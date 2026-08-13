@@ -24,7 +24,7 @@ use bss_pricing::domain::plan_shape::{
 };
 use bss_pricing::domain::scope_key::{PhaseId, PlanId};
 use bss_pricing::infra::storage::entity::{
-    bundle, bundle_component, bundle_revshare, bundle_revshare_group, plan,
+    bundle, bundle_component, bundle_revshare, bundle_revshare_group, outbox, plan,
 };
 use bss_pricing::infra::storage::migrations::Migrator;
 use bss_pricing::infra::storage::repo::{NewPlanDraft, PlanRepo, PlanShapeRepo};
@@ -32,7 +32,7 @@ use bss_pricing::infra::storage::{RepoError, repo_failure};
 use chrono::{DateTime, TimeZone, Utc};
 use sea_orm::ActiveValue::Set;
 use sea_orm::sea_query::Expr;
-use sea_orm::{ColumnTrait, Condition, EntityTrait};
+use sea_orm::{ColumnTrait, Condition, EntityTrait, Order};
 use sea_orm_migration::MigratorTrait;
 use toolkit::api::canonical_prelude::CanonicalError;
 use toolkit_db::migration_runner::run_migrations_for_testing;
@@ -3113,4 +3113,167 @@ async fn lineage_round_trips_and_survives_the_next_revision() {
         .await
         .expect("create an authored draft");
     assert_eq!(plain.cloned_from, None, "an authored plan has no lineage");
+}
+
+// ---------------------------------------------------------------------------
+// `PlanCreated` / `PlanUpdated` — the producers S2 §7 puts on the authoring door
+// ---------------------------------------------------------------------------
+
+/// Every outbox row of one tenant, in the order the aggregate holds them, as
+/// `(event name, aggregate id, dedup key)`.
+///
+/// The dedup key is read rather than the payload, because the key is what a
+/// second enqueue of one act collides on and it is therefore the half of the
+/// record a consumer's at-least-once dedup depends on. Ordered by `seq`, because
+/// per-`(tenantId, aggregateId)` order is the delivery contract and a suite that
+/// read the rows unordered could not tell a creation announced before its edits
+/// from one announced after.
+async fn plan_outbox(
+    provider: &DBProvider<DbError>,
+    scope: &AccessScope,
+) -> Vec<(String, Uuid, String)> {
+    let conn = provider.conn().expect("conn");
+    outbox::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .order_by(outbox::Column::Seq, Order::Asc)
+        .all(&conn)
+        .await
+        .expect("read the outbox")
+        .into_iter()
+        .map(|row| (row.event_name, row.aggregate_id, row.dedup_key))
+        .collect()
+}
+
+#[tokio::test]
+async fn creating_a_plan_emits_plan_created() {
+    // `inst-pa-return` states the producer in as many words - "RETURN 201 (draft
+    // plan, ETag); `PlanCreated` emitted by the Foundation outbox" - and PRD §4
+    // makes the emission a MUST rather than one of the conditional names. The
+    // name has been frozen and producerless since the gear was created, so every
+    // consumer counting plan creations has been counting zero while the exactly
+    // parallel `PriceCreated` fired.
+    let (repo, provider) = harness().await;
+    let tenant = Uuid::from_u128(0x7e_11);
+    let scope = AccessScope::for_tenant(tenant);
+    let plan_id = PlanId::new(Uuid::from_u128(0x9_1a4));
+
+    repo.create_draft(&scope, new_draft(plan_id, tenant))
+        .await
+        .expect("create the first revision");
+
+    assert_eq!(
+        plan_outbox(&provider, &scope).await,
+        vec![(
+            "PlanCreated".to_owned(),
+            plan_id.get(),
+            format!("PlanCreated/{plan_id}")
+        )],
+        "one creation, one event, ordered within the plan's own stream"
+    );
+}
+
+#[tokio::test]
+async fn each_authoring_edit_emits_one_plan_updated() {
+    // S2 §7: this slice "rides the Foundation's frozen set - `PlanCreated`,
+    // `PlanUpdated` on authoring", and S10 §7 adds that the advanced primitives
+    // "ride `PlanUpdated`/`PriceUpdated`" rather than minting names of their
+    // own. Those primitives are authored as `PATCH` facets, so a facet write
+    // that announced nothing would leave S10's whole event story unproduced.
+    // PRD AC #98 fixes the granularity: emitted "after mutation".
+    let (repo, provider) = harness().await;
+    let tenant = Uuid::from_u128(0x7e_11);
+    let scope = AccessScope::for_tenant(tenant);
+    let plan_id = PlanId::new(Uuid::from_u128(0x9_1a4));
+    let shapes = PlanShapeRepo::new(provider.clone());
+
+    repo.create_draft(&scope, new_draft(plan_id, tenant))
+        .await
+        .expect("create");
+    // The plan facet, then a child-set facet: the two are written by different
+    // repositories and share only the audit rail, so a producer bolted onto
+    // `update_draft_on` alone would leave the phase write silent.
+    repo.update_draft(
+        &scope,
+        tenant,
+        plan_id,
+        0,
+        RowVersion::new(0),
+        PlanShapePatch {
+            plan_tier: Some("platinum".to_owned()),
+            ..PlanShapePatch::default()
+        },
+        stamp(),
+    )
+    .await
+    .expect("edit the plan facet");
+    shapes
+        .replace_phases(
+            &scope,
+            tenant,
+            plan_id,
+            0,
+            RowVersion::new(1),
+            three_phases(),
+            stamp(),
+        )
+        .await
+        .expect("author the phase chain");
+
+    assert_eq!(
+        plan_outbox(&provider, &scope).await,
+        vec![
+            (
+                "PlanCreated".to_owned(),
+                plan_id.get(),
+                format!("PlanCreated/{plan_id}")
+            ),
+            // The post-state row version is what names the edit: the
+            // compare-and-swap makes `(plan, revision, version)` unique to one
+            // mutation, so two edits can never collide on one key and a
+            // redelivery of one edit can never look like two.
+            (
+                "PlanUpdated".to_owned(),
+                plan_id.get(),
+                format!("PlanUpdated/{plan_id}/0/1")
+            ),
+            (
+                "PlanUpdated".to_owned(),
+                plan_id.get(),
+                format!("PlanUpdated/{plan_id}/0/2")
+            ),
+        ],
+        "one event per authoring mutation, each naming the state it produced"
+    );
+}
+
+#[tokio::test]
+async fn abandoning_a_draft_emits_nothing_further() {
+    // The discriminator is the act, not the rail. `abandon_draft` writes its
+    // audit record through the same function every facet edit does, so a
+    // producer placed there without asking what happened would announce a
+    // discarded draft as a content change. D-145 is explicit that the abandon is
+    // a terminal lifecycle flip rather than an edit, and the frozen set has no
+    // name for it - so the honest wire outcome is silence.
+    let (repo, provider) = harness().await;
+    let tenant = Uuid::from_u128(0x7e_11);
+    let scope = AccessScope::for_tenant(tenant);
+    let plan_id = PlanId::new(Uuid::from_u128(0x9_1a4));
+
+    repo.create_draft(&scope, new_draft(plan_id, tenant))
+        .await
+        .expect("create");
+    repo.abandon_draft(&scope, tenant, plan_id, 0, RowVersion::new(0), stamp())
+        .await
+        .expect("abandon the draft");
+
+    assert_eq!(
+        plan_outbox(&provider, &scope)
+            .await
+            .into_iter()
+            .map(|(name, _, _)| name)
+            .collect::<Vec<_>>(),
+        vec!["PlanCreated".to_owned()],
+        "the creation is announced; the abandon is not"
+    );
 }

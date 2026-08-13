@@ -90,11 +90,14 @@ use crate::domain::scope_key::PlanId;
 use crate::infra::storage::entity::plan;
 use crate::infra::storage::repo::bundle_repo;
 use crate::infra::storage::repo::check_authored_instant;
+use crate::infra::storage::repo::outbox_repo::{
+    NewOutboxEvent, PlanCreatedPayload, PlanUpdatedPayload,
+};
 use crate::infra::storage::repo::plan_shape_repo::{
     copy_addon_rules, copy_composites, copy_descriptor_set, copy_phases, delete_addon_rules,
     delete_composites, delete_descriptor_set, delete_phases,
 };
-use crate::infra::storage::repo::{NewAuditEntry, audit_repo};
+use crate::infra::storage::repo::{NewAuditEntry, audit_repo, outbox_repo};
 use crate::infra::storage::{RepoError, contention_or_db};
 
 /// The noun every **compare-and-swap** refusal names, so a caller that failed
@@ -880,12 +883,16 @@ impl PlanRepo {
 /// # This is also the TOCTOU void's rail (`inst-ap-pin`)
 ///
 /// Every authoring mutation of a plan's **shape** lands here — the plan facet,
-/// the phase graph, the add-on rule set, the descriptor set and the draft
-/// abandon — so a pending approval unit pinned to that plan is voided here, in
-/// the mutation's own transaction. `price_repo::record_price_mutation` is the
-/// same rail for the row plane.
+/// the phase graph, the add-on rule set, the descriptor set, the derived meters
+/// (Slice 10), a bundle's composition (Slice 8, D-92, which rides its plan's
+/// revision) and the draft abandon — so a pending approval unit pinned to that
+/// plan is voided here, in the mutation's own transaction.
+/// `price_repo::record_price_mutation` is the same rail for the row plane. This
+/// list said **five** until 2026-08-13 and had said so since the two later
+/// facets joined the rail; they inherited the void correctly, which is the
+/// property the placement buys, and only the sentence describing it was stale.
 ///
-/// Placed on the audit writer rather than at each of those five call sites for
+/// Placed on the audit writer rather than at each of those seven call sites for
 /// the reason the whole rule exists: this phase permits **no unaudited mutating
 /// entry point**, so a surface a later slice adds cannot reach a pinned subject
 /// without passing through here, and it inherits the void instead of needing to
@@ -898,13 +905,34 @@ impl PlanRepo {
 /// function, which is why `create_plan` does not void: no unit can be pinned to
 /// a plan that did not exist.
 ///
+/// # And it is the `PlanUpdated` rail, for the same reason
+///
+/// S2 §7 puts `PlanUpdated` "on authoring" and S10 §7 has the advanced
+/// primitives "ride `PlanUpdated`" rather than mint a name; PRD AC #98 emits it
+/// "after mutation". Every one of those mutations already passes through here,
+/// so the producer is here too — at the choke point rather than at the six of
+/// the seven call sites above that carry an edit, exactly as the void is, and
+/// for the identical reason: a facet a later slice adds inherits the
+/// announcement instead of having to remember it. Six hand-placed enqueues is
+/// the shape that leaves the seventh silent.
+///
+/// **It is emitted on [`AuditAction::Update`] and on nothing else.** The other
+/// action reaching this rail is [`AuditAction::Abandon`], and D-145's whole point
+/// is that discarding a draft is a terminal lifecycle flip rather than an edit:
+/// the frozen set has no name for it, and announcing it as a content change would
+/// tell a consumer to re-read a revision that just stopped being readable. The
+/// discrimination is on the act, not on the caller, so a future action added to
+/// this rail is silent until someone decides what it announces.
+///
 /// # Errors
 /// [`RepoError::Db`] or [`RepoError::CorruptRow`] from the chain append, both of
 /// which roll the mutation back with them. That is the point: a mutation whose
 /// record cannot be written must not commit, or the trail becomes silently
 /// incomplete. [`RepoError::Db`] from the void, for the same reason one construct
 /// over: a mutation that could not close the approval it invalidated must not
-/// commit either.
+/// commit either. [`RepoError::ConcurrentMutation`] from the enqueue, which is
+/// the same posture a third time: an edit that committed without its event would
+/// leave a consumer resolving a draft nobody told it had moved.
 pub(super) async fn record_revision_mutation(
     runner: &impl DBRunner,
     scope: &AccessScope,
@@ -942,6 +970,24 @@ pub(super) async fn record_revision_mutation(
             approval_ref: None,
             correlation_id: stamp.correlation_id,
         },
+    )
+    .await?;
+    if action != AuditAction::Update {
+        return Ok(());
+    }
+    outbox_repo::enqueue(
+        runner,
+        scope,
+        NewOutboxEvent::plan_updated(
+            tenant_id,
+            &PlanUpdatedPayload {
+                plan_id: after.plan_id,
+                revision: after.revision,
+                row_version: after.row_version.get(),
+                correlation_id: stamp.correlation_id,
+            },
+            stamp.recorded_at,
+        ),
     )
     .await
     .map(|_| ())
@@ -1057,6 +1103,31 @@ pub async fn create_draft_on(
             approval_ref: None,
             correlation_id,
         },
+    )
+    .await?;
+    // `PlanCreated`, in the same transaction as the insert and the record, for
+    // the reason the outbox exists: an event exists if and only if its commit
+    // happened, so a create that rolls back announces nothing and one that
+    // commits cannot fail to announce.
+    //
+    // **Here rather than at the two call sites.** `create_draft_on` is the only
+    // implementation of "a plan comes into existence" — `api::rest::plans` reaches
+    // it through the idempotency guard and `infra::clone` reaches it directly
+    // (D-275) — so a producer at the surface would have announced authored plans
+    // and stayed silent about cloned ones, which is the asymmetry across two doors
+    // that this event's absence already was across two planes.
+    outbox_repo::enqueue(
+        runner,
+        scope,
+        NewOutboxEvent::plan_created(
+            tenant_id,
+            &PlanCreatedPayload {
+                plan_id: opened.plan_id,
+                revision: opened.revision,
+                correlation_id,
+            },
+            opened.created_at_utc,
+        ),
     )
     .await?;
     Ok(opened)

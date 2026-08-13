@@ -1505,6 +1505,39 @@ pub async fn outbox_correlations(harness: &Harness) -> Vec<Uuid> {
         .collect()
 }
 
+/// The correlation id of every `pricing_outbox` row carrying **one named
+/// event**, in `seq` order.
+///
+/// [`outbox_correlations`] answers "what did this tenant's outbox accumulate",
+/// which is the right question for a caller measuring a **delta** across an act
+/// and the wrong one for a caller asserting what a single commit emitted. Its
+/// own doc said as much — *"true only while no caller's act authors a price
+/// row"* — and the same sentence held for the fixture: since the plan plane got
+/// its `PlanCreated`/`PlanUpdated` producers, seeding a publishable plan leaves
+/// three rows in the outbox before the act under test runs.
+///
+/// The repair is to name the event rather than to bump a count. A count is a
+/// proxy for "the row this act wrote", and it passes just as happily when the
+/// one row present is some other event entirely.
+pub async fn outbox_correlations_of(harness: &Harness, event_name: &str) -> Vec<Uuid> {
+    let conn = harness.db.conn().expect("conn");
+    outbox::Entity::find()
+        .secure()
+        .scope_with(&AccessScope::allow_all())
+        .filter(
+            Condition::all()
+                .add(outbox::Column::TenantId.eq(harness.tenant))
+                .add(outbox::Column::EventName.eq(event_name)),
+        )
+        .order_by(outbox::Column::Seq, Order::Asc)
+        .all(&conn)
+        .await
+        .expect("read the outbox")
+        .into_iter()
+        .map(|row| row.correlation_id)
+        .collect()
+}
+
 /// Every `pricing_catalog_version_ref` row the caller's tenant holds, in
 /// `requested_at` then `pending_ref` order.
 ///

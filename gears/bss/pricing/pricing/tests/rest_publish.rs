@@ -27,8 +27,8 @@ mod rest_support;
 use bss_pricing::domain::approval::ApprovalState;
 use bss_pricing::domain::lifecycle::LifecycleState;
 use rest_support::{
-    Harness, approval_row, approval_rows, audit_rows, body_json, outbox_correlations, plan_state,
-    price_rows, problem_code, seed_draft_plan, seed_publishable_plan, with_headers,
+    Harness, approval_row, approval_rows, audit_rows, body_json, outbox_correlations_of,
+    plan_state, price_rows, problem_code, seed_draft_plan, seed_publishable_plan, with_headers,
 };
 use uuid::Uuid;
 
@@ -991,8 +991,13 @@ async fn the_publish_record_and_its_outbox_row_carry_one_correlation() {
         .correlation_id
         .expect("the publish record carries a correlation");
 
-    let emitted = outbox_correlations(&h).await;
-    assert_eq!(emitted.len(), 1, "one commit, one event");
+    // The `PlanPublished` row by name, not "the only row in the outbox". The
+    // count was a proxy for the event, and it stopped being a faithful one when
+    // the plan plane got its `PlanCreated`/`PlanUpdated` producers and the
+    // fixture began leaving three rows behind it — but it was never a
+    // *sufficient* one either: a lone `PlanRetired` would have satisfied it.
+    let emitted = outbox_correlations_of(&h, "PlanPublished").await;
+    assert_eq!(emitted.len(), 1, "one commit, one `PlanPublished`");
     assert_eq!(
         emitted[0], recorded,
         "the trail and the outbox name the same operator call"

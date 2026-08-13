@@ -201,6 +201,56 @@ pub struct NewOutboxEvent {
 }
 
 impl NewOutboxEvent {
+    /// The `PlanCreated` event of one plan coming into existence
+    /// (`inst-pa-return`).
+    ///
+    /// A named constructor for [`NewOutboxEvent::plan_published`]'s reason: the
+    /// name, the aggregate and the dedup key are not the caller's to choose.
+    #[must_use]
+    pub fn plan_created(
+        tenant_id: Uuid,
+        payload: &PlanCreatedPayload,
+        enqueued_at: DateTime<Utc>,
+    ) -> Self {
+        Self {
+            tenant_id,
+            aggregate_id: payload.plan_id.get(),
+            event: CatalogEvent::PlanCreated,
+            payload: payload.to_value(),
+            dedup_key: plan_created_dedup_key(payload.plan_id),
+            correlation_id: payload.correlation_id,
+            enqueued_at,
+        }
+    }
+
+    /// The `PlanUpdated` event of one authoring edit (S2 §7, S10 §7).
+    ///
+    /// A named constructor for [`NewOutboxEvent::plan_published`]'s reason, and
+    /// with more at stake than most: this is the one event of the plan plane
+    /// whose act repeats, so a call site free to pick its own dedup key is a
+    /// call site free to make the second edit of a draft dedup against the
+    /// first. [`plan_updated_dedup_key`] is what stops that.
+    #[must_use]
+    pub fn plan_updated(
+        tenant_id: Uuid,
+        payload: &PlanUpdatedPayload,
+        enqueued_at: DateTime<Utc>,
+    ) -> Self {
+        Self {
+            tenant_id,
+            aggregate_id: payload.plan_id.get(),
+            event: CatalogEvent::PlanUpdated,
+            payload: payload.to_value(),
+            dedup_key: plan_updated_dedup_key(
+                payload.plan_id,
+                payload.revision,
+                payload.row_version,
+            ),
+            correlation_id: payload.correlation_id,
+            enqueued_at,
+        }
+    }
+
     /// The `PlanPublished` event of one publish unit, whole.
     ///
     /// A named constructor rather than a struct literal at the call site,
@@ -564,6 +614,111 @@ pub fn plan_published_dedup_key(plan_id: PlanId, revision: u64) -> String {
         CatalogEvent::PlanPublished.as_str(),
         plan_id,
         revision
+    )
+}
+
+/// The `PlanCreated` payload (`inst-pa-return`, S2 §7).
+///
+/// The field list is this module's, for its three siblings' reason: `inst-pa-return`
+/// declares that the event is emitted and PRD §4 that it must be, and neither says
+/// what it carries.
+///
+/// **No `skuId`, no shape.** A plan is announced at the instant it exists, before
+/// any `PATCH` has attached a phase chain, an add-on set or a descriptor set, so a
+/// payload that named the shape would name a shape nobody has authored yet. What a
+/// consumer can act on here is that the aggregate now exists; the content arrives
+/// as `PlanUpdated` and freezes at `PlanPublished`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PlanCreatedPayload {
+    /// The plan that came into existence — the event's aggregate.
+    pub plan_id: PlanId,
+    /// The revision the create opened, which is `0` by construction.
+    pub revision: u64,
+    /// The correlation id of the causing request.
+    pub correlation_id: Uuid,
+}
+
+impl PlanCreatedPayload {
+    /// Render the payload for its `jsonb` column.
+    #[must_use]
+    pub fn to_value(&self) -> JsonValue {
+        json!({
+            "planId": self.plan_id.get(),
+            "revision": self.revision,
+            "correlationId": self.correlation_id,
+        })
+    }
+}
+
+/// What makes a repeat of one plan's creation the same event.
+///
+/// **The plan alone, with no revision segment.** A creation opens revision `0`
+/// and a plan is created exactly once, so the revision would be a constant
+/// dressed as a discriminator — and a constant in a dedup key is the shape that
+/// makes two acts look distinct when they are not. [`plan_retired_dedup_key`]
+/// carries a revision because a plan's *retirement* names the revision that
+/// flipped, which is not always `0`.
+#[must_use]
+pub fn plan_created_dedup_key(plan_id: PlanId) -> String {
+    format!("{}/{}", CatalogEvent::PlanCreated.as_str(), plan_id)
+}
+
+/// The `PlanUpdated` payload — the content change of one authored revision
+/// (S2 §7, S10 §7).
+///
+/// The field list is this module's, as its siblings' are.
+///
+/// **It names the state the edit produced and not the edit's content.** A patch
+/// is one of six facets — the plan columns, the phase chain, the add-on set, the
+/// descriptor set, the derived meters, a bundle's composition — and a payload
+/// that tried to describe which one moved would be a sixth enumeration of a set
+/// this gear already enumerates in the audit trail, free to fall out of step
+/// with it. What a consumer needs is that the draft moved and which state it
+/// moved to; the *what* is `pricing_audit_log`'s, and the shape freezes at
+/// publish anyway.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PlanUpdatedPayload {
+    /// The plan whose draft moved — the aggregate the event is ordered within.
+    pub plan_id: PlanId,
+    /// The revision that was edited.
+    pub revision: u64,
+    /// The row version the edit **produced**, which is the caller's asserted
+    /// version plus one: the compare-and-swap makes it unique to this mutation.
+    pub row_version: u64,
+    /// The correlation id of the causing request.
+    pub correlation_id: Uuid,
+}
+
+impl PlanUpdatedPayload {
+    /// Render the payload for its `jsonb` column.
+    #[must_use]
+    pub fn to_value(&self) -> JsonValue {
+        json!({
+            "planId": self.plan_id.get(),
+            "revision": self.revision,
+            "rowVersion": self.row_version,
+            "correlationId": self.correlation_id,
+        })
+    }
+}
+
+/// What makes a repeat of one authoring edit the same event.
+///
+/// The revision **and the row version the edit produced**. Unlike every other
+/// key in this file the act is repeatable — a draft takes as many edits as an
+/// author cares to make — so the plan and the revision alone would collide on
+/// the second one and the outbox would silently drop it. The post-state version
+/// is the act's own identity, because the compare-and-swap that wrote it matched
+/// on the predecessor and bumped by one: exactly one mutation of
+/// `(plan, revision)` can ever have produced it.
+#[must_use]
+pub fn plan_updated_dedup_key(plan_id: PlanId, revision: u64, row_version: u64) -> String {
+    format!(
+        "{}/{}/{}/{}",
+        CatalogEvent::PlanUpdated.as_str(),
+        plan_id,
+        revision,
+        row_version
     )
 }
 

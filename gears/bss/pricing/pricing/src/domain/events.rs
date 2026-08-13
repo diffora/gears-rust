@@ -32,8 +32,18 @@ use toolkit_macros::domain_model;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum CatalogEvent {
     /// A plan aggregate was created.
+    ///
+    /// Produced by `plan_repo::create_draft_on` (`inst-pa-return`), which is
+    /// where an authored plan and a cloned one meet — so both announce, and
+    /// neither door can announce without the other.
     PlanCreated,
-    /// A plan's draft content changed.
+    /// A plan's draft content changed — one event per authoring mutation
+    /// (S2 §7, S10 §7, PRD AC #98 "emitted after mutation").
+    ///
+    /// Produced by `plan_repo::record_revision_mutation`, the rail every facet
+    /// write already passes through. Discarding a draft reaches that rail too
+    /// and is deliberately silent: D-145 makes it a terminal lifecycle flip
+    /// rather than an edit, and the set below has no name for it.
     PlanUpdated,
     /// A plan publish committed, carrying a **pending** version ref.
     PlanPublished,

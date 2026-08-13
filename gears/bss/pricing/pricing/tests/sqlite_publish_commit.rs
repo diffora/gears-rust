@@ -392,26 +392,40 @@ async fn version_refs(h: &Harness) -> Vec<catalog_version_ref::Model> {
         .expect("read the version refs")
 }
 
+/// The three names a **seed** in this file emits, which is everything the
+/// authoring door announces: the plan coming into existence, each `PATCH` that
+/// shaped it, and the price row authored on it.
+///
+/// `PlanCreated` / `PlanUpdated` joined `PriceCreated` here on 2026-08-13, when
+/// the plan plane got the producers `inst-pa-return` and S2 §7 had always asked
+/// for. Adding them was the same judgement the original exclusion records below,
+/// taken a second time and for the same act.
+const SEEDED_EVENT_NAMES: [&str; 3] = ["PlanCreated", "PlanUpdated", "PriceCreated"];
+
 /// The events **this commit** wrote.
 ///
-/// **`PriceCreated` is excluded, and the exclusion is what keeps the assertions
-/// honest rather than what weakens them.** Every seed in this file authors a price
-/// row, and authoring is where S3 §17.5 puts `PriceCreated` — so once that producer
-/// existed, an unfiltered read made `is_empty()` false on paths that write nothing,
-/// and the tempting repair was to bump each expectation from 0 to 1. That would
-/// have left every `..._writes_nothing` case named for a guarantee it no longer
-/// checked. Filtering the seed's own event out instead keeps "the commit wrote
-/// nothing" meaning exactly that.
+/// **The authoring door's events are excluded, and the exclusion is what keeps
+/// the assertions honest rather than what weakens them.** Every seed in this file
+/// creates a plan, patches it and authors a price row, and each of those three
+/// acts announces itself (`inst-pa-return`; S2 §7; S3 §17.5) — so an unfiltered
+/// read makes `is_empty()` false on paths that write nothing, and the tempting
+/// repair is to bump each expectation from 0 to 4. That would leave every
+/// `..._writes_nothing` case named for a guarantee it no longer checked.
+/// Filtering the seed's own events out instead keeps "the commit wrote nothing"
+/// meaning exactly that.
 ///
 /// **It is correct here for a reason that does not travel**, and it did not:
 /// `write_prepared` — the only path to `record_price_mutation(Create)` — has two
 /// callers, the authoring door and `insert_successor_draft_on`, and neither is
-/// reachable from a publish or a window op. So in this file every `PriceCreated`
-/// really is a seed's. `sqlite_supersession_unit` copied the filter without
-/// re-reading its own act, which *does* stage a draft, and spent a stretch
-/// asserting "nothing was announced" over an announcement; it excludes the fixture
-/// by sequence now. **Before reusing this helper, check whether the act under test
-/// can author a row.**
+/// reachable from a publish or a window op; `plan_repo::create_draft_on` and
+/// `plan_repo::record_revision_mutation` — the two the plan pair rides — are
+/// likewise unreachable from a commit, which freezes a revision rather than
+/// authoring one, and `open_revision` deliberately passes through neither. So in
+/// this file every excluded row really is a seed's. `sqlite_supersession_unit`
+/// copied the filter without re-reading its own act, which *does* stage a draft,
+/// and spent a stretch asserting "nothing was announced" over an announcement; it
+/// excludes the fixture by sequence now. **Before reusing this helper, check
+/// whether the act under test can author a plan or a row.**
 async fn outbox_rows(h: &Harness) -> Vec<outbox::Model> {
     let conn = h.provider.conn().expect("conn");
     outbox::Entity::find()
@@ -422,8 +436,33 @@ async fn outbox_rows(h: &Harness) -> Vec<outbox::Model> {
         .await
         .expect("read the outbox")
         .into_iter()
-        .filter(|row| row.event_name != "PriceCreated")
+        .filter(|row| !SEEDED_EVENT_NAMES.contains(&row.event_name.as_str()))
         .collect()
+}
+
+/// Every `seq` the plan's stream holds, seed events included, ascending.
+///
+/// The unfiltered read, because the counter is the aggregate's and a drain reads
+/// it whole: a caller asking "is the publish the newest event" is asking about
+/// the numbers the filter above hides.
+async fn plan_stream_seqs(h: &Harness) -> Vec<i64> {
+    let conn = h.provider.conn().expect("conn");
+    let mut seqs: Vec<i64> = outbox::Entity::find()
+        .secure()
+        .scope_with(&h.scope)
+        .filter(
+            Condition::all()
+                .add(outbox::Column::TenantId.eq(TENANT))
+                .add(outbox::Column::AggregateId.eq(plan_id().get())),
+        )
+        .all(&conn)
+        .await
+        .expect("read the outbox")
+        .into_iter()
+        .map(|row| row.seq)
+        .collect();
+    seqs.sort_unstable();
+    seqs
 }
 
 async fn audit_rows(h: &Harness) -> Vec<audit_log::Model> {
@@ -559,10 +598,24 @@ async fn a_first_publish_leaves_exactly_the_five_artifacts_and_nothing_else() {
     let events = outbox_rows(&h).await;
     assert_eq!(events.len(), 1);
     assert_eq!(events[0].event_name, "PlanPublished");
-    // The seed's own `PriceCreated` holds seq 0 — authoring emits now (S3 §17.5) —
-    // so the publish is the tenant's second event. The number is asserted rather
-    // than dropped because the counter is what orders a drain.
-    assert_eq!(events[0].seq, 1);
+    // The counter is asserted rather than dropped, because it is what orders a
+    // drain — but as the **property** and not as a literal. This read `seq == 1`
+    // while the seed emitted exactly one event; the seed emits four now
+    // (`PlanCreated`, two `PlanUpdated`, `PriceCreated`), and a literal that has
+    // to be re-derived every time a producer lands was never asserting the thing
+    // it named. What a drain needs is that the plan's stream is dense from zero
+    // and that the publish sits at its head.
+    let stream = plan_stream_seqs(&h).await;
+    assert_eq!(
+        stream,
+        (0..i64::try_from(stream.len()).expect("a small count")).collect::<Vec<_>>(),
+        "the plan's stream is dense from zero, so a drain misses nothing"
+    );
+    assert_eq!(
+        Some(events[0].seq),
+        stream.last().copied(),
+        "and the publish is its newest event"
+    );
     assert_eq!(events[0].published_at, None);
     assert_eq!(events[0].aggregate_id, plan_id().get());
     assert_eq!(
