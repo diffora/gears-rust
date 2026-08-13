@@ -14,7 +14,13 @@ mod rest_support;
 
 use axum::http::StatusCode;
 use bss_pricing::api::rest::bulk_imports::BULK_IMPORTS;
+use bss_pricing::domain::bulk::{BulkKind, BulkState};
+use bss_pricing::infra::storage::entity::price;
+use bss_pricing::infra::storage::repo::bulk_repo;
 use rest_support::{Harness, body_json, problem_code, seed_current_plan, with_headers};
+use sea_orm::ActiveValue::Set;
+use sea_orm::EntityTrait;
+use toolkit_db::secure::SecureInsertExt;
 use uuid::Uuid;
 
 fn keyed(key: &str) -> Vec<(&str, &str)> {
@@ -632,5 +638,147 @@ async fn a_metered_draft_is_found_by_the_batch_that_names_its_key() {
     assert!(
         !detail.contains("DUPLICATE_SCOPE_KEY"),
         "and it did not fall through to the create path: {detail}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Z11-4 — a Phase-1 store failure, and the key it spends.
+// ---------------------------------------------------------------------------
+
+/// Make the store-dependent half of Phase 1 fail, and nothing else.
+///
+/// `classify_against_store` reads the plan's **published** rows and rehydrates
+/// each one's canonical key; `to_scope_key` refuses a `currency` the domain cannot
+/// parse with `CorruptRow`. `pricing_price.currency` is a bare `varchar(3)` with
+/// no CHECK on its shape, so a two-letter code is a value the store admits and the
+/// crate refuses — a row a restore, a data fix or another shape's migration could
+/// leave behind.
+///
+/// It is injected on a row of its **own** key rather than the batch's, so nothing
+/// here depends on the batch colliding with it: what fails is the plan-wide read,
+/// which is the whole of Phase 1's store half.
+async fn poison_the_published_read(harness: &Harness, plan_id: Uuid) {
+    let conn = harness.db.conn().expect("conn");
+    let scope = harness.scope();
+    let row = price::ActiveModel {
+        price_id: Set(Uuid::now_v7()),
+        tenant_id: Set(harness.tenant),
+        plan_id: Set(plan_id),
+        currency: Set("US".to_owned()),
+        region: Set("EU".to_owned()),
+        phase: Set(rest_support::seeded_phase().get()),
+        charge_kind: Set("recurring".to_owned()),
+        amount_minor: Set(Some(1_000)),
+        model_kind: Set(Some("flat".to_owned())),
+        lifecycle_state: Set("published".to_owned()),
+        created_by: Set(Uuid::from_u128(0xac_11)),
+        created_at_utc: Set(chrono::Utc::now()),
+        ..price::ActiveModel::default()
+    };
+    price::Entity::insert(row.clone())
+        .secure()
+        .scope_with_model(&scope, &row)
+        .expect("scope the seed")
+        .exec(&conn)
+        .await
+        .expect("the currency column admits a code the domain does not");
+}
+
+/// **The RED this case is about.** The run is born `validating`
+/// (`bulk_repo::open`), and `classify_against_store` carried a bare `?`. A
+/// transient repo error there left the run in `validating` **forever**: `abort`
+/// refuses anything that is not `committing`, no sweeper exists, and the only two
+/// other writers of a run's state are the rule path's `ValidationFailed` and Phase
+/// 2's `Committing`, neither of which is reached.
+///
+/// The client key is spent by then, so the replay is worse than the failure: the
+/// replay arm answers `202` with the run's placeholder report — `state:
+/// "validating"`, `report: {"rows": []}` — telling a client that resubmitted on a
+/// timeout that its import succeeded, for a run that imported nothing. That is the
+/// one conclusion idempotency exists to prevent, and the same handler argues it at
+/// length twenty lines up, where it installs a refusal for the `ValidationFailed`
+/// case.
+///
+/// Phase 2 was hardened three times for this hazard (D-294, D-297, D-300) and
+/// Phase 1 not once; `domain::bulk`'s own `Rejected` exists because D-267 found a
+/// run "stranded there with no exit".
+///
+/// Armed at both halves: the run must be left terminal, and the replay must be a
+/// refusal. A case that only asserted the first `POST` failed would pass under the
+/// bare `?`.
+#[tokio::test]
+async fn a_phase_one_store_failure_lands_the_run_terminal_and_the_replay_is_refused() {
+    let harness = Harness::new().await;
+    let plan = Uuid::now_v7();
+    seed_current_plan(&harness, plan).await;
+    poison_the_published_read(&harness, plan).await;
+
+    let response = harness
+        .allowed()
+        .send(with_headers(
+            "POST",
+            BULK_IMPORTS,
+            Some(batch(&[row(plan, "eu", 1_500)])),
+            &keyed("bulk-phase1-fault"),
+        ))
+        .await;
+    assert!(
+        response.status().is_server_error(),
+        "a store fault in Phase 1 is the run's failure and reaches the caller as one, not as \
+         a validation refusal: {}",
+        response.status()
+    );
+
+    // The run itself, read past the API because the failing response carries no
+    // operation ref to `GET`.
+    let conn = harness.db.conn().expect("conn");
+    let run = bulk_repo::find_by_client_key(
+        &conn,
+        &harness.scope(),
+        harness.tenant,
+        BulkKind::Import,
+        "bulk-phase1-fault",
+    )
+    .await
+    .expect("read the run by its key")
+    .expect("the key opened a run, which is exactly why it must not be left mid-flight");
+    assert_eq!(
+        run.state,
+        BulkState::ValidationFailed,
+        "the run this key spent has to reach a state something can act on; `validating` has \
+         no exit at all — abort refuses it and no sweeper exists: {run:?}"
+    );
+    assert!(
+        run.completed_at.is_some(),
+        "and a terminal run is stamped, which the CHECK pairs with the state: {run:?}"
+    );
+    assert!(
+        run.report.get("failure").is_some(),
+        "the report says why, because the GET is where a batch's answer lives: {}",
+        run.report
+    );
+    drop(conn);
+
+    // The replay. Under the bare `?` this answered 202 with `{"rows": []}` — a
+    // resubmit told it succeeded.
+    let replay = harness
+        .allowed()
+        .send(with_headers(
+            "POST",
+            BULK_IMPORTS,
+            Some(batch(&[row(plan, "eu", 1_500)])),
+            &keyed("bulk-phase1-fault"),
+        ))
+        .await;
+    assert_eq!(
+        replay.status(),
+        StatusCode::BAD_REQUEST,
+        "a replay must not tell a client a resubmit succeeded where the original failed"
+    );
+    assert!(
+        problem_code(replay)
+            .await
+            .contains("BULK_VALIDATION_FAILED"),
+        "and it is refused under the code the run's own state names"
     );
 }

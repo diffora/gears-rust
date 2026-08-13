@@ -19,6 +19,15 @@
 //! `validation_failed` holding it, and the `GET` is where a batch's answer lives
 //! for every other outcome too.
 //!
+//! **A Phase-1 *store* fault lands on the same edge** (Z11-4). It is not a
+//! validation refusal and does not answer 400 — the caller learns the storage
+//! fault — but the run cannot be left where the fault found it: `validating` is a
+//! state nothing can leave except this handler, so a run stranded there holds a
+//! **spent** client key with no operator remedy at all. So the run is landed
+//! `validation_failed` with the fault in its report before the error propagates,
+//! and the replay arm then refuses instead of answering `202` for a run that
+//! imported nothing.
+//!
 //! # The client key is the run's, not the gate's
 //!
 //! O4's replay here is **not** `idempotent::guarded`'s. That gate stores a
@@ -287,11 +296,17 @@ async fn submit_bulk_import(
         // The message also states what the key now costs, because this is where
         // an operator meets it: the key is **spent on the run**, so a corrected
         // batch resubmitted under it would import nothing and be told nothing.
+        //
+        // The state covers two ways to get there — the rule path below, and a
+        // Phase-1 *store* fault landed on the same edge (Z11-4). Both are "this
+        // key's batch did not import", which is the fact the refusal is about; the
+        // run's report is where the difference is written, and the `GET` serves it.
         if existing.state == BulkState::ValidationFailed {
             return Err(CanonicalError::from(DomainError::BulkValidationFailed {
                 operation_id: existing.operation_id.to_string(),
-                detail: "this key opened a batch that was refused in validation; a corrected \
-                         batch is a new batch and needs its own idempotency key"
+                detail: "this key opened a batch that did not pass validation; the run holds \
+                         what refused it, and a corrected batch is a new batch that needs its \
+                         own idempotency key"
                     .to_owned(),
             }));
         }
@@ -319,9 +334,54 @@ async fn submit_bulk_import(
 
     // Phase 1: both halves, into one report.
     let mut report = classify(&rows);
-    classify_against_store(&conn, &scope, tenant, &rows, &mut report)
+    // **Not a bare `?`, and Z11-4 is why.** The run above is born `validating`, and
+    // `validating` is a state nothing can leave except this handler: `abort` refuses
+    // anything that is not `committing`, the lock table has no sweeper, and the only
+    // other writers of a run's state are the rule path below and Phase 2. So a
+    // store fault here used to strand the run there permanently — with the client
+    // key **spent on it**, which makes the retry worse than the failure: the replay
+    // arm above would answer `202` with the placeholder report, telling a client
+    // that resubmitted on a timeout that its import succeeded, for a run that
+    // imported nothing. That is the conclusion the D-295 refusal twenty lines up
+    // exists to prevent, reproduced with no refusal at all.
+    //
+    // Phase 2 was hardened three times for exactly this hazard (D-294, D-297,
+    // D-300) and Phase 1 not once, in the same handler; `domain::bulk::Rejected`
+    // exists because D-267 found a run "stranded there with no exit".
+    if let Err(fault) = classify_against_store(&conn, &scope, tenant, &rows, &mut report).await {
+        let failure = repo_failure(&fault);
+        // The report the batch had reached, plus why it stopped. A batch-level
+        // member beside the per-row ones, the shape the abort's own note uses:
+        // this fault is about the *read*, so it belongs to no row.
+        let mut stored =
+            serde_json::to_value(&report).unwrap_or_else(|_| serde_json::json!({ "rows": [] }));
+        if let Some(object) = stored.as_object_mut() {
+            object.insert("failure".to_owned(), serde_json::json!(failure.to_string()));
+        }
+        // Best-effort: if even this fails the run is left where it was, and the
+        // caller still learns the original fault rather than the landing's — the
+        // first is what they can act on.
+        if let Err(landing) = bulk_repo::advance(
+            &conn,
+            &scope,
+            tenant,
+            run.operation_id,
+            BulkState::Validating,
+            BulkState::ValidationFailed,
+            stored,
+            now,
+        )
         .await
-        .map_err(|e| CanonicalError::from(repo_failure(&e)))?;
+        {
+            tracing::error!(
+                error = %landing,
+                operation_id = %run.operation_id,
+                "bss-pricing: a bulk import's Phase-1 store fault could not be recorded on the \
+                 run; it is left validating, which has no exit, and its idempotency key is spent"
+            );
+        }
+        return Err(CanonicalError::from(failure));
+    }
 
     if report.blocks_the_batch() {
         let stored = serde_json::to_value(&report).unwrap_or_else(|_| serde_json::json!([]));
