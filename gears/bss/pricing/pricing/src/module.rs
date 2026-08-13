@@ -945,13 +945,41 @@ impl DatabaseCapability for BssPricingGear {
 /// `(resource_type, action)` pair before touching a repository, and
 /// `tests/rest_authz.rs` drives the whole set to prove it.
 ///
-/// **The design set declares roughly forty surfaces across Slices 2-12** and most are
-/// not mounted, because a route whose handler has nothing to call is not a route:
-/// there is no overlay, bundle, customer-group, import, migration, bulk or preview
-/// table, no audit or history read, and no read-model resolution query.
+/// **The design set declares roughly forty surfaces across Slices 2-12**, and which
+/// of them are mounted is the question `declared_paths()` answers and this doc does
+/// not. The criterion is what is worth keeping here: a route whose handler has
+/// nothing to call is not a route, so a declared surface stays absent until its
+/// engine exists.
 ///
-/// **The three window surfaces have left that list**, and the sentence that used
-/// to keep them on it is withdrawn rather than edited around. It read that
+/// **The enumeration that used to follow is withdrawn whole** (2026-08-13), and
+/// withdrawn rather than corrected, because it is exactly the shape the paragraph
+/// above forbids. It read: *"there is no overlay, bundle, customer-group, import,
+/// migration, bulk or preview table, no audit or history read, and no read-model
+/// resolution query."* **Seven of its clauses were false.** `pricing_price_overlay`,
+/// `pricing_bundle`, `pricing_customer_group_taxonomy`, `pricing_migration` and
+/// `pricing_bulk_operation` all exist under `infra::storage::entity`, and every one
+/// of them — plus `history::router`, and the customer-group taxonomy and
+/// membership pair — has its router merged **in this same function**; and
+/// `read_model_repo::delta_at`, a read-model resolution query by its own error
+/// string, is reached from the mounted preview and sellability reads.
+///
+/// A list beside a roster leaves only one of the two true, and it is never the
+/// prose. The 2026-08-10 review counted five false clauses; mounting
+/// `customer_groups::router` made six without anybody touching the words; and the
+/// read-model clause is a seventh that review did not count.
+///
+/// **Two absences survive it**, and are named because each is adjacent to something
+/// that *is* mounted — the case where a reader would otherwise reasonably conclude
+/// the feature is wired. `POST /bss-pricing/v1/historical-imports` has no
+/// reference-price store. And `pricing_audit_log` has **no reader on any mounted
+/// surface**: `GET /history` gates on `audit × read`, but it serves plan and price
+/// data and takes its actor from `pricing_price.created_by` and never from the
+/// audit log (see [`crate::api::rest::history`]) — so the trail this gear writes on
+/// every governed act is readable by nothing this gear mounts, and `audit × export`
+/// is gated by no route at all.
+///
+/// **The three window surfaces had left that sentence earlier**, and the clause that
+/// used to keep them on it is withdrawn rather than edited around. It read that
 /// `POST …/prices/{priceId}/windows` and `PATCH`/`DELETE …/price-windows/{windowId}`
 /// "still have nothing to call", namely the `WindowService` — which
 /// [`crate::infra::window::WindowService`] now is, built a few lines above and held
@@ -960,8 +988,8 @@ impl DatabaseCapability for BssPricingGear {
 /// plan subject and answers **202**, so nothing advertises coverage a consumer's
 /// pinned read model has not seen.
 ///
-/// **`GET/PUT /bss-pricing/v1/config/approval-threshold-policy` has left that list
-/// too**, and the sentence that kept it there is withdrawn rather than edited
+/// **`GET/PUT /bss-pricing/v1/config/approval-threshold-policy` had left it too**,
+/// and the clause that kept it there is withdrawn rather than edited
 /// around. It read that the surface "has no policy store, which is why every
 /// publish is material (D-10's fail-safe)" — `pricing_approval_threshold` is that
 /// store, and the two routes are mounted above. What the withdrawn sentence got
@@ -969,10 +997,6 @@ impl DatabaseCapability for BssPricingGear {
 /// wherever a tenant has no **approved** version, because the fail-safe is a rule
 /// about the policy's absence and not about the store's, and configuring one is
 /// itself an always-material act (D-10) that a second principal has to sign.
-///
-/// One absence on the approval plane is still worth naming because it is adjacent
-/// to what *is* mounted: `POST /bss-pricing/v1/historical-imports` has no
-/// reference-price store.
 ///
 /// The gear reserves its prefix either way, so an unconfigured boot answers 404
 /// under `/bss-pricing/v1` rather than colliding with another gear's namespace.
