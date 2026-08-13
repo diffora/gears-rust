@@ -19,7 +19,7 @@ mod rest_support;
 
 use axum::http::StatusCode;
 use bss_pricing::api::rest::overlays::{PRICE_OVERLAY_SUBMIT, PRICE_OVERLAYS};
-use rest_support::{Harness, body_json, request, with_headers};
+use rest_support::{Harness, body_json, problem_code, request, with_headers};
 use uuid::Uuid;
 
 fn overlay_path(overlay_id: Uuid) -> String {
@@ -87,6 +87,148 @@ fn violation_codes(body: &serde_json::Value) -> Vec<String> {
 // ---------------------------------------------------------------------------
 // `inst-pl-author` / `inst-pl-return`.
 // ---------------------------------------------------------------------------
+
+/// **A retried create is replayed, not re-executed** (Z12-7's overlay half).
+///
+/// The route took the `Idempotency-Key` and discarded it — `let _client_key = …`,
+/// required of every caller and read by nothing — and unlike the bundle create
+/// there is no uniqueness index standing behind this one. So a retry did not even
+/// get a wrong-but-plausible conflict: it **created a second draft overlay**, with
+/// its own id, its own revision 0 and its own audit trail, and answered `201` as
+/// if that were the first call's answer.
+///
+/// Both halves are asserted. The status **and the body** come back as the first
+/// call's, because a replay that re-rendered would hand the caller an id naming an
+/// overlay its first attempt never made; and the store still holds one overlay,
+/// which is what makes this a proof about at-most-once rather than about a status
+/// code. The list read is the load-bearing half here — a route that minted a second
+/// overlay and echoed the first body would pass the status assertion alone.
+#[tokio::test]
+async fn a_retried_create_replays_the_first_answer_and_creates_one_overlay() {
+    let harness = Harness::new().await;
+    let key = Uuid::now_v7().to_string();
+    let payload = serde_json::json!({
+        "scope_class": "global",
+        "precedence": 10,
+        "tax_basis": "delegated_tariffs",
+        "target_plan_ids": [],
+        "lines": [default_discount(1000)],
+    });
+
+    let first = harness
+        .allowed()
+        .send(with_headers(
+            "POST",
+            PRICE_OVERLAYS,
+            Some(payload.clone()),
+            &[("idempotency-key", &key)],
+        ))
+        .await;
+    assert_eq!(first.status(), StatusCode::CREATED);
+    let first = body_json(first).await;
+
+    let replay = harness
+        .allowed()
+        .send(with_headers(
+            "POST",
+            PRICE_OVERLAYS,
+            Some(payload),
+            &[("idempotency-key", &key)],
+        ))
+        .await;
+
+    assert_eq!(
+        replay.status(),
+        StatusCode::CREATED,
+        "a replay answers what the first call answered"
+    );
+    let replayed = body_json(replay).await;
+    assert_eq!(
+        replayed, first,
+        "verbatim: the overlay id above all, since a fresh one would name a draft the caller \
+         never authored"
+    );
+
+    // The positive control against a replay that is merely an echo over a second
+    // insert: exactly one overlay exists, and it is the one both answers named.
+    let listed = harness
+        .allowed()
+        .send(request("GET", PRICE_OVERLAYS, None))
+        .await;
+    assert_eq!(listed.status(), StatusCode::OK);
+    let listed = body_json(listed).await;
+    let overlays = listed["overlays"].as_array().expect("the list");
+    assert_eq!(overlays.len(), 1, "one create, one overlay: {listed}");
+    assert_eq!(overlays[0]["price_overlay_id"], first["price_overlay_id"]);
+}
+
+/// **A different overlay under a spent key is refused** (Z12-7's overlay half).
+///
+/// Armed on a genuinely different request — another precedence, another tax basis,
+/// another magnitude — under the same key. Replaying the *same* body proves the
+/// opposite property and is the case above, which is this one's positive control.
+/// Before the gate was wired this second call was a plain `201` over a **second**
+/// draft overlay: nothing in the store objects to two drafts, so there was not even
+/// a misleading conflict to be told about.
+#[tokio::test]
+async fn a_different_create_under_a_spent_key_is_refused_as_a_payload_mismatch() {
+    let harness = Harness::new().await;
+    let key = Uuid::now_v7().to_string();
+
+    let first = harness
+        .allowed()
+        .send(with_headers(
+            "POST",
+            PRICE_OVERLAYS,
+            Some(serde_json::json!({
+                "scope_class": "global",
+                "precedence": 10,
+                "tax_basis": "delegated_tariffs",
+                "target_plan_ids": [],
+                "lines": [default_discount(1000)],
+            })),
+            &[("idempotency-key", &key)],
+        ))
+        .await;
+    assert_eq!(first.status(), StatusCode::CREATED);
+
+    let refused = harness
+        .allowed()
+        .send(with_headers(
+            "POST",
+            PRICE_OVERLAYS,
+            Some(serde_json::json!({
+                "scope_class": "global",
+                "precedence": 20,
+                "tax_basis": "inclusive",
+                "target_plan_ids": [],
+                "lines": [default_discount(2500)],
+            })),
+            &[("idempotency-key", &key)],
+        ))
+        .await;
+
+    assert_eq!(refused.status(), StatusCode::CONFLICT);
+    assert_eq!(
+        problem_code(refused).await,
+        "IDEMPOTENCY_PAYLOAD_MISMATCH",
+        "a key held by one request must not author a second overlay for another"
+    );
+
+    // The refusal has to have refused a *write*, not only a status: the store
+    // holds the first overlay and nothing else.
+    let listed = harness
+        .allowed()
+        .send(request("GET", PRICE_OVERLAYS, None))
+        .await;
+    let listed = body_json(listed).await;
+    let overlays = listed["overlays"].as_array().expect("the list");
+    assert_eq!(
+        overlays.len(),
+        1,
+        "the refused create wrote nothing: {listed}"
+    );
+}
 
 /// A save lands a **draft** and publishes nothing (`inst-pl-return`).
 #[tokio::test]

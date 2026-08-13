@@ -225,6 +225,10 @@ impl OverlayRepo {
     /// cannot fire on the way in. Two drafts may share a precedence, and the
     /// second one to **publish** is the one refused — see
     /// [`OverlayRepo::publish_revision`].
+    ///
+    /// The three statements live in [`create_on`], which is this method's body on
+    /// a runner the caller owns; this form opens the transaction they need. The two
+    /// paths therefore issue the same statements rather than two copies of them.
     pub async fn create(
         &self,
         scope: &AccessScope,
@@ -245,37 +249,7 @@ impl OverlayRepo {
             .db
             .db()
             .in_transaction::<u64, RepoError, _>(move |txn| {
-                Box::pin(async move {
-                    let row = price_overlay::ActiveModel {
-                        price_overlay_id: Set(new.price_overlay_id),
-                        revision: Set(0),
-                        tenant_id: Set(new.tenant_id),
-                        lifecycle_state: Set(OverlayLifecycle::Draft.as_str().to_owned()),
-                        scope_class: Set(new.scope.class().as_str().to_owned()),
-                        scope_value: Set(new.scope.stored_value().to_owned()),
-                        precedence: Set(new.precedence),
-                        effective_from: Set(new.interval.from),
-                        effective_to: Set(new.interval.to),
-                        tax_basis: Set(new.tax_basis.as_str().to_owned()),
-                        disclosure: Set(new.disclosure.as_str().to_owned()),
-                        target_ref: Set(render_target_ref(&new.target_ref)),
-                        row_version: Set(0),
-                    };
-                    insert_overlay(txn, &scope, row).await?;
-                    write_lines(txn, &scope, new.price_overlay_id, new.tenant_id, 0, &lines)
-                        .await?;
-                    record_overlay_mutation(
-                        txn,
-                        &scope,
-                        new.tenant_id,
-                        new.price_overlay_id,
-                        0,
-                        AuditAction::Create,
-                        stamp,
-                    )
-                    .await?;
-                    Ok(0)
-                })
+                Box::pin(async move { create_on(txn, &scope, new, lines, stamp).await })
             })
             .await;
         outcome.map_err(tx_failure)
@@ -966,6 +940,81 @@ async fn record_overlay_mutation(
     )
     .await
     .map(|_| ())
+}
+
+/// [`OverlayRepo::create`]'s body on a runner the caller owns.
+///
+/// The method opens its own transaction; this form runs on the caller's, which is
+/// what the at-most-once gate needs. `infra::idempotent::guarded` claims the
+/// client key and runs the guarded mutation **in one transaction** — split across
+/// two the guarantee inverts, and `POST /price-overlays` is the route that needed
+/// it: it demanded an `Idempotency-Key` and discarded it, and with no uniqueness
+/// index standing behind the create a retry authored a *second draft overlay*
+/// rather than being answered the first one.
+///
+/// **The runner must be a transaction**, `bundle_repo::replace_composition_on`'s
+/// house rule and for the same reason doubled: this writes the header, the whole
+/// line set *and* the D-14 audit record, so on a bare connection they would be
+/// separate autocommit statements and a failure part way would leave a committed
+/// overlay with no lines and no record of anyone making it. Both current callers
+/// supply one — [`OverlayRepo::create`]'s own, and the gate's.
+///
+/// # Errors
+/// Exactly [`OverlayRepo::create`]'s.
+pub async fn create_on(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    new: NewOverlay,
+    lines: Vec<OverlayLine>,
+    stamp: AuditStamp,
+) -> Result<u64, RepoError> {
+    // The overlay's own interval is an authored, published, **compared** instant
+    // pair — `OverlayInterval::intersects` is what `check_dating` decides
+    // collisions with — so it meets D-144's quantum here, exactly as
+    // `window_repo::schedule` gates the identically-shaped pair one module over.
+    // Restated on this path rather than left to the method: a caller reaching the
+    // create through its runner-taking form would otherwise write an instant the
+    // direct path refuses, and the two must not disagree about what a valid
+    // request is. `OverlayRepo::create` keeps its copy **before** opening the
+    // transaction, where a fault that needs no row read costs no transaction.
+    check_authored_instant("effectiveFrom", new.interval.from)?;
+    check_authored_instant("effectiveTo", new.interval.to)?;
+    let row = price_overlay::ActiveModel {
+        price_overlay_id: Set(new.price_overlay_id),
+        revision: Set(0),
+        tenant_id: Set(new.tenant_id),
+        lifecycle_state: Set(OverlayLifecycle::Draft.as_str().to_owned()),
+        scope_class: Set(new.scope.class().as_str().to_owned()),
+        scope_value: Set(new.scope.stored_value().to_owned()),
+        precedence: Set(new.precedence),
+        effective_from: Set(new.interval.from),
+        effective_to: Set(new.interval.to),
+        tax_basis: Set(new.tax_basis.as_str().to_owned()),
+        disclosure: Set(new.disclosure.as_str().to_owned()),
+        target_ref: Set(render_target_ref(&new.target_ref)),
+        row_version: Set(0),
+    };
+    insert_overlay(runner, scope, row).await?;
+    write_lines(
+        runner,
+        scope,
+        new.price_overlay_id,
+        new.tenant_id,
+        0,
+        &lines,
+    )
+    .await?;
+    record_overlay_mutation(
+        runner,
+        scope,
+        new.tenant_id,
+        new.price_overlay_id,
+        0,
+        AuditAction::Create,
+        stamp,
+    )
+    .await?;
+    Ok(0)
 }
 
 /// The **published** revision of one overlay, on a **runner**.

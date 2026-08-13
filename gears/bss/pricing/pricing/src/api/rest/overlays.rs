@@ -57,6 +57,7 @@ use axum::{Json, Router, http::HeaderMap, http::StatusCode};
 use chrono::{DateTime, Utc};
 use toolkit::api::canonical_prelude::CanonicalError;
 use toolkit::api::{OpenApiRegistry, operation_builder::OperationBuilder};
+use toolkit_db::secure::DbTx;
 use toolkit_odata::PageInfo;
 use toolkit_security::SecurityContext;
 use uuid::Uuid;
@@ -80,9 +81,16 @@ use crate::domain::overlay_rules::{
     OverlayCandidate, check_authored_shape, check_tax_basis_declared, conflict_of, validate,
 };
 use crate::domain::scope_key::PlanId;
-use crate::infra::storage::repo::{NewOverlay, OverlayRecord};
+use crate::infra::idempotent::{self, Guarded, GuardedRequest, TxFuture};
+use crate::infra::storage::repo::{NewOverlay, OverlayRecord, overlay_repo};
 
 const TAG: &str = "BSS Pricing Overlays";
+
+/// The at-most-once operation the overlay create claims under (§9).
+///
+/// Per-route, `plans.rs`' rule: the key is scoped to the operation, so one client
+/// key used on two different verbs does not collide.
+const CREATE_OVERLAY_OPERATION: &str = "bss_pricing.create_price_overlay";
 
 /// The wire token for the submit arm — `api::rest::publish`'s, so a client's
 /// `match` does not depend on which plane it called.
@@ -606,7 +614,16 @@ async fn create_overlay(
 
     // Parsed after the gate, as `plans.rs`, `prices.rs` and `bundles.rs` order it.
     let body: CreateOverlayRequest = preconditions::parse_body(&body)?;
-    let _client_key = preconditions::idempotency_key(&headers)?;
+    // **Used, and Z12-7's overlay half is why it had to become so.** The key was
+    // taken and discarded — required of every caller and read by nothing — and
+    // unlike `POST /bundles` no uniqueness index stands behind this create. So a
+    // retry was not answered a wrong-but-plausible conflict; it **authored a
+    // second draft overlay**, with its own id and its own revision 0, and the
+    // caller was told `201` as though that were its first attempt's answer. A
+    // route that demands a key gives every caller reason to believe retrying is
+    // safe, which is what made discarding it worse than never asking.
+    let client_key = preconditions::idempotency_key(&headers)?;
+    let request_hash = preconditions::request_digest(&body)?;
 
     let selector = scope_of(&body.scope_class, body.scope_value.as_deref())?;
     // L5's *silence fails*, on its own entry point: `tax_basis` is NOT NULL in
@@ -648,46 +665,90 @@ async fn create_overlay(
     };
     let lines = lines_of(interval, &body.lines)?;
 
-    let price_overlay_id = Uuid::now_v7();
-    let stamp = audit_stamp(&ctx, Utc::now(), correlation);
-    let revision = state
-        .overlays
-        .create(
-            &scope,
-            NewOverlay {
-                price_overlay_id,
-                tenant_id: tenant,
-                scope: selector,
-                precedence: body.precedence,
-                interval,
-                tax_basis,
-                disclosure,
-                target_ref: TargetRef {
-                    plans: body
-                        .target_plan_ids
-                        .iter()
-                        .map(|p| PlanId::new(*p))
-                        .collect(),
-                },
-            },
-            lines,
-            stamp,
-        )
-        .await
-        .map_err(|e| crate::infra::storage::repo_failure(&e))?;
+    let now = Utc::now();
+    let stamp = audit_stamp(&ctx, now, correlation);
+    let target_ref = TargetRef {
+        plans: body
+            .target_plan_ids
+            .iter()
+            .map(|p| PlanId::new(*p))
+            .collect(),
+    };
+    let precedence = body.precedence;
+    let mutation_scope = scope.clone();
 
-    // 201, and a **draft**: nothing publishes from a save (`inst-pl-return`).
-    let mut response = (
-        StatusCode::CREATED,
-        Json(OverlayAcceptedView {
-            price_overlay_id,
-            revision,
-        }),
+    let outcome = idempotent::guarded(
+        &state.db,
+        &state.idempotency,
+        &scope,
+        GuardedRequest {
+            operation: CREATE_OVERLAY_OPERATION,
+            client_key,
+            request_hash,
+            tenant_id: tenant,
+            status: StatusCode::CREATED.as_u16().into(),
+            now,
+        },
+        move |txn: &DbTx<'_>| -> TxFuture<'_, OverlayAcceptedView> {
+            Box::pin(async move {
+                // Minted **inside** the guarded body, `plans::create_plan`'s and
+                // `bundles::create_bundle`'s rule: a replay does not reach this
+                // closure at all, so an id minted above it would be a second
+                // overlay id nobody is ever told about.
+                let price_overlay_id = Uuid::now_v7();
+                // `overlay_repo::create_on` rather than `OverlayRepo::create`: the
+                // claim and the three statements have to be one transaction, which
+                // is the whole of `guarded`'s guarantee — a create that failed
+                // rolls its claim back with it, so the retry claims afresh instead
+                // of being told "already done" forever.
+                overlay_repo::create_on(
+                    txn,
+                    &mutation_scope,
+                    NewOverlay {
+                        price_overlay_id,
+                        tenant_id: tenant,
+                        scope: selector,
+                        precedence,
+                        interval,
+                        tax_basis,
+                        disclosure,
+                        target_ref,
+                    },
+                    lines,
+                    stamp,
+                )
+                .await
+                .map(|revision| OverlayAcceptedView {
+                    price_overlay_id,
+                    revision,
+                })
+                .map_err(|e| crate::infra::storage::repo_failure(&e))
+            })
+        },
+        |view: &OverlayAcceptedView| {
+            serde_json::to_value(view).map_err(|e| {
+                DomainError::Internal(format!("cannot render the created overlay: {e}"))
+            })
+        },
     )
-        .into_response();
+    .await
+    .map_err(CanonicalError::from)?;
+
+    Ok(match outcome {
+        Guarded::Performed(view) => created_overlay(view)?,
+        Guarded::Replayed { status, body } => replayed_overlay(status, &body),
+    })
+}
+
+/// The `201` a performed create answers — a **draft**, since nothing publishes
+/// from a save (`inst-pl-return`) — with its location and its entity tag.
+fn created_overlay(view: OverlayAcceptedView) -> Result<Response, CanonicalError> {
+    let price_overlay_id = view.price_overlay_id;
+    let revision = view.revision;
+    let mut response = (StatusCode::CREATED, Json(view)).into_response();
     response.headers_mut().insert(
         LOCATION,
-        format!("/bss-pricing/v1/price-overlays/{price_overlay_id}")
+        format!("{PRICE_OVERLAYS}/{price_overlay_id}")
             .parse()
             .map_err(|_| DomainError::InvalidRequest("unrenderable location".to_owned()))?,
     );
@@ -698,6 +759,34 @@ async fn create_overlay(
             .map_err(|_| DomainError::InvalidRequest("unrenderable entity tag".to_owned()))?,
     );
     Ok(response)
+}
+
+/// The recorded answer a replay is handed back, verbatim.
+///
+/// `plans::replayed`'s shape and its reasoning. `Location` is rebuilt from the
+/// **recorded body**, which is a pure function of an id that body carries and of
+/// nothing this request computed.
+///
+/// **No `ETag`, and here that is load-bearing rather than incidental.** The dedup
+/// row stores a status and a body and no headers, and the tag the first caller was
+/// given named `(revision 0, version 0)` — a coordinate a `PATCH` between the two
+/// calls has already moved. A tag rebuilt from the stored body would be a
+/// precondition token that looks current and is not, and this plane's `PATCH`
+/// requires one; a replayed caller re-reads the overlay for its tag, which is the
+/// read it would have to make before editing in any case.
+fn replayed_overlay(status: i32, body: &serde_json::Value) -> Response {
+    let status = u16::try_from(status)
+        .ok()
+        .and_then(|code| StatusCode::from_u16(code).ok())
+        .unwrap_or(StatusCode::OK);
+    let location = body
+        .get("price_overlay_id")
+        .and_then(serde_json::Value::as_str)
+        .map(|price_overlay_id| format!("{PRICE_OVERLAYS}/{price_overlay_id}"));
+    match location {
+        Some(location) => (status, [(LOCATION, location)], Json(body.clone())).into_response(),
+        None => (status, Json(body.clone())).into_response(),
+    }
 }
 
 async fn replace_lines(
@@ -1128,12 +1217,16 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
              A save **never publishes** - the submit route is what opens the always-material \
              approval unit. An absent `tax_basis` is refused `TAX_BASIS_UNDECLARED`: L5 says \
              the basis must be declared and silence fails. `disclosure` defaults to \
-             `restricted`, which is L6's fail-closed default. Gates on `price_overlay` x \
-             `write`.",
+             `restricted`, which is L6's fail-closed default. **`Idempotency-Key` is required \
+             and is honoured**: a retry under the same key replays the first call's `201` and \
+             its overlay id rather than authoring a second draft, and the same key carrying a \
+             different request is `409` `IDEMPOTENCY_PAYLOAD_MISMATCH`. Gates on \
+             `price_overlay` x `write`.",
         )
         .tag(TAG)
         .authenticated()
         .no_license_required()
+        .param(crate::api::rest::plans::idempotency_key_param())
         .handler(create_overlay)
         .json_response_with_schema::<OverlayAcceptedView>(
             openapi,
