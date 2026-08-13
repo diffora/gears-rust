@@ -912,6 +912,91 @@ async fn a_submit_opens_the_approval_unit_and_names_it_on_the_wire() {
     assert_eq!(record.state.as_str(), "submitted");
 }
 
+/// **The two planes name one overlay act identically** (Z8-6, D-158).
+///
+/// `audit_repo::overlay_revision_ref`'s own doc calls itself *"one overlay
+/// revision's durable **audit and approval** name"*, and it reached one of the two:
+/// the approval plane called it, and `overlay_repo::record_overlay_mutation`
+/// hand-wrote a bare `price_overlay_id` instead. So the record of the act and the
+/// unit authorizing it named their subject two different ways, and a walk that
+/// joined the planes on `subject_ref` — the join an auditor read has to make —
+/// found nothing. The revision was not *lost*, it rode in `after_state`; it was
+/// simply not in the name, which is the only place a join can look.
+///
+/// The same divergence was corrected for windows (`audit_repo::window_ref`), whose
+/// doc states the rule this asserts: *"it keeps both stores on one spelling: the
+/// audit record and the approval record of one act name it identically"*.
+///
+/// **Asserted as an equality between the two stores**, not as a format. A test
+/// that pinned `format!("{overlay}/0")` on each side separately would pass over
+/// two planes that had drifted to a third spelling together, and would say nothing
+/// about the join. The literal shape is pinned once, beside it, so the equality
+/// cannot be satisfied by both sides being empty.
+#[tokio::test]
+async fn the_audit_record_and_the_approval_record_of_one_overlay_act_name_it_identically() {
+    let harness = Harness::new().await;
+    let overlay = seed_overlay(&harness, 10).await;
+
+    let response = harness
+        .allowed()
+        .send(request(
+            "POST",
+            &submit_path(overlay),
+            Some(serde_json::json!({ "revision": 0 })),
+        ))
+        .await;
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    let body = body_json(response).await;
+    let approval_id = body["approval"]["approval_id"]
+        .as_str()
+        .and_then(|id| Uuid::parse_str(id).ok())
+        .unwrap_or_else(|| panic!("the submit must name the unit it opened: {body}"));
+    let approval = harness
+        .read_approval(approval_id)
+        .await
+        .unwrap_or_else(|| panic!("approval {approval_id} must be readable"));
+
+    // The **create's** record, on the overlay's segment: the mutation
+    // `overlay_repo` wrote, as against the `submit` record the approval plane
+    // wrote one seq later on the same chain. Both are about revision 0 of one
+    // overlay, and until Z8-6 was paid they named it two different ways *inside a
+    // single segment* — which is why picking the create by its action matters and
+    // taking "the record" would not.
+    let chain = bss_pricing::infra::storage::repo::audit_repo::overlay_chain(overlay);
+    let records: Vec<_> = rest_support::audit_rows(&harness)
+        .await
+        .into_iter()
+        .filter(|row| row.chain_id == chain)
+        .collect();
+    let created = records
+        .iter()
+        .find(|row| row.action == "create")
+        .unwrap_or_else(|| panic!("the save's own record: {records:?}"));
+    assert_eq!(created.subject_kind, "overlay");
+
+    assert_eq!(
+        created.subject_ref, approval.subject_ref,
+        "the audit record and the approval record of one overlay revision must name it \
+         identically, or a walk joining the planes on `subject_ref` finds nothing"
+    );
+    // And the one spelling both use is the helper's, rather than a third the two
+    // planes happened to agree on.
+    assert_eq!(
+        created.subject_ref,
+        bss_pricing::infra::storage::repo::audit_repo::overlay_revision_ref(overlay, 0),
+    );
+    // The positive control the equality needs: the plane that was already right
+    // did not move to meet the one that was wrong.
+    let submitted = records
+        .iter()
+        .find(|row| row.action == "submit")
+        .unwrap_or_else(|| panic!("the submit's own record: {records:?}"));
+    assert_eq!(
+        submitted.subject_ref,
+        bss_pricing::infra::storage::repo::audit_repo::overlay_revision_ref(overlay, 0),
+    );
+}
+
 /// **One pending unit per overlay revision** — a second submit is refused, not
 /// silently duplicated.
 ///

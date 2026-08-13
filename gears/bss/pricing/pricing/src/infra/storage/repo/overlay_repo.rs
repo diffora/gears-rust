@@ -909,6 +909,30 @@ async fn declares(
 /// predecessor state is derivable from the record one `seq` back on the same chain.
 /// Recording a before that the writer had to re-read would be a second answer to a
 /// question the chain already answers.
+///
+/// # The subject is [`audit_repo::overlay_revision_ref`], and used to be a bare id
+///
+/// Z8-6. That helper's own doc calls itself *"one overlay revision's durable **audit
+/// and approval** name"*, and it reached one of the two stores: `infra::approval`
+/// and `infra::overlay_publish` call it, and this writer — the only one on the audit
+/// side — hand-wrote `price_overlay_id.to_string()`. So the record of an act and the
+/// unit authorizing it named one subject two different ways, and `subject_ref` is
+/// the only join between the planes: a walk over it found nothing. The revision was
+/// not *lost* — it rides in `after_state` — but a value in a payload is not a name,
+/// and only the name is joinable.
+///
+/// The correction is `window_ref`'s, applied rather than reinvented: that helper
+/// records the same divergence for windows and states the rule — *"it keeps both
+/// stores on one spelling: the audit record and the approval record of one act name
+/// it identically, which is the alignment D-158 is about, and it is why the helper
+/// moved rather than its three call sites."* Here too the call sites do not move;
+/// they already pass the revision they acted on, which is why each of the four
+/// records now names its own rather than sharing one.
+///
+/// **Not vocabulary.** What the design set declares is the `subject_kind` token
+/// (S5 §6), and `AuditSubjectKind::Overlay` is unchanged — no roster, `CHECK` or
+/// enum moves with this. How a subject of that kind is *spelled* is the store's
+/// own business, and `subject_ref` is free text on both backends.
 async fn record_overlay_mutation(
     runner: &impl DBRunner,
     scope: &AccessScope,
@@ -918,6 +942,18 @@ async fn record_overlay_mutation(
     action: AuditAction,
     stamp: AuditStamp,
 ) -> Result<(), RepoError> {
+    // Checked, not cast. The column is `chk_pricing_price_overlay_revision CHECK
+    // (revision >= 0)` (`m20260802_000032`), so a negative here is a row the store
+    // should not hold rather than a request anyone can be refused for — which is
+    // what `CorruptRow` is for. A saturating or wrapping conversion would put a
+    // *plausible* revision into a durable name, and the two stores would agree on
+    // a name that denotes the wrong revision, which is worse than disagreeing.
+    let revision_named = u64::try_from(revision).map_err(|_| {
+        RepoError::CorruptRow(format!(
+            "pricing_price_overlay {price_overlay_id} carries revision {revision}, which \
+             chk_pricing_price_overlay_revision forbids and no audit name can denote"
+        ))
+    })?;
     audit_repo::append(
         runner,
         scope,
@@ -928,12 +964,22 @@ async fn record_overlay_mutation(
             actor_principal_id: stamp.actor_principal_id,
             action,
             subject_kind: AuditSubjectKind::Overlay,
-            subject_ref: price_overlay_id.to_string(),
+            subject_ref: audit_repo::overlay_revision_ref(price_overlay_id, revision_named),
             before_state: None,
             after_state: Some(serde_json::json!({ "revision": revision })),
-            // **No approval to name.** D-50 makes an overlay mutation an approval
-            // subject and the unit that would carry the id is Slice 9's O-7, unwired;
-            // the field goes `Some` in the same change that opens one.
+            // **No approval to name**, and the reason is no longer the one that
+            // used to be written here (Z8-6's second half). It said the unit was
+            // Slice 9's O-7 and unwired; D-225's `ApprovalService::submit_overlay_on`
+            // wired it, so that premise is stale. What is still true is narrower:
+            // none of the **four mutations this function records** runs under a
+            // unit. The submit is a fifth act, recorded by the approval plane on
+            // this same segment, and *its* record does carry an `approval_ref` —
+            // which is why an auditor is not missing the link, only this end of it.
+            // The publish is the one act that follows an approved unit, and
+            // threading the id would mean carrying it through
+            // `publish_revision_on`'s whole signature; left undone deliberately
+            // rather than by omission, and it is a change to that path, not to
+            // this one.
             approval_ref: None,
             correlation_id: stamp.correlation_id,
         },

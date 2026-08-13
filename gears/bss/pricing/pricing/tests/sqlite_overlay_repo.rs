@@ -1430,9 +1430,31 @@ async fn every_overlay_mutation_appends_exactly_one_audit_record() {
     let seqs: Vec<i64> = trail.iter().map(|r| r.seq).collect();
     assert_eq!(seqs, [0, 1, 2, 3]);
 
+    // **Each record names the revision it is about** (Z8-6). This pinned the bare
+    // `OVERLAY` — one name for four acts on two different revisions, and not the
+    // name the approval plane writes for the same subject. `subject_ref` is the
+    // only join between the two stores, so a walk over it found nothing at all.
+    // Asserted per record rather than in the loop below precisely because the four
+    // differ: the create and the publish are about revision 0, the successor and
+    // its line replacement about revision 1, and a single expected value could not
+    // tell a correct writer from one that stamped every act with the same revision.
+    let refs: Vec<&str> = trail.iter().map(|r| r.subject_ref.as_str()).collect();
+    assert_eq!(
+        refs,
+        [
+            audit_repo::overlay_revision_ref(OVERLAY, 0),
+            audit_repo::overlay_revision_ref(OVERLAY, 0),
+            audit_repo::overlay_revision_ref(OVERLAY, 1),
+            audit_repo::overlay_revision_ref(OVERLAY, 1),
+        ]
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<&str>>(),
+        "each act names the revision it acted on: {trail:?}"
+    );
+
     for record in &trail {
         assert_eq!(record.subject_kind, "overlay");
-        assert_eq!(record.subject_ref, OVERLAY.to_string());
         assert_eq!(record.actor_principal_id, stamp().actor_principal_id);
         assert_eq!(record.correlation_id, Some(stamp().correlation_id));
     }
