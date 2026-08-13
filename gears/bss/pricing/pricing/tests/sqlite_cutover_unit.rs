@@ -904,3 +904,119 @@ async fn a_draft_on_another_generation_is_not_adopted_as_this_act_s_copy() {
         "and the key it mints is this cutover's instant"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Z9-4 — the divergent successor the supersession refuses and this act did not.
+// ---------------------------------------------------------------------------
+
+/// **The RED this case is about.** `infra::supersession` calls
+/// `refuse_divergent_successor` on all three of its arms — pending replay,
+/// committing and submit — and the cutover, written from the same skeleton,
+/// carried the guard on none: `grep -n divergent cutover.rs` returned nothing.
+///
+/// The consequence is not a content-substitution hole. The approved unit's pin
+/// is over `context.shape`, whose rows include the staged drafts, so editing the
+/// *staged* row moves the digest and `authorizing_unit` stops answering. It is
+/// worse to **read** than a refusal: a caller who edits the successor and
+/// re-`POST`s is answered for a commit of the content they no longer asked for,
+/// with nothing in the answer saying so. The supersession decided this question
+/// and answered `DUPLICATE_SCOPE_KEY` (409); this act answered a replay.
+///
+/// Armed at the divergence and at nothing wider: the second call differs from
+/// the first in `amountMinor` alone, and
+/// [`the_same_act_arriving_twice_is_answered_with_the_same_unit`] stands beside
+/// it as the control that a guard refusing *every* retry would fail.
+#[tokio::test]
+async fn a_retry_carrying_a_different_successor_is_refused_rather_than_replayed() {
+    let h = Harness::new().await;
+    let (plan_id, seeded) = published_plan(&h).await;
+    let key = key_of(plan_id, &seeded);
+
+    let first = cut_over(&h, request_of(&key, 12_000), SUBMITTER)
+        .await
+        .expect("the first call opens the unit");
+    let staged_successor = pending(&first).successor_price_id;
+
+    let err = cut_over(&h, request_of(&key, 13_000), SUBMITTER)
+        .await
+        .expect_err("a body that is not the one under review is not this act's retry");
+
+    match &err {
+        DomainError::DuplicateScopeKey(detail) => assert!(
+            detail.contains(&staged_successor.to_string()),
+            "the refusal names the staged row an operator has to re-send or withdraw: {detail}"
+        ),
+        other => panic!("expected the supersession's own refusal, got: {other:?}"),
+    }
+}
+
+/// The same guard on the **committing** arm, which is the one that spends money.
+///
+/// A reviewer approved a cutover to `12_000`. The submitter then re-`POST`s the
+/// approved act at `13_000`: `authorizing_unit` answers on the subject — which
+/// names the plan, the key set and the instant, and no content at all — so
+/// without the guard `stage_both` takes its "already staged" arm, the act
+/// commits the **staged** `12_000` row, and the caller is answered for a body
+/// that was never committed and never refused.
+///
+/// Asserted on the refusal *and* on the store: a refusal that had already
+/// superseded the predecessor would be worse than the silence it replaces.
+#[tokio::test]
+async fn an_approved_cutover_refuses_a_body_that_is_not_the_one_that_was_approved() {
+    let h = Harness::new().await;
+    let (plan_id, seeded) = published_plan(&h).await;
+    let key = key_of(plan_id, &seeded);
+
+    let opened = cut_over(&h, request_of(&key, 12_000), SUBMITTER)
+        .await
+        .expect("the unit opens");
+    approve(&h, pending(&opened).approval.approval_id).await;
+
+    let err = cut_over(&h, request_of(&key, 13_000), SUBMITTER)
+        .await
+        .expect_err("an approved unit authorizes the content it was opened over, not another");
+
+    assert!(
+        matches!(err, DomainError::DuplicateScopeKey(_)),
+        "got: {err:?}"
+    );
+    assert_eq!(
+        state_of(&h, seeded.price_id).await,
+        LifecycleState::Published.as_str(),
+        "and the predecessor is untouched"
+    );
+}
+
+/// The **positive control** for the committing arm: the body that *was*
+/// approved still commits.
+///
+/// Without it, a guard comparing the wrong two things — the wire's row rather
+/// than the row the door writes, which is the exact defect that made every
+/// non-recurring key unsupersedable on the supersession — would satisfy both
+/// cases above by refusing everything.
+#[tokio::test]
+async fn the_body_that_was_approved_still_commits_on_the_retry() {
+    let h = Harness::new().await;
+    let (plan_id, seeded) = published_plan(&h).await;
+    let key = key_of(plan_id, &seeded);
+
+    let opened = cut_over(&h, request_of(&key, 12_000), SUBMITTER)
+        .await
+        .expect("the unit opens");
+    approve(&h, pending(&opened).approval.approval_id).await;
+
+    let committed = cut_over(&h, request_of(&key, 12_000), SUBMITTER)
+        .await
+        .expect("the approved content commits");
+
+    assert_eq!(
+        receipt(&committed).successor_price_id,
+        pending(&opened).successor_price_id,
+        "the staged row the reviewer agreed to is the row that published"
+    );
+    assert_eq!(
+        state_of(&h, seeded.price_id).await,
+        LifecycleState::Superseded.as_str(),
+        "and the predecessor left the key"
+    );
+}

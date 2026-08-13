@@ -676,6 +676,14 @@ pub async fn cutover_in(
     );
 
     if authorization.is_none() {
+        // 3b. The content this act is really about, before the retry is answered out
+        //     of the unit standing for it (Z9-4). `infra::supersession` asks this
+        //     ahead of its own pending lookup for the same reason: a caller who
+        //     edited the successor and re-`POST`ed was answered *for a commit of the
+        //     content they no longer asked for*, and a replay is the one answer that
+        //     cannot say so.
+        refuse_divergent_staged(&context, request, &copy_key)?;
+
         // 4. This act's **own** pending unit — `inst-gc-api`'s idempotency, answered
         //    before anything is staged, because the answer is that nothing more
         //    should be. `authorizing_unit` looks for an *approved* record; a
@@ -739,8 +747,14 @@ pub async fn cutover_in(
     held.insert(copy_key.to_string());
     crate::infra::approval::refuse_held_key(txn, scope, tenant_id, &held).await?;
 
-    // 7. `inst-gc-compose` re-run at the **commit** floor, which is the stricter one.
+    // 7. `inst-gc-compose` re-run at the **commit** floor, which is the stricter one,
+    //    and the divergence guard beside it (Z9-4) — `supersede_in`'s step 7 spends
+    //    both here too. This is the arm that spends money: `authorizing_unit` answers
+    //    on a subject naming the plan, the key set and the instant and **no content
+    //    at all**, so without this the approved unit authorizes any body a later call
+    //    brings, and what commits is the staged one the reviewer saw.
     check_cutover_instant(request.cutover_at, now, ChangeoverMoment::Commit)?;
+    refuse_divergent_staged(&context, request, &copy_key)?;
     let shorten = context.shorten_target(composed.shorten().window_id)?;
     let shorten_seq = shorten.mutation_seq;
     let shortened_window_id = shorten.window_id;
@@ -1067,6 +1081,67 @@ async fn submitted_cutover(
             approval: record,
         },
     )))
+}
+
+/// Refuse a call whose rows are not the rows this act already staged (Z9-4).
+///
+/// **`infra::supersession`'s guard, spent on both of this act's rows**, and the one
+/// step the cutover's copy of that eleven-step skeleton dropped. `grep -n divergent
+/// cutover.rs` returned nothing until 2026-08-13: a caller who edited the successor
+/// and re-`POST`ed under a pending unit was answered `202` and a replay, and one who
+/// did it after the approve was answered `200` for a commit of the **staged** body.
+/// Neither answer said which content had actually been committed. The supersession
+/// decided this question and answered it 409; the sibling written from the same
+/// skeleton silently did something other than what the submitted body said.
+///
+/// **Both sides are the row as the store holds it**, which is
+/// [`crate::infra::supersession::refuse_divergent_successor`]'s own rule and the half
+/// that is easy to get wrong: the staged side is a record read back, so the request's
+/// side has to go through `price_repo::authored_content` — the one spelling of the two
+/// rewrites the authoring door performs, `charge_kind` from the key and the band order.
+/// Comparing the wire's row instead is what made every non-recurring key
+/// unsupersedable on the supersession, and it would do the same here.
+///
+/// **The copy's authored side is the predecessor's content, not the request's.**
+/// [`stage_both`] writes the row being closed onto a generation of its own key, so a
+/// staged copy that does not carry the predecessor's content is not this act's copy —
+/// the case `read_cutover_context`'s D-300 filter narrows by key and this narrows by
+/// content.
+///
+/// # Errors
+/// [`DomainError::DuplicateScopeKey`] naming whichever staged row diverged.
+fn refuse_divergent_staged(
+    context: &CutoverContext,
+    request: &CutoverRequest,
+    copy_key: &ScopeKey,
+) -> Result<(), DomainError> {
+    if let Some(staged) = context.staged_successor.as_ref() {
+        crate::infra::supersession::refuse_divergent_successor(
+            staged,
+            &authored_successor(context, request),
+        )?;
+    }
+    if let Some(staged) = context.staged_copy.as_ref() {
+        crate::infra::supersession::refuse_divergent_successor(
+            staged,
+            &price_repo::authored_content(copy_key, context.predecessor.content()),
+        )?;
+    }
+    Ok(())
+}
+
+/// The successor **as the door would write it**.
+///
+/// `infra::supersession::requested_content`'s three rewrites, and all three matter:
+/// `price_repo::authored_content` applies the key's `charge_kind` and the band order —
+/// the two the store performs and the wire cannot express — and the supersession link
+/// is stamped from the predecessor this transaction read, overwriting whatever the
+/// caller sent, exactly as `insert_successor_draft_on` does.
+fn authored_successor(context: &CutoverContext, request: &CutoverRequest) -> PriceContent {
+    PriceContent {
+        supersedes_price_id: Some(context.predecessor.price_id),
+        ..price_repo::authored_content(&request.predecessor_key, request.successor.clone())
+    }
 }
 
 /// Stage the successor and the grandfathered copy, reusing whatever an earlier

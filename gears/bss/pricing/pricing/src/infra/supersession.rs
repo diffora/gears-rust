@@ -1207,9 +1207,19 @@ async fn stage_successor(
 /// act on (review, 2026-08-06). A body listing bands out of order failed the same way on
 /// any key. Both sides now go through `price_repo::authored_content`.
 ///
+/// # Two acts, one guard
+///
+/// `pub(crate)` because [`crate::infra::cutover`] is the second caller (Z9-4). That act
+/// was written from this file's eleven-step skeleton and inherited every step except
+/// this one, so the two sibling paths disagreed about the same hazard — one refused a
+/// divergent successor, the other committed the staged body and answered the caller as
+/// though it had committed theirs. The refusal is content-generic and takes a staged
+/// record against an authored content, so the cutover spends it three times: on its
+/// successor, on its grandfathered copy, and on both of its arms.
+///
 /// # Errors
 /// [`DomainError::DuplicateScopeKey`] naming the staged row.
-fn refuse_divergent_successor(
+pub(crate) fn refuse_divergent_successor(
     staged: &PriceRecord,
     successor_content: &PriceContent,
 ) -> Result<(), DomainError> {
