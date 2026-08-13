@@ -704,7 +704,6 @@ async fn a_commit_future_dropped_mid_flight_releases_its_locks_and_lands_the_run
         let held = bulk_repo::lock_holder(&conn, &scope(), TENANT, price_ids[0])
             .await
             .expect("read the lock");
-        drop(conn);
         if held == Some(run) {
             break;
         }
@@ -744,7 +743,6 @@ async fn a_commit_future_dropped_mid_flight_releases_its_locks_and_lands_the_run
                 break;
             }
         }
-        drop(conn);
         if held.is_none() && run_now.state != BulkState::Committing {
             assert!(
                 run_now.state.is_terminal(),

@@ -757,7 +757,6 @@ async fn a_phase_one_store_failure_lands_the_run_terminal_and_the_replay_is_refu
         "the report says why, because the GET is where a batch's answer lives: {}",
         run.report
     );
-    drop(conn);
 
     // The replay. Under the bare `?` this answered 202 with `{"rows": []}` — a
     // resubmit told it succeeded.
