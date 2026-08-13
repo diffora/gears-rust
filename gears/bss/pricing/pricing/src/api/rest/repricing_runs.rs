@@ -36,19 +36,35 @@
 //!   own-currency threshold trips the run") is therefore real: a run's own
 //!   adjustment size decides materiality together with the configured policy,
 //!   not the fail-safe alone.
-//! * **`project_row`'s one open corner**, named rather than papered over: an
-//!   amount-based or `fixed` adjustment whose `AmountSet` does not cover a
-//!   `graduated`/`volume` row's currency has nowhere honest to record "not
-//!   computable" — `TierBand::unit_price_minor` is a bare `MinorAmount`, not the
-//!   `Option` that lets [`project_row`] signal the same gap on a `flat`/`per_unit`
-//!   or `package` row by leaving the field `None`. Today such a band's price is
-//!   left at its published value, which is a narrower, single-row echo of the
-//!   zero-delta gap this task otherwise closes — not the systemic one, since
-//!   every currency-resolvable row and every percent-based adjustment (always
-//!   currency-neutral) still gets a real delta. Fixing it needs either a new
-//!   [`crate::domain::materiality::delta::RowDelta`] arm or a submit-time
-//!   `ADJUSTMENT_CURRENCY_NOT_COVERED`-style refusal (the overlay plane's own
-//!   check, unwired here) — both decisions beyond this task's brief.
+//! * **`project_row`'s one open corner**, named rather than papered over, and
+//!   **restated 2026-08-13**: it is a property of a **rate-priced** row, not of
+//!   currency coverage, and it belongs to all three rate kinds rather than two.
+//!   An `amount` markup/discount or a `fixed` line on a `per_unit` row's
+//!   `unit_rate` or on a `graduated`/`volume` row's bands has nowhere honest to
+//!   record "not computable": `project_rate` refuses both magnitudes outright —
+//!   whether or not the adjustment's `AmountSet` covers the row's currency,
+//!   since a rate has no minor-unit floor to receive a currency delta against —
+//!   and [`project_row`] reads that `None` as "leave the rate published". The
+//!   escape `flat`/`package` have is not available: `TierBand::unit_price_rate`
+//!   is a bare `RateMinor` with no absent state at all, and clearing a
+//!   `per_unit` row's `unit_rate` — which *is* an `Option` — would author a row
+//!   `rules::model_kind::check_amount_placement` refuses, since D-311 makes
+//!   that field the one place such a row's money lives. So [`run_materiality`]
+//!   measures a **zero** delta over such a row where `flat`/`package` would
+//!   have reported `RowDelta::NotComputable` and been material regardless of
+//!   threshold.
+//!
+//!   **What bounds it** is `infra::repricing::apply_rows_in`'s D-311 refusal,
+//!   which covers all three rate kinds since `4817562f5`: a run whose
+//!   adjustment cannot move a rate fails that row's whole plan
+//!   (`inst-mr-apply`, D-134) and publishes nothing, so an understated verdict
+//!   never becomes an unapproved change to a consumer-visible price — it is a
+//!   run that reaches `completed_with_conflicts` having applied nothing, which
+//!   is the outcome `rest_repricing_runs` pins. What is still unbuilt is a
+//!   [`crate::domain::materiality::delta::RowDelta`] arm that says so, or a
+//!   submit-time `ADJUSTMENT_CURRENCY_NOT_COVERED`-style refusal (the overlay
+//!   plane's own check, unwired here) that would refuse the run at its own
+//!   door instead of at the apply's — both decisions beyond this task's brief.
 //! * **Paid 2026-08-11 (D-158's audit alignment):** opening a run appends a
 //!   `create` record on the run's own chain
 //!   (`audit_repo::bulk_operation_chain`), `subject_ref` its `operation_id`
@@ -767,9 +783,15 @@ async fn open_run_in(
 /// takes the bulk lock, writes an outbox record and lands inside a per-plan
 /// transaction the aggregate pass re-runs against — none of which materiality
 /// needs in order to know what a row's amount is *about* to become. The
-/// arithmetic [`project_row`] performs is total over `flat`/`per_unit`/`package`
-/// rows and over every currency-resolvable case of `graduated`/`volume`; see
-/// the module doc for the one corner it does not cover.
+/// arithmetic [`project_row`] performs is total over `flat`/`package` rows in
+/// every currency-resolvable case, and over the rate-priced kinds —
+/// `per_unit`'s `unit_rate` and `graduated`/`volume`'s bands — under a
+/// `percent_bp` magnitude, which is currency-neutral and therefore always
+/// resolvable. `per_unit` moved into that second group on 2026-08-13, with
+/// [`project_row`]'s own arm (D-311): under an `amount` or `fixed` magnitude
+/// `project_rate` computes nothing for any of the three, and this projection
+/// measures a zero delta — see the module doc for that corner and for the
+/// apply-side refusal that bounds it.
 ///
 /// `selected` is never empty here: `open_repricing_run` refuses
 /// `RUN_SELECTOR_EMPTY` before a run is ever opened, so every touched plan
