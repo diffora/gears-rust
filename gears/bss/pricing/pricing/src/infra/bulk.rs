@@ -32,6 +32,35 @@
 //! reading: **nothing committed, every row conflicted, the report lists them for
 //! retry.** That is what `BULK_ROW_CONFLICT` means and what "committed rows
 //! stand" says about a run where none did.
+//!
+//! # Three ways to end, and only one of them runs a match arm
+//!
+//! [`commit_batch`]'s `Ok`/`Err` arms are the two this function's own code is
+//! still running for, and they were the whole of the release for a long time
+//! (D-294 took the `?` off `commit_rows`, D-300 took it off `release_locks`).
+//! Review finding Z8-8 names what an arm-only release cannot reach:
+//!
+//! * **A panic** inside `commit_rows` unwinds past a match arm exactly as it
+//!   unwinds past everything else.
+//! * **A dropped future** — a client disconnect, a shutdown signal, a losing
+//!   `select!` arm — stops at its next await point and never runs any of this
+//!   crate's code again, arm or not.
+//!
+//! Neither is rolled back, and that is deliberate rather than accidental:
+//! `bulk_repo::take_locks` **requires** an autocommit connection, because inside a
+//! transaction Postgres degrades its refusal past the holder `fr-concurrent-edit`
+//! needs named. So the locks outlive the future that took them, the rows stay
+//! frozen against every interactive editor, and the run stays `committing` with no
+//! timeout, no sweeper and D-37's lease takeover designed and unbuilt.
+//!
+//! [`Drop`] is the one thing the language itself guarantees on all three exits, so
+//! the release is owned by a guard — `infra::repricing::RunLockGuard`'s
+//! arrangement, whose own doc names this finding, and [`abandon_committing_run`]
+//! is the sweep both it and the abort route perform, written once. What the
+//! fallback cannot promise is the same there as here: `Drop` cannot `.await`, so
+//! it spawns a detached task on whatever runtime is current, and a process killed
+//! outright runs neither. That residue is the abort route's — which is why the
+//! route stays.
 
 use std::collections::HashMap;
 
@@ -47,7 +76,9 @@ use crate::domain::import::{BatchReport, ImportRow, RowOutcome, RowViolation};
 use crate::domain::lifecycle::LifecycleState;
 use crate::domain::price_record::PriceRecord;
 use crate::domain::scope_key::{PlanId, ScopeKey};
-use crate::infra::storage::repo::{NewPriceDraft, PriceRepo, bulk_repo, price_repo};
+use crate::infra::storage::repo::{
+    BulkOperationRecord, NewPriceDraft, PriceRepo, bulk_repo, price_repo,
+};
 use crate::infra::storage::{RepoError, repo_failure};
 
 /// §5's per-row conflict code, reported in the operation report.
@@ -57,6 +88,200 @@ use crate::infra::storage::{RepoError, repo_failure};
 /// operator — somebody else moved it — and the remedy is the same: re-read and
 /// resubmit the conflicted subset as a new import.
 pub const BULK_ROW_CONFLICT: &str = "BULK_ROW_CONFLICT";
+
+/// The report member [`abandon_committing_run`] stamps its note under.
+///
+/// One key, because an operator reading a run's report should not have to know
+/// whether the sweep came from the abort route or from a dropped future to find
+/// out that one happened.
+pub const ABORTED_MEMBER: &str = "aborted";
+
+/// The note `POST …/abort` stamps: an operator stopped a run that had stalled.
+pub const ABORT_NOTE: &str = "uncommitted rows were not attempted";
+
+/// The note [`CommitLockGuard`]'s fallback stamps.
+///
+/// It says what happened *and* what is owed, because the rows this run did commit
+/// are in the store and are **not** in this report: the receipt that would have
+/// listed them died with the future, and the column carries only what
+/// [`commit_batch`] wrote on entry (how many rows the run was about). That is the
+/// same limitation the abort route has had since D-300 and for the same reason —
+/// there is nothing left running to build a receipt from.
+const INTERRUPTED_NOTE: &str = "the commit was interrupted (a panic or a dropped future) before \
+    it reached its own terminal move; its row locks have been released and the run has been \
+    landed terminal, but the report does not list what it had already committed - re-read the \
+    rows and resubmit whatever is still owed as a new batch under a new idempotency key";
+
+/// Release a `committing` run's row locks and land it terminal, stamping `note`
+/// on the report it has already reached.
+///
+/// The one sweep with two callers — `POST …/abort` and [`CommitLockGuard`]'s
+/// `Drop` fallback — written once rather than twice, because the ordering below is
+/// load-bearing and a second spelling of it is a second place for the order to be
+/// got wrong.
+///
+/// **The release goes first, and D-300 is why.** With the terminal move ahead of
+/// it, a release that failed for any transient reason left the run terminal and
+/// every lock held — and the abort route's own state guard then refuses the retry
+/// that used to rescue it, because a terminal run is no longer `committing`. The
+/// rows would be frozen by a finished operation with no remedy at all: nothing
+/// else calls `release_locks`, the lock table has no sweeper, and D-37's lease
+/// takeover is designed and unbuilt. Releasing first makes a failed sweep
+/// **retryable** — the run is still `committing`, so the operator simply asks
+/// again.
+///
+/// **The report is added to, never replaced**, so what the run committed survives
+/// the note wherever a receipt did reach the column.
+///
+/// # Errors
+/// [`RepoError::NotFound`] when no run in this scope answers to the id;
+/// [`RepoError::ConcurrentMutation`] when the run is no longer `committing` — the
+/// premise this sweep is only correct under, judged by the statement rather than
+/// by a read in front of it; [`RepoError::Db`] on a scope or storage failure.
+pub async fn abandon_committing_run(
+    runner: &impl toolkit_db::secure::DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    operation_id: Uuid,
+    note: &str,
+    at: DateTime<Utc>,
+) -> Result<BulkOperationRecord, RepoError> {
+    let run = bulk_repo::read(runner, scope, tenant_id, operation_id)
+        .await?
+        .ok_or_else(|| RepoError::NotFound {
+            subject: "bulk import".to_owned(),
+            id: operation_id.to_string(),
+        })?;
+    let mut report = run.report;
+    if let Some(object) = report.as_object_mut() {
+        object.insert(ABORTED_MEMBER.to_owned(), serde_json::json!(note));
+    }
+
+    bulk_repo::release_locks(runner, scope, tenant_id, operation_id).await?;
+    bulk_repo::advance(
+        runner,
+        scope,
+        tenant_id,
+        operation_id,
+        BulkState::Committing,
+        BulkState::CompletedWithConflicts,
+        report,
+        at,
+    )
+    .await
+}
+
+/// Owns [`commit_batch`]'s row locks across the two exits no match arm reaches: a
+/// panic, and a dropped future.
+///
+/// See the module doc for why an `Ok`/`Err`-arm-only release cannot cover either,
+/// and why the locks are not rolled back when it fails to. This is
+/// `infra::repricing::RunLockGuard`'s arrangement — the two are siblings, and that
+/// one's doc names this finding as the gap it was built against.
+///
+/// [`commit_batch`] [`disarm`](Self::disarm)s this the moment its own terminal
+/// [`bulk_repo::advance`] lands, which is the last statement of the release-and-land
+/// contract the module doc states. It stays armed for everything before that,
+/// including a terminal move that itself failed — where the fallback is the only
+/// thing left that will try again.
+///
+/// # What the fallback cannot promise
+///
+/// [`Drop::drop`] cannot `.await`, so it spawns a detached task on whatever Tokio
+/// runtime is current — best-effort, not synchronous with the drop, so a caller
+/// reading the run back immediately afterwards may still see it `committing` for a
+/// beat. A runtime that has gone away, or a process killed outright, runs neither.
+/// That residue is the abort route's, which is why the route stays and is
+/// deliberately retryable.
+struct CommitLockGuard {
+    db: DBProvider<DbError>,
+    scope: AccessScope,
+    tenant_id: Uuid,
+    operation_id: Uuid,
+    disarmed: bool,
+}
+
+impl CommitLockGuard {
+    const fn new(
+        db: DBProvider<DbError>,
+        scope: AccessScope,
+        tenant_id: Uuid,
+        operation_id: Uuid,
+    ) -> Self {
+        Self {
+            db,
+            scope,
+            tenant_id,
+            operation_id,
+            disarmed: false,
+        }
+    }
+
+    /// Tell the guard the run has already been released and landed, so its `Drop`
+    /// has nothing to do. `&mut self` rather than consuming it, for
+    /// `RunLockGuard::disarm`'s reason: a caller disarms and lets the ordinary end
+    /// of scope drop it, rather than naming a no-op `Drop` at every return point.
+    fn disarm(&mut self) {
+        self.disarmed = true;
+    }
+}
+
+impl Drop for CommitLockGuard {
+    fn drop(&mut self) {
+        if self.disarmed {
+            return;
+        }
+        let db = self.db.clone();
+        let scope = self.scope.clone();
+        let tenant_id = self.tenant_id;
+        let operation_id = self.operation_id;
+        // No runtime to spawn onto — a panic during shutdown, say — is the gap
+        // this guard's own doc names as past what it can promise. Logged and left
+        // rather than panicking a second time out of a `Drop`, which would abort
+        // the process outright.
+        let Ok(handle) = tokio::runtime::Handle::try_current() else {
+            tracing::error!(
+                operation_id = %operation_id,
+                "bss-pricing: a bulk commit was dropped with its row locks still held and no \
+                 Tokio runtime current to release them on; the locks and the run's committing \
+                 state are both stuck until an operator aborts the run"
+            );
+            return;
+        };
+        handle.spawn(async move {
+            let conn = match db.conn() {
+                Ok(conn) => conn,
+                Err(e) => {
+                    tracing::error!(
+                        error = %e,
+                        operation_id = %operation_id,
+                        "bss-pricing: a dropped bulk commit's guard could not open a connection \
+                         to release its row locks"
+                    );
+                    return;
+                }
+            };
+            if let Err(e) = abandon_committing_run(
+                &conn,
+                &scope,
+                tenant_id,
+                operation_id,
+                INTERRUPTED_NOTE,
+                Utc::now(),
+            )
+            .await
+            {
+                tracing::error!(
+                    error = %e,
+                    operation_id = %operation_id,
+                    "bss-pricing: a dropped bulk commit's guard failed to release its row locks \
+                     and land the run terminal; the run may still be committing and its rows \
+                     frozen, and `POST /bulk-imports/{{id}}/abort` is the remedy"
+                );
+            }
+        });
+    }
+}
 
 /// One row that landed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
@@ -170,6 +395,15 @@ pub async fn commit_batch(
     // editor, with no operator remedy until D-37's lease takeover exists, which it
     // does not. `inst-bs-done` says the lock is released "either way"; the `?` that
     // used to sit on `commit_rows` made that false.
+    //
+    // The two `?`s the arms below deliberately do not carry are the *arms*' half of
+    // that sentence. The guard is the other half: a panic unwinds past an arm and a
+    // dropped future never reaches one, and only `Drop` covers both (Z8-8). It is
+    // armed here rather than after `take_locks`, so a panic inside `take_locks`
+    // itself — which has already inserted rows by the time it can fail — is covered
+    // too.
+    let mut lock_guard = CommitLockGuard::new(db.clone(), scope.clone(), tenant_id, operation_id);
+
     let (receipt, failure) =
         match bulk_repo::take_locks(&conn, scope, tenant_id, operation_id, &targets, now).await {
             Ok(()) => {
@@ -223,6 +457,10 @@ pub async fn commit_batch(
     )
     .await
     .map_err(|e| repo_failure(&e))?;
+    // The locks are released and the run is terminal, which is the whole of what
+    // the guard exists to do. It stays armed if the statement above failed: its
+    // fallback is then the only thing left that will try.
+    lock_guard.disarm();
     failure.map_or(Ok(receipt), Err)
 }
 

@@ -633,3 +633,165 @@ async fn a_run_level_failure_keeps_the_rows_that_did_commit_in_the_report() {
         run.report
     );
 }
+
+// ---------------------------------------------------------------------------
+// Z8-8 — the two exits no match arm reaches.
+// ---------------------------------------------------------------------------
+
+/// **The RED this case is about.** `commit_batch` covered the `Err` exit
+/// meticulously — D-294 took the `?` off `commit_rows` and D-300 took it off
+/// `release_locks` — and covered neither of the other two ways the function can
+/// end. A panic inside `commit_rows` unwinds *past* a match arm exactly as it
+/// unwinds past everything else, and a dropped future (a client disconnect, a
+/// shutdown signal, a losing `select!` arm) never runs any of this crate's code
+/// again, match arm or not. Neither is rolled back, because `take_locks` requires
+/// an autocommit connection **by design**: "Postgres aborts an enclosing
+/// transaction on a failed statement".
+///
+/// What is left behind is the freeze `inst-bs-done`'s "lock released either way"
+/// exists to prevent: the rows stay held against every interactive editor and the
+/// run stays `committing` with no timeout, no sweeper, and D-37's lease takeover
+/// designed and unbuilt.
+///
+/// Only [`Drop`] is the language's own guarantee across a panic and a
+/// cancellation together, and the crate already has the precedent one module over
+/// (`infra::repricing::RunLockGuard`, whose own doc names this very finding).
+///
+/// **Armed at an abnormal exit, not at an `Err`.** The task is genuinely
+/// cancelled with `JoinHandle::abort` — `select!`'s own mechanism for a losing arm
+/// — and only after the lock has been *observed* taken, because a future dropped
+/// before `take_locks` ran would prove nothing about the guard. The polling loop
+/// is what stops this case passing that way.
+#[tokio::test]
+async fn a_commit_future_dropped_mid_flight_releases_its_locks_and_lands_the_run_terminal() {
+    let h = harness().await;
+
+    // Enough rows that the per-row loop is still running when the abort lands:
+    // every row is its own transaction with its own audit write, so this is the
+    // margin the cancellation happens inside. They are **edits**, because only a
+    // row whose draft already exists is a row `take_locks` has anything to lock.
+    let mut rows = Vec::new();
+    let mut price_ids = Vec::new();
+    for index in 0..40_u32 {
+        let region = format!("r{index}");
+        let (price_id, version) = seed_draft(&h, key(&region), 9_900).await;
+        price_ids.push(price_id);
+        rows.push(row(key(&region), 12_500, Some(version)));
+    }
+    let run = open_run(&h, "c-drop-1").await;
+
+    let provider = h.provider.clone();
+    let prices = h.prices.clone();
+    let handle = tokio::spawn(async move {
+        commit_batch(
+            &provider,
+            &prices,
+            &scope(),
+            TENANT,
+            run,
+            &rows,
+            stamp(),
+            at(11),
+        )
+        .await
+    });
+
+    // Polled rather than slept a fixed amount, so this is not a bet on how fast
+    // one test box is.
+    let take_deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        let conn = h.provider.conn().expect("conn");
+        let held = bulk_repo::lock_holder(&conn, &scope(), TENANT, price_ids[0])
+            .await
+            .expect("read the lock");
+        drop(conn);
+        if held == Some(run) {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < take_deadline,
+            "the commit never took its row locks within 10s, and this case cannot say anything \
+             about a drop guard without first observing the locks taken"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+    }
+
+    handle.abort();
+    match handle.await {
+        Err(ref e) if e.is_cancelled() => {}
+        other => panic!(
+            "the task must have been genuinely cancelled mid-flight for this case to prove \
+             anything, not merely finished before the abort landed: {other:?}"
+        ),
+    }
+
+    // The fallback is a detached spawn — `Drop` cannot await — so it is not
+    // synchronous with the abort. Polled, for the reason above.
+    let settle_deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        let conn = h.provider.conn().expect("conn");
+        let run_now = bulk_repo::read(&conn, &scope(), TENANT, run)
+            .await
+            .expect("read the run")
+            .expect("the run exists");
+        let mut held = None;
+        for &price_id in &price_ids {
+            if let Some(holder) = bulk_repo::lock_holder(&conn, &scope(), TENANT, price_id)
+                .await
+                .expect("read the lock")
+            {
+                held = Some((price_id, holder));
+                break;
+            }
+        }
+        drop(conn);
+        if held.is_none() && run_now.state != BulkState::Committing {
+            assert!(
+                run_now.state.is_terminal(),
+                "and the run lands on one of the terminal states rather than somewhere no \
+                 edge leaves: {run_now:?}"
+            );
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < settle_deadline,
+            "10s after a cancelled commit the run is still {:?} and {held:?} still holds a \
+             row: nothing releases the locks a dropped future left, and nothing lands the run",
+            run_now.state
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+}
+
+/// The **positive control** for the guard: a commit that ends normally must not
+/// be swept by it. Without this, a guard that fired unconditionally — landing
+/// every run `completed_with_conflicts` over the receipt's own terminal state —
+/// would satisfy the case above.
+#[tokio::test]
+async fn a_commit_that_ends_normally_is_not_touched_by_the_guard() {
+    let h = harness().await;
+    let (_, version) = seed_draft(&h, key("eu"), 9_900).await;
+    let run = open_run(&h, "c-drop-2").await;
+
+    let receipt = run_phase_2(&h, run, &[row(key("eu"), 12_500, Some(version))]).await;
+    assert_eq!(committed_rows(&receipt), vec![0]);
+
+    // Long enough that a detached sweep, if one had been spawned, would have run.
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    let conn = h.provider.conn().expect("conn");
+    let stored = bulk_repo::read(&conn, &scope(), TENANT, run)
+        .await
+        .expect("read")
+        .expect("exists");
+    assert_eq!(
+        stored.state,
+        BulkState::Completed,
+        "the receipt's own terminal state stands, not the guard's fallback: {stored:?}"
+    );
+    assert!(
+        stored.report.get("aborted").is_none(),
+        "and no interruption note was stamped over a run that finished: {}",
+        stored.report
+    );
+}

@@ -464,41 +464,19 @@ async fn abort_bulk_import(
         )));
     }
 
-    // The report the abort adds to is the one the run reached, so what it
-    // committed survives the note.
-    let mut report = run.report.clone();
-    if let Some(object) = report.as_object_mut() {
-        object.insert(
-            "aborted".to_owned(),
-            serde_json::json!("uncommitted rows were not attempted"),
-        );
-    }
-    // The state guard above is a read, so it cannot be the whole of the refusal:
-    // the run may move between it and the statement below. The premise therefore
-    // rides into the statement too (Z8-7), which is what makes a repeat abort
-    // against a run that has meanwhile completed a refusal rather than a rewrite
-    // of the report every row of which WAS attempted.
-    //
-    // **The release goes first, and D-300 is why.** With the terminal move ahead of
-    // it, a release that failed for any transient reason left the run terminal and
-    // every lock held — and D-294's own state guard above then refuses the retry
-    // that used to rescue it, because a terminal run is no longer `committing`. The
-    // rows would be frozen by a finished operation with no remedy at all: nothing
-    // else calls `release_locks`, the lock table has no sweeper, and D-37's lease
-    // takeover is designed and unbuilt. Releasing first makes a failed abort
-    // **retryable** — the run is still `committing`, so the operator simply asks
-    // again — which is the property the guard was written assuming.
-    bulk_repo::release_locks(&conn, &scope, tenant, operation_id)
-        .await
-        .map_err(|e| CanonicalError::from(repo_failure(&e)))?;
-    let aborted = bulk_repo::advance(
+    // **The sweep is `infra::bulk`'s, not a spelling of its own** (Z8-8). Release
+    // first then land terminal, the report added to rather than replaced, the
+    // premise carried into the statement — all of it argued there, because the
+    // dropped-commit guard performs the identical act and the ordering is
+    // load-bearing on both paths. The state guard above survives it: it is what
+    // gives an operator aborting a finished run the sentence naming the state,
+    // where the store alone would answer a bare contention refusal.
+    let aborted = crate::infra::bulk::abandon_committing_run(
         &conn,
         &scope,
         tenant,
         operation_id,
-        BulkState::Committing,
-        BulkState::CompletedWithConflicts,
-        report,
+        crate::infra::bulk::ABORT_NOTE,
         Utc::now(),
     )
     .await

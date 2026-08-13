@@ -80,10 +80,10 @@ async fn harness() -> Harness {
         .expect("run migrator");
     let provider = DBProvider::<DbError>::new(db);
     Harness {
+        provider: provider.clone(),
         plans: PlanRepo::new(provider.clone()),
         bundles: BundleRepo::new(provider.clone()),
-        service: BundleService::new(provider.clone()),
-        provider,
+        service: BundleService::new(provider),
     }
 }
 
@@ -236,7 +236,7 @@ async fn the_reconciled_shares_are_written_to_the_effective_column_on_publish() 
             ("acme".to_owned(), 4_499, None),
             ("globex".to_owned(), 4_500, None),
         ],
-        "unpublished, the effective column is absent — that is what `None` means here"
+        "unpublished, the effective column is absent, which is what `None` means here"
     );
 
     h.service
