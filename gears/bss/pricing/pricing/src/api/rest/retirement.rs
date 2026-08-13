@@ -65,6 +65,17 @@ pub const PLAN_RETIRE: &str = "/bss-pricing/v1/plans/{planId}/retire";
 /// subject is the plan rather than a price row or a window.
 const TAG: &str = "BSS Pricing Plans";
 
+/// The wire token for the submit arm — `api::rest::publish`'s, imported rather
+/// than re-spelled (Z13-2).
+///
+/// `OUTCOME_SUBMITTED` is `pub(crate)` precisely so this surface does not carry a
+/// second spelling: a client's `match` must not depend on which route answered it,
+/// and a rename of the const there has to reach here. It is the **outcome**
+/// vocabulary and not a lifecycle one — no column in this gear stores this word,
+/// which is why `windows`, `overlays`, `bundles` and `customer_groups` all import
+/// this same const while each keeps its own stored-state renderer.
+const OUTCOME_SUBMITTED: &str = crate::api::rest::publish::OUTCOME_SUBMITTED;
+
 /// The body of a retirement request.
 #[derive(Debug, Clone)]
 #[toolkit_macros::api_dto(request, response)]
@@ -252,7 +263,7 @@ async fn retire_plan(
             approval: None,
         },
         RetirementOutcome::SubmittedForApproval(pending) => RetirementOutcomeView {
-            outcome: "submitted_for_approval".to_owned(),
+            outcome: OUTCOME_SUBMITTED.to_owned(),
             preview: RetirementPreviewView::of(&pending.preview),
             pending_version_ref: None,
             cancelled_window_ids: Vec::new(),

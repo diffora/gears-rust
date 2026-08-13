@@ -110,6 +110,17 @@ pub const PLAN_SUPERSESSIONS: &str = "/bss-pricing/v1/plans/{planId}/supersessio
 /// The `OpenAPI` tag this surface is filed under — Slice 7's, as the window routes are.
 const TAG: &str = "Price Windows";
 
+/// The wire token for the submit arm — `api::rest::publish`'s, imported rather
+/// than re-spelled (Z13-2).
+///
+/// `OUTCOME_SUBMITTED` is `pub(crate)` precisely so this surface does not carry a
+/// second spelling: a client's `match` must not depend on which route answered it,
+/// and a rename of the const there has to reach here. It is the **outcome**
+/// vocabulary and not a lifecycle one — no column in this gear stores this word,
+/// which is why `windows`, `overlays`, `bundles` and `customer_groups` all import
+/// this same const while each keeps its own stored-state renderer.
+const OUTCOME_SUBMITTED: &str = crate::api::rest::publish::OUTCOME_SUBMITTED;
+
 /// The body of `POST /plans/{planId}/supersessions`.
 ///
 /// The three things `inst-su-api` names, plus the change reason the scheduled window is
@@ -242,7 +253,7 @@ impl SupersessionOutcomeView {
 
     fn of_pending(pending: &SupersessionPending) -> Self {
         Self {
-            outcome: "submitted_for_approval".to_owned(),
+            outcome: OUTCOME_SUBMITTED.to_owned(),
             plan_id: pending.plan_id.get(),
             revision: pending.revision,
             predecessor_price_id: pending.predecessor_price_id,

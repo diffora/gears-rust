@@ -64,6 +64,17 @@ pub const PLAN_CUTOVERS: &str = "/bss-pricing/v1/plans/{planId}/cutovers";
 /// supersession routes are.
 const TAG: &str = "BSS Pricing Windows";
 
+/// The wire token for the submit arm — `api::rest::publish`'s, imported rather
+/// than re-spelled (Z13-2).
+///
+/// `OUTCOME_SUBMITTED` is `pub(crate)` precisely so this surface does not carry a
+/// second spelling: a client's `match` must not depend on which route answered it,
+/// and a rename of the const there has to reach here. It is the **outcome**
+/// vocabulary and not a lifecycle one — no column in this gear stores this word,
+/// which is why `windows`, `overlays`, `bundles` and `customer_groups` all import
+/// this same const while each keeps its own stored-state renderer.
+const OUTCOME_SUBMITTED: &str = crate::api::rest::publish::OUTCOME_SUBMITTED;
+
 /// The body of a cutover request.
 #[derive(Debug, Clone)]
 #[toolkit_macros::api_dto(request, response)]
@@ -144,7 +155,7 @@ impl CutoverOutcomeView {
 
     fn of_pending(pending: &CutoverPending, cutover_at: DateTime<Utc>, predecessor: Uuid) -> Self {
         Self {
-            outcome: "submitted_for_approval".to_owned(),
+            outcome: OUTCOME_SUBMITTED.to_owned(),
             plan_id: pending.plan_id.get(),
             revision: pending.revision,
             predecessor_price_id: predecessor,

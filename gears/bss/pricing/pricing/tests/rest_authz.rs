@@ -1727,6 +1727,78 @@ fn every_mutating_router_applies_the_correlation_edge() {
     );
 }
 
+/// The wire token for the submit arm is spelled **once**, in `api::rest::publish`
+/// (Z13-2).
+///
+/// `publish::OUTCOME_SUBMITTED` is `pub(crate)` and its own doc gives the rule in
+/// as many words: *"the window surface answers the same word for the same act …
+/// Two spellings of one outcome would make a client's `match` depend on which
+/// route it called."* Six DTOs carry that word on a `pub outcome: String`, and
+/// three of them used to build it from a literal of their own — `cutovers`,
+/// `retirement` and `supersessions`.
+///
+/// # Why a scan and not an assertion over the responses
+///
+/// The suites already pin the literal on all five surfaces
+/// (`rest_cutovers.rs`, `rest_retirement.rs`, `rest_supersessions.rs`), so every
+/// one of them stays green when the const is renamed and three endpoints keep
+/// answering the old word. A test comparing a response body against
+/// `OUTCOME_SUBMITTED` would not see it either: both sides are the same string
+/// today, which is precisely the drift that has not happened yet. What is
+/// falsifiable is the **number of places the token is written**, so that is what
+/// this checks.
+///
+/// # It scans `scannable()` and not the raw text
+///
+/// Five of these files explain the token in prose — this one included — and a
+/// scan matching its own explanation would have to be weakened until it matched
+/// nothing (`every_mounted_router_is_merged_into_both_censuses`' own defect, one
+/// property over). Comments are stripped first, so what is counted is code.
+///
+/// # `OUTCOME_PUBLISHED` is deliberately not in scope
+///
+/// `"published"` is two vocabularies wearing one spelling: the publish arm's
+/// **outcome** token, and `LifecycleState::Published` / `OverlayLifecycle::Published`
+/// as stored in a column. A scan over that word would drag the lifecycle
+/// renderers into an outcome rule and be answered by weakening it. `submitted_for_approval`
+/// belongs to the outcome vocabulary alone — no column in this gear holds it (the
+/// approval register's own state token is `submitted`) — which is what makes this
+/// one bannable outright.
+#[test]
+fn the_submit_outcome_token_is_written_in_exactly_one_module() {
+    const TOKEN: &str = "\"submitted_for_approval\"";
+
+    let sources = rest_sources();
+    assert!(
+        sources.len() > 5,
+        "the scan found almost nothing: {sources:?}"
+    );
+
+    let mut spellers: Vec<String> = Vec::new();
+    for path in &sources {
+        if scannable(path).contains(TOKEN) {
+            spellers.push(
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .expect("a named source file")
+                    .to_owned(),
+            );
+        }
+    }
+    spellers.sort();
+
+    assert_eq!(
+        spellers,
+        vec!["publish.rs".to_owned()],
+        "the submit outcome token is written outside `api::rest::publish`, where \
+         `OUTCOME_SUBMITTED` is declared `pub(crate)` for exactly this reason. Import the const \
+         (`crate::api::rest::publish::OUTCOME_SUBMITTED`, as `windows`, `overlays`, `bundles` and \
+         `customer_groups` do) rather than re-spelling the word: a rename of the const otherwise \
+         leaves these endpoints answering the old one, with every suite green because the suites \
+         pin the literal too"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // 1b. The gate that runs before every other one: authentication.
 //
