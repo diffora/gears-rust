@@ -28,7 +28,7 @@ use bss_pricing::infra::storage::repo::{
 };
 use chrono::{DateTime, TimeZone, Utc};
 use sea_orm::ActiveValue::Set;
-use sea_orm::{ColumnTrait, Condition, EntityTrait};
+use sea_orm::{ColumnTrait, Condition, EntityTrait, Order};
 use sea_orm_migration::MigratorTrait;
 use toolkit_db::migration_runner::run_migrations_for_testing;
 use toolkit_db::secure::{AccessScope, SecureDeleteExt, SecureEntityExt, SecureInsertExt};
@@ -38,6 +38,9 @@ use uuid::Uuid;
 const TENANT: Uuid = Uuid::from_u128(0x7e_b1);
 const ACTOR: Uuid = Uuid::from_u128(0xac_b1);
 const CORRELATION: Uuid = Uuid::from_u128(0xc0_b1);
+/// A **second** operator call's correlation. D-178 mints one per request at the
+/// edge, so two calls never share one — see the Z8-3 case.
+const CORRELATION_2: Uuid = Uuid::from_u128(0xc0_b2);
 const VENDOR: Uuid = Uuid::from_u128(0x5e_b1);
 const BUNDLE: Uuid = Uuid::from_u128(0xb0_b1);
 const PLAN: Uuid = Uuid::from_u128(0x91_b1);
@@ -165,6 +168,15 @@ async fn stored_shares(h: &Harness) -> Vec<(String, i32, Option<i32>)> {
 
 /// Every `BundleUpdated` the outbox holds for this plan.
 async fn announcements(h: &Harness) -> Vec<serde_json::Value> {
+    announcement_rows(h)
+        .await
+        .into_iter()
+        .map(|r| r.1)
+        .collect()
+}
+
+/// Every `BundleUpdated` as `(dedup_key, payload)`, in `seq` order.
+async fn announcement_rows(h: &Harness) -> Vec<(String, serde_json::Value)> {
     let conn = h.provider.conn().expect("conn");
     outbox::Entity::find()
         .secure()
@@ -174,11 +186,12 @@ async fn announcements(h: &Harness) -> Vec<serde_json::Value> {
                 .add(outbox::Column::TenantId.eq(TENANT))
                 .add(outbox::Column::EventName.eq("BundleUpdated")),
         )
+        .order_by(outbox::Column::Seq, Order::Asc)
         .all(&conn)
         .await
         .expect("read the outbox")
         .into_iter()
-        .map(|row| row.payload)
+        .map(|row| (row.dedup_key, row.payload))
         .collect()
 }
 
@@ -390,5 +403,114 @@ async fn a_reconciled_share_the_write_cannot_address_is_refused_rather_than_anno
     assert!(
         announcements(&h).await.is_empty(),
         "and nothing announced a composition change that never reached the store"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Z8-3 — the second publish of one revision, which had no answer but "retry".
+// ---------------------------------------------------------------------------
+
+/// **The RED this case is about.** The announcement's dedup key was
+/// `BundleUpdated:<bundle>:<revision>`, which asserts *"a revision publishes
+/// exactly once"* — true of a plan revision, whose publish commit holds a
+/// compare-and-swap, and **false of a bundle composition**. `publish_composition`
+/// has no swap: it re-reads the composition, re-normalises and enqueues, and the
+/// publish route admits a second call at one `plan_revision` (a composition edit
+/// moves the revision's `row_version`, which invalidates the content pin, so the
+/// legal republish is *another approved unit over the same revision*). So the
+/// outbox's unique index was the only thing standing there and it answered
+/// `CONCURRENT_MUTATION` — a 409 that tells the operator to retry, and every
+/// retry collides identically. `outbox_repo`'s own file records this defect
+/// class, diagnosed and fixed one event over: *"an adjustment of a window that was
+/// scheduled through the route deduped against its own schedule … the reason no
+/// window could be adjusted twice"*.
+///
+/// **Two correlation ids, because that is what two operator calls are.** D-178
+/// establishes one correlation per request at the HTTP edge and
+/// `require_correlation` refuses to mint anywhere else, so two publishes are two
+/// acts by construction and the second is not a replay of the first. The tail of
+/// this case drives the replay — one act's enqueue, twice — and asserts the index
+/// still refuses it, so the key that stopped over-deduping did not stop
+/// deduplicating.
+#[tokio::test]
+async fn a_second_publish_of_one_revision_makes_progress_rather_than_answering_retry_forever() {
+    let h = harness().await;
+    seeded(&h).await;
+
+    h.bundles
+        .replace_composition(
+            &scope(),
+            TENANT,
+            plan(),
+            0,
+            RowVersion::new(0),
+            CompositionDraft {
+                components: vec![component(1)],
+                rev_share_groups: vec![RevShareGroup {
+                    vendor_sku_id: VENDOR,
+                    platform_cut_bp: 1_000,
+                    residual_absorber: Absorber::Platform,
+                    parties: vec![PartyShare {
+                        party: Party::new("acme").expect("party"),
+                        share_bp: 9_000,
+                    }],
+                }],
+            },
+            stamp(),
+        )
+        .await
+        .expect("author the composition");
+
+    h.service
+        .publish_composition(&scope(), TENANT, plan(), 0, CORRELATION, at(11))
+        .await
+        .expect("the first publish of the revision");
+
+    // The second act over the same `(bundle, plan_revision)` — the whole of the
+    // finding.
+    let second = h
+        .service
+        .publish_composition(&scope(), TENANT, plan(), 0, CORRELATION_2, at(12))
+        .await;
+    assert!(
+        !matches!(second, Err(RepoError::ConcurrentMutation { .. })),
+        "a second publish at one revision is a legal act, so it must not be answered with the \
+         one status whose meaning is `retry` — retrying collides identically, forever: {second:?}"
+    );
+    second.expect("the second publish of one revision commits");
+
+    let rows = announcement_rows(&h).await;
+    assert_eq!(
+        rows.len(),
+        2,
+        "each act announced its own normalisation; one row would mean a consumer never learned \
+         the composition moved a second time"
+    );
+    assert_ne!(
+        rows[0].0, rows[1].0,
+        "and the two acts carry two dedup keys, which is what makes the second insertable"
+    );
+    assert!(
+        rows.iter()
+            .all(|(key, _)| key.starts_with("BundleUpdated/")),
+        "the key is rendered from the enum and separated as its ten siblings are: {rows:?}"
+    );
+
+    // The positive control: the index still refuses **one** act announced twice.
+    // Without this, "the second publish now fits" could equally describe a key
+    // that dedups nothing at all.
+    let replay = h
+        .service
+        .publish_composition(&scope(), TENANT, plan(), 0, CORRELATION_2, at(13))
+        .await;
+    assert!(
+        matches!(replay, Err(RepoError::ConcurrentMutation { .. })),
+        "one act enqueues one announcement, so the same act's second enqueue is still refused by \
+         `uq_pricing_outbox_dedup_key`: {replay:?}"
+    );
+    assert_eq!(
+        announcement_rows(&h).await.len(),
+        2,
+        "and the refused replay added nothing"
     );
 }

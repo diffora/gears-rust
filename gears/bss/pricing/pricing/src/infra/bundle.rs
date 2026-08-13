@@ -255,6 +255,17 @@ impl BundleService {
     /// than trusted, because §4.2 has the rule set run twice for exactly this
     /// reason.
     ///
+    /// # One revision may publish **more than once**
+    ///
+    /// Unlike a plan publish, and it is the premise the announcement's dedup key
+    /// used to contradict (Z8-3): nothing here is a compare-and-swap. The writes
+    /// are idempotent — the same composition re-normalises to the same effective
+    /// shares — and a composition edit moves the plan revision's `row_version`,
+    /// which voids the content pin and sends the operator back through a second
+    /// approval **over the same revision**. So the second call is a legal act,
+    /// and it is answered rather than refused; see the dedup key below for what
+    /// keys the announcement instead.
+    ///
     /// # Errors
     /// [`RepoError::NotFound`] when the plan carries no bundle, and — Z9-6 —
     /// when a reconciled share addresses no stored party row, which rolls the
@@ -339,7 +350,42 @@ impl BundleService {
                                 "priceBasis": record.price_basis.as_str(),
                                 "invoiceItemization": record.invoice_itemization.as_str(),
                             }),
-                            dedup_key: format!("BundleUpdated:{bundle_id}:{revision}"),
+                            // **The act, not the revision** — Z8-3, and
+                            // `NewOutboxEvent::price_window_mutation`'s remedy
+                            // one event over. `BundleUpdated:<bundle>:<revision>`
+                            // asserted "a revision publishes exactly once",
+                            // which is `plan_published_dedup_key`'s argument and
+                            // holds there because the publish commit's
+                            // compare-and-swap refuses the second attempt. This
+                            // path has no swap: it re-reads the composition,
+                            // re-normalises and enqueues, and the route admits a
+                            // second call at one `plan_revision` — a composition
+                            // edit moves the revision's `row_version`, which
+                            // voids the content pin, so the legal republish is
+                            // another approved unit over the same revision. So
+                            // `uq_pricing_outbox_dedup_key` was the only thing
+                            // standing there and it answered
+                            // `CONCURRENT_MUTATION`: a 409 meaning *retry* on an
+                            // act whose every retry collides identically.
+                            //
+                            // The correlation id **is** the act: D-178 clause (2)
+                            // binds one value to one operator call and
+                            // `require_correlation` refuses to mint anywhere but
+                            // the edge, so one announcement per correlation is
+                            // one per call. What that leaves is a resend at the
+                            // *client* level — a new request, so a new
+                            // correlation, so a second content-identical event —
+                            // which is what the PRD's "carrying
+                            // correlation/idempotency keys so consumers can
+                            // dedupe" already puts on the consumer under
+                            // at-least-once delivery. The alternative, keying on
+                            // a digest of the normalised composition, dedups the
+                            // identical repeat but leaves it answered
+                            // `CONCURRENT_MUTATION` again, which is the defect.
+                            dedup_key: format!(
+                                "{}/{bundle_id}/{revision}/{correlation_id}",
+                                CatalogEvent::BundleUpdated.as_str()
+                            ),
                             correlation_id,
                             enqueued_at: at,
                         },
