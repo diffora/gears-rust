@@ -887,6 +887,33 @@ async fn the_runs_own_adjustment_magnitude_against_the_configured_threshold_deci
         "the real per-row comparison tripped it, not the fail-safe: {:?}",
         over_units[0]
     );
+    // The `minor`-scale half of the tripped document, whose companion is the
+    // `nanoMinor` one in `a_per_unit_runs_rate_move_crosses_the_configured_threshold`:
+    // a `flat` row's money **is** whole minor units, so the label is the move's
+    // own fact rather than a constant either case could have hard-coded.
+    //
+    // The baseline is `10_500`, not the seeded `10_000`: the under-the-bar run
+    // above **applied**, so the published occupant of the key by now is its
+    // successor at `+5%` and the second run reprices that. Read from the store
+    // rather than assumed, since the id is the successor's too.
+    let repriced = price_rows(&harness, plan)
+        .await
+        .into_iter()
+        .find(|row| row.supersedes_price_id == Some(priced.price_id))
+        .expect("the under-the-bar run's apply wrote a successor");
+    assert_eq!(
+        over_units[0].materiality["tripped"],
+        serde_json::json!({
+            "price_id": repriced.price_id,
+            "currency": "USD",
+            "from_minor": 10_500,
+            "to_minor": 12_600,
+            "scale": "minor",
+        }),
+        "20% of the 10_500 now published is 12_600, in USD's own minor units, on the row that \
+         holds the key: {:?}",
+        over_units[0]
+    );
 }
 
 /// Pins `project_amount`'s rounding **rule**, not merely its arithmetic —
@@ -1130,6 +1157,24 @@ async fn a_per_unit_runs_rate_move_crosses_the_configured_threshold() {
         Some(&serde_json::json!("thresholdReached")),
         "the real per-currency comparison tripped it, not the no-policy fail-safe -- a policy is \
          configured here precisely so the fail-safe cannot supply this verdict: {:?}",
+        units[0]
+    );
+    // **The number the approver actually reads**, and the half this case was
+    // missing: `reason` alone says a bar was reached and not by how much. The
+    // two amounts are the rate's own nano-minor units (D-311), so the document
+    // has to label them as such -- rendered under the `minor` label they read
+    // as $230,777,016.50 -> $246,931,407.66, a factor of 10^9 out, on the one
+    // screen the two-person rule exists to put in front of a second principal.
+    assert_eq!(
+        units[0].materiality["tripped"],
+        serde_json::json!({
+            "price_id": priced.price_id,
+            "currency": "USD",
+            "from_minor": PER_UNIT_RATE_NANO,
+            "to_minor": PER_UNIT_RATE_AFTER_MARKUP_NANO,
+            "scale": "nanoMinor",
+        }),
+        "the stored verdict carries the move that tripped, in the units it was measured in: {:?}",
         units[0]
     );
 }

@@ -119,6 +119,21 @@ impl MoveScale {
             Self::NanoMinor => 10_i128.pow(RATE_SUB_DECIMALS),
         }
     }
+
+    /// The token the stored `materiality` document and the wire carry, so the
+    /// two amounts a verdict reports are readable as the units they were
+    /// measured in.
+    ///
+    /// `MaterialityReason::as_str`'s shape and reason: the rendering belongs to
+    /// the type that owns the roster, so a variant added later cannot acquire a
+    /// spelling at a call site instead of here.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Minor => "minor",
+            Self::NanoMinor => "nanoMinor",
+        }
+    }
 }
 
 impl AmountMove {

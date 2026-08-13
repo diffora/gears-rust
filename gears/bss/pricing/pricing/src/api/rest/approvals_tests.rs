@@ -7,7 +7,8 @@ use uuid::Uuid;
 
 use super::{MaterialityView, PinnedContentView, hex, region_grant_of_this_surface, state_filter};
 use crate::domain::approval::{ApprovalState, content_hash};
-use crate::domain::materiality::{MaterialityReason, MaterialityVerdict};
+use crate::domain::materiality::delta::MoveScale;
+use crate::domain::materiality::{MaterialityReason, MaterialityVerdict, TrippedRow};
 use crate::domain::money::CurrencyCode;
 use crate::domain::plan_shape::{BillingCycle, PlanShape};
 use crate::domain::scope_key::{
@@ -168,6 +169,71 @@ fn the_materiality_verdict_survives_the_column_it_is_stored_in() {
 
     assert!(read.material);
     assert_eq!(read.reason.as_deref(), Some("noConfiguredThreshold"));
+}
+
+/// **A rate's move keeps the scale it was measured at, all the way to the
+/// document the approver reads** (D-311).
+///
+/// The case above round-trips a verdict with **no** tripped row, so every
+/// member of [`super::TrippedRowView`] was unobserved by it — which is how the
+/// view came to drop `MoveScale` while documenting its two amounts as minor
+/// units. A `per_unit` rate of `$0.230777165` is stored as `230_777_165`
+/// nano-minor, and rendered under a `minor` label that is a factor of `10⁹`
+/// out: `$2,307,771.65` presented to the second principal whose signature is
+/// the whole of the two-person rule.
+///
+/// The numbers are deliberately not round — neither end is a whole count of
+/// minor units, so a view that converted rather than labelled cannot pass this
+/// by truncating both to the same value, and neither is a multiple of the
+/// other.
+#[test]
+fn a_tripped_rates_move_carries_the_scale_it_was_measured_at() {
+    let price_id = Uuid::from_u128(0x7_a7e);
+    let verdict = MaterialityVerdict::tripped_row(TrippedRow {
+        price_id,
+        currency: CurrencyCode::new("USD").expect("three letters"),
+        from_minor: 230_777_165,
+        to_minor: 246_931_407,
+        scale: MoveScale::NanoMinor,
+    });
+
+    let stored = serde_json::to_value(MaterialityView::from(&verdict)).expect("render");
+    assert_eq!(
+        stored["tripped"],
+        serde_json::json!({
+            "price_id": price_id,
+            "currency": "USD",
+            "from_minor": 230_777_165,
+            "to_minor": 246_931_407,
+            "scale": "nanoMinor",
+        }),
+        "the stored document has to say which units its two amounts are in, or an approver reads \
+         a rate move as an amount move a billion times its size: {stored}"
+    );
+
+    let read: MaterialityView = serde_json::from_value(stored).expect("read back");
+    let tripped = read
+        .tripped
+        .expect("a threshold-reached verdict names its row");
+    assert_eq!(
+        tripped.scale, "nanoMinor",
+        "and it parses back out of the column, which is where the approvals surface reads it"
+    );
+
+    // The other scale, so the label is the move's own fact and not a constant.
+    // `flat`'s money is whole minor units and its move must still say so.
+    let flat = MaterialityVerdict::tripped_row(TrippedRow {
+        price_id,
+        currency: CurrencyCode::new("USD").expect("three letters"),
+        from_minor: 9_900,
+        to_minor: 12_000,
+        scale: MoveScale::Minor,
+    });
+    assert_eq!(
+        serde_json::to_value(MaterialityView::from(&flat)).expect("render")["tripped"]["scale"],
+        serde_json::json!("minor"),
+        "an amount move is still in the currency's own minor units"
+    );
 }
 
 /// **`inst-ap-scope` is not enforced on this surface, and this is the test that

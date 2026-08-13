@@ -168,6 +168,24 @@ pub struct MaterialityView {
 /// The same document in both places by construction: this is what
 /// `api::rest::windows::verdict_json` serialises into the column, so a reviewer reads
 /// what was stored rather than a second rendering of the same verdict.
+///
+/// # The two amounts carry their [`Self::scale`], and are not converted to minor units
+///
+/// D-311 gave rates their own 10⁻⁹-minor-unit scale, and
+/// `materiality::delta::MoveScale` rides the move so the comparer can raise the
+/// **bar** into the operand's units rather than lower the operand into the bar's.
+/// This document makes the same choice for the same reason, one layer out.
+/// Converting would floor `$0.230777165` — a `per_unit` rate, which is the entire
+/// reason `RateMinor` exists — to `0`, so a reviewer would read a real rate change
+/// as no change at all; and the stored verdict is what an auditor re-computes years
+/// later, which cannot be done from an operand recorded in units the comparison did
+/// not use.
+///
+/// It was **absent** until 2026-08-13, and `per_unit` rows started reaching this path
+/// the same week (`4817562f5`): a rate move of `23_077_701_650 → 24_693_140_766`
+/// nano-minor rendered under a minor-unit label reads as `$230.7M → $246.9M` for a
+/// change of about `$0.23`, a factor of `10⁹`, on the one screen the two-person rule
+/// exists to put in front of a second principal.
 // `(request, response)` because [`MaterialityView`] is: the stored `materiality`
 // document is read **back** out of the column by the approvals surface, so every member
 // of it has to parse as well as render. A response-only member would compile until the
@@ -180,10 +198,19 @@ pub struct TrippedRowView {
     /// The currency whose bar it was. `inst-mat-percurrency` compares each row in its
     /// own currency, so this is part of *which bar was reached*.
     pub currency: String,
-    /// The baseline amount, in that currency's minor units.
+    /// The baseline amount, in the units [`Self::scale`] names — **not** always that
+    /// currency's minor units, which is what this field's own doc used to claim.
     pub from_minor: i64,
     /// The proposed amount, same units.
     pub to_minor: i64,
+    /// Which units the pair above is in: `minor` | `nanoMinor`.
+    ///
+    /// `minor` is the currency's own ISO-4217 minor unit — a `flat` amount or a
+    /// `package` price. `nanoMinor` is 10⁻⁹ of one, the scale a `per_unit` rate and a
+    /// tier band's rate are stored at (D-311). The roster is
+    /// `materiality::delta::MoveScale::as_str`'s, transcribed from the type that owns
+    /// it for [`MaterialityView::reason`]'s reason.
+    pub scale: String,
 }
 
 /// **By reference, since the verdict stopped being `Copy`** (D-187): it carries a
@@ -202,6 +229,7 @@ impl From<&MaterialityVerdict> for MaterialityView {
                 currency: tripped.currency.as_str().to_owned(),
                 from_minor: tripped.from_minor,
                 to_minor: tripped.to_minor,
+                scale: tripped.scale.as_str().to_owned(),
             }),
         }
     }

@@ -289,10 +289,27 @@ pub struct TrippedRow {
     /// its own currency, so the currency is part of *which bar was reached* and not
     /// decoration.
     pub currency: CurrencyCode,
-    /// The baseline amount, in that currency's minor units.
+    /// The baseline amount, in the units [`Self::scale`] names.
     pub from_minor: i64,
     /// The proposed amount, same units.
     pub to_minor: i64,
+    /// Which units the two amounts above are in (D-311).
+    ///
+    /// **Carried, not converted**, and the choice is the one
+    /// [`delta::AmountMove::reaches_absolute`] already makes one layer down:
+    /// the bar is raised into the move's scale rather than the move lowered
+    /// into the bar's. Lowering here would floor `$0.230777165` — a `per_unit`
+    /// rate, the entire reason [`crate::domain::money::RateMinor`] exists — to
+    /// `0`, so a reviewer would read a real rate change as no change at all;
+    /// and the verdict is stored, read years later, and re-computed by an
+    /// auditor, which it cannot be from an operand recorded in units the
+    /// comparison did not use.
+    ///
+    /// Without it the field pair is unreadable rather than merely imprecise: a
+    /// nano-minor move under a minor-unit label is a factor of `10⁹` out, which
+    /// is what the second principal signing a `thresholdReached` unit would be
+    /// signing for.
+    pub scale: delta::MoveScale,
 }
 
 /// What the evaluator answers: `material` with its reason, or
@@ -1026,6 +1043,13 @@ pub fn evaluate(
                     currency: row.scope_key.currency().clone(),
                     from_minor: moved.from_minor,
                     to_minor: moved.to_minor,
+                    // The whole move, not two thirds of it. `moved` is the
+                    // operand [`compare`] measured against the bar and its
+                    // scale is what made that comparison meaningful (D-311);
+                    // dropping it here left the two amounts above labelled as
+                    // minor units by `api::rest::approvals::TrippedRowView`,
+                    // and a `per_unit` rate reaches this arm since 4817562f5.
+                    scale: moved.scale,
                 });
             }
             // The bar could not be evaluated: a percent entry against a zero
