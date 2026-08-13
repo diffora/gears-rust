@@ -1,17 +1,21 @@
 //! Repository over `pricing_policy_object` — the per-tenant policy store
 //! (`design/01-foundation.md` §3.7).
 //!
-//! **One repository over the table, and one method on it — that is the
-//! narrowing this file is.** The row carries three more policies, and each is
-//! read on a different path at a different moment: the approval threshold at
-//! §4.2 step 3, the tax-display mode in Slice 4, the notice period when Slice 11
-//! schedules an enforced migration. None of those paths exists yet, each wants a
-//! different value shape, and each carries its own reading of absence. A method
-//! returning the whole row today would answer three questions nobody is asking
-//! and would fix one shape for three readers that have not been written — so the
-//! row's other half gets its methods **here**, beside this one, when its slices
-//! land. A second repository over one table is what would be wrong; a second
-//! method is not.
+//! **One repository over the table, and the narrowing this file used to be has
+//! since been paid off.** An earlier version of this doc said the row carried
+//! three more policies whose readers did not exist yet — the approval threshold
+//! at §4.2 step 3, the tax-display mode in Slice 4, the notice period when Slice
+//! 11 schedules an enforced migration — and that a whole-row read would
+//! therefore answer three questions nobody was asking. All three have moved.
+//! The **approval threshold left this table altogether**: `m20260802_000018`
+//! split it into `pricing_approval_threshold`, per-currency and versioned, and
+//! dropped the old column pair in the same migration. The other two are read
+//! now — `tax_display_policy_mode` at [`crate::infra::publish`] and by `GET
+//! /config/tax-display-policy`, `enforced_migration_notice_days` at
+//! [`crate::infra::migration`] when Slice 11 schedules. So [`AuthoringPolicy`]
+//! carries **every** content column the row still has and one read resolves
+//! them all, which is what the two runs of one publish need in order not to
+//! disagree about what the tenant had configured.
 //!
 //! What this one reads is exactly what the **authoring** path resolves: the four
 //! §14 caps and the descriptor required-set extension D-152 put in this table,
@@ -22,13 +26,55 @@
 //! one rule set for one tenant, and two reads to build it would be two chances
 //! for the two runs to disagree about what the tenant had configured.
 //!
-//! **Read-only, deliberately.** There is no upsert here because a policy change
-//! is not a row write: D-10/D-13 route policy changes through the same approval
-//! workflow as a publish, so a repository that let a caller set a cap directly
-//! would be that workflow's write without its approval — and the caps are
-//! exactly the values an approval exists to hold, since one UPDATE can make
-//! every plan of a tenant unpublishable. The policy-administration path owns the
-//! write and does not exist yet.
+//! # Seven of the eight content columns have no writer, here or anywhere
+//!
+//! [`set_tax_display_policy`] is the **only** writer of `pricing_policy_object`
+//! in this crate, and it sets exactly one content column —
+//! `tax_display_policy_mode` — beside the `updated_at_utc` / `updated_by`
+//! stamps. An earlier version of this doc said *"there is no upsert here"*,
+//! which stopped being true the day that function landed; what is true is the
+//! narrower statement, and it is worth stating precisely because the seven
+//! columns it leaves out are read on live paths:
+//!
+//! - `default_rounding_policy_ref` is permanently `None`, so every published row
+//!   must carry its own `rounding_policy_ref` or fail `ROUNDING_POLICY_UNRESOLVED`
+//!   (see [`AuthoringPolicy::default_rounding_policy_ref`]). The per-tenant
+//!   default PRD §17.4 contemplates is declared and unreachable.
+//! - `additional_required_descriptors` is permanently `[]`, so
+//!   [`DescriptorSetComplete::extending_v1`] — D-152's mechanism — never
+//!   extends, and `DESCRIPTOR_INCOMPLETE` can only ever check D-48 v1's pinned
+//!   three.
+//! - `enforced_migration_notice_days` is permanently the 60-day floor: a tenant
+//!   can raise nothing, though D-49 says they may.
+//! - the four §14 caps fall back to [`LimitsConfig`] for every tenant, which is
+//!   benign in outcome and still means the per-tenant caps and their `CHECK`s
+//!   guard a value nothing in this gear can set.
+//!
+//! **This is the state of the design set rather than an omission here.** The set
+//! names exactly one authoring surface over this table — `GET/PUT
+//! /bss-pricing/v1/config/tax-display-policy` (S4 §5,
+//! `design/04-currency-tax.md`; its authz row, `design/05-governance.md` §5) —
+//! and that surface is built ([`crate::api::rest::tax_display_policy`]). It
+//! names **no** surface for the other seven: `/config/approval-threshold-policy`
+//! writes `pricing_approval_threshold` and `/config/taxonomies` writes the
+//! taxonomy tables, and those, with `/config/artifacts`, are every `/config`
+//! path the set declares. D-152 is explicit that this carrier is *provisional*
+//! for the four caps and the descriptor extension — the product owner confirmed
+//! the columns here *"for now"* and expects them to move to a settings gear that
+//! does not exist in this repository, so *"build against this carrier, and
+//! expect the move"*. D-49 contemplates raising the notice period by *"an
+//! explicit audited policy change"* (S11 `inst-mg-target`) and names no route
+//! for one.
+//!
+//! So the missing writers are owed by a document nobody has written, and minting
+//! them here would be the thing D-10/D-13 refuse: a policy change is not a row
+//! write. One UPDATE on this table can make every plan of a tenant
+//! unpublishable, which is exactly the materiality an approval unit exists to
+//! hold — and the one write that does exist earns it by being the surface S4 §5
+//! declares, authz-gated, `If-Match`ed and audited. Until the rest are declared
+//! somewhere, a tenant's caps and descriptor extension are configurable only the
+//! way this gear's own tests configure them: by a row written around it, with
+//! the column `CHECK`s as the only guard.
 //!
 //! # The defect this closes, and why it is not a cache
 //!
@@ -40,6 +86,13 @@
 //! `DESCRIPTOR_INCOMPLETE` could only ever check D-48's pinned three and "config
 //! extensible without a schema change" described a capability with no
 //! configuration to exercise it (D-152).
+//!
+//! **What D-152 closed was the carrier, not the surface.** The extension has a
+//! declared home now and this repository reads it; nothing in the crate writes
+//! it, per the section above, so the capability is still exercisable only by a
+//! row written around the gear. The half that is paid is that a reader now knows
+//! where the value would live and what absence means; the half that is owed is
+//! the surface that puts one there.
 //!
 //! [`PolicyObjectRepo::authoring_policy`] is on the **authoring** path — the
 //! §4.2 step-2 pre-check and the publish commit's re-validation — and never on a

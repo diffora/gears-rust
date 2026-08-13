@@ -19,6 +19,18 @@
 //! The four caps and the descriptor required-set extension sit here **for now**:
 //! they are per-tenant settings with no settings gear to live in, and D-152's
 //! confirmation records that they are expected to move once one exists.
+//!
+//! **Only one content column has a writer.** `tax_display_policy_mode` is set by
+//! [`crate::infra::storage::repo::policy_repo::set_tax_display_policy`], behind the one
+//! authoring surface the design set declares over this table (`PUT
+//! /config/tax-display-policy`, S4 §5). The other seven —
+//! `default_rounding_policy_ref`, `enforced_migration_notice_days`, the four
+//! caps and `additional_required_descriptors` — are read on live paths and
+//! written by nothing in this crate, so every tenant holds the column default
+//! and every read resolves to the fallback. That is deliberate rather than
+//! pending: no document names a surface for them, and `policy_repo`'s module doc
+//! carries the citations and the per-column consequence. Do not read a nullable
+//! column here as "a tenant may configure this today".
 
 use chrono::{DateTime, Utc};
 use sea_orm::entity::prelude::*;

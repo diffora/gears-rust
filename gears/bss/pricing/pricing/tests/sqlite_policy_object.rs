@@ -40,9 +40,13 @@ use uuid::Uuid;
 mod common;
 
 /// The repository over the ratified deployment defaults, plus the provider the
-/// seeding helper needs: `pricing_policy_object` has no writer in this gear (a
-/// policy change is an approval-workflow unit, not a row write), so a test that
-/// wants a configured tenant puts the row there itself.
+/// seeding helper needs: the one writer this gear has
+/// (`policy_repo::set_tax_display_policy`, behind `PUT
+/// /config/tax-display-policy`) sets `tax_display_policy_mode` and nothing else,
+/// and no surface writes the caps or the descriptor extension this suite is
+/// about — a policy change is an approval-workflow unit rather than a row write,
+/// and no document declares the surface that would hold it. So a test that wants
+/// a configured tenant puts the row there itself.
 async fn harness() -> (PolicyObjectRepo, DBProvider<DbError>) {
     let db = connect_db("sqlite::memory:", ConnectOpts::default())
         .await

@@ -69,7 +69,12 @@ pub const V1_REQUIRED_DESCRIPTORS: [&str; 3] = ["invoiceLineTemplate", "glCode",
 /// required-set is config-extensible without a schema change"). A tenant that
 /// must require a fourth descriptor names it in their `pricing_policy_object`
 /// entry (D-152) and carries its value in [`DescriptorSet::additional`], so the
-/// requirement costs no migration. Holding the list here rather than reaching
+/// requirement costs no migration. **No surface in this gear writes that column
+/// yet**, so the fourth key is declarable and not yet authorable and this rule's
+/// extension set is empty for every tenant — the carrier and its per-column
+/// consequence are set out in
+/// [`policy_repo`](crate::infra::storage::repo::policy_repo)'s module doc.
+/// Holding the list here rather than reaching
 /// for that entry inside `evaluate` is [`crate::domain::validation`]'s purity
 /// requirement: the same rule set runs twice — as the §4.2 step-2 pre-check and
 /// again inside the publish commit — and a rule that read a policy row itself
