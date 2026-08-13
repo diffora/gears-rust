@@ -187,6 +187,18 @@ fn the_reading_carries_the_row_across_unchanged() {
 /// `tests/rest_authz.rs`'s `every_mounted_router_is_merged_into_both_censuses`
 /// is the precedent for reading this crate's sources to bind a roster to the
 /// code rather than to a second copy of the roster.
+///
+/// # The scan itself is under test, because a probe that can be evaded silently
+/// is what this replaced
+///
+/// The first version of the scan could be walked past by a construction that
+/// merely wrapped its lines differently, and could credit a `..template()` site
+/// with the *next* site's kind — both green, both invisible. So the scanner is a
+/// pure function of one file's text ([`kinds_opened_in`], whose doc names the two
+/// holes) and the four `the_scan_…` tests below arm it against each evasion
+/// directly. Those four are the reason this test's assertion can be read as
+/// evidence rather than as a coincidence about how today's seven sites are
+/// formatted.
 #[test]
 fn the_roster_is_exactly_the_kinds_production_opens_a_unit_of() {
     let opened = kinds_production_opens();
@@ -250,60 +262,454 @@ fn the_roster_is_exactly_the_kinds_production_opens_a_unit_of() {
 /// `every_subject_kind_d158_declares_is_storable_on_the_mirror`), not that
 /// anything in production ever does. Counting them would make the roster mean
 /// "storable", which is D-158's property and already has its own test.
+///
+/// # The scan is syntactic, and the two ways its first version could be evaded
+/// **silently**
+///
+/// A probe that can be walked past without going red is worse than no probe: it
+/// reports the property it no longer checks. The first version of this scan had
+/// two such holes, both found by review on 2026-08-13 and neither reachable by
+/// any site that exists today — which is exactly why they had to be closed on
+/// purpose rather than left to be noticed by the site that first hit one.
+///
+/// 1. **It was line-shaped.** Detection was `ends_with("NewApproval {")`, so a
+///    single-line initializer, a `#[rustfmt::skip]` site or one wrapped
+///    differently was invisible — and invisible is green: the remaining six kinds
+///    would still equal the roster and still clear the floor. This version reads
+///    the file as *text*, so where the line breaks fall stops mattering.
+/// 2. **The field window was unbounded by the initializer.** `subject_kind:` was
+///    looked for in a flat 40-line window, so a site using `..template()` — which
+///    names no kind of its own — silently borrowed the *next* site's literal.
+///    This version bounds the search by the initializer's own matching brace, so
+///    such a site now panics loudly and names its line.
+///
+/// Comments and string literals are blanked before any of that, so a doc comment
+/// quoting a construction — this very doc quotes one — cannot be counted as a
+/// writer, and a brace inside a string cannot throw the depth count off. A macro
+/// that *spells* `NewApproval { subject_kind: $kind }` is still seen and refused
+/// loudly for naming a non-literal; only one assembling the identifier itself
+/// (`paste!`) could hide, and nothing in this crate does that.
+///
+/// [`kinds_opened_in`] is a pure function of one file's text for one reason: the
+/// scanner's own behaviour is then testable, and the four tests below arm it
+/// against each evasion instead of asserting that it happens to agree with the
+/// roster today.
 fn kinds_production_opens() -> BTreeSet<AuditSubjectKind> {
     let mut found = BTreeSet::new();
     for path in production_sources() {
         let text = std::fs::read_to_string(&path).expect("a readable source file");
-        let lines: Vec<&str> = text.lines().collect();
-        for (index, line) in lines.iter().enumerate() {
-            // The type's own declaration ends in the same four characters and
-            // writes nothing.
-            if !line.trim_end().ends_with("NewApproval {") || line.contains("struct ") {
-                continue;
-            }
-            // The field is written within the initializer, and `NewApproval`'s
-            // longest is nine lines of fields plus their comments. Bounded rather
-            // than scanned to the closing brace: a brace matcher over Rust source
-            // is a parser, and what this needs is the next `subject_kind:`.
-            let field = lines[index..]
-                .iter()
-                .take(40)
-                .find_map(|line| line.trim_start().strip_prefix("subject_kind:"))
-                .unwrap_or_else(|| {
-                    panic!(
-                        "{}:{} constructs a `NewApproval` and names no `subject_kind` within \
-                         40 lines; the scan cannot tell which kind it writes",
-                        path.display(),
-                        index + 1
-                    )
-                });
-            let Some(rest) = field.trim().strip_prefix("AuditSubjectKind::") else {
-                panic!(
-                    "{}:{} opens a unit whose kind is not a literal `AuditSubjectKind::…`, but \
-                     {field:?}; a roster cannot name a kind chosen at run time",
-                    path.display(),
-                    index + 1
-                )
-            };
-            let variant = rest
-                .trim_end_matches(',')
-                .trim_end_matches(|c: char| !c.is_alphanumeric());
-            let kind = AuditSubjectKind::ALL
-                .iter()
-                .copied()
-                .find(|kind| format!("{kind:?}") == variant)
-                .unwrap_or_else(|| {
-                    panic!(
-                        "{}:{} opens a `AuditSubjectKind::{variant}`, which is not a member of \
-                         `AuditSubjectKind::ALL`",
-                        path.display(),
-                        index + 1
-                    )
-                });
-            found.insert(kind);
-        }
+        let kinds = kinds_opened_in(&text).unwrap_or_else(|e| panic!("{}:{e}", path.display()));
+        found.extend(kinds);
     }
     found
+}
+
+/// Every kind one file's text opens a unit of, or the reason the scan cannot say.
+///
+/// The `Err` is a `<line>: <what>` fragment, which the caller prefixes with the
+/// path. Every `Err` is a **failure of the roster's evidence**, never a tolerated
+/// case: a site the scan cannot read is a site that could be writing any kind.
+fn kinds_opened_in(text: &str) -> Result<Vec<AuditSubjectKind>, String> {
+    const TYPE: &str = "NewApproval";
+    // Positions are preserved by the blanking, so a line number computed here is
+    // the line number in the file the caller read.
+    let code = blank_comments_and_literals(text);
+    let line_of = |at: usize| code[..at].matches('\n').count() + 1;
+
+    let mut found = Vec::new();
+    for (at, _) in code.match_indices(TYPE) {
+        let before = code[..at].trim_end();
+        let after = &code[at + TYPE.len()..];
+        // An identifier boundary on both sides. `::` before is *not* a boundary
+        // failure: `approval_repo::NewApproval { … }` is a construction, and one
+        // site in this crate spells it that way.
+        if before.ends_with(|c: char| c.is_alphanumeric() || c == '_')
+            || after.starts_with(|c: char| c.is_alphanumeric() || c == '_')
+        {
+            continue;
+        }
+        // A brace makes it an initializer. Anything else is a type position, and
+        // the keyword cases are the type's own declaration (`struct`), its impls
+        // (`impl`, `impl … for`) and a signature returning it (`->`) — each of
+        // which is followed by a brace that opens something other than a value.
+        let Some(open) = after.find(|c: char| !c.is_whitespace()) else {
+            continue;
+        };
+        if after.as_bytes()[open] != b'{' {
+            continue;
+        }
+        let keyword = before
+            .rsplit(|c: char| c.is_whitespace())
+            .next()
+            .unwrap_or("");
+        if matches!(
+            keyword,
+            "struct" | "impl" | "for" | "enum" | "union" | "trait"
+        ) || before.ends_with("->")
+        {
+            continue;
+        }
+
+        let open = at + TYPE.len() + open;
+        let close = matching_brace(&code, open)
+            .ok_or_else(|| format!("{}: a `{TYPE}` initializer is never closed", line_of(open)))?;
+        // **Bounded by this initializer's own braces**, which is hole (2) above:
+        // a `..template()` site names no kind and must say so here rather than
+        // read the next site's literal.
+        let field = code[open..close]
+            .find("subject_kind:")
+            .map(|offset| open + offset + "subject_kind:".len())
+            .ok_or_else(|| {
+                format!(
+                    "{}: constructs a `{TYPE}` and names no `subject_kind` inside the \
+                     initializer; the scan cannot tell which kind it writes, and a site it \
+                     cannot read is a site that could be writing any kind",
+                    line_of(open)
+                )
+            })?;
+        let value = code[field..close].trim_start();
+        let rest = value.strip_prefix("AuditSubjectKind::").ok_or_else(|| {
+            format!(
+                "{}: opens a unit whose kind is not a literal `AuditSubjectKind::…`, but {:?}; a \
+                 roster cannot name a kind chosen at run time",
+                line_of(field),
+                value.lines().next().unwrap_or(value)
+            )
+        })?;
+        let variant: String = rest
+            .chars()
+            .take_while(|c| c.is_alphanumeric() || *c == '_')
+            .collect();
+        let kind = AuditSubjectKind::ALL
+            .iter()
+            .copied()
+            .find(|kind| format!("{kind:?}") == variant)
+            .ok_or_else(|| {
+                format!(
+                    "{}: opens a `AuditSubjectKind::{variant}`, which is not a member of \
+                     `AuditSubjectKind::ALL`",
+                    line_of(field)
+                )
+            })?;
+        found.push(kind);
+    }
+    Ok(found)
+}
+
+/// The index of the `}` closing the `{` at `open`, counting depth.
+///
+/// Exact over the *blanked* text and only there: with every comment and string
+/// literal already spaces, a brace is a brace.
+fn matching_brace(code: &str, open: usize) -> Option<usize> {
+    let mut depth = 0_usize;
+    for (offset, byte) in code.as_bytes()[open..].iter().enumerate() {
+        match byte {
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(open + offset);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// One file's text with every comment and every string, char and raw-string
+/// literal replaced by spaces — **byte positions and newlines preserved**, so a
+/// line number taken from the result is a line number in the input.
+///
+/// This is what makes the scan above syntactic rather than textual. Two concrete
+/// properties depend on it: prose that quotes a construction is not a writer, and
+/// a brace inside a literal cannot move the initializer's boundary.
+///
+/// A lifetime (`&'a str`) is deliberately not read as a char literal: a `'` opens
+/// one only when the next character is an escape or is followed by a closing
+/// quote, which is what distinguishes `'x'` from `'a` in the one place it matters.
+fn blank_comments_and_literals(text: &str) -> String {
+    let chars: Vec<(usize, char)> = text.char_indices().collect();
+    let mut out = String::with_capacity(text.len());
+    let mut state = Lexed::Code;
+    let mut index = 0;
+    while index < chars.len() {
+        let step = match state {
+            Lexed::Code => step_code(&chars, index),
+            Lexed::LineComment => step_line_comment(&chars, index),
+            Lexed::BlockComment(depth) => step_block_comment(&chars, index, depth),
+            Lexed::Str => step_quoted(&chars, index, '"'),
+            Lexed::Char => step_quoted(&chars, index, '\''),
+            Lexed::RawStr(hashes) => step_raw_str(&chars, index, hashes),
+        };
+        push_span(&mut out, &chars[index..index + step.consumed], step.keep);
+        state = step.next;
+        index += step.consumed;
+    }
+    out
+}
+
+/// What the scanner is inside of.
+#[derive(Clone, Copy)]
+enum Lexed {
+    Code,
+    LineComment,
+    /// Rust block comments nest, so the depth is carried.
+    BlockComment(usize),
+    Str,
+    Char,
+    /// `r#"…"#`, carrying how many `#` close it.
+    RawStr(usize),
+}
+
+/// One move: what the scanner is in next, how many chars it consumed, and whether
+/// they are code (kept) or not (blanked).
+struct Step {
+    next: Lexed,
+    consumed: usize,
+    keep: bool,
+}
+
+/// Write a span, either as itself or as spaces — `\n` always as itself, which is
+/// what preserves line numbers through a multi-line comment or string.
+fn push_span(out: &mut String, span: &[(usize, char)], keep: bool) {
+    for (_, c) in span {
+        if keep {
+            out.push(*c);
+        } else if *c == '\n' {
+            out.push('\n');
+        } else {
+            for _ in 0..c.len_utf8() {
+                out.push(' ');
+            }
+        }
+    }
+}
+
+fn char_at(chars: &[(usize, char)], index: usize) -> Option<char> {
+    chars.get(index).map(|(_, c)| *c)
+}
+
+/// The only arm that keeps anything, and the only one that can open a literal.
+fn step_code(chars: &[(usize, char)], index: usize) -> Step {
+    let c = chars[index].1;
+    let next = char_at(chars, index + 1);
+    let blank = |state: Lexed, consumed: usize| Step {
+        next: state,
+        consumed,
+        keep: false,
+    };
+    if c == '/' && next == Some('/') {
+        return blank(Lexed::LineComment, 2);
+    }
+    if c == '/' && next == Some('*') {
+        return blank(Lexed::BlockComment(1), 2);
+    }
+    if c == '"' {
+        return blank(Lexed::Str, 1);
+    }
+    if let Some(step) = step_raw_str_prefix(chars, index) {
+        return step;
+    }
+    // A `'` opens a char literal only when what follows is an escape or a single
+    // character before the closing quote; otherwise it is a lifetime (`&'a str`),
+    // and reading that as a literal would blank real code.
+    if c == '\'' && (next == Some('\\') || char_at(chars, index + 2) == Some('\'')) {
+        return blank(Lexed::Char, 1);
+    }
+    Step {
+        next: Lexed::Code,
+        consumed: 1,
+        keep: true,
+    }
+}
+
+/// `r"…"`, `r#"…"#`, `br"…"` and `br#"…"#`, if that is what starts here.
+fn step_raw_str_prefix(chars: &[(usize, char)], index: usize) -> Option<Step> {
+    let c = chars[index].1;
+    if c != 'r' && c != 'b' {
+        return None;
+    }
+    // Not a raw string if the `r` is the tail of an identifier (`for`, `iter`).
+    if index > 0 && {
+        let previous = chars[index - 1].1;
+        previous.is_alphanumeric() || previous == '_'
+    } {
+        return None;
+    }
+    let mut look = index + 1;
+    if c == 'b' && char_at(chars, look) == Some('r') {
+        look += 1;
+    } else if c == 'b' {
+        // `b"…"` is an ordinary quote and `Lexed::Str` handles it from the `"`.
+        return None;
+    }
+    let mut hashes = 0;
+    while char_at(chars, look) == Some('#') {
+        hashes += 1;
+        look += 1;
+    }
+    if char_at(chars, look) != Some('"') {
+        return None;
+    }
+    Some(Step {
+        next: Lexed::RawStr(hashes),
+        consumed: look - index + 1,
+        keep: false,
+    })
+}
+
+fn step_line_comment(chars: &[(usize, char)], index: usize) -> Step {
+    Step {
+        next: if chars[index].1 == '\n' {
+            Lexed::Code
+        } else {
+            Lexed::LineComment
+        },
+        consumed: 1,
+        keep: false,
+    }
+}
+
+fn step_block_comment(chars: &[(usize, char)], index: usize, depth: usize) -> Step {
+    let c = chars[index].1;
+    let next = char_at(chars, index + 1);
+    if c == '/' && next == Some('*') {
+        return Step {
+            next: Lexed::BlockComment(depth + 1),
+            consumed: 2,
+            keep: false,
+        };
+    }
+    if c == '*' && next == Some('/') {
+        return Step {
+            next: if depth == 1 {
+                Lexed::Code
+            } else {
+                Lexed::BlockComment(depth - 1)
+            },
+            consumed: 2,
+            keep: false,
+        };
+    }
+    Step {
+        next: Lexed::BlockComment(depth),
+        consumed: 1,
+        keep: false,
+    }
+}
+
+/// A `"…"` or `'…'` literal, whose escapes consume the escaped character too — so
+/// `"\""` does not end at its middle quote.
+fn step_quoted(chars: &[(usize, char)], index: usize, terminator: char) -> Step {
+    let c = chars[index].1;
+    let inside = if terminator == '"' {
+        Lexed::Str
+    } else {
+        Lexed::Char
+    };
+    if c == '\\' && index + 1 < chars.len() {
+        return Step {
+            next: inside,
+            consumed: 2,
+            keep: false,
+        };
+    }
+    Step {
+        next: if c == terminator { Lexed::Code } else { inside },
+        consumed: 1,
+        keep: false,
+    }
+}
+
+/// A raw string has no escapes; only `"` followed by its own `#` count ends it.
+fn step_raw_str(chars: &[(usize, char)], index: usize, hashes: usize) -> Step {
+    if chars[index].1 == '"' && (1..=hashes).all(|i| char_at(chars, index + i) == Some('#')) {
+        return Step {
+            next: Lexed::Code,
+            consumed: hashes + 1,
+            keep: false,
+        };
+    }
+    Step {
+        next: Lexed::RawStr(hashes),
+        consumed: 1,
+        keep: false,
+    }
+}
+
+/// The scan sees a construction whose fields are on **one line**, which the
+/// version this replaces could not.
+///
+/// Hole (1): detection was `ends_with("NewApproval {")`. Every site in this crate
+/// wraps, so nothing was mis-read — and nothing would have been red the day one
+/// did not wrap, because six kinds still equal a six-kind roster.
+#[test]
+fn the_scan_reads_a_single_line_initializer() {
+    let source = "fn f() { let a = NewApproval { approval_id: id, subject_kind: \
+                  AuditSubjectKind::Window, held_keys: keys }; }";
+    assert_eq!(
+        kinds_opened_in(source),
+        Ok(vec![AuditSubjectKind::Window]),
+        "a site is a site wherever its line breaks fall"
+    );
+}
+
+/// A site that names no kind of its own is **refused**, rather than credited with
+/// the next site's.
+///
+/// Hole (2): the field was looked for in a flat 40-line window from the opening
+/// line, so a `..template()` site inside 40 lines of another one silently
+/// borrowed its literal — reporting a writer of a kind that site does not write,
+/// and hiding that the roster's evidence had a gap.
+#[test]
+fn the_scan_refuses_a_site_that_names_no_kind_of_its_own() {
+    let source = "fn f() { let a = NewApproval { approval_id: id, ..template() }; \
+                  let b = NewApproval { subject_kind: AuditSubjectKind::Policy }; }";
+    let refusal = kinds_opened_in(source).expect_err("the borrowing site must be refused");
+    assert!(
+        refusal.contains("names no `subject_kind`"),
+        "the refusal must name the hole it closes, got: {refusal}"
+    );
+}
+
+/// A kind chosen at run time is refused loudly, which the version this replaces
+/// also did — pinned here so the rewrite kept it.
+#[test]
+fn the_scan_refuses_a_kind_chosen_at_run_time() {
+    let source = "fn f(kind: AuditSubjectKind) { let a = NewApproval { subject_kind: kind }; }";
+    let refusal = kinds_opened_in(source).expect_err("a parameterised kind must be refused");
+    assert!(refusal.contains("not a literal"), "got: {refusal}");
+}
+
+/// The type's own declaration, its impls, and **prose quoting a construction**
+/// are all not writers.
+///
+/// The prose case is new and is the reason the blanking exists: this file's own
+/// doc comments quote `NewApproval { … subject_kind: AuditSubjectKind::… }`, and a
+/// textual scan over a production file that did the same would have counted it.
+#[test]
+fn the_scan_counts_neither_declarations_nor_prose() {
+    // The doc comment is written the way a writer's own doc would write it —
+    // opening brace at the end of the line, the field below it — because that is
+    // the shape a textual scan counts as a seventh writer.
+    let source = r#"
+/// A writer builds one like this:
+///
+/// let new = NewApproval {
+///     subject_kind: AuditSubjectKind::Window,
+/// };
+pub struct NewApproval { pub subject_kind: AuditSubjectKind }
+impl NewApproval { fn new() -> Self { Self { subject_kind: AuditSubjectKind::Policy } } }
+impl Default for NewApproval { fn default() -> Self { Self::new() } }
+fn note() -> &'static str { "NewApproval { subject_kind: AuditSubjectKind::Overlay }" }
+"#;
+    assert_eq!(
+        kinds_opened_in(source),
+        Ok(vec![]),
+        "only a value construction is a writer: a declaration, an impl, a doc comment and a \
+         string are all things a textual scan would have counted"
+    );
 }
 
 /// Every `.rs` file under `src`, recursively, that is not a test module.
