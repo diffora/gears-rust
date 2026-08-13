@@ -63,6 +63,8 @@
 
 mod pg_support;
 
+use std::collections::BTreeSet;
+
 use pg_support::Pg;
 use sea_orm::{ConnectionTrait, DatabaseConnection, Statement};
 
@@ -997,14 +999,87 @@ async fn a_metered_line_and_a_meterless_one_are_two_keys() {
 // `bss.pricing_price_append_only()` — the five arms
 // ---------------------------------------------------------------------------
 
+/// The two columns of `pricing_price` that are deliberately movable on a frozen
+/// row, and why each one is.
+///
+/// `lifecycle_state` is the sanctioned `published -> superseded` flip the
+/// whitelist exists to permit — freezing it would forbid supersession itself, and
+/// the arm two cases down is what keeps it from walking back to `draft`.
+/// `grandfather_until` is guarded by **monotonicity** instead: it may be
+/// tightened and never loosened, which is a different arm of the same function
+/// and is proved by its own case.
+///
+/// Everything else on the table is owed a line in the frozen-column arm, and
+/// this list is the only place an exemption can be claimed — so an exemption is
+/// a visible edit rather than a column quietly missing from an array.
+const SANCTIONED_MUTABLE: [&str; 2] = ["grandfather_until", "lifecycle_state"];
+
+/// **The whitelist names every content column the *table* holds.**
+///
+/// The census `every_frozen_column_of_a_published_row_refuses_to_move`
+/// structurally cannot run, and the reason is the defect class this crate keeps
+/// producing: that case moves a hand-written list of columns, so it proves the
+/// enumerated ones are frozen and is blind by construction to a column the
+/// enumeration omits. Five migrations have already paid for exactly that omission
+/// on this table — `000040` for the tax columns, `000051` for the proration ones,
+/// `000055` for the reservation pair, `000057` for the floors and `000069` for
+/// the `per_unit` rate, which **is the price** — and every one of them was found
+/// by a person reading a diff.
+///
+/// `m20260802_000062` brought `pricing_plan` under a census that reads the column
+/// list off the table; this is the same census for the table that holds money,
+/// through the one helper both now use.
+///
+/// It is a text census and not a behavioural one deliberately: a per-column
+/// UPDATE needs a value that both differs from the seed and satisfies every
+/// pairing CHECK, which is why the sibling case hand-picks its list — and
+/// hand-picking is the very step that gets skipped when a column is added. The
+/// two are not redundant: a guard could name a column in a comment, and a
+/// behavioural case cannot see a column nobody thought to add.
+#[tokio::test]
+#[ignore = "requires Docker (testcontainers)"]
+async fn the_frozen_whitelist_names_every_content_column_the_table_holds() {
+    let conn = applied().await;
+    let census = pg_support::frozen_columns(
+        &conn,
+        "pricing_price",
+        "pricing_price_append_only",
+        "IF NEW.price_id",
+        &SANCTIONED_MUTABLE,
+    )
+    .await;
+
+    assert!(
+        !census.owed.is_empty(),
+        "the census read no columns at all, which is the shape a mistyped table \
+         name leaves — it would report every guard complete"
+    );
+    assert!(
+        census.missing().is_empty(),
+        "these columns are on bss.pricing_price and absent from the frozen-column \
+         whitelist, so an ad-hoc UPDATE moves them under a frozen CatalogVersion: \
+         {:?}",
+        census.missing()
+    );
+}
+
 /// Every column the whitelist freezes, one UPDATE each.
 ///
-/// Forty-four columns, and the loop is the point: a whitelist maintained by hand
-/// rots one forgotten `OR` at a time, and a test that moved only `amount_minor`
-/// would stay green while `included_allowance` or `row_version` quietly became
-/// mutable on a frozen row. The trigger is `BEFORE`, so it answers ahead of every
-/// CHECK — several of the values below would also be illegal, and none of them
-/// gets that far.
+/// The loop is the point: a whitelist maintained by hand rots one forgotten `OR`
+/// at a time, and a test that moved only `amount_minor` would stay green while
+/// `included_allowance` or `row_version` quietly became mutable on a frozen row.
+/// The trigger is `BEFORE`, so it answers ahead of every CHECK — several of the
+/// values below would also be illegal, and none of them gets that far.
+///
+/// **What keeps the list complete is the table, not a count.** Until 2026-08-13
+/// the cross-check below was `moves.len() == 45` against a literal — which is the
+/// blindness this case exists to close, moved one layer up: a 46th column added
+/// to `pricing_price` and forgotten changes neither the array nor the literal, so
+/// both stay green while the column becomes mutable under a frozen
+/// `CatalogVersion`. The columns exercised here are now compared **by name**
+/// against the census the sibling case reads off `information_schema`, in both
+/// directions: a column the table gained and nobody moved is named, and so is a
+/// move left behind for a column that no longer exists.
 #[tokio::test]
 #[ignore = "requires Docker (testcontainers)"]
 async fn every_frozen_column_of_a_published_row_refuses_to_move() {
@@ -1081,14 +1156,44 @@ async fn every_frozen_column_of_a_published_row_refuses_to_move() {
         "created_at_utc = '2026-08-02 09:00:00+00'".to_owned(),
         "row_version = 1".to_owned(),
     ];
-    assert_eq!(
-        moves.len(),
-        45,
-        "the whitelist has forty-five columns; a shorter list here is a column \
-         nobody is testing -- it was 34 here against 38 in the guard until \
-         2026-08-08, when Slice 10 added its six and the four Slice-6 proration \
-         columns turned out never to have been added at all, and 44 until \
-         2026-08-11, when D-311 split the `per_unit` rate off `amount_minor`"
+    // The cross-check, by name and against the table. The history the old
+    // literal carried is worth keeping because it is the argument for reading
+    // the table instead: this list stood at 34 against 38 in the guard until
+    // 2026-08-08, when Slice 10 added its six and the four Slice-6 proration
+    // columns turned out never to have been added at all, and at 44 until
+    // 2026-08-11, when D-311 split the `per_unit` rate off `amount_minor`. Each
+    // of those gaps was open while a literal count agreed with itself.
+    let census = pg_support::frozen_columns(
+        &conn,
+        "pricing_price",
+        "pricing_price_append_only",
+        "IF NEW.price_id",
+        &SANCTIONED_MUTABLE,
+    )
+    .await;
+    let exercised: BTreeSet<&str> = moves
+        .iter()
+        .map(|change| {
+            change
+                .split(' ')
+                .next()
+                .expect("every move is `column = value`")
+        })
+        .collect();
+    let owed: BTreeSet<&str> = census.owed.iter().map(String::as_str).collect();
+    let untested: Vec<&&str> = owed.difference(&exercised).collect();
+    assert!(
+        untested.is_empty(),
+        "these columns are on bss.pricing_price and no UPDATE below moves them, \
+         so nothing here would notice them becoming mutable on a frozen row: \
+         {untested:?}"
+    );
+    let stale: Vec<&&str> = exercised.difference(&owed).collect();
+    assert!(
+        stale.is_empty(),
+        "these moves name something that is not an owed column of \
+         bss.pricing_price -- a dropped column, a typo, or an exemption that \
+         belongs in SANCTIONED_MUTABLE: {stale:?}"
     );
 
     for change in &moves {

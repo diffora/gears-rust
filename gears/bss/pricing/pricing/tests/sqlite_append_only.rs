@@ -84,6 +84,65 @@ async fn seed(conn: &DatabaseConnection) {
     .await;
 }
 
+/// **The whitelist names every content column the *table* holds.**
+///
+/// Every other case in this file picks its columns by hand, so each of them
+/// proves the column it names is frozen and all of them together are blind by
+/// construction to a column the enumeration omits. That is not a hypothetical on
+/// this table: five migrations have paid for exactly that omission —
+/// `m20260802_000040` for the tax columns, `000051` for the proration ones,
+/// `000055` for the reservation pair, `000057` for the floors and `000069` for
+/// the `per_unit` rate, which **is the price** — and every one was found by a
+/// person reading a diff rather than by a test.
+///
+/// This case reads the column list off `pragma_table_info` and the predicate off
+/// `sqlite_master`, so a column added to `pricing_price` and forgotten in
+/// `trg_pricing_price_frozen_columns` reddens here. It is the twin of
+/// `postgres_schema_price::the_frozen_whitelist_names_every_content_column_the_table_holds`
+/// and of the pair `m20260802_000062` wrote for `pricing_plan`; this half needs no
+/// Docker, so the census runs on every commit rather than on the ignored tier.
+///
+/// A text census rather than a behavioural one, deliberately: a per-column UPDATE
+/// needs a value that both differs from the seed and satisfies every pairing
+/// CHECK, which is why the cases below hand-pick theirs — and hand-picking is the
+/// very step that gets skipped when a column is added.
+#[tokio::test]
+async fn the_frozen_whitelist_names_every_content_column_the_table_holds() {
+    // The two columns deliberately movable on a frozen row. `lifecycle_state` is
+    // the sanctioned `published -> superseded` flip the whitelist exists to
+    // permit, and `grandfather_until` is guarded by monotonicity instead — a
+    // different trigger, with its own case in this file. Every other column is
+    // owed a line, and this list is the only place an exemption can be claimed.
+    const SANCTIONED_MUTABLE: [&str; 2] = ["grandfather_until", "lifecycle_state"];
+
+    let conn = migrated_db().await;
+    let columns = scalar(
+        &conn,
+        "SELECT group_concat(name) AS v FROM pragma_table_info('pricing_price')",
+    )
+    .await;
+    let predicate = scalar(
+        &conn,
+        "SELECT sql AS v FROM sqlite_master \
+         WHERE type = 'trigger' AND name = 'trg_pricing_price_frozen_columns'",
+    )
+    .await;
+
+    let missing: Vec<&str> = columns
+        .split(',')
+        .filter(|column| !SANCTIONED_MUTABLE.contains(column))
+        // The trailing space is what keeps `min_qty_usage` from matching
+        // `min_qty_usage_fallback`'s line.
+        .filter(|column| !predicate.contains(&format!("NEW.{column} ")))
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "these columns are on `pricing_price` and absent from the frozen-column \
+         whitelist, so an ad-hoc UPDATE moves them under a frozen CatalogVersion: \
+         {missing:?}"
+    );
+}
+
 #[tokio::test]
 async fn a_published_price_row_is_immutable_in_content() {
     let conn = migrated_db().await;

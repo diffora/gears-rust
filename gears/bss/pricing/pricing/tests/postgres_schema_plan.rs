@@ -120,19 +120,6 @@ async fn exec(conn: &DatabaseConnection, sql: &str) -> Result<(), sea_orm::DbErr
 }
 
 /// Run one statement that must land.
-/// Every `v` column a catalog query returns, in the order it asked for.
-async fn column_values(conn: &DatabaseConnection, sql: &str) -> Vec<String> {
-    conn.query_all(Statement::from_string(
-        sea_orm::DatabaseBackend::Postgres,
-        sql.to_owned(),
-    ))
-    .await
-    .expect("run the catalog query")
-    .iter()
-    .map(|row| row.try_get::<String>("", "v").expect("read the value"))
-    .collect()
-}
-
 async fn must_succeed(conn: &DatabaseConnection, sql: &str) {
     exec(conn, sql)
         .await
@@ -989,6 +976,12 @@ async fn a_frozen_revision_moves_only_from_published_to_superseded_or_retired() 
 /// This case reads the column list off `information_schema` and the predicate out
 /// of `pg_proc.prosrc`, so a column added to `pricing_plan` and forgotten in
 /// `bss.pricing_plan_append_only()` reddens here rather than in production.
+///
+/// The reading itself moved into `pg_support::frozen_columns` on 2026-08-13, when
+/// `pricing_price` — the table that holds money — was brought under the same
+/// census. Two spellings of one census are two things that can disagree about
+/// what a guard owes; the arm slicing in particular is subtle enough that it must
+/// not be re-derived per table.
 #[tokio::test]
 #[ignore = "requires Docker (testcontainers)"]
 async fn the_frozen_whitelist_names_every_content_column_the_table_holds() {
@@ -998,49 +991,25 @@ async fn the_frozen_whitelist_names_every_content_column_the_table_holds() {
     const SANCTIONED_MUTABLE: [&str; 1] = ["lifecycle_state"];
 
     let conn = applied().await;
-    let columns = column_values(
+    let census = pg_support::frozen_columns(
         &conn,
-        "SELECT column_name AS v FROM information_schema.columns \
-         WHERE table_schema = 'bss' AND table_name = 'pricing_plan' ORDER BY 1",
+        "pricing_plan",
+        "pricing_plan_append_only",
+        "IF NEW.plan_id",
+        &SANCTIONED_MUTABLE,
     )
     .await;
-    let body = column_values(
-        &conn,
-        "SELECT prosrc AS v FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace \
-         WHERE n.nspname = 'bss' AND p.proname = 'pricing_plan_append_only'",
-    )
-    .await;
-    let function = body.first().expect("the guard function must exist");
 
-    // **Sliced to the frozen-column arm, not matched across the whole function.**
-    // `bss.pricing_plan_append_only()` carries three arms and a comment block, so
-    // a column named in the DELETE ban, in the flip whitelist or in a comment
-    // would pass a function-wide match while being unguarded. The sibling table
-    // already shows the shape: in `bss.pricing_price_append_only()`,
-    // `grandfather_until` appears in the **monotonicity** arm and not in the
-    // frozen-column one, so a function-wide `contains` would report it frozen
-    // when it is not. The `SQLite` twin has no such weakness — it reads one
-    // trigger — and the engine that ships must not have the weaker census.
-    let arm_start = function
-        .find("IF NEW.plan_id")
-        .expect("the frozen-column arm opens on plan_id");
-    let arm = &function[arm_start..];
-    let arm_end = arm
-        .find(" THEN")
-        .expect("the frozen-column arm closes on THEN");
-    let predicate = &arm[..arm_end];
-
-    let missing: Vec<&String> = columns
-        .iter()
-        .filter(|c| !SANCTIONED_MUTABLE.contains(&c.as_str()))
-        // The trailing space is what keeps `plan_tier` from matching
-        // `plan_tier_override`'s line.
-        .filter(|c| !predicate.contains(&format!("NEW.{c} ")))
-        .collect();
     assert!(
-        missing.is_empty(),
+        !census.owed.is_empty(),
+        "the census read no columns at all, which is the shape a mistyped table \
+         name leaves — it would report every guard complete"
+    );
+    assert!(
+        census.missing().is_empty(),
         "these columns are on bss.pricing_plan and absent from the frozen-column \
          whitelist, so an ad-hoc UPDATE moves them under a frozen CatalogVersion: \
-         {missing:?}"
+         {:?}",
+        census.missing()
     );
 }

@@ -538,3 +538,120 @@ fn small_pool(url: &str) -> ConnectOptions {
     options.max_connections(2).min_connections(0);
     options
 }
+
+// ---------------------------------------------------------------------------
+// The frozen-column census, parameterised on the table
+// ---------------------------------------------------------------------------
+
+/// What a table's append-only guard owes, read off the **table** rather than off
+/// the guard.
+///
+/// A whitelist enumerated by hand cannot notice a column added later, and this
+/// crate keeps producing exactly that defect: `m20260802_000040` paid for the tax
+/// columns, `000051` for the proration ones, `000055` for the reservation pair,
+/// `000057` for the floors and `000069` for the `per_unit` rate — five waves in
+/// which a column arrived and its guard line did not. A census cross-checked
+/// against a **count** is the same blindness one layer up: a 46th column added to
+/// `pricing_price` and forgotten moves neither a hand-written array nor the
+/// literal beside it, and the column becomes mutable under a frozen
+/// `CatalogVersion` with both green.
+///
+/// So the owed set is derived from `information_schema.columns` and nothing here
+/// is counted. See [`frozen_columns`] for the arm slicing, which is the only part
+/// a caller supplies an anchor for.
+pub struct FrozenColumns {
+    /// Every column the guard must freeze: the table's own columns, less the
+    /// ones the design set sanctions as mutable on a frozen row.
+    pub owed: Vec<String>,
+    /// The text of the guard's frozen-column arm, sliced out of the function
+    /// body.
+    pub predicate: String,
+}
+
+impl FrozenColumns {
+    /// The owed columns the arm does not name — empty is the passing state.
+    #[must_use]
+    pub fn missing(&self) -> Vec<&str> {
+        self.owed
+            .iter()
+            .map(String::as_str)
+            // The trailing space is what keeps `min_qty_usage` from matching
+            // `min_qty_usage_fallback`'s line, and `plan_tier` from matching
+            // `plan_tier_override`'s.
+            .filter(|column| !self.predicate.contains(&format!("NEW.{column} ")))
+            .collect()
+    }
+}
+
+/// Read a table's frozen-column census off the catalog.
+///
+/// `arm_opens_on` is the first `IF NEW.<column>` of the frozen-column arm, and
+/// the slicing it drives is load-bearing rather than tidy: these guard functions
+/// carry several arms and a comment block, so a column named in the `DELETE` ban,
+/// in a lifecycle whitelist or in a comment would satisfy a function-wide match
+/// while being unguarded. `bss.pricing_price_append_only()` shows the hazard
+/// concretely — `grandfather_until` appears in its **monotonicity** arm and not in
+/// the frozen-column one, so a function-wide `contains` would report it frozen
+/// when it is not.
+///
+/// # Panics
+/// When the function, the arm opener or the arm's closing `THEN` is absent: each
+/// of those is a guard that no longer has the shape this census reads, and a
+/// census that quietly returned an empty predicate would report every column
+/// unguarded — or, worse, be silenced with an exemption.
+pub async fn frozen_columns(
+    conn: &DatabaseConnection,
+    table: &str,
+    guard_function: &str,
+    arm_opens_on: &str,
+    sanctioned_mutable: &[&str],
+) -> FrozenColumns {
+    let owed = catalog_strings(
+        conn,
+        &format!(
+            "SELECT column_name AS v FROM information_schema.columns \
+             WHERE table_schema = 'bss' AND table_name = '{table}' ORDER BY 1"
+        ),
+    )
+    .await
+    .into_iter()
+    .filter(|column| !sanctioned_mutable.contains(&column.as_str()))
+    .collect();
+
+    let bodies = catalog_strings(
+        conn,
+        &format!(
+            "SELECT prosrc AS v FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace \
+             WHERE n.nspname = 'bss' AND p.proname = '{guard_function}'"
+        ),
+    )
+    .await;
+    let body = bodies
+        .first()
+        .unwrap_or_else(|| panic!("the guard function bss.{guard_function}() must exist"));
+    let arm_start = body.find(arm_opens_on).unwrap_or_else(|| {
+        panic!("the frozen-column arm of bss.{guard_function}() must open on `{arm_opens_on}`")
+    });
+    let arm = &body[arm_start..];
+    let arm_end = arm
+        .find(" THEN")
+        .unwrap_or_else(|| panic!("the frozen-column arm of bss.{guard_function}() must close"));
+
+    FrozenColumns {
+        owed,
+        predicate: arm[..arm_end].to_owned(),
+    }
+}
+
+/// One text column of a catalog query, in order.
+pub async fn catalog_strings(conn: &DatabaseConnection, sql: &str) -> Vec<String> {
+    conn.query_all(Statement::from_string(
+        sea_orm::DatabaseBackend::Postgres,
+        sql.to_owned(),
+    ))
+    .await
+    .expect("run the catalog query")
+    .iter()
+    .map(|row| row.try_get::<String>("", "v").expect("read the value"))
+    .collect()
+}
