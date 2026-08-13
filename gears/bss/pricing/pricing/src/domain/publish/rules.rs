@@ -70,12 +70,25 @@
 //! "registered into the pipeline by the Foundation itself". Of those:
 //!
 //! - **The money rules need no pipeline rule, because they are unrepresentable
-//!   failures.** `MinorAmount::new` refuses a negative (`AMOUNT_NEGATIVE`),
-//!   `CurrencyCode::new` refuses a non-ISO-4217 code (`CURRENCY_INVALID`), and
-//!   `check_scale` / `check_decimal` carry `PRECISION_EXCEEDED`. A [`PriceRow`]
-//!   cannot hold a violation of any of them, so a rule here would be a rule with
-//!   nothing to reject — and a rule that always passes is indistinguishable from
-//!   a rule that holds. The absence is a decision, recorded so it reads as one.
+//!   failures.** `MinorAmount::new` refuses a negative (`AMOUNT_NEGATIVE`) and
+//!   `CurrencyCode::new` refuses a non-ISO-4217 code (`CURRENCY_INVALID`). A
+//!   [`PriceRow`] cannot hold a violation of either, so a rule here would be a
+//!   rule with nothing to reject — and a rule that always passes is
+//!   indistinguishable from a rule that holds. The absence is a decision,
+//!   recorded so it reads as one.
+//!
+//!   **`PRECISION_EXCEEDED` is in that paragraph for a different reason, and this
+//!   sentence used to blur the two** (Z11-1, corrected 2026-08-13). It said
+//!   `check_scale` / `check_decimal` "carry" the code, which reads as *these are
+//!   where it is enforced*; they carry it in the sense that they are the functions
+//!   that would raise it, and **nothing calls either of them**. The reason is the
+//!   same representational one — an amount arrives as an `i64` of minor units, so
+//!   no request declares a scale — but the conclusion differs: `AMOUNT_NEGATIVE`
+//!   and `CURRENCY_INVALID` are enforced elsewhere and need no rule here, while
+//!   this refusal is enforced *nowhere* and is waiting for the first authoring
+//!   surface that takes a decimal literal. [`crate::domain::money`]'s doc names
+//!   what that surface owes; a reader checking the FR against this bullet should
+//!   not be told the rule is already held.
 //! - **The rounding rule was genuinely missing.** `DomainError::RoundingPolicyUnresolved`
 //!   existed and was mapped, `pricing_price.rounding_policy_ref` existed,
 //!   `pricing_policy_object.default_rounding_policy_ref` existed — and **no rule

@@ -13,8 +13,36 @@
 //! Amounts are integer minor units (`amount_minor`), never a float and never a
 //! decimal type. The per-currency **scale** is the ISO 4217 minor unit: there is
 //! no flat two-decimal rule — JPY takes 0 and BHD takes 3 — which is why
-//! `PRECISION_EXCEEDED` is a first-class publish rejection rather than a
-//! rounding decision taken quietly at the boundary.
+//! `PRECISION_EXCEEDED` is declared a first-class publish rejection rather than
+//! a rounding decision taken quietly at the boundary.
+//!
+//! # `PRECISION_EXCEEDED` is declared, and on the amount plane it is dormant
+//!
+//! Stated here because three design documents describe it as live enforcement —
+//! `design/01-foundation.md` §3.3, `03-price-structure.md` §§ error sets,
+//! `04-currency-tax.md` — and a reader checking whether
+//! `cpt-cf-bss-pricing-fr-price-amount-validation` is satisfied would otherwise
+//! be told "yes, by these" about functions nothing calls.
+//!
+//! **[`check_scale`], [`check_decimal`] and [`is_expressible`] have no caller in
+//! this gear.** That is not an oversight and relaxing or deleting them would not
+//! be the repair: the barrier is *representational*. Every amount reaches this
+//! module as an `i64` count of minor units (`PriceContentView::amount_minor` →
+//! [`MinorAmount::new`]), so no request can *declare* a scale for the rule to
+//! compare, and a [`crate::domain::price_row::PriceRow`] cannot hold a violation
+//! of it — the argument [`crate::domain::publish::rules`] makes for registering
+//! no pipeline rule, and the one D-311 restates ("there is no check to relax,
+//! and relaxing one would change nothing").
+//!
+//! **What owes the call is the first authoring surface that takes a decimal
+//! literal**, in either scale: [`check_decimal`] for an amount, and
+//! [`RateMinor::from_decimal`] — which carries the *rate* scale's own comparison
+//! and not [`check_scale`]'s — for a rate. D-311 staged that surface and has not
+//! built it: the rate wire spelling it chose is the integer `unitRateNanoMinor`,
+//! read back through [`RateMinor::from_nano_minor`], so today
+//! [`RateMinor::from_decimal`] is reached only from `domain::repricing_tests`. A
+//! CSV or major-unit bulk import is the obvious first such surface, and the point
+//! of recording this is that it will **not** reach the check by default.
 
 use std::fmt;
 
@@ -201,10 +229,24 @@ impl RateMinor {
     /// [`DomainError::PrecisionExceeded`] when it declares more decimals than
     /// the stored scale can hold.
     ///
-    /// **This is where `PRECISION_EXCEEDED` becomes reachable.** The code was a
-    /// declared refusal nothing could raise: `check_scale` had no caller, because
-    /// `MinorAmount` could not hold a violation for it to reject. A rate *can*
-    /// carry more digits than are stored, so the refusal now has an operand.
+    /// **This is where `PRECISION_EXCEEDED` gets an operand — not yet a caller.**
+    /// The code was a declared refusal nothing could raise, because `MinorAmount`
+    /// could not hold a violation for it to reject. A rate *can* carry more digits
+    /// than are stored, so the refusal is representable here. Two clauses of
+    /// D-311's landing note are corrected rather than repeated, because both are
+    /// checkable and both read as more than they are (Z11-1, 2026-08-13):
+    ///
+    /// - **This does not call [`check_scale`], and could not.** That predicate is
+    ///   the *amount* rule — a scale above the currency's minor unit — and the
+    ///   comparison below is the *rate* rule, against `minor_unit +
+    ///   RATE_SUB_DECIMALS`. Two scales, two rules; folding them into one function
+    ///   would give one name two meanings. [`check_scale`], [`check_decimal`] and
+    ///   [`is_expressible`] therefore still have no caller at all.
+    /// - **No production path reaches this constructor.** D-311's wire spelling is
+    ///   the integer `unitRateNanoMinor`, read through
+    ///   [`RateMinor::from_nano_minor`], so the only caller is
+    ///   `domain::repricing_tests`. The operand exists; the surface that would
+    ///   submit one does not. See the module doc for what is owed and by whom.
     pub fn from_decimal(currency: &CurrencyCode, literal: &str) -> Result<Self, DomainError> {
         let declared = fraction_digits(literal)?;
         let storable = currency.minor_unit() + RATE_SUB_DECIMALS;
@@ -311,6 +353,12 @@ pub fn is_expressible(currency: &CurrencyCode, declared_scale: u32) -> bool {
 }
 
 /// The publish-time form of [`is_expressible`].
+///
+/// **Dormant: nothing calls this.** Kept rather than deleted because the code it
+/// raises is declared by three design documents and an FR, and because the fault
+/// becomes representable the moment an authoring surface takes a decimal literal —
+/// which is the whole of what is owed. The module doc carries the argument; do not
+/// read a caller into this signature without checking for one.
 ///
 /// # Errors
 ///
