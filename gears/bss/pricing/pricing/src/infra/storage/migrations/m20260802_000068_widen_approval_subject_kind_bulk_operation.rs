@@ -12,9 +12,12 @@
 //!   operation to carry. That column carries no `CHECK` (see "Why the asymmetry stays"
 //!   below), so nothing in the store was in the way of it — the whole obstacle was the
 //!   enumeration having no token.
-//! * `pricing_approval.subject_kind` — **no writer**. `inst-bs-approval`'s batch
-//!   approval, the unit `POST /repricing-runs`' `validating -> awaiting_approval` edge
-//!   needs, is not wired in this change.
+//! * `pricing_approval.subject_kind` — **no writer on this date**. `inst-bs-approval`'s
+//!   batch approval, the unit `POST /repricing-runs`' `validating -> awaiting_approval`
+//!   edge needs, is not wired in this change. It was wired since, by
+//!   `api::rest::repricing_runs::advance_on_verdict`, so read this bullet as this
+//!   migration's dated state; `approval_repo::SUBJECT_KINDS_WITH_A_WRITER` is the
+//!   maintained roster of which kinds are written.
 //!
 //! D-158 requires the two stores to spell one enumeration and to be **extended
 //! together**, and `sqlite_approval_repo::every_subject_kind_d158_declares_is_storable_on_the_mirror`

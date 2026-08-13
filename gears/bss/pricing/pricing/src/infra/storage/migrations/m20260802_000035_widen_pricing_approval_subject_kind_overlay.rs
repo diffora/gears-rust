@@ -13,20 +13,24 @@
 //!   always-material subject (Slice 9's register, **O-3**). That column carries no
 //!   `CHECK`, so nothing in the store was in the way of it — the whole obstacle was
 //!   the enumeration having no token.
-//! * `pricing_approval.subject_kind` — **no writer**. D-50 makes every overlay
-//!   mutation an approval subject, but the unit that would open one is Slice 9's
-//!   **O-7** and is unwired; `infra::approval.rs` and `infra::publish.rs` were on the
-//!   overlay strand's forbidden list, which is exactly why it is owed here.
+//! * `pricing_approval.subject_kind` — **no writer on this date**. D-50 makes every
+//!   overlay mutation an approval subject, but the unit that would open one is
+//!   Slice 9's **O-7** and was unwired; `infra::approval.rs` and `infra::publish.rs`
+//!   were on the overlay strand's forbidden list, which is exactly why it is owed
+//!   here. D-225 wired it since, so read this bullet — and the refusals cited two
+//!   paragraphs down — as this migration's dated state and not as a live claim;
+//!   `approval_repo::SUBJECT_KINDS_WITH_A_WRITER` is the maintained roster.
 //!
 //! D-158 requires the two stores to spell one enumeration and to be **extended
 //! together**, and `sqlite_approval_repo::every_subject_kind_d158_declares_is_storable_on_the_mirror`
 //! enforces it by opening a record of every `AuditSubjectKind::ALL` member against
 //! this very constraint. So the token is widened here **because** the audit plane's
 //! member landed, and it is the narrower claim of the two: the kind is *storable* and
-//! not yet *stored*. `approval_repo::subject_aggregate` and
-//! `infra::approval::re_derive`'s overlay arms both refuse a record carrying it, and
-//! say in as many words that one appearing did not come from this crate — which is
-//! what keeps "storable" from being read as "resolvable".
+//! not yet *stored*. On this date `approval_repo::subject_aggregate` and
+//! `infra::approval::re_derive`'s overlay arms both refused a record carrying it, and
+//! said in as many words that one appearing did not come from this crate — which is
+//! what kept "storable" from being read as "resolvable". Both arms resolve it now
+//! (D-225); the distinction the sentence draws is what survives, not its example.
 //!
 //! # Why a migration of its own rather than an amendment to `000019`
 //!

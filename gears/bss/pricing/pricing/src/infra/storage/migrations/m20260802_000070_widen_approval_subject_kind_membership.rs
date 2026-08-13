@@ -1,16 +1,30 @@
 //! `chk_pricing_approval_subject_kind` gains `'membership'` — the seventh member
-//! of D-158's enumeration, arriving with a writer on **neither** of the two
-//! planes it spans, unlike every migration that widened this CHECK before it.
+//! of D-158's enumeration, and the only one of the seven that arrived **before**
+//! either of the two planes it spans had an approval-plane writer.
 //!
-//! # Why this migration exists at all, given nothing opens a membership approval
-//! yet
+//! # Why this migration existed at all, on the day nothing opened a membership
+//! approval
 //!
-//! `group_membership_repo` (Task 4 of the customer-group plane, 2026-08-11)
-//! declared `AuditSubjectKind::Membership` and gave it an audit-plane writer
-//! (`enroll` / `end_membership` append to `pricing_audit_log`); no approval-plane
-//! writer exists — `infra::approval::re_derive` and `approval_repo::subject_aggregate`
-//! both refuse this kind outright, by name, because `inst-mm-*`'s materiality is
-//! unwired.
+//! **Read as history, and dated.** When this migration was authored,
+//! `group_membership_repo` (Task 4 of the customer-group plane, 2026-08-11) had
+//! declared `AuditSubjectKind::Membership` and given it an audit-plane writer
+//! (`enroll` / `end_membership` append to `pricing_audit_log`) and there was no
+//! approval-plane writer: `infra::approval::re_derive` and
+//! `approval_repo::subject_aggregate` each refused this kind outright, by name,
+//! because `inst-mm-*`'s materiality was unwired.
+//!
+//! **That is no longer the case, as of 2026-08-12.** Task 7 of the same plane
+//! wired the material edge: `ApprovalService::submit_membership_move_on` opens
+//! the unit (`crate::infra::approval`, reached from `customer_groups`' move
+//! route), `subject_aggregate` resolves it into `SubjectAggregate::Payer` or
+//! `SubjectAggregate::BulkOperation`, and `re_derive` decodes the pinned set back
+//! out of the `subject_ref`. Both by-name refusals are gone. The paragraphs below
+//! keep the reasoning that obliged this migration on the day it was written —
+//! which does not depend on a writer and is the point — but nothing here should
+//! be read as a live claim that the approval plane has no membership writer.
+//! `approval_repo::SUBJECT_KINDS_WITH_A_WRITER` is the maintained list of which
+//! kinds are written, and `approval_repo_tests::the_roster_is_exactly_the_kinds_production_opens_a_unit_of`
+//! is what keeps it true by reading the crate's own writers.
 //!
 //! That absence of a writer is **not** what obliges this migration.
 //! `sqlite_approval_repo::every_subject_kind_d158_declares_is_storable_on_the_mirror`
@@ -44,12 +58,13 @@
 //!   the same change that declared the variant (see the module doc's own note:
 //!   that column carries no `CHECK` at all, so nothing in the store was ever in
 //!   the way of it).
-//! * `pricing_approval.subject_kind` — **no writer**, and this migration does not
-//!   add one. It only makes the kind *storable*, which is D-158's narrower claim
-//!   and the one `chk_pricing_approval_subject_kind` is capable of enforcing; the
-//!   approval-plane writer (wiring `inst-mm-*`'s material edge into
-//!   `ApprovalService`) is a later task's, unaffected by whether this CHECK
-//!   admits the token today.
+//! * `pricing_approval.subject_kind` — **no writer on this date**, and this
+//!   migration adds none. It only makes the kind *storable*, which is D-158's
+//!   narrower claim and the one `chk_pricing_approval_subject_kind` is capable of
+//!   enforcing; the approval-plane writer (wiring `inst-mm-*`'s material edge
+//!   into `ApprovalService`) was a later task's, and landed one day later as
+//!   `submit_membership_move_on` — unaffected either way by whether this CHECK
+//!   admitted the token, which is the whole argument of the section above.
 //!
 //! # Why a migration of its own rather than an amendment to `000068`
 //!

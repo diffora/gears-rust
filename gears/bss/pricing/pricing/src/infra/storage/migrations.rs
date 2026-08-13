@@ -346,9 +346,13 @@ impl MigratorTrait for Migrator {
             // has its writer), and the roster test
             // (`sqlite_approval_repo::every_subject_kind_d158_declares_is_storable_on_the_mirror`)
             // binds the declaration rather than the usage — so this CHECK must admit
-            // the token whether or not an approval-plane writer exists yet, which it
-            // does not. Rebuilds `pricing_approval` on `SQLite` again, from the same
-            // object set `000068` rebuilt.
+            // the token whether or not an approval-plane writer exists yet. On the day
+            // this migration was authored none did; `submit_membership_move_on` landed
+            // the day after (2026-08-12) and the roster
+            // (`approval_repo::SUBJECT_KINDS_WITH_A_WRITER`) carries it now, which is
+            // the point of the argument rather than a footnote to it: the widening was
+            // never waiting on the writer. Rebuilds `pricing_approval` on `SQLite`
+            // again, from the same object set `000068` rebuilt.
             //
             // **Numbered `000070`, not `000069`.** Authored as `000069` on a branch
             // that did not yet carry the concurrent strand's own `000069`
