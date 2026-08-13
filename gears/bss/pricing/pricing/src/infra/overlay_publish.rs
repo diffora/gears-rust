@@ -70,13 +70,12 @@ use uuid::Uuid;
 use crate::domain::approval::content_pin::overlay_content_hash;
 use crate::domain::audit::AuditStamp;
 use crate::domain::error::DomainError;
-use crate::domain::events::CatalogEvent;
 use crate::domain::overlay::OverlayLifecycle;
-use crate::domain::overlay::ScopeValue;
 use crate::domain::overlay_rules::{OverlayCandidate, PRECEDENCE_DUPLICATE, conflict_of, validate};
 use crate::domain::ports::{CatalogVersionRegistryV1, registry_failure};
 use crate::domain::publish::{OverlayPublishUnit, PublishAuthorization};
 use crate::domain::read_model::{OverlayIndexShard, SubjectRef};
+use crate::infra::storage::repo::outbox_repo::PriceOverlayPublishedPayload;
 use crate::infra::storage::repo::{
     NewOutboxEvent, PendingVersionRow, audit_repo, catalog_version_ref_repo, outbox_repo,
 };
@@ -322,34 +321,28 @@ impl OverlayPublishService {
                     // Per-overlay is also the right granularity — two revisions of
                     // one overlay must not be observed out of order, and two
                     // different overlays have no ordering relationship to keep.
+                    //
+                    // The name, the aggregate, the wire keys and the dedup key
+                    // are `NewOutboxEvent::price_overlay_published`'s and never
+                    // this call site's — Z8-4. Until then this was one of the two
+                    // from-scratch `NewOutboxEvent` literals in the crate, which
+                    // is how the event name came to be hand-spelled in a
+                    // `format!` two lines under the enum that renders it.
                     outbox_repo::enqueue(
                         txn,
                         &scope,
-                        NewOutboxEvent {
+                        NewOutboxEvent::price_overlay_published(
                             tenant_id,
-                            aggregate_id: price_overlay_id,
-                            event: CatalogEvent::PriceOverlayPublished,
-                            payload: serde_json::json!({
-                                "priceOverlayId": price_overlay_id,
-                                "revision": revision,
-                                // The `overlay_index` shard key (D-112), so a
-                                // consumer knows which index document to re-read
-                                // without a lookup.
-                                "scopeClass": record.scope.class().as_str(),
-                                "scopeValue": record.scope.value().map(ScopeValue::as_str),
-                                "precedence": record.precedence,
-                                // Pending, for `PlanPublishedPayload`'s reason: the
-                                // version does not exist yet and will not until the
-                                // registry batches (D-47).
-                                "pendingVersionRef": pending.pending_ref.clone(),
-                                "correlationId": stamp.correlation_id,
-                            }),
-                            dedup_key: format!(
-                                "PriceOverlayPublished:{price_overlay_id}:{revision}"
-                            ),
-                            correlation_id: stamp.correlation_id,
-                            enqueued_at: stamp.recorded_at,
-                        },
+                            &PriceOverlayPublishedPayload {
+                                price_overlay_id,
+                                revision,
+                                scope: record.scope.clone(),
+                                precedence: record.precedence,
+                                pending_version_ref: pending.pending_ref.clone(),
+                                correlation_id: stamp.correlation_id,
+                            },
+                            stamp.recorded_at,
+                        ),
                     )
                     .await
                     .map_err(|e| repo_failure(&e))?;

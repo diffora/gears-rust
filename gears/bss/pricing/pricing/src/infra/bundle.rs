@@ -55,7 +55,6 @@ use crate::domain::bundle::{PriceBasis, reconcile};
 use crate::domain::bundle_rules::{
     BundleComposition, ComponentDefect, ComponentSnapshot, CoverageRow, validate,
 };
-use crate::domain::events::CatalogEvent;
 use crate::domain::lifecycle::LifecycleState;
 use crate::domain::materiality::ChangeSet;
 use crate::domain::materiality::triggers::Trigger;
@@ -68,6 +67,7 @@ use crate::infra::storage::RepoError;
 use crate::infra::storage::entity::{
     bundle, bundle_component, bundle_revshare, plan, plan_phase, price,
 };
+use crate::infra::storage::repo::outbox_repo::BundleUpdatedPayload;
 use crate::infra::storage::repo::plan_repo::{self, read_frequency};
 use crate::infra::storage::repo::{BundleRepo, NewOutboxEvent, outbox_repo};
 
@@ -334,61 +334,26 @@ impl BundleService {
                         )
                         .await?;
                     }
+                    // The name, the aggregate and the key are the module's, never
+                    // this call site's — Z8-4. What that buys is
+                    // `bundle_updated_dedup_key`, whose doc carries Z8-3's whole
+                    // argument: the key is **the act's**, because a revision may
+                    // publish more than once and the key used to say it could not.
                     outbox_repo::enqueue(
                         txn,
                         &scope,
-                        NewOutboxEvent {
+                        NewOutboxEvent::bundle_updated(
                             tenant_id,
-                            // The **plan**, because that is the aggregate the
-                            // outbox orders within and the bundle rides it.
-                            aggregate_id: plan_id.get(),
-                            event: CatalogEvent::BundleUpdated,
-                            payload: serde_json::json!({
-                                "bundleId": bundle_id,
-                                "planId": plan_id.get(),
-                                "planRevision": revision,
-                                "priceBasis": record.price_basis.as_str(),
-                                "invoiceItemization": record.invoice_itemization.as_str(),
-                            }),
-                            // **The act, not the revision** — Z8-3, and
-                            // `NewOutboxEvent::price_window_mutation`'s remedy
-                            // one event over. `BundleUpdated:<bundle>:<revision>`
-                            // asserted "a revision publishes exactly once",
-                            // which is `plan_published_dedup_key`'s argument and
-                            // holds there because the publish commit's
-                            // compare-and-swap refuses the second attempt. This
-                            // path has no swap: it re-reads the composition,
-                            // re-normalises and enqueues, and the route admits a
-                            // second call at one `plan_revision` — a composition
-                            // edit moves the revision's `row_version`, which
-                            // voids the content pin, so the legal republish is
-                            // another approved unit over the same revision. So
-                            // `uq_pricing_outbox_dedup_key` was the only thing
-                            // standing there and it answered
-                            // `CONCURRENT_MUTATION`: a 409 meaning *retry* on an
-                            // act whose every retry collides identically.
-                            //
-                            // The correlation id **is** the act: D-178 clause (2)
-                            // binds one value to one operator call and
-                            // `require_correlation` refuses to mint anywhere but
-                            // the edge, so one announcement per correlation is
-                            // one per call. What that leaves is a resend at the
-                            // *client* level — a new request, so a new
-                            // correlation, so a second content-identical event —
-                            // which is what the PRD's "carrying
-                            // correlation/idempotency keys so consumers can
-                            // dedupe" already puts on the consumer under
-                            // at-least-once delivery. The alternative, keying on
-                            // a digest of the normalised composition, dedups the
-                            // identical repeat but leaves it answered
-                            // `CONCURRENT_MUTATION` again, which is the defect.
-                            dedup_key: format!(
-                                "{}/{bundle_id}/{revision}/{correlation_id}",
-                                CatalogEvent::BundleUpdated.as_str()
-                            ),
-                            correlation_id,
-                            enqueued_at: at,
-                        },
+                            &BundleUpdatedPayload {
+                                bundle_id,
+                                plan_id,
+                                plan_revision: revision,
+                                price_basis: record.price_basis,
+                                invoice_itemization: record.invoice_itemization,
+                                correlation_id,
+                            },
+                            at,
+                        ),
                     )
                     .await?;
                     Ok(())

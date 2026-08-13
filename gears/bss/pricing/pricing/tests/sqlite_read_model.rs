@@ -707,8 +707,19 @@ async fn an_overlay_publish_announces_itself_and_names_the_shard_it_moved() {
     );
     assert_eq!(
         event.dedup_key,
-        format!("PriceOverlayPublished:{price_overlay_id}:0"),
-        "a revision publishes once, so the key is revision-scoped like BundleUpdated's"
+        bss_pricing::infra::storage::repo::outbox_repo::price_overlay_published_dedup_key(
+            price_overlay_id,
+            0
+        ),
+        "the key comes from the module that owns it (Z8-4) rather than being spelled a second \
+         time here, and it is revision-scoped because the commit's compare-and-swap refuses the \
+         second publish of one revision before the enqueue"
+    );
+    assert_eq!(
+        event.dedup_key,
+        format!("PriceOverlayPublished/{price_overlay_id}/0"),
+        "rendered from the enum and separated as its ten siblings are. `:` was this event's own \
+         spelling, and D-248's prose still quotes it"
     );
 
     let payload = &event.payload;

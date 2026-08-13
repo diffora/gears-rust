@@ -47,6 +47,39 @@
 //! spelling *would* be caught — but caught as a driver error inside a publish
 //! transaction, which is not where a frozen contract should be discovered.
 //!
+//! ## How to check the discipline holds — and the check that does **not** work
+//!
+//! Not *"`NewOutboxEvent {` appears only in this file"*. Two sites in
+//! [`crate::infra::repricing`] are struct **updates** — `NewOutboxEvent {
+//! dedup_key: …, ..NewOutboxEvent::price_updated(…) }` — which *extend* a named
+//! constructor rather than replacing it: the name, the aggregate and the payload
+//! still come from the constructor and only the key moves, to the `(run_id,
+//! price_id)` shape `12-operator-efficiency.md` requires of a repricing run. A
+//! grep for the opening brace cannot tell that from a literal built from nothing,
+//! and it has already reported those two as regressions they are not.
+//!
+//! What separates the two is the functional-update base, so **count it**:
+//!
+//! ```text
+//! diff <(rg -c 'NewOutboxEvent \{'    src --glob '!**/outbox_repo*.rs') \
+//!      <(rg -c '\.\.NewOutboxEvent::' src --glob '!**/outbox_repo*.rs')
+//! ```
+//!
+//! Per file the two counts must be equal: every literal outside this module is a
+//! struct update over a constructor, so a from-scratch literal breaks the
+//! equality and a struct update preserves it. The other half of the discipline is
+//! the **name**: no `CatalogEvent` variant may be spelled as a literal by a
+//! *writer*, so
+//!
+//! ```text
+//! rg -n 'format!\("[A-Za-z]*(Published|Updated|Created|Retired|Scheduled|Activated|Expired|Cancelled|Degraded)' \
+//!    src --glob '!**/*_tests.rs'
+//! ```
+//!
+//! must come back empty. The exclusion is deliberate and is not a loophole: a
+//! test asserting a rendered key spells it independently **on purpose**, which is
+//! the only thing that makes the assertion say anything.
+//!
 //! # A gap this file named, and what filled it
 //!
 //! [`PricingSnapshotRef`](crate::domain::snapshot::PricingSnapshotRef) has three
@@ -83,8 +116,10 @@ use serde_json::{Value as JsonValue, json};
 use toolkit_db::secure::{AccessScope, DBRunner, SecureEntityExt, SecureInsertExt};
 use uuid::Uuid;
 
+use crate::domain::bundle::{InvoiceItemization, PriceBasis};
 use crate::domain::evaluation_policy::EVALUATION_POLICY_GENERATION;
 use crate::domain::events::CatalogEvent;
+use crate::domain::overlay::{ScopeSelector, ScopeValue};
 use crate::domain::scope_key::PlanId;
 use crate::infra::storage::entity::outbox;
 use crate::infra::storage::{RepoError, contention_or_db};
@@ -441,6 +476,76 @@ impl NewOutboxEvent {
             event: CatalogEvent::PriceUpdated,
             payload: payload.to_value(),
             dedup_key: price_updated_dedup_key(payload.price_id),
+            correlation_id: payload.correlation_id,
+            enqueued_at,
+        }
+    }
+
+    /// The `BundleUpdated` of one composition normalisation (`inst-ba-return`,
+    /// D-07).
+    ///
+    /// A named constructor for [`NewOutboxEvent::plan_published`]'s reason, and
+    /// arriving late for a reason worth recording: this event and
+    /// [`NewOutboxEvent::price_overlay_published`] were the crate's only
+    /// from-scratch `NewOutboxEvent` literals until Z8-4, which is how the
+    /// **name** came to be hand-spelled in a `format!` two lines under the enum
+    /// that renders it, and how the key came to be separated with `:` where all
+    /// ten of its siblings use `/`. Neither was a correctness break on its own;
+    /// what the discipline was holding shut is Z8-3, and this event is the one
+    /// that walked into it.
+    ///
+    /// The aggregate is the **plan** — a bundle rides a plan revision, so the
+    /// composition change orders within that plan's stream. (The overlay event
+    /// is the one place that differs, and its constructor says why.)
+    #[must_use]
+    pub fn bundle_updated(
+        tenant_id: Uuid,
+        payload: &BundleUpdatedPayload,
+        enqueued_at: DateTime<Utc>,
+    ) -> Self {
+        Self {
+            tenant_id,
+            aggregate_id: payload.plan_id.get(),
+            event: CatalogEvent::BundleUpdated,
+            payload: payload.to_value(),
+            dedup_key: bundle_updated_dedup_key(
+                payload.bundle_id,
+                payload.plan_revision,
+                payload.correlation_id,
+            ),
+            correlation_id: payload.correlation_id,
+            enqueued_at,
+        }
+    }
+
+    /// The `PriceOverlayPublished` of one overlay revision going live (D-248).
+    ///
+    /// A named constructor for [`NewOutboxEvent::plan_published`]'s reason, and
+    /// [`NewOutboxEvent::bundle_updated`]'s late sibling — the two arrived
+    /// together in Z8-4.
+    ///
+    /// **The aggregate is the overlay, not a plan**, which is the one place this
+    /// differs from every other event in this module: an overlay is
+    /// tenant-scoped and may target no plan at all (`target_plan_ids: []` is the
+    /// global-scope case), so there is no plan stream to order it within.
+    /// Per-overlay is also the right granularity — two revisions of one overlay
+    /// must not be observed out of order, and two different overlays have no
+    /// ordering relationship to keep.
+    #[must_use]
+    pub fn price_overlay_published(
+        tenant_id: Uuid,
+        payload: &PriceOverlayPublishedPayload,
+        enqueued_at: DateTime<Utc>,
+    ) -> Self {
+        Self {
+            tenant_id,
+            aggregate_id: payload.price_overlay_id,
+            event: CatalogEvent::PriceOverlayPublished,
+            payload: payload.to_value(),
+            dedup_key: price_overlay_published_dedup_key(
+                payload.price_overlay_id,
+                payload.revision,
+            ),
             correlation_id: payload.correlation_id,
             enqueued_at,
         }
@@ -943,6 +1048,156 @@ pub fn price_updated_dedup_key(price_id: Uuid) -> String {
 #[must_use]
 pub fn price_created_dedup_key(price_id: Uuid) -> String {
     format!("{}/{}", CatalogEvent::PriceCreated.as_str(), price_id)
+}
+
+/// The `BundleUpdated` payload — one composition, as a consumer is told about it
+/// (`design/08-bundles.md` §2, `inst-ba-return`).
+///
+/// Its field list is this module's, like its four siblings': §7 freezes the
+/// **name** `BundleUpdated` and declares nothing about the body.
+///
+/// The correlation is **not** rendered into it — it rides the row's own column,
+/// which is where a consumer reads it. That is the wire shape this event already
+/// had rather than a decision taken here; `PlanPublishedPayload` renders it as
+/// well, and reconciling the two is a wire question and not this change's.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BundleUpdatedPayload {
+    /// The bundle whose composition moved.
+    pub bundle_id: Uuid,
+    /// The plan it rides — the aggregate the event is ordered within.
+    pub plan_id: PlanId,
+    /// The plan revision the composition belongs to.
+    pub plan_revision: u64,
+    /// How the bundle arrives at its price (`inst-bb-declared`).
+    pub price_basis: PriceBasis,
+    /// How the invoice lays it out.
+    pub invoice_itemization: InvoiceItemization,
+    /// The correlation id of the causing request, which is also the act segment
+    /// of [`bundle_updated_dedup_key`].
+    pub correlation_id: Uuid,
+}
+
+impl BundleUpdatedPayload {
+    /// Render the payload for its `jsonb` column, `camelCase` as its siblings'.
+    #[must_use]
+    pub fn to_value(&self) -> JsonValue {
+        json!({
+            "bundleId": self.bundle_id,
+            "planId": self.plan_id.get(),
+            "planRevision": self.plan_revision,
+            "priceBasis": self.price_basis.as_str(),
+            "invoiceItemization": self.invoice_itemization.as_str(),
+        })
+    }
+}
+
+/// The dedup key of one bundle composition announcement:
+/// `BundleUpdated/<bundle_id>/<plan_revision>/<act>`.
+///
+/// **The act, and not only the revision** — Z8-3. This key read
+/// `BundleUpdated:<bundle>:<revision>` and so asserted
+/// [`plan_published_dedup_key`]'s argument, *"a revision publishes exactly
+/// once"*. That argument rests on the publish commit's compare-and-swap refusing
+/// the second attempt, and `BundleService::publish_composition` has no swap: it
+/// re-reads the composition, re-normalises and enqueues, and the route admits a
+/// second call at one `plan_revision` — a composition edit moves the revision's
+/// `row_version`, which voids the content pin, so the legal republish is another
+/// approved unit over the same revision. `uq_pricing_outbox_dedup_key` was
+/// therefore the only thing standing there and it answered
+/// `CONCURRENT_MUTATION`: a 409 meaning *retry* on an act whose every retry
+/// collides identically. Widening the key is
+/// [`NewOutboxEvent::price_window_mutation`]'s remedy for the same defect one
+/// event over, taken for the same reason — the key is internal to this table, so
+/// naming the act in it settles the defect without deciding any wire question.
+///
+/// **The act is the correlation id**, because D-178 clause (2) binds one such
+/// value to one operator call and `api::rest::correlation::require_correlation`
+/// refuses to mint anywhere but the edge — so one announcement per correlation is
+/// one per call. The residue: a resend at the *client* level is a new request, so
+/// a new correlation, so a second content-identical event. That is what the PRD's
+/// *"carrying correlation/idempotency keys so consumers can dedupe"* already puts
+/// on the consumer under at-least-once delivery. Keying on a digest of the
+/// normalised composition instead would dedup that repeat and answer it
+/// `CONCURRENT_MUTATION` again, which is the defect.
+#[must_use]
+pub fn bundle_updated_dedup_key(bundle_id: Uuid, plan_revision: u64, act: Uuid) -> String {
+    format!(
+        "{}/{}/{}/{}",
+        CatalogEvent::BundleUpdated.as_str(),
+        bundle_id,
+        plan_revision,
+        act
+    )
+}
+
+/// The `PriceOverlayPublished` payload — the shard key a consumer re-reads by
+/// (D-248).
+///
+/// The field list is D-248's own: `priceOverlayId`, `revision`, `scopeClass`,
+/// `scopeValue`, `precedence`, `pendingVersionRef`, `correlationId`. The scope
+/// pair is the `overlay_index` shard key (D-112), so a consumer knows which index
+/// document to re-read without a lookup, and `precedence` is the order it
+/// resolves by.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PriceOverlayPublishedPayload {
+    /// The overlay that published — and the aggregate, unlike every sibling.
+    pub price_overlay_id: Uuid,
+    /// The revision that became current.
+    pub revision: u64,
+    /// Class and value together, so the two cannot be rendered out of step: the
+    /// store spends a biconditional `CHECK` on the pairing and
+    /// [`ScopeSelector`](crate::domain::overlay::ScopeSelector) makes the
+    /// mismatch unrepresentable.
+    pub scope: ScopeSelector,
+    /// The precedence the index resolves by.
+    pub precedence: i32,
+    /// The registry's **pending** handle, for [`PlanPublishedPayload`]'s reason:
+    /// the version does not exist yet and will not until the registry batches
+    /// (D-47).
+    pub pending_version_ref: String,
+    /// The correlation id of the causing request.
+    pub correlation_id: Uuid,
+}
+
+impl PriceOverlayPublishedPayload {
+    /// Render the payload for its `jsonb` column, `camelCase` as its siblings'.
+    #[must_use]
+    pub fn to_value(&self) -> JsonValue {
+        json!({
+            "priceOverlayId": self.price_overlay_id,
+            "revision": self.revision,
+            "scopeClass": self.scope.class().as_str(),
+            "scopeValue": self.scope.value().map(ScopeValue::as_str),
+            "precedence": self.precedence,
+            "pendingVersionRef": self.pending_version_ref,
+            "correlationId": self.correlation_id,
+        })
+    }
+}
+
+/// The dedup key of one overlay publish:
+/// `PriceOverlayPublished/<price_overlay_id>/<revision>`.
+///
+/// [`plan_published_dedup_key`]'s argument, and here it **holds**: the commit
+/// proves the target is the open draft before anything is written and flips it to
+/// `published`, so a second publish of one revision is refused with a
+/// `NotFound` — by a compare-and-swap, before the enqueue — which is exactly the
+/// property [`bundle_updated_dedup_key`] lacks and therefore why that key carries
+/// an act segment and this one does not.
+///
+/// D-248 and `09-price-overlays.md` §4 write the key as
+/// `PriceOverlayPublished:<overlay_id>:<revision>`, with colons. The separator is
+/// `/` here, as in all ten sibling keys, and the dedup key is internal to this
+/// table — so the two documents' spelling is stale prose about a private key
+/// rather than a contract, and it is owed a docs-wave correction.
+#[must_use]
+pub fn price_overlay_published_dedup_key(price_overlay_id: Uuid, revision: u64) -> String {
+    format!(
+        "{}/{}/{}",
+        CatalogEvent::PriceOverlayPublished.as_str(),
+        price_overlay_id,
+        revision
+    )
 }
 
 /// Enqueue one event inside `runner`'s transaction, returning the `seq` it
