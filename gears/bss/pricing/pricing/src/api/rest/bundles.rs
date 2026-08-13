@@ -49,6 +49,7 @@ use axum::{Json, Router, http::HeaderMap, http::StatusCode};
 use chrono::Utc;
 use toolkit::api::canonical_prelude::CanonicalError;
 use toolkit::api::{OpenApiRegistry, operation_builder::OperationBuilder};
+use toolkit_db::secure::DbTx;
 use toolkit_odata::Page;
 use toolkit_security::SecurityContext;
 use uuid::Uuid;
@@ -68,9 +69,16 @@ use crate::domain::error::DomainError;
 use crate::domain::materiality::{self, MaterialityVerdict};
 use crate::domain::money::CurrencyCode;
 use crate::domain::scope_key::{PlanId, Region};
-use crate::infra::storage::repo::{BundleComponentDraft, CompositionDraft, NewBundle};
+use crate::infra::idempotent::{self, Guarded, GuardedRequest, TxFuture};
+use crate::infra::storage::repo::{BundleComponentDraft, CompositionDraft, NewBundle, bundle_repo};
 
 const TAG: &str = "BSS Pricing Bundles";
+
+/// The at-most-once operation the bundle create claims under (§9).
+///
+/// Per-route, `plans.rs`' rule: the key is scoped to the operation, so one client
+/// key used on two different verbs does not collide.
+const CREATE_BUNDLE_OPERATION: &str = "bss_pricing.create_bundle";
 
 /// The wire tokens for the two arms — `api::rest::publish`'s, so a client's
 /// `match` does not depend on which plane it called, and so `"published"` has one
@@ -394,7 +402,16 @@ async fn create_bundle(
 
     // Parsed after the gate, as `plans.rs` and `prices.rs` order it.
     let body: CreateBundleRequest = preconditions::parse_body(&body)?;
-    let _client_key = preconditions::idempotency_key(&headers)?;
+    // **Used, and Z12-7 is why it had to become so.** The key was taken and
+    // discarded — required of every caller and read by nothing — so a retry ran the
+    // create a second time and was answered by whatever the store made of it: on
+    // this route `uq_pricing_bundle_plan` caught the insert, so a client that
+    // retried on a timeout was told `BUNDLE_EXISTS_ON_PLAN`, with no bundle id and
+    // no way to tell its own first attempt from another operator's bundle. That is
+    // the inversion at-most-once exists to prevent, arriving as a plausible-looking
+    // conflict rather than as a fault.
+    let client_key = preconditions::idempotency_key(&headers)?;
+    let request_hash = preconditions::request_digest(&body)?;
 
     let basis = match body.price_basis.as_deref() {
         None => check_basis_declared(None).map_err(|code| {
@@ -415,39 +432,105 @@ async fn create_bundle(
         })?,
     };
 
-    let bundle_id = Uuid::new_v4();
     let plan_id = PlanId::new(body.plan_id);
-    let stamp = audit_stamp(&ctx, Utc::now(), correlation);
-    state
-        .bundles
-        .create(
-            &scope,
-            NewBundle {
-                bundle_id,
-                tenant_id: tenant,
-                plan_id,
-                price_basis: basis,
-                invoice_itemization: itemization,
-            },
-            stamp,
-        )
-        .await
-        .map_err(|e| crate::infra::storage::repo_failure(&e))?;
+    let wire_plan_id = body.plan_id;
+    let now = Utc::now();
+    let stamp = audit_stamp(&ctx, now, correlation);
+    let mutation_scope = scope.clone();
 
-    let view = BundleView {
-        bundle_id,
-        plan_id: body.plan_id,
-        price_basis: basis.as_str().to_owned(),
-        invoice_itemization: itemization.as_str().to_owned(),
-    };
+    let outcome = idempotent::guarded(
+        &state.db,
+        &state.idempotency,
+        &scope,
+        GuardedRequest {
+            operation: CREATE_BUNDLE_OPERATION,
+            client_key,
+            request_hash,
+            tenant_id: tenant,
+            status: StatusCode::CREATED.as_u16().into(),
+            now,
+        },
+        move |txn: &DbTx<'_>| -> TxFuture<'_, BundleView> {
+            Box::pin(async move {
+                // Minted **inside** the guarded body, `plans::create_plan`'s and
+                // `windows::schedule_window`'s rule: a replay does not reach this
+                // closure at all, so an id minted above it would be a second one
+                // nobody is ever told about.
+                let bundle_id = Uuid::now_v7();
+                // `create_on` rather than `BundleRepo::create`: the claim and the
+                // insert have to be one transaction, which is the whole of
+                // `guarded`'s guarantee — a create that failed rolls its claim back
+                // with it, so the retry claims afresh instead of being told
+                // "already done" forever.
+                bundle_repo::create_on(
+                    txn,
+                    &mutation_scope,
+                    NewBundle {
+                        bundle_id,
+                        tenant_id: tenant,
+                        plan_id,
+                        price_basis: basis,
+                        invoice_itemization: itemization,
+                    },
+                    stamp,
+                )
+                .await
+                .map(|bundle_id| BundleView {
+                    bundle_id,
+                    plan_id: wire_plan_id,
+                    price_basis: basis.as_str().to_owned(),
+                    invoice_itemization: itemization.as_str().to_owned(),
+                })
+                .map_err(|e| crate::infra::storage::repo_failure(&e))
+            })
+        },
+        |view: &BundleView| {
+            serde_json::to_value(view).map_err(|e| {
+                DomainError::Internal(format!("cannot render the created bundle: {e}"))
+            })
+        },
+    )
+    .await
+    .map_err(CanonicalError::from)?;
+
+    Ok(match outcome {
+        Guarded::Performed(view) => created_bundle(view.bundle_id, view)?,
+        Guarded::Replayed { status, body } => replayed_bundle(status, &body),
+    })
+}
+
+/// The `201` a performed create answers, with the `Location` §3 requires.
+fn created_bundle(bundle_id: Uuid, view: BundleView) -> Result<Response, CanonicalError> {
     let mut response = (StatusCode::CREATED, Json(view)).into_response();
     response.headers_mut().insert(
         LOCATION,
-        format!("/bss-pricing/v1/bundles/{bundle_id}")
+        format!("{BUNDLES}/{bundle_id}")
             .parse()
             .map_err(|_| DomainError::InvalidRequest("unrenderable location".to_owned()))?,
     );
     Ok(response)
+}
+
+/// The stored answer, replayed.
+///
+/// `plans::replayed`'s shape and its reasoning: the status and body are what the
+/// first caller was told, and the `Location` is rebuilt from the id **that body
+/// carries** rather than from anything this request computed. No `ETag` — the dedup
+/// row stores a status and a body and no headers, and a bundle's identity row
+/// carries no version of its own in any case.
+fn replayed_bundle(status: i32, body: &serde_json::Value) -> Response {
+    let status = u16::try_from(status)
+        .ok()
+        .and_then(|code| StatusCode::from_u16(code).ok())
+        .unwrap_or(StatusCode::OK);
+    let location = body
+        .get("bundle_id")
+        .and_then(serde_json::Value::as_str)
+        .map(|bundle_id| format!("{BUNDLES}/{bundle_id}"));
+    match location {
+        Some(location) => (status, [(LOCATION, location)], Json(body.clone())).into_response(),
+        None => (status, Json(body.clone())).into_response(),
+    }
 }
 
 async fn replace_composition(
@@ -983,11 +1066,15 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
              invoice itemization. The composition itself is authored through `PATCH \
              /bss-pricing/v1/bundles/{bundleId}`, which is where it becomes revision-scoped. A \
              plan carries at most one bundle. An absent `price_basis` is refused `BASIS_MISSING` \
-             (`inst-bb-declared`). Gates on `bundle` x `write`.",
+             (`inst-bb-declared`). **`Idempotency-Key` is required and is honoured**: a retry \
+             under the same key replays the first call's `201` and its bundle id rather than \
+             creating or refusing anything, and the same key carrying a different request is \
+             `409` `IDEMPOTENCY_PAYLOAD_MISMATCH`. Gates on `bundle` x `write`.",
         )
         .tag(TAG)
         .authenticated()
         .no_license_required()
+        .param(crate::api::rest::plans::idempotency_key_param())
         .handler(create_bundle)
         .json_response_with_schema::<BundleView>(
             openapi,

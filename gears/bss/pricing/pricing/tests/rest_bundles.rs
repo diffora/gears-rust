@@ -109,6 +109,140 @@ async fn a_bundle_with_no_declared_basis_is_refused_by_code() {
     );
 }
 
+/// **A retried create is replayed, not re-executed** (Z12-7, `inst-bk-idem`).
+///
+/// The route took the `Idempotency-Key` and discarded it — `let _client_key = …`,
+/// required of every caller and used by nothing — so this suite's every key was a
+/// fresh `Uuid::now_v7()` and no second call ever carried one a first call used.
+/// What a retry actually got was `BUNDLE_EXISTS_ON_PLAN`: the plan's uniqueness
+/// index caught the second insert, so a client that retried on a timeout was told
+/// its bundle already existed, by somebody, with no id and no way to tell its own
+/// first attempt from another operator's.
+///
+/// Both halves are asserted. The status **and the body** come back as the first
+/// call's, because a replay that re-rendered would hand the caller something it was
+/// never told; and the store still holds one bundle, which is what makes this a
+/// proof about at-most-once rather than about a status code.
+#[tokio::test]
+async fn a_retried_create_replays_the_first_answer_and_creates_one_bundle() {
+    let harness = Harness::new().await;
+    let plan_id = Uuid::now_v7();
+    seed_draft_plan(&harness, plan_id).await;
+    harness.attach_shape(plan_id, 0).await;
+    let key = Uuid::now_v7().to_string();
+    let request = serde_json::json!({
+        "plan_id": plan_id,
+        "price_basis": "sum_of_parts",
+        "invoice_itemization": "itemize",
+    });
+
+    let first = harness
+        .allowed()
+        .send(with_headers(
+            "POST",
+            BUNDLES,
+            Some(request.clone()),
+            &[("idempotency-key", &key)],
+        ))
+        .await;
+    assert_eq!(first.status(), StatusCode::CREATED);
+    let first = body_json(first).await;
+
+    let replay = harness
+        .allowed()
+        .send(with_headers(
+            "POST",
+            BUNDLES,
+            Some(request),
+            &[("idempotency-key", &key)],
+        ))
+        .await;
+
+    assert_eq!(
+        replay.status(),
+        StatusCode::CREATED,
+        "a replay answers what the first call answered, not what the uniqueness index thinks \
+         of a second insert"
+    );
+    let replayed = body_json(replay).await;
+    assert_eq!(
+        replayed, first,
+        "verbatim: the bundle id above all, since a fresh one would name a bundle the caller \
+         cannot address"
+    );
+
+    // The positive control against a replay that is merely a refusal wearing a
+    // 201: exactly one bundle exists, and it is the one both answers named.
+    let listed = harness
+        .allowed()
+        .send(with_headers(
+            "GET",
+            &format!("{BUNDLES}?plan_id={plan_id}"),
+            None,
+            &[],
+        ))
+        .await;
+    assert_eq!(listed.status(), StatusCode::OK);
+    let listed = body_json(listed).await;
+    let items = listed["items"].as_array().expect("a page of bundles");
+    assert_eq!(items.len(), 1, "one create, one bundle: {listed}");
+    assert_eq!(items[0]["bundle_id"], first["bundle_id"]);
+}
+
+/// **A different bundle under a spent key is refused** (Z12-7).
+///
+/// Armed on a genuinely different request — another basis, another itemization —
+/// under the same key. Replaying the *same* body proves the opposite property and
+/// is the case above, which is this one's positive control. The refusal is the
+/// gate's own `IDEMPOTENCY_PAYLOAD_MISMATCH` rather than a `BUNDLE_EXISTS_ON_PLAN`
+/// that happens to be produced by an index: the two are different facts, and only
+/// the first tells the caller that the key is the problem.
+#[tokio::test]
+async fn a_different_create_under_a_spent_key_is_refused_as_a_payload_mismatch() {
+    let harness = Harness::new().await;
+    let plan_id = Uuid::now_v7();
+    seed_draft_plan(&harness, plan_id).await;
+    harness.attach_shape(plan_id, 0).await;
+    let key = Uuid::now_v7().to_string();
+
+    let first = harness
+        .allowed()
+        .send(with_headers(
+            "POST",
+            BUNDLES,
+            Some(serde_json::json!({
+                "plan_id": plan_id,
+                "price_basis": "sum_of_parts",
+                "invoice_itemization": "itemize",
+            })),
+            &[("idempotency-key", &key)],
+        ))
+        .await;
+    assert_eq!(first.status(), StatusCode::CREATED);
+
+    let refused = harness
+        .allowed()
+        .send(with_headers(
+            "POST",
+            BUNDLES,
+            Some(serde_json::json!({
+                "plan_id": plan_id,
+                "price_basis": "own_price",
+                "invoice_itemization": "aggregate",
+            })),
+            &[("idempotency-key", &key)],
+        ))
+        .await;
+
+    assert_eq!(refused.status(), StatusCode::CONFLICT);
+    assert_eq!(
+        problem_code(refused).await,
+        "IDEMPOTENCY_PAYLOAD_MISMATCH",
+        "a key held by one request must not answer for another, and the refusal has to name \
+         the key rather than the plan's uniqueness"
+    );
+}
+
 /// One bundle per plan, as a conflict rather than a storage failure.
 #[tokio::test]
 async fn a_second_bundle_on_one_plan_is_a_conflict() {
