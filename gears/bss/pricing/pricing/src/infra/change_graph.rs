@@ -55,6 +55,7 @@ use toolkit_db::secure::{AccessScope, DBRunner, SecureEntityExt};
 use uuid::Uuid;
 
 use crate::domain::contracts::ChangeTargetIndex;
+use crate::domain::lifecycle::LifecycleState;
 use crate::domain::scope_key::PlanId;
 use crate::infra::storage::RepoError;
 use crate::infra::storage::entity::plan;
@@ -125,7 +126,7 @@ async fn published_plans(
         .filter(
             Condition::all()
                 .add(plan::Column::TenantId.eq(tenant_id))
-                .add(plan::Column::LifecycleState.eq("published")),
+                .add(plan::Column::LifecycleState.eq(LifecycleState::Published.as_str())),
         )
         .all(runner)
         .await

@@ -64,10 +64,11 @@ use crate::api::rest::auth_context::require_authenticated;
 use crate::api::rest::error::authz_error_to_canonical;
 use crate::api::rest::state::GovernanceState;
 use crate::domain::error::DomainError;
+use crate::domain::lifecycle::LifecycleState;
 use crate::domain::money::CurrencyCode;
 use crate::domain::ports::metrics::PreviewFailClosed;
 use crate::domain::read_model::SubjectRef;
-use crate::domain::scope_key::{PlanId, Region};
+use crate::domain::scope_key::{ChargeKind, PlanId, PriceEligibility, PriceOverlay, Region};
 use crate::infra::storage::repo::{pin_frontier_repo, read_model_repo};
 use crate::infra::storage::repo_failure;
 
@@ -381,12 +382,19 @@ fn market_rows<'a>(
         .map(|rows| {
             rows.iter()
                 .filter(|row| {
+                    // Every token below is read back through the enum that
+                    // rendered it into the delta, not respelled here: the payload
+                    // is written by `PriceOverlay`/`PriceEligibility`/
+                    // `LifecycleState`'s own `as_str`, and a second spelling on
+                    // the reading side is a filter free to stop matching what the
+                    // projector writes.
                     let key = &row["scopeKey"];
                     key["currency"] == currency
                         && key["region"] == region
-                        && key["priceOverlay"] == "base"
-                        && key["priceEligibility"] != "existing_grandfathered"
-                        && row["lifecycleState"] == "published"
+                        && key["priceOverlay"] == PriceOverlay::Base.as_str()
+                        && key["priceEligibility"]
+                            != PriceEligibility::ExistingGrandfathered.as_str()
+                        && row["lifecycleState"] == LifecycleState::Published.as_str()
                 })
                 .collect()
         })
@@ -454,8 +462,9 @@ fn base_amount_row<'a>(
     let named = terminal_phase.and_then(|phase| {
         ordered.iter().copied().find(|row| {
             row["scopeKey"]["phase"] == phase
-                && row["scopeKey"]["priceEligibility"] == "all_subscriptions"
-                && row["scopeKey"]["chargeKind"] == "recurring"
+                && row["scopeKey"]["priceEligibility"]
+                    == PriceEligibility::AllSubscriptions.as_str()
+                && row["scopeKey"]["chargeKind"] == ChargeKind::Recurring.as_str()
         })
     });
     if named.is_some() {
@@ -465,7 +474,10 @@ fn base_amount_row<'a>(
     ordered
         .iter()
         .copied()
-        .find(|row| row["scopeKey"]["chargeKind"] != "usage" && !row["amountMinor"].is_null())
+        .find(|row| {
+            row["scopeKey"]["chargeKind"] != ChargeKind::Usage.as_str()
+                && !row["amountMinor"].is_null()
+        })
         // **A preference, not a filter**, and the difference is a market priced
         // solely by usage. Excluding metered rows outright made such a market
         // answer 404 — as though the plan did not sell there — which contradicts

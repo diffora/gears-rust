@@ -70,7 +70,7 @@ use crate::api::rest::preconditions;
 use crate::api::rest::state::{AuthoringState, GovernanceState};
 use crate::domain::error::DomainError;
 use crate::domain::materiality::triggers::Trigger;
-use crate::domain::materiality::{self, ChangeSet, MaterialityVerdict};
+use crate::domain::materiality::{self, ChangeSet, MaterialityReason, MaterialityVerdict};
 use crate::domain::money::CurrencyCode;
 use crate::domain::overlay::{
     Adjustment, AmountSet, Disclosure, LineKey, Magnitude, OverlayInterval, OverlayLifecycle,
@@ -93,7 +93,12 @@ const OUTCOME_PUBLISHED: &str = "published";
 
 /// The materiality reason an overlay act always carries (D-50), for the arm that
 /// reads it back off a **stored** verdict rather than evaluating one.
-const OVERLAY_ACT_REASON: &str = "alwaysMaterialTrigger";
+///
+/// Rendered by the enum that owns the token rather than spelled again here: the
+/// stored verdict this falls back for was written by
+/// [`MaterialityReason::as_str`], so a second spelling is a fallback free to stop
+/// agreeing with the value it substitutes for.
+const OVERLAY_ACT_REASON: &str = MaterialityReason::AlwaysMaterialTrigger.as_str();
 
 /// `POST` — author an overlay draft; `GET` — list them.
 pub const PRICE_OVERLAYS: &str = "/bss-pricing/v1/price-overlays";
@@ -486,7 +491,11 @@ pub(crate) fn adjustment_of(
         "markup" => Ok(Adjustment::Markup(magnitude)),
         "discount" => Ok(Adjustment::Discount(magnitude)),
         "fixed" => {
-            if magnitude_kind != "amount" {
+            // Asked of the **value** the parse above built, not of the token it
+            // was built from: the two can only disagree if this comparison and
+            // that `match` drift apart, and D-138 is a rule about the magnitude
+            // rather than about a spelling of it.
+            if !matches!(magnitude, Magnitude::Amount(_)) {
                 return Err(DomainError::InvalidRequest(
                     "a fixed line is always amount-based: it replaces the running amount with \
                      an absolute price, and a percentage of the amount it replaces evaluates to \

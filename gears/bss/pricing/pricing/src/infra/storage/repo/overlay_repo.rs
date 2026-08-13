@@ -100,6 +100,7 @@ use toolkit_db::{DBProvider, DbError};
 use uuid::Uuid;
 
 use crate::domain::audit::{AuditAction, AuditStamp, AuditSubjectKind};
+use crate::domain::lifecycle::LifecycleState;
 use crate::domain::money::CurrencyCode;
 use crate::domain::overlay::OverlayRevision;
 use crate::domain::overlay::{
@@ -107,13 +108,14 @@ use crate::domain::overlay::{
     OverlayLine, ScopeClass, ScopeSelector, ScopeValue, TargetRef, TargetSku, TaxBasis,
 };
 use crate::domain::overlay_rules::{CrossClassTie, OverlayWorld, PublishedLineInterval};
-use crate::domain::scope_key::PlanId;
+use crate::domain::scope_key::{PlanId, PriceEligibility};
+use crate::domain::taxonomy::TaxonomyState;
 use crate::infra::storage::RepoError;
 use crate::infra::storage::entity::{
     brand_taxonomy, org_tier_taxonomy, partner_taxonomy, plan, price, price_overlay,
     price_overlay_line, price_overlay_line_amount, region_taxonomy,
 };
-use crate::infra::storage::repo::plan_repo::tx_failure;
+use crate::infra::storage::repo::plan_repo::{read_token, tx_failure};
 use crate::infra::storage::repo::{NewAuditEntry, audit_repo};
 
 // ---------------------------------------------------------------------------
@@ -831,7 +833,12 @@ async fn declares(
     class: ScopeClass,
     value: &ScopeValue,
 ) -> Result<bool, RepoError> {
-    const ACTIVE: &str = "active";
+    // The taxonomy vocabulary's own renderer, not a second spelling of it. This
+    // half of the class fails loud rather than open — a token that stopped
+    // matching empties the value universe and refuses every publish — but it is
+    // the same defect, and the fix is to have one renderer rather than to rely on
+    // the direction the second one happens to break in.
+    let active = TaxonomyState::Active.as_str();
     let found = match class {
         ScopeClass::Global => return Ok(true),
         ScopeClass::Region => region_taxonomy::Entity::find()
@@ -841,7 +848,7 @@ async fn declares(
                 Condition::all()
                     .add(region_taxonomy::Column::TenantId.eq(tenant_id))
                     .add(region_taxonomy::Column::Value.eq(value.as_str()))
-                    .add(region_taxonomy::Column::State.eq(ACTIVE)),
+                    .add(region_taxonomy::Column::State.eq(active)),
             )
             .one(runner)
             .await
@@ -854,7 +861,7 @@ async fn declares(
                 Condition::all()
                     .add(brand_taxonomy::Column::TenantId.eq(tenant_id))
                     .add(brand_taxonomy::Column::Value.eq(value.as_str()))
-                    .add(brand_taxonomy::Column::State.eq(ACTIVE)),
+                    .add(brand_taxonomy::Column::State.eq(active)),
             )
             .one(runner)
             .await
@@ -867,7 +874,7 @@ async fn declares(
                 Condition::all()
                     .add(partner_taxonomy::Column::TenantId.eq(tenant_id))
                     .add(partner_taxonomy::Column::Value.eq(value.as_str()))
-                    .add(partner_taxonomy::Column::State.eq(ACTIVE)),
+                    .add(partner_taxonomy::Column::State.eq(active)),
             )
             .one(runner)
             .await
@@ -880,7 +887,7 @@ async fn declares(
                 Condition::all()
                     .add(org_tier_taxonomy::Column::TenantId.eq(tenant_id))
                     .add(org_tier_taxonomy::Column::Value.eq(value.as_str()))
-                    .add(org_tier_taxonomy::Column::State.eq(ACTIVE)),
+                    .add(org_tier_taxonomy::Column::State.eq(active)),
             )
             .one(runner)
             .await
@@ -1702,8 +1709,19 @@ async fn plan_facts(
             // dangling-and-flagged … remediation = end or retarget the overlay"*.
             // Blocking would also block the remediation, since ending or
             // retargeting an overlay is itself a submit.
-            let state = revision.lifecycle_state.as_str();
-            if !matches!(state, "published" | "retired") {
+            //
+            // Read through [`LifecycleState::is_current_revision`] rather than
+            // hand-enumerated: this was the third copy of that predicate's token
+            // list, and D-128 has already widened it once — a copy that did not
+            // move with it is a copy that starts answering `TARGET_UNPUBLISHED`
+            // for a state the machine calls current.
+            let state = read_token(
+                "pricing_plan.lifecycle_state",
+                &revision.lifecycle_state,
+                LifecycleState::ALL,
+                LifecycleState::as_str,
+            )?;
+            if !state.is_current_revision() {
                 continue;
             }
             facts.published.insert(*plan_id);
@@ -1712,7 +1730,7 @@ async fn plan_facts(
             {
                 facts.skus.entry(*plan_id).or_default().insert(named);
             }
-            if state == "retired" {
+            if state == LifecycleState::Retired {
                 facts.retired.insert(*plan_id);
             }
         }
@@ -1746,7 +1764,7 @@ async fn price_facts(
                 Condition::all()
                     .add(price::Column::TenantId.eq(tenant_id))
                     .add(price::Column::PlanId.eq(plan_id.get()))
-                    .add(price::Column::LifecycleState.eq("published")),
+                    .add(price::Column::LifecycleState.eq(LifecycleState::Published.as_str())),
             )
             .all(runner)
             .await
@@ -1759,7 +1777,7 @@ async fn price_facts(
                     .or_default()
                     .insert(currency);
             }
-            if row.price_eligibility == "existing_grandfathered"
+            if row.price_eligibility == PriceEligibility::ExistingGrandfathered.as_str()
                 && let Some(at) = published_generation(&row.cohort)
             {
                 facts.cohorts.entry(*plan_id).or_default().insert(at);
