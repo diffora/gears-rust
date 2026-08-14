@@ -1,10 +1,16 @@
 //! Background jobs the gear's `stateful` `serve` loop drives.
 //!
-//! **Two, and they are independent**: each has its own coordination lease, its
-//! own cadence and its own pass, and neither reads what the other writes. That
-//! independence is worth stating because it is what makes them two tickers
-//! rather than two phases of one — a window flipping does not wait on a warm,
-//! and a warm does not wait on a window.
+//! **They are independent**, and the module list below is the roster: each job has
+//! its own coordination lease, its own cadence and its own pass, and none reads what
+//! another writes. That independence is worth stating because it is what makes them
+//! separate tickers rather than phases of one — a window flipping does not wait on a
+//! warm, a warm does not wait on a window, and neither waits on a gauge refresh.
+//!
+//! **No count.** This paragraph opened *"Two, and they are independent"* and the
+//! bullets named two of three for the two days after [`gated_markets`] landed
+//! (F-6/Z10-8). A count in prose beside a roster in code leaves only one of the two
+//! true, and it is never the prose — which is the correction the first bullet below
+//! already carries for its own earlier count.
 //!
 //! - [`readmodel_warm`] — §3.8's read-model warm re-drive: resolve pending
 //!   `CatalogVersion` handles against the registry, drive
@@ -28,6 +34,13 @@
 //!   the job SLO. It is **not** a publish unit and re-projects nothing
 //!   (`inst-ws-publishunit`), which is what the read model carrying window
 //!   *intervals* buys.
+//! - [`gated_markets`] — D-246's catalog-wide GA backlog on D-250's cadence: count
+//!   the tenant-markets a published tax-inclusive row gates while `TAX_ENGINE_GA`
+//!   stands false, and publish it to `pricing_tax_not_sellable_ga`. **The one job
+//!   here that is not load-bearing for correctness** — the gear serves every request
+//!   without it — and what its absence costs is §7's alarm never firing, because the
+//!   gauge is an observable over a cached value and an unrefreshed cache reports `0`
+//!   while markets are gated.
 //!
 //! These are **system-context, cross-tenant** jobs, exactly as the sibling
 //! ledger's are: they read across tenants under the sanctioned

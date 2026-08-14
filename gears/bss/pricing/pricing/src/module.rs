@@ -8,19 +8,25 @@
 //!
 //! Capabilities: `db` (the Foundation tables and their append-only enforcement
 //! are migrations), `rest` (the authoring + read-model surfaces), `stateful`
-//! (the read-model warm re-drive **and** the Slice 7 window-activation sweep —
-//! that clause used to say "and later the window-activation job Slice 7 owns",
-//! and later arrived). Declared dependencies are the PEP and the type registry:
-//! every ctx-bearing path gates through `access_scope` before touching a
-//! repository, and the AuthZ label type-schemas are registered at init.
+//! (**every ticker `serve` spawns** — `crate::infra::jobs` is the roster and this
+//! clause deliberately does not repeat it). Declared dependencies are the PEP and
+//! the type registry: every ctx-bearing path gates through `access_scope` before
+//! touching a repository, and the AuthZ label type-schemas are registered at init.
 //!
-//! The `stateful` entry drives **two** independent leased tickers, each with its
-//! own key and cadence (`crate::infra::jobs` states what each is for). Neither
-//! waits on the other: the warm re-drive is what turns a publish's pending handle
-//! into a version a consumer can pin — without it `pricing_read_model` stays
-//! empty whatever else is built — and the activation sweep is what makes a
-//! scheduled window take effect at its own instant rather than at the next
-//! publish.
+//! That clause has now been wrong twice by enumerating. It said "and later the
+//! window-activation job Slice 7 owns" and later arrived; it was corrected to name
+//! the warm re-drive **and** the activation sweep, and the gated-market refresher
+//! arrived. A list beside a roster leaves only one of the two true, and it is never
+//! the prose.
+//!
+//! The `stateful` entry drives independent leased tickers, each with its own key and
+//! cadence (`crate::infra::jobs` states what each is for). **No ticker waits on
+//! another**: the warm re-drive is what turns a publish's pending handle into a
+//! version a consumer can pin — without it `pricing_read_model` stays empty whatever
+//! else is built; the activation sweep is what makes a scheduled window take effect
+//! at its own instant rather than at the next publish; and the gated-market
+//! refresher is what keeps §7's backlog gauge from reading zero while markets are
+//! gated.
 
 use std::sync::Arc;
 
@@ -164,14 +170,19 @@ impl Default for BssPricingGear {
 impl BssPricingGear {
     /// Lifecycle entry (`stateful` capability).
     ///
-    /// Three tickers, spawned below and all joined — `crate::infra::jobs` says what
-    /// each is for and why neither waits on the other. Neither is optional, for two
-    /// different reasons: the publish commit leaves a **pending** `CatalogVersion`
-    /// handle and no version, so without the warm re-drive nothing ever resolves it,
-    /// `pricing_read_model` stays empty and no version becomes pin-eligible (§4.4's
-    /// "the re-drive continues past the SLO with no bound" is that loop coming round
-    /// again); and without the activation sweep a scheduled window takes effect at
-    /// no instant at all.
+    /// Every ticker is spawned below and all of them are joined —
+    /// `crate::infra::jobs` says what each is for and why none waits on another.
+    ///
+    /// **Two of them are load-bearing for correctness and one is not**, which is a
+    /// distinction worth stating rather than a count: the publish commit leaves a
+    /// **pending** `CatalogVersion` handle and no version, so without the warm
+    /// re-drive nothing ever resolves it, `pricing_read_model` stays empty and no
+    /// version becomes pin-eligible (§4.4's "the re-drive continues past the SLO with
+    /// no bound" is that loop coming round again); and without the activation sweep a
+    /// scheduled window takes effect at no instant at all. The gated-market refresher
+    /// costs observability rather than correctness — [`Self::spawn_gated_markets_ticker`]
+    /// says what exactly — and this paragraph said *"Neither is optional"* over three
+    /// tickers while that function said the opposite about one of them.
     ///
     /// An unconfigured gear still parks on the token: a gear compiled in but
     /// absent from `gears:` has no runtime and therefore no work.
@@ -193,9 +204,14 @@ impl BssPricingGear {
             return Ok(());
         };
 
+        // **One field per ticker spawned below**, and the third was missing for two
+        // days: a deployment could not see the gated-market cadence it was running,
+        // which is the one instance of this drift that cannot be read as prose going
+        // stale. The sibling ledger's `module.rs` logs all nine of its own.
         info!(
             warm_tick_secs = rt.config.jobs.readmodel_warm_tick_secs,
             window_activation_tick_secs = rt.config.jobs.window_activation_tick_secs,
+            gated_markets_tick_secs = rt.config.jobs.gated_markets_tick_secs,
             "bss-pricing: lifecycle started"
         );
         let tasks = cancel.child_token();
@@ -304,9 +320,9 @@ impl BssPricingGear {
     /// tell. A panic *before* cancellation is a different event and takes
     /// [`Self::exited_first`], which fails `serve`.
     ///
-    /// **Both are joined, and neither is skipped when the other faults.** They
+    /// **All of them are joined, and none is skipped when another faults.** They
     /// are cancelled by one token and each holds a coordination lease whose slot
-    /// frees itself at the TTL, so a shutdown that abandoned the second handle
+    /// frees itself at the TTL, so a shutdown that abandoned a later handle
     /// would leave a task writing to a database the process is closing — the one
     /// state a `stop_timeout` cannot help with.
     async fn stop(
@@ -322,9 +338,9 @@ impl BssPricingGear {
 
     /// Await one ticker's handle, reporting a panic rather than swallowing it.
     ///
-    /// One function for both, and the `ticker` field is what tells them apart:
-    /// two copies of this `if let` is two places the warning could be dropped
-    /// from, and the second handle is exactly the one a shutdown is tempted to
+    /// One function for every ticker, and the `ticker` field is what tells them
+    /// apart: a copy of this `if let` per handle is a place the warning could be
+    /// dropped from, and the last handle is exactly the one a shutdown is tempted to
     /// stop caring about.
     async fn join_ticker(handle: tokio::task::JoinHandle<()>, ticker: &'static str) {
         if let Err(e) = handle.await {
@@ -751,7 +767,7 @@ impl BssPricingGear {
     /// but one loses this every tick, which is the mechanism working rather
     /// than a fault.
     ///
-    /// One function for both passes because the acquire is one rule — the key is
+    /// One function for every pass because the acquire is one rule — the key is
     /// what differs, and a second copy of this match is a second place the
     /// `LeaseHeld` arm could be promoted to a warning by somebody who had not
     /// read the sentence above.
