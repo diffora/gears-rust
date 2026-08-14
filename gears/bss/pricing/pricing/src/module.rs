@@ -378,12 +378,12 @@ impl BssPricingGear {
             let mut iv = tokio::time::interval(rt.config.jobs.readmodel_warm_interval());
             iv.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             let lease = coord::LeaseManager::new(rt.db.db());
-            let job = ReadModelWarmJob::new(
+            let job = Self::warm_job(
                 rt.db.clone(),
                 Arc::clone(&rt.catalog_version_registry),
                 rt.config.jobs.clone(),
-            )
-            .with_metrics(Arc::clone(&rt.metrics));
+                Arc::clone(&rt.metrics),
+            );
             loop {
                 tokio::select! {
                     biased;
@@ -395,6 +395,48 @@ impl BssPricingGear {
                 }
             }
         })
+    }
+
+    /// The warm job as the lifecycle builds it — **the metrics attachment
+    /// included**.
+    ///
+    /// A named function rather than four lines inside `tokio::spawn`, and it is the
+    /// attachment that earns it. `ReadModelWarmJob::new` installs
+    /// `NoopPricingMetrics` and `with_metrics` is a separate call, so a lifecycle
+    /// that forgot it would build a job whose two **Critical** alarms — this gear's
+    /// only two — report to nothing, while every job-level suite (which builds its
+    /// own job) stayed green. Nothing inside `spawn` can be reached by a test: the
+    /// closure needs a whole [`PricingRuntime`], and a runtime needs a PEP, a
+    /// registry and eight API states.
+    ///
+    /// So the wiring decision moved to somewhere a case can call, and
+    /// `module_tests::the_warm_job_the_lifecycle_builds_reports_on_the_metrics_port_it_is_handed`
+    /// drives a pass through it against a real `SdkMeterProvider`. What is left
+    /// unproved is that `spawn_warm_ticker` calls **this** function, which is one
+    /// line holding no decision.
+    ///
+    /// [`Self::gated_markets_pass`]' job needs no equivalent: `GatedMarketsJob::new`
+    /// takes the port as a parameter, so its attachment is a compile error to omit
+    /// — the shape this one cannot have while `with_metrics` is the seam three other
+    /// services share.
+    fn warm_job(
+        db: DBProvider<DbError>,
+        registry: Arc<dyn CatalogVersionRegistryV1>,
+        jobs: crate::config::JobsConfig,
+        metrics: Arc<dyn crate::domain::ports::metrics::PricingMetricsPort>,
+    ) -> ReadModelWarmJob {
+        ReadModelWarmJob::new(db, registry, jobs).with_metrics(metrics)
+    }
+
+    /// The activation job as the lifecycle builds it, for [`Self::warm_job`]'s
+    /// reason: `with_metrics` carries §7's only window-plane alarm and is a
+    /// separate call that a rebuild of this ticker could drop.
+    fn activation_job(
+        db: DBProvider<DbError>,
+        jobs: crate::config::JobsConfig,
+        metrics: Arc<dyn crate::domain::ports::metrics::PricingMetricsPort>,
+    ) -> WindowActivationJob {
+        WindowActivationJob::new(db, jobs).with_metrics(metrics)
     }
 
     /// One leased pass. Extracted so the ticker stays a ticker.
@@ -481,8 +523,11 @@ impl BssPricingGear {
             let mut iv = tokio::time::interval(rt.config.jobs.window_activation_interval());
             iv.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             let lease = coord::LeaseManager::new(rt.db.db());
-            let job = WindowActivationJob::new(rt.db.clone(), rt.config.jobs.clone())
-                .with_metrics(Arc::clone(&rt.metrics));
+            let job = Self::activation_job(
+                rt.db.clone(),
+                rt.config.jobs.clone(),
+                Arc::clone(&rt.metrics),
+            );
             loop {
                 tokio::select! {
                     biased;
