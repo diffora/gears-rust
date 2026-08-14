@@ -2331,7 +2331,7 @@ async fn the_frozen_category_map_holds_every_published_row_and_no_draft() {
     assert_eq!(
         frozen.get(&superseded).cloned().flatten().as_deref(),
         Some("standard"),
-        "and so is the superseded one — it has published, and rating resolves past instants \
+        "and so is the superseded one: it has published, and rating resolves past instants \
          against it"
     );
     assert_eq!(
