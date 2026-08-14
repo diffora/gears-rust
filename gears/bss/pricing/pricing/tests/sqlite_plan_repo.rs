@@ -1217,6 +1217,98 @@ async fn a_plan_may_not_be_created_into_another_tenant() {
     );
 }
 
+/// **A composite-set request naming a tenant the parent revision does not carry
+/// writes nothing, under either scope** (Z7-4, Global Constraint 9).
+///
+/// The composite plane was the one shape table with no cross-tenant case, and it
+/// is the plane whose `_on` body took the child rows' `tenant_id` and `plan_id`
+/// from the **request** where its three siblings take them off the parent revision
+/// row. This case is what makes the unreachability argument a measured fact rather
+/// than a reading of `load_revision_row`: the request's tenant is not what selects
+/// the parent, so a divergent one resolves no draft and the refusal lands before
+/// any child row is rendered. It therefore passes with and without the parent
+/// binding, and is **not** the fix's probe — the fix's gate is the compiler, since
+/// `write_composites` no longer has request values to be handed. Stated outright
+/// so no later reader mistakes it for one.
+#[tokio::test]
+async fn a_composite_set_request_naming_a_foreign_tenant_writes_nothing() {
+    let (repo, provider) = harness().await;
+    let owner = Uuid::from_u128(0x7e_11);
+    let intruder = Uuid::from_u128(0x7e_22);
+    let owner_scope = AccessScope::for_tenant(owner);
+    let intruder_scope = AccessScope::for_tenant(intruder);
+    let plan_id = PlanId::new(Uuid::from_u128(0x9_1a4));
+    let shapes = PlanShapeRepo::new(provider.clone());
+
+    repo.create_draft(&owner_scope, new_draft(plan_id, owner))
+        .await
+        .expect("the owner opens revision 0");
+
+    // The owner's own scope, naming somebody else's tenant: the parent row
+    // carries `owner`, the request says `intruder`.
+    let err = shapes
+        .replace_composites(
+            &owner_scope,
+            intruder,
+            plan_id,
+            0,
+            RowVersion::new(0),
+            two_composites(),
+            stamp(),
+        )
+        .await
+        .expect_err("a request naming another tenant resolves no parent revision");
+    assert!(matches!(err, RepoError::NotFound { .. }), "got: {err:?}");
+    // And the mirror direction: a foreign scope naming the owning tenant.
+    let err = shapes
+        .replace_composites(
+            &intruder_scope,
+            owner,
+            plan_id,
+            0,
+            RowVersion::new(0),
+            two_composites(),
+            stamp(),
+        )
+        .await
+        .expect_err("naming the owning tenant does not widen a foreign scope");
+    assert!(matches!(err, RepoError::NotFound { .. }), "got: {err:?}");
+
+    // No child row landed under the tenant the request named. A scoped read is
+    // the right instrument for that: a row carrying `intruder` in `tenant_id`
+    // would be visible to exactly this scope and invisible to the owner.
+    assert!(
+        shapes
+            .list_composites(&intruder_scope, intruder, plan_id, 0)
+            .await
+            .expect("read")
+            .is_empty(),
+        "nothing may land under the tenant a request named"
+    );
+    // The positive control: the same call for the parent's own tenant writes the
+    // set, so the refusals above are not a fixture that refuses everything.
+    shapes
+        .replace_composites(
+            &owner_scope,
+            owner,
+            plan_id,
+            0,
+            RowVersion::new(0),
+            two_composites(),
+            stamp(),
+        )
+        .await
+        .expect("the owner's own request writes the set");
+    assert_eq!(
+        shapes
+            .list_composites(&owner_scope, owner, plan_id, 0)
+            .await
+            .expect("read"),
+        two_composites(),
+        "and the owner sees both rows"
+    );
+}
+
 /// The one pairing the table cannot refuse, refused where the row is read.
 ///
 /// `chk_pricing_plan_custom_interval_pairing` compares

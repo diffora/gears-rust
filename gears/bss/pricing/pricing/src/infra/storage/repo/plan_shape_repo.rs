@@ -801,28 +801,65 @@ async fn insert_composites(
     Ok(())
 }
 
-/// Replace one draft revision's composite set wholesale.
+/// Replace one draft revision's composite set wholesale, **off the parent
+/// revision row**.
+///
+/// Every value that says *which* rows these are — `tenant_id`, `plan_id` and
+/// `plan_revision` — is taken from `parent`, the revision row this repository
+/// resolved, and none of them from the request (Global Constraint 9, stated in
+/// this module's own doc). That is the three sibling model-builders' rule, and
+/// this path used to be the exception: it took the caller's `tenant_id` and
+/// `plan_id` arguments, so the invariant held only because
+/// `mutable_draft` → `load_revision_row` happens to filter on those same two
+/// values. Taking a `&plan::Model` is what makes the divergence **unwritable**
+/// rather than merely absent — this function is `pub(super)`, and a second caller
+/// resolving a revision by any other predicate could have passed its own
+/// arguments with no test able to tell (Z7-4).
+///
+/// The revision needs no `stored_revision` range check any more, for the reason
+/// the siblings never needed one: `parent.revision` is a number the column is
+/// already holding.
 pub(super) async fn write_composites(
     runner: &impl DBRunner,
     scope: &AccessScope,
-    tenant_id: Uuid,
-    plan_id: PlanId,
-    revision: u64,
+    parent: &plan::Model,
     composites: Vec<CompositeMeter>,
 ) -> Result<(), RepoError> {
-    let Some(number) = stored_revision(revision) else {
-        return Err(RepoError::CorruptRow(format!(
-            "plan {plan_id} revision {revision} exceeds the storable range"
-        )));
-    };
-    delete_composites(runner, scope, tenant_id, plan_id, revision).await?;
-    let rows = composites
+    let revision = u64::try_from(parent.revision).map_err(|e| {
+        RepoError::CorruptRow(format!(
+            "pricing_plan row for plan {} holds revision {}: {e}",
+            parent.plan_id, parent.revision
+        ))
+    })?;
+    let rows = composite_models(parent, composites);
+    delete_composites(
+        runner,
+        scope,
+        parent.tenant_id,
+        PlanId::new(parent.plan_id),
+        revision,
+    )
+    .await?;
+    insert_composites(runner, scope, rows).await
+}
+
+/// Render a submitted composite set into the rows that hold it.
+///
+/// Every row's `tenant_id`, `plan_id` and `plan_revision` are taken from `parent`
+/// — the revision row this repository resolved — and none of them from the
+/// submitted value, which is why [`CompositeMeter`] carries no such field. This is
+/// [`phase_models`]' contract verbatim, and deliberately so.
+fn composite_models(
+    parent: &plan::Model,
+    composites: Vec<CompositeMeter>,
+) -> Vec<composite_meter::ActiveModel> {
+    composites
         .into_iter()
         .map(|composite| composite_meter::ActiveModel {
             composite_id: Set(composite.composite_id),
-            plan_revision: Set(number),
-            tenant_id: Set(tenant_id),
-            plan_id: Set(plan_id.get()),
+            plan_revision: Set(parent.revision),
+            tenant_id: Set(parent.tenant_id),
+            plan_id: Set(parent.plan_id),
             output_unit: Set(composite.output_unit),
             constituent_units: Set(serde_json::Value::Array(
                 composite
@@ -833,8 +870,7 @@ pub(super) async fn write_composites(
             )),
             formula: Set(composite.formula),
         })
-        .collect();
-    insert_composites(runner, scope, rows).await
+        .collect()
 }
 
 /// Drop one revision's whole composite set.
@@ -1739,13 +1775,14 @@ pub async fn replace_composites_on(
     let Some(guard) = swap_guard(tenant_id, plan_id, revision, expected) else {
         return Err(refuse(runner, scope, tenant_id, plan_id, revision, expected).await);
     };
-    if mutable_draft(runner, scope, tenant_id, plan_id, revision, expected)
-        .await?
-        .is_none()
-    {
+    let Some(parent) = mutable_draft(runner, scope, tenant_id, plan_id, revision, expected).await?
+    else {
         return Err(refuse(runner, scope, tenant_id, plan_id, revision, expected).await);
-    }
-    write_composites(runner, scope, tenant_id, plan_id, revision, composites).await?;
+    };
+    // The tenant every child row carries is the parent
+    // revision's, taken off the row just read — the three
+    // siblings' rule, which this path used to be outside of.
+    write_composites(runner, scope, &parent, composites).await?;
     let result = plan_revision_bump(runner, scope, guard).await?;
     if result == 0 {
         return Err(refuse(runner, scope, tenant_id, plan_id, revision, expected).await);
