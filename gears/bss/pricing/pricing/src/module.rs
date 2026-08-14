@@ -27,6 +27,69 @@
 //! at its own instant rather than at the next publish; and the gated-market
 //! refresher is what keeps §7's backlog gauge from reading zero while markets are
 //! gated.
+//!
+//! # The lease posture: TTL = tick, no renewal, no fence — declined deliberately
+//!
+//! Every ticker passes its **tick interval** as the lease TTL (5s warm, 60s window,
+//! 60s gated) and every pass releases its guard at the end. Neither of
+//! [`coord::LeaseGuard`]'s other two seams is used:
+//! [`spawn_renewal`](coord::LeaseGuard::spawn_renewal), the heartbeat whose
+//! convention is `period ≈ ttl/3` and which signals loss in band through
+//! `RenewalState::Lost`; and
+//! [`with_ack_in_tx`](coord::LeaseGuard::with_ack_in_tx), the write fence that turns
+//! a mid-flight steal into `AckError::LeaseLost`. The sibling `bss-ledger` takes
+//! both — `infra::recognition::run_service` runs a 1-minute TTL renewed every 20s,
+//! `infra::period_close` a 2-minute TTL renewed every 40s.
+//!
+//! **The design set does not say which posture this gear owes**, so this is recorded
+//! as a decision with its reasons rather than resolved. What the set does say, in
+//! every place it speaks: `DESIGN.md` §3.4 and `01-foundation.md` §4 name the
+//! coordination lease library as *"singleton coordination"* for this work;
+//! `07-pricewindow-linkage.md` §4 and its DoD require that *"a killed-and-restarted
+//! job (lease takeover) activates exactly once (idempotent)"*;
+//! `12-operator-efficiency.md` §6 and D-37 make crash recovery *"lease takeover +
+//! journal re-drive"* for the bulk runner. Not one of them names a TTL, a renewal
+//! period, or a fence. Both readings below are consistent with all of it.
+//!
+//! **Reading A, which is the one built.** The set's requirement is *idempotence
+//! under takeover*, and a lease whose loss is harmless needs no renewal to be
+//! correct. It is harmless on each of these three paths, and the argument is per
+//! path rather than shared — [`Self::spawn_warm_ticker`] and
+//! [`Self::spawn_activation_ticker`] each carry their own, and the second one
+//! explicitly refuses to inherit the first's. In summary: every write is guarded by a
+//! key or a predicate (the delta INSERT by its primary key, the finalize by its
+//! `catalog_version IS NULL` compare-and-swap, the frontier by its forward-only
+//! predicate, the window flip by `state = <expected>` plus §4's boundary, both events
+//! by `uq_pricing_outbox_dedup_key`), and **no pass holds durable in-progress
+//! state** — there is no RUNNING row, no cursor and no "swept" column anywhere on
+//! this plane, so the lease is the only in-flight state and the store's own rows are
+//! the record of what has been done. A pass that loses its lease therefore finishes
+//! against a store that refuses whatever a peer already did, and the next tick
+//! re-drives the rest. On that reading TTL = tick is not a compromise but the point:
+//! it bounds a **crashed** holder's blockage to exactly one tick, where a longer slot
+//! would stall a whole deployment's sweep to protect a race that is already safe.
+//!
+//! **Reading B, which is why this section exists.** Where the platform offers a
+//! mechanical guarantee, a hand-maintained argument is the thing that rots: reading A
+//! is nine claims about nine call sites, and every future write on these paths joins
+//! the list silently. The sibling takes both seams for units that are long and
+//! multi-statement, and one of these passes *is* long — a warm pass issues one
+//! discovery read, then two pending reads and a registry round trip per tenant, up to
+//! `pending_tenants_per_pass` (250) tenants, against a **5-second** TTL. So a warm
+//! pass outrunning its lease is routine rather than hypothetical, and what it costs
+//! today is a `release()` that matches zero rows and coord logging *"row was likely
+//! stolen before release"* at `warn` — noise attributed to a steal that did not
+//! happen, plus a peer replica repeating work. Wasted, not wrong; but it is a warn an
+//! operator has no action for.
+//!
+//! **What would settle it.** Any of these turns reading B into the required posture
+//! and the argument above into a defect: a durable in-progress marker on any pass; a
+//! write on these paths that is neither key- nor predicate-guarded; or a pass whose
+//! partial effect is not self-healing on the next tick. Adopting the seams is also
+//! not a one-line change — `spawn_renewal` is only meaningful with the TTL raised to
+//! a multiple of the tick *and* the `RenewalState::Lost` signal acted on, since
+//! renewal alone lowers the odds of a silent loss without making one detectable.
+//! Which is exactly why it is not done speculatively.
 
 use std::sync::Arc;
 
