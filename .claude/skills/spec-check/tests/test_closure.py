@@ -214,7 +214,17 @@ def test_the_pinned_code_baseline_has_exactly_fifty_entries():
     # the finding stayed closed.
     # 32 until 2026-08-09, when D-291 paid down `BULK_ROW_CONFLICT` by building
     # Phase 2 and naming the code in `inst-bk-phase2`, the rule that raises it.
-    assert len(PINNED_UNREFERENCED_CODES_2026_07_29) == 31
+    # 28 since 2026-08-14. Three left in one capture, and they are not one story:
+    # D-312 paid `EVAL_POLICY_MISPLACED` (`inst-mk-forbidden`) and
+    # `RESERVATION_ON_NON_USAGE` (`inst-rv-attrs`), each named in the rule that
+    # raises it; `RUN_SELECTOR_EMPTY` had already left in an earlier wave and was
+    # only surfacing now, the oracles not having been re-captured since D-291.
+    # `EVAL_POLICY_MISPLACED` was FIRST paid falsely, by a bare token in D-312's
+    # own inventory table -- the trap this comment block has warned about since
+    # 2026-08-09, sprung the very next time somebody wrote a table. Resolved by
+    # naming it in the rule, then verified the way that note prescribes: the
+    # register mention was removed and the finding stayed closed.
+    assert len(PINNED_UNREFERENCED_CODES_2026_07_29) == 28
 
 
 def test_is_pinned_baseline_matches_only_the_recorded_gear():

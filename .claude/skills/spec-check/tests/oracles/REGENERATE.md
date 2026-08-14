@@ -958,6 +958,49 @@ code is *referenced* — the register is where decisions about codes are recorde
 not where rules live. Noted here rather than built: it is a change to what the
 checker means by "referenced", and that is the skill's contract.
 
+24. **2026-08-14, twenty-fourth capture — D-312, and four waves that had gone
+    unpinned behind it.** Document movement only, no checker change. **Live findings
+    unchanged at 2** (the two cross-gear coverage statements). **Suppressed 52 → 49.**
+
+    **The capture is two stories and they are deliberately not merged.** The oracles
+    had not been re-captured since D-291, so D-307, D-309, D-310 and D-311 were all
+    sitting unpinned; running the suite before touching anything already showed three
+    reds. Everything below is attributed by **measurement against a worktree at
+    `3492f0091`** — the commit before D-312's design edits — rather than by
+    proximity, because a capture that credits one wave with another's movement is
+    worse than a stale pin.
+
+    - **D-312's own, two members:** `EVAL_POLICY_MISPLACED` / design/03, now named by
+      `inst-mk-forbidden`, and `RESERVATION_ON_NON_USAGE` / design/10, now named by
+      `inst-rv-attrs`. Both are the honest resolution — the rule that raises the code
+      names it.
+    - **Not D-312's, one member:** `RUN_SELECTOR_EMPTY` / design/12. D-312 never
+      touched design/12; the code had already left the unreferenced set at the
+      pre-edit commit.
+    - **Not D-312's, the whole triage histogram.** `anchored:no-account` 7 → 4,
+      `suspicious:multi-region` 57 → 61, `suspicious:weak-coverage` 10 → 9, and
+      `PINNED_JUDGE_CALLS["pricing"]` 67 → 70. Computed at `3492f0091` and after
+      D-312: **all seven buckets identical, 77 neighbourhoods on both sides.** The
+      control is not ceremony — a wave that moves coverage and one that only moves
+      document-frequency sampling are indistinguishable in this histogram.
+
+    **The register-prose trap sprang a third time, and it was mine.** D-312's entry
+    carries an inventory table whose left column is the bare token
+    `EVAL_POLICY_MISPLACED`; that mention alone closed the `code-unreferenced`
+    finding while `inst-mk-forbidden` still named nothing. It was caught by the
+    worktree measurement above rather than by reading the entry — which is the whole
+    argument for measuring. Resolved by naming the code in the rule and then verified
+    the way entries 15 and 23 prescribe: the register mention was removed, the
+    checker re-run, and the finding confirmed **still closed**. Restore-and-verify,
+    not inspection.
+
+    **Three occurrences is no longer a habit problem.** Entry 23 proposes the
+    structural fix — a rule that ignores `DECISIONS.md` when deciding whether a
+    declared code is *referenced*, the register being where decisions about codes are
+    recorded and not where rules live. This capture is the third data point for it.
+    Still not built here, for entry 23's reason: it changes what the checker means by
+    "referenced", and that is the skill's contract, not a capture's business.
+
 ## How they were produced (2026-07-31 capture)
 
 Run from the repository root:

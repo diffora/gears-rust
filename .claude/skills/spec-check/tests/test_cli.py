@@ -112,7 +112,13 @@ def test_the_run_reports_seven_live_findings_and_seventy_three_suppressed():
     # and that is a false payment. Checked by rewording the mention and
     # confirming the finding stayed closed -- the third time this trap has been
     # sprung, see REGENERATE.md entries 24 and 25.
-    assert payload["known_debt_suppressed"] == 52
+    # 52 -> 49 on 2026-08-14. Three code-unreferenced members left the set: two
+    # paid by D-312 (`EVAL_POLICY_MISPLACED` / design/03 and
+    # `RESERVATION_ON_NON_USAGE` / design/10, each now named by the rule that
+    # raises it) and one, `RUN_SELECTOR_EMPTY` / design/12, that had already
+    # left in an earlier wave and was only surfacing now because the oracles had
+    # not been re-captured since D-291. See closure.py for the per-member notes.
+    assert payload["known_debt_suppressed"] == 49
     assert payload["known_debt_tracked_as"] == "D-69"
 
 

@@ -320,7 +320,18 @@ PINNED_UNREFERENCED_CODES_2026_07_29 = (
     # as blocked on a registry client this gear does not have -- a code referenced
     # by the rule that would raise it, with the reason it cannot.
     ("pricing", "CREDIT_UNIT_UNPUBLISHED", "design/10-advanced-primitives.md"),
-    ("pricing", "EVAL_POLICY_MISPLACED", "design/03-price-structure.md"),
+    # `EVAL_POLICY_MISPLACED` / design/03 paid down 2026-08-14 by D-312's
+    # `@write` marking -- `inst-mk-forbidden` now names the code it raises for the
+    # usage-only placement fault.
+    #
+    # **It was first paid FALSELY, and the false payment is worth recording
+    # because the note above predicted it.** D-312's register entry carries an
+    # inventory table whose left column is the bare token `EVAL_POLICY_MISPLACED`;
+    # that mention alone cleared the finding while the rule still named nothing,
+    # which is entry 15's warning arriving on schedule. Caught by measuring the
+    # unreferenced set against a worktree at the pre-edit commit rather than by
+    # reading the entry, then resolved the honest way -- the rule now names the
+    # code -- rather than by deleting the table.
     ("pricing", "FLOOR_FALLBACK_MISSING", "design/10-advanced-primitives.md"),
     ("pricing", "FLOOR_INSIDE_PRICED_BAND", "design/10-advanced-primitives.md"),
     # `FLOOR_TYPE_MISSING` paid down 2026-08-08 by the Slice 10 merge: `inst-ft-typed`
@@ -344,8 +355,14 @@ PINNED_UNREFERENCED_CODES_2026_07_29 = (
     ("pricing", "PRORATION_INPUTS_MISSING", "design/06-consumer-contracts.md"),
     ("pricing", "QUANTITY_SOURCE_MISSING", "design/03-price-structure.md"),
     ("pricing", "REASON_REQUIRED", "design/05-governance.md"),
-    ("pricing", "RESERVATION_ON_NON_USAGE", "design/10-advanced-primitives.md"),
-    ("pricing", "RUN_SELECTOR_EMPTY", "design/12-operator-efficiency.md"),
+    # `RESERVATION_ON_NON_USAGE` / design/10 paid down 2026-08-14 by D-312:
+    # `inst-rv-attrs` names the code in the rule body, for the half of the rule the
+    # authoring write can judge (a reservation on a frozen non-usage `chargeKind`).
+    # `RUN_SELECTOR_EMPTY` / design/12 left the set between the 2026-08-07 capture
+    # and 2026-08-14, in one of the four decision waves that landed without a
+    # re-capture (D-307, D-309, D-310, D-311). **Not paid by D-312**, which never
+    # touched design/12 -- attributed by measurement, not by proximity: the
+    # unreferenced set at the pre-D-312 commit already lacks it.
     ("pricing", "SETUP_ROW_INVALID", "design/02-plan-definition.md"),
     ("pricing", "TIER_BANDS_GAP", "design/03-price-structure.md"),
     ("pricing", "TIER_BANDS_OVERLAP", "design/03-price-structure.md"),

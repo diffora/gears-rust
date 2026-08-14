@@ -219,12 +219,21 @@ def test_an_unknown_only_class_is_a_usage_error(tmp_path):
 PINNED_TRIAGE_PRICING = {
     "unbuildable:no-prose": 0,
     "no-region": 3,
-    "anchored:no-account": 7,
-    "suspicious:multi-region": 57,
+    "anchored:no-account": 4,
+    "suspicious:multi-region": 61,
     "suspicious:not-normative": 0,
-    "suspicious:weak-coverage": 10,
+    "suspicious:weak-coverage": 9,
     "covered:strong": 0,
 }
+#: Moved 2026-08-14 (was 7 / 57 / 10) and **not by D-312**, which is the point of
+#: this note. The oracles had not been re-captured since D-291, so four decision
+#: waves (D-307, D-309, D-310, D-311) were sitting unpinned and surfaced together
+#: with the D-312 capture. Attributed by measurement rather than by proximity: the
+#: histogram was computed against a worktree at 3492f0091 — the commit before
+#: D-312's design edits — and every one of the seven buckets was identical to the
+#: post-D-312 run, 77 neighbourhoods on both sides. The control matters here
+#: because a docs wave that *does* move coverage and one that only moves
+#: document-frequency sampling are indistinguishable in this histogram.
 #: Moved 2026-08-10 (was 58 / 9) by **D-305's register entry**, and the move is a
 #: sampling artefact rather than a coverage change — worth stating because the two
 #: are indistinguishable in the histogram. `fr-bundle-composition` went
@@ -1170,7 +1179,11 @@ PINNED_TRIAGE_LEDGER = {
 #: 69 -> 67 on the 2026-08-08 D-259 tail wave. The triage histogram is unchanged,
 #: so this is the judged-share side of the same knife-edge movement recorded above,
 #: moving for the third time in one day on prose that touched neither requirement.
-PINNED_JUDGE_CALLS = {"pricing": 67, "ledger": 17}
+PINNED_JUDGE_CALLS = {"pricing": 70, "ledger": 17}
+#: pricing 67 -> 70 on 2026-08-14, and **not by D-312** — same control as
+#: `PINNED_TRIAGE_PRICING` above: measured against 3492f0091, the judged set is
+#: unchanged across D-312's edits. The movement belongs to the four waves that
+#: landed between the D-291 capture and this one.
 #: pricing 69 -> 67 on the 2026-08-08 **D-251/D-252/D-234 propagation wave**. Two movers,
 #: `fr-scheduled-migration` and `fr-supersession`, both leaving the judged set for
 #: `anchored:no-account` — the full control is recorded beside `PINNED_TRIAGE_PRICING` above and
