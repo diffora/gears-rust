@@ -122,6 +122,34 @@ pub struct JobsConfig {
     /// tell "the registry has not answered" from "the registry answered and the
     /// warm is failing". The two thresholds differ by two orders of magnitude
     /// precisely because they measure different waits.
+    ///
+    /// # **No cadence relation is enforced against this one, and that is the
+    /// decision rather than the omission**
+    ///
+    /// Its sibling `catalog_version_overdue_secs` carries one
+    /// ([`ConfigError::CadenceNotInsideThreshold`]) and this knob deliberately does
+    /// not, because the two clocks start in different places. The overdue clock
+    /// starts at `requested_at`, stamped by a **publish** between two passes, so the
+    /// cadence is spent before the sweep ever looks and at `tick >= threshold` the
+    /// first healthy question is already late. The degraded clock starts at
+    /// `commit_observed_at`, which **this sweep stamps itself**
+    /// (`readmodel_warm::observe_commit` runs inside the same pass that then
+    /// projects), so a healthy publish is warmed in the pass that started its clock
+    /// and never reaches this threshold at all. A pass at `tick == threshold` spends
+    /// none of the budget waiting to look.
+    ///
+    /// That is why the defaults may be — and are — **equal** at 5s: the value is
+    /// §1.2's ratified propagation SLO on the threshold side and the same order on
+    /// the cadence side, and an arm demanding strict inequality here would refuse
+    /// the shipped configuration to buy slack a self-started clock does not need.
+    /// What the equality does mean is that a projection which fails in the pass that
+    /// observed the commit is reported degraded by the next pass with no retry in
+    /// between — which is the literal reading of the SLO the threshold **is**, and
+    /// late-rather-than-false is the safe direction for a Critical.
+    ///
+    /// The 2026-08-10 review's Z10-6 asked for the arm on this pair; it named the
+    /// wrong one, and `config_tests::the_default_cadences_are_accepted_including_the_equal_warm_pair`
+    /// is what keeps a later reader from adding it.
     pub readmodel_degraded_after_secs: u64,
     /// How many of **one tenant's** pending refs a warm pass reads. Default 500.
     ///
@@ -261,9 +289,13 @@ impl JobsConfig {
     /// [`ConfigError::ZeroInterval`] for a zero cadence: `tokio`'s interval
     /// panics on a zero period, and a zero alarm threshold would fire on every
     /// publish before the registry could possibly have answered.
-    /// [`ConfigError::CadenceNotInsideThreshold`] when the window sweep's cadence
-    /// stands at or past its own overdue threshold — the one relation in this
-    /// section that no single field's value can be judged by.
+    /// [`ConfigError::CadenceNotInsideThreshold`] when either sweep's cadence stands
+    /// at or past the overdue threshold whose clock **a publish rather than the
+    /// sweep** starts — the relations in this section that no single field's value
+    /// can be judged by. Two pairs carry it: the window cadence against
+    /// `window_activation_overdue_secs`, and the warm cadence against
+    /// `catalog_version_overdue_secs`. `readmodel_degraded_after_secs` is
+    /// deliberately not a third; see its own doc for the clock that exempts it.
     pub const fn validate(&self) -> Result<(), ConfigError> {
         if self.readmodel_warm_tick_secs == 0 {
             return Err(ConfigError::ZeroInterval {
@@ -329,6 +361,25 @@ impl JobsConfig {
             return Err(ConfigError::CadenceNotInsideThreshold {
                 cadence: "jobs.window_activation_tick_secs",
                 threshold: "jobs.window_activation_overdue_secs",
+            });
+        }
+        // The same relation on the warm plane, and the pair is chosen by **whose
+        // clock the threshold is read off** rather than by which ticker the knobs
+        // are named after.
+        //
+        // `pricing.catalogversion.commit_overdue` is measured from `requested_at`,
+        // stamped by a publish in some other process between two passes
+        // (`readmodel_warm::observe_commit_overdue`, `waited >= threshold`). So the
+        // cadence eats into that budget exactly as it does on the window plane: a
+        // ref requested one instant after a pass is a whole tick old the first time
+        // anybody asks the registry about it, and at `tick >= threshold` the very
+        // first, entirely healthy question is already reported as "the registry has
+        // not answered" — this gear's Critical, whose remediation the log line calls
+        // a registry re-request.
+        if self.readmodel_warm_tick_secs >= self.catalog_version_overdue_secs {
+            return Err(ConfigError::CadenceNotInsideThreshold {
+                cadence: "jobs.readmodel_warm_tick_secs",
+                threshold: "jobs.catalog_version_overdue_secs",
             });
         }
         Ok(())

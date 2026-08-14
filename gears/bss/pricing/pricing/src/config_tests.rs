@@ -272,6 +272,79 @@ fn a_cadence_at_or_past_the_overdue_threshold_is_rejected() {
     assert!(inside.validate().is_ok());
 }
 
+/// The **warm** sweep's cadence is inside its own overdue threshold too, and the
+/// relation holds on the pair whose clock the sweep does not start.
+///
+/// `pricing.catalogversion.commit_overdue` is measured from `requested_at` — an
+/// instant a *publish* stamps, in some other process, between two passes — so the
+/// cadence eats into the budget exactly as it does on the window plane: a ref
+/// requested one instant after a pass is a whole tick old when the next pass first
+/// looks at it, and at `tick >= threshold` the registry is reported as not having
+/// answered on the first occasion anybody asked. That is
+/// [`ReadModelWarmJob::observe_commit_overdue`](crate::infra::jobs::readmodel_warm)'s
+/// `waited >= threshold` compare, so equality is refused with the same arm and for
+/// the same reason as its window sibling.
+///
+/// **Not `readmodel_degraded_after_secs`**, and the review entry that asked for that
+/// pair had it the wrong way round — see `JobsConfig::validate`'s own note. The
+/// ratified defaults are `readmodel_warm_tick_secs: 5` and
+/// `readmodel_degraded_after_secs: 5`, so an arm over that pair would refuse the
+/// out-of-the-box configuration; the case below is what proves the defaults stay
+/// valid under the arm that *was* added.
+#[test]
+fn the_warm_cadence_at_or_past_the_commit_overdue_threshold_is_rejected() {
+    let expected = ConfigError::CadenceNotInsideThreshold {
+        cadence: "jobs.readmodel_warm_tick_secs",
+        threshold: "jobs.catalog_version_overdue_secs",
+    };
+
+    for tick in [300, 600] {
+        let jobs = JobsConfig {
+            catalog_version_overdue_secs: 300,
+            readmodel_warm_tick_secs: tick,
+            ..JobsConfig::default()
+        };
+
+        assert_eq!(
+            jobs.validate(),
+            Err(expected),
+            "a {tick}s warm cadence under a 300s batching-delay threshold reports every \
+             healthy publish as unanswered"
+        );
+    }
+
+    // One second inside it is accepted, for the window arm's reason: the refusal is
+    // of a relation, not of a value.
+    let inside = JobsConfig {
+        catalog_version_overdue_secs: 300,
+        readmodel_warm_tick_secs: 299,
+        ..JobsConfig::default()
+    };
+    assert!(inside.validate().is_ok());
+}
+
+/// **The ratified defaults pass `validate()`**, and this is the case that keeps a
+/// later cadence relation from being written against them.
+///
+/// `readmodel_warm_tick_secs` and `readmodel_degraded_after_secs` are **equal** at
+/// 5s out of the box — §1.2's propagation SLO on both sides — so any arm demanding
+/// the warm tick be strictly inside *that* threshold would make the default
+/// configuration unbootable. A relation is only a relation if the shipped values
+/// satisfy it.
+#[test]
+fn the_default_cadences_are_accepted_including_the_equal_warm_pair() {
+    let defaults = JobsConfig::default();
+
+    assert_eq!(
+        defaults.readmodel_warm_tick_secs, defaults.readmodel_degraded_after_secs,
+        "the two are equal by ratification, which is what makes this case load-bearing"
+    );
+    assert!(
+        defaults.validate().is_ok(),
+        "the shipped defaults must boot"
+    );
+}
+
 #[test]
 fn zero_limits_are_rejected_by_field() {
     for (limits, field) in [
