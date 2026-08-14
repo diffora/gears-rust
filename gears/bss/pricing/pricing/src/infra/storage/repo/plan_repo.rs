@@ -69,8 +69,8 @@
 use std::collections::BTreeMap;
 
 use chrono::{DateTime, Utc};
-use sea_orm::ActiveValue::Set;
 use sea_orm::sea_query::{Expr, SimpleExpr};
+use sea_orm::ActiveValue::Set;
 use sea_orm::{ColumnTrait, Condition, EntityTrait, JsonValue, Order};
 use toolkit_db::secure::{
     AccessScope, DBRunner, DbConn, DbTx, SecureEntityExt, SecureInsertExt, SecureUpdateExt, TxError,
@@ -78,7 +78,7 @@ use toolkit_db::secure::{
 use toolkit_db::{DBProvider, DbError};
 use uuid::Uuid;
 
-use crate::domain::audit::{AuditAction, AuditStamp, AuditSubjectKind, subject_state};
+use crate::domain::audit::{subject_state, AuditAction, AuditStamp, AuditSubjectKind};
 use crate::domain::concurrency::RowVersion;
 use crate::domain::contracts::{
     EntitlementGrants, GrantSet, PlanChangeContract, UsageCounterOnPlanChange,
@@ -97,8 +97,8 @@ use crate::infra::storage::repo::plan_shape_repo::{
     copy_addon_rules, copy_composites, copy_descriptor_set, copy_phases, delete_addon_rules,
     delete_composites, delete_descriptor_set, delete_phases,
 };
-use crate::infra::storage::repo::{NewAuditEntry, audit_repo, outbox_repo};
-use crate::infra::storage::{RepoError, contention_or_db};
+use crate::infra::storage::repo::{audit_repo, outbox_repo, NewAuditEntry};
+use crate::infra::storage::{contention_or_db, RepoError};
 
 /// The noun every **compare-and-swap** refusal names, so a caller that failed
 /// to edit revision 3 and a caller that failed to delete it are told about the
@@ -1720,15 +1720,44 @@ pub(super) fn swap_guard(
 /// # Errors
 /// [`RepoError::ValueOutOfRange`] for a purchase quantity or custom interval
 /// past its column's range.
+///
+/// # A field added to the patch is a compile error here
+/// The patch is **destructured field by field, with no `..` rest pattern**, and
+/// every binding is used below. This is the same guard `content_assignments`
+/// took for the price row's columns, applied to the plan's, and for the reason
+/// that one was taken: this list used to be a run of `if let Some(x) =
+/// patch.x` arms, which is a hand-written enumeration wearing the shape of a
+/// complete one. A field added to [`PlanShapePatch`] would have compiled, been
+/// accepted by the surface, never reached the `UPDATE`, and answered success —
+/// exactly how `unit_rate_nano` fell out of the price row's assignment list and
+/// stayed out for two days while `PATCH` rendered the reverted value from the
+/// stored record as if the author had asked for it. Now a new field is
+/// `error[E0027]` on this pattern until someone decides which column it moves,
+/// or binds it and states on the line why it moves none.
 fn patched_columns(patch: PlanShapePatch) -> Result<Vec<(plan::Column, SimpleExpr)>, RepoError> {
+    let PlanShapePatch {
+        sku_id,
+        plan_tier,
+        billing_cycle,
+        frequency,
+        plan_tier_override,
+        purchase_min_qty,
+        purchase_max_qty,
+        invoice_grouping_key,
+        available_from,
+        available_to,
+        entitlement_grants,
+        change_contract,
+    } = patch;
+
     let mut columns: Vec<(plan::Column, SimpleExpr)> = Vec::new();
-    if let Some(sku_id) = patch.sku_id {
+    if let Some(sku_id) = sku_id {
         columns.push((plan::Column::SkuId, Expr::value(sku_id)));
     }
-    if let Some(plan_tier) = patch.plan_tier {
+    if let Some(plan_tier) = plan_tier {
         columns.push((plan::Column::PlanTier, Expr::value(plan_tier)));
     }
-    if let Some(billing_cycle) = patch.billing_cycle {
+    if let Some(billing_cycle) = billing_cycle {
         columns.push((
             plan::Column::BillingCycle,
             Expr::value(billing_cycle.as_str()),
@@ -1739,45 +1768,45 @@ fn patched_columns(patch: PlanShapePatch) -> Result<Vec<(plan::Column, SimpleExp
     // pairing `chk_pricing_plan_custom_interval_pairing` refuses and
     // `Frequency` cannot represent - so the interval columns travel with it,
     // NULL and all.
-    if let Some(frequency) = patch.frequency {
+    if let Some(frequency) = frequency {
         let interval = StoredFrequency::render(Some(frequency))?;
         columns.push((plan::Column::Frequency, Expr::value(interval.token)));
         columns.push((plan::Column::CustomIntervalN, Expr::value(interval.n)));
         columns.push((plan::Column::CustomIntervalUnit, Expr::value(interval.unit)));
     }
-    if let Some(plan_tier_override) = patch.plan_tier_override {
+    if let Some(plan_tier_override) = plan_tier_override {
         columns.push((
             plan::Column::PlanTierOverride,
             Expr::value(plan_tier_override),
         ));
     }
-    if let Some(min_qty) = stored_qty("purchaseMinQty", patch.purchase_min_qty)? {
+    if let Some(min_qty) = stored_qty("purchaseMinQty", purchase_min_qty)? {
         columns.push((plan::Column::PurchaseMinQty, Expr::value(min_qty)));
     }
-    if let Some(max_qty) = stored_qty("purchaseMaxQty", patch.purchase_max_qty)? {
+    if let Some(max_qty) = stored_qty("purchaseMaxQty", purchase_max_qty)? {
         columns.push((plan::Column::PurchaseMaxQty, Expr::value(max_qty)));
     }
-    if let Some(grouping_key) = patch.invoice_grouping_key {
+    if let Some(grouping_key) = invoice_grouping_key {
         columns.push((plan::Column::InvoiceGroupingKey, Expr::value(grouping_key)));
     }
-    if let Some(available_from) = patch.available_from {
+    if let Some(available_from) = available_from {
         columns.push((plan::Column::AvailableFrom, Expr::value(available_from)));
     }
-    if let Some(available_to) = patch.available_to {
+    if let Some(available_to) = available_to {
         columns.push((plan::Column::AvailableTo, Expr::value(available_to)));
+    }
+    if let Some(grants) = entitlement_grants {
+        columns.push((
+            plan::Column::EntitlementGrants,
+            Expr::value(entitlement_grants_json(&grants)),
+        ));
     }
     // One value, three columns, and they travel together for `Frequency`'s
     // reason: K4 ties the rank to whether the edge list names anyone, so moving
     // one on its own could leave a plan with edges and no rank -- a state no
     // publish accepts and no caller meant. `PlanShapePatch::change_contract`
     // replaces the contract wholesale precisely so this stays impossible.
-    if let Some(grants) = patch.entitlement_grants {
-        columns.push((
-            plan::Column::EntitlementGrants,
-            Expr::value(entitlement_grants_json(&grants)),
-        ));
-    }
-    if let Some(contract) = patch.change_contract {
+    if let Some(contract) = change_contract {
         columns.push((
             plan::Column::AllowedChangeTargets,
             Expr::value(change_targets_json(
