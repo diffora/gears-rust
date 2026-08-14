@@ -10,8 +10,12 @@
 //! cross-aggregate order.
 //!
 //! Four physical guards. `chk_pricing_outbox_event_name` pins the **frozen**
-//! event-name set (the same thirteen names as `domain::events::CatalogEvent`):
-//! a name here is a contract a consumer is entitled to keep receiving forever,
+//! event-name set — the thirteen names `domain::events::CatalogEvent` held *on
+//! the day this migration ran*, and it is no longer that whole set:
+//! `m20260802_000060` widened the CHECK for `PriceOverlayPublished` (D-248), so
+//! the roster to read is the enum's and the constraint in force is the later
+//! migration's. A name here is a contract a consumer is entitled to keep
+//! receiving forever,
 //! so a typo must fail at insert rather than become an event nobody is
 //! subscribed to. `uq_pricing_outbox_sequence` makes the per-aggregate order a
 //! total order — two rows at the same seq would leave the relay free to

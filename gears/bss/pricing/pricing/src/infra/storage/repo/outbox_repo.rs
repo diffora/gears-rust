@@ -43,9 +43,15 @@
 //!
 //! `NewOutboxEvent` carries a [`CatalogEvent`] rather than a `String`, and the
 //! column is written from [`CatalogEvent::as_str`].
-//! `chk_pricing_outbox_event_name` pins the same thirteen names, so a second
-//! spelling *would* be caught — but caught as a driver error inside a publish
+//! `chk_pricing_outbox_event_name` pins the same set, so a second spelling
+//! *would* be caught — but caught as a driver error inside a publish
 //! transaction, which is not where a frozen contract should be discovered.
+//! The count is deliberately not in that sentence, and it is not in the two
+//! below either: this paragraph carried "thirteen" for a week after D-248 added
+//! `PriceOverlayPublished` and `m20260802_000060` widened the CHECK to match, so
+//! the number was the one thing in the sentence that could go stale and the only
+//! thing it did not need. `CatalogEvent::ALL` is the roster and
+//! `domain::events_tests` is where its size is asserted.
 //!
 //! ## How to check the discipline holds — and the check that does **not** work
 //!
@@ -187,7 +193,7 @@ pub struct NewOutboxEvent {
     /// The aggregate the event is ordered within — the plan, for a plan
     /// publish.
     pub aggregate_id: Uuid,
-    /// Which of the thirteen frozen names.
+    /// Which of the frozen names — [`CatalogEvent::ALL`] is the roster.
     pub event: CatalogEvent,
     /// The rendered payload.
     pub payload: JsonValue,
@@ -983,7 +989,7 @@ pub fn plan_publish_degraded_dedup_key(plan_id: PlanId, catalog_version: Catalog
 /// would have duplicated a value *inside* the payload, while `state` duplicated
 /// the **envelope** — `pricing_outbox.event_name`, which is not in this JSON. That
 /// is a real difference and it makes the duplication *worse*, not admissible. The
-/// event name is `NOT NULL`, pinned to thirteen values by
+/// event name is `NOT NULL`, pinned to the frozen set by
 /// `chk_pricing_outbox_event_name`, and is what any consumer dispatches on; a body
 /// contradicting its own envelope has no resolution rule at all, whereas two
 /// disagreeing payload keys at least both live in one document. A test asserting

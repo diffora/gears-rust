@@ -1,8 +1,9 @@
 //! `SeaORM` entity for `bss.pricing_outbox` — one transactionally-enqueued
 //! event (`design/01-foundation.md` §3.7).
 //!
-//! `event_name` is one of the thirteen frozen names
-//! (`domain::events::CatalogEvent`), `seq` orders events per
+//! `event_name` is one of the frozen names
+//! (`domain::events::CatalogEvent`, which is the roster and the only place its
+//! size is stated), `seq` orders events per
 //! `(tenant_id, aggregate_id)` and nowhere else, and `dedup_key` is what makes
 //! at-least-once delivery safe for a consumer.
 
