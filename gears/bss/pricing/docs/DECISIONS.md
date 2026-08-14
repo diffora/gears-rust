@@ -3229,3 +3229,122 @@ both are the same shape: **a split column does not carry its rules with it.**
    and the pre-existing verdicts are preserved exactly. That two threshold cases
    went green again **unchanged** is the evidence the scaling is right and the
    fail-safe was not.
+
+#### D-312 [H] The authoring plane accepts rows that no later edit can make publishable
+
+**Status:** raised 2026-08-14, from the Pricing Studio. **Awaiting veto.** Found
+by an author opening a stored row whose model-kind picker had nothing selected:
+the row is `flat` on a `usage` charge kind, and `flat` is in no part of the
+usage set.
+
+##### The finding
+
+Measured over HTTP against the stand, not inferred:
+
+| call | answer |
+|---|---|
+| `POST …/prices` with `model_kind: flat` on a `charge_kind: usage` key | **201** |
+| `PATCH` the same content again | **200** |
+| `POST …/plans/{id}/publish` | **400**, `MODEL_KIND_CHARGEKIND_MISMATCH` |
+
+The row is authored, re-saved, and only refused at the end — as the whole plan's
+refusal, naming a rule the author met several screens earlier.
+
+##### Why the design's own argument does not cover it
+
+§4.2 puts the rule set at the publish pre-check, and the price surface states the
+reason plainly: *"an author assembles a row over several calls, and refusing an
+intermediate state at save time would contradict that design outright."* That is
+correct, and it is an argument about **absence**. A row whose kind is not yet
+authored, whose bands are not yet laid, whose amount is not yet typed, is a row
+that later calls complete. Refusing those at the write would break multi-call
+authoring, which is why they are where they are.
+
+`flat` on `usage` is not absence. Both operands are **present at the moment of the
+write**, and one of them is **frozen**: `chargeKind` is a component of the canonical
+scope key, and the key is immutable after create — `PatchPriceRequest` takes an
+optional `scope_key` that, when present, *must equal the stored one*.
+
+The distinction is not that the fault is unfixable. A later `PATCH` of `model_kind`
+does fix it, and an earlier draft of this entry claimed otherwise — the claim is
+withdrawn rather than qualified. The distinction is **what a later call would have
+to do**. An absence fault is resolved by a call that *adds* the missing operand,
+which is exactly the assembly §4.2 protects. A key contradiction is resolved only by
+*retracting the field the caller just sent*, because the other operand can never
+move. So the request is complete, self-inconsistent, and knowably unpublishable at
+the instant it arrives — and refusing it there costs an author nothing they could
+legitimately have wanted, since no information a subsequent call adds will help.
+
+##### This is a category, not one rule
+
+Four codes in the current rule set compare authored content against the frozen
+key, and every one of them is a presence-or-contradiction fault rather than an
+absent operand:
+
+| rule | reads from the frozen key | fault |
+|---|---|---|
+| `inst-mk-chargekind` | `chargeKind` | the model kind is not legal on this charge kind |
+| `inst-mk-forbidden` | `chargeKind` | `tierAggregationWindow` / `billingGranularity` on a non-usage row |
+| `inst-la-fields` | `chargeKind` | `aggregationFunction` / `aggregationGranularity` on a non-usage row |
+| reservation authoring (S10) | `chargeKind` | a reservation on a row with no meter, quantity or counter |
+
+The test that separates the two families is mechanical, which is what makes this a
+line rather than an exception: **a rule whose fault is an absent operand belongs at
+publish; a rule all of whose operands are present at the write, one of them an
+immutable component of the scope key, can be refused there.** A rule reading only
+mutable content (`inst-mk-required`, the band geometry family, the amount-placement
+matrix) stays where it is — a row missing its bands is a row whose bands are still
+coming, and that is the intermediate state the design protects. Bands present on a
+`flat` row is likewise **not** in the subset: both operands are content, so a later
+call setting `model_kind: graduated` resolves it by adding intent rather than by
+retracting what it just sent.
+
+##### Decision
+
+The price authoring plane runs the **key-contradiction subset** of the row rule
+set on `POST` and on `PATCH`, and refuses a request that trips it with the same
+enumerated violation envelope the publish pre-check uses. The publish pre-check
+keeps running the whole set unchanged, this subset included — the write-side check
+is an earlier refusal of a subset, never a replacement, and nothing about
+§4.2's fail-closed commit-time re-validation moves.
+
+Membership is declared by the rule, not by a list held at the call site: a rule
+states which stage it belongs to, the default is publish, and a new rule that
+reads the scope key has to say so. A list in the handler is a second spelling of
+the classification, and the two would drift the first time a rule was added.
+
+##### What this costs, stated rather than hidden
+
+- **The write plane's contract stops being one sentence.** It was "what the store
+  itself decides" — duplicate key, stale tag, precision, column bounds, lifecycle.
+  It becomes "what the store decides, plus what contradicts the frozen key". Still
+  one sentence, and it now describes a door that does not admit knowably dead rows.
+- **Two refusal shapes on one surface.** The write plane's other refusals are
+  single `InvalidArgument`s; this one carries an enumerated report. Deliberate: a
+  client that already parses the publish envelope parses this unchanged, and
+  collapsing a multi-violation report into one message would hide the second fault
+  behind the first.
+- **Rows already stored stay stored.** The subset gates writes, not reads, and
+  nothing rewrites history. An existing contradictory row is unpublishable exactly
+  as it is today; what changes is that its next `PATCH` says so instead of
+  returning 200. An author fixing something else on such a row must fix the
+  contradiction first — which is the point, not a side effect.
+
+##### What was considered and rejected
+
+- **Leave it, and let the UI hold the line.** Rejected. Two clients already
+  authored this shape — the Studio's own add dialog took the model kind and the
+  charge kind as independent fields until it was constrained — and a rule that
+  lives only in one client is a rule the next client re-discovers by shipping a
+  dead catalog. The gear is where the invariant belongs.
+- **Refuse the whole rule set at the write.** Rejected outright: it is the change
+  §4.2 exists to prevent, and it breaks multi-call authoring for every row.
+- **A bulk-import exemption.** Not needed. `bulk_imports` validates the whole batch
+  in phase 1 and refuses it entire, so no surface depends on a permissive write
+  door to land shape-invalid rows.
+
+##### Owed on landing
+
+An inventory of rows already carrying a key contradiction, per plan, so the
+catalog's existing unpublishable set is known rather than discovered one publish at
+a time.

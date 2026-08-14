@@ -174,14 +174,29 @@ model — `modelKind`, ordered bands, `packageSize`/`packagePrice`,
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-pricing-algo-model-kind`
 
-**Input**: a draft price row at publish
+**Input**: a draft price row at publish; **and, for the key-contradiction subset
+only, at the authoring write** (D-312)
 **Output**: pass, or enumerated fail-closed violations
+
+**Stage (D-312).** Every step below runs at the publish pre-check, unchanged. The
+steps marked **`@write`** *also* run on `POST`/`PATCH` of a price row and refuse the
+request there with the same enumerated envelope. A step qualifies for `@write` when
+**all of its operands are present in the request and one of them is an immutable
+component of the scope key** — `chargeKind` above all — the key being uneditable
+after create (`PatchPriceRequest.scope_key`, when present, must equal the stored
+one). Such a request is complete and knowably unpublishable when it arrives, and the
+only call that resolves it retracts the field just sent rather than adding anything.
+A step whose fault is an **absent** operand never qualifies, and neither does one
+whose operands are all mutable content: both are resolved by a later call that adds
+information, which is the multi-call assembly §4.2 exists to protect. So tier bands
+on a `flat` row stay at publish — `model_kind: graduated` resolves that — while
+`billingGranularity` on a `recurring` row does not, because `recurring` is fixed.
 
 **Steps**:
 1. [ ] - `p1` - `modelKind ∈ {flat, per_unit, graduated, volume, package}` MUST be explicit; a tiered row with no kind MUST NOT publish ("tiered (unspecified)" is not publishable, §17.1); no implicit default exists at rating time - `inst-mk-explicit`
 2. [ ] - `p1` - **Kind-specific required fields**: `per_unit` → unit price + (**non-usage rows**) `quantitySource` (`subscription_seat_count | manual`, and the fixed quantity for `manual`; a `per_unit` **usage** row takes its quantity from the meter — `quantitySource` forbidden, 2026-07-28 review fix, confirmed 2026-07-31); `graduated`/`volume` → ≥ 1 tier band; `package` → `packageSize`/`packagePrice`; `flat` → single amount - `inst-mk-required`
-3. [ ] - `p1` - **Kind-specific forbidden fields**: tier-band fields absent on `flat`/`per_unit`/`package`; `tierAggregationWindow`/`billingGranularity` are **usage-row only** — presence on `flat` (never a usage row — see 3a) or `per_unit` **non-usage** rows fails publish (§17.4 evaluation-policy placement; a `per_unit` usage row carries `billingGranularity` like every usage row — 2026-07-28 review fix) - `inst-mk-forbidden`
-3a. [ ] - `p1` - **Kind×chargeKind matrix (D-18; completed 2026-07-28 review fix, confirmed 2026-07-31)** — the full legality matrix: `flat` and `per_unit` are legal on **non-usage** rows; `per_unit`, `graduated`, `volume`, `package` are legal on **`usage`** rows (a `per_unit` usage row is the plain untiered metered rate — unit price × metered `Q`, `billingGranularity` required like every usage row, no `quantitySource`); `flat` on a `usage` row, and `graduated`/`volume`/`package` on a `recurring`/`one_time`/`one_time_setup` row, fail publish (`MODEL_KIND_CHARGEKIND_MISMATCH`): the tier machinery presupposes a metered quantity stream, and no `Q` semantics exist for non-usage rows. Tiered per-seat pricing (bands over seat count on recurring rows) is Future scope (§17.8) - `inst-mk-chargekind`
+3. [ ] - `p1` - **Kind-specific forbidden fields**: tier-band fields absent on `flat`/`per_unit`/`package` (publish-stage: both operands are content); **`@write` (D-312)** — `tierAggregationWindow`/`billingGranularity` are **usage-row only** — presence on `flat` (never a usage row — see 3a) or `per_unit` **non-usage** rows fails publish (§17.4 evaluation-policy placement; a `per_unit` usage row carries `billingGranularity` like every usage row — 2026-07-28 review fix) - `inst-mk-forbidden`
+3a. [ ] - `p1` - **`@write` (D-312). Kind×chargeKind matrix (D-18; completed 2026-07-28 review fix, confirmed 2026-07-31)** — the full legality matrix: `flat` and `per_unit` are legal on **non-usage** rows; `per_unit`, `graduated`, `volume`, `package` are legal on **`usage`** rows (a `per_unit` usage row is the plain untiered metered rate — unit price × metered `Q`, `billingGranularity` required like every usage row, no `quantitySource`); `flat` on a `usage` row, and `graduated`/`volume`/`package` on a `recurring`/`one_time`/`one_time_setup` row, fail publish (`MODEL_KIND_CHARGEKIND_MISMATCH`): the tier machinery presupposes a metered quantity stream, and no `Q` semantics exist for non-usage rows. Tiered per-seat pricing (bands over seat count on recurring rows) is Future scope (§17.8) - `inst-mk-chargekind`
 4. [ ] - `p1` - The catalog computes **no** charge: kinds are flags Tariffs maps to formulas one-to-one per §17.2; catalog `volume` = Variant A only (Q3) - `inst-mk-nocompute`
 
 ### Tier-Band Validation
@@ -222,7 +237,7 @@ model — `modelKind`, ordered bands, `packageSize`/`packagePrice`,
 **Output**: the frozen level-aggregation policy in the read model / `pricingSnapshotRef`; publish blocked on any invalid combination
 
 **Steps**:
-1. [ ] - `p1` - A usage row MAY author **`aggregationFunction ∈ {sum (default), peak, time_weighted}`** and, for non-`sum`, **`aggregationGranularity ∈ {hour (default), day}`** (D-44). Presence of either field on a non-usage row, an unknown value, **or `aggregationGranularity` present on a `sum` row** (no granule fold exists to parameterize — forbidden, not ignored, exactly like `maxHold`; 2026-07-30 review fix) fails publish (`LEVEL_FIELDS_INVALID`); both freeze into `pricingSnapshotRef` — the catalog authors the policy and never computes a fold (Rating owns the granule fold per rating T-D-17) - `inst-la-fields`
+1. [ ] - `p1` - **`@write` (D-312) for the non-usage placement half only; the `sum`-row granularity half is content-against-content and stays at publish.** A usage row MAY author **`aggregationFunction ∈ {sum (default), peak, time_weighted}`** and, for non-`sum`, **`aggregationGranularity ∈ {hour (default), day}`** (D-44). Presence of either field on a non-usage row, an unknown value, **or `aggregationGranularity` present on a `sum` row** (no granule fold exists to parameterize — forbidden, not ignored, exactly like `maxHold`; 2026-07-30 review fix) fails publish (`LEVEL_FIELDS_INVALID`); both freeze into `pricingSnapshotRef` — the catalog authors the policy and never computes a fold (Rating owns the granule fold per rating T-D-17) - `inst-la-fields`
 2. [ ] - `p1` - **Unit consistency (publish check):** on a non-`sum` row the meter MUST be **level-shaped** (collector `gauge` kind — verified against the registry's metering-unit declaration) and the **sample unit = the level unit** (GB, cloudlet); the row's **billable** unit is `level unit × granule duration` — level·granule-**hours** for `granularity = hour` (GB·h, cloudlet·h), level·granule-**days** for `granularity = day` (GB·day) — declared by the SKU exactly as a composite output unit is. A non-`sum` row whose meter is not gauge-kind, or whose SKU-declared billable unit does not match `level unit × granule` **for the row's declared granularity**, fails publish (`LEVEL_UNIT_MISMATCH`) - `inst-la-units`
    - **Implementation status (2026-08-02):** this rule and `inst-la-composite` are the two Slice-3 checks that read the **registry's** metering-unit declaration, and the Product & SKU registry has no client in this repository yet — so neither is enforced today and both codes are emitted nowhere. The gap is stated rather than stubbed: a rule that always passes reads as enforcement and is worse than a visible absence. Same class as Slice 2's `inst-cmp-usagetype`; all three land together when the registry client does.
 2a. [ ] - `p1` - **Granularity pairing (normative, D-77, 2026-07-30 review fix):** on a non-`sum` row `billingGranularity` MUST be the `billingGranularity` counterpart of the row's `aggregationGranularity` — `hour` ⇒ `per_hour`, `day` ⇒ `per_day`; every other pairing (`per_second`, `per_minute`, `whole_unit`, or a crossed `hour`/`per_day`) fails publish (`LEVEL_GRANULARITY_MISMATCH`, 422). Without it two rules of this slice name **different** units for the same band: `inst-tb-units` derives the band unit from `billingGranularity`, `inst-la-units` derives it from `level unit × aggregationGranularity`, and `inst-la-units` resolved the conflict by referring back to `inst-tb-units` — a circle. A `time_weighted`/`hour` row with `billingGranularity = per_day` therefore has bands in GB·h under one reading and GB·day under the other: a **24x error at the band edge** that passes every other stated check (`LEVEL_UNIT_MISMATCH` compares the SKU's declared unit against `level × granule`, never the granule against `billingGranularity`). With the pairing pinned, the two rules name the same unit **by construction**: on a level row the granule fold *is* the quantization, so tier-band quantities are expressed in the billable `level unit × granule` unit and `inst-tb-units` holds unchanged - `inst-la-granularity`
@@ -266,6 +281,20 @@ model — `modelKind`, ordered bands, `packageSize`/`packagePrice`,
 | `PATCH` | `/bss-pricing/v1/plans/{planId}/prices/{priceId}` | Update a draft row | ETag |
 | `DELETE` | `/bss-pricing/v1/plans/{planId}/prices/{priceId}` | Delete a **draft** row (published rows: 409) | ETag (D-141) |
 | `GET` | `/bss-pricing/v1/plans/{planId}/prices` | List the plan's `draft` **and** `published` rows (**D-170**; paginated per Foundation §3.3 / D-125) | — |
+
+**What the authoring plane validates (D-312).** Historically nothing of the row's
+shape: the whole rule set sat at the publish pre-check, and this plane refused only
+what the store itself decides — a duplicate canonical scope key, a stale entity tag,
+a horizon off its eligibility class, an instant finer than the quantum, a value past
+its column, an edit of a frozen row. **It now also runs the `@write` subset of §3's
+row rules** — the steps whose operands are all present in the request with one of
+them an immutable component of the scope key — and refuses a tripping request with
+the same enumerated violation envelope the publish pre-check returns, rather than a
+single message. Two shapes on one surface is deliberate: a client already parsing the
+publish report parses this unchanged, and folding a multi-violation report into one
+line would hide the second fault behind the first. The publish pre-check still runs
+the **whole** set including this subset — the write-side check is an earlier refusal,
+never a replacement, and §4.2's commit-time re-validation is untouched.
 
 **Problem responses (RFC 9457):** `MODEL_KIND_MISSING` (422), `TIER_BANDS_OVERLAP` /
 `TIER_BANDS_GAP` (422 — including a tiered row carrying **no bands at all**, and a first band that does not start at the quantity origin: both are the same fault, a quantity the row prices nowhere; 2026-08-02 clarification), `TIER_BAND_EMPTY` (422 — `toQty ≤ fromQty` on a non-open band),
