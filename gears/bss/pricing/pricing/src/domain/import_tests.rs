@@ -100,6 +100,26 @@ fn usage_row(scope_key: ScopeKey) -> ImportRow {
     }
 }
 
+/// A metered line on a usage key — the shape a Slice-10 primitive is authored
+/// on.
+///
+/// The three unbuilt-primitive cases below used [`base`] + [`content`], a `flat`
+/// **recurring** row, and hung an `includedAllowance` on it. That was invisible
+/// while nothing judged the field and it became a fault the moment `inst-ac-gate`
+/// landed: `ALLOWANCE_ON_NON_USAGE` is a write-stage refusal, so those rows would
+/// have failed Phase 1 for a *second* reason and each case would have gone green
+/// on the wrong report. The fixture is fixed rather than the assertion — the rows
+/// were always wrong, and D-312's own arm found the same class of fault in the
+/// duplicate-key fixtures one wave earlier.
+fn metered_key() -> ScopeKey {
+    key("eu", PriceEligibility::AllSubscriptions, ChargeKind::Usage)
+        .with_usage_line(
+            Some(Meter::new("api-calls").expect("a meter")),
+            DimensionKey::new("region=eu"),
+        )
+        .expect("a usage line on a usage key")
+}
+
 fn codes(report: &BatchReport, at: usize) -> Vec<String> {
     report
         .rows()
@@ -274,7 +294,7 @@ fn a_row_carrying_an_unbuilt_primitive_fails_and_inherits_the_publish_code() {
     // **The refusal moves earlier, it does not move** (D-177/D-179): publish
     // still refuses these fields on its own authority. What this arm changes is
     // that the operator hears it while the batch can still be fixed.
-    let mut row = row(base());
+    let mut row = usage_row(metered_key());
     row.content.row.included_allowance = Some(IncludedAllowance {
         quantity: 100,
         rollover_policy: RolloverPolicy::Carry,
@@ -293,11 +313,34 @@ fn a_row_carrying_an_unbuilt_primitive_fails_and_inherits_the_publish_code() {
     assert!(report.blocks_the_batch());
 }
 
+/// The positive control the bulk door needed (D-45).
+///
+/// The three cases around it hand Phase 1 a row it refuses, so all three would
+/// pass identically against the pre-D-45 arm that refused `includedAllowance`
+/// outright. This is the one that says a compiled allowance **imports**.
+#[test]
+fn a_row_carrying_a_compiled_allowance_imports() {
+    let mut row = usage_row(metered_key());
+    row.content.row.included_allowance = Some(IncludedAllowance {
+        quantity: 100,
+        rollover_policy: RolloverPolicy::None,
+    });
+
+    let report = classify(&[row]);
+    assert_eq!(
+        failed_rows(&report),
+        Vec::<usize>::new(),
+        "rolloverPolicy = none is judged by inst-ac-gate and honoured by the compile: {:?}",
+        codes(&report, 0)
+    );
+    assert!(!report.blocks_the_batch());
+}
+
 #[test]
 fn a_row_carrying_both_unbuilt_primitives_is_told_about_both() {
     // The all-or-nothing posture only pays for itself if the report is complete
     // — a row fixed one field at a time is a second batch for nothing.
-    let mut row = row(base());
+    let mut row = usage_row(metered_key());
     row.content.row.included_allowance = Some(IncludedAllowance {
         quantity: 100,
         rollover_policy: RolloverPolicy::Carry,
@@ -323,12 +366,12 @@ fn a_row_carrying_both_unbuilt_primitives_is_told_about_both() {
 fn a_row_can_carry_two_different_faults_and_hears_about_both() {
     // The two rules are independent and both answer for every row. A report that
     // stopped at the first would send the operator round twice.
-    let mut first = row(base());
+    let mut first = usage_row(metered_key());
     first.content.row.included_allowance = Some(IncludedAllowance {
         quantity: 100,
         rollover_policy: RolloverPolicy::Carry,
     });
-    let report = classify(&[first, row(base())]);
+    let report = classify(&[first, usage_row(metered_key())]);
 
     assert_eq!(failed_rows(&report), vec![0, 1]);
     let codes: Vec<&str> = report.rows()[0]

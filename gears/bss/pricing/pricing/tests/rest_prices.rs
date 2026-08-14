@@ -308,34 +308,130 @@ async fn a_create_carrying_a_tier_qualification_window_is_refused_at_any_value()
     );
 }
 
+/// A create body on a **usage** key: the shape `includedAllowance` is authorable
+/// on since D-45's compile landed.
+fn usage_create_body(region: &str, meter: &str) -> serde_json::Value {
+    serde_json::json!({
+        "scope_key": {
+            "currency": "USD",
+            "region": region,
+            "phase": harness_phase(),
+            "price_eligibility": "all_subscriptions",
+            "charge_kind": "usage",
+            "cohort": serde_json::Value::Null
+        },
+        "content": {
+            "model_kind": "per_unit",
+            "unit_rate_nano_minor": 700_000_000_i64,
+            "tax_inclusive": false,
+            "meter": meter,
+            "billing_granularity": "per_hour"
+        }
+    })
+}
+
 #[tokio::test]
-async fn a_create_carrying_an_included_allowance_is_refused_under_either_rollover_policy() {
-    // `none` needs the band compile (the $0 band, the offset set, the marker);
-    // `carry` needs a `pricing_plan_grant` row. Neither exists, so a stored
-    // declaration is an allowance billed from the first unit.
+async fn a_usage_row_carrying_a_none_allowance_is_authored_and_echoed() {
+    // **The positive control for the whole slice.** Every refusal below would
+    // pass identically against the field-wide refusal this change removed, so
+    // the case that proves the removal is the one that stores a declaration.
     let harness = Harness::new().await;
     let plan_id = seeded_plan(&harness).await;
 
-    for (index, policy) in ["none", "carry"].into_iter().enumerate() {
-        let response = harness
-            .allowed()
-            .send(with_headers(
-                "POST",
-                &prices_path(plan_id),
-                Some(create_body_with(
-                    "EU",
-                    "included_allowance",
-                    serde_json::json!({ "quantity": 100, "rollover_policy": policy }),
-                )),
-                &keyed(&format!("allow-{index}")),
-            ))
-            .await;
+    let mut body = usage_create_body("EU", "egress.gb");
+    body["content"]["included_allowance"] =
+        serde_json::json!({ "quantity": 100, "rollover_policy": "none" });
 
-        assert_refused_naming(response, "included_allowance").await;
-    }
+    let response = harness
+        .allowed()
+        .send(with_headers(
+            "POST",
+            &prices_path(plan_id),
+            Some(body),
+            &keyed("allow-none"),
+        ))
+        .await;
+
+    assert_eq!(
+        response.status(),
+        StatusCode::CREATED,
+        "rolloverPolicy = none has a rule that judges it and a compile that honours it"
+    );
+    let echoed = body_json(response).await;
+    assert_eq!(
+        echoed["content"]["included_allowance"]["quantity"],
+        serde_json::json!(100),
+        "{echoed}"
+    );
+    assert_eq!(
+        echoed["content"]["included_allowance"]["rollover_policy"],
+        serde_json::json!("none"),
+        "{echoed}"
+    );
+    assert_eq!(price_rows(&harness, plan_id).await.len(), 1);
+}
+
+#[tokio::test]
+async fn an_allowance_on_a_non_usage_key_is_refused_at_the_write() {
+    // D-312's category: the declaration and a frozen non-usage `chargeKind` are
+    // both in the request, so `inst-ac-gate` refuses at the write rather than
+    // storing a row only publish could reject.
+    //
+    // Asserted by **code**, because a 400 on this route is also what a malformed
+    // body gets and a case that could not tell them apart would stay green if
+    // the gate were replaced by any other validation.
+    let harness = Harness::new().await;
+    let plan_id = seeded_plan(&harness).await;
+
+    let response = harness
+        .allowed()
+        .send(with_headers(
+            "POST",
+            &prices_path(plan_id),
+            Some(create_body_with(
+                "EU",
+                "included_allowance",
+                serde_json::json!({ "quantity": 100, "rollover_policy": "none" }),
+            )),
+            &keyed("allow-recurring"),
+        ))
+        .await;
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(problem_code(response).await, "ALLOWANCE_ON_NON_USAGE");
     assert!(
         price_rows(&harness, plan_id).await.is_empty(),
-        "neither refusal may have stored a row"
+        "the refusal may not have stored a row"
+    );
+}
+
+#[tokio::test]
+async fn a_create_carrying_a_carried_allowance_is_refused_on_a_key_that_would_otherwise_take_it() {
+    // The **key** is the one an allowance is authorable on, so nothing but the
+    // rollover policy is at fault: `inst-ac-carry` materializes a promotional
+    // grant into `pricing_plan_grant`, and this gear has no such table, so an
+    // accepted declaration would freeze a carry horizon nothing ever issues.
+    let harness = Harness::new().await;
+    let plan_id = seeded_plan(&harness).await;
+
+    let mut body = usage_create_body("EU", "egress.gb");
+    body["content"]["included_allowance"] =
+        serde_json::json!({ "quantity": 100, "rollover_policy": "carry" });
+
+    let response = harness
+        .allowed()
+        .send(with_headers(
+            "POST",
+            &prices_path(plan_id),
+            Some(body),
+            &keyed("allow-carry"),
+        ))
+        .await;
+
+    assert_refused_naming(response, "included_allowance").await;
+    assert!(
+        price_rows(&harness, plan_id).await.is_empty(),
+        "the refusal may not have stored a row"
     );
 }
 
@@ -355,7 +451,7 @@ async fn a_patch_cannot_slip_either_primitive_past_the_create_check() {
         ),
         (
             "included_allowance",
-            serde_json::json!({ "quantity": 100, "rollover_policy": "none" }),
+            serde_json::json!({ "quantity": 100, "rollover_policy": "carry" }),
         ),
     ] {
         let response = harness

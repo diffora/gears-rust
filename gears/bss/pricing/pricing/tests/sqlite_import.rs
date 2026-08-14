@@ -167,6 +167,34 @@ fn usage_row(scope_key: ScopeKey, meter: &str, amount: i64) -> ImportRow {
     }
 }
 
+/// The metered `(eu, api-calls, region=eu)` line — the key a Slice-10 primitive
+/// is authored on.
+///
+/// The two ordering cases below hung an `includedAllowance` on a `flat`
+/// **recurring** row, which was invisible while nothing judged the field and
+/// became a second Phase-1 refusal the moment `inst-ac-gate` landed
+/// (`ALLOWANCE_ON_NON_USAGE`, write-stage). Both cases assert an exact code
+/// vector, so both would have gone red on a fault that is the fixture's rather
+/// than the report's. The fixture is fixed, exactly as `usage_content` was one
+/// wave earlier for the same class of fault.
+fn metered_key() -> ScopeKey {
+    ScopeKey::new(
+        plan(),
+        CurrencyCode::new("EUR").expect("three letters"),
+        Region::new("eu").expect("a non-blank region"),
+        phase(),
+        PriceEligibility::AllSubscriptions,
+        ChargeKind::Usage,
+        Cohort::None,
+    )
+    .expect("the class pairs with the cohort")
+    .with_usage_line(
+        Some(Meter::new("api-calls").expect("a meter")),
+        DimensionKey::new("region=eu"),
+    )
+    .expect("a usage line on a usage key")
+}
+
 async fn publish_usage(h: &Harness, scope_key: ScopeKey, meter: &str, amount: i64) -> Uuid {
     let price_id = Uuid::now_v7();
     h.prices
@@ -303,8 +331,8 @@ async fn a_row_that_is_both_unjudged_and_published_hears_them_in_a_stable_order(
     // batch-only half runs first — and sort to the reverse. Delete the sort in
     // `BatchReport::add` and this is the case that reddens.
     let h = harness().await;
-    publish(&h, key("eu"), 9_900).await;
-    let mut carrier = row(key("eu"), 12_500);
+    publish_usage(&h, metered_key(), "api-calls", 900).await;
+    let mut carrier = usage_row(metered_key(), "api-calls", 1_200);
     carrier.content.row.included_allowance = Some(IncludedAllowance {
         quantity: 100,
         rollover_policy: RolloverPolicy::Carry,
@@ -446,7 +474,7 @@ async fn the_report_is_in_batch_order_however_the_halves_reached_it() {
     // so `add` is called out of order and the report has to sort it out.
     let h = harness().await;
     publish(&h, key("eu"), 9_900).await;
-    let mut carrier = row(key("us"), 12_500);
+    let mut carrier = usage_row(metered_key(), "api-calls", 1_200);
     carrier.content.row.included_allowance = Some(IncludedAllowance {
         quantity: 100,
         rollover_policy: RolloverPolicy::Carry,

@@ -197,10 +197,16 @@ pub const GRANDFATHER_UNTIL_FORBIDDEN: &str = "GRANDFATHER_UNTIL_FORBIDDEN";
 /// A row carries a value in a field that is **declared and not yet authorable**
 /// (`01-foundation.md` §3.3, D-179; the hazard is D-177's).
 ///
-/// Today that is `includedAllowance` (D-45) and `tierQualificationWindow`
-/// (D-40). Both are refused at authoring by D-177 clause (1) as malformed
-/// requests carrying **no code** — the class D-141 settled — and this is
-/// deliberately a *different* refusal rather than the same one moved:
+/// Today that is `tierQualificationWindow` (D-40) and the **`carry` half** of
+/// `includedAllowance` (D-45): Slice 10's allowance gate and its band compile
+/// have landed, so a `{N, none}` declaration is judged and honoured, while
+/// `inst-ac-carry`'s promotional grant has no `pricing_plan_grant` table to be
+/// written into and stays here. The code names the **reason**, so a half nobody
+/// can honour yet needs no code of its own.
+///
+/// Both are refused at authoring by D-177 clause (1) as malformed requests
+/// carrying **no code** — the class D-141 settled — and this is deliberately a
+/// *different* refusal rather than the same one moved:
 ///
 /// - The acts differ. A stored row's publish request is well-formed and its
 ///   preconditions hold; the operator's remedy is to clear the field, not to
@@ -219,10 +225,14 @@ pub const GRANDFATHER_UNTIL_FORBIDDEN: &str = "GRANDFATHER_UNTIL_FORBIDDEN";
 /// rostered-but-unauthorable field needs no second code and the operator's action
 /// does not change — D-146's line.
 ///
-/// **Its removal has an order** (D-177 clause 3, restated by D-179 clause 3): it
-/// is deleted in the same change that lands the ten Slice-10 refusals *and* the
-/// allowance compile. Not before, and not by a group tidying what looks like an
-/// unreachable branch.
+/// **Its removal has an order** (D-177 clause 3, restated by D-179 clause 3): a
+/// field leaves this rule in the same change that lands the rules *and* the
+/// artifact that gives its value meaning — never before, and never by a group
+/// tidying what looks like an unreachable branch. That is how the allowance's
+/// `none` half left: `inst-ac-gate`'s six refusals and
+/// [`crate::domain::allowance::compile`] landed together, and the field's arm
+/// narrowed to `carry` in the same change rather than being deleted whole. The
+/// window and the `carry` half wait on the same terms.
 pub const PRIMITIVE_RULES_UNBUILT: &str = "PRIMITIVE_RULES_UNBUILT";
 
 /// The per-tenant configuration the publish rule set is run under.
@@ -641,10 +651,15 @@ impl ValidationRule<PlanShape> for BundleMarketBasisUnmixed {
 /// **This is the gate that makes mounting the publish route safe.** Publish is
 /// the freezing act: a stored value becomes an immutable version on a ≥ 7-year
 /// horizon, with no further code change and no other gate that would notice.
-/// D-177 refuses these two fields on every *authoring* path, which is the right
-/// posture and an insufficient one — it holds only while every authoring path
-/// exists and refuses, while a row authored before that refusal landed was never
-/// offered to it at all. This rule does not ask how the value got there.
+/// D-177 refuses the remaining fields on every *authoring* path, which is the
+/// right posture and an insufficient one — it holds only while every authoring
+/// path exists and refuses, while a row authored before that refusal landed was
+/// never offered to it at all. This rule does not ask how the value got there.
+///
+/// **A row carrying an allowance it *can* honour passes** — a `{N, none}`
+/// declaration on a `usage` row is judged by `inst-ac-gate` like any other
+/// authored fact and compiled by publish. What this rule refuses of that field is
+/// the `carry` half alone.
 ///
 /// *(This paragraph said the bulk-import arm was "owed by Slice 12 and unbuilt".
 /// It is built — `domain::import` raises this same code on the bulk plane and the
@@ -663,13 +678,15 @@ struct NoUnjudgedPrimitive;
 
 /// Which unjudged Slice-10 primitives a row carries, and what is missing for each.
 ///
-/// **One list, two refusals.** This rule is the publish backstop (D-179); the
-/// bulk import's Phase-1 arm (D-177) refuses the same fields at authoring, where
-/// the operator can still fix the batch. A second spelling of the pair is a
-/// second thing to update when Slice 10 lands — and [`PRIMITIVE_RULES_UNBUILT`]
-/// names the **reason** rather than the field precisely so that a third
-/// rostered-but-unauthorable field needs no second code. It needs no second list
-/// either.
+/// **One list, three refusals.** This rule is the publish backstop (D-179); the
+/// bulk import's Phase-1 arm (D-177) and `api::rest::prices` refuse the same
+/// things at authoring, where the operator can still fix the batch. A second
+/// spelling is a second thing to update — and this list is what proved the point
+/// when Slice 10's allowance landed: the allowance arm narrowed from *the field*
+/// to *`rolloverPolicy = carry`* in **one** place and all three surfaces moved
+/// together. [`PRIMITIVE_RULES_UNBUILT`] names the **reason** rather than the
+/// field for the same economy, so a fourth rostered-but-unhonourable value needs
+/// no second code.
 ///
 /// The second element is what is missing, which differs per field and is what
 /// makes the two refusals readable rather than generic; each caller wraps it in
@@ -678,16 +695,22 @@ struct NoUnjudgedPrimitive;
 #[must_use]
 pub fn unjudged_primitives(row: &PriceRow) -> Vec<(&'static str, &'static str)> {
     let mut carried = Vec::new();
-    if row.included_allowance.is_some() {
+    if row
+        .included_allowance
+        .is_some_and(|allowance| allowance.rollover_policy.is_carry())
+    {
         carried.push((
-            "includedAllowance",
-            "the compile that gives the value meaning",
+            "includedAllowance with rolloverPolicy = carry",
+            "its compiled per-period grant has no store in this gear: `pricing_plan_grant` \
+             (D-52) does not exist, so `inst-ac-carry`'s promotional grant would be neither \
+             written nor issued and the carried allowance would silently never arrive",
         ));
     }
     if row.tier_qualification_window.is_some() {
         carried.push((
             "tierQualificationWindow",
-            "the rate lock that gives the value meaning",
+            "the Slice-10 rules that would judge it are unbuilt, as is the rate lock \
+             (`inst-tt-lock`) that gives the value meaning",
         ));
     }
     carried
@@ -705,9 +728,8 @@ impl ValidationRule<PlanShape> for NoUnjudgedPrimitive {
                     PRIMITIVE_RULES_UNBUILT,
                     record.price_id.to_string(),
                     format!(
-                        "this row carries `{field}`, and the Slice-10 rules that would judge it \
-                         are unbuilt, as is {missing}; publish stops rather than freezing an \
-                         unjudged value into an immutable version"
+                        "this row carries `{field}`, and {missing}; publish stops rather than \
+                         freezing an unjudged value into an immutable version"
                     ),
                 );
             }

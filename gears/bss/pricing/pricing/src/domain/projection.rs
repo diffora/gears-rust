@@ -70,16 +70,21 @@
 //! every resolved plan subject, and its former other half is not a field at all
 //! — see that constant's own doc for why.
 //!
-//! # What it carries and **should not**: two Slice-10 primitives nothing judges
+//! # The one Slice-10 primitive still nothing judges
 //!
 //! [`row_value`] renders `tierQualificationWindow` and `includedAllowance` into
-//! the delta, and **Slice 10 has landed nothing else**: not one of the ten
-//! refusals `inst-ac-gate` / `inst-tt-forbidden` / `inst-tt-window-pair` /
-//! `inst-tt-zero-band` / `inst-tt-fixture` state, and not the allowance compile
-//! that gives the declaration its meaning. A version this module projects
-//! therefore freezes, into an INSERT-only store on the ≥ 7-year truth horizon, two
-//! fields no rule in this gear has judged and no compiler has honoured — and
-//! rating would bill an accepted allowance from the first unit.
+//! the delta. The **allowance half is now judged and compiled** — `inst-ac-gate`'s
+//! six refusals are registered row-local rules and
+//! [`crate::domain::allowance::compile`] materializes the `$0` band, the offset
+//! ladder and the marker into this very payload — with one half still owed:
+//! `rolloverPolicy = carry`, whose artifact is a `pricing_plan_grant` row
+//! (`inst-ac-carry`, D-52) and whose table this gear does not have.
+//!
+//! `tierQualificationWindow` is untouched: not one of `inst-tt-forbidden` /
+//! `inst-tt-window-pair` / `inst-tt-zero-band` / `inst-tt-fixture` exists, and
+//! neither does the rate lock (`inst-tt-lock`) that would give a value meaning.
+//! Rendered into a version, it would freeze — into an INSERT-only store on the
+//! ≥ 7-year truth horizon — a field no rule in this gear has judged.
 //!
 //! **It is not reachable, and what holds the line is a rule rather than an
 //! absence.** This paragraph used to say the line was held by "a single refusal at
@@ -90,8 +95,9 @@
 //! true and the freeze did not. Three guards hold it, none of them an absence:
 //!
 //! 1. [`crate::domain::publish::rules::NoUnjudgedPrimitive`], a **registered
-//!    publish rule**, refuses either field at precheck and again inside the commit
-//!    transaction — this is the one that survives a new writer.
+//!    publish rule**, refuses the window and a `carry` allowance at precheck and
+//!    again inside the commit transaction — this is the one that survives a new
+//!    writer.
 //! 2. `api::rest::prices::refuse_unlanded_primitives`, on the two interactive
 //!    price routes.
 //! 3. `domain::import`'s inherited `PRIMITIVE_RULES_UNBUILT` arm, on the bulk
@@ -106,10 +112,10 @@
 //! ([`crate::domain::evaluation_policy`]), which says the opposite of a warning:
 //! it tells a consumer both are part of the field set an evaluator reads.
 //!
-//! **Whoever adds a writer of a `PriceRow` owes either the ten Slice-10 refusals
-//! or a refusal at their own boundary** — the publish rule catches what reaches
-//! publish, and a writer that stores a value the rule then refuses has built a row
-//! nobody can publish.
+//! **Whoever adds a writer of a `PriceRow` owes either the remaining Slice-10
+//! refusals or a refusal at their own boundary** — the publish rule catches what
+//! reaches publish, and a writer that stores a value the rule then refuses has
+//! built a row nobody can publish.
 //!
 //! Deleting the two fields from this renderer is *not* the fix — D-129's
 //! supersession guard compares them between a predecessor and a successor, and a
@@ -1103,6 +1109,25 @@ fn price_value(record: &PriceRecord, tax: Option<&RowTaxProjection>) -> JsonValu
 /// from and a nesting level nothing in the design set declares would be a wire
 /// structure invented here. Split out of [`price_value`] so neither exceeds the
 /// line budget, and destructured exhaustively for the reason that one is.
+///
+/// # This is where the D-45 allowance compile is materialized (D-130)
+///
+/// The compile is a **projection, never a write-back**: the row's truth stays
+/// exactly as authored and the compiled artifacts are materialized *here*, into
+/// the read model and the `pricingSnapshotRef` the version freezes. So on an
+/// allowance-carrying row three of the members below are the **compiled** value
+/// and not the stored column — `modelKind` (the presented `graduated` kind),
+/// `bands` (the `$0` band plus the offset ladder), and `unitRateNanoMinor`
+/// (`null`, because an untiered row's rate is folded into the top band) — and one
+/// member is added, `allowanceMarker`. `includedAllowance` keeps carrying the
+/// **authored** declaration beside them, which is what makes the compile
+/// re-entrant: the input a supersession, repricing successor or clone recompiles
+/// from is right there.
+///
+/// **Compile-equivalence (AC #90a)** is what makes that safe to do silently: the
+/// projected form is byte-identical in evaluation terms to the hand-authored
+/// `$0`-band row, so a consumer needs no allowance-specific arithmetic and the
+/// marker is for display and the included-vs-billed reporting split only.
 fn row_value(row: &PriceRow) -> JsonValue {
     let PriceRow {
         charge_kind,
@@ -1130,16 +1155,34 @@ fn row_value(row: &PriceRow) -> JsonValue {
         min_qty_usage_fallback,
         discount_ref,
     } = row;
+    // `inst-ac-band` / `inst-ac-marker`. `None` on every row that declares no
+    // allowance -- which is every row until one does -- and the three members it
+    // overrides then read the stored columns exactly as they always have.
+    let compiled = crate::domain::allowance::compile(row);
     json!({
         "chargeKind": charge_kind.as_str(),
-        "modelKind": model_kind.map(model_kind_wire),
+        "modelKind": compiled.as_ref().map_or_else(
+            || model_kind.map(model_kind_wire),
+            |compiled| Some(model_kind_wire(compiled.presented_kind)),
+        ),
         "amountMinor": amount_minor.map(crate::domain::money::MinorAmount::get),
         // The `per_unit` rate, in 10^-9 minor units (D-311). A member of its own
         // rather than a second meaning for `amountMinor`: a consumer reading the
         // old name would otherwise get a number a billion times too large, on a
         // read-model row frozen for seven years.
-        "unitRateNanoMinor": unit_rate.map(crate::domain::money::RateMinor::nano_minor),
-        "bands": bands.iter().map(band_value).collect::<Vec<_>>(),
+        //
+        // `null` on a compiled row: the authored rate is the top band's rate
+        // there, and a payload carrying both would hand a consumer two competing
+        // prices -- the exact thing `inst-mk-required`'s placement matrix keeps
+        // off every other row.
+        "unitRateNanoMinor": compiled.as_ref().map_or_else(
+            || unit_rate.map(crate::domain::money::RateMinor::nano_minor),
+            |_| None,
+        ),
+        "bands": compiled.as_ref().map_or_else(
+            || bands.iter().map(band_value).collect::<Vec<_>>(),
+            |compiled| compiled.bands.iter().map(band_value).collect::<Vec<_>>(),
+        ),
         "packageSize": package_size,
         "packagePriceMinor": package_price_minor.map(crate::domain::money::MinorAmount::get),
         "quantitySource": quantity_source.map(QuantitySource::as_str),
@@ -1152,6 +1195,9 @@ fn row_value(row: &PriceRow) -> JsonValue {
         "aggregationFunction": aggregation_function.map(AggregationFunction::as_str),
         "aggregationGranularity": aggregation_granularity.map(AggregationGranularity::as_str),
         "maxHoldGranules": max_hold_granules,
+        // The **authored** declaration, unchanged -- the compile's own input,
+        // which D-130 keeps in truth precisely so that it still exists on the
+        // second run.
         "includedAllowance": included_allowance.map(|allowance| {
             let IncludedAllowance {
                 quantity,
@@ -1159,6 +1205,21 @@ fn row_value(row: &PriceRow) -> JsonValue {
             } = allowance;
             json!({ "quantity": quantity, "rolloverPolicy": rollover_policy.as_str() })
         }),
+        // The first-class marker (`inst-ac-marker`). Display ("includes N
+        // units") and the included-vs-billed reporting split read **this**, never
+        // a `$0` first band -- a hand-authored free band carries no marker, and
+        // that difference is what D-45 exists for. `authoredModelKind` rides
+        // beside it per D-59 ("the authored kind retained beside the marker"):
+        // it is what tells a reader the top band's rate is a folded
+        // `unitRateNanoMinor` rather than an authored band. Neither the member
+        // name nor the marker's is spelled anywhere in the design set; both are
+        // minted here and reported as mints.
+        "allowanceMarker": compiled.as_ref().map(|compiled| json!({
+            "quantity": compiled.marker.quantity,
+            "rolloverPolicy": compiled.marker.rollover_policy.as_str(),
+            "source": compiled.marker.source.as_str(),
+            "authoredModelKind": model_kind_wire(compiled.authored_kind),
+        })),
         // The reservation pair (`inst-rv-attrs`), flat beside the row's other
         // authored facts for this function's stated reason. Rating sources the
         // self-service reserved rate from here rather than from Contracts

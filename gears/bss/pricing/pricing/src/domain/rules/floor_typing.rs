@@ -27,6 +27,7 @@
 
 use toolkit_macros::domain_model;
 
+use crate::domain::allowance::presented_bands;
 use crate::domain::price_row::PriceRow;
 use crate::domain::validation::{ValidationReport, ValidationRule};
 
@@ -65,12 +66,13 @@ pub const FLOOR_FALLBACK_WITHOUT_FLOOR: &str = "FLOOR_FALLBACK_WITHOUT_FLOOR";
 /// half that band unreachable — which is legal and is almost always a mistake.
 ///
 /// `inst-ft-warn` extends this to the `$0` allowance band, "where the floor
-/// silently voids part of the granted allowance". **That half is not built**:
-/// the compiled `[0, N)` band is D-45's and the allowance compile does not exist
-/// (D-177/D-179 refuse the field on every path). What is built is the
-/// hand-authored case — a floor inside any band, priced or `$0` — which covers
-/// `inst-ft-warn`'s original wording plus the hand-authored half of its 2026-07-31
-/// extension. The compiled half arrives with the compile.
+/// silently voids part of the granted allowance". **That half is built now**: the
+/// rule reads the row's *presented* band set
+/// ([`presented_bands`](crate::domain::allowance::presented_bands)), so a floor
+/// inside the compiled `[0, N)` band warns exactly as one inside a hand-authored
+/// `$0` first band does. Reading the authored set instead would have missed the
+/// compiled band entirely on a `per_unit` row, which has no bands at all until
+/// the compile runs.
 pub const FLOOR_INSIDE_PRICED_BAND: &str = "FLOOR_INSIDE_PRICED_BAND";
 
 /// A `usage` floor declares what happens beneath it, and a fallback has a floor.
@@ -126,6 +128,10 @@ impl ValidationRule<PriceRow> for FloorOutsideBands {
         // extends it to a `$0` band; neither is specific to one floor type, and a
         // purchase floor inside a priced band hides exactly as much quantity as a
         // usage one.
+        // The **presented** set (D-45): what a consumer rates from, which is the
+        // compiled ladder on an allowance row and the authored one everywhere
+        // else. `inst-ft-warn`'s allowance half is exactly the difference.
+        let bands = presented_bands(subject);
         for (label, floor) in [
             ("purchase", subject.min_qty_purchase),
             ("usage", subject.min_qty_usage),
@@ -134,7 +140,7 @@ impl ValidationRule<PriceRow> for FloorOutsideBands {
             // Strictly inside: a floor **at** a band's lower bound hides nothing,
             // which is the authoring an operator who noticed the overlap would
             // produce. Only a floor above the bound and below the top does.
-            for band in &subject.bands {
+            for band in &bands {
                 let inside =
                     floor > band.from_qty && band.to_qty.closed_at().is_none_or(|top| floor < top);
                 if inside {

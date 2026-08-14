@@ -161,3 +161,72 @@ fn a_floor_inside_the_open_top_band_warns() {
         warnings(&run(&row))
     );
 }
+
+// ---------------------------------------------------------------------------
+// `inst-ft-warn`'s allowance half (D-45) — the compiled `[0, N)` band.
+// ---------------------------------------------------------------------------
+
+/// A usage floor inside the **compiled** allowance band warns, "where the floor
+/// silently voids part of the granted allowance".
+///
+/// This is the half `FLOOR_INSIDE_PRICED_BAND`'s doc recorded as unbuilt: the
+/// `[0, N)` band exists only in the projection, so a rule reading
+/// `subject.bands` could not see it — and on an untiered row there are no
+/// authored bands at all.
+#[test]
+fn a_usage_floor_inside_the_compiled_allowance_band_warns() {
+    let mut row = PriceRow::new(ChargeKind::Usage, Some(ModelKind::PerUnit));
+    row.meter = Some("storage.gb".to_owned());
+    row.billing_granularity = Some(BillingGranularity::PerHour);
+    row.unit_rate = Some(rate(6));
+    row.min_qty_usage = Some(40);
+    row.min_qty_usage_fallback = Some(MinQtyUsageFallback::Exception);
+
+    // Without a declaration the row has no bands at all, so nothing to warn on.
+    assert!(
+        warnings(&run(&row)).is_empty(),
+        "the untiered row carries no band the floor could sit inside"
+    );
+
+    // With one, the compiled `[0, 100)` band is what the floor of 40 hides half
+    // of.
+    row.included_allowance = Some(crate::domain::price_row::IncludedAllowance {
+        quantity: 100,
+        rollover_policy: crate::domain::price_row::RolloverPolicy::None,
+    });
+    assert_eq!(
+        warnings(&run(&row)),
+        vec![FLOOR_INSIDE_PRICED_BAND.to_owned()],
+        "the floor voids 40 of the 100 granted units, and the operator hears about it before the \
+         publish freezes it"
+    );
+    assert!(violations(&run(&row)).is_empty(), "it warns, never blocks");
+}
+
+/// And the offset ladder is what a floor on a tiered allowance row is judged
+/// against, not the authored one — a floor of `1_050` sits inside the *compiled*
+/// `[100, 1_100)` band and outside the authored `[0, 1_000)`.
+#[test]
+fn a_floor_on_a_tiered_allowance_row_is_judged_against_the_offset_ladder() {
+    let mut row = banded_row();
+    row.min_qty_purchase = Some(1_050);
+    // Against the authored ladder 1_050 falls in `[1_000, open)`, which warns.
+    assert_eq!(
+        warnings(&run(&row)),
+        vec![FLOOR_INSIDE_PRICED_BAND.to_owned()]
+    );
+
+    row.included_allowance = Some(crate::domain::price_row::IncludedAllowance {
+        quantity: 100,
+        rollover_policy: crate::domain::price_row::RolloverPolicy::None,
+    });
+    // Against the compiled ladder it falls in `[100, 1_100)` — still a warning,
+    // and about a different band. The assertion that matters is that the *band
+    // named* is the compiled one, because that is the quantity the floor really
+    // hides.
+    let detail = run(&row).warnings[0].detail.clone();
+    assert!(
+        detail.contains("starting at 100"),
+        "the compiled band is the one the floor hides quantity in: {detail}"
+    );
+}

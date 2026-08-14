@@ -883,6 +883,58 @@ fn both_fields_on_one_row_are_reported_separately_and_name_the_row() {
     }
 }
 
+/// The list, at the seam all three doors read (D-45's landing narrowed it).
+///
+/// **The positive control this rule most needed.** Every case above hands the
+/// rule a row it refuses, so all of them would pass identically against the
+/// pre-D-45 arm that refused `includedAllowance` outright. The one assertion that
+/// distinguishes the two is that a `{N, none}` declaration produces **nothing**:
+/// it has a rule that judges it (`inst-ac-gate`) and a compile that honours it,
+/// which is exactly what D-177 clause (3) required before the field could leave.
+#[test]
+fn the_unjudged_list_refuses_a_carried_allowance_and_admits_a_compiled_one() {
+    use crate::domain::price_row::{IncludedAllowance, RolloverPolicy, TierQualificationWindow};
+
+    let mut row = PriceRow::new(ChargeKind::Usage, Some(ModelKind::Graduated));
+    assert!(
+        super::unjudged_primitives(&row).is_empty(),
+        "a row declaring nothing carries nothing"
+    );
+
+    row.included_allowance = Some(IncludedAllowance {
+        quantity: 100,
+        rollover_policy: RolloverPolicy::None,
+    });
+    assert!(
+        super::unjudged_primitives(&row).is_empty(),
+        "rolloverPolicy = none is judged and compiled: it must not be refused as unbuilt"
+    );
+
+    row.included_allowance = Some(IncludedAllowance {
+        quantity: 100,
+        rollover_policy: RolloverPolicy::Carry,
+    });
+    let carried = super::unjudged_primitives(&row);
+    assert_eq!(carried.len(), 1, "{carried:?}");
+    assert!(
+        carried[0].0.contains("carry"),
+        "the entry names the half at fault rather than the field: {:?}",
+        carried[0]
+    );
+    assert!(
+        carried[0].1.contains("pricing_plan_grant"),
+        "and says what is missing, which is a store rather than a rule: {:?}",
+        carried[0]
+    );
+
+    row.tier_qualification_window = Some(TierQualificationWindow::Current);
+    assert_eq!(
+        super::unjudged_primitives(&row).len(),
+        2,
+        "clearing one leaves the other, so each is its own entry"
+    );
+}
+
 /// The code is spelled as the design set spells it (`01-foundation.md` §3.3).
 #[test]
 fn the_unjudged_primitive_code_is_spelled_as_the_design_set_spells_it() {

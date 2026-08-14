@@ -45,32 +45,50 @@
 //! — and it makes the authz `resource_id` argument a fiction, since the gate is
 //! asked about a resource the handler then does not confirm.
 //!
-//! # Two Slice-10 primitives are refused here, not validated
+//! # What Slice 10 has not landed is refused here, not validated
 //!
-//! `tierQualificationWindow` (D-40, D-60) and `includedAllowance` (D-45, D-130)
-//! are members of [`PriceContentView`] and are refused with
-//! [`DomainError::InvalidRequest`] the moment a request carries a non-null one.
-//! The reason is that Slice 10 has landed *nothing else*: neither the ten
-//! refusals `inst-ac-gate` / `inst-tt-forbidden` / `inst-tt-window-pair` /
-//! `inst-tt-zero-band` / `inst-tt-fixture` state, nor the allowance compile
-//! (`inst-ac-band`, `inst-ac-marker`, `inst-ac-carry`) that gives the declaration
-//! its meaning. Storing a value this gear can neither judge nor honour is
-//! precisely the state `inst-tt-forbidden` names when it says *an
-//! accepted-but-ignored value would mask authoring errors* — and the projector
-//! and the evaluation-policy roster already carry both fields, so a stored value
-//! that reached publish would freeze into an immutable version. *(This sentence
-//! said "the day Slice 5 mounts the publish route". It is mounted, and the freeze
-//! did not follow, because `publish::rules::NoUnjudgedPrimitive` refuses either
-//! field inside the publish set — see D-298. The guard on this surface still earns its
+//! `tierQualificationWindow` (D-40, D-60) and the **`carry`** half of
+//! `includedAllowance` (D-45, D-130) are members of [`PriceContentView`] and are
+//! refused with [`DomainError::InvalidRequest`] the moment a request carries
+//! one.
+//!
+//! **The allowance's `none` half is no longer among them.** D-177 clause (3)
+//! made this refusal removable only in the change that lands the rules *and* the
+//! compile, and that is the change: `inst-ac-gate`'s six refusals are registered
+//! row-local rules ([`crate::domain::rules::allowance`]) that this very write
+//! runs, and `inst-ac-band` / `inst-ac-marker` are
+//! [`crate::domain::allowance`], materialized into the read model by the
+//! projector. A `{N, none}` declaration is therefore judged when it arrives and
+//! honoured when it publishes, which is the whole of what the refusal was
+//! holding the line for.
+//!
+//! What is still refused, and why it is a store rather than a rule:
+//!
+//! - **`tierQualificationWindow`, at any value** — none of `inst-tt-forbidden` /
+//!   `inst-tt-window-pair` / `inst-tt-zero-band` / `inst-tt-fixture` exists, nor
+//!   does the rate lock (`inst-tt-lock`). Storing a value this gear can neither
+//!   judge nor honour is precisely the state `inst-tt-forbidden` names when it
+//!   says *an accepted-but-ignored value would mask authoring errors*.
+//! - **`includedAllowance` with `rolloverPolicy = carry`** — `inst-ac-carry`
+//!   materializes a `promotional` grant into `pricing_plan_grant` (D-52), a
+//!   table this gear does not have, so the carried allowance would freeze into
+//!   an immutable version and never be issued.
+//!
+//! The projector and the evaluation-policy roster carry both fields, so a stored
+//! value that reached publish would freeze. *(This sentence said "the day Slice 5
+//! mounts the publish route". It is mounted, and the freeze did not follow,
+//! because `publish::rules::NoUnjudgedPrimitive` refuses what is still unbuilt
+//! inside the publish set — see D-298. The guard on this surface still earns its
 //! place, because a row stored here that publish then refuses is a row nobody can
 //! publish.)*
 //!
-//! Building the ten refusals **without** the compile would be worse, not
-//! better: a `graduated` row carrying `{100, none}` would pass all six
-//! `inst-ac-gate` rules, publish, and then be billed from unit one — an
+//! Building the refusals **without** the compile would have been worse, not
+//! better: a `graduated` row carrying `{100, none}` would have passed all six
+//! `inst-ac-gate` rules, published, and then been billed from unit one — an
 //! allowance accepted, *validated*, and silently ignored. That is the shape
 //! D-149 clause (3), D-161 clause (1), D-167 clause (3) and D-168 clause (1)
-//! each refuse one artifact over.
+//! each refuse one artifact over, and it is why the six and the compile landed
+//! in one change.
 //!
 //! The members **stay** on the view. D-174 clause (1) puts a member the gear
 //! does not model outside the idempotency digest and therefore inside the replay
@@ -1434,14 +1452,38 @@ fn none_anchored(
     Ok(policy)
 }
 
-/// Refuse the two Slice-10 primitives until Slice 10 lands.
+/// Refuse what Slice 10 has not landed: the qualification window, and the
+/// **`carry`** half of the allowance.
+///
+/// # The window, at any value
 ///
 /// The refusal is **not value-conditioned**: `inst-tt-forbidden` refuses an
 /// *explicit* window of any value, `current` included, so a check that only
 /// caught `trailing_period` would accept the default spelled out and store a
-/// field nothing judges. The same holds for the allowance under either rollover
-/// policy — `none` needs the band compile and `carry` needs a
-/// `pricing_plan_grant` row, and neither exists.
+/// field nothing judges.
+///
+/// # The allowance, narrowed to `carry`
+///
+/// `includedAllowance {N, none}` is **authorable now**: `inst-ac-gate`'s six
+/// refusals judge it row-locally at this very write
+/// ([`crate::domain::rules::allowance`]) and publish compiles it
+/// ([`crate::domain::allowance`]), so the value has both a rule and a meaning —
+/// the two things D-177 clause (3) required before the refusal could go.
+///
+/// `carry` does not, and the reason is a store rather than a rule: its artifact
+/// is a `promotional` grant row in `pricing_plan_grant` (`inst-ac-carry`, D-52),
+/// a table this gear does not have. Accepting one would freeze a carry horizon
+/// nothing ever issues — the allowance would simply not arrive, at zero price
+/// delta and with no alarm, which is the D-129 failure mode with a different
+/// cause. So it keeps D-177's posture and
+/// [`unjudged_primitives`](crate::domain::publish::rules::unjudged_primitives)
+/// keeps the matching publish backstop.
+///
+/// The policy is compared against the wire token rather than a parsed one
+/// because this runs **before** the row is built, deliberately: the refusal is
+/// about the field, so it must precede the enum-spelling check that would
+/// otherwise tell a caller their `carry` was misspelled. A token that is neither
+/// `none` nor `carry` still reaches `wire_token` below and is refused there.
 ///
 /// The message names the field and says why, because the caller's next action
 /// differs from every other 400 on this surface: there is nothing to correct in
@@ -1457,12 +1499,18 @@ fn refuse_unlanded_primitives(view: &PriceContentView) -> Result<(), DomainError
                 .to_owned(),
         ));
     }
-    if view.included_allowance.is_some() {
+    if view
+        .included_allowance
+        .as_ref()
+        .is_some_and(|allowance| allowance.rollover_policy == RolloverPolicy::Carry.as_str())
+    {
         return Err(DomainError::InvalidRequest(
-            "content.included_allowance is not supported yet: the gear can store the declaration \
-             and cannot honour it. Slice 10's allowance compile (the $0 band, the offset band set, \
-             the display marker, the carry grant) and its six publish refusals have not landed, so \
-             a stored allowance would be billed from the first unit. Omit the field"
+            "content.included_allowance with rollover_policy = carry is not supported yet: the \
+             gear can store the declaration and cannot issue it. inst-ac-carry materializes a \
+             per-period promotional grant into pricing_plan_grant, a table this gear does not \
+             have, so a carried allowance would be frozen into an immutable version and never \
+             granted. rollover_policy = none is authorable: it compiles to the $0 band, the \
+             offset ladder and the display marker"
                 .to_owned(),
         ));
     }

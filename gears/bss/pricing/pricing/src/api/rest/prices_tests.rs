@@ -185,7 +185,7 @@ fn the_read_half_still_renders_both_slice_ten_primitives() {
 }
 
 #[test]
-fn the_request_half_refuses_each_slice_ten_primitive_and_accepts_their_absence() {
+fn the_request_half_refuses_what_slice_ten_has_not_landed_and_accepts_what_it_has() {
     // Delete `refuse_unlanded_primitives`' call in `content_of` and the two
     // refusal arms below stop failing - as does
     // `rest_prices.rs::a_create_carrying_a_tier_qualification_window_is_refused_at_any_value`.
@@ -207,24 +207,45 @@ fn the_request_half_refuses_each_slice_ten_primitive_and_accepts_their_absence()
         );
     }
 
-    for policy in ["none", "carry"] {
-        let refusal = content_of(&PriceContentView {
-            included_allowance: Some(IncludedAllowanceView {
-                quantity: 100,
-                rollover_policy: policy.to_owned(),
-            }),
-            ..clean_view()
-        })
-        .expect_err("an allowance under either policy is refused");
-        assert!(
-            matches!(
-                &refusal,
-                crate::domain::error::DomainError::InvalidRequest(detail)
-                    if detail.contains("included_allowance")
-            ),
-            "{refusal:?}"
-        );
-    }
+    // `carry` alone: its artifact is a `pricing_plan_grant` row and there is no
+    // such table, so an accepted declaration would freeze a horizon nothing
+    // issues.
+    let refusal = content_of(&PriceContentView {
+        included_allowance: Some(IncludedAllowanceView {
+            quantity: 100,
+            rollover_policy: "carry".to_owned(),
+        }),
+        ..clean_view()
+    })
+    .expect_err("a carried allowance is refused");
+    assert!(
+        matches!(
+            &refusal,
+            crate::domain::error::DomainError::InvalidRequest(detail)
+                if detail.contains("included_allowance") && detail.contains("carry")
+        ),
+        "{refusal:?}"
+    );
+
+    // And the positive control the whole slice exists for: `none` converts.
+    // Without it the case above would pass identically against the old
+    // field-wide refusal, which is the shape this change removed.
+    let converted = content_of(&PriceContentView {
+        included_allowance: Some(IncludedAllowanceView {
+            quantity: 100,
+            rollover_policy: "none".to_owned(),
+        }),
+        ..clean_view()
+    })
+    .expect("rolloverPolicy = none is authorable now: it compiles");
+    assert_eq!(
+        converted
+            .row
+            .included_allowance
+            .expect("the declaration survives the conversion")
+            .quantity,
+        100
+    );
 }
 
 #[test]
@@ -426,6 +447,37 @@ mod key_contradictions {
         // The identical content. Only the frozen half of the pair moved, which is
         // what makes the case above about the key rather than about `flat`.
         check(ChargeKind::Recurring, &clean_view()).expect("a flat recurring row is legal");
+    }
+
+    /// D-45's allowance joins this category (`ALLOWANCE_ON_NON_USAGE`).
+    ///
+    /// The declaration and the frozen `chargeKind` are both in the request, and
+    /// no later call moves the key, so the write refuses rather than storing a
+    /// row only publish could reject. The mirror case is the same content on a
+    /// usage key, which converts and is judged by the rest of `inst-ac-gate`.
+    #[test]
+    fn an_allowance_on_a_non_usage_key_is_refused_at_the_write() {
+        let declared = PriceContentView {
+            model_kind: Some("per_unit".to_owned()),
+            amount_minor: None,
+            unit_rate_nano_minor: Some(2_000_000_000),
+            billing_granularity: Some("whole_unit".to_owned()),
+            meter: Some("egress.gb".to_owned()),
+            included_allowance: Some(IncludedAllowanceView {
+                quantity: 100,
+                rollover_policy: "none".to_owned(),
+            }),
+            ..clean_view()
+        };
+
+        let refusal = check(ChargeKind::Recurring, &declared).expect_err("refused");
+        assert!(
+            refusal.contains("ALLOWANCE_ON_NON_USAGE"),
+            "expected the allowance gate's key code, got: {refusal}"
+        );
+
+        check(ChargeKind::Usage, &declared)
+            .expect("the identical content on a usage key is exactly what the compile admits");
     }
 
     #[test]

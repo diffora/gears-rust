@@ -42,6 +42,11 @@ fn the_pipeline_registers_every_row_local_instruction() {
     // this pipeline and never assembles a `PlanShape`. The test was renamed with
     // it: a roster whose name says "slice three" is a roster a later slice
     // hesitates to extend.
+    //
+    // `inst-ac-gate` and `inst-ac-band` joined on the same terms (D-45): the
+    // allowance gate judges one row against itself, and the compiled-set check
+    // judges the ladder that row projects. Both are here rather than in the
+    // Foundation plan set, and the corpus reaches both.
     assert_eq!(
         price_row_rules().rule_names(),
         vec![
@@ -59,6 +64,8 @@ fn the_pipeline_registers_every_row_local_instruction() {
             "inst-la-granularity",
             "inst-la-maxhold",
             "inst-rv-attrs",
+            "inst-ac-gate",
+            "inst-ac-band",
             "inst-ft-fallback",
             "inst-ft-warn",
         ]

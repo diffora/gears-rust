@@ -117,6 +117,58 @@ fn a_sum_row_requires_no_level_aggregation_variant_and_a_non_sum_row_does() {
     );
 }
 
+/// `inst-ac-band` — an allowance row is gated on the **compiled** kind.
+///
+/// An untiered `per_unit` usage row carrying `includedAllowance {N, none}` is
+/// rated as a band ladder, so gating it on `per_unit`'s fixture would admit a
+/// shape no joint fixture covers — and it needs the tiered-usage continuity
+/// variant for the counter it now has. Both halves are asserted, and the
+/// unadorned row is asserted beside them: without that, the case would pass
+/// against a mapping that demanded the continuity variant of every `per_unit`
+/// row ever published.
+#[test]
+fn an_allowance_carrying_untiered_row_is_gated_as_the_graduated_row_it_publishes_as() {
+    let mut plain = row(ModelKind::PerUnit);
+    plain.charge_kind = ChargeKind::Usage;
+    plain.meter = Some("compute.seconds".to_owned());
+    plain.billing_granularity = Some(BillingGranularity::PerHour);
+    plain.quantity_source = None;
+    plain.amount_minor = None;
+    plain.unit_rate = Some(rate(2));
+
+    assert!(
+        !required_variants(&plain, Reservation::Unreserved)
+            .contains(&Variant::SupersessionContinuity),
+        "an untiered metered row has no tier counter to continue"
+    );
+
+    let mut carrying = plain;
+    carrying.included_allowance = Some(crate::domain::price_row::IncludedAllowance {
+        quantity: 100,
+        rollover_policy: crate::domain::price_row::RolloverPolicy::None,
+    });
+    assert!(
+        required_variants(&carrying, Reservation::Unreserved)
+            .contains(&Variant::SupersessionContinuity),
+        "the compiled row is a tiered usage row, and the fixture is about the counter it has"
+    );
+
+    // And the refusal names the **compiled** kind, not the authored one: an
+    // operator looking `per_unit` up in the registry would find a green row and
+    // no explanation.
+    let closed = FixtureGate::closed();
+    let refusal = closed
+        .check(&carrying, Reservation::Unreserved)
+        .expect_err("a closed gate refuses everything");
+    let DomainError::FixtureMissing(detail) = refusal else {
+        panic!("the gate refuses with FIXTURE_MISSING");
+    };
+    assert!(
+        detail.contains("graduated"),
+        "the row publishes as graduated, so that is the kind whose fixture is missing: {detail}"
+    );
+}
+
 #[test]
 fn only_a_tiered_usage_row_requires_the_continuity_variant() {
     // D-22: the continuity fixture gates the first publish of any **tiered

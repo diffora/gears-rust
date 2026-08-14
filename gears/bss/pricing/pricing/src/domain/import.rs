@@ -300,7 +300,8 @@ fn key_contradictions(rows: &[ImportRow]) -> Vec<(usize, RowViolation)> {
     found
 }
 
-/// Rows carrying a Slice-10 primitive whose rules are unbuilt (D-177).
+/// Rows carrying a Slice-10 primitive whose rules or artifacts are unbuilt
+/// (D-177).
 ///
 /// **The refusal moves earlier, it does not move.** `domain::publish::rules`
 /// already refuses these fields at publish on its own authority (D-179), whatever
@@ -312,6 +313,14 @@ fn key_contradictions(rows: &[ImportRow]) -> Vec<(usize, RowViolation)> {
 /// It **inherits** `PRIMITIVE_RULES_UNBUILT` rather than minting a second code,
 /// which the design set states outright: the code names the reason, not the
 /// field, and one reason wants one code however many surfaces notice it.
+///
+/// **This arm narrowed rather than moving when D-45 landed**, and the narrowing
+/// cost nothing here: what it refuses is
+/// [`unjudged_primitives`](crate::domain::publish::rules::unjudged_primitives)'
+/// list, so the allowance's judged-and-compiled `none` half left all three
+/// surfaces in one edit and its `carry` half — whose grant has no
+/// `pricing_plan_grant` table — stayed on all three. A second spelling of the
+/// list here would have been a second thing to get right.
 fn unbuilt_primitives(rows: &[ImportRow]) -> Vec<(usize, RowViolation)> {
     let mut found = Vec::new();
     for (index, row) in rows.iter().enumerate() {

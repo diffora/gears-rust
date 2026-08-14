@@ -394,6 +394,17 @@ impl fmt::Display for RolloverPolicy {
 }
 
 /// `includedAllowance {quantity, rolloverPolicy}` (D-45).
+///
+/// The **authored declaration**, and it stays the row's truth: publish *compiles*
+/// it ([`crate::domain::allowance`]) into a `$0` first band, an offset ladder and
+/// a display marker, and materializes those into the read model without writing
+/// any of them back (D-130). That is what makes the compile re-entrant — a
+/// supersession, repricing successor or clone recompiles from this field and the
+/// authored bands, both of which are still here.
+///
+/// `rolloverPolicy = carry` is a different artifact — a per-period promotional
+/// grant in `pricing_plan_grant` (`inst-ac-carry`, D-52) — and it is still refused
+/// on every authoring path, because that table does not exist in this gear.
 #[domain_model]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct IncludedAllowance {

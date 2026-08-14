@@ -48,26 +48,38 @@
 //! for the same reason it is stated here — a reader is entitled to know which
 //! risk they are carrying.
 //!
-//! # Two rostered fields have no rules and no compile, and publish will freeze them
+//! # One rostered field still has no rule, and one half of a second has no store
 //!
-//! `tier_qualification_window` and `included_allowance` are in the roster below
-//! and **Slice 10 has landed nothing else**: not one of the ten refusals
-//! `inst-ac-gate` / `inst-tt-forbidden` / `inst-tt-window-pair` /
-//! `inst-tt-zero-band` / `inst-tt-fixture` state, and not the allowance compile
-//! (`inst-ac-band`, `inst-ac-marker`, `inst-ac-carry`) that gives the declaration
-//! its meaning. So the generation stamp tells a consumer these two fields are part of the set an
-//! evaluator reads, and nothing in this gear judges either value or honours the
-//! allowance.
+//! `tier_qualification_window` and `included_allowance` are both in the roster
+//! below, so the generation stamp tells a consumer both are part of the set an
+//! evaluator reads. As of D-45's landing that is **true of the allowance**:
+//! `inst-ac-gate`'s six refusals judge it and
+//! [`crate::domain::allowance::compile`] honours it, materializing the `$0` band,
+//! the offset ladder and the marker into the read model. Two things are still
+//! unhonoured and the roster promises them anyway:
+//!
+//! - `tier_qualification_window` — none of `inst-tt-forbidden` /
+//!   `inst-tt-window-pair` / `inst-tt-zero-band` / `inst-tt-fixture` exists, and
+//!   neither does the rate lock (`inst-tt-lock`);
+//! - `included_allowance` with `rolloverPolicy = carry` — `inst-ac-carry`'s
+//!   promotional grant needs `pricing_plan_grant` (D-52) and this gear has no
+//!   such table.
 //!
 //! What holds the line is **three refusals, and the load-bearing one is a rule**:
 //! [`crate::domain::publish::rules::NoUnjudgedPrimitive`] is registered in the
-//! publish set and refuses either field at precheck and again inside the commit
-//! transaction; `api::rest::prices::refuse_unlanded_primitives` rejects a non-null
-//! value on `POST …/plans/{planId}/prices` and `PATCH …/prices/{priceId}`; and
+//! publish set and refuses both at precheck and again inside the commit
+//! transaction; `api::rest::prices::refuse_unlanded_primitives` rejects them on
+//! `POST …/plans/{planId}/prices` and `PATCH …/prices/{priceId}`; and
 //! `domain::import` inherits the same code on the bulk plane. None of the three is
 //! a property of the type, the column or the roster — the domain model, the
 //! storage round trip and the D-129 supersession guard all carry both fields quite
 //! happily.
+//!
+//! **The roster does not move for any of this.** D-162 makes it an append-only
+//! log: removing a field nobody can author would bump a generation for a
+//! fabrication, and adding the allowance's `none` half changed no field name, so
+//! `ep-1` is unchanged by a slice landing. That is the property to keep in mind
+//! before widening it.
 //!
 //! **This paragraph said "the freeze is one route away", and that route is now
 //! mounted** (D-298). `POST …/plans/{planId}/publish` is merged in `module.rs` and
@@ -76,11 +88,10 @@
 //! freeze did not happen, because the publish rule landed with it. Corrected in
 //! place rather than deleted: the danger it described is real, and the reason it
 //! is closed should be readable by whoever next widens this roster. A group that
-//! adds a writer of `PriceRow` still owes the ten
-//! refusals or a second refusal at its own boundary. No DTO in this gear sets
-//! `deny_unknown_fields`, so the surface refusal is also contingent on both
-//! members remaining modelled fields rather than silently ignored ones (D-174
-//! clause 1).
+//! adds a writer of `PriceRow` still owes the remaining refusals or a second
+//! refusal at its own boundary. No DTO in this gear sets `deny_unknown_fields`, so
+//! the surface refusal is also contingent on both members remaining modelled
+//! fields rather than silently ignored ones (D-174 clause 1).
 
 use crate::domain::contracts::PlanChangeContract;
 use crate::domain::price_row::PriceRow;

@@ -219,6 +219,14 @@ const NANO_PER_MINOR_I64: i64 = 10_i64.pow(RATE_SUB_DECIMALS);
 pub struct RateMinor(i64);
 
 impl RateMinor {
+    /// The zero rate.
+    ///
+    /// A first-class value rather than a `from_nano_minor(0).expect(…)` at each
+    /// site: zero is a rate — `inst-tb-first` says so in as many words ("a `$0`
+    /// first band is valid") — and since D-45 the compiler *synthesises* one, so
+    /// the `[0, N)` band it prepends has a name rather than a literal.
+    pub const ZERO: Self = Self(0);
+
     /// Read a rate from the decimal literal an authoring surface submits.
     ///
     /// # Errors

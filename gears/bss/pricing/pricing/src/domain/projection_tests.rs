@@ -525,6 +525,221 @@ fn a_price_row_freezes_its_key_its_shape_and_its_bands() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// D-45 / D-130 — the allowance compile is materialized here, and nowhere else.
+// ---------------------------------------------------------------------------
+
+fn rate(nano: i64) -> RateMinor {
+    RateMinor::from_nano_minor(nano).expect("a non-negative rate")
+}
+
+/// A graduated usage row whose ladder is **priced from the origin**.
+///
+/// [`graduated_row`]'s own first band is `$0`, which is the hand-authored
+/// allowance `ALLOWANCE_DOUBLE_FREE` refuses beside a declaration — so it is the
+/// one fixture in this file an allowance cannot be hung on, and hanging one on it
+/// would have produced a case that asserted the *absence* of a compile and read
+/// as asserting its presence.
+fn priced_from_the_origin() -> PriceRecord {
+    let mut record = graduated_row();
+    record.row.bands = vec![
+        TierBand::closed(0, 1_000, rate(5_000_000_000)),
+        TierBand::open(1_000, rate(3_000_000_000)),
+    ];
+    record
+}
+
+fn projected(record: PriceRecord) -> serde_json::Value {
+    PlanSubjectDelta {
+        prices: vec![record],
+        ..shape_only()
+    }
+    .to_value()
+    .get("prices")
+    .expect("prices")
+    .as_array()
+    .expect("array")[0]
+        .clone()
+}
+
+/// `inst-ac-band` + `inst-ac-marker` on a tiered row: the `$0` band is
+/// prepended, every authored bound is offset by `+N`, and the marker rides beside
+/// them.
+#[test]
+fn a_tiered_allowance_row_freezes_the_compiled_ladder_and_the_marker() {
+    let mut record = priced_from_the_origin();
+    record.row.included_allowance = Some(crate::domain::price_row::IncludedAllowance {
+        quantity: 100,
+        rollover_policy: crate::domain::price_row::RolloverPolicy::None,
+    });
+
+    let row = projected(record);
+
+    assert_eq!(
+        row.get("bands"),
+        Some(&json!([
+            { "fromQty": 0, "toQty": 100, "unitPriceNanoMinor": 0 },
+            { "fromQty": 100, "toQty": 1_100, "unitPriceNanoMinor": 5_000_000_000_i64 },
+            { "fromQty": 1_100, "toQty": null, "unitPriceNanoMinor": 3_000_000_000_i64 },
+        ])),
+        "the compiled set, not the authored one: this is what a consumer rates from"
+    );
+    assert_eq!(
+        row.get("allowanceMarker"),
+        Some(&json!({
+            "quantity": 100,
+            "rolloverPolicy": "none",
+            "source": "compiled",
+            "authoredModelKind": "graduated",
+        })),
+        "display and the included-vs-billed split read the marker, never a $0 band"
+    );
+    assert_eq!(
+        row.get("includedAllowance"),
+        Some(&json!({ "quantity": 100, "rolloverPolicy": "none" })),
+        "and the authored declaration rides beside it: D-130 keeps the compile's own input"
+    );
+}
+
+/// `inst-ac-band`'s untiered branch: the projection presents `graduated`, the
+/// rate moves into the top band, and the truth row is untouched.
+#[test]
+fn an_untiered_allowance_row_projects_graduated_with_the_rate_folded_into_the_top_band() {
+    let mut record = graduated_row();
+    record.row = PriceRow::new(ChargeKind::Usage, Some(ModelKind::PerUnit));
+    record.row.meter = Some("api_calls".to_owned());
+    record.row.unit_rate = Some(rate(2_300_000_000));
+    record.row.included_allowance = Some(crate::domain::price_row::IncludedAllowance {
+        quantity: 50,
+        rollover_policy: crate::domain::price_row::RolloverPolicy::None,
+    });
+    let truth = record.row.clone();
+
+    let row = projected(record);
+
+    assert_eq!(row.get("modelKind"), Some(&json!("graduated")));
+    assert_eq!(
+        row.get("bands"),
+        Some(&json!([
+            { "fromQty": 0, "toQty": 50, "unitPriceNanoMinor": 0 },
+            { "fromQty": 50, "toQty": null, "unitPriceNanoMinor": 2_300_000_000_i64 },
+        ]))
+    );
+    assert_eq!(
+        row.get("unitRateNanoMinor"),
+        Some(&json!(null)),
+        "the rate is the top band's now, and a payload carrying both would hand a consumer two          competing prices"
+    );
+    assert_eq!(
+        row.get("allowanceMarker")
+            .and_then(|m| m.get("authoredModelKind")),
+        Some(&json!("per_unit")),
+        "the authored kind is retained beside the marker (D-59): it is what says the top \
+         band's rate is a folded unitRateNanoMinor"
+    );
+
+    // D-130: the projection is a projection. The truth row still reads `per_unit`
+    // with its rate intact and zero bands.
+    assert_eq!(truth.model_kind, Some(ModelKind::PerUnit));
+    assert_eq!(truth.unit_rate, Some(rate(2_300_000_000)));
+    assert!(truth.bands.is_empty());
+}
+
+/// AC #90a — compile-equivalence, asserted at the wire.
+///
+/// Every priced member of the compiled row equals the hand-authored equivalent's.
+/// If the two ever diverge, Rating bills an allowance row differently from the
+/// row an operator would have written by hand to mean the same thing, and no
+/// other test in this file would notice.
+#[test]
+fn the_projected_allowance_row_is_the_hand_authored_equivalent_member_for_member() {
+    let mut declared = priced_from_the_origin();
+    declared.row.included_allowance = Some(crate::domain::price_row::IncludedAllowance {
+        quantity: 100,
+        rollover_policy: crate::domain::price_row::RolloverPolicy::None,
+    });
+
+    let mut by_hand = priced_from_the_origin();
+    by_hand.row.bands = vec![
+        TierBand::closed(0, 100, rate(0)),
+        TierBand::closed(100, 1_100, rate(5_000_000_000)),
+        TierBand::open(1_100, rate(3_000_000_000)),
+    ];
+
+    let compiled = projected(declared);
+    let authored = projected(by_hand);
+
+    for member in ["modelKind", "bands", "unitRateNanoMinor", "amountMinor"] {
+        assert_eq!(
+            compiled.get(member),
+            authored.get(member),
+            "{member} diverges, so the two rows do not rate the same"
+        );
+    }
+    // And the one member that must differ, or the marker would be inferable from
+    // a `$0` band after all — which is the inference D-45 exists to replace.
+    assert_eq!(authored.get("allowanceMarker"), Some(&json!(null)));
+    assert!(
+        compiled
+            .get("allowanceMarker")
+            .is_some_and(|m| !m.is_null())
+    );
+}
+
+/// The negative half: a row declaring no allowance freezes an explicit `null`
+/// marker and its own authored ladder.
+#[test]
+fn a_row_with_no_allowance_freezes_a_null_marker_and_its_authored_shape() {
+    let row = projected(priced_from_the_origin());
+
+    assert_eq!(
+        row.get("allowanceMarker"),
+        Some(&serde_json::Value::Null),
+        "present and null, not absent: a consumer tells `this gear does not publish the field` \
+         from `this row does not carry one` by the key"
+    );
+    assert_eq!(row.get("includedAllowance"), Some(&serde_json::Value::Null));
+    assert_eq!(
+        row.get("bands"),
+        Some(&json!([
+            { "fromQty": 0, "toQty": 1_000, "unitPriceNanoMinor": 5_000_000_000_i64 },
+            { "fromQty": 1_000, "toQty": null, "unitPriceNanoMinor": 3_000_000_000_i64 },
+        ])),
+        "the authored ladder, unmoved: the compile fires on no row that declares nothing"
+    );
+}
+
+/// A `carry` declaration compiles no band artifact, so the projection carries the
+/// declaration and **no** marker.
+///
+/// Such a row cannot be authored or published today (`PRIMITIVE_RULES_UNBUILT`),
+/// and this is here because the projector answers for rows whatever refused them:
+/// a marker on a carry row would be a `$0` band's worth of free quantity that
+/// `inst-ac-carry`'s grant is *also* supposed to give.
+#[test]
+fn a_carry_declaration_freezes_no_band_artifact() {
+    let mut record = priced_from_the_origin();
+    record.row.included_allowance = Some(crate::domain::price_row::IncludedAllowance {
+        quantity: 100,
+        rollover_policy: crate::domain::price_row::RolloverPolicy::Carry,
+    });
+
+    let row = projected(record);
+
+    assert_eq!(row.get("allowanceMarker"), Some(&serde_json::Value::Null));
+    assert_eq!(
+        row.get("includedAllowance"),
+        Some(&json!({ "quantity": 100, "rolloverPolicy": "carry" }))
+    );
+    assert_eq!(
+        row.get("bands"),
+        Some(&json!([
+            { "fromQty": 0, "toQty": 1_000, "unitPriceNanoMinor": 5_000_000_000_i64 },
+            { "fromQty": 1_000, "toQty": null, "unitPriceNanoMinor": 3_000_000_000_i64 },
+        ]))
+    );
+}
+
 /// Slice 10's six columns reach the frozen payload (`inst-rv-attrs`,
 /// `inst-ft-typed`, `inst-ft-fallback`, `inst-dr-boundary`).
 ///

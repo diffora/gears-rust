@@ -63,6 +63,7 @@ use std::path::Path;
 use bss_fixtures::{ModelKind, Registry, Variant};
 use tracing::error;
 
+use crate::domain::allowance::{is_presented_tiered, presented_model_kind};
 use crate::domain::error::DomainError;
 use crate::domain::price_row::{PriceRow, model_kind_wire};
 
@@ -141,8 +142,13 @@ impl Reservation {
 /// - [`Variant::SupersessionContinuity`] on a **tiered usage** row — D-22, which
 ///   ratified the continuity fixture as gating "the first publish of any tiered
 ///   usage kind (alongside that kind's own fixture)". Both halves are required:
-///   `is_tiered` because the fixture is about a tier counter, and `is_usage`
-///   because a non-usage row has no counter to continue.
+///   tieredness because the fixture is about a tier counter, and `is_usage`
+///   because a non-usage row has no counter to continue. Tieredness is read off
+///   the **presented** kind
+///   ([`is_presented_tiered`](crate::domain::allowance::is_presented_tiered)),
+///   which differs from [`PriceRow::is_tiered`] on exactly one shape: an
+///   untiered `per_unit` row carrying an `includedAllowance`, which publishes as
+///   a band ladder (`inst-ac-band`).
 /// - [`Variant::Reserved`] on a reserved row — `inst-rv-fixture`: "the
 ///   reservation variant requires its own joint golden fixture before publish
 ///   (registered into Slice 3's `FixtureGate`)". **This clause is that
@@ -162,7 +168,12 @@ pub fn required_variants(row: &PriceRow, reservation: Reservation) -> Vec<Varian
     if row.is_level() {
         required.push(Variant::LevelAggregation);
     }
-    if row.is_tiered() && row.is_usage() {
+    // The **presented** shape, not the authored one (`inst-ac-band`, D-45): an
+    // untiered `per_unit` row carrying an `includedAllowance` publishes as a
+    // band ladder, so the continuity fixture is about a counter it does have.
+    // Every other row presents what it authored, so this reads as `is_tiered`
+    // everywhere the compile does not fire.
+    if is_presented_tiered(row) && row.is_usage() {
         required.push(Variant::SupersessionContinuity);
     }
     if matches!(reservation, Reservation::Reserved) {
@@ -281,7 +292,13 @@ impl FixtureGate {
     /// `MODEL_KIND_MISSING`, and this gate must not be the one place that reads
     /// an absent kind as an admissible one.
     pub fn check(&self, row: &PriceRow, reservation: Reservation) -> Result<(), DomainError> {
-        let Some(kind) = row.model_kind else {
+        // The **presented** kind (`inst-ac-band`, D-45). A compiled allowance row
+        // is rated as a `graduated` ladder whatever it was authored as, so gating
+        // it on the authored `per_unit` fixture would admit a shape no joint
+        // fixture covers. `presented_model_kind` answers the authored kind on
+        // every row the compile does not fire for, which is all of them but this
+        // one.
+        let Some(kind) = presented_model_kind(row) else {
             return Err(DomainError::FixtureMissing(
                 "the row states no modelKind, so no conformance fixture resolves for it; \
                  a kind is authored explicitly and is never inferred at publish"
