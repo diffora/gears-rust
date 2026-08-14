@@ -1273,12 +1273,17 @@ where
     .map_err(|e| repo_failure(&e))?;
 
     // 8. The record of who did it — the debt `window_repo`'s module
-    // doc filed as "the store holds who *scheduled* a window and
-    // cannot answer who *shortened* it". It is answered by a record
+    // doc once filed as "the store holds who *scheduled* a window and
+    // cannot answer who *shortened* it", and now records as paid
+    // **here**, naming this site (Z8-9). It is answered by a record
     // rather than by an `updated_by` column, which is what makes it
     // payable without minting: a column no decision names would be
     // this group inventing storage, while `pricing_audit_log` is the
     // store D-135 already keys on the audited subject's aggregate.
+    // The one act-discrimination it does not carry is the action
+    // token — `Op::AUDIT_ACTION` is `Publish` for all three — so the
+    // acts are told apart by the states below and by the unit's
+    // subject, which is what `window_repo`'s doc now says too.
     audit_repo::append(
         runner,
         scope,

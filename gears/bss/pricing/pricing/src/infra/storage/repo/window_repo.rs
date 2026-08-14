@@ -138,7 +138,7 @@
 //!   rows on the key's `(currency, region)` — and is **zero** on a plan with no
 //!   recurring part. The cutover half is phase 5's and has no code to be absent from.
 //!
-//! # The [`AuditStamp`] is taken and the trail is **not** written here
+//! # The [`AuditStamp`] is taken here and the trail is written one layer up
 //!
 //! Every mutating call takes a stamp, because there is no unaudited entry point in
 //! this crate by design. [`schedule`] consumes it: the scheduler **is** the actor
@@ -146,32 +146,42 @@
 //! and `created_at` come off the stamp rather than off two more fields that could
 //! disagree with the record of the same act.
 //!
-//! `pricing_audit_log` gets nothing yet. The deferral is the phase plan's and is
-//! kept, but the mechanism first written here was wrong and is corrected:
+//! **No statement in this module writes `pricing_audit_log`, and the trail is not
+//! missing** — it is one layer up, at the single site all three of these mutations
+//! reach it through. [`crate::infra::window`]'s `mutate_in` dispatches to
+//! [`schedule`], [`adjust_effective_to`] and [`transition`] from one `write` and
+//! then appends one `NewAuditEntry` on the same runner, keyed on the plan's chain
+//! (`audit_repo::plan_chain`), with `actor_principal_id` taken off the stamp and
+//! `subject_ref` rendered by `audit_repo::window_ref`. So "who *shortened* it" is
+//! answerable, and it is answerable about the same act the approval plane names,
+//! because both planes spell the subject through that one helper.
+//!
+//! Two qualifications, since the paragraph this replaced was read as an absolute
+//! and it was only ever a statement about **this repository**:
+//!
+//! * The store still has no `updated_by` column, and that is unchanged and
+//!   deliberate: the actor of a *change* rides the audit record, which D-135 keys
+//!   on the audited subject's aggregate, rather than a column no decision names.
+//!   `created_by` remains frozen by the whitelist.
+//! * One token serves all three acts — `crate::infra::window`'s
+//!   `AUDIT_ACTION` is `AuditAction::Publish` for a schedule, a shortening and a
+//!   cancel alike — so the trail tells them apart only through `before_state` /
+//!   `after_state` and the act segment of the unit's subject. That is an open
+//!   coarseness in the action vocabulary, not a missing record.
+//!
+//! What binds the `window` subject token is not the schema:
 //! **`pricing_audit_log.subject_kind` is free `text` with no CHECK at all**
 //! (`m20260802_000010`, and `tests/postgres_migrations.rs`'s roster confirms it —
-//! the only audit CHECKs are `entry_kind`, `rollup` and `seq`). So writing a
-//! `window`-subject audit row would trip no constraint and would **not** break
-//! D-158 in the schema. What binds the token is the plan's discipline plus
-//! [`AuditSubjectKind`]'s Rust enumeration, which is paired with
-//! `chk_pricing_approval_subject_kind` — the **approval** table's CHECK — and that
-//! pairing is what must not be extended before a writer exists.
-//!
-//! **The sharper debt is not the audit row, and it is not deferrable by a
-//! signature.** [`adjust_effective_to`] is an always-material operator act (D-62:
-//! a shorten is always material) and it records **no actor anywhere**:
-//! `created_by` is frozen by the whitelist, this table has no `updated_by`, and no
-//! audit row is written. So the store holds who *scheduled* a window and cannot
-//! answer who *shortened* it — including who moved a money-bearing coverage end.
-//! That is a missing column, not a missing INSERT, and it is reported rather than
-//! patched: a column no decision names is not this group's to mint.
+//! the only audit CHECKs are `entry_kind`, `rollup` and `seq`). It is
+//! [`AuditSubjectKind`]'s Rust enumeration, paired with
+//! `chk_pricing_approval_subject_kind` — the **approval** table's CHECK — which is
+//! why that pairing is extended in the same change as a writer and not before.
 //!
 //! [`transition`]'s parameter is spelled `_stamp` because that path uses none of
 //! it, so the omission is visible at every call site instead of being a promise
 //! the signature makes and the body does not keep. [`adjust_effective_to`] does
 //! read it — `recorded_at` is the clock `inst-ws-immutable` is judged against
-//! there — and still writes no record, which is the same debt with one fewer
-//! marker on it.
+//! there.
 
 use chrono::{DateTime, Utc};
 use sea_orm::ActiveValue::Set;
