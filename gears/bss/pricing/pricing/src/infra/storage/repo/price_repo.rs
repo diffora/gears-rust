@@ -2372,10 +2372,12 @@ async fn read_key_occupants(
 ///
 /// Its absence was money, not tidiness, and compounded: the successor would rewrite
 /// the retained cohort's price, and the shorten would walk that generation's coverage
-/// inward while [`window_repo::adjust_effective_to`](super::window_repo::adjust_effective_to)
-/// still does not enforce D-04's `inst-co-bounds` (its own doc records that gap),
-/// stranding bound subscribers mid-cycle with no guard on either side (found missing by
-/// review, 2026-08-05).
+/// inward while nothing enforced D-04's `inst-co-bounds` at all, stranding bound
+/// subscribers mid-cycle with no guard on either side (found missing by review,
+/// 2026-08-05). The other side of that pair is closed as of 2026-08-14 —
+/// `infra::window`'s `refuse_horizon_uncovered` judges every window mutation on a
+/// grandfathered key against `grandfather_until` plus W6's margin — and this door
+/// is unaffected either way: it refuses the supersession outright, one act earlier.
 ///
 /// # Why it is a function of the key alone, and has two callers
 ///

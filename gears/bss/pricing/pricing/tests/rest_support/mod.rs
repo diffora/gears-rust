@@ -1649,6 +1649,26 @@ pub async fn seed_price_keyed(
     price_eligibility: PriceEligibility,
     cohort: Cohort,
 ) -> PriceRecord {
+    seed_price_keyed_with_horizon(harness, plan_id, region, price_eligibility, cohort, None).await
+}
+
+/// [`seed_price_keyed`] carrying a **grandfathering horizon**.
+///
+/// The one field the class exists for, and the only fixture that can reach it:
+/// `chk_pricing_price_grandfather_until` pairs a non-null `grandfather_until`
+/// with `price_eligibility = 'existing_grandfathered'` (D-147,
+/// `GRANDFATHER_UNTIL_FORBIDDEN`), so a caller passing one on any other class is
+/// refused by the store. Split off rather than added to every call site for
+/// [`seed_price_keyed`]'s own stated reason — one body, so the row a suite
+/// asserts about differs only in what it named.
+pub async fn seed_price_keyed_with_horizon(
+    harness: &Harness,
+    plan_id: Uuid,
+    region: &str,
+    price_eligibility: PriceEligibility,
+    cohort: Cohort,
+    grandfather_until: Option<DateTime<Utc>>,
+) -> PriceRecord {
     let key = ScopeKey::new(
         PlanId::new(plan_id),
         CurrencyCode::new("USD").expect("currency"),
@@ -1684,7 +1704,7 @@ pub async fn seed_price_keyed(
                         credit_on_downgrade: false,
                     }),
                     rounding_policy_ref: None,
-                    grandfather_until: None,
+                    grandfather_until,
                     supersedes_price_id: None,
                 },
                 created_by: SEED_ACTOR,

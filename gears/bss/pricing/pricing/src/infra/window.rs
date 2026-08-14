@@ -267,7 +267,7 @@ use crate::domain::ports::{CatalogVersionRegistryV1, registry_failure};
 use crate::domain::price_record::PriceRecord;
 use crate::domain::publish::PlanPublishUnit;
 use crate::domain::read_model::SubjectRef;
-use crate::domain::scope_key::{PlanId, ScopeKey};
+use crate::domain::scope_key::{PlanId, PriceEligibility, ScopeKey};
 use crate::domain::validation::ValidationReport;
 use crate::domain::window::{self, CoverageEnd, KeyWindows, WindowInterval, WindowState};
 use crate::infra::publish::assemble_from;
@@ -1187,6 +1187,10 @@ where
     if planned.op.may_remove_coverage() {
         refuse_trailing_void(&planned, &after, now)?;
     }
+    // D-04's `inst-co-bounds`, the half §6 names `adjust_effective_to` for. It is
+    // evaluated for **every** operation and not only the coverage-removing two:
+    // see the function's own doc.
+    refuse_horizon_uncovered(&planned, &after)?;
 
     // 3a. The two-person control, **after** every check above and
     // before anything at all is written. The order is the publish
@@ -1646,6 +1650,129 @@ fn refuse_trailing_void(
             )))
         }
     }
+}
+
+/// `inst-co-bounds` (D-04) — a grandfathered generation's coverage must reach
+/// through **`grandfatherUntil` + the longest billing cycle sold on the key**,
+/// and be open-ended when the horizon is null.
+///
+/// The margin exists because re-bind happens only at the **next renewal** after
+/// the horizon: a bound period that started before `grandfatherUntil` keeps
+/// rating against the generation's key until that renewal, so a window ending at
+/// the horizon strands subscribers for up to one full cycle. Nothing leaks —
+/// new subscriptions never bind a grandfathered row.
+///
+/// # It was enforced nowhere, and both accounts of that were out of date
+///
+/// D-04 says the bound is enforced *"at cutover and on every `effectiveTo`
+/// adjustment"*. The cutover half holds **by construction** (D-204 clause 4):
+/// `compose_cutover_windows` schedules the copy's window open-ended, and an open
+/// interval covers every instant the margin could name. The adjustment half was
+/// unbuilt, and `window_repo`'s two doc comments recorded the reason as *"the
+/// rule's second input has no producer anywhere in this crate … no function, no
+/// column, no type"*. That was true when it was written and is not now:
+/// [`coverage::longest_cycle_sold`] is W6's term, built for D-80's horizon and
+/// `inst-fg-trailing`'s floor, and this transaction already reads it —
+/// `PlanContext::margin`.
+///
+/// # Why every operation and not the two that remove coverage
+///
+/// [`refuse_trailing_void`] runs on a cancel or a `PATCH` because its floor is
+/// `max(current coverage end, now + margin)`, which no addition can cross. This
+/// floor is different: it is anchored on the **row's** horizon, not on the key's
+/// current coverage, so a key can be *authored* below it. The reachable shape is
+/// a **schedule** — the first bounded window on a grandfathered key whose row
+/// carries a horizon — and an extension that moves the end without reaching the
+/// floor is the second. Neither is a coverage removal, and both leave subscribers
+/// uncovered inside their own bound period. So this is asked of the interval set
+/// the mutation *produces*, whichever act produced it.
+///
+/// # The refusal reuses `WINDOW_TRAILING_VOID`, and that is a reading
+///
+/// §5 declares no code for `inst-co-bounds`; D-04's own step glosses the refusal
+/// as *"`WINDOW_HISTORICAL_IMMUTABLE`/`CUTOVER_GAP` semantics"*, and neither fits
+/// a schedule or an extension. `WINDOW_TRAILING_VOID` is declared as *"names the
+/// key and the first uncovered instant"* — this refusal's exact shape — and D-80
+/// records the three margins (its horizon, this bound, `inst-fg-trailing`'s
+/// floor) as **one** margin under three anchors. Minting a fifth window code
+/// would be this crate declaring a wire fact the design set does not, which
+/// D-204 clause (2) explicitly refuses to do. The naming question is reported as
+/// owed rather than answered here.
+///
+/// # What this does **not** cover
+///
+/// A grandfathered row that is still a **draft** carries no published generation
+/// on the key, so there is nothing here to judge; the publish pipeline's coverage
+/// rules own that world and do not check this bound either. Reported.
+fn refuse_horizon_uncovered(planned: &Planned, after: &KeyWindows) -> Result<(), DomainError> {
+    if planned.plan.key.price_eligibility() != PriceEligibility::ExistingGrandfathered {
+        return Ok(());
+    }
+    // The generation on **this** key, not the plan's grandfathered rows at large:
+    // the cohort axis makes every generation its own key (ADR-0002), and each
+    // carries its own horizon.
+    let Some(generation) = planned
+        .plan
+        .published
+        .iter()
+        .find(|row| row.scope_key == planned.plan.key)
+    else {
+        return Ok(());
+    };
+    let after_end = after.coverage_end();
+
+    let Some(horizon) = generation.grandfather_until else {
+        // D-04's parenthesis — *"open-ended when null"*. D-147: a grandfathered
+        // row with a null `grandfatherUntil` is **indefinite**, so no finite end
+        // can satisfy a bound that never arrives. Distinct from the margin case
+        // below and refused on its own words, because "no horizon" read as "a
+        // horizon of now" is the direction a money bound must never round in.
+        if matches!(after_end, CoverageEnd::OpenEnded) {
+            return Ok(());
+        }
+        return Err(DomainError::WindowTrailingVoid(format!(
+            "{}: the generation's grandfatherUntil is null, so its eligibility is indefinite and \
+             its window must stay open-ended; this leaves {} the first uncovered instant",
+            planned.plan.key,
+            after_end
+                .at()
+                .map_or_else(|| "every instant".to_owned(), |at| at.to_rfc3339())
+        )));
+    };
+
+    // `None` refuses, for `refuse_trailing_void`'s reason at full strength: it
+    // means the market sells recurring and the plan authored no frequency, so
+    // W6's term has *no value* — which is not `Some(zero)`, W6's "a plan with no
+    // recurring part needs no forward coverage".
+    let Some(margin) = planned.plan.margin else {
+        return Err(DomainError::WindowTrailingVoid(format!(
+            "{}: the plan sells a recurring row on this market and authors no frequency, so \
+             D-04's bound - grandfatherUntil plus the longest billing cycle sold on the key - has \
+             no value, and this generation's coverage cannot be shown to reach it",
+            planned.plan.key
+        )));
+    };
+
+    let floor = horizon + margin;
+    let covered = match after_end {
+        CoverageEnd::OpenEnded => true,
+        CoverageEnd::Ends(at) => at >= floor,
+        CoverageEnd::Uncovered => false,
+    };
+    if covered {
+        return Ok(());
+    }
+    Err(DomainError::WindowTrailingVoid(format!(
+        "{}: this generation is grandfathered until {} and its coverage must reach {} - that \
+         horizon plus the longest billing cycle sold on the key - so that every bound period \
+         stays rateable until its renewal re-bind; this leaves {} the first uncovered instant",
+        planned.plan.key,
+        horizon.to_rfc3339(),
+        floor.to_rfc3339(),
+        after_end
+            .at()
+            .map_or_else(|| "every instant".to_owned(), |at| at.to_rfc3339())
+    )))
 }
 
 /// Read every fact the validation needs, inside the writing transaction.

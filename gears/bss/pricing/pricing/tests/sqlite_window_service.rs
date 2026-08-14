@@ -73,7 +73,7 @@ use bss_pricing::domain::approval::{DecisionBy, WithdrawAuthority};
 use bss_pricing::domain::audit::AuditSubjectKind;
 use bss_pricing::domain::error::DomainError;
 use bss_pricing::domain::lifecycle::LifecycleState;
-use bss_pricing::domain::scope_key::PlanId;
+use bss_pricing::domain::scope_key::{Cohort, PlanId, PriceEligibility};
 use bss_pricing::domain::window::{CoverageEnd, KeyWindows, WindowInterval, WindowState};
 use bss_pricing::infra::approval::{DecideRequest, RegionGrant};
 use bss_pricing::infra::jobs::readmodel_warm::ReadModelWarmJob;
@@ -1654,4 +1654,180 @@ async fn a_window_needs_a_frozen_revision_and_the_store_says_so_too() {
         accepted.is_ok(),
         "one column apart, the same row stores: {accepted:?}"
     );
+}
+// D-04's `inst-co-bounds` — the grandfathered generation's two clocks.
+// ---------------------------------------------------------------------------
+
+/// The horizon the generation below is grandfathered until.
+fn horizon() -> DateTime<Utc> {
+    Utc.with_ymd_and_hms(2099, 10, 1, 0, 0, 0)
+        .single()
+        .expect("the fixed instant is unambiguous")
+}
+
+/// `horizon() + the longest billing cycle sold on the key`.
+///
+/// The seeded plan is `monthly`, and W6's margin rounds a month **up** to its
+/// calendar maximum — 31 days — because a margin rounded down leaves the tail of
+/// a bound period uncovered, which is the hole D-04 exists to close. Spelled as
+/// the arithmetic rather than as a date so the case says what the floor *is*.
+fn horizon_floor() -> DateTime<Utc> {
+    horizon() + chrono::TimeDelta::days(31)
+}
+
+/// A published plan carrying a **grandfathered generation** with a horizon, on
+/// its own cohort key, beside the ordinary published row.
+///
+/// The generation is a key of its own (ADR-0002's cohort axis), so it starts with
+/// no window at all — which is what makes the first schedule on it the reachable
+/// shape: nothing has been removed, no interior gap opens, and every neighbouring
+/// coverage guard is silent.
+async fn published_with_a_generation(h: &Harness, plan_id: Uuid) -> Uuid {
+    let seeded = rest_support::seed_publishable_plan(h, plan_id).await;
+    let generation = rest_support::seed_price_keyed_with_horizon(
+        h,
+        plan_id,
+        "us",
+        PriceEligibility::ExistingGrandfathered,
+        Cohort::Generation(window_at(-30)),
+        Some(horizon()),
+    )
+    .await;
+    h.publish(plan_id, seeded.revision).await;
+    h.publish_price(plan_id, seeded.price_id).await;
+    h.publish_price(plan_id, generation.price_id).await;
+    rest_support::approve_threshold_policy(h, &[("EUR", 100_000), ("USD", 100_000)]).await;
+    generation.price_id
+}
+
+/// Schedule through the service and hand back the outcome unjudged.
+///
+/// [`schedule`] panics on the approval arm, which is right for the cases that
+/// stage a policy covering their own currency and wrong here: what these cases
+/// assert is **refused or not refused**, and a unit being opened is not a
+/// refusal.
+async fn schedule_outcome(
+    h: &Harness,
+    price_id: Uuid,
+    from: DateTime<Utc>,
+    to: Option<DateTime<Utc>>,
+) -> Result<WindowMutationOutcome, DomainError> {
+    h.governance
+        .windows
+        .schedule(
+            &rest_support::security_context(rest_support::SEED_ACTOR, h.tenant),
+            &h.scope(),
+            h.tenant,
+            price_id,
+            Uuid::now_v7(),
+            from,
+            to,
+            "priceIncrease".to_owned(),
+            bss_pricing::api::rest::windows::verdict_json,
+            rest_support::seed_stamp(),
+        )
+        .await
+}
+
+/// **A window that stops inside the generation's bound is refused.**
+///
+/// D-04 / `inst-co-bounds`: a grandfathered generation carries two clocks — its
+/// window and `grandfatherUntil` — and the window MUST cover through
+/// `grandfatherUntil` **plus the longest billing cycle sold on the key**, because
+/// re-bind happens only at the next renewal after the horizon. Until this case
+/// nothing in the crate enforced it: the cutover half holds by construction (the
+/// copy's window is scheduled open-ended, D-204 clause 4) and the adjustment half
+/// was recorded as an open gap in `window_repo`'s own doc, on the ground that W6's
+/// margin "has no producer anywhere in this crate" — which stopped being true when
+/// `coverage::longest_cycle_sold` landed for D-80.
+///
+/// The end asked for here is **past the horizon** and short of the floor, which is
+/// the case a bound-less reading would wave through: it looks like full coverage
+/// of the grandfathered period and strands every subscriber whose period began
+/// before the horizon for up to one full cycle.
+#[tokio::test]
+async fn a_generations_window_may_not_stop_inside_its_grandfathering_bound() {
+    let h = Harness::new().await;
+    let plan_id = Uuid::now_v7();
+    let price_id = published_with_a_generation(&h, plan_id).await;
+
+    let refusal = schedule_outcome(
+        &h,
+        price_id,
+        window_at(0),
+        Some(horizon() + chrono::TimeDelta::days(14)),
+    )
+    .await
+    .expect_err("a window ending inside the D-04 bound is refused");
+
+    let DomainError::WindowTrailingVoid(detail) = refusal else {
+        panic!("expected the coverage floor's refusal, got {refusal:?}");
+    };
+    assert!(
+        detail.contains(&horizon().to_rfc3339()) && detail.contains(&horizon_floor().to_rfc3339()),
+        "the refusal names the horizon and the floor it has to reach: {detail}"
+    );
+}
+
+/// **The positive control: a window that reaches the floor is accepted.**
+///
+/// Without it the refusal above is satisfied by a rule that refused every window
+/// on a grandfathered key — which would make the class unusable and would pass
+/// the case just as well. The end is the floor **exactly**, so the comparison is
+/// pinned at its boundary rather than somewhere comfortably past it: the bound is
+/// `>=`, and a rule written with `>` reddens here and nowhere else.
+#[tokio::test]
+async fn a_generations_window_reaching_the_floor_is_accepted() {
+    let h = Harness::new().await;
+    let plan_id = Uuid::now_v7();
+    let price_id = published_with_a_generation(&h, plan_id).await;
+
+    schedule_outcome(&h, price_id, window_at(0), Some(horizon_floor()))
+        .await
+        .expect("coverage through the horizon plus one full cycle satisfies D-04");
+}
+
+/// **And an open-ended window is accepted**, which is the shape the cutover
+/// itself composes.
+///
+/// D-204 clause (4)'s "holds by construction" is only true if this passes: an
+/// open interval covers every instant the margin could name, whatever the horizon
+/// and whatever the cycle roster says. A rule that refused it would refuse every
+/// cutover the day the copy's window reached this path.
+#[tokio::test]
+async fn a_generations_open_ended_window_is_accepted() {
+    let h = Harness::new().await;
+    let plan_id = Uuid::now_v7();
+    let price_id = published_with_a_generation(&h, plan_id).await;
+
+    schedule_outcome(&h, price_id, window_at(0), None)
+        .await
+        .expect("an open interval covers every instant the bound could name");
+}
+
+/// **An ordinary key is untouched by the bound**, which is the other control.
+///
+/// The rule keys on `price_eligibility = existing_grandfathered`, and a bound
+/// applied to every key would refuse the ordinary bounded windows this suite is
+/// built out of. This case is the same instants on the plan's `all_subscriptions`
+/// row, and it commits.
+#[tokio::test]
+async fn an_ordinary_keys_window_is_not_judged_against_any_horizon() {
+    let h = Harness::new().await;
+    let plan_id = Uuid::now_v7();
+    let seeded = rest_support::seed_publishable_plan(&h, plan_id).await;
+    let ordinary = rest_support::seed_price(&h, plan_id, "us").await;
+    h.publish(plan_id, seeded.revision).await;
+    h.publish_price(plan_id, seeded.price_id).await;
+    h.publish_price(plan_id, ordinary.price_id).await;
+    rest_support::approve_threshold_policy(&h, &[("EUR", 100_000), ("USD", 100_000)]).await;
+
+    schedule_outcome(
+        &h,
+        ordinary.price_id,
+        window_at(0),
+        Some(horizon() + chrono::TimeDelta::days(14)),
+    )
+    .await
+    .expect("a non-grandfathered key has no horizon to be bound by");
 }

@@ -111,32 +111,32 @@
 //!   one of them, `WINDOW_TRAILING_VOID`, additionally needs the D-79 subscriber
 //!   lane, `inst-fg-trailing`'s only exemption being about in-flight subscribers.
 //!   `CoverageChecker`'s.
-//! * **D-04's grandfathering horizon, which §6 names this function.** §6: a
-//!   grandfathered generation's window `effective_to` MUST stay
+//! * **D-04's grandfathering horizon, which §6 names this function — built
+//!   2026-08-14, and one layer up.** §6: a grandfathered generation's window
+//!   `effective_to` MUST stay
 //!   `≥ grandfather_until + the longest billing cycle sold on the key`, *"enforced
-//!   at cutover and on every `effectiveTo` adjustment"*. [`adjust_effective_to`]
-//!   **is** that second half and does not enforce it, which is a live gap rather
-//!   than a phase-5 one: `pricing_price.grandfather_until` is already a written
-//!   column with its own CHECK, so a key can carry a horizon today and a shorten
-//!   can walk its coverage inside it today. It is not enforced here because the
-//!   rule's second input has no producer anywhere in this crate — "the longest
-//!   billing cycle sold on the key" is W6's, and a search for it finds only prose
-//!   (`crate::infra::read_model`'s horizon note, `crate::domain::window`'s D-80
-//!   note): no function, no column, no type. Enforcing it against a guessed cycle
-//!   would be worse than not enforcing it, because the guess would be the number a
-//!   money horizon was checked against. **This is the entry the deferred list was
-//!   missing**, and it is owed along one chain rather than to one group:
-//!   **G3 builds the cycle set** (it owns `CoverageChecker` and the D-80 horizon, the
-//!   same term under another margin), **G4 wires it into [`adjust_effective_to`]**
-//!   (§6 requires the bound on every `effectiveTo` adjustment, and G4 owns this path
-//!   and the routes that reach it), and **G5 consumes it in sellability predicate
-//!   (1)**. [`crate::infra::read_model`]'s horizon note states the same chain, which
-//!   it did not before 2026-08-04: it named G5 as the builder while this entry named
-//!   G3, two documents in one group's diff naming two owners for one owed input.
+//!   at cutover and on every `effectiveTo` adjustment"*. This entry stood here as
+//!   an owed item on the ground that *"the rule's second input has no producer
+//!   anywhere in this crate … no function, no column, no type"*. **That ceased to
+//!   be true and the entry had not noticed**: `domain::coverage::longest_cycle_sold`
+//!   is W6's term, built for D-80's coverage horizon and `inst-fg-trailing`'s
+//!   floor, and it takes exactly the two facts the margin is a function of. The
+//!   gap was live rather than theoretical — `pricing_price.grandfather_until` is a
+//!   written column with its own CHECK, so a key could carry a horizon and a
+//!   window be authored inside it, green.
+//!
+//!   It is now [`crate::infra::window`]'s `refuse_horizon_uncovered`, beside
+//!   `refuse_trailing_void`, and it is **not** [`adjust_effective_to`]'s because
+//!   the operands are not this layer's: the margin is a property of the plan
+//!   shape and the horizon of the price row, and this function holds one window
+//!   and its key. It runs on every window mutation and not only the adjustment,
+//!   because the reachable violation is a **schedule** — the first bounded window
+//!   on a grandfathered key — which no coverage-removal predicate looks at.
 //!   Beware the name: W6 is *called* "the longest billing cycle sold on the key" and
 //!   is *defined* per **plan** — the longest `frequency` among the plan's recurring
 //!   rows on the key's `(currency, region)` — and is **zero** on a plan with no
-//!   recurring part. The cutover half is phase 5's and has no code to be absent from.
+//!   recurring part. The cutover half holds by construction (D-204 clause 4: the
+//!   copy's window is composed open-ended).
 //!
 //! # The [`AuditStamp`] is taken here and the trail is written one layer up
 //!
@@ -1065,16 +1065,26 @@ fn advanced_seq(window_id: Uuid, current: u64, advance: bool) -> Result<i64, Rep
 /// a pre-check made *more* permissive than the trigger only moves where the 500
 /// comes from.
 ///
-/// # What is **not** checked here that §6 names this function for
+/// # What is **not** checked here that §6 names this function for, and where it is
 ///
 /// D-04: a grandfathered generation's window `effective_to` MUST stay
 /// `>= grandfather_until + the longest billing cycle sold on the key`, *"enforced at
-/// cutover and on every `effectiveTo` adjustment"*. **This is that second half, and
-/// it does not enforce it.** The rule is reachable today — `grandfather_until` is a
-/// written column — and it is unenforced because its second input has no producer
-/// anywhere in this crate. The module doc's deferred list carries the whole entry
-/// and names the owner; this sentence is here so that nobody reads the three
-/// refusals above as the complete set of what a shorten is judged against.
+/// cutover and on every `effectiveTo` adjustment"*. This statement is still not
+/// made **here**, and it is no longer unmade: it is
+/// [`crate::infra::window`]'s `refuse_horizon_uncovered`, beside
+/// `refuse_trailing_void`, run inside the same transaction over every window
+/// mutation (2026-08-14).
+///
+/// It could not be made here and still cannot. The rule's operands are the
+/// **row's** `grandfather_until` and W6's margin — the longest `frequency` among
+/// the plan's recurring rows on the key's `(currency, region)` — and this
+/// function holds one window and its key. The doc that stood here said the margin
+/// *"has no producer anywhere in this crate"*, which was true when it was written
+/// and stopped being true when `domain::coverage::longest_cycle_sold` landed for
+/// D-80's horizon; the layer that reads it is the one that assembles the plan
+/// shape. So this sentence stays for its original purpose — nobody should read
+/// the three refusals above as the complete set of what a shorten is judged
+/// against — with the owner named rather than the gap.
 ///
 /// # The `expected_seq` precondition
 ///

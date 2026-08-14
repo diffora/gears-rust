@@ -58,6 +58,7 @@ use uuid::Uuid;
 
 use crate::domain::audit::{AuditAction, AuditStamp, AuditSubjectKind};
 use crate::domain::error::DomainError;
+use crate::domain::events::CatalogEvent;
 use crate::domain::lifecycle::LifecycleState;
 use crate::domain::materiality::triggers::Trigger;
 use crate::domain::materiality::{self, ChangeSet};
@@ -75,6 +76,7 @@ use crate::infra::storage::RepoError;
 use crate::infra::storage::entity::{bundle, bundle_component, plan_addon_rule};
 use crate::infra::storage::repo::approval_repo::{self, ApprovalRecord};
 use crate::infra::storage::repo::audit_repo::NewAuditEntry;
+use crate::infra::storage::repo::outbox_repo::PriceWindowTransitionPayload;
 use crate::infra::storage::repo::{
     NewOutboxEvent, PendingVersionRow, PlanRetiredPayload, audit_repo, catalog_version_ref_repo,
     outbox_repo, plan_repo, price_repo, window_repo,
@@ -610,25 +612,19 @@ pub async fn retire_in(
         .await
         .map_err(|e| repo_failure(&e))?;
 
-    // The windows Slice 7's cancellation flow is **invoked** on — never marked
-    // invalid, so each emits `PriceWindowCancelled` and drives its cache
-    // eviction. Under D-182 this list is empty and the loop is what makes that a
-    // measured fact rather than a missing feature.
-    let mut cancelled_window_ids = Vec::new();
-    for verdict in preview.windows.iter().filter(|v| v.is_cancelled()) {
-        window_repo::transition(
-            txn,
-            scope,
-            tenant_id,
-            verdict.window_id,
-            WindowState::Cancelled,
-            now,
-            stamp,
-        )
-        .await
-        .map_err(|e| repo_failure(&e))?;
-        cancelled_window_ids.push(verdict.window_id);
-    }
+    // The windows Slice 7's cancellation flow is **invoked** on. Under D-182 this
+    // list is empty and the call is what makes that a measured fact rather than a
+    // missing feature.
+    let cancelled_window_ids = cancel_windows_in(
+        txn,
+        scope,
+        tenant_id,
+        &preview.windows,
+        &subject_ref,
+        now,
+        stamp,
+    )
+    .await?;
 
     // The subject the projector re-freezes, carrying the state the flip
     // produced: D-128's whole point is that `lifecycle_state` must be evaluable
@@ -696,6 +692,104 @@ pub async fn retire_in(
         cancelled_window_ids,
         audit_seq: seq,
     })))
+}
+
+/// Invoke Slice 7's cancellation flow on every window the preview condemned, and
+/// answer the ids in the order it decided them.
+///
+/// # It is a function because the *event* is half of what "invoked" means
+///
+/// `inst-re-cancelflow` is one sentence with two clauses: the flow is **invoked**
+/// on each window, *"each cancellation emits `PriceWindowCancelled` and drives its
+/// cache-eviction path"* — and *"marking-invalid without the event is
+/// forbidden (consumers would keep warm caches)"*. Inline in [`retire_in`] this
+/// was a bare [`window_repo::transition`] loop with a comment asserting the
+/// second clause and no code performing it. That was inert only because D-182's
+/// fail-closed presence map keeps the list empty; the day the D-79 lane lands,
+/// every window it condemns would be marked invalid with no event — the exact
+/// shape the instruction forbids, arriving green.
+///
+/// # The enqueue is the caller's, and that is this crate's settled arrangement
+///
+/// [`window_repo::transition`] enqueues nothing, deliberately: it is also the
+/// activation sweep's edge (`jobs::window_activation`), and the sweep's two
+/// events are `PriceWindowActivated`/`PriceWindowExpired` — a store that emitted
+/// per edge would have to know which of §5's surfaces called it, which is
+/// [`NewOutboxEvent::price_window_mutation`]'s own argument for taking the event
+/// as an argument. So every window-mutating **service** pairs the flip with its
+/// own enqueue — `infra::window`, `infra::cutover`, `infra::supersession`,
+/// `infra::repricing` — and retirement was the one that did not. Putting it in
+/// the repo instead would have double-emitted in all four.
+///
+/// # The act segment, and why the dedup key needs one
+///
+/// `price_window_mutation` keys on the **act** rather than on the transition,
+/// because `Op::event` maps a schedule *and* an adjustment to one name; the same
+/// reasoning applies here in the other direction. A window cancelled by a
+/// retirement and the same window cancelled through `DELETE` are two acts, and
+/// `retirement/{plan}/{revision}` is the act this one is — the same coordinate
+/// [`retirement_unit_ref`] names the approval unit by.
+///
+/// # It is `pub`, and that is the D-182 posture rather than a testability leak
+///
+/// [`retire_in`] cannot reach this loop at all today: `compose_preview` hard-wires
+/// [`PresenceMap::fail_closed`], so every window is kept and the condemned list is
+/// empty. A rule that runs only once a lane **nobody has built** starts answering
+/// is a rule no suite driving the orchestrator can arm — which is precisely how
+/// the missing event stayed green. So the flow is addressable on its own, and
+/// `sqlite_retirement_unit` arms it against hand-built verdicts.
+///
+/// # Errors
+/// [`DomainError::Internal`] when a transition or an enqueue fails; a window that
+/// has moved since the preview read it surfaces as its own repository refusal.
+pub async fn cancel_windows_in(
+    txn: &DbTx<'_>,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    verdicts: &[WindowVerdict],
+    act: &str,
+    now: chrono::DateTime<chrono::Utc>,
+    stamp: AuditStamp,
+) -> Result<Vec<Uuid>, DomainError> {
+    let mut cancelled = Vec::new();
+    for verdict in verdicts.iter().filter(|v| v.is_cancelled()) {
+        let record = window_repo::transition(
+            txn,
+            scope,
+            tenant_id,
+            verdict.window_id,
+            WindowState::Cancelled,
+            now,
+            stamp,
+        )
+        .await
+        .map_err(|e| repo_failure(&e))?;
+        // **As written, not as the verdict described it** — the sibling services'
+        // rule: the payload's interval is the row's, read back off the transition,
+        // so a consumer evicting a cache is told which interval stopped existing.
+        outbox_repo::enqueue(
+            txn,
+            scope,
+            NewOutboxEvent::price_window_mutation(
+                tenant_id,
+                CatalogEvent::PriceWindowCancelled,
+                &PriceWindowTransitionPayload {
+                    window_id: record.window_id,
+                    plan_id: record.scope_key.plan_id(),
+                    price_id: record.price_id,
+                    effective_from: record.effective_from,
+                    effective_to: record.effective_to,
+                    correlation_id: stamp.correlation_id,
+                },
+                now,
+                act,
+            ),
+        )
+        .await
+        .map_err(|e| repo_failure(&e))?;
+        cancelled.push(record.window_id);
+    }
+    Ok(cancelled)
 }
 
 /// The registry request id of one retirement.

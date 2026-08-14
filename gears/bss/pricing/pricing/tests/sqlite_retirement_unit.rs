@@ -24,7 +24,7 @@ mod rest_support;
 use std::sync::Arc;
 
 use bss_pricing::domain::error::DomainError;
-use bss_pricing::domain::retirement::{KeptReason, WindowDisposition};
+use bss_pricing::domain::retirement::{KeptReason, WindowDisposition, WindowVerdict};
 use bss_pricing::domain::scope_key::PlanId;
 use bss_pricing::infra::retirement::{RetirementOutcome, RetirementService};
 use chrono::{DateTime, TimeZone, Utc};
@@ -239,4 +239,176 @@ async fn a_plan_that_is_not_published_is_refused_with_its_own_state() {
         panic!("expected LifecycleForbidden, got {refusal:?}");
     };
     assert!(detail.contains("retired"), "{detail}");
+}
+
+// ---------------------------------------------------------------------------
+// `inst-re-cancelflow`'s second clause — the event, which is half of "invoked"
+// (this file's own module doc: "cancels nothing because nobody wired the loop").
+// ---------------------------------------------------------------------------
+
+/// Every event name enqueued for this tenant after `floor`, in `seq` order.
+///
+/// By **sequence and not by name**, `sqlite_cutover_unit`'s rule: a name filter
+/// has to know what the fixture produces and silently drops the act's own event
+/// the day the act starts producing one.
+async fn events_since(h: &Harness, floor: i64) -> Vec<String> {
+    use bss_pricing::infra::storage::entity::outbox;
+    use sea_orm::Order;
+    let conn = h.db.conn().expect("conn");
+    outbox::Entity::find()
+        .secure()
+        .scope_with(&toolkit_db::secure::AccessScope::allow_all())
+        .filter(
+            Condition::all()
+                .add(outbox::Column::TenantId.eq(h.tenant))
+                .add(outbox::Column::Seq.gt(floor)),
+        )
+        .order_by(outbox::Column::Seq, Order::Asc)
+        .all(&conn)
+        .await
+        .expect("read the outbox")
+        .into_iter()
+        .map(|row| row.event_name)
+        .collect()
+}
+
+async fn outbox_floor(h: &Harness) -> i64 {
+    use bss_pricing::infra::storage::entity::outbox;
+    use sea_orm::Order;
+    let conn = h.db.conn().expect("conn");
+    outbox::Entity::find()
+        .secure()
+        .scope_with(&toolkit_db::secure::AccessScope::allow_all())
+        .filter(Condition::all().add(outbox::Column::TenantId.eq(h.tenant)))
+        .order_by(outbox::Column::Seq, Order::Desc)
+        .one(&conn)
+        .await
+        .expect("read the outbox")
+        .map_or(0, |row| row.seq)
+}
+
+/// The window's stored state token.
+async fn window_state(h: &Harness, window_id: Uuid) -> String {
+    use bss_pricing::infra::storage::entity::price_window;
+    let conn = h.db.conn().expect("conn");
+    price_window::Entity::find()
+        .secure()
+        .scope_with(&h.scope())
+        .filter(
+            Condition::all()
+                .add(price_window::Column::TenantId.eq(h.tenant))
+                .add(price_window::Column::WindowId.eq(window_id)),
+        )
+        .one(&conn)
+        .await
+        .expect("read the window")
+        .expect("the seeded window is there")
+        .state
+}
+
+/// Run the cancellation flow over `verdicts` in one transaction.
+async fn cancel(h: &Harness, verdicts: Vec<WindowVerdict>) -> Vec<Uuid> {
+    let scope = h.scope();
+    let tenant = h.tenant;
+    let (_, outcome) =
+        h.db.db()
+            .in_transaction::<Vec<Uuid>, DomainError, _>(move |txn| {
+                Box::pin(async move {
+                    bss_pricing::infra::retirement::cancel_windows_in(
+                        txn,
+                        &scope,
+                        tenant,
+                        &verdicts,
+                        "retirement/fixture",
+                        now(),
+                        stamp_of(SUBMITTER),
+                    )
+                    .await
+                })
+            })
+            .await;
+    outcome.expect("the cancellation flow")
+}
+
+/// **A retirement-cancelled window emits `PriceWindowCancelled`.**
+///
+/// `inst-re-cancelflow`: Slice 7's cancellation flow is *invoked* — *"each
+/// cancellation emits `PriceWindowCancelled` and drives its cache-eviction
+/// path"* — and *"marking-invalid without the event is forbidden (consumers
+/// would keep warm caches)"*. Until this case, `retire_in` moved the row through
+/// `window_repo::transition` and enqueued nothing, under a comment asserting the
+/// opposite. Every other window-mutating service in the crate pairs the flip
+/// with its own enqueue; retirement was the one that did not.
+///
+/// **It is driven through the flow rather than through `retire_in`**, and that
+/// is the point rather than a shortcut: D-182 keeps the presence map fail-closed,
+/// so `retire_in` condemns nothing and the loop never runs — which is exactly
+/// why the bug was green. A rule that fires only once a lane nobody has built
+/// starts answering has to be armed directly, or the day the D-79 lane lands it
+/// fires wrong.
+#[tokio::test]
+async fn a_retirement_cancelled_window_emits_its_event() {
+    let h = Harness::new().await;
+    let plan_uuid = Uuid::now_v7();
+    let seeded = rest_support::seed_publishable_plan(&h, plan_uuid).await;
+    h.publish(plan_uuid, seeded.revision).await;
+    h.publish_price(plan_uuid, seeded.price_id).await;
+    let window_id = common::coverage_window_id(seeded.price_id);
+
+    let floor = outbox_floor(&h).await;
+    let cancelled = cancel(
+        &h,
+        vec![WindowVerdict {
+            window_id,
+            price_id: seeded.price_id,
+            disposition: WindowDisposition::Cancelled,
+        }],
+    )
+    .await;
+
+    assert_eq!(cancelled, vec![window_id], "the flow answers what it moved");
+    assert_eq!(
+        window_state(&h, window_id).await,
+        "cancelled",
+        "the row moved, which was never the missing half"
+    );
+    assert_eq!(
+        events_since(&h, floor).await,
+        vec!["PriceWindowCancelled".to_owned()],
+        "the cancellation announces itself, or every consumer keeps a warm cache \
+         over a window that no longer exists"
+    );
+}
+
+/// **The control: a kept window is neither moved nor announced.**
+///
+/// Without it the case above passes against a flow that cancelled and announced
+/// every window it was handed, which is the D-51 hazard inverted — a key with
+/// in-flight subscribers losing its continuing coverage.
+#[tokio::test]
+async fn a_kept_window_is_left_alone_and_announces_nothing() {
+    let h = Harness::new().await;
+    let plan_uuid = Uuid::now_v7();
+    let seeded = rest_support::seed_publishable_plan(&h, plan_uuid).await;
+    h.publish(plan_uuid, seeded.revision).await;
+    h.publish_price(plan_uuid, seeded.price_id).await;
+    let window_id = common::coverage_window_id(seeded.price_id);
+
+    let floor = outbox_floor(&h).await;
+    let cancelled = cancel(
+        &h,
+        vec![WindowVerdict {
+            window_id,
+            price_id: seeded.price_id,
+            disposition: WindowDisposition::Kept(KeptReason::InFlightSubscribers),
+        }],
+    )
+    .await;
+
+    assert!(cancelled.is_empty(), "a kept window is not a cancellation");
+    assert_eq!(window_state(&h, window_id).await, "scheduled");
+    assert!(
+        events_since(&h, floor).await.is_empty(),
+        "and nothing is announced about it"
+    );
 }

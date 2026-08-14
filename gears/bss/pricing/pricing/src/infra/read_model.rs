@@ -69,17 +69,25 @@
 //! the term, so nothing here makes W6 evaluable and an earlier draft of this
 //! paragraph claiming otherwise by apposition was wrong rather than loose.
 //!
-//! **Nothing in this tree produces the term**, and the ownership chain for it is one
-//! chain rather than two. It is stated here because two documents in this group's own
-//! diff used to name two different owners for one owed input — this paragraph named
-//! `SellabilitySurface`'s group, `window_repo`'s deferred entry named G3:
+//! **The term now has a producer**, and this paragraph used to say it had none.
+//! `domain::coverage::longest_cycle_sold` (and `longest_cycle_sold_on`, the same
+//! implementation over the two facts it reads) is W6, built with G3's coverage
+//! rules. What the ownership chain below described is therefore mostly discharged,
+//! and it is kept as the record of one owed input that two documents in one group's
+//! diff had named two owners for — this paragraph named `SellabilitySurface`'s
+//! group, `window_repo`'s deferred entry named G3:
 //!
 //! * **G3 builds the cycle set.** It owns `CoverageChecker` and the D-80 horizon,
-//!   which is the same term under a different margin.
-//! * **G4 wires it into `window_repo::adjust_effective_to`.** §6 requires the D-04
-//!   bound enforced "at cutover and on every `effectiveTo` adjustment", and G4 owns
-//!   that path and the routes that reach it.
+//!   which is the same term under a different margin. **Built.**
+//! * **G4 wires it into the `effectiveTo` path.** §6 requires the D-04 bound
+//!   enforced "at cutover and on every `effectiveTo` adjustment". **Built
+//!   2026-08-14**, as `infra::window::refuse_horizon_uncovered` rather than inside
+//!   `window_repo::adjust_effective_to`: the repository layer holds one window and
+//!   its key, and the bound's operands are the plan shape's margin and the price
+//!   row's horizon. That function's own doc carries the argument.
 //! * **G5 consumes it in predicate (1)**, which is where the D-80 margin is read.
+//!   Still owed: what this projector freezes is intervals, states and a coverage
+//!   end, and the horizon predicate is the sellability surface's to evaluate.
 //!
 //! **The trap, recorded because the name is the trap.** W6 is *named* "the longest
 //! billing cycle sold on the **key**" and is *defined* per **plan**: the longest
