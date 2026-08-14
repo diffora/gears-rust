@@ -3277,16 +3277,27 @@ legitimately have wanted, since no information a subsequent call adds will help.
 
 ##### This is a category, not one rule
 
-Four codes in the current rule set compare authored content against the frozen
-key, and every one of them is a presence-or-contradiction fault rather than an
-absent operand:
+Four rules in the current rule set compare authored content against the frozen
+key — five faults between them, under four codes — and every one is a
+presence-or-contradiction fault rather than an absent operand:
 
 | rule | reads from the frozen key | fault |
 |---|---|---|
 | `inst-mk-chargekind` | `chargeKind` | the model kind is not legal on this charge kind |
 | `inst-mk-forbidden` | `chargeKind` | `tierAggregationWindow` / `billingGranularity` on a non-usage row |
+| `inst-mk-forbidden` | `chargeKind` | `quantitySource` on a **usage** row — a metered row takes its quantity from the meter under every model kind |
 | `inst-la-fields` | `chargeKind` | `aggregationFunction` / `aggregationGranularity` on a non-usage row |
 | reservation authoring (S10) | `chargeKind` | a reservation on a row with no meter, quantity or counter |
+
+Five faults across four rules, and the count matters less than what the last column
+has in common: none of these faults reads `model_kind`. **A fault in this category is
+judged whether or not a kind has been picked yet** — the absent operand is absent
+from the *fault*, not merely from the row. The first implementation got this wrong in
+one place and the review caught it: `inst-mk-forbidden` returned early on a missing
+`model_kind`, so `billingGranularity` on a recurring key — nine of the eleven rows
+counted below — was answered 201 by this very check, and reported nothing at publish
+either. The kind gate now guards only the two faults that genuinely read a kind
+(bands on a `flat` row, `quantitySource` on a non-usage row of the wrong kind).
 
 The test that separates the two families is mechanical, which is what makes this a
 line rather than an exception: **a rule whose fault is an absent operand belongs at
@@ -3339,9 +3350,19 @@ the classification, and the two would drift the first time a rule was added.
   dead catalog. The gear is where the invariant belongs.
 - **Refuse the whole rule set at the write.** Rejected outright: it is the change
   §4.2 exists to prevent, and it breaks multi-call authoring for every row.
-- **A bulk-import exemption.** Not needed. `bulk_imports` validates the whole batch
-  in phase 1 and refuses it entire, so no surface depends on a permissive write
-  door to land shape-invalid rows.
+- **A bulk-import exemption.** Not needed — but **not for the reason first given
+  here.** This entry claimed that "`bulk_imports` validates the whole batch in phase
+  1 and refuses it entire, so no surface depends on a permissive write door". That is
+  false, and it was load-bearing: it is the whole reason an exemption looked
+  unnecessary. Measured, `domain::import::classify` runs exactly two arms —
+  `duplicate_scope_keys` and `unbuilt_primitives` (D-177) — and no row-local rule at
+  all, while `infra::bulk::commit_rows` writes `row.content` straight through. A key
+  contradiction passes import today, before this decision and after it. No exemption
+  is needed because import never depended on the door being permissive; what is
+  needed is the check, on a **third door this decision does not close**. Recorded as
+  owed below rather than assumed shut. (Supersession and cutover, by contrast, are
+  genuinely covered: `domain::supersession::plan_supersession` runs the full
+  `price_row_rules()` over the successor.)
 
 ##### The existing unpublishable set, counted rather than assumed
 
@@ -3363,3 +3384,12 @@ exists as a number rather than as an expectation.
 
 Nothing rewrites them. The rows stay as their authors left them, they stay
 unpublishable, and their next `PATCH` now says so instead of answering 200.
+
+##### Three doors, not two
+
+A price row enters through `POST`, through `PATCH`, and through `bulk_imports`. The
+decision above is written about the first two; the third needs the same line drawn
+on it, for the same reason and by the same filter, and it is the one that lands rows
+in *bulk*. Phase 1 already exists precisely to move a refusal earlier ("the refusal
+moves earlier, it does not move", D-177) and `RowViolation` already carries a code
+per row, so the import arm inherits this line rather than restating it.
