@@ -1708,6 +1708,44 @@ async fn an_eval_policy_field_off_its_charge_kind_is_refused_at_save() {
     assert_eq!(problem_code(response).await, "EVAL_POLICY_MISPLACED");
 }
 
+/// **The shape that actually produced the stored population**, and the one the
+/// first implementation of this check let through.
+///
+/// D-312 counted eleven contradictory rows on the stand; nine are
+/// `billing_granularity` on a recurring key, written by the Studio's
+/// `defaultContent` with the model-kind picker never touched. So the body that
+/// matters carries the misplaced field and **no `model_kind` at all** — and
+/// `inst-mk-forbidden` used to return early on a missing kind, which meant the
+/// check built for these rows answered 201 to exactly them. The fault's operands
+/// are the field and the frozen `charge_kind`; the kind is absent from the fault,
+/// not merely from the row.
+#[tokio::test]
+async fn an_eval_policy_field_is_refused_before_a_kind_has_been_picked() {
+    let harness = Harness::new().await;
+    let plan_id = seeded_plan(&harness).await;
+
+    let mut body = create_body("EU");
+    body["content"] =
+        serde_json::json!({ "billing_granularity": "whole_unit", "tax_inclusive": false });
+
+    let response = harness
+        .allowed()
+        .send(with_headers(
+            "POST",
+            &prices_path(plan_id),
+            Some(body),
+            &keyed("d312-granularity-no-kind-1"),
+        ))
+        .await;
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(problem_code(response).await, "EVAL_POLICY_MISPLACED");
+    assert!(
+        price_rows(&harness, plan_id).await.is_empty(),
+        "a refused save writes no row"
+    );
+}
+
 /// The half that decides whether this change is the design or its opposite.
 ///
 /// A row missing its kind, its price, or its bands is a row a later call

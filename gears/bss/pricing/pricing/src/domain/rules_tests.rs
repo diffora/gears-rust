@@ -131,7 +131,7 @@ fn the_supersession_pipeline_judges_a_pair_without_asking_which_mechanism_made_i
 mod write_stage_over_the_whole_set {
     use super::*;
     use crate::domain::money::MinorAmount;
-    use crate::domain::price_row::{AggregationFunction, ReservationFlavor};
+    use crate::domain::price_row::{AggregationFunction, QuantitySource, ReservationFlavor};
     use crate::domain::rules::reservation::RESERVATION_ON_NON_USAGE;
     use crate::domain::rules::{
         EVAL_POLICY_MISPLACED, LEVEL_FIELDS_INVALID, MODEL_KIND_CHARGEKIND_MISMATCH,
@@ -185,6 +185,29 @@ mod write_stage_over_the_whole_set {
             write_codes(&row),
             vec![MODEL_KIND_CHARGEKIND_MISMATCH.to_owned()]
         );
+    }
+
+    #[test]
+    fn a_row_whose_kind_is_not_yet_picked_still_answers_for_its_frozen_key() {
+        // The population D-312 counted, over the whole set: nine of the eleven
+        // stored contradictions are `billingGranularity` on a recurring row, and
+        // the Studio's `defaultContent` wrote them with the model-kind picker
+        // untouched. Judged here because the fault's operands are the field and the
+        // frozen `chargeKind`; the kind is absent from the *fault*, not merely from
+        // the row. The rule used to return early on the missing kind, so the check
+        // this decision built passed the very rows it was measured against.
+        let mut row = PriceRow::new(ChargeKind::Recurring, None);
+        row.billing_granularity = Some(BillingGranularity::WholeUnit);
+        assert_eq!(write_codes(&row), vec![EVAL_POLICY_MISPLACED.to_owned()]);
+    }
+
+    #[test]
+    fn a_quantity_source_on_a_usage_key_is_the_fifth_fault() {
+        let mut row = PriceRow::new(ChargeKind::Usage, Some(ModelKind::PerUnit));
+        row.meter = Some("addon_dr".to_owned());
+        row.unit_rate = Some(rate(3));
+        row.quantity_source = Some(QuantitySource::SubscriptionSeatCount);
+        assert_eq!(write_codes(&row), vec![EVAL_POLICY_MISPLACED.to_owned()]);
     }
 
     #[test]

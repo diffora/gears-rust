@@ -117,6 +117,30 @@ fn the_field_rules_stay_silent_while_the_kind_is_missing() {
 }
 
 #[test]
+fn a_field_the_charge_kind_alone_forbids_is_reported_while_the_kind_is_missing() {
+    // The companion to the test above, and the one that makes it mean something.
+    // "Silent while the kind is missing" is true of the *per-kind* consequences
+    // only: `billingGranularity` on a recurring row is forbidden by the charge
+    // kind by itself, no model kind participates in the fault, and a picker left
+    // untouched must not hide it. `KindForbiddenFields` used to return early on a
+    // missing kind and swallowed exactly this — the nine rows of the eleven D-312
+    // counted against the stand, answered 201 by D-312's own write check and
+    // reported by nothing at publish either.
+    let mut row = PriceRow::new(ChargeKind::Recurring, None);
+    row.billing_granularity = Some(BillingGranularity::WholeUnit);
+
+    let report = findings(&KindForbiddenFields, &row);
+    assert_eq!(codes(&report), vec![EVAL_POLICY_MISPLACED]);
+    assert!(
+        report
+            .violations
+            .iter()
+            .all(|v| v.stage == crate::domain::validation::Stage::Write),
+        "the fault's operands are the field and the frozen chargeKind, both present"
+    );
+}
+
+#[test]
 fn a_flat_row_without_an_amount_fails_publish() {
     let mut row = flat_recurring();
     row.amount_minor = None;
@@ -412,6 +436,40 @@ mod write_stage {
             stages(&report),
             vec![(EVAL_POLICY_MISPLACED, Stage::Publish)]
         );
+    }
+
+    #[test]
+    fn a_quantity_source_on_a_usage_key_is_judgeable_at_the_write() {
+        // A metered row takes its quantity from the meter under *every* model
+        // kind, so no later call can legalise this and `chargeKind` cannot move.
+        let mut row = per_unit_usage();
+        row.quantity_source = Some(QuantitySource::SubscriptionSeatCount);
+        let report = findings(&KindForbiddenFields, &row);
+        assert_eq!(stages(&report), vec![(EVAL_POLICY_MISPLACED, Stage::Write)]);
+    }
+
+    #[test]
+    fn a_quantity_source_on_a_non_usage_row_of_the_wrong_kind_waits_for_publish() {
+        // The mirror image, and the reason the two halves cannot share a stage:
+        // here both operands are content, so `model_kind: per_unit` resolves it by
+        // adding intent. Same rule, same code, opposite stage.
+        let mut row = flat_recurring();
+        row.quantity_source = Some(QuantitySource::SubscriptionSeatCount);
+        let report = findings(&KindForbiddenFields, &row);
+        assert_eq!(
+            stages(&report),
+            vec![(EVAL_POLICY_MISPLACED, Stage::Publish)]
+        );
+    }
+
+    #[test]
+    fn a_quantity_source_on_a_usage_key_is_judged_before_a_kind_is_picked() {
+        // The usage-key half reads no kind, so the kind gate must not cover it.
+        let mut row = PriceRow::new(ChargeKind::Usage, None);
+        row.meter = Some("addon_dr".to_owned());
+        row.quantity_source = Some(QuantitySource::SubscriptionSeatCount);
+        let report = findings(&KindForbiddenFields, &row);
+        assert_eq!(stages(&report), vec![(EVAL_POLICY_MISPLACED, Stage::Write)]);
     }
 
     #[test]

@@ -200,6 +200,21 @@ impl ValidationRule<PriceRow> for KindForbiddenFields {
     }
 
     fn evaluate(&self, subject: &PriceRow, report: &mut ValidationReport) {
+        // **The checks that do not read `model_kind` run before the kind is
+        // required.** Only two of the faults below are kind-dependent — bands on a
+        // `flat` / `per_unit` row, and `quantitySource` on a non-usage row of the
+        // wrong kind. The rest judge content against the row's `chargeKind` alone,
+        // and an early return on an absent kind hid them at *both* stages: a row
+        // carrying `billingGranularity` on a recurring key was answered 201 by the
+        // D-312 write door and reported nothing at publish either, though its two
+        // operands were both present and one of them frozen. That is the larger of
+        // the two populations D-312 counted (nine rows of eleven).
+        if !subject.is_usage() {
+            check_usage_only_policy(subject, report);
+        }
+        check_usage_key_quantity_source(subject, report);
+        check_manual_quantity_pairing(subject, report);
+
         let Some(kind) = subject.model_kind else {
             return;
         };
@@ -215,10 +230,6 @@ impl ValidationRule<PriceRow> for KindForbiddenFields {
                     subject.bands.len()
                 ),
             );
-        }
-
-        if !subject.is_usage() {
-            check_usage_only_policy(subject, report);
         }
 
         check_quantity_source_placement(subject, kind, report);
@@ -253,11 +264,55 @@ fn check_usage_only_policy(row: &PriceRow, report: &mut ValidationReport) {
     );
 }
 
-/// `quantitySource` (and the `manual` quantity that goes with it) belongs to
-/// exactly one shape: a `per_unit` row that is not a usage row.
+/// `quantitySource` on a **usage** key — the half of its placement rule that the
+/// frozen key decides on its own (D-312).
+///
+/// A usage row takes its quantity from the meter under *every* model kind, so this
+/// fault needs no kind to judge and no later call can add one that legalises it:
+/// `chargeKind` is frozen and the only resolution is retracting the field just
+/// sent. Its mirror image — `quantitySource` on a non-usage row whose kind is not
+/// `per_unit` — is content against content and stays at publish, because
+/// `model_kind: per_unit` fixes it by adding intent. Same code, same rule,
+/// opposite stages: the split the [`Stage`](crate::domain::validation::Stage) doc
+/// says a marker on the rule could not express.
+fn check_usage_key_quantity_source(row: &PriceRow, report: &mut ValidationReport) {
+    if row.is_usage() && row.quantity_source.is_some() {
+        report.violate_at_write(
+            EVAL_POLICY_MISPLACED,
+            row.subject(),
+            format!(
+                "quantitySource is authorable only on a non-usage per_unit row; this row's \
+                 chargeKind is {} and a metered row takes its quantity from the meter",
+                row.charge_kind
+            ),
+        );
+    }
+}
+
+/// `manual_quantity` and `quantitySource = manual` are both-or-neither. Two
+/// content fields, so publish-stage — but read from no `model_kind`, which is why
+/// it is not behind the kind gate.
+fn check_manual_quantity_pairing(row: &PriceRow, report: &mut ValidationReport) {
+    if row.manual_quantity.is_some() && row.quantity_source != Some(QuantitySource::Manual) {
+        report.violate(
+            EVAL_POLICY_MISPLACED,
+            row.subject(),
+            "manual_quantity is authorable if and only if quantitySource = manual; \
+             otherwise it is a frozen quantity nothing reads",
+        );
+    }
+}
+
+/// `quantitySource` belongs to exactly one shape: a `per_unit` row that is not a
+/// usage row. The usage-key half of that lives in
+/// [`check_usage_key_quantity_source`]; what is left here is the kind-dependent
+/// half, which is why this still takes a `kind`.
 fn check_quantity_source_placement(row: &PriceRow, kind: ModelKind, report: &mut ValidationReport) {
-    let authored_source = matches!(kind, ModelKind::PerUnit) && !row.is_usage();
-    if row.quantity_source.is_some() && !authored_source {
+    if row.is_usage() {
+        // Already judged, at the write stage, without needing the kind.
+        return;
+    }
+    if row.quantity_source.is_some() && !matches!(kind, ModelKind::PerUnit) {
         report.violate(
             EVAL_POLICY_MISPLACED,
             row.subject(),
@@ -267,14 +322,6 @@ fn check_quantity_source_placement(row: &PriceRow, kind: ModelKind, report: &mut
                 row.charge_kind,
                 model_kind_wire(kind)
             ),
-        );
-    }
-    if row.manual_quantity.is_some() && row.quantity_source != Some(QuantitySource::Manual) {
-        report.violate(
-            EVAL_POLICY_MISPLACED,
-            row.subject(),
-            "manual_quantity is authorable if and only if quantitySource = manual; \
-             otherwise it is a frozen quantity nothing reads",
         );
     }
 }
