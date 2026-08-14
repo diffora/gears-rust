@@ -1093,3 +1093,75 @@ async fn a_replay_of_a_key_spent_on_an_unreadable_batch_is_refused() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// Z11-7 — what actually bounds a submitted batch.
+// ---------------------------------------------------------------------------
+
+/// **The bound that exists, measured rather than asserted in prose.**
+///
+/// The finding says the batch is unbounded, and no *row* cap exists — that absence
+/// is recorded as deliberate in the module doc, because the nearest stated number
+/// (§1.2's 500 rows/plan) is a **soft, advisory** publish-time cap by D-160 and a
+/// batch spans plans, so adopting it as a hard request refusal would refuse batches
+/// the design set admits and contradict the decision that made it advisory.
+///
+/// What is not absent is a bound in **bytes**: the extractor this route reads its
+/// body through carries the platform default, so a body past it is refused before
+/// any handler code runs — no run opened, no key spent, no lock taken. This case
+/// pins that, because the module doc now claims it, and a claim about a limit
+/// nobody measured is how "unbounded" got written in the first place.
+///
+/// Armed against the claim and not around it: the body is built one row over the
+/// limit and the batch is otherwise **valid**, so a `413` cannot be a validation
+/// refusal wearing another status.
+#[tokio::test]
+async fn a_body_past_the_platform_limit_is_refused_before_the_handler_runs() {
+    let harness = Harness::new().await;
+    let plan = Uuid::now_v7();
+    seed_current_plan(&harness, plan).await;
+
+    // One row's serialized size decides how many make 2 MiB; measured rather than
+    // guessed, so a change to `BulkImportRowRequest`'s shape cannot leave this case
+    // building a body that is under the limit and asserting it is over.
+    let one = row(plan, "eu", 1_500).to_string().len();
+    let count = (2 * 1024 * 1024) / one + 2;
+    let rows: Vec<serde_json::Value> = (0..count).map(|_| row(plan, "eu", 1_500)).collect();
+    let body = batch(&rows);
+    assert!(
+        body.to_string().len() > 2 * 1024 * 1024,
+        "the premise of this case: the body has to be over the limit it is testing"
+    );
+
+    let response = harness
+        .allowed()
+        .send(with_headers(
+            "POST",
+            BULK_IMPORTS,
+            Some(body),
+            &keyed("bulk-over-the-body-limit"),
+        ))
+        .await;
+    assert_eq!(
+        response.status(),
+        StatusCode::PAYLOAD_TOO_LARGE,
+        "the platform body limit is what bounds this route's batch today"
+    );
+
+    // And it is refused *before* the handler: no run was opened, so the key is not
+    // spent. This is the half that makes the bound harmless rather than a trap.
+    let conn = harness.db.conn().expect("conn");
+    let opened = bulk_repo::find_by_client_key(
+        &conn,
+        &harness.scope(),
+        harness.tenant,
+        BulkKind::Import,
+        "bulk-over-the-body-limit",
+    )
+    .await
+    .expect("read the run by its key");
+    assert!(
+        opened.is_none(),
+        "a body refused by the extractor never reaches the handler that opens a run: {opened:?}"
+    );
+}

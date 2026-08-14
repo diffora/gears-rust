@@ -50,6 +50,33 @@
 //! three axes the replay can be wrong on are closed: the state (D-295), the kind
 //! (D-307) and the payload.
 //!
+//! # There is no row cap, and the absence is deliberate (Z11-7)
+//!
+//! `rows` is a bare `Vec` and nothing on this path counts it. That is recorded
+//! rather than fixed, because the two things a cap would need are both missing:
+//!
+//! * **No stated number on this axis.** The design set's nearest is §1.2's "500
+//!   rows/plan", which D-160 settled as a **soft, advisory** publish-time warning
+//!   (`PLAN_SIZE_SOFT_CAP_EXCEEDED`, on `warnings[]`, never blocking) — and it is
+//!   per *plan*, while a batch spans plans (`pricing_bulk_operation` has a tenant
+//!   and no plan). Refusing a request above it would both contradict the decision
+//!   that made it advisory and measure the wrong axis. D-125, the read side's hard
+//!   cap of 1,000, is a **pagination** decision about a response and says nothing
+//!   about a request.
+//! * **The cost is real but bounded by bytes.** Both phases run inline, each row is
+//!   its own transaction, and every row takes a row lock — so a large batch does
+//!   hold a connection open and rows frozen against interactive editors for as long
+//!   as it runs. What bounds it today is the platform's request-body limit on the
+//!   extractor this handler reads through: a body past it is refused before any
+//!   handler code runs, so no run is opened and the idempotency key is not spent.
+//!   `a_body_past_the_platform_limit_is_refused_before_the_handler_runs` pins that,
+//!   because a bound named in prose and never measured is how "unbounded" came to
+//!   be written here in the first place.
+//!
+//! What is owed is a **number**, from the design set, on the row axis — and the
+//! operator remedy for a batch that is too big already exists either way: the
+//! abort route.
+//!
 //! # Abort is an edge, not a new state
 //!
 //! `inst-bs-abort`: `committing → completed_with_conflicts`, uncommitted rows
