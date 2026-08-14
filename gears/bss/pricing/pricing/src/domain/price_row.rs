@@ -130,6 +130,10 @@ pub enum TierAggregationWindow {
     SubscriptionLifetime,
     /// Each event stands alone.
     PerEvent,
+    /// Each clock hour stands alone: the counter resets hourly, so every hour's
+    /// quantity picks its own band (D-313). Distinct from `billingGranularity`,
+    /// which quantizes the billable unit and does not reset anything.
+    PerHour,
 }
 
 impl TierAggregationWindow {
@@ -141,6 +145,7 @@ impl TierAggregationWindow {
             Self::InvoicePeriod => "invoice_period",
             Self::SubscriptionLifetime => "subscription_lifetime",
             Self::PerEvent => "per_event",
+            Self::PerHour => "per_hour",
         }
     }
 }

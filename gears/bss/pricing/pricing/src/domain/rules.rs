@@ -66,6 +66,16 @@ pub const EVAL_POLICY_MISPLACED: &str = "EVAL_POLICY_MISPLACED";
 /// without `tierAggregationWindow`.
 pub const EVAL_POLICY_MISSING: &str = "EVAL_POLICY_MISSING";
 
+/// The two windows are each legal and cannot be combined: an hourly tier counter
+/// under a billable unit that spans longer than an hour (D-313).
+///
+/// A separate code from [`EVAL_POLICY_MISPLACED`] because the fault is neither a
+/// missing field nor a field on the wrong kind — both values are authorable and
+/// both are correct alone. Named after the reason, as this gear's codes are, and
+/// deliberately the same shape as `TIER_QUAL_WINDOW_INCOMPATIBLE`, which D-60
+/// minted for the other window pair that cannot meet.
+pub const TIER_AGG_WINDOW_INCOMPATIBLE: &str = "TIER_AGG_WINDOW_INCOMPATIBLE";
+
 /// Two bands cover the same quantity — including a band set that is not
 /// ascending.
 pub const TIER_BANDS_OVERLAP: &str = "TIER_BANDS_OVERLAP";

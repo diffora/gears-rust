@@ -108,6 +108,7 @@ pub mod m20260802_000072_add_bulk_operation_request_hash;
 pub mod m20260802_000073_guard_bulk_operation_request_hash;
 pub mod m20260802_000074_guard_pricing_audit_log_subject_kind;
 pub mod m20260802_000075_widen_source_revision_to_bigint;
+pub mod m20260802_000076_add_per_hour_tier_aggregation_window;
 
 use sea_orm::{ConnectionTrait, Statement};
 use sea_orm_migration::prelude::*;
@@ -419,6 +420,7 @@ impl MigratorTrait for Migrator {
             // — the type a plan revision is stored as — and on Postgres it is two
             // `ALTER COLUMN`s with no rebuild, no rows touched and no object restated.
             Box::new(m20260802_000075_widen_source_revision_to_bigint::Migration),
+            Box::new(m20260802_000076_add_per_hour_tier_aggregation_window::Migration),
             // Shared `coord_leases` table, owned by the `coord` crate. This gear's
             // background work is coordinated as a singleton (§3.8: background work
             // is coordinated as a singleton via the coordination lease library),

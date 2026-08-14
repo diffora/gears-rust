@@ -6,8 +6,8 @@ use super::{BandGeometry, BandOrigin, BandTopOpen, UsageEvaluationPolicy};
 use crate::domain::money::{MinorAmount, RateMinor};
 use crate::domain::price_row::{BillingGranularity, PriceRow, TierAggregationWindow, TierBand};
 use crate::domain::rules::{
-    EVAL_POLICY_MISSING, TIER_BAND_EMPTY, TIER_BAND_PRICE_INCREASE, TIER_BANDS_GAP,
-    TIER_BANDS_OVERLAP, TIER_TOP_CLOSED,
+    EVAL_POLICY_MISSING, TIER_AGG_WINDOW_INCOMPATIBLE, TIER_BAND_EMPTY, TIER_BAND_PRICE_INCREASE,
+    TIER_BANDS_GAP, TIER_BANDS_OVERLAP, TIER_TOP_CLOSED,
 };
 use crate::domain::scope_key::ChargeKind;
 use crate::domain::validation::{ValidationReport, ValidationRule};
@@ -331,4 +331,87 @@ fn a_rise_out_of_a_priced_band_still_warns() {
 
     assert_eq!(report.warnings.len(), 1);
     assert_eq!(report.warnings[0].code, TIER_BAND_PRICE_INCREASE);
+}
+
+/// D-313's hourly window, and the one pair of legal values that cannot meet.
+mod per_hour_window {
+    use super::*;
+
+    /// An hourly counter is a legal answer to `inst-tb-window`'s requirement, so
+    /// the row that carries it owes nothing further. Asserted because the value
+    /// was added to the enum after the rule was written, and a rule that had
+    /// enumerated its own accepted set instead of reading the type would have gone
+    /// on demanding a window that was already there.
+    #[test]
+    fn an_hourly_window_satisfies_the_requirement_it_is_a_member_of() {
+        let mut row = tiered(descending_ladder());
+        row.tier_aggregation_window = Some(TierAggregationWindow::PerHour);
+        row.billing_granularity = Some(BillingGranularity::PerHour);
+
+        assert!(
+            findings(&UsageEvaluationPolicy, &row).violations.is_empty(),
+            "per_hour is a window, not the absence of one"
+        );
+    }
+
+    /// The refusal: a day-long billable unit cannot be banded by the hour.
+    #[test]
+    fn an_hourly_counter_under_a_daily_billable_unit_is_refused() {
+        let mut row = tiered(descending_ladder());
+        row.tier_aggregation_window = Some(TierAggregationWindow::PerHour);
+        row.billing_granularity = Some(BillingGranularity::PerDay);
+
+        assert_eq!(
+            codes(&findings(&UsageEvaluationPolicy, &row)),
+            vec![TIER_AGG_WINDOW_INCOMPATIBLE]
+        );
+    }
+
+    /// **The deliberate non-refusal**, and the half a narrower check would have
+    /// got wrong. `whole_unit` quantizes to a unit of the meter and names no
+    /// period, so an hourly counter over whole units is coherent; a rule that
+    /// refused "everything not finer than an hour" would refuse it and no test
+    /// would say why that is wrong.
+    #[test]
+    fn an_hourly_counter_over_whole_units_is_left_alone() {
+        let mut row = tiered(descending_ladder());
+        row.tier_aggregation_window = Some(TierAggregationWindow::PerHour);
+        row.billing_granularity = Some(BillingGranularity::WholeUnit);
+
+        assert!(
+            findings(&UsageEvaluationPolicy, &row).violations.is_empty(),
+            "whole_unit is not a long period, it is no period at all"
+        );
+    }
+
+    /// Every granularity that fits inside an hour, so the refusal is pinned to the
+    /// one value it is about rather than to "not `per_hour`".
+    #[test]
+    fn every_sub_hourly_granularity_pairs_with_the_hourly_counter() {
+        for granularity in [
+            BillingGranularity::PerSecond,
+            BillingGranularity::PerMinute,
+            BillingGranularity::PerHour,
+        ] {
+            let mut row = tiered(descending_ladder());
+            row.tier_aggregation_window = Some(TierAggregationWindow::PerHour);
+            row.billing_granularity = Some(granularity);
+
+            assert!(
+                findings(&UsageEvaluationPolicy, &row).violations.is_empty(),
+                "{granularity} fits inside the hour it is counted in"
+            );
+        }
+    }
+
+    /// The window is only refused beside the granularity it contradicts: the same
+    /// `per_day` unit under a monthly counter is the ordinary case.
+    #[test]
+    fn a_daily_billable_unit_is_fine_under_a_window_that_contains_it() {
+        let mut row = tiered(descending_ladder());
+        row.tier_aggregation_window = Some(TierAggregationWindow::CalendarMonth);
+        row.billing_granularity = Some(BillingGranularity::PerDay);
+
+        assert!(findings(&UsageEvaluationPolicy, &row).violations.is_empty());
+    }
 }

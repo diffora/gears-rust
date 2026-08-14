@@ -192,6 +192,7 @@ pub const TIER_AGGREGATION_WINDOWS: &[TierAggregationWindow] = &[
     TierAggregationWindow::InvoicePeriod,
     TierAggregationWindow::SubscriptionLifetime,
     TierAggregationWindow::PerEvent,
+    TierAggregationWindow::PerHour,
 ];
 /// The D-40 tier-qualification window.
 pub const TIER_QUALIFICATION_WINDOWS: &[TierQualificationWindow] = &[

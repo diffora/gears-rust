@@ -8,10 +8,12 @@
 
 use toolkit_macros::domain_model;
 
-use crate::domain::price_row::{BandTop, PriceRow, TierBand};
+use crate::domain::price_row::{
+    BandTop, BillingGranularity, PriceRow, TierAggregationWindow, TierBand,
+};
 use crate::domain::rules::{
-    EVAL_POLICY_MISSING, TIER_BAND_EMPTY, TIER_BAND_PRICE_INCREASE, TIER_BANDS_GAP,
-    TIER_BANDS_OVERLAP, TIER_TOP_CLOSED,
+    EVAL_POLICY_MISSING, TIER_AGG_WINDOW_INCOMPATIBLE, TIER_BAND_EMPTY, TIER_BAND_PRICE_INCREASE,
+    TIER_BANDS_GAP, TIER_BANDS_OVERLAP, TIER_TOP_CLOSED,
 };
 use crate::domain::validation::{ValidationReport, ValidationRule};
 
@@ -214,9 +216,23 @@ impl ValidationRule<PriceRow> for BandTopOpen {
 /// one missing window is reported once.
 ///
 /// The value sets (`per_second | per_minute | per_hour | per_day | whole_unit`
-/// and `calendar_month | invoice_period | subscription_lifetime | per_event`)
-/// need no check here: they are the enums, so an unknown value cannot be
-/// constructed.
+/// and `calendar_month | invoice_period | subscription_lifetime | per_event |
+/// per_hour`) need no check here: they are the enums, so an unknown value cannot
+/// be constructed.
+///
+/// # One pair of legal values cannot meet (D-313)
+///
+/// `per_hour` — the hourly tier counter — needs a billable unit that fits inside
+/// an hour. Under `per_day` a single billable unit spans twenty-four of the
+/// windows that are supposed to band it independently, so the row states two
+/// incompatible periods and there is no reading that reconciles them: it is the
+/// ×24 band-edge class D-77 closed for level rows and D-97 closed across
+/// supersession, arrived at here through one row's own two fields.
+///
+/// `whole_unit` is **not** in the refusal. It quantizes to a whole unit of the
+/// meter and says nothing about time, so an hourly counter over whole units
+/// (whole GiB in each clock hour) is coherent — refusing it would be the checker
+/// mistaking "not a time unit" for "a long time unit".
 #[domain_model]
 #[derive(Clone, Copy, Debug, Default)]
 pub struct UsageEvaluationPolicy;
@@ -244,8 +260,21 @@ impl ValidationRule<PriceRow> for UsageEvaluationPolicy {
                 EVAL_POLICY_MISSING,
                 subject.subject(),
                 "a tiered usage row must carry tierAggregationWindow \
-                 (calendar_month | invoice_period | subscription_lifetime | per_event): \
-                 without it the tier counter never resets",
+                 (calendar_month | invoice_period | subscription_lifetime | per_event | \
+                 per_hour): without it the tier counter never resets",
+            );
+        }
+        if subject.tier_aggregation_window == Some(TierAggregationWindow::PerHour)
+            && subject.billing_granularity == Some(BillingGranularity::PerDay)
+        {
+            report.violate(
+                TIER_AGG_WINDOW_INCOMPATIBLE,
+                subject.subject(),
+                "tierAggregationWindow per_hour resets the tier counter every clock hour, \
+                 but billingGranularity per_day makes one billable unit span twenty-four \
+                 of those windows: the row states two periods that cannot both hold. \
+                 Quantize per_hour or finer, or aggregate over a window at least as long \
+                 as the billable unit",
             );
         }
     }
