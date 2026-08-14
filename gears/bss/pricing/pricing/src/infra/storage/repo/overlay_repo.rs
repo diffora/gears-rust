@@ -1545,6 +1545,14 @@ async fn read_line_rows(
 }
 
 /// Read one revision's lines back into the domain's shape.
+///
+/// **Two statements, whatever the line count.** The amounts used to be read per
+/// line, which made every caller of this function a fan-out: `list` paid it once
+/// per row of a page, and `overlay_facts` — which runs inside the publish
+/// transaction and over the tenant's *whole* published set — paid it once per
+/// line of every published overlay. The batched read is
+/// [`read_amounts_by_line`], and the property is counted rather than argued in
+/// `tests/sqlite_overlay_world_fanout.rs`.
 async fn read_lines(
     runner: &impl DBRunner,
     scope: &AccessScope,
@@ -1553,24 +1561,61 @@ async fn read_lines(
     revision: i64,
 ) -> Result<Vec<OverlayLine>, RepoError> {
     let rows = read_line_rows(runner, scope, price_overlay_id, tenant_id, revision).await?;
+    let mut amounts = read_amounts_by_line(runner, scope, tenant_id, revision, &rows).await?;
     let mut lines = Vec::with_capacity(rows.len());
     for row in rows {
-        let amounts = price_overlay_line_amount::Entity::find()
-            .secure()
-            .scope_with(scope)
-            .filter(
-                Condition::all()
-                    .add(price_overlay_line_amount::Column::TenantId.eq(tenant_id))
-                    .add(price_overlay_line_amount::Column::LineId.eq(row.line_id))
-                    .add(price_overlay_line_amount::Column::OverlayRevision.eq(revision)),
-            )
-            .order_by(price_overlay_line_amount::Column::Currency, Order::Asc)
-            .all(runner)
-            .await
-            .map_err(|e| RepoError::Db(format!("read overlay line amounts: {e}")))?;
-        lines.push(line_of(&row, &amounts)?);
+        // A line with no amount rows is not an error: a `percent_bp` line has
+        // none by construction, and `line_of` reads the empty set exactly as the
+        // per-line query's empty answer used to be read.
+        let own = amounts.remove(&row.line_id).unwrap_or_default();
+        lines.push(line_of(&row, &own)?);
     }
     Ok(lines)
+}
+
+/// Every amount row of these lines, in one statement, grouped by line.
+///
+/// The filter is the union of the per-line filters it replaces — same tenant,
+/// same revision, `line_id` in the set — so it can neither reach another
+/// revision's amounts nor another overlay's: `line_id` is unique per revision
+/// across overlays, which is what `(line_id, overlay_revision)` being the line's
+/// primary key means.
+///
+/// Ordered by `line_id` then `currency` so each group keeps the currency order the
+/// per-line read produced; `AmountSet` is a `BTreeMap` and would re-sort anyway,
+/// but a reader comparing the two shapes should not have to know that.
+///
+/// An empty line set issues **no** statement rather than a `WHERE line_id IN ()`.
+async fn read_amounts_by_line(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    revision: i64,
+    lines: &[price_overlay_line::Model],
+) -> Result<BTreeMap<Uuid, Vec<price_overlay_line_amount::Model>>, RepoError> {
+    let mut by_line: BTreeMap<Uuid, Vec<price_overlay_line_amount::Model>> = BTreeMap::new();
+    if lines.is_empty() {
+        return Ok(by_line);
+    }
+    let ids: Vec<Uuid> = lines.iter().map(|line| line.line_id).collect();
+    let rows = price_overlay_line_amount::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(price_overlay_line_amount::Column::TenantId.eq(tenant_id))
+                .add(price_overlay_line_amount::Column::OverlayRevision.eq(revision))
+                .add(price_overlay_line_amount::Column::LineId.is_in(ids)),
+        )
+        .order_by(price_overlay_line_amount::Column::LineId, Order::Asc)
+        .order_by(price_overlay_line_amount::Column::Currency, Order::Asc)
+        .all(runner)
+        .await
+        .map_err(|e| RepoError::Db(format!("read overlay line amounts: {e}")))?;
+    for row in rows {
+        by_line.entry(row.line_id).or_default().push(row);
+    }
+    Ok(by_line)
 }
 
 /// A stored line and its values, as the domain reads them.
@@ -1930,6 +1975,27 @@ struct OverlayFacts {
 /// three range over the same set. **The candidate's own overlay is skipped** —
 /// D-107: an overlay never collides with another revision of itself, on either
 /// the precedence slot or the interval.
+///
+/// # This read is deliberately unpaged, and what that costs is stated
+///
+/// [`OverlayRepo::list`] one screen up takes a `limit` because D-125 requires a
+/// keyset walk of an *authoring* list. This one takes none, and must not: all
+/// three facts are **absence** claims over the whole published set — "no other
+/// overlay holds this precedence", "no published line's interval overlaps this
+/// one" — and a page bound would turn each of them into "none on the first page",
+/// which is a rule that passes by paging rather than by being true. §4.2 runs the
+/// set twice per publish, the second time inside the commit transaction, so the
+/// tenant's **published-overlay count** is what decides how long that transaction
+/// stays open.
+///
+/// **The intended bound is therefore on the count itself, not on this query.** It
+/// is the same shape as the row caps `pricing_policy_object` carries per tenant,
+/// and there is no such cap on published overlays today: nothing in the design set
+/// bounds it, so nothing here can enforce one. What this function now guarantees
+/// is that the cost is linear in that count and **not** in the tenant's total line
+/// count — [`read_lines`] reads a revision's amounts in one statement rather than
+/// one per line, so the transaction holds `1 + 2n` statements for `n` published
+/// overlays. `tests/sqlite_overlay_world_fanout.rs` counts them.
 async fn overlay_facts(
     runner: &impl DBRunner,
     scope: &AccessScope,
