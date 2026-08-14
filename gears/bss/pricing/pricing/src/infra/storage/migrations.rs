@@ -191,8 +191,13 @@ impl MigratorTrait for Migrator {
             Box::new(m20260802_000032_create_pricing_price_overlay::Migration),
             Box::new(m20260802_000033_create_pricing_price_overlay_line::Migration),
             Box::new(m20260802_000034_create_pricing_price_overlay_line_amount::Migration),
-            // D-158's enumeration gains `price_overlay`, because the overlay plane
-            // now writes audit records and `AuditSubjectKind` spells both stores.
+            // D-158's enumeration gains `overlay` — the token the CHECK actually
+            // mints (`m20260802_000035:88`), and not `price_overlay`, which belongs
+            // to a different vocabulary: `pricing_read_model` and
+            // `pricing_catalog_version_ref` spell their `subject_kind` that way
+            // (`m20260802_000003:47`, `m20260802_000004:209`). It joins because the
+            // overlay plane now writes audit records and `AuditSubjectKind` spells
+            // both stores.
             // It rebuilds `pricing_approval` on `SQLite`, so it sorts after every
             // migration that attaches anything to that table — `000022`'s index is
             // the object it restates that `m20260802_000019` did not have to.
@@ -260,8 +265,19 @@ impl MigratorTrait for Migrator {
             Box::new(m20260802_000049_create_pricing_bulk_row_lock::Migration),
             // Slice 6's proration input contract: four columns on `pricing_price`
             // (`inst-pi-required`). Plain `ALTER`s, so they sort anywhere after
-            // `000002` creates the table; the number is this strand's allotted
-            // range (`000050`-`000059`), disjoint from the concurrent strand's.
+            // `000002` creates the table.
+            //
+            // **The two strands' numbers, as actually taken** — this comment and
+            // `000054`'s each used to claim a range "disjoint from the concurrent
+            // strand's" and the two claims OVERLAPPED (`000050`-`000059` against
+            // `000054`-`000059`), which on a chain that has already had to
+            // renumber a collision (see `000037` above) is the one thing the prose
+            // is for. Slice 6's strand took `000050`-`000053`, Slice 10's took
+            // `000054`-`000057`, and `000058`'s guard restatement crossed the
+            // boundary because the columns it names are Slice 6's. `000059` was
+            // taken by neither and is free; the chain resumes at `000060`. Numbers
+            // rather than a range, because a range is a claim about the future and
+            // these are a record of the past.
             Box::new(m20260802_000050_add_pricing_price_proration_contract::Migration),
             // The guard restatement for the four columns `000050` adds. It sorts
             // after them because a trigger naming a column that does not exist
@@ -278,8 +294,10 @@ impl MigratorTrait for Migrator {
             Box::new(m20260802_000053_add_pricing_plan_entitlement_grants::Migration),
             // Slice 10's reserved-capacity attributes: two columns on
             // `pricing_price` (`inst-rv-attrs`, A1). Plain `ALTER`s, so they sort
-            // anywhere after `000002`; the number is this strand's allotted range
-            // (`000054`-`000059`), disjoint from the concurrent D-231 work's.
+            // anywhere after `000002`. This is the second of the two concurrent
+            // strands `000050`'s comment reconciles — it took `000054`-`000057`,
+            // and that comment is where the whole record lives so the two cannot
+            // drift apart again.
             Box::new(m20260802_000054_add_pricing_price_reservation::Migration),
             // The guard restatement for the two columns `000054` adds --
             // `000051`'s shape, and after them for `000051`'s reason: a trigger

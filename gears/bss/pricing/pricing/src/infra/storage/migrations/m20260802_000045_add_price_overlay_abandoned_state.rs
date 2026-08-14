@@ -41,7 +41,9 @@
 //! tables
 //!
 //! Postgres drops and re-adds a named constraint, and does. `SQLite` cannot alter
-//! a `CHECK` at all, so the table is rebuilt on `m20260802_000060`'s shape — and a
+//! a `CHECK` at all, so the table is rebuilt on `m20260802_000032`'s shape — the
+//! migration that creates `pricing_price_overlay`, and the one the rebuild below
+//! restates by hand (see the comment above `sqlite_rebuild!`) — and a
 //! rebuild restates the table by hand, which means **`DROP TABLE` takes the
 //! indexes and the triggers with it**. All three indexes and this table's own four
 //! triggers are recreated after the rename. Leaving one out would silently delete
