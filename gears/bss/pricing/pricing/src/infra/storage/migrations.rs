@@ -106,6 +106,7 @@ pub mod m20260802_000070_widen_approval_subject_kind_membership;
 pub mod m20260802_000071_pin_membership_state_on_catalog_version_ref;
 pub mod m20260802_000072_add_bulk_operation_request_hash;
 pub mod m20260802_000073_guard_bulk_operation_request_hash;
+pub mod m20260802_000074_guard_pricing_audit_log_subject_kind;
 
 use sea_orm::{ConnectionTrait, Statement};
 use sea_orm_migration::prelude::*;
@@ -406,6 +407,12 @@ impl MigratorTrait for Migrator {
             // different objects, and on Postgres the guard is a whole function body.
             Box::new(m20260802_000072_add_bulk_operation_request_hash::Migration),
             Box::new(m20260802_000073_guard_bulk_operation_request_hash::Migration),
+            // Z6-6: `pricing_audit_log.subject_kind` gains the CHECK its
+            // `pricing_approval` sibling has carried since `000015`. One enum spells
+            // two columns (D-158) and only one of them was held to it; the seven-year
+            // hash-chained trail is the column where an unspelled token is least
+            // correctable afterwards.
+            Box::new(m20260802_000074_guard_pricing_audit_log_subject_kind::Migration),
             // Shared `coord_leases` table, owned by the `coord` crate. This gear's
             // background work is coordinated as a singleton (§3.8: background work
             // is coordinated as a singleton via the coordination lease library),

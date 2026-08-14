@@ -437,6 +437,64 @@ async fn a_second_row_at_one_position_is_refused_by_the_primary_key() {
 }
 
 #[tokio::test]
+async fn every_subject_kind_d158_declares_is_storable_in_the_trail() {
+    // D-158's claim is about the **declaration**, not about who writes it: the two
+    // stores spell one enumeration and extend it in step. This is the audit-plane
+    // twin of `sqlite_approval_repo::every_subject_kind_d158_declares_is_storable_on_the_mirror`,
+    // and it is what keeps `chk_pricing_audit_log_subject_kind` (Z6-6,
+    // `m20260802_000074`) in step with `AuditSubjectKind::ALL`: an eighth variant
+    // reddens here on the next `cargo test`, with no route, no service and no
+    // writer having been touched.
+    //
+    // Iterated off `ALL` rather than spelled out, because a hand-written list of
+    // the same seven tokens is a second roster to keep true — the shape the
+    // constraint itself exists to remove.
+    let conn = common::migrated_db().await;
+
+    for (seq, kind) in AuditSubjectKind::ALL.iter().enumerate() {
+        let token = kind.as_str();
+        common::must_succeed(
+            &conn,
+            &format!(
+                "INSERT INTO pricing_audit_log (
+                     tenant_id, chain_id, seq, entry_kind, recorded_at, actor_principal_id,
+                     action, subject_kind, subject_ref, row_hash)
+                 VALUES ('t1','c1',{seq},'mutation','2026-08-03T12:00:00Z','a1',
+                         'publish','{token}','subject/0', x'00')"
+            ),
+        )
+        .await;
+    }
+}
+
+#[tokio::test]
+async fn a_subject_kind_outside_d158s_enumeration_is_refused_by_the_store() {
+    // The other direction, and the one that makes the constraint falsifiable: the
+    // trail is append-only, hash-chained and retained for seven-plus years, so a
+    // token that arrives unspelled cannot be corrected afterwards — an `UPDATE`
+    // breaks the chain and a `DELETE` re-writes it, and both are refused by the
+    // table's own triggers. Before `m20260802_000074` this insert succeeded: the
+    // column was `text NOT NULL` and nothing more, on either engine, while its
+    // `pricing_approval` sibling had been CHECK-constrained since `000015`.
+    let conn = common::migrated_db().await;
+
+    common::exec(
+        &conn,
+        "INSERT INTO pricing_audit_log (
+             tenant_id, chain_id, seq, entry_kind, recorded_at, actor_principal_id,
+             action, subject_kind, subject_ref, row_hash)
+         VALUES ('t1','c1',0,'mutation','2026-08-03T12:00:00Z','a1',
+                 'publish','plan-revision','subject/0', x'00')",
+    )
+    .await
+    .expect_err(
+        "a subject_kind outside AuditSubjectKind::ALL must be refused: 'plan-revision' is the \
+         hyphenated near-miss of a real token, which is exactly what a hand-spelled writer \
+         produces",
+    );
+}
+
+#[tokio::test]
 async fn a_mutation_row_carrying_segment_heads_is_impossible() {
     // `chk_pricing_audit_log_rollup` is what keeps the roll-up — which nothing
     // in this gear writes — from being confusable with a mutation record.

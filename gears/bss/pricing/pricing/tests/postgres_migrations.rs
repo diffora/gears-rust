@@ -358,6 +358,9 @@ const EXPECTED_CHECKS: &[&str] = &[
     "chk_pricing_audit_log_entry_kind",
     "chk_pricing_audit_log_rollup",
     "chk_pricing_audit_log_seq",
+    // Z6-6 (`m20260802_000074`), the same name the SQLite mirror carries: one enum
+    // spells two columns and only `pricing_approval`'s was CHECK-constrained.
+    "chk_pricing_audit_log_subject_kind",
     "chk_pricing_brand_taxonomy_state",
     "chk_pricing_brand_taxonomy_value_present",
     // Slice 12's bulk operation, the same four the SQLite mirror carries.
