@@ -138,6 +138,115 @@ async fn a_siblings_panic_is_not_discarded_while_draining() {
 }
 
 // ---------------------------------------------------------------------------
+// What a warm pass tells an operator (Z13-7).
+// ---------------------------------------------------------------------------
+
+/// **A pass that did nothing is silent, and a pass that did something is not.**
+///
+/// `SweepReport`'s eleven counters were dropped whole by the only production caller
+/// of `run`, so the sweep `serve` calls the one *"without which `pricing_read_model`
+/// stays empty"* produced no per-pass signal while its less load-bearing sibling did.
+/// The rule that decides is asserted here rather than the emission, because this
+/// crate has no tracing capture — `log_activation` has carried the same rule inline
+/// since the sweep landed and has never had a case.
+///
+/// Every arm is driven separately. A table over one field at a time is what catches
+/// the arm that was left out of the disjunction: a single "everything at once" report
+/// passes with any one of the seven checks present.
+#[test]
+fn a_warm_pass_is_worth_logging_exactly_when_it_moved_or_failed_at_something() {
+    use crate::infra::jobs::readmodel_warm::SweepReport;
+
+    // The steady state twice over: nothing pending, and tenants swept whose refs are
+    // simply still inside the batching budget. At a 5s cadence either of these
+    // logging at `info` would bury every pass that did something.
+    assert!(
+        !BssPricingGear::sweep_is_noteworthy(&SweepReport::default()),
+        "a pass with nothing pending is the steady state"
+    );
+    assert!(
+        !BssPricingGear::sweep_is_noteworthy(&SweepReport {
+            tenants_seen: 3,
+            pending_seen: 9,
+            ..SweepReport::default()
+        }),
+        "seeing tenants and refs is not doing anything with them — this is every tick \
+         inside D-47's batching budget"
+    );
+    // A deployment state, not an event. `readmodel_warm` puts it at `debug` because
+    // the e2e that boots this gear with no registry has to stay readable, and every
+    // pass is inert forever in that deployment.
+    assert!(
+        !BssPricingGear::sweep_is_noteworthy(&SweepReport {
+            inert: true,
+            tenants_seen: 1,
+            ..SweepReport::default()
+        }),
+        "an unconfigured registry must not log at `info` twelve times a minute"
+    );
+
+    for (report, what) in [
+        (
+            SweepReport {
+                versions_projected: 1,
+                ..SweepReport::default()
+            },
+            "a version was projected",
+        ),
+        (
+            SweepReport {
+                subjects_failed: 1,
+                ..SweepReport::default()
+            },
+            "a subject's transaction refused",
+        ),
+        (
+            SweepReport {
+                frontiers_advanced: 1,
+                ..SweepReport::default()
+            },
+            "a frontier advanced",
+        ),
+        (
+            SweepReport {
+                degraded_emitted: 1,
+                ..SweepReport::default()
+            },
+            "a PlanPublishDegraded was enqueued",
+        ),
+        (
+            SweepReport {
+                commit_overdue: 1,
+                ..SweepReport::default()
+            },
+            "a Critical was raised",
+        ),
+        (
+            SweepReport {
+                pin_eligibility_overdue: 1,
+                ..SweepReport::default()
+            },
+            "the other Critical was raised",
+        ),
+        (
+            // The one that is not a counter, and the one Z10-5 added: a Critical
+            // that could not be *evaluated* leaves every other counter identical to
+            // a healthy pass's, so it is the arm most easily left out.
+            SweepReport {
+                frontier_scan_failed: true,
+                ..SweepReport::default()
+            },
+            "the cross-tenant frontier read failed",
+        ),
+    ] {
+        assert!(
+            BssPricingGear::sweep_is_noteworthy(&report),
+            "a pass where {what} must reach an operator"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
 // The lease, over two passes of one `LeaseManager`.
 // ---------------------------------------------------------------------------
 

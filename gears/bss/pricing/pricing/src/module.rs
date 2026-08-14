@@ -448,10 +448,96 @@ impl BssPricingGear {
         let Some(guard) = Self::take_lease(lease, WARM_LEASE_KEY, ttl).await else {
             return;
         };
-        if let Err(e) = job.run(Utc::now()).await {
-            tracing::error!(error = %e, "bss-pricing: read-model warm sweep tick failed");
+        match job.run(Utc::now()).await {
+            Ok(report) => Self::log_sweep(&report),
+            Err(e) => {
+                tracing::error!(error = %e, "bss-pricing: read-model warm sweep tick failed");
+            }
         }
         Self::release_lease(guard, "readmodel-warm").await;
+    }
+
+    /// Report a warm pass that did something, and stay silent about one that did
+    /// not — [`Self::log_activation`]'s rule, on the sweep that had none (Z13-7).
+    ///
+    /// `SweepReport` carries eleven counters and this was the only production caller
+    /// of `run`: it matched `Err` and dropped the `Ok` whole. So the pass `serve`'s
+    /// own doc calls the one *"without which `pricing_read_model` stays empty"*
+    /// produced no per-pass operational signal at all, while its less load-bearing
+    /// sibling forty lines below emitted one. The asymmetry was the finding.
+    ///
+    /// What is *not* lost without this — and why it is `info!` rather than something
+    /// louder — is the two Criticals and every failed subject: those reach the
+    /// metrics port and `tracing::error!` from inside the job and the projector,
+    /// independently of this. What was lost is the **aggregate**, including
+    /// `degraded_emitted` and `versions_complete`, whose only other channel is a
+    /// `debug!`.
+    fn log_sweep(report: &crate::infra::jobs::readmodel_warm::SweepReport) {
+        if !Self::sweep_is_noteworthy(report) {
+            return;
+        }
+        info!(
+            tenants_seen = report.tenants_seen,
+            pending_seen = report.pending_seen,
+            versions_projected = report.versions_projected,
+            versions_complete = report.versions_complete,
+            subjects_projected = report.subjects_projected,
+            subjects_failed = report.subjects_failed,
+            frontiers_advanced = report.frontiers_advanced,
+            degraded_emitted = report.degraded_emitted,
+            commit_overdue = report.commit_overdue,
+            pin_eligibility_overdue = report.pin_eligibility_overdue,
+            frontier_scan_failed = report.frontier_scan_failed,
+            "bss-pricing: read-model warm sweep pass"
+        );
+    }
+
+    /// Has this pass anything to tell an operator?
+    ///
+    /// The **decision**, split from the emission so it can be asserted: this crate
+    /// has no tracing capture, so a `log_sweep` that made the choice inline would be
+    /// a rule nothing could redden. [`Self::log_activation`] carries the same rule
+    /// inline and has the same gap.
+    ///
+    /// Two states are deliberately *not* noteworthy, and both are steady states
+    /// rather than events. A pass that swept tenants and moved nothing is what every
+    /// tick inside D-47's batching budget looks like — at a five-second cadence,
+    /// logging it would bury the passes that did something under roughly twelve
+    /// passes a minute that did not. And `inert` is a **deployment state**: with no
+    /// registry wired every pass is inert forever, and `readmodel_warm`'s module doc
+    /// puts that at `debug` precisely because the e2e that boots this gear without a
+    /// registry has to stay readable.
+    ///
+    /// **Destructured exhaustively on purpose.** A twelfth counter added to
+    /// `SweepReport` is then a compile error here rather than a field this rule
+    /// silently ignores — which is the one way a report grows a signal that never
+    /// reaches an operator.
+    fn sweep_is_noteworthy(report: &crate::infra::jobs::readmodel_warm::SweepReport) -> bool {
+        let crate::infra::jobs::readmodel_warm::SweepReport {
+            // A deployment state, not an event — see above.
+            inert: _,
+            // Seeing a tenant or a ref is not doing anything with it.
+            tenants_seen: _,
+            pending_seen: _,
+            versions_projected,
+            // Implied by `versions_projected`: nothing is judged complete or
+            // projected without a version having been handed to the projector.
+            versions_complete: _,
+            subjects_projected: _,
+            subjects_failed,
+            frontiers_advanced,
+            degraded_emitted,
+            commit_overdue,
+            pin_eligibility_overdue,
+            frontier_scan_failed,
+        } = report;
+        *versions_projected > 0
+            || *subjects_failed > 0
+            || *frontiers_advanced > 0
+            || *degraded_emitted > 0
+            || *commit_overdue > 0
+            || *pin_eligibility_overdue > 0
+            || *frontier_scan_failed
     }
 
     /// Spawn the window activation/expiry ticker: a cancellable loop driving one
