@@ -1015,3 +1015,100 @@ fn an_unphased_plan_publishes_no_map_rather_than_a_one_entry_one() {
 
     assert!(grants.phase_map(&[phase(0xa1, 0, None)]).is_empty());
 }
+
+// ---------------------------------------------------------------------------
+// The K2 roster (Z13-3)
+// ---------------------------------------------------------------------------
+
+/// **Adding a `BillingAnchorPolicy` member without adding it to `ALL` does not
+/// compile.**
+///
+/// This is the only kind of check that can catch a missing roster entry: a length
+/// assertion is satisfied by any array of the right size, and a token comparison
+/// ranges over the roster and so cannot see what the roster omits. The exhaustive
+/// `match` below has no wildcard, so a fourth K2 policy is a compile error here —
+/// which is what the two hand-written token matches this roster replaced could not
+/// be, and why a fourth policy would have been a legal request refused as unknown
+/// (`api::rest::prices`) and a stored row refusing to load (`price_repo`).
+#[test]
+fn every_billing_anchor_policy_member_is_in_the_roster() {
+    fn rostered(policy: BillingAnchorPolicy) -> bool {
+        // No `_ =>` arm, deliberately: this match is the gate.
+        match policy {
+            BillingAnchorPolicy::CalendarMonth
+            | BillingAnchorPolicy::SubscriptionStart
+            | BillingAnchorPolicy::FixedDay(_) => BillingAnchorPolicy::ALL
+                .iter()
+                .any(|member| member.as_str() == policy.as_str()),
+        }
+    }
+
+    let day = AnchorDay::new(17).expect("17 is a day a month can have");
+    for policy in [
+        BillingAnchorPolicy::CalendarMonth,
+        BillingAnchorPolicy::SubscriptionStart,
+        BillingAnchorPolicy::FixedDay(day),
+    ] {
+        assert!(
+            rostered(policy),
+            "{policy} is not in BillingAnchorPolicy::ALL"
+        );
+    }
+}
+
+/// **One token per member, so a parse over the roster is unambiguous.**
+///
+/// `ALL` is a parse roster, and the readers walk it comparing `as_str`. Two members
+/// rendering one token would make the first one found win silently — and it is a
+/// live hazard here rather than a hypothetical, because `FixedDay` renders
+/// `fixed_day` for all 31 days: a roster that listed the days would answer one
+/// token 31 times, which is why it lists the policy once on a placeholder day.
+#[test]
+fn the_roster_renders_one_token_per_member() {
+    let tokens: std::collections::BTreeSet<&str> = BillingAnchorPolicy::ALL
+        .iter()
+        .map(|policy| policy.as_str())
+        .collect();
+
+    assert_eq!(
+        tokens.len(),
+        BillingAnchorPolicy::ALL.len(),
+        "two roster members render one token, so a parse over ALL is ambiguous: {tokens:?}"
+    );
+}
+
+/// **The roster's `FixedDay` placeholder never escapes a parse.**
+///
+/// `with_anchor_day` is what re-pairs the day after a token is read back through
+/// `ALL`, and the placeholder day would otherwise be a default nobody chose. The
+/// converse arm matters as much: a day paired onto a policy that anchors without
+/// one is **ignored** rather than absorbed, because absorbing it would make the two
+/// unpublishable spellings K2 forbids representable again — the refusal belongs to
+/// the caller, which is the only place that knows whether a day was sent.
+#[test]
+fn pairing_a_day_replaces_the_placeholder_and_leaves_the_dayless_policies_alone() {
+    let day = AnchorDay::new(29).expect("29 is a day a month can have");
+
+    let fixed = BillingAnchorPolicy::ALL
+        .iter()
+        .find(|policy| policy.as_str() == "fixed_day")
+        .copied()
+        .expect("fixed_day is in the roster");
+    assert_ne!(
+        fixed.anchor_day(),
+        Some(day),
+        "the placeholder must not be the day under test, or this proves nothing"
+    );
+    assert_eq!(fixed.with_anchor_day(day).anchor_day(), Some(day));
+
+    for dayless in [
+        BillingAnchorPolicy::CalendarMonth,
+        BillingAnchorPolicy::SubscriptionStart,
+    ] {
+        assert_eq!(
+            dayless.with_anchor_day(day),
+            dayless,
+            "{dayless} anchors without a day and must not silently acquire one"
+        );
+    }
+}

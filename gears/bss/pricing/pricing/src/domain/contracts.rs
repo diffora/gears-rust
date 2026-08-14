@@ -118,6 +118,63 @@ pub enum BillingAnchorPolicy {
 }
 
 impl BillingAnchorPolicy {
+    /// K2's set, whole, for the readers that map a stored token back —
+    /// [`ProrationBasis::ALL`]'s reason, on the enum two lines above it that had no
+    /// roster at all (Z6/Z13-3).
+    ///
+    /// **`FixedDay` stands here on a placeholder day, and the placeholder is
+    /// deliberate.** What a roster is for is the token→member direction, and
+    /// [`Self::as_str`] renders `fixed_day` for *every* day, so one member per token
+    /// is the whole vocabulary; the day is a second fact, and
+    /// [`Self::with_anchor_day`] is what re-pairs it. A roster carrying 31 members
+    /// would be a roster of `(policy, day)` pairs pretending to be a roster of
+    /// policies, and it would answer the same token 31 times.
+    ///
+    /// Spelled out rather than derived so that adding a member is a change this
+    /// array records: K2 makes any extension a versioned contract change, and one
+    /// that slipped in without touching a declared roster is the drift
+    /// `pricing.contracts.enum_drift` alarms on.
+    pub const ALL: &'static [Self] = &[
+        Self::CalendarMonth,
+        Self::SubscriptionStart,
+        Self::FixedDay(Self::ROSTER_DAY),
+    ];
+
+    /// The placeholder day [`Self::ALL`]'s `FixedDay` member carries.
+    ///
+    /// Named rather than inlined so a reader of `ALL` cannot mistake it for a
+    /// default: nothing anchors on it, and every parse that reaches `FixedDay`
+    /// replaces it through [`Self::with_anchor_day`] before the value escapes.
+    const ROSTER_DAY: AnchorDay = match AnchorDay::new(1) {
+        Ok(day) => day,
+        // Unreachable: 1 is in 1..=31. Spelled as a match rather than an
+        // `expect` because this is a `const`.
+        Err(_) => panic!("1 is a day a month can have"),
+    };
+
+    /// This policy with `day` as its anchor, where it names one.
+    ///
+    /// The inverse of [`Self::anchor_day`], and what makes [`Self::ALL`] usable as a
+    /// parse roster: a token read back through `ALL` arrives as `FixedDay` on the
+    /// placeholder day, and the caller pairs the real day here rather than
+    /// re-matching the token. The two hand-written token matches this replaced —
+    /// one in `api::rest::prices`, one in `price_repo` — each re-spelled all three
+    /// tokens next to an enum they had already imported.
+    ///
+    /// `CalendarMonth` and `SubscriptionStart` ignore `day` and return unchanged:
+    /// this function pairs a day with a policy that takes one and is **not** where a
+    /// day-beside-`calendar_month` request is refused. That refusal belongs to the
+    /// caller, which knows whether the day was *sent*; a policy that silently
+    /// absorbed it would make the two unpublishable spellings this enum's shape
+    /// exists to prevent representable again.
+    #[must_use]
+    pub const fn with_anchor_day(self, day: AnchorDay) -> Self {
+        match self {
+            Self::FixedDay(_) => Self::FixedDay(day),
+            Self::CalendarMonth | Self::SubscriptionStart => self,
+        }
+    }
+
     /// The persisted / wire token, which never carries the day.
     #[must_use]
     pub const fn as_str(self) -> &'static str {

@@ -1300,25 +1300,33 @@ fn read_proration_contract(
         ));
     };
 
-    let billing_anchor_policy = match policy_token {
-        "calendar_month" => none_anchored(BillingAnchorPolicy::CalendarMonth, view)?,
-        "subscription_start" => none_anchored(BillingAnchorPolicy::SubscriptionStart, view)?,
-        "fixed_day" => {
+    // Through the enum's own roster, exactly as the `ProrationBasis` field two
+    // lines below already did (Z13-3). This match used to re-spell all three
+    // tokens and the refusal message re-spelled them a fourth time, in a module
+    // that imports the enum — so a fourth K2 policy was a legal request refused as
+    // unknown, with nothing reddening.
+    let policy = wire_token(
+        "content.billing_anchor_policy",
+        policy_token,
+        BillingAnchorPolicy::ALL,
+        BillingAnchorPolicy::as_str,
+    )?;
+    // The day is the second fact, and the pairing is where the two unpublishable
+    // spellings are refused: a `fixed_day` with no day, and a day beside a policy
+    // that anchors without one. `with_anchor_day` deliberately does not refuse
+    // either — only this caller knows whether a day was *sent*.
+    let billing_anchor_policy = match policy.anchor_day() {
+        Some(_) => {
             let day = view.anchor_day.ok_or_else(|| {
                 DomainError::InvalidRequest(
                     "content.anchor_day is required beside a fixed_day anchor".to_owned(),
                 )
             })?;
-            BillingAnchorPolicy::FixedDay(
+            policy.with_anchor_day(
                 AnchorDay::new(day).map_err(|e| DomainError::InvalidRequest(e.to_string()))?,
             )
         }
-        other => {
-            return Err(DomainError::InvalidRequest(format!(
-                "content.billing_anchor_policy must be one of calendar_month, \
-                 subscription_start, fixed_day; got {other}"
-            )));
-        }
+        None => none_anchored(policy, view)?,
     };
 
     Ok(Some(ProrationContract {
