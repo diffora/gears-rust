@@ -47,8 +47,11 @@ pub struct Model {
     #[sea_orm(primary_key, auto_increment = false)]
     pub revision: i64,
     pub tenant_id: Uuid,
-    /// `draft` | `published` | `superseded`. Three states and no `abandoned`
-    /// tombstone, which is why a discarded draft revision leaves by DELETE.
+    /// `draft` | `abandoned` | `published` | `superseded`. A discarded draft
+    /// revision leaves by the terminal `draft -> abandoned` flip and **never** by
+    /// `DELETE`, which the store refuses outright for every state
+    /// (`m20260802_000045`, D-231): the number a discarded revision consumed is
+    /// never freed, so a stale `If-Match` cannot match a re-minted one.
     pub lifecycle_state: String,
     /// `partner` | `org_tier` | `brand` | `region` | `customer_group` | `global`.
     pub scope_class: String,
