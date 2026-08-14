@@ -56,6 +56,7 @@ use axum::response::{IntoResponse, Response};
 use axum::{Json, Router, http::HeaderMap, http::StatusCode};
 use chrono::{DateTime, Utc};
 use toolkit::api::canonical_prelude::CanonicalError;
+use toolkit::api::operation_builder::{ParamLocation, ParamSpec};
 use toolkit::api::{OpenApiRegistry, operation_builder::OperationBuilder};
 use toolkit_db::secure::DbTx;
 use toolkit_odata::PageInfo;
@@ -1206,6 +1207,30 @@ async fn list_overlays(
 // The router.
 // ---------------------------------------------------------------------------
 
+/// The list read's own narrowing parameter (Z13-10).
+///
+/// Declared because [`ListOverlaysQuery`] reads it: a query parameter a handler
+/// honours and the document does not name is one a generated client cannot send,
+/// and a caller who cannot narrow pages the tenant's whole overlay set at D-125's
+/// default. The page pair beside it is `history`'s, spelled once for the gear.
+fn scope_class_param() -> ParamSpec {
+    ParamSpec {
+        name: "scope_class".to_owned(),
+        location: ParamLocation::Query,
+        required: false,
+        description: Some(
+            "Narrow to one of L2's scope classes, by its `snake_case` token as the overlay's own \
+             `scope_class` field carries it. Absent returns every class. An unknown token is \
+             refused `400` rather than silently ignored: a filter that quietly matched everything \
+             would answer a narrowed question with the whole set. The classes are not enumerated \
+             here - D-120 added two after this surface was written, and a list beside a \
+             vocabulary leaves only one of the two true."
+                .to_owned(),
+        ),
+        param_type: "string".to_owned(),
+    }
+}
+
 /// Mount the overlay authoring routes.
 pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Router {
     let router = OperationBuilder::post(PRICE_OVERLAYS)
@@ -1245,15 +1270,22 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
         .operation_id("bss_pricing.list_price_overlays")
         .summary("List PriceOverlays")
         .description(
-            "The admin and Tariffs read. Returns **every** revision, draft included, ordered by \
-             precedence then id then revision, optionally narrowed to one `scope_class`. It does \
-             **not** filter on `disclosure`: L6 governs consumer-facing exposure and section 3 \
-             step 7 is explicit that operator and service reads are unaffected, so a `restricted` \
-             overlay is still its author's to read. Gates on `price_overlay` x `read`.",
+            "The admin and Tariffs read. Returns **every** revision, draft included, optionally \
+             narrowed to one `scope_class`, and paginated on an opaque cursor per D-125. Ordered \
+             by overlay id then revision - the cursor's own key and **not** precedence order: a \
+             keyset walk has to be ordered by the key its cursor names. Every row carries its \
+             `precedence`, so a caller assembling a stack reads it from the row rather than from \
+             the sequence. It does **not** filter on `disclosure`: L6 governs consumer-facing \
+             exposure and section 3 step 7 is explicit that operator and service reads are \
+             unaffected, so a `restricted` overlay is still its author's to read. Gates on \
+             `price_overlay` x `read`.",
         )
         .tag(TAG)
         .authenticated()
         .no_license_required()
+        .param(crate::api::rest::history::limit_param())
+        .param(crate::api::rest::history::cursor_param())
+        .param(scope_class_param())
         .handler(list_overlays)
         .json_response_with_schema::<OverlayListView>(
             openapi,

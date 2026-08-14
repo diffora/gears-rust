@@ -147,7 +147,14 @@ impl From<HistoryPage> for HistoryPageView {
     }
 }
 
-fn limit_param() -> ParamSpec {
+/// D-125's page size, declared once for every cursor walk in the gear.
+///
+/// `pub(crate)` for `plans::idempotency_key_param`'s reason and on its precedent:
+/// the contract is the gear's rather than this route's, and two spellings of one
+/// parameter's description are two answers to what a generated client's docs say
+/// about it. This surface was the first D-125 walk to declare its parameters at
+/// all, which is why the spelling lives here.
+pub(crate) fn limit_param() -> ParamSpec {
     ParamSpec {
         name: "limit".to_owned(),
         location: ParamLocation::Query,
@@ -162,7 +169,8 @@ fn limit_param() -> ParamSpec {
     }
 }
 
-fn cursor_param() -> ParamSpec {
+/// D-125's opaque page token, declared once — [`limit_param`]'s note.
+pub(crate) fn cursor_param() -> ParamSpec {
     ParamSpec {
         name: "cursor".to_owned(),
         location: ParamLocation::Query,

@@ -658,6 +658,68 @@ fn declared_headers(openapi: &OpenApiRegistryImpl, method: &str, path: &str) -> 
         .collect()
 }
 
+/// The query parameters one registered operation declares, sorted.
+fn declared_query_params(openapi: &OpenApiRegistryImpl, method: &str, path: &str) -> Vec<String> {
+    let key = format!("{method}:{path}");
+    let entry = openapi
+        .operation_specs
+        .get(&key)
+        .unwrap_or_else(|| panic!("{key} is not a registered operation"));
+    let mut names: Vec<String> = entry
+        .value()
+        .params
+        .iter()
+        .filter(|param| matches!(param.location, ParamLocation::Query))
+        .map(|param| param.name.clone())
+        .collect();
+    names.sort();
+    names
+}
+
+/// **The two cursor reads declare every query parameter their handlers read.**
+///
+/// Asserted against the emitted document rather than against the handler, because
+/// the document is the only half a generated client sees: `GET /price-overlays`
+/// took `Query<ListOverlaysQuery>` — `limit`, `cursor`, `scope_class` — and
+/// declared **none** of the three, so the endpoint D-125's pagination work had just
+/// paginated could not be paged by any generated client, and the narrowing filter
+/// could not be sent at all (Z13-10).
+///
+/// **Set equality, not containment.** A declaration a handler does not read is the
+/// same defect from the other side: it tells a client to send something the server
+/// ignores, which is what `a_read_route_declares_no_precondition_header` says one
+/// plane over about headers.
+///
+/// `/history` is in the roster as the case that was already right, so a regression
+/// there reddens too rather than being assumed. The wider census — *every*
+/// `Query<T>` field declared by the route that reads it — is Z13-10's remainder:
+/// six more collection reads take a page query and declare nothing, and closing
+/// them is a fix wave rather than a line here.
+#[tokio::test]
+async fn the_cursor_reads_declare_every_query_parameter_they_read() {
+    let openapi = registered_operations().await;
+
+    for (method, path, expected) in [
+        (
+            "GET",
+            bss_pricing::api::rest::overlays::PRICE_OVERLAYS,
+            vec!["cursor", "limit", "scope_class"],
+        ),
+        (
+            "GET",
+            bss_pricing::api::rest::history::HISTORY,
+            vec!["cursor", "limit"],
+        ),
+    ] {
+        assert_eq!(
+            declared_query_params(&openapi, method, path),
+            expected,
+            "{method} {path} declares a query parameter set its handler does not read, or reads \
+             one it does not declare"
+        );
+    }
+}
+
 #[tokio::test]
 async fn every_mutating_route_declares_its_precondition_header() {
     // D-171's owed clause: the declarations existed on every mutating route and
