@@ -1753,6 +1753,20 @@ async fn hydrate_bands(
 // ---------------------------------------------------------------------------
 // Statements.
 
+/// The rows one page of [`gated_markets`]' walk reads into memory.
+///
+/// `readmodel_warm::FRONTIER_SCAN_LIMIT`'s value and, deliberately, **not** its
+/// meaning: that constant truncates a scan and this one only breaks it up, because
+/// the frontier scan discards the tail it can prove is uninteresting while a
+/// truncated market count would be a wrong number reported to §7's alarm.
+///
+/// A thousand rather than a hundred because the walk pays one round trip per page
+/// on a 60-second cadence and the value it computes moves in months (D-250, and the
+/// PRD risk table's "an estimated eight months"), so the cost worth minimizing here
+/// is statements, not the peak page. No operator has a decision to make about it,
+/// which is why it is a constant and not a `JobsConfig` knob.
+const GATED_MARKETS_PAGE: u64 = 1_000;
+
 /// D-246: the catalog-wide GA backlog — **how many tenant-markets are gated now**.
 ///
 /// # Why this reads the truth store and not the read model
@@ -1784,12 +1798,58 @@ async fn hydrate_bands(
 /// it — `pin_frontier_repo::list_all`'s arrangement, and for its reason: a
 /// per-tenant read cannot answer a catalog-wide question.
 ///
+/// # Bounded, in pages of [`GATED_MARKETS_PAGE`]
+///
+/// This is [`gated_markets_in_pages`] spending the deployment constant; see it for
+/// what the page buys and for the bound the walk does **not** have.
+///
 /// # Errors
 /// [`RepoError::Db`] on a scope or storage failure.
 pub async fn gated_markets(
     runner: &impl DBRunner,
     scope: &AccessScope,
     tax_engine_ga: bool,
+) -> Result<i64, RepoError> {
+    gated_markets_in_pages(runner, scope, tax_engine_ga, GATED_MARKETS_PAGE).await
+}
+
+/// [`gated_markets`], with the page size the caller's.
+///
+/// # Why the page exists (Z10-11)
+///
+/// This read was `price::Entity::find()… .all(runner)` — the **only** unbounded
+/// read on any of the three tickers, where `readmodel_warm`'s frontier scan,
+/// `window_activation`'s due set and both of D-163's ref bounds each carry an
+/// explicit cap and a documented degradation. Its stated bound was *"the cost is
+/// bounded by the thing being measured — the gated rows **are** the backlog"*, and
+/// that is not one: the backlog is every published, non-grandfathered,
+/// tax-inclusive row of every tenant, which §10's risk table expects to stand *"an
+/// estimated eight months"*, re-read whole every 60 seconds.
+///
+/// # What the page bounds, and what it deliberately does not
+///
+/// It bounds the **rows held in memory at once** to one page. It does *not*
+/// truncate: the walk runs to the end of the catalog and the answer is exact,
+/// because this number is a gauge feeding §7's alarm and a truncated count is a
+/// *wrong* number rather than a late one — the opposite of `FRONTIER_SCAN_LIMIT`,
+/// where the discarded tail is provably the part that cannot be stale. What still
+/// grows with the catalog is the deduplicated market set, and that is the answer's
+/// own size: `(tenant, currency, region)` triples somebody has to act on, not rows.
+///
+/// So the residual cost is one statement per [`GATED_MARKETS_PAGE`] gated rows, on a
+/// 60-second cadence, and the reason that is the right trade rather than a smaller
+/// page is stated at the constant.
+///
+/// The `tax_engine_ga` short-circuit is **above** the walk: past GA there is no
+/// backlog to page through at all.
+///
+/// # Errors
+/// [`RepoError::Db`] on a scope or storage failure.
+pub async fn gated_markets_in_pages(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tax_engine_ga: bool,
+    page: u64,
 ) -> Result<i64, RepoError> {
     // **The flag is a parameter so this site is reachable from the constant.**
     // It was reasoned about in prose here and named nowhere in the code, while
@@ -1805,34 +1865,54 @@ pub async fn gated_markets(
     if tax_engine_ga {
         return Ok(0);
     }
-    let rows = price::Entity::find()
-        .secure()
-        .scope_with(scope)
-        .filter(
-            Condition::all()
-                .add(price::Column::LifecycleState.eq(LifecycleState::Published.as_str()))
-                .add(price::Column::TaxInclusive.eq(true))
-                .add(
-                    price::Column::PriceEligibility
-                        .ne(PriceEligibility::ExistingGrandfathered.as_str()),
-                ),
-        )
-        .all(runner)
-        .await
-        .map_err(|e| RepoError::Db(format!("read gated rows: {e}")))?;
-
+    // A zero page would read nothing and never come back short of its bound, so the
+    // walk would spin forever on an empty statement. Clamped rather than refused:
+    // the production caller spends a constant and this parameter exists so a test
+    // can span pages, so an error return would be a `Result` arm nothing produces.
+    let page = page.max(1);
     // **Deduplicated here rather than by the database**, and the reason is the
     // scoping wrapper rather than preference: `SecureSelect` exposes `all`,
     // `one`, `count` and `filter` and deliberately no `select_only` / `distinct`,
     // because a projection that dropped the scope columns would be a read the
     // scope can no longer be checked against. So the rows come back whole and the
-    // set is built here. The cost is bounded by the thing being measured — the
-    // gated rows *are* the backlog — and this runs on a refresher's cadence, never
-    // on a publish or a read path.
-    let markets: BTreeSet<(Uuid, String, String)> = rows
-        .into_iter()
-        .map(|row| (row.tenant_id, row.currency, row.region))
-        .collect();
+    // set is built here — a page at a time, which is what keeps "the rows come back
+    // whole" from meaning *all* of them at once.
+    let mut markets: BTreeSet<(Uuid, String, String)> = BTreeSet::new();
+    // The keyset cursor. `price_id` is the primary key on its own — not
+    // `(tenant_id, price_id)` — so one column totally orders the table and the
+    // cursor needs no compound compare.
+    let mut after: Option<Uuid> = None;
+    loop {
+        let mut filter = Condition::all()
+            .add(price::Column::LifecycleState.eq(LifecycleState::Published.as_str()))
+            .add(price::Column::TaxInclusive.eq(true))
+            .add(
+                price::Column::PriceEligibility
+                    .ne(PriceEligibility::ExistingGrandfathered.as_str()),
+            );
+        if let Some(above) = after {
+            filter = filter.add(price::Column::PriceId.gt(above));
+        }
+        let rows = price::Entity::find()
+            .secure()
+            .scope_with(scope)
+            .filter(filter)
+            .order_by(price::Column::PriceId, Order::Asc)
+            .limit(page)
+            .all(runner)
+            .await
+            .map_err(|e| RepoError::Db(format!("read gated rows: {e}")))?;
+        // A page under its bound is the end of the table above the cursor. Read
+        // before the rows are consumed, since the loop moves them into the set.
+        let exhausted = u64::try_from(rows.len()).unwrap_or(u64::MAX) < page;
+        for row in rows {
+            after = Some(row.price_id);
+            markets.insert((row.tenant_id, row.currency, row.region));
+        }
+        if exhausted {
+            break;
+        }
+    }
 
     i64::try_from(markets.len())
         .map_err(|_| RepoError::Db("gated market count exceeds i64".to_owned()))
