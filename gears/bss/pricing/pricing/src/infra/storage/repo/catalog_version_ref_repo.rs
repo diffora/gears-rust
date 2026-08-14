@@ -577,19 +577,45 @@ pub async fn finalize(
 /// frontier that does not advance, so the unfairness is not a latency detail but
 /// a tenant's publishes going unpinnable because another tenant's are.
 ///
-/// It is a **loose index scan**: one single-row seek per tenant found, each
-/// asking for the smallest tenant id above the last, over the same
-/// `(tenant_id, catalog_version)` index the projector and the frontier walk
-/// read. So the cost is proportional to the tenants that actually have
-/// **outstanding publishes**, not to the tenants of the deployment — in a
+/// It is a **paged keyset walk**, and it deduplicates in memory: each query asks
+/// for up to `limit` rows above the last tenant already seen, ordered by tenant
+/// id, over the same `(tenant_id, catalog_version)` index the projector and the
+/// frontier walk read. So the cost is proportional to the tenants that actually
+/// have **outstanding publishes**, not to the tenants of the deployment — in a
 /// healthy one a ref is pending for at most a batching delay and the walk stops
-/// after a handful.
+/// after one page.
+///
+/// # Why the page, when a single-row seek per tenant is the textbook loose scan
+///
+/// It **was** one `find().limit(1)` per tenant found (Z10-10), which is the
+/// textbook shape and the wrong one here: the caller is a sweep at
+/// `readmodel_warm_tick_secs` — 5 seconds — asking for up to
+/// `pending_tenants_per_pass` — 250 — tenants, so a deployment with 250 tenants
+/// mid-publish paid 250 round trips every five seconds before the two pending
+/// reads per tenant and the registry calls, against a lease whose TTL *is* that
+/// same 5 seconds. `tests/sqlite_pending_tenants_shape.rs` counts the statements:
+/// twelve tenants took twelve, and take two.
+///
+/// The cursor still advances **past a whole tenant** (`TenantId.gt(last_seen)`),
+/// which is what keeps the answer distinct tenants rather than rows and what
+/// bounds the walk: every query after the first either yields a tenant this pass
+/// had not seen or ends the walk. The residual worst case is one query per tenant
+/// again, reached only when every tenant on the page carries `limit` or more
+/// pending refs of its own — a backlog `pending_refs_per_tenant` and the
+/// `commit_overdue` alarm are both already about — and never worse than the shape
+/// this replaced.
+///
+/// `SecureSelect` exposes no `distinct` (see `price_repo::gated_markets` for the
+/// same constraint and the reason it is deliberate), so the deduplication is here
+/// rather than in SQL either way.
 ///
 /// **`limit` and the ordering are values, and they are the owner's** — D-163
 /// says so in as many words: *how many tenants a pass takes and in what order
 /// needs a value and is carried in §F.2*. Ascending tenant id is deterministic
 /// and it is **not** rotating: past `limit`, the tail of the tenant order is not
-/// swept at all. Rotating it needs a cursor no table in §3.7 carries.
+/// swept at all. Rotating it needs a cursor no table in §3.7 carries. `limit`
+/// bounds the **tenants** answered, and it is spent as the page size too, so no
+/// second knob decides how many rows one query may read.
 ///
 /// # Errors
 /// [`RepoError::Db`] on a scope or storage failure.
@@ -606,21 +632,35 @@ pub async fn pending_tenants(
         if let Some(above) = after {
             filter = filter.add(catalog_version_ref::Column::TenantId.gt(above));
         }
-        let row = catalog_version_ref::Entity::find()
+        let rows = catalog_version_ref::Entity::find()
             .secure()
             .scope_with(scope)
             .filter(filter)
             .order_by(catalog_version_ref::Column::TenantId, Order::Asc)
-            .limit(1)
-            .one(runner)
+            .limit(limit)
+            .all(runner)
             .await
             .map_err(|e| RepoError::Db(format!("list tenants with pending refs: {e}")))?;
-        let Some(row) = row else {
+        // A short page is the end of the table above the cursor: the read was
+        // bounded and came back under its bound, so there is nothing beyond it.
+        let exhausted = u64::try_from(rows.len()).unwrap_or(u64::MAX) < limit;
+        for row in rows {
+            // The rows arrive ordered by tenant, so the last one recorded is the
+            // only value a duplicate can match — a set would be a second
+            // structure for a fact the ordering already gives.
+            if found.last() != Some(&row.tenant_id) {
+                found.push(row.tenant_id);
+            }
+            after = Some(row.tenant_id);
+        }
+        if exhausted {
             break;
-        };
-        after = Some(row.tenant_id);
-        found.push(row.tenant_id);
+        }
     }
+    // The page is spent as the row bound, so a page whose rows are many tenants
+    // can overshoot the tenant bound. D-163's tail is cut at the end of the
+    // ascending order, which is where the overshoot is.
+    found.truncate(usize::try_from(limit).unwrap_or(usize::MAX));
     Ok(found)
 }
 
