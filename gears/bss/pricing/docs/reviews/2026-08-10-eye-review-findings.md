@@ -801,6 +801,8 @@ This is the exact class the fold's own comment records having been caught once: 
 
 *Fix/Verify:* add a `storage_tests.rs` case asserting `repo_failure(&RepoError::UsageLineDisagrees{..})` is `DomainError::UsageLineAxisMismatch`, and one end-to-end case that reads `USAGE_LINE_AXIS_MISMATCH` off a `PATCH` whose row meter disagrees with its key.
 
+**PAID `f3ecc2a93` — and the arm is NOT dead, which is the opposite of what a first reading suggests.** Tracing the writers rather than the registrations found three live producers reachable from the wire: `resolve_authored_usage_line` on create and on bulk import, and `check_update_keeps_the_line` on `PATCH`. The usage line is authored on the content view, so a caller really can state one the key disagrees with, on all three paths. So this was a coverage finding, not a dead branch, and deleting the arm — the tempting cheap answer — would have removed a live refusal. Two cases: the fold arm, and a `PATCH` naming no `scope_key` so only the store's guard can refuse. RED with the arm corrupted to `Internal`: the unit test panics on the mapping and the e2e gets the literal 500 this entry predicted.
+
 **Z6-2 [Medium] The table-driven frozen-column census was written for `pricing_plan` only; `pricing_price` still rests on a hand-enumeration and a literal count**
 
 - `tests/sqlite_plan_guards.rs:641` `the_frozen_whitelist_names_every_content_column_the_table_holds` — reads the columns off `pragma_table_info('pricing_plan')` (line 652) and the predicate off `sqlite_master`, so a column added and unguarded reddens
@@ -815,6 +817,8 @@ I verified the whitelists are **currently complete**: `m20260802_000057` names 4
 
 *Fix/Verify:* lift `sqlite_plan_guards.rs:641` into a helper parameterised on `(table, guard_trigger, sanctioned_mutable)` and instantiate it for every table that carries a frozen-column arm, on both engines.
 
+**PAID `7b80bef23`, lints in `04f9dfc8a`.** `pricing_price` now reads its frozen columns off the table on BOTH engines, and the `moves.len() == 45` literal is replaced by a by-name set comparison in both directions; `postgres_schema_plan` was re-pointed at the same helper. **The census was proved rather than asserted:** a scratch column was added to both engines, three reds named it, and the column was reverted — the old literal count would not have moved. Postgres was EXECUTED, not reasoned (Docker was up). Residual: five other guarded tables still rest on hand-enumerations, and the helper is now the place to add them.
+
 **Z6-3 [Low] The overlay entity's `lifecycle_state` doc contradicts the schema it describes, and names an exit the store now refuses**
 
 - `src/infra/storage/entity/price_overlay.rs:50-51` — "`draft` | `published` | `superseded`. Three states and no `abandoned` tombstone, which is why a discarded draft revision leaves by DELETE."
@@ -826,6 +830,8 @@ D-231 is the decision whose whole point is that a discarded overlay revision mus
 
 *Fix/Verify:* restate the four states and delete the `DELETE` sentence; `m20260802_000045`'s module doc is the source.
 
+**PAID `f6d77588a`**, docs. The CONSTRAINT was re-checked as it now stands — `m20260802_000045` drops and re-adds four states on Postgres and rebuilds SQLite with the same four, and no later migration touches either — rather than reading the migration that first created it, which is how a wrong conclusion has been reached here before.
+
 **Z6-4 [Low] The fast tier's entity↔migration agreement census stops at Slice 9 — ten entities are never read through**
 
 - `tests/sqlite_migrations.rs:6-10` states the property: "every table can be read through its `SeaORM` entity … a migration and an entity that disagree about a column fail here rather than at the first production read"
@@ -835,6 +841,8 @@ D-231 is the decision whose whole point is that a discarded overlay revision mus
 Never read through: `bulk_operation`, `bulk_row_lock`, `bundle`, `bundle_component`, `bundle_revshare`, `bundle_revshare_group`, `composite_meter`, `migration`, `repricing_journal`, `snapshot_provenance` — Slices 8, 10, 11 and 12, i.e. every table added after the census was written. The list is a hand-enumeration with no completeness check against `EXPECTED_TABLES`, which is the F-12 shape. Mitigated in practice: each of the ten has its own `sqlite_*_store.rs` / `*_repo.rs` suite that selects through the entity, so a column mismatch would still redden somewhere — which is why this is Low and not Medium.
 
 *Fix/Verify:* derive the `assert_readable!` set from `EXPECTED_TABLES`, or add a case asserting the two are the same size.
+
+**PAID `2a6cdf764`, and every number in this entry was stale.** 28 entities against 39 tables, not 26 against 36, and the unread set is ELEVEN rather than the ten named — the extra is `coord_leases`, for which no entity exists at all, recorded as a structural exemption rather than folded in. The census reddens both on a dropped entity and on a renamed column; both probes reverted.
 
 **Z6-5 [Low] The Postgres roster covers partial indexes only, so 37 of 49 indexes — including the one `m20260802_000064` just changed — have no Postgres assertion**
 
@@ -847,6 +855,8 @@ D-307's cross-kind admission is proven on `SQLite` (`tests/sqlite_repricing_jour
 
 *Fix/Verify:* extend `tests/postgres_migrations.rs` to roster all indexes (name + `indexdef`), and add the cross-kind admission to `postgres_schema_bulk_operation.rs`.
 
+**PAID `e271c6b05`; the roster is 51, not 49, so the gap was 39 rather than 37.** Proved by renaming a **Postgres** `CREATE INDEX` and watching the roster redden — that engine's indexes previously had no assertion of any kind. Residual: the 51 names are duplicated per engine on the existing convention, and nothing asserts the two lists are equal.
+
 **Z6-6 [Low] `pricing_audit_log.subject_kind` carries no CHECK while `pricing_approval.subject_kind` carries the D-158 roster**
 
 - `src/infra/storage/migrations/m20260802_000010_create_pricing_audit_log.rs:51` / `:95` — `subject_kind text NOT NULL`, no constraint on either engine; the module doc at `:21-27` enumerates the table's guards ("Two physical guards") and is silent about it
@@ -858,6 +868,8 @@ Both columns hold the same vocabulary from the same Rust enum, and only one of t
 
 *Fix/Verify:* either add `chk_pricing_audit_log_subject_kind` over `AuditSubjectKind::ALL`, or record in `m20260802_000010`'s doc why the audit plane deliberately does not carry the constraint its approval sibling does.
 
+**PAID `fd4fec47c`** — new migration `m20260802_000074` gives the log table's discriminator the CHECK its sibling already carried. Postgres EXECUTED, not reasoned.
+
 **Z6-7 [Low] `pricing_migration` and `pricing_snapshot_provenance` type a plan revision `integer` where every other revision column in the chain is `bigint`**
 
 - `m20260802_000043:143` / `:291` — `source_revision integer NOT NULL`; `m20260802_000044:97` — `source_revision integer`
@@ -867,6 +879,8 @@ Both columns hold the same vocabulary from the same Rust enum, and only one of t
 The consequence is a fail-closed refusal rather than a truncation, so it is a modeling outlier and not a defect. Worth a line because the narrower type is invisible from the entity (`entity/migration.rs:40` `source_revision: i32`) unless a reader goes to the DDL.
 
 *Fix/Verify:* widen both to `bigint` in a follow-up migration, or record the narrowing in `m20260802_000043`'s module doc beside the `chk_..._source_revision` it already explains.
+
+**PAID `f65b15c0b`** — new migration `m20260802_000075`. Note this entry survived a rebuild: the migration that paid a neighbouring finding rebuilt one of these tables and restated the narrow type. Two probes, reddened with **all four sites reverted at once**. `m20260802_000075` carries the chain's only empty SQLite arm; the argument is measured and lives in its module doc.
 
 **Z6-8 [Low] Three stale cross-references in the chain's own prose, on a chain whose numbering has already collided once**
 
@@ -920,6 +934,8 @@ The consequence is a fail-closed refusal rather than a truncation, so it is a mo
 
 **Findings**
 
+**PAID `48db2de8e`**, docs. All three cross-references verified against their current targets before rewriting.
+
 **Z7-1 [HIGH] `update_draft` cannot write `tax_category_ref` — the column is absent from the content-assignment list, on both live edit paths**
 **PAID `4eebef3c4`.** See the status ledger at the top of this document.
 
@@ -956,6 +972,8 @@ This file imports the domain (`use crate::domain::taxonomy::{... TaxonomyState .
 
 *Fix/Verify:* `LifecycleState::Published.as_str()` and `TaxonomyState::Active.as_str()` at all six sites; delete both constants. A cheap standing probe: assert `PUBLISHED == LifecycleState::Published.as_str()` — but the honest fix is to remove the second spelling rather than to test it.
 
+**PARTIAL → PAID `828784bcd`.** The `taxonomy_repo` module was paid by `8af192e10`; the surviving `overlay_repo` literals are now rendered through the enum. See Z13-1 for the full site list, which turned out to be twelve rather than the three this plan's ledger recorded.
+
 **Z7-3 [MEDIUM] `overlay_revisions_at_or_below` folds "later row wins" with no tie-break, so two publishes of one overlay batched into one `CatalogVersion` freeze an arbitrary revision into the index shard**
 
 `gears/bss/pricing/pricing/src/infra/storage/repo/catalog_version_ref_repo.rs:695-697` — `// Ascending, so the fold below keeps the **greatest** ref of each overlay by simply letting later rows win.` then `.order_by(catalog_version_ref::Column::CatalogVersion, Order::Asc)` and nothing else
@@ -966,6 +984,8 @@ This file imports the domain (`use crate::domain::taxonomy::{... TaxonomyState .
 The ordering is total on `catalog_version` only. Two publishes of the **same** overlay are two handles and two rows, and D-47 batching is exactly the mechanism that can assign them one version — at which point the two rows tie, SQL leaves their relative order undefined, and whichever the store returns last decides which `subject_revision` the frozen `overlay_index` shard names. The consequence is the one this function exists to prevent, stated in its own doc: a consumer pinned at `V` enumerates the overlay at a revision the version did not describe, permanently, because a delta is INSERT-only over the seven-year horizon. Compare the sibling `list_pending_for_tenant` (`catalog_version_ref_repo.rs:579-580`), which adds `.order_by(PendingRef, Asc)` precisely so its `requested_at` order is total — the tie-break discipline exists in this file and was not carried here.
 
 *Fix/Verify:* add `.order_by(catalog_version_ref::Column::SubjectRevision, Order::Asc)` after the version, so the fold's "later wins" is the greatest revision by construction. A probe: two committed `price_overlay` refs of one overlay id at one `catalog_version` with revisions 0 and 1, asserting the map answers 1.
+
+**PAID `4b130a440`.** The fold takes the greatest ref, following the tie-break discipline already present in the same file. The probe batches two publishes of ONE overlay into ONE catalog version in *both* insertion orders and asserts which wins — a probe that resolved a single overlay would have proved nothing. RED: `left: Some(0) / right: Some(1)`.
 
 **Z7-4 [LOW] `replace_composites_on` takes its child rows' `tenant_id` and `plan_id` from the request, where its three siblings take them from the parent revision row**
 
@@ -980,6 +1000,8 @@ Not exploitable today, and I checked why rather than assuming: `mutable_draft` �
 
 *Fix/Verify:* bind the parent (`let Some(parent) = mutable_draft(…)`) and give `write_composites` a `parent: &plan::Model` the way the three sibling model-builders take one.
 
+**PAID `235642ebc` — TRUE, BUT NO PROBE CAN BE ARMED AT ITS CLAIM, which was established by measurement rather than by reading.** A request naming a different tenant is refused `NotFound` BEFORE any child row is rendered (`mutable_draft` → `load_revision_row` selects on the same two values), so the probe this finding implies passes identically with and without the fix. The fix is therefore structural and the gate is the compiler: proved with a scratch caller that fails `expected &Model, found Uuid`. Also this entry's premise about a diverging second call site is wrong — `write_composites` has exactly one caller.
+
 **Z7-5 [LOW] `publish_rows`' entire doc block — including its `# Errors` — is attached to `resolved_tax_categories`; `publish_rows` carries none**
 
 `gears/bss/pricing/pricing/src/infra/storage/repo/price_repo.rs:817-918` — the argument for why `publish_rows` takes `validated` as an argument (the READ COMMITTED window, D-141, the supersession-ordering debt, the `# Errors` list)
@@ -991,6 +1013,8 @@ Rendered docs put `publish_rows`' normative contract on a two-line read helper, 
 
 *Fix/Verify:* move `resolved_tax_categories` and its own doc out of the middle of the block. The general guard: this is what a `#![warn(missing_docs)]` on `infra` would have caught, but `lib.rs:27` marks the module `#[doc(hidden)]`.
 
+**PAID `a29525ae2`**, docs — the doc block and its `# Errors` moved to the function they describe.
+
 **Z7-6 [LOW] `resolved_tax_categories` has no lifecycle filter, and its doc claims the absence that filter would have produced**
 
 `gears/bss/pricing/pricing/src/infra/storage/repo/price_repo.rs:923-924` — *"`None` in the map is a row that has one and it is null; a row absent from the map has not published."*
@@ -999,6 +1023,8 @@ Rendered docs put `publish_rows`' normative contract on a two-line read helper, 
 Every draft row of the plan is therefore *in* the map with `None`, which the doc says means "published with a null category". Harmless at the one call site — `infra/read_model.rs:914-935` looks the map up only at `price_id`s drawn from `load_for_plan(… PROJECTED_ROW_STATES)` — so this is an audit gap rather than a live defect, and it is priced Low for exactly that reason. It becomes real the moment a second caller reads the map's key set as "the published rows".
 
 *Fix/Verify:* either add `LifecycleState.is_in(PROJECTED_ROW_STATES)` to the query or correct the sentence. The filter is the better half — it also stops a draft's NULL being carried into a projection.
+
+**PAID `d4f852f26`**, with a RED probe. The constraint was re-checked as it now stands (`draft|published|superseded`, unwidened), which decided the shape of the fix: the filter is `PROJECTED_ROW_STATES`, not `eq(Published)` — the probe fails against the narrower form, so the narrower form is not merely stricter, it is wrong.
 
 **Z7-7 [LOW] `replace_composites`' `# Errors` names `RepoError::LifecycleForbidden`, a variant that does not exist**
 
@@ -1010,6 +1036,8 @@ Every draft row of the plan is therefore *in* the map with `None`, which the doc
 
 *Fix/Verify:* `RepoError::NotDraft`; the three siblings are the reference text.
 
+**PAID `a29525ae2`**, docs — the named `RepoError` variant does not exist and the contract now names what the function can actually return.
+
 **Z7-8 [LOW] `record_pending`'s `# Errors` still describes the two-column primary key `m20260802_000036` widened**
 
 `gears/bss/pricing/pricing/src/infra/storage/repo/catalog_version_ref_repo.rs:224-229` — *"which **includes** a second record of one `(tenant_id, pending_ref)`, refused by the primary key"*
@@ -1020,6 +1048,8 @@ A reader of the error contract is told that a handle may be recorded once, when 
 
 *Fix/Verify:* restate as `(tenant_id, pending_ref, subject_kind, subject_ref)` and cite `m20260802_000036`.
 
+**PAID `a29525ae2`**, docs — the `# Errors` described a two-column primary key a migration had widened.
+
 **Z7-9 [LOW, forward-dependency] `observe_commit` identifies a ref by two of the four columns `RefIdentity` exists to keep together**
 
 `gears/bss/pricing/pricing/src/infra/storage/repo/catalog_version_ref_repo.rs:292-299` — `RefIdentity`'s doc: *"One value rather than four parameters, and that is the point … A caller cannot supply three of the four."*
@@ -1029,6 +1059,8 @@ A reader of the error contract is told that a handle may be recorded once, when 
 Arguably correct — the registry answers a *handle*, so stamping every subject row of that handle at one instant is the honest observation, and `update_many` with no `.exec` row-count assertion is consistent with the doc's "an absent row is not an error". What is missing is the sentence: the module's D-234 paragraph (`:405-416`) argues only why the *finalize* is per subject, so the next reader meets one function of three that spells the identity differently with nothing saying why. Recorded rather than left, because `RefIdentity` was introduced specifically to make partial identities unwritable and this call site is the exception it does not cover.
 
 *Fix/Verify:* one paragraph on `observe_commit` stating that the observation is handle-scoped by design, or a `HandleIdentity` type so the two granularities are both named.
+
+**PAID `a29525ae2` — and this entry's forward-dependency premise DOES NOT HOLD.** `m20260802_000071` is `ALTER TABLE … ADD COLUMN` and leaves the primary key alone, so the four columns still identify a row and the new pin columns are payload rather than identity. Recorded as prose rather than rebuilt.
 
 **Z7-10 [LOW, forward-dependency] `delete_draft` hard-codes `on_behalf_of: None`, so a bulk run can never delete a row it holds itself**
 
@@ -1078,6 +1110,8 @@ Fail-closed behind an absent lane, which is the shape worth naming: the import h
 
 **Findings**
 
+**PAID `c62603c2f` — and THIS ENTRY'S *Fix/Verify* IS INCOMPLETE.** Threading `on_behalf_of` is necessary and not sufficient: `fk_pricing_bulk_row_lock_price` has no cascade, so past the guard the delete meets the foreign key and returns a 500. The second RED printed `(code: 787) FOREIGN KEY constraint failed`. All three arms are pinned, and the implementer **declined** to let a price repository drop another aggregate's lock row — the lane that lands a delete verb owes `release_locks` in the same transaction. The entry's "two interactive call sites" is also wrong: there is one.
+
 **Z8-1 [High] `migration_id` is a client-supplied key in a global uniqueness namespace — a cross-tenant existence oracle and a permanent cross-tenant denial**
 **PAID `5180ae475`.** See the status ledger at the top of this document.
 
@@ -1111,6 +1145,8 @@ It is latent today rather than live, and that is the shape worth flagging: `mark
 
 *Fix/Verify:* have both functions return `RepoError::NotFound` (or `ConcurrentMutation`, matching `bulk_repo::advance`'s choice) on `rows_affected == 0`, and add `tenant_id` to `row_of` for the belt-and-braces every sibling has. Arm it with a RED case that marks a `(run_id, price_id)` pair that is not in the journal and asserts the refusal — not with a happy-path mark.
 
+**PAID `69add0d3b`** (found already paid during the 2026-08-13 reconciliation, never marked). `mark_applied`/`mark_failed` read `rows_affected` and answer `NotFound` on zero; `row_of` gained `tenant_id`. This entry was the file's only High and it had been closed for days — which is why the reconciliation was run before any further fixing.
+
 **Z8-3 [Medium] A repeated bundle publish at one plan revision is answered `CONCURRENT_MUTATION` forever — the defect the same file records as found-and-fixed for windows**
 
 `gears/bss/pricing/pricing/src/infra/bundle.rs:341` — `dedup_key: format!("BundleUpdated:{bundle_id}:{revision}")`
@@ -1122,6 +1158,8 @@ It is latent today rather than live, and that is the shape worth flagging: `mark
 
 *Fix/Verify:* either give the bundle publish an act segment in its dedup key, as `price_window_mutation` took, or a compare-and-swap that refuses the second publish of one revision with a code that says so. Verify by publishing one bundle twice at one `plan_revision` and asserting the second answer is not `CONCURRENT_MUTATION`.
 
+**PAID `0a3319ba8`.** The finding was real but its premise was not: the dedup key asserted "a revision publishes exactly once", which is false for a bundle — a composition edit voids the content pin, so a republish at one revision is a LEGAL act. Remedy is `price_window_mutation`'s act segment, the act being the correlation id (D-178 clause 2). The probe drives the SECOND publish and carries a positive control that one act enqueued twice is still refused, so "no longer 409s" cannot be satisfied by a key that dedups nothing.
+
 **Z8-4 [Medium] The two newest outbox events bypass the named-constructor discipline the module doc argues for, and hand-spell the event name as a string literal beside the enum**
 
 `gears/bss/pricing/pricing/src/infra/bundle.rs:327` — `NewOutboxEvent { … event: CatalogEvent::BundleUpdated, … dedup_key: format!("BundleUpdated:{bundle_id}:{revision}") }`
@@ -1132,6 +1170,8 @@ It is latent today rather than live, and that is the shape worth flagging: `mark
 Eight events have a `NewOutboxEvent::*` constructor and a `*_dedup_key` free function (`outbox_repo.rs:178, 204, 229, 254, 283, 310, 355, 416, 433`). The two most recent do not: they are the only `NewOutboxEvent { … }` struct literals in the crate. Both consequences of that are visible in the two lines: the event name is written as a **bare literal** in the dedup key while the enum is passed in the field immediately above it — the "imports the enum but still passes a literal" tell — and both use `:` as the separator where all ten `*_dedup_key` functions use `/` (`outbox_repo.rs:457, 596, 610, 685, 809, 935, 945`). Neither is a correctness break on its own (each key is internally self-consistent), but the *reason* the discipline exists is Z8-3, which is exactly what the bundle site then walked into.
 
 *Fix/Verify:* give both events a `NewOutboxEvent::` constructor and a `*_dedup_key` free function beside their siblings, built from `CatalogEvent::…​.as_str()`. Verify by grepping that `NewOutboxEvent {` appears only in `outbox_repo.rs`.
+
+**PAID `72bdb26f9`** — and THIS ENTRY'S OWN *Fix/Verify* LINE WAS WRONG and has been replaced. Both events now have `NewOutboxEvent::` constructors and `*_dedup_key` functions rendered from `CatalogEvent::as_str` with `/`. The old recipe ("grep that `NewOutboxEvent {` appears only in `outbox_repo.rs`") cannot tell a struct LITERAL from a struct UPDATE, and produced a false positive against `infra/repricing.rs`, whose `..NewOutboxEvent::price_updated(…)` sites are correct and whose per-run dedup key is required by `12-operator-efficiency.md:172`. The replacement counts the functional-update base per file and requires the two counts to be equal, plus a grep for event names inside `format!`. **CORRECTION, 2026-08-14 audit: that replacement was written into `outbox_repo`'s module doc, NOT into this entry — the *Fix/Verify* line below still carries the unsound grep.** Read the module doc, not the line below.
 
 **Z8-5 [Medium] `SUBJECT_KINDS_WITH_A_WRITER` and its test assert that the overlay has no approval-plane writer; `submit_overlay_on` is one**
 
@@ -1146,6 +1186,8 @@ Eight events have a `NewOutboxEvent::*` constructor and a `*_dedup_key` free fun
 The roster contradicts its own module's `subject_aggregate` arm, and the test asserts the false sentence. Its own comment at `approval_repo_tests.rs:146-151` names this exact failure mode for the *previous* member — *"a roster is a maintained list, so the day it is wrong is the day a reader takes it as normative and the writer as the mistake"* — so `price_unit`'s wave paid the roster and D-225's wave did not. The const is `pub` and has no consumer outside the test (grep: `approval_repo_tests.rs:35, 143, 174` only), so nothing dereferences it at runtime; the cost is that the one artefact that answers "which kinds can open a unit" now answers wrongly, and the test that exists to catch that is the thing asserting it.
 
 *Fix/Verify:* add `AuditSubjectKind::Overlay` to the roster, correct the doc at `:176-184`, and change the test's tail so `without_a_writer` is empty (or names whatever the next unwired kind is).
+
+**PAID `a79f73320` / `adbc1feb7`**, hardened by `0475a84c9` and `6ea05eb64` (found already paid during the reconciliation). The constant holds seven kinds including `Overlay`, and the self-copying test — which compared the constant against a hand-written copy of itself, so both operands moved together — was replaced by a scan of the crate's own production sources.
 
 **Z8-6 [Medium] The audit plane and the approval plane spell an overlay subject two different ways — the divergence `window_ref` records as corrected for windows**
 
@@ -1163,6 +1205,10 @@ Beside it, `overlay_repo.rs:944` sets `approval_ref: None` unconditionally with 
 
 *Fix/Verify:* call `audit_repo::overlay_revision_ref(price_overlay_id, revision)` in `record_overlay_mutation`, and decide whether the publish path can thread the unit id into `approval_ref`. Verify by asserting the audit record's `subject_ref` equals the approval record's for one overlay revision.
 
+**STILL OPEN, and now routed.** The only divergent writer is `overlay_repo::record_overlay_mutation` (`subject_ref` as a bare uuid), with its test pinning that spelling; everything else already calls `audit_repo::overlay_revision_ref`. The four-roster obligation is NOT triggered — `AuditSubjectKind::Overlay` is in all four already. Note `revision` is `i64` there, so the fix needs a checked conversion rather than a one-liner.
+
+**PAID `305f647ae`.** `subject_ref` renders through `audit_repo::overlay_revision_ref` with a CHECKED `i64→u64` conversion resolving to `CorruptRow`. The prior trace was verified rather than assumed, and the divergence turned out to be visible INSIDE one audit segment: the `create` record said `<uuid>` while the `submit` record one seq later said `<uuid>/0`. The probe exploits exactly that, with the `submit` record asserted unchanged as its positive control. No migration: the column is free text with no runtime reader, and rewriting a hash-chained append-only log to manufacture a backfill would dwarf the gap.
+
 **Z8-7 [Medium] `bulk_repo::advance` is the zone's only state-moving write with no compare-and-set predicate, and the trigger admits the self-edge**
 
 `gears/bss/pricing/pricing/src/infra/storage/repo/bulk_repo.rs:252-256` — the whole `WHERE`: `TenantId.eq(tenant_id)` and `OperationId.eq(operation_id)`; no expected-state conjunct
@@ -1172,6 +1218,8 @@ Beside it, `overlay_repo.rs:944` sets `approval_ref: None` unconditionally with 
 The trigger's early-return on a self-edge is the hole the deferral to it does not cover: `advance` also rewrites `report` and `completed_at` wholesale, so any repeat lands silently and clobbers the run's stored answer. The remedy that exists is a guard **in the route** (`bulk_imports.rs:456`, `if run.state != BulkState::Committing`), not in the store — which is the arrangement the crate elsewhere argues against (`window_repo.rs:1030-1035`: *"a tag read, compared and then handed to a statement is a decision racing the write it authorizes"*). Every look-alike carries the premise into the statement: `approval_repo.rs:1389`, `overlay_repo.rs:1194`, `window_repo.rs:891`/`:1048`, `pin_frontier_repo.rs:277`, `policy_repo.rs:397`, `idempotency_repo.rs:307`.
 
 *Fix/Verify:* add the expected-`from` state to `advance`'s filter and resolve `rows_affected == 0` into "no such run" vs "the run has moved", the way `approval_repo::swap` (`:1395-1403`) does. Verify with a case that calls `advance` twice to one state and asserts the second is refused rather than rewriting the report.
+
+**PAID `8800f90c8`.** `advance` now carries the state it was decided on into the statement, as every sibling write in the zone does. It had gained EIGHT callers since this entry was filed. RED output prints the clobbered report.
 
 **Z8-8 [Medium] Bulk row locks have no Drop guard: a panic or a cancelled future leaves durable locks on an autocommit connection**
 
@@ -1186,6 +1234,8 @@ Priced Medium, not High, because a remedy exists and is reachable: the `POST …
 
 *Fix/Verify:* a `Drop`-implementing guard that owns `(conn, scope, tenant, operation_id)` and issues the release, or a sweeper over `committing` runs past a horizon. Verify by dropping the commit future mid-`commit_rows` and asserting `lock_holder` answers `None` afterwards.
 
+**PAID `a931f5e3f`.** The `Drop` guard that `3de9d0c73` built for the repricing apply is now carried to the bulk commit lane this entry filed against. Residual, stated rather than hidden: a cancelled commit lands terminal carrying only the entry report, so rows it did commit are in the store but not in the report — the same limitation the abort route has had since D-300.
+
 **Z8-9 [Low] `window_repo`'s module doc reports an audit debt that was paid, in three claims that are now false**
 
 `gears/bss/pricing/pricing/src/infra/storage/repo/window_repo.rs:149` — *"`pricing_audit_log` gets nothing yet."*
@@ -1197,6 +1247,10 @@ Priced Medium, not High, because a remedy exists and is reachable: the `POST …
 The record is written, and its actor is the stamp's — so "who shortened it" is answerable. The debt is a repository-scoped statement that reads as an absolute one, and the risk is a later wave paying it twice. (Adjacent, and outside this zone to fix: `window.rs:775` `const AUDIT_ACTION: AuditAction = AuditAction::Publish` is one token for all three acts, so the trail distinguishes them only through `before_state`/`after_state`.)
 
 *Fix/Verify:* rewrite §"The `AuditStamp` is taken and the trail is **not** written here" to say the trail is written one layer up and name the site.
+
+**PAID `eed356136`**, docs.
+
+**CORRECTION, 2026-08-14 audit: PAID AND THEN RE-BROKEN IN THE SAME PARAGRAPH.** The rewrite carried forward the sentence "`pricing_audit_log.subject_kind` is free `text` with no CHECK at all" — which `m20260802_000074`, the migration that paid Z6-6 a few hours later the same morning, made false. It also cites the `postgres_migrations` roster as its proof, and that roster is exactly what the new CHECK joined. A doc corrected against the code of the hour is a doc that expires within the day; this one expired inside one wave.
 
 **Z8-10 [Low] `outbox_repo` says "thirteen" three times against a fourteen-member frozen set**
 
@@ -1210,6 +1264,8 @@ Another instance of the F-6 class. Same wave as Z8-4: D-248 added the name and t
 
 *Fix/Verify:* say "the frozen set" rather than a number, the way `subject_kind`'s roster was corrected (`approval_repo_tests.rs:107-109`: *"The count is deliberately not in this sentence"*).
 
+**PAID `f2705a307` — and the ENTRY WAS RIGHT while the controller's dispatch note was wrong.** The set is fourteen in the enum and fourteen in the CHECK, and no migration after `m20260802_000060` touches it; the note that claimed it was larger than either number was mistaken. What the entry missed was two further sites — `entity/outbox.rs`, and a migration that asserts a now-false **equality** with the enum. Count the set; do not trust a summary of it, including this controller's.
+
 **Z8-11 [Low] `highest_revision`'s doc contradicts the D-231 correction its own caller carries**
 
 `gears/bss/pricing/pricing/src/infra/storage/repo/overlay_repo.rs:1947-1949` — *"**It is the max of what the table still holds**, which is not the max of what the overlay has ever minted — a discarded draft is deleted outright. See [`OverlayRepo::open_revision`] and owed-register entry O-13."*
@@ -1219,6 +1275,8 @@ Another instance of the F-6 class. Same wave as Z8-4: D-248 added the name and t
 The fix landed at the call site and not in the helper it points at, and the helper is the one a reader lands on from the register entry it cites.
 
 *Fix/Verify:* delete the stale paragraph and the O-13 pointer.
+
+**PAID `2e19ccdbe`**, docs — the stale paragraph and a dangling pointer to an id declared nowhere in the gear are gone.
 
 **Z8-12 [Low] Two transplanted/duplicated doc blocks in `overlay_repo` — one of them the exact defect `outbox_repo` diagnoses by name**
 
@@ -1231,6 +1289,8 @@ Note as possibly mid-flight — `overlay_repo.rs` is one of the files another se
 
 *Fix/Verify:* split the block at `:1858` and move the first half back onto `collect_lower_layer`; drop the duplicated half of `:502-512`.
 
+**PAID `2e19ccdbe` — and UNDERCOUNTED.** A third instance of the same transplant sits in `tests/sqlite_overlay_repo.rs`, where one decision's prose block had migrated onto another's case with its severed tail sentence stranded on the original. All three restored. This is the fifth entry in this register whose enumeration was shorter than the code's.
+
 **Z8-13 [Low] `overlay_facts` is an unbounded N+1 fan-out inside the publish transaction, where its own sibling one screen up is page-bounded by D-125**
 
 `gears/bss/pricing/pricing/src/infra/storage/repo/overlay_repo.rs:1792-1804` — every published overlay of the tenant, no `limit`
@@ -1241,6 +1301,8 @@ Note as possibly mid-flight — `overlay_repo.rs` is one of the files another se
 The validation genuinely needs the whole set, so a page bound is the wrong fix; the cost is that a tenant's overlay count decides how long the publish transaction stays open, and §4.2 runs the world twice per publish.
 
 *Fix/Verify:* fold the per-line amounts read into one query per revision (or one over the whole published set), and record the intended bound on the tenant's published-overlay count.
+
+**PAID `fcb671e79`, and its probe COUNTS QUERIES, which is the only honest measurement of an N+1 claim.** `read_lines` now reads a revision's amounts in one statement, so `load`/`list`/`copy_lines`/`overlay_facts` all stop fanning out. A hand-rolled subscriber over the statement log read **12 before / 3 after** on a 3-overlay × 4-line seed — and the report states plainly that a one-line seed could not have distinguished the two shapes. Armed three ways so it cannot pass by measuring nothing or by reading less. **One bound deliberately NOT added:** the published-set read stays unpaged, because all three facts over it are absence claims and a page bound would let them pass by paging. The residual — still linear in the tenant's published-overlay count — is recorded on `overlay_facts`, and the per-tenant cap it would need does not exist in the design set.
 
 **Z8-14 [Low] Three driver-message matches with no `is_unique_violation()` conjunct**
 
@@ -1303,6 +1365,8 @@ The validation genuinely needs the whole set, so a page bound is the wrong fix; 
 
 **Findings**
 
+**PAID `632ae8cdd` for two of three sites, and the third is ALSO PAID — `bundle_repo`'s `uq_pricing_bundle_plan`, closed later the same day. (This line said "still open" until the 2026-08-14 audit found otherwise; stale in the safe direction.)** Only two of the named sites are in `overlay_repo`; the third is `bundle_repo`'s `uq_pricing_bundle_plan` and was out of that lane's scope. Both fixed sites now conjunct `is_unique_violation()` with a split-out name predicate, mirroring the existing guard. The two "named but not unique" cases fail against BOTH conjuncts reverted at once, with the real-driver cases on both engines as positive controls.
+
 **Z9-1 [High] the grandfathering cutover commits four table changes and writes no audit record at all**
 **PAID `7f3da53a5`.** See the status ledger at the top of this document.
 `gears/bss/pricing/pricing/src/infra/cutover.rs:594` — `cutover_in`, the whole body
@@ -1359,6 +1423,8 @@ Not a content-substitution hole: the approved unit's pin is over `context.shape`
 
 *Fix/Verify:* call `refuse_divergent_successor` (it is already `fn`-shaped and content-generic) on both cutover arms, against `staged_successor` and against `staged_copy`. Probe: a second cutover `POST` with a changed `amountMinor` under a pending unit is a 409 and not a replay.
 
+**PAID `738dc8afe`.** `refuse_divergent_successor` is spent on both cutover arms over both staged rows. RED was this entry's own words: the pending retry answered `SubmittedForApproval` and the approved retry answered `Committed`, both for a staged body that differed from the one the call carried.
+
 **Z9-5 [Medium] the bulk run's terminal move and lock release are covered against `Err` and against nothing else**
 `gears/bss/pricing/pricing/src/infra/bulk.rs:146-161` — `advance(… Committing …)` commits, durably
 `gears/bss/pricing/pricing/src/infra/bulk.rs:170` — `take_locks(...)` commits, durably
@@ -1370,6 +1436,8 @@ Third abnormal exit of the three, unclosed: the run stays `committing` with its 
 
 *Fix/Verify:* either hold the lock release in a `Drop` guard / `scopeguard`-shaped finaliser, or state in `bulk.rs` that the drop path is deliberately delegated to the abort route — and correct `bulk.rs:167` either way. Probe: drop the `commit_batch` future at an await and assert the run is still recoverable through abort.
 
+**PAID `ceaf1ff16` — and HALF OF THIS ENTRY WAS ALREADY PAID when the fix was dispatched.** `a931f5e3f` (Z8-8) had landed the `Drop` guard AND its cancellation probe two days earlier, in `3de9d0c73`'s shape with a positive control. What was genuinely unpaid was different from what the entry emphasises: a stale `bulk.rs` sentence contradicting `bulk_imports.rs`, and `abandon_committing_run`'s SUCCESS path, which had zero coverage anywhere in the crate. The residual is now pinned rather than papered over — the case waits for a row to actually commit before cancelling, then asserts the store holds it while `report.committed` does not. Still unexercised, deliberately: `commit_batch`'s panic exit, because no seam exists to inject one and adding one to production code for a test is the wrong trade.
+
 **Z9-6 [Medium] the bundle's effective-share write is a blind `update_many` whose zero-row outcome is indistinguishable from success**
 `gears/bss/pricing/pricing/src/infra/bundle.rs:687-718` — `write_effective_share`: `bundle_revshare::Entity::update_many() … .exec(runner).await.map_err(…)?; Ok(())`. The `UpdateResult`'s `rows_affected` is discarded
 `gears/bss/pricing/pricing/src/infra/bundle.rs:284-297` — the values come from `reconcile(group)` over `draft.rev_share_groups`, read from the composition; a group whose `(bundle, revision, vendor_sku, party)` row is absent or was written under a different revision matches nothing
@@ -1378,6 +1446,8 @@ Third abnormal exit of the three, unclosed: the run stays `committing` with its 
 `reconcile`'s whole job is to turn authored shares into the effective ones a downstream party is paid on; a filter that matches no row leaves the stored `effective_share_bp` at whatever it was, and the act reports success and announces itself. This is the "detector swallows its own signal" shape applied to a writer.
 
 *Fix/Verify:* read `rows_affected` and refuse (`RepoError::CorruptRow` or `NotFound` naming the four-column key) when it is zero; the sibling writers in `price_repo`/`window_repo` all answer on a no-op swap.
+
+**PAID `60ba54b29`.** A share that reconciled onto no row is refused instead of announced. This was the only site in these zones where a MONEY write could silently not happen: zero matched rows left `effective_share_bp` stale, the act returned `Ok(())`, `BundleUpdated` announced it anyway, and downstream parties were paid on that column.
 
 **Z9-7 [Low] three modules spell a domain enum's token as a bare literal, and none of them imports the enum**
 `gears/bss/pricing/pricing/src/infra/bundle.rs:75` — `const COVERAGE_ELIGIBILITY: &str = "all_subscriptions";` and `:77` — `const COVERAGE_COHORT: &str = "none";`, used at `:475-476`
@@ -1391,6 +1461,8 @@ Not a live bug: `cohort` is a `String` column holding the token (`entity/price.r
 
 *Fix/Verify:* `PriceEligibility::AllSubscriptions.as_str()`, `Cohort::None.to_string()`, `LifecycleState::Published.as_str()` at all six sites.
 
+**PAID `b43b909ad` (with Z11-9 — the same two literals), but THE ENTRY'S FAILURE MODE DOES NOT HOLD.** The predicted silent failure is unreachable: two CHECK constraints write both tokens into the schema, so a rename is refused at every insert — proved by trying it, which killed seven cases in the seeder — and the coverage check would fail loudly rather than vacuously. The substitution is kept on one-owner grounds, not on the entry's stated risk.
+
 **Z9-8 [Low] `window.rs`'s error contracts name `DomainError::ServiceUnavailable`, a variant that does not exist**
 `gears/bss/pricing/pricing/src/infra/window.rs:380`, `:501`, `:580` — "[`DomainError::ServiceUnavailable`] when the registry cannot assign"
 `gears/bss/pricing/pricing/src/domain/error.rs:706` — the variant is `CatalogVersionUnavailable(String)`; `grep -n "ServiceUnavailable" src/` returns only those three doc lines
@@ -1399,6 +1471,8 @@ Not a live bug: `cohort` is a `String` column holding the token (`entity/price.r
 Three dangling intra-doc links on the `# Errors` contract of the zone's three most-called public methods, and the sibling contracts get it right (`publish.rs:453` names `CatalogVersionUnavailable`). Another instance of F-8's class (error doc names a non-producer).
 
 *Fix/Verify:* rename the three references; consider `#![deny(rustdoc::broken_intra_doc_links)]` for the crate, which would have caught all three.
+
+**PAID `28475be90`**, docs — the named `DomainError` variant does not exist.
 
 **Z9-9 [Low] two module docs assert a fact their own code contradicts**
 `gears/bss/pricing/pricing/src/infra/window.rs:311-313` — `PendingApproval::verdict`: "Why a second principal is required — **always** [`MaterialityReason::AlwaysMaterialTrigger`] here"
@@ -1410,6 +1484,8 @@ The same `jobs.rs` doc block, at `:22-24`, makes exactly this argument about its
 F-6/F-18's class, two more instances. The first is the more consequential: an operator reading the field doc believes every window unit says `alwaysMaterialTrigger`, which is the one thing they cannot act on when the real reason is a currency with no threshold entry.
 
 *Fix/Verify:* delete the "always" clause and the "Two"; the surviving sentences are already correct.
+
+**PAID `28475be90`** for this module; the sibling half was paid by a concurrent lane as `66a455f10`. This shape — a module doc asserting a fact its own code contradicts — has now been recorded in **five** different modules in this register.
 
 **Z9-10 [Low] the retirement's registry request id carries no act discriminator, alone among the five**
 `gears/bss/pricing/pricing/src/infra/retirement.rs:705-707` — `format!("{tenant_id}/{subject_ref}")`
@@ -1462,6 +1538,8 @@ No collision exists today — the subject already carries `/retirement/` (`appro
 
 **Findings**
 
+**PAID `8bc26ce94`**, three probes.
+
 **Z10-1 [Medium] The window sweep's Warn alarm is the third instance of the defect D-238 was opened to close, and its two justifying sentences still assert the alarm plane does not exist**
 
 `src/infra/jobs/window_activation.rs:49-58` — module doc: *"`pricing.window.activation_overdue` (Warn, §7) is the design set's string… **this gear has no metrics or alarm facility at all** — the sibling ledger has `infra/metrics.rs` and an event publisher with an alarm catalogue, and this crate has neither — so a `tracing::error!` under the named string is the whole of it. **Reported as a gap**"*
@@ -1475,6 +1553,8 @@ No collision exists today — the subject already carries `/retirement/` (`appro
 `infra/metrics.rs` and `domain/ports/metrics.rs` exist; `readmodel_warm` was corrected on 2026-08-07 (`b0516ea83`); `gated_markets` was born holding a `PricingMetricsPort`. `window_activation` is the one ticker of three that holds no port, and its module doc and its unit test both still carry the falsified premise D-238 records as the cause. Consequence: §7's only window-plane alarm — the one whose text is *"the lease singleton is stalled"*, i.e. the signal that the whole activation plane has stopped — reaches `pricing_alarm_total` on no label and therefore reaches no alerting rule. D-238 is filed as `BUILT`, which makes this a closed decision with a live third instance rather than owed work anybody is looking for.
 *Fix/Verify:* add `WindowActivationOverdue` (Warn) to `PricingAlarm`, give `WindowActivationJob` the `with_metrics` seam its two siblings have, wire it at `module.rs:378`, and delete the two "no facility" sentences at `window_activation.rs:52-58` and `window_activation_tests.rs:48-50`. Verify by asserting `counter_value("pricing_alarm_total", &[("alarm","pricing.window.activation_overdue")])` in the `MetricsHarness` after a pass with an overdue boundary — the harness already reads the exported stream (`metrics.rs:335-341`).
 
+**PAID `f370e8933` (2026-08-11) — this mark was MISSING until the 2026-08-14 audit.** The four Z10 Mediums were paid by a concurrent session before the annotated programme began, and its edit marking them was never committed, so this register carried them as open for three days. Residue the audit found: this entry's own verify recipe is unfulfilled — no test asserts `pricing_alarm_total` moves for `pricing.window.activation_overdue`, because every suite builds the job with the no-op metrics adapter. The attachment is structural in `module.rs`, so it is not a silent risk, but the emission is unobserved end to end.
+
 **Z10-2 [Medium] The gated-markets ticker drops its lease guard where its two siblings release it, so the gauge refreshes on every other tick — half the cadence D-250 decided**
 
 `src/module.rs:443-460` — `gated_markets_pass`: `let Some(guard) = Self::take_lease(lease, GATED_MARKETS_LEASE_KEY, ttl)`, run, then `drop(guard);`
@@ -1486,6 +1566,8 @@ No collision exists today — the subject already carries `/retirement/` (`appro
 
 The slot is claimed at `T+δ` with `locked_until = NOW()+60`, and dropping leaves it standing. The next tick fires at `T+60 < T+δ+60`, so `acquire` returns `LeaseHeld`, `take_lease` logs *"sweep skipped (a peer holds its lease)"* at **debug** — naming a peer where the holder is this same task's previous pass — and the refresh is skipped. The pass after that succeeds. So `pricing_tax_not_sellable_ga` is refreshed at ~120s while `gated_markets.rs:31-38` states the trade as *"the value is up to one tick old"* and D-250 (`DECISIONS.md:2348-2356`) ratifies 60s. Not a correctness break — the quantity moves in months — but it is a decided cadence the code does not deliver, invisible behind a debug line that misattributes the cause, and an exact outlier among three look-alike passes.
 *Fix/Verify:* `guard.release().await` with the siblings' warn-on-error arm. Verify with a two-pass test over one `LeaseManager` and a fake clock, asserting the second pass acquires (there is no such test today — see Z10-12).
+
+**PAID `f370e8933` (2026-08-11) — mark missing until the 2026-08-14 audit; see Z10-1.** `release_lease` verified present and probed.
 
 **Z10-3 [Medium] A panicking ticker is silently dead for the process lifetime; `serve` returns `Ok`, and the sibling whose shape this file claims to copy `select!`s on the join handles precisely to prevent it**
 
@@ -1499,6 +1581,8 @@ The slot is claimed at `T+δ` with `locked_until = NOW()+60`, and dropping leave
 The three properties were inherited; the supervision the sibling wraps them in was not. `module.rs:154-161` states the warm ticker is load-bearing for correctness (*"without the warm re-drive nothing ever resolves it, `pricing_read_model` stays empty and no version becomes pin-eligible"*), so a panic on tick 1 leaves the gear serving traffic, answering 200s, and never warming a read model — with the only trace a warn line emitted at shutdown, possibly days later, and `serve` still `Ok(())`. There is no supervision, no restart and no alarm; the two Criticals in `readmodel_warm` cannot fire because the task that raises them is the dead one.
 *Fix/Verify:* adopt the ledger's `select!`-on-handles shape (cancel the token, drain the survivors, map the join error to `Err`), or at minimum raise a Critical alarm and log at `error` on a join failure. Verify with a ticker whose job panics once, asserting `serve` resolves `Err` (or that the alarm counter moved).
 
+**PAID `f370e8933` (2026-08-11) — mark missing until the 2026-08-14 audit; see Z10-1.** A ticker resolving before cancellation fails `serve`, including the no-panic case.
+
 **Z10-4 [Medium] The gated-market gauge inlines `TAX_ENGINE_GA == false` into SQL, so the flag's documented flip has no compile gate at the one site that decides the gauge**
 
 `src/domain/tax_display.rs:217-221` — *"It flips **in code** when the engine ships"* — `pub const TAX_ENGINE_GA: bool = false;`
@@ -1509,6 +1593,8 @@ The three properties were inherited; the supervision the sibling wraps them in w
 
 The two consumers of one predicate diverge the moment the constant moves. On the day GA lands, `report_market_metrics` correctly stops raising `TaxNotSellableGaActive` while `GatedMarketsJob` keeps publishing the full count of published tax-inclusive tenant-markets to `pricing_tax_not_sellable_ga` forever — §7's backlog gauge pinned at a number no action can clear, and the whole point of the D-246 rebuild was that this series must be honest. It compiles, and every test stays green, because the tests exercise the plumbing rather than the predicate (`gated_markets_tests.rs:45-52` deliberately seeds no rows). This is the "flag flip needs a compile gate" shape: whoever flips the constant greps for `TAX_ENGINE_GA`, finds `tax_display.rs` and `metrics.rs`, and does not find `price_repo.rs`.
 *Fix/Verify:* make the read take `tax_engine_ga: bool` (or short-circuit to `Ok(0)` on `TAX_ENGINE_GA`), so the site is reachable from the constant. Verify by flipping the constant in a `#[cfg(test)]` shim and asserting the count falls to zero.
+
+**PAID `f370e8933` (2026-08-11) — mark missing until the 2026-08-14 audit; see Z10-1.** The GA flag is a parameter, so the site is reachable from the constant.
 
 **Z10-5 [Low→Medium] The pin-eligibility Critical swallows its own frontier read: an `if let Ok` with no log, and the whole stale-frontier arm silently disappears**
 
@@ -1526,6 +1612,8 @@ if let Ok(frontiers) =
 On a storage failure the `Err` is dropped without a log or a counter, and the tenant map degenerates to *only tenants that have a pending ref this pass*. That is exactly the population the method's own doc says the frontier read exists to go beyond, so the Critical's most important arm goes silent with no trace whatsoever — the pass reports `pin_eligibility_overdue: 0`, which reads as "healthy". `frontier_is_blocked` (`:878-891`) makes the same `Ok`-only choice but documents it (*"an alarm that cannot read must not become a second fault, and the pass has already alarmed on the ref itself"*) — an argument that does not transfer to this call, because here there is no other alarm covering the gap.
 *Fix/Verify:* match the `Err` and log at `error` as `read_pending` does; consider surfacing it on `SweepReport`. Verify with an unmigrated store, asserting the log/report rather than the silence.
 
+**PAID `5ce7feb1a`.** The `Err` is matched, logged at `error`, and surfaced on a new `SweepReport::frontier_scan_failed`. **The RED is the finding itself:** a pass whose frontier read blew up produced a report BYTE-IDENTICAL to a healthy one, every counter equal — which is also why a report field is part of the fix rather than a log alone, since this crate has no tracing capture and nothing else was assertable. Deliberately NOT done: no `alarm =` label (it would report the Critical as raised when it is merely unevaluable) and no new `PricingAlarm` variant, because roster names belong to the design set.
+
 **Z10-6 [Low] The cadence-inside-threshold invariant is validated for one of the two alarm-bearing tickers**
 
 `src/config.rs:328-333` — `if self.window_activation_tick_secs >= self.window_activation_overdue_secs { return Err(CadenceNotInsideThreshold { … }) }`
@@ -1535,6 +1623,8 @@ On a storage failure the `Err` is dropped without a log or a counter, and the te
 
 The paragraph at `:318-327` describes a general rule — an age-threshold read off a periodic pass is meaningless once the cadence reaches the threshold — and applies it to one pair. `readmodel_degraded_after` is measured from `commit_observed_at`, which a pass stamps, and is then re-evaluated by the *next* pass; at `tick == threshold` there is zero slack, so any transient projection failure emits `PlanPublishDegraded` on the very next tick. Defensible against §1.2's 5s SLO, but it is an undeclared relation where its sibling is a declared and enforced one.
 *Fix/Verify:* extend `CadenceNotInsideThreshold` to `readmodel_warm_tick_secs` vs `readmodel_degraded_after_secs` (and state the intended relation for `catalog_version_overdue_secs`), or record in `config.rs` why the warm pair is exempt. Verify in `config_tests.rs` beside the existing window case.
+
+**PAID `47812c58c` — THE ENTRY NAMED THE WRONG PAIR, and the invariant as written would have refused the shipped configuration.** The two values it pairs both default to the same number, so asserting one strictly inside the other rejects the default config while protecting nothing: that clock is stamped by the sweep in the very pass that then projects. The pathology transfers to `catalog_version_overdue_secs`, whose clock a **publish** starts — that arm is what was built, with the exemption recorded and a case pinning the equal defaults. Right class of defect, wrong object.
 
 **Z10-7 [Low] All three leases set TTL = tick, never renew and never fence, where the platform's own primitive offers both and the named sibling uses them**
 
@@ -1549,6 +1639,8 @@ The paragraph at `:318-327` describes a general rule — an age-threshold read o
 Neither of pricing's two seams is used, so a pass that outruns its TTL — routine for the warm sweep at these numbers — loses the lease with no signal, keeps writing, and its terminal `guard.release()` matches zero rows and logs coord's *"row was likely stolen before release"* warn. The module doc argues concurrency is harmless because every write is key- or predicate-guarded, and I could not falsify that argument for the writes on these paths; what is missing is that the argument is hand-maintained where the primitive offers a mechanical guarantee the sibling takes.
 *Fix/Verify:* either set TTL to a multiple of the tick with `spawn_renewal(ttl/3)` as the ledger does, or record in the module doc that renewal and the fence are declined deliberately and that a lost lease is provably safe on each path.
 
+**RESOLVED AS PROSE `93c042391` — OWED A DECISION, not closed.** Whether this gear must renew and fence its leases, or may keep TTL = tick, is not stated by the design set; both readings are written at the declaration with citations. Deliberately not invented, on the same ground that kept two other producers dormant this week.
+
 **Z10-8 [Low] Further instances of F-6: the third ticker's arrival did not update the scheduling plane's prose or its startup log**
 
 `src/infra/jobs.rs:3` — *"**Two, and they are independent**"*, and the bullet list at `:9-30` names two of three (`gated_markets` is absent). *(This is F-6 itself — listed only as the anchor.)*
@@ -1559,6 +1651,8 @@ Neither of pricing's two seams is used, so a pass that outruns its TTL — routi
 
 Same class as F-6, not re-filed; recorded because the startup log is the operator-facing half and is the one that cannot be read as prose drift: a deployment cannot see the gated-markets cadence it is running.
 
+**PAID `66a455f10`, and the entry was short by two.** The startup log now carries the third tick interval — the operator-facing survivor — and seven prose sites were corrected rather than six: it missed the module doc's `stateful` capability clause and a sentence claiming the gear drives *two* independent leased tickers.
+
 **Z10-9 [Low] "thirteen names" survives in three places after the fourteenth landed (stale-count class, F-18)**
 
 `src/infra/storage/repo/outbox_repo.rs:46` — *"`chk_pricing_outbox_event_name` pins the same **thirteen** names"*
@@ -1567,6 +1661,8 @@ Same class as F-6, not re-filed; recorded because the startup log is the operato
 `src/infra/storage/migrations/m20260802_000009_create_pricing_outbox.rs:13` — *"the same **thirteen** names"*
 `src/domain/events.rs:62-66` — `PriceOverlayPublished` … *"The **fourteenth** name"* (D-248)
 `src/infra/storage/migrations/m20260802_000060_add_price_overlay_published_event_name.rs:47-51` — the CHECK now admits fourteen.
+
+**PAID by a concurrent lane (see Z8-10). CORRECTION, 2026-08-14 audit: THE CLAIM THAT BOTH NUMBERS WERE STALE WAS ITSELF WRONG, and it contradicted this register's own Z8-10 note.** Re-derived independently: `CatalogEvent::ALL` is fourteen and the CHECK in force is the same fourteen — exactly what this entry said. What was stale was "thirteen" and "three places": the entry listed four sites and there were five. All five sites are closed, including one this entry did not name.
 
 **Z10-10 [Low] `pending_tenants` is an N+1 keyset walk: up to 250 single-row queries per 5-second tick**
 
@@ -1577,6 +1673,8 @@ Same class as F-6, not re-filed; recorded because the startup log is the operato
 At the defaults this is up to 250 round trips every 5 seconds to enumerate distinct tenant ids — before the two pending reads per tenant and the registry calls — and it is the largest contributor to the warm pass outrunning its 5-second lease TTL (Z10-7). The keyset walk exists because `SecureSelect` exposes no `distinct`; the same constraint applies to `pin_frontier_repo::list_all`, which solves it differently.
 *Fix/Verify:* page the walk (fetch `limit` rows per query and dedup in memory, as `price_repo::gated_markets` does at `:1759-1762`) rather than one row per query.
 
+**PAID `4fb8798d3`** — the keyset walk is paged, measured at **12 → 2 statements**. Counted, not estimated: a probe over a handful of tenants cannot distinguish an N+1 from a page.
+
 **Z10-11 [Low] `gated_markets` is the only unbounded read on any ticker**
 
 `src/infra/storage/repo/price_repo.rs:1735-1749` — `price::Entity::find()… .all(runner)` with **no `.limit()`**, loading every published non-grandfathered tax-inclusive `price::Model` in the catalog into memory before deduplicating.
@@ -1585,6 +1683,8 @@ At the defaults this is up to 250 round trips every 5 seconds to enumerate disti
 `src/domain/ports/metrics.rs:183-186` — the backlog is expected to stand *"an estimated eight months"* by the PRD risk table.
 
 "Bounded by the backlog" is not a bound: the backlog is every tax-inclusive row every tenant has published, expected to persist for months, re-read whole every 60 seconds. It is an availability rather than a correctness concern, and it is the one ticker read with no cap and no saturation story.
+
+**PAID `1c6cfbd2d`, `9feaed032`** — bounded pages with the answer still exact. Note this entry's suggested model was wrong: the sibling it points at dedups without a bound, so it was never the paging example to copy.
 
 **Z10-12 [Low] Nothing tests the scheduling plane — the exact test-smell (c) the method names**
 
@@ -1639,6 +1739,8 @@ Every job body is well covered; the code that decides *when and under what lease
 
 **Findings**
 
+**PAID `fb478a34c`, both halves, both runtime-driven** — the lease half (two passes over one `LeaseManager` proving the release lets the next tick acquire) and the `with_metrics` attachment. The entry's headline had already gone false before this: `f370e8933` added three supervision cases. Two production seams were added for testability with no signature changes, and `SweepReport` is now destructured exhaustively, so a twelfth counter becomes a compile error rather than a silently dropped field.
+
 **Z11-1 [Medium] The ISO-4217 scale rule has no operand and no caller — `PRECISION_EXCEEDED` is a declared publish refusal nothing can raise**
 - `pricing/src/domain/money.rs:158` `is_expressible`, `:168` `check_scale`, `:191` `fraction_digits`, `:216` `check_decimal`
 - grep for all four names across the whole gear (`gears/bss/pricing`, `*.rs`): the only hit outside `money.rs`/`money_tests.rs` is a **doc sentence**, `pricing/src/domain/publish/rules.rs:75` — "`check_scale` / `check_decimal` carry `PRECISION_EXCEEDED`"
@@ -1648,6 +1750,8 @@ Every job body is well covered; the code that decides *when and under what lease
 
 The wire carries integer minor units only (`PriceContentView.amount_minor: Option<i64>` → `prices.rs:1330` `amount()` → `MinorAmount::new`), so no request can *declare* a scale and the fault is genuinely unrepresentable today — which `api/rest/approvals.rs:588-598` argues explicitly for the sibling threshold field ("as a *rule* about an integer already declared to be in minor units it constrains nothing"). That makes this a Medium and not a High. What is wrong is that three documents and one module doc describe the family as **live enforcement**, and `publish/rules.rs:73-78` cites the two functions as the reason no pipeline rule is needed — a reader checking whether the FR is satisfied is told "yes, by these", and these are never called. It is also the exact seam that hatches with green tests: the first authoring surface that takes a decimal literal (a CSV bulk import is the obvious one, and §4's import already exists) will not automatically reach `check_decimal`.
 *Fix/Verify:* either state in `money.rs` and `publish/rules.rs` that the family is **dormant until a decimal/major-unit authoring surface exists**, and name that surface as the one owing the call; or delete the four functions and the `PrecisionExceeded` variant plus its mapping. Verify by grepping for a producer of `DomainError::PrecisionExceeded` — today there is exactly one, `money.rs:172`, reachable only from `money_tests.rs`.
+
+**PAID `b31fe2bd1` — as prose, deliberately NOT as enforcement, and the entry's premise has moved.** D-311 gave `PRECISION_EXCEEDED` an operand in `RateMinor::from_decimal`, but that function has no production caller (D-311's own wire spelling is the integer `unitRateNanoMinor`), and `check_scale`/`check_decimal`/`is_expressible` still have zero callers. The design set names a path but fixes amounts as integer minor units (`01-foundation.md` §2.2), so that path cannot carry the fault. Two clauses of D-311's landing note are false and checkable. The rule stays dormant and the surface that owes the call is now named in the code.
 
 **Z11-2 [Medium] The overlay plane's `cohort` bypasses the millisecond quantum the price plane enforces on the same axis (F-12 shape)**
 - `pricing/src/domain/instant.rs:6-11` — the module's own motivating case: "`cohort` **is** a cutover instant and is matched for **equality** across a gear boundary … the generation becomes unfindable"
@@ -1661,6 +1765,8 @@ The wire carries integer minor units only (`PriceContentView.amount_minor: Optio
 Live behaviour is fail-closed, which is why this is Medium: `published_cohorts` is built from millisecond values, so an authored `2026-08-02T12:00:00.000123Z` can never be a member and `OVERLAY_LINE_COHORT_UNKNOWN` always fires. But the refusal **misattributes the fault** — it tells the operator the plan "carries no published `existing_grandfathered` row at that cutover instant" when the real fault is precision, and the value that provokes it is precisely what a client gets by copying a Postgres `timestamptz` rendering from another gear. Two rules are silently disarmed behind that single fail-closed gate: `check_dating` **skips** an unquantized line entirely (key inequality at `:854`, so no overlap is ever reported for it), and `check_duplicate_keys` counts two cohorts a microsecond apart as two keys. So the eligibility rule is the only thing standing between an unquantized cohort and two published overlays overlapping on one generation — the arming condition being any future relaxation of eligibility (e.g. a cohort authored before its generation publishes).
 *Fix/Verify:* call `instant::check_quantum("cohort", cohort)` in `LineKey::for_cohort` (or at `overlays.rs:399`), which puts the refusal in the same place, with the same code, as the price plane's. Verify with a case authoring a `.000123Z` cohort and asserting `TIMESTAMP_PRECISION_EXCEEDED` rather than `OVERLAY_LINE_COHORT_UNKNOWN`.
 
+**PAID `ab27be2fc`.** `cohort` now passes `check_authored_instant` in `overlay_repo::write_lines`, the one funnel all three writers share.
+
 **Z11-3 [Medium] Three more authored-instant planes never meet the quantum gate that `repo.rs` calls "one rule"**
 - `pricing/src/infra/storage/repo.rs:91-99` — "Here rather than in each repository because both of them store instants an operator authored … and the quantum is one rule"; `:110-122` `check_authored_instant`
 - its complete caller set (grep): `threshold_repo.rs:314,371` (`effectiveFrom`), `window_repo.rs:309,310` (`effectiveFrom`/`effectiveTo`), `plan_repo.rs:985,986,2208,2209` (`availableFrom`/`availableTo`), `price_repo.rs:588,2806` (`grandfatherUntil`)
@@ -1669,6 +1775,8 @@ Live behaviour is fail-closed, which is why this is Medium: `published_cohorts` 
 
 `instant.rs:19-22` scopes the rule to "instants the gear **authors, carries in a contract field, publishes or compares**", excluding only storage bookkeeping. All three of these are authored, all three are contract fields, two are published, and the overlay interval is compared (`overlay_rules.rs:857` `intersects`). The overlay interval is the clearest outlier: `window_repo` gates the identically-shaped `effectiveFrom`/`effectiveTo` pair one module over. The failure mode is weaker than Z11-2's — these are order-compared, not equality-matched — which is why it is Medium and not High, but the divergence between a gated price window and an ungated overlay window is not something either module's doc claims.
 *Fix/Verify:* add `check_authored_instant` calls beside the three writers, or record in `instant.rs` which planes the rule deliberately does not reach and why. Verify by re-running the caller grep: the gate's callers should be the set of tables holding an authored instant column.
+
+**PAID `cda5f24bd`, with one clause of this entry REFUTED.** Overlay `effectiveFrom`/`effectiveTo`, `pricing_migration.effective_at` and `snapshot_provenance.snapshot_instant` are gated. But `announced_at` is NOT an authored instant — it is on no request and comes from the act's stamp, and `window_repo::transition` already records that gating a machine timestamp refuses every write. Left ungated deliberately, with both halves pinned in one case. Consequence worth knowing: `POST /migrations` now refuses a sub-millisecond `effective_at` on the wire, which reddened six cases whose fixture authored `Utc::now()`; the fixture was quantized AND a REST case added for the refusal, so the fixture change cannot hide the new behaviour.
 
 **Z11-4 [Medium] A Phase-1 store failure strands the run in `validating` forever, and the replay then answers `202` with an empty report**
 - `pricing/src/api/rest/bulk_imports.rs:304-318` opens the run (born `validating` — `bulk_repo.rs:132`), then `:321-324` `classify_against_store(...).await.map_err(...)?` — a bare `?`
@@ -1680,6 +1788,8 @@ Live behaviour is fail-closed, which is why this is Medium: `published_cohorts` 
 Phase 2 was hardened three times (D-294, D-297, D-300) for exactly this hazard and Phase 1 was not, in the same handler. A transient repo error inside `classify_against_store` — or a crash between `open` and either terminal move — leaves the client key **spent** on a run that will never advance, with no operator remedy: abort refuses it, no sweeper exists, and the retry is answered `202`. That answer is worse than the failure: `:280-289` argues at length that a replay must not tell a client a resubmit succeeded where the original failed, and installs a refusal for the `ValidationFailed` case; the `validating` case reproduces the same harm with no refusal at all.
 *Fix/Verify:* on a Phase-1 repo error, advance to `ValidationFailed` (or another terminal state) with the failure in the report before propagating; and/or admit `validating` to the abort edge. Verify with a fault-injected `classify_against_store` and a replay asserting a refusal rather than `202`.
 
+**PAID `4c27955c5`.** A Phase-1 store fault now lands the run terminal on the existing `validating → validation_failed` edge instead of stranding it, so the client key is not spent on a run with no exit and the replay no longer answers `202` over an empty report. `validating` was deliberately NOT admitted to the abort edge: that edge exists on neither engine, so adding it would be a migration and a design decision rather than a fix. RED output prints the run stuck `Validating` with `{"rows": []}`.
+
 **Z11-5 [Medium] The bulk replay has no payload guard, so a *different* batch under a spent key is answered `202` and imports nothing**
 - `pricing/src/api/rest/bulk_imports.rs:275-299` — the replay is `find_by_client_key` and nothing else; the body (`:301` `rows_of`) is never compared with what the key first carried
 - `pricing_bulk_operation` has no request-hash column: `m20260802_000047_create_pricing_bulk_operation.rs:72` (columns are `operation_id, tenant_id, kind, state, client_key, report, submitted_by, submitted_at, completed_at`, re-created identically at `m20260802_000063:268-270`)
@@ -1688,6 +1798,8 @@ Phase 2 was hardened three times (D-294, D-297, D-300) for exactly this hazard a
 
 `bulk_imports.rs:22-30` justifies replacing the gate with the run's own row on TTL grounds — which is sound — but silently drops the payload-mismatch guard the gate provided. `BulkImportView` carries no digest and no row count, so a caller who resubmits a corrected batch under the same key gets `202`, a stale report, and zero rows imported, with nothing in the response that could reveal it. That is the same inversion, on the third axis.
 *Fix/Verify:* store `IdempotencyGate::payload_hash` of the canonical body on the run and refuse a mismatch with `IDEMPOTENCY_PAYLOAD_MISMATCH`; failing that, state the omission in the module doc beside the TTL argument. Verify with two `POST`s under one key carrying different row sets.
+
+**PAID `0750ea7ab`, and an existing test had been PINNING the defect.** A payload digest now guards the replay. `a_replayed_key_answers_the_run_it_opened…` used to submit a DIFFERENT batch under the same key and assert `202` with the first run's report — it asserted the inversion as correct. It is re-armed on the same batch and is now the positive control for the new probe. Open decision recorded elsewhere: `rest_repricing_runs` pins the same shape deliberately, so that route records its digest and does not compare it.
 
 **Z11-6 [Low] Row-level content faults escape the per-row report and name no row**
 - `pricing/src/api/rest/bulk_imports.rs:542-561` `rows_of` — `.collect::<Result<Vec<_>, DomainError>>()`, so the first bad row aborts the whole body with one `DomainError` carrying no index
@@ -1698,6 +1810,8 @@ Phase 2 was hardened three times (D-294, D-297, D-300) for exactly this hazard a
 A thousand-row batch with a typo'd currency in row 700 is answered "currency invalid: US" with no index and no run — which is precisely the round-trip-per-refusal the all-or-nothing posture exists to spare the operator.
 *Fix/Verify:* fold these into `BatchReport` (they are per-row facts, exactly like `PRIMITIVE_RULES_UNBUILT`), or at minimum prefix `rows[{i}]:`. Verify with a batch whose second row carries a bad currency and a negative amount, asserting both are reported against row 1.
 
+**PAID `223c381c1`**, two probes. Two judgements recorded rather than buried: the wire code for an unreadable row becomes `BULK_VALIDATION_FAILED` and now spends the idempotency key (both per §5 and per this entry's own complaint; no test pinned the old codes), and **no per-row code was minted** — the faults ride an `unreadable` report member instead, because an undeclared code on a replayable shape is the worse of the two.
+
 **Z11-7 [Low] The submitted batch is unbounded**
 - `pricing/src/api/rest/bulk_imports.rs:107` `pub rows: Vec<BulkImportRowRequest>` — no cap anywhere on the path
 - both phases run **inline in the request**: `bulk_imports.rs:5-13` ("the reason survives the current implementation running both inline"), `:321-366`
@@ -1706,6 +1820,8 @@ A thousand-row batch with a typo'd currency in row 700 is answered "currency inv
 
 [Q] whether the design set states a request-side cap: `docs/design/12-operator-efficiency.md` names only export chunking (`:220`, `:404`) and D-125 is a *read* pagination decision (`DECISIONS.md:1125`). Absent one, a single `POST` can hold a connection open across an arbitrary number of transactions while holding row locks against every interactive editor.
 *Fix/Verify:* name a cap (the 500-rows/plan soft cap of §1.2 is the nearest stated number) and refuse above it, or record the absence as deliberate.
+
+**PAID `fef443d7e` AS AN ABSENCE RECORDED — the headline is half false, established by measurement.** The batch is not unbounded: the platform body limit refuses an oversize body before the handler ever runs, proved with a probe asserting the refusal AND that no run was opened. A row cap was **declined**: §1.2's 500-per-plan is D-160's advisory, never-blocking number, and turning an advisory figure into a hard refusal would change the contract under cover of a fix.
 
 **Z11-8 [Medium] `PricingSnapshotRef` is a live-looking domain type that no path produces, and its doc names a finalizer that does not exist**
 - `pricing/src/domain/publish.rs:434-446` `snapshot_ref()` is the only producer; grep for `snapshot_ref` across `src/` and `tests/`: the definition and `domain/publish_tests.rs:101,121`. Nothing else.
@@ -1717,6 +1833,8 @@ A thousand-row batch with a typo'd currency in row 700 is answered "currency inv
 `snapshot.rs:1-19` says this type is where two normative properties live — the aligned composition and the one-way pin. Both are therefore asserted in a place off every live path, while the wire's version of the same composition is a separate spelling guarded only by `infra/storage/repo/outbox_repo_tests.rs:130-160`. This is the dead-field class applied to a whole type, plus F-8's shape (a doc naming a producer that does not produce).
 *Fix/Verify:* either route the payload build through `PricingSnapshotRef` (so the three-segment invariant has one home), or correct `publish.rs:437-439` and mark the type as the not-yet-consumed catalog-side model with the surface that owes its use. Verify by grepping `snapshot_ref` for a non-test caller.
 
+**PAID `1ec151008`, documentation only, lints in `04f9dfc8a`.** Verified the claim: `snapshot_ref()` is produced only in tests and `PricingSnapshotRef::finalize` has no caller outside its own tests; the live finalize is `catalog_version_ref_repo::finalize`'s row CAS. Read D-30 and D-102 — **no producer built and the type not deleted**, because this gear is told it never stamps snapshots and another gear's contract may name the type. The doc now names the live mechanism, the dormancy, and the surface that owes adoption. No test added and the totals do not move, which is the correct evidence for a prose change.
+
 **Z11-9 [Low] A cohort token is re-spelled as a SQL literal where the enum owns the rendering**
 - `pricing/src/infra/bundle.rs:77` `const COVERAGE_COHORT: &str = "none";` and `:476` `.add(price::Column::Cohort.eq(COVERAGE_COHORT))`
 - the reader on the same column goes through the enum: `infra/storage/repo/price_repo.rs:3512-3514` `if token == Cohort::None.to_string()`
@@ -1724,6 +1842,8 @@ A thousand-row batch with a typo'd currency in row 700 is answered "currency inv
 
 A change to `Cohort`'s rendering is caught by `read_cohort` and by the two derived filters, and silently turns the bundle coverage query into one that matches zero rows.
 *Fix/Verify:* `Cohort::None.to_string()` at the call site. (Flagging across the zone line — the axis belongs to `scope_key` — rather than dropping it.)
+
+**PAID `b43b909ad`** with Z9-7 — the same two literals. See Z9-7 for why the stated failure mode does not hold.
 
 **Z11-10 [Low] The row that failed is reported as "not attempted"**
 - `pricing/src/infra/bulk.rs:335-343` — on a run-level fault at row `index`, the loop runs `for unreached in index..rows.len()` and stamps "not attempted: the run failed at row {index}"
@@ -1769,6 +1889,8 @@ Row `index` **was** attempted; its own transaction failed. Including it in the r
 
 **Findings**
 
+**PAID `d0e697604`**, one probe. Same class as the residual `ceaf1ff16` recorded on the abandon path, seen from the opposite side — that one under-reports what committed, this one over-reports what was attempted. The `Drop` path is untouched and that residual stands.
+
 **Z12-1 [Critical] The whole Postgres tier — 346 tests, and every concurrency proof the crate has — is `#[ignore]`d and no CI job runs it**
 **PAID `e2dad9203`.** See the status ledger at the top of this document.
 
@@ -1801,6 +1923,8 @@ That argument applies verbatim to every plane the readbacks omit, and the omissi
 A second, smaller edge on the same test: `prices_after.first()` compares only the **first** price row's version (`:1613-1615`), so a denied write that moved the second of several rows would be caught only by the length check.
 
 *Fix/Verify:* extend the `Seeded` readback to one row-version-or-state probe per plane the census can address (overlay, bundle, window, taxonomy, policy, migration, bulk run) and compare the whole `price_rows` vector rather than its head. Prove it by deleting the gate call from `overlays::patch` and watching this loop redden.
+
+**CORRECTION, 2026-08-14 audit: OVERSTATED.** The seven named planes and the whole-price-vector read are genuinely delivered, but "reads every mutable plane" is not true: `POST /repricing-runs` writes the repricing journal and the threshold-policy `PUT` writes its proposal row, and neither plane is read back. Two planes owed, not zero.
 
 **Z12-3 [High] `rest_retirement.rs` asserts response bodies only — the confirm arm proves neither half of its own name**
 **PAID `1c7b22d16`.** See the status ledger at the top of this document.
@@ -1841,6 +1965,8 @@ The surface governs whether a `taxInclusive` row in a region declaring no tax ra
 
 *Fix/Verify:* a `rest_tax_display_policy.rs` with the bootstrap `GET` (200 + `fail_closed` + a tag), a `PUT` that flips to `warn` and re-reads it, a stale-tag 409 `STALE_VERSION`, and one publish that succeeds under `warn` and is refused under `fail_closed` on the same rate-incomplete row — plus the negative control that the category arm refuses under both.
 
+**PAID `9ee2f9ea4`.** The route has REST-tier coverage and the `warn` branch executes; proved by reverting `inst-td-policy`'s arm and restoring it.
+
 **Z12-6 [Medium] There is no census-level property for the unauthenticated caller, and no source scan for `require_authenticated`**
 
 - `tests/rest_authz.rs` mounts four set-level properties over all 48 routes (`:1525`, `:1572`, `:1635`, `:1730`) and none of them uses `Harness::anonymous()`.
@@ -1852,6 +1978,8 @@ The file's own module doc (`:12-14`) states the principle this violates: *"a rou
 
 *Fix/Verify:* add `an_unauthenticated_caller_is_refused_on_every_route` over `census()` using `harness.anonymous()`, and add `"require_authenticated"` to the `scannable()`-based scan beside `correlation::establish`.
 
+**PAID `6c0fb5e02`, and it closed a second gap on the way.** An unauthenticated refusal is now asserted over all 58 census rows, each paired with a positive control that must be neither 401 nor 403 — without which the property could pass vacuously. It also generalised the sibling `every_route_asks_the_catalogued_pair`, which read only `asked.first()` and therefore bound NOTHING a route asks second: it now compares the whole sequence as `(resource, action, require_constraints)` triples, with `require_constraints` carried per row because the withdraw's second question is deliberately unconstrained and a flat `true` would be armed wider than the claim. Owed and recorded in the property's own doc: `approve`'s second question is asked only on the repricing-run branch, which this seed never reaches, so it is proven nowhere.
+
 **Z12-7 [Medium] The at-most-once gate has no Postgres proof, and two keyed creates never replay a key**
 
 - `tests/sqlite_idempotency.rs:1-8` — "The gate is a `PRIMARY KEY` and an `INSERT ... ON CONFLICT DO NOTHING`… every assertion below is about what the *statement* did." 644 lines, SQLite only.
@@ -1862,6 +1990,10 @@ The file's own module doc (`:12-14`) states the principle this violates: *"a rou
 
 *Fix/Verify:* one replay case and one payload-mismatch case each on the bundle and overlay creates; and a `postgres_idempotency.rs` twin for the claim path once Z12-1 is fixed.
 
+**PARTIAL — `7b84496d4`.** The Postgres proof now EXISTS AND WAS RUN (`postgres_idempotency` 5/5 with `-- --ignored`, including the two-duplicates-in-flight race), and `POST /bundles` replays its key. **`POST /price-overlays` remains ungated, and is worse than this entry describes:** it parses an idempotency key and then discards it (`let _client_key = …`), and there is no uniqueness index, so a retry creates a SECOND draft overlay. A route that demands a key and ignores it is more dangerous than one that never asked, because the caller has every reason to think a retry is safe.
+
+**REMAINDER NOW PAID `f48e1ddb9`.** `POST /price-overlays` is wrapped in `idempotent::guarded` with the id minted inside the guarded body, `overlay_repo::create_on` lifts the three statements onto a caller-owned runner on `bundle_repo::create_on`'s shape, and the `Idempotency-Key` parameter is declared. The replay deliberately answers NO `ETag`: the performed path's tag names revision 0 / version 0, which a `PATCH` between the calls has already moved, and handing back a stale precondition marker is worse than handing back none. **The RED printed the defect itself — two different overlay ids out of one key.** The mismatch case is armed on a genuinely different body, the same-body replay is its positive control, and both assert the store, so the refusal is proved to have refused a WRITE rather than merely returned a status.
+
 **Z12-8 [Low] `every_mounted_router_is_merged_into_both_censuses` scans raw source where its siblings scan stripped source — a commented-out merge satisfies it**
 
 - `tests/rest_authz.rs:1268-1274` — `let text = std::fs::read_to_string(root.join(mount))…; assert!(text.contains(&needle), …)` with `needle = format!("rest::{module}::{function}(")`.
@@ -1870,6 +2002,8 @@ The file's own module doc (`:12-14`) states the principle this violates: *"a rou
 Commenting out a `.merge(...)` line leaves the needle in the file, so the guard passes over the exact regression it was written for (the 2026-08-04 sixth-router incident its own doc recounts at `:1181-1191`). The test also self-limits — `routers.len() >= 5` (`:1252`) against a gear that has 22 — but that floor is only an anti-vacuity check, not the property.
 
 *Fix/Verify:* route the four mount files through `scannable()` before `contains`.
+
+**PAID `74e06f316`, proved by removal as asked.** With a merge commented out the raw-text census stayed GREEN; routed through the stripped-source helper its siblings use, it reddens naming both file and router. Merge restored.
 
 **Z12-9 [Low] Two of the four metrics instruments are never asserted from a live path**
 
@@ -1880,6 +2014,8 @@ Commenting out a `.merge(...)` line leaves the needle in the file, so the guard 
 `rest_preview.rs:890-891` states the standard the other two miss: *"Asserted **through the router**, so what is proven is that a real refusal reported a real series, not that the adapter can increment its own counter."*
 
 *Fix/Verify:* one `force_flush` + `counter_value` pair after a publish that raises `CURRENCY_NOT_COVERED`, and one after a gated-market publish.
+
+**PAID `e39b43210` — and the probe uncovered something far larger than this entry.** The `tax_not_sellable_ga` half was already false when filed (proven live since `5578460b8`) and was left alone. Fixing the survivor produced a first RED reading `0` for a refusal the router had just returned, because `rest_support` built its `BundleService` with **no `.with_metrics(...)`** and held `NoopPricingMetrics` — eight lines under a comment claiming the harness holds the real adapter. Production wires it, so the counter was live in production and **unobservable in every test by construction**, for as long as that plane has existed. The same class as the fixture whose wildcard grant made thirteen authz scenarios untestable and green. Two probes then: emission removed → both blocked cases red; label chosen on the wrong basis → only one case red, which is the defect the emitter's own doc warns about and which no count-only assertion could ever see.
 
 **Z12-10 [by-design] The retirement commit lane is absent, so `published → retired` has no producer and every consumer of a retired plan is tested against a state the gear cannot reach**
 
@@ -1930,6 +2066,8 @@ Greps run:
 
 What the class contains: the crate is overwhelmingly disciplined — 49 of the 57 state predicates read `Enum::Variant.as_str()`, and `plan_repo::current_tokens()` (`infra/storage/repo/plan_repo.rs:1481`) even derives its token set from `LifecycleState::is_current_revision()` rather than spelling it. Three residues remain, below. I checked and **cleared** the false-positive direction: `"active"`/`"retired"` in `domain/taxonomy.rs` (a taxonomy entry's state) and `"active"`/`"expired"`/`"cancelled"` in `domain/window.rs` (a window's state) are two different vocabularies that happen to share text, not one duplicated token; `"published"` as a *wire outcome* (`api/rest/publish.rs:152`) and `"published"` as a *row lifecycle state* are likewise two concepts.
 
+**CORRECTION, 2026-08-14 audit: THE BY-DESIGN JUDGEMENT RESTED ON A FALSE PREMISE.** `published → retired` DOES have a producer — `retirement::retire_in` step 6 into `plan_repo::retire_revision`, rendered by a mounted route and covered by its own suite — and it landed on 2026-08-07, THREE DAYS BEFORE this review was written. The review trusted a stale comment in the test harness claiming the transition "has no producer in this gear at all", and that comment is still in the tree. So the only real defect this entry names is that harness comment; the plane it says is absent has existed the whole time. A finding sourced from a doc rather than from the code inherits the doc's errors.
+
 **Z13-1 [Medium] The row-lifecycle / eligibility vocabulary is respelled as literals in four modules, and one of them spells it into a `.ne()`**
 
 `domain/lifecycle.rs:89` owns `LifecycleState::as_str` and `domain/scope_key.rs` owns `PriceEligibility::as_str`. Four modules bypass both:
@@ -1945,6 +2083,8 @@ Two consequences differ in direction, and the second is the one that matters. `o
 
 Also in this class, milder: `const ACTIVE: &str = "active"` is declared **twice**, in `infra/storage/repo/taxonomy_repo.rs:95` and `infra/storage/repo/overlay_repo.rs:834`, both against taxonomy `state` columns whose enum `TaxonomyState::Active.as_str()` exists at `domain/taxonomy.rs:220`. And `api/rest/overlays.rs:96` `const OVERLAY_ACT_REASON: &str = "alwaysMaterialTrigger"` respells `MaterialityReason::AlwaysMaterialTrigger.as_str()` (`domain/materiality.rs:260`) — the same literal F-2 filed at `api/rest/bundles.rs:510`, here only as an `unwrap_or_else` fallback.
 
+**PAID `b534436bd` + `828784bcd`, and the site count was wrong three times over.** The fail-OPEN member went first: `currency_binding`'s `.ne(GRANDFATHERED)` was the only one where a token rename makes the predicate match everything and lets a publish through — every other member fails closed. Then twelve sites across five modules, where this plan's ledger had recorded three and the dispatch brief five; SIX of them were in `preview.rs`, a module no entry ever filed. Deliberately left: `OUTCOME_PUBLISHED` (the outcome vocabulary — collapsing it into `LifecycleState` is the two-vocabularies trap that has cost a session here) and `adjustment_of`'s wire-token parse arms.
+
 **Z13-2 [Medium] Three handlers hard-code `submitted_for_approval` against a `pub(crate)` const whose own doc exists to stop exactly that**
 
 `api/rest/publish.rs:143-149` declares the token `pub(crate)` and states the rule in as many words: *"`pub(crate)` because the window surface answers the same word for the same act … Two spellings of one outcome would make a client's `match` depend on which route it called."* Two surfaces obey it — `api/rest/windows.rs:1190` (`crate::api::rest::publish::OUTCOME_SUBMITTED`, with `:399` recording "imported rather than re-spelled") and `api/rest/overlays.rs:89`. Three do not:
@@ -1956,6 +2096,8 @@ Also in this class, milder: `const ACTIVE: &str = "active"` is declared **twice*
 The suites pin the literal on all five surfaces (`tests/rest_cutovers.rs:106`, `tests/rest_retirement.rs:121`, `tests/rest_supersessions.rs:120`), so a rename of the const passes CI green while three endpoints keep answering the old word — F-3's shape, one plane over. Compounding it, the field is `pub outcome: String` on all six DTOs (`publish.rs:199`, `overlays.rs:290`, `cutovers.rs:98`, `retirement.rs:183`, `supersessions.rs:157`, `windows.rs:416`): a bare string where an enum belongs, so nothing catches the drift at the type level either.
 
 *Fix/Verify:* import `publish::OUTCOME_SUBMITTED` at the three sites; better, lift the outcome vocabulary to an enum with `as_str()` so the DTO field is typed. Verify by grepping the literal — it should appear once, in `publish.rs`.
+
+**PAID `5242f28c8`.** The three handlers use the const. `OUTCOME_PUBLISHED` was deliberately not folded in — it belongs to a different vocabulary.
 
 **Z13-3 [Low] `BillingAnchorPolicy` has no declared roster, and its inverse is hand-enumerated in two modules**
 
@@ -1981,6 +2123,8 @@ What the class contains: one finding, and three refutations that are worth as mu
 
 **Refuted — the same domain rejection gets one status everywhere.** Because every producer routes through `repo_failure` → the single ladder, `APPROVAL_NOT_PENDING`, `WINDOW_OVERLAP`, `STALE_VERSION` etc. carry one status and one code regardless of which of the six governance handlers surfaced them. The two 403 arms drop their detail rather than folding it into `reason`, which `error_mapping.rs:23-32` argues correctly (a `"CODE: detail"` reason would never `==` the code).
 
+**PAID `2fb9ca14e`.** The compile gate was proved the hard way: it reddens only after the new variant is spelled everywhere else so the lib still compiles, which is the actual old failure mode — a bare grep or a half-applied variant would have proved nothing.
+
 **Z13-4 [Medium] A permanent registry refusal is rendered as a retriable 503**
 
 `domain/ports.rs:33` collapses all four `CatalogVersionRegistryError` variants into one:
@@ -2005,6 +2149,8 @@ What the class contains: two never-populated tables (one whole), one written-but
 
 **Refuted (a) — `pricing_price.resolved_tax_category` is written.** It looked never-set, but `infra/storage/repo/price_repo.rs:1035` writes it by `col_expr` inside the publish transaction, grouped by resolved value. I confirmed it is the *only* path to `published`: `grep -rn 'Column::LifecycleState,' -A3 infra/` shows exactly one `Expr::value(LifecycleState::Published…)` for the price plane (`price_repo.rs:1032`), and the only price insert builder (`prepare_draft`, `price_repo.rs:2794`) always writes `Draft` — so no row can reach `published` with a NULL category. Similarly `approval_threshold.{version,absolute_minor,percent_bp}` are written via fully-qualified `sea_orm::ActiveValue::Set` (`threshold_repo.rs:318-321`).
 
+**PAID `1cc351062`.** `Rejected` now maps to a new `DomainError::CatalogVersionRejected` → **400** carrying `CATALOG_VERSION_REJECTED` with the registry's detail on the wire; the three transient variants keep the 503 with the detail suppressed. Split on the variant rather than on a rendered string. RED: `left: 503 / right: 400`. Urgency came from outside the entry: the Python e2e client suite that landed in `21830f724` is exactly the consumer that would have encoded the wrong retry policy.
+
 **Z13-5 [Low] `pricing_operator_flag` has no writer, no reader and no repository — and one module doc says operators read it**
 
 `grep -rn 'operator_flag::' --include='*.rs'` returns exactly one non-test hit outside the entity file itself: the migration registration (`infra/storage/migrations.rs:149`). The table exists on both backends with a four-value `CHECK` on `flag` and a secondary index `idx_pricing_operator_flag_by_flag (tenant_id, flag, set_at)` (`m20260802_000007_create_pricing_operator_flag.rs:38,44`); the SeaORM entity exists (`infra/storage/entity/operator_flag.rs`). Nothing constructs an `ActiveModel`, nothing queries it. Per the severity rule I grepped the readers first: nothing dereferences it on a live path, so this is a forensic/forward-dependency gap, not a break — and it is the load-bearing form of the class, an index on a forever-empty table.
@@ -2012,6 +2158,8 @@ What the class contains: two never-populated tables (one whole), one written-but
 The gear is honest about it in one place and wrong about it in another. `domain/plan_rules.rs:66-71` states it exactly: *"That store **exists** … and it has no repository. The absence is therefore the *signal*, not the storage — worth stating, because a reader who finds the table would otherwise reasonably conclude the feature is wired."* But `domain/projection.rs:127-129` says the drift flags *"live in `pricing_operator_flag` and **operators read them through the authoring surfaces**"* — no authoring surface reads them, and no repository could serve one.
 
 *Fix/Verify:* correct `projection.rs:127` to match `plan_rules.rs:66`, or file the reader as owed. Verify with the grep above.
+
+**PAID `49d349e26`**, docs.
 
 **Z13-6 [Medium] Seven of `pricing_policy_object`'s eight content columns have no writer anywhere in the crate**
 
@@ -2037,6 +2185,8 @@ The behavioural residue per column, from the readers' own docs:
 
 *Fix/Verify:* either mount the authoring surface for the policy object, or record the seven columns as owed with the readers' fallbacks named. Verify by grepping for a second `policy_object::ActiveModel` construction.
 
+**PAID `3f1042246` AS PROSE — declined to build, with citations.** The design set names exactly one authoring surface over this table (`04-currency-tax.md` §5, `05-governance.md` §5) and it is built; it names NO surface for the other seven — every `/config/*` path in the set is one of four, and none is theirs. D-152 records the carrier as provisional pending a settings gear not in this repo; D-49 contemplates an audited policy change and names no route; D-10/D-13 put a policy change in the approval workflow rather than a repository write. **The declaration is load-bearing regardless** — six CHECK constraints and two migration roster tests bind these column names — so "nothing writes it" was never grounds to drop them, only grounds to say so. Five false statements corrected, the sharpest being `policy_repo`'s "Read-only, deliberately. There is no upsert here" sitting in the same module as a function that opens "Upsert, because…". **A design question falls out of this and is owed a decision:** `default_rounding_policy_ref` can never be non-`None`, so the PRD's ratified "publish MUST resolve the tenant default rounding policy" is unreachable for every tenant. Fail-closed and safe, but unsatisfiable, and nothing says who mounts the surface.
+
 **Z13-7 [Low] The warm sweep's eleven-counter report is discarded by its only production caller**
 
 `infra/jobs/readmodel_warm.rs:208-236` defines `SweepReport` with eleven counters (`versions_complete`, `subjects_failed`, `frontiers_advanced`, `degraded_emitted`, …). Its only non-test caller is `module.rs:299`:
@@ -2059,6 +2209,8 @@ What the class contains: one write-only business record, one already covered by 
 
 **Refuted — the window plane is *not* a write-only state machine.** `POST /prices/{priceId}/windows`, `PATCH`/`DELETE /price-windows/{windowId}` have no `GET` of their own, which reads as the classic case; but `GET /plans/{planId}/coverage` returns `KeyCoverageView.intervals: Vec<WindowIntervalView>`, and `api/rest/windows.rs:228-231` says *"Every window of the key, ordered, **every state included** — a cancelled one among them"*, with `WindowIntervalView.state` carrying `scheduled|active|expired|cancelled` (`:272`). The lifecycle is readable. Recording this because it is the shape the sweep was built to catch and it is genuinely covered.
 
+**PAID `f361f686e`** — re-checked after `5ce7feb1a` (which added a counter to this very report) and still true, so the caller now acts on what it is handed.
+
 **Z13-8 [Medium] `pricing_audit_log` is append-only with no reader — and the error ladder's justification for dropping 403 details depends on it being readable**
 
 `infra/storage/repo/audit_repo.rs` exposes exactly one mutating entry point, `append` (`:361`), plus five ref-builders and a private `read_head` (`:440`) used only to find the next `seq`. There is no list, no page, no export, and no route: `grep -rn 'audit_log::Entity::find'` returns the one private hit. Every mutating path in the gear appends to it (D-12's seven-year actor trail), and nothing can read it back.
@@ -2066,6 +2218,8 @@ What the class contains: one write-only business record, one already covered by 
 That is normally a plain Med/Low forensic gap, and I priced it that way — but it has a live dependant. `infra/error_mapping.rs:29-32` argues that dropping the detail from `SELF_APPROVAL_FORBIDDEN` and `REGION_SCOPE_DENIED` costs an operator nothing, *"because … the attempt itself is already on `pricing_audit_log` as a `deny` record carrying that id (`inst-tp-selfaudit`, `inst-rb-audit`) — **a durable trail rather than a log line**"*. The trail is durable and unreachable, so the compensating control the ladder names does not exist yet. The authz catalog already declares the two permissions the reader would gate on — `audit × read` and `audit × export` (`gts/permissions.rs:221,229`) — and nothing gates on either (see S6).
 
 *Fix/Verify:* file the audit read/export surface as owed, and either soften `error_mapping.rs:29-32` or land the reader. Verify: `grep -rn 'audit_log::Entity' pricing/src` should show a list/page function.
+
+**PAID `700e6a4af` — the design set names the reader, so the reader landed** (`rest_audit`, a new suite). RED at two levels: `ORDER BY` made to disagree with the cursor reddens by SKIPPING rows, which is the D-125 violation itself; the `deny` writer stubbed reddens the dependant case. This entry's "nothing gates on either permission" is false for `audit × read` — `/history` gates on it — but its core claim held: no reader of the table, and an error-ladder justification leaning on one. **Deliberately unbuilt, and stated in the code where the next builder meets it:** filters and `audit × export`, because the design set names filters without enumerating them and inventing a set would be the mistake this register already records twice. Residual: the walk's tie-break collation is backend-dependent, and there is no Postgres suite for it.
 
 **Z13-9 [Low] Read-shape asymmetry across the record families**
 
@@ -2093,6 +2247,10 @@ What the class contains: two findings, both freshly created by the HEAD commit's
 
 **Refuted — the unbounded-list class the HEAD commit closed has no siblings left.** All four collection GETs now carry a page contract: `/approvals` (`api/rest/approvals.rs:938`), `/plans/{planId}/prices` (`prices.rs:876`), `/price-overlays` (`overlays.rs:1102`) and `/history` (its own `{entries, next_cursor}`). `GET /plans/{planId}/coverage` returns an array with no cursor but is bounded by `max_price_rows_per_plan`.
 
+**PAID `a80378716`**, docs — and the table was stale in four cells: four of the reads it lists as absent exist. Five deviations, not seven.
+
+**CORRECTION, 2026-08-14 audit: the "stale in four cells" claim is OVERSTATED.** Two of the six absent cells are filled, not four — and both were built during this wave on 2026-08-11 rather than being stale at filing. The docs fix itself is accurate.
+
 **Z13-10 [Medium] `GET /price-overlays` still advertises the ordering the HEAD commit removed, and declares none of its query parameters**
 
 The registration at `api/rest/overlays.rs:1145-1149` reads:
@@ -2106,6 +2264,8 @@ The same registration declares **no** `query_param` at all, while the handler ta
 `GET /history` has the same declaration gap: `Query<HistoryQuery>` at `api/rest/history.rs:233` with `limit`/`cursor` (`:70-75`), the description *narrates* the pagination (`:195`), and no `query_param` is registered.
 
 *Fix/Verify:* delete the ordering clause from `overlays.rs:1146`; add `.query_param_typed("limit", …)` / `.query_param("cursor", …)` / `.query_param("scope_class", …)` to both registrations, matching `prices.rs:611`. Verify against the emitted OpenAPI document, not against the handler.
+
+**PAID `9b8697a25` for the open half; BOTH of its other claims are false, and in opposite directions.** The `/history` clause was already false when filed — that module registers its `limit` and `cursor` params, and the entry's grep looked for `query_param` while the code writes `.param(ParamSpec)`. But its "the two siblings do declare them" clause is false the other way: those siblings declare nothing, and neither do four more. ~~Six collection reads still advertise no page query~~ — **PHANTOM DEBT, withdrawn by the 2026-08-14 audit, and it was this controller's own.** Those reads DO declare `limit`/`cursor`, via `query_param`/`query_param_typed`, which push the identical `ParamSpec` the document reads. The claim came from grepping for one spelling of the call — the same mistake this very entry records about `/history`, made again by the person recording it. Seventh instance in this programme of a syntactic search answering a semantic question, and always in the direction of "there is a defect". RED: `left: []` against `right: ["cursor","limit","scope_class"]` on the emitted OpenAPI document. Found on the way and separately paid (`e08ff16d2`, `955c03985`): `/history` advertised `plan × read` while asking `audit × read`.
 
 **Z13-11 [Low] `module.rs`'s roster of what is *not* mounted is false on five counts**
 
@@ -2127,6 +2287,8 @@ Greps run:
 - config: each of the 15 knobs and each of the 8 `JobsConfig`/`LimitsConfig` accessors grepped for a non-doc reader.
 - jobs: the three tickers in `module.rs::serve` against `infra/jobs/`.
 
+**PAID `a0947ca73` — and it was worse than filed, not merely stale.** The enumeration was false on SEVEN counts rather than the five recorded here: `customer-group` joined when its router was mounted, and `read_model_repo::delta_at` is reached from the mounted preview and sellability reads, a clause the entry never counted. The enumeration is withdrawn whole; the criterion and the two surviving absences are kept.
+
 **Z13-12 [Medium] Two names of the "frozen" event set have no producer, and their row-plane analogues do**
 
 `domain/events.rs:1-8` opens *"The **frozen** event-name set. Frozen means what it says: the names below are the contract, and a consumer subscribing to `PriceWindowActivated` is entitled to keep receiving it under that name forever."* Counting references outside the definition file:
@@ -2142,6 +2304,8 @@ So a consumer subscribing to `PlanCreated` — a name the module calls a frozen 
 
 *Fix/Verify:* either enqueue the pair on the plan authoring paths or document them as reserved-unemitted, the way the deletion event's absence is documented. Verify with the per-variant count above.
 
+**PAID `60b2c20c1` — built, because here the design set is explicit rather than silent.** `inst-pa-return` is a `p1` step naming the emission, PRD §4 is an unconditional MUST distinguished in the same sentence from the conditional names, and S10 §7 ("primitives ride `PlanUpdated`/`PriceUpdated`") fixed the emission point, so per-revision granularity was never an option and documenting these as reserved-unemitted would have contradicted a `p1` instruction. Each producer sits at one choke point rather than at call sites: `PlanCreated` in `plan_repo::create_draft_on` (the only implementation of "a plan comes into existence", covering both the REST create and the clone), `PlanUpdated` in `plan_repo::record_revision_mutation` (the rail six edit callers already share; the seventh, the D-145 abandon, stays silent and the discrimination is on the act). **Building the producers exposed two suites reading the outbox by a proxy:** `rest_publish` asserted "exactly one row in the outbox" as a stand-in for its event — a lone `PlanRetired` would have satisfied it — and `sqlite_publish_commit` asserted `events[0].seq == 1`, true only while the seed emitted one event. Both now assert the property, and neither repair moves a number.
+
 **Z13-13 [Low] Seven catalogued authz pairs are gated on by nothing**
 
 22 pairs declared in `gts/permissions.rs`; 15 reached by a route. Never gated: `audit × read`, `audit × export`, `customer_group × read`, `customer_group × write`, `historical_import × read`, `historical_import × write`, `bundle × read`. Correspondingly `actions::EXPORT` (`authz.rs:132`) and the labels `AUDIT`, `CUSTOMER_GROUP`, `HISTORICAL_IMPORT` are declared, registered as type-schemas at init (`module.rs:602-613`), and never passed to `access_scope`.
@@ -2149,6 +2313,8 @@ So a consumer subscribing to `PlanCreated` — a name the module calls a frozen 
 **The converse is clean, and that is the half that matters**: every pair a route asks for is declared. I enumerated the 20 route files' `resource_types::*` × `actions::*` usage and found no route gating on an uncatalogued pair.
 
 `bundle × read` is F-4's authz mirror and is not re-filed. `historical_import` and `customer_group` are named as unbuilt in `module.rs:857` and `overlay_repo.rs:794-801` respectively, so those four are [by-design] and documented. The two that are **not** documented as owed are `audit × read` / `audit × export` — see Z13-8, where the permission exists, the data exists, and the reader does not.
+
+**PAID `cf20dab9a` — stale by six of seven.** Only `audit × export` survives; `audit × read` gained its consumer this week. The guard is now pair-level rather than label-level, because the label-level one could not see the survivor by construction, and the remaining debt is stated. Both of this entry's "documented as unbuilt" citations are dead links.
 
 **Z13-14 [Low] [by-design] `config.events_enabled` is read by nothing**
 
@@ -2161,6 +2327,8 @@ So a consumer subscribing to `PlanCreated` — a name the module calls a frozen 
 **S7 — Hand-enumeration of a composite key's axes**
 
 Greps run: a script split every non-test `.rs` into function blocks and counted, per block, how many of `ScopeKey`'s ten axes (`plan_id, currency, region, price_overlay, phase, price_eligibility, charge_kind, cohort, meter, dimension_key`, in snake / camel / SeaORM-column spelling, comment lines stripped) it names; every block naming ≥6 was read. `domain/scope_key.rs:559-570` is the key; F-12 (`domain/cutover.rs:231 generation_key`) is filed and not re-reported.
+
+**PAID `96cc82536`, docs — and the design set is not merely silent, it never mentions this flag or a relay AT ALL.** So nothing was implemented and both readings are written at the declaration with citations. "By-design" was the right label for the wrong reason.
 
 **Z13-15 [High] Eight further sites build, compare or serialize the ten-axis scope key by hand; all eight are currently correct, and the last widening of this key missed three of them**
 **PARTIALLY PAID `d67a401de`.** The four sites that *consume* a key are compile-gated through `ScopeKeyParts`. The three that build a key **from** a stored row or JSON (`to_scope_key`, `scope_key_columns`, `read_scope_key`) are **still open** — an accessor cannot reach them. Two entries in the table below were **already gated** before this: `is_sibling_of` and `to_generation` spell it `let Self {`, which this finding's `let ScopeKey {` grep missed.
