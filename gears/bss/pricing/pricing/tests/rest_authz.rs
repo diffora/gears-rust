@@ -2434,6 +2434,153 @@ fn every_grantable_label_is_enforced_by_some_route() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// And the same property one level down: every catalogued **pair** (Z13-13).
+//
+// `every_grantable_label_is_enforced_by_some_route` above collects
+// `r.resource_type` and nothing else, so it is satisfied by *any* action on a
+// label. `audit x read` gaining a route (`/history`, and then `/audit`) therefore
+// silenced the guard for `audit x export` as well — and `actions::EXPORT` is
+// asked for by no route in the gear, so the permission grants nothing and
+// withholding it protects nothing. That is the label guard's own argument,
+// applied to the axis it cannot see.
+//
+// The catalogued set is read off the **GTS inventory** rather than re-listed
+// here: `gts::permissions` is where a pair becomes grantable, and a second copy
+// of its 22 rows in a test file is the F-12 shape that produced this finding.
+// ---------------------------------------------------------------------------
+
+/// The `(resource_type, action)` pairs `gts::permissions` declares.
+fn catalogued_pairs() -> std::collections::BTreeSet<(String, String)> {
+    const PERMISSION_TYPE_ID: &str = "gts.cf.toolkit.authz.permission.v1~";
+    toolkit_gts::inventory::iter::<toolkit_gts::InventoryInstance>
+        .into_iter()
+        .filter(|entry| {
+            entry.instance_id.starts_with(PERMISSION_TYPE_ID)
+                && entry.instance_id[PERMISSION_TYPE_ID.len()..].starts_with("cf.bss.pricing.")
+        })
+        .map(|entry| {
+            let payload = (entry.payload_fn)();
+            let field = |name: &str| {
+                payload[name]
+                    .as_str()
+                    .unwrap_or_else(|| {
+                        panic!("AuthzPermissionV1 {} carries a {name}", entry.instance_id)
+                    })
+                    .to_owned()
+            };
+            (field("resource_type"), field("action"))
+        })
+        .collect()
+}
+
+/// The floor under [`catalogued_pairs`], and it is load-bearing rather than
+/// defensive.
+///
+/// Every guard below ranges over that set, so an inventory read that returned
+/// **nothing** — a changed `gts_id!` prefix, a linkage change, a renamed instance
+/// suffix — would make all three trivially green while measuring an empty set. That
+/// is this codebase's most common defect shape, and a set-valued guard read out of a
+/// registry is exactly where it hides.
+const AT_LEAST_THIS_MANY_PAIRS: usize = 20;
+
+/// Catalogued pairs declared ahead of the surface that will ask for them.
+///
+/// An exemption is a **debt**, stated so it stays visible —
+/// [`LABELS_WITHOUT_A_SURFACE_YET`]'s rule, per pair.
+///
+/// `audit x export` is the one, and it is documented at the point it would
+/// matter rather than only here: `api::rest::audit`'s registration says "it is not
+/// the export - `audit` x `export` is a second permission for a chunked shape, and
+/// **neither is built**", of which the read half has since been built (Z13-8) and
+/// the export half has not. Z13-8's own reasoning is what keeps it a debt rather
+/// than a deletion: the error ladder's justification for dropping 403 detail leans
+/// on the trail being readable, and a chunked export is the second half of the same
+/// Auditor story. If the design set is ever read as not owing an export, the fix is
+/// to delete the permission instance, not to widen this list.
+const PAIRS_WITHOUT_A_ROUTE_YET: &[(&str, &str)] = &[(labels::AUDIT, actions::EXPORT)];
+
+#[test]
+fn every_catalogued_permission_pair_is_asked_for_by_some_route() {
+    let asked: std::collections::BTreeSet<(String, String)> = census()
+        .iter()
+        .map(|route| (route.resource_type.to_owned(), route.action.to_owned()))
+        .collect();
+
+    let catalogued = catalogued_pairs();
+    assert!(
+        catalogued.len() >= AT_LEAST_THIS_MANY_PAIRS,
+        "the inventory read found {} pairs, which is fewer than this catalog has declared since \
+         Slice 5 - the read is broken, not the catalog: {catalogued:?}",
+        catalogued.len()
+    );
+
+    let unasked: Vec<(String, String)> = catalogued
+        .into_iter()
+        .filter(|pair| !asked.contains(pair))
+        .filter(|(label, action)| {
+            !PAIRS_WITHOUT_A_ROUTE_YET
+                .iter()
+                .any(|(l, a)| l == label && a == action)
+        })
+        .collect();
+
+    assert!(
+        unasked.is_empty(),
+        "these pairs are grantable and are asked for by no route, so granting them confers \
+         nothing and withholding them protects nothing: {unasked:?}"
+    );
+}
+
+#[test]
+fn no_pair_exemption_outlives_the_route_that_arrived() {
+    // `no_exemption_outlives_the_surface_it_was_waiting_for`'s direction, per pair:
+    // six of this finding's seven original pairs were gated during the week it was
+    // filed, so an exemption list that is not checked from this side is one that
+    // describes a debt already paid.
+    let asked: std::collections::BTreeSet<(String, String)> = census()
+        .iter()
+        .map(|route| (route.resource_type.to_owned(), route.action.to_owned()))
+        .collect();
+
+    let stale: Vec<&(&str, &str)> = PAIRS_WITHOUT_A_ROUTE_YET
+        .iter()
+        .filter(|(label, action)| asked.contains(&((*label).to_owned(), (*action).to_owned())))
+        .collect();
+
+    assert!(
+        stale.is_empty(),
+        "these pairs are asked for now and no longer need an exemption: {stale:?}"
+    );
+}
+
+#[test]
+fn every_exempted_pair_is_one_the_catalog_actually_declares() {
+    // The third direction, which the label guard has no equivalent of and needs
+    // one less: an exemption for a pair nobody catalogues is a debt against
+    // nothing, and it would keep reading as a live obligation after the permission
+    // instance was deleted.
+    let catalogued = catalogued_pairs();
+
+    assert!(
+        catalogued.len() >= AT_LEAST_THIS_MANY_PAIRS,
+        "the inventory read found {} pairs - the read is broken, not the catalog",
+        catalogued.len()
+    );
+
+    let phantom: Vec<&(&str, &str)> = PAIRS_WITHOUT_A_ROUTE_YET
+        .iter()
+        .filter(|(label, action)| {
+            !catalogued.contains(&((*label).to_owned(), (*action).to_owned()))
+        })
+        .collect();
+
+    assert!(
+        phantom.is_empty(),
+        "these exemptions name pairs `gts::permissions` does not declare: {phantom:?}"
+    );
+}
+
 #[test]
 fn no_exemption_outlives_the_surface_it_was_waiting_for() {
     // The other direction, and the one an exemption list rots without: a label
