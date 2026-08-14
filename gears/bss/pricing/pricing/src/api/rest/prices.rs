@@ -1,17 +1,31 @@
 //! The price authoring plane: `POST`, `PATCH`, `DELETE` and the paginated list
 //! (`design/03-price-structure.md` §5, D-125, D-140, D-141, D-148).
 //!
-//! # This surface does not validate a row's shape, and a reader would otherwise
-//! # assume it does
+//! # This surface validates a row's shape only where the frozen key already
+//! # decides it, and a reader would otherwise assume either extreme
 //!
-//! `MODEL_KIND_MISSING`, the tier-band family, `EVAL_POLICY_*`,
-//! `AMOUNT_PLACEMENT_INVALID`, `LEVEL_*` and the rest of Slice 3's rules are
-//! **publish-time** and none of them runs here. Authoring a shape-invalid draft
-//! is legal: §4.2 puts the whole rule set at the publish pre-check, an author
-//! assembles a row over several calls, and refusing an intermediate state at
-//! save time would contradict that design outright.
+//! `MODEL_KIND_MISSING`, the tier-band geometry family, `AMOUNT_PLACEMENT_INVALID`,
+//! `LEVEL_*` and most of Slice 3's rules are **publish-time** and do not run here.
+//! Authoring a shape-invalid draft stays legal: §4.2 puts the whole rule set at the
+//! publish pre-check, an author assembles a row over several calls, and refusing an
+//! intermediate state at save time would contradict that design outright.
 //!
-//! What this plane **can** refuse is what the store itself decides — a duplicate
+//! **D-312 carves out one narrow subset, and it is a subset of violations rather
+//! than of rules.** `POST` and `PATCH` run the same row rule set and keep only what
+//! is marked [`Stage::Write`](crate::domain::validation::Stage): a fault whose every
+//! operand is present in the request with one of them frozen by the canonical scope
+//! key — `chargeKind` above all, the key being uneditable after create. Such a
+//! request is complete, self-inconsistent and knowably unpublishable the instant it
+//! arrives, and the only call that resolves it *retracts the field just sent* rather
+//! than adding anything, so refusing it here costs an author nothing they could
+//! legitimately have wanted. `EVAL_POLICY_MISPLACED` therefore appears on **both**
+//! sides of this line: `billingGranularity` on a recurring key is refused here,
+//! while tier bands on a `flat` row are content against content that
+//! `model_kind: graduated` resolves, and they wait for publish. The refusal is the
+//! same enumerated `ValidationFailed` envelope publish uses, not a single message,
+//! and the publish pre-check still runs the whole set, this subset included.
+//!
+//! What this plane refuses **besides** that is what the store itself decides — a duplicate
 //! canonical scope key (`DUPLICATE_SCOPE_KEY`, on the draft plane too since
 //! D-148), a stale entity tag (`STALE_VERSION`), a horizon off its eligibility
 //! class (`GRANDFATHER_UNTIL_FORBIDDEN`), an instant finer than the millisecond
@@ -515,7 +529,12 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
              `IDEMPOTENCY_PAYLOAD_MISMATCH`. A key already held by a `draft` or `published` row \
              is refused `DUPLICATE_SCOPE_KEY` (on the draft plane too, since D-148). The row's \
              `charge_kind` is the key's, not the body's, so the response echoes what was stored \
-             rather than what was sent. Slice-3 shape rules run at publish, not here.",
+             rather than what was sent. Slice-3 shape rules run at publish, not here - with \
+             one exception: content that contradicts the frozen scope key (a `model_kind` the \
+             key's `charge_kind` forbids, `billingGranularity` on a non-usage key) is refused \
+             `400` here, carrying the same enumerated violation report the publish pre-check \
+             answers rather than a single message (D-312). A row missing its kind, its amount \
+             or its bands still saves - that is the multi-call authoring this door protects.",
         )
         .tag(TAG)
         .authenticated()
@@ -548,7 +567,10 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
              `graduated` to `flat` has to drop the bands and set `amount_minor` in the same \
              write. The canonical scope key is **immutable** - a body naming a different one is \
              `400`, never a silent no-op. A row belonging to a different plan than the `{planId}` \
-             segment answers `404`.",
+             segment answers `404`. Because the key is immutable, content that contradicts it is \
+             refused `400` here as it is on the create, carrying the publish pre-check's own \
+             enumerated violation report (D-312) - so an edit of a row stored before that check \
+             existed has to fix the contradiction before any other change to it will save.",
         )
         .tag(TAG)
         .authenticated()
@@ -792,9 +814,14 @@ async fn patch_price(
     }
     let content = content_of(&body.content)?;
     // The stored key, because the key is immutable and the block above has already
-    // refused a body that names a different one. A row can only reach the bad state
-    // through one of the two verbs, so covering the create alone would leave open
-    // the door an existing row is edited through.
+    // refused a body that names a different one. `PATCH` carries the check as well
+    // as `POST` because an existing row is edited through it, and covering the
+    // create alone would leave that door open — it is the door the Studio actually
+    // used. These two are not, however, the *only* doors a row enters through:
+    // `bulk_imports` is the third, and it carries this same line on its own phase-1
+    // report rather than through this handler (D-312, "Three doors, not two"). The
+    // decision entry used to assert that import could not land such a row, which was
+    // measured false — so do not read this pair as exhaustive.
     require_no_key_contradiction(&stored.scope_key, &content)?;
 
     let updated = state
@@ -1110,6 +1137,15 @@ async fn require_declared_region(
 /// look like a `graduated` recurring one and refuse it outright, which is this
 /// change's most inviting way to be wrong.
 ///
+/// It borrows that rewrite from [`price_repo::authored_content`] rather than
+/// open-coding it, because the row this judges has to be **the row the store will
+/// file**, not one that merely agrees with it today. `authored_content` is the one
+/// spelling of what the write door rewrites — the key's charge kind *and* the band
+/// sort — and its own comment says it exists for a second caller to be able to
+/// predict them. Judging a differently-rewritten row is how a check starts
+/// disagreeing with the write it guards; `prepare_draft` and
+/// `refuse_divergent_successor` both record what open-coding this cost before.
+///
 /// Answers the enumerated report rather than a single message: a client already
 /// parsing the publish envelope parses this unchanged, and folding a
 /// multi-violation report into one line hides the second fault behind the first.
@@ -1117,8 +1153,7 @@ fn require_no_key_contradiction(
     key: &ScopeKey,
     content: &PriceContent,
 ) -> Result<(), CanonicalError> {
-    let mut subject = content.row.clone();
-    subject.charge_kind = key.charge_kind();
+    let subject = price_repo::authored_content(key, content.clone()).row;
     let report = crate::domain::rules::price_row_rules().run(&subject);
     match report.write_stage_only() {
         None => Ok(()),

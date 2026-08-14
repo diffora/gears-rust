@@ -432,8 +432,9 @@ pub fn plan_supersession(
     // The content step, and it is **two** rule sets rather than one. `inst-su-compose`
     // clause (a) says the successor is "the successor draft row on the same canonical
     // scope key (**S3 rules apply** — incl. the D-82/D-98 unit guard)", and only the
-    // guard was being run: `price_row_rules` has exactly one other caller,
-    // `run_publish_rules`, and a supersession successor never reaches it —
+    // guard was being run: `price_row_rules`'s other callers are `run_publish_rules`
+    // and — since D-312 — the price authoring write, which keeps only the
+    // write-stage subset. A supersession successor reaches neither —
     // `infra::publish::validated_draft_rows` deliberately excludes a draft on an
     // occupied key from the plan-revision unit's set (D-195). So the row that publishes
     // through this unit was judged by **no** row-local rule at all: a `graduated`
