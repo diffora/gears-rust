@@ -706,12 +706,21 @@ async fn the_membership_pin_backfills_the_refs_written_before_it() {
     let db = pg.db().await;
     let mut chain = Migrator::migrations();
     chain.sort_by(|a, b| a.name().cmp(b.name()));
-    let withheld = chain.len();
+    let whole_chain = chain.len();
     chain.retain(|migration| migration.name() < PIN_MIGRATION);
     assert!(
-        chain.len() < withheld,
+        chain.len() < whole_chain,
         "`{PIN_MIGRATION}` is not a migration this chain carries"
     );
+    // The first pass withholds the migration under test **and everything after it**,
+    // so the second pass applies that whole tail. The count is therefore derived from
+    // the chain and never written down: it was `1` while the pin was the newest
+    // migration, and four later ones (`…000072` … `…000075`) took it to 5 and left
+    // this test failing on every run. None of the four touches
+    // `pricing_catalog_version_ref` or `pricing_group_membership`, so the tail cannot
+    // affect what is asserted below — the property is that the pin was withheld and
+    // then applied over rows written before it, never that it happens to be last.
+    let withheld = whole_chain - chain.len();
     run_migrations_for_testing(&db, chain)
         .await
         .expect("apply the chain up to the migration under test");
@@ -766,8 +775,17 @@ async fn the_membership_pin_backfills_the_refs_written_before_it() {
         .await
         .expect("the withheld migration applies over the older rows");
     assert_eq!(
-        caught_up.applied, 1,
-        "exactly one migration was withheld: {:?}",
+        caught_up.applied, withheld,
+        "the withheld tail applies in one pass: {:?}",
+        caught_up.applied_names
+    );
+    assert!(
+        caught_up
+            .applied_names
+            .iter()
+            .any(|name| name == PIN_MIGRATION),
+        "and the migration under test is one of them, which is the part a derived count \
+         cannot check on its own: {:?}",
         caught_up.applied_names
     );
 

@@ -55,6 +55,8 @@
 
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
+use std::time::Duration;
+
 use bss_pricing::infra::storage::migrations::Migrator;
 use sea_orm::{ConnectionTrait, Database, DatabaseConnection, Statement};
 use sea_orm_migration::MigratorTrait;
@@ -99,11 +101,66 @@ async fn pg() -> (u16, ContainerAsync<Postgres>) {
         .start()
         .await
         .expect("start postgres");
-    let port = container
-        .get_host_port_ipv4(5432)
-        .await
-        .expect("map the postgres port");
+    let port = host_port(&container).await;
     (port, container)
+}
+
+/// The published host port for the container's 5432, waited for rather than read
+/// once.
+///
+/// # Why this is a loop, measured rather than assumed
+///
+/// This suite failed intermittently with
+/// `PortNotExposed { port: Tcp(5432) }` — 1–3 of the 11 tests per run, a different
+/// member each time, which is what made it look like contention over the shared
+/// harness the sibling suites use. It is not: these tests each start their own
+/// container, and the failure was diagnosed by printing the container's own log at
+/// the moment of the error. The log says the container is **healthy**:
+///
+/// ```text
+/// LOG:  listening on IPv4 address "0.0.0.0", port 5432
+/// LOG:  database system is ready to accept connections
+/// ```
+///
+/// No crash and no exit. So the container is up and the *port map* is what is
+/// missing: `get_host_port_ipv4` performs a live `inspect` (`RawContainer::ports`
+/// → `docker_client.ports`, no cache), and under load Docker answers with
+/// `NetworkSettings.Ports` not yet carrying the binding it is about to publish.
+/// Reading once is reading too early.
+///
+/// The first guess — that `PortNotExposed` meant the container had stopped, Docker
+/// dropping a dead container's bindings — was wrong, and only the container log
+/// ruled it out. That is why the log stays in the failure path below: without it
+/// this reads as a crash and the retry looks like papering over one.
+async fn host_port(container: &ContainerAsync<Postgres>) -> u16 {
+    /// Long enough to cover the observed gap by two orders of magnitude, short
+    /// enough that a genuinely unexposed port still fails inside a test timeout.
+    const ATTEMPTS: u32 = 40;
+    const GAP: Duration = Duration::from_millis(50);
+
+    let mut last = None;
+    for attempt in 0..ATTEMPTS {
+        match container.get_host_port_ipv4(5432).await {
+            Ok(port) => return port,
+            Err(cause) => {
+                last = Some(cause);
+                if attempt + 1 < ATTEMPTS {
+                    tokio::time::sleep(GAP).await;
+                }
+            }
+        }
+    }
+
+    let out = container.stdout_to_vec().await.unwrap_or_default();
+    let err = container.stderr_to_vec().await.unwrap_or_default();
+    panic!(
+        "map the postgres port after {ATTEMPTS} attempts over {:?}: {}\n\
+         --- container stdout ---\n{}\n--- container stderr ---\n{}",
+        GAP * ATTEMPTS,
+        last.expect("the loop ran at least once and every arm records its error"),
+        String::from_utf8_lossy(&out),
+        String::from_utf8_lossy(&err)
+    );
 }
 
 /// A DSN carrying `search_path` as a libpq option, the way the gear's runtime
