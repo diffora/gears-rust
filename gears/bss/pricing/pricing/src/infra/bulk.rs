@@ -588,7 +588,25 @@ async fn commit_rows(
             // un-attempted, which is true of them and of nothing else.
             Err(other) => {
                 let failure = repo_failure(&other);
-                for unreached in index..rows.len() {
+                // **Row `index` was attempted, and it is the row that failed**
+                // (Z11-10). It used to be swept into the loop below and told "not
+                // attempted: the run failed at row {index}" — a sentence that is
+                // false of the one row it was most specific about, and about the
+                // only row in the receipt whose own transaction the operator can
+                // read something into. Its own sentence names its failure; the
+                // rows after it are the ones nothing reached.
+                //
+                // `not_attempted`'s doc one screen down records this family being
+                // corrected once already, for putting the contended row's
+                // `price_id` on every row's violation.
+                receipt.conflicted.push(conflicted(
+                    index,
+                    format!(
+                        "this row was attempted and its own transaction failed, so nothing was \
+                         committed for it and the run stopped here. {failure}"
+                    ),
+                ));
+                for unreached in index.saturating_add(1)..rows.len() {
                     receipt.conflicted.push(conflicted(
                         unreached,
                         format!("not attempted: the run failed at row {index}. {failure}"),

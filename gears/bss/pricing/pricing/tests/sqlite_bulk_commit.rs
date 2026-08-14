@@ -1179,3 +1179,121 @@ async fn amount_of(h: &Harness, price_id: Uuid) -> Option<i64> {
         .expect("read the row")
         .and_then(|row| row.amount_minor)
 }
+
+// ---------------------------------------------------------------------------
+// Z11-10 — the row that failed is not the rows that were never reached.
+// ---------------------------------------------------------------------------
+
+/// **The RED this case is about.** On a run-level fault at row `k` the loop ran
+/// `for unreached in k..rows.len()` and stamped every one of them "not attempted:
+/// the run failed at row {k}" — including row `k` itself, which **was** attempted
+/// and whose own transaction is the thing that failed. Including it in the receipt
+/// is right (nothing committed for it); the sentence was not.
+///
+/// The distinction is the operator's next action. A row that was never reached is
+/// resubmitted unchanged; the row that failed is the one whose content they have to
+/// look at, and it is the only row in the receipt the failure sentence is actually
+/// about. `not_attempted`'s own doc records this same family being corrected once
+/// before, for putting the contended row's `price_id` on every row's violation.
+///
+/// **Three rows, and the middle one fails**, because that is the only arrangement
+/// that can tell the two sentences apart: with the fault on the last row a
+/// green-looking `k + 1..len` is an empty range either way. `billing_timing` is a
+/// free `String` on this plane whose column CHECK is the first thing that sees it,
+/// which is `a_run_level_failure_keeps_the_rows_that_did_commit_in_the_report`'s
+/// fault injection and a genuinely run-level one.
+#[tokio::test]
+async fn the_row_whose_own_transaction_failed_is_not_reported_as_not_attempted() {
+    let h = harness().await;
+    let operation_id = open_run(&h, "the-middle-row-fails").await;
+
+    let mut bad = row(key("us"), 2_500, None);
+    bad.content.billing_timing = Some("whenever".to_owned());
+
+    let failure = commit_batch(
+        &h.provider,
+        &h.prices,
+        &scope(),
+        TENANT,
+        operation_id,
+        &[
+            row(key("eu"), 1_500, None),
+            bad,
+            row(key("apac"), 3_500, None),
+        ],
+        stamp(),
+        at(11),
+    )
+    .await
+    .expect_err("a fault that is the run's still reaches the caller");
+    assert!(
+        failure.to_string().contains("billing_timing"),
+        "the premise of this case: the fault is the run's and it is row 1's own: {failure}"
+    );
+
+    let conn = h.provider.conn().expect("conn");
+    let report = bulk_repo::read(&conn, &scope(), TENANT, operation_id)
+        .await
+        .expect("read")
+        .expect("exists")
+        .report;
+
+    // Row 0 committed, which is what makes the other two claims about a partial
+    // result rather than about a run that did nothing.
+    let committed: Vec<u64> = report["committed"]
+        .as_array()
+        .unwrap_or_else(|| panic!("the stored report's committed arm: {report}"))
+        .iter()
+        .filter_map(|row| row["row"].as_u64())
+        .collect();
+    assert_eq!(committed, vec![0], "row 0 committed: {report}");
+
+    let detail_of = |row: u64| -> String {
+        report["conflicted"]
+            .as_array()
+            .unwrap_or_else(|| panic!("the conflicted arm: {report}"))
+            .iter()
+            .find(|outcome| outcome["row"].as_u64() == Some(row))
+            .map(|outcome| outcome["violations"][0]["detail"].to_string())
+            .unwrap_or_else(|| panic!("row {row} has to be in the report at all: {report}"))
+    };
+
+    let failed = detail_of(1);
+    assert!(
+        !failed.contains("not attempted"),
+        "row 1 WAS attempted - its own transaction failed, and that is the one thing its \
+         sentence must not deny: {failed}"
+    );
+    assert!(
+        failed.contains("billing_timing"),
+        "and its sentence names the failure, which is what an operator has to act on: {failed}"
+    );
+
+    // The positive control for the sentence above: the row after it really was
+    // never reached, and still says so. A fix that dropped the "not attempted"
+    // sentence altogether would pass the two assertions above and lose the
+    // distinction they exist to draw.
+    let unreached = detail_of(2);
+    assert!(
+        unreached.contains("not attempted"),
+        "row 2 was never reached and the report still has to say so: {unreached}"
+    );
+
+    // And the store agrees with both halves: row 1 authored nothing, so "nothing
+    // was committed for it" is a fact about `pricing_price` and not only a
+    // sentence in a report.
+    let authored: Vec<i64> = price::Entity::find()
+        .secure()
+        .scope_with(&scope())
+        .all(&conn)
+        .await
+        .expect("read the rows")
+        .into_iter()
+        .filter_map(|row| row.amount_minor)
+        .collect();
+    assert_eq!(
+        authored,
+        vec![1_500],
+        "only row 0's amount is in the store: rows 1 and 2 committed nothing"
+    );
+}
