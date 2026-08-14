@@ -679,6 +679,13 @@ async fn an_abort_without_an_idempotency_key_is_refused() {
 ///
 /// D-103's confirmed shape is the fixture: a plan pricing several meters is one
 /// plan, not three.
+///
+/// The kind is `per_unit` — the plain untiered metered rate, unit price times
+/// metered `Q`. It was `flat` until D-312's bulk arm was built, and `flat` is in no
+/// part of the usage set: the fixture had been carrying a key contradiction, which
+/// the import now refuses per-row in Phase 1 rather than at publish. That is the
+/// same latent defect the arm exists to catch, found in the fixture of the case that
+/// proves two meters are two keys.
 fn usage_row(plan_id: Uuid, meter: &str, amount: i64) -> serde_json::Value {
     serde_json::json!({
         "plan_id": plan_id,
@@ -691,7 +698,7 @@ fn usage_row(plan_id: Uuid, meter: &str, amount: i64) -> serde_json::Value {
             "cohort": serde_json::Value::Null
         },
         "content": {
-            "model_kind": "flat",
+            "model_kind": "per_unit",
             "amount_minor": amount,
             "tax_inclusive": false,
             "meter": meter,
@@ -733,6 +740,84 @@ async fn two_usage_rows_on_different_meters_are_two_keys_and_both_author() {
             .len(),
         2,
         "and both rows author, on keys the store files them under separately: {run}"
+    );
+}
+
+/// A usage row whose kind is `flat`, which is in no part of the usage set.
+///
+/// The shape the fixture above carried until D-312's bulk arm was built.
+fn contradicting_usage_row(plan_id: Uuid, meter: &str, amount: i64) -> serde_json::Value {
+    let mut built = usage_row(plan_id, meter, amount);
+    built["content"]["model_kind"] = serde_json::json!("flat");
+    built
+}
+
+#[tokio::test]
+async fn a_batch_whose_row_contradicts_its_own_key_is_refused_and_commits_nothing() {
+    // **D-312's third door, over HTTP.** `POST` and `PATCH` refuse a key
+    // contradiction on arrival; `bulk_imports` is the third door a price row enters
+    // through and it did not, so a batch carrying `flat` on a `usage` key committed
+    // and was refused only at publish — after the rows were written, through the one
+    // door of the three that writes them in bulk.
+    //
+    // The refusal is Phase 1's, so it is the batch-level 400 with the per-row report
+    // at the GET, exactly as the in-batch duplicate is. Nothing about the code is
+    // minted here: the violation carries the rule's own
+    // `MODEL_KIND_CHARGEKIND_MISMATCH`.
+    let harness = Harness::new().await;
+    let plan = Uuid::now_v7();
+    seed_current_plan(&harness, plan).await;
+
+    let refused = harness
+        .allowed()
+        .send(with_headers(
+            "POST",
+            BULK_IMPORTS,
+            Some(batch(&[
+                contradicting_usage_row(plan, "cloudlets", 1_500),
+                usage_row(plan, "egress-gb", 2_500),
+            ])),
+            &keyed("bulk-key-contradiction"),
+        ))
+        .await;
+
+    assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
+    let problem = body_json(refused).await;
+    assert_eq!(rest_support::code_in(&problem), "BULK_VALIDATION_FAILED");
+    let operation_id = rest_support::violation_for(&problem, "operation_id")
+        .unwrap_or_else(|| panic!("the refusal has to name the run it opened: {problem}"));
+
+    let run = body_json(
+        harness
+            .allowed()
+            .send(with_headers("GET", &import_path(&operation_id), None, &[]))
+            .await,
+    )
+    .await;
+    assert_eq!(run["state"], serde_json::json!("validation_failed"));
+    assert!(
+        run["report"]["committed"]
+            .as_array()
+            .is_none_or(Vec::is_empty),
+        "all-or-nothing: a blocked batch commits no row at all: {run}"
+    );
+
+    let rows = run["report"]["rows"]
+        .as_array()
+        .unwrap_or_else(|| panic!("Phase 1's report is a list of rows: {run}"));
+    assert_eq!(
+        rows.iter()
+            .map(|outcome| &outcome["row"])
+            .collect::<Vec<_>>(),
+        vec![&serde_json::json!(0)],
+        "row 0 is the contradiction and row 1 is a legal usage row — a report that \
+         refused the batch entire would pass a weaker assertion than this: {run}"
+    );
+    assert!(
+        rows[0]["violations"].as_array().is_some_and(|found| found
+            .iter()
+            .any(|v| v["code"] == serde_json::json!("MODEL_KIND_CHARGEKIND_MISMATCH"))),
+        "and the code is the rule's own, inherited rather than minted for the import: {run}"
     );
 }
 

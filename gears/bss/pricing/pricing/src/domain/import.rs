@@ -19,6 +19,13 @@
 //! has opened anything, and they are the ones whose behaviour a test can state
 //! without building a world.
 //!
+//! Three arms are batch-only: the in-batch duplicate below, the unbuilt Slice-10
+//! primitive (D-177), and the **key contradiction** (D-312). The third needs no
+//! store for the same reason it needs no later call — both its operands are in the
+//! row, and one of them is the frozen scope key. It is a *row-local* rule, which
+//! Phase 1 had none of before and whose absence the D-312 entry asserted away; see
+//! [`key_contradictions`].
+//!
 //! # The in-batch duplicate, and the key it is judged on (D-148)
 //!
 //! Two rows on one canonical scope key are a duplicate **inside** the batch and
@@ -56,8 +63,9 @@ use std::collections::HashMap;
 use toolkit_macros::domain_model;
 
 use crate::domain::concurrency::RowVersion;
-use crate::domain::price_record::PriceContent;
+use crate::domain::price_record::{PriceContent, authored_content};
 use crate::domain::publish::rules::{PRIMITIVE_RULES_UNBUILT, unjudged_primitives};
+use crate::domain::rules::price_row_rules;
 use crate::domain::scope_key::ScopeKey;
 
 /// The wire code for two rows on one canonical scope key.
@@ -222,7 +230,74 @@ pub fn classify(rows: &[ImportRow]) -> BatchReport {
     for (row, found) in unbuilt_primitives(rows) {
         report.add(row, found);
     }
+    for (row, found) in key_contradictions(rows) {
+        report.add(row, found);
+    }
     report
+}
+
+/// Rows whose authored content contradicts their own frozen scope key — D-312's
+/// third door.
+///
+/// # Why this belongs to the import at all
+///
+/// D-312 refuses a key contradiction at the price `POST` and `PATCH`, on the
+/// ground that such a request is complete and knowably unpublishable the instant
+/// it arrives. `bulk_imports` is the **third** door a price row enters through and
+/// the decision as first written did not reach it: the entry claimed the batch was
+/// already validated whole in Phase 1, which was false and load-bearing — Phase 1
+/// judged duplicate keys and unbuilt primitives and no row-local rule at all, so a
+/// batch carrying `flat` on a `usage` key landed and was refused only at publish.
+/// Through the one door of the three that lands rows *in bulk*.
+///
+/// The refusal therefore **moves earlier, it does not move** — the same sentence
+/// `unbuilt_primitives` above is built on (D-177). Publish keeps the whole rule set
+/// on its own authority; what changes is that an operator hears it while the batch
+/// can still be fixed rather than after the rows are committed.
+///
+/// # The stage subset, not the whole rule set
+///
+/// Only [`Stage::Write`](crate::domain::validation::Stage) violations are taken.
+/// Running the full `price_row_rules()` here would refuse a batch of legitimately
+/// incomplete drafts — no `model_kind` yet, no bands yet — which is exactly what
+/// §4.2 puts the rule set at publish to permit, and an import lands **drafts**. So
+/// this arm inherits D-312's line rather than restating it: the same
+/// `write_stage_only()` filter the authoring plane applies, over the same pipeline.
+///
+/// # The projection is not optional
+///
+/// The row is judged through [`authored_content`], which fills `charge_kind` **from
+/// the key**. Judging `row.content.row` directly would read whatever the caller
+/// put there — and the analogous shortcut has already produced two Criticals, both
+/// recorded on that function. A usage batch judged un-normalized reads as recurring
+/// and is refused outright.
+///
+/// The codes are **inherited** from the violations, not minted here: one reason,
+/// one code, however many surfaces notice it.
+fn key_contradictions(rows: &[ImportRow]) -> Vec<(usize, RowViolation)> {
+    // Once, not per row: the pipeline is a fresh allocation of every registered
+    // rule and a batch is the case where that multiplies.
+    let rules = price_row_rules();
+    let mut found = Vec::new();
+    for (index, row) in rows.iter().enumerate() {
+        let subject = authored_content(&row.scope_key, row.content.clone()).row;
+        let Some(write_stage) = rules.run(&subject).write_stage_only() else {
+            continue;
+        };
+        // `Violation::subject` is dropped rather than carried: it names the row by
+        // its key, and [`RowOutcome`] identifies a row by its **index** precisely
+        // because a row whose key is at fault cannot be named by it unambiguously.
+        for violation in write_stage.violations {
+            found.push((
+                index,
+                RowViolation {
+                    code: violation.code,
+                    detail: violation.detail,
+                },
+            ));
+        }
+    }
+    found
 }
 
 /// Rows carrying a Slice-10 primitive whose rules are unbuilt (D-177).

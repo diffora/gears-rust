@@ -133,8 +133,17 @@ async fn publish(h: &Harness, scope_key: ScopeKey, amount: i64) -> Uuid {
 /// A usage row's content, whose own line must agree with its key — the store
 /// refuses `UsageLineDisagrees` otherwise, which is the guard that makes a
 /// mismatched `ImportRow` unauthorable rather than merely wrong.
+/// A usage row's content, and its kind is `per_unit` — the plain untiered metered
+/// rate, unit price times metered `Q`.
+///
+/// It was `flat` until D-312's bulk arm was built, and `flat` is in no part of the
+/// usage set: this fixture had been carrying a key contradiction, so
+/// `a_usage_line_key_is_matched_through_the_store_like_any_other` began hearing
+/// `MODEL_KIND_CHARGEKIND_MISMATCH` beside the `IMPORT_TARGETS_PUBLISHED` it asserts.
+/// That report was right — a row hears every violation found against it — and the
+/// fixture was wrong.
 fn usage_content(meter: &str, amount: i64) -> PriceContent {
-    let mut row = PriceRow::new(ChargeKind::Usage, Some(ModelKind::Flat));
+    let mut row = PriceRow::new(ChargeKind::Usage, Some(ModelKind::PerUnit));
     row.amount_minor = Some(MinorAmount::new(amount).expect("a non-negative amount"));
     row.meter = Some(meter.to_owned());
     "region=eu".clone_into(&mut row.dimension_key);

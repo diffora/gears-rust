@@ -163,6 +163,63 @@ impl PriceRecord {
     }
 }
 
+/// The two rewrites a price row's **content** undergoes on its way into the store,
+/// as one function.
+///
+/// `infra::storage::repo::price_repo::prepare_draft` performed both inline for as
+/// long as it was the only thing that needed to know them, and that stopped being
+/// true when D-88's orchestrator had to judge and compare a row *before* the store
+/// held it. Two of them:
+///
+/// - **`charge_kind` comes from the key.** The row's own copy is not stored: the axis
+///   is the canonical scope key's and the field on [`PriceRow`] is a convenience the
+///   shape rules read. So a record read back always agrees with its own key, and a
+///   caller that handed the two different answers gets the key's.
+/// - **The bands are sorted by `from_qty`.** A read answers in that order — the table
+///   carries no ordinal — so a create that kept the authored order would hand the
+///   caller a record that stops equalling itself after one round trip.
+///
+/// # Why this had to become shared, and what it cost while it was not
+///
+/// Both rewrites are invisible from the wire, and `api::rest::prices::content_of`
+/// fills `charge_kind` with a **placeholder** (`ChargeKind::Recurring`) because
+/// `PriceContentView` has no such field. Two consequences followed, both found by
+/// review on 2026-08-06 and both Critical:
+///
+/// 1. `domain::rules::SupersessionUnitGuard` gates on `successor.is_usage()`. Handed
+///    the un-normalized row, it saw `Recurring` on every supersession — so on a
+///    **usage** key the D-82/D-98/D-122/D-127/D-129 guard returned without evaluating,
+///    and a successor could move `meter`, `billing_granularity` or `model_kind` under a
+///    continued tier counter. The guard was live, correct, and unreachable through the
+///    one surface that has it.
+/// 2. `infra::supersession`'s divergent-successor guard compares the request's content
+///    against the **stored** successor's. Un-normalized, the two differ in
+///    `charge_kind` on every non-recurring key and in band order on any body that
+///    lists bands out of order — so a legitimately approved unit was refused
+///    `DUPLICATE_SCOPE_KEY` on its committing call, permanently, with a remedy sentence
+///    the caller could not act on.
+///
+/// One spelling, six callers, and the rule is: **anything that judges or compares a
+/// row the store will hold must pass it through here first.**
+///
+/// # Why it lives in the domain and is re-exported from the repository
+///
+/// It was written in `price_repo` and every caller still spells it
+/// `price_repo::authored_content`, which is kept working by a re-export rather than
+/// by a rename. It moved here because D-312's bulk-import arm needs it and
+/// `domain::import` holds Phase 1's **store-free** rules — a domain module may not
+/// reach into `infra`, and the alternative was a second copy of the projection,
+/// which is the exact fault the two Criticals above were.
+#[must_use]
+pub fn authored_content(key: &ScopeKey, content: PriceContent) -> PriceContent {
+    let mut row = PriceRow {
+        charge_kind: key.charge_kind(),
+        ..content.row
+    };
+    row.bands.sort_by_key(|band| band.from_qty);
+    PriceContent { row, ..content }
+}
+
 #[cfg(test)]
 #[path = "price_record_tests.rs"]
 mod price_record_tests;

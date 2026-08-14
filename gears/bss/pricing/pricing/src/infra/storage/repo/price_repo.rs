@@ -2960,52 +2960,15 @@ struct PreparedDraft {
     correlation_id: Uuid,
 }
 
-/// The two rewrites a price row's **content** undergoes on its way into the store,
-/// as one function.
+/// The two rewrites a price row's content undergoes on its way into the store.
 ///
-/// `prepare_draft` performed both inline for as long as it was the only thing that
-/// needed to know them, and that stopped being true when D-88's orchestrator had to
-/// judge and compare a row *before* the store held it. Two of them:
-///
-/// - **`charge_kind` comes from the key.** The row's own copy is not stored: the axis
-///   is the canonical scope key's and the field on [`PriceRow`] is a convenience the
-///   shape rules read. So a record read back always agrees with its own key, and a
-///   caller that handed the two different answers gets the key's.
-/// - **The bands are sorted by `from_qty`.** A read answers in that order — the table
-///   carries no ordinal — so a create that kept the authored order would hand the
-///   caller a record that stops equalling itself after one round trip.
-///
-/// # Why this had to become shared, and what it cost while it was not
-///
-/// Both rewrites are invisible from the wire, and `api::rest::prices::content_of`
-/// fills `charge_kind` with a **placeholder** (`ChargeKind::Recurring`) because
-/// `PriceContentView` has no such field. Two consequences followed, both found by
-/// review on 2026-08-06 and both Critical:
-///
-/// 1. `domain::rules::SupersessionUnitGuard` gates on `successor.is_usage()`. Handed
-///    the un-normalized row, it saw `Recurring` on every supersession — so on a
-///    **usage** key the D-82/D-98/D-122/D-127/D-129 guard returned without evaluating,
-///    and a successor could move `meter`, `billing_granularity` or `model_kind` under a
-///    continued tier counter. The guard was live, correct, and unreachable through the
-///    one surface that has it.
-/// 2. `infra::supersession`'s divergent-successor guard compares the request's content
-///    against the **stored** successor's. Un-normalized, the two differ in
-///    `charge_kind` on every non-recurring key and in band order on any body that
-///    lists bands out of order — so a legitimately approved unit was refused
-///    `DUPLICATE_SCOPE_KEY` on its committing call, permanently, with a remedy sentence
-///    the caller could not act on.
-///
-/// One spelling, two callers, and the rule is: **anything that judges or compares a
-/// row the store will hold must pass it through here first.**
-#[must_use]
-pub fn authored_content(key: &ScopeKey, content: PriceContent) -> PriceContent {
-    let mut row = PriceRow {
-        charge_kind: key.charge_kind(),
-        ..content.row
-    };
-    row.bands.sort_by_key(|band| band.from_qty);
-    PriceContent { row, ..content }
-}
+/// Defined in [`crate::domain::price_record`] and re-exported here, where it was
+/// written and where every caller still spells it `price_repo::authored_content`.
+/// It moved because D-312's bulk-import arm judges a row in `domain::import`,
+/// which may not reach into `infra` — and a second copy of the projection is the
+/// fault that produced the two Criticals its own documentation records.
+pub use crate::domain::price_record::authored_content;
+
 /// Render a create and refuse every value the store cannot take, statement-free.
 fn prepare_draft(tenant_id: Uuid, draft: NewPriceDraft) -> Result<PreparedDraft, RepoError> {
     // The key the row is actually filed under: the usage line comes from the

@@ -9,11 +9,14 @@
 
 use super::{BatchReport, DUPLICATE_SCOPE_KEY, ImportRow, classify};
 use crate::domain::money::{CurrencyCode, MinorAmount};
-use crate::domain::price_record::PriceContent;
+use crate::domain::price_record::{PriceContent, authored_content};
 use crate::domain::price_row::{
     IncludedAllowance, ModelKind, PriceRow, RolloverPolicy, TierQualificationWindow,
 };
 use crate::domain::publish::rules::PRIMITIVE_RULES_UNBUILT;
+use crate::domain::rules::{
+    AMOUNT_PLACEMENT_INVALID, MODEL_KIND_CHARGEKIND_MISMATCH, price_row_rules,
+};
 use crate::domain::scope_key::{
     ChargeKind, Cohort, DimensionKey, Meter, PhaseId, PlanId, PriceEligibility, Region, ScopeKey,
 };
@@ -69,6 +72,47 @@ fn row(scope_key: ScopeKey) -> ImportRow {
         content: content(),
         if_match: None,
     }
+}
+
+/// Content legal on a **usage** key: `per_unit` on a usage row is the plain
+/// untiered metered rate, unit price times metered `Q`.
+///
+/// The duplicate-key cases below need this rather than [`content`], and the reason
+/// is D-312 rather than tidiness. [`content`] is `flat`, `flat` is in no part of the
+/// usage set, and Phase 1 now judges that contradiction — so a usage fixture built
+/// from [`content`] would assert the duplicate rule through a row the import refuses
+/// for an unrelated reason, and the case would go green on the wrong report.
+///
+/// Those fixtures had carried the contradiction since they were written, which is
+/// the same defect this arm exists to catch and a fair sample of how invisible it is
+/// while nothing judges it.
+fn usage_content() -> PriceContent {
+    let mut row = PriceRow::new(ChargeKind::Usage, Some(ModelKind::PerUnit));
+    row.amount_minor = Some(MinorAmount::new(25).expect("a non-negative amount"));
+    PriceContent { row, ..content() }
+}
+
+fn usage_row(scope_key: ScopeKey) -> ImportRow {
+    ImportRow {
+        scope_key,
+        content: usage_content(),
+        if_match: None,
+    }
+}
+
+fn codes(report: &BatchReport, at: usize) -> Vec<String> {
+    report
+        .rows()
+        .iter()
+        .find(|outcome| outcome.row == at)
+        .map(|outcome| {
+            outcome
+                .violations
+                .iter()
+                .map(|violation| violation.code.clone())
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn failed_rows(report: &BatchReport) -> Vec<usize> {
@@ -160,7 +204,7 @@ fn two_rows_differing_only_in_their_usage_line_are_two_keys_and_both_author() {
         )
         .expect("a usage line on a usage key");
 
-    let report = classify(&[row(metered.clone()), row(other_meter)]);
+    let report = classify(&[usage_row(metered.clone()), usage_row(other_meter)]);
     assert_eq!(
         failed_rows(&report),
         Vec::<usize>::new(),
@@ -169,7 +213,7 @@ fn two_rows_differing_only_in_their_usage_line_are_two_keys_and_both_author() {
 
     // And the same line twice IS a duplicate — otherwise this case would pass
     // for a `classify` that never reports anything at all.
-    let doubled = classify(&[row(metered.clone()), row(metered)]);
+    let doubled = classify(&[usage_row(metered.clone()), usage_row(metered)]);
     assert_eq!(failed_rows(&doubled), vec![0, 1]);
 }
 
@@ -192,12 +236,12 @@ fn two_rows_differing_only_in_their_dimension_key_are_also_two_keys() {
         )
         .expect("a usage line on a usage key");
 
-    let report = classify(&[row(eu.clone()), row(us)]);
+    let report = classify(&[usage_row(eu.clone()), usage_row(us)]);
     assert_eq!(failed_rows(&report), Vec::<usize>::new());
 
     // The same companion its sibling carries, and for the same reason: without
     // it this passes for a `classify` that never reports anything at all.
-    let doubled = classify(&[row(eu.clone()), row(eu)]);
+    let doubled = classify(&[usage_row(eu.clone()), usage_row(eu)]);
     assert_eq!(failed_rows(&doubled), vec![0, 1]);
 }
 
@@ -313,4 +357,121 @@ fn an_empty_batch_blocks_nothing() {
     let report = classify(&[]);
     assert!(!report.blocks_the_batch());
     assert_eq!(failed_rows(&report), Vec::<usize>::new());
+}
+
+/// A usage key carrying a usage line, by region so two of them are two keys.
+fn metered(region: &str) -> ScopeKey {
+    key(
+        region,
+        PriceEligibility::AllSubscriptions,
+        ChargeKind::Usage,
+    )
+    .with_usage_line(
+        Some(Meter::new("api-calls").expect("a meter")),
+        DimensionKey::new("region=eu"),
+    )
+    .expect("a usage line on a usage key")
+}
+
+fn one(scope_key: ScopeKey, content: PriceContent) -> Vec<ImportRow> {
+    vec![ImportRow {
+        scope_key,
+        content,
+        if_match: None,
+    }]
+}
+
+#[test]
+fn a_row_contradicting_its_own_frozen_key_is_refused_before_the_batch_commits() {
+    // D-312's third door. `flat` is in no part of the usage set and `chargeKind` is
+    // an immutable axis of the key, so the row is unpublishable the instant it
+    // arrives and no later call adds anything that legalises it. Before this arm
+    // existed the batch imported clean and was refused at publish — after the rows
+    // were committed, which is the one thing all-or-nothing exists to prevent.
+    let report = classify(&[usage_row(metered("eu")), row(metered("us"))]);
+
+    assert_eq!(failed_rows(&report), vec![1]);
+    assert_eq!(
+        codes(&report, 1),
+        vec![MODEL_KIND_CHARGEKIND_MISMATCH.to_owned()],
+        "the code is inherited from the rule, not minted for the import"
+    );
+    assert!(report.blocks_the_batch());
+    // The positive control. Row 0 is a legal usage row on the same shape of key, and
+    // a report that refused the batch entire would pass the assertions above.
+    assert_eq!(codes(&report, 0), Vec::<String>::new());
+}
+
+#[test]
+fn an_incomplete_draft_still_imports_and_that_is_the_whole_distinction() {
+    // The negative control that decides whether this arm is D-312 or its opposite.
+    // §4.2 puts the rule set at publish because a row is assembled over several
+    // calls, and an import lands **drafts**. A row with no kind, no amount and no
+    // bands is incomplete, not contradictory: its fault is an absent operand, which
+    // a later call supplies. Without this case the change reads as "Phase 1
+    // validates rows", which is the posture §4.2 exists to refuse.
+    let mut bare = content();
+    bare.row = PriceRow::new(ChargeKind::Recurring, None);
+
+    let report = classify(&one(base(), bare));
+
+    assert_eq!(failed_rows(&report), Vec::<usize>::new());
+    assert!(!report.blocks_the_batch());
+}
+
+#[test]
+fn a_usage_row_is_judged_on_its_key_and_not_on_the_content_placeholder() {
+    // `api::rest::prices::content_of` fills `charge_kind` with `Recurring` as a
+    // placeholder — the wire view has no such field — and an import row carries
+    // content built the same way. `graduated` is legal on a usage row and illegal on
+    // a recurring one, so this row lands only if the projection through
+    // `authored_content` happened. Judged un-normalized it reads as recurring and is
+    // refused `MODEL_KIND_CHARGEKIND_MISMATCH`, which would make every graduated,
+    // volume and package batch in the catalog unimportable.
+    //
+    // Skipping that projection has produced two Criticals elsewhere in this crate.
+    // This is the case that notices it here.
+    let mut placeholder = content();
+    placeholder.row = PriceRow::new(ChargeKind::Recurring, Some(ModelKind::Graduated));
+
+    let report = classify(&one(metered("eu"), placeholder));
+
+    assert_eq!(
+        failed_rows(&report),
+        Vec::<usize>::new(),
+        "a graduated usage row is legal; only an un-normalized judgement refuses it"
+    );
+}
+
+#[test]
+fn a_content_against_content_fault_is_left_where_publish_can_still_see_it() {
+    // Money on a `graduated` row belongs in its bands, and an `amount_minor` beside
+    // them is `AMOUNT_PLACEMENT_INVALID` — a real blocking violation, and a
+    // publish-stage one, because both operands are content and either can still
+    // move. The import must not take it.
+    let mut misplaced_money = content();
+    let mut graduated = PriceRow::new(ChargeKind::Recurring, Some(ModelKind::Graduated));
+    graduated.amount_minor = Some(MinorAmount::new(9_900).expect("a non-negative amount"));
+    misplaced_money.row = graduated;
+
+    // The fault is real, and stating that here is what stops this case passing for a
+    // row that simply has nothing wrong with it — the failure mode this file's own
+    // preamble names.
+    let judged = authored_content(&metered("eu"), misplaced_money.clone()).row;
+    let full = price_row_rules().run(&judged);
+    assert!(
+        full.violations
+            .iter()
+            .any(|violation| violation.code == AMOUNT_PLACEMENT_INVALID),
+        "the fixture must actually violate the rule this case is about"
+    );
+    assert!(
+        full.write_stage_only().is_none(),
+        "and none of what it violates may be write-stage"
+    );
+
+    let report = classify(&one(metered("eu"), misplaced_money));
+
+    assert_eq!(failed_rows(&report), Vec::<usize>::new());
+    assert!(!report.blocks_the_batch());
 }

@@ -220,11 +220,29 @@ PINNED_TRIAGE_PRICING = {
     "unbuildable:no-prose": 0,
     "no-region": 3,
     "anchored:no-account": 4,
-    "suspicious:multi-region": 61,
+    "suspicious:multi-region": 62,
     "suspicious:not-normative": 0,
-    "suspicious:weak-coverage": 9,
+    "suspicious:weak-coverage": 8,
     "covered:strong": 0,
 }
+#: Moved 2026-08-14, later the same day (was 61 / 9), by **D-312's bulk-import arm
+#: prose** — and it is the marginal-score artefact this file has now recorded four
+#: times, not a coverage change. One mover, hand-checked:
+#:   - `fr-price-history-export`, `weak-coverage` -> `multi-region`. It gained a
+#:     `DECISIONS.md` fragment scoring **0.603** against `SCORE_THRESHOLD = 0.6`.
+#:     Its genuine account is `design/12-operator-efficiency.md` at 0.707; the new
+#:     fragment is D-312's account of closing the bulk-import door, which shares the
+#:     export requirement's operator/batch/row/catalog vocabulary while being about
+#:     key contradictions and not about export at all.
+#: Attributed by measurement, not proximity: a worktree at 18c6a18f7 — the commit
+#: before the D-312 bulk arm's entry text — ran the whole suite **233 passed, 1
+#: skipped**, and `check.py --auto-context` printed `0 finding(s)` / 49 suppressed on
+#: both sides. So the deterministic layer is byte-identical and only this histogram
+#: moved. Not re-worded to push the score back under the threshold: the prose is
+#: correct documentation and reshaping a document to move a metric is worse than
+#: recording the artefact. The cost of leaving it is one spurious judged
+#: neighbourhood — an N1 run will be asked whether two accounts of
+#: `fr-price-history-export` diverge, and one of them is about bulk import.
 #: Moved 2026-08-14 (was 7 / 57 / 10) and **not by D-312**, which is the point of
 #: this note. The oracles had not been re-captured since D-291, so four decision
 #: waves (D-307, D-309, D-310, D-311) were sitting unpinned and surfaced together

@@ -3359,10 +3359,10 @@ the classification, and the two would drift the first time a rule was added.
   all, while `infra::bulk::commit_rows` writes `row.content` straight through. A key
   contradiction passes import today, before this decision and after it. No exemption
   is needed because import never depended on the door being permissive; what is
-  needed is the check, on a **third door this decision does not close**. Recorded as
-  owed below rather than assumed shut. (Supersession and cutover, by contrast, are
-  genuinely covered: `domain::supersession::plan_supersession` runs the full
-  `price_row_rules()` over the successor.)
+  needed is the check, on a **third door**. It was built rather than recorded as owed
+  — see below. (Supersession and cutover, by contrast, were already covered:
+  `domain::supersession::plan_supersession` runs the full `price_row_rules()` over
+  the successor.)
 
 ##### The existing unpublishable set, counted rather than assumed
 
@@ -3393,3 +3393,42 @@ on it, for the same reason and by the same filter, and it is the one that lands 
 in *bulk*. Phase 1 already exists precisely to move a refusal earlier ("the refusal
 moves earlier, it does not move", D-177) and `RowViolation` already carries a code
 per row, so the import arm inherits this line rather than restating it.
+
+It is built, in `domain::import::key_contradictions`.
+
+**Phase 1 gains its first row-local rule.** Its two existing arms are about
+something other than the row's own shape — the in-batch duplicate (D-148) and the
+unbuilt Slice-10 primitive (D-177) — and a key contradiction needs no store for the
+same reason it needs no later call: both operands are in the row and one of them is
+the frozen key. So it joins the batch-only half, the rules a caller can run before
+opening anything.
+
+**It takes the stage subset, not the rule set**, through the same
+`write_stage_only()` filter the authoring plane applies. An import lands **drafts**,
+so running the full `price_row_rules()` here would refuse a batch of legitimately
+incomplete rows — no kind yet, no bands yet — which is the posture §4.2 exists to
+prevent. A negative control holds it there: a row with no kind, no amount and no
+bands still imports, and a content-against-content fault
+(`AMOUNT_PLACEMENT_INVALID` on a `graduated` row) still imports and is still
+refused at publish.
+
+**The row is judged through `authored_content`**, which fills `charge_kind` from the
+key. That projection is not incidental: judging the submitted content directly reads
+whatever the caller left in the placeholder field, and a usage batch judged
+un-normalized reads as recurring and is refused outright — which would make every
+graduated, volume and package batch in the catalog unimportable. A case is armed
+against exactly that. `authored_content` **moved** from
+`infra::storage::repo::price_repo` to `domain::price_record` to make it reachable, and
+is re-exported from its old home so every existing caller keeps its spelling; a domain
+module may not reach into `infra`, and the alternative was a second copy of the
+projection, which is the fault its own documentation records two Criticals for.
+
+**Three fixtures had been carrying the contradiction** — `flat` on a `usage` key in
+`domain::import`'s duplicate-key cases, in `tests/rest_bulk_imports.rs`, and in
+`tests/sqlite_import.rs`, the last of which had been asserting a violation list that
+was simply missing the second fault. All three are now `per_unit`; every assertion in
+them is unchanged. They are a fair measure of how invisible this fault is while
+nothing judges it, and the same defect the eleven stored rows above are instances of.
+
+The eleven are unaffected: they were authored through `POST`/`PATCH`, not imported,
+and nothing rewrites them. This arm changes what lands from here on.
