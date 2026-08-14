@@ -40,14 +40,16 @@
 
 use bss_pricing::infra::storage::entity::{
     approval, approval_key, approval_threshold, approval_threshold_tombstone, audit_log,
-    brand_taxonomy, catalog_version_ref, customer_group_taxonomy, group_membership,
-    idempotency_dedup, operator_flag, org_tier_taxonomy, outbox, partner_taxonomy, pin_frontier,
-    plan, plan_addon_rule, plan_descriptor_set, plan_phase, policy_object, price, price_overlay,
-    price_overlay_line, price_overlay_line_amount, price_tier_band, price_window, read_model,
-    region_taxonomy,
+    brand_taxonomy, bulk_operation, bulk_row_lock, bundle, bundle_component, bundle_revshare,
+    bundle_revshare_group, catalog_version_ref, composite_meter, customer_group_taxonomy,
+    group_membership, idempotency_dedup, migration, operator_flag, org_tier_taxonomy, outbox,
+    partner_taxonomy, pin_frontier, plan, plan_addon_rule, plan_descriptor_set, plan_phase,
+    policy_object, price, price_overlay, price_overlay_line, price_overlay_line_amount,
+    price_tier_band, price_window, read_model, region_taxonomy, repricing_journal,
+    snapshot_provenance,
 };
 use bss_pricing::infra::storage::migrations::Migrator;
-use sea_orm::{ConnectionTrait, Database, EntityTrait, Statement};
+use sea_orm::{ConnectionTrait, Database, EntityName, EntityTrait, Statement};
 use sea_orm_migration::{MigrationTrait, MigratorTrait, SchemaManager};
 use toolkit_db::migration_runner::run_migrations_for_testing;
 use toolkit_db::secure::{AccessScope, SecureEntityExt};
@@ -1211,8 +1213,20 @@ async fn objects_of(conn: &sea_orm::DatabaseConnection, kind: &str) -> Vec<Strin
 
 /// Read every row of an entity under a tenant scope, asserting the table and
 /// its column set are what the entity expects.
+///
+/// Expands to the **table names it read**, which is what
+/// [`the_chain_creates_every_table_and_re_runs_cleanly`] compares against
+/// [`EXPECTED_TABLES`]. The list used to be a bare hand-enumeration with no
+/// completeness check, and it had drifted exactly as that shape does (Z6-4): it
+/// named 28 entities while the roster knew 39 tables, so every table added after
+/// the census was written — Slices 8, 10, 11 and 12 — was covered by
+/// `table_exists` alone, which is existence and not column agreement. The table
+/// name comes off `EntityName` rather than being re-typed here, so the comparison
+/// is between the migration's roster and the entity's own `table_name` attribute
+/// with no third spelling in between.
 macro_rules! assert_readable {
-    ($conn:expr, $scope:expr, $($entity:path),+ $(,)?) => {
+    ($conn:expr, $scope:expr, $($entity:path),+ $(,)?) => {{
+        let mut read: Vec<String> = Vec::new();
         $(
             let rows = <$entity>::find()
                 .secure()
@@ -1221,8 +1235,10 @@ macro_rules! assert_readable {
                 .await
                 .unwrap_or_else(|e| panic!("{} must be readable: {e}", stringify!($entity)));
             assert!(rows.is_empty(), "{} starts empty", stringify!($entity));
+            read.push(EntityName::table_name(&<$entity>::default()).to_owned());
         )+
-    };
+        read
+    }};
 }
 
 async fn table_exists(conn: &sea_orm::DatabaseConnection, table: &str) -> bool {
@@ -1314,7 +1330,7 @@ async fn the_chain_creates_every_table_and_re_runs_cleanly() {
     let provider = DBProvider::<DbError>::new(db);
     let conn = provider.conn().expect("scoped connection");
     let scope = AccessScope::for_tenant(Uuid::from_u128(1));
-    assert_readable!(
+    let read = assert_readable!(
         &conn,
         &scope,
         plan::Entity,
@@ -1352,6 +1368,41 @@ async fn the_chain_creates_every_table_and_re_runs_cleanly() {
         price_overlay::Entity,
         price_overlay_line::Entity,
         price_overlay_line_amount::Entity,
+        // Slice 8's four: the bundle's declaration and its composition. Every one
+        // of them was outside this census until Z6-4, so `pricing_bundle`'s
+        // `effective_share` — a column two migrations have already moved — was read
+        // through its entity by no test in the fast tier.
+        bundle::Entity,
+        bundle_component::Entity,
+        bundle_revshare_group::Entity,
+        bundle_revshare::Entity,
+        // Slice 10's composite meter, and Slice 11's migration plane.
+        composite_meter::Entity,
+        migration::Entity,
+        snapshot_provenance::Entity,
+        // Slice 12's bulk plane: the run, its journal and its row locks.
+        bulk_operation::Entity,
+        repricing_journal::Entity,
+        bulk_row_lock::Entity,
+    );
+
+    // The completeness half, and the reason the roster above is no longer a
+    // hand-enumeration: every table the chain creates is read through its entity,
+    // not the ones somebody remembered. `coord_leases` is the single exemption and
+    // it is a structural one rather than a debt — `coord` owns that table and does
+    // not export an entity for it, which is why property 3 above introspects
+    // `sqlite_master` for it instead.
+    let read: std::collections::BTreeSet<String> = read.into_iter().collect();
+    let owed: std::collections::BTreeSet<String> = EXPECTED_TABLES
+        .iter()
+        .filter(|table| **table != "coord_leases")
+        .map(|table| (*table).to_owned())
+        .collect();
+    assert_eq!(
+        read, owed,
+        "a table this chain creates is read through no entity, or an entity names a table the \
+         chain does not create: the first is a column disagreement nothing catches before the \
+         first production read, and the second is an entity pointed at nothing"
     );
 }
 
