@@ -371,7 +371,6 @@ async fn submit_bulk_import(
         return Ok((StatusCode::ACCEPTED, Json(run_view(&existing))).into_response());
     }
 
-    let rows = rows_of(&body)?;
     let now = Utc::now();
     let stamp = audit_stamp(&ctx, now, correlation);
     let run = bulk_repo::open(
@@ -390,6 +389,29 @@ async fn submit_bulk_import(
     )
     .await
     .map_err(|e| CanonicalError::from(repo_failure(&e)))?;
+
+    // **Phase 1 begins by reading the rows, and it reads all of them** (Z11-6).
+    // This used to run *before* the run was opened and with a `?` per row, so the
+    // first bad value aborted the whole body with one `DomainError` carrying no
+    // index and no run — "currency invalid: US" for a thousand-row batch, which is
+    // exactly the round-trip-per-refusal the all-or-nothing posture exists to
+    // spare an operator (`domain::import`: "a rule that can answer for a row
+    // **must** answer for every row rather than stopping at the first").
+    let rows = match rows_of(&body) {
+        Ok(rows) => rows,
+        Err(unreadable) => {
+            return Err(refuse_unreadable_rows(
+                &conn,
+                &scope,
+                tenant,
+                run.operation_id,
+                &unreadable,
+                body.rows.len(),
+                now,
+            )
+            .await);
+        }
+    };
 
     // Phase 1: both halves, into one report.
     let mut report = classify(&rows);
@@ -649,23 +671,133 @@ async fn write_scope(
 /// hazard the interactive plane's version already records: the store has one home
 /// for the columns, so a disagreement between two derivations would survive
 /// exactly as far as the first metered import.
-fn rows_of(body: &BulkImportRequest) -> Result<Vec<ImportRow>, CanonicalError> {
-    body.rows
-        .iter()
-        .map(|row| {
-            let content = content_of(&row.content)?;
-            let key = scope_key_of(PlanId::new(row.plan_id), &row.scope_key)?;
-            let scope_key = crate::infra::storage::repo::price_repo::resolve_authored_usage_line(
-                &key,
-                &content.row,
-            )
-            .map_err(|e| repo_failure(&e))?;
-            Ok(ImportRow {
+/// # Every row answers, and every row's faults are named against it (Z11-6)
+///
+/// The three derivations are run **independently** rather than chained through
+/// `?`, because a row's key and its content fail separately and an operator
+/// fixing one at a time is doing the work the batch exists to save them: a bad
+/// currency is `scope_key_of`'s, a negative amount is `content_of`'s, and a batch
+/// carrying both in one row used to be told about whichever came first. The usage
+/// line is the one derivation that genuinely depends on the other two, so it is
+/// attempted only when they both answered.
+fn rows_of(body: &BulkImportRequest) -> Result<Vec<ImportRow>, Vec<UnreadableRow>> {
+    let mut rows = Vec::with_capacity(body.rows.len());
+    let mut unreadable: Vec<UnreadableRow> = Vec::new();
+    for (index, row) in body.rows.iter().enumerate() {
+        let mut faults: Vec<String> = Vec::new();
+        let content = content_of(&row.content)
+            .inspect_err(|e| faults.push(e.to_string()))
+            .ok();
+        let key = scope_key_of(PlanId::new(row.plan_id), &row.scope_key)
+            .inspect_err(|e| faults.push(e.to_string()))
+            .ok();
+        let line = match (key, content.as_ref()) {
+            (Some(key), Some(content)) => {
+                crate::infra::storage::repo::price_repo::resolve_authored_usage_line(
+                    &key,
+                    &content.row,
+                )
+                .inspect_err(|e| faults.push(repo_failure(e).to_string()))
+                .ok()
+            }
+            _ => None,
+        };
+        match (line, content) {
+            (Some(scope_key), Some(content)) if faults.is_empty() => rows.push(ImportRow {
                 scope_key,
                 content,
                 if_match: row.if_match.map(RowVersion::new),
-            })
-        })
-        .collect::<Result<Vec<_>, DomainError>>()
-        .map_err(CanonicalError::from)
+            }),
+            _ => unreadable.push(UnreadableRow { row: index, faults }),
+        }
+    }
+    if unreadable.is_empty() {
+        Ok(rows)
+    } else {
+        Err(unreadable)
+    }
+}
+
+/// One submitted row that could not be read as a price row at all, with **every**
+/// fault found against it.
+///
+/// A row rather than a key, for [`RowOutcome`](crate::domain::import::RowOutcome)'s
+/// reason stated one module over: a row whose key is the problem cannot be named by
+/// that key.
+#[derive(Debug)]
+struct UnreadableRow {
+    /// Zero-based position in the submitted batch, the same coordinate Phase 1's
+    /// own report uses.
+    row: usize,
+    /// Every fault, in derivation order. Never only the first.
+    faults: Vec<String>,
+}
+
+/// Land the run on the Phase-1 refusal edge and answer `BULK_VALIDATION_FAILED`.
+///
+/// **These are Phase-1 row failures and they now answer like every other one.**
+/// §5 is explicit that *any* Phase-1 failure is `BULK_VALIDATION_FAILED` with the
+/// per-row report on the run, and that is what the route's own contract and its
+/// `OpenAPI` registration say. Before this they escaped as whatever variant the
+/// first bad value happened to raise — `CURRENCY_INVALID` or `AMOUNT_NEGATIVE`,
+/// carrying no row index — from a point in the handler before any run existed, so
+/// no run held a report for them at all and the `GET` had nothing to serve.
+///
+/// **The per-row codes are deliberately not minted.** Phase 1's report entries are
+/// coded, and each code is declared in the design set
+/// (`DUPLICATE_SCOPE_KEY`, `IMPORT_TARGETS_PUBLISHED`, `PRIMITIVE_RULES_UNBUILT`);
+/// the design set names none for "this row is not a readable price row", and
+/// inventing one here would put an undeclared code on a wire contract
+/// `inst-bk-idem` replays. So these ride a member of their own beside `rows`, the
+/// arrangement Z11-4's batch-level `failure` member already established, each entry
+/// carrying its row and its sentences — which name the field and the value, because
+/// the underlying refusals do.
+///
+/// The state landing is the rule path's: `validating → validation_failed`, with the
+/// premise in the statement, so the replay arm above refuses instead of answering
+/// `202` for a run that imported nothing. A failure to land it is logged and the
+/// caller still learns the refusal — the first thing they can act on.
+async fn refuse_unreadable_rows(
+    conn: &impl toolkit_db::secure::DBRunner,
+    scope: &toolkit_db::secure::AccessScope,
+    tenant: Uuid,
+    operation_id: Uuid,
+    unreadable: &[UnreadableRow],
+    submitted: usize,
+    now: chrono::DateTime<Utc>,
+) -> CanonicalError {
+    let stored = serde_json::json!({
+        "rows": [],
+        "unreadable": unreadable
+            .iter()
+            .map(|row| serde_json::json!({ "row": row.row, "faults": row.faults }))
+            .collect::<Vec<_>>(),
+    });
+    if let Err(landing) = bulk_repo::advance(
+        conn,
+        scope,
+        tenant,
+        operation_id,
+        BulkState::Validating,
+        BulkState::ValidationFailed,
+        stored,
+        now,
+    )
+    .await
+    {
+        tracing::error!(
+            error = %landing,
+            operation_id = %operation_id,
+            "bss-pricing: a bulk import's unreadable rows could not be recorded on the run; it \
+             is left validating, which has no exit, and its idempotency key is spent"
+        );
+    }
+    CanonicalError::from(DomainError::BulkValidationFailed {
+        operation_id: operation_id.to_string(),
+        detail: format!(
+            "{} of {submitted} row(s) could not be read as a price row and nothing was \
+             committed; the run holds which rows and every fault found against each of them",
+            unreadable.len()
+        ),
+    })
 }

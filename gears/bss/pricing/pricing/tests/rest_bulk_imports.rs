@@ -20,7 +20,7 @@ use bss_pricing::infra::storage::repo::bulk_repo;
 use rest_support::{Harness, body_json, problem_code, seed_current_plan, with_headers};
 use sea_orm::ActiveValue::Set;
 use sea_orm::EntityTrait;
-use toolkit_db::secure::SecureInsertExt;
+use toolkit_db::secure::{SecureEntityExt, SecureInsertExt};
 use uuid::Uuid;
 
 fn keyed(key: &str) -> Vec<(&str, &str)> {
@@ -927,4 +927,169 @@ async fn a_phase_one_store_failure_lands_the_run_terminal_and_the_replay_is_refu
             .contains("BULK_VALIDATION_FAILED"),
         "and it is refused under the code the run's own state names"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Z11-6 — a row's content faults are the run's per-row report, not a bare 400.
+// ---------------------------------------------------------------------------
+
+/// One row whose **key** and whose **content** are both wrong.
+///
+/// Two faults from two different derivations, which is the arrangement the finding
+/// names: `CurrencyCode::new` is `scope_key_of`'s and `MinorAmount::new` is
+/// `content_of`'s, so a handler that chained them through `?` could only ever
+/// report one of them however it ordered the two.
+fn doubly_bad_row(plan_id: Uuid) -> serde_json::Value {
+    serde_json::json!({
+        "plan_id": plan_id,
+        "scope_key": {
+            "currency": "US",
+            "region": "eu",
+            "phase": rest_support::seeded_phase().get().to_string(),
+            "price_eligibility": "all_subscriptions",
+            "charge_kind": "recurring",
+            "cohort": serde_json::Value::Null
+        },
+        "content": {
+            "model_kind": "flat",
+            "amount_minor": -5,
+            "tax_inclusive": false
+        }
+    })
+}
+
+/// **The RED this case is about.** `rows_of` collected through
+/// `Result<Vec<_>, DomainError>`, so the first bad row aborted the whole body with
+/// one refusal carrying no index — and it ran *before* `bulk_repo::open`, so no run
+/// held a report for it and the `GET` had nothing to serve. A thousand-row batch
+/// with a typo'd currency in row 700 was answered "currency invalid: US".
+///
+/// Against the contract twice over: this route promises "Phase 1 validates the
+/// whole batch and refuses it if any row is invalid … the per-row report is on the
+/// run", and `domain::import` states the posture — "a rule that can answer for a
+/// row **must** answer for every row rather than stopping at the first".
+///
+/// Armed at all three halves, because each can pass while the others fail: the
+/// refusal is the Phase-1 one and names its run, the run holds the row's index, and
+/// **both** of the row's faults are against it.
+#[tokio::test]
+async fn a_row_that_is_not_a_readable_price_row_is_reported_against_its_index() {
+    let harness = Harness::new().await;
+    let plan = Uuid::now_v7();
+    seed_current_plan(&harness, plan).await;
+
+    let refused = harness
+        .allowed()
+        .send(with_headers(
+            "POST",
+            BULK_IMPORTS,
+            Some(batch(&[row(plan, "eu", 1_500), doubly_bad_row(plan)])),
+            &keyed("bulk-unreadable-row"),
+        ))
+        .await;
+    assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
+    let problem = body_json(refused).await;
+    assert_eq!(
+        rest_support::code_in(&problem),
+        "BULK_VALIDATION_FAILED",
+        "section 5 makes any Phase-1 failure this code, and a content fault is one: {problem}"
+    );
+    let operation_id = rest_support::violation_for(&problem, "operation_id")
+        .unwrap_or_else(|| panic!("the refusal has to name the run it opened: {problem}"));
+
+    let run = body_json(
+        harness
+            .allowed()
+            .send(with_headers("GET", &import_path(&operation_id), None, &[]))
+            .await,
+    )
+    .await;
+    assert_eq!(
+        run["state"],
+        serde_json::json!("validation_failed"),
+        "the run this key spent has to reach a state something can act on: {run}"
+    );
+
+    let unreadable = run["report"]["unreadable"]
+        .as_array()
+        .unwrap_or_else(|| panic!("the run holds which rows could not be read: {run}"));
+    assert_eq!(
+        unreadable.len(),
+        1,
+        "one entry, for the one row at fault - row 0 is a perfectly good row and naming it \
+         would be the whole-batch refusal this replaces: {run}"
+    );
+    assert_eq!(
+        unreadable[0]["row"],
+        serde_json::json!(1),
+        "and it is named by its position in the submitted batch: {run}"
+    );
+
+    let faults = unreadable[0]["faults"]
+        .as_array()
+        .unwrap_or_else(|| panic!("with every fault found against it: {run}"))
+        .iter()
+        .map(std::string::ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(" | ");
+    assert!(
+        faults.contains("currency"),
+        "the key's fault has to be in the report: {faults}"
+    );
+    assert!(
+        faults.contains("amount"),
+        "and so does the content's - reporting one of the two is what stopping at the first \
+         fault looked like: {faults}"
+    );
+
+    // Nothing was imported, which is what "refuses it if any row is invalid" means.
+    let conn = harness.db.conn().expect("conn");
+    let stored = price::Entity::find()
+        .secure()
+        .scope_with(&harness.scope())
+        .all(&conn)
+        .await
+        .expect("read pricing_price");
+    assert!(
+        stored.is_empty(),
+        "an all-or-nothing Phase 1 commits nothing: {stored:?}"
+    );
+}
+
+/// The replay of a key spent on an unreadable batch is refused, not answered `202`.
+///
+/// The positive control for landing the run terminal at all. The run is opened
+/// before the rows are read now, so the key **is** spent — and a run left
+/// `validating` would be answered `202` with `{"rows": []}` on the retry, telling a
+/// client that resubmitted on a timeout that its import succeeded. That is the
+/// conclusion D-295's refusal exists to prevent, and Z11-4 found this exact shape
+/// on the store-fault path.
+#[tokio::test]
+async fn a_replay_of_a_key_spent_on_an_unreadable_batch_is_refused() {
+    let harness = Harness::new().await;
+    let plan = Uuid::now_v7();
+    seed_current_plan(&harness, plan).await;
+
+    for _ in 0..2 {
+        let response = harness
+            .allowed()
+            .send(with_headers(
+                "POST",
+                BULK_IMPORTS,
+                Some(batch(&[doubly_bad_row(plan)])),
+                &keyed("bulk-unreadable-replay"),
+            ))
+            .await;
+        assert_eq!(
+            response.status(),
+            StatusCode::BAD_REQUEST,
+            "neither the first call nor its replay may read as a success"
+        );
+        assert!(
+            problem_code(response)
+                .await
+                .contains("BULK_VALIDATION_FAILED"),
+            "and the replay is refused under the code the run's own state names"
+        );
+    }
 }
