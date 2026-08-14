@@ -3232,7 +3232,8 @@ both are the same shape: **a split column does not carry its rules with it.**
 
 #### D-312 [H] The authoring plane accepts rows that no later edit can make publishable
 
-**Status:** decided 2026-08-14, implementation pending. Found by an author opening
+**Status:** decided and landed 2026-08-14, on all three doors — the authoring
+`POST`/`PATCH` and the bulk import. Found by an author opening
 a stored row whose model-kind picker had nothing selected:
 the row is `flat` on a `usage` charge kind, and `flat` is in no part of the
 usage set.
@@ -3384,6 +3385,22 @@ exists as a number rather than as an expectation.
 
 Nothing rewrites them. The rows stay as their authors left them, they stay
 unpublishable, and their next `PATCH` now says so instead of answering 200.
+
+**And that costs them their edit path, which is stated here rather than discovered.**
+`PATCH` takes whole content, so an editor that reads a row, changes one field and
+sends the result back now has that call refused on a field it did not touch — and for
+the nine `billing_granularity` rows the blocking field is one a charge-kind-aware
+editor does not render at all, so the author cannot see, let alone clear, what the
+refusal is about. The rows are effectively uneditable through the documented
+read-modify-write flow until the field is retracted deliberately.
+
+This is accepted rather than worked around. The alternatives were both worse: letting
+a `PATCH` through when it clears the contradicting field means the write door's answer
+depends on which fields moved, and rewriting the eleven rows means a migration
+mutating authored content nobody asked to change. What the client owes instead is to
+send the field as absent when it does not apply — a client-side fix on a population of
+eleven known rows, listed by the inventory script, not a gear change. Recorded as owed
+on the Studio, and it is the reason the count above exists as a number.
 
 ##### Three doors, not two
 
