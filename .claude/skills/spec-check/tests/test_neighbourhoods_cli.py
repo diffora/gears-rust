@@ -220,11 +220,23 @@ PINNED_TRIAGE_PRICING = {
     "unbuildable:no-prose": 0,
     "no-region": 3,
     "anchored:no-account": 4,
-    "suspicious:multi-region": 62,
+    "suspicious:multi-region": 61,
     "suspicious:not-normative": 0,
-    "suspicious:weak-coverage": 8,
+    "suspicious:weak-coverage": 9,
     "covered:strong": 0,
 }
+#: Moved **back** 2026-08-14, later still (62 / 8 -> 61 / 9), by D-313's `per_hour`
+#: wave — and the mover is `fr-price-history-export` again, in the opposite
+#: direction, which is the fifth recording of this artefact and the clearest one:
+#: the same requirement crossed the same boundary twice in one day, in both
+#: directions, under two waves that touched nothing about exporting price history.
+#: It is document-frequency scoring at a threshold, not coverage.
+#: **What was checked before accepting it:** the per-id diff was taken against a
+#: stashed pre-wave tree (one mover, named above, not inferred from the totals),
+#: the total held at 77, and live findings / known debt held at **2 / 49** — the
+#: control that separates a scoring wobble from a silently closed finding, which is
+#: what the `WINDOW_GAP` episode below exists to catch. The three byte-exact
+#: oracles came back **unchanged**, so nothing in the findings themselves moved.
 #: Moved 2026-08-14, later the same day (was 61 / 9), by **D-312's bulk-import arm
 #: prose** — and it is the marginal-score artefact this file has now recorded four
 #: times, not a coverage change. One mover, hand-checked:

@@ -3449,3 +3449,90 @@ nothing judges it, and the same defect the eleven stored rows above are instance
 
 The eleven are unaffected: they were authored through `POST`/`PATCH`, not imported,
 and nothing rewrites them. This arm changes what lands from here on.
+
+#### D-313 [H] `tierAggregationWindow` gains `per_hour`
+
+**Status:** decided 2026-08-14. Found by an author porting a real cloudlet price
+sheet: the catalogue offers hourly tiering, the model has no way to say it, and the
+substitution that looks harmless changes the money.
+
+##### The finding
+
+A PaaS cloudlet price is sold as *"each hour, the quantity you ran picks its own
+tier"*. The catalog could express the two neighbouring facts and not that one:
+
+| what | field | value |
+|---|---|---|
+| how large one billable unit is | `billingGranularity` | `per_hour` |
+| when the tier counter resets | `tierAggregationWindow` | **nothing hourly** |
+
+The set was `calendar_month | invoice_period | subscription_lifetime | per_event`,
+enumerated identically in `design/03-price-structure.md` (twice) and in rating's
+PRD §539 — so the gap was in the model, not in one document.
+
+##### Why the two neighbouring values do not cover it
+
+**`calendar_month` is the opposite.** The counter accumulates all month, so a
+customer climbs into the cheaper bands and stays there. Hourly tiering re-enters
+the ladder every hour. On a ladder whose top band is a third of its first, that is
+not a rounding difference.
+
+**`per_event` is a different thing that sometimes looks the same.** Rating defines
+the evaluation unit for `per_event` as *"a single normalized `UsageRecord`"*
+(rating PRD §327). An hour and a record coincide only when the feed happens to emit
+hourly, which is a property of the feed and not of the price — so a price authored
+`per_event` silently re-prices itself when the meter's emission rate changes. The
+value was considered and rejected for exactly that: it would have been cheaper by
+one enum member and wrong by one layer.
+
+##### Decision
+
+`per_hour` joins `tierAggregationWindow`, delimited in **UTC clock hours** — the
+boundary `aggregationGranularity`'s `hour` granule already cuts on, so a level fold
+and an hourly counter agree on where an hour ends. It is deliberately **not**
+anchored to the subscription: an anchored hour would make two subscriptions on one
+published row disagree about band membership for the same wall-clock usage.
+
+**One pair of legal values is refused.** `per_hour` beside
+`billingGranularity = per_day` fails publish with a new code,
+`TIER_AGG_WINDOW_INCOMPATIBLE` (422): one billable unit would span twenty-four of
+the windows meant to band it independently, and there is no reading that
+reconciles them — the ×24 band-edge class D-77 closed for level rows and D-97
+closed across supersession, reached here through one row's own two fields. Its own
+code rather than `EVAL_POLICY_MISPLACED`, because both values are authorable and
+each is correct alone; the fault is the pair, which is the shape D-60 already
+minted `TIER_QUAL_WINDOW_INCOMPATIBLE` for.
+
+`whole_unit` is **not** refused beside it. It quantizes to a unit of the meter and
+names no period at all, so an hourly counter over whole units is coherent, and a
+check that refused everything "not finer than an hour" would mistake *no period*
+for *a long period*.
+
+##### What this costs, stated rather than hidden
+
+- **Two ladders now share a spelling.** `per_hour` is a member of both the reset
+  set and the cadence set and means a different thing in each. §4's orthogonality
+  sentence is amended to say so outright, because a reader who sees one word in two
+  enums will otherwise assume one concept.
+- **Rating owes the fold.** The catalog persists the enum; reset semantics are
+  Tariffs-owned, so the boundary is stated in their PRD as well as here.
+- **The store needed the first rebuild of `pricing_price`.** `SQLite` cannot alter
+  a `CHECK`, so widening the constraint rebuilt a 47-column, 21-constraint table
+  and recreated 5 indexes, its own 6 triggers and 5 triggers on
+  `pricing_price_tier_band` that sub-select it. Every statement was lifted verbatim
+  from `sqlite_master` on a freshly migrated database rather than reconstructed from
+  the migration set, because restating that by hand is how a rebuild silently drops
+  an append-only guard — and nothing in the fast tier reads a trigger that is merely
+  absent (`m20260802_000076`).
+- **`trailing_period` stays compatible.** D-60 refuses
+  `tierQualificationWindow = trailing_period` beside `subscription_lifetime` and
+  `per_event` because no prior-period total is derivable from either. An hourly
+  counter is not in that company: the trailing total is a separate aggregate over
+  the prior anchor-derived period and is independent of the in-window counter, so
+  the pair is legal and deliberately left alone.
+
+##### Propagated
+
+S3 §4 (the orthogonality clause), §5 (the new code), `inst-tb-window`'s statement
+and the schema table; rating PRD §Definitions, §Time and §539; the domain enum, its
+census list, `inst-tb-window`'s second clause, and `m20260802_000076`.
