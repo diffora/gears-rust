@@ -155,6 +155,18 @@ const CHECKS_SQL: &str = "SELECT co.conname AS v FROM pg_constraint co \
      WHERE n.nspname = 'bss' AND co.contype = 'c' ORDER BY 1";
 const PARTIAL_INDEXES_SQL: &str = "SELECT indexname AS v FROM pg_indexes \
      WHERE schemaname = 'bss' AND indexdef LIKE '%WHERE%' ORDER BY 1";
+/// Every index this chain writes a `CREATE INDEX` for (Z6-5).
+///
+/// The `NOT EXISTS` is what makes the set comparable to the `SQLite` roster: a
+/// primary key's backing index is created *by the constraint*, named by the server
+/// and rostered by `PRIMARY_KEYS_SQL`, so counting it here would compare a
+/// migration's declarations against the server's bookkeeping.
+const INDEXES_SQL: &str = "SELECT i.indexname AS v FROM pg_indexes i \
+     JOIN pg_class c ON c.relname = i.indexname \
+     JOIN pg_namespace n ON n.oid = c.relnamespace AND n.nspname = i.schemaname \
+     WHERE i.schemaname = 'bss' AND c.relkind = 'i' \
+     AND NOT EXISTS (SELECT 1 FROM pg_constraint co WHERE co.conindid = c.oid) \
+     ORDER BY 1";
 /// Every table's primary key as `table: col, col` (D-236).
 ///
 /// `unnest(conkey) WITH ORDINALITY` is what makes this a mirror of the `SQLite`
@@ -271,6 +283,77 @@ const EXPECTED_PARTIAL_INDEXES: &[&str] = &[
     "uq_pricing_price_overlay_precedence",
     "uq_pricing_price_scope_key_current",
     "uq_pricing_price_scope_key_draft",
+];
+
+/// Every index the chain declares, **by name** — the whole set, of which
+/// [`EXPECTED_PARTIAL_INDEXES`] above is the twelve whose predicate *is* the rule
+/// (Z6-5).
+///
+/// Two rosters over one set is deliberate and not duplication: the partial one is
+/// asserted against a `WHERE`-filtered query, so it also proves the twelve are
+/// still *partial* — dropping a predicate leaves the name in this list and removes
+/// it from that one. A single roster could not tell those apart.
+///
+/// This list is `tests/sqlite_migrations.rs`'s `EXPECTED_INDEXES` verbatim, which
+/// is the convention `EXPECTED_CHECKS` and `EXPECTED_TRIGGERS` already follow:
+/// one roster per engine, so a missing statement in **one** arm of a migration
+/// reddens on that engine rather than being averaged away by a shared list.
+const EXPECTED_INDEXES: &[&str] = &[
+    "idx_pricing_approval_key_approval",
+    "idx_pricing_audit_log_recorded",
+    "idx_pricing_audit_log_subject",
+    "idx_pricing_bulk_operation_live",
+    "idx_pricing_bulk_row_lock_operation",
+    "idx_pricing_bundle_component_plan",
+    "idx_pricing_bundle_component_revision",
+    "idx_pricing_bundle_revshare_group_revision",
+    "idx_pricing_bundle_revshare_revision",
+    "idx_pricing_bundle_tenant",
+    "idx_pricing_catalog_version_ref_version",
+    "idx_pricing_composite_meter_revision",
+    "idx_pricing_group_membership_payer",
+    "idx_pricing_idempotency_dedup_created",
+    "idx_pricing_migration_due",
+    "idx_pricing_migration_source",
+    "idx_pricing_migration_target",
+    "idx_pricing_operator_flag_by_flag",
+    "idx_pricing_outbox_undrained",
+    "idx_pricing_plan_addon_rule_revision",
+    "idx_pricing_plan_descriptor_set_revision",
+    "idx_pricing_plan_phase_revision",
+    "idx_pricing_plan_tenant",
+    "idx_pricing_price_overlay_line_amount_tenant",
+    "idx_pricing_price_overlay_line_plan",
+    "idx_pricing_price_overlay_line_revision",
+    "idx_pricing_price_overlay_scope",
+    "idx_pricing_price_plan",
+    "idx_pricing_price_supersedes",
+    "idx_pricing_price_tier_band_price",
+    "idx_pricing_price_window_due",
+    "idx_pricing_price_window_price",
+    "idx_pricing_read_model_resolve",
+    "idx_pricing_snapshot_provenance_plan",
+    "uq_pricing_approval_key_pending",
+    "uq_pricing_approval_policy_pending",
+    // D-307's physical half, and the one this roster exists for: it is not partial,
+    // so it was in no Postgres roster at all, and `m20260802_000064` had just
+    // re-keyed it. `the_client_key_index_spans_the_kind_as_well_as_the_tenant`
+    // below asserts its columns, because a name cannot carry them.
+    "uq_pricing_bulk_operation_client_key",
+    "uq_pricing_bundle_plan",
+    "uq_pricing_composite_meter_output",
+    "uq_pricing_outbox_dedup_key",
+    "uq_pricing_outbox_sequence",
+    "uq_pricing_plan_current",
+    "uq_pricing_plan_open_draft",
+    "uq_pricing_plan_phase_terminal",
+    "uq_pricing_price_meter_line_current",
+    "uq_pricing_price_overlay_line_key",
+    "uq_pricing_price_overlay_open_draft",
+    "uq_pricing_price_overlay_precedence",
+    "uq_pricing_price_scope_key_current",
+    "uq_pricing_price_scope_key_draft",
+    "uq_pricing_snapshot_provenance_subscription",
 ];
 
 /// Every CHECK constraint the chain declares, **by name**.
@@ -696,6 +779,66 @@ async fn every_declared_partial_index_reaches_the_server() {
     assert_eq!(
         names(&conn, PARTIAL_INDEXES_SQL).await,
         EXPECTED_PARTIAL_INDEXES
+    );
+}
+
+/// **Every index the chain declares reaches the server, by name** — Z6-5.
+///
+/// The suite's only index assertion used to be the partial one above, and its SQL
+/// filters on `indexdef LIKE '%WHERE%'`. So the roster covered **12 of 51**, and
+/// the 39 without a predicate had no Postgres assertion at all — including
+/// `uq_pricing_bulk_operation_client_key`, which `m20260802_000064` had just
+/// re-keyed and which is the physical half of D-307's cross-kind admission. An
+/// index that vanished from a Postgres arm, or that a rebuild restated with the
+/// wrong columns, was invisible on the engine that ships.
+///
+/// Constraint-backed indexes are excluded rather than rostered: a primary key's
+/// index is created by the constraint, is named by Postgres rather than by this
+/// chain, and has its own roster in `PRIMARY_KEYS_SQL`. So what this ranges over is
+/// exactly the indexes the migrations write `CREATE INDEX` for — which is what the
+/// `SQLite` roster ranges over too, and why the two lists are the same 51 names.
+#[tokio::test]
+#[ignore = "requires Docker (testcontainers)"]
+async fn every_declared_index_reaches_the_server_by_name() {
+    let (conn, _guard) = applied().await;
+    assert_eq!(
+        names(&conn, INDEXES_SQL).await,
+        EXPECTED_INDEXES,
+        "an index that vanished, was renamed, or was never written into the Postgres arm of its \
+         migration is a read path nobody removed on purpose - and on the engine that ships, \
+         nothing else in this suite would have noticed"
+    );
+}
+
+/// **The D-307 index carries the kind, and it is measured on both engines.**
+///
+/// A name roster cannot see a rebuild that restated an index over the wrong
+/// columns, and this is the index that happened to: `m20260802_000063`'s `SQLite`
+/// rebuild restated `uq_pricing_bulk_operation_client_key` with the pre-D-307
+/// columns and `m20260802_000064` had to correct it. On Postgres the correction was
+/// asserted by nothing.
+///
+/// `indexdef` and not a count of columns: what D-307 decided is *which* axes the
+/// key spans, so the assertion names them. `m20260802_000023`'s own doc states the
+/// principle this applies — "a measurement on one engine is not a fact about the
+/// other".
+#[tokio::test]
+#[ignore = "requires Docker (testcontainers)"]
+async fn the_client_key_index_spans_the_kind_as_well_as_the_tenant() {
+    let (conn, _guard) = applied().await;
+    let definitions = names(
+        &conn,
+        "SELECT indexdef AS v FROM pg_indexes WHERE schemaname = 'bss' \
+         AND indexname = 'uq_pricing_bulk_operation_client_key'",
+    )
+    .await;
+    let definition = definitions
+        .first()
+        .expect("uq_pricing_bulk_operation_client_key must exist on the server");
+    assert!(
+        definition.contains("(tenant_id, kind, client_key)"),
+        "D-307 keys a client key per kind, so one run id opens one import and one repricing run \
+         alike; this index reads {definition}"
     );
 }
 

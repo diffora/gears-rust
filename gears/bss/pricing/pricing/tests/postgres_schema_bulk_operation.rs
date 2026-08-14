@@ -26,6 +26,9 @@ const ACTOR: &str = "33333333-3333-3333-3333-333333333333";
 const OTHER_OP: &str = "44444444-4444-4444-4444-444444444444";
 /// A second tenant, so O4's key can be shown to be scoped to one.
 const OTHER_TENANT: &str = "55555555-5555-5555-5555-555555555555";
+/// A third run, for D-307's cross-kind case: it needs one row per kind under one
+/// key *and* a second row of the same kind to collide with.
+const THIRD_OP: &str = "66666666-6666-6666-6666-666666666666";
 
 async fn applied() -> DatabaseConnection {
     Pg::applied().await.raw().await
@@ -320,6 +323,44 @@ async fn one_client_key_opens_one_run_per_tenant() {
     must_succeed(
         &conn,
         &seed_as(OTHER_OP, OTHER_TENANT, "import", "validating", "ck-1"),
+    )
+    .await;
+}
+
+/// **D-307's cross-kind admission, on the engine that ships** — Z6-5.
+///
+/// The case above seeds `import`/`import` and varies only the tenant, so it would
+/// pass identically against the **pre-D-307** `(tenant_id, client_key)` index: it
+/// proves the key is per tenant and says nothing about the kind. D-307's decision
+/// is the other axis — one `run_id` opens one repricing run **and** one bulk import
+/// alike, because the two flows were sharing one namespace and a caller who had
+/// spent a key on an import could not open a repricing run under it. That was
+/// proved on `SQLite` (`sqlite_repricing_journal_repo`) and over HTTP
+/// (`rest_repricing_runs`) and on Postgres by nothing, which is the gap
+/// `m20260802_000023`'s own principle names: "a measurement on one engine is not a
+/// fact about the other".
+///
+/// Both directions, because the index has to admit one and refuse the other:
+/// varying the kind under one key must land, and repeating the kind must not.
+#[tokio::test]
+#[ignore = "requires Docker"]
+async fn one_client_key_opens_one_run_per_kind_and_not_across_kinds() {
+    let conn = applied().await;
+    must_succeed(&conn, &seed("import", "validating")).await;
+
+    // The admission: the same tenant, the same client key, the other kind.
+    must_succeed(
+        &conn,
+        &seed_as(OTHER_OP, TENANT, "repricing", "validating", "ck-1"),
+    )
+    .await;
+
+    // And the refusal is still there per kind, which is what stops the admission
+    // above from being "the index was dropped".
+    must_be_rejected(
+        &conn,
+        &seed_as(THIRD_OP, TENANT, "repricing", "validating", "ck-1"),
+        "uq_pricing_bulk_operation_client_key",
     )
     .await;
 }
