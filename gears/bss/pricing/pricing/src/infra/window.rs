@@ -308,9 +308,15 @@ pub struct PendingApproval {
     pub effective_to: Option<DateTime<Utc>>,
     /// The state as it **still** stands, unmoved.
     pub state: WindowState,
-    /// Why a second principal is required — always
-    /// [`MaterialityReason::AlwaysMaterialTrigger`] here, and carried as a value so
-    /// the unit's stored verdict and this answer cannot disagree.
+    /// Why a second principal is required — the evaluator's own reason, carried as
+    /// a value so the unit's stored verdict and this answer cannot disagree.
+    ///
+    /// **Not always [`MaterialityReason::AlwaysMaterialTrigger`]**, which this doc
+    /// asserted while its producer 1100 lines down recorded the opposite: a cancel
+    /// and a shortening are always-material by `inst-mat-registered` and need no
+    /// threshold, and the other two acts reach this arm because a *threshold* rule
+    /// answered — including the currency that has no threshold entry at all, which
+    /// is the one reason an operator can act on.
     pub verdict: MaterialityVerdict,
     /// **The unit that is now reviewing the act**, opened inside the same transaction
     /// that refused it.
@@ -377,8 +383,8 @@ impl WindowService {
     /// opens an interior gap on the key; [`DomainError::NotFound`] for an unknown
     /// price row or a plan with no revision at all;
     /// [`DomainError::PendingChangeUnitExists`] when a unit already holds the key;
-    /// [`DomainError::ServiceUnavailable`] when the registry cannot assign a
-    /// version; [`DomainError::Internal`] on a storage failure.
+    /// [`DomainError::CatalogVersionUnavailable`] when the registry cannot be
+    /// reached or has none configured; [`DomainError::Internal`] on a storage failure.
     #[allow(
         clippy::too_many_arguments,
         reason = "every argument is a fact only the caller holds - the compiled scope and tenant, \
@@ -498,7 +504,8 @@ impl WindowService {
     /// key uncovered through its floor; [`DomainError::WindowOverlap`] when an
     /// extension collides with a sibling; [`DomainError::ValidationFailed`] on an
     /// interior gap; [`DomainError::NotFound`] for an unknown window;
-    /// [`DomainError::ServiceUnavailable`] when the registry cannot assign;
+    /// [`DomainError::CatalogVersionUnavailable`] when the registry cannot be reached
+    /// or has none configured;
     /// [`DomainError::StaleVersion`] when the window has been acted on since
     /// `expected_seq` was read; [`DomainError::Internal`] on a storage failure.
     #[allow(
@@ -577,8 +584,8 @@ impl WindowService {
     /// (checked before the store — the other half of debt 2);
     /// [`DomainError::WindowTrailingVoid`] when the cancel would leave the key
     /// uncovered through its floor; [`DomainError::NotFound`] for an unknown
-    /// window; [`DomainError::ServiceUnavailable`] when the registry cannot
-    /// assign; [`DomainError::Internal`] on a storage failure.
+    /// window; [`DomainError::CatalogVersionUnavailable`] when the registry cannot be
+    /// reached or has none configured; [`DomainError::Internal`] on a storage failure.
     pub async fn cancel(
         &self,
         ctx: &SecurityContext,
