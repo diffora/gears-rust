@@ -16,15 +16,23 @@
 //! writes an audit record or an outbox row, so nothing here needs an
 //! `AuditStamp`, so the edge would be a layer with no reader.
 //!
-//! # `plan × read`, and the actor is the row's own column
+//! # `audit × read`, and the actor is the row's own column
 //!
-//! D-12 puts price history under `plan × read` — it is plan and price data, and
-//! Finance reads it by construction. The **separate** Slice 5 audit trail stays
-//! `audit × read`, Auditor-only, and the 2026-07-28 review fix that split them is
-//! why [`HistoryEntry::actor`](crate::infra::history::HistoryEntry::actor) reads
-//! `pricing_price.created_by` and never `pricing_audit_log`. A surface that took
-//! the actor from the audit log would move an Auditor-only source behind a
-//! Finance-readable gate, which is a leak no test of *this* route would notice.
+//! This section and the route's own description both said **`plan × read`** until
+//! 2026-08-14, and both were false: the handler asks `audit × read` and
+//! `rest_authz`'s census catalogues it that way. The correction is recorded rather
+//! than quietly applied because the withdrawn sentence was the *original* reading
+//! of D-12 — price history is plan and price data, Finance reads it by construction
+//! — and what overrode it is stated at the gate itself: `/history` is the catalog
+//! audit trail, so filing it under catalog read handed "who changed what, when"
+//! to every holder of `plan × read` while `audit_read` granted nothing.
+//!
+//! What that leaves standing is the **source** rule, which is a different claim and
+//! still exactly true: [`HistoryEntry::actor`](crate::infra::history::HistoryEntry::actor)
+//! reads `pricing_price.created_by` and never `pricing_audit_log`. The two surfaces
+//! now share a permission and not a store — see [`crate::api::rest::audit`], which
+//! is the Slice 5 trail's own read — and a surface that took its actor from the
+//! audit log would still be reading a store it is not the reader of.
 //!
 //! # The cursor is opaque on the wire because it is opaque in the engine
 //!
@@ -202,9 +210,11 @@ pub fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Router {
              - the Foundation's immutability IS the history (`inst-he-nostore`) - and it \
              paginates on an opaque cursor per D-125, with a server default page size and a \
              hard cap. Superseded and cancelled records are included and distinguishable: \
-             history records what was, not what is. Gates on `plan` x `read` (D-12), so it is \
-             Finance-readable by construction; the separate Slice 5 audit trail remains \
-             Auditor-only and is never this surface's source for the actor.",
+             history records what was, not what is. Gates on `audit` x `read` (D-12): this is \
+             the catalog audit trail, so it is Auditor-only rather than Finance-readable, and \
+             `plan` x `read` grants no access to it. The separate Slice 5 trail over \
+             `pricing_audit_log` has its own read (`GET /bss-pricing/v1/audit`) and is never \
+             this surface's source for the actor.",
         )
         .tag(TAG)
         .authenticated()
