@@ -27,6 +27,7 @@ use bss_pricing::infra::bulk::{
     ABORT_NOTE, ABORTED_MEMBER, BULK_ROW_CONFLICT, CommitReceipt, abandon_committing_run,
     commit_batch,
 };
+use bss_pricing::infra::storage::RepoError;
 use bss_pricing::infra::storage::entity::price;
 use bss_pricing::infra::storage::migrations::Migrator;
 use bss_pricing::infra::storage::repo::{
@@ -457,6 +458,114 @@ async fn the_run_holding_the_row_edits_it_freely() {
         )
         .await
         .expect("its own holder passes");
+}
+
+/// **And the same distinction on the delete verb — plus the second refusal
+/// standing behind it** (Z7-10).
+///
+/// `delete_draft` hard-coded `on_behalf_of: None`, so the guard answered
+/// `BULK_ROW_LOCKED` **naming the run making the call**. Fail-closed behind an
+/// absent lane — neither bulk lane has a delete arm today (`commit_rows` has an
+/// edit arm and a create arm; `infra::repricing` stages successors and creates
+/// drafts) — which is exactly why it had no test and could not get one until the
+/// parameter existed.
+///
+/// **Threading it is necessary and not sufficient, which this case is here to
+/// record.** `fk_pricing_bulk_row_lock_price` references `pricing_price
+/// (price_id)` with no cascade, so a held row cannot be deleted while its own
+/// lock row stands: past the guard, the delete meets the foreign key and comes
+/// back as `RepoError::Db` — a 500. So the lane that lands a delete verb owes
+/// `bulk_repo::release_locks` for that row **inside the same transaction**, and
+/// the third arm below is what says that is the whole remaining obstacle rather
+/// than a wall. Filing this as a passing test rather than a fix, because giving a
+/// price repository the power to drop another aggregate's lock row is a design
+/// decision and not a repair.
+///
+/// The **`None` arm is the control**: without it, a `delete_draft` that had
+/// simply stopped consulting the lock would satisfy the first arm, and the guard
+/// would be gone rather than corrected.
+#[tokio::test]
+async fn the_lock_stops_naming_the_run_that_holds_it_when_that_run_deletes() {
+    let h = harness().await;
+    let (mine, my_version) = seed_draft(&h, key("eu"), 9_900).await;
+    let (theirs, their_version) = seed_draft(&h, key("us"), 5_000).await;
+    let run = open_run(&h, "c-14").await;
+    let conn = h.provider.conn().expect("conn");
+    bulk_repo::advance(
+        &conn,
+        &scope(),
+        TENANT,
+        run,
+        BulkState::Validating,
+        BulkState::Committing,
+        serde_json::json!({}),
+        at(11),
+    )
+    .await
+    .expect("enter committing");
+    bulk_repo::take_locks(&conn, &scope(), TENANT, run, &[mine, theirs], at(11))
+        .await
+        .expect("the run holds both rows");
+
+    // Arm 1: the holder's own delete is past the guard. What refuses it now is
+    // the foreign key, not `inst-bk-lock` — and the difference is the whole
+    // finding, because one of the two names the caller's own run at it.
+    let blocked = h
+        .prices
+        .delete_draft(&scope(), TENANT, mine, my_version, stamp(), Some(run))
+        .await
+        .expect_err("the lock row's foreign key still stands in the way");
+    assert!(
+        !matches!(blocked, RepoError::BulkRowLocked { .. }),
+        "the guard must not refuse the run that holds the row: {blocked:?}"
+    );
+    assert!(
+        format!("{blocked:?}").contains("FOREIGN KEY"),
+        "and what does refuse is fk_pricing_bulk_row_lock_price: {blocked:?}"
+    );
+
+    // Arm 2, the control: somebody else — an interactive delete belongs to no
+    // run — is still refused BY THE GUARD, and the refusal still names the
+    // holder.
+    let refused = h
+        .prices
+        .delete_draft(&scope(), TENANT, theirs, their_version, stamp(), None)
+        .await
+        .expect_err("an interactive delete belongs to no run");
+    assert!(
+        matches!(refused, RepoError::BulkRowLocked { .. }),
+        "somebody else meets the guard, not the foreign key: {refused:?}"
+    );
+    assert!(
+        format!("{refused:?}").contains(&run.to_string()),
+        "the conflict names the run holding it: {refused:?}"
+    );
+    assert!(
+        h.prices
+            .find(&scope(), TENANT, theirs)
+            .await
+            .expect("read back")
+            .is_some(),
+        "and the refused delete deleted nothing"
+    );
+
+    // Arm 3: with the lock released, the run's own delete lands. This is the
+    // shape the future lane owes — release, then delete, in one transaction.
+    bulk_repo::release_locks(&conn, &scope(), TENANT, run)
+        .await
+        .expect("the run releases what it holds");
+    h.prices
+        .delete_draft(&scope(), TENANT, mine, my_version, stamp(), Some(run))
+        .await
+        .expect("and then the row goes");
+    assert_eq!(
+        h.prices
+            .find(&scope(), TENANT, mine)
+            .await
+            .expect("read back"),
+        None,
+        "really gone, not merely un-refused"
+    );
 }
 
 #[tokio::test]

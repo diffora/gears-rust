@@ -1172,6 +1172,7 @@ async fn deleting_a_price_row_voids_the_pending_unit() {
             seeded.price_id,
             seeded.price_version,
             stamp(),
+            None,
         )
         .await
         .expect("delete the draft row");

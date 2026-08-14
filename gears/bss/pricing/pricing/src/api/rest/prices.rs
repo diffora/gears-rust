@@ -834,6 +834,11 @@ async fn delete_price(
             price_id,
             expected,
             audit_stamp(&ctx, Utc::now(), correlation),
+            // An interactive delete belongs to no run, so the bulk lock excludes
+            // it whoever holds the row (`inst-bk-lock`) — the sibling `PATCH`'s
+            // argument one verb over.
+            /* on_behalf_of */
+            None,
         )
         .await
         .map_err(|e| CanonicalError::from(repo_failure(&e)))?;

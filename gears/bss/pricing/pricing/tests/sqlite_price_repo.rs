@@ -1331,7 +1331,14 @@ async fn a_frozen_row_refuses_by_name_and_an_absent_one_is_not_found() {
     // and the band trigger would answer `RepoError::Db`, so the caller would be
     // told the store is broken rather than that the row is published.
     let err = repo
-        .delete_draft(&scope, tenant(), price_id, RowVersion::new(0), stamp())
+        .delete_draft(
+            &scope,
+            tenant(),
+            price_id,
+            RowVersion::new(0),
+            stamp(),
+            None,
+        )
         .await
         .expect_err("only a never-published draft is deletable");
     assert_eq!(
@@ -1719,7 +1726,14 @@ async fn deleting_a_draft_takes_its_bands_with_it() {
     // Abandoning a draft is a write like any other: a caller working from a
     // read it did not refresh would otherwise discard an edit it never saw.
     let err = repo
-        .delete_draft(&scope, tenant(), price_id, RowVersion::new(4), stamp())
+        .delete_draft(
+            &scope,
+            tenant(),
+            price_id,
+            RowVersion::new(4),
+            stamp(),
+            None,
+        )
         .await
         .expect_err("a stale tag must not delete");
     assert_eq!(
@@ -1740,9 +1754,16 @@ async fn deleting_a_draft_takes_its_bands_with_it() {
     // The bands go first, inside the transaction: the foreign key declares the
     // default NO ACTION on both backends, so the row cannot leave while its
     // children point at it.
-    repo.delete_draft(&scope, tenant(), price_id, RowVersion::new(0), stamp())
-        .await
-        .expect("the current tag deletes");
+    repo.delete_draft(
+        &scope,
+        tenant(),
+        price_id,
+        RowVersion::new(0),
+        stamp(),
+        None,
+    )
+    .await
+    .expect("the current tag deletes");
     assert_eq!(
         repo.find(&scope, tenant(), price_id).await.expect("read"),
         None
@@ -1857,7 +1878,14 @@ async fn another_tenants_price_row_is_invisible_and_unwritable() {
     assert!(matches!(err, RepoError::NotFound { .. }));
 
     let err = repo
-        .delete_draft(&scope, tenant(), price_id, RowVersion::new(0), stamp())
+        .delete_draft(
+            &scope,
+            tenant(),
+            price_id,
+            RowVersion::new(0),
+            stamp(),
+            None,
+        )
         .await
         .expect_err("a foreign draft is not deletable");
     assert!(matches!(err, RepoError::NotFound { .. }));
@@ -3104,7 +3132,7 @@ async fn a_row_deleted_since_validation_refuses_the_whole_publish() {
             .expect("author");
     }
     let validated = validated_drafts(&repo, &scope, tenant(), plan()).await;
-    repo.delete_draft(&scope, tenant(), dropped, RowVersion::new(0), stamp())
+    repo.delete_draft(&scope, tenant(), dropped, RowVersion::new(0), stamp(), None)
         .await
         .expect("discard one of them");
 
@@ -3388,6 +3416,7 @@ async fn every_price_record_carries_the_correlation_its_caller_supplied() {
         price_id,
         RowVersion::new(1),
         stamp_correlated(DELETED_BY_CALL),
+        None,
     )
     .await
     .expect("take it away");

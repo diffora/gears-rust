@@ -690,10 +690,37 @@ impl PriceRepo {
     /// [`RepoError::NotFound`] when no such row is visible to `scope`;
     /// [`RepoError::NotDraft`] when it is visible but frozen;
     /// [`RepoError::StaleRowVersion`] carrying both versions when the submitted
-    /// one is not current; [`RepoError::BulkRowLocked`] when an in-flight bulk
-    /// run holds the row, naming the run; [`RepoError::Db`] on a scope or
-    /// storage failure; [`RepoError::CorruptRow`] when the row reads back
+    /// one is not current; [`RepoError::BulkRowLocked`] when a bulk run **other
+    /// than `on_behalf_of`** holds the row, naming the run; [`RepoError::Db`] on a
+    /// scope or storage failure; [`RepoError::CorruptRow`] when the row reads back
     /// unusable.
+    ///
+    /// # `on_behalf_of`, and why it is here before a caller needs it
+    ///
+    /// The run this delete belongs to, or `None` for an interactive one —
+    /// [`PriceRepo::update_draft`]'s parameter, for
+    /// [`refuse_if_locked_elsewhere`]'s reason: *what the lock excludes is
+    /// somebody else*. It was hard-coded `None` here, which is fail-closed behind
+    /// an absent lane rather than a live defect: neither bulk lane has a delete
+    /// verb (`infra::bulk::commit_rows` has an edit arm and a create arm;
+    /// `infra::repricing` stages successors and creates drafts), so the day one
+    /// lands, a run's own delete of its own locked row would have been refused
+    /// `BULK_ROW_LOCKED` naming the run itself — with every test green, because no
+    /// test can hold a rule against a verb that does not exist. Threading the
+    /// parameter now changes no behaviour and puts the rule in the door rather
+    /// than leaving it for whoever writes that lane (Z7-10).
+    ///
+    /// **And a second refusal stands behind the guard, measured rather than
+    /// assumed.** `fk_pricing_bulk_row_lock_price` references
+    /// `pricing_price (price_id)` with no cascade (`m20260802_000049`), so a held
+    /// row cannot be deleted while its own lock row stands: past the guard the
+    /// statement meets the foreign key and comes back as [`RepoError::Db`] — a 500,
+    /// not a refusal an operator can act on. So the lane that lands a delete verb
+    /// owes [`bulk_repo::release_locks`](super::bulk_repo::release_locks) for that
+    /// row **inside the same transaction as the delete**, and both halves are
+    /// pinned by `tests/sqlite_bulk_commit.rs::the_lock_stops_naming_the_run_that_holds_it_when_that_run_deletes`.
+    /// Deliberately not done here: dropping another aggregate's lock row from a
+    /// price repository is a design decision, not a repair.
     pub async fn delete_draft(
         &self,
         scope: &AccessScope,
@@ -701,6 +728,7 @@ impl PriceRepo {
         price_id: Uuid,
         expected: RowVersion,
         stamp: AuditStamp,
+        on_behalf_of: Option<Uuid>,
     ) -> Result<(), RepoError> {
         let Some(guard) = swap_guard(tenant_id, price_id, expected) else {
             let conn = self.conn()?;
@@ -719,7 +747,12 @@ impl PriceRepo {
                     // delete is not exempt: the foreign key refuses it anyway, so
                     // without this the operator gets a 500 saying the store is
                     // broken instead of a conflict naming the run.
-                    refuse_if_locked_elsewhere(txn, &scope, tenant_id, price_id, None).await?;
+                    //
+                    // And it is `on_behalf_of` rather than a hard-coded `None`,
+                    // for the guard's own reason: what the lock excludes is
+                    // somebody else. See this method's doc.
+                    refuse_if_locked_elsewhere(txn, &scope, tenant_id, price_id, on_behalf_of)
+                        .await?;
                     let Some(_) = mutable_draft(txn, &scope, tenant_id, price_id, expected).await?
                     else {
                         return Err(refuse(txn, &scope, tenant_id, price_id, expected).await);

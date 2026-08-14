@@ -1948,7 +1948,7 @@ async fn drive_every_audited_path(h: &Harness) -> Vec<audit_log::Model> {
         .await
         .expect("author a second row");
     h.prices
-        .delete_draft(&h.scope, TENANT, doomed, RowVersion::new(0), stamp())
+        .delete_draft(&h.scope, TENANT, doomed, RowVersion::new(0), stamp(), None)
         .await
         .expect("discard it");
 
