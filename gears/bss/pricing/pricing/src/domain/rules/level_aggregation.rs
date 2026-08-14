@@ -54,7 +54,11 @@ impl ValidationRule<PriceRow> for LevelFields {
                 misplaced.push("aggregationGranularity");
             }
             if !misplaced.is_empty() {
-                report.violate(
+                // D-312: placement against the frozen `chargeKind`. The two
+                // sibling faults in this file — `aggregationGranularity` on a
+                // `sum` row, and `maxHold` off a level row — are
+                // content-against-content and stay publish-stage.
+                report.violate_at_write(
                     LEVEL_FIELDS_INVALID,
                     subject.subject(),
                     format!(

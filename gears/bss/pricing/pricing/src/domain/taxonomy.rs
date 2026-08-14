@@ -67,7 +67,7 @@ use crate::domain::concurrency::{PolicyTag, TaxonomyTagEntry};
 use crate::domain::overlay::{ScopeClass, ScopeValue};
 use crate::domain::plan_shape::PlanShape;
 use crate::domain::scope_key::Region;
-use crate::domain::validation::{ValidationReport, ValidationRule, Violation};
+use crate::domain::validation::{Stage, ValidationReport, ValidationRule, Violation};
 
 // ---------------------------------------------------------------------------
 // The codes.
@@ -519,6 +519,12 @@ impl RegionsDeclared {
                  fails before publish (C2) — declare it at PUT \
                  /bss-pricing/v1/config/taxonomies/region first"
             ),
+            // `Stage::Write` states what this arrangement already does — D-312.
+            // The doc above says it: judged at save and again at publish, through
+            // one entry point so an operator meets one message. That predates the
+            // stage field and is the precedent D-312 generalises; the field makes
+            // the property declared rather than implied by two call sites.
+            stage: Stage::Write,
         })
     }
 }

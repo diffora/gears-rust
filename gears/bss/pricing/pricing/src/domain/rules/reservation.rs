@@ -105,7 +105,9 @@ impl ValidationRule<PriceRow> for ReservationWellFormed {
         }
 
         if !subject.is_usage() {
-            report.violate(
+            // D-312: a reservation and a frozen non-usage `chargeKind`, both in
+            // the request. The both-or-neither pairing stays publish-stage.
+            report.violate_at_write(
                 RESERVATION_ON_NON_USAGE,
                 subject.subject(),
                 format!(

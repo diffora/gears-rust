@@ -238,7 +238,11 @@ fn check_usage_only_policy(row: &PriceRow, report: &mut ValidationReport) {
     if misplaced.is_empty() {
         return;
     }
-    report.violate(
+    // D-312: the misplaced field and the frozen `chargeKind` are both present.
+    // Its sibling in this file — tier bands on a `flat` row, same code — is NOT
+    // write-stage: both of those operands are content, and `model_kind:
+    // graduated` resolves it by adding intent rather than by retracting.
+    report.violate_at_write(
         EVAL_POLICY_MISPLACED,
         row.subject(),
         format!(
@@ -312,7 +316,10 @@ impl ValidationRule<PriceRow> for KindChargeKindMatrix {
         if legal {
             return;
         }
-        report.violate(
+        // D-312: both operands are in the request and `chargeKind` is frozen by
+        // the scope key, so this row is knowably unpublishable the instant it
+        // arrives — the authoring write refuses it too.
+        report.violate_at_write(
             MODEL_KIND_CHARGEKIND_MISMATCH,
             subject.subject(),
             format!(

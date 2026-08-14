@@ -22,6 +22,50 @@ use std::fmt;
 
 use toolkit_macros::domain_model;
 
+/// When a violation can first be judged — D-312.
+///
+/// The rule set runs in full at the publish pre-check and again inside the
+/// publish commit; that is unchanged and normative (§4.2). What this adds is a
+/// second, *earlier* place a **subset** of the same violations is also judged:
+/// the price authoring write.
+///
+/// The subset is not "the cheap rules" or "the important ones". A violation is
+/// [`Stage::Write`] when **every operand of its fault is present in the request
+/// and one of them is an immutable component of the scope key** — `chargeKind`
+/// above all, the key being uneditable after create. Such a request is complete,
+/// self-inconsistent and knowably unpublishable the instant it arrives, and the
+/// only call that resolves it retracts the field just sent rather than adding
+/// anything. Refusing it at the write therefore costs an author nothing they
+/// could legitimately have wanted.
+///
+/// Everything else is [`Stage::Publish`], and that includes two families it is
+/// tempting to sweep in:
+///
+/// - **An absent operand** — no `model_kind` yet, no bands yet, no amount yet.
+///   These are completed by a later call, which is the multi-call authoring
+///   §4.2 exists to protect.
+/// - **Content contradicting content** — tier bands on a `flat` row. Both
+///   operands are mutable, so `model_kind: graduated` resolves it by adding
+///   intent rather than by retracting.
+///
+/// **The stage belongs to the violation, not to the rule.** Three of the four
+/// rules that emit a write-stage violation also emit publish-stage ones, and
+/// `EVAL_POLICY_MISPLACED` is the code for both a key contradiction and a
+/// content-against-content fault — so neither a marker on the rule nor a filter
+/// keyed on the code can express the split without over-refusing.
+#[domain_model]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Stage {
+    /// Judged at the authoring write **and** at publish.
+    Write,
+    /// Judged at publish only. The default: a new rule is publish-stage unless
+    /// its author states otherwise, which is the safe direction — a rule wrongly
+    /// left here refuses later than it could, and a rule wrongly moved to
+    /// [`Stage::Write`] refuses an author's legitimate intermediate state.
+    #[default]
+    Publish,
+}
+
 /// A blocking rule failure. `code` is the machine-readable discriminator the
 /// design set names (`TIER_BANDS_OVERLAP`, `SUPERSESSION_UNIT_MISMATCH`, …);
 /// `subject` locates it for the author (a price id, a phase id, a scope key).
@@ -34,6 +78,8 @@ pub struct Violation {
     pub subject: String,
     /// Human-readable detail for the authoring surface.
     pub detail: String,
+    /// The earliest surface that can judge this fault (D-312).
+    pub stage: Stage,
 }
 
 /// An advisory finding. Surfaced to the author, never a veto — a warning that
@@ -85,7 +131,51 @@ impl ValidationReport {
             code: code.into(),
             subject: subject.into(),
             detail: detail.into(),
+            stage: Stage::Publish,
         });
+    }
+
+    /// Record a blocking violation the **authoring write** can already judge.
+    ///
+    /// Use only where every operand of the fault is in the request and one of
+    /// them is frozen by the scope key — see [`Stage`]. Reaching for this on a
+    /// fault whose operands can still change is how multi-call authoring breaks,
+    /// and no gate would catch it: the row simply stops saving.
+    pub fn violate_at_write(
+        &mut self,
+        code: impl Into<String>,
+        subject: impl Into<String>,
+        detail: impl Into<String>,
+    ) {
+        self.violations.push(Violation {
+            code: code.into(),
+            subject: subject.into(),
+            detail: detail.into(),
+            stage: Stage::Write,
+        });
+    }
+
+    /// The write-judgeable part of this report, or `None` when there is none.
+    ///
+    /// Warnings are dropped rather than carried: an advisory never blocks, and a
+    /// write refusal that shipped one alongside its violations would suggest it
+    /// might have. The publish pre-check keeps the whole report, this subset
+    /// included — this is an earlier refusal of a part, never a replacement.
+    #[must_use]
+    pub fn write_stage_only(&self) -> Option<Self> {
+        let violations: Vec<Violation> = self
+            .violations
+            .iter()
+            .filter(|v| v.stage == Stage::Write)
+            .cloned()
+            .collect();
+        if violations.is_empty() {
+            return None;
+        }
+        Some(Self {
+            violations,
+            warnings: Vec::new(),
+        })
     }
 
     /// Record an advisory finding.

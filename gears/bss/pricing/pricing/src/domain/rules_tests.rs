@@ -118,3 +118,100 @@ fn the_supersession_pipeline_judges_a_pair_without_asking_which_mechanism_made_i
     assert_eq!(report.violations.len(), 1);
     assert_eq!(report.violations[0].code, SUPERSESSION_UNIT_MISMATCH);
 }
+
+/// D-312's group probe: over the **whole** registered set, which violations the
+/// authoring write may judge.
+///
+/// Armed against the claim the change actually makes, not against half of it. A
+/// probe that only asserted "the four faults are write-stage" would pass against
+/// an implementation that had marked every rule — and that implementation refuses
+/// an author's legitimate half-built row, which no gate here would report. So both
+/// halves are asserted: exactly these codes, and *nothing else from a row that is
+/// merely incomplete*.
+mod write_stage_over_the_whole_set {
+    use super::*;
+    use crate::domain::money::MinorAmount;
+    use crate::domain::price_row::{AggregationFunction, ReservationFlavor};
+    use crate::domain::rules::reservation::RESERVATION_ON_NON_USAGE;
+    use crate::domain::rules::{
+        EVAL_POLICY_MISPLACED, LEVEL_FIELDS_INVALID, MODEL_KIND_CHARGEKIND_MISMATCH,
+    };
+
+    fn minor(units: i64) -> MinorAmount {
+        MinorAmount::new(units).expect("test amount is non-negative")
+    }
+
+    fn write_codes(row: &PriceRow) -> Vec<String> {
+        price_row_rules()
+            .run(row)
+            .write_stage_only()
+            .map(|report| {
+                let mut codes: Vec<String> =
+                    report.violations.iter().map(|v| v.code.clone()).collect();
+                codes.sort();
+                codes.dedup();
+                codes
+            })
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn a_non_usage_row_carrying_every_misplaced_field_reports_three() {
+        // One recurring row cannot also be the `flat`-on-usage case — that fault
+        // needs the opposite charge kind — so the four are proved across two rows.
+        let mut row = PriceRow::new(ChargeKind::Recurring, Some(ModelKind::Flat));
+        row.amount_minor = Some(minor(2_500));
+        row.billing_granularity = Some(BillingGranularity::WholeUnit);
+        row.aggregation_function = Some(AggregationFunction::Peak);
+        row.reserved_rate_minor = Some(minor(3));
+        row.reservation_flavor = Some(ReservationFlavor::Capacity);
+        assert_eq!(
+            write_codes(&row),
+            vec![
+                EVAL_POLICY_MISPLACED.to_owned(),
+                LEVEL_FIELDS_INVALID.to_owned(),
+                RESERVATION_ON_NON_USAGE.to_owned(),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_kind_illegal_on_its_charge_kind_is_the_fourth() {
+        let mut row = PriceRow::new(ChargeKind::Usage, Some(ModelKind::Flat));
+        row.amount_minor = Some(minor(250));
+        row.meter = Some("addon_dr".to_owned());
+        row.billing_granularity = Some(BillingGranularity::WholeUnit);
+        assert_eq!(
+            write_codes(&row),
+            vec![MODEL_KIND_CHARGEKIND_MISMATCH.to_owned()]
+        );
+    }
+
+    #[test]
+    fn a_merely_incomplete_row_is_judged_by_nothing_at_the_write() {
+        // The half that matters most. This row fails publish several times over —
+        // no kind, no amount, no bands — and every one of those faults is
+        // completed by a later call. If any of them reached the write, multi-call
+        // authoring would be broken and only this assertion would say so.
+        let row = PriceRow::new(ChargeKind::Usage, None);
+        assert!(
+            price_row_rules().run(&row).write_stage_only().is_none(),
+            "an incomplete row must still save: {:?}",
+            write_codes(&row)
+        );
+        assert!(
+            !price_row_rules().run(&row).violations.is_empty(),
+            "the probe proves nothing unless this row does fail publish"
+        );
+    }
+
+    #[test]
+    fn a_publishable_row_is_judged_by_nothing_at_the_write() {
+        assert!(
+            price_row_rules()
+                .run(&graduated_usage())
+                .write_stage_only()
+                .is_none()
+        );
+    }
+}

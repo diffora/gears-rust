@@ -155,3 +155,43 @@ fn consumption_on_a_sum_row_is_permitted() {
     row.reservation_flavor = Some(ReservationFlavor::Consumption);
     assert!(run(&row).violations.is_empty(), "{:?}", codes(&run(&row)));
 }
+
+/// D-312 — the non-usage half of this rule is judgeable at the authoring write.
+mod write_stage {
+    use super::*;
+    use crate::domain::validation::Stage;
+
+    fn stage_of(report: &ValidationReport, code: &str) -> Stage {
+        report
+            .violations
+            .iter()
+            .find(|v| v.code == code)
+            .unwrap_or_else(|| panic!("expected a {code} violation: {:?}", codes(report)))
+            .stage
+    }
+
+    #[test]
+    fn a_reservation_on_a_non_usage_row_is_judgeable_at_the_write() {
+        // There is no meter, no quantity and no counter for the reserved rate to
+        // apply to, and `chargeKind` is frozen — so no later call helps.
+        let mut row = PriceRow::new(ChargeKind::Recurring, Some(ModelKind::Flat));
+        row.amount_minor = Some(minor(2_500));
+        row.reserved_rate_minor = Some(minor(3));
+        row.reservation_flavor = Some(ReservationFlavor::Capacity);
+        let report = run(&row);
+        assert_eq!(stage_of(&report, RESERVATION_ON_NON_USAGE), Stage::Write);
+    }
+
+    #[test]
+    fn the_incomplete_pair_is_not_judgeable_at_the_write() {
+        // Both operands are content: the missing half is exactly what a later
+        // call supplies, which is the authoring the design protects.
+        let mut row = usage_row();
+        row.reserved_rate_minor = Some(minor(3));
+        let report = run(&row);
+        assert_eq!(
+            stage_of(&report, RESERVATION_PAIR_INCOMPLETE),
+            Stage::Publish
+        );
+    }
+}

@@ -238,3 +238,42 @@ fn a_max_hold_on_a_recurring_row_fails_publish() {
         vec![LEVEL_FIELDS_INVALID]
     );
 }
+
+/// D-312 — which half of this rule the authoring write can already judge.
+mod write_stage {
+    use super::*;
+    use crate::domain::money::RateMinor;
+    use crate::domain::validation::Stage;
+
+    fn stage_of(report: &ValidationReport, code: &str) -> Stage {
+        report
+            .violations
+            .iter()
+            .find(|v| v.code == code)
+            .unwrap_or_else(|| panic!("expected a {code} violation: {:?}", codes(report)))
+            .stage
+    }
+
+    #[test]
+    fn a_level_field_on_a_non_usage_row_is_judgeable_at_the_write() {
+        // `chargeKind` is frozen by the scope key and the misplaced field is in
+        // the request, so nothing a later call adds can make this row publish.
+        let mut row = PriceRow::new(ChargeKind::Recurring, Some(ModelKind::Flat));
+        row.amount_minor = Some(minor(2_500));
+        row.aggregation_function = Some(AggregationFunction::Peak);
+        let report = findings(&LevelFields, &row);
+        assert_eq!(stage_of(&report, LEVEL_FIELDS_INVALID), Stage::Write);
+    }
+
+    #[test]
+    fn a_granularity_on_a_sum_row_is_not_judgeable_at_the_write() {
+        // The sibling fault, same code, same rule — and both its operands are
+        // content: `aggregationFunction: peak` resolves it by adding intent.
+        let mut row = PriceRow::new(ChargeKind::Usage, Some(ModelKind::PerUnit));
+        row.unit_rate = Some(RateMinor::from_minor_units(1).expect("test rate"));
+        row.billing_granularity = Some(BillingGranularity::WholeUnit);
+        row.aggregation_granularity = Some(AggregationGranularity::Hour);
+        let report = findings(&LevelFields, &row);
+        assert_eq!(stage_of(&report, LEVEL_FIELDS_INVALID), Stage::Publish);
+    }
+}

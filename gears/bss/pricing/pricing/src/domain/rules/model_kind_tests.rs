@@ -358,3 +358,106 @@ fn each_kind_is_legal_on_the_rows_the_matrix_admits() {
         );
     }
 }
+
+/// D-312 — which of these faults the **authoring write** can already judge.
+///
+/// The stage is a property of the violation, not of the rule: two of the rules
+/// below emit both kinds, so a marker on the rule or a filter keyed on the code
+/// would either miss half or refuse an author's legitimate intermediate state.
+/// These cases pin the split at the granularity the fault actually has.
+mod write_stage {
+    use super::*;
+    use crate::domain::validation::Stage;
+
+    fn stages(report: &ValidationReport) -> Vec<(&str, Stage)> {
+        report
+            .violations
+            .iter()
+            .map(|v| (v.code.as_str(), v.stage))
+            .collect()
+    }
+
+    #[test]
+    fn a_kind_illegal_on_the_charge_kind_is_judgeable_at_the_write() {
+        // `flat` on `usage`: both operands present, and `chargeKind` is frozen by
+        // the scope key — the row is knowably unpublishable when it arrives.
+        let mut row = PriceRow::new(ChargeKind::Usage, Some(ModelKind::Flat));
+        row.amount_minor = Some(minor(250));
+        let report = findings(&KindChargeKindMatrix, &row);
+        assert_eq!(
+            stages(&report),
+            vec![(MODEL_KIND_CHARGEKIND_MISMATCH, Stage::Write)]
+        );
+    }
+
+    #[test]
+    fn an_eval_policy_field_on_a_non_usage_row_is_judgeable_at_the_write() {
+        let mut row = flat_recurring();
+        row.billing_granularity = Some(BillingGranularity::WholeUnit);
+        let report = findings(&KindForbiddenFields, &row);
+        assert_eq!(stages(&report), vec![(EVAL_POLICY_MISPLACED, Stage::Write)]);
+    }
+
+    #[test]
+    fn tier_bands_on_a_flat_row_are_not_judgeable_at_the_write() {
+        // The other half of the SAME rule, and the reason a code filter cannot
+        // express this split: both operands are content, so a later
+        // `model_kind: graduated` resolves it by adding intent rather than by
+        // retracting what was just sent. Refusing it at the write would break
+        // multi-call authoring, and nothing would report that it had.
+        let mut row = flat_recurring();
+        row.bands = vec![TierBand::open(0, rate(1))];
+        let report = findings(&KindForbiddenFields, &row);
+        assert_eq!(
+            stages(&report),
+            vec![(EVAL_POLICY_MISPLACED, Stage::Publish)]
+        );
+    }
+
+    #[test]
+    fn an_absent_operand_is_never_judgeable_at_the_write() {
+        // The family the design protects: the kind has not arrived yet, and a
+        // later call adds it.
+        let row = PriceRow::new(ChargeKind::Usage, None);
+        let report = findings(&ExplicitModelKind, &row);
+        assert_eq!(stages(&report), vec![(MODEL_KIND_MISSING, Stage::Publish)]);
+    }
+
+    #[test]
+    fn a_missing_priced_column_is_never_judgeable_at_the_write() {
+        // Also absence, and the one most likely to be swept in by mistake: the
+        // row's kind and charge kind agree, only the money has not been typed.
+        let row = PriceRow::new(ChargeKind::Recurring, Some(ModelKind::Flat));
+        let report = findings(&KindRequiredFields, &row);
+        assert!(
+            report.violations.iter().all(|v| v.stage == Stage::Publish),
+            "an absent amount is completed by a later call: {:?}",
+            stages(&report)
+        );
+    }
+
+    #[test]
+    fn the_write_subset_is_exactly_the_write_stage_violations() {
+        let mut report = ValidationReport::default();
+        report.violate("PUBLISH_ONLY", "s", "d");
+        report.violate_at_write("WRITE_JUDGEABLE", "s", "d");
+        report.warn("ADVISORY", "s", "d");
+
+        let subset = report
+            .write_stage_only()
+            .expect("one write-stage violation");
+        assert_eq!(codes(&subset), vec!["WRITE_JUDGEABLE"]);
+        // Advisories are dropped: one riding along with a refusal would suggest
+        // it had blocked something.
+        assert!(subset.warnings.is_empty());
+        // And the full report is untouched — publish still sees everything.
+        assert_eq!(report.violations.len(), 2);
+    }
+
+    #[test]
+    fn a_report_with_no_write_stage_violation_refuses_nothing() {
+        let mut report = ValidationReport::default();
+        report.violate("PUBLISH_ONLY", "s", "d");
+        assert!(report.write_stage_only().is_none());
+    }
+}
