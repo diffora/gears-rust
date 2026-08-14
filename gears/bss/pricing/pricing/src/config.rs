@@ -28,6 +28,45 @@ pub struct BssPricingConfig {
     /// event broker in this repository yet, and the publish path must not fail
     /// because a fan-out target is absent (the outbox row is still written —
     /// fan-out, not the transaction, is what this gates).
+    ///
+    /// # Nothing reads this flag, and the design set does not say who should
+    ///
+    /// Recorded rather than resolved (review finding Z13-14), because resolving it
+    /// would mean inventing an owner. What is measurable:
+    ///
+    /// * **No code reads it.** The field, one assertion in
+    ///   [`config_tests`](crate::config::config_tests), and two doc comments are its
+    ///   only mentions in the crate.
+    /// * **Its gated component does not exist here.** The relay that would drain
+    ///   `pricing_outbox` and fan out is not in this repository.
+    ///   [`crate::infra::storage::repo::outbox_repo`] states the consequence for the
+    ///   write side and holds to it: the flag "gates **fan-out, not the row**", so
+    ///   `enqueue` is unconditional and never reads it — "a publish whose row was
+    ///   skipped because fan-out was off would be a publish nothing could ever
+    ///   replay." [`crate::infra::read_model`] gives the same argument for why no
+    ///   inbound port is defined either.
+    /// * **The design set is silent.** `events_enabled` appears in no PRD
+    ///   requirement, no design slice and no decision; the word "relay" appears
+    ///   nowhere in the gear's docs outside the review folder. D-66 settles that
+    ///   `CatalogVersionPublished` is the *registry's* event and deliberately outside
+    ///   this gear's frozen set, which moves an emitter out of scope and says nothing
+    ///   about a drainer.
+    ///
+    /// So there are two defensible readings and this comment does not choose:
+    ///
+    /// 1. **Owed and dormant.** The outbox exists, `idx_pricing_outbox_undrained` is
+    ///    a cursor written for a drainer, and the frozen event set is normative — so
+    ///    something must eventually drain it, and this flag is that component's
+    ///    switch, correctly defaulted off until it exists.
+    /// 2. **Not this gear's at all.** The flag is an implementation-originated knob
+    ///    for a component the design set never assigns here, in which case what is
+    ///    owed is a decision deleting it rather than a producer honouring it.
+    ///
+    /// **No producer is implemented on either reading**, per the rule this gear
+    /// applies to a rule with no operand: a knob whose owner the design set does not
+    /// name is a design question, and building a reader would settle it by
+    /// accident. What the flag is *not* is forgotten — the marker is here, at the
+    /// declaration, where a reader looking for the switch arrives.
     pub events_enabled: bool,
     /// Background-job cadences.
     pub jobs: JobsConfig,
