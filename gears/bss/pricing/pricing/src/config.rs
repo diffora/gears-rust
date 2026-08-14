@@ -2,8 +2,16 @@
 //!
 //! Every field has a launch default, so a `gears:` entry with no `config:`
 //! block is a valid deployment. The numbers are the ratified NFR values
-//! (`PRD.md` §14/§15, ratified 2026-07-28), not invented ones; no field here can
-//! turn a fail-closed check off.
+//! (`PRD.md` §14/§15, ratified 2026-07-28), not invented ones.
+//!
+//! **One field here does turn a fail-closed check off, and it is the only one.**
+//! This sentence used to say none could, and that was true until
+//! [`CatalogVersionRegistryConfig`] was added: its non-default mode replaces the
+//! fail-closed `CatalogVersion` source with one that invents versions locally. It
+//! is amended rather than quietly contradicted, because a reader who trusts the
+//! old sentence would look for the exception nowhere. Every *other* guard still
+//! holds to it — the fixture gate in particular has no off switch and
+//! [`FixturesConfig`] says why.
 //!
 //! **This section is per deployment, and four of its values are per tenant**
 //! (D-152). The four §14 caps in [`LimitsConfig`] are the **default** a tenant
@@ -74,6 +82,9 @@ pub struct BssPricingConfig {
     pub limits: LimitsConfig,
     /// Where the joint conformance-fixture registry is read from.
     pub fixtures: FixturesConfig,
+    /// Which `CatalogVersion` source the publish path talks to. Defaults to the
+    /// fail-closed one; see [`CatalogVersionRegistryConfig`].
+    pub catalog_version_registry: CatalogVersionRegistryConfig,
 }
 
 impl BssPricingConfig {
@@ -88,6 +99,42 @@ impl BssPricingConfig {
         self.limits.validate()?;
         self.fixtures.validate()
     }
+}
+
+/// Which `CatalogVersion` source the publish path talks to.
+///
+/// The registry gear (Product & SKU) is the sole legitimate incrementer and it is
+/// not in this repository, so the default leaves the fail-closed source in place
+/// and every publish answers `503`. That is correct for anything real, and it also
+/// makes the whole publish-dependent half of the gear — windows, cutovers,
+/// supersessions, repricing, migrations — unreachable on a deployment meant to
+/// demonstrate it.
+///
+/// **The escape is deliberately awkward.** The mode is a named value rather than a
+/// boolean, so a deployment cannot switch it on by writing `true` next to
+/// something else, and so the file itself records what was chosen. See
+/// [`crate::infra::local_dev_registry`] for what the non-default mode costs.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct CatalogVersionRegistryConfig {
+    /// Which source to use. Default [`CatalogVersionSource::Unconfigured`].
+    pub mode: CatalogVersionSource,
+}
+
+/// The `CatalogVersion` sources a deployment may name.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CatalogVersionSource {
+    /// Fail closed: no registry, so no publish becomes addressable. The default,
+    /// and the only correct value while the registry gear does not exist.
+    #[default]
+    Unconfigured,
+    /// Invent versions in this process. **Not a registry**, and named at length so
+    /// that it cannot be selected without saying so: a deployment carrying this
+    /// value is choosing versions no registry issued, which is the second
+    /// incrementer `CatalogVersionRegistryV1` warns makes `CatalogVersion`
+    /// unordered. For a stand with no registry to talk to, and nothing else.
+    LocalDevInventedVersions,
 }
 
 /// Where the generated joint conformance-fixture registry lives

@@ -51,6 +51,46 @@ fn defaults_are_the_ratified_launch_values() {
     assert!(cfg.validate().is_ok());
 }
 
+/// The `CatalogVersion` source: fail-closed unless a deployment says otherwise in
+/// words.
+///
+/// Three properties, and the second is the point of the whole shape. A boolean
+/// would let the dev source be selected by a `true` sitting next to something
+/// else; the named value cannot be arrived at by accident, and it leaves the
+/// admission in the deployment's own file.
+#[test]
+fn the_catalog_version_source_is_fail_closed_and_opting_out_must_be_spelled() {
+    use super::CatalogVersionSource;
+
+    assert_eq!(
+        BssPricingConfig::default().catalog_version_registry.mode,
+        CatalogVersionSource::Unconfigured,
+        "a deployment that says nothing must not publish invented versions"
+    );
+
+    let opted: BssPricingConfig = serde_json::from_str(
+        "{\"catalog_version_registry\": {\"mode\": \"local_dev_invented_versions\"}}",
+    )
+    .expect("the documented spelling parses");
+    assert_eq!(
+        opted.catalog_version_registry.mode,
+        CatalogVersionSource::LocalDevInventedVersions
+    );
+
+    // A boolean, or any other near-miss, is refused rather than coerced. Without
+    // this the "cannot be set by accident" claim is prose.
+    for near_miss in [
+        "{\"catalog_version_registry\": {\"mode\": true}}",
+        "{\"catalog_version_registry\": {\"mode\": \"local_dev\"}}",
+        "{\"catalog_version_registry\": {\"enabled\": true}}",
+    ] {
+        assert!(
+            serde_json::from_str::<BssPricingConfig>(near_miss).is_err(),
+            "expected {near_miss} to be refused"
+        );
+    }
+}
+
 #[test]
 fn the_fixtures_section_carries_only_a_path() {
     // The gate has no off switch, so the section has no boolean. Anything that

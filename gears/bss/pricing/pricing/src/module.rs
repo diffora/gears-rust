@@ -935,15 +935,40 @@ impl Gear for BssPricingGear {
         // survivable at boot and fatal at publish, which is the right split:
         // the registry gear is not in this repository yet, and a version this
         // gear invented locally would make it a second incrementer.
+        //
+        // **A registered client always wins.** The config mode below is the
+        // fallback's fallback, so a deployment that later gains a real registry
+        // takes it even if the dev mode was left in its file — the failure to
+        // avoid is a stand quietly keeping invented versions after the registry
+        // arrives.
         let catalog_version_registry: Arc<dyn CatalogVersionRegistryV1> = ctx
             .client_hub()
             .get::<dyn CatalogVersionRegistryV1>()
-            .unwrap_or_else(|_| {
-                info!(
-                    "bss-pricing: no CatalogVersionRegistryV1 registered; publish will fail \
-                     closed until the registry gear is wired"
-                );
-                Arc::new(UnconfiguredCatalogVersionRegistryV1)
+            .unwrap_or_else(|_| match config.catalog_version_registry.mode {
+                crate::config::CatalogVersionSource::LocalDevInventedVersions => {
+                    // At `warn!`, every boot, naming the mode: an operator who
+                    // inherits this deployment should learn it from the log rather
+                    // than from a version collision.
+                    tracing::warn!(
+                        mode = "local_dev_invented_versions",
+                        ref_prefix = crate::infra::local_dev_registry::DEV_LOCAL_REF_PREFIX,
+                        "bss-pricing: publishing with LOCALLY INVENTED CatalogVersions. This \
+                         gear is acting as a second incrementer, which makes CatalogVersion \
+                         unordered against any real registry. Every pending ref it mints is \
+                         prefixed so the rows can be found later. Never run this beside the \
+                         Product & SKU registry."
+                    );
+                    Arc::new(
+                        crate::infra::local_dev_registry::LocalDevCatalogVersionRegistryV1::new(),
+                    )
+                }
+                crate::config::CatalogVersionSource::Unconfigured => {
+                    info!(
+                        "bss-pricing: no CatalogVersionRegistryV1 registered; publish will fail \
+                         closed until the registry gear is wired"
+                    );
+                    Arc::new(UnconfiguredCatalogVersionRegistryV1)
+                }
             });
 
         // The joint-conformance publish gate. Deliberately NOT fatal when the
