@@ -1565,3 +1565,171 @@ async fn a_row_on_a_plan_this_tenant_does_have_still_lands() {
     assert_eq!(response.status(), StatusCode::CREATED);
     assert_eq!(price_rows(&harness, plan_id).await.len(), 1);
 }
+
+// --- D-312: key contradictions are refused where they are made ---------------
+
+/// The body from the screenshot that started this: `flat` on a `usage` key.
+fn flat_on_usage_body() -> serde_json::Value {
+    let mut body = create_body("EU");
+    body["scope_key"]["charge_kind"] = serde_json::json!("usage");
+    body["scope_key"]["meter"] = serde_json::json!("addon_dr");
+    body
+}
+
+#[tokio::test]
+async fn a_kind_illegal_on_the_charge_kind_is_refused_at_save() {
+    // It used to answer 201, and again 200 on every subsequent PATCH; the refusal
+    // arrived at publish, as the whole plan's, naming a rule the author met
+    // several screens earlier.
+    let harness = Harness::new().await;
+    let plan_id = seeded_plan(&harness).await;
+
+    let response = harness
+        .allowed()
+        .send(with_headers(
+            "POST",
+            &prices_path(plan_id),
+            Some(flat_on_usage_body()),
+            &keyed("d312-flat-on-usage-1"),
+        ))
+        .await;
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(
+        problem_code(response).await,
+        "MODEL_KIND_CHARGEKIND_MISMATCH"
+    );
+    assert!(
+        price_rows(&harness, plan_id).await.is_empty(),
+        "a refused save writes no row"
+    );
+}
+
+#[tokio::test]
+async fn an_eval_policy_field_off_its_charge_kind_is_refused_at_save() {
+    let harness = Harness::new().await;
+    let plan_id = seeded_plan(&harness).await;
+    let body = create_body_with("EU", "billing_granularity", serde_json::json!("whole_unit"));
+
+    let response = harness
+        .allowed()
+        .send(with_headers(
+            "POST",
+            &prices_path(plan_id),
+            Some(body),
+            &keyed("d312-granularity-1"),
+        ))
+        .await;
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(problem_code(response).await, "EVAL_POLICY_MISPLACED");
+}
+
+/// The half that decides whether this change is the design or its opposite.
+///
+/// A row missing its kind, its price, or its bands is a row a later call
+/// completes — the multi-call authoring the whole publish-time rule set exists to
+/// allow. If any of these ever answers 400, the write plane has become a
+/// validator and nothing else here would say so.
+#[tokio::test]
+async fn an_incomplete_row_still_saves() {
+    let harness = Harness::new().await;
+    let plan_id = seeded_plan(&harness).await;
+
+    let mut no_kind = create_body("EU");
+    no_kind["content"] = serde_json::json!({ "tax_inclusive": false });
+    let response = harness
+        .allowed()
+        .send(with_headers(
+            "POST",
+            &prices_path(plan_id),
+            Some(no_kind),
+            &keyed("d312-incomplete-1"),
+        ))
+        .await;
+    assert_eq!(
+        response.status(),
+        StatusCode::CREATED,
+        "a row whose kind has not arrived yet is authorable"
+    );
+
+    let mut unpriced = create_body("EU");
+    unpriced["scope_key"]["charge_kind"] = serde_json::json!("one_time");
+    unpriced["content"] = serde_json::json!({ "model_kind": "flat", "tax_inclusive": false });
+    let response = harness
+        .allowed()
+        .send(with_headers(
+            "POST",
+            &prices_path(plan_id),
+            Some(unpriced),
+            &keyed("d312-incomplete-2"),
+        ))
+        .await;
+    assert_eq!(
+        response.status(),
+        StatusCode::CREATED,
+        "a row whose amount has not been typed yet is authorable"
+    );
+}
+
+/// The PATCH door, on a row that is legal until the edit makes it otherwise.
+///
+/// This is the door the Studio actually used: an author opens a stored usage row
+/// and picks a kind the charge kind does not allow. Covering only the create would
+/// have left it open — and the row would go on saving 200 until publish refused
+/// the whole plan.
+#[tokio::test]
+async fn an_edit_into_a_key_contradiction_is_refused_on_patch() {
+    let harness = Harness::new().await;
+    let plan_id = seeded_plan(&harness).await;
+
+    // A legal usage row, authored through the route.
+    let mut legal = create_body("EU");
+    legal["scope_key"]["charge_kind"] = serde_json::json!("usage");
+    legal["scope_key"]["meter"] = serde_json::json!("addon_dr");
+    legal["content"] = serde_json::json!({
+        "model_kind": "per_unit",
+        "unit_rate_nano_minor": 1_000_000_000_i64,
+        "billing_granularity": "whole_unit",
+        "tax_inclusive": false
+    });
+    let response = harness
+        .allowed()
+        .send(with_headers(
+            "POST",
+            &prices_path(plan_id),
+            Some(legal),
+            &keyed("d312-patch-1"),
+        ))
+        .await;
+    assert_eq!(
+        response.status(),
+        StatusCode::CREATED,
+        "the legal usage row must author, or this test proves nothing"
+    );
+    let tag = etag_of(&response).expect("the create answers a tag");
+    let body = body_json(response).await;
+    let price_id = body["price_id"]
+        .as_str()
+        .expect("the id is answered")
+        .to_owned();
+
+    // The edit the picker used to offer: `flat`, on a usage key.
+    let response = harness
+        .allowed()
+        .send(with_headers(
+            "PATCH",
+            &price_path(plan_id, price_id.parse().expect("uuid")),
+            Some(serde_json::json!({
+                "content": { "model_kind": "flat", "amount_minor": 300, "tax_inclusive": false }
+            })),
+            &[("if-match", tag.as_str())],
+        ))
+        .await;
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(
+        problem_code(response).await,
+        "MODEL_KIND_CHARGEKIND_MISMATCH"
+    );
+}

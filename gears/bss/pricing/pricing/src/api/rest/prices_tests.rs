@@ -382,3 +382,115 @@ fn a_basis_outside_the_canonical_set_is_refused_naming_the_set() {
     assert!(rendered.contains("calendar_days_actual"), "{rendered}");
     assert!(rendered.contains("by_second"), "{rendered}");
 }
+
+/// D-312 — what the authoring write refuses, and what it must keep accepting.
+///
+/// The second half is the load-bearing one. This change is one careless `if` away
+/// from being "the write plane validates rows", which is the design §4.2 exists to
+/// prevent, and the only thing that would report it is a case asserting that an
+/// incomplete row still saves.
+mod key_contradictions {
+    use super::*;
+    use crate::domain::rules::MODEL_KIND_CHARGEKIND_MISMATCH;
+
+    fn key_on(charge_kind: ChargeKind) -> ScopeKey {
+        ScopeKey::new(
+            PlanId::new(Uuid::from_u128(0x91a4)),
+            CurrencyCode::new("USD").expect("currency"),
+            Region::new("EU").expect("region"),
+            PhaseId::new(Uuid::from_u128(0x9ba5e)),
+            PriceEligibility::AllSubscriptions,
+            charge_kind,
+            Cohort::None,
+        )
+        .expect("key")
+    }
+
+    fn check(charge_kind: ChargeKind, view: &PriceContentView) -> Result<(), String> {
+        let content = content_of(view).expect("the view converts");
+        super::super::require_no_key_contradiction(&key_on(charge_kind), &content)
+            .map_err(|e| format!("{e:?}"))
+    }
+
+    #[test]
+    fn a_flat_row_on_a_usage_key_is_refused_at_the_write() {
+        let refusal = check(ChargeKind::Usage, &clean_view()).expect_err("refused");
+        assert!(
+            refusal.contains(MODEL_KIND_CHARGEKIND_MISMATCH),
+            "expected the matrix code, got: {refusal}"
+        );
+    }
+
+    #[test]
+    fn the_same_row_on_a_recurring_key_is_accepted() {
+        // The identical content. Only the frozen half of the pair moved, which is
+        // what makes the case above about the key rather than about `flat`.
+        check(ChargeKind::Recurring, &clean_view()).expect("a flat recurring row is legal");
+    }
+
+    #[test]
+    fn a_graduated_usage_row_is_not_judged_against_the_placeholder_charge_kind() {
+        // `content_of` builds its row with `ChargeKind::Recurring` as a placeholder.
+        // Judge that instead of the key and `graduated` reads as a recurring band
+        // row — refused, and every legitimate metered price with it. This case is
+        // the reason the helper takes the key at all.
+        let view = PriceContentView {
+            model_kind: Some("graduated".to_owned()),
+            amount_minor: None,
+            bands: Some(vec![TierBandView {
+                from_qty: 0,
+                to_qty: None,
+                unit_price_nano_minor: 1_000_000_000,
+            }]),
+            billing_granularity: Some("whole_unit".to_owned()),
+            tier_aggregation_window: Some("calendar_month".to_owned()),
+            ..clean_view()
+        };
+        check(ChargeKind::Usage, &view).expect("a graduated usage row is legal");
+    }
+
+    #[test]
+    fn an_eval_policy_field_on_a_recurring_key_is_refused_at_the_write() {
+        let view = PriceContentView {
+            billing_granularity: Some("whole_unit".to_owned()),
+            ..clean_view()
+        };
+        check(ChargeKind::Recurring, &view).expect_err("billingGranularity is usage-row only");
+    }
+
+    #[test]
+    fn a_row_with_no_model_kind_still_saves() {
+        // Absence. The kind arrives in a later call, and refusing this is exactly
+        // the multi-call authoring §4.2 protects.
+        let view = PriceContentView {
+            model_kind: None,
+            amount_minor: None,
+            ..clean_view()
+        };
+        check(ChargeKind::Usage, &view).expect("an unfinished row is authorable");
+        check(ChargeKind::Recurring, &view).expect("an unfinished row is authorable");
+    }
+
+    #[test]
+    fn a_priced_row_with_no_price_still_saves() {
+        // Also absence, and the one most likely to be swept in: the kind and the
+        // charge kind agree, only the money has not been typed yet.
+        let view = PriceContentView {
+            model_kind: Some("flat".to_owned()),
+            amount_minor: None,
+            ..clean_view()
+        };
+        check(ChargeKind::Recurring, &view).expect("an unpriced draft is authorable");
+    }
+
+    #[test]
+    fn a_graduated_row_with_no_bands_yet_still_saves() {
+        let view = PriceContentView {
+            model_kind: Some("graduated".to_owned()),
+            amount_minor: None,
+            bands: None,
+            ..clean_view()
+        };
+        check(ChargeKind::Usage, &view).expect("a ladder is laid over several calls");
+    }
+}

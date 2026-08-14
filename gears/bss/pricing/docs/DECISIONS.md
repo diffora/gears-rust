@@ -3343,8 +3343,23 @@ the classification, and the two would drift the first time a rule was added.
   in phase 1 and refuses it entire, so no surface depends on a permissive write
   door to land shape-invalid rows.
 
-##### Owed on landing
+##### The existing unpublishable set, counted rather than assumed
 
-An inventory of rows already carrying a key contradiction, per plan, so the
-catalog's existing unpublishable set is known rather than discovered one publish at
-a time.
+Run against the stand on 2026-08-14, before the write-side check could affect
+anything: **11 of 40 stored price rows across 26 plans carry a key contradiction**
+— over a quarter of the catalog, unpublishable, and nobody knew.
+
+| fault | rows |
+|---|---|
+| `EVAL_POLICY_MISPLACED` — `billing_granularity` on a recurring row | 9 |
+| `MODEL_KIND_CHARGEKIND_MISMATCH` — `flat` on a `usage` key | 2 |
+
+Both populations have a named author. The nine came from the Pricing Studio's
+`defaultContent`, which set `billing_granularity` on every row it created
+regardless of charge kind; the two from the era when its add dialog took the model
+kind and the charge kind as independent fields. Both client defects are fixed, and
+neither fix reaches a row already stored — which is the whole reason this count
+exists as a number rather than as an expectation.
+
+Nothing rewrites them. The rows stay as their authors left them, they stay
+unpublishable, and their next `PATCH` now says so instead of answering 200.

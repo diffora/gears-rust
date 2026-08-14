@@ -693,6 +693,10 @@ async fn create_price(
     // whether its region is declared is asking about nothing.
     require_existing_plan(&state, &scope, tenant, plan_id).await?;
     require_declared_region(&state, &scope, tenant, &key).await?;
+    // D-312, and it sits beside the region check for the same reason that one
+    // exists: without it an author is answered 201 and learns at publish, possibly
+    // from a different person on a different day.
+    require_no_key_contradiction(&key, &content)?;
     let now = Utc::now();
 
     let guard = GuardedRequest {
@@ -787,6 +791,11 @@ async fn patch_price(
         }
     }
     let content = content_of(&body.content)?;
+    // The stored key, because the key is immutable and the block above has already
+    // refused a body that names a different one. A row can only reach the bad state
+    // through one of the two verbs, so covering the create alone would leave open
+    // the door an existing row is edited through.
+    require_no_key_contradiction(&stored.scope_key, &content)?;
 
     let updated = state
         .prices
@@ -1083,6 +1092,40 @@ async fn require_declared_region(
         )));
     }
     Ok(())
+}
+
+/// D-312 — refuse a row the write can already see is unpublishable.
+///
+/// The rule set stays where it was: `run_publish_rules` runs all of it, twice, and
+/// nothing about §4.2 moves. This runs the **same** pipeline here and keeps only
+/// the violations marked [`Stage::Write`](crate::domain::validation::Stage) — the
+/// faults whose every operand is in the request with one of them frozen by the
+/// scope key. Such a request is complete and knowably unpublishable when it
+/// arrives, and the only call that resolves it retracts the field just sent.
+///
+/// **The charge kind must come from the key, not from the content.** `content_of`
+/// builds its `PriceRow` with `ChargeKind::Recurring` as a placeholder — that row
+/// is a conversion vehicle for the content columns and its charge kind is a lie by
+/// construction. Judging the placeholder would make every `graduated` usage row
+/// look like a `graduated` recurring one and refuse it outright, which is this
+/// change's most inviting way to be wrong.
+///
+/// Answers the enumerated report rather than a single message: a client already
+/// parsing the publish envelope parses this unchanged, and folding a
+/// multi-violation report into one line hides the second fault behind the first.
+fn require_no_key_contradiction(
+    key: &ScopeKey,
+    content: &PriceContent,
+) -> Result<(), CanonicalError> {
+    let mut subject = content.row.clone();
+    subject.charge_kind = key.charge_kind();
+    let report = crate::domain::rules::price_row_rules().run(&subject);
+    match report.write_stage_only() {
+        None => Ok(()),
+        Some(write_stage) => Err(CanonicalError::from(DomainError::ValidationFailed(
+            write_stage,
+        ))),
+    }
 }
 
 /// Build the canonical scope key from the path's plan and the body's axes.
