@@ -702,8 +702,27 @@ pub async fn retire_in(
 ///
 /// Derived rather than random, so a retry of the same retirement is handed the
 /// same pending handle instead of stranding a second one.
+///
+/// **It leads with the act, and it used to lead with the tenant** (Z9-10). The
+/// registry is a cross-tenant service whose idempotency is keyed on exactly this
+/// string, and this was the one id of the five whose uniqueness rested on a
+/// segment of a string built somewhere else: `{tenant}/{subject_ref}`, where the
+/// `/retirement/` that told it apart from a publish of the same revision is
+/// `approval::retirement_unit_ref`'s to spell and to change. The four siblings all
+/// carry a discriminator of their own — `publish.rs`' `{kind_token}/…`,
+/// `supersession.rs`' `supersession/…`, `cutover.rs`' `cutover/…`, `window.rs`'
+/// `…/{act}` — so this one now does too, and no collision depends on a subject
+/// helper keeping a segment it never promised.
+///
+/// **Re-spelling strands an outstanding pending ref**, which is the same re-freeze
+/// question `PublishUnitKind::request_token` carries: a retirement that requested a
+/// version under the old id and has not committed will request a *new* handle on
+/// its retry, leaving the first assigned and unreferenced. It is stranded, not
+/// double-spent — the flip is guarded by `plan_repo::retire_revision`'s own
+/// compare-and-swap, not by the handle — and the window is one uncommitted
+/// retirement per plan.
 fn retirement_request_id(tenant_id: Uuid, subject_ref: &str) -> String {
-    format!("{tenant_id}/{subject_ref}")
+    format!("retirement/{tenant_id}/{subject_ref}")
 }
 
 /// The before/after state an audit record carries for a retirement.
@@ -716,3 +735,7 @@ fn retirement_state(state: LifecycleState, pending_ref: Option<&str>) -> JsonVal
         None => serde_json::json!({ "lifecycleState": state.as_str() }),
     }
 }
+
+#[cfg(test)]
+#[path = "retirement_tests.rs"]
+mod retirement_tests;
