@@ -218,7 +218,7 @@ async fn a_revision_beyond_the_old_columns_range_round_trips() {
     let conn = provider.conn().expect("scoped connection");
 
     let tenant_id = Uuid::parse_str(TENANT).expect("a tenant uuid");
-    let beyond = u64::from(u32::MAX / 2) + 1;
+    let beyond = u64::try_from(i32::MAX).expect("i32::MAX is non-negative") + 1;
     let instant = Utc
         .with_ymd_and_hms(2026, 11, 5, 0, 0, 0)
         .single()

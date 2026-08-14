@@ -42,7 +42,7 @@
 //!
 //! On `SQLite` the two spellings **are the same type**. Affinity is assigned by
 //! substring: any declared type containing `INT` takes INTEGER affinity, and a
-//! SQLite integer is stored in up to 8 bytes regardless of what the column was
+//! `SQLite` integer is stored in up to 8 bytes regardless of what the column was
 //! declared as. So `integer` there already addressed the whole `u64` range that
 //! fits in an `i64`, the narrowing never existed on that engine, and the only thing
 //! a `SQLite` arm could change is the word in `sqlite_master`. That word would cost

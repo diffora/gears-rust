@@ -219,7 +219,7 @@ async fn a_revision_beyond_the_old_columns_range_round_trips() {
     let provider = harness().await;
     let conn = provider.conn().expect("conn");
     let id = Uuid::now_v7();
-    let beyond = u64::from(u32::MAX / 2) + 1;
+    let beyond = u64::try_from(i32::MAX).expect("i32::MAX is non-negative") + 1;
 
     let mut wide = new_migration(id);
     wide.source_revision = beyond;

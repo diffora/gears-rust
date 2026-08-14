@@ -686,6 +686,13 @@ fn declared_query_params(openapi: &OpenApiRegistryImpl, method: &str, path: &str
     names
 }
 
+/// `(method, path, extractor type, the query parameters the handler reads)`.
+///
+/// Named because the tuple is read by two tests that mean different things by it:
+/// the third element is what binds the roster to the source scan, and the fourth is
+/// what binds it to the emitted document.
+type QueryReadingRoute = (&'static str, &'static str, &'static str, Vec<&'static str>);
+
 /// Every route that takes a `Query<T>` extractor, the extractor it takes, and the
 /// query parameters its handler therefore reads.
 ///
@@ -697,7 +704,7 @@ fn declared_query_params(openapi: &OpenApiRegistryImpl, method: &str, path: &str
 /// the defect it is checking — the F-12 class — and its own predecessor showed why:
 /// it listed the three routes a fix wave had just visited and was silent about the
 /// nine others.
-fn query_reading_routes() -> Vec<(&'static str, &'static str, &'static str, Vec<&'static str>)> {
+fn query_reading_routes() -> Vec<QueryReadingRoute> {
     use bss_pricing::api::rest::approvals::APPROVALS;
     use bss_pricing::api::rest::audit::AUDIT;
     use bss_pricing::api::rest::bundles::{BUNDLE_BY_ID, BUNDLES};
