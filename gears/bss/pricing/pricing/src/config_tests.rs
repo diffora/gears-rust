@@ -300,8 +300,8 @@ fn the_warm_cadence_at_or_past_the_commit_overdue_threshold_is_rejected() {
 
     for tick in [300, 600] {
         let jobs = JobsConfig {
-            catalog_version_overdue_secs: 300,
             readmodel_warm_tick_secs: tick,
+            catalog_version_overdue_secs: 300,
             ..JobsConfig::default()
         };
 
@@ -316,8 +316,8 @@ fn the_warm_cadence_at_or_past_the_commit_overdue_threshold_is_rejected() {
     // One second inside it is accepted, for the window arm's reason: the refusal is
     // of a relation, not of a value.
     let inside = JobsConfig {
-        catalog_version_overdue_secs: 300,
         readmodel_warm_tick_secs: 299,
+        catalog_version_overdue_secs: 300,
         ..JobsConfig::default()
     };
     assert!(inside.validate().is_ok());

@@ -29,6 +29,8 @@
 //! `readmodel_warm` raises cannot fire, because the task that raises them is the
 //! dead one.
 
+#![allow(clippy::expect_used, clippy::unwrap_used)]
+
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -170,7 +172,7 @@ fn a_warm_pass_is_worth_logging_exactly_when_it_moved_or_failed_at_something() {
             pending_seen: 9,
             ..SweepReport::default()
         }),
-        "seeing tenants and refs is not doing anything with them — this is every tick \
+        "seeing tenants and refs is not doing anything with them: this is every tick \
          inside D-47's batching budget"
     );
     // A deployment state, not an event. `readmodel_warm` puts it at `debug` because
@@ -298,7 +300,7 @@ fn gated_job(
 async fn every_leased_pass_frees_its_slot_for_the_next_tick() {
     let provider = migrated_provider().await;
     let lease = coord::LeaseManager::new(provider.db());
-    let ttl = Duration::from_secs(60);
+    let ttl = Duration::from_mins(1);
     let metrics: Arc<dyn PricingMetricsPort> =
         Arc::new(crate::domain::ports::metrics::NoopPricingMetrics);
 
@@ -312,7 +314,7 @@ async fn every_leased_pass_frees_its_slot_for_the_next_tick() {
         BssPricingGear::take_lease(&lease, WARM_LEASE_KEY, ttl)
             .await
             .is_none(),
-        "a dropped guard holds its row until the TTL — if this acquires, the lease is not a \
+        "a dropped guard holds its row until the TTL, so if this acquires, the lease is not a \
          lease and every assertion below measures nothing"
     );
 
@@ -353,7 +355,7 @@ async fn every_leased_pass_frees_its_slot_for_the_next_tick() {
         BssPricingGear::take_lease(&lease, GATED_MARKETS_LEASE_KEY, ttl)
             .await
             .is_some(),
-        "the gated-markets pass must release its slot — this is the one that did not (Z10-2)"
+        "the gated-markets pass must release its slot; this is the one that did not (Z10-2)"
     );
 }
 
@@ -391,7 +393,7 @@ async fn two_gated_market_ticks_publish_twice_rather_than_every_other_tick() {
     let lease = coord::LeaseManager::new(provider.db());
     // The TTL the ticker passes **is** its tick (`gated_markets_interval()`), and
     // the whole defect lived in that equality, so the case uses the same shape.
-    let ttl = Duration::from_secs(60);
+    let ttl = Duration::from_mins(1);
     let counter = Arc::new(CountingGauge::default());
     let metrics: Arc<dyn PricingMetricsPort> = Arc::clone(&counter) as Arc<dyn PricingMetricsPort>;
     let job = gated_job(&provider, &metrics);
@@ -418,7 +420,7 @@ async fn two_gated_market_ticks_publish_twice_rather_than_every_other_tick() {
 async fn the_three_sweeps_hold_three_independent_slots() {
     let provider = migrated_provider().await;
     let lease = coord::LeaseManager::new(provider.db());
-    let ttl = Duration::from_secs(60);
+    let ttl = Duration::from_mins(1);
 
     let warm = BssPricingGear::take_lease(&lease, WARM_LEASE_KEY, ttl).await;
     let window = BssPricingGear::take_lease(&lease, WINDOW_ACTIVATION_LEASE_KEY, ttl).await;
@@ -545,7 +547,7 @@ async fn the_warm_job_the_lifecycle_builds_reports_on_the_metrics_port_it_is_han
     );
     assert_eq!(
         report.commit_overdue, 1,
-        "one ref, an hour old, never observed committed: §3.6's predicate holds"
+        "one ref, an hour old, never observed committed: sec 3.6's predicate holds"
     );
     assert_eq!(
         harness.counter_value(
