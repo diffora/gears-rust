@@ -488,17 +488,6 @@ impl OverlayRepo {
     /// [`RepoError::NotFound`] when the revision is not an open draft;
     /// [`RepoError::OverlayPrecedenceHeld`] when the index refuses the flip;
     /// [`RepoError::Db`] on a scope or storage failure.
-    /// Publish a draft revision and supersede its predecessor, **in one commit**.
-    ///
-    /// §6 requires the pair to be atomic, and the partial precedence index makes
-    /// the intermediate state unreachable rather than merely wrong: two
-    /// published revisions of one overlay on one `(class, precedence)` is
-    /// exactly what that index refuses.
-    ///
-    /// # Errors
-    /// [`RepoError::NotFound`] when the revision is not an open draft;
-    /// [`RepoError::OverlayPrecedenceHeld`] when the index refuses the flip;
-    /// [`RepoError::Db`] on a scope or storage failure.
     pub async fn publish_revision(
         &self,
         scope: &AccessScope,
@@ -2091,11 +2080,6 @@ async fn overlay_facts(
     Ok(facts)
 }
 
-/// The targets one published line at a lower precedence would have a `fixed`
-/// layer discard (D-138).
-///
-/// A list-default line matches **every** target of its own overlay, so it
-/// contributes that whole set rather than one plan.
 /// The tie one published line of a **different** class at the same precedence
 /// forms with the candidate (D-230).
 ///
@@ -2128,6 +2112,11 @@ fn collect_cross_class_tie(
     }
 }
 
+/// The targets one published line beneath the candidate would have a `fixed`
+/// layer discard (D-138).
+///
+/// A list-default line matches **every** target of its own overlay, so it
+/// contributes that whole set rather than one plan.
 fn collect_lower_layer(into: &mut BTreeSet<PlanId>, holder: &OverlayRecord, line: &OverlayLine) {
     match line.key.plan_id() {
         Some(plan_id) => {
@@ -2185,9 +2174,11 @@ fn published_generation(token: &str) -> Option<chrono::DateTime<chrono::Utc>> {
 /// published row, so the published row is not the chain's high-water mark. `-1`
 /// for an overlay with no rows, so the first successor is `0`.
 ///
-/// **It is the max of what the table still holds**, which is not the max of what
-/// the overlay has ever minted — a discarded draft is deleted outright. See
-/// [`OverlayRepo::open_revision`] and owed-register entry O-13.
+/// **The max of what the table holds is the max the overlay has ever minted**, and
+/// it became so with D-231: `m20260802_000045` added `abandoned` and removed
+/// `DELETE` as an exit, so a discarded draft is still a row and still counted.
+/// Before that this read could not see the number a deleted draft had consumed,
+/// and [`OverlayRepo::open_revision`]'s comment traces the consequence.
 async fn highest_revision(
     runner: &impl DBRunner,
     scope: &AccessScope,

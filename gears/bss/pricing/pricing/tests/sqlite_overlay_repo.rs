@@ -1009,22 +1009,6 @@ async fn seed_plan(provider: &DBProvider<DbError>, plan_id: PlanId, revision: i6
         .expect("the plan revision is seeded");
 }
 
-/// **D-31 through the seam: a retired target is still a published target.**
-///
-/// `uq_pricing_plan_current` is `UNIQUE (plan_id) WHERE lifecycle_state IN
-/// ('published','retired')`, so retirement flips the plan's **one current**
-/// revision in place — a retired plan has no `published` row left. Reading that
-/// as "not published" makes `TARGET_UNPUBLISHED` block every overlay on it,
-/// which is the rule D-31 forbids, and it blocks the remediation too: ending or
-/// retargeting the overlay is itself a submit.
-///
-/// This is the case that was missing. The domain test hand-built a world with the
-/// plan in **both** sets — a state the schema cannot produce — so it stayed green
-/// while `plan_facts` put a retired plan in neither.
-///
-/// The same trap was walked into again on 2026-08-07 for D-220's first clause, and
-/// the case below is the repair: a domain test setting `layers_beneath` by hand
-/// says nothing about whether `overlay_facts` ever puts an equal-precedence
 /// **D-220's first clause and D-230, at the seam that decides them.**
 ///
 /// `precedence` is unique only *within* a class, so two overlays of different
@@ -1105,6 +1089,22 @@ async fn an_equal_precedence_lower_class_overlay_is_beneath_and_ties() {
     );
 }
 
+/// **D-31 through the seam: a retired target is still a published target.**
+///
+/// `uq_pricing_plan_current` is `UNIQUE (plan_id) WHERE lifecycle_state IN
+/// ('published','retired')`, so retirement flips the plan's **one current**
+/// revision in place — a retired plan has no `published` row left. Reading that
+/// as "not published" makes `TARGET_UNPUBLISHED` block every overlay on it,
+/// which is the rule D-31 forbids, and it blocks the remediation too: ending or
+/// retargeting the overlay is itself a submit.
+///
+/// This is the case that was missing. The domain test hand-built a world with the
+/// plan in **both** sets — a state the schema cannot produce — so it stayed green
+/// while `plan_facts` put a retired plan in neither.
+///
+/// The same trap was walked into again on 2026-08-07 for D-220's first clause, and
+/// the case above is the repair: a domain test setting `layers_beneath` by hand
+/// says nothing about whether `overlay_facts` ever puts an equal-precedence
 /// lower-class layer in it, which is the whole of what D-220 fixed.
 #[tokio::test]
 async fn a_retired_target_is_still_a_published_target_and_is_flagged() {
