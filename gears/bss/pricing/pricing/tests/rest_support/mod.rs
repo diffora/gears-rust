@@ -428,6 +428,20 @@ impl Harness {
             .expect("run the gear migrator");
         let db = DBProvider::<DbError>::new(db);
         let approvals = ApprovalService::new(db.clone());
+        // **The real adapter over a private exporter**, not the no-op: a suite
+        // that held `NoopPricingMetrics` could assert a route answered and learn
+        // nothing about whether it reported, which is exactly the claim a
+        // dashboard depends on. Private to this harness, so one suite's counter
+        // can never decide another's assertion.
+        //
+        // Built **before** the first state that takes it, and that placement was
+        // a repair (Z12-9): it used to be built after `AuthoringState`, so the
+        // bundle plane could not be handed it and silently kept the no-op the
+        // paragraph above says this harness does not hold. Production wires it
+        // (`module.rs`'s `bundle_service`), so section 10's currency-binding
+        // counter was live in production and unobservable in every test.
+        let metrics_harness = MetricsHarness::new();
+        let metrics: Arc<dyn PricingMetricsPort> = Arc::new(metrics_harness.metrics());
         let state = Arc::new(AuthoringState {
             approvals: approvals.clone(),
             db: db.clone(),
@@ -435,7 +449,8 @@ impl Harness {
             shapes: PlanShapeRepo::new(db.clone()),
             prices: PriceRepo::new(db.clone()),
             bundles: bss_pricing::infra::storage::repo::BundleRepo::new(db.clone()),
-            bundle_service: bss_pricing::infra::bundle::BundleService::new(db.clone()),
+            bundle_service: bss_pricing::infra::bundle::BundleService::new(db.clone())
+                .with_metrics(Arc::clone(&metrics)),
             overlays: bss_pricing::infra::storage::repo::OverlayRepo::new(db.clone()),
             taxonomies: bss_pricing::infra::storage::repo::taxonomy_repo::TaxonomyRepo::new(
                 db.clone(),
@@ -455,13 +470,6 @@ impl Harness {
         // `Arc` and `PublishUnitKind::request_token` keeps the two units' handles
         // apart, so the fault was the harness's alone.
         let registry = Arc::new(RegistryDouble::default());
-        // **The real adapter over a private exporter**, not the no-op: a suite
-        // that held `NoopPricingMetrics` could assert a route answered and learn
-        // nothing about whether it reported, which is exactly the claim a
-        // dashboard depends on. Private to this harness, so one suite's counter
-        // can never decide another's assertion.
-        let metrics_harness = MetricsHarness::new();
-        let metrics: Arc<dyn PricingMetricsPort> = Arc::new(metrics_harness.metrics());
         let governance = Arc::new(GovernanceState {
             db: db.clone(),
             plans: PlanRepo::new(db.clone()),

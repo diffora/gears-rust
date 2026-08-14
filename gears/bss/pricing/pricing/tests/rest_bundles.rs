@@ -848,6 +848,179 @@ async fn the_same_row_published_does_cover_the_market() {
 }
 
 // ---------------------------------------------------------------------------
+// Section 10's currency-binding counter, cases (ii) and (iii), through the router.
+// ---------------------------------------------------------------------------
+
+/// The counter section 10 names.
+const CURRENCY_BINDING: &str = "pricing_currency_binding_blocks_total";
+
+/// Every label the counter can carry, so a case can assert the ones it is *not*.
+///
+/// `CurrencyBindingCase::ALL`'s spellings. Written out here rather than iterated
+/// from the enum on purpose: the label values are the operator-facing series
+/// names, and a test deriving them from the same `as_str` the adapter uses would
+/// stay green through a rename that broke every dashboard.
+const CASES: [&str; 3] = ["required_addon", "bundle_sum_of_parts", "bundle_own_price"];
+
+/// Publish a one-component bundle on `basis`, selling `(USD, EU)`, the component's
+/// only row published or not, and hand back the response body as text.
+///
+/// The seeding is `a_published_components_draft_row_does_not_cover_a_market`'s,
+/// which is the shape already proven to reach the coverage walk: the component's
+/// *plan* publishes, so `COMPONENT_UNPUBLISHED` is not what fires, and whether the
+/// market is covered is then the single variable.
+async fn publish_one_component_bundle(harness: &Harness, basis: &str, covered: bool) -> String {
+    let (plan_id, bundle_id) = seed_bundle_with(harness, basis).await;
+
+    let component = Uuid::now_v7();
+    seed_draft_plan(harness, component).await;
+    let row = seed_price(harness, component, "EU").await;
+    harness.publish(component, 0).await;
+    if covered {
+        harness.publish_price(component, row.price_id).await;
+    }
+
+    let tag = harness.plan_etag(plan_id).await;
+    harness
+        .allowed()
+        .send(with_headers(
+            "PATCH",
+            &bundle_path(bundle_id),
+            Some(serde_json::json!({
+                "plan_revision": 0,
+                "components": [{
+                    "component_plan_id": component,
+                    "included_sku_id": Uuid::now_v7(),
+                }],
+            })),
+            &[("if-match", &tag)],
+        ))
+        .await;
+
+    let response = harness
+        .allowed()
+        .send(with_headers(
+            "POST",
+            &publish_path(bundle_id),
+            Some(serde_json::json!({
+                "plan_revision": 0,
+                "markets": [{ "currency": "USD", "region": "EU" }],
+            })),
+            &[],
+        ))
+        .await;
+    body_json(response).await.to_string()
+}
+
+/// **A blocked `sum_of_parts` publish counts case (ii) and nothing else.**
+///
+/// Asserted through the router, which is the standard `rest_preview.rs` states for
+/// the sibling instrument: what is proven is that a real refusal reported a real
+/// series, not that the adapter can increment its own counter. Both of this
+/// counter's bundle cases were reachable only from `metrics_tests.rs`, which calls
+/// the port directly — deleting the emission in `infra/bundle.rs` left the whole
+/// suite green.
+///
+/// The **other two labels are asserted zero**, and that is the load-bearing half
+/// rather than padding. `bundle_rules` raises the same `CURRENCY_NOT_COVERED`
+/// string for cases (i), (ii) and (iii), so an emitter that chose its label by
+/// scanning violation codes would count this block as `required_addon` while the
+/// refusal an operator reads stayed correct. Only the label can tell the two
+/// apart.
+#[tokio::test]
+async fn a_blocked_sum_of_parts_publish_counts_the_bundle_sum_case() {
+    let harness = Harness::new().await;
+    let detail = publish_one_component_bundle(&harness, "sum_of_parts", false).await;
+
+    assert!(
+        detail.contains("CURRENCY_NOT_COVERED"),
+        "the block this counts must be the coverage one, got: {detail}"
+    );
+    harness.metrics.force_flush();
+
+    assert_eq!(
+        harness
+            .metrics
+            .counter_value(CURRENCY_BINDING, &[("case", "bundle_sum_of_parts")]),
+        1,
+        "one composition mistake is one block on the declared basis's case"
+    );
+    for other in CASES.iter().filter(|case| **case != "bundle_sum_of_parts") {
+        assert_eq!(
+            harness
+                .metrics
+                .counter_value(CURRENCY_BINDING, &[("case", other)]),
+            0,
+            "a sum_of_parts bundle's block must not be reported as {other}"
+        );
+    }
+}
+
+/// The same block on an `own_price` bundle is case (iii), and this is what makes
+/// the pair a **discrimination** rather than one label asserted twice.
+///
+/// The composition, the component, the market and the refusal code are identical
+/// to the case above; only the declared basis differs. An emitter reading the
+/// report instead of the basis would answer `bundle_sum_of_parts` to both and pass
+/// one of the two cases.
+#[tokio::test]
+async fn a_blocked_own_price_publish_counts_the_other_bundle_case() {
+    let harness = Harness::new().await;
+    let detail = publish_one_component_bundle(&harness, "own_price", false).await;
+
+    assert!(
+        detail.contains("CURRENCY_NOT_COVERED"),
+        "the block this counts must be the coverage one, got: {detail}"
+    );
+    harness.metrics.force_flush();
+
+    assert_eq!(
+        harness
+            .metrics
+            .counter_value(CURRENCY_BINDING, &[("case", "bundle_own_price")]),
+        1,
+        "the label is the composition's declared basis, not the violation's code"
+    );
+    for other in CASES.iter().filter(|case| **case != "bundle_own_price") {
+        assert_eq!(
+            harness
+                .metrics
+                .counter_value(CURRENCY_BINDING, &[("case", other)]),
+            0,
+            "an own_price bundle's block must not be reported as {other}"
+        );
+    }
+}
+
+/// **A composition that covers its market counts nothing.**
+///
+/// The negative control the two above rest on: an emitter that counted every
+/// publish, or every validation run, would satisfy both of them and would report a
+/// healthy catalog as permanently blocked. Same route, same seed, one row
+/// published.
+#[tokio::test]
+async fn a_covered_bundle_publish_counts_no_block() {
+    let harness = Harness::new().await;
+    let detail = publish_one_component_bundle(&harness, "sum_of_parts", true).await;
+
+    assert!(
+        !detail.contains("CURRENCY_NOT_COVERED"),
+        "a published row on the sold market covers it, got: {detail}"
+    );
+    harness.metrics.force_flush();
+
+    for case in CASES {
+        assert_eq!(
+            harness
+                .metrics
+                .counter_value(CURRENCY_BINDING, &[("case", case)]),
+            0,
+            "a composition that covers its markets must report no {case} block"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
 // The TOCTOU guard, on the plane that rides a plan revision.
 // ---------------------------------------------------------------------------
 
