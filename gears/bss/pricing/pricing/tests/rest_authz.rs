@@ -1387,10 +1387,20 @@ async fn the_census_covers_every_route_the_routers_register() {
 /// declared, catalogued, and invisible to both censuses; the harness did not mount
 /// it either, so every request to it answered 404 without ever reaching the gate.
 ///
-/// So the scan is over the **source text** of the four functions' files. It cannot
-/// check that the merge is correct — only that the name appears — which is exactly
-/// the guarantee needed: it forces an author who adds a router to visit all four,
-/// and the censuses then do the rest.
+/// So the scan is over the **source text** of the four functions' files — the
+/// `scannable()` text and not the raw bytes, see below. It cannot check that the
+/// merge is correct — only that the name appears — which is exactly the guarantee
+/// needed: it forces an author who adds a router to visit all four, and the
+/// censuses then do the rest.
+///
+/// # It reads stripped source, and that was the second repair (Z12-8)
+///
+/// The scan read the raw file until 2026-08-14, so a merge **commented out**
+/// still carried its own needle and the guard passed over the exact regression it
+/// was written for. Its two sibling scans in this file had used `scannable()`
+/// from the start and said why; this one was the holdout. Verified rather than
+/// argued: commenting `module_test.rs`'s `taxonomies` merge out left the raw-text
+/// version green and reddens this one, naming the file and the router.
 ///
 /// # It keys on the function, not the module, and that was a repair
 ///
@@ -1467,8 +1477,13 @@ fn every_mounted_router_is_merged_into_both_censuses() {
     for (module, function) in &routers {
         let needle = format!("rest::{module}::{function}(");
         for mount in mounts {
-            let text = std::fs::read_to_string(root.join(mount))
-                .unwrap_or_else(|e| panic!("read {mount}: {e}"));
+            // `scannable()` and not the raw text, for the reason its own doc gives
+            // and which this scan was the last holdout against: a merge commented
+            // out leaves the needle in the file, so the raw-text version passed
+            // over precisely the 2026-08-04 regression the doc above recounts.
+            // Probed by commenting `module_test.rs`'s `taxonomies` merge out: raw
+            // text stayed green, this reddens.
+            let text = scannable(&root.join(mount));
             assert!(
                 text.contains(&needle),
                 "{mount} does not merge the `{module}::{function}` router: `{needle}` appears nowhere in it, so every census and every gate property built there is blind to its routes"
@@ -1752,8 +1767,10 @@ fn every_mutating_router_applies_the_correlation_edge() {
 ///
 /// Five of these files explain the token in prose — this one included — and a
 /// scan matching its own explanation would have to be weakened until it matched
-/// nothing (`every_mounted_router_is_merged_into_both_censuses`' own defect, one
-/// property over). Comments are stripped first, so what is counted is code.
+/// nothing — which was
+/// `every_mounted_router_is_merged_into_both_censuses`' own defect one property
+/// over until Z12-8 routed it through `scannable()` too. Comments are stripped
+/// first, so what is counted is code.
 ///
 /// # `OUTCOME_PUBLISHED` is deliberately not in scope
 ///
