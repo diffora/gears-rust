@@ -274,11 +274,21 @@ impl PendingVersionRow {
 ///
 /// # Errors
 /// [`RepoError::Db`] on a scope or storage failure — which **includes** a second
-/// record of one `(tenant_id, pending_ref)`, refused by the primary key. That is
-/// the right refusal rather than an upsert: the registry is idempotent on
-/// `request_id`, so a handle arriving twice means two publish transactions
-/// believe they own the same assignment, and silently overwriting the first
-/// would hand one publish's subject to the other's version.
+/// record of one `(tenant_id, pending_ref, subject_kind, subject_ref)`, refused by
+/// the primary key. That is the right refusal rather than an upsert: the registry
+/// is idempotent on `request_id`, so the **same subject** arriving twice under one
+/// handle means two publish transactions believe they own the same assignment, and
+/// silently overwriting the first would hand one publish's subject to the other's
+/// version.
+///
+/// **The protection is per subject, not per handle**, which is the granularity
+/// D-234 exists for: a handle names one assignment and an overlay publish unit
+/// records two or three subjects against it, so a handle recorded once *per
+/// subject* is the ordinary case rather than a fault. This sentence used to
+/// describe `(tenant_id, pending_ref)` — the two-column key
+/// `m20260802_000036` dropped and recreated on both engines (`:79` on Postgres,
+/// `:150`'s rebuild on `SQLite`), which is the "read the schema, not a migration"
+/// shape (Z7-8). [`find`] and [`RefIdentity`] have carried the wider key since.
 pub async fn record_pending(
     runner: &impl DBRunner,
     scope: &AccessScope,
@@ -417,6 +427,29 @@ impl std::fmt::Display for RefIdentity<'_> {
 /// A row that is already committed is matched too when it has no observation,
 /// which is the shape a ref finalized by something other than the sweep would
 /// leave; there is no such writer today and the predicate costs nothing.
+///
+/// # Handle-scoped, and the one function here that is (Z7-9)
+///
+/// This is the only statement in this module that addresses ref rows by
+/// `(tenant_id, pending_ref)` rather than through [`RefIdentity`], whose whole
+/// purpose is that *"a caller cannot supply three of the four"*. It is deliberate
+/// and it is not the same granularity question [`finalize`] answers below: what
+/// this records is **the registry's answer**, and the registry answers a *handle*
+/// — one question, one instant — so stamping every subject row of that handle at
+/// that instant is the honest observation, and a per-subject stamp would record
+/// one arrival as several. The observation also has no transaction to share:
+/// [`finalize`] is per subject precisely so a subject's finalize and its
+/// projection commit together, while this one is written **outside** that
+/// transaction on purpose, so it survives a projection that fails.
+///
+/// The four-column identity is unchanged by the pin columns this table has since
+/// gained (`subject_lifecycle_state`, `subject_effective_to`,
+/// `m20260802_000071`): they are what a version froze, not what selects a row, and
+/// the primary key is still `m20260802_000036`'s
+/// `(tenant_id, pending_ref, subject_kind, subject_ref)`. So "identify" still
+/// means those four, and this function deliberately identifies something else —
+/// a handle. A `HandleIdentity` type would name the second granularity, and is
+/// not built for one call site.
 ///
 /// # Errors
 /// [`RepoError::Db`] on a scope or storage failure. An absent row is **not** an

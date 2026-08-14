@@ -215,9 +215,18 @@ impl PlanShapeRepo {
     /// keep true.
     ///
     /// # Errors
-    /// [`RepoError::StaleRowVersion`] / [`RepoError::LifecycleForbidden`] /
-    /// [`RepoError::NotFound`] as the compare-and-swap resolves them;
-    /// [`RepoError::Db`] on a scope or storage failure.
+    /// [`RepoError::NotFound`] when no such revision is visible to `scope`;
+    /// [`RepoError::NotDraft`] when it is visible but frozen;
+    /// [`RepoError::StaleRowVersion`] carrying both versions when the submitted
+    /// one is not current; [`RepoError::Db`] on a scope or storage failure;
+    /// [`RepoError::CorruptRow`] when the revision reads back unusable.
+    ///
+    /// The three siblings' text verbatim, and that is the correction: this list
+    /// used to name `RepoError::LifecycleForbidden`, which is a
+    /// [`DomainError`](crate::domain::error::DomainError) variant and has never
+    /// been a `RepoError` one — a broken intra-doc link that survived because
+    /// `infra` is `#[doc(hidden)]`. What the shared `refuse` answers for a frozen
+    /// revision is [`RepoError::NotDraft`] (Z7-7).
     #[allow(
         clippy::too_many_arguments,
         reason = "`replace_phases`' signature and `replace_phases`' reason, verbatim: the owed \
