@@ -13,10 +13,14 @@
 //! # The actor is the row's own column, never the audit log
 //!
 //! D-12 split two surfaces that had been conflated. Price **history** is
-//! plan/price data and is read under `plan x read`, which Finance holds by
-//! construction; the Slice-5 audit **trail** is `audit x read`, Auditor-only,
-//! because its rows carry actor PII discipline the history read is not entitled
-//! to. The 2026-07-28 amendment to that decision closed the hole the split left:
+//! plan/price data; the Slice-5 audit **trail** is a different store, read by
+//! [`crate::api::rest::audit`], because its rows carry before/after states the
+//! history read has no business carrying. **Both are `audit x read`,
+//! Auditor-only** — this paragraph said the history read was `plan x read` and
+//! "Finance holds it by construction", which its own route stopped being true of
+//! when `/history` was recatalogued: it *is* the catalog audit trail, and filing it
+//! under catalog read handed "who changed what, when" to every holder of
+//! `plan x read`. The 2026-07-28 amendment to that decision closed the hole the split left:
 //! the history record needs an actor, and the only lawful source is
 //! `pricing_price.created_by` — the pseudonymous principal stamped on the row by
 //! whichever authoring path wrote it. [`HistoryEntry::actor`] is that column and
@@ -285,9 +289,12 @@ impl HistoryEntry {
     ///
     /// Named rather than left as a field access so the one sentence D-12's
     /// 2026-07-28 amendment turns on has a place to live: the actor of a history
-    /// record is the row's column and never `pricing_audit_log`, which D-12
-    /// confines to `audit x read`, Auditor-only, while this surface is
-    /// `plan x read` and Finance-readable.
+    /// record is the row's column and never `pricing_audit_log`. The two surfaces
+    /// share a **permission** (`audit x read`, Auditor-only) and not a **store**,
+    /// and it is the store that this rule is about: reading the actor out of the
+    /// audit log would make this engine a second reader of a table whose own read
+    /// is [`crate::api::rest::audit`], and would tie a price row's rendering to the
+    /// hash-chained record beside it.
     #[must_use]
     pub const fn actor(&self) -> Uuid {
         self.record.created_by
