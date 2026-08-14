@@ -37,6 +37,7 @@ has been left alone deliberately: a concurrent session has been working that lan
 | Z12-2, Z12-3 | `1c7b22d16` | The denial census reads every mutable plane; the retirement confirm arm reads the store. |
 | Z8-1 | `5180ae475` | `pricing_migration`'s key is `(tenant_id, migration_id)` (`m20260802_000065`). |
 | Z9-2 | `b8a70a3de` | Both halves. The row-lifecycle filter is `PROJECTED_ROW_STATES`, and `FrozenKey` was **decided as a market**: `select_rows` freezes every live line on it. |
+| Z10-1, Z10-2, Z10-3, Z10-4 | `f370e8933` | The background plane, as one group: lease released, GA flag compile-gated, ticker panics fail `serve`, `pricing.window.activation_overdue` on the alarm plane. |
 
 ### Three corrections to this document, found by building against it
 
@@ -1553,6 +1554,8 @@ No collision exists today — the subject already carries `/retirement/` (`appro
 `infra/metrics.rs` and `domain/ports/metrics.rs` exist; `readmodel_warm` was corrected on 2026-08-07 (`b0516ea83`); `gated_markets` was born holding a `PricingMetricsPort`. `window_activation` is the one ticker of three that holds no port, and its module doc and its unit test both still carry the falsified premise D-238 records as the cause. Consequence: §7's only window-plane alarm — the one whose text is *"the lease singleton is stalled"*, i.e. the signal that the whole activation plane has stopped — reaches `pricing_alarm_total` on no label and therefore reaches no alerting rule. D-238 is filed as `BUILT`, which makes this a closed decision with a live third instance rather than owed work anybody is looking for.
 *Fix/Verify:* add `WindowActivationOverdue` (Warn) to `PricingAlarm`, give `WindowActivationJob` the `with_metrics` seam its two siblings have, wire it at `module.rs:378`, and delete the two "no facility" sentences at `window_activation.rs:52-58` and `window_activation_tests.rs:48-50`. Verify by asserting `counter_value("pricing_alarm_total", &[("alarm","pricing.window.activation_overdue")])` in the `MetricsHarness` after a pass with an overdue boundary — the harness already reads the exported stream (`metrics.rs:335-341`).
 
+**PAID `f370e8933`.** The alarm is declared and the ticker holds the port; the unit test that asserted there was no second spelling now cross-checks both.
+
 **PAID `f370e8933` (2026-08-11) — this mark was MISSING until the 2026-08-14 audit.** The four Z10 Mediums were paid by a concurrent session before the annotated programme began, and its edit marking them was never committed, so this register carried them as open for three days. Residue the audit found: this entry's own verify recipe is unfulfilled — no test asserts `pricing_alarm_total` moves for `pricing.window.activation_overdue`, because every suite builds the job with the no-op metrics adapter. The attachment is structural in `module.rs`, so it is not a silent risk, but the emission is unobserved end to end.
 
 **Z10-2 [Medium] The gated-markets ticker drops its lease guard where its two siblings release it, so the gauge refreshes on every other tick — half the cadence D-250 decided**
@@ -1566,6 +1569,8 @@ No collision exists today — the subject already carries `/retirement/` (`appro
 
 The slot is claimed at `T+δ` with `locked_until = NOW()+60`, and dropping leaves it standing. The next tick fires at `T+60 < T+δ+60`, so `acquire` returns `LeaseHeld`, `take_lease` logs *"sweep skipped (a peer holds its lease)"* at **debug** — naming a peer where the holder is this same task's previous pass — and the refresh is skipped. The pass after that succeeds. So `pricing_tax_not_sellable_ga` is refreshed at ~120s while `gated_markets.rs:31-38` states the trade as *"the value is up to one tick old"* and D-250 (`DECISIONS.md:2348-2356`) ratifies 60s. Not a correctness break — the quantity moves in months — but it is a decided cadence the code does not deliver, invisible behind a debug line that misattributes the cause, and an exact outlier among three look-alike passes.
 *Fix/Verify:* `guard.release().await` with the siblings' warn-on-error arm. Verify with a two-pass test over one `LeaseManager` and a fake clock, asserting the second pass acquires (there is no such test today — see Z10-12).
+
+**PAID `f370e8933`.** `release()` instead of `drop`, and the arm is now one function for all three passes — it was written out three times, which is how one came to be missing.
 
 **PAID `f370e8933` (2026-08-11) — mark missing until the 2026-08-14 audit; see Z10-1.** `release_lease` verified present and probed.
 
@@ -1581,6 +1586,8 @@ The slot is claimed at `T+δ` with `locked_until = NOW()+60`, and dropping leave
 The three properties were inherited; the supervision the sibling wraps them in was not. `module.rs:154-161` states the warm ticker is load-bearing for correctness (*"without the warm re-drive nothing ever resolves it, `pricing_read_model` stays empty and no version becomes pin-eligible"*), so a panic on tick 1 leaves the gear serving traffic, answering 200s, and never warming a read model — with the only trace a warn line emitted at shutdown, possibly days later, and `serve` still `Ok(())`. There is no supervision, no restart and no alarm; the two Criticals in `readmodel_warm` cannot fire because the task that raises them is the dead one.
 *Fix/Verify:* adopt the ledger's `select!`-on-handles shape (cancel the token, drain the survivors, map the join error to `Err`), or at minimum raise a Critical alarm and log at `error` on a join failure. Verify with a ticker whose job panics once, asserting `serve` resolves `Err` (or that the alarm counter moved).
 
+**PAID `f370e8933`.** `bss-ledger`'s `select!`-on-handles shape; a ticker resolving before cancellation fails `serve`, including the no-panic case.
+
 **PAID `f370e8933` (2026-08-11) — mark missing until the 2026-08-14 audit; see Z10-1.** A ticker resolving before cancellation fails `serve`, including the no-panic case.
 
 **Z10-4 [Medium] The gated-market gauge inlines `TAX_ENGINE_GA == false` into SQL, so the flag's documented flip has no compile gate at the one site that decides the gauge**
@@ -1593,6 +1600,8 @@ The three properties were inherited; the supervision the sibling wraps them in w
 
 The two consumers of one predicate diverge the moment the constant moves. On the day GA lands, `report_market_metrics` correctly stops raising `TaxNotSellableGaActive` while `GatedMarketsJob` keeps publishing the full count of published tax-inclusive tenant-markets to `pricing_tax_not_sellable_ga` forever — §7's backlog gauge pinned at a number no action can clear, and the whole point of the D-246 rebuild was that this series must be honest. It compiles, and every test stays green, because the tests exercise the plumbing rather than the predicate (`gated_markets_tests.rs:45-52` deliberately seeds no rows). This is the "flag flip needs a compile gate" shape: whoever flips the constant greps for `TAX_ENGINE_GA`, finds `tax_display.rs` and `metrics.rs`, and does not find `price_repo.rs`.
 *Fix/Verify:* make the read take `tax_engine_ga: bool` (or short-circuit to `Ok(0)` on `TAX_ENGINE_GA`), so the site is reachable from the constant. Verify by flipping the constant in a `#[cfg(test)]` shim and asserting the count falls to zero.
+
+**PAID `f370e8933`.** The flag is a parameter, so the site is reachable from the constant.
 
 **PAID `f370e8933` (2026-08-11) — mark missing until the 2026-08-14 audit; see Z10-1.** The GA flag is a parameter, so the site is reachable from the constant.
 
