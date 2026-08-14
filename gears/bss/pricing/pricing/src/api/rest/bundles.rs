@@ -1108,6 +1108,17 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
         .path_param("bundleId", "The bundle to read.")
         .authenticated()
         .no_license_required()
+        .query_param_typed(
+            "plan_revision",
+            false,
+            "The plan revision whose composition is answered. Absent resolves to the plan's open \
+             draft, or to its current revision when no draft is open - so a caller who omits it \
+             reads the composition an author is editing, not the one a subscriber is billed on. \
+             Declared because the handler reads it: a parameter the description narrates and the \
+             document does not name is one no generated client can send, and this read would then \
+             answer one revision only (Z13-10's class).",
+            "integer",
+        )
         .handler(read_bundle)
         .json_response_with_schema::<BundleCompositionView>(
             openapi,

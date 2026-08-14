@@ -686,7 +686,101 @@ fn declared_query_params(openapi: &OpenApiRegistryImpl, method: &str, path: &str
     names
 }
 
-/// **The three cursor reads declare every query parameter their handlers read.**
+/// Every route that takes a `Query<T>` extractor, the extractor it takes, and the
+/// query parameters its handler therefore reads.
+///
+/// The third column is the **document's** owed set and the second is what binds it
+/// to the handler: [`every_query_reading_route_is_in_the_parameter_census`] scans
+/// the REST sources for `Query<…>` and fails until the extractor it finds has a row
+/// here, so a new query-reading route cannot be mounted without declaring what it
+/// reads. Without that scan the roster is a hand-enumeration of the same shape as
+/// the defect it is checking — the F-12 class — and its own predecessor showed why:
+/// it listed the three routes a fix wave had just visited and was silent about the
+/// nine others.
+fn query_reading_routes() -> Vec<(&'static str, &'static str, &'static str, Vec<&'static str>)> {
+    use bss_pricing::api::rest::approvals::APPROVALS;
+    use bss_pricing::api::rest::audit::AUDIT;
+    use bss_pricing::api::rest::bundles::{BUNDLE_BY_ID, BUNDLES};
+    use bss_pricing::api::rest::history::HISTORY;
+    use bss_pricing::api::rest::migrations::MIGRATIONS;
+    use bss_pricing::api::rest::overlays::PRICE_OVERLAYS;
+    use bss_pricing::api::rest::plans::PLANS;
+    use bss_pricing::api::rest::preview::PLAN_PREVIEW;
+    use bss_pricing::api::rest::prices::PLAN_PRICES;
+    use bss_pricing::api::rest::windows::{PLAN_SELLABILITY, PRICE_WINDOWS_LIST};
+    vec![
+        // D-125's cursor walks. `limit` and `cursor` are one contract spelled once
+        // (`history::limit_param`), so every row here owes both.
+        (
+            "GET",
+            PRICE_OVERLAYS,
+            "ListOverlaysQuery",
+            vec!["cursor", "limit", "scope_class"],
+        ),
+        ("GET", HISTORY, "HistoryQuery", vec!["cursor", "limit"]),
+        ("GET", AUDIT, "AuditQuery", vec!["cursor", "limit"]),
+        (
+            "GET",
+            PLANS,
+            "PlanPageQuery",
+            vec!["cursor", "lifecycle_state", "limit"],
+        ),
+        (
+            "GET",
+            PLAN_PRICES,
+            "PricePageQuery",
+            vec!["cursor", "limit"],
+        ),
+        (
+            "GET",
+            APPROVALS,
+            "ApprovalPageQuery",
+            vec!["cursor", "limit", "state"],
+        ),
+        (
+            "GET",
+            BUNDLES,
+            "BundlePageQuery",
+            vec!["cursor", "limit", "plan_id"],
+        ),
+        (
+            "GET",
+            PRICE_WINDOWS_LIST,
+            "WindowPageQuery",
+            vec!["cursor", "limit", "price_id"],
+        ),
+        (
+            "GET",
+            MIGRATIONS,
+            "MigrationPageQuery",
+            vec!["cursor", "limit", "state"],
+        ),
+        // The reads whose query is not a page. `plan_revision` was the last
+        // undeclared parameter in the gear: the description *narrated* it ("absent,
+        // it is the plan's open draft"), and a generated client could not send it,
+        // so the composition D-310 made readable was readable at one revision only.
+        (
+            "GET",
+            BUNDLE_BY_ID,
+            "ReadBundleQuery",
+            vec!["plan_revision"],
+        ),
+        (
+            "GET",
+            PLAN_SELLABILITY,
+            "SellabilityQuery",
+            vec!["at", "currency", "region"],
+        ),
+        (
+            "GET",
+            PLAN_PREVIEW,
+            "PreviewQuery",
+            vec!["currency", "region"],
+        ),
+    ]
+}
+
+/// **Every query-reading route declares every query parameter its handler reads.**
 ///
 /// Asserted against the emitted document rather than against the handler, because
 /// the document is the only half a generated client sees: `GET /price-overlays`
@@ -700,32 +794,22 @@ fn declared_query_params(openapi: &OpenApiRegistryImpl, method: &str, path: &str
 /// ignores, which is what `a_read_route_declares_no_precondition_header` says one
 /// plane over about headers.
 ///
-/// `/history` is in the roster as the case that was already right, and `/audit` as
-/// the newest one (Z13-8), so a regression in either reddens rather than being
-/// assumed. The wider census — *every* `Query<T>` field declared by the route that
-/// reads it — is Z13-10's remainder: six more collection reads take a page query and
-/// declare nothing, and closing them is a fix wave rather than a line here.
+/// **The roster is now every `Query<T>` route and not the three a fix wave had
+/// visited.** The predecessor of this test covered `/price-overlays`, `/history`
+/// and `/audit`, and its own doc reported "six more collection reads take a page
+/// query and declare nothing" as a remainder. That remainder was **false**: all six
+/// declare `limit`, `cursor` and their filter through `.query_param_typed(…)` /
+/// `.query_param(…)`, which is a second spelling of `.param(ParamSpec)` — the same
+/// grep-shape mistake, in mirror, that the entry made about `/history`. What the
+/// wider census did find is one genuine survivor, `GET /bundles/{bundleId}`'s
+/// `plan_revision`, and that is what the accompanying commit declares.
 #[tokio::test]
-async fn the_cursor_reads_declare_every_query_parameter_they_read() {
+async fn every_query_reading_route_declares_the_parameters_it_reads() {
     let openapi = registered_operations().await;
 
-    for (method, path, expected) in [
-        (
-            "GET",
-            bss_pricing::api::rest::overlays::PRICE_OVERLAYS,
-            vec!["cursor", "limit", "scope_class"],
-        ),
-        (
-            "GET",
-            bss_pricing::api::rest::history::HISTORY,
-            vec!["cursor", "limit"],
-        ),
-        (
-            "GET",
-            bss_pricing::api::rest::audit::AUDIT,
-            vec!["cursor", "limit"],
-        ),
-    ] {
+    for (method, path, _extractor, expected) in query_reading_routes() {
+        let mut expected = expected;
+        expected.sort_unstable();
         assert_eq!(
             declared_query_params(&openapi, method, path),
             expected,
@@ -733,6 +817,102 @@ async fn the_cursor_reads_declare_every_query_parameter_they_read() {
              one it does not declare"
         );
     }
+}
+
+/// The forcing function under the roster above: a route that reads a query it does
+/// not declare cannot be mounted without a decision.
+///
+/// The scan is over the **stripped** source of every file at or under
+/// `src/api/rest`, for `Query<…>`'s extractor type, and the found set must equal
+/// the roster's second column exactly. Stripped and not raw for
+/// `every_mounted_router_is_merged_into_both_censuses`'s reason (Z12-8): a
+/// commented-out extractor leaves its own needle in the file, so a raw-text scan
+/// passes over the regression it exists to catch.
+///
+/// Equality in both directions, because both directions are defects: an extractor
+/// with no row is a route whose parameters nothing checks, and a row with no
+/// extractor is a roster entry describing a route that no longer reads a query.
+#[test]
+fn every_query_reading_route_is_in_the_parameter_census() {
+    let mut found: Vec<String> = Vec::new();
+    for path in rest_sources() {
+        let text = scannable(&path);
+        let mut rest = text.as_str();
+        // `Query<` and not `: Query<`: the extractor is written
+        // `Query(query): Query<T>`, and a formatter is free to break before the
+        // colon, which `scannable` collapses but does not delete.
+        while let Some(at) = rest.find("Query<") {
+            rest = &rest[at + "Query<".len()..];
+            let name: String = rest
+                .chars()
+                .take_while(|c| c.is_alphanumeric() || *c == '_')
+                .collect();
+            if !name.is_empty() {
+                found.push(name);
+            }
+        }
+    }
+    let found: std::collections::BTreeSet<String> = found.into_iter().collect();
+    let rostered: std::collections::BTreeSet<String> = query_reading_routes()
+        .into_iter()
+        .map(|(_, _, extractor, _)| extractor.to_owned())
+        .collect();
+
+    assert!(
+        found.len() >= 3,
+        "the scan found {found:?}, which is fewer query extractors than this gear has had since \
+         Slice 4 — the scan is broken, not the layer"
+    );
+    assert_eq!(
+        found, rostered,
+        "a `Query<T>` extractor under src/api/rest is absent from `query_reading_routes()`, or a \
+         row there names an extractor no route takes: nothing then checks that the route declares \
+         what it reads"
+    );
+}
+
+/// Every `.rs` file at or under `src/api/rest`, recursively — `rest_authz.rs`'s
+/// `rest_sources` with its reason: a guard that a future subdirectory switches off
+/// silently is a guard that reads as coverage to everyone who greps for it.
+///
+/// Re-typed rather than shared because a test binary is a compilation unit of its
+/// own and this file has no `mod` of its own to hang it on; the two copies are four
+/// lines and are pinned to the same directory by the assertion above.
+fn rest_sources() -> Vec<std::path::PathBuf> {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/api/rest");
+    let mut found = vec![root.with_extension("rs")];
+    let mut stack = vec![root];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.extension().is_some_and(|ext| ext == "rs") {
+                found.push(path);
+            }
+        }
+    }
+    found
+}
+
+/// One line of source with every `//` comment removed, so a construct written
+/// inside a comment cannot satisfy a scan.
+fn scannable(path: &std::path::Path) -> String {
+    std::fs::read_to_string(path)
+        .expect("a readable REST source")
+        .lines()
+        .map(|line| match line.find("//") {
+            Some(at) => &line[..at],
+            None => line,
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 #[tokio::test]
