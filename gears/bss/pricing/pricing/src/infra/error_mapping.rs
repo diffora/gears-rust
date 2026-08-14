@@ -67,6 +67,22 @@
 //! `deny` record carrying that id (`inst-tp-selfaudit`, `inst-rb-audit`) —
 //! a durable trail rather than a log line.
 //!
+//! **That clause names a compensating control, so the control has to exist**, and
+//! for two waves it did not: the table had a writer and no reader on any mounted
+//! surface, which makes "recoverable from the trail" an argument about a place
+//! nobody can look (Z13-8). `GET /bss-pricing/v1/audit`
+//! ([`crate::api::rest::audit`]) is that reader — Auditor-only, and the `deny`
+//! record's `approval_ref` is the dropped id. Two qualifications, because the
+//! sentence above is stronger than what is built. The trail is behind
+//! `audit × read`, so the principal who *met* the 403 is generally not the
+//! principal who can read the record: what is preserved is the **operator's**
+//! recourse, not the caller's, which is `inst-au-pii`'s and D-12's arrangement
+//! rather than a shortfall. And of the two instructions cited, only
+//! `inst-tp-selfaudit` has a writer on an HTTP path —
+//! `REGION_SCOPE_DENIED` is unreachable over HTTP by construction
+//! ([`crate::api::rest::approvals`] says why), so for that arm the clause is moot
+//! rather than satisfied.
+//!
 //! **The design set's 422s are architectural, not wire** (normative:
 //! `design/01-foundation.md` §3.3). They say *unprocessable content*; the
 //! platform's canonical family has no 422 category at all —

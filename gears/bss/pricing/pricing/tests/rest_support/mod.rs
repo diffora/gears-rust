@@ -34,6 +34,7 @@ use axum::Router;
 use axum::body::{Body, to_bytes};
 use axum::http::{Request, Response};
 use bss_fixtures::ModelKind;
+use bss_pricing::api::rest::audit::ApiState as AuditState;
 use bss_pricing::api::rest::frontier::ApiState as FrontierState;
 use bss_pricing::api::rest::history::ApiState as HistoryState;
 use bss_pricing::api::rest::state::{AuthoringState, GovernanceState};
@@ -405,6 +406,11 @@ pub struct Harness {
     /// would be a census with a hole in exactly the place a census exists to
     /// close.
     pub frontier: Arc<FrontierState>,
+    /// The state the Auditor read is built over (`inst-au-read`), here for the
+    /// history read's reason — and it is the state a suite reaches for when it
+    /// asserts that a governed act left the trail the error ladder's 403 arms
+    /// point at.
+    pub audit: Arc<AuditState>,
     /// The state the read-only history route is built over, here for the
     /// frontier's reason: the router this file builds is the whole gear.
     pub history: Arc<HistoryState>,
@@ -533,6 +539,9 @@ impl Harness {
         let history = Arc::new(HistoryState {
             history: bss_pricing::infra::history::HistoryExporter::new(db.clone()),
         });
+        let audit = Arc::new(AuditState {
+            audit: bss_pricing::infra::audit_read::AuditReader::new(db.clone()),
+        });
         let tenant = Uuid::now_v7();
         // **The tenant declares the regions its fixtures sell in.**
         // `inst-tx-region` is registered in the Foundation rule set and C2 is
@@ -553,6 +562,7 @@ impl Harness {
             governance,
             metrics: metrics_harness,
             frontier,
+            audit,
             history,
             registry,
             membership,
@@ -641,6 +651,11 @@ impl Harness {
             ))
             .merge(bss_pricing::api::rest::history::router(
                 Arc::clone(&self.history),
+                &openapi,
+            ))
+            // Slice 5's Auditor read, merged here for the history read's reason.
+            .merge(bss_pricing::api::rest::audit::router(
+                Arc::clone(&self.audit),
                 &openapi,
             ))
             .merge(bss_pricing::api::rest::plans::router(

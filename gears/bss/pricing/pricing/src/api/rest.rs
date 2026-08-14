@@ -5,6 +5,7 @@
 //! and every collection surface paginates with an opaque cursor (D-125).
 
 pub mod approvals;
+pub mod audit;
 pub mod auth_context;
 pub mod bulk_imports;
 pub mod bundles;

@@ -70,6 +70,7 @@ fn declared_paths() -> Vec<(&'static str, &'static str)> {
     use bss_pricing::api::rest::approvals::{
         APPROVAL, APPROVAL_APPROVE, APPROVAL_REJECT, APPROVAL_WITHDRAW, APPROVALS,
     };
+    use bss_pricing::api::rest::audit::AUDIT;
     use bss_pricing::api::rest::bulk_imports::{BULK_IMPORT, BULK_IMPORT_ABORT, BULK_IMPORTS};
     use bss_pricing::api::rest::bundles::{BUNDLE_BY_ID, BUNDLE_PUBLISH, BUNDLES};
     use bss_pricing::api::rest::customer_groups::{
@@ -100,6 +101,7 @@ fn declared_paths() -> Vec<(&'static str, &'static str)> {
     vec![
         ("GET", FRONTIER),
         ("GET", HISTORY),
+        ("GET", AUDIT),
         ("GET", PLAN),
         ("GET", PLANS),
         ("POST", PLANS),
@@ -245,6 +247,7 @@ async fn registered_operations() -> OpenApiRegistryImpl {
         pin_frontier: PinFrontierRepo::new(db.clone()),
     });
     let history_db = db.clone();
+    let audit_db = db.clone();
     let approvals = ApprovalService::new(db.clone());
     let authoring = Arc::new(AuthoringState {
         approvals: approvals.clone(),
@@ -346,6 +349,13 @@ async fn registered_operations() -> OpenApiRegistryImpl {
             .merge(bss_pricing::api::rest::history::router(
                 Arc::new(bss_pricing::api::rest::history::ApiState {
                     history: bss_pricing::infra::history::HistoryExporter::new(history_db),
+                }),
+                &openapi,
+            ))
+            // Slice 5's Auditor read, mounted here for the history read's reason.
+            .merge(bss_pricing::api::rest::audit::router(
+                Arc::new(bss_pricing::api::rest::audit::ApiState {
+                    audit: bss_pricing::infra::audit_read::AuditReader::new(audit_db),
                 }),
                 &openapi,
             ))

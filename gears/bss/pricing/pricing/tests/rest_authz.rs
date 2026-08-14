@@ -34,6 +34,7 @@ use axum::http::StatusCode;
 use bss_pricing::api::rest::approvals::{
     APPROVAL, APPROVAL_APPROVE, APPROVAL_REJECT, APPROVAL_WITHDRAW, APPROVALS,
 };
+use bss_pricing::api::rest::audit::AUDIT;
 use bss_pricing::api::rest::bulk_imports::{BULK_IMPORT, BULK_IMPORT_ABORT, BULK_IMPORTS};
 use bss_pricing::api::rest::bundles::{BUNDLE_BY_ID, BUNDLE_PUBLISH, BUNDLES};
 use bss_pricing::api::rest::customer_groups::{
@@ -121,6 +122,16 @@ fn census() -> Vec<Route> {
         Route {
             method: "GET",
             path: HISTORY,
+            resource_type: labels::AUDIT,
+            action: actions::READ,
+            mutating: false,
+        },
+        // That separate surface (`inst-au-read`, Z13-8). Same pair as the row
+        // above and a different store: D-12 confines both to the Auditor, and
+        // this one answers before/after states and the approval trail.
+        Route {
+            method: "GET",
+            path: AUDIT,
             resource_type: labels::AUDIT,
             action: actions::READ,
             mutating: false,
@@ -1167,6 +1178,11 @@ async fn registered_paths() -> Vec<String> {
             // whose path nothing here checks.
             .merge(bss_pricing::api::rest::history::router(
                 Arc::clone(&harness.history),
+                &openapi,
+            ))
+            // Slice 5's Auditor read, in this census for the history read's reason.
+            .merge(bss_pricing::api::rest::audit::router(
+                Arc::clone(&harness.audit),
                 &openapi,
             ))
             .merge(bss_pricing::api::rest::bulk_imports::router(

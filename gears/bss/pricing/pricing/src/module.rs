@@ -38,6 +38,7 @@ use toolkit::{Gear, GearCtx};
 use toolkit_db::{DBProvider, DbError};
 use tracing::info;
 
+use crate::api::rest::audit::ApiState as AuditApiState;
 use crate::api::rest::frontier::ApiState as CatalogVersionApiState;
 use crate::api::rest::history::ApiState as HistoryApiState;
 use crate::api::rest::state::{AuthoringState, GovernanceState};
@@ -118,6 +119,10 @@ pub(crate) struct PricingRuntime {
     /// correlation edge and it opens no transaction, so sharing a state with the
     /// mutating surfaces would give it reach it has no use for.
     pub history_api: Arc<HistoryApiState>,
+    /// Slice 5's Auditor read over `pricing_audit_log` (`inst-au-read`, Z13-8).
+    /// Its own state for [`Self::history_api`]'s reason, and separate from it
+    /// because the two surfaces share a permission and not a store.
+    pub audit_api: Arc<AuditApiState>,
     /// Per-request state for the plan and price authoring surfaces, built here
     /// for the same reason: one place wires, one place composes.
     pub authoring_api: Arc<AuthoringState>,
@@ -766,6 +771,14 @@ impl Gear for BssPricingGear {
             history: crate::infra::history::HistoryExporter::new(db.clone()),
         });
 
+        // Slice 5's Auditor read. A reader with a provider of its own is safe in a
+        // way the audit *writer* is not: `audit_repo`'s CONTRACT forbids the writer
+        // a transaction of its own because the record must commit inside the
+        // mutation's, and a read has no mutation to be inside of.
+        let audit_api = Arc::new(AuditApiState {
+            audit: crate::infra::audit_read::AuditReader::new(db.clone()),
+        });
+
         let catalog_version_api = Arc::new(CatalogVersionApiState {
             pin_frontier: PinFrontierRepo::new(db.clone()),
         });
@@ -907,6 +920,7 @@ impl Gear for BssPricingGear {
             catalog_version_registry,
             catalog_version_api,
             history_api,
+            audit_api,
             authoring_api,
             governance_api,
             membership_api,
@@ -971,12 +985,21 @@ impl DatabaseCapability for BssPricingGear {
 /// **Two absences survive it**, and are named because each is adjacent to something
 /// that *is* mounted — the case where a reader would otherwise reasonably conclude
 /// the feature is wired. `POST /bss-pricing/v1/historical-imports` has no
-/// reference-price store. And `pricing_audit_log` has **no reader on any mounted
-/// surface**: `GET /history` gates on `audit × read`, but it serves plan and price
-/// data and takes its actor from `pricing_price.created_by` and never from the
-/// audit log (see [`crate::api::rest::history`]) — so the trail this gear writes on
-/// every governed act is readable by nothing this gear mounts, and `audit × export`
-/// is gated by no route at all.
+/// reference-price store. And **`audit × export` is gated by no route**: S5 §5's
+/// audit surface carries two permissions, `GET /bss-pricing/v1/audit` serves the
+/// `read` half (mounted below, Z13-8), and the export is a chunked shape under its
+/// own p95 that nothing here builds — a large `limit` on the page is not it.
+///
+/// **The audit *read* left this list on 2026-08-14** and the clause is withdrawn
+/// rather than edited around, since half of it was a correct warning against the
+/// other half's inference. It read that `pricing_audit_log` had "**no reader on any
+/// mounted surface**: `GET /history` gates on `audit × read`, but it serves plan and
+/// price data and takes its actor from `pricing_price.created_by` and never from the
+/// audit log". The second half is still exactly true and is stated where it belongs
+/// (see [`crate::api::rest::history`] and [`crate::api::rest::audit`]); the first is
+/// what [`crate::api::rest::audit`] discharges, and it had a dependant —
+/// `infra::error_mapping`'s three 403 arms drop their detail on the ground that the
+/// attempt is recoverable from this trail.
 ///
 /// **The three window surfaces had left that sentence earlier**, and the clause that
 /// used to keep them on it is withdrawn rather than edited around. It read that
@@ -1041,6 +1064,13 @@ impl RestApiCapability for BssPricingGear {
             // correlation edge, nothing behind it writing an audit record.
             .merge(crate::api::rest::history::router(
                 Arc::clone(&rt.history_api),
+                openapi,
+            ))
+            // Slice 5's Auditor read, merged like the two reads above it and for
+            // the same reason: it writes no audit record of its own, so it needs no
+            // correlation edge.
+            .merge(crate::api::rest::audit::router(
+                Arc::clone(&rt.audit_api),
                 openapi,
             ))
             // Slice 12's bulk import. Mounted with the authoring routers because

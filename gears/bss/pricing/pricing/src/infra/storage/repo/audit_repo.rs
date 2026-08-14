@@ -100,9 +100,25 @@
 //!   `chk_pricing_audit_log_rollup` already makes a mutation row carrying heads
 //!   impossible — so nothing this module writes can be mistaken for one.
 //! - **The verification job** (`pricing_audit_chain_verified`). Same reason.
-//! - **Every read surface.** The Auditor read API, the D-125 cursor walk and
-//!   the retention sweep have no caller in this group. A read method nothing
-//!   calls would be a shape fixed before its reader exists.
+//! - **The retention sweep.** G5's per-jurisdiction horizon has no caller in this
+//!   group, and a sweep is a deletion policy over a table whose whole point is
+//!   that nothing deletes from it — it lands with the configuration that decides
+//!   the horizon, not before it.
+//! - **The export half.** `inst-au-read` names one surface and **two**
+//!   permissions: `audit × read`, which [`page`] now serves through
+//!   [`crate::api::rest::audit`], and `audit × export`, which nothing gates on.
+//!   An export is a different shape — a chunked stream under its own p95, not a
+//!   page — and it is owed rather than approximated by a large `limit`.
+//!
+//! The paragraph this list opened with said "**every** read surface", and that
+//! stopped being true on 2026-08-14 (Z13-8). It was correct when written — a read
+//! method nothing calls is a shape fixed before its reader exists — and what
+//! changed is that the reader arrived: `infra/error_mapping.rs` argues that the
+//! three 403 arms may drop their detail *because the attempt is on this table as a
+//! `deny` record*, and a compensating control nothing can read is not one. The
+//! design set names the surface that discharges it (S5 §5,
+//! `GET /bss-pricing/v1/audit`, Auditor-only, cursor-paginated per D-125), so the
+//! reader was owed rather than invented.
 
 use chrono::{DateTime, Utc};
 use sea_orm::ActiveValue::Set;
@@ -526,6 +542,140 @@ pub async fn append(
             )
         })?;
     Ok(seq)
+}
+
+/// One page of the tenant's trail in **commit order**, oldest first, resuming
+/// strictly after `after` (Z13-8, `inst-au-read`).
+///
+/// Returns rows rather than a page type: what "one more row than the page" means,
+/// and how the next position is spelled on the wire, are
+/// [`crate::infra::audit_read`]'s — this is the store's walk and nothing else.
+/// `limit` is passed through as given, so a caller wanting the probe row asks for
+/// `limit + 1`.
+///
+/// # The order is `(recorded_at, chain_id, seq)`, and every part of it is load-bearing
+///
+/// `recorded_at` alone is not a key: D-135 segments the chains precisely so that
+/// concurrent mutations of different aggregates proceed independently, and two of
+/// them can carry the same instant — the writer takes the caller's instant, not the
+/// database's. A walk keyed on the timestamp alone would skip or repeat rows inside
+/// a tie, which is exactly what D-125 forbids. `(chain_id, seq)` is the rest of the
+/// primary key, so the three together are a **total** order over the table and the
+/// keyset predicate below names one row.
+///
+/// `seq` is not a global sequence and cannot be the leading key: it counts within a
+/// segment, so ordering by it would interleave 2023 and 2026 records of different
+/// aggregates. `recorded_at` leads because commit order is what an auditor reads.
+///
+/// **The tie-break's collation is the backend's own**, and that is consistent
+/// rather than uniform: `ORDER BY chain_id` and the `chain_id >` comparison below
+/// are evaluated by the same engine on the same column, so a walk never disagrees
+/// with itself. Two backends may visit one tie in two orders; neither skips nor
+/// duplicates a row, which is what D-125 promises.
+///
+/// # What this store cannot lose, and how that differs from the price walk
+///
+/// [`crate::api::rest::cursor`]'s doc records that its guarantee stops at a
+/// **delete**, because draft price rows are deletable. Nothing here is: the table
+/// is append-only with the REVOKE and trigger discipline of the Foundation tables,
+/// and no row is ever updated. So the walk over this store is stable in the full
+/// sense the price walk has to qualify — rows appear at the end and never move.
+///
+/// # Errors
+/// [`RepoError::CorruptRow`] when `after` names a `seq` the column cannot hold. The
+/// route's cursor decoder refuses such a token first, so this is defence in depth
+/// rather than a reachable arm — and it is refused instead of clamped, because a
+/// clamped position silently answers about a different row.
+///
+/// [`RepoError::Db`] on any scope or storage failure.
+pub async fn page(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    limit: u64,
+    after: Option<AuditPosition>,
+) -> Result<Vec<audit_log::Model>, RepoError> {
+    let mut condition = Condition::all().add(audit_log::Column::TenantId.eq(tenant_id));
+    if let Some(position) = after {
+        condition = condition.add(after_position(position)?);
+    }
+
+    audit_log::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(condition)
+        .order_by(audit_log::Column::RecordedAt, Order::Asc)
+        .order_by(audit_log::Column::ChainId, Order::Asc)
+        .order_by(audit_log::Column::Seq, Order::Asc)
+        .limit(limit)
+        .all(runner)
+        .await
+        .map_err(|e| RepoError::Db(format!("page pricing_audit_log: {e}")))
+}
+
+/// A position in the commit-ordered walk — the whole key, because the key is what
+/// a keyset cursor names.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AuditPosition {
+    /// The instant the row was recorded.
+    pub recorded_at: DateTime<Utc>,
+    /// The segment the row belongs to.
+    pub chain_id: Uuid,
+    /// The row's position within that segment.
+    pub seq: u64,
+}
+
+impl AuditPosition {
+    /// The position of a row a page has just read.
+    ///
+    /// # Errors
+    /// [`RepoError::CorruptRow`] when the row's `seq` is negative. The column is
+    /// signed because the backends' integer types are, and this writer counts from
+    /// zero upward, so a negative position means something reached the table around
+    /// this gear — [`next_seq`]'s reading of the same column.
+    pub fn of(row: &audit_log::Model) -> Result<Self, RepoError> {
+        let seq = u64::try_from(row.seq).map_err(|e| {
+            RepoError::CorruptRow(format!(
+                "pricing_audit_log chain {} holds seq {}: {e}",
+                row.chain_id, row.seq
+            ))
+        })?;
+        Ok(Self {
+            recorded_at: row.recorded_at,
+            chain_id: row.chain_id,
+            seq,
+        })
+    }
+}
+
+/// The lexicographic `>` over `(recorded_at, chain_id, seq)`, spelled as the
+/// OR-of-ANDs a `WHERE` clause can carry.
+///
+/// Written out rather than expressed as a row comparison because the two backends
+/// do not agree on tuple comparison syntax, and a predicate that worked on one
+/// engine and not the other would make the walk's guarantee a deployment property.
+fn after_position(position: AuditPosition) -> Result<Condition, RepoError> {
+    let seq = i64::try_from(position.seq).map_err(|e| {
+        RepoError::CorruptRow(format!(
+            "audit cursor names seq {}, which pricing_audit_log cannot hold: {e}",
+            position.seq
+        ))
+    })?;
+    Ok(Condition::any()
+        .add(audit_log::Column::RecordedAt.gt(position.recorded_at))
+        .add(
+            Condition::all()
+                .add(audit_log::Column::RecordedAt.eq(position.recorded_at))
+                .add(
+                    Condition::any()
+                        .add(audit_log::Column::ChainId.gt(position.chain_id))
+                        .add(
+                            Condition::all()
+                                .add(audit_log::Column::ChainId.eq(position.chain_id))
+                                .add(audit_log::Column::Seq.gt(seq)),
+                        ),
+                ),
+        ))
 }
 
 /// The segment's greatest row, scoped. `None` is an empty segment.
