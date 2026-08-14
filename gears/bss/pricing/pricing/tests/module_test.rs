@@ -868,7 +868,7 @@ fn every_query_reading_route_is_in_the_parameter_census() {
     assert!(
         found.len() >= 3,
         "the scan found {found:?}, which is fewer query extractors than this gear has had since \
-         Slice 4 — the scan is broken, not the layer"
+         Slice 4 - the scan is broken, not the layer"
     );
     assert_eq!(
         found, rostered,
