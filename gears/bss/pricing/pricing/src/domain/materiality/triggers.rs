@@ -263,6 +263,15 @@ impl Trigger {
     /// two come apart in exactly one place:
     /// [`Self::GrandfatherHorizonTightening`], whose column is here and whose authoring
     /// surface is not. The module doc has that at full strength.
+    ///
+    /// **A `true` on the act half is now census-checked.** This is a hand-written
+    /// `match`, so a `true` added to it compiles and every other case in the file
+    /// stays green — including the transcription, which copies whatever the match
+    /// says. `triggers_tests::every_act_half_trigger_answering_true_is_named_by_a_producing_site`
+    /// walks the crate's sources and requires a producing site outside this
+    /// module for each one; it exists because
+    /// [`Self::BulkGroupMove`] answered `true` for two days under a dated comment
+    /// claiming a writer that makes no such declaration.
     #[must_use]
     pub const fn subject_exists_in_this_crate(self) -> bool {
         match self {
@@ -276,15 +285,37 @@ impl Trigger {
             | Self::RevenueShareChange
             | Self::GrandfatheringCutover
             | Self::PriceOverlayMutation
-            // **Paid 2026-08-12** (Task 7 of the customer-group plane, `inst-mm-*`):
-            // `MembershipMoveSet` is this crate's subject for both, and
-            // `ApprovalService::submit_membership_move_on` is the writer that
-            // now declares one or the other via `ChangeSet::of_act` — the same
-            // "declared, not merely stored" bar `GrandfatheringCutover`'s own
-            // note states.
-            | Self::ImmediateMembershipReresolution
-            | Self::BulkGroupMove => true,
-            Self::RetirementUnwindingACutover
+            // The customer-group plane's **one** declared act.
+            // `api::rest::customer_groups::immediate_membership_materiality`
+            // builds `ChangeSet::of_act(Trigger::ImmediateMembershipReresolution,
+            // …)` on every arrival of `POST …/move`, which is the same
+            // "declared, not merely stored" bar `GrandfatheringCutover`'s note
+            // states. Its sibling is **not** here: see below.
+            | Self::ImmediateMembershipReresolution => true,
+            // `inst-mm-bulk`'s subject is not built, and the comment that said
+            // otherwise is the reason this arm now carries an argument.
+            //
+            // It read: *"**Paid 2026-08-12** … `MembershipMoveSet` is this
+            // crate's subject for both, and `ApprovalService::submit_membership_move_on`
+            // is the writer that now declares one or the other via
+            // `ChangeSet::of_act`"*. Measured against the tree, every clause of
+            // that is false. `submit_membership_move_on` contains no `of_act`
+            // call — no writer in `infra::approval` does; the only `of_act` on
+            // this plane is the route's, and it passes
+            // `ImmediateMembershipReresolution` unconditionally; and
+            // `move_membership_immediate` builds a **single-payer**
+            // `MembershipMoveSet`, so no surface in the crate ever constructs the
+            // many-payer act `inst-mm-bulk` is about. The only other occurrence
+            // of the variant in the tree was a test.
+            //
+            // `MembershipMoveSet` being *able* to hold many proposals is exactly
+            // the distinction `GrandfatheringCutover` waited three commits on:
+            // **the predicate is about a declaration, not about a table.** So
+            // this answers `false` — the honest value — and the bulk surface
+            // (a many-payer route, its idempotency contract and its approval
+            // unit) is owed to Slice 9 rather than quietly attested to here.
+            Self::BulkGroupMove
+            | Self::RetirementUnwindingACutover
             | Self::HistoricalImport
             | Self::GaGateClearingRepublish
             | Self::PrepaidGateClearingRepublish

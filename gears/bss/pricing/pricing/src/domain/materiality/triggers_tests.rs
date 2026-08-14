@@ -101,6 +101,101 @@ fn every_trigger_names_a_design_document_that_opens() {
     }
 }
 
+/// **The census behind the attestation.** A trigger that answers `true` on the
+/// act half must be *named by a producing site outside this registry*.
+///
+/// `subject_exists_in_this_crate` is the one predicate in the file that nothing
+/// checks: it is a hand-written `match`, and a `true` added to it compiles,
+/// passes every other case here, and is read by later authors as a statement
+/// that the work landed. That is not hypothetical — `bulkGroupMove` answered
+/// `true` under a dated comment claiming both membership triggers were "paid
+/// 2026-08-12", and **no file in `src/` constructed it**: the only `of_act` on
+/// that plane always passes `ImmediateMembershipReresolution`, the move route
+/// builds a single-payer set, and the sole other occurrence in the tree was a
+/// test. The transcription case below could not see it — a transcription copies
+/// whatever the `match` says.
+///
+/// # What is exempted, and why it is three names rather than a predicate
+///
+/// The **content half** is produced inside this module and by design has no call
+/// site anywhere else: [`triggered_by_row`] mints `grandfatherHorizonTightening`
+/// and `noComputableRowDelta`, and [`triggered_by_content`] mints
+/// `planShapeRevisionContent`. Those two functions are the census's blind spot
+/// and the three names below are transcribed from their bodies, in this file's
+/// standing style — a roster that is copied reddens when the thing it copies
+/// moves, which is the obligation it exists to create.
+///
+/// A **test file is not a producer.** `_tests.rs` is excluded for the reason the
+/// finding turns on: a variant mentioned only by a case asserting about it is
+/// exactly the state `bulkGroupMove` was in.
+#[test]
+fn every_act_half_trigger_answering_true_is_named_by_a_producing_site() {
+    /// Minted inside this module by the content half, so no other file names
+    /// them — transcribed from `triggered_by_row` and `triggered_by_content`.
+    const MINTED_BY_THE_CONTENT_HALF: &[&str] = &[
+        "grandfatherHorizonTightening",
+        "noComputableRowDelta",
+        "planShapeRevisionContent",
+    ];
+
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let sources = rust_sources(&src);
+    assert!(
+        sources.len() > 50,
+        "the walk found {} files, which is not this crate",
+        sources.len()
+    );
+
+    let mut unproduced: Vec<&str> = Vec::new();
+    for trigger in Trigger::ALL {
+        if !trigger.subject_exists_in_this_crate()
+            || MINTED_BY_THE_CONTENT_HALF.contains(&trigger.as_str())
+        {
+            continue;
+        }
+        let needle = format!("Trigger::{trigger:?}");
+        if !sources.iter().any(|body| body.contains(&needle)) {
+            unproduced.push(trigger.as_str());
+        }
+    }
+
+    assert!(
+        unproduced.is_empty(),
+        "these triggers answer `subject_exists_in_this_crate() == true` and no file \
+         in this crate outside the registry names them, so the `true` attests to \
+         work that has no code: {unproduced:?}"
+    );
+}
+
+/// Every non-test Rust source of this crate, bodies read, with this registry and
+/// its own cases removed.
+///
+/// The registry is excluded because it necessarily names every variant — the
+/// enumeration, `ALL`, and three exhaustive `match`es — so leaving it in would
+/// make the census answer `true` for everything.
+fn rust_sources(dir: &std::path::Path) -> Vec<String> {
+    let mut bodies = Vec::new();
+    let entries = std::fs::read_dir(dir).expect("the crate's source tree is readable");
+    for entry in entries {
+        let path = entry.expect("a readable directory entry").path();
+        if path.is_dir() {
+            bodies.extend(rust_sources(&path));
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        let is_rust = path
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("rs"));
+        if !is_rust || name.ends_with("_tests.rs") || name == "triggers.rs" {
+            continue;
+        }
+        bodies.push(std::fs::read_to_string(&path).expect("a readable source file"));
+    }
+    bodies
+}
+
 /// Two triggers sharing a token would make a diagnostic unable to say which act
 /// required the reviewer.
 #[test]
@@ -157,6 +252,15 @@ fn every_trigger_carries_a_distinct_token() {
 /// `rev_share_change_set`, which **have no caller** — `publish_bundle` evaluates no
 /// verdict at all. Their subjects are unarguably here, which is what the predicate
 /// literally asks; what is missing is the evaluation, and with it D-104's rule.
+///
+/// **`bulkGroupMove` left this list on 2026-08-14**, and it should never have
+/// joined it: the flip credited `ApprovalService::submit_membership_move_on` with
+/// a `ChangeSet::of_act` declaration that writer does not make, and the move route
+/// builds a single-payer set and always declares
+/// `immediateMembershipReresolution`. A transcription cannot see that — it copies
+/// whatever the `match` says — which is why
+/// `every_act_half_trigger_answering_true_is_named_by_a_producing_site` now
+/// stands beside it, and why that census, not this list, is what reddened.
 #[test]
 fn only_the_triggers_with_a_subject_in_this_crate_answer_true() {
     let reachable: Vec<&str> = Trigger::ALL
@@ -171,7 +275,6 @@ fn only_the_triggers_with_a_subject_in_this_crate_answer_true() {
             "grandfatherHorizonTightening",
             "grandfatheringCutover",
             "immediateMembershipReresolution",
-            "bulkGroupMove",
             "thresholdPolicyDiff",
             "priceOverlayMutation",
             "windowCancellation",
