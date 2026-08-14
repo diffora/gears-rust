@@ -94,7 +94,8 @@ use sea_orm::ActiveValue::Set;
 use sea_orm::sea_query::Expr;
 use sea_orm::{ColumnTrait, Condition, EntityTrait, Order};
 use toolkit_db::secure::{
-    AccessScope, DBRunner, SecureDeleteExt, SecureEntityExt, SecureInsertExt, SecureUpdateExt,
+    AccessScope, DBRunner, ScopeError, SecureDeleteExt, SecureEntityExt, SecureInsertExt,
+    SecureUpdateExt,
 };
 use toolkit_db::{DBProvider, DbError};
 use uuid::Uuid;
@@ -1310,16 +1311,43 @@ async fn flip(
         .exec(runner)
         .await
         .map(|r| r.rows_affected)
-        .map_err(|e| {
-            if e.to_string()
-                .contains("uq_pricing_price_overlay_precedence")
-                || e.to_string().contains("pricing_price_overlay.precedence")
-            {
-                RepoError::OverlayPrecedenceHeld
-            } else {
-                RepoError::Db(format!("flip pricing_price_overlay: {e}"))
-            }
-        })
+        .map_err(|e| precedence_held_or_db(&e, "flip pricing_price_overlay"))
+}
+
+/// The precedence slot's refusal, or an ordinary storage failure.
+///
+/// **The typed class first, the message only to say *which* index.**
+/// [`crate::infra::storage::policy_guard_or_contention`] is the shape being
+/// matched and its doc carries the argument for why message matching is the
+/// narrow case at all. Without the conjunct this read text alone, so any failure
+/// whose message happened to carry the DDL name — a lock report naming the index,
+/// a planner error quoting it — was answered as
+/// [`RepoError::OverlayPrecedenceHeld`], a refusal telling the caller to pick
+/// another precedence for a fault that had nothing to do with one.
+///
+/// The fallback runs the safe way: an unrecognised message is
+/// [`RepoError::Db`], which is today's answer for everything this does not
+/// name.
+fn precedence_held_or_db(err: &ScopeError, context: &str) -> RepoError {
+    if err.is_unique_violation() && names_the_precedence_slot(&err.to_string()) {
+        return RepoError::OverlayPrecedenceHeld;
+    }
+    RepoError::Db(format!("{context}: {err}"))
+}
+
+/// Does this driver message name `uq_pricing_price_overlay_precedence` rather
+/// than any other index on the overlay table?
+///
+/// Two renderings, one per backend, both of them names `m20260802_000032` writes:
+/// Postgres names the **index**, `SQLite` names the indexed **columns**. Neither
+/// engine produces the other's spelling, so both arms are live.
+///
+/// Split out and taking a `&str` so both renderings are asserted directly,
+/// without staging a database race for either — `names_the_policy_guard`'s
+/// arrangement, for the same reason.
+fn names_the_precedence_slot(message: &str) -> bool {
+    message.contains("uq_pricing_price_overlay_precedence")
+        || message.contains("pricing_price_overlay.precedence")
 }
 
 /// Which of the three refusals a failed compare-and-swap owes the caller.
@@ -2183,11 +2211,26 @@ async fn highest_revision(
 
 /// Is this the line table's identity collision rather than any other fault?
 ///
+/// **The unique class is asked first**, and the message only decides *which*
+/// constraint refused. The predicate took a bare `Display` before, so a storage
+/// failure of any kind whose text happened to carry this DDL name was answered as
+/// a caller-fixable `line_id` refusal. A primary-key violation is in the unique
+/// class on both engines — Postgres reports SQLSTATE `23505`, `SQLite` extended
+/// code `1555` — so the conjunct costs the real collision nothing.
+fn is_line_identity_collision(err: &ScopeError) -> bool {
+    err.is_unique_violation() && names_the_line_identity(&err.to_string())
+}
+
+/// Does this driver message name the line table's primary key?
+///
 /// Matched on the primary key's own name (Postgres) and on the column list
 /// `SQLite` reports, because the two engines name a primary-key violation
 /// differently and neither produces the other's spelling.
-fn is_line_identity_collision(err: &impl std::fmt::Display) -> bool {
-    let message = err.to_string();
+fn names_the_line_identity(message: &str) -> bool {
     message.contains("pricing_price_overlay_line_pkey")
         || message.contains("pricing_price_overlay_line.line_id")
 }
+
+#[cfg(test)]
+#[path = "overlay_repo_tests.rs"]
+mod overlay_repo_tests;
