@@ -69,7 +69,7 @@
 use sea_orm::ActiveValue::Set;
 use sea_orm::{ColumnTrait, Condition, EntityTrait, Order};
 use toolkit_db::secure::{
-    AccessScope, DBRunner, SecureDeleteExt, SecureEntityExt, SecureInsertExt,
+    AccessScope, DBRunner, ScopeError, SecureDeleteExt, SecureEntityExt, SecureInsertExt,
 };
 use toolkit_db::{DBProvider, DbError};
 use uuid::Uuid;
@@ -768,20 +768,56 @@ pub async fn create_on(
         .map_err(|e| RepoError::Db(format!("pricing_bundle scope: {e}")))?
         .exec(runner)
         .await
-        .map_err(|e| {
-            // The index is the guarantee; a racing creator loses here rather
-            // than on the read above.
-            if e.to_string().contains("uq_pricing_bundle_plan")
-                || e.to_string().contains("pricing_bundle.plan_id")
-            {
-                RepoError::DuplicateBundleOnPlan {
-                    plan_id: new.plan_id.get().to_string(),
-                }
-            } else {
-                RepoError::Db(format!("insert pricing_bundle: {e}"))
-            }
-        })?;
+        // The index is the guarantee; a racing creator loses here rather
+        // than on the read above.
+        .map_err(|e| duplicate_bundle_or_db(&e, new.plan_id, "insert pricing_bundle"))?;
     Ok(new.bundle_id)
+}
+
+/// The one-bundle-per-plan refusal, or an ordinary storage failure.
+///
+/// **The typed class first, the message only to say *which* constraint.** This
+/// read the driver's text alone, with no `is_unique_violation()` conjunct, so any
+/// failure whose message happened to carry the DDL name — a lock report naming the
+/// index, a planner error quoting it — was answered as
+/// [`RepoError::DuplicateBundleOnPlan`]: a refusal that tells the caller their plan
+/// already has a bundle, for a fault that had nothing to do with one, and whose
+/// remedy (go and edit the bundle you have) then leads nowhere.
+///
+/// The shape being matched is [`crate::infra::storage::policy_guard_or_contention`],
+/// whose doc carries the argument for why message matching is the narrow case and
+/// not a precedent, and the two overlay classifiers corrected in `21633827f` for
+/// this finding's other two sites. The fallback runs the safe way: an unrecognised
+/// message is [`RepoError::Db`], which is today's answer for everything this does
+/// not name.
+fn duplicate_bundle_or_db(err: &ScopeError, plan_id: PlanId, context: &str) -> RepoError {
+    if err.is_unique_violation() && names_the_bundle_plan_slot(&err.to_string()) {
+        return RepoError::DuplicateBundleOnPlan {
+            plan_id: plan_id.get().to_string(),
+        };
+    }
+    RepoError::Db(format!("{context}: {err}"))
+}
+
+/// Does this driver message name `uq_pricing_bundle_plan` rather than any other
+/// constraint on the bundle table?
+///
+/// Two renderings, one per backend, both of them names `m20260802_000024` writes:
+/// Postgres names the **index**, `SQLite` names the indexed **column**. Neither
+/// engine produces the other's spelling, so both arms are live. The qualified form
+/// `pricing_bundle.plan_id` is matched rather than the bare column, so
+/// `pricing_bundle_component.plan_id` and the revshare tables' own columns cannot
+/// be mistaken for it.
+///
+/// The other unique constraint on this table is its primary key on `bundle_id`
+/// (`m20260802_000024`, and no later migration rebuilds the table), which is why
+/// "a unique index refused" cannot on its own mean the plan slot.
+///
+/// Split out and taking a `&str` so both renderings are asserted directly, without
+/// staging a database race for either — `names_the_policy_guard`'s arrangement, for
+/// the same reason.
+fn names_the_bundle_plan_slot(message: &str) -> bool {
+    message.contains("uq_pricing_bundle_plan") || message.contains("pricing_bundle.plan_id")
 }
 
 /// [`BundleRepo::replace_composition`]'s body on a runner the caller owns.
@@ -1083,3 +1119,7 @@ async fn read_composition(
         rev_share_groups,
     })
 }
+
+#[cfg(test)]
+#[path = "bundle_repo_tests.rs"]
+mod bundle_repo_tests;
