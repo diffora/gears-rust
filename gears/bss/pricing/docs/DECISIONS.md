@@ -3232,8 +3232,8 @@ both are the same shape: **a split column does not carry its rules with it.**
 
 #### D-312 [H] The authoring plane accepts rows that no later edit can make publishable
 
-**Status:** raised 2026-08-14, from the Pricing Studio. **Awaiting veto.** Found
-by an author opening a stored row whose model-kind picker had nothing selected:
+**Status:** decided 2026-08-14, implementation pending. Found by an author opening
+a stored row whose model-kind picker had nothing selected:
 the row is `flat` on a `usage` charge kind, and `flat` is in no part of the
 usage set.
 
