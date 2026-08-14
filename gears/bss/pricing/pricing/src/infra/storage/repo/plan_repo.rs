@@ -69,8 +69,8 @@
 use std::collections::BTreeMap;
 
 use chrono::{DateTime, Utc};
-use sea_orm::sea_query::{Expr, SimpleExpr};
 use sea_orm::ActiveValue::Set;
+use sea_orm::sea_query::{Expr, SimpleExpr};
 use sea_orm::{ColumnTrait, Condition, EntityTrait, JsonValue, Order};
 use toolkit_db::secure::{
     AccessScope, DBRunner, DbConn, DbTx, SecureEntityExt, SecureInsertExt, SecureUpdateExt, TxError,
@@ -78,7 +78,7 @@ use toolkit_db::secure::{
 use toolkit_db::{DBProvider, DbError};
 use uuid::Uuid;
 
-use crate::domain::audit::{subject_state, AuditAction, AuditStamp, AuditSubjectKind};
+use crate::domain::audit::{AuditAction, AuditStamp, AuditSubjectKind, subject_state};
 use crate::domain::concurrency::RowVersion;
 use crate::domain::contracts::{
     EntitlementGrants, GrantSet, PlanChangeContract, UsageCounterOnPlanChange,
@@ -97,8 +97,8 @@ use crate::infra::storage::repo::plan_shape_repo::{
     copy_addon_rules, copy_composites, copy_descriptor_set, copy_phases, delete_addon_rules,
     delete_composites, delete_descriptor_set, delete_phases,
 };
-use crate::infra::storage::repo::{audit_repo, outbox_repo, NewAuditEntry};
-use crate::infra::storage::{contention_or_db, RepoError};
+use crate::infra::storage::repo::{NewAuditEntry, audit_repo, outbox_repo};
+use crate::infra::storage::{RepoError, contention_or_db};
 
 /// The noun every **compare-and-swap** refusal names, so a caller that failed
 /// to edit revision 3 and a caller that failed to delete it are told about the

@@ -928,11 +928,20 @@ impl Harness {
 
     /// Move a revision straight to `retired`.
     ///
-    /// Retirement is Slice 11's publish unit (D-128) and **has no producer in
-    /// this gear at all**, so a suite that needs a retired plan has to write the
-    /// state itself. The append-only trigger permits the edge: it fires only
-    /// once a row is past `draft`, and `published -> retired` is one of the two
-    /// flips it whitelists.
+    /// Retirement is Slice 11's publish unit (D-128). **This comment used to say
+    /// the edge "has no producer in this gear at all", and that has been false
+    /// since 2026-08-07**: `retirement::retire_in` reaches
+    /// `plan_repo::retire_revision`, behind the mounted `POST` at `PLAN_RETIRE`,
+    /// with its own suite. The 2026-08-10 review read this comment rather than
+    /// the code and filed the whole retirement commit lane as absent-by-design;
+    /// the 2026-08-14 audit of that review found the plane had existed for three
+    /// days. A finding sourced from a doc inherits the doc's errors.
+    ///
+    /// The helper stays, because a suite that only needs a retired row should not
+    /// have to drive the whole unit to get one — that is a fixture shortcut, not
+    /// a statement about what the gear can do. The append-only trigger permits
+    /// the edge: it fires only once a row is past `draft`, and
+    /// `published -> retired` is one of the two flips it whitelists.
     pub async fn retire(&self, plan_id: Uuid, revision: i64) {
         let conn = self.db.conn().expect("conn");
         let result = plan::Entity::update_many()

@@ -169,13 +169,19 @@
 //!   `after_state` and the act segment of the unit's subject. That is an open
 //!   coarseness in the action vocabulary, not a missing record.
 //!
-//! What binds the `window` subject token is not the schema:
-//! **`pricing_audit_log.subject_kind` is free `text` with no CHECK at all**
-//! (`m20260802_000010`, and `tests/postgres_migrations.rs`'s roster confirms it —
-//! the only audit CHECKs are `entry_kind`, `rollup` and `seq`). It is
-//! [`AuditSubjectKind`]'s Rust enumeration, paired with
-//! `chk_pricing_approval_subject_kind` — the **approval** table's CHECK — which is
-//! why that pairing is extended in the same change as a writer and not before.
+//! What binds the `window` subject token is [`AuditSubjectKind`]'s Rust
+//! enumeration, paired with the schema's own CHECKs — which is why that pairing
+//! is extended in the same change as a writer and not before.
+//!
+//! **This paragraph said `pricing_audit_log.subject_kind` was free `text` with no
+//! CHECK at all, and cited `tests/postgres_migrations.rs`'s roster as proof. That
+//! became false a few hours after it was written**, when `m20260802_000074` gave
+//! the column the CHECK its sibling on `pricing_approval` already carried — and
+//! the roster cited as proof is exactly what the new constraint joined. Both
+//! edits landed the same morning, in one fix wave, from two different findings
+//! that never met. A doc corrected against the code of the hour expires as fast
+//! as the hour does; state what binds a token, not what the schema currently
+//! declines to.
 //!
 //! [`transition`]'s parameter is spelled `_stamp` because that path uses none of
 //! it, so the omission is visible at every call site instead of being a promise
