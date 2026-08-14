@@ -113,8 +113,8 @@ use crate::domain::scope_key::{PlanId, PriceEligibility};
 use crate::domain::taxonomy::TaxonomyState;
 use crate::infra::storage::RepoError;
 use crate::infra::storage::entity::{
-    brand_taxonomy, org_tier_taxonomy, partner_taxonomy, plan, price, price_overlay,
-    price_overlay_line, price_overlay_line_amount, region_taxonomy,
+    brand_taxonomy, customer_group_taxonomy, org_tier_taxonomy, partner_taxonomy, plan, price,
+    price_overlay, price_overlay_line, price_overlay_line_amount, region_taxonomy,
 };
 use crate::infra::storage::repo::plan_repo::{read_token, tx_failure};
 use crate::infra::storage::repo::{NewAuditEntry, audit_repo, check_authored_instant};
@@ -768,14 +768,22 @@ impl OverlayRepo {
     /// `inst-plv-scope`'s lookup. The classless scope consults nothing and
     /// answers `true`: it has no value, so there is nothing to be undeclared.
     ///
-    /// **`customer_group` answers `false` unconditionally**, and that is a
-    /// refusal rather than a gap: `pricing_customer_group_taxonomy` belongs to
-    /// the membership half, which is not built in this strand, so there is no
-    /// universe to validate against. Answering `true` would let a
-    /// `customerGroup` overlay publish against a universe that does not exist —
-    /// exactly the D-211 shape these four tables were built to avoid — and
-    /// answering `false` is the fail-closed reading: the class is refused with a
-    /// refusal that names its missing universe.
+    /// **`customer_group` reads `pricing_customer_group_taxonomy`, and used to
+    /// answer `false` unconditionally.** D-223 chose that refusal *while the
+    /// class had no value universe* — "reversible in one line when the
+    /// membership half lands" are its own words, and the table landed:
+    /// `m20260802_000066` creates it in the four Slice 4 taxonomies' shape,
+    /// `TaxonomyRepo::replace_customer_groups` writes it, and
+    /// `api::rest::customer_groups` mounts the `GET`/`PUT` pair §5 gives it. That
+    /// migration's module doc files this wiring as the follow-up it *"only gives
+    /// the class somewhere to read"* for. Left as it was, the arm refused a
+    /// `customerGroup` overlay with `SCOPE_VALUE_UNKNOWN` against a universe that
+    /// exists — which is not the fail-closed reading of anything, only a stale
+    /// one.
+    ///
+    /// The refusal it *is* still fail-closed about is unchanged: an undeclared
+    /// value, and a `retired` one, both answer `false` here exactly as on the
+    /// four siblings.
     ///
     /// # Errors
     /// [`RepoError::Db`] on a scope or storage failure.
@@ -797,7 +805,7 @@ impl OverlayRepo {
 // Taxonomy lookup — one function per table, because each is a distinct entity.
 // ---------------------------------------------------------------------------
 
-/// The `active` predicate every one of the four shares.
+/// The `active` predicate every one of the five shares.
 ///
 /// A **retired** value does not declare anything: §6 guards retirement while a
 /// value is referenced, and a value that reached `retired` anyway must not
@@ -869,8 +877,22 @@ async fn declares(
             .await
             .map_err(|e| RepoError::Db(format!("read pricing_org_tier_taxonomy: {e}")))?
             .is_some(),
-        // The membership half is not built; see `taxonomy_declares`' own doc.
-        ScopeClass::CustomerGroup => false,
+        // The fifth table, read exactly as its four siblings are. It is a
+        // separate arm rather than a shared one because each class is a distinct
+        // entity with its own `Column` type; see this section's heading.
+        ScopeClass::CustomerGroup => customer_group_taxonomy::Entity::find()
+            .secure()
+            .scope_with(scope)
+            .filter(
+                Condition::all()
+                    .add(customer_group_taxonomy::Column::TenantId.eq(tenant_id))
+                    .add(customer_group_taxonomy::Column::Value.eq(value.as_str()))
+                    .add(customer_group_taxonomy::Column::State.eq(active)),
+            )
+            .one(runner)
+            .await
+            .map_err(|e| RepoError::Db(format!("read pricing_customer_group_taxonomy: {e}")))?
+            .is_some(),
     };
     Ok(found)
 }

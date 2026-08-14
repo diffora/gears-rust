@@ -21,7 +21,9 @@ use bss_pricing::domain::overlay::{
     OverlayLine, ScopeClass, ScopeSelector, ScopeValue, TargetRef, TaxBasis,
 };
 use bss_pricing::domain::scope_key::PlanId;
-use bss_pricing::infra::storage::entity::{audit_log, brand_taxonomy, plan, price_overlay};
+use bss_pricing::infra::storage::entity::{
+    audit_log, brand_taxonomy, customer_group_taxonomy, plan, price_overlay,
+};
 use bss_pricing::infra::storage::migrations::Migrator;
 use bss_pricing::infra::storage::repo::{NewOverlay, OverlayRepo, audit_repo};
 use bss_pricing::infra::storage::{RepoError, repo_failure};
@@ -70,6 +72,29 @@ async fn declare_brand(provider: &DBProvider<DbError>, state: &str) {
         .expect("the brand is declared");
 }
 
+/// Declare one customer-group value in one state.
+///
+/// [`declare_brand`]'s shape on the fifth table, and seeded through the entity
+/// for that helper's reason: what is under test is the overlay repository's
+/// *read* of the taxonomy, not `TaxonomyRepo::replace_customer_groups`' own
+/// rules.
+async fn declare_customer_group(provider: &DBProvider<DbError>, value: &str, state: &str) {
+    let conn = provider.conn().expect("a connection");
+    let row = customer_group_taxonomy::ActiveModel {
+        tenant_id: Set(TENANT),
+        value: Set(value.to_owned()),
+        display_name: Set(value.to_uppercase()),
+        state: Set(state.to_owned()),
+    };
+    customer_group_taxonomy::Entity::insert(row.clone())
+        .secure()
+        .scope_with_model(&AccessScope::allow_all(), &row)
+        .expect("the scope admits the row")
+        .exec(&conn)
+        .await
+        .expect("the customer group is declared");
+}
+
 fn plan(n: u128) -> PlanId {
     PlanId::new(Uuid::from_u128(n))
 }
@@ -91,6 +116,14 @@ fn brand_scope() -> ScopeSelector {
         ScopeValue::new("acme").expect("a non-blank value"),
     )
     .expect("brand is not global")
+}
+
+fn customer_group_scope(value: &str) -> ScopeSelector {
+    ScopeSelector::scoped(
+        ScopeClass::CustomerGroup,
+        ScopeValue::new(value).expect("a non-blank value"),
+    )
+    .expect("customer_group is not global")
 }
 
 fn new_overlay(id: Uuid, precedence: i32) -> NewOverlay {
@@ -901,28 +934,50 @@ async fn the_classless_scope_consults_no_taxonomy() {
     );
 }
 
-/// **`customer_group` answers `false`, and that is fail-closed rather than a
-/// gap.**
+/// **`customer_group` reads its own universe, and the universe now exists.**
 ///
-/// `pricing_customer_group_taxonomy` belongs to the membership half, which this
-/// strand does not build. Answering `true` would let a `customerGroup` overlay
-/// publish against a universe that does not exist — exactly the D-211 shape the
-/// four taxonomy tables were built to avoid.
+/// D-223 chose to refuse the class *while its taxonomy did not exist*, and
+/// `overlay_repo::declares` answered `false` unconditionally for it. That
+/// premise expired: `m20260802_000066` created
+/// `pricing_customer_group_taxonomy` (the four Slice 4 taxonomies' shape, on
+/// Slice 9's own route), `TaxonomyRepo::replace_customer_groups` writes it and
+/// `api::rest::customer_groups` mounts the pair — so the arm was refusing an
+/// overlay against a universe that is there. That migration's own module doc
+/// files the wiring as owed: *"wiring that read to this table is a later
+/// change"*.
+///
+/// **Three rows and not one.** A refusal-only case cannot tell a predicate that
+/// reads the table from one that still answers `false` — the undeclared and
+/// retired rows would be green either way. The **declared, active** row is the
+/// positive control, and it is the only one of the three that reddens against
+/// the unconditional `false`.
 #[tokio::test]
-async fn the_customer_group_class_has_no_universe_and_is_refused() {
-    let (repo, scope) = repo().await;
-    let selector = ScopeSelector::scoped(
-        ScopeClass::CustomerGroup,
-        ScopeValue::new("vip").expect("a non-blank value"),
-    )
-    .expect("customer_group is not global");
+async fn the_customer_group_class_validates_against_its_own_taxonomy() {
+    let provider = provider().await;
+    declare_customer_group(&provider, "vip", "active").await;
+    declare_customer_group(&provider, "lapsed", "retired").await;
+    let repo = OverlayRepo::new(provider);
+    let scope = AccessScope::allow_all();
 
     assert!(
-        !repo
-            .taxonomy_declares(&scope, TENANT, &selector)
+        repo.taxonomy_declares(&scope, TENANT, &customer_group_scope("vip"))
             .await
             .expect("the lookup succeeds"),
-        "the class must fail closed while its taxonomy does not exist"
+        "a declared, active customer group is a universe an overlay may target"
+    );
+    assert!(
+        !repo
+            .taxonomy_declares(&scope, TENANT, &customer_group_scope("lapsed"))
+            .await
+            .expect("the lookup succeeds"),
+        "a retired value declares nothing, as on every sibling class"
+    );
+    assert!(
+        !repo
+            .taxonomy_declares(&scope, TENANT, &customer_group_scope("nobody"))
+            .await
+            .expect("the lookup succeeds"),
+        "an undeclared value is still refused"
     );
 }
 
