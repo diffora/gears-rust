@@ -123,10 +123,28 @@
 //! One absence is a **rule** rather than a gap, and it is listed so a later
 //! reader does not close it: the operator-plane drift flags
 //! (`tier_divergent`, `grants_divergent`, the tax-readiness and meter-binding
-//! divergences) are **never** part of a frozen version (D-85). They live in
-//! `pricing_operator_flag` and operators read them through the authoring
-//! surfaces. A version that carried one would be a frozen artifact whose
-//! content changes when an external signal arrives.
+//! divergences) are **never** part of a frozen version (D-85). A version that
+//! carried one would be a frozen artifact whose content changes when an external
+//! signal arrives.
+//!
+//! Their home is `pricing_operator_flag`. This paragraph used to add "and
+//! operators read them through the authoring surfaces", which is **false as a
+//! statement about this repository** and is corrected rather than softened (review
+//! finding Z13-5): no authoring surface reads that table, and none could — it has
+//! no repository, no reader and no writer, and `operator_flag::` appears outside
+//! its entity and its migration registration nowhere at all. D-85 does say the
+//! flags are "surfaced on authoring/operator reads (`plan × read`)", so the clause
+//! was a design intention reported as a built fact; D-305 is the entry that settles
+//! which it is, and it says the whole plane is unbuilt, that the cost is "a plane,
+//! not a field" — a repository, a producer on the publish path, a read surface and
+//! an alarm `PricingAlarm::ALL` does not carry — and that the read surface is a
+//! design question it deliberately does not settle. So the reader is **owed and
+//! unbuilt**, not present.
+//!
+//! [`crate::domain::plan_rules`] states the same absence correctly and gives the
+//! reason it is worth stating at all: "the absence is therefore the *signal*, not
+//! the storage … a reader who finds the table would otherwise reasonably conclude
+//! the feature is wired." That is what this paragraph had been inviting.
 //!
 //! **No payload-generation marker is invented for any of this.** The gear has
 //! exactly one such mechanism — the evaluation-policy generation
