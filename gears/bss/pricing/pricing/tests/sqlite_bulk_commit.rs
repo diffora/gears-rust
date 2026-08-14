@@ -1249,13 +1249,13 @@ async fn the_row_whose_own_transaction_failed_is_not_reported_as_not_attempted()
     assert_eq!(committed, vec![0], "row 0 committed: {report}");
 
     let detail_of = |row: u64| -> String {
-        report["conflicted"]
+        let outcome = report["conflicted"]
             .as_array()
             .unwrap_or_else(|| panic!("the conflicted arm: {report}"))
             .iter()
             .find(|outcome| outcome["row"].as_u64() == Some(row))
-            .map(|outcome| outcome["violations"][0]["detail"].to_string())
-            .unwrap_or_else(|| panic!("row {row} has to be in the report at all: {report}"))
+            .unwrap_or_else(|| panic!("row {row} has to be in the report at all: {report}"));
+        outcome["violations"][0]["detail"].to_string()
     };
 
     let failed = detail_of(1);

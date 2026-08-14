@@ -1117,19 +1117,27 @@ async fn a_replay_of_a_key_spent_on_an_unreadable_batch_is_refused() {
 /// refusal wearing another status.
 #[tokio::test]
 async fn a_body_past_the_platform_limit_is_refused_before_the_handler_runs() {
+    /// The platform default this route inherits.
+    const LIMIT: usize = 2 * 1024 * 1024;
+
     let harness = Harness::new().await;
     let plan = Uuid::now_v7();
     seed_current_plan(&harness, plan).await;
 
-    // One row's serialized size decides how many make 2 MiB; measured rather than
-    // guessed, so a change to `BulkImportRowRequest`'s shape cannot leave this case
+    // Rows are appended until the serialized body is over the limit, and the
+    // premise is then asserted. Measured rather than computed from an assumed row
+    // size, so a change to `BulkImportRowRequest`'s shape cannot leave this case
     // building a body that is under the limit and asserting it is over.
-    let one = row(plan, "eu", 1_500).to_string().len();
-    let count = (2 * 1024 * 1024) / one + 2;
-    let rows: Vec<serde_json::Value> = (0..count).map(|_| row(plan, "eu", 1_500)).collect();
+    let mut rows: Vec<serde_json::Value> = Vec::new();
+    let mut size = 0;
+    while size <= LIMIT {
+        let one = row(plan, "eu", 1_500);
+        size += one.to_string().len();
+        rows.push(one);
+    }
     let body = batch(&rows);
     assert!(
-        body.to_string().len() > 2 * 1024 * 1024,
+        body.to_string().len() > LIMIT,
         "the premise of this case: the body has to be over the limit it is testing"
     );
 
