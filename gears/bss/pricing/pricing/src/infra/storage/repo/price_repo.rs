@@ -587,7 +587,7 @@ impl PriceRepo {
         // refused wherever it arrives, and this path can reject it without a
         // round trip.
         check_authored_instant("grandfatherUntil", horizon)?;
-        let assignments = content_assignments(&content_model(&content)?);
+        let assignments = content_assignments(content_model(&content)?);
         let bands = band_models(tenant_id, price_id, &content.row.bands)?;
         let content_line = (content.row.meter.clone(), content.row.dimension_key.clone());
         let Some(guard) = swap_guard(tenant_id, price_id, expected) else {
@@ -3282,25 +3282,120 @@ fn insert_model(tenant_id: Uuid, record: &PriceRecord) -> Result<price::ActiveMo
 /// The columns an `update_draft` writes: the whole of the row's content, and
 /// nothing of its identity, its scope key or its provenance.
 ///
-/// The values are read off the very `ActiveModel` the insert path builds, so
-/// the two writers cannot render one column two different ways. The **list**,
-/// by contrast, is written out rather than derived from the entity: which
-/// columns a draft edit may move is a decision, and a column added to the table
-/// must not become editable merely by existing.
-fn content_assignments(model: &price::ActiveModel) -> Vec<(price::Column, Value)> {
+/// The values are read off the very `ActiveModel` the insert path builds, so the
+/// two writers cannot render one column two different ways. Which columns a draft
+/// edit may move is still a **decision** — a column added to the table must not
+/// become editable merely by existing — but it is now a decision the compiler
+/// makes you take.
+///
+/// # Why the argument is destructured field by field, with no `..`
+///
+/// Because the list was hand-written against an `ActiveModel` the compiler never
+/// checked it against, and twice a column reached [`content_model`] and never
+/// reached this list. Both were silent: the `UPDATE` simply did not name the
+/// column, the row kept its old value, and `PATCH` answered `200` with a body
+/// rendered from the **stored** record — so the surface reported success and
+/// showed the reverted field as if the caller had asked for it.
+///
+/// - `tax_category_ref`, until 2026-08-11 (D-110/D-154): a correction that could
+///   not be made before publish froze the category for seven years.
+/// - `unit_rate_nano`, until 2026-08-14: D-311 gave a `per_unit` row's money a
+///   column of its own, and this was the **third** site that one column split
+///   stranded — after `domain::repricing`'s `project_row` and the tier-band site,
+///   both found and fixed while this one survived two fix waves. It survived
+///   because every search for the class was a grep, and a hand-written list of
+///   `(Column, Value)` pairs looks nothing like the code those greps matched.
+///
+/// The exhaustive destructure is the guard that ends the class: adding a column
+/// to [`price::Model`] makes this pattern non-exhaustive and the crate stops
+/// compiling until someone decides, here, whether a draft edit may move it. The
+/// guard was recommended when the *first* of the three sites was found and not
+/// taken; had it been, neither of the two omissions above could have existed.
+///
+/// Fields a draft edit may **not** move are bound and ignored with the reason on
+/// the line, so an exclusion is a decision on the record rather than an omission
+/// that reads identically to one.
+fn content_assignments(model: price::ActiveModel) -> Vec<(price::Column, Value)> {
+    let price::ActiveModel {
+        // Identity. `insert_model` writes it once; an update addresses the row by
+        // it and can no more move it than a caller can rename what they are editing.
+        price_id: _,
+        tenant_id: _,
+        // The canonical scope key, all ten axes. Moving one is a different row:
+        // the key decides which duplicate a row is, which supersession chain it
+        // joins and which window covers it, so the remedy is a delete and a new
+        // draft — see `update_draft`'s own doc. (`meter` and `dimension_key` are
+        // axes too since D-196, but they are also content, so they are written
+        // below; `check_update_keeps_the_line` refuses an edit that moves them,
+        // which is what makes writing them back a no-op rather than a key move.)
+        plan_id: _,
+        currency: _,
+        region: _,
+        price_overlay: _,
+        phase: _,
+        price_eligibility: _,
+        charge_kind: _,
+        cohort: _,
+        // --- content: every one of these is what a draft edit is for ---
+        amount_minor,
+        unit_rate_nano,
+        model_kind,
+        tax_inclusive,
+        tax_category_ref,
+        // D-154's resolved category, frozen inside the publish transaction. NULL
+        // on a draft by definition — there is nothing to freeze until a publish
+        // resolves it — so a draft edit has nothing to say about it.
+        resolved_tax_category: _,
+        billing_timing,
+        billing_anchor_policy,
+        anchor_day,
+        proration_basis,
+        credit_on_downgrade,
+        quantity_source,
+        manual_quantity,
+        package_size,
+        package_price_minor,
+        meter,
+        dimension_key,
+        billing_granularity,
+        aggregation_function,
+        aggregation_granularity,
+        tier_aggregation_window,
+        tier_qualification_window,
+        max_hold_granules,
+        included_allowance,
+        reserved_rate_minor,
+        reservation_flavor,
+        min_qty_purchase,
+        min_qty_usage,
+        min_qty_usage_fallback,
+        discount_ref,
+        rounding_policy_ref,
+        grandfather_until,
+        supersedes_price_id,
+        // Lifecycle is moved by publish and supersession, never by an edit; the
+        // table's own trigger enumerates the sanctioned transitions.
+        lifecycle_state: _,
+        // Provenance: who authored the row and when. An edit is not an authoring,
+        // and the Slice-12 history export reads these as the original facts.
+        created_by: _,
+        created_at_utc: _,
+        // The `ETag`. `update_draft` advances it with `RowVersion + 1` in the same
+        // statement, under the compare-and-swap guard; an assignment here would
+        // overwrite the swap with the value the caller submitted.
+        row_version: _,
+    } = model;
+
     [
-        (
-            price::Column::AmountMinor,
-            model.amount_minor.clone().into_value(),
-        ),
-        (
-            price::Column::ModelKind,
-            model.model_kind.clone().into_value(),
-        ),
-        (
-            price::Column::TaxInclusive,
-            model.tax_inclusive.clone().into_value(),
-        ),
+        (price::Column::AmountMinor, amount_minor.into_value()),
+        // **Absent from this list until 2026-08-14**, while `content_model` had
+        // set it since D-311 (`3492f0091`) and `to_record` read it back. So a
+        // draft edit that re-rated a metered row — the commonest edit there is on
+        // a `per_unit` row, since this column *is* its price — was discarded, and
+        // the call answered success.
+        (price::Column::UnitRateNano, unit_rate_nano.into_value()),
+        (price::Column::ModelKind, model_kind.into_value()),
+        (price::Column::TaxInclusive, tax_inclusive.into_value()),
         // **Absent from this list until 2026-08-11**, and the one content column
         // that was neither written, nor refused, nor documented as frozen — which
         // is what made it an omission rather than a decision. `charge_kind` and
@@ -3315,114 +3410,81 @@ fn content_assignments(model: &price::ActiveModel) -> Vec<(price::Column, Value)
         // a draft never landed and the row published the category its author
         // already knew was wrong — and `04-currency-tax.md:198` names authoring
         // this very field as D-245's remedy, which was therefore unexpressible.
-        (
-            price::Column::TaxCategoryRef,
-            model.tax_category_ref.clone().into_value(),
-        ),
-        (
-            price::Column::BillingTiming,
-            model.billing_timing.clone().into_value(),
-        ),
+        (price::Column::TaxCategoryRef, tax_category_ref.into_value()),
+        (price::Column::BillingTiming, billing_timing.into_value()),
         (
             price::Column::BillingAnchorPolicy,
-            model.billing_anchor_policy.clone().into_value(),
+            billing_anchor_policy.into_value(),
         ),
-        (
-            price::Column::AnchorDay,
-            model.anchor_day.clone().into_value(),
-        ),
-        (
-            price::Column::ProrationBasis,
-            model.proration_basis.clone().into_value(),
-        ),
+        (price::Column::AnchorDay, anchor_day.into_value()),
+        (price::Column::ProrationBasis, proration_basis.into_value()),
         (
             price::Column::CreditOnDowngrade,
-            model.credit_on_downgrade.clone().into_value(),
+            credit_on_downgrade.into_value(),
         ),
-        (
-            price::Column::QuantitySource,
-            model.quantity_source.clone().into_value(),
-        ),
-        (
-            price::Column::ManualQuantity,
-            model.manual_quantity.clone().into_value(),
-        ),
-        (
-            price::Column::PackageSize,
-            model.package_size.clone().into_value(),
-        ),
+        (price::Column::QuantitySource, quantity_source.into_value()),
+        (price::Column::ManualQuantity, manual_quantity.into_value()),
+        (price::Column::PackageSize, package_size.into_value()),
         (
             price::Column::PackagePriceMinor,
-            model.package_price_minor.clone().into_value(),
+            package_price_minor.into_value(),
         ),
-        (price::Column::Meter, model.meter.clone().into_value()),
-        (
-            price::Column::DimensionKey,
-            model.dimension_key.clone().into_value(),
-        ),
+        (price::Column::Meter, meter.into_value()),
+        (price::Column::DimensionKey, dimension_key.into_value()),
         (
             price::Column::BillingGranularity,
-            model.billing_granularity.clone().into_value(),
+            billing_granularity.into_value(),
         ),
         (
             price::Column::AggregationFunction,
-            model.aggregation_function.clone().into_value(),
+            aggregation_function.into_value(),
         ),
         (
             price::Column::AggregationGranularity,
-            model.aggregation_granularity.clone().into_value(),
+            aggregation_granularity.into_value(),
         ),
         (
             price::Column::TierAggregationWindow,
-            model.tier_aggregation_window.clone().into_value(),
+            tier_aggregation_window.into_value(),
         ),
         (
             price::Column::TierQualificationWindow,
-            model.tier_qualification_window.clone().into_value(),
+            tier_qualification_window.into_value(),
         ),
         (
             price::Column::MaxHoldGranules,
-            model.max_hold_granules.clone().into_value(),
+            max_hold_granules.into_value(),
         ),
         (
             price::Column::IncludedAllowance,
-            model.included_allowance.clone().into_value(),
+            included_allowance.into_value(),
         ),
         (
             price::Column::ReservedRateMinor,
-            model.reserved_rate_minor.clone().into_value(),
+            reserved_rate_minor.into_value(),
         ),
         (
             price::Column::ReservationFlavor,
-            model.reservation_flavor.clone().into_value(),
+            reservation_flavor.into_value(),
         ),
-        (
-            price::Column::MinQtyPurchase,
-            model.min_qty_purchase.clone().into_value(),
-        ),
-        (
-            price::Column::MinQtyUsage,
-            model.min_qty_usage.clone().into_value(),
-        ),
+        (price::Column::MinQtyPurchase, min_qty_purchase.into_value()),
+        (price::Column::MinQtyUsage, min_qty_usage.into_value()),
         (
             price::Column::MinQtyUsageFallback,
-            model.min_qty_usage_fallback.clone().into_value(),
+            min_qty_usage_fallback.into_value(),
         ),
-        (
-            price::Column::DiscountRef,
-            model.discount_ref.clone().into_value(),
-        ),
+        (price::Column::DiscountRef, discount_ref.into_value()),
         (
             price::Column::RoundingPolicyRef,
-            model.rounding_policy_ref.clone().into_value(),
+            rounding_policy_ref.into_value(),
         ),
         (
             price::Column::GrandfatherUntil,
-            model.grandfather_until.clone().into_value(),
+            grandfather_until.into_value(),
         ),
         (
             price::Column::SupersedesPriceId,
-            model.supersedes_price_id.clone().into_value(),
+            supersedes_price_id.into_value(),
         ),
     ]
     .into_iter()

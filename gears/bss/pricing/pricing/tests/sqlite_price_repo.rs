@@ -124,6 +124,17 @@ fn rate(minor_units: i64) -> RateMinor {
     RateMinor::from_nano_minor(minor_units * 1_000_000_000).expect("a non-negative rate")
 }
 
+/// A rate stated in the **stored** 10^-9 scale, for the cases that need two
+/// values a scale slip could not confuse.
+///
+/// [`rate`] above multiplies by 10^9, so every value it makes is a whole number
+/// of minor units and divides evenly by the scale factor — which is exactly the
+/// shape that nearly defeated D-311's own fix, because a reading at the wrong
+/// scale still landed on a plausible number. The values passed here are not.
+fn nano_rate(nano_minor: i64) -> RateMinor {
+    RateMinor::from_nano_minor(nano_minor).expect("a non-negative rate")
+}
+
 /// The default key: `all_subscriptions`, `cohort = none`.
 fn base_key(charge_kind: ChargeKind) -> ScopeKey {
     ScopeKey::new(
@@ -1598,7 +1609,7 @@ async fn an_update_reaches_the_per_kind_money_columns_too() {
 
     // The five content columns the tiered row above cannot legally carry:
     // `package_size` / `package_price_minor` live only on a `package` row
-    // (`chk_pricing_price_package_fields_kind`), and `amount_minor` /
+    // (`chk_pricing_price_package_fields_kind`), and `unit_rate_nano` /
     // `quantity_source` / `manual_quantity` belong to the untiered kinds. They
     // reach the UPDATE through the same assignment list, so they need the same
     // proof that the list actually names them.
@@ -1655,7 +1666,15 @@ async fn an_update_reaches_the_per_kind_money_columns_too() {
 
     let per_unit_id = Uuid::from_u128(0xb_83);
     let mut per_unit = PriceRow::new(ChargeKind::Recurring, Some(ModelKind::PerUnit));
-    per_unit.amount_minor = Some(money(1_500));
+    // **A `per_unit` row's money is its rate, and `amount_minor` is NULL on it**
+    // (D-311). This row carried `amount_minor` and no rate until 2026-08-14, which
+    // is both the pre-D-311 shape and the reason the gap below survived: the case
+    // named for "the per-kind money columns" never touched the one column that had
+    // just become a `per_unit` row's price. `amount_minor`'s own assignment is
+    // proved by the flat-row edit in
+    // `an_edit_advances_the_tag_and_the_previous_tag_stops_working`, so correcting
+    // the shape here costs no coverage.
+    per_unit.unit_rate = Some(nano_rate(1_234_567_891));
     per_unit.quantity_source = Some(QuantitySource::Manual);
     per_unit.manual_quantity = Some(12);
     let per_unit_content = PriceContent {
@@ -1682,9 +1701,14 @@ async fn an_update_reaches_the_per_kind_money_columns_too() {
 
     // Moving to the seat count clears the fixed quantity in the same write —
     // the two fields answer one question, and a row that kept both would give
-    // rating two answers to "how many".
+    // rating two answers to "how many". And the **rate moves with it**: re-rating
+    // a metered row is the commonest draft edit there is.
+    //
+    // Neither value is a whole number of minor units and neither is the other
+    // scaled by a power of ten, so a read or a write at the wrong scale lands on
+    // a number this assertion refuses rather than on a plausible one.
     let mut seated = per_unit_content;
-    seated.row.amount_minor = Some(money(2_500));
+    seated.row.unit_rate = Some(nano_rate(987_654_321));
     seated.row.quantity_source = Some(QuantitySource::SubscriptionSeatCount);
     seated.row.manual_quantity = None;
     repo.update_draft(
@@ -1704,7 +1728,19 @@ async fn an_update_reaches_the_per_kind_money_columns_too() {
         .await
         .expect("read")
         .expect("present");
-    assert_eq!(read.row.amount_minor, Some(money(2_500)));
+    // **The stored value, read back through `find` — not the one submitted.** An
+    // assertion on the content handed to `update_draft`, or on a response body
+    // rendered from the request, passes against a column the UPDATE never names.
+    assert_eq!(
+        read.row.unit_rate,
+        Some(nano_rate(987_654_321)),
+        "D-311 gave the per_unit rate a column of its own, and a draft edit that \
+         cannot move it loses a commercial change while answering success"
+    );
+    assert_eq!(
+        read.row.amount_minor, None,
+        "a per_unit row's money is its rate; two priced columns are two competing prices"
+    );
     assert_eq!(
         read.row.quantity_source,
         Some(QuantitySource::SubscriptionSeatCount)

@@ -1299,6 +1299,89 @@ async fn a_metered_row_may_patch_while_echoing_the_key_it_cannot_fully_name() {
     );
 }
 
+/// Re-rating a `per_unit` draft through `PATCH` lands in the **store**.
+///
+/// D-311 moved a `per_unit` row's money out of `amount_minor` into a column of
+/// its own, and `content_assignments` — the hand-written list of columns an
+/// `update_draft` writes — was not extended with it. The `UPDATE` therefore never
+/// named `unit_rate_nano`: the route answered `200`, the response body rendered
+/// the **stored** record so it looked consistent, and the author's new rate was
+/// gone. That is the **third** site that one column split stranded — after
+/// `project_row` and the tier-band site, both already fixed — and the only one no
+/// grep for the class could reach, because a hand-written list of
+/// `(Column, Value)` pairs looks nothing like the code those greps matched.
+///
+/// The readback is [`price_rows`], which reads the store — **not** the `PATCH`
+/// response and not the request body. Either of those would have passed against
+/// the defect.
+#[tokio::test]
+async fn a_patch_that_re_rates_a_per_unit_row_moves_the_stored_rate() {
+    let harness = Harness::new().await;
+    let plan_id = seeded_plan(&harness).await;
+
+    let create = harness
+        .allowed()
+        .send(with_headers(
+            "POST",
+            &prices_path(plan_id),
+            Some(serde_json::json!({
+                "scope_key": {
+                    "currency": "USD",
+                    "region": "EU",
+                    "phase": harness_phase(),
+                    "price_eligibility": "all_subscriptions",
+                    "charge_kind": "recurring",
+                    "cohort": serde_json::Value::Null
+                },
+                "content": {
+                    "model_kind": "per_unit",
+                    // Neither rate is a whole number of minor units, and neither is
+                    // the other scaled by a power of ten: a slip between the wire's
+                    // nano scale and the minor-unit one lands on a number these
+                    // assertions refuse rather than on a plausible price.
+                    "unit_rate_nano_minor": 1_234_567_891_i64,
+                    "quantity_source": "manual",
+                    "manual_quantity": 12,
+                    "tax_inclusive": false
+                }
+            })),
+            &keyed("per-unit-re-rate"),
+        ))
+        .await;
+    assert_eq!(create.status(), StatusCode::CREATED, "{:?}", create.body());
+    let price_id = price_rows(&harness, plan_id).await[0].price_id;
+
+    let patched = harness
+        .allowed()
+        .send(with_headers(
+            "PATCH",
+            &price_path(plan_id, price_id),
+            Some(serde_json::json!({
+                "content": {
+                    "model_kind": "per_unit",
+                    "unit_rate_nano_minor": 987_654_321_i64,
+                    "quantity_source": "manual",
+                    "manual_quantity": 12,
+                    "tax_inclusive": false
+                }
+            })),
+            &[("if-match", "\"0\"")],
+        ))
+        .await;
+    assert_eq!(patched.status(), StatusCode::OK, "{:?}", patched.body());
+
+    let after = price_rows(&harness, plan_id).await;
+    assert_eq!(
+        after[0]
+            .row
+            .unit_rate
+            .map(bss_pricing::domain::money::RateMinor::nano_minor),
+        Some(987_654_321),
+        "the rate the author submitted is the rate the store holds"
+    );
+    assert_eq!(after[0].row_version.get(), 1, "the edit landed");
+}
+
 /// A `PATCH` that moves the usage line is refused by the axis rule's own code.
 ///
 /// **The paired negative for the case above, and the only observation of one arm
