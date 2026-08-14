@@ -61,7 +61,7 @@ use crate::domain::materiality::triggers::Trigger;
 use crate::domain::money::CurrencyCode;
 use crate::domain::plan_shape::Frequency;
 use crate::domain::publish::rules::ReferencingMarket;
-use crate::domain::scope_key::{PlanId, Region};
+use crate::domain::scope_key::{Cohort, PlanId, PriceEligibility, Region};
 use crate::domain::validation::ValidationReport;
 use crate::infra::storage::RepoError;
 use crate::infra::storage::entity::{
@@ -71,10 +71,16 @@ use crate::infra::storage::repo::outbox_repo::BundleUpdatedPayload;
 use crate::infra::storage::repo::plan_repo::{self, read_frequency};
 use crate::infra::storage::repo::{BundleRepo, NewOutboxEvent, outbox_repo};
 
-/// The rows a component contributes to coverage: published, on the durable base.
-const COVERAGE_ELIGIBILITY: &str = "all_subscriptions";
-/// The non-grandfathered generation (ADR-0002).
-const COVERAGE_COHORT: &str = "none";
+/// The eligibility class a component contributes coverage from: the durable base.
+///
+/// Rendered by the enum that owns the axis rather than spelled again. Both halves
+/// of this narrowing used to be bare literals — `"all_subscriptions"` and
+/// `"none"` — in a module that imports [`LifecycleState`] and compares *that* axis
+/// through `as_str` three lines away (Z9-7, Z11-9). The reader on the same column
+/// goes through the enum (`price_repo::read_eligibility` / `read_cohort`) and so
+/// does every other filter on it, so a change to either rendering moved the writer
+/// and the readers and left this query behind.
+const COVERAGE_ELIGIBILITY: &str = PriceEligibility::AllSubscriptions.as_str();
 
 /// The change set that says *"this call is a bundle composition change"*
 /// (D-104, `inst-ba-material`).
@@ -486,7 +492,12 @@ async fn component_rows(
                 .add(price::Column::PlanId.eq(plan_id.get()))
                 .add(price::Column::LifecycleState.eq(LifecycleState::Published.as_str()))
                 .add(price::Column::PriceEligibility.eq(COVERAGE_ELIGIBILITY))
-                .add(price::Column::Cohort.eq(COVERAGE_COHORT)),
+                // The non-grandfathered generation (ADR-0002), rendered by
+                // `Cohort` and not spelled: `Display` is the writer's
+                // rendering (`price_repo`'s `cohort.to_string()`), and it is
+                // not `const`, so it lives at the call site rather than in a
+                // constant above.
+                .add(price::Column::Cohort.eq(Cohort::None.to_string())),
         )
         .all(runner)
         .await
