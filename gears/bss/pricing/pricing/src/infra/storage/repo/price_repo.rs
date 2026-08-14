@@ -119,6 +119,7 @@ use crate::domain::price_row::{
     MinQtyUsageFallback, ModelKind, PriceRow, QuantitySource, ReservationFlavor, RolloverPolicy,
     TierAggregationWindow, TierBand, TierQualificationWindow, model_kind_wire,
 };
+use crate::domain::projection::PROJECTED_ROW_STATES;
 use crate::domain::repricing::RunSelector;
 use crate::domain::scope_key::{
     ChargeKind, Cohort, DimensionKey, Meter, PhaseId, PlanId, PriceEligibility, PriceOverlay,
@@ -923,6 +924,23 @@ fn tx_failure(err: TxError<RepoError>) -> RepoError {
 /// has been mutable ever since. `None` in the map is a row that has one and it is
 /// null; a row absent from the map has not published.
 ///
+/// **The lifecycle filter is what makes that second sentence true**, and it was
+/// missing: with `tenant_id` and `plan_id` the only predicates, every `draft` row
+/// of the plan was in the map carrying `None` — the one value the sentence above
+/// reads as "published, with no category". The live caller
+/// ([`read_model`](crate::infra::read_model)) looks the map up only at ids it drew
+/// from `load_for_plan(… PROJECTED_ROW_STATES)`, so nothing mispriced; the filter
+/// is here so the **key set** means what the doc says and a draft's NULL cannot be
+/// carried into a projection by a second reader.
+///
+/// The set is [`PROJECTED_ROW_STATES`] itself rather than `published` alone,
+/// because "has published" includes `superseded`: rating pins current versions and
+/// rates past instants, so a superseded predecessor's frozen category is still
+/// resolved against (D-121). `chk_pricing_price_lifecycle_state` admits exactly
+/// `draft`, `published` and `superseded` as the chain now stands
+/// (`m20260802_000002`, unwidened since), so the filter's complement is the draft
+/// plane and nothing else.
+///
 /// # Errors
 /// [`RepoError::Db`] on a scope or storage failure.
 pub async fn resolved_tax_categories(
@@ -937,7 +955,11 @@ pub async fn resolved_tax_categories(
         .filter(
             Condition::all()
                 .add(price::Column::TenantId.eq(tenant_id))
-                .add(price::Column::PlanId.eq(plan_id.get())),
+                .add(price::Column::PlanId.eq(plan_id.get()))
+                .add(
+                    price::Column::LifecycleState
+                        .is_in(PROJECTED_ROW_STATES.iter().map(|state| state.as_str())),
+                ),
         )
         .all(runner)
         .await

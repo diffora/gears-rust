@@ -2218,6 +2218,101 @@ async fn publish_freezes_the_rows_own_category_over_the_region_default() {
     );
 }
 
+/// **The map's key set is "has published", and a never-published draft is not in
+/// it** (Z7-6).
+///
+/// `resolved_tax_categories`' own doc reads its two absences apart: *"`None` in
+/// the map is a row that has one and it is null; a row absent from the map has
+/// not published."* The read carried no lifecycle filter, so every draft row of
+/// the plan was in the map with `None` — the one value the doc says means
+/// "published, with no category". The live caller looks the map up only at ids it
+/// drew from `load_for_plan(… PROJECTED_ROW_STATES)`, so nothing mispriced; what
+/// the filter buys is that the key set means what the sentence says, and that a
+/// draft's NULL cannot be carried into a projection.
+///
+/// **Armed at both edges, deliberately.** The `superseded` row is here because
+/// `PROJECTED_ROW_STATES` is `published` **and** `superseded` — a filter written
+/// `eq(Published)` would be armed narrower than the claim and would drop a row
+/// that has published, and this case fails on it. `chk_pricing_price_lifecycle_state`
+/// admits exactly those three tokens as the chain now stands (`m20260802_000002`,
+/// unwidened since), so the three rows are the whole vocabulary.
+#[tokio::test]
+async fn the_frozen_category_map_holds_every_published_row_and_no_draft() {
+    let (repo, provider) = harness().await;
+    let scope = AccessScope::for_tenant(tenant());
+    let published = Uuid::from_u128(0xb_00d1);
+    let superseded = Uuid::from_u128(0xb_00d2);
+    let never_published = Uuid::from_u128(0xb_00d3);
+    let readiness = readiness_for(base_key(ChargeKind::Recurring).region().as_str(), None);
+
+    for (price_id, key) in [
+        (published, base_key(ChargeKind::Recurring)),
+        (superseded, new_subscriptions_key(ChargeKind::Recurring)),
+        (
+            never_published,
+            grandfathered_key(ChargeKind::Recurring, at(9)),
+        ),
+    ] {
+        let mut content = flat_content();
+        content.tax_category_ref = Some("standard".to_owned());
+        repo.create_draft(&scope, tenant(), draft(price_id, key, content))
+            .await
+            .expect("author the row");
+    }
+    // Two of the three publish; one of those two then supersedes, which is a row
+    // that HAS published and whose frozen category a consumer still resolves
+    // against (D-121's reason for keeping `superseded` in the projected set).
+    publish_rows(
+        &provider,
+        &scope,
+        tenant(),
+        plan(),
+        vec![
+            (published, RowVersion::new(0)),
+            (superseded, RowVersion::new(0)),
+        ],
+        &readiness,
+    )
+    .await
+    .expect("publish the two");
+    flip_state(&provider, &scope, superseded, LifecycleState::Superseded).await;
+
+    let conn = provider.conn().expect("conn");
+    let frozen = bss_pricing::infra::storage::repo::price_repo::resolved_tax_categories(
+        &conn,
+        &scope,
+        tenant(),
+        plan(),
+    )
+    .await
+    .expect("read the frozen categories");
+
+    assert!(
+        !frozen.contains_key(&never_published),
+        "a never-published draft is absent from the map, because absence is what the doc reads \
+         as 'has not published': {frozen:?}"
+    );
+    // The positive control, and it is what stops the filter being written
+    // narrower than the claim: both rows that published are still in the map,
+    // carrying the category the publish froze.
+    assert_eq!(
+        frozen.get(&published).cloned().flatten().as_deref(),
+        Some("standard"),
+        "the published row is in the map with what publish froze"
+    );
+    assert_eq!(
+        frozen.get(&superseded).cloned().flatten().as_deref(),
+        Some("standard"),
+        "and so is the superseded one — it has published, and rating resolves past instants \
+         against it"
+    );
+    assert_eq!(
+        frozen.len(),
+        2,
+        "the map is exactly the rows that have published: {frozen:?}"
+    );
+}
+
 #[tokio::test]
 async fn draft_rows_flip_and_published_rows_are_left_alone() {
     let (repo, provider) = harness().await;
