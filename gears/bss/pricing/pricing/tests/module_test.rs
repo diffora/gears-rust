@@ -686,7 +686,7 @@ fn declared_query_params(openapi: &OpenApiRegistryImpl, method: &str, path: &str
     names
 }
 
-/// **The two cursor reads declare every query parameter their handlers read.**
+/// **The three cursor reads declare every query parameter their handlers read.**
 ///
 /// Asserted against the emitted document rather than against the handler, because
 /// the document is the only half a generated client sees: `GET /price-overlays`
@@ -700,11 +700,11 @@ fn declared_query_params(openapi: &OpenApiRegistryImpl, method: &str, path: &str
 /// ignores, which is what `a_read_route_declares_no_precondition_header` says one
 /// plane over about headers.
 ///
-/// `/history` is in the roster as the case that was already right, so a regression
-/// there reddens too rather than being assumed. The wider census — *every*
-/// `Query<T>` field declared by the route that reads it — is Z13-10's remainder:
-/// six more collection reads take a page query and declare nothing, and closing
-/// them is a fix wave rather than a line here.
+/// `/history` is in the roster as the case that was already right, and `/audit` as
+/// the newest one (Z13-8), so a regression in either reddens rather than being
+/// assumed. The wider census — *every* `Query<T>` field declared by the route that
+/// reads it — is Z13-10's remainder: six more collection reads take a page query and
+/// declare nothing, and closing them is a fix wave rather than a line here.
 #[tokio::test]
 async fn the_cursor_reads_declare_every_query_parameter_they_read() {
     let openapi = registered_operations().await;
@@ -718,6 +718,11 @@ async fn the_cursor_reads_declare_every_query_parameter_they_read() {
         (
             "GET",
             bss_pricing::api::rest::history::HISTORY,
+            vec!["cursor", "limit"],
+        ),
+        (
+            "GET",
+            bss_pricing::api::rest::audit::AUDIT,
             vec!["cursor", "limit"],
         ),
     ] {
