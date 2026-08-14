@@ -180,6 +180,78 @@ async fn a_synthesized_snapshot_freezes_and_reads_back_whole() {
     );
 }
 
+/// **A revision above the old `integer` column's range freezes and reads back** —
+/// Z6-7, and the one case in this suite that goes *through* the repository.
+///
+/// The module doc's rule is that every constraint here is driven past
+/// `synthesis_repo`, because a suite driving the repository is blind to a rule that
+/// got dropped. This case is the exception and the reason is that its subject is
+/// not a store constraint at all: on `SQLite`, `integer` and `bigint` are one type
+/// — INTEGER affinity, up to 8 bytes — so no raw statement can distinguish the
+/// column before `m20260802_000075` from the column after it, and a raw probe would
+/// have been green against the defect. What was narrow was the **Rust** side:
+/// `freeze_or_load` guarded with `i32::try_from` and answered `CorruptRow` for a
+/// revision a plan's own `bigint` column can hold, and the entity typed the field
+/// `Option<i32>`. Both are only reachable through the repository.
+///
+/// The value is `i32::MAX as u64 + 1`, the old boundary exactly: one less passed
+/// before the widening too.
+#[tokio::test]
+async fn a_revision_beyond_the_old_columns_range_round_trips() {
+    use bss_pricing::domain::scope_key::PlanId;
+    use bss_pricing::domain::synthesis::SynthesisTrigger;
+    use bss_pricing::infra::storage::migrations::Migrator;
+    use bss_pricing::infra::storage::repo::{NewProvenance, synthesis_repo};
+    use chrono::{TimeZone, Utc};
+    use sea_orm_migration::MigratorTrait as _;
+    use toolkit_db::secure::AccessScope;
+    use toolkit_db::{ConnectOpts, DBProvider, DbError, connect_db};
+    use uuid::Uuid;
+
+    let db = connect_db("sqlite::memory:", ConnectOpts::default())
+        .await
+        .expect("connect in-memory sqlite");
+    toolkit_db::migration_runner::run_migrations_for_testing(&db, Migrator::migrations())
+        .await
+        .expect("run migrator");
+    let provider = DBProvider::<DbError>::new(db);
+    let conn = provider.conn().expect("scoped connection");
+
+    let tenant_id = Uuid::parse_str(TENANT).expect("a tenant uuid");
+    let beyond = u64::from(u32::MAX / 2) + 1;
+    let instant = Utc
+        .with_ymd_and_hms(2026, 11, 5, 0, 0, 0)
+        .single()
+        .expect("a fixed instant");
+
+    let frozen = synthesis_repo::freeze_or_load(
+        &conn,
+        &AccessScope::for_tenant(tenant_id),
+        NewProvenance {
+            provenance_id: Uuid::parse_str(PROVENANCE).expect("a provenance uuid"),
+            tenant_id,
+            subscription_ref: Uuid::parse_str(SUBSCRIPTION).expect("a subscription uuid"),
+            source_plan_id: PlanId::new(Uuid::parse_str(PLAN).expect("a plan uuid")),
+            source_revision: Some(beyond),
+            snapshot_instant: instant,
+            trigger: SynthesisTrigger::Migration,
+            acting_principal: Uuid::parse_str(ACTOR).expect("an actor uuid"),
+            resolved: serde_json::from_str(RESOLVED).expect("the resolved fixture is json"),
+            payload: serde_json::from_str(PAYLOAD).expect("the payload fixture is json"),
+            created_at: instant,
+        },
+    )
+    .await
+    .expect("a revision above the old integer column's range must be storable");
+
+    assert!(frozen.created);
+    assert_eq!(
+        frozen.record.source_revision,
+        Some(beyond),
+        "the revision must survive the round trip, not merely the insert"
+    );
+}
+
 /// **The stored trigger vocabulary is D-81's two and the underscored spelling is
 /// the stored one.**
 ///

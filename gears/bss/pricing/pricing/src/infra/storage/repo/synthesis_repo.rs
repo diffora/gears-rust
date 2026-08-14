@@ -124,8 +124,11 @@ pub async fn freeze_or_load(
     new: NewProvenance,
 ) -> Result<Frozen, RepoError> {
     check_authored_instant("snapshotInstant", Some(new.snapshot_instant))?;
+    // `i64` and not `i32` since `m20260802_000075` widened the column (Z6-7) —
+    // `migration_repo::insert_or_load`'s note, the same narrowing on the other of
+    // the two tables that carried it.
     let revision = match new.source_revision {
-        Some(revision) => match i32::try_from(revision) {
+        Some(revision) => match i64::try_from(revision) {
             Ok(revision) => Some(revision),
             Err(_) => {
                 return Err(RepoError::CorruptRow(format!(

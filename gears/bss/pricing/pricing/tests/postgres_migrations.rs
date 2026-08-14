@@ -268,6 +268,16 @@ const EXPECTED_TRIGGERS: &[&str] = &[
 
 /// The partial indexes — the `WHERE`-carrying ones, where the predicate *is* the
 /// rule (one current revision per plan, one open draft, one terminal phase).
+/// Every column in the chain whose name says it holds a revision, as
+/// `table.column type` (Z6-7).
+///
+/// Matched on the name because that is what a reader matches on: a column called
+/// `…_revision` that is not `bigint` is the outlier this exists to find, whichever
+/// table grows it next. `plan_revision`, `subject_revision`, `source_revision` and
+/// the bare `revision` all end in the same eight characters.
+const REVISION_COLUMNS_SQL: &str = "SELECT table_name || '.' || column_name || ' ' || data_type \
+     AS v FROM information_schema.columns \
+     WHERE table_schema = 'bss' AND column_name LIKE '%revision' ORDER BY 1";
 const EXPECTED_PARTIAL_INDEXES: &[&str] = &[
     "idx_pricing_outbox_undrained",
     "idx_pricing_price_supersedes",
@@ -839,6 +849,40 @@ async fn the_client_key_index_spans_the_kind_as_well_as_the_tenant() {
         definition.contains("(tenant_id, kind, client_key)"),
         "D-307 keys a client key per kind, so one run id opens one import and one repricing run \
          alike; this index reads {definition}"
+    );
+}
+
+/// **Every revision column in the chain is `bigint`** — Z6-7.
+///
+/// A plan revision is a `u64` wherever it is a value, and `pricing_plan.revision`
+/// is `bigint`. Two columns were `integer` — `pricing_migration.source_revision`
+/// and `pricing_snapshot_provenance.source_revision` — which made them addressable
+/// to 2^31-1, guarded at the boundary by an `i32::try_from` that answered
+/// `CorruptRow`. `m20260802_000075` widened both.
+///
+/// The property is stated over the **schema** rather than over those two columns,
+/// which is the point: a spot check on the two known outliers would be green
+/// against the third. It reads `information_schema` after the whole chain, so a
+/// later `CREATE TABLE` that types a revision `integer` reddens here — including
+/// through a rebuild that restates a column verbatim, which is exactly how
+/// `m20260802_000065` carried this outlier forward without anyone seeing it.
+#[tokio::test]
+#[ignore = "requires Docker (testcontainers)"]
+async fn every_revision_column_is_bigint() {
+    let (conn, _guard) = applied().await;
+    let columns = names(&conn, REVISION_COLUMNS_SQL).await;
+    assert!(
+        columns.len() >= 12,
+        "the scan found {columns:?}, which is fewer revision columns than the chain has carried \
+         since Slice 8 - the query is broken, not the schema"
+    );
+    let narrow: Vec<&String> = columns
+        .iter()
+        .filter(|column| !column.ends_with(" bigint"))
+        .collect();
+    assert!(
+        narrow.is_empty(),
+        "a revision column narrower than the u64 a revision is: {narrow:?}"
     );
 }
 

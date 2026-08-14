@@ -201,6 +201,45 @@ async fn an_effective_instant_finer_than_the_quantum_is_refused_and_the_announce
 }
 
 #[tokio::test]
+async fn a_revision_beyond_the_old_columns_range_round_trips() {
+    // Z6-7, and the measurement `m20260802_000075`'s module doc leans on rather than
+    // asserting: `source_revision` was `integer` with an `i32::try_from` in front of
+    // it, so a source plan standing at a revision above 2^31-1 was refused
+    // `CorruptRow` — a fail-closed refusal, but a refusal of a revision the plan's own
+    // `bigint` column can hold and the domain's `u64` can name.
+    //
+    // The value is `i32::MAX as u64 + 1` and not something round, because what is
+    // being proved is exactly the old boundary: one less than this passed before the
+    // widening too, so a probe at any smaller value would have been green against the
+    // defect.
+    //
+    // It round-trips rather than merely inserting: the read is what proves the width
+    // survives storage on the engine whose declared type this migration deliberately
+    // did not change.
+    let provider = harness().await;
+    let conn = provider.conn().expect("conn");
+    let id = Uuid::now_v7();
+    let beyond = u64::from(u32::MAX / 2) + 1;
+
+    let mut wide = new_migration(id);
+    wide.source_revision = beyond;
+    let scheduled = migration_repo::insert_or_load(&conn, &scope(), wide)
+        .await
+        .expect("a revision above the old integer column's range must be storable");
+
+    assert_eq!(scheduled.record.source_revision, beyond);
+
+    let read = migration_repo::load(&conn, &scope(), TENANT, id)
+        .await
+        .expect("read back")
+        .expect("the schedule is there");
+    assert_eq!(
+        read.source_revision, beyond,
+        "the revision must survive the round trip, not merely the insert"
+    );
+}
+
+#[tokio::test]
 async fn a_retry_of_one_migration_id_returns_the_original_schedule_and_never_a_second() {
     // `inst-ms-api`, verbatim: "a timed-out client retry returns the original
     // schedule, never a second one".

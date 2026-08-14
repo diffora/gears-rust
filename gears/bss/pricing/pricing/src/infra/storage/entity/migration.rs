@@ -43,7 +43,12 @@ pub struct Model {
     /// The retiring side.
     pub source_plan_id: Uuid,
     /// The source plan's revision at schedule time.
-    pub source_revision: i32,
+    ///
+    /// `i64` since `m20260802_000075` (Z6-7). It was `i32` against an `integer`
+    /// column, which made this one of two revision columns in the chain narrower
+    /// than the `u64` a revision is — visible from the DDL only, which is why the
+    /// review found it and no reader had.
+    pub source_revision: i64,
     /// MUST be published when the schedule is created, and re-checked nowhere:
     /// a target that stops being published afterwards surfaces as a D-36
     /// execution-time exclusion rather than as a retroactive refusal.

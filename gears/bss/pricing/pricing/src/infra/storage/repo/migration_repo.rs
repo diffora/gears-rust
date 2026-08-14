@@ -157,7 +157,12 @@ pub async fn insert_or_load(
     new: NewMigration,
 ) -> Result<Scheduled, RepoError> {
     check_authored_instant("effectiveAt", Some(new.effective_at))?;
-    let Ok(revision) = i32::try_from(new.source_revision) else {
+    // The guard is the **column's** range and not a third one: `bigint` since
+    // `m20260802_000075` (Z6-7), so this refuses only a revision above `i64::MAX`,
+    // which no plan reachable through `pricing_plan.revision` — itself `bigint` —
+    // can stand at. It was `i32::try_from` against an `integer` column, and that
+    // narrowing is what the widening removed.
+    let Ok(revision) = i64::try_from(new.source_revision) else {
         return Err(RepoError::CorruptRow(format!(
             "plan {} stands at a revision {} no column can address",
             new.source_plan_id, new.source_revision

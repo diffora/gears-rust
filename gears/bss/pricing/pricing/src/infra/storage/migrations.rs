@@ -107,6 +107,7 @@ pub mod m20260802_000071_pin_membership_state_on_catalog_version_ref;
 pub mod m20260802_000072_add_bulk_operation_request_hash;
 pub mod m20260802_000073_guard_bulk_operation_request_hash;
 pub mod m20260802_000074_guard_pricing_audit_log_subject_kind;
+pub mod m20260802_000075_widen_source_revision_to_bigint;
 
 use sea_orm::{ConnectionTrait, Statement};
 use sea_orm_migration::prelude::*;
@@ -413,6 +414,11 @@ impl MigratorTrait for Migrator {
             // hash-chained trail is the column where an unspelled token is least
             // correctable afterwards.
             Box::new(m20260802_000074_guard_pricing_audit_log_subject_kind::Migration),
+            // Z6-7: the chain's last two `integer` revision columns become `bigint`.
+            // One migration for two tables rather than two, because the concern is one
+            // — the type a plan revision is stored as — and on Postgres it is two
+            // `ALTER COLUMN`s with no rebuild, no rows touched and no object restated.
+            Box::new(m20260802_000075_widen_source_revision_to_bigint::Migration),
             // Shared `coord_leases` table, owned by the `coord` crate. This gear's
             // background work is coordinated as a singleton (§3.8: background work
             // is coordinated as a singleton via the coordination lease library),

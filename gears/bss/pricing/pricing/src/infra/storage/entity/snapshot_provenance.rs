@@ -35,7 +35,11 @@ pub struct Model {
     pub subscription_ref: Uuid,
     pub source_plan_id: Uuid,
     /// `None` for a tier-2 fully-legacy key (D-87).
-    pub source_revision: Option<i32>,
+    ///
+    /// `i64` since `m20260802_000075` (Z6-7) — `pricing_migration.source_revision`'s
+    /// note, and the same widening: the nullability is the D-87 signal, the width was
+    /// an outlier.
+    pub source_revision: Option<i64>,
     /// D-81's per-trigger instant `t`, UTC, frozen at execution.
     pub snapshot_instant: DateTime<Utc>,
     /// `migration` | `first_rating`.
