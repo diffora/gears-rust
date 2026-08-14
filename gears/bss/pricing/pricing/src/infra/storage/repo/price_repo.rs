@@ -1843,6 +1843,18 @@ pub async fn gated_markets(
 /// The `tax_engine_ga` short-circuit is **above** the walk: past GA there is no
 /// backlog to page through at all.
 ///
+/// # The cursor is backend-agnostic even though `uuid` ordering is not
+///
+/// Postgres orders `uuid` by its bytes and the `SQLite` mirror orders the same column
+/// as text, so the two backends walk these pages in **different orders** — the shape
+/// `tests/sqlite_window_activation.rs` exists to arm against on the timestamp column.
+/// It is harmless here, and by construction rather than by luck: the `ORDER BY` and
+/// the `>` compare read the same column through the same backend's own collation, so
+/// whichever total order that is, every matching row is visited exactly once. The
+/// answer is a set's cardinality and is invariant under the order the set is built
+/// in. A page **bound** would not be — a truncating cap would keep a different subset
+/// per backend — which is a second reason this walk does not truncate.
+///
 /// # Errors
 /// [`RepoError::Db`] on a scope or storage failure.
 pub async fn gated_markets_in_pages(
@@ -3817,10 +3829,18 @@ fn to_proration_contract(row: &price::Model) -> Result<Option<ProrationContract>
         )));
     };
 
-    let billing_anchor_policy = match policy_token {
-        "calendar_month" => BillingAnchorPolicy::CalendarMonth,
-        "subscription_start" => BillingAnchorPolicy::SubscriptionStart,
-        "fixed_day" => {
+    // Through the enum's own roster, as the `proration_basis` field below already
+    // was (Z13-3). The match this replaced re-spelled all three tokens in a module
+    // that imports the enum, so a fourth K2 policy would have been read back as
+    // corruption — which is a stored row this gear wrote refusing to load.
+    let policy = read_token(
+        "pricing_price.billing_anchor_policy",
+        policy_token,
+        BillingAnchorPolicy::ALL,
+        BillingAnchorPolicy::as_str,
+    )?;
+    let billing_anchor_policy = match policy.anchor_day() {
+        Some(_) => {
             let day = row.anchor_day.ok_or_else(|| {
                 RepoError::CorruptRow(format!(
                     "pricing_price {}: a fixed_day anchor holds no anchor_day",
@@ -3836,13 +3856,9 @@ fn to_proration_contract(row: &price::Model) -> Result<Option<ProrationContract>
                         row.price_id
                     ))
                 })?;
-            BillingAnchorPolicy::FixedDay(day)
+            policy.with_anchor_day(day)
         }
-        other => {
-            return Err(RepoError::CorruptRow(format!(
-                "pricing_price.billing_anchor_policy holds {other}"
-            )));
-        }
+        None => policy,
     };
     if billing_anchor_policy.anchor_day().is_none() && row.anchor_day.is_some() {
         return Err(RepoError::CorruptRow(format!(
