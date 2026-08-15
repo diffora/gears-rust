@@ -314,8 +314,15 @@ instant a scope-key axis is matched on for equality across a gear boundary),
 into the pipeline by the Foundation itself),
 `PRIMITIVE_RULES_UNBUILT` (422 — a row carries a value in a field that is **declared and not
 yet authorable**: the rules that would judge it are unbuilt, so publish refuses to freeze it
-into an immutable ≥ 7-year version. Today that is `includedAllowance` (D-45) and
-`tierQualificationWindow` (D-40), both refused at authoring by D-177 clause (1) as malformed
+into an immutable ≥ 7-year version. Today that is `tierQualificationWindow` (D-40) and
+`includedAllowance` **with `rolloverPolicy = carry`** (D-45) — narrowed 2026-08-15 from
+*"`includedAllowance` and `tierQualificationWindow`"*: the six `inst-ac-gate` refusals and the
+allowance compile landed together, so `includedAllowance {N, none}` is authorable and this code no
+longer reaches it. The `carry` half stays for a reason that is a missing **store** rather than a
+missing rule — `inst-ac-carry`'s compiled grant needs `pricing_plan_grant` (D-52), a table this
+gear does not have — which is exactly why this code names the **reason** and not the field: no
+seventh `ALLOWANCE_*` code was needed for the half nobody can honour yet. Both are refused at
+authoring by D-177 clause (1) as malformed
 requests with no code — the D-141 class. **D-179**, 2026-08-03: a *stored* row reaching publish
 is a different act, its request well-formed and its remedy different (clear the field, not
 reshape the payload), and three routes put a value there that no authoring refusal covers —
@@ -1157,10 +1164,12 @@ D-44, D-45 and D-122 each moved this set before it was written down, and reconst
 generations for them would mint versions no snapshot was ever stamped with — the same
 fabrication D-161 clause (1) refuses, one artifact over.
 
-**Two of the nine are rostered and not yet authorable, and the roster is right to name them
-anyway** (**D-177**, 2026-08-03): `tier_qualification_window` and `included_allowance` are refused
-on every authoring path until Slice 10's rules land, so a reader who takes this roster as the list
-of fields a version *can* carry today will be wrong about two of them. They stay because the log is
+**One of the nine is rostered and not yet authorable and one is half-authorable, and the roster is
+right to name them anyway** (**D-177**, 2026-08-03; narrowed 2026-08-15): `tier_qualification_window`
+is refused on every authoring path until Slice 10's remaining rules land, and `included_allowance`
+is refused only where its `rolloverPolicy` is `carry` — the `{N, none}` half became authorable when
+the `inst-ac-gate` refusals and the compile landed together. So a reader who takes this roster as
+the list of fields a version *can* carry today will be wrong about one and a half of them. They stay because the log is
 append-only and a `-` line would bump a generation for a field nobody can author — the fabrication
 this section already refuses — and because the roster's subject is which field set a frozen row is
 **read under**, which is a property of the generation and not of any surface's willingness to
