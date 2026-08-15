@@ -246,6 +246,7 @@ and bundles (Slice 8) build on.
 | `GET` | `/bss-pricing/v1/plans/{planId}/preview` | Base-price preview per `(currency, region)`; fail closed, overlay disclaimer | — |
 | `GET/PUT` | `/bss-pricing/v1/config/taxonomies/{region\|brand\|partner\|org_tier}` | Tenant taxonomy read/update (admin, audited; partner/org_tier added by D-120). Each segment is the class's own scope token — the camelCase `orgTier` this row used to spell is refused rather than aliased (**D-241**) | ETag |
 | `GET/PUT` | `/bss-pricing/v1/config/tax-display-policy` | Tenant tax-display policy (fail-closed default) | ETag |
+| `GET/PUT` | `/bss-pricing/v1/config/rounding-policy` | The tenant **default rounding policy** — not this slice's subject, listed here because it is the surface this one was built from and the two are the only writers of `pricing_policy_object` (D-320) | `ETag` |
 
 **Problem responses (RFC 9457):** `REGION_UNKNOWN` (422 — a **price row** naming a region
 outside the tenant taxonomy; the row's `region` is a scope-key axis and the remedy is to fix the

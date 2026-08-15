@@ -121,6 +121,179 @@ fn findings(policy: &AuthoringPolicy, shape: &PlanShape, code: &str) -> usize {
         .count()
 }
 
+// ---------------------------------------------------------------------------
+// `set_default_rounding_policy` — the update arm and its compare-and-swap (D-320)
+// ---------------------------------------------------------------------------
+
+/// The stamp the writer records.
+fn stamp() -> bss_pricing::domain::audit::AuditStamp {
+    bss_pricing::domain::audit::AuditStamp {
+        actor_principal_id: Uuid::from_u128(0xac_70),
+        recorded_at: at(),
+        correlation_id: Uuid::from_u128(0xc0_44),
+    }
+}
+
+async fn held(
+    repo: &PolicyObjectRepo,
+    provider: &DBProvider<DbError>,
+    tenant: Uuid,
+) -> Option<String> {
+    let conn = provider.conn().expect("scoped connection");
+    repo.authoring_policy_on(&conn, &AccessScope::for_tenant(tenant), tenant)
+        .await
+        .expect("read the policy")
+        .default_rounding_policy_ref()
+        .map(ToOwned::to_owned)
+}
+
+/// A second write moves the default — the **update** arm, which the bootstrap
+/// insert hides.
+///
+/// Written after a red-check found five of six REST cases reaching only the
+/// insert: a writer whose `UPDATE` set no column at all still passed them,
+/// because a fresh tenant has no row and every first write inserts.
+#[tokio::test]
+async fn a_second_write_moves_the_default_through_the_update_arm() {
+    let (repo, provider) = harness().await;
+    let tenant = Uuid::from_u128(0x_d3_19_01);
+    let scope = AccessScope::for_tenant(tenant);
+    let conn = provider.conn().expect("scoped connection");
+
+    assert!(
+        bss_pricing::infra::storage::repo::policy_repo::set_default_rounding_policy(
+            &conn,
+            &scope,
+            tenant,
+            Some("half_up_2dp"),
+            None,
+            &stamp()
+        )
+        .await
+        .expect("the bootstrap insert"),
+        "a tenant with no row holds no default, so `None` is the premise a first write asserts"
+    );
+
+    assert!(
+        bss_pricing::infra::storage::repo::policy_repo::set_default_rounding_policy(
+            &conn,
+            &scope,
+            tenant,
+            Some("bankers"),
+            Some("half_up_2dp"),
+            &stamp()
+        )
+        .await
+        .expect("the update"),
+        "the premise matches what is stored, so the swap lands"
+    );
+    assert_eq!(
+        held(&repo, &provider, tenant).await.as_deref(),
+        Some("bankers")
+    );
+}
+
+/// A premise that no longer describes the stored value writes **nothing**.
+///
+/// This is the compare-and-swap itself, and it cannot be reached through the
+/// route: the handler compares the tag first and refuses before the store is
+/// asked. Only a caller racing another writer gets here, which is precisely the
+/// lost update the `WHERE` exists to prevent.
+#[tokio::test]
+async fn a_premise_that_has_moved_writes_nothing() {
+    let (repo, provider) = harness().await;
+    let tenant = Uuid::from_u128(0x_d3_19_02);
+    let scope = AccessScope::for_tenant(tenant);
+    let conn = provider.conn().expect("scoped connection");
+
+    bss_pricing::infra::storage::repo::policy_repo::set_default_rounding_policy(
+        &conn,
+        &scope,
+        tenant,
+        Some("half_up_2dp"),
+        None,
+        &stamp(),
+    )
+    .await
+    .expect("the bootstrap insert");
+
+    let applied = bss_pricing::infra::storage::repo::policy_repo::set_default_rounding_policy(
+        &conn,
+        &scope,
+        tenant,
+        Some("bankers"),
+        Some("something-else"),
+        &stamp(),
+    )
+    .await
+    .expect("the refused swap is not an error");
+
+    assert!(!applied, "a moved premise matches no row");
+    assert_eq!(
+        held(&repo, &provider, tenant).await.as_deref(),
+        Some("half_up_2dp"),
+        "and the stored value is exactly where it was"
+    );
+}
+
+/// Clearing is a `NULL` premise on both sides, and SQL equality is not null-safe.
+///
+/// `= NULL` matches nothing, so a writer that built the premise that way would
+/// turn every clear into a spurious refusal — and, on the arm below, would fall
+/// through to an insert on a tenant that already has a row.
+#[tokio::test]
+async fn clearing_the_default_matches_a_null_premise() {
+    let (repo, provider) = harness().await;
+    let tenant = Uuid::from_u128(0x_d3_19_03);
+    let scope = AccessScope::for_tenant(tenant);
+    let conn = provider.conn().expect("scoped connection");
+
+    bss_pricing::infra::storage::repo::policy_repo::set_default_rounding_policy(
+        &conn,
+        &scope,
+        tenant,
+        Some("half_up_2dp"),
+        None,
+        &stamp(),
+    )
+    .await
+    .expect("the bootstrap insert");
+
+    assert!(
+        bss_pricing::infra::storage::repo::policy_repo::set_default_rounding_policy(
+            &conn,
+            &scope,
+            tenant,
+            None,
+            Some("half_up_2dp"),
+            &stamp()
+        )
+        .await
+        .expect("the clear"),
+        "clearing back to unset is a legitimate state, not a one-way door"
+    );
+    assert_eq!(held(&repo, &provider, tenant).await, None);
+
+    // And from unset, a `None` premise still matches the existing row rather
+    // than falling through to the insert arm.
+    assert!(
+        bss_pricing::infra::storage::repo::policy_repo::set_default_rounding_policy(
+            &conn,
+            &scope,
+            tenant,
+            Some("half_even"),
+            None,
+            &stamp()
+        )
+        .await
+        .expect("the re-set"),
+    );
+    assert_eq!(
+        held(&repo, &provider, tenant).await.as_deref(),
+        Some("half_even")
+    );
+}
+
 /// The clause that keeps D-152 from moving any ratified number: no row means the
 /// launch values, and they reach the rule that enforces them.
 #[tokio::test]

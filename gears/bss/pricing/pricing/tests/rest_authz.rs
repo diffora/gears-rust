@@ -53,6 +53,7 @@ use bss_pricing::api::rest::prices::{PLAN_PRICE, PLAN_PRICES};
 use bss_pricing::api::rest::publish::PLAN_PUBLISH;
 use bss_pricing::api::rest::repricing_runs::{REPRICING_RUN, REPRICING_RUNS};
 use bss_pricing::api::rest::retirement::PLAN_RETIRE;
+use bss_pricing::api::rest::rounding_policy::ROUNDING_POLICY;
 use bss_pricing::api::rest::supersessions::PLAN_SUPERSESSIONS;
 use bss_pricing::api::rest::tax_display_policy::TAX_DISPLAY_POLICY;
 use bss_pricing::api::rest::taxonomies::TAXONOMY;
@@ -554,6 +555,24 @@ fn config_routes() -> Vec<Route> {
         Route {
             method: "PUT",
             path: TAX_DISPLAY_POLICY,
+            resource_type: labels::CONFIG,
+            action: actions::WRITE,
+            mutating: true,
+        },
+        // The tenant's default rounding policy (D-320). `config` for the same
+        // reason as its neighbour above: it supplies a default publish would
+        // otherwise demand row by row, and decides nothing about who may approve
+        // what.
+        Route {
+            method: "GET",
+            path: ROUNDING_POLICY,
+            resource_type: labels::CONFIG,
+            action: actions::READ,
+            mutating: false,
+        },
+        Route {
+            method: "PUT",
+            path: ROUNDING_POLICY,
             resource_type: labels::CONFIG,
             action: actions::WRITE,
             mutating: true,
@@ -1240,6 +1259,10 @@ async fn registered_paths() -> Vec<String> {
                 &openapi,
             ))
             .merge(bss_pricing::api::rest::tax_display_policy::router(
+                Arc::clone(&harness.state),
+                &openapi,
+            ))
+            .merge(bss_pricing::api::rest::rounding_policy::router(
                 Arc::clone(&harness.state),
                 &openapi,
             ))

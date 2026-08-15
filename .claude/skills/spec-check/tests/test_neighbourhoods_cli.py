@@ -219,12 +219,26 @@ def test_an_unknown_only_class_is_a_usage_error(tmp_path):
 PINNED_TRIAGE_PRICING = {
     "unbuildable:no-prose": 0,
     "no-region": 3,
-    "anchored:no-account": 4,
-    "suspicious:multi-region": 64,
+    "anchored:no-account": 5,
+    "suspicious:multi-region": 63,
     "suspicious:not-normative": 0,
     "suspicious:weak-coverage": 7,
     "covered:strong": 0,
 }
+#: Moved 2026-08-15 by the **D-320 rounding-policy surface wave**, landing on top of
+#: the D-319 period-floor wave (64/4 -> 63/5, total 78 unchanged).
+#:
+#: **Exactly one requirement moved and it is hand-checked**: `fr-supersession` lost
+#: its fifth candidate region, `DECISIONS.md:19-30` — the register's status
+#: paragraph — and so fell from `suspicious:weak-coverage` to
+#: `anchored:no-account`. That wave edited neither the requirement, its four real
+#: accounts (PRD, ADR-0001, DESIGN.md, S1 §1.x), nor lines 19-30; it **appended a
+#: decision entry**, and region selection ranks candidates over corpus-wide
+#: vocabulary statistics, so a marginal fifth region drops out when the register
+#: grows. The requirement's coverage did not change — the checker's confidence in
+#: a weak account did. Noted rather than smoothed over because the same paragraph
+#: has now entered and left this requirement's region set twice in one day, which
+#: is a property of the ranking at a boundary and not a fact about supersession.
 #: Moved 2026-08-15 by the **D-319 period-floor authoring wave**, landing on top of the
 #: D-317/D-318 wave rather than beside it (62/7/5 -> 64/7/4, total 77 -> 78).
 #:
@@ -1264,7 +1278,10 @@ PINNED_TRIAGE_LEDGER = {
 #: 69 -> 67 on the 2026-08-08 D-259 tail wave. The triage histogram is unchanged,
 #: so this is the judged-share side of the same knife-edge movement recorded above,
 #: moving for the third time in one day on prose that touched neither requirement.
-PINNED_JUDGE_CALLS = {"pricing": 71, "ledger": 17}
+PINNED_JUDGE_CALLS = {"pricing": 70, "ledger": 17}
+#: pricing 71 -> 70 on the 2026-08-15 **D-320 rounding-policy wave**: the single
+#: mover above leaves the judged set, `anchored:no-account` being triaged rather
+#: than judged. No requirement gained or lost an account of its own.
 #: pricing 69 -> 71 on the 2026-08-15 **D-319 period-floor wave**, landing on top of the
 #: D-317/D-318 wave. Both classes that moved between themselves are judged, so the
 #: `fr-price-history-export` mover contributes nothing; the +2 is the new

@@ -91,6 +91,7 @@ fn declared_paths() -> Vec<(&'static str, &'static str)> {
     use bss_pricing::api::rest::publish::PLAN_PUBLISH;
     use bss_pricing::api::rest::repricing_runs::{REPRICING_RUN, REPRICING_RUNS};
     use bss_pricing::api::rest::retirement::PLAN_RETIRE;
+    use bss_pricing::api::rest::rounding_policy::ROUNDING_POLICY;
     use bss_pricing::api::rest::supersessions::PLAN_SUPERSESSIONS;
     use bss_pricing::api::rest::tax_display_policy::TAX_DISPLAY_POLICY;
     use bss_pricing::api::rest::taxonomies::TAXONOMY;
@@ -159,6 +160,8 @@ fn declared_paths() -> Vec<(&'static str, &'static str)> {
         ("POST", CUSTOMER_GROUP_MEMBER_MOVE),
         ("GET", TAX_DISPLAY_POLICY),
         ("PUT", TAX_DISPLAY_POLICY),
+        ("GET", ROUNDING_POLICY),
+        ("PUT", ROUNDING_POLICY),
         ("POST", BUNDLES),
         ("GET", BUNDLES),
         // D-310: the composition's reader. It was unreadable through any surface,
@@ -236,6 +239,21 @@ fn declared_paths() -> Vec<(&'static str, &'static str)> {
 /// No migrations: nothing here sends a request, and the registration happens
 /// while the router is built. What this needs a provider for is that the states
 /// hold one.
+/// The two `/config` policy routers, extracted so [`registered_operations`] stays
+/// under the line cap rather than growing a lint allow — `rest_authz`'s own
+/// overlay extraction, for the same reason and in the same shape.
+///
+/// They belong together on more than length: both write `pricing_policy_object`,
+/// and they are the only two things that do.
+fn config_routers(
+    authoring: &Arc<bss_pricing::api::rest::state::AuthoringState>,
+    openapi: &OpenApiRegistryImpl,
+) -> axum::Router {
+    bss_pricing::api::rest::tax_display_policy::router(Arc::clone(authoring), openapi).merge(
+        bss_pricing::api::rest::rounding_policy::router(Arc::clone(authoring), openapi),
+    )
+}
+
 async fn registered_operations() -> OpenApiRegistryImpl {
     let db = connect_db("sqlite::memory:", ConnectOpts::default())
         .await
@@ -414,10 +432,7 @@ async fn registered_operations() -> OpenApiRegistryImpl {
                 Arc::clone(&membership_state),
                 &openapi,
             ))
-            .merge(bss_pricing::api::rest::tax_display_policy::router(
-                Arc::clone(&authoring),
-                &openapi,
-            ))
+            .merge(config_routers(&authoring, &openapi))
             .merge(bss_pricing::api::rest::preview::router(
                 Arc::clone(&governance),
                 &openapi,

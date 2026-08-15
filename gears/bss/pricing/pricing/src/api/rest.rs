@@ -67,6 +67,7 @@ pub mod prices;
 pub mod publish;
 pub mod repricing_runs;
 pub mod retirement;
+pub mod rounding_policy;
 pub mod state;
 pub mod supersessions;
 pub mod tax_display_policy;

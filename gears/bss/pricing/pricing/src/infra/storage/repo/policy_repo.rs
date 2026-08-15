@@ -28,18 +28,21 @@
 //!
 //! # Seven of the eight content columns have no writer, here or anywhere
 //!
-//! [`set_tax_display_policy`] is the **only** writer of `pricing_policy_object`
-//! in this crate, and it sets exactly one content column —
+//! [`set_tax_display_policy`] and [`set_default_rounding_policy`] are the
+//! **only** writers of `pricing_policy_object` in this crate, and each sets
+//! exactly one content column — the first
 //! `tax_display_policy_mode` — beside the `updated_at_utc` / `updated_by`
 //! stamps. An earlier version of this doc said *"there is no upsert here"*,
 //! which stopped being true the day that function landed; what is true is the
 //! narrower statement, and it is worth stating precisely because the seven
 //! columns it leaves out are read on live paths:
 //!
-//! - `default_rounding_policy_ref` is permanently `None`, so every published row
-//!   must carry its own `rounding_policy_ref` or fail `ROUNDING_POLICY_UNRESOLVED`
-//!   (see [`AuthoringPolicy::default_rounding_policy_ref`]). The per-tenant
-//!   default PRD §17.4 contemplates is declared and unreachable.
+//! - `default_rounding_policy_ref` **had** the same status until D-320
+//!   (2026-08-15): permanently `None`, so every published row had to carry its
+//!   own `rounding_policy_ref` or fail `ROUNDING_POLICY_UNRESOLVED`, and the
+//!   per-tenant default PRD §17.4 contemplates was declared and unreachable. It
+//!   now has a writer, [`set_default_rounding_policy`], behind
+//!   `GET/PUT /bss-pricing/v1/config/rounding-policy`.
 //! - `additional_required_descriptors` is permanently `[]`, so
 //!   [`DescriptorSetComplete::extending_v1`] — D-152's mechanism — never
 //!   extends, and `DESCRIPTOR_INCOMPLETE` can only ever check D-48 v1's pinned
@@ -480,6 +483,112 @@ pub async fn set_tax_display_policy(
     let row = policy_object::ActiveModel {
         tenant_id: Set(tenant_id),
         tax_display_policy_mode: Set(mode.as_str().to_owned()),
+        updated_at_utc: Set(stamp.recorded_at),
+        updated_by: Set(stamp.actor_principal_id),
+        ..Default::default()
+    };
+    policy_object::Entity::insert(row.clone())
+        .secure()
+        .scope_with_model(scope, &row)
+        .map_err(|e| RepoError::Db(format!("scope pricing_policy_object: {e}")))?
+        .exec(runner)
+        .await
+        .map(|_| true)
+        .map_err(|e| contention_or_db(&e, "pricing_policy_object", "insert policy object"))
+}
+
+/// Set the tenant's **default rounding policy**, gated on the premise the caller
+/// asserted (D-320).
+///
+/// `pricing_policy_object`'s second content writer, and the reason there is one
+/// at all: `default_rounding_policy_ref` was *declared and unreachable* — this
+/// module's own header said so — so the fail-closed arm of
+/// `foundation.rounding_policy_resolved` was the only reachable path, and every
+/// row of every plan had to carry its own ref or the plan did not publish. The
+/// per-tenant default PRD §17.4 contemplates now has a writer.
+///
+/// # The premise is a value, not an enumeration
+///
+/// [`set_tax_display_policy`] resolves its caller's `If-Match` by **enumerating**
+/// the two modes and finding the one whose tag matches. A rounding ref is free
+/// text, so nothing can be enumerated; the caller's asserted tag is resolved
+/// against the value the tenant currently **holds**, and that value is what goes
+/// in the `WHERE`. The compare-and-swap is unchanged in strength: a concurrent
+/// writer who moved the ref between the caller's read and this statement affects
+/// zero rows rather than being overwritten. Comparing in the handler and
+/// updating unconditionally is the T-7 defect, and it has been rebuilt on this
+/// table once already.
+///
+/// # `None` is a value on both sides
+///
+/// Clearing the default back to unset is legitimate — it is the state every
+/// tenant is in today — so `ref_value` may be `None`, and so may `expected`. SQL
+/// equality is not null-safe, so the premise is matched with `IS NULL` on that
+/// arm rather than `= NULL`, which matches nothing and would turn every clear
+/// into a spurious `409`.
+pub async fn set_default_rounding_policy(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    ref_value: Option<&str>,
+    expected: Option<&str>,
+    stamp: &AuditStamp,
+) -> Result<bool, RepoError> {
+    let premise = match expected {
+        Some(value) => policy_object::Column::DefaultRoundingPolicyRef.eq(value),
+        None => policy_object::Column::DefaultRoundingPolicyRef.is_null(),
+    };
+    let updated = policy_object::Entity::update_many()
+        .secure()
+        .scope_with(scope)
+        .col_expr(
+            policy_object::Column::DefaultRoundingPolicyRef,
+            Expr::value(ref_value),
+        )
+        .col_expr(
+            policy_object::Column::UpdatedAtUtc,
+            Expr::value(stamp.recorded_at),
+        )
+        .col_expr(
+            policy_object::Column::UpdatedBy,
+            Expr::value(stamp.actor_principal_id),
+        )
+        .filter(
+            Condition::all()
+                .add(policy_object::Column::TenantId.eq(tenant_id))
+                .add(premise),
+        )
+        .exec(runner)
+        .await
+        .map_err(|e| RepoError::Db(format!("update default rounding policy: {e}")))?;
+    if updated.rows_affected > 0 {
+        return Ok(true);
+    }
+
+    // No row matched: either the tenant has no policy object at all — the
+    // ordinary bootstrap — or one exists and its ref has moved. Read rather than
+    // assume, exactly as the tax-display writer does: the difference between a
+    // first write and a lost update is the whole point of the precondition.
+    let exists = policy_object::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(Condition::all().add(policy_object::Column::TenantId.eq(tenant_id)))
+        .one(runner)
+        .await
+        .map_err(|e| RepoError::Db(format!("read policy object: {e}")))?
+        .is_some();
+    if exists {
+        return Ok(false);
+    }
+    // A tenant with no row holds no default, so that is the only premise a first
+    // write may assert.
+    if expected.is_some() {
+        return Ok(false);
+    }
+
+    let row = policy_object::ActiveModel {
+        tenant_id: Set(tenant_id),
+        default_rounding_policy_ref: Set(ref_value.map(ToOwned::to_owned)),
         updated_at_utc: Set(stamp.recorded_at),
         updated_by: Set(stamp.actor_principal_id),
         ..Default::default()
