@@ -727,8 +727,17 @@ pub async fn retire_in(
 /// because `Op::event` maps a schedule *and* an adjustment to one name; the same
 /// reasoning applies here in the other direction. A window cancelled by a
 /// retirement and the same window cancelled through `DELETE` are two acts, and
-/// `retirement/{plan}/{revision}` is the act this one is — the same coordinate
-/// [`retirement_unit_ref`] names the approval unit by.
+/// `{plan}/retirement/{revision}` is the act this one is — the same coordinate
+/// [`retirement_unit_ref`] names the approval unit by, passed in from
+/// [`retire_in`]'s `subject_ref` rather than re-spelled here.
+///
+/// **The plan segment leads**, and this sentence used to transpose it. That is not
+/// a typo with no consequence: [`retirement_unit_ref`]'s own doc records that
+/// `approval_repo::subject_plan` parses the aggregate off the **head** of every
+/// ref, that the column's `CHECK`s admit any text, and that a first draft putting
+/// the act first read back as a `CorruptRow` from inside the approval plane. A
+/// reader who took this rendering as the shape and built the next act's ref to
+/// match it would land exactly there.
 ///
 /// # It is `pub`, and that is the D-182 posture rather than a testability leak
 ///

@@ -1685,7 +1685,13 @@ fn refuse_trailing_void(
 /// carries a horizon — and an extension that moves the end without reaching the
 /// floor is the second. Neither is a coverage removal, and both leave subscribers
 /// uncovered inside their own bound period. So this is asked of the interval set
-/// the mutation *produces*, whichever act produced it.
+/// the mutation *produces*, whichever of [`mutate_in`]'s three acts produced it.
+///
+/// **Its reach is those three acts and not every window mutation in the crate.**
+/// `infra::cutover`, `infra::supersession`, `infra::retirement` and the activation
+/// sweep all write through `window_repo` without passing here;
+/// [`window_repo`](crate::infra::storage::repo::window_repo)'s module roster names
+/// each and says which are argued shut and which is dormant rather than covered.
 ///
 /// # The refusal reuses `WINDOW_TRAILING_VOID`, and that is a reading
 ///

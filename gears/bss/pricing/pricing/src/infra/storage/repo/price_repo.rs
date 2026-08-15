@@ -2375,9 +2375,14 @@ async fn read_key_occupants(
 /// inward while nothing enforced D-04's `inst-co-bounds` at all, stranding bound
 /// subscribers mid-cycle with no guard on either side (found missing by review,
 /// 2026-08-05). The other side of that pair is closed as of 2026-08-14 —
-/// `infra::window`'s `refuse_horizon_uncovered` judges every window mutation on a
-/// grandfathered key against `grandfather_until` plus W6's margin — and this door
-/// is unaffected either way: it refuses the supersession outright, one act earlier.
+/// `infra::window`'s `refuse_horizon_uncovered` judges the three acts
+/// `infra::window::mutate_in` performs on a grandfathered key against
+/// `grandfather_until` plus W6's margin. **Not every window mutation**, which this
+/// sentence claimed: cutover, supersession, retirement and the activation sweep
+/// reach `window_repo` without passing it, and `window_repo`'s own roster now
+/// carries which of the four are argued shut and which is merely dormant. This
+/// door is unaffected either way: it refuses the supersession outright, one act
+/// earlier, and it is *why* the supersession path needs no bound of its own.
 ///
 /// # Why it is a function of the key alone, and has two callers
 ///

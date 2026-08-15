@@ -84,7 +84,11 @@
 //!   2026-08-14**, as `infra::window::refuse_horizon_uncovered` rather than inside
 //!   `window_repo::adjust_effective_to`: the repository layer holds one window and
 //!   its key, and the bound's operands are the plan shape's margin and the price
-//!   row's horizon. That function's own doc carries the argument.
+//!   row's horizon. That function's own doc carries the argument. **What it covers
+//!   is `infra::window::mutate_in`'s three acts and not every path that writes a
+//!   window** — `window_repo`'s roster names the four that bypass it and says
+//!   which are argued shut; the cutover half of §6's sentence is one of them, held
+//!   by construction rather than by this rule.
 //! * **G5 consumes it in predicate (1)**, which is where the D-80 margin is read.
 //!   Still owed: what this projector freezes is intervals, states and a coverage
 //!   end, and the horizon predicate is the sellability surface's to evaluate.

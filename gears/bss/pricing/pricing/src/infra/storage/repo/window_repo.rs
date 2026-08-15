@@ -129,9 +129,31 @@
 //!   `refuse_trailing_void`, and it is **not** [`adjust_effective_to`]'s because
 //!   the operands are not this layer's: the margin is a property of the plan
 //!   shape and the horizon of the price row, and this function holds one window
-//!   and its key. It runs on every window mutation and not only the adjustment,
-//!   because the reachable violation is a **schedule** — the first bounded window
-//!   on a grandfathered key — which no coverage-removal predicate looks at.
+//!   and its key. It runs on all three of `mutate_in`'s acts and not only the
+//!   adjustment, because the reachable violation is a **schedule** — the first
+//!   bounded window on a grandfathered key — which no coverage-removal predicate
+//!   looks at.
+//!
+//!   **`mutate_in`'s acts are not every window mutation, and this entry said they
+//!   were.** Four paths reach the three functions below without passing that
+//!   guard, and each is argued shut rather than checked — which is a different
+//!   claim and the one worth recording, since a reader taking "every mutation"
+//!   literally would build the next one through this store and inherit no bound.
+//!   `infra::cutover` schedules the copy **open-ended** (D-204 clause 4), which
+//!   satisfies any margin whatever the horizon says. `infra::supersession` cannot
+//!   reach a grandfathered key at all — [`super::price_repo`]'s
+//!   `refuse_unsupersedable_class` turns it away one act earlier, on Foundation
+//!   §4.3, and `infra::repricing` reaches these windows only through that same
+//!   door. `infra::jobs::window_activation` moves a state token and no instant, and
+//!   `KeyWindows::coverage_end` reads every non-cancelled state alike, so no
+//!   coverage it judges changes. `infra::retirement` is the one with a real
+//!   argument rather than a structural one: it cancels only not-yet-active windows
+//!   on keys D-51 reports no in-flight subscribers for, and that lane is
+//!   fail-closed today so the loop does not run — the day the D-79 lane lands, a
+//!   retirement cancelling a grandfathered generation's sole scheduled window
+//!   strands exactly what this bound exists to protect, and nothing here would
+//!   refuse it. Reported rather than built: the guard needs the plan shape and the
+//!   act's key set, neither of which is this entry's to add.
 //!   Beware the name: W6 is *called* "the longest billing cycle sold on the key" and
 //!   is *defined* per **plan** — the longest `frequency` among the plan's recurring
 //!   rows on the key's `(currency, region)` — and is **zero** on a plan with no
