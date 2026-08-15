@@ -39,6 +39,7 @@ use toolkit_macros::domain_model;
 
 pub use bss_fixtures::ModelKind;
 
+use crate::domain::allowance::presented_model_kind;
 use crate::domain::money::{MinorAmount, RateMinor};
 use crate::domain::scope_key::ChargeKind;
 
@@ -801,11 +802,46 @@ impl PriceRow {
 /// `Option`s: "authored nothing" and "authored the default" are the same row,
 /// and comparing the `Option`s would report a change on a pair that changed
 /// nothing at all.
+///
+/// ## The kind is compared twice, because a row has two of them (D-45)
+///
+/// `model_kind` is on this list because the **formula** that prices the
+/// continued counter must not move (D-98). Since the included-allowance compile
+/// the formula is the **presented** kind, and the two part company on exactly one
+/// shape: an untiered `per_unit` row carrying `includedAllowance {N, none}`
+/// publishes as the ladder `[0, N) @ $0`, `[N, null) @ rate` (`inst-ac-band`)
+/// with its authored `model_kind` untouched (D-130 — the compile is a
+/// projection, so there is nothing on the row for an authored comparison to
+/// see).
+///
+/// Introducing or dropping that declaration mid-window is therefore the D-82
+/// class through a field nobody had listed: the predecessor accumulated a
+/// counter under no bands at all, and the successor applies a band set to it
+/// whose first band is the allowance. Neither answer is defined — start `Q` at
+/// zero and the subscriber is granted `N` free units mid-period on top of what
+/// they already bought; continue it and the allowance is silently consumed by
+/// quantity that was billed at full rate before it existed. The two differ by
+/// `N × rate` on every subscriber on the key.
+///
+/// So the presented kind is compared as well, and reported under its own name
+/// because the remediable operand is the **declaration**: an author diffing two
+/// rows that both read `model_kind = per_unit` cannot act on a finding that
+/// names `model_kind`.
+///
+/// A **quantity** change on a row that presents a ladder on both sides moves
+/// nothing here and stays what the note below calls it — a price lever. That is
+/// what the presented comparison buys over binding `included_allowance`
+/// outright, and it is why the D-129 `carry` clause on
+/// [`SupersessionPair::mismatched_unit_fields`](crate::domain::rules::supersession::SupersessionPair::mismatched_unit_fields)
+/// stays where it is: that one binds a plan-scoped grant row and is a different
+/// argument on the same field.
 #[must_use]
 pub fn unit_determining_mismatch(before: &PriceRow, after: &PriceRow) -> Vec<&'static str> {
     let mut changed = Vec::new();
     if before.model_kind != after.model_kind {
         changed.push("model_kind");
+    } else if presented_model_kind(before) != presented_model_kind(after) {
+        changed.push("includedAllowance (presented modelKind)");
     }
     if before.billing_granularity != after.billing_granularity {
         changed.push("billingGranularity");

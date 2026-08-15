@@ -238,6 +238,63 @@ fn a_none_policy_allowance_change_publishes() {
     );
 }
 
+/// A `none` allowance is a price lever **while the presented kind stays put**.
+/// On an untiered row it does not: `{N, none}` compiles `per_unit` into the
+/// ladder `[0, N) @ $0, [N, null) @ rate` (`inst-ac-band`), and the successor's
+/// bands are applied to a counter the predecessor accumulated with no bands and
+/// no allowance at all. The authored `model_kind` never moves, so the guard's
+/// `model_kind` clause cannot see it.
+#[test]
+fn introducing_a_none_allowance_on_an_untiered_successor_fails_publish() {
+    let mut before = predecessor();
+    before.model_kind = Some(ModelKind::PerUnit);
+    before.bands = Vec::new();
+    before.unit_rate = Some(rate(6));
+
+    let mut successor = before.clone();
+    successor.included_allowance = Some(IncludedAllowance {
+        quantity: 100,
+        rollover_policy: RolloverPolicy::None,
+    });
+
+    let pair = SupersessionPair::new(before.clone(), successor.clone());
+    assert_eq!(
+        pair.mismatched_unit_fields(),
+        vec!["includedAllowance (presented modelKind)"]
+    );
+    assert!(!judge(&pair).is_publishable());
+
+    // Dropping it is the same move in the other direction.
+    let dropping = SupersessionPair::new(successor, before);
+    assert_eq!(
+        dropping.mismatched_unit_fields(),
+        vec!["includedAllowance (presented modelKind)"]
+    );
+}
+
+/// The positive control for the case above: on an untiered row that already
+/// publishes a ladder, moving `N` moves only the price of it.
+#[test]
+fn a_none_allowance_quantity_change_on_an_untiered_row_publishes() {
+    let mut before = predecessor();
+    before.model_kind = Some(ModelKind::PerUnit);
+    before.bands = Vec::new();
+    before.unit_rate = Some(rate(6));
+    before.included_allowance = Some(IncludedAllowance {
+        quantity: 100,
+        rollover_policy: RolloverPolicy::None,
+    });
+    let mut successor = before.clone();
+    successor.included_allowance = Some(IncludedAllowance {
+        quantity: 250,
+        rollover_policy: RolloverPolicy::None,
+    });
+
+    let pair = SupersessionPair::new(before, successor);
+    assert!(pair.mismatched_unit_fields().is_empty());
+    assert!(judge(&pair).is_publishable());
+}
+
 #[test]
 fn introducing_or_dropping_a_carry_allowance_fails_publish() {
     // Either direction mints or orphans a plan-scoped grant row, which is

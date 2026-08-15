@@ -34,6 +34,72 @@ fn metered() -> PriceRow {
     row
 }
 
+/// The other authorable metered shape: an untiered rate, no bands, no ladder —
+/// until an `includedAllowance` compiles one.
+fn untiered_metered() -> PriceRow {
+    let mut row = PriceRow::new(ChargeKind::Usage, Some(ModelKind::PerUnit));
+    row.meter = Some("egress_bytes".to_owned());
+    row.billing_granularity = Some(BillingGranularity::PerHour);
+    row.tier_aggregation_window = Some(TierAggregationWindow::CalendarMonth);
+    row.unit_rate = Some(rate(6));
+    row
+}
+
+fn none_allowance(quantity: u64) -> IncludedAllowance {
+    IncludedAllowance {
+        quantity,
+        rollover_policy: RolloverPolicy::None,
+    }
+}
+
+/// `model_kind` is in the shared list because the formula that prices the
+/// continued counter must not move. Since D-45 the formula is the **presented**
+/// kind: introducing `{N, none}` on a published `per_unit` row turns it into the
+/// ladder `[0, N) @ $0, [N, null) @ rate` with the authored `model_kind`
+/// untouched, so the counter that was rated linearly is rated against a band set
+/// mid-window — and the band it lands in depends on quantity accumulated while
+/// no allowance existed.
+#[test]
+fn introducing_a_none_allowance_on_an_untiered_row_moves_the_presented_kind() {
+    let mut after = untiered_metered();
+    after.included_allowance = Some(none_allowance(100));
+
+    assert_eq!(
+        after.model_kind,
+        untiered_metered().model_kind,
+        "the authored kind does not move; that is what made this invisible"
+    );
+    assert_eq!(
+        unit_determining_mismatch(&untiered_metered(), &after),
+        vec!["includedAllowance (presented modelKind)"]
+    );
+    // Symmetric, like the rest of the list: dropping it moves the same way.
+    assert_eq!(
+        unit_determining_mismatch(&after, &untiered_metered()),
+        vec!["includedAllowance (presented modelKind)"]
+    );
+}
+
+/// The positive control, and the clause the note in
+/// [`super::unit_determining_mismatch`] keeps: a `none` allowance is a price
+/// lever wherever the presented kind stays put. Both of these rows publish as a
+/// ladder before and after, so changing `N` changes only what the ladder costs.
+#[test]
+fn a_none_allowance_quantity_change_leaves_the_presented_kind_alone() {
+    let mut before = untiered_metered();
+    before.included_allowance = Some(none_allowance(100));
+    let mut after = untiered_metered();
+    after.included_allowance = Some(none_allowance(250));
+
+    assert!(unit_determining_mismatch(&before, &after).is_empty());
+
+    // And on a row authored as a ladder there is no presented move at all: a
+    // `graduated` row presents `graduated` with or without a declaration.
+    let mut carrying = metered();
+    carrying.included_allowance = Some(none_allowance(100));
+    assert!(unit_determining_mismatch(&metered(), &carrying).is_empty());
+}
+
 #[test]
 fn a_row_that_authors_no_derivation_reads_as_a_sum_row() {
     // "Authored nothing" and "authored `sum`" have to be the same row: if they

@@ -116,7 +116,16 @@ impl SupersessionPair {
     ///
     /// Deliberately **not** listed, because they are the legitimate price
     /// levers: the band amounts, the band set itself, `amount_minor`,
-    /// `package_price_minor`, and a `none`-policy allowance.
+    /// `package_price_minor`, and the **quantity** of a `none`-policy allowance.
+    ///
+    /// That last clause was written without a qualifier and it was wrong on one
+    /// shape. A `none` allowance compiles to nothing plan-scoped, which is the
+    /// argument this method's `carry` condition is about, but on an untiered
+    /// `per_unit` row it compiles the row into a band ladder — and *that* moves
+    /// what prices the continued counter. So introducing or dropping one on such
+    /// a row is caught by [`unit_determining_mismatch`]'s presented-kind clause,
+    /// under its own name, while a quantity change on a row that presents a
+    /// ladder on both sides stays exactly the free lever the clause claims.
     #[must_use]
     pub fn mismatched_unit_fields(&self) -> Vec<&'static str> {
         let (before, after) = (&self.predecessor, &self.successor);
