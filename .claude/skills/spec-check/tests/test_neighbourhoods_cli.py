@@ -219,12 +219,32 @@ def test_an_unknown_only_class_is_a_usage_error(tmp_path):
 PINNED_TRIAGE_PRICING = {
     "unbuildable:no-prose": 0,
     "no-region": 3,
-    "anchored:no-account": 4,
-    "suspicious:multi-region": 61,
+    "anchored:no-account": 5,
+    "suspicious:multi-region": 62,
     "suspicious:not-normative": 0,
-    "suspicious:weak-coverage": 9,
+    "suspicious:weak-coverage": 7,
     "covered:strong": 0,
 }
+#: Moved 2026-08-15 by the **D-317 / slice-10 allowance docs wave** (61/9/4 -> 62/7/5).
+#: Total held at 77 and the live-findings count held at **2** on the three-gear invocation
+#: (both rating-side) with known debt at **49**, so nothing closed silently — the check the
+#: 2026-08-05 `WINDOW_GAP` episode exists to force. **Two movers, and only one of them is
+#: judged-set traffic:**
+#:   * `fr-rating-compatibility`, `weak-coverage` -> `multi-region`. Both classes are judged,
+#:     so it is judge-neutral and changes only the histogram's shape.
+#:   * `fr-supersession`, `weak-coverage` -> `anchored:no-account`, which is the whole of the
+#:     judged-call decrement below. **It is the same threshold oscillator this list has now
+#:     recorded four times** (2026-08-03 in, 2026-08-05 in, 2026-08-08 out at 0.602, here out
+#:     again) and it moves in the direction *opposite* to what the wave did to it: this wave
+#:     wrote an account of exactly that mechanism **into `fr-supersession`'s own prose** — the
+#:     presented-`modelKind` clause of the succession unit guard, mirrored into
+#:     `inst-tb-supersession-units` and S3 §5 — and the requirement left the judged set anyway.
+#: **Control, taken rather than argued**: with `DECISIONS.md` held at its pre-wave content and
+#: every design/PRD edit of this wave in place, `anchored:no-account` is already **5** — so the
+#: mover is the design/PRD half and not the register entry, and the register entry's own effect
+#: is one id pulled back from `multi-region` into `weak-coverage`. A requirement's own text
+#: growing changes its discriminating-term set, which is the ladder's document-frequency
+#: behaviour and not a loss of coverage; the account it gained is still there to read.
 #: Moved **back** 2026-08-14, later still (62 / 8 -> 61 / 9), by D-313's `per_hour`
 #: wave — and the mover is `fr-price-history-export` again, in the opposite
 #: direction, which is the fifth recording of this artefact and the clearest one:
@@ -1209,7 +1229,13 @@ PINNED_TRIAGE_LEDGER = {
 #: 69 -> 67 on the 2026-08-08 D-259 tail wave. The triage histogram is unchanged,
 #: so this is the judged-share side of the same knife-edge movement recorded above,
 #: moving for the third time in one day on prose that touched neither requirement.
-PINNED_JUDGE_CALLS = {"pricing": 70, "ledger": 17}
+PINNED_JUDGE_CALLS = {"pricing": 69, "ledger": 17}
+#: pricing 70 -> 69 on the 2026-08-15 **D-317 / slice-10 allowance docs wave**. One mover,
+#: `fr-supersession`, leaving the judged set for `anchored:no-account` for the second time in a
+#: week; the other mover is judge-neutral. Full decomposition and the held-`DECISIONS.md`
+#: control beside `PINNED_TRIAGE_PRICING` above. Worth naming plainly: this is the first entry
+#: on this list where the demoted requirement is one the wave **wrote an account into**, which
+#: is the clearest statement yet that the number measures term distribution and not coverage.
 #: pricing 67 -> 70 on 2026-08-14, and **not by D-312** — same control as
 #: `PINNED_TRIAGE_PRICING` above: measured against 3492f0091, the judged set is
 #: unchanged across D-312's edits. The movement belongs to the four waves that
