@@ -29,10 +29,16 @@ fn graduated_usage() -> PriceRow {
     row
 }
 
+/// The untiered shape. It carries a `tierAggregationWindow` although an untiered
+/// row owes none: every case here hangs an allowance on it, and a compiled
+/// allowance row is tiered for `inst-tb-window`'s purposes — the `[0, N) @ $0`
+/// band is a counter and it has to reset. Without one this stood for a row that
+/// could never publish.
 fn per_unit_usage() -> PriceRow {
     let mut row = PriceRow::new(ChargeKind::Usage, Some(ModelKind::PerUnit));
     row.meter = Some("egress.gb".to_owned());
     row.billing_granularity = Some(BillingGranularity::PerHour);
+    row.tier_aggregation_window = Some(TierAggregationWindow::InvoicePeriod);
     row.unit_rate = Some(rate(2));
     row
 }
@@ -297,6 +303,37 @@ fn an_allowance_row_presents_the_compiled_kind_and_a_plain_row_presents_its_own(
     assert_eq!(
         presented_model_kind(&PriceRow::new(ChargeKind::Usage, None)),
         None
+    );
+}
+
+/// And the presented kind is what the evaluation-policy rule reads, which is
+/// what the fixture's `tierAggregationWindow` is there for: the same row, the
+/// same predicate, judged by `inst-tb-window`.
+#[test]
+fn the_shape_that_presents_as_tiered_is_the_shape_that_owes_a_reset_window() {
+    use crate::domain::rules::tier_bands::UsageEvaluationPolicy;
+    use crate::domain::validation::{ValidationReport, ValidationRule};
+
+    let window_findings = |row: &PriceRow| {
+        let mut report = ValidationReport::default();
+        UsageEvaluationPolicy.evaluate(row, &mut report);
+        report.violations.len()
+    };
+
+    let carrying = with(per_unit_usage(), 10, RolloverPolicy::None);
+    assert!(is_presented_tiered(&carrying));
+    assert_eq!(
+        window_findings(&carrying),
+        0,
+        "the fixture names its window, so the compiled counter resets"
+    );
+
+    let mut unwindowed = carrying;
+    unwindowed.tier_aggregation_window = None;
+    assert_eq!(
+        window_findings(&unwindowed),
+        1,
+        "and without one the allowance would be granted once for the subscription's life"
     );
 }
 

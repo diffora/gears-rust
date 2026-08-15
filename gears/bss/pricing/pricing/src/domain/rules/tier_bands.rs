@@ -8,6 +8,7 @@
 
 use toolkit_macros::domain_model;
 
+use crate::domain::allowance::is_presented_tiered;
 use crate::domain::price_row::{
     BandTop, BillingGranularity, PriceRow, TierAggregationWindow, TierBand,
 };
@@ -211,6 +212,21 @@ impl ValidationRule<PriceRow> for BandTopOpen {
 /// row additionally carries `tierAggregationWindow`: it is when the counter
 /// resets, and a band set without it prices an unbounded accumulation.
 ///
+/// # Tieredness is the **presented** shape, not the authored one (D-45)
+///
+/// The window is owed by whatever publishes a band ladder, and since the
+/// included-allowance compile that is no longer the same set of rows as
+/// `model_kind ∈ {graduated, volume}`: an untiered `per_unit` usage row carrying
+/// `includedAllowance {N, none}` publishes as `[0, N) @ $0` followed by the
+/// folded rate (`inst-ac-band`), which is a tier counter. Read on the authored
+/// kind this rule stayed silent about exactly that row, and the counter it
+/// never asked to reset is the one holding the **allowance**: with no window the
+/// N free units are granted once for the subscription's whole lifetime instead
+/// of once per period. So this reads
+/// [`is_presented_tiered`](crate::domain::allowance::is_presented_tiered), the
+/// same operand `FixtureGate` and `inst-ft-warn` now read, and it answers
+/// `is_tiered` on every row the compile does not fire for.
+///
 /// The `package` case — which needs the same window for a different reason, to
 /// bound the accumulation *before* block round-up — is `inst-pk-window`'s, so
 /// one missing window is reported once.
@@ -255,13 +271,15 @@ impl ValidationRule<PriceRow> for UsageEvaluationPolicy {
                  it is the unit the bands are counted in",
             );
         }
-        if subject.is_tiered() && subject.tier_aggregation_window.is_none() {
+        if is_presented_tiered(subject) && subject.tier_aggregation_window.is_none() {
             report.violate(
                 EVAL_POLICY_MISSING,
                 subject.subject(),
                 "a tiered usage row must carry tierAggregationWindow \
                  (calendar_month | invoice_period | subscription_lifetime | per_event | \
-                 per_hour): without it the tier counter never resets",
+                 per_hour): without it the tier counter never resets. A row compiled into \
+                 a ladder by an includedAllowance is tiered for this purpose: it is the \
+                 allowance counter that would never reset",
             );
         }
         if subject.tier_aggregation_window == Some(TierAggregationWindow::PerHour)

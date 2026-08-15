@@ -415,3 +415,76 @@ mod per_hour_window {
         assert!(findings(&UsageEvaluationPolicy, &row).violations.is_empty());
     }
 }
+// ---------------------------------------------------------------------------
+// The window follows the **presented** shape (D-45).
+// ---------------------------------------------------------------------------
+
+/// An untiered `per_unit` usage row with no allowance: it prices every unit at
+/// one rate, no counter accumulates, and nothing resets. The positive control
+/// that keeps the case below from being green because the rule started asking
+/// every `per_unit` row for a window.
+fn per_unit_usage() -> PriceRow {
+    let mut row = PriceRow::new(ChargeKind::Usage, Some(ModelKind::PerUnit));
+    row.meter = Some("api_calls".to_owned());
+    row.billing_granularity = Some(BillingGranularity::WholeUnit);
+    row.unit_rate = Some(rate(10));
+    row
+}
+
+fn allowance(quantity: u64) -> crate::domain::price_row::IncludedAllowance {
+    crate::domain::price_row::IncludedAllowance {
+        quantity,
+        rollover_policy: crate::domain::price_row::RolloverPolicy::None,
+    }
+}
+
+#[test]
+fn an_untiered_per_unit_row_owes_no_reset_window() {
+    let row = per_unit_usage();
+
+    assert!(
+        findings(&UsageEvaluationPolicy, &row).violations.is_empty(),
+        "a per_unit row with no allowance accumulates no counter"
+    );
+}
+
+/// The money case. A `per_unit` row carrying `includedAllowance {N, none}`
+/// **publishes as a band ladder** (`inst-ac-band`): `[0, N) @ $0`, then the
+/// folded rate. That ladder has a tier counter, and with no
+/// `tierAggregationWindow` the counter never resets — so the N free units are
+/// granted once for the subscription's whole life instead of once per period.
+#[test]
+fn a_per_unit_row_compiled_into_a_ladder_by_an_allowance_needs_a_reset_window() {
+    let mut row = per_unit_usage();
+    row.included_allowance = Some(allowance(100));
+
+    assert_eq!(
+        codes(&findings(&UsageEvaluationPolicy, &row)),
+        vec![EVAL_POLICY_MISSING],
+        "the compiled [0, 100) $0 band is a tier counter and it must reset"
+    );
+}
+
+/// The positive control for the case above: the same row, window authored.
+#[test]
+fn a_compiled_allowance_row_that_names_its_window_passes() {
+    let mut row = per_unit_usage();
+    row.included_allowance = Some(allowance(100));
+    row.tier_aggregation_window = Some(TierAggregationWindow::CalendarMonth);
+
+    assert!(findings(&UsageEvaluationPolicy, &row).violations.is_empty());
+}
+
+/// The narrowness control. A `carry` allowance does not compile (its grant has
+/// no store), so the row still presents `per_unit` and still owes no window —
+/// the rule must read what publishes, not the mere presence of the field.
+#[test]
+fn an_uncompiled_allowance_leaves_the_row_untiered() {
+    let mut row = per_unit_usage();
+    row.included_allowance = Some(crate::domain::price_row::IncludedAllowance {
+        quantity: 100,
+        rollover_policy: crate::domain::price_row::RolloverPolicy::Carry,
+    });
+
+    assert!(findings(&UsageEvaluationPolicy, &row).violations.is_empty());
+}

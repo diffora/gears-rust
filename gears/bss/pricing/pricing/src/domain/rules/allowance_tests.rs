@@ -55,10 +55,18 @@ fn graduated_usage() -> PriceRow {
 }
 
 /// The other authorable shape: an untiered metered rate.
+///
+/// It names a `tierAggregationWindow` even though an untiered row owes none.
+/// Every case below hangs an allowance on it, and an allowance compiles it into
+/// a band ladder whose first band is the free quantity — so the row this fixture
+/// stands for is one `inst-tb-window` requires a reset window from. Authored
+/// without one it was a row that could never publish, which is not the row any
+/// case here means to be judging.
 fn per_unit_usage() -> PriceRow {
     let mut row = PriceRow::new(ChargeKind::Usage, Some(ModelKind::PerUnit));
     row.meter = Some("egress.gb".to_owned());
     row.billing_granularity = Some(BillingGranularity::PerHour);
+    row.tier_aggregation_window = Some(TierAggregationWindow::InvoicePeriod);
     row.unit_rate = Some(rate(2));
     row
 }
@@ -96,6 +104,47 @@ fn the_two_authorable_shapes_carrying_an_allowance_are_accepted() {
             "a {label} sum usage row with a positive quantity and no free opening band is the \
              authorable case: {:?}",
             codes(&run(&row))
+        );
+    }
+}
+
+/// And accepted by the **whole** row-local set, not only by the two rules this
+/// file runs.
+///
+/// This is what reads the `tierAggregationWindow` the two fixtures above carry.
+/// `inst-ac-gate` never looks at that field, so a fixture without one satisfied
+/// every case in this file while standing for a row publish refuses — and on the
+/// untiered shape the missing window is not a detail: the ladder the allowance
+/// compiles has a `[0, N) @ $0` first band, and a counter with no reset grants
+/// those `N` units once for the subscription's life instead of once per period.
+#[test]
+fn the_two_authorable_shapes_carrying_an_allowance_pass_the_whole_row_local_set() {
+    for (label, mut row) in [
+        ("graduated", graduated_usage()),
+        ("per_unit", per_unit_usage()),
+    ] {
+        row.included_allowance = Some(allowance(100, RolloverPolicy::None));
+        let report = crate::domain::rules::price_row_rules().run(&row);
+        assert!(
+            report.violations.is_empty(),
+            "{label}: {:?}",
+            report
+                .violations
+                .iter()
+                .map(|violation| violation.code.as_str())
+                .collect::<Vec<_>>()
+        );
+
+        // Drop the window and the untiered shape is refused for the counter it
+        // would never reset; the tiered one was already refused without it.
+        row.tier_aggregation_window = None;
+        let without = crate::domain::rules::price_row_rules().run(&row);
+        assert!(
+            without
+                .violations
+                .iter()
+                .any(|violation| violation.code == "EVAL_POLICY_MISSING"),
+            "{label} without a reset window must be refused"
         );
     }
 }
