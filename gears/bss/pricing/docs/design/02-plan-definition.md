@@ -433,11 +433,12 @@ cannot carry one precondition, and the half-way state is not a no-op but an open
 this plan's single editable slot, which every later `PATCH` from any operator then takes instead
 of this arm.
 
-**A `PATCH` carries exactly one facet** (**D-173**, 2026-08-03, found while building the surface).
+**A `PATCH` carries exactly one facet** (**D-173**, 2026-08-03, found while building the surface;
+the arity has since moved to **six** — Slice 10's composites and **D-319**'s period floor/cap).
 The Purpose cell named four — cycle, phases, add-ons, descriptors — and this slice's storage
-cannot apply them as one: the cycle lives on the plan revision row and the other three in the
-revision-scoped child tables of §6 (D-83/D-106), and **all four** are versioned against the
-revision's single row version and each advances it. A request carrying two facets can therefore
+cannot apply them as one: the cycle lives on the plan revision row and the others in the
+revision-scoped child tables of §6 (D-83/D-106), and **every one of them** is versioned against
+the revision's single row version and each advances it. A request carrying two facets can therefore
 match the caller's `If-Match` on the first and cannot match it on the second, and applying them in
 sequence leaves a **visibly half-applied revision** between two transactions — the state
 [`01-foundation.md`](./01-foundation.md) §4.2's commit refuses on the publish plane for the same

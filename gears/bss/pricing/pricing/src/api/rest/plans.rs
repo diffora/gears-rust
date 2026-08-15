@@ -339,7 +339,7 @@ impl From<DescriptorSet> for DescriptorSetView {
 ///    [`DescriptorSetView`] and [`FrequencyView`] *from here*: the authoring plane
 ///    owns the shapes an author writes, and the reviewer's document borrows them.
 ///    Making [`PatchPlanRequest`] depend on a type in `approvals.rs` inverts that
-///    for one facet, and a reader would then have to know which of the five is the
+///    for one facet, and a reader would then have to know which of the six is the
 ///    exception.
 /// 2. **The two shapes are already answers to different questions.** This module's
 ///    own Slice-6 pairs are the precedent: [`PlanChangeContractRequest`] beside
@@ -416,7 +416,7 @@ impl From<CompositeMeter> for CompositeMeterRequest {
     }
 }
 
-/// One plan revision, whole: its own columns and its four child sets.
+/// One plan revision, whole: its own columns and its five child sets.
 ///
 /// The child sets are here rather than on sub-resources of their own because
 /// S2 §5's `PATCH` cell names those facets as the plan's shape - a read
@@ -544,8 +544,8 @@ impl PlanView {
 /// One plan on a page: the revision an author is holding, and nothing that costs
 /// a query of its own.
 ///
-/// The four child sets [`PlanView`] carries are each a query of their own, so
-/// rendering them a hundred times for a catalogue screen would be five hundred
+/// The five child sets [`PlanView`] carries are each a query of their own, so
+/// rendering them a hundred times for a catalogue screen would be six hundred
 /// round trips to show a tier and a state. A caller opens
 /// `GET …/plans/{planId}` for the rest — the split
 /// `list_approvals` / `get_approval` already make one module over.
@@ -794,8 +794,8 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
              one, else its current revision - `draft` is not a current revision \
              (`is_current_revision()` is `published | retired`), so a listing that asked for \
              current revisions would hide every plan being authored right now. \
-             `lifecycle_state` narrows the page to a comma-separated set of states. The four \
-             child sets are **not** on this page - a hundred plans would be five hundred \
+             `lifecycle_state` narrows the page to a comma-separated set of states. The five \
+             child sets are **not** on this page - a hundred plans would be six hundred \
              queries - so a caller opens `GET /bss-pricing/v1/plans/{planId}` for a plan's \
              shape.",
         )
@@ -993,8 +993,9 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
         .summary("Read a plan's authoring revision")
         .description(
             "Returns the plan's **open draft** revision when it has one, and its **current** \
-             revision (`published` or `retired`) otherwise, with its phase chain, its add-on \
-             rules and its descriptor set. This is the authoring read (`plan` x `read`); the \
+             revision (`published` or `retired`) otherwise, with all five of its child sets - \
+             its phase chain, its add-on rules, its descriptor set, its derived (composite) \
+             meters and its period floor/cap. This is the authoring read (`plan` x `read`); the \
              published content a consumer resolves comes from the read model, which is a \
              different contract. `lifecycle_state` and `revision` name which revision was \
              answered, so a caller never infers it. The `ETag` header carries the revision's row \

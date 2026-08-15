@@ -194,8 +194,22 @@ pub enum Trigger {
     /// A plan revision that moves **no price row at all** (D-115): its content is
     /// the plan's shape — the descriptor set, the phase graph and durations, the
     /// add-on rule set, the cycle, the availability dates, the tier override, the
-    /// plan-change contract — none of which carries a price delta. A trial
-    /// stretched 7 → 90 days is this case.
+    /// plan-change contract, the composite meter definitions, and the plan-level
+    /// **period floor/cap** (D-319) — none of which carries a price delta. A
+    /// trial stretched 7 → 90 days is this case; a $500-per-period minimum is
+    /// the same case with a money consequence.
+    ///
+    /// **The condition is the change set moving no row, and that is narrower
+    /// than the list above** (reported by review, 2026-08-15, not fixed here).
+    /// A publish carrying a shape edit **and** a sub-threshold row edit does not
+    /// reach this trigger at all: `moves_no_row` is false, the per-row deltas
+    /// answer `Below`, and the shape edit rides out unjudged. Closing it needs a
+    /// **shape diff** against the published revision, which no `ChangeSet`
+    /// carries — every operand `materiality::evaluate` holds is a price row —
+    /// so it is a change to what the act declares rather than to this predicate,
+    /// and it moves five facets that predate D-319 as well as its own. Owed with
+    /// its own decision; recorded here because a reader of this list would
+    /// otherwise believe every member of it is judged on every publish.
     PlanShapeRevisionContent,
 }
 

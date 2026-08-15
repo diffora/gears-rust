@@ -31,11 +31,13 @@ mod rest_support;
 
 use axum::http::StatusCode;
 use bss_pricing::api::rest::migrated_origin_snapshots::MIGRATED_ORIGIN_SNAPSHOT;
-use bss_pricing::domain::scope_key::PlanId;
+use bss_pricing::domain::money::{CurrencyCode, MinorAmount};
+use bss_pricing::domain::plan_shape::PeriodFloorCap;
+use bss_pricing::domain::scope_key::{PlanId, Region};
 use bss_pricing::domain::synthesis::SynthesisTrigger;
 use bss_pricing::infra::synthesis::{FrozenKey, SynthesisRequest};
 use chrono::{DateTime, TimeZone, Utc};
-use rest_support::{Harness, body_json, request, seed_publishable_plan};
+use rest_support::{Harness, body_json, request, seed_publishable_plan, seed_stamp};
 use uuid::Uuid;
 
 const RATING_SERVICE: Uuid = Uuid::from_u128(0x_4a_71_46);
@@ -480,6 +482,85 @@ async fn the_frozen_payload_is_self_contained_and_says_it_has_no_catalog_version
     assert_eq!(payload["planLevel"]["grantSetUnavailable"], true);
     assert!(payload["planLevel"]["grantSet"].is_null());
     assert!(payload["planLevel"].get("invoiceLineTemplate").is_some());
+    // D-319, and the marker beside it is the point: this plan authored no
+    // minimum, so the empty list **means** "no minimum" — which is only readable
+    // because the payload also says the set was available to be read. Without
+    // the marker an unread set and an unauthored one render identically, and
+    // this payload resolves through no `CatalogVersion`, so a consumer has
+    // nowhere to go and check.
+    assert_eq!(
+        payload["planLevel"]["periodFloorCaps"],
+        serde_json::json!([])
+    );
+    assert_eq!(payload["planLevel"]["periodFloorCapsUnavailable"], false);
+}
+
+/// **A period bound reaches the frozen `migrated-origin` payload** (D-319).
+///
+/// The case exists because this is the gear's **second** plan-level payload and
+/// it does not go through `publish::assemble_from`: `plan_level` reads the
+/// descriptor set off the current revision by hand, and a field added to the
+/// read model alone would be invisible here. That matters more here than
+/// anywhere else — a `migrated-origin` ref resolves through **no**
+/// `CatalogVersion` by construction, so a bound outside this payload is one
+/// Billing cannot apply and cannot look up, on a record that is frozen and
+/// therefore permanently wrong.
+#[tokio::test]
+async fn a_period_bound_is_materialized_into_the_frozen_payload() {
+    let h = Harness::new().await;
+    let plan_id = Uuid::now_v7();
+    let seeded = seed_publishable_plan(&h, plan_id).await;
+
+    // On the market the seeded row prices — anything else is
+    // `PERIOD_FLOOR_CAP_MARKET_UNSOLD` and would never publish.
+    h.state
+        .shapes
+        .replace_period_floor_caps(
+            &h.scope(),
+            h.tenant,
+            PlanId::new(plan_id),
+            seeded.revision,
+            seeded.version,
+            vec![PeriodFloorCap {
+                currency: CurrencyCode::new("EUR").expect("three letters"),
+                region: Region::new("eu").expect("non-blank"),
+                floor_minor: Some(MinorAmount::new(50_000).expect("non-negative")),
+                cap_minor: None,
+            }],
+            seed_stamp(),
+        )
+        .await
+        .expect("author the period floor on the open draft");
+
+    h.publish(plan_id, seeded.revision).await;
+    h.publish_price(plan_id, seeded.price_id).await;
+
+    let frozen = h
+        .governance
+        .synthesis
+        .synthesize(
+            &h.scope(),
+            h.tenant,
+            synthesis_request(Uuid::now_v7(), plan_id, covered_at()),
+        )
+        .await
+        .expect("synthesize");
+
+    assert_eq!(
+        frozen.record.payload["planLevel"]["periodFloorCaps"],
+        serde_json::json!([{
+            "currency": "EUR",
+            "region": "eu",
+            "floorMinor": 50_000,
+            "capMinor": null,
+        }]),
+        "the bound is materialized whole: {}",
+        frozen.record.payload
+    );
+    assert_eq!(
+        frozen.record.payload["planLevel"]["periodFloorCapsUnavailable"],
+        false
+    );
 }
 
 // ---------------------------------------------------------------------------

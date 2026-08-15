@@ -1,8 +1,9 @@
 //! Repository for a plan revision's **shape** — the Slice-2 child tables that
 //! version with the revision (`design/02-plan-definition.md` §6, D-83).
 //!
-//! `pricing_plan_phase`, `pricing_plan_addon_rule` and
-//! `pricing_plan_descriptor_set` are all three of them. It is separate from
+//! `pricing_plan_phase`, `pricing_plan_addon_rule`,
+//! `pricing_plan_descriptor_set`, `pricing_composite_meter` and
+//! `pricing_plan_period_floor_cap` are all five of them. It is separate from
 //! [`PlanRepo`](super::PlanRepo) because the two answer different questions:
 //! that repository owns the revision **chain** — which revision is current,
 //! which is open, which numbers are consumed — while this one owns what a single
@@ -63,13 +64,18 @@
 //! dependency its own two-cycle and `ADDON_CYCLE` would fail every plan that has
 //! one.
 //!
-//! **Six functions here are not part of the repository's surface**, and they
-//! exist because D-83 and D-145 are `PlanRepo`'s obligations discharged against
-//! these tables: [`copy_phases`] / [`copy_addon_rules`] / [`copy_descriptor_set`]
-//! write the current revision's rows again under a newly opened one with their
-//! ids unchanged, and [`delete_phases`] / [`delete_addon_rules`] /
-//! [`delete_descriptor_set`] drop a discarded revision's copies before its row is
-//! flipped `abandoned`. They live beside their table's other statements rather
+//! **Ten functions here are not part of the repository's surface** — a
+//! `copy_` and a `delete_` per table — and they exist because D-83 and D-145 are
+//! `PlanRepo`'s obligations discharged against these tables: [`copy_phases`] /
+//! [`copy_addon_rules`] / [`copy_descriptor_set`] / [`copy_composites`] /
+//! [`copy_period_floor_caps`] write the current revision's rows again under a
+//! newly opened one with their ids unchanged, and [`delete_phases`] /
+//! [`delete_addon_rules`] / [`delete_descriptor_set`] / [`delete_composites`] /
+//! [`delete_period_floor_caps`] drop a discarded revision's copies before its row
+//! is flipped `abandoned`. **This paragraph is the statement of that obligation**,
+//! so a table added without extending it leaves the next author reading a roster
+//! that is short by one — which is how the count above stood at three tables and
+//! six functions while five tables and eight functions existed. They live beside their table's other statements rather
 //! than in `plan_repo.rs` so that every write to a child table is in one file,
 //! and they take a runner rather than a connection because each is half of a
 //! transaction its caller owns.

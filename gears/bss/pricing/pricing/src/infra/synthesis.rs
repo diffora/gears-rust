@@ -64,7 +64,7 @@
 //! consumer cannot read the absence as "this plan grants nothing".
 
 use chrono::{DateTime, Utc};
-use sea_orm::{ColumnTrait, Condition, EntityTrait};
+use sea_orm::{ColumnTrait, Condition, EntityTrait, Order};
 use serde_json::{Value as JsonValue, json};
 use toolkit_db::secure::{AccessScope, DBRunner, SecureEntityExt};
 use uuid::Uuid;
@@ -75,7 +75,7 @@ use crate::domain::synthesis::{
     LiveCandidate, SelectedRow, SynthesisOutcome, UnresolvedKey, select_rows,
 };
 use crate::domain::window::WindowState;
-use crate::infra::storage::entity::{plan_descriptor_set, price};
+use crate::infra::storage::entity::{plan_descriptor_set, plan_period_floor_cap, price};
 use crate::infra::storage::repo::{plan_repo, price_repo, window_repo};
 use crate::infra::storage::{RepoError, repo_failure};
 
@@ -289,6 +289,7 @@ async fn plan_level(
         return Ok(json!({
             "descriptorSetUnavailable": true,
             "grantSetUnavailable": true,
+            "periodFloorCapsUnavailable": true,
             "reason": "the source plan has no current revision; a fully legacy key belongs to none",
         }));
     };
@@ -299,6 +300,32 @@ async fn plan_level(
             current.revision
         ))
     })?;
+    // D-319's period floor/cap set, read here by hand for the reason the
+    // descriptor set is: this payload resolves through **no** `CatalogVersion`
+    // by construction, so a bound outside it is a bound Billing cannot apply and
+    // cannot look up. Frozen, and therefore permanently — which is why the
+    // omission would have been worse here than in the read model. The `false`
+    // marker beside it is `grantSetUnavailable`'s discipline: an empty list must
+    // not be readable as "this plan has no minimum" unless it is one.
+    let bounds = plan_period_floor_cap::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(plan_period_floor_cap::Column::TenantId.eq(tenant_id))
+                .add(plan_period_floor_cap::Column::PlanId.eq(plan_id.get()))
+                .add(plan_period_floor_cap::Column::PlanRevision.eq(revision)),
+        )
+        .order_by(plan_period_floor_cap::Column::Currency, Order::Asc)
+        .order_by(plan_period_floor_cap::Column::Region, Order::Asc)
+        .all(runner)
+        .await
+        .map_err(|e| {
+            repo_failure(&RepoError::Db(format!(
+                "read the period floor/cap set of plan {plan_id}: {e}"
+            )))
+        })?;
+
     let descriptors = plan_descriptor_set::Entity::find()
         .secure()
         .scope_with(scope)
@@ -329,6 +356,20 @@ async fn plan_level(
         // absence as "this plan grants nothing".
         "grantSet": JsonValue::Null,
         "grantSetUnavailable": true,
+        // D-319. Rendered with the same members the read-model delta uses, so a
+        // consumer reads one shape whichever door the snapshot came through.
+        "periodFloorCaps": bounds
+            .iter()
+            .map(|bound| {
+                json!({
+                    "currency": bound.currency,
+                    "region": bound.region,
+                    "floorMinor": bound.floor_minor,
+                    "capMinor": bound.cap_minor,
+                })
+            })
+            .collect::<Vec<_>>(),
+        "periodFloorCapsUnavailable": false,
     }))
 }
 

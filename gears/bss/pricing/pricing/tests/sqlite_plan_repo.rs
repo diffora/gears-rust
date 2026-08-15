@@ -2372,8 +2372,11 @@ async fn the_revision_scoped_tables_are_a_closed_set_and_each_one_is_copied_and_
          beside the table's other statements in `plan_shape_repo.rs`, extend \
          `a_new_revision_carries_the_whole_shape_forward_with_stable_ids_d83` and \
          `an_abandoned_revision_keeps_none_of_the_whole_shape_d145` to assert \
-         them, and then add the table here. Do NOT simply add it here: this \
-         assertion is the notice, not the obligation."
+         them, and - the third path, which this message omitted until \
+         2026-08-15 - `infra::clone::clone_plan_on` must copy the set onto a \
+         cloned plan, which no assertion here can see because a clone is a \
+         different plan. Only then add the table here. Do NOT simply add it \
+         here: this assertion is the notice, not the obligation."
     );
 }
 

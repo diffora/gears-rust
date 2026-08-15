@@ -219,12 +219,47 @@ def test_an_unknown_only_class_is_a_usage_error(tmp_path):
 PINNED_TRIAGE_PRICING = {
     "unbuildable:no-prose": 0,
     "no-region": 3,
-    "anchored:no-account": 5,
-    "suspicious:multi-region": 62,
+    "anchored:no-account": 4,
+    "suspicious:multi-region": 64,
     "suspicious:not-normative": 0,
     "suspicious:weak-coverage": 7,
     "covered:strong": 0,
 }
+#: Moved 2026-08-15 by the **D-319 period-floor authoring wave**, landing on top of the
+#: D-317/D-318 wave rather than beside it (62/7/5 -> 64/7/4, total 77 -> 78).
+#:
+#: **Measured on the combined corpus, because it is not composable.** The two waves were
+#: authored concurrently against a common base and each measured itself against that base:
+#: D-317/D-318 alone gives 62/7/5 and D-319 alone gave 62/9/4. Neither is this. `DF_CUTOFF`
+#: and every requirement's discriminating-term set are computed **per corpus**, so two waves'
+#: histograms do not add — the pin below is a fresh capture of the two together, and the old
+#: single-wave numbers are left in the notes as history rather than reconciled into it.
+#:
+#: **Three movers, diffed per-id against the pre-wave tree (`f55e6e975`) in a detached
+#: worktree**, and `weak-coverage` holds at 7 only because two of them cancel:
+#:   * `fr-period-floor-cap`, **new** -> `multi-region`. The requirement PRD §17.8 had been
+#:     deferring; the whole of the total's 77 -> 78, and the only genuine account among the
+#:     three. Its regions are D-319's own register entry (`DECISIONS.md:3745-3756`, id-anchor
+#:     0.398) plus three term-overlap windows.
+#:   * `fr-supersession`, `anchored:no-account` -> `weak-coverage`. Gains
+#:     `DECISIONS.md:19-30` at **0.602** against `SCORE_THRESHOLD = 0.6`.
+#:   * `fr-price-history-export`, `weak-coverage` -> `multi-region`. Gains the **same**
+#:     `DECISIONS.md:19-30` window at **0.603**; its genuine account stays
+#:     `design/12-operator-efficiency.md:211-222` (0.702 -> 0.707).
+#: The last two are one artefact, not two findings: both are the register's *"How to use this
+#: document"* preamble crossing 0.6 by a thousandth because appending one decision entry
+#: re-weights every term in the corpus. Neither requirement was edited by this wave. They are
+#: the same two oscillators this list has now recorded repeatedly, and they moved in
+#: **opposite** directions to the D-317 wave immediately below — that wave pushed
+#: `fr-supersession` out of the judged set on the same window this one pushes it back in.
+#: Nothing was reworded to move a score in either direction.
+#:
+#: **Control, taken not argued**: `--gear gears/bss/pricing/docs --auto-context` reports
+#: **0 live findings / 49 known debt** on *both* trees, so nothing closed silently. (Run the
+#: pre-wave side in a real worktree, not a `git archive` extract — an extract has no sibling
+#: gear directories, `auto-context` loads nothing, and 14 phantom `P1/seam-undefined` and
+#: `propagation-target-not-loaded` findings appear that say nothing about the corpus.)
+#: The three byte-exact oracles came back **unchanged**.
 #: Moved 2026-08-15 by the **D-317 / slice-10 allowance docs wave** (61/9/4 -> 62/7/5).
 #: Total held at 77 and the live-findings count held at **2** on the three-gear invocation
 #: (both rating-side) with known debt at **49**, so nothing closed silently — the check the
@@ -1229,7 +1264,14 @@ PINNED_TRIAGE_LEDGER = {
 #: 69 -> 67 on the 2026-08-08 D-259 tail wave. The triage histogram is unchanged,
 #: so this is the judged-share side of the same knife-edge movement recorded above,
 #: moving for the third time in one day on prose that touched neither requirement.
-PINNED_JUDGE_CALLS = {"pricing": 69, "ledger": 17}
+PINNED_JUDGE_CALLS = {"pricing": 71, "ledger": 17}
+#: pricing 69 -> 71 on the 2026-08-15 **D-319 period-floor wave**, landing on top of the
+#: D-317/D-318 wave. Both classes that moved between themselves are judged, so the
+#: `fr-price-history-export` mover contributes nothing; the +2 is the new
+#: `fr-period-floor-cap` plus `fr-supersession` re-entering the judged set on the same
+#: `DECISIONS.md:19-30` window the entry below records it leaving. Measured on the combined
+#: corpus rather than composed from the two waves' separate captures — see
+#: `PINNED_TRIAGE_PRICING` for why that distinction is load-bearing and for the per-id record.
 #: pricing 70 -> 69 on the 2026-08-15 **D-317 / slice-10 allowance docs wave**. One mover,
 #: `fr-supersession`, leaving the judged set for `anchored:no-account` for the second time in a
 #: week; the other mover is judge-neutral. Full decomposition and the held-`DECISIONS.md`
