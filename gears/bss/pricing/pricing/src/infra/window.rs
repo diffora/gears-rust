@@ -1190,7 +1190,7 @@ where
     // D-04's `inst-co-bounds`, the half §6 names `adjust_effective_to` for. It is
     // evaluated for **every** operation and not only the coverage-removing two:
     // see the function's own doc.
-    refuse_horizon_uncovered(&planned, &after)?;
+    refuse_horizon_uncovered(&planned, &after, now)?;
 
     // 3a. The two-person control, **after** every check above and
     // before anything at all is written. The order is the publish
@@ -1699,12 +1699,44 @@ fn refuse_trailing_void(
 /// D-204 clause (2) explicitly refuses to do. The naming question is reported as
 /// owed rather than answered here.
 ///
+/// # It is a span and not a last instant, and that took a second reading
+///
+/// The bound was first built as one comparison — `coverage_end >= floor` — which
+/// answers only where coverage **stops**. An interval satisfies it whatever
+/// instant it *starts* at, so `[grandfatherUntil + 60d, floor + 365d)` passed:
+/// coverage ran a year past the floor and the generation held no window at all
+/// for the two months before it. Every neighbouring guard is silent on that
+/// shape, each for a reason it states itself. [`refuse_interior_gap`] walks each
+/// window's exclusive end to its successor's start, so a **leading** void has no
+/// predecessor to open it from. [`refuse_trailing_void`] runs only on the two
+/// coverage-removing acts, and a schedule is not one. And this rule read the far
+/// end. The identical hole was in the null-horizon arm, where
+/// [`CoverageEnd::OpenEnded`] is likewise a property of one interval's end.
+///
+/// So the question is asked of the whole span the generation is answerable for,
+/// `[max(cohort, now), floor)`, and the refusal names the first instant of it
+/// that nothing covers.
+///
+/// **The lower anchor is the cohort**, because that axis *is* the cutover instant
+/// (ADR-0002) and a generation cannot strand anybody before it exists — the copy's
+/// window is scheduled *at* the cutover instant, so a freshly composed cutover
+/// whose instant is still a few minutes out is covered from its own first instant
+/// and not from the operator's clock. **`now` raises it**, because a void strictly
+/// in the past is not repairable by any window mutation — no interval can be
+/// authored backwards over it — and a floor anchored on it alone would freeze
+/// such a key against every further change, including the ones repairing its
+/// future.
+///
 /// # What this does **not** cover
 ///
 /// A grandfathered row that is still a **draft** carries no published generation
 /// on the key, so there is nothing here to judge; the publish pipeline's coverage
 /// rules own that world and do not check this bound either. Reported.
-fn refuse_horizon_uncovered(planned: &Planned, after: &KeyWindows) -> Result<(), DomainError> {
+fn refuse_horizon_uncovered(
+    planned: &Planned,
+    after: &KeyWindows,
+    now: DateTime<Utc>,
+) -> Result<(), DomainError> {
     if planned.plan.key.price_eligibility() != PriceEligibility::ExistingGrandfathered {
         return Ok(());
     }
@@ -1720,6 +1752,17 @@ fn refuse_horizon_uncovered(planned: &Planned, after: &KeyWindows) -> Result<(),
         return Ok(());
     };
     let after_end = after.coverage_end();
+    // The generation's own first instant, never earlier than the clock this
+    // mutation is stamped with — see the doc's anchor paragraph for both halves.
+    // `map_or` rather than an `expect`: the cohort/eligibility biconditional
+    // (`check_cohort_eligibility`) makes the `None` unreachable on this arm, and
+    // a key that reached it anyway is answered on `now` rather than on a panic.
+    let anchor = planned
+        .plan
+        .key
+        .cohort()
+        .generation()
+        .map_or(now, |cutover| cutover.max(now));
 
     let Some(horizon) = generation.grandfather_until else {
         // D-04's parenthesis — *"open-ended when null"*. D-147: a grandfathered
@@ -1727,16 +1770,21 @@ fn refuse_horizon_uncovered(planned: &Planned, after: &KeyWindows) -> Result<(),
         // can satisfy a bound that never arrives. Distinct from the margin case
         // below and refused on its own words, because "no horizon" read as "a
         // horizon of now" is the direction a money bound must never round in.
-        if matches!(after_end, CoverageEnd::OpenEnded) {
+        //
+        // `None` for the far end is that "never arrives" spelled as the walk's
+        // own argument: nothing short of an unbroken run to an open interval
+        // answers it, which subsumes the `OpenEnded` test this used to make and
+        // additionally sees the interval that opens late.
+        let Some(uncovered_at) = first_uncovered_from(after, anchor, None) else {
             return Ok(());
-        }
+        };
         return Err(DomainError::WindowTrailingVoid(format!(
             "{}: the generation's grandfatherUntil is null, so its eligibility is indefinite and \
-             its window must stay open-ended; this leaves {} the first uncovered instant",
+             its coverage must run unbroken from {} and never end; this leaves {} the first \
+             uncovered instant",
             planned.plan.key,
-            after_end
-                .at()
-                .map_or_else(|| "every instant".to_owned(), |at| at.to_rfc3339())
+            anchor.to_rfc3339(),
+            uncovered_at.to_rfc3339()
         )));
     };
 
@@ -1754,25 +1802,85 @@ fn refuse_horizon_uncovered(planned: &Planned, after: &KeyWindows) -> Result<(),
     };
 
     let floor = horizon + margin;
-    let covered = match after_end {
+    // Two questions, and the second does not subsume the first. The walk starts at
+    // `anchor`, so on a key whose whole bound is already in the past it has nothing
+    // to report and would accept coverage that never reached the floor - which is
+    // the reading this rule landed with and must not lose. The walk is what sees a
+    // void that opens at or after the anchor, wherever in the span it falls.
+    let reaches_floor = match after_end {
         CoverageEnd::OpenEnded => true,
         CoverageEnd::Ends(at) => at >= floor,
         CoverageEnd::Uncovered => false,
     };
-    if covered {
+    let uncovered_at = first_uncovered_from(after, anchor, Some(floor));
+    if reaches_floor && uncovered_at.is_none() {
         return Ok(());
     }
     Err(DomainError::WindowTrailingVoid(format!(
-        "{}: this generation is grandfathered until {} and its coverage must reach {} - that \
-         horizon plus the longest billing cycle sold on the key - so that every bound period \
-         stays rateable until its renewal re-bind; this leaves {} the first uncovered instant",
+        "{}: this generation is grandfathered until {} and its coverage must run unbroken from {} \
+         through {} - that horizon plus the longest billing cycle sold on the key - so that every \
+         bound period stays rateable until its renewal re-bind; this leaves {} the first \
+         uncovered instant",
         planned.plan.key,
         horizon.to_rfc3339(),
+        anchor.to_rfc3339(),
         floor.to_rfc3339(),
-        after_end
-            .at()
-            .map_or_else(|| "every instant".to_owned(), |at| at.to_rfc3339())
+        uncovered_at.map_or_else(
+            || after_end
+                .at()
+                .map_or_else(|| "every instant".to_owned(), |at| at.to_rfc3339()),
+            |at| at.to_rfc3339()
+        )
     )))
+}
+
+/// The first instant from `from` onward that no window of `after` covers, when
+/// there is one before `until`.
+///
+/// One walk for the three shapes a coverage bound can be broken by — an interval
+/// that opens **late**, a hole **between** two of them, and a run that **stops**
+/// short — because each of them is the same fact, "here is an instant nothing
+/// covers", and a rule that asked them as three questions is how the leading one
+/// went unasked for a whole landing.
+///
+/// `until` is exclusive and `None` means *never*: the caller that passes it is
+/// asking for coverage that runs on forever, and only reaching an open-ended
+/// interval with no break on the way answers that.
+///
+/// **`cancelled` is the only state filtered**, matching
+/// [`KeyWindows::coverage_end`] exactly rather than [`coverage::KeyCoverage`]'s
+/// `COVERING_STATES`. A cancelled window is a schedule that never happened;
+/// `expired` and the stale `scheduled` of a window the activation sweep has not
+/// reached yet both describe real coverage, and filtering on the token would make
+/// this answer depend on when the sweep last ran (D-99).
+///
+/// It relies on `after.intervals` being ordered by `effective_from` — the type's
+/// promise, restated by [`project`], which sorts the set it builds.
+fn first_uncovered_from(
+    after: &KeyWindows,
+    from: DateTime<Utc>,
+    until: Option<DateTime<Utc>>,
+) -> Option<DateTime<Utc>> {
+    let mut covered_through = from;
+    for interval in after
+        .intervals
+        .iter()
+        .filter(|i| i.state != WindowState::Cancelled)
+    {
+        if interval.effective_from > covered_through {
+            // A void opens here. Whether it matters is `until`'s question, asked
+            // once below for this and for the short run alike.
+            break;
+        }
+        match interval.effective_to {
+            None => return None,
+            Some(to) => covered_through = covered_through.max(to),
+        }
+    }
+    match until {
+        Some(end) if covered_through >= end => None,
+        _ => Some(covered_through),
+    }
 }
 
 /// Read every fact the validation needs, inside the writing transaction.

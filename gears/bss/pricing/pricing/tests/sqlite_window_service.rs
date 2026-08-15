@@ -1675,6 +1675,20 @@ fn horizon_floor() -> DateTime<Utc> {
     horizon() + chrono::TimeDelta::days(31)
 }
 
+/// The instant the generation below was cut over at — its `cohort` axis, and the
+/// first instant it can strand anybody.
+///
+/// **It is `window_at(0)` and not an arbitrary earlier date, because a cutover
+/// schedules the copy's window *at* the cutover instant** (`algo-cutover` step 3,
+/// D-204 clause 4): a generation's first covered instant is its cohort, by
+/// construction. This fixture used to say `window_at(-30)`, which models a
+/// generation that existed for thirty days carrying subscribers and holding no
+/// window at all — the exact stranding `inst-co-bounds` forbids. The bound as
+/// first built could not see it, because it only asked where coverage *ends*.
+fn cohort_at() -> DateTime<Utc> {
+    window_at(0)
+}
+
 /// A published plan carrying a **grandfathered generation** with a horizon, on
 /// its own cohort key, beside the ordinary published row.
 ///
@@ -1683,14 +1697,25 @@ fn horizon_floor() -> DateTime<Utc> {
 /// shape: nothing has been removed, no interior gap opens, and every neighbouring
 /// coverage guard is silent.
 async fn published_with_a_generation(h: &Harness, plan_id: Uuid) -> Uuid {
+    published_with_a_generation_until(h, plan_id, Some(horizon())).await
+}
+
+/// [`published_with_a_generation`] over an explicit horizon, so the **null**
+/// horizon — D-147's indefinite generation — gets the same fixture rather than a
+/// second one written to look like it.
+async fn published_with_a_generation_until(
+    h: &Harness,
+    plan_id: Uuid,
+    grandfather_until: Option<DateTime<Utc>>,
+) -> Uuid {
     let seeded = rest_support::seed_publishable_plan(h, plan_id).await;
     let generation = rest_support::seed_price_keyed_with_horizon(
         h,
         plan_id,
         "us",
         PriceEligibility::ExistingGrandfathered,
-        Cohort::Generation(window_at(-30)),
-        Some(horizon()),
+        Cohort::Generation(cohort_at()),
+        grandfather_until,
     )
     .await;
     h.publish(plan_id, seeded.revision).await;
@@ -1830,4 +1855,116 @@ async fn an_ordinary_keys_window_is_not_judged_against_any_horizon() {
     )
     .await
     .expect("a non-grandfathered key has no horizon to be bound by");
+}
+
+/// **A window that opens *after* the generation's cohort is refused, however far
+/// past the floor it runs.**
+///
+/// The bound as first built asked one question — where does coverage *end* — and
+/// `at >= floor` is satisfied by an interval that begins at any instant at all.
+/// The three neighbouring guards are each silent on the shape for a stated
+/// reason: `interior_gaps` walks each window's exclusive end to its successor's
+/// start, so a **leading** void has no predecessor to open it from;
+/// `refuse_trailing_void` runs only on the two coverage-removing acts and a
+/// schedule is not one; and this rule read the far end.
+///
+/// So the interval below — opening two months past the horizon and running a year
+/// past the floor — was accepted, and every subscriber the generation carries is
+/// unrateable from the cutover instant until it opens. That is D-04's stranding
+/// verbatim, arrived at from the other side. The bound is therefore asked of the
+/// **whole** span the generation is answerable for, `[cohort, grandfatherUntil +
+/// the longest billing cycle sold on the key)`, and not of its last instant.
+#[tokio::test]
+async fn a_generations_window_may_not_open_after_its_cohort() {
+    let h = Harness::new().await;
+    let plan_id = Uuid::now_v7();
+    let price_id = published_with_a_generation(&h, plan_id).await;
+
+    let refusal = schedule_outcome(
+        &h,
+        price_id,
+        horizon() + chrono::TimeDelta::days(60),
+        Some(horizon_floor() + chrono::TimeDelta::days(365)),
+    )
+    .await
+    .expect_err("a window opening after the cohort strands the generation it belongs to");
+
+    let DomainError::WindowTrailingVoid(detail) = refusal else {
+        panic!("expected the coverage floor's refusal, got {refusal:?}");
+    };
+    assert!(
+        detail.contains(&cohort_at().to_rfc3339())
+            && detail.contains(&horizon_floor().to_rfc3339()),
+        "the refusal names the first uncovered instant and the floor: {detail}"
+    );
+}
+
+/// **An indefinite generation's window may not open after its cohort either** —
+/// the null-horizon branch had the identical hole.
+///
+/// D-147 makes a grandfathered row with a null `grandfatherUntil` indefinite, and
+/// the branch answering for it accepted anything [`CoverageEnd::OpenEnded`] — a
+/// property of one interval's *end*. An open interval starting a month after the
+/// cutover is open-ended and covers nothing in between, so the branch waved
+/// through the same stranding the bounded one did, over a period that never ends.
+#[tokio::test]
+async fn an_indefinite_generations_window_may_not_open_after_its_cohort() {
+    let h = Harness::new().await;
+    let plan_id = Uuid::now_v7();
+    let price_id = published_with_a_generation_until(&h, plan_id, None).await;
+
+    let refusal = schedule_outcome(&h, price_id, window_at(30), None)
+        .await
+        .expect_err("an open-ended window opening a month late still leaves that month uncovered");
+
+    let DomainError::WindowTrailingVoid(detail) = refusal else {
+        panic!("expected the indefinite generation's refusal, got {refusal:?}");
+    };
+    assert!(
+        detail.contains(&cohort_at().to_rfc3339()),
+        "the refusal names the first uncovered instant: {detail}"
+    );
+}
+
+/// **The indefinite generation's positive control**: open-ended *from the cohort*
+/// commits.
+///
+/// Without it the case above is satisfied by a rule that refused every window on a
+/// null-horizon generation — which is the whole D-147 class, and which no cutover
+/// could then ever adjust.
+#[tokio::test]
+async fn an_indefinite_generations_window_from_its_cohort_is_accepted() {
+    let h = Harness::new().await;
+    let plan_id = Uuid::now_v7();
+    let price_id = published_with_a_generation_until(&h, plan_id, None).await;
+
+    schedule_outcome(&h, price_id, cohort_at(), None)
+        .await
+        .expect("coverage from the cohort onward, never ending, is what an indefinite row needs");
+}
+
+/// **And an indefinite generation may not be bounded at all**, which is the
+/// branch's own sentence and had no case on it.
+///
+/// A horizon that never arrives cannot be reached by any finite end, so "no
+/// horizon" must not be read as "a horizon of now". This pins the arm the
+/// leading-gap walk now shares with the bounded one, so a later simplification
+/// that collapsed the two would have to answer here.
+#[tokio::test]
+async fn an_indefinite_generations_window_may_not_be_bounded() {
+    let h = Harness::new().await;
+    let plan_id = Uuid::now_v7();
+    let price_id = published_with_a_generation_until(&h, plan_id, None).await;
+
+    let refusal = schedule_outcome(&h, price_id, cohort_at(), Some(window_at(3650)))
+        .await
+        .expect_err("an indefinite generation's coverage may not be given an end");
+
+    let DomainError::WindowTrailingVoid(detail) = refusal else {
+        panic!("expected the indefinite generation's refusal, got {refusal:?}");
+    };
+    assert!(
+        detail.contains(&window_at(3650).to_rfc3339()),
+        "the refusal names the instant coverage would stop at: {detail}"
+    );
 }
