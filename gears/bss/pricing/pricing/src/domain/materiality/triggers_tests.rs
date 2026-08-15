@@ -18,6 +18,7 @@ use crate::domain::price_row::{ModelKind, PriceRow};
 use crate::domain::scope_key::{
     ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey,
 };
+use crate::source_scan::blank_comments_and_literals;
 
 fn at(year: i32) -> DateTime<Utc> {
     Utc.with_ymd_and_hms(year, 1, 1, 0, 0, 0)
@@ -227,21 +228,50 @@ fn every_act_half_trigger_answering_false_is_named_by_no_producing_site() {
     );
 }
 
-/// Does any source outside the registry name this trigger?
+/// Does any source outside the registry name this trigger **in its code**?
 ///
 /// The one reading both census directions share, so they cannot drift into
 /// disagreeing about what "produced" means.
+///
+/// # Prose does not produce anything, and this used to accept it
+///
+/// The match was over the file's raw text, so a **comment** naming
+/// `Trigger::X` paid the census for it. That is not a hypothetical margin: the
+/// crate's only construction of `Trigger::BundleComposition` is
+/// `infra::bundle::composition_change_set`, and deleting it would have left the
+/// trigger green off two line comments in `api::rest::bundles` and one line of
+/// `infra::bundle`'s own module doc — the precise state `bulkGroupMove` was in,
+/// which is the defect this census was built to find. A census that a comment can
+/// satisfy attests to prose.
+///
+/// **Comments are stripped rather than a construction shape matched**, and the
+/// choice is not a toss-up. The act half has two spellings — `ChangeSet::of_act`
+/// for the policy, overlay, bundle, cutover, membership and retirement acts, and
+/// `Op::registered_trigger` returning `Some(Trigger::WindowCancellation)` into
+/// `ChangeSet::of_window_mutation` for the window plane — so a needle shaped like
+/// `of_act(Trigger::` would answer `false` for two triggers that are produced,
+/// and would have to be widened by hand every time a third spelling appears. The
+/// census's question is *"does this crate's code name it"*, and the honest way to
+/// narrow a textual match to that is to remove what is not code.
+///
+/// `crate::source_scan` is that removal, and it is **the same instrument**
+/// `approval_repo_tests` uses to tell a writer of an `AuditSubjectKind` from a
+/// doc comment quoting one — one reading, not two.
 fn is_produced(sources: &[String], trigger: &Trigger) -> bool {
     let needle = format!("Trigger::{trigger:?}");
-    sources.iter().any(|body| body.contains(&needle))
+    sources.iter().any(|code| code.contains(&needle))
 }
 
-/// Every non-test Rust source of this crate, bodies read, with this registry and
-/// its own cases removed.
+/// Every non-test Rust source of this crate, **blanked to its code**, with this
+/// registry and its own cases removed.
 ///
 /// The registry is excluded because it necessarily names every variant — the
 /// enumeration, `ALL`, and three exhaustive `match`es — so leaving it in would
 /// make the census answer `true` for everything.
+///
+/// The blanking is [`is_produced`]'s subject and its doc carries the argument:
+/// what comes back has every comment and every string, char and raw-string
+/// literal replaced by spaces, so a mention in prose is not a producing site.
 fn rust_sources(dir: &std::path::Path) -> Vec<String> {
     let mut bodies = Vec::new();
     let entries = std::fs::read_dir(dir).expect("the crate's source tree is readable");
@@ -260,9 +290,81 @@ fn rust_sources(dir: &std::path::Path) -> Vec<String> {
         if !is_rust || name.ends_with("_tests.rs") || name == "triggers.rs" {
             continue;
         }
-        bodies.push(std::fs::read_to_string(&path).expect("a readable source file"));
+        let text = std::fs::read_to_string(&path).expect("a readable source file");
+        bodies.push(blank_comments_and_literals(&text));
     }
     bodies
+}
+
+/// **The census reads code, and this is what says so over the real walk.**
+///
+/// Both assertions are needed and neither implies the other. The first is that
+/// nothing the walk hands back is prose: this crate's doc comments are its
+/// densest text, so a single surviving `///` means the sources are raw and a
+/// comment naming a trigger pays the census for it. The second is the control
+/// that the blanking has not simply eaten everything — a rule that returned empty
+/// strings would satisfy the first assertion perfectly and make **every** trigger
+/// read as unproduced, which the `true`-side census would then report as eleven
+/// findings rather than as its own instrument being broken.
+///
+/// `Trigger::PlanRetirement` is the control's subject because that file carries
+/// the token both ways: `infra::retirement` names it at line 498 inside a doc
+/// comment and constructs it at 565, so a walk that kept the prose and a walk
+/// that dropped the code are told apart here and nowhere else in the crate.
+#[test]
+fn the_census_walks_this_crates_code_and_not_its_prose() {
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let sources = rust_sources(&src);
+
+    assert!(
+        !sources.iter().any(|code| code.contains("///")),
+        "a doc comment survived the walk, so the census is textual and prose naming a \
+         trigger would pay it"
+    );
+    assert!(
+        sources
+            .iter()
+            .any(|code| code.contains("ChangeSet::of_act(Trigger::PlanRetirement")),
+        "the walk dropped a real construction, so every trigger would read as unproduced"
+    );
+}
+
+/// **A comment naming a trigger is not a producing site**, asked of the two
+/// comments that actually pay for one.
+///
+/// Transcribed from `api::rest::bundles` at the time of writing — line 663's
+/// *"which is what made `Trigger::BundleComposition`"* and line 796's heading —
+/// because those two are the whole margin: the crate's only construction of that
+/// trigger is `infra::bundle::composition_change_set`, and with the census
+/// textual, deleting it left `bundleComposition` green off exactly this prose.
+///
+/// The positive control beside it is the construction itself. Without it the case
+/// passes against a reading that found nothing anywhere.
+///
+/// It applies the blanking [`rust_sources`] applies, over text small enough to
+/// read — the end-to-end evidence that the walk itself blanks is
+/// [`the_census_walks_this_crates_code_and_not_its_prose`], and that is the case
+/// that was red.
+#[test]
+fn prose_naming_a_trigger_does_not_produce_it_and_a_construction_does() {
+    let prose = vec![blank_comments_and_literals(
+        "    // answer `subject_exists_in_this_crate` while nothing could ever evaluate it.\n\
+         \x20   // anywhere in the crate**, which is what made `Trigger::BundleComposition`\n\
+         /// # This call is what makes `Trigger::BundleComposition` real\n",
+    )];
+    assert!(
+        !is_produced(&prose, &Trigger::BundleComposition),
+        "a comment quoting a trigger is prose about a producer, not one"
+    );
+
+    let code = vec![blank_comments_and_literals(
+        "pub fn composition_change_set() -> ChangeSet {\n    \
+         ChangeSet::of_act(Trigger::BundleComposition, [])\n}\n",
+    )];
+    assert!(
+        is_produced(&code, &Trigger::BundleComposition),
+        "the construction the census exists to find must still be found"
+    );
 }
 
 /// Two triggers sharing a token would make a diagnostic unable to say which act

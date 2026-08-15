@@ -29,3 +29,10 @@ pub mod gts;
 pub mod infra;
 #[doc(hidden)]
 pub mod module;
+
+/// The shared reading of "is this token code or prose", for the two censuses
+/// that walk this crate's own sources. Test-only; see the module's doc for why
+/// it is one module and why its file carries the `_tests.rs` suffix.
+#[cfg(test)]
+#[path = "source_scan_tests.rs"]
+mod source_scan;
