@@ -11,9 +11,10 @@
 //!
 //! # Triggers naming absent slices register **with their slice**
 //!
-//! Most of this list names a subject this crate has no table, no entity and no
-//! surface for — cutovers, `PriceOverlay` line sets, group memberships, bundles,
-//! prepaid grants, retirement, bulk batches. They are declared here anyway, each
+//! Six of this list name a subject this crate has no table, no entity and no
+//! surface for — a bulk group move, a retirement that unwinds a live cutover, a
+//! historical import, the two gate-clearing republishes, a prepaid grant's
+//! non-price fields. They are declared here anyway, each
 //! with [`Trigger::owning_slice`] naming the document that owns it and
 //! [`Trigger::subject_exists_in_this_crate`] answering `false`, for two reasons.
 //! The set does not then read as **incomplete** — a reader who greps
@@ -45,6 +46,16 @@
 //! declared it until `infra::cutover::cutover_in` did. **The predicate is about a
 //! declaration, not about a table**, and the three commits between the store and
 //! the declaration are what that distinction looks like in practice.
+//!
+//! **`PlanRetirement` never belonged on the `false` side at all**, and the
+//! paragraph above listed "retirement" among the absent subjects while
+//! `infra::retirement::retire_in` was declaring the act on a mounted route. That
+//! is the first error of this shape found in the *understating* direction, and it
+//! is worse than the overstating one: an overstated `true` claims work that is not
+//! there and a reader who greps finds nothing; an understated `false` denies work
+//! that is, and a reader who trusts it builds the surface a second time. Both
+//! directions are now walked —
+//! `triggers_tests::every_act_half_trigger_answering_{true,false}_is_named_by_{a,no}_producing_site`.
 //!
 //! # Two halves, because a trigger is either a property of the act or of the diff
 //!
@@ -272,6 +283,17 @@ impl Trigger {
     /// module for each one; it exists because
     /// [`Self::BulkGroupMove`] answered `true` for two days under a dated comment
     /// claiming a writer that makes no such declaration.
+    ///
+    /// **And a `false` is census-checked too**, which is not symmetry for its own
+    /// sake: the very next reading of this `match` found
+    /// [`Self::PlanRetirement`] answering `false` while
+    /// `infra::retirement::retire_in` constructed it on a **mounted** route. The
+    /// `true`-side census cannot see that by construction — it only visits the
+    /// `true` arm — and the transcription agrees with whatever the `match` says.
+    /// `triggers_tests::every_act_half_trigger_answering_false_is_named_by_no_producing_site`
+    /// is the other walk. An understated `false` is the worse of the two errors:
+    /// it reads as "that slice has not landed", and the next author builds the
+    /// surface again.
     #[must_use]
     pub const fn subject_exists_in_this_crate(self) -> bool {
         match self {
@@ -291,7 +313,18 @@ impl Trigger {
             // …)` on every arrival of `POST …/move`, which is the same
             // "declared, not merely stored" bar `GrandfatheringCutover`'s note
             // states. Its sibling is **not** here: see below.
-            | Self::ImmediateMembershipReresolution => true,
+            | Self::ImmediateMembershipReresolution
+            // D-109's act, and it was on the wrong side of this `match` from the
+            // day `infra::retirement` landed. `retire_in` builds
+            // `ChangeSet::of_act(Trigger::PlanRetirement, ..)` and hands it to
+            // `materiality::evaluate` on the mounted
+            // `POST …/plans/{planId}/retire` — the "declared, not merely stored"
+            // bar met in full, and met by more than the bar asks: the subject is
+            // a whole service here, `RetirementService`, with a preview, a
+            // reference check, an approval unit of its own and a window sweep.
+            // The `false` said this crate has no surface for retirement while a
+            // route was serving one.
+            | Self::PlanRetirement => true,
             // `inst-mm-bulk`'s subject is not built, and the comment that said
             // otherwise is the reason this arm now carries an argument.
             //
@@ -319,8 +352,7 @@ impl Trigger {
             | Self::HistoricalImport
             | Self::GaGateClearingRepublish
             | Self::PrepaidGateClearingRepublish
-            | Self::GrantNonPriceField
-            | Self::PlanRetirement => false,
+            | Self::GrantNonPriceField => false,
         }
     }
 

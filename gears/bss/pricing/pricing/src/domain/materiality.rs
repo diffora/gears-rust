@@ -102,9 +102,13 @@
 //! policy store, the delta domain, the trigger registry and this evaluator are one
 //! change, not a sequence.
 //!
-//! **Most registered triggers still name subjects this crate cannot author** —
-//! cutovers, `PriceOverlay` line sets, group memberships, bundles, prepaid grants,
-//! retirement, bulk batches. They are not omitted: [`triggers::Trigger`] declares
+//! **Six registered triggers still name subjects this crate cannot author** — a
+//! bulk group move, a retirement that unwinds a live cutover, a historical import,
+//! the two gate-clearing republishes, a prepaid grant's non-price fields. (The
+//! sentence said "most", and named cutovers, overlays, memberships, bundles and
+//! **retirement** among them; each of those has since landed, and retirement had
+//! landed before this paragraph was last touched.) They are not omitted:
+//! [`triggers::Trigger`] declares
 //! each with its owning slice and answers
 //! [`triggers::Trigger::subject_exists_in_this_crate`] `false`, so the set does not
 //! read as half-built and no token claims a writer it has not got.

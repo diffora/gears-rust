@@ -153,8 +153,7 @@ fn every_act_half_trigger_answering_true_is_named_by_a_producing_site() {
         {
             continue;
         }
-        let needle = format!("Trigger::{trigger:?}");
-        if !sources.iter().any(|body| body.contains(&needle)) {
+        if !is_produced(&sources, trigger) {
             unproduced.push(trigger.as_str());
         }
     }
@@ -165,6 +164,76 @@ fn every_act_half_trigger_answering_true_is_named_by_a_producing_site() {
          in this crate outside the registry names them, so the `true` attests to \
          work that has no code: {unproduced:?}"
     );
+}
+
+/// **The other direction of the same census**, and it is not the mirror image of a
+/// tidy rule — it is where the second defect of this shape actually was.
+///
+/// The census above walks the `true` side and asks for a producer. That catches an
+/// attestation with no code and cannot, by construction, catch its **inverse**: a
+/// trigger answering `false` that the crate does construct anyway. `planRetirement`
+/// was exactly that. `infra::retirement::retire_in` builds
+/// `ChangeSet::of_act(Trigger::PlanRetirement, ..)` on the mounted
+/// `POST …/plans/{planId}/retire`, and the registry answered `false` for it — so the
+/// module doc listed retirement among the subjects this crate has *"no table, no
+/// entity and no surface"* for while a route was serving it, and
+/// `only_the_triggers_with_a_subject_in_this_crate_answer_true`, being a
+/// transcription of the `match`, agreed with the `match`.
+///
+/// Both directions are the same obligation stated once: **the answer and the code
+/// must agree**. A `false` beside a producing site understates the crate exactly as
+/// a `true` beside nothing overstates it, and the understatement is the more
+/// dangerous of the two — it is read as "this slice is not here yet" by the next
+/// author, who then builds the surface a second time.
+///
+/// The content half is exempt for the census above's reason, and inverted: those
+/// three are minted *inside* the registry, so "no producing site outside it" is
+/// their normal state whatever they answer.
+#[test]
+fn every_act_half_trigger_answering_false_is_named_by_no_producing_site() {
+    /// [`every_act_half_trigger_answering_true_is_named_by_a_producing_site`]'s
+    /// list, for its reason.
+    const MINTED_BY_THE_CONTENT_HALF: &[&str] = &[
+        "grandfatherHorizonTightening",
+        "noComputableRowDelta",
+        "planShapeRevisionContent",
+    ];
+
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let sources = rust_sources(&src);
+    assert!(
+        sources.len() > 50,
+        "the walk found {} files, which is not this crate",
+        sources.len()
+    );
+
+    let mut produced_anyway: Vec<&str> = Vec::new();
+    for trigger in Trigger::ALL {
+        if trigger.subject_exists_in_this_crate()
+            || MINTED_BY_THE_CONTENT_HALF.contains(&trigger.as_str())
+        {
+            continue;
+        }
+        if is_produced(&sources, trigger) {
+            produced_anyway.push(trigger.as_str());
+        }
+    }
+
+    assert!(
+        produced_anyway.is_empty(),
+        "these triggers answer `subject_exists_in_this_crate() == false` and a file \
+         in this crate outside the registry constructs them anyway, so the `false` \
+         denies work that is built and mounted: {produced_anyway:?}"
+    );
+}
+
+/// Does any source outside the registry name this trigger?
+///
+/// The one reading both census directions share, so they cannot drift into
+/// disagreeing about what "produced" means.
+fn is_produced(sources: &[String], trigger: &Trigger) -> bool {
+    let needle = format!("Trigger::{trigger:?}");
+    sources.iter().any(|body| body.contains(&needle))
 }
 
 /// Every non-test Rust source of this crate, bodies read, with this registry and
@@ -261,6 +330,15 @@ fn every_trigger_carries_a_distinct_token() {
 /// whatever the `match` says — which is why
 /// `every_act_half_trigger_answering_true_is_named_by_a_producing_site` now
 /// stands beside it, and why that census, not this list, is what reddened.
+///
+/// **`planRetirement` joined on 2026-08-15, and it had been due since
+/// `infra::retirement` landed.** `retire_in` declares
+/// `ChangeSet::of_act(Trigger::PlanRetirement, ..)` on the mounted
+/// `POST …/plans/{planId}/retire`, over a subject that is a whole service here.
+/// The registry said `false`. This transcription could not see that either — it
+/// copies the `match` in **both** directions — and neither could the `true`-side
+/// census, which never visits a `false` arm. The
+/// `..._answering_false_is_named_by_no_producing_site` walk is what reddened.
 #[test]
 fn only_the_triggers_with_a_subject_in_this_crate_answer_true() {
     let reachable: Vec<&str> = Trigger::ALL
@@ -281,6 +359,7 @@ fn only_the_triggers_with_a_subject_in_this_crate_answer_true() {
             "windowShortening",
             "bundleComposition",
             "revenueShareChange",
+            "planRetirement",
             "noComputableRowDelta",
             "planShapeRevisionContent",
         ]
