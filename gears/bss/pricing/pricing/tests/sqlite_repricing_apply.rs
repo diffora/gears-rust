@@ -211,6 +211,7 @@ async fn seed_plan(h: &Harness, plan_id: Uuid, phase_id: Uuid) {
         .create_draft(
             &h.scope,
             NewPlanDraft {
+                plan_name: None,
                 plan_id: plan,
                 tenant_id: TENANT,
                 created_by: ACTOR,

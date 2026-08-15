@@ -1083,6 +1083,7 @@ pub(crate) async fn assemble_from(
         revision,
         sku_id,
         plan_tier,
+        plan_name,
         billing_cycle,
         frequency,
         plan_tier_override,
@@ -1110,6 +1111,7 @@ pub(crate) async fn assemble_from(
     shape.billing_cycle = billing_cycle;
     shape.frequency = frequency;
     shape.plan_tier = plan_tier;
+    shape.plan_name = plan_name;
     shape.plan_tier_override = plan_tier_override;
     shape.available_from = available_from;
     shape.available_to = available_to;

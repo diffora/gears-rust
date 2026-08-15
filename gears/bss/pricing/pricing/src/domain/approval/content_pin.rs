@@ -449,7 +449,20 @@ use crate::domain::window::{KeyWindows, WindowInterval, WindowState};
 /// publish, so what exists is drafts. It is also the honest direction: a
 /// reviewer who approved a ladder truncated to `0.01` at every band approved a
 /// document that misstated the price.
-pub const CONTENT_PIN_DOMAIN_SEP: &[u8] = b"VHP-BSS-PRICING-APPROVAL-PIN-v12\x1f";
+/// # `v13`: the plan gained a name (2026-08-15, D-318)
+///
+/// `pricing_plan.plan_name` is authored draft content a `PATCH` moves, so it is
+/// `v4`'s case exactly: unframed, a reviewer could approve "Business Starter"
+/// and the commit publish "Enterprise Unlimited" with every digest equal. It is
+/// not a money field, and it does not need to be — the name is what a consumer
+/// surface shows the plan as, so a swap between submit and approve changes what
+/// a buyer is told they are buying.
+///
+/// **Not free.** Like `v12`, this invalidates any pending unit that exists;
+/// unlike `v6`–`v11`, nothing about it collapses. Cheap only because what exists
+/// on any stand is drafts and pending units, the two-person rule having held
+/// every publish.
+pub const CONTENT_PIN_DOMAIN_SEP: &[u8] = b"VHP-BSS-PRICING-APPROVAL-PIN-v13\x1f";
 
 /// Versioned domain-separation tag for the **threshold-policy** content pin.
 ///
@@ -774,6 +787,7 @@ fn put_plan_shape(buf: &mut Vec<u8>, shape: &PlanShape) {
         billing_cycle,
         frequency,
         plan_tier,
+        plan_name,
         plan_tier_override,
         available_from,
         available_to,
@@ -800,6 +814,7 @@ fn put_plan_shape(buf: &mut Vec<u8>, shape: &PlanShape) {
     put_opt_str(buf, billing_cycle.map(BillingCycle::as_str));
     put_frequency(buf, *frequency);
     put_opt_str(buf, plan_tier.as_deref());
+    put_opt_str(buf, plan_name.as_deref());
     put_bool(buf, *plan_tier_override);
     put_opt_instant(buf, *available_from);
     put_opt_instant(buf, *available_to);

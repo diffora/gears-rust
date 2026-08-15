@@ -298,6 +298,16 @@ pub async fn clone_plan_on(
         available_to,
         entitlement_grants,
         change_contract,
+        // **Not copied, and this is an exception `inst-cl-copy` now names**
+        // (D-318). A name is an identity label rather than configuration: a
+        // clone carrying its source's name puts two identically-named plans in
+        // every list, which is the state the column was added to remove. The
+        // clone's operator names it with an ordinary draft `PATCH`, and until
+        // then it displays by tier exactly as every plan did before the column
+        // existed. Its sibling exceptions are `effective_share_bp` and the
+        // compiled-allowance grant, both left behind for the same kind of
+        // reason: the value belongs to the act, not to the shape.
+        plan_name: _,
         lifecycle_state: _,
         created_by: _,
         created_at_utc: _,
@@ -320,6 +330,7 @@ pub async fn clone_plan_on(
             created_at_utc: now,
             sku_id,
             plan_tier,
+            plan_name: None,
             billing_cycle,
             frequency,
             plan_tier_override,

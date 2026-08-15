@@ -375,6 +375,7 @@ async fn harness_migrated_to(jobs: JobsConfig, stop_before: Option<&str>) -> Har
 
 fn plan_draft_of(tenant: Uuid, plan_id: PlanId, tier: &str) -> NewPlanDraft {
     NewPlanDraft {
+        plan_name: None,
         plan_id,
         tenant_id: tenant,
         created_by: ACTOR,

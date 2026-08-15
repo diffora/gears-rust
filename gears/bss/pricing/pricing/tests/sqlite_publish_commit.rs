@@ -243,6 +243,7 @@ async fn harness_with(registry: Arc<RegistryDouble>) -> Harness {
 
 fn new_plan_draft() -> NewPlanDraft {
     NewPlanDraft {
+        plan_name: None,
         plan_id: plan_id(),
         tenant_id: TENANT,
         created_by: ACTOR,

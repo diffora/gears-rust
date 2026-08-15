@@ -152,6 +152,7 @@ async fn seed(provider: &DBProvider<DbError>) {
         .create_draft(
             &scope(),
             NewPlanDraft {
+                plan_name: None,
                 plan_id: source_plan(),
                 tenant_id: TENANT,
                 created_by: ACTOR,

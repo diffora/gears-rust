@@ -143,7 +143,8 @@ flowchart TB
 
 **Consumed:** published `skuId` + SKU `PlanTier` + `meteringUnit` declarations (registry).
 **Produced:** the plan-shape portion of the read model (cycle, frequency metadata, phase map +
-`displayTrialDays`, add-on rules, descriptor set, `invoiceGroupingKey` (D-96) —
+`displayTrialDays`, add-on rules, descriptor set, `invoiceGroupingKey` (D-96),
+`planName` (D-318) —
 `quantitySource` is persisted/validated by Slice 3), validated fail-closed at publish.
 
 ## 2. Actor Flows (CDSL)
@@ -216,6 +217,7 @@ flowchart TB
 **Output**: pass, or enumerated fail-closed violations
 
 **Steps**:
+0a. [ ] - `p2` - **Plan name (D-318, 2026-08-15):** a plan MAY carry a human label, `planName`, and until this decision it carried **none** — every surface showing a plan to a person rendered its `PlanTier`, a classification the catalog reasons about, or eight characters of a UUID. The column is **nullable** (an unnamed plan is ordinary and no backfill invents one) and **frozen once published** like every other content column, so a rename is a new revision. `NULL` is the only spelling of unnamed: an empty or whitespace-only name, and one longer than **120 characters** (counted in characters, not bytes), are refused at the **write stage** with `PLAN_NAME_INVALID`. Framed into the approval content pin (`v13`) and shown in the reviewer's pinned document — a name is what a consumer surface calls the plan, so a swap between submit and approve changes what a buyer is told they are buying. **No uniqueness constraint**, deliberately: identity is `planId`, two plans may share a label, and the check would cost a scan per publish to buy a convention an operator can hold - `inst-cmp-planname`
 1. [ ] - `p1` - **PlanTier**: declared before publish (optional at draft); MUST equal the parent SKU's `PlanTier` unless an **explicit, audited override** is declared (P3, no silent divergence — a divergence with no override fails publish, `PLANTIER_DIVERGENT`); the effective tier lands in the read model - `inst-cmp-plantier`
 1a. [ ] - `p1` - **PlanTier drift after publish:** the equality check at publish is not enough — the registry can change the SKU's tier later. The catalog consumes the registry's SKU-tier-change signal and flags every affected **published** plan `tier_divergent` **in the operator-plane flag store (`pricing_operator_flag`, D-85, 2026-07-30 review fix — never the versioned read model: a drift flag has no publish unit, and a frozen `CatalogVersion` never mutates)** (+ the `pricing.plan.tier_divergent` alarm); remediation is a re-publish (re-validating equality) or an explicit audited override. Downstream consumers keep resolving the frozen published tier — the flag is an operator remediation signal on the authoring surfaces, never a silent retro-change (part of the registry joint contract, PRD §15) - `inst-cmp-tier-drift`
 2. [ ] - `p1` - **Meter injectivity (restated, D-103, 2026-07-31 review fix):** the invariant is **one priced line per `(meter, dimensionKey)` per scope-key slice** (`currency`/`region`/`priceOverlay`/`phase`/`priceEligibility`/`cohort` legitimately multiply rows — the `cohort` axis is what lets a second cutover add another grandfathered generation of the same usage line without violating injectivity, ADR-0002); a **duplicate line** within one slice is the ambiguity that fails publish (`METER_AMBIGUOUS`). A usage plan **MAY** price **several** `meteringUnit`s (a PaaS plan pricing cloudlets, storage and egress is one plan, not three) — the earlier "each usage plan revision maps **exactly one** `meteringUnit`" was the stronger claim, and it was contradicted by three rules of this set and enforced by none: D-84's per-market completeness ranges over "every `(meter, dimensionKey)` line the plan prices", this slice's own D-84 integration AC exercises a plan pricing M1 and M2, D-43's grant `applicability` scopes to "a **set** of published `meteringUnit` ids … usage lines of the grant-bearing plan", and the enforcing partial `UNIQUE` (§6) carries both `meter` and `dimension_key` — i.e. it always implemented the per-line reading. A derived (composite) meter (Slice 10) remains the way to price **several units as one billable line** (vCPU + RAM → one output unit), and separate single-meter SKUs composed via bundle/add-ons (Slice 8) remain available — neither is now the *only* multi-meter path - `inst-cmp-injective`
@@ -289,7 +291,7 @@ plan carries no `frequency`; the field is named; **D-149**),
 on a recurring or hybrid one; cycle, `chargeKind` and market named; **D-149** — the base-side
 sibling of `USAGE_MARKET_INCOMPLETE`),
 `HYBRID_INCOMPLETE` (422), `USAGE_MARKET_INCOMPLETE` (422 — a priced `(meter, dimensionKey)`
-line missing a usage row for a sold `(currency, region)`; D-84), `PLANTIER_MISSING`/`PLANTIER_DIVERGENT` (422), `METER_AMBIGUOUS`
+line missing a usage row for a sold `(currency, region)`; D-84), `PLAN_NAME_INVALID` (422, D-318), `PLANTIER_MISSING`/`PLANTIER_DIVERGENT` (422), `METER_AMBIGUOUS`
 (422), `ADDON_CYCLE`/`ADDON_INCOMPATIBLE` (422 — the second now also carrying the recurring-only
 add-on attached to a one-time plan, **D-149**), `ADDON_QTY_RANGE_INVALID` (422 — a required
 add-on with `maxQty < 1`, `minQty > maxQty`, or `stepQty ≤ 0`; the offending bound named;

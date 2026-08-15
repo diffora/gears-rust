@@ -17,13 +17,14 @@ use uuid::Uuid;
 
 use super::{
     AddonConflictBothRequired, AddonDependencyAcyclic, AddonEdgeMembership, AddonQtyRange,
-    MeterInjectivity, PlanTierDeclared,
+    MeterInjectivity, PLAN_NAME_MAX_CHARS, PlanNameWellFormed, PlanTierDeclared,
 };
 use crate::domain::concurrency::RowVersion;
 use crate::domain::lifecycle::LifecycleState;
 use crate::domain::money::CurrencyCode;
 use crate::domain::plan_rules::{
-    ADDON_CYCLE, ADDON_INCOMPATIBLE, ADDON_QTY_RANGE_INVALID, METER_AMBIGUOUS, PLANTIER_MISSING,
+    ADDON_CYCLE, ADDON_INCOMPATIBLE, ADDON_QTY_RANGE_INVALID, METER_AMBIGUOUS, PLAN_NAME_INVALID,
+    PLANTIER_MISSING,
 };
 use crate::domain::plan_shape::{AddonRule, PlanShape};
 use crate::domain::price_record::PriceRecord;
@@ -200,6 +201,87 @@ fn composition(rules: Vec<AddonRule>) -> ValidationReport {
     report.absorb(findings(&AddonDependencyAcyclic, &subject));
     report.absorb(findings(&AddonConflictBothRequired, &subject));
     report
+}
+
+// ---------------------------------------------------------------------------
+// inst-cmp-planname (D-318)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn an_unnamed_plan_is_silent() {
+    // The column is nullable and the overwhelming majority of plans in any
+    // catalog predate the name. Refusing absence would make every one of them
+    // unpublishable, which is not what a label is worth.
+    let mut subject = shape();
+    subject.plan_name = None;
+
+    assert!(findings(&PlanNameWellFormed, &subject).is_publishable());
+}
+
+#[test]
+fn a_named_plan_is_silent() {
+    let mut subject = shape();
+    subject.plan_name = Some("Managed WordPress".to_owned());
+
+    assert!(findings(&PlanNameWellFormed, &subject).is_publishable());
+}
+
+#[test]
+fn an_empty_plan_name_is_refused_rather_than_read_as_unnamed() {
+    // The whole reason the rule exists: `NULL` already means unnamed, and
+    // storing `""` beside it gives one state two spellings. Every surface would
+    // then have to treat them alike, and the first that forgot would render a
+    // plan whose name is nothing at all.
+    let mut subject = shape();
+    subject.plan_name = Some(String::new());
+
+    let report = findings(&PlanNameWellFormed, &subject);
+
+    assert_eq!(codes(&report), vec![PLAN_NAME_INVALID]);
+    assert_eq!(report.violations[0].subject, subject.subject());
+}
+
+#[test]
+fn a_whitespace_only_plan_name_is_refused_too() {
+    // A space is not a name, and a `trim().is_empty()` check is the only thing
+    // between "unnamed" and a row that looks named in the database and blank on
+    // every screen.
+    let mut subject = shape();
+    subject.plan_name = Some(" \t ".to_owned());
+
+    assert_eq!(
+        codes(&findings(&PlanNameWellFormed, &subject)),
+        vec![PLAN_NAME_INVALID]
+    );
+}
+
+#[test]
+fn a_plan_name_at_the_bound_is_silent_and_one_over_is_not() {
+    // The pair, in one test: a bound tested only from the failing side passes
+    // just as well when it is off by one in the permissive direction.
+    let mut at_bound = shape();
+    at_bound.plan_name = Some("n".repeat(PLAN_NAME_MAX_CHARS));
+    assert!(findings(&PlanNameWellFormed, &at_bound).is_publishable());
+
+    let mut over = shape();
+    over.plan_name = Some("n".repeat(PLAN_NAME_MAX_CHARS + 1));
+    assert_eq!(
+        codes(&findings(&PlanNameWellFormed, &over)),
+        vec![PLAN_NAME_INVALID]
+    );
+}
+
+#[test]
+fn the_bound_counts_characters_and_not_bytes() {
+    // A name in a non-Latin script must get the same room as one in ASCII.
+    // Counted in bytes, this 120-character name is 360 and would be refused.
+    let mut subject = shape();
+    // Escaped rather than literal: the workspace forbids non-ASCII in source
+    // (`clippy::non_ascii_literal`), and a Cyrillic П is exactly the character
+    // this case is about — three bytes, one character.
+    subject.plan_name = Some("\u{041f}".repeat(PLAN_NAME_MAX_CHARS));
+
+    assert!(findings(&PlanNameWellFormed, &subject).is_publishable());
 }
 
 // ---------------------------------------------------------------------------

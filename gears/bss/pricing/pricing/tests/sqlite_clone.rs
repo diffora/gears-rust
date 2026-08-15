@@ -327,6 +327,7 @@ async fn seed(h: &Harness, composition: Option<CompositionDraft>) {
         .create_draft(
             &h.scope,
             NewPlanDraft {
+                plan_name: None,
                 plan_id: source_plan(),
                 tenant_id: TENANT,
                 created_by: ACTOR,

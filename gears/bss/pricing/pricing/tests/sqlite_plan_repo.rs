@@ -93,6 +93,7 @@ fn at(hour: u32) -> DateTime<Utc> {
 /// observed.
 fn new_draft(plan_id: PlanId, tenant_id: Uuid) -> NewPlanDraft {
     NewPlanDraft {
+        plan_name: None,
         plan_id,
         tenant_id,
         created_by: Uuid::from_u128(0xac_10),
@@ -470,6 +471,7 @@ async fn every_patched_column_reaches_the_row_it_names() {
             0,
             RowVersion::new(0),
             PlanShapePatch {
+                plan_name: None,
                 entitlement_grants: Option::default(),
                 change_contract: Option::default(),
                 sku_id: Some(sku_id),
@@ -2607,6 +2609,7 @@ async fn a_retired_plan_takes_no_publish_and_says_so_in_its_own_words() {
     // A second revision row, fabricated straight at the table: `open_revision`
     // refuses a retired plan first, and what is under test is the publish.
     let opened = plan::ActiveModel {
+        plan_name: Set(None),
         cloned_from: Set(None),
         entitlement_grants: Set(None),
         allowed_change_targets: Set(None),

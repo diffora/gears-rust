@@ -261,6 +261,7 @@ fn base() -> PlanShape {
         unit: CustomIntervalUnit::Days,
     });
     shape.plan_tier = Some("gold".to_owned());
+    shape.plan_name = Some("Gold Plan".to_owned());
     shape.plan_tier_override = true;
     shape.available_from = Some(at(1));
     shape.available_to = Some(at(23));
@@ -355,6 +356,11 @@ fn plan_level_mutators() -> Vec<Mutator> {
         ("plan_tier", |s| s.plan_tier = Some("silver".to_owned())),
         ("plan_tier -> None", |s| s.plan_tier = None),
         ("plan_tier -> empty", |s| s.plan_tier = Some(String::new())),
+        ("plan_name", |s| {
+            s.plan_name = Some("Silver Plan".to_owned());
+        }),
+        ("plan_name -> None", |s| s.plan_name = None),
+        ("plan_name -> empty", |s| s.plan_name = Some(String::new())),
         ("plan_tier_override", |s| s.plan_tier_override = false),
         ("available_from", |s| s.available_from = Some(at(2))),
         ("available_to", |s| s.available_to = Some(at(22))),
@@ -1163,6 +1169,16 @@ fn the_clock_may_flip_a_window_but_not_the_pin() {
 ///   bump is one field and not two. `row.unit_rate` in the mutator table is that
 ///   property; this is its byte vector.
 ///
+/// - `v12` -> `v13`, on **2026-08-15**, when D-318 gave the plan a name and
+///   `plan_name` joined `put_plan_shape`. Two things moved this vector at once
+///   and both were meant: the domain separator, which prefixes every preimage,
+///   and the new framed field, which `base()` now carries a value for so that
+///   the golden bytes cover a non-empty name rather than a `None` marker. The
+///   hole is `v4`'s in a non-money field — a reviewer approves the document that
+///   says what the catalog will call this plan, and unframed the name could be
+///   swapped between submit and approve with every digest equal. The three
+///   `plan_name` rows in the mutator table are that property.
+///
 /// What makes any of them an edit rather than a migration today is on
 /// [`CONTENT_PIN_DOMAIN_SEP`](super::CONTENT_PIN_DOMAIN_SEP): this gear is not
 /// deployed, so no durable row holds a `v1` or a `v2` digest. That argument expires
@@ -1171,7 +1187,7 @@ fn the_clock_may_flip_a_window_but_not_the_pin() {
 fn the_encoding_is_frozen() {
     assert_eq!(
         hex32(&content_hash(&base())),
-        "438ce0eeb88f866d69e09503e2fdc4fa1c4d3bb71e0cc9e73be6b1b8cc66ff3f"
+        "e50f3ed977f195398245b704675eecbb6c9af32043178c8a41c47f42a2ec1cbb"
     );
 }
 
@@ -1332,7 +1348,7 @@ fn the_two_pin_domains_are_disjoint_and_each_names_its_own_generation() {
     );
     assert_eq!(
         super::CONTENT_PIN_DOMAIN_SEP,
-        b"VHP-BSS-PRICING-APPROVAL-PIN-v12\x1f"
+        b"VHP-BSS-PRICING-APPROVAL-PIN-v13\x1f"
     );
     assert_eq!(
         super::THRESHOLD_PIN_DOMAIN_SEP,

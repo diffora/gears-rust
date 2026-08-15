@@ -868,10 +868,13 @@ const EXPECTED_TRIGGER_BODIES: &[(&str, u64)] = &[
     // than drift: `m20260802_000058` added the four columns `000052`/`000053`
     // left unguarded (D-263), taking the body from
     // `12_503_936_757_081_989_316`; `m20260802_000062` then added `cloned_from`
-    // (D-264), taking it from `5_595_552_456_787_579_512` to the number below.
+    // (D-264), taking it from `5_595_552_456_787_579_512` to
+    // `8_809_109_997_858_035_071`; `m20260802_000078` then added `plan_name`
+    // (D-318), taking it to the number below. Each step is one column joining
+    // the frozen-column arm, and each re-pin is the census doing its job.
     (
         "trg_pricing_plan_frozen_columns",
-        8_809_109_997_858_035_071_u64,
+        16_522_338_372_357_234_734_u64,
     ),
     ("trg_pricing_plan_no_delete", 11_619_837_810_759_772_588_u64),
     (

@@ -104,12 +104,94 @@ use uuid::Uuid;
 
 use crate::domain::money::CurrencyCode;
 use crate::domain::plan_rules::{
-    ADDON_CYCLE, ADDON_INCOMPATIBLE, ADDON_QTY_RANGE_INVALID, METER_AMBIGUOUS, PLANTIER_MISSING,
+    ADDON_CYCLE, ADDON_INCOMPATIBLE, ADDON_QTY_RANGE_INVALID, METER_AMBIGUOUS, PLAN_NAME_INVALID,
+    PLANTIER_MISSING,
 };
 use crate::domain::plan_shape::{AddonRule, PlanShape};
 use crate::domain::price_record::PriceRecord;
 use crate::domain::scope_key::{Cohort, PhaseId, PriceEligibility, PriceOverlay, Region};
 use crate::domain::validation::{ValidationReport, ValidationRule};
+
+// ---------------------------------------------------------------------------
+// D-318 - the plan name
+// ---------------------------------------------------------------------------
+
+/// The plan's name, if it carries one, is a name (D-318).
+///
+/// Two refusals and no third. **Blank** — empty or whitespace-only — because
+/// `NULL` already means "unnamed" and a second spelling of one state is a defect
+/// this gear has paid for before: a list would then have to treat `""` and
+/// absent alike everywhere, and the first surface that forgot would show a plan
+/// with a name made of nothing. **Over the bound**, because a name is rendered
+/// in a table cell and a nav breadcrumb, and there is no length at which a
+/// caller's intent is served by 8 KiB of text in a column meant for a label.
+///
+/// [`Stage::Write`](crate::domain::validation::Stage) by D-312's criterion:
+/// every operand of the fault is in the request the author just sent, and none
+/// of it is frozen by anything the publish resolves. An author cannot be part
+/// way to a valid name — the intermediate state a write-stage refusal would
+/// wrongly block does not exist here, unlike a half-authored band ladder.
+///
+/// **No uniqueness rule, deliberately.** Identity is `plan_id`; a name is a
+/// label, and two plans may legitimately share one (a tenant running the same
+/// offer in two markets). Enforcing it would be a cross-row check at publish
+/// whose cost is a scan per publish, buying a convention an operator can hold
+/// without the gear. Stated because an absence a reader cannot tell from an
+/// oversight is one they will re-litigate.
+#[domain_model]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct PlanNameWellFormed;
+
+/// The longest name any surface undertakes to render.
+///
+/// 120 characters. The longest name in the Pricing Studio prototype's own
+/// catalog is 34 ("Chainstack — Platform (restricted)"), so this is generous by
+/// more than three times, and it is counted in **characters rather than bytes**
+/// so that a name in a non-Latin script is not silently allowed a third of the
+/// room.
+pub const PLAN_NAME_MAX_CHARS: usize = 120;
+
+/// The fault in a plan name, or `None` if it is one.
+///
+/// Extracted so the **route** and the **rule** judge by the same code. They must
+/// both judge: the rule is what the publish pipeline and any other assembler of
+/// a shape run, and the route is the only thing between an author and a column
+/// holding `''` — the plan write path runs no rule pipeline at all, which is
+/// what a REST probe found after this rule's doc had already claimed the write
+/// stage for it.
+#[must_use]
+pub fn plan_name_fault(name: &str) -> Option<String> {
+    if name.trim().is_empty() {
+        return Some(
+            "planName is blank: a plan with no name is spelled by omitting the field, and \
+             storing an empty one would give the unnamed state two spellings"
+                .to_owned(),
+        );
+    }
+    let chars = name.chars().count();
+    if chars > PLAN_NAME_MAX_CHARS {
+        return Some(format!(
+            "planName is {chars} characters, above the {PLAN_NAME_MAX_CHARS} a surface \
+             undertakes to render"
+        ));
+    }
+    None
+}
+
+impl ValidationRule<PlanShape> for PlanNameWellFormed {
+    fn name(&self) -> &'static str {
+        "inst-cmp-planname"
+    }
+
+    fn evaluate(&self, subject: &PlanShape, report: &mut ValidationReport) {
+        let Some(name) = subject.plan_name.as_deref() else {
+            return;
+        };
+        if let Some(detail) = plan_name_fault(name) {
+            report.violate_at_write(PLAN_NAME_INVALID, subject.subject(), detail);
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // PlanTier (inst-cmp-plantier)

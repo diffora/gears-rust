@@ -101,6 +101,7 @@ async fn seeded(h: &Harness) {
         .create_draft(
             &scope(),
             NewPlanDraft {
+                plan_name: None,
                 plan_id: plan(),
                 tenant_id: TENANT,
                 created_by: ACTOR,

@@ -26,6 +26,9 @@ pub struct Model {
     pub tenant_id: Uuid,
     pub sku_id: Option<Uuid>,
     pub plan_tier: Option<String>,
+    /// The plan's human label (D-318). `NULL` is "not named", and the empty
+    /// string is refused at the write stage rather than stored beside it.
+    pub plan_name: Option<String>,
     /// `one_time` | `recurring` | `usage` | `hybrid`, `CHECK`-constrained to
     /// those four; the value set is `domain::plan_shape::BillingCycle`.
     pub billing_cycle: Option<String>,

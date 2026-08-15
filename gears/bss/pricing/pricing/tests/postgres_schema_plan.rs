@@ -758,7 +758,7 @@ async fn a_draft_revision_leaves_only_by_publishing_or_by_being_abandoned() {
 
 /// Every column the whitelist freezes, one UPDATE each.
 ///
-/// Twenty-three columns, and the loop is the point: a whitelist maintained by hand
+/// Twenty-four columns, and the loop is the point: a whitelist maintained by hand
 /// rots one forgotten `OR` at a time, and a test that moved only `plan_tier`
 /// would stay green while `invoice_grouping_key` or `row_version` quietly became
 /// mutable on a frozen revision. That is not an abstract hazard here — the
@@ -814,6 +814,7 @@ async fn every_frozen_column_of_a_frozen_revision_refuses_to_move() {
         "tenant_id = '99999999-9999-9999-9999-999999999999'".to_owned(),
         format!("sku_id = '{ACTOR}'"),
         "plan_tier = 'gold'".to_owned(),
+        "plan_name = 'Renamed Under A Frozen Version'".to_owned(),
         "billing_cycle = 'recurring'".to_owned(),
         "frequency = 'monthly'".to_owned(),
         "custom_interval_n = 3".to_owned(),
@@ -842,8 +843,8 @@ async fn every_frozen_column_of_a_frozen_revision_refuses_to_move() {
     ];
     assert_eq!(
         moves.len(),
-        23,
-        "the whitelist has twenty-three columns; a shorter list here is a column \
+        24,
+        "the whitelist has twenty-four columns; a shorter list here is a column \
          nobody is testing"
     );
 

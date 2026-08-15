@@ -546,12 +546,13 @@ async fn a_published_revision_freezes_every_column_the_whitelist_names() {
     // frequency and no interval, so moving one interval column on its own
     // leaves the pairing CHECK satisfied and the trigger is the only guard that
     // can refuse — which is what this case has to observe.
-    const FROZEN: [(&str, &str); 18] = [
+    const FROZEN: [(&str, &str); 19] = [
         ("plan_id", "'99999999-9999-9999-9999-999999999999'"),
         ("revision", "7"),
         ("tenant_id", "'88888888-8888-8888-8888-888888888888'"),
         ("sku_id", "'77777777-7777-7777-7777-777777777777'"),
         ("plan_tier", "'silver'"),
+        ("plan_name", "'Renamed Under A Frozen Version'"),
         ("billing_cycle", "'usage'"),
         ("frequency", "'quarterly'"),
         ("custom_interval_n", "3"),
@@ -622,7 +623,7 @@ async fn a_published_revision_freezes_every_column_the_whitelist_names() {
 /// `a_published_revision_freezes_every_column_the_whitelist_names` structurally
 /// cannot run.
 ///
-/// That case pins an 18-entry array copied from the trigger, so it proves the
+/// That case pins a hand-copied array from the trigger, so it proves the
 /// enumerated columns are frozen and is blind by construction to a column the
 /// enumeration omits. Four were: `entitlement_grants` (`m20260802_000053`) and
 /// the three plan-change contract columns (`m20260802_000052`), all added to

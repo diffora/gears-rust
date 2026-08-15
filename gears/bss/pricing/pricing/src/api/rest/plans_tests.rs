@@ -23,6 +23,7 @@ fn revision(plan_id: PlanId) -> PlanRevision {
         revision: 3,
         sku_id: None,
         plan_tier: Some("gold".to_owned()),
+        plan_name: None,
         billing_cycle: Some(BillingCycle::Recurring),
         frequency: Some(Frequency::CustomEveryN {
             n: 45,

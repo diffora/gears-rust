@@ -62,6 +62,7 @@ async fn seed_published_plan(provider: &DBProvider<DbError>, plan_id: PlanId) {
         .create_draft(
             &scope(),
             NewPlanDraft {
+                plan_name: None,
                 plan_id,
                 tenant_id: TENANT,
                 created_by: ACTOR,

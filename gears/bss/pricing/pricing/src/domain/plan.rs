@@ -77,6 +77,14 @@ pub struct PlanRevision {
     /// against the parent SKU's; neither of those is a claim about which tiers
     /// exist.
     pub plan_tier: Option<String>,
+    /// The plan's human label (D-318), or `None` when it has never been named.
+    ///
+    /// Free text an operator chose. Distinct from [`PlanRevision::plan_tier`],
+    /// which is a **classification** the catalog reasons about — a tier is
+    /// compared, overridden and inherited from the SKU, and a name is none of
+    /// those things. Every surface showed the tier only because there was
+    /// nothing else to show.
+    pub plan_name: Option<String>,
     /// The plan's billing cycle.
     ///
     /// Typed, unlike [`PlanRevision::plan_tier`], and for the reason that field
@@ -210,6 +218,15 @@ pub struct PlanShapePatch {
     pub sku_id: Option<Uuid>,
     /// Move the plan's tier.
     pub plan_tier: Option<String>,
+    /// Move the plan's human label (D-318).
+    ///
+    /// Like every other member here, `None` means "leave it alone" and not
+    /// "clear it" — a plan is unnamed back by sending the empty string, which
+    /// the write stage refuses, so **there is no way to un-name a named plan
+    /// through this patch**. Deliberate: the two-spellings hazard is worse than
+    /// the missing verb, and a plan that has been shown to an operator under a
+    /// name is not improved by losing it.
+    pub plan_name: Option<String>,
     /// Move the plan's billing cycle.
     pub billing_cycle: Option<BillingCycle>,
     /// Move the recurring frequency, interval and all; see the type doc.

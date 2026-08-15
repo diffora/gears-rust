@@ -666,6 +666,14 @@ pub struct PlanShape {
     /// The plan's tier. Optional at draft and required at publish
     /// (`PLANTIER_MISSING`).
     pub plan_tier: Option<String>,
+    /// The plan's human label (D-318).
+    ///
+    /// Framed into the content pin (`v13`) rather than left out as a mere
+    /// label: it is authored draft content a `PATCH` moves, so leaving it
+    /// unframed would let a reviewer approve "Business Starter" and the commit
+    /// publish "Enterprise Unlimited" with every digest equal — and the name is
+    /// what a consumer surface shows the plan as.
+    pub plan_name: Option<String>,
     /// Whether the tier deliberately diverges from the parent SKU's under an
     /// explicit audited override (P3). The equality half of the check needs the
     /// registry; see [`crate::domain::plan_rules`].
@@ -751,6 +759,7 @@ impl PlanShape {
             billing_cycle: None,
             frequency: None,
             plan_tier: None,
+            plan_name: None,
             plan_tier_override: false,
             available_from: None,
             available_to: None,

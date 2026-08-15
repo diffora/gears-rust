@@ -142,6 +142,8 @@ pub struct NewPlanDraft {
     pub sku_id: Option<Uuid>,
     /// The plan's tier.
     pub plan_tier: Option<String>,
+    /// The plan's human label (D-318), or `None` when it has never been named.
+    pub plan_name: Option<String>,
     /// The plan's billing cycle.
     pub billing_cycle: Option<BillingCycle>,
     /// The recurring frequency, interval and all.
@@ -717,6 +719,7 @@ impl PlanRepo {
             revision: next,
             sku_id: current.sku_id,
             plan_tier: current.plan_tier,
+            plan_name: current.plan_name,
             billing_cycle: current.billing_cycle,
             frequency: current.frequency,
             plan_tier_override: current.plan_tier_override,
@@ -1055,6 +1058,7 @@ pub async fn create_draft_on(
         revision: 0,
         sku_id: draft.sku_id,
         plan_tier: draft.plan_tier,
+        plan_name: draft.plan_name,
         billing_cycle: draft.billing_cycle,
         frequency: draft.frequency,
         plan_tier_override: draft.plan_tier_override,
@@ -1630,6 +1634,7 @@ fn revision_model(
         tenant_id: Set(tenant_id),
         sku_id: Set(revision.sku_id),
         plan_tier: Set(revision.plan_tier.clone()),
+        plan_name: Set(revision.plan_name.clone()),
         billing_cycle: Set(revision
             .billing_cycle
             .map(|cycle| cycle.as_str().to_owned())),
@@ -1738,6 +1743,7 @@ fn patched_columns(patch: PlanShapePatch) -> Result<Vec<(plan::Column, SimpleExp
     let PlanShapePatch {
         sku_id,
         plan_tier,
+        plan_name,
         billing_cycle,
         frequency,
         plan_tier_override,
@@ -1756,6 +1762,9 @@ fn patched_columns(patch: PlanShapePatch) -> Result<Vec<(plan::Column, SimpleExp
     }
     if let Some(plan_tier) = plan_tier {
         columns.push((plan::Column::PlanTier, Expr::value(plan_tier)));
+    }
+    if let Some(plan_name) = plan_name {
+        columns.push((plan::Column::PlanName, Expr::value(plan_name)));
     }
     if let Some(billing_cycle) = billing_cycle {
         columns.push((
@@ -2135,6 +2144,7 @@ fn to_domain(row: plan::Model) -> Result<PlanRevision, RepoError> {
         revision,
         sku_id: row.sku_id,
         plan_tier: row.plan_tier,
+        plan_name: row.plan_name,
         billing_cycle,
         frequency,
         plan_tier_override: row.plan_tier_override,

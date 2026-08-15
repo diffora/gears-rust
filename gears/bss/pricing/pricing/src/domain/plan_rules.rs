@@ -159,6 +159,15 @@ pub const SETUP_ROW_INVALID: &str = "SETUP_ROW_INVALID";
 /// `purchase_min_qty > purchase_max_qty` (`inst-cs-onetime`).
 pub const PURCHASE_QTY_RANGE_INVALID: &str = "PURCHASE_QTY_RANGE_INVALID";
 
+/// The plan's name is present but not a name: blank, or longer than the bound
+/// (D-318).
+///
+/// Its own code rather than a reuse, because the fault is neither a missing
+/// field nor a field on the wrong shape — the column is nullable and an unnamed
+/// plan is perfectly legal. What is refused is a *second spelling* of unnamed
+/// (`""`, or whitespace) and a value no surface can render.
+pub const PLAN_NAME_INVALID: &str = "PLAN_NAME_INVALID";
+
 /// A **newly set or changed** `availableFrom` in the past, on any billing cycle
 /// (`inst-cs-availability`).
 ///
@@ -405,6 +414,7 @@ pub fn plan_shape_rules(
         .with_rule(Box::new(cycle_shape::PurchaseQtyRange))
         .with_rule(Box::new(cycle_shape::AvailableFromNotBackdated))
         // Composition: what the plan is made of.
+        .with_rule(Box::new(composition::PlanNameWellFormed))
         .with_rule(Box::new(composition::PlanTierDeclared))
         .with_rule(Box::new(composition::MeterInjectivity))
         .with_rule(Box::new(composition::AddonEdgeMembership))

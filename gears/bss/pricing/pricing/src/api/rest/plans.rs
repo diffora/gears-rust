@@ -407,6 +407,8 @@ pub struct PlanView {
     pub sku_id: Option<Uuid>,
     /// The plan's tier (a registry-owned taxonomy, so a string).
     pub plan_tier: Option<String>,
+    /// The plan's human label (D-318), absent until an operator names it.
+    pub plan_name: Option<String>,
     /// `one_time` | `recurring` | `usage` | `hybrid`.
     pub billing_cycle: Option<String>,
     /// The recurring frequency, interval and all.
@@ -469,6 +471,7 @@ impl PlanView {
             lifecycle_state: revision.lifecycle_state.as_str().to_owned(),
             sku_id: revision.sku_id,
             plan_tier: revision.plan_tier,
+            plan_name: revision.plan_name,
             billing_cycle: revision
                 .billing_cycle
                 .map(|cycle| cycle.as_str().to_owned()),
@@ -515,6 +518,8 @@ pub struct PlanSummaryView {
     pub sku_id: Option<Uuid>,
     /// The plan's tier (a registry-owned taxonomy, so a string).
     pub plan_tier: Option<String>,
+    /// The plan's human label (D-318), absent until an operator names it.
+    pub plan_name: Option<String>,
     /// `one_time` | `recurring` | `usage` | `hybrid`.
     pub billing_cycle: Option<String>,
     /// Start of the availability window, UTC.
@@ -537,6 +542,7 @@ impl From<&PlanRevision> for PlanSummaryView {
             lifecycle_state: revision.lifecycle_state.as_str().to_owned(),
             sku_id: revision.sku_id,
             plan_tier: revision.plan_tier.clone(),
+            plan_name: revision.plan_name.clone(),
             billing_cycle: revision
                 .billing_cycle
                 .map(|cycle| cycle.as_str().to_owned()),
@@ -572,6 +578,12 @@ pub struct PlanShapeRequest {
     pub sku_id: Option<Uuid>,
     /// The plan's tier (a registry-owned taxonomy, so a free string).
     pub plan_tier: Option<String>,
+    /// The plan's human label (D-318). Free text an operator chose, distinct
+    /// from the tier, which is a classification the catalog reasons about.
+    ///
+    /// Absent leaves it alone; the empty string is **refused**, not stored, so
+    /// `NULL` stays the only spelling of "unnamed".
+    pub plan_name: Option<String>,
     /// `one_time` | `recurring` | `usage` | `hybrid`.
     pub billing_cycle: Option<String>,
     /// The recurring frequency, interval and all.
@@ -1970,6 +1982,7 @@ struct DraftShape {
     sku_id: Option<Uuid>,
     /// The plan's tier.
     plan_tier: Option<String>,
+    plan_name: Option<String>,
     /// The plan's billing cycle.
     billing_cycle: Option<BillingCycle>,
     /// The recurring frequency, interval and all.
@@ -2011,6 +2024,7 @@ impl DraftShape {
             created_at_utc,
             sku_id: self.sku_id,
             plan_tier: self.plan_tier,
+            plan_name: self.plan_name,
             billing_cycle: self.billing_cycle,
             frequency: self.frequency,
             plan_tier_override: self.plan_tier_override,
@@ -2029,11 +2043,40 @@ impl DraftShape {
     }
 }
 
+/// The write-stage door for the plan name (D-318).
+///
+/// **The plan write path runs no rule pipeline**, unlike the price row's, whose
+/// `require_no_key_contradiction` runs `price_row_rules()` and takes
+/// `write_stage_only()`. Turning the whole plan pipeline on here would refuse
+/// legitimate intermediate states — `PlanTierDeclared` alone would make a draft
+/// with no tier yet unsaveable — which is the mistake D-312's stage split exists
+/// to avoid. So exactly one rule's predicate is applied, the one whose every
+/// operand is in the request and which guards a column that must never hold
+/// `''`.
+///
+/// It answers the enumerated report shape rather than a bare message, so a
+/// client already parsing publish violations parses this unchanged.
+fn require_well_formed_plan_name(name: Option<&str>) -> Result<(), DomainError> {
+    let Some(name) = name else { return Ok(()) };
+    let Some(detail) = crate::domain::plan_rules::composition::plan_name_fault(name) else {
+        return Ok(());
+    };
+    let mut report = crate::domain::validation::ValidationReport::default();
+    report.violate_at_write(
+        crate::domain::plan_rules::PLAN_NAME_INVALID,
+        "plan".to_owned(),
+        detail,
+    );
+    Err(DomainError::ValidationFailed(report))
+}
+
 /// Parse a create's shape.
 fn shape_of(body: &PlanShapeRequest) -> Result<DraftShape, DomainError> {
+    require_well_formed_plan_name(body.plan_name.as_deref())?;
     Ok(DraftShape {
         sku_id: body.sku_id,
         plan_tier: body.plan_tier.clone(),
+        plan_name: body.plan_name.clone(),
         billing_cycle: billing_cycle_of(body.billing_cycle.as_deref())?,
         frequency: frequency_of(body.frequency.as_ref())?,
         plan_tier_override: body.plan_tier_override.unwrap_or(false),
@@ -2057,9 +2100,11 @@ fn shape_of(body: &PlanShapeRequest) -> Result<DraftShape, DomainError> {
 /// through `POST …/abandon`, which keeps the revision number it consumed
 /// (D-145).
 fn shape_patch(body: &PlanShapeRequest) -> Result<PlanShapePatch, DomainError> {
+    require_well_formed_plan_name(body.plan_name.as_deref())?;
     Ok(PlanShapePatch {
         sku_id: body.sku_id,
         plan_tier: body.plan_tier.clone(),
+        plan_name: body.plan_name.clone(),
         billing_cycle: billing_cycle_of(body.billing_cycle.as_deref())?,
         frequency: frequency_of(body.frequency.as_ref())?,
         plan_tier_override: body.plan_tier_override,

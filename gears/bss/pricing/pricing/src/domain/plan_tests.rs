@@ -27,6 +27,7 @@ fn the_patch_names_eleven_columns_and_cannot_mean_clear_ten_of_them() {
     let _eleven_columns = PlanShapePatch {
         sku_id: Some(Uuid::from_u128(1)),
         plan_tier: Some("silver".to_owned()),
+        plan_name: None,
         billing_cycle: Some(BillingCycle::Recurring),
         frequency: Some(Frequency::CustomEveryN {
             n: 45,

@@ -211,6 +211,105 @@ fn keyed(key: &str) -> Vec<(&str, &str)> {
     vec![("idempotency-key", key)]
 }
 
+/// The name goes out on the create and comes back on the read (D-318).
+///
+/// The round trip is the claim worth pinning: the column, the request member,
+/// the two views and the mapper are five places, and a name accepted by the
+/// write and dropped by the read looks exactly like a write that never landed.
+#[tokio::test]
+async fn a_plan_can_be_created_with_a_name_and_reads_back_with_it() {
+    let harness = Harness::new().await;
+
+    let response = harness
+        .allowed()
+        .send(with_headers(
+            "POST",
+            PLANS,
+            Some(serde_json::json!({
+                "plan_tier": "gold",
+                "plan_name": "Managed WordPress",
+                "billing_cycle": "recurring",
+            })),
+            &keyed("create-named"),
+        ))
+        .await;
+
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let body = body_json(response).await;
+    assert_eq!(body["plan_name"], serde_json::json!("Managed WordPress"));
+    let plan_id = body["plan_id"]
+        .as_str()
+        .expect("the id is answered")
+        .to_owned();
+
+    let read = harness
+        .allowed()
+        .send(with_headers(
+            "GET",
+            &format!("{PLANS}/{plan_id}"),
+            None,
+            &[],
+        ))
+        .await;
+    assert_eq!(read.status(), StatusCode::OK);
+    assert_eq!(
+        body_json(read).await["plan_name"],
+        serde_json::json!("Managed WordPress")
+    );
+}
+
+/// An unnamed plan answers `null`, not an empty string (D-318).
+#[tokio::test]
+async fn a_plan_created_without_a_name_answers_null_for_it() {
+    let harness = Harness::new().await;
+
+    let response = harness
+        .allowed()
+        .send(with_headers(
+            "POST",
+            PLANS,
+            Some(create_body("gold")),
+            &keyed("create-unnamed"),
+        ))
+        .await;
+
+    assert_eq!(response.status(), StatusCode::CREATED);
+    // The distinction the whole `PLAN_NAME_INVALID` rule exists to keep: absent
+    // is `null`, and `""` is never stored, so a client testing truthiness and a
+    // client testing `=== null` agree.
+    assert_eq!(
+        body_json(response).await["plan_name"],
+        serde_json::Value::Null
+    );
+}
+
+/// An empty name is refused rather than stored beside `NULL` (D-318).
+#[tokio::test]
+async fn an_empty_plan_name_is_refused_at_the_write() {
+    let harness = Harness::new().await;
+
+    let response = harness
+        .allowed()
+        .send(with_headers(
+            "POST",
+            PLANS,
+            Some(serde_json::json!({
+                "plan_tier": "gold",
+                "plan_name": "   ",
+                "billing_cycle": "recurring",
+            })),
+            &keyed("create-blank-name"),
+        ))
+        .await;
+
+    // **400, not 422**, and the number is the crate's convention rather than
+    // this rule's choice: a write-stage violation renders through
+    // `failed_precondition()`, which is the architectural 422 this gear answers
+    // as 400 — the same status every `rest_prices` write-stage refusal asserts.
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(problem_code(response).await, "PLAN_NAME_INVALID");
+}
+
 #[tokio::test]
 async fn a_create_answers_201_with_the_location_and_the_tag_a_caller_needs_next() {
     let harness = Harness::new().await;

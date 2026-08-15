@@ -125,6 +125,9 @@ const REGISTERED: &[&str] = &[
     "inst-cs-onetime",
     "inst-cs-availability",
     // cpt-cf-bss-pricing-algo-composition
+    // The name is judged before the tier: an author who left both wrong reads
+    // the label fault first, and it is the cheaper of the two to fix.
+    "inst-cmp-planname",
     "inst-cmp-plantier",
     "inst-cmp-injective",
     "inst-cmp-addons",

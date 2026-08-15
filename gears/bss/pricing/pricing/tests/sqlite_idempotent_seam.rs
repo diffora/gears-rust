@@ -61,6 +61,7 @@ fn at(hour: u32) -> DateTime<Utc> {
 
 fn new_draft(plan_id: PlanId, tenant_id: Uuid) -> NewPlanDraft {
     NewPlanDraft {
+        plan_name: None,
         plan_id,
         tenant_id,
         created_by: Uuid::from_u128(0xac_11),

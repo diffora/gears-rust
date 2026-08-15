@@ -327,7 +327,12 @@ historical import always-material, but the matrix granted `FinanceReviewer` neit
 what they were approving. Adding a trigger to `inst-mat-registered` therefore **also** requires
 the matching `read` grant here — and `GET /bss-pricing/v1/approvals/{id}` MUST return the **pinned
 content** the approval's `content_hash` covers (not the hash alone), so approval is never
-hash-blind even where the subject resource is read-restricted.
+hash-blind even where the subject resource is read-restricted. **What the digest covers, the
+document shows** — the two move together by construction, which is why `planName` joining the pin
+at generation `v13` (D-318, 2026-08-15) also joins the reviewer's document: a name is what a
+consumer surface calls the plan, so leaving it out of the digest would let it be swapped between
+submit and approve, and leaving it out of the document would ask a reviewer to sign for text they
+never read.
 
 ### Audit Trail and Retention
 

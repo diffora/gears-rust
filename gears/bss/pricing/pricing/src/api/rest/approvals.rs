@@ -415,6 +415,13 @@ pub struct PinnedContentView {
     pub frequency: Option<FrequencyView>,
     /// The plan's tier.
     pub plan_tier: Option<String>,
+    /// The plan's human label (D-318).
+    ///
+    /// **Shown**, because the pin frames it: a rename is a change to what the
+    /// catalog will call this plan, a reviewer's signature covers it, and the
+    /// module doc above makes showing-or-not an explicit decision rather than an
+    /// omission.
+    pub plan_name: Option<String>,
     /// Whether the tier diverges from the parent SKU's under an audited
     /// override.
     pub plan_tier_override: bool,
@@ -524,6 +531,7 @@ impl From<&PlanShape> for PinnedContentView {
             billing_cycle,
             frequency,
             plan_tier,
+            plan_name,
             plan_tier_override,
             available_from,
             available_to,
@@ -551,6 +559,7 @@ impl From<&PlanShape> for PinnedContentView {
             billing_cycle: billing_cycle.map(|cycle| cycle.as_str().to_owned()),
             frequency: frequency.map(FrequencyView::from),
             plan_tier: plan_tier.clone(),
+            plan_name: plan_name.clone(),
             plan_tier_override: *plan_tier_override,
             available_from: *available_from,
             available_to: *available_to,

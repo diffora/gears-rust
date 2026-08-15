@@ -1319,6 +1319,7 @@ pub async fn seed_current_plan_with_phase(harness: &Harness, plan_id: Uuid) {
         .create_draft(
             &scope,
             NewPlanDraft {
+                plan_name: None,
                 plan_id: plan,
                 tenant_id: harness.tenant,
                 created_by: SEED_ACTOR,
@@ -1446,6 +1447,7 @@ pub async fn plan_state(harness: &Harness, plan_id: Uuid, revision: u64) -> Opti
 
 fn new_draft(plan_id: Uuid, tenant_id: Uuid) -> NewPlanDraft {
     NewPlanDraft {
+        plan_name: None,
         plan_id: PlanId::new(plan_id),
         tenant_id,
         created_by: SEED_ACTOR,
@@ -2066,6 +2068,7 @@ pub async fn seed_publishable_shape(harness: &Harness, plan_id: Uuid) -> Publish
         .create_draft(
             &scope,
             NewPlanDraft {
+                plan_name: None,
                 plan_id: plan,
                 tenant_id: harness.tenant,
                 created_by: SEED_ACTOR,
