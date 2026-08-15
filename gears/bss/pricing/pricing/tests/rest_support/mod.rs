@@ -2212,6 +2212,63 @@ pub async fn seed_publishable_plan(harness: &Harness, plan_id: Uuid) -> Publisha
     }
 }
 
+/// [`seed_publishable_plan`]'s `per_unit` sibling: the same plan shape, and a
+/// row whose money is a **rate** rather than an amount.
+///
+/// A second seed rather than a parameter on [`seed_publishable_plan`], for
+/// [`seed_per_unit_rate_row`]'s reason one level up: after D-311 the two kinds
+/// do not differ by a value, they differ by **which column is NULL**, so there
+/// is no flag that turns one into the other — `check_amount_placement` requires
+/// `amount_minor` present on a `flat` row and **forbids** it on a `per_unit`
+/// one.
+///
+/// [`seed_per_unit_rate_row`] is not reused either: it files its row under the
+/// fixed `seeded_phase()` and a fixed `USD`, and what a synthesis fixture needs
+/// is a row on **this plan's** phase and on the `(EUR, eu)` market
+/// [`publishable_scope_key`] puts every publishable seed on — which is the
+/// frozen key a `FrozenKey` names.
+pub async fn seed_publishable_per_unit_plan(
+    harness: &Harness,
+    plan_id: Uuid,
+    rate_nano_minor: i64,
+) -> Publishable {
+    let plan = PlanId::new(plan_id);
+    let scope = harness.scope();
+    let shape = seed_publishable_shape(harness, plan_id).await;
+    let phase = shape.phase;
+
+    let price_id = Uuid::now_v7();
+    harness
+        .state
+        .prices
+        .create_draft(
+            &scope,
+            harness.tenant,
+            NewPriceDraft {
+                price_id,
+                scope_key: publishable_scope_key(plan, phase, "eu"),
+                content: publishable_per_unit_row(rate_nano_minor),
+                created_by: SEED_ACTOR,
+                created_at_utc: at(10),
+                correlation_id: TEST_CORRELATION,
+            },
+        )
+        .await
+        .expect("author the per_unit price row");
+
+    // `inst-wc-required`, and the interval every synthesis fixture reads against.
+    // [`seed_publishable_plan`]'s note applies verbatim.
+    let conn = harness.state.db.conn().expect("conn");
+    crate::common::schedule_coverage_window(&conn, &scope, harness.tenant, price_id, stamp()).await;
+
+    Publishable {
+        phase,
+        revision: shape.revision,
+        version: shape.version,
+        price_id,
+    }
+}
+
 /// A flat recurring row that passes the Slice-3 rule set.
 #[must_use]
 pub fn publishable_row() -> PriceContentAlias {
@@ -2238,6 +2295,28 @@ pub fn publishable_row() -> PriceContentAlias {
         grandfather_until: None,
         supersedes_price_id: None,
     }
+}
+
+/// [`publishable_row`]'s `per_unit` sibling: the money is a **rate**, and
+/// `amount_minor` is left NULL because the placement matrix forbids it here.
+///
+/// `quantity_source` is `subscription_seat_count` for
+/// [`seed_per_unit_rate_row`]'s reason: `inst-mk-required` makes a **non-usage**
+/// `per_unit` row declare where its quantity comes from, and the seat count is
+/// the one answer that needs no second field beside it.
+#[must_use]
+pub fn publishable_per_unit_row(rate_nano_minor: i64) -> PriceContentAlias {
+    let mut row = PriceRow::new(ChargeKind::Recurring, Some(ModelKind::PerUnit));
+    row.unit_rate = Some(RateMinor::from_nano_minor(rate_nano_minor).expect("a non-negative rate"));
+    row.quantity_source = Some(QuantitySource::SubscriptionSeatCount);
+    // Everything but the row is [`publishable_row`]'s, taken from it rather than
+    // restated: the billing timing, the proration contract and the rounding
+    // policy are the three inputs that make a seeded row publishable at all, and
+    // a second copy of them here would be free to drift from the one the flat
+    // seed uses — which is the row this fixture's positive control reads.
+    let mut content = publishable_row();
+    content.row = row;
+    content
 }
 
 /// The canonical scope key a publishable row sits on.

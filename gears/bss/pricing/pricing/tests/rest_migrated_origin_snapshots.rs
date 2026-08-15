@@ -37,7 +37,9 @@ use bss_pricing::domain::scope_key::{PlanId, Region};
 use bss_pricing::domain::synthesis::SynthesisTrigger;
 use bss_pricing::infra::synthesis::{FrozenKey, SynthesisRequest};
 use chrono::{DateTime, TimeZone, Utc};
-use rest_support::{Harness, body_json, request, seed_publishable_plan, seed_stamp};
+use rest_support::{
+    Harness, body_json, request, seed_publishable_per_unit_plan, seed_publishable_plan, seed_stamp,
+};
 use uuid::Uuid;
 
 const RATING_SERVICE: Uuid = Uuid::from_u128(0x_4a_71_46);
@@ -476,6 +478,22 @@ async fn the_frozen_payload_is_self_contained_and_says_it_has_no_catalog_version
     assert!(rows[0].get("taxInclusive").is_some());
     assert!(rows[0].get("roundingPolicyRef").is_some());
 
+    // **The positive control for D-320.** This plan's row is `flat`, so its money
+    // is in `amountMinor` and the rate member is NULL — the other half of the
+    // placement matrix `a_per_unit_lines_rate_reaches_the_frozen_payload` reads.
+    // Without a case that pins the amount arm, teaching this builder about rates
+    // and rewriting it would look the same from here.
+    assert_eq!(
+        rows[0]["amountMinor"], 9_900,
+        "a flat row still renders its amount unchanged: {}",
+        frozen.record.payload
+    );
+    assert!(
+        rows[0]["unitRateNanoMinor"].is_null(),
+        "and carries no rate, because a flat row prices by no multiple: {}",
+        frozen.record.payload
+    );
+
     // C-5's plan-level half, and the absence that is reported rather than hidden:
     // there is no entitlement grant store in this gear, so a consumer must not
     // read the empty set as "this plan grants nothing".
@@ -493,6 +511,64 @@ async fn the_frozen_payload_is_self_contained_and_says_it_has_no_catalog_version
         serde_json::json!([])
     );
     assert_eq!(payload["planLevel"]["periodFloorCapsUnavailable"], false);
+}
+
+/// **A `per_unit` line's rate reaches the frozen payload, and it is the only
+/// price it has** (D-320).
+///
+/// D-311 moved a `per_unit` row's money out of `amount_minor` and into
+/// `unit_rate_nano`, and listed ten files as the propagation surface;
+/// `infra::synthesis` was in none of them. The builder rendered `amountMinor`
+/// alone, so every synthesized `per_unit` line reached Rating with
+/// `"amountMinor": null` and no price anywhere in the payload.
+///
+/// **`amount_minor` is not merely absent here, it is forbidden.**
+/// `check_amount_placement` refuses a `per_unit` row that carries one — *"two
+/// priced columns are two competing prices"* — so there is no publishable row of
+/// this kind for which the old rendering could have produced a number. The
+/// assertion on `amountMinor` below is therefore not incidental: it is what says
+/// the rate member is the row's whole price, and a case that only asserted the
+/// rate would not have said it.
+///
+/// The record is INSERT-only and resolves through **no** `CatalogVersion` (D-87),
+/// so this is not a value a later publish corrects.
+#[tokio::test]
+async fn a_per_unit_lines_rate_reaches_the_frozen_payload() {
+    // €0.023 per unit, in D-311's nano-minor scale — the S3 rate the decision was
+    // raised on, and one no amount column can express.
+    const RATE_NANO_MINOR: i64 = 23_000_000;
+
+    let h = Harness::new().await;
+    let plan_id = Uuid::now_v7();
+    let seeded = seed_publishable_per_unit_plan(&h, plan_id, RATE_NANO_MINOR).await;
+    h.publish(plan_id, seeded.revision).await;
+    h.publish_price(plan_id, seeded.price_id).await;
+
+    let frozen = h
+        .governance
+        .synthesis
+        .synthesize(
+            &h.scope(),
+            h.tenant,
+            synthesis_request(Uuid::now_v7(), plan_id, covered_at()),
+        )
+        .await
+        .expect("synthesize");
+
+    let rows = frozen.record.payload["rows"].as_array().expect("rows");
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["modelKind"], "per_unit");
+    assert!(
+        rows[0]["amountMinor"].is_null(),
+        "the placement matrix forbids an amount on a per_unit row, so nothing else in this \
+         payload can be carrying the price: {}",
+        frozen.record.payload
+    );
+    assert_eq!(
+        rows[0]["unitRateNanoMinor"], RATE_NANO_MINOR,
+        "the rate is the line's only price and the payload is frozen: {}",
+        frozen.record.payload
+    );
 }
 
 /// **A period bound reaches the frozen `migrated-origin` payload** (D-319).

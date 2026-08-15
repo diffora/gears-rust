@@ -239,6 +239,34 @@ pub async fn materialize(
             "chargeKind": stored.charge_kind,
             "modelKind": stored.model_kind,
             "amountMinor": stored.amount_minor,
+            // **The `per_unit` row's money, and between D-311 and D-320 it was
+            // nowhere in this payload.** D-311 moved a `per_unit` rate out of
+            // `amount_minor` into its own column and measured its cost as
+            // references to `unit_price_minor`, the *band* rate; this builder
+            // reads `amount_minor` and touches no band, so it is in neither that
+            // list nor the staging, and went on rendering `amountMinor` alone.
+            //
+            // The absence is not conditional. `check_amount_placement` does not
+            // merely allow `amount_minor` to be NULL on a `per_unit` row, it
+            // **forbids** the column — "two priced columns are two competing
+            // prices" — so every synthesized `per_unit` line carried
+            // `"amountMinor": null` and no price at all, frozen INSERT-only into
+            // a record that resolves through no `CatalogVersion` and can never
+            // be corrected.
+            //
+            // **Rendered as authored**, unlike the read model's member of the
+            // same name: `projection::row_value` nulls it on an
+            // allowance-carrying row because the D-45 compile folds the rate into
+            // the top band, and this payload carries no compiled ladder at all
+            // (`inst-sy-payload` records that and leaves it open), so the same
+            // nulling would take the row's only price away a second time.
+            //
+            // No `*Unavailable` marker rides beside it, and the difference from
+            // `grantSetUnavailable` is the point: that marker reports a set this
+            // payload could not *read*, while this column is read on every row
+            // and `modelKind` — which is right above — says which member holds
+            // the price.
+            "unitRateNanoMinor": stored.unit_rate_nano,
             "packageSize": stored.package_size,
             "packagePriceMinor": stored.package_price_minor,
             "meter": stored.meter,
