@@ -31,7 +31,7 @@
 use bss_fixtures::ModelKind;
 use toolkit_macros::domain_model;
 
-use crate::domain::allowance::{authors_a_free_first_band, compile};
+use crate::domain::allowance::{authors_a_free_first_band, compile, offsets_saturate};
 use crate::domain::price_row::{PriceRow, model_kind_wire};
 use crate::domain::rules::tier_bands::{BandGeometry, BandOrigin, BandTopOpen};
 use crate::domain::validation::{ValidationReport, ValidationRule};
@@ -255,13 +255,32 @@ impl ValidationRule<PriceRow> for AllowanceAuthorable {
 /// geometry exactly, so against a clean authored set this rule finds nothing —
 /// which is the correct outcome and not evidence that it does nothing. The fault
 /// it exists for is the one the **compile** introduces: `from_qty + N` saturates
-/// at `u64::MAX`, and a saturated bound collapses bands onto each other. Nothing
-/// else in the gear would notice, because the malformed set is never stored.
+/// at `u64::MAX`. Nothing else in the gear would notice, because the malformed
+/// set is never stored.
 ///
-/// It stays silent while the **authored** set is already malformed, so an author
-/// whose ladder has a hole is told once rather than twice about one edit. The
-/// compiled set is derived from that ladder; reporting its derived faults beside
-/// the real one would put the consequence ahead of the cause.
+/// # The saturation is reported as itself, not inferred from the geometry
+///
+/// Until 2026-08-15 this rule relied entirely on the geometry to surface a
+/// saturated bound, on the stated premise that a saturated bound *produces* a
+/// malformed set. That premise is false. `N = u64::MAX` on the ladder
+/// `[0, 1000)`, `[1000, null)` collapses both bounds onto `u64::MAX` and the
+/// zero-width band between them is caught; `N = u64::MAX - 5` on the same ladder
+/// compiles to `[0, N) @ $0`, `[N, u64::MAX)`, `[u64::MAX, null)` — contiguous,
+/// origin-anchored, open-topped, and silent under all three rules — while the
+/// authored 1000-unit band is materialized **five** units wide. So
+/// [`offsets_saturate`](crate::domain::allowance::offsets_saturate) is asked
+/// directly, and the code is `ALLOWANCE_QUANTITY_INVALID`: the authored ladder is
+/// well-formed and stays so at every smaller `N`, so the remediable operand is
+/// the declared quantity.
+///
+/// That refusal does **not** wait on the authored set being clean. It is a fault
+/// of the declaration rather than a consequence of the ladder, so an author whose
+/// ladder also has a hole is told about both — two operands, two edits.
+///
+/// The **geometry** half does wait, so an author whose ladder has a hole is told
+/// once rather than twice about one edit. The compiled set is derived from that
+/// ladder; reporting its derived faults beside the real one would put the
+/// consequence ahead of the cause.
 #[domain_model]
 #[derive(Clone, Copy, Debug)]
 pub struct CompiledAllowanceWellFormed;
@@ -275,6 +294,21 @@ impl ValidationRule<PriceRow> for CompiledAllowanceWellFormed {
         let Some(compiled) = compile(subject) else {
             return;
         };
+        if offsets_saturate(subject) {
+            let quantity = subject
+                .included_allowance
+                .map_or(0, |allowance| allowance.quantity);
+            report.violate(
+                ALLOWANCE_QUANTITY_INVALID,
+                subject.subject(),
+                format!(
+                    "includedAllowance.quantity is {quantity}; offsetting this row's authored \
+                     band bounds by it overflows, so the compiled ladder silently narrows the \
+                     bands it was supposed to shift. Author a quantity the ladder's top bound \
+                     can be raised by"
+                ),
+            );
+        }
         if !band_report(subject).violations.is_empty() {
             return;
         }

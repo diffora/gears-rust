@@ -248,15 +248,28 @@ pub fn authors_a_free_first_band(row: &PriceRow) -> bool {
 /// not an amount, and a `per_unit` row has carried `amount_minor = NULL` ever
 /// since. Folding `amount_minor` would fold a `NULL`.
 ///
-/// # Overflow saturates, and the compiled set is judged
+/// # Overflow saturates, and the saturation is judged as itself
 ///
-/// `from_qty + N` is a `saturating_add`. A saturated bound produces a malformed
-/// compiled set — a zero-width or overlapping band — which is exactly what
-/// `inst-ac-band`'s *"publish still validates the compiled set against the
-/// standard Slice 3 band rules"* is for, and it is the one fault the compile can
-/// introduce that the authored set does not already have. Panicking or silently
-/// wrapping would both turn an authoring error into something other than a
-/// validation report.
+/// `from_qty + N` is a `saturating_add`, because panicking or silently wrapping
+/// would both turn an authoring error into something other than a validation
+/// report.
+///
+/// **A saturated bound is not reliably visible in the compiled geometry**, and
+/// this comment said the opposite until 2026-08-15. With the authored ladder
+/// `[0, 1000)`, `[1000, null)` and `N = u64::MAX - 5`, the compiled set is
+/// `[0, N) @ $0`, `[N, u64::MAX)`, `[u64::MAX, null)` — ascending,
+/// non-overlapping, contiguous, no zero-width band, open at the top. Every one
+/// of the three Slice-3 band rules passes it while the authored 1000-unit band
+/// is materialized **five** units wide. Only where both bounds saturate onto
+/// each other (`N = u64::MAX` on that ladder) does the geometry itself fail, so
+/// *"publish still validates the compiled set"* catches the loud half and misses
+/// the quiet one.
+///
+/// So the saturation is detected as itself, by [`offsets_saturate`], and
+/// `inst-ac-band`'s rule refuses on it. The compile still produces the saturated
+/// set rather than answering `None`: what it produces is never stored (D-130),
+/// the geometry rules keep reporting the collapsed shapes they can see, and the
+/// row does not publish either way.
 #[must_use]
 pub fn compile(row: &PriceRow) -> Option<CompiledAllowance> {
     if Admissibility::of(row) != Admissibility::Compiles {
@@ -293,6 +306,42 @@ pub fn compile(row: &PriceRow) -> Option<CompiledAllowance> {
             rollover_policy: allowance.rollover_policy,
             source: AllowanceSource::Compiled,
         },
+    })
+}
+
+/// Does offsetting this row's authored ladder by its allowance overflow `u64`?
+///
+/// The one fault [`compile`] can introduce that the authored set does not
+/// already have, and — unlike what this module claimed until 2026-08-15 — one
+/// the compiled geometry does **not** reliably show: see [`compile`]'s own doc
+/// for the `u64::MAX - 5` ladder that saturates into a perfectly well-formed
+/// set five units narrower than it was authored.
+///
+/// Read against the **authored** bounds, which is where the addition happens.
+/// The untiered branch adds nothing to anything — `[0, N)` and `[N, null)` are
+/// synthesized, not offset — so it cannot overflow and this answers `false` for
+/// it at every `N`.
+///
+/// Answers `false` for a row with no compilable allowance: there is no offset to
+/// overflow, and a row the gate already refuses must not collect a second
+/// refusal derived from an artifact it will never have.
+#[must_use]
+pub fn offsets_saturate(row: &PriceRow) -> bool {
+    if Admissibility::of(row) != Admissibility::Compiles {
+        return false;
+    }
+    let Some(allowance) = row.included_allowance else {
+        return false;
+    };
+    if row.model_kind == Some(ModelKind::PerUnit) {
+        return false;
+    }
+    row.bands.iter().any(|band| {
+        band.from_qty.checked_add(allowance.quantity).is_none()
+            || band
+                .to_qty
+                .closed_at()
+                .is_some_and(|top| top.checked_add(allowance.quantity).is_none())
     })
 }
 

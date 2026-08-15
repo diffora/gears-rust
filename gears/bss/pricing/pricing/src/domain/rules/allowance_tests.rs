@@ -352,6 +352,80 @@ fn a_saturating_offset_produces_a_malformed_compiled_set_and_is_reported() {
     );
 }
 
+/// **A saturated bound does not always produce a malformed set.** The case above
+/// is the easy one — both bounds land on `u64::MAX` and the band between them
+/// covers nothing. Five units lower and the compiled ladder is a perfectly good
+/// geometry: contiguous, anchored at the origin, open at the top. Every one of
+/// the three Slice-3 band rules is silent, and the authored 1000-unit band is
+/// materialized **five** units wide.
+///
+/// So the saturation has to be detected as itself. It is the declared quantity
+/// that is at fault — the authored ladder is well-formed and stays so at any
+/// smaller `N` — and `ALLOWANCE_QUANTITY_INVALID` is the code that names it.
+#[test]
+fn a_saturating_offset_that_still_looks_like_a_geometry_is_refused() {
+    let quantity = u64::MAX - 5;
+    let mut row = graduated_usage();
+    row.included_allowance = Some(allowance(quantity, RolloverPolicy::None));
+
+    // The harm, stated: 1000 units authored, 5 units materialized.
+    let compiled = crate::domain::allowance::compile(&row).expect("it compiles");
+    assert_eq!(
+        compiled.bands,
+        vec![
+            TierBand::closed(0, quantity, RateMinor::ZERO),
+            TierBand::closed(quantity, u64::MAX, rate(5)),
+            TierBand::open(u64::MAX, rate(3)),
+        ]
+    );
+
+    let found = codes(&run(&row));
+    // ... and it is invisible to the geometry: nothing overlaps, nothing is
+    // empty, nothing is missing. This is what makes the check below the only
+    // thing standing between the fault and a published price.
+    assert!(
+        !found.contains(&TIER_BAND_EMPTY.to_owned()) && !found.contains(&TIER_BANDS_GAP.to_owned()),
+        "the compiled set is a well-formed geometry; that is the point: {found:?}"
+    );
+    assert!(
+        found.contains(&ALLOWANCE_QUANTITY_INVALID.to_owned()),
+        "an allowance whose offset overflows the authored ladder must be refused: {found:?}"
+    );
+}
+
+/// The positive control, one unit inside the boundary: the largest quantity that
+/// offsets this ladder exactly — `u64::MAX - 1000` puts the authored top on
+/// `u64::MAX` with nothing lost. It publishes.
+#[test]
+fn the_largest_quantity_that_offsets_the_ladder_exactly_is_accepted() {
+    let quantity = u64::MAX - 1_000;
+    let mut row = graduated_usage();
+    row.included_allowance = Some(allowance(quantity, RolloverPolicy::None));
+
+    let compiled = crate::domain::allowance::compile(&row).expect("it compiles");
+    assert_eq!(
+        compiled.bands[1],
+        TierBand::closed(quantity, u64::MAX, rate(5)),
+        "1000 units authored, 1000 units materialized"
+    );
+    assert!(
+        run(&row).violations.is_empty(),
+        "nothing overflowed, so nothing is refused: {:?}",
+        codes(&run(&row))
+    );
+}
+
+/// An untiered row has no authored bound to offset — the two synthesized bands
+/// are `[0, N)` and `[N, null)`, neither of which adds anything to `N` — so the
+/// overflow check must not fire on it at any quantity.
+#[test]
+fn an_untiered_row_cannot_overflow_its_offset() {
+    let mut row = per_unit_usage();
+    row.included_allowance = Some(allowance(u64::MAX, RolloverPolicy::None));
+
+    assert!(run(&row).violations.is_empty(), "{:?}", codes(&run(&row)));
+}
+
 /// And it stays silent while the authored ladder is the thing at fault, so one
 /// edit is reported once.
 #[test]
