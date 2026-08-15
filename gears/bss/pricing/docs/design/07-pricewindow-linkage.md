@@ -346,6 +346,25 @@ submit, or closer than the max batching-delay SLO at approval commit; D-88 — t
 in the Foundation catalogue because this slice owns the eligibility machinery the rule is part of,
 exactly as it owns the slice's other grandfathering refusals).
 
+**All three window mutations address a revision the catalog has already frozen (normative, D-314,
+2026-08-15, found by an operator taking a plan that already carried rows to `published`).** The
+subject is the plan's **current** revision — `published` or `retired`, Foundation §4.4/§3.7's sense —
+so on a plan whose only revision is a `draft` all three answer **404**, naming the current plan
+revision as the thing that is absent. This is a rule and not an artifact of how the revision
+happens to be looked up, on two independent grounds: the pending ref a mutation records carries
+the pinned `(revision, lifecycle_state)` pair and the store admits **no** `draft` value for the
+second (Foundation §3.7 — a mutation that got past the domain check would abort at the write,
+which was measured); and the projector reads a pinned revision's **content** live off the truth
+row up to the max batching-delay SLO later, a licence that holds only because a frozen revision
+and its revision-scoped children are physically immutable, which a draft's are not. The
+consequence is an **ordering constraint on a plan's first publish and not a deadlock**:
+`inst-wc-required` refuses a *billable* row whose key holds no live window, and the coverage
+report ranges over the billable set, so a plan whose shape is sound publishes with an **empty**
+row set — after which the row and its window are authorable and ride the next publish. What that
+sequence costs is stated in D-314 rather than here, because the artifact it leaves — an
+addressable revision that prices nothing — is read by the sellability gate below and is not this
+section's to resolve.
+
 **Instants on these surfaces are UTC at millisecond resolution (normative, D-144, 2026-08-02,
 found while building the draft-authoring plane).** `effectiveFrom`/`effectiveTo`, the cutover
 instant (`inst-co-shorten`/`inst-co-copy`), the D-88 changeover instant (`inst-su-instant`) and

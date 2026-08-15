@@ -3536,3 +3536,125 @@ for *a long period*.
 S3 §4 (the orthogonality clause), §5 (the new code), `inst-tb-window`'s statement
 and the schema table; rating PRD §Definitions, §Time and §539; the domain enum, its
 census list, `inst-tb-window`'s second clause, and `m20260802_000076`.
+
+#### D-314 [H] A window mutation's subject is a revision the catalog has already frozen
+
+**Status:** decided 2026-08-15. Found by an operator taking a plan that already
+carried billable rows to `published` and discovering that neither act it needs is
+available: the publish wants coverage, the coverage wants a publish.
+
+##### The finding
+
+Measured, not inferred — the second and third rows in this crate's fast tier this
+session, the first over HTTP against the stand and asserted in the crate besides:
+
+| act | on a plan whose only revision is a `draft` | why |
+|---|---|---|
+| plan publish carrying a billable row | one `WINDOW_COVERAGE_MISSING` per uncovered key | `inst-wc-required` |
+| `POST /prices/{priceId}/windows` | **404**, `current plan revision not found` | the mutation resolves the plan's *current* revision |
+| the way out | publish with **no** rows first, then author the row and its window, then publish again | `coverage::check` ranges over the billable set, so an empty row set presents no key to find uncovered |
+
+The order is therefore forced, and `infra::window`'s module header said so — but it
+defended the refusal from exactly one fact, that `LifecycleState::is_current_revision`
+is `published | retired`. Argued from that alone the refusal reads like an accident of
+reusing one repository function, and an accident is something a later author removes.
+
+It is not an accident. Relaxing it was measured rather than reasoned about: the
+domain-level restriction was lifted for the **schedule** verb only, at every site that
+expresses it — three of them, found one at a time because each is a separate
+`load_current` (`window::read_plan_context`, `approval::current_revision_shape`,
+`approval::submit_window_mutation_on`). With all three relaxed the schedule runs the
+whole way — coverage passes, the evaluator answers `Material { reason: FirstPublish }`,
+a second principal approves, the registry answers a handle — and then dies at step 6:
+
+> `Internal("… record pending catalog version ref: CHECK constraint failed:`
+> `chk_pricing_catalog_version_ref_subject_lifecycle")`
+
+with the transaction rolled back and no ref written. The restriction the reader takes
+for a query's side effect is enforced three layers down by the **schema**:
+`subject_lifecycle_state IS NULL OR IN ('published','retired')`, read off the
+constraint as it now stands after the `m20260802_000036` rebuild rather than off the
+migration that first wrote it.
+
+##### Why the neighbouring readings do not cover it
+
+**D-165 puts the pair on the ref row and D-128 fixes its token set, and both are about
+`superseded`.** §3.7 says the column is "constrained to the two tokens D-128 sanctions
+… so `superseded` is not expressible in a ref at all", and the store test that guards
+it is named for `superseded` too. `draft` rides along in the same `IN` list and in the
+same loop, unnamed and unexplained — so the design set states the constraint that makes
+the window surface's ordering constraint necessary, states the ordering constraint's
+mechanism one slice over, and nowhere joins them.
+
+**D-99 makes every window mutation a publish unit; it never asks whether the plan has
+one.** `inst-ws-publishunit`'s subject is what a mutation *does* — re-project, freeze,
+warm — on a plan for which all three words already mean something.
+
+**The projector's own safety argument is the second ground, and it is independent of
+the first.** §4.4 pins the revision *number* and the lifecycle *state* on the ref row
+and deliberately does not pin the content, because "a published revision row and its
+revision-scoped children are physically immutable". That premise is false for a draft,
+and measured so: the descriptor set of a draft revision was rewritten after the ref
+that names it was recorded, and `plan_repo::load_revision` — the projector's content
+read — has no state filter and returns the draft happily. The sweep arrives up to
+D-47's five-minute batching maximum later and writes an INSERT-only row on the
+seven-year horizon, so a draft-pinned delta would freeze whatever the draft happened to
+say at sweep time: content no rule judged, no reviewer signed and that keeps moving
+afterwards.
+
+##### Decision
+
+**The `published | retired` restriction on all three window mutations is normative and
+is stated as a rule rather than left as a consequence of `load_current`.** A window
+pins a revision, and a revision a publish has not frozen is not a thing to pin: the
+pinned pair has no legal `draft` value in the store, and the projector's licence to
+read content live off the pinned row holds only for a row nothing can still change.
+
+Nothing in the gear's behaviour changes. What changes is that the refusal now has a
+stated reason in the design set, so the next author who reads the 404 as a reuse
+artifact finds the two grounds before removing it.
+
+**No new error code.** The refusal stays a `404 current plan revision not found` on all
+three verbs. It is truthful, its remedy is the sequence stated above, and a code minted
+for it would buy a declaration-and-reference obligation and tell an operator nothing
+the message does not.
+
+##### What this costs, stated rather than hidden
+
+- **The empty first publish leaves a real artifact, and the module header did not
+  mention it.** Measured: the frozen delta carries `lifecycleState: "published"`,
+  `prices: []`, `windows: []`. It is addressable, INSERT-only and permanent on the
+  seven-year horizon — a published revision that prices nothing. Of `inst-sg-pinned`'s
+  six predicates, the three a version can answer today — (2) committed-`CatalogVersion`
+  addressability, (3) the purchasability dates, (4) the plan lifecycle state — all
+  answer affirmatively, and the rest have no key to be evaluated on, because
+  `inst-sg-conjunction` ranges over the plan's keys on a bound `(currency, region)` and
+  this revision publishes none. Whether a storefront can bind a market on a plan that
+  publishes no key is Subscriptions' half of the joint gate and not this gear's to
+  answer, so what is recorded here is the artifact and not a verdict about it.
+  **Deliberately not closed:** closing it means either a minimum-row rule at publish,
+  which re-closes the loop into an actual deadlock, or a seventh sellability predicate,
+  which is a change to a rule flagged joint with Subscriptions. Neither is a mechanism
+  question.
+- **A plan that already carries rows has to have them lifted out and put back.** There
+  is no import path around it — `infra::import` has no window operations by its own
+  design — so the operator sequence on such a plan is: capture the rows, delete them,
+  publish empty, recreate them, schedule each key's window, publish again. Two publishes
+  and two approval rounds where the author expected one.
+- **The relaxation would not have shortened that sequence anyway.** Measured under it,
+  a schedule on a never-published plan is judged `Material { reason: FirstPublish }`, so
+  it takes a second principal — the relaxation swaps one publish for one approval round
+  rather than removing a step. That is worth recording because it removes the ergonomic
+  argument for relaxing, which is the only argument there was.
+- **A partial relaxation is strictly worse than the refusal.** Lifting the domain check
+  without the schema one turns a truthful `404` into a `500` at step 6. Anyone attempting
+  this in future starts three layers down, not at `read_plan_context`.
+
+##### Propagated
+
+**Propagated**: S7 §5 (the ordering constraint under the surface table) and Foundation §3.7 (the
+`draft` half of `chk_pricing_catalog_version_ref_subject_lifecycle`, beside the
+`superseded` half D-165 already carries); `infra::window`'s module header, which now
+argues from the schema and the projector rather than from `load_current`; and
+`sqlite_window_service.rs`, which asserts the surface refusal and the store refusal in
+one case so neither can be relaxed alone without a red test.

@@ -581,15 +581,29 @@ async fn a_negative_subject_revision_is_refused() {
     .await;
 }
 
-/// **`superseded` is the token this constraint exists to keep out**, and it is
-/// the reachable defect rather than the exotic one.
+/// **Two tokens, two different defects**, and the loop below runs over three
+/// values because they are not one rule with one reason.
 ///
-/// Reading the pinned revision's state as it *now* stands lets `superseded` into
-/// a delta — a value `plan_repo::load_current` could never return and which
+/// **`superseded`** is the reachable one and is what the constraint was written
+/// for. Reading the pinned revision's state as it *now* stands lets `superseded`
+/// into a delta — a value `plan_repo::load_current` could never return and which
 /// D-128 does not contemplate for a projected subject, whose clause names
 /// `published` **or** `retired`. A consumer coding D-90's sellability predicate
 /// as "is published" then reads the version as unsellable, permanently, on an
 /// INSERT-only row.
+///
+/// **`draft` is kept out for a second reason, and this doc used to imply it rode
+/// along (D-314, 2026-08-15).** `superseded` is a state a *frozen* revision drifts
+/// into after its pin; a draft revision row is still **mutable**, and the
+/// projector reads a pinned revision's content live off the truth row up to
+/// D-47's batching maximum after the commit — a licence that rests on the row and
+/// its revision-scoped children being physically immutable. So a draft-pinned ref
+/// would freeze un-judged, still-moving content into an INSERT-only delta. This
+/// clause is also the second of D-314's two grounds for the window surface's 404
+/// on a plan that has never published, and its fast-tier twin is
+/// `sqlite_window_service.rs::a_window_needs_a_frozen_revision_and_the_store_says_so_too`:
+/// widening it here would leave that case's *surface* assertion green.
+/// `abandoned` is the terminal draft (D-145) and is out for the same reason.
 ///
 /// NULL is admitted because only a revisioned subject kind has a state at all.
 #[tokio::test]

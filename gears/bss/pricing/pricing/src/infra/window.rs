@@ -87,11 +87,42 @@
 //! `NotFound`, because there is no current revision to project and a window on an
 //! unpublished plan's draft row has nothing to be consumer-visible *in*.
 //!
+//! # And that refusal is a **rule** (D-314), not this function's choice of reader
+//!
+//! Argued from `load_current`'s state list alone — which is all the paragraph above
+//! does — the 404 reads like an accident of reusing one repository function, and an
+//! accident is something a later author deletes. It is not one, and the two grounds
+//! were measured by lifting the restriction rather than reasoned about.
+//!
+//! **The store has no `draft` to pin.** Step 6 records
+//! `(subject_revision, subject_lifecycle_state)`, and
+//! `chk_pricing_catalog_version_ref_subject_lifecycle` admits
+//! `NULL | 'published' | 'retired'` — read off the constraint as it now stands after
+//! `m20260802_000036`'s rebuild, not off the migration that first wrote it. Relaxing
+//! the domain check for the **schedule** verb alone takes three edits, one per
+//! `load_current` in the path (`read_plan_context` below,
+//! `approval::current_revision_shape`, `approval::submit_window_mutation_on`), and the
+//! act then runs the whole way — coverage passes, the evaluator answers
+//! `Material { reason: FirstPublish }`, a second principal approves, the registry
+//! answers a handle — before aborting at the write with a `CHECK` failure surfaced as
+//! `DomainError::Internal`. A partial relaxation converts a truthful 404 into a 500.
+//!
+//! **And the projector's licence does not extend to a draft.** `read_model` pins the
+//! revision *number* and the lifecycle *state* on the ref row and deliberately pins no
+//! content, on the stated premise that "a published revision row and its
+//! revision-scoped children are physically immutable". A draft's are not:
+//! `plan_shape_repo::set_descriptor_set` rewrites a draft revision's descriptor set
+//! after the ref naming it exists, and `plan_repo::load_revision` — the projector's
+//! content read — carries no state filter and hands the draft back. The sweep arrives
+//! up to D-47's five-minute batching maximum later and writes an INSERT-only row on the
+//! seven-year horizon, so a draft-pinned delta would freeze whatever the draft said at
+//! sweep time: content no rule judged and that keeps moving afterwards.
+//!
 //! # A billable row cannot ride a plan's **first** publish — it takes two, and
 //! both are reachable
 //!
-//! The paragraph above states a fact; this states the consequence it has, and the
-//! consequence is narrower than it looks. Put together:
+//! The two sections above state a fact and why it is a rule; this states the
+//! consequence it has, and the consequence is narrower than it looks. Put together:
 //!
 //! * `plan_repo::load_current` resolves `published | retired`
 //!   ([`LifecycleState::is_current_revision`](crate::domain::lifecycle::LifecycleState::is_current_revision)),
@@ -121,8 +152,24 @@
 //! The policy step joined that list when the schedule began consulting the evaluator,
 //! and it is not a detour: an unconfigured tenant has every act material, so a schedule
 //! would answer with a unit rather than a window. It is the same two-person shape as the
-//! first publish, so what is left is still an ordering constraint and not a deadlock: it
-//! needs no design decision and gets none, and the only thing owed was saying so. The in-crate fixtures still schedule their coverage
+//! first publish, so what is left is still an ordering constraint and not a deadlock.
+//!
+//! **What the sequence costs, which this section used to leave out (D-314).** The
+//! "needs no design decision and gets none" that stood here was true of the *ordering*
+//! and false of what the ordering leaves behind. The empty publish is a real publish:
+//! it commits a version and freezes a delta carrying `lifecycleState: "published"`,
+//! `prices: []` and `windows: []`, INSERT-only on the seven-year horizon. Of
+//! `inst-sg-pinned`'s six predicates the three a version can answer today — committed
+//! addressability, the purchasability dates and the plan lifecycle state — all answer
+//! affirmatively, and the rest have no key to be evaluated on, because
+//! `inst-sg-conjunction` ranges over the plan's keys on a bound `(currency, region)`
+//! and this revision publishes none. Whether a storefront can bind a market on a plan
+//! that publishes no key is Subscriptions' half of the joint gate; what is recorded is
+//! the artifact, not a verdict about it, and D-314 states why closing it is a change to
+//! the sellability gate rather than a change here. A plan that *already* carries rows
+//! pays the same order the hard way — the rows come out, the plan publishes empty, the
+//! rows go back — because no other surface authors a window either (`infra::import` has
+//! none by its own design). The in-crate fixtures still schedule their coverage
 //! window through `window_repo` — for isolation and speed, which is what their own
 //! docs now say rather than the withdrawn claim about a door that does not exist.
 //!

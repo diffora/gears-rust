@@ -1527,3 +1527,131 @@ async fn a_schedule_stamped_after_the_policy_start_commits() {
         ),
     }
 }
+
+// ---------------------------------------------------------------------------
+// D-314: the subject is a revision the catalog has already frozen
+// ---------------------------------------------------------------------------
+
+/// **A window cannot be scheduled on a plan that has never published, and the two
+/// enforcements that say so are asserted together.**
+///
+/// The file's own premise banner says every plan here is published because the window
+/// paths resolve the plan's *current* revision. This is the one case about the other
+/// side of that premise, and it exists because the refusal reads like an accident:
+/// `plan_repo::load_current` is `published | retired`, so a reader can conclude the 404
+/// is a side effect of which repository function this path happened to reuse, and
+/// delete it.
+///
+/// D-314 records that it is not, and the two assertions here guard the two **separate**
+/// enforcements — which is the point, because either can be relaxed without the other:
+///
+/// 1. the surface refuses, naming the current plan revision as what is absent. This arm
+///    is what reddens if the domain check is lifted: the act then runs to step 6 and
+///    aborts at the write, so `schedule` answers `Internal` and the `match` below takes
+///    its panicking arm. A domain relaxation cannot pass this case quietly, and it
+///    converts a truthful 404 into a 500 rather than authoring anything.
+/// 2. the ref row such a mutation would record at step 6 is refused **by the store** —
+///    `chk_pricing_catalog_version_ref_subject_lifecycle` admits no `draft`. This arm
+///    guards the *other* direction, and nothing else in the crate's fast tier does: a
+///    later migration that widens or drops that `CHECK` — reasoning that `superseded`
+///    is the token it was written for, which it is and which its Postgres twin now
+///    spells out is only half of what it keeps out — leaves assertion (1) perfectly
+///    green while removing the ground D-314's second half rests on.
+///
+/// The second assertion is written against `record_pending`, which is the call
+/// `mutate_in` makes, with the two arguments the relaxed path would supply: the draft's
+/// own revision number and its own lifecycle state, both taken off the record the way
+/// `read_plan_context` takes them. It asserts the **constraint by name**, its Postgres
+/// twin's discipline: `is_err()` alone is satisfied by any storage failure, so a chain
+/// that dropped this `CHECK` and refused the insert on some other column would keep the
+/// case green while the guarantee was gone.
+#[tokio::test]
+async fn a_window_needs_a_frozen_revision_and_the_store_says_so_too() {
+    use bss_pricing::domain::read_model::SubjectRef;
+    use bss_pricing::infra::storage::repo::{PendingVersionRow, catalog_version_ref_repo};
+
+    let h = Harness::new().await;
+    let plan_id = Uuid::now_v7();
+    // Deliberately **not** `published()`: the plan is publishable and unpublished,
+    // which is the state under judgement.
+    let seeded = seed_publishable_plan(&h, plan_id).await;
+    rest_support::approve_threshold_policy(&h, &[("EUR", 100_000)]).await;
+
+    // (1) The surface.
+    let refused = schedule(&h, seeded.price_id, window_at(0), None)
+        .await
+        .expect_err("a plan with no current revision has no window surface");
+    match refused {
+        DomainError::NotFound { subject, .. } => assert_eq!(
+            subject, "current plan revision",
+            "the absent thing is named, so the operator is told which act is missing"
+        ),
+        other => panic!("expected the current-revision refusal, got {other:?}"),
+    }
+    assert!(
+        rest_support::pending_version_refs(&h).await.is_empty(),
+        "and the refusal wrote nothing"
+    );
+
+    // (2) The store, against the row the relaxed path would have written.
+    let draft = {
+        let conn = h.db.conn().expect("conn");
+        bss_pricing::infra::storage::repo::plan_repo::load_open_draft(
+            &conn,
+            &h.scope(),
+            h.tenant,
+            PlanId::new(plan_id),
+        )
+        .await
+        .expect("read the open draft")
+        .expect("the seed left one")
+    };
+    assert_eq!(
+        draft.lifecycle_state,
+        LifecycleState::Draft,
+        "the subject state a relaxed path would carry off the same record"
+    );
+    let conn = h.db.conn().expect("conn");
+    let stored = catalog_version_ref_repo::record_pending(
+        &conn,
+        &h.scope(),
+        PendingVersionRow::for_subject(
+            h.tenant,
+            "window-mutation/d314".to_owned(),
+            &SubjectRef::Plan(plan_id),
+            Some(draft.revision),
+            Some(draft.lifecycle_state),
+            rest_support::at(12),
+        ),
+    )
+    .await;
+    let refusal = format!("{stored:?}");
+    assert!(
+        refusal.contains("chk_pricing_catalog_version_ref_subject_lifecycle"),
+        "the schema admits no draft subject state, and it is THIS constraint that says \
+         so — an `is_err` alone would be satisfied by any other refusal: {refusal}"
+    );
+
+    // The negative control, and it is what makes the assertion above about the
+    // **state** rather than about anything else on the row. It reuses the **same
+    // handle**, so the two inserts differ in exactly one column: the rejected one wrote
+    // nothing, so `(tenant, handle, kind, subject)` is still free, and a control under a
+    // second handle could not rule out a refusal keyed on the handle instead.
+    let accepted = catalog_version_ref_repo::record_pending(
+        &conn,
+        &h.scope(),
+        PendingVersionRow::for_subject(
+            h.tenant,
+            "window-mutation/d314".to_owned(),
+            &SubjectRef::Plan(plan_id),
+            Some(draft.revision),
+            Some(LifecycleState::Published),
+            rest_support::at(12),
+        ),
+    )
+    .await;
+    assert!(
+        accepted.is_ok(),
+        "one column apart, the same row stores: {accepted:?}"
+    );
+}
