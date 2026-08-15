@@ -461,8 +461,8 @@ mod key_contradictions {
             model_kind: Some("per_unit".to_owned()),
             amount_minor: None,
             unit_rate_nano_minor: Some(2_000_000_000),
-            billing_granularity: Some("whole_unit".to_owned()),
             meter: Some("egress.gb".to_owned()),
+            billing_granularity: Some("whole_unit".to_owned()),
             included_allowance: Some(IncludedAllowanceView {
                 quantity: 100,
                 rollover_policy: "none".to_owned(),
