@@ -3353,3 +3353,104 @@ async fn a_ranked_plan_another_published_plan_points_at_still_publishes() {
         "and the plan publishes: {report:?}"
     );
 }
+
+/// **A period bound on a market the plan does not sell is refused by the real
+/// publish path** (D-319) — and the case goes through `precheck` for the reason
+/// the composite case above does.
+///
+/// `PeriodFloorCapMarketSold`'s operand is `PlanShape::period_floor_caps`, which
+/// `assemble_from` has to load; a rule whose operand nobody loads is a rule that
+/// always passes, and this function's neighbours record that landing three times
+/// (D-254, D-257, D-258). A hand-built `PlanShape` cannot see the missing line,
+/// so the assertion is made against the shape a commit would actually judge.
+///
+/// The positive control is deliberately the **same amount** on a market the plan
+/// does sell: what separates the two subjects is one axis value, so a rule that
+/// refused every bound would fail the control, and a rule that refused none
+/// would fail the refusal.
+#[tokio::test]
+async fn a_period_bound_on_an_unsold_market_is_refused_by_the_publish_path() {
+    let h = harness().await;
+    let (_revision, _version, _) = seed_publishable(&h).await;
+
+    let clean = h
+        .publish
+        .precheck(&h.scope, TENANT, plan_id(), at(11))
+        .await
+        .expect("the pre-check runs");
+    assert!(clean.is_publishable(), "the subject was publishable first");
+
+    let current = h
+        .plans
+        .find_open_draft(&h.scope, TENANT, plan_id())
+        .await
+        .expect("read the draft")
+        .expect("there is one");
+
+    // The seeded plan prices `(EUR, eu)`. This is the same amount one region
+    // over — the shape of the typo the rule exists to catch.
+    let after_bad = h
+        .shapes
+        .replace_period_floor_caps(
+            &h.scope,
+            TENANT,
+            plan_id(),
+            current.revision,
+            current.row_version,
+            vec![bss_pricing::domain::plan_shape::PeriodFloorCap {
+                currency: CurrencyCode::new("EUR").expect("three letters"),
+                region: Region::new("us").expect("a non-blank region"),
+                floor_minor: Some(MinorAmount::new(50_000).expect("non-negative")),
+                cap_minor: None,
+            }],
+            stamp_of(ACTOR, at(11)),
+        )
+        .await
+        .expect("author the bound on the open draft");
+
+    let report = h
+        .publish
+        .precheck(&h.scope, TENANT, plan_id(), at(11))
+        .await
+        .expect("the pre-check runs");
+    assert!(
+        !report.is_publishable(),
+        "a bound on a market the plan prices nothing in must not publish: {report:?}"
+    );
+    assert!(
+        report
+            .violations
+            .iter()
+            .any(|v| v.code == "PERIOD_FLOOR_CAP_MARKET_UNSOLD"),
+        "and it must say which rule refused: {report:?}"
+    );
+
+    // The control: the same amount on the market the plan actually sells.
+    h.shapes
+        .replace_period_floor_caps(
+            &h.scope,
+            TENANT,
+            plan_id(),
+            current.revision,
+            after_bad.row_version,
+            vec![bss_pricing::domain::plan_shape::PeriodFloorCap {
+                currency: CurrencyCode::new("EUR").expect("three letters"),
+                region: Region::new("eu").expect("a non-blank region"),
+                floor_minor: Some(MinorAmount::new(50_000).expect("non-negative")),
+                cap_minor: None,
+            }],
+            stamp_of(ACTOR, at(11)),
+        )
+        .await
+        .expect("move the bound onto a sold market");
+
+    let fixed = h
+        .publish
+        .precheck(&h.scope, TENANT, plan_id(), at(11))
+        .await
+        .expect("the pre-check runs");
+    assert!(
+        fixed.is_publishable(),
+        "the same bound on a sold market is the whole point of the field: {fixed:?}"
+    );
+}

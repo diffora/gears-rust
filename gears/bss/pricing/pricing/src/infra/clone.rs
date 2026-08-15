@@ -419,6 +419,21 @@ pub async fn clone_plan_on(
         .row_version;
     }
 
+    // D-319's period floor/cap set. Extracted rather than written inline like
+    // its four siblings above, and the reason is measured: the sixth copy took
+    // this function past clippy's cognitive-complexity bar (21/20). Whichever
+    // child set is the seventh should follow it out.
+    version = copy_period_bounds_on(
+        runner,
+        scope,
+        tenant_id,
+        (source, source_revision),
+        (target, revision),
+        version,
+        stamp,
+    )
+    .await?;
+
     // **A bundle rides its plan's revisions, so a clone of a bundle is a
     // bundle** (D-269). Ahead of the patch below because the composition
     // write is a compare-and-swap on the same revision tag, and it returns
@@ -465,6 +480,48 @@ pub async fn clone_plan_on(
         composites_copied,
         notices: rows.notices(),
     })
+}
+
+/// Copy the source revision's period floor/cap set onto the clone (**D-319**).
+///
+/// Verbatim: nothing is re-minted, because the key is the market pair and a
+/// market means the same thing on the clone as on the source — unlike a
+/// `composite_id`, which is stable across revisions of one plan rather than
+/// across plans (D-106). Whether the clone actually sells those markets is
+/// `PERIOD_FLOOR_CAP_MARKET_UNSOLD`'s question at its first publish, and the
+/// clone copies the source's price rows, so the answer is normally the source's.
+///
+/// Returns the row version the next write has to hold — the caller's, unchanged,
+/// when the source authored no bound.
+async fn copy_period_bounds_on(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    from: (PlanId, u64),
+    to: (PlanId, u64),
+    version: RowVersion,
+    stamp: AuditStamp,
+) -> Result<RowVersion, DomainError> {
+    let (source, source_revision) = from;
+    let (target, revision) = to;
+    let bounds = plan_shape_repo::load_period_floor_cap_set(
+        runner,
+        scope,
+        tenant_id,
+        source,
+        source_revision,
+    )
+    .await
+    .map_err(|e| repo_failure(&e))?;
+    if bounds.is_empty() {
+        return Ok(version);
+    }
+    Ok(plan_shape_repo::replace_period_floor_caps_on(
+        runner, scope, tenant_id, target, revision, version, bounds, stamp,
+    )
+    .await
+    .map_err(|e| repo_failure(&e))?
+    .row_version)
 }
 
 /// Copy the source bundle's identity and composition onto the clone (D-269).

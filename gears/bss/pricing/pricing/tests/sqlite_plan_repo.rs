@@ -17,12 +17,13 @@ use std::collections::BTreeMap;
 
 use bss_pricing::domain::concurrency::RowVersion;
 use bss_pricing::domain::lifecycle::LifecycleState;
+use bss_pricing::domain::money::{CurrencyCode, MinorAmount};
 use bss_pricing::domain::plan::PlanShapePatch;
 use bss_pricing::domain::plan_shape::{
     AddonRule, BillingCycle, CompositeMeter, CustomIntervalUnit, DescriptorSet, Frequency,
-    PhaseKind, PlanPhase,
+    PeriodFloorCap, PhaseKind, PlanPhase,
 };
-use bss_pricing::domain::scope_key::{PhaseId, PlanId};
+use bss_pricing::domain::scope_key::{PhaseId, PlanId, Region};
 use bss_pricing::infra::storage::entity::{
     bundle, bundle_component, bundle_revshare, bundle_revshare_group, outbox, plan,
 };
@@ -1547,9 +1548,41 @@ async fn published_plan_with_shape(
         )
         .await
         .expect("author the composite set on the open draft");
+    shapes
+        .replace_period_floor_caps(
+            scope,
+            tenant,
+            plan_id,
+            0,
+            RowVersion::new(4),
+            two_period_bounds(),
+            stamp(),
+        )
+        .await
+        .expect("author the period floor/cap set on the open draft");
     seed_bundle_composition(provider, scope, tenant, plan_id).await;
     flip_state(provider, scope, plan_id, 0, LifecycleState::Published).await;
     shapes
+}
+
+/// Two period bounds, one per market, in the order the reader guarantees —
+/// `(currency, region)` — so the assertions stay equalities over a total order
+/// (**D-319**).
+fn two_period_bounds() -> Vec<PeriodFloorCap> {
+    vec![
+        PeriodFloorCap {
+            currency: CurrencyCode::new("EUR").expect("three letters"),
+            region: Region::new("DE").expect("non-blank"),
+            floor_minor: Some(MinorAmount::new(40_000).expect("non-negative")),
+            cap_minor: None,
+        },
+        PeriodFloorCap {
+            currency: CurrencyCode::new("USD").expect("three letters"),
+            region: Region::new("US").expect("non-blank"),
+            floor_minor: Some(MinorAmount::new(50_000).expect("non-negative")),
+            cap_minor: Some(MinorAmount::new(500_000).expect("non-negative")),
+        },
+    ]
 }
 
 /// Two composite definitions, neither self-referential, for the shape cases.
@@ -2049,6 +2082,17 @@ async fn a_new_revision_carries_the_whole_shape_forward_with_stable_ids_d83() {
         Some(descriptors()),
         "the descriptor set travels, the P5 extra fields included"
     );
+    // D-319's bounds. A successor that lost them republishes a plan with no
+    // minimum — a price change nobody authored and no line of the invoice
+    // explains.
+    assert_eq!(
+        shapes
+            .list_period_floor_caps(&scope, tenant, plan_id, 1)
+            .await
+            .expect("read the successor's period bounds"),
+        two_period_bounds(),
+        "the period floor/cap set travels, every market of it (D-319)"
+    );
 
     // Slice 8's three, on the same terms (D-92): a successor that lost its
     // components composes with fewer products than its predecessor at an
@@ -2185,6 +2229,15 @@ async fn an_abandoned_revision_keeps_none_of_the_whole_shape_d145() {
         None,
         "no descriptor set survives the tombstone"
     );
+    assert!(
+        shapes
+            .list_period_floor_caps(&scope, tenant, plan_id, 1)
+            .await
+            .expect("read")
+            .is_empty(),
+        "no period bound survives the tombstone (D-319): `abandoned` is not `draft`, so the \
+         drop has to precede the flip or the table's DELETE trigger refuses it forever"
+    );
 
     // Slice 8's three, on the same terms: a tombstone that kept its composition
     // would leave a frozen component set hanging off a revision no path reaches,
@@ -2267,7 +2320,7 @@ async fn the_revision_scoped_tables_are_a_closed_set_and_each_one_is_copied_and_
     /// themselves, so their statements need that indirection and Slice 2's do
     /// not. `PlanRepo` calls both unconditionally; a plan that is not a bundle is
     /// a no-op.
-    const REVISION_SCOPED: [&str; 7] = [
+    const REVISION_SCOPED: [&str; 8] = [
         "pricing_bundle_component",
         "pricing_bundle_revshare",
         "pricing_bundle_revshare_group",
@@ -2279,6 +2332,12 @@ async fn the_revision_scoped_tables_are_a_closed_set_and_each_one_is_copied_and_
         "pricing_composite_meter",
         "pricing_plan_addon_rule",
         "pricing_plan_descriptor_set",
+        // D-319's period floor/cap (2026-08-15). Added after the obligation was
+        // met, like `pricing_composite_meter` above: `copy_period_floor_caps`
+        // and `delete_period_floor_caps` live in `plan_shape_repo` beside the
+        // phase set's, `open_revision` and `abandon_draft` call them in the
+        // required order, and the two shape cases below assert both.
+        "pricing_plan_period_floor_cap",
         "pricing_plan_phase",
     ];
 

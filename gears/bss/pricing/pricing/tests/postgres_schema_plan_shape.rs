@@ -1,7 +1,7 @@
-//! `pricing_plan_phase`, `pricing_plan_addon_rule` and
-//! `pricing_plan_descriptor_set` — the three revision-scoped children of a plan
-//! revision — proved by **executing the statement each object must refuse**, on
-//! Postgres.
+//! `pricing_plan_phase`, `pricing_plan_addon_rule`,
+//! `pricing_plan_descriptor_set` and `pricing_plan_period_floor_cap` — the four
+//! revision-scoped children of a plan revision — proved by **executing the
+//! statement each object must refuse**, on Postgres.
 //!
 //! # Why this suite exists
 //!
@@ -1159,6 +1159,219 @@ async fn a_frozen_revision_acquires_no_descriptor_set() {
              WHERE plan_id = '{PLAN_B}' AND plan_revision = 0"
         ),
         "pricing_plan_descriptor_set: UPDATE of a descriptor set under a published plan revision is not permitted",
+    )
+    .await;
+}
+
+// ---------------------------------------------------------------------------
+// `pricing_plan_period_floor_cap` (D-319) — the four CHECKs and the trigger
+// ---------------------------------------------------------------------------
+//
+// The `SQLite` mirror of every rule below is in
+// `tests/sqlite_plan_period_floor_cap.rs`, and it is a *different set of
+// objects*: three fixed-message `RAISE(ABORT, …)` triggers where Postgres has
+// one PL/pgSQL function with two arms. What is shared is the four `CHECK`s,
+// written identically on both engines — which is the whole argument for putting
+// the market pair in a new table rather than in columns on `pricing_plan`, where
+// `SQLite` could carry no `CHECK` at all (`m20260802_000056`).
+
+fn insert_bound(plan: &str, currency: &str, region: &str, floor: &str, cap: &str) -> String {
+    format!(
+        "INSERT INTO bss.pricing_plan_period_floor_cap \
+         (plan_id, plan_revision, currency, region, tenant_id, floor_minor, cap_minor) \
+         VALUES ('{plan}', 0, '{currency}', '{region}', '{TENANT}', {floor}, {cap})"
+    )
+}
+
+/// The world this table accepts, asserted before anything is refused.
+///
+/// Without it a table nothing could be written to at all would pass every
+/// refusal below — the module doc's standing rule, applied to a fourth table.
+#[tokio::test]
+#[ignore = "requires Docker (testcontainers)"]
+async fn a_draft_revisions_bounds_are_insertable_mutable_and_deletable() {
+    let conn = applied().await;
+    seed_draft(&conn, PLAN_A).await;
+
+    must_succeed(&conn, &insert_bound(PLAN_A, "USD", "us", "50000", "500000")).await;
+    // One bound per market, any number of markets: the second differs only in
+    // `region` and the third only in `currency`.
+    must_succeed(&conn, &insert_bound(PLAN_A, "USD", "ca", "40000", "NULL")).await;
+    must_succeed(&conn, &insert_bound(PLAN_A, "EUR", "us", "NULL", "45000")).await;
+    must_succeed(
+        &conn,
+        &format!(
+            "UPDATE bss.pricing_plan_period_floor_cap SET floor_minor = 60000 \
+             WHERE plan_id = '{PLAN_A}' AND plan_revision = 0 AND currency = 'USD' \
+             AND region = 'us'"
+        ),
+    )
+    .await;
+    must_succeed(
+        &conn,
+        &format!(
+            "DELETE FROM bss.pricing_plan_period_floor_cap \
+             WHERE plan_id = '{PLAN_A}' AND plan_revision = 0"
+        ),
+    )
+    .await;
+}
+
+/// Every amount `CHECK`, each pinned against the value one step away from it.
+///
+/// The controls are the point: `> 0` and `> 1000` both refuse a zero, and `<`
+/// and `<=` both refuse an inverted pair — only one of each is the rule, and
+/// only the accepted value tells them apart.
+#[tokio::test]
+#[ignore = "requires Docker (testcontainers)"]
+async fn a_bound_that_admits_no_bill_is_refused_by_its_own_check() {
+    let conn = applied().await;
+    seed_draft(&conn, PLAN_A).await;
+
+    must_be_rejected(
+        &conn,
+        &insert_bound(PLAN_A, "USD", "us", "0", "NULL"),
+        "chk_pricing_plan_period_floor_cap_floor_positive",
+    )
+    .await;
+    must_be_rejected(
+        &conn,
+        &insert_bound(PLAN_A, "USD", "us", "NULL", "0"),
+        "chk_pricing_plan_period_floor_cap_cap_positive",
+    )
+    .await;
+    must_be_rejected(
+        &conn,
+        &insert_bound(PLAN_A, "USD", "us", "50001", "50000"),
+        "chk_pricing_plan_period_floor_cap_ordered",
+    )
+    .await;
+    must_be_rejected(
+        &conn,
+        &insert_bound(PLAN_A, "USD", "us", "NULL", "NULL"),
+        "chk_pricing_plan_period_floor_cap_present",
+    )
+    .await;
+
+    // The controls, in the same order: one minor unit, one minor unit, an equal
+    // pair (a fixed-fee plan is not a contradiction), and each one-sided shape —
+    // the last of which is what proves `_ordered`'s explicit NULL arms are being
+    // evaluated rather than silently satisfied by NULL propagation.
+    must_succeed(&conn, &insert_bound(PLAN_A, "USD", "us", "1", "NULL")).await;
+    must_succeed(&conn, &insert_bound(PLAN_A, "USD", "ca", "NULL", "1")).await;
+    must_succeed(&conn, &insert_bound(PLAN_A, "EUR", "de", "50000", "50000")).await;
+    must_succeed(&conn, &insert_bound(PLAN_A, "EUR", "fr", "50000", "NULL")).await;
+}
+
+/// The key is the whole market, so one revision holds one bound per market.
+#[tokio::test]
+#[ignore = "requires Docker (testcontainers)"]
+async fn one_revision_holds_one_bound_per_market() {
+    let conn = applied().await;
+    seed_draft(&conn, PLAN_A).await;
+    must_succeed(&conn, &insert_bound(PLAN_A, "USD", "us", "50000", "NULL")).await;
+
+    must_be_rejected(
+        &conn,
+        &insert_bound(PLAN_A, "USD", "us", "60000", "NULL"),
+        "pricing_plan_period_floor_cap_pkey",
+    )
+    .await;
+}
+
+/// A bound cannot hang off a revision that does not exist.
+///
+/// **The append-only trigger answers, not the foreign key.** A `BEFORE ROW`
+/// trigger runs ahead of constraint checking on this engine, and the trigger's
+/// predicate ("a *draft* revision with this key exists") strictly implies the
+/// key's — so on the insert path the key can never be reached second, exactly as
+/// on the `SQLite` mirror. What is asserted about the key is therefore that it
+/// is **declared over both columns**, which is the half a refusal could never
+/// show: a single-column key would refuse this row identically and would let a
+/// bound sit under revision 7 of a plan whose only revision is 0.
+#[tokio::test]
+#[ignore = "requires Docker (testcontainers)"]
+async fn a_bound_cannot_hang_off_a_revision_that_does_not_exist() {
+    let conn = applied().await;
+    seed_draft(&conn, PLAN_A).await;
+
+    must_be_rejected(
+        &conn,
+        &insert_bound(PLAN_ABSENT, "USD", "us", "50000", "NULL"),
+        "is not permitted",
+    )
+    .await;
+
+    let declared = conn
+        .query_one(Statement::from_string(
+            sea_orm::DatabaseBackend::Postgres,
+            "SELECT pg_get_constraintdef(oid) AS def FROM pg_constraint \
+             WHERE conname = 'fk_pricing_plan_period_floor_cap_revision'"
+                .to_owned(),
+        ))
+        .await
+        .expect("query the constraint")
+        .expect("the foreign key is declared");
+    let def: String = declared.try_get("", "def").expect("read the definition");
+    assert!(
+        def.contains("(plan_id, plan_revision)") && def.contains("(plan_id, revision)"),
+        "the composite FK must cover both key columns, got: {def}"
+    );
+}
+
+/// Every verb is refused once the revision is frozen, INSERT included — the arm
+/// that stops a minimum nobody approved being *added* to a published revision.
+#[tokio::test]
+#[ignore = "requires Docker (testcontainers)"]
+async fn a_frozen_revisions_bounds_take_no_insert_no_update_and_no_delete() {
+    let conn = applied().await;
+    seed_draft(&conn, PLAN_A).await;
+    must_succeed(&conn, &insert_bound(PLAN_A, "USD", "us", "50000", "NULL")).await;
+    freeze(&conn, PLAN_A, "published").await;
+
+    must_be_rejected(
+        &conn,
+        &insert_bound(PLAN_A, "EUR", "de", "40000", "NULL"),
+        "pricing_plan_period_floor_cap",
+    )
+    .await;
+    must_be_rejected(
+        &conn,
+        &format!(
+            "UPDATE bss.pricing_plan_period_floor_cap SET floor_minor = 999999 \
+             WHERE plan_id = '{PLAN_A}' AND plan_revision = 0"
+        ),
+        "pricing_plan_period_floor_cap",
+    )
+    .await;
+    must_be_rejected(
+        &conn,
+        &format!(
+            "DELETE FROM bss.pricing_plan_period_floor_cap \
+             WHERE plan_id = '{PLAN_A}' AND plan_revision = 0"
+        ),
+        "pricing_plan_period_floor_cap",
+    )
+    .await;
+}
+
+/// **`abandoned` is not `draft`** — which is what forces `abandon_draft` to drop
+/// these rows before it flips the revision.
+#[tokio::test]
+#[ignore = "requires Docker (testcontainers)"]
+async fn an_abandoned_revisions_bounds_can_no_longer_be_dropped() {
+    let conn = applied().await;
+    seed_draft(&conn, PLAN_B).await;
+    must_succeed(&conn, &insert_bound(PLAN_B, "USD", "us", "50000", "NULL")).await;
+    freeze(&conn, PLAN_B, "abandoned").await;
+
+    must_be_rejected(
+        &conn,
+        &format!(
+            "DELETE FROM bss.pricing_plan_period_floor_cap \
+             WHERE plan_id = '{PLAN_B}' AND plan_revision = 0"
+        ),
+        "pricing_plan_period_floor_cap",
     )
     .await;
 }

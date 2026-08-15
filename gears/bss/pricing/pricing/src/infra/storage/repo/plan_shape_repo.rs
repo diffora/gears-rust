@@ -89,12 +89,15 @@ use uuid::Uuid;
 
 use crate::domain::audit::{AuditAction, AuditStamp};
 use crate::domain::concurrency::RowVersion;
+use crate::domain::money::{CurrencyCode, MinorAmount};
 use crate::domain::plan::PlanRevision;
-use crate::domain::plan_shape::{AddonRule, CompositeMeter, DescriptorSet, PhaseKind, PlanPhase};
-use crate::domain::scope_key::{PhaseId, PlanId};
+use crate::domain::plan_shape::{
+    AddonRule, CompositeMeter, DescriptorSet, PeriodFloorCap, PhaseKind, PlanPhase,
+};
+use crate::domain::scope_key::{PhaseId, PlanId, Region};
 use crate::infra::storage::RepoError;
 use crate::infra::storage::entity::{
-    composite_meter, plan, plan_addon_rule, plan_descriptor_set, plan_phase,
+    composite_meter, plan, plan_addon_rule, plan_descriptor_set, plan_period_floor_cap, plan_phase,
 };
 use crate::infra::storage::repo::plan_repo::{
     load_revision, mutable_draft, not_found, read_token, record_revision_mutation, refuse,
@@ -204,6 +207,83 @@ impl PlanShapeRepo {
             .conn()
             .map_err(|e| RepoError::Db(format!("conn: {e}")))?;
         load_phase_set(&conn, scope, tenant_id, plan_id, revision).await
+    }
+
+    /// Replace an open draft revision's whole period floor/cap set, under the
+    /// caller's row version, in one transaction (S2 §6, **D-319**).
+    ///
+    /// Structurally [`PlanShapeRepo::replace_phases`] against the sibling table.
+    /// An **empty set is a valid request**: it is how an author removes every
+    /// bound, and a plan with no bound is the ordinary plan.
+    ///
+    /// # Errors
+    /// [`RepoError::NotFound`] when no such revision is visible to `scope`;
+    /// [`RepoError::NotDraft`] when it is visible but frozen;
+    /// [`RepoError::StaleRowVersion`] carrying both versions when the submitted
+    /// one is not current; [`RepoError::Db`] on a scope or storage failure,
+    /// which **includes the table's four `CHECK`s** — a non-positive bound, a
+    /// floor above its cap, and a row authoring neither — each of which the
+    /// publish pipeline reports as `PERIOD_FLOOR_CAP_AMOUNT_INVALID` before a
+    /// set ever gets here; [`RepoError::CorruptRow`] when the revision reads
+    /// back unusable.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the siblings' signature verbatim: the scope, the (tenant, plan, revision, \
+                  expected-version) the compare-and-swap addresses, the payload and the D-135 \
+                  audit stamp"
+    )]
+    pub async fn replace_period_floor_caps(
+        &self,
+        scope: &AccessScope,
+        tenant_id: Uuid,
+        plan_id: PlanId,
+        revision: u64,
+        expected: RowVersion,
+        bounds: Vec<PeriodFloorCap>,
+        stamp: AuditStamp,
+    ) -> Result<PlanRevision, RepoError> {
+        let scope = scope.clone();
+        let (_, outcome) = self
+            .db
+            .db()
+            .in_transaction::<PlanRevision, RepoError, _>(move |txn| {
+                Box::pin(async move {
+                    replace_period_floor_caps_on(
+                        txn, &scope, tenant_id, plan_id, revision, expected, bounds, stamp,
+                    )
+                    .await
+                })
+            })
+            .await;
+        outcome.map_err(tx_failure)
+    }
+
+    /// Read one revision's period floor/cap set, ordered by `(currency,
+    /// region)`.
+    ///
+    /// The order is here rather than left to the caller, for
+    /// [`PlanShapeRepo::list_phases`]' reason: the market pair is the key, so
+    /// ordering on it is total, and a set that came back differently on each
+    /// read would make `PERIOD_FLOOR_CAP_MARKET_UNSOLD`'s report unreproducible.
+    ///
+    /// SQL-level BOLA: a foreign tenant's revision yields an empty set.
+    ///
+    /// # Errors
+    /// [`RepoError::Db`] on a scope or storage failure;
+    /// [`RepoError::CorruptRow`] when a stored row cannot be read as the domain
+    /// value its columns are `CHECK`-constrained to hold.
+    pub async fn list_period_floor_caps(
+        &self,
+        scope: &AccessScope,
+        tenant_id: Uuid,
+        plan_id: PlanId,
+        revision: u64,
+    ) -> Result<Vec<PeriodFloorCap>, RepoError> {
+        let conn = self
+            .db
+            .conn()
+            .map_err(|e| RepoError::Db(format!("conn: {e}")))?;
+        load_period_floor_cap_set(&conn, scope, tenant_id, plan_id, revision).await
     }
 
     /// Replace an open draft revision's whole composite-meter set, under the
@@ -561,6 +641,28 @@ pub async fn load_descriptor(
         .transpose()
 }
 
+/// A revision's period floor/cap set; see [`load_phase_set`] for why this shape
+/// exists (**D-319**).
+///
+/// # Errors
+/// [`RepoError::Db`] on a scope or storage failure;
+/// [`RepoError::CorruptRow`] when a stored row cannot be read as the domain
+/// value its columns are `CHECK`-constrained to hold — a negative amount, or a
+/// currency code the ISO 4217 type refuses.
+pub async fn load_period_floor_cap_set(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    plan_id: PlanId,
+    revision: u64,
+) -> Result<Vec<PeriodFloorCap>, RepoError> {
+    load_period_floor_caps(runner, scope, tenant_id, plan_id, revision)
+        .await?
+        .iter()
+        .map(to_period_floor_cap)
+        .collect()
+}
+
 // ---------------------------------------------------------------------------
 // Statements.
 // ---------------------------------------------------------------------------
@@ -710,6 +812,134 @@ pub(super) async fn copy_phases(
         })
         .collect();
     insert_phases(runner, scope, copies).await
+}
+
+// ---------------------------------------------------------------------------
+// Statements - `pricing_plan_period_floor_cap` (S2 §6, D-319).
+// ---------------------------------------------------------------------------
+//
+// The phase set's four statements again, against the fourth revision-scoped
+// child: a loader, a writer, a copier and a dropper. Nothing here is
+// structurally new — what is new is only which columns the rows carry.
+
+/// Read one revision's stored bound rows, ordered by the market pair.
+async fn load_period_floor_caps(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    plan_id: PlanId,
+    revision: u64,
+) -> Result<Vec<plan_period_floor_cap::Model>, RepoError> {
+    let Some(number) = stored_revision(revision) else {
+        return Ok(Vec::new());
+    };
+    plan_period_floor_cap::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(plan_period_floor_cap::Column::TenantId.eq(tenant_id))
+                .add(plan_period_floor_cap::Column::PlanId.eq(plan_id.get()))
+                .add(plan_period_floor_cap::Column::PlanRevision.eq(number)),
+        )
+        .order_by(plan_period_floor_cap::Column::Currency, Order::Asc)
+        .order_by(plan_period_floor_cap::Column::Region, Order::Asc)
+        .all(runner)
+        .await
+        .map_err(|e| RepoError::Db(format!("read plan period floor/caps: {e}")))
+}
+
+/// Write a bound set, one row at a time — [`insert_phases`]' reason verbatim.
+async fn insert_period_floor_caps(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    bounds: Vec<plan_period_floor_cap::ActiveModel>,
+) -> Result<(), RepoError> {
+    for bound in bounds {
+        plan_period_floor_cap::Entity::insert(bound.clone())
+            .secure()
+            .scope_with_model(scope, &bound)
+            .map_err(|e| RepoError::Db(format!("pricing_plan_period_floor_cap scope: {e}")))?
+            .exec(runner)
+            .await
+            .map_err(|e| RepoError::Db(format!("insert pricing_plan_period_floor_cap: {e}")))?;
+    }
+    Ok(())
+}
+
+/// Drop one revision's whole bound set.
+///
+/// `pub(super)` for [`delete_phases`]' reason: it is half of D-145's discharge
+/// as well as half of a replacement, and `abandon_draft` calls it **before** it
+/// flips the revision.
+///
+/// # Errors
+/// [`RepoError::Db`] on a scope or storage failure — which includes the
+/// append-only trigger's refusal when the revision is not a `draft`.
+pub(super) async fn delete_period_floor_caps(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    plan_id: PlanId,
+    revision: u64,
+) -> Result<(), RepoError> {
+    let Some(number) = stored_revision(revision) else {
+        return Ok(());
+    };
+    plan_period_floor_cap::Entity::delete_many()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(plan_period_floor_cap::Column::TenantId.eq(tenant_id))
+                .add(plan_period_floor_cap::Column::PlanId.eq(plan_id.get()))
+                .add(plan_period_floor_cap::Column::PlanRevision.eq(number)),
+        )
+        .exec(runner)
+        .await
+        .map_err(|e| RepoError::Db(format!("delete plan period floor/caps: {e}")))?;
+    Ok(())
+}
+
+/// Copy `from`'s bound rows onto revision `to` (D-83's copy-on-new-revision).
+///
+/// There is no id to keep stable here — the market pair is the key and it is
+/// carried across unchanged — but the rows are still re-written from the stored
+/// models rather than round-tripped through the domain, for [`copy_phases`]'
+/// reason: a copy must reproduce what is there, and a value the domain cannot
+/// currently read is still one the successor revision has to inherit.
+///
+/// # Errors
+/// [`RepoError::Db`] on a scope or storage failure — which includes the
+/// append-only trigger's refusal when the destination revision is not a
+/// `draft`, and the destination revision not existing at all.
+pub(super) async fn copy_period_floor_caps(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    plan_id: PlanId,
+    from: u64,
+    to: u64,
+) -> Result<(), RepoError> {
+    let Some(number) = stored_revision(to) else {
+        return Err(RepoError::CorruptRow(format!(
+            "plan {plan_id} revision {to} exceeds the storable range"
+        )));
+    };
+    let source = load_period_floor_caps(runner, scope, tenant_id, plan_id, from).await?;
+    let copies = source
+        .into_iter()
+        .map(|row| plan_period_floor_cap::ActiveModel {
+            plan_id: Set(row.plan_id),
+            plan_revision: Set(number),
+            currency: Set(row.currency),
+            region: Set(row.region),
+            tenant_id: Set(row.tenant_id),
+            floor_minor: Set(row.floor_minor),
+            cap_minor: Set(row.cap_minor),
+        })
+        .collect();
+    insert_period_floor_caps(runner, scope, copies).await
 }
 
 // ---------------------------------------------------------------------------
@@ -1322,6 +1552,69 @@ fn to_domain(row: &plan_phase::Model) -> Result<PlanPhase, RepoError> {
     })
 }
 
+/// Render a submitted period floor/cap set into the rows that hold it
+/// (**D-319**).
+///
+/// Every row's `tenant_id`, `plan_id` and `plan_revision` are taken from
+/// `parent`, which is why [`PeriodFloorCap`] carries no such field. The market
+/// pair **is** taken from the submitted value: it is the authored key, not a
+/// fact about the revision.
+fn period_floor_cap_models(
+    parent: &plan::Model,
+    bounds: &[PeriodFloorCap],
+) -> Vec<plan_period_floor_cap::ActiveModel> {
+    bounds
+        .iter()
+        .map(|bound| plan_period_floor_cap::ActiveModel {
+            plan_id: Set(parent.plan_id),
+            plan_revision: Set(parent.revision),
+            currency: Set(bound.currency.as_str().to_owned()),
+            region: Set(bound.region.as_str().to_owned()),
+            tenant_id: Set(parent.tenant_id),
+            floor_minor: Set(bound.floor_minor.map(MinorAmount::get)),
+            cap_minor: Set(bound.cap_minor.map(MinorAmount::get)),
+        })
+        .collect()
+}
+
+/// Map a stored bound row to the domain value, at this boundary and nowhere
+/// else.
+///
+/// Every reading that can fail is an **invariant breach, not a caller
+/// mistake**: `currency` and `region` are written from validated domain values,
+/// and the two amount columns are `CHECK`-constrained strictly positive. A row
+/// that reads otherwise means something reached the table outside this gear.
+fn to_period_floor_cap(row: &plan_period_floor_cap::Model) -> Result<PeriodFloorCap, RepoError> {
+    Ok(PeriodFloorCap {
+        currency: CurrencyCode::new(&row.currency).map_err(|e| {
+            RepoError::CorruptRow(format!(
+                "pricing_plan_period_floor_cap.currency holds {}: {e}",
+                row.currency
+            ))
+        })?,
+        region: Region::new(&row.region).map_err(|e| {
+            RepoError::CorruptRow(format!(
+                "pricing_plan_period_floor_cap.region holds {}: {e}",
+                row.region
+            ))
+        })?,
+        floor_minor: read_minor("floor_minor", row.floor_minor)?,
+        cap_minor: read_minor("cap_minor", row.cap_minor)?,
+    })
+}
+
+/// Read a stored minor-unit amount back into the domain's checked type.
+fn read_minor(column: &str, stored: Option<i64>) -> Result<Option<MinorAmount>, RepoError> {
+    let Some(value) = stored else {
+        return Ok(None);
+    };
+    MinorAmount::new(value).map(Some).map_err(|_| {
+        RepoError::CorruptRow(format!(
+            "pricing_plan_period_floor_cap.{column} holds {value}, not an amount"
+        ))
+    })
+}
+
 /// Render a submitted add-on rule set into the rows that hold it, **with the
 /// conflict edges closed under symmetry**.
 ///
@@ -1615,6 +1908,58 @@ pub async fn replace_phases_on(
     // land between it and this statement - so a swap that
     // matched nothing is still resolved, and the phase set it
     // has already replaced is restored by the rollback.
+    if result == 0 {
+        return Err(refuse(runner, scope, tenant_id, plan_id, revision, expected).await);
+    }
+    let updated = load_revision(runner, scope, tenant_id, plan_id, revision)
+        .await?
+        .ok_or_else(|| not_found(plan_id, revision))?;
+    record_revision_mutation(
+        runner,
+        scope,
+        tenant_id,
+        &updated,
+        AuditAction::Update,
+        expected,
+        stamp,
+    )
+    .await?;
+    Ok(updated)
+}
+
+/// [`PlanShapeRepo::replace_period_floor_caps`]'s body, on a runner the caller
+/// owns (**D-319**).
+///
+/// **The runner must be a transaction**, for [`replace_phases_on`]'s reason.
+///
+/// # Errors
+/// Whatever the method's own documentation states — this is that method,
+/// minus the transaction it opens for itself.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the siblings' signature verbatim; this form exists so a caller that already owns a transaction can join it rather than open a second (D-272)."
+)]
+pub async fn replace_period_floor_caps_on(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    plan_id: PlanId,
+    revision: u64,
+    expected: RowVersion,
+    bounds: Vec<PeriodFloorCap>,
+    stamp: AuditStamp,
+) -> Result<PlanRevision, RepoError> {
+    let Some(guard) = swap_guard(tenant_id, plan_id, revision, expected) else {
+        return Err(refuse(runner, scope, tenant_id, plan_id, revision, expected).await);
+    };
+    let Some(parent) = mutable_draft(runner, scope, tenant_id, plan_id, revision, expected).await?
+    else {
+        return Err(refuse(runner, scope, tenant_id, plan_id, revision, expected).await);
+    };
+    let rows = period_floor_cap_models(&parent, &bounds);
+    delete_period_floor_caps(runner, scope, tenant_id, plan_id, revision).await?;
+    insert_period_floor_caps(runner, scope, rows).await?;
+    let result = plan_revision_bump(runner, scope, guard).await?;
     if result == 0 {
         return Err(refuse(runner, scope, tenant_id, plan_id, revision, expected).await);
     }

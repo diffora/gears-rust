@@ -28,8 +28,8 @@ use crate::domain::overlay::{
     OverlayRevision, ScopeClass, ScopeSelector, ScopeValue, TargetRef, TaxBasis,
 };
 use crate::domain::plan_shape::{
-    BillingCycle, CompositeMeter, CustomIntervalUnit, DescriptorSet, Frequency, PhaseKind,
-    PlanPhase,
+    BillingCycle, CompositeMeter, CustomIntervalUnit, DescriptorSet, Frequency, PeriodFloorCap,
+    PhaseKind, PlanPhase,
 };
 use crate::domain::price_record::PriceRecord;
 use crate::domain::price_row::{
@@ -94,6 +94,24 @@ fn shape_only() -> PlanSubjectDelta {
             itemization_rule: Some("per_charge".to_owned()),
             additional: std::collections::BTreeMap::new(),
         }),
+        // Two markets, and the second carries a cap the first does not: a
+        // fixture with one entry cannot tell a renderer that emits the first
+        // bound from one that emits the whole set, and a fixture with no cap
+        // anywhere cannot tell `capMinor` from a hard-coded null (D-319).
+        period_floor_caps: vec![
+            PeriodFloorCap {
+                currency: CurrencyCode::new("USD").expect("three letters"),
+                region: Region::new("us").expect("non-blank"),
+                floor_minor: Some(MinorAmount::new(50_000).expect("non-negative")),
+                cap_minor: None,
+            },
+            PeriodFloorCap {
+                currency: CurrencyCode::new("EUR").expect("three letters"),
+                region: Region::new("de").expect("non-blank"),
+                floor_minor: None,
+                cap_minor: Some(MinorAmount::new(900_000).expect("non-negative")),
+            },
+        ],
         composites: vec![composite()],
         entitlement_grants: EntitlementGrants::default(),
         change_contract: PlanChangeContract::default(),
@@ -1348,7 +1366,7 @@ fn every_member_of_the_frozen_payload_is_classified_exactly_once() {
         "no member is classified on both sides: {all:?}"
     );
     assert_eq!(
-        named, 22,
+        named, 23,
         "the payload's member count, read back: it moves with the payload on purpose, and a \
          member left unclassified is caught by the compiler before it reaches here"
     );

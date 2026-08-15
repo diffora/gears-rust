@@ -125,6 +125,7 @@ fn delta_covering(coverage_to: Option<DateTime<Utc>>) -> PlanSubjectDelta {
         phases: Vec::new(),
         addon_rules: Vec::new(),
         descriptor_set: None,
+        period_floor_caps: Vec::new(),
         entitlement_grants: EntitlementGrants::default(),
         change_contract: PlanChangeContract::default(),
         prices: vec![row()],

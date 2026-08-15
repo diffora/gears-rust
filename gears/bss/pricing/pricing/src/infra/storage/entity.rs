@@ -35,6 +35,7 @@ pub mod pin_frontier;
 pub mod plan;
 pub mod plan_addon_rule;
 pub mod plan_descriptor_set;
+pub mod plan_period_floor_cap;
 pub mod plan_phase;
 pub mod policy_object;
 pub mod price;

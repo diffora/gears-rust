@@ -1098,6 +1098,16 @@ async fn project_plan_subject(
         )
         .await
         .map_err(|e| repo_failure(&e))?,
+        // D-319's period floor/cap, from the same revision-scoped table the
+        // publish rules judged and the content pin framed. Without this line
+        // the delta renders an empty list on every plan and PRD §17.8's field
+        // would be authorable, approvable and unreachable by Rating - the shape
+        // the line below records `composites` having been in.
+        period_floor_caps: plan_shape_repo::load_period_floor_cap_set(
+            runner, scope, tenant_id, plan_id, revision,
+        )
+        .await
+        .map_err(|e| repo_failure(&e))?,
         // Slice 10's derived meters, from the same revision-scoped table the
         // publish rules judged and the content pin framed. **Without this line
         // the delta renders an empty list on every plan** and `inst-cm-frozen`

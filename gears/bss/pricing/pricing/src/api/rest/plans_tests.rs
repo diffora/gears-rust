@@ -57,7 +57,14 @@ fn an_unattached_descriptor_set_is_null_and_an_empty_one_is_an_object() {
     // same publish input.
     let plan_id = PlanId::new(Uuid::now_v7());
 
-    let unattached = PlanView::new(revision(plan_id), Vec::new(), Vec::new(), None, Vec::new());
+    let unattached = PlanView::new(
+        revision(plan_id),
+        Vec::new(),
+        Vec::new(),
+        None,
+        Vec::new(),
+        Vec::new(),
+    );
     assert!(
         body(&unattached)["descriptor_set"].is_null(),
         "{}",
@@ -69,6 +76,7 @@ fn an_unattached_descriptor_set_is_null_and_an_empty_one_is_an_object() {
         Vec::new(),
         Vec::new(),
         Some(DescriptorSet::default()),
+        Vec::new(),
         Vec::new(),
     );
     let rendered = body(&attached);
@@ -93,6 +101,7 @@ fn the_view_names_which_revision_it_answered() {
         Vec::new(),
         None,
         Vec::new(),
+        Vec::new(),
     ));
 
     assert_eq!(rendered["revision"], serde_json::json!(3));
@@ -112,6 +121,7 @@ fn a_custom_frequency_carries_its_interval_and_a_fixed_one_carries_none() {
         Vec::new(),
         None,
         Vec::new(),
+        Vec::new(),
     ));
     assert_eq!(rendered["frequency"]["kind"], serde_json::json!("monthly"));
     assert!(rendered["frequency"]["custom_interval_n"].is_null());
@@ -121,6 +131,7 @@ fn a_custom_frequency_carries_its_interval_and_a_fixed_one_carries_none() {
         Vec::new(),
         Vec::new(),
         None,
+        Vec::new(),
         Vec::new(),
     ));
     assert_eq!(

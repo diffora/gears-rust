@@ -19,8 +19,8 @@ use crate::domain::contracts::{EntitlementGrants, PlanChangeContract};
 use crate::domain::lifecycle::LifecycleState;
 use crate::domain::money::{CurrencyCode, MinorAmount};
 use crate::domain::plan_shape::{
-    BillingCycle, CompositeMeter, CustomIntervalUnit, DescriptorSet, Frequency, PhaseKind,
-    PlanPhase,
+    BillingCycle, CompositeMeter, CustomIntervalUnit, DescriptorSet, Frequency, PeriodFloorCap,
+    PhaseKind, PlanPhase,
 };
 use crate::domain::price_record::PriceRecord;
 use crate::domain::price_row::{ModelKind, PriceRow};
@@ -146,6 +146,16 @@ fn populated() -> PlanSubjectDelta {
             itemization_rule: Some("per_charge".to_owned()),
             additional: std::collections::BTreeMap::new(),
         }),
+        // Populated for the same reason as the composite set below: an empty
+        // list would let `period_floor_cap_value` render nothing and still pass
+        // the key census, so the market pair, the floor and the absent cap are
+        // all exercised (D-319).
+        period_floor_caps: vec![PeriodFloorCap {
+            currency: CurrencyCode::new("USD").expect("three letters"),
+            region: Region::new("us").expect("non-blank"),
+            floor_minor: Some(MinorAmount::new(50_000).expect("non-negative")),
+            cap_minor: None,
+        }],
         // Populated rather than left empty, on this fixture's own rule: a member
         // at its default proves nothing about the renderer that writes it, and
         // `composite_value` walks a formula it never reads (A4) - so an empty list
@@ -300,6 +310,12 @@ fn the_payloads_members_partition_into_the_read_and_the_ignored() {
         "entitlementGrants",
         "evaluationPolicyVersion",
         "invoiceGroupingKey",
+        // D-319's plan-level period floor/cap. **Ignored deliberately**: a
+        // period bound is what a thing costs at minimum once sold, and the six
+        // predicates ask whether it may be sold at all. A plan carrying no
+        // minimum is sellable and one carrying a $500 minimum is not thereby
+        // unsellable - `entitlementGrants`' reading, one member over.
+        "periodFloorCaps",
         "phaseGrantMap",
         "phases",
         "planTier",

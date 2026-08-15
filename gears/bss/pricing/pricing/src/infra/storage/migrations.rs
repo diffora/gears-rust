@@ -111,6 +111,7 @@ pub mod m20260802_000075_widen_source_revision_to_bigint;
 pub mod m20260802_000076_add_per_hour_tier_aggregation_window;
 pub mod m20260802_000077_add_pricing_plan_name;
 pub mod m20260802_000078_guard_pricing_plan_name;
+pub mod m20260802_000079_create_pricing_plan_period_floor_cap;
 
 use sea_orm::{ConnectionTrait, Statement};
 use sea_orm_migration::prelude::*;
@@ -425,6 +426,12 @@ impl MigratorTrait for Migrator {
             Box::new(m20260802_000076_add_per_hour_tier_aggregation_window::Migration),
             Box::new(m20260802_000077_add_pricing_plan_name::Migration),
             Box::new(m20260802_000078_guard_pricing_plan_name::Migration),
+            // D-319: Slice 2's fourth revision-scoped child, the plan-level period
+            // floor and cap per sold market. It sorts after `000001` creates the
+            // parent it keys into, and restates nothing — a `CREATE TABLE` carries
+            // its own `CHECK`s on both engines, which is why the market pair lives
+            // in a table of its own rather than as columns on `pricing_plan`.
+            Box::new(m20260802_000079_create_pricing_plan_period_floor_cap::Migration),
             // Shared `coord_leases` table, owned by the `coord` crate. This gear's
             // background work is coordinated as a singleton (§3.8: background work
             // is coordinated as a singleton via the coordination lease library),

@@ -277,9 +277,11 @@ use crate::domain::contracts::{
 };
 use crate::domain::evaluation_policy::EVALUATION_POLICY_GENERATION;
 use crate::domain::lifecycle::LifecycleState;
+use crate::domain::money::MinorAmount;
 use crate::domain::overlay::{OverlayInterval, OverlayLine, OverlayRevision, TargetSku};
 use crate::domain::plan_shape::{
-    AddonRule, BillingCycle, CompositeMeter, DescriptorSet, Frequency, PhaseKind, PlanPhase,
+    AddonRule, BillingCycle, CompositeMeter, DescriptorSet, Frequency, PeriodFloorCap, PhaseKind,
+    PlanPhase,
 };
 use crate::domain::price_record::PriceRecord;
 use crate::domain::price_row::{
@@ -652,6 +654,22 @@ pub struct PlanSubjectDelta {
     pub addon_rules: Vec<AddonRule>,
     /// The revision's billing descriptor set (D-83).
     pub descriptor_set: Option<DescriptorSet>,
+    /// The revision's plan-level period floor/cap set, one entry per market it
+    /// is authored for (S2 §6, **D-319**).
+    ///
+    /// **This is the half of PRD §17.8 a consumer can act on.** Rating resolves
+    /// the amount, currency and attachment scope for its
+    /// `PeriodFloorCapObligation` *from the pinned snapshot*, and Billing
+    /// executes `max(total, floor)` / `min(total, cap)` after step 9 — so a
+    /// bound outside this payload is a bound nothing downstream can apply,
+    /// however carefully it was authored and approved.
+    ///
+    /// The **attachment scope is not a member** and is not authored anywhere:
+    /// rating PRD §17.2 makes it `usage` by default and `recurring+usage` when
+    /// the bound is plan-level, and a bound published on the *plan subject* is
+    /// plan-level by construction. Stamping a constant here would be this gear
+    /// declaring a wire fact its design set does not (D-204 clause (2)).
+    pub period_floor_caps: Vec<PeriodFloorCap>,
     /// The revision's derived (composite) meter definitions (Slice 10 §6, D-83,
     /// D-106).
     ///
@@ -814,6 +832,7 @@ impl PlanSubjectDelta {
             phases,
             addon_rules,
             descriptor_set,
+            period_floor_caps,
             composites,
             entitlement_grants,
             change_contract,
@@ -839,6 +858,20 @@ impl PlanSubjectDelta {
             "phases": phases.iter().map(phase_value).collect::<Vec<_>>(),
             "addonRules": addon_rules.iter().map(addon_rule_value).collect::<Vec<_>>(),
             "descriptorSet": descriptor_set.as_ref().map(descriptor_set_value),
+            // D-319's period floor/cap (PRD §17.8). Rendered as a list of
+            // market-keyed objects rather than an object keyed by a joined
+            // `"USD/us"` string: the market is a **pair** everywhere else in
+            // this payload, and a consumer that had to split a key back apart
+            // would be parsing a spelling this gear invented for one member.
+            //
+            // An empty list is the ordinary plan. It is not `null`, because
+            // there is nothing for a null to mean here that the empty list does
+            // not — unlike `allowedChangeTargets`, where absence is a fail-safe
+            // and emptiness is a statement.
+            "periodFloorCaps": period_floor_caps
+                .iter()
+                .map(period_floor_cap_value)
+                .collect::<Vec<_>>(),
             // Slice 10's derived meters (`inst-cm-frozen`). Rendered as a list and
             // not as a map keyed by `outputUnit`, even though
             // `uq_pricing_composite_meter_output` makes the unit unique per
@@ -1013,6 +1046,26 @@ fn descriptor_set_value(set: &DescriptorSet) -> JsonValue {
         "glCode": gl_code,
         "itemizationRule": itemization_rule,
         "additional": additional,
+    })
+}
+
+/// One market's period floor and cap (**D-319**).
+///
+/// The currency is rendered once, as the market axis, and the two amounts carry
+/// no currency of their own — the denomination has one home, which is the same
+/// rule the price row's `MinorAmount` follows.
+fn period_floor_cap_value(bound: &PeriodFloorCap) -> JsonValue {
+    let PeriodFloorCap {
+        currency,
+        region,
+        floor_minor,
+        cap_minor,
+    } = bound;
+    json!({
+        "currency": currency.as_str(),
+        "region": region.as_str(),
+        "floorMinor": floor_minor.map(MinorAmount::get),
+        "capMinor": cap_minor.map(MinorAmount::get),
     })
 }
 
@@ -1432,6 +1485,7 @@ pub fn partition_delta_members(delta: &PlanSubjectDelta) -> (Vec<&'static str>, 
         phases,
         addon_rules,
         descriptor_set,
+        period_floor_caps,
         composites,
         entitlement_grants,
         change_contract,
@@ -1480,6 +1534,11 @@ pub fn partition_delta_members(delta: &PlanSubjectDelta) -> (Vec<&'static str>, 
         named("phases", phases),
         named("addon_rules", addon_rules),
         named("descriptor_set", descriptor_set),
+        // A period bound is money compared against a **period total** by
+        // Billing after step 9; it selects no rate and derives no quantity, so
+        // it is outside the D-162 roster on the boundary test rather than on
+        // `composites`' clause-(5) technicality.
+        named("period_floor_caps", period_floor_caps),
         named("composites", composites),
         named("entitlement_grants", entitlement_grants),
         named("tax_projection", tax_projection),

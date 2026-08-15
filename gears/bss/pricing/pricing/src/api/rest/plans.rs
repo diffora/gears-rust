@@ -58,12 +58,13 @@ use crate::domain::contracts::{
 };
 use crate::domain::error::DomainError;
 use crate::domain::lifecycle::LifecycleState;
+use crate::domain::money::{CurrencyCode, MinorAmount};
 use crate::domain::plan::{PlanRevision, PlanShapePatch};
 use crate::domain::plan_shape::{
     AddonRule, BillingCycle, CompositeMeter, CustomIntervalUnit, DescriptorSet, Frequency,
-    PhaseKind, PlanPhase,
+    PeriodFloorCap, PhaseKind, PlanPhase,
 };
-use crate::domain::scope_key::{PhaseId, PlanId};
+use crate::domain::scope_key::{PhaseId, PlanId, Region};
 use crate::infra::clone::{CloneNotice, CloneReceipt, clone_plan_on};
 use crate::infra::idempotent::{self, Guarded, GuardedRequest, TxFuture};
 use crate::infra::storage::repo::{NewPlanDraft, PlanRepo, plan_repo};
@@ -253,6 +254,35 @@ impl From<AddonRule> for AddonRuleView {
             price_override_ref: rule.price_override_ref,
             depends_on: rule.depends_on,
             conflicts_with: rule.conflicts_with,
+        }
+    }
+}
+
+/// One market's plan-level period floor and cap (S2 §6, **D-319**).
+///
+/// The currency is the market axis **and** the denomination of both amounts:
+/// there is no `currency` field on the money, because a second spelling of the
+/// denomination is a second thing to disagree.
+#[derive(Debug, Clone)]
+#[toolkit_macros::api_dto(request, response)]
+pub struct PeriodFloorCapView {
+    /// ISO 4217.
+    pub currency: String,
+    /// The market's region axis value.
+    pub region: String,
+    /// The period floor in minor units, or `null` when only a cap is authored.
+    pub floor_minor: Option<i64>,
+    /// The period cap in minor units, or `null` when only a floor is authored.
+    pub cap_minor: Option<i64>,
+}
+
+impl From<PeriodFloorCap> for PeriodFloorCapView {
+    fn from(bound: PeriodFloorCap) -> Self {
+        Self {
+            currency: bound.currency.as_str().to_owned(),
+            region: bound.region.as_str().to_owned(),
+            floor_minor: bound.floor_minor.map(MinorAmount::get),
+            cap_minor: bound.cap_minor.map(MinorAmount::get),
         }
     }
 }
@@ -454,16 +484,27 @@ pub struct PlanView {
     /// case: unlike [`PlanView::descriptor_set`] there is no attached-but-empty
     /// state to keep apart from absence, because the set is rows and not a row.
     pub composites: Vec<CompositeMeterRequest>,
+    /// The revision's period floor/cap set, in `(currency, region)` order
+    /// (**D-319**).
+    ///
+    /// A write surface whose read surface does not show the value is half a
+    /// feature, and here the read is what makes a wholesale replace usable at
+    /// all: the facet replaces the set, so an author adding a bound in a second
+    /// market has to be able to read the first one back to resubmit it.
+    ///
+    /// An empty list is a plan with no minimum, which is the ordinary plan.
+    pub period_floor_caps: Vec<PeriodFloorCapView>,
 }
 
 impl PlanView {
-    /// Compose a revision with its four child sets.
+    /// Compose a revision with its five child sets.
     fn new(
         revision: PlanRevision,
         phases: Vec<PlanPhase>,
         addon_rules: Vec<AddonRule>,
         descriptor_set: Option<DescriptorSet>,
         composites: Vec<CompositeMeter>,
+        period_floor_caps: Vec<PeriodFloorCap>,
     ) -> Self {
         Self {
             plan_id: revision.plan_id.get(),
@@ -491,6 +532,10 @@ impl PlanView {
             composites: composites
                 .into_iter()
                 .map(CompositeMeterRequest::from)
+                .collect(),
+            period_floor_caps: period_floor_caps
+                .into_iter()
+                .map(PeriodFloorCapView::from)
                 .collect(),
         }
     }
@@ -717,6 +762,13 @@ pub struct PatchPlanRequest {
     /// composite - the store's own operation is delete-then-insert, so there is no
     /// per-definition verb to expose and no `null`-versus-`[]` distinction to keep.
     pub composites: Option<Vec<CompositeMeterRequest>>,
+    /// The whole period floor/cap set, replaced wholesale (S2 §6, **D-319**).
+    ///
+    /// Wholesale like its siblings, and an empty list is how every bound is
+    /// withdrawn: the store's own operation is delete-then-insert, so there is
+    /// no per-market verb to expose and no `null`-versus-`[]` distinction to
+    /// keep.
+    pub period_floor_caps: Option<Vec<PeriodFloorCapView>>,
 }
 
 /// Build the Axum router for the plan surface and register its operations.
@@ -814,8 +866,8 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
         .summary("Edit a plan's open draft revision")
         .description(
             "Applies **exactly one** facet - the plan's own columns, its phase chain, its \
-             add-on rule set, its descriptor set, or its derived (composite) meter set - to \
-             the plan's open draft revision, under \
+             add-on rule set, its descriptor set, its derived (composite) meter set, or its \
+             period floor/cap set - to the plan's open draft revision, under \
              the `If-Match` precondition. Two facets in one body is `400`: each child mutator \
              compare-and-swaps on the revision's row version and bumps it, so the second could \
              not match the tag the first advanced. When the plan holds **no** open draft, a \
@@ -1130,7 +1182,7 @@ async fn authoring_revision(
     plans.find_current(scope, tenant, plan_id).await
 }
 
-/// Attach a revision's four child sets.
+/// Attach a revision's five child sets.
 async fn read_shape(
     state: &AuthoringState,
     scope: &toolkit_db::secure::AccessScope,
@@ -1159,12 +1211,20 @@ async fn read_shape(
         .shapes
         .list_composites(scope, tenant, plan_id, revision)
         .await?;
+    // The fifth read (D-319), for the fourth's reason: the `period_floor_caps`
+    // facet replaces the set wholesale, so an author who cannot read the
+    // current markets back cannot add one without dropping the rest.
+    let period_floor_caps = state
+        .shapes
+        .list_period_floor_caps(scope, tenant, plan_id, revision)
+        .await?;
     Ok(PlanView::new(
         row,
         phases,
         addon_rules,
         descriptor_set,
         composites,
+        period_floor_caps,
     ))
 }
 
@@ -1272,7 +1332,14 @@ async fn create_plan(
             })
         },
         |revision: &PlanRevision| {
-            let view = PlanView::new(revision.clone(), Vec::new(), Vec::new(), None, Vec::new());
+            let view = PlanView::new(
+                revision.clone(),
+                Vec::new(),
+                Vec::new(),
+                None,
+                Vec::new(),
+                Vec::new(),
+            );
             serde_json::to_value(&view)
                 .map_err(|e| DomainError::Internal(format!("cannot render the created plan: {e}")))
         },
@@ -1353,6 +1420,19 @@ async fn patch_plan(
                 .shapes
                 .replace_composites(
                     &scope, tenant, plan_id, revision, expected, composites, stamp,
+                )
+                .await
+        }
+        // D-319's period floor/cap. Nothing is judged here either: the market
+        // rule needs the plan's whole row set and the amount rule reports a
+        // fault the table's own `CHECK`s refuse - both are publish rules, and
+        // an author who authors the bound before the market's rows is doing
+        // what this module's opening premise expects.
+        Facet::PeriodFloorCaps(bounds) => {
+            state
+                .shapes
+                .replace_period_floor_caps(
+                    &scope, tenant, plan_id, revision, expected, bounds, stamp,
                 )
                 .await
         }
@@ -1456,7 +1536,7 @@ async fn write_scope(
     .map_err(authz_error_to_canonical)
 }
 
-/// Which of the five facets a `PATCH` carries.
+/// Which of the six facets a `PATCH` carries.
 enum Facet {
     /// The plan's own columns.
     Shape(PlanShapePatch),
@@ -1468,6 +1548,8 @@ enum Facet {
     DescriptorSet(DescriptorSet),
     /// The whole derived-meter set (Slice 10 §6).
     Composites(Vec<CompositeMeter>),
+    /// The whole period floor/cap set (S2 §6, D-319).
+    PeriodFloorCaps(Vec<PeriodFloorCap>),
 }
 
 impl Facet {
@@ -1477,13 +1559,14 @@ impl Facet {
             + usize::from(body.phases.is_some())
             + usize::from(body.addon_rules.is_some())
             + usize::from(body.descriptor_set.is_some())
-            + usize::from(body.composites.is_some());
+            + usize::from(body.composites.is_some())
+            + usize::from(body.period_floor_caps.is_some());
         if named != 1 {
             return Err(DomainError::InvalidRequest(format!(
                 "a PATCH carries exactly one of `shape`, `phases`, `addon_rules`, \
-                 `descriptor_set` or `composites`; this one carries {named}. Each of the five \
-                 compare-and-swaps on the revision's own row version and advances it, so two \
-                 in one request could not both satisfy one `If-Match`"
+                 `descriptor_set`, `composites` or `period_floor_caps`; this one carries \
+                 {named}. Each of the six compare-and-swaps on the revision's own row version \
+                 and advances it, so two in one request could not both satisfy one `If-Match`"
             )));
         }
         if let Some(shape) = body.shape {
@@ -1500,6 +1583,14 @@ impl Facet {
         if let Some(composites) = body.composites {
             return Ok(Self::Composites(
                 composites.into_iter().map(composite_of).collect(),
+            ));
+        }
+        if let Some(bounds) = body.period_floor_caps {
+            return Ok(Self::PeriodFloorCaps(
+                bounds
+                    .iter()
+                    .map(period_floor_cap_of)
+                    .collect::<Result<_, _>>()?,
             ));
         }
         let set = body
@@ -1735,7 +1826,14 @@ async fn answer_revision(
 
 /// The 201 a performed create answers with.
 fn created(revision: &PlanRevision) -> Response {
-    let view = PlanView::new(revision.clone(), Vec::new(), Vec::new(), None, Vec::new());
+    let view = PlanView::new(
+        revision.clone(),
+        Vec::new(),
+        Vec::new(),
+        None,
+        Vec::new(),
+        Vec::new(),
+    );
     let tag = plan_tag(&view);
     (
         StatusCode::CREATED,
@@ -2311,6 +2409,22 @@ fn composite_of(view: CompositeMeterRequest) -> CompositeMeter {
         // and A4 puts the formula's meaning outside this crate entirely.
         formula: view.formula.unwrap_or(serde_json::Value::Null),
     }
+}
+
+/// Parse one period floor/cap (**D-319**).
+///
+/// Three things can fail, and all three are **shape** faults rather than
+/// policy: the currency is not ISO 4217, the region axis value is blank, or an
+/// amount is negative. Every policy question — a `0` bound, a floor above its
+/// cap, a market the plan does not sell — is judged at publish, where the
+/// author gets a report line naming the market instead of a 400 naming a field.
+fn period_floor_cap_of(view: &PeriodFloorCapView) -> Result<PeriodFloorCap, DomainError> {
+    Ok(PeriodFloorCap {
+        currency: CurrencyCode::new(&view.currency)?,
+        region: Region::new(&view.region)?,
+        floor_minor: view.floor_minor.map(MinorAmount::new).transpose()?,
+        cap_minor: view.cap_minor.map(MinorAmount::new).transpose()?,
+    })
 }
 
 /// Parse a descriptor set.

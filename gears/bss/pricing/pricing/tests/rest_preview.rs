@@ -108,6 +108,7 @@ fn delta_of(
         phases: Vec::new(),
         addon_rules: Vec::new(),
         descriptor_set: None,
+        period_floor_caps: Vec::new(),
         prices: Vec::new(),
         tax_projection: BTreeMap::new(),
         windows: Vec::new(),

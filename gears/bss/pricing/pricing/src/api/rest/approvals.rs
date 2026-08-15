@@ -84,7 +84,9 @@ use crate::api::rest::auth_context::{audit_stamp, require_authenticated};
 use crate::api::rest::correlation::{CorrelationId, require_correlation};
 use crate::api::rest::cursor::{self, PageRequest};
 use crate::api::rest::error::authz_error_to_canonical;
-use crate::api::rest::plans::{AddonRuleView, DescriptorSetView, FrequencyView, PlanPhaseView};
+use crate::api::rest::plans::{
+    AddonRuleView, DescriptorSetView, FrequencyView, PeriodFloorCapView, PlanPhaseView,
+};
 use crate::api::rest::preconditions;
 use crate::api::rest::prices::{PriceRowView, ScopeKeyView};
 use crate::api::rest::state::GovernanceState;
@@ -465,6 +467,15 @@ pub struct PinnedContentView {
     /// never displayed — which is precisely the signature they did not give. The
     /// module's invariant is "exactly the fields the pin hashes and no others".
     pub composites: Vec<CompositeMeterView>,
+    /// The plan-level period floor/cap this revision would publish (S2 §6,
+    /// **D-319**).
+    ///
+    /// Shown for the three above's reason, and it is the one with the most
+    /// direct money consequence: the pin covers it since v14, so a reviewer's
+    /// signature covers a minimum charge they were never displayed — and unlike
+    /// a price row, a period floor changes what a subscriber pays without
+    /// appearing as a line on the invoice that would explain it.
+    pub period_floor_caps: Vec<PeriodFloorCapView>,
     pub change_contract: PlanChangeContractView,
     /// The window plane the pin covers, one entry per canonical scope key.
     ///
@@ -541,6 +552,7 @@ impl From<&PlanShape> for PinnedContentView {
             phases,
             addon_rules,
             descriptor_set,
+            period_floor_caps,
             rows,
             entitlement_grants,
             composites,
@@ -581,6 +593,11 @@ impl From<&PlanShape> for PinnedContentView {
             rows: rows.iter().map(PriceRowView::from).collect(),
             entitlement_grants: EntitlementGrantsView::from(entitlement_grants),
             composites: composites.iter().map(CompositeMeterView::from).collect(),
+            period_floor_caps: period_floor_caps
+                .iter()
+                .cloned()
+                .map(PeriodFloorCapView::from)
+                .collect(),
             change_contract: PlanChangeContractView::from(change_contract),
             windows: windows.iter().map(PinnedWindowsView::from).collect(),
         }

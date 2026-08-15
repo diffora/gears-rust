@@ -124,7 +124,7 @@ async fn the_read_carries_the_revisions_child_sets_and_its_etag() {
     assert_eq!(
         body["phases"].as_array().map(Vec::len),
         Some(1),
-        "S2 §5's PATCH names four facets, so a read that omits them cannot round-trip one: {body}"
+        "S2 §5's PATCH names six facets, so a read that omits them cannot round-trip one: {body}"
     );
     assert_eq!(
         body["addon_rules"].as_array().map(Vec::len),
@@ -139,6 +139,14 @@ async fn the_read_carries_the_revisions_child_sets_and_its_etag() {
     // sometimes omits the field it comes from.
     assert_eq!(
         body["composites"].as_array().map(Vec::len),
+        Some(0),
+        "{body}"
+    );
+    // The fifth (D-319), on the composites' argument exactly: the
+    // `period_floor_caps` facet replaces the set wholesale, so an author adding
+    // a bound in a second market has to read the first one back to resubmit it.
+    assert_eq!(
+        body["period_floor_caps"].as_array().map(Vec::len),
         Some(0),
         "{body}"
     );
@@ -2181,5 +2189,123 @@ async fn two_composites_of_one_body_sharing_an_output_unit_answer_500() {
         collided.status(),
         StatusCode::INTERNAL_SERVER_ERROR,
         "the unique index refuses it, and the refusal has no gear code to name"
+    );
+}
+
+/// **The period floor/cap facet lands, and the read echoes what it stored**
+/// (D-319).
+///
+/// The same argument the composites case above makes: before this facet the
+/// repository method had no caller in `src/`, so every production path was a
+/// copy of a set nothing could originate and both publish rules ran on a
+/// permanently empty vector — D-254's class, which this slice has now landed
+/// four times. What is under test is not that the store works, but that a
+/// **client** can put a minimum into it.
+///
+/// The `GET` half is load-bearing for its own reason: the facet replaces the set
+/// wholesale, so an author adding a second market has to read the first one back
+/// to resubmit it. A read that omitted the member would make a two-market plan
+/// unauthorable one market at a time.
+#[tokio::test]
+async fn a_period_floor_cap_facet_lands_and_the_read_echoes_what_it_stored() {
+    let harness = Harness::new().await;
+    let plan_id = Uuid::now_v7();
+    seed_draft_plan(&harness, plan_id).await;
+
+    let response = harness
+        .allowed()
+        .send(with_headers(
+            "PATCH",
+            &plan_path(plan_id),
+            Some(serde_json::json!({
+                "period_floor_caps": [
+                    { "currency": "usd", "region": "us", "floor_minor": 50000, "cap_minor": 500_000 },
+                    { "currency": "EUR", "region": "de", "floor_minor": 40000 }
+                ]
+            })),
+            &[("if-match", "\"0-0\"")],
+        ))
+        .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let patched = body_json(response).await;
+    let stored = patched["period_floor_caps"]
+        .as_array()
+        .unwrap_or_else(|| panic!("the patch answers the revision it wrote: {patched}"));
+    assert_eq!(stored.len(), 2, "{patched}");
+    // In `(currency, region)` order, and the currency **normalized** — the
+    // authored `usd` comes back `USD`, because the code is an ISO 4217 value and
+    // not the string the client typed. A round trip that echoed the input would
+    // leave two spellings of one market in the caller's hands.
+    assert_eq!(
+        stored[0],
+        serde_json::json!({
+            "currency": "EUR", "region": "de", "floor_minor": 40000, "cap_minor": null
+        }),
+        "{patched}"
+    );
+    assert_eq!(
+        stored[1],
+        serde_json::json!({
+            "currency": "USD", "region": "us", "floor_minor": 50000, "cap_minor": 500_000
+        }),
+        "{patched}"
+    );
+
+    let read = body_json(
+        harness
+            .allowed()
+            .send(request("GET", &plan_path(plan_id), None))
+            .await,
+    )
+    .await;
+    assert_eq!(
+        read["period_floor_caps"], patched["period_floor_caps"],
+        "a GET answers the set the PATCH stored: {read}"
+    );
+}
+
+/// A `PATCH` naming the period floor/cap facet **and** another one is refused,
+/// like every other pair (D-173).
+///
+/// Its own case rather than a line in the existing two-facet test, because the
+/// arity count in `Facet::of` is hand-written: a sixth facet added to the enum
+/// and forgotten in that sum makes a two-facet body look like a one-facet body,
+/// and the existing case would not notice — it names two facets that are both
+/// still counted.
+#[tokio::test]
+async fn a_patch_naming_the_period_facet_and_another_is_refused() {
+    let harness = Harness::new().await;
+    let plan_id = Uuid::now_v7();
+    seed_draft_plan(&harness, plan_id).await;
+
+    let response = harness
+        .allowed()
+        .send(with_headers(
+            "PATCH",
+            &plan_path(plan_id),
+            Some(serde_json::json!({
+                "period_floor_caps": [
+                    { "currency": "USD", "region": "us", "floor_minor": 50000 }
+                ],
+                "phases": []
+            })),
+            &[("if-match", "\"0-0\"")],
+        ))
+        .await;
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+    let read = body_json(
+        harness
+            .allowed()
+            .send(request("GET", &plan_path(plan_id), None))
+            .await,
+    )
+    .await;
+    assert_eq!(
+        read["period_floor_caps"],
+        serde_json::json!([]),
+        "neither facet may have landed: {read}"
     );
 }

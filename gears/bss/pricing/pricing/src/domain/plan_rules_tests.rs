@@ -149,6 +149,12 @@ const REGISTERED: &[&str] = &[
     "inst-ph-usage-invariant",
     "inst-ph-override-units",
     "inst-ph-terminal-stable",
+    // cpt-cf-bss-pricing-algo-period-floor-cap (D-319). Between the phase
+    // schedule and the descriptors: a period bound is a fact about a whole
+    // period's total, so it reads after the rules that establish what the
+    // periods are.
+    "inst-pfc-amount",
+    "inst-pfc-market",
     // cpt-cf-bss-pricing-algo-descriptors
     "inst-ds-required",
 ];

@@ -90,6 +90,7 @@ pub mod composite;
 pub mod composition;
 pub mod cycle_shape;
 pub mod descriptor_set;
+pub mod period_floor_cap;
 pub mod phase_graph;
 
 use crate::domain::plan_shape::PlanShape;
@@ -334,6 +335,31 @@ pub const PHASE_IN_USE: &str = "PHASE_IN_USE";
 pub const DESCRIPTOR_INCOMPLETE: &str = "DESCRIPTOR_INCOMPLETE";
 
 // ---------------------------------------------------------------------------
+// Period floor / cap (cpt-cf-bss-pricing-algo-period-floor-cap)
+// ---------------------------------------------------------------------------
+
+/// A period floor/cap authored on a `(currency, region)` the plan prices
+/// nothing in (`inst-pfc-market`, **D-319**).
+///
+/// The mirror image of [`BASE_MARKET_INCOMPLETE`] and
+/// [`USAGE_MARKET_INCOMPLETE`], which ask whether every sold market carries the
+/// rows it owes. This one asks whether an authored bound has a market to apply
+/// in: a floor on a market the plan does not sell is not a smaller floor, it is
+/// no floor at all, frozen into an immutable snapshot on a plan whose author
+/// believes it has a minimum.
+pub const PERIOD_FLOOR_CAP_MARKET_UNSOLD: &str = "PERIOD_FLOOR_CAP_MARKET_UNSOLD";
+
+/// A period bound that admits no bill (`inst-pfc-amount`, **D-319**): a `0`
+/// floor, a `0` cap, a floor above its cap, or a row authoring neither.
+///
+/// One code for four faults, the offending bound named —
+/// [`ADDON_QTY_RANGE_INVALID`]'s arrangement (D-150), because the operator's
+/// next action is the same shape in every case. Each of them is also a `CHECK`
+/// on `pricing_plan_period_floor_cap`: the constraint is the guarantee and this
+/// is the explanatory path (D-148).
+pub const PERIOD_FLOOR_CAP_AMOUNT_INVALID: &str = "PERIOD_FLOOR_CAP_AMOUNT_INVALID";
+
+// ---------------------------------------------------------------------------
 // Registration
 // ---------------------------------------------------------------------------
 
@@ -436,6 +462,12 @@ pub fn plan_shape_rules(
         .with_rule(Box::new(phase_graph::PhaseOverrideBase))
         .with_rule(Box::new(phase_graph::PhaseOverrideUnits))
         .with_rule(Box::new(phase_graph::TerminalPhaseStable))
+        // Period floor/cap: what the plan bills at least, and at most, per
+        // period. After the phase schedule and before the descriptors: it is a
+        // fact about a whole period's total, so it reads after the rules that
+        // establish what the periods are.
+        .with_rule(Box::new(period_floor_cap::PeriodFloorCapAmounts))
+        .with_rule(Box::new(period_floor_cap::PeriodFloorCapMarketSold))
         // Descriptors: how the plan is billed.
         .with_rule(Box::new(descriptors))
 }

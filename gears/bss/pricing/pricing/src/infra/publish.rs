@@ -1158,6 +1158,17 @@ pub(crate) async fn assemble_from(
         plan_shape_repo::load_composite_set(runner, scope, tenant_id, plan_id, revision)
             .await
             .map_err(|e| repo_failure(&e))?;
+    // D-319's period floor/cap set, loaded for the same reason and stated here
+    // rather than left implicit: both of its rules range over this vec, so an
+    // unloaded set makes `PERIOD_FLOOR_CAP_MARKET_UNSOLD` and
+    // `PERIOD_FLOOR_CAP_AMOUNT_INVALID` pass on every plan, and the content pin
+    // frames an empty set — a reviewer approving a plan with no minimum and a
+    // commit publishing one, at an equal digest. That is D-254's class and it
+    // has landed four times in this function.
+    shape.period_floor_caps =
+        plan_shape_repo::load_period_floor_cap_set(runner, scope, tenant_id, plan_id, revision)
+            .await
+            .map_err(|e| repo_failure(&e))?;
     // The candidate set: the shape as it will be after the commit.
     shape.rows = price_repo::load_for_plan(runner, scope, tenant_id, plan_id, CANDIDATE_ROW_STATES)
         .await

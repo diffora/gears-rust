@@ -94,8 +94,9 @@ use crate::infra::storage::repo::outbox_repo::{
     NewOutboxEvent, PlanCreatedPayload, PlanUpdatedPayload,
 };
 use crate::infra::storage::repo::plan_shape_repo::{
-    copy_addon_rules, copy_composites, copy_descriptor_set, copy_phases, delete_addon_rules,
-    delete_composites, delete_descriptor_set, delete_phases,
+    copy_addon_rules, copy_composites, copy_descriptor_set, copy_period_floor_caps, copy_phases,
+    delete_addon_rules, delete_composites, delete_descriptor_set, delete_period_floor_caps,
+    delete_phases,
 };
 use crate::infra::storage::repo::{NewAuditEntry, audit_repo, outbox_repo};
 use crate::infra::storage::{RepoError, contention_or_db};
@@ -497,6 +498,9 @@ impl PlanRepo {
                     // is not `draft` and the table's DELETE trigger refuses
                     // everything after the flip.
                     delete_composites(txn, &scope, tenant_id, plan_id, revision).await?;
+                    // D-319's period floor/cap set, on the same terms: it is a
+                    // revision-scoped child and `abandoned` is not `draft`.
+                    delete_period_floor_caps(txn, &scope, tenant_id, plan_id, revision).await?;
                     // Slice 8's three composition tables ride this revision too
                     // (D-92), and `abandoned` is not `draft`: the drop has to
                     // precede the flip for the same reason the three above do.
@@ -761,6 +765,10 @@ impl PlanRepo {
                     // (D-106) so a formula edit on the draft leaves the published
                     // revision byte-identical.
                     copy_composites(txn, &scope, tenant_id, plan_id, source, next).await?;
+                    // D-319's period floor/cap set. Copied like the four above
+                    // and after the new revision row exists, the table refusing
+                    // an INSERT whose parent revision is not `draft`.
+                    copy_period_floor_caps(txn, &scope, tenant_id, plan_id, source, next).await?;
                     // Slice 8's composition, on the same terms and after the new
                     // revision row exists: these tables refuse an INSERT whose
                     // parent revision is not `draft`.

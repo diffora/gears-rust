@@ -1179,6 +1179,18 @@ fn the_clock_may_flip_a_window_but_not_the_pin() {
 ///   swapped between submit and approve with every digest equal. The three
 ///   `plan_name` rows in the mutator table are that property.
 ///
+/// - `v13` -> `v14`, on **2026-08-15**, when D-319's plan-level period floor/cap
+///   joined `put_plan_shape`. Like `v11` it moves the **plan** shape, so it is in
+///   this table for the counter's sake rather than for a mutator of its own: the
+///   bound is a child set of the revision, not a field of a price row. The hole it
+///   closes is the sharpest of the plan-shape ones — a reviewer who approved a plan
+///   carrying no minimum and a commit that publishes one at $500 a period matched on
+///   every digest, and unlike a rate change there is no line on the invoice that
+///   would have shown it. **Two entries one day apart, and neither absorbs the
+///   other**: `v13` and this were authored concurrently against a common `v12`, so
+///   the vector below is the first to cover both the name and the bound, and it
+///   equals neither wave's own measurement taken alone.
+///
 /// What makes any of them an edit rather than a migration today is on
 /// [`CONTENT_PIN_DOMAIN_SEP`](super::CONTENT_PIN_DOMAIN_SEP): this gear is not
 /// deployed, so no durable row holds a `v1` or a `v2` digest. That argument expires
@@ -1187,7 +1199,7 @@ fn the_clock_may_flip_a_window_but_not_the_pin() {
 fn the_encoding_is_frozen() {
     assert_eq!(
         hex32(&content_hash(&base())),
-        "e50f3ed977f195398245b704675eecbb6c9af32043178c8a41c47f42a2ec1cbb"
+        "2339b20152bccd4390aa82ed5819267922a1b3e82834652db3a0a968572e2a66"
     );
 }
 
@@ -1348,7 +1360,7 @@ fn the_two_pin_domains_are_disjoint_and_each_names_its_own_generation() {
     );
     assert_eq!(
         super::CONTENT_PIN_DOMAIN_SEP,
-        b"VHP-BSS-PRICING-APPROVAL-PIN-v13\x1f"
+        b"VHP-BSS-PRICING-APPROVAL-PIN-v14\x1f"
     );
     assert_eq!(
         super::THRESHOLD_PIN_DOMAIN_SEP,

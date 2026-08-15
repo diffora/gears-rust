@@ -215,7 +215,7 @@ use crate::domain::overlay::{
     Adjustment, AmountSet, Magnitude, OverlayLine, OverlayRevision, ScopeValue, TargetSku,
 };
 use crate::domain::plan_shape::{
-    AddonRule, BillingCycle, DescriptorSet, Frequency, PlanPhase, PlanShape,
+    AddonRule, BillingCycle, DescriptorSet, Frequency, PeriodFloorCap, PlanPhase, PlanShape,
 };
 use crate::domain::price_record::PriceRecord;
 use crate::domain::price_row::{
@@ -462,7 +462,28 @@ use crate::domain::window::{KeyWindows, WindowInterval, WindowState};
 /// unlike `v6`–`v11`, nothing about it collapses. Cheap only because what exists
 /// on any stand is drafts and pending units, the two-person rule having held
 /// every publish.
-pub const CONTENT_PIN_DOMAIN_SEP: &[u8] = b"VHP-BSS-PRICING-APPROVAL-PIN-v13\x1f";
+///
+/// # `v14`: the plan-level period floor and cap joined the plan shape (2026-08-15, D-319)
+///
+/// PRD §17.8's catalog authoring field landed as a revision-scoped child set,
+/// and it is authored draft content a `PATCH` moves — `v11`'s case for the
+/// composite definitions, with a money consequence. The hole it closes: a
+/// reviewer who approved a plan carrying no minimum and a commit that publishes
+/// one at $500 a period, with every digest equal. It is worse than the
+/// composite formula's, because a floor changes what a subscriber pays without
+/// changing any line of the invoice that would explain it.
+///
+/// Like `v12` and `v13`, and unlike `v6`–`v11`, this invalidates any pending
+/// unit that exists rather than collapsing for free.
+///
+/// **A separate bump rather than a wider `v13`.** This field and `v13`'s
+/// `plan_name` were authored concurrently and both first framed against `v12`.
+/// They are not one version: the separator's whole job is that one tag means one
+/// framing, so two different covered-content shapes sharing `v13` would be the
+/// case this constant's own doc argues against — a digest that cannot say which
+/// encoding produced it. `v13` is what the name was frozen under and stays that;
+/// the bound arrives as `v14`.
+pub const CONTENT_PIN_DOMAIN_SEP: &[u8] = b"VHP-BSS-PRICING-APPROVAL-PIN-v14\x1f";
 
 /// Versioned domain-separation tag for the **threshold-policy** content pin.
 ///
@@ -797,6 +818,7 @@ fn put_plan_shape(buf: &mut Vec<u8>, shape: &PlanShape) {
         phases,
         addon_rules,
         descriptor_set,
+        period_floor_caps,
         rows,
         entitlement_grants,
         composites,
@@ -889,6 +911,27 @@ fn put_plan_shape(buf: &mut Vec<u8>, shape: &PlanShape) {
             .map(|rank| rank.cast_unsigned().into()),
     );
     put_str(buf, change_contract.usage_counter_on_plan_change.as_str());
+
+    // D-319's period floor/cap set. **In the pin because a `PATCH` moves it and
+    // because it decides what a subscriber is billed at minimum** -- a reviewer
+    // who approved a plan with no minimum and a commit that publishes one at
+    // $500 a period, with every digest equal, is `sku_id`'s re-verification hole
+    // with a money consequence and no line on the invoice to explain it.
+    //
+    // Sorted on the market pair before framing, because the set arrives in the
+    // repository's read order and a pin whose bytes depend on that order would
+    // move for a re-read. Length-framed like every other collection here.
+    let mut ordered_bounds: Vec<&PeriodFloorCap> = period_floor_caps.iter().collect();
+    ordered_bounds.sort_unstable_by(|a, b| {
+        (a.currency.as_str(), a.region.as_str()).cmp(&(b.currency.as_str(), b.region.as_str()))
+    });
+    put_u64(buf, count_of(ordered_bounds.len()));
+    for bound in ordered_bounds {
+        put_str(buf, bound.currency.as_str());
+        put_str(buf, bound.region.as_str());
+        put_opt_i64(buf, bound.floor_minor.map(MinorAmount::get));
+        put_opt_i64(buf, bound.cap_minor.map(MinorAmount::get));
+    }
 
     let mut ordered_phases: Vec<&PlanPhase> = phases.phases().iter().collect();
     ordered_phases.sort_unstable_by_key(|phase| (phase.ordinal, phase.phase_id.get()));

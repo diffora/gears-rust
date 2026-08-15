@@ -127,7 +127,7 @@ use toolkit_macros::domain_model;
 use uuid::Uuid;
 
 use crate::domain::contracts::{EntitlementGrants, PlanChangeContract};
-use crate::domain::money::CurrencyCode;
+use crate::domain::money::{CurrencyCode, MinorAmount};
 use crate::domain::price_record::PriceRecord;
 use crate::domain::scope_key::{ChargeKind, PhaseId, PlanId, Region};
 use crate::domain::window::KeyWindows;
@@ -598,6 +598,61 @@ pub struct DescriptorSet {
     pub additional: BTreeMap<String, String>,
 }
 
+/// The plan-level **period floor and cap** in one market (S2 §6,
+/// `inst-pfc-*`, **D-319**).
+///
+/// *"This plan bills at least X per period in this market"* — money compared
+/// against a **period total**, not a price. Nothing in this gear evaluates it:
+/// Rating reads it out of the pinned snapshot and emits a
+/// `PeriodFloorCapObligation`, and **Billing** applies `max(total, floor)` /
+/// `min(total, cap)` after step 9 (rating PRD `fr-period-floor-cap-obligation`).
+///
+/// # Three things it is not
+///
+/// - **Not a quantity floor.** `min_qty_purchase` / `min_qty_usage` are on the
+///   price row and bound a *quantity*; rating §6.2 forbids conflating the two.
+/// - **Not a committed-spend pool.** Negotiated commitments with a monetary
+///   true-up are Contracts' system of record (rating T-D-14); this is a
+///   self-service catalog field with no true-up and no contract.
+/// - **Not cohort-scoped.** The `cohort` axis selects a *key*, and a
+///   subscription pins one price id per line, so a subscription whose lines
+///   straddle two generations has no single cohort for a bound to be read
+///   under. The bound is therefore a fact about the plan revision, and a
+///   grandfathered generation is answerable to the revision's bound at the
+///   version its subscription is pinned to (D-319).
+///
+/// # Why the currency is not a field
+///
+/// [`PeriodFloorCap::currency`] **is** the denomination of both amounts. The
+/// same doctrine [`MinorAmount`](crate::domain::money::MinorAmount) states for
+/// a price row: pairing a currency into the amount creates a second place to
+/// disagree about which currency the money is in.
+#[domain_model]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PeriodFloorCap {
+    /// ISO 4217 — the first half of the market, and the denomination of both
+    /// amounts below.
+    pub currency: CurrencyCode,
+    /// The second half of the market pair.
+    pub region: Region,
+    /// The period floor in minor units of [`PeriodFloorCap::currency`].
+    ///
+    /// Strictly positive when present: a `0` floor is `max(total, 0)`, which
+    /// the per-line non-negative guard already guarantees, so the two spellings
+    /// would name one state (`PERIOD_FLOOR_CAP_AMOUNT_INVALID`).
+    pub floor_minor: Option<MinorAmount>,
+    /// The period cap, same denomination and same positivity rule.
+    pub cap_minor: Option<MinorAmount>,
+}
+
+impl PeriodFloorCap {
+    /// The market this bound is filed under.
+    #[must_use]
+    pub fn market(&self) -> (CurrencyCode, Region) {
+        (self.currency.clone(), self.region.clone())
+    }
+}
+
 /// What the plan's **current published revision** holds, for the three Slice-2
 /// rules that are comparisons rather than predicates.
 ///
@@ -697,6 +752,15 @@ pub struct PlanShape {
     /// `DESCRIPTOR_INCOMPLETE` reports the same way an incomplete one is
     /// reported.
     pub descriptor_set: Option<DescriptorSet>,
+    /// The plan-level period floor/cap this revision publishes, one entry per
+    /// market it is authored for (**D-319**).
+    ///
+    /// A `Vec` and not an `Option<..>`: the empty set **is** the unauthored
+    /// state, and a plan that authored no bound and one that authored the empty
+    /// set are the same plan — [`PlanChangeContract`]'s reason, one object over.
+    /// The publish rules range over it against [`PlanShape::markets`], which is
+    /// a fact about the row set and not about any one entry.
+    pub period_floor_caps: Vec<PeriodFloorCap>,
     /// The candidate row set the publish would produce; see the module doc.
     pub rows: Vec<PriceRecord>,
     /// The entitlement grant set this revision publishes (Slice 6, §6, D-41):
@@ -769,6 +833,7 @@ impl PlanShape {
             phases: PhaseGraph::default(),
             addon_rules: Vec::new(),
             descriptor_set: None,
+            period_floor_caps: Vec::new(),
             rows: Vec::new(),
             entitlement_grants: EntitlementGrants::default(),
             composites: Vec::new(),

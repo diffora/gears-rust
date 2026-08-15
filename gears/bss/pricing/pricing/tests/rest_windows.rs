@@ -2318,6 +2318,7 @@ fn delta_of(
         phases: Vec::new(),
         addon_rules: Vec::new(),
         descriptor_set: None,
+        period_floor_caps: Vec::new(),
         prices: vec![PriceRecord {
             price_id: Uuid::from_u128(0xb_0001),
             scope_key: key.clone(),

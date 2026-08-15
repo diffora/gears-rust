@@ -43,10 +43,10 @@ use bss_pricing::infra::storage::entity::{
     brand_taxonomy, bulk_operation, bulk_row_lock, bundle, bundle_component, bundle_revshare,
     bundle_revshare_group, catalog_version_ref, composite_meter, customer_group_taxonomy,
     group_membership, idempotency_dedup, migration, operator_flag, org_tier_taxonomy, outbox,
-    partner_taxonomy, pin_frontier, plan, plan_addon_rule, plan_descriptor_set, plan_phase,
-    policy_object, price, price_overlay, price_overlay_line, price_overlay_line_amount,
-    price_tier_band, price_window, read_model, region_taxonomy, repricing_journal,
-    snapshot_provenance,
+    partner_taxonomy, pin_frontier, plan, plan_addon_rule, plan_descriptor_set,
+    plan_period_floor_cap, plan_phase, policy_object, price, price_overlay, price_overlay_line,
+    price_overlay_line_amount, price_tier_band, price_window, read_model, region_taxonomy,
+    repricing_journal, snapshot_provenance,
 };
 use bss_pricing::infra::storage::migrations::Migrator;
 use sea_orm::{ConnectionTrait, Database, EntityName, EntityTrait, Statement};
@@ -62,6 +62,7 @@ const EXPECTED_TABLES: &[&str] = &[
     "pricing_plan_phase",
     "pricing_plan_addon_rule",
     "pricing_plan_descriptor_set",
+    "pricing_plan_period_floor_cap",
     "pricing_price",
     "pricing_price_tier_band",
     "pricing_read_model",
@@ -188,6 +189,9 @@ const EXPECTED_TRIGGERS: &[&str] = &[
     "trg_pricing_plan_flip_whitelist",
     "trg_pricing_plan_frozen_columns",
     "trg_pricing_plan_no_delete",
+    "trg_pricing_plan_period_floor_cap_no_delete",
+    "trg_pricing_plan_period_floor_cap_no_insert",
+    "trg_pricing_plan_period_floor_cap_no_update",
     "trg_pricing_plan_phase_no_delete",
     "trg_pricing_plan_phase_no_insert",
     "trg_pricing_plan_phase_no_update",
@@ -268,6 +272,7 @@ const EXPECTED_INDEXES: &[&str] = &[
     "idx_pricing_outbox_undrained",
     "idx_pricing_plan_addon_rule_revision",
     "idx_pricing_plan_descriptor_set_revision",
+    "idx_pricing_plan_period_floor_cap_revision",
     "idx_pricing_plan_phase_revision",
     "idx_pricing_plan_tenant",
     "idx_pricing_price_overlay_line_amount_tenant",
@@ -409,6 +414,10 @@ const EXPECTED_CHECKS: &[&str] = &[
     "chk_pricing_plan_custom_interval_unit",
     "chk_pricing_plan_frequency",
     "chk_pricing_plan_lifecycle_state",
+    "chk_pricing_plan_period_floor_cap_cap_positive",
+    "chk_pricing_plan_period_floor_cap_floor_positive",
+    "chk_pricing_plan_period_floor_cap_ordered",
+    "chk_pricing_plan_period_floor_cap_present",
     "chk_pricing_plan_phase_display_trial_days",
     "chk_pricing_plan_phase_kind",
     "chk_pricing_plan_purchase_qty",
@@ -585,6 +594,10 @@ const EXPECTED_PRIMARY_KEYS: &[(&str, &str)] = &[
         "plan_id, plan_revision, addon_sku_id",
     ),
     ("pricing_plan_descriptor_set", "plan_id, plan_revision"),
+    (
+        "pricing_plan_period_floor_cap",
+        "plan_id, plan_revision, currency, region",
+    ),
     ("pricing_plan_phase", "phase_id, plan_revision"),
     ("pricing_policy_object", "tenant_id"),
     ("pricing_price", "price_id"),
@@ -877,6 +890,19 @@ const EXPECTED_TRIGGER_BODIES: &[(&str, u64)] = &[
         16_522_338_372_357_234_734_u64,
     ),
     ("trg_pricing_plan_no_delete", 11_619_837_810_759_772_588_u64),
+    // D-319's three, read off this census's own failure the first time it ran.
+    (
+        "trg_pricing_plan_period_floor_cap_no_delete",
+        550_264_251_495_731_436_u64,
+    ),
+    (
+        "trg_pricing_plan_period_floor_cap_no_insert",
+        13_466_492_846_002_650_696_u64,
+    ),
+    (
+        "trg_pricing_plan_period_floor_cap_no_update",
+        12_201_247_980_524_221_695_u64,
+    ),
     (
         "trg_pricing_plan_phase_no_delete",
         10_318_237_350_173_185_356_u64,
@@ -1343,6 +1369,8 @@ async fn the_chain_creates_every_table_and_re_runs_cleanly() {
         plan_phase::Entity,
         plan_addon_rule::Entity,
         plan_descriptor_set::Entity,
+        // D-319's fourth revision-scoped child.
+        plan_period_floor_cap::Entity,
         price::Entity,
         price_tier_band::Entity,
         read_model::Entity,
