@@ -191,7 +191,11 @@ def ledger():
 #: addition (C-5: ~two dozen slice-declared alarms, several Critical and
 #: money-facing, with no PRD requirement obliging routing/runbooks), not drift.
 PINNED_COUNTS_2026_07_30 = {
-    "pricing": {"fr": 65, "nfr": 12, "total": 77},
+    # pricing fr 65 -> 66 / total 77 -> 78 on 2026-08-15: PRD §6.1 gained
+    # `fr-period-floor-cap`, the catalog authoring field §17.8 had deferred
+    # (D-319). One requirement authored, one counted; the per-id check is beside
+    # `PINNED_TRIAGE_PRICING` in `test_neighbourhoods_cli.py`.
+    "pricing": {"fr": 66, "nfr": 12, "total": 78},
     "ledger": {"fr": 35, "nfr": 5, "total": 40},
 }
 

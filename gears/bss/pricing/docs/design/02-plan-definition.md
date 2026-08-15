@@ -22,6 +22,7 @@
   - [Plan Composition Validation](#plan-composition-validation)
   - [Phase Schedule Validation](#phase-schedule-validation)
   - [Billing Descriptor Completeness](#billing-descriptor-completeness)
+  - [Period Floor & Cap Validation](#period-floor--cap-validation)
 - [4. States (CDSL)](#4-states-cdsl)
   - [Plan Lifecycle State Machine](#plan-lifecycle-state-machine)
 - [5. API Surface](#5-api-surface)
@@ -32,6 +33,7 @@
   - [Plan Composition & PlanTier](#plan-composition--plantier)
   - [Phases](#phases)
   - [Descriptors](#descriptors)
+  - [Period Floor & Cap](#period-floor--cap)
 - [9. Acceptance Criteria](#9-acceptance-criteria)
 - [10. Non-Functional Considerations](#10-non-functional-considerations)
 
@@ -44,7 +46,8 @@
 This slice owns the **shape of a Plan**: the billing-cycle matrix (one-time / recurring /
 usage-based / hybrid), custom frequency, per-seat quantity provenance, the optional one-time
 setup row, mandatory `PlanTier`, meter injectivity, add-on rules, plan phases with
-`convertsToPhaseId`, and the billing descriptor set. It registers its validation rules into
+`convertsToPhaseId`, the billing descriptor set, and — since **D-319** — the plan-level
+**period floor and cap** per sold market. It registers its validation rules into
 the Foundation's fail-closed pipeline and its fields into the read-model projection; it owns
 **no publish mechanics** — everything publishes through the Foundation
 ([`01-foundation.md`](./01-foundation.md) §4.2).
@@ -53,7 +56,8 @@ the Foundation's fail-closed pipeline and its fields into the read-model project
 `cpt-cf-bss-pricing-fr-hybrid-completeness`,
 `cpt-cf-bss-pricing-fr-one-time-setup`, `cpt-cf-bss-pricing-fr-plantier-mandatory`,
 `cpt-cf-bss-pricing-fr-meter-injective`, `cpt-cf-bss-pricing-fr-addon-rules`,
-`cpt-cf-bss-pricing-fr-billing-descriptors`, `cpt-cf-bss-pricing-fr-plan-phases`
+`cpt-cf-bss-pricing-fr-billing-descriptors`, `cpt-cf-bss-pricing-fr-plan-phases`,
+`cpt-cf-bss-pricing-fr-period-floor-cap`
 (per-seat `quantitySource` persistence + validation live in Slice 3, matching §1.5 —
 `fr-per-seat` is claimed there, one owner per FR; 2026-07-31 P2 fix)
 
@@ -88,11 +92,16 @@ without defaults.
 quantity provenance concept (persistence + validation of `quantitySource`: Slice 3); one-time
 setup row validation; `PlanTier` mandatory + SKU-equality check;
 meter injectivity; add-on rules (dependency, bounds, override reference); phases (ordering,
-`convertsToPhaseId`, terminal phase, `displayTrialDays`); billing descriptor completeness.
+`convertsToPhaseId`, terminal phase, `displayTrialDays`); billing descriptor completeness;
+the plan-level period floor/cap per sold `(currency, region)` — **authoring, validation and
+freezing only** (D-319).
 
 **Out of scope**: tier bands / model kinds (Slice 3); bundles (Slice 8); windows/sellability
 enforcement (Slice 7); trial runtime, entitlement enforcement, proration math (Subscriptions);
-`PlanTier` taxonomy and `meteringUnit` declaration (registry); charge computation (Tariffs).
+`PlanTier` taxonomy and `meteringUnit` declaration (registry); charge computation (Tariffs);
+**execution of the period floor/cap** — Rating emits the `PeriodFloorCapObligation` from the
+pinned snapshot and Billing applies `max(total, floor)` / `min(total, cap)` after step 9
+(rating `fr-period-floor-cap-obligation`), and this slice adds no evaluation machinery.
 
 ### 1.6 Constraints & Assumptions
 
@@ -254,6 +263,19 @@ flowchart TB
 1. [ ] - `p1` - Required per manifest §4.1 / D-48 v1: invoice line template (`invoiceLineTemplate`), GL code (`glCode`), composition/itemization rules (`itemizationRule`) on the descriptor set — the three spelled as the validation report and the extension keys spell them, following the wire spelling every other rule's detail uses (`planTier`, `billingGranularity`), since §6 names only the columns and the PRD only the concepts — plus the two **row-borne** elements: `billingTiming` on every recurring row (validated by Slice 6's rule, `BILLING_TIMING_MISSING`) and `taxCategory` as each row's `tax_category_ref` (Slice 4 `inst-td-persist`, sole source of truth per D-110); publish blocks on any missing element with the field and, for the row-borne ones, the row named in the report. **What "missing" means for `taxCategory` (normative, D-154, 2026-08-03, found while building the descriptor rule):** the required element is the row's **effective** category — `coalesce(row.tax_category_ref, readiness.taxCategory)`, [`04-currency-tax.md`](./04-currency-tax.md) `inst-td-policy` — never the column alone, so a tenant declaring one category per region satisfies this element without authoring `tax_category_ref` on every row. Publish **resolves** that category and freezes the resolved value with the row, exactly as it resolves and freezes `rounding_policy_ref` (Foundation §3.7). Two things follow and neither held before: a row whose effective category is **absent** fails publish (`TAX_BASIS_INCOMPLETE`, S4 §5) with **no** warn-mode escape, because D-48 v1 pins this element and a tenant display policy may not publish past a pinned contract element; and Billing reads the category from the frozen row instead of re-resolving the coalesce against `pricing_region_taxonomy`, which is mutable per `(tenant, region)` and whose re-query is what step 2 forbids - `inst-ds-required`
 2. [ ] - `p1` - The frozen set MUST be sufficient for Billing/ERP to post without re-querying mutable rows; the minimum field list is confirmed with Billing (P5) and the validator's required-set is config-extensible without a schema change — **the extension is declared in `pricing_policy_object` (normative, D-152, 2026-08-03, found while building the descriptor rule)**: a per-tenant entry listing additional required descriptor keys, matched against `pricing_plan_descriptor_set.additional_fields`, additive-only over the pinned v1 three, and enforced by the existing `DESCRIPTOR_INCOMPLETE` — **no new code**, a missing extended key being a missing descriptor element like any other. Until now the promise had no carrier: nothing in §6, §10 or [`../PRD.md`](../PRD.md) §14 named where the extended set is declared, so `DESCRIPTOR_INCOMPLETE` could only ever check the v1 three and "config-extensible without a schema change" described a capability with no configuration to exercise it - `inst-ds-sufficient`
 
+### Period Floor & Cap Validation
+
+- [ ] `p2` - **ID**: `cpt-cf-bss-pricing-algo-period-floor-cap`
+
+**Input**: a draft plan's authored period floor/cap set + its price rows
+**Output**: pass, or enumerated fail-closed violations
+
+**Steps**:
+1. [ ] - `p2` - **The bound names a market the plan sells (normative, D-319, 2026-08-15):** every authored `(currency, region)` MUST be a member of the plan's sold-market set — the union over its price rows' canonical scope keys, the same derivation `inst-cs-onetime`, `inst-cs-hybrid` and `inst-ph-coverage` range over — else publish fails (`PERIOD_FLOOR_CAP_MARKET_UNSOLD`, 422, the market named). This is the mirror image of `BASE_MARKET_INCOMPLETE` and `USAGE_MARKET_INCOMPLETE`, which ask whether every sold market carries the rows it owes; this asks whether an authored bound has a market to apply in. A floor on `(USD, us)` authored by a plan pricing `(USD, ca)` is not a smaller floor — it is **no floor at all**, frozen for the seven-year horizon into an immutable snapshot on a plan whose author believes it carries a minimum, and nothing else in the pipeline can see it: the completeness rules range over sold markets and this bound is not on one. **The converse is deliberately not a rule** — a sold market with no bound is the ordinary plan, and requiring one would make every plan in the catalogue author a minimum. Every offending bound is reported, never the first - `inst-pfc-market`
+2. [ ] - `p2` - **The bound admits a bill (normative, D-319):** each authored entry MUST carry at least one of floor/cap, each present amount MUST be **strictly positive**, and the floor MUST NOT exceed the cap — each an unusable-bound defect on one row, all four reported as `PERIOD_FLOOR_CAP_AMOUNT_INVALID` (422, the offending bound named; the sibling of `ADDON_QTY_RANGE_INVALID` two objects over, and D-150's arrangement for D-150's reason). **`0` is refused rather than admitted as a second spelling of absence**: the per-line non-negative guard already holds every line at or above zero *before* floor/cap is applied (rating PRD §6.11), so `max(total, 0)` is a no-op by construction and an author who wrote it would believe they had set a minimum. That is the opposite call from a **price**, where an explicit `$0` row and an absent row are genuinely different states — a market where usage is free versus one where it is unrateable (S3 Q5) — and the difference is exactly that there the two spellings mean two things and here they mean one. §6 carries all four as `CHECK`s as well: the constraint is the physical guarantee and this rule is the explanatory path, the arrangement D-148 describes, so the rule is unreachable through the authoring door **by design** rather than by oversight - `inst-pfc-amount`
+3. [ ] - `p2` - **What is not authored, and why (normative, D-319).** The obligation Rating emits carries an **attachment scope** and a **comparison basis**, and this slice authors neither. The attachment scope follows from where the bound lives: rating PRD §17.2 reads a plan-level bound as `recurring+usage`, and a bound published on the **plan subject** is plan-level by construction, so stamping a constant would be a second spelling of one fact. The comparison basis is **unresolved rating-side** — whether a contractual floor claws back coupon discount is rating §15's open item, default proposal post-coupon — and a value frozen into a seven-year-immutable snapshot under an undecided meaning cannot be corrected when the meaning is decided, while an absence can. The catalog therefore authors an **amount and a market** and nothing else; if §15 resolves in a way that needs a per-plan basis, it arrives as an additive field with its own decision - `inst-pfc-unauthored`
+4. [ ] - `p2` - **The bound is not cohort-scoped (normative, D-319).** A grandfathered generation is answerable to its plan revision's bound at the version its subscription is pinned to; the cutover copies **price rows** under a new `cohort` (ADR-0002) and mints no plan revision, so there is no per-cohort plan-level surface for a bound to sit on. The decisive reason is structural rather than economical: `cohort` selects a **key**, and Tariffs resolves it *from the subscription's pinned price id* — a subscription holds one pinned id per line, so a subscription whose lines straddle two generations has no single cohort under which a period-total bound could be read. **The cost is stated rather than hidden**: a floor raised in a later revision reaches a grandfathered cohort at its next re-pin, so grandfathering protects the row and not the minimum. An operator who must hold a cohort to an old floor puts that cohort on a different plan, which is the path §17.8 already names for a group needing an entirely different tier structure - `inst-pfc-cohort`
+
 ## 4. States (CDSL)
 
 ### Plan Lifecycle State Machine
@@ -278,7 +300,7 @@ so its `revision` number stays consumed (`inst-pl-abandon`, D-145); optional `Pl
 | Method | Path | Purpose | Idempotency |
 |--------|------|---------|-------------|
 | `POST` | `/bss-pricing/v1/plans` | Create a draft plan | client idempotency key |
-| `PATCH` | `/bss-pricing/v1/plans/{planId}` | Update draft shape — **exactly one** of cycle, phases, add-ons, descriptors, composites per call (**D-173**; the composites facet is Slice 10's, authorized by `inst-ad-author`) | ETag |
+| `PATCH` | `/bss-pricing/v1/plans/{planId}` | Update draft shape — **exactly one** of cycle, phases, add-ons, descriptors, composites, period floor/cap per call (**D-173**; the composites facet is Slice 10's, authorized by `inst-ad-author`; the period floor/cap facet is **D-319**'s) | ETag |
 | `POST` | `/bss-pricing/v1/plans/{planId}/publish` | Run fail-closed validation + submit for approval/publish | per plan revision |
 | `POST` | `/bss-pricing/v1/plans/{planId}/abandon` | **Discard the plan's open draft revision** — the author-driven arm of `inst-pl-abandon` (**D-145**): the row flips to the terminal `abandoned` state, its child copies drop, the flip is audited, and the `revision` number stays consumed. It is never deleted, so the verb is not `DELETE` | ETag |
 | `GET` | `/bss-pricing/v1/plans/{planId}` | Read the plan's **editable revision** — its open draft if it holds one, else its current revision (**D-170**; published content is *consumed* via the read model) | — |
@@ -328,8 +350,16 @@ one-time plan, or carrying recurrence/`billingTiming`/tier fields),
 `METER_USAGE_TYPE_UNBOUND` (422 — the row's meter carries no registry `usageTypeRef`; UC3),
 `METER_DIMENSION_UNDECLARED` (422 — a priced `dimensionKey` outside the UsageType's declared
 `metadata_fields` keys; UC3),
-`DESCRIPTOR_INCOMPLETE` (422). Concrete error taxonomy is refined at implementation; names
-follow the fail-closed report contract (every violation enumerated).
+`DESCRIPTOR_INCOMPLETE` (422),
+`PERIOD_FLOOR_CAP_MARKET_UNSOLD` (422 — a period floor/cap authored on a `(currency, region)`
+the plan prices nothing in; the market named; **D-319** — the mirror of
+`BASE_MARKET_INCOMPLETE`, which asks the same question from the market's side),
+`PERIOD_FLOOR_CAP_AMOUNT_INVALID` (422 — a period bound that admits no bill: a `0` floor, a
+`0` cap, a floor above its cap, or an entry authoring neither; the offending bound named;
+**D-319** — `0` is refused because the per-line non-negative guard already makes
+`max(total, 0)` a no-op, so it would be a second spelling of absence). Concrete error taxonomy
+is refined at implementation; names follow the fail-closed report contract (every violation
+enumerated).
 
 **Revision-lifecycle refusals are Foundation-owned and referenced, never redeclared above**
 (R-11; Foundation §3.3). A `PATCH` that would open a successor revision on a plan whose current
@@ -493,6 +523,22 @@ now `taxCategory` (**D-110**, 2026-07-31 review fix: a per-plan column cannot mi
 check was undefined whenever two rows of a plan carried different categories) — both ride
 `pricing_price` and are delivered with the row.
 
+**`pricing_plan_period_floor_cap`** (PK **`(plan_id, plan_revision, currency, region)`** — copy-on-new-revision, D-83; FK `(plan_id, plan_revision)`; **D-319**, 2026-08-15). The plan-level period floor and cap in one market. The market pair is **in the key** and not a pair of ordinary columns, because `pricing_plan` has no market axis at all — `currency` and `region` live on the price row's canonical scope key (Foundation §4.1) — so PRD §17.8's "plan-level floor/cap per `(currency, region)`" has no column on the plan row to sit in, and a currency-scalar column could denominate the bound in exactly one currency: a plan selling USD and EUR would carry a floor applying silently to one market and not the other, or an implicit FX conversion this gear refuses (`currencyFallbackPolicy` is fail-closed):
+
+| Column | Type | Notes |
+|--------|------|-------|
+| `plan_id` | `uuid` | PK half; FK |
+| `plan_revision` | `bigint` | PK half — the revision this copy belongs to (copy-on-new-revision, D-83) |
+| `currency` | `text` | PK half, ISO 4217 — the market's first axis **and** the denomination of both amounts below. There is deliberately no separate currency column on the money: a second spelling of the denomination is a second thing to disagree, which is `MinorAmount`'s own rule one object over |
+| `region` | `text` | PK half — the market's second axis |
+| `tenant_id` | `uuid` | the tenant scope every table of this gear carries, copied from the parent revision by the repository and never taken from a request (`pricing_plan_phase`'s note verbatim) |
+| `floor_minor` | `bigint` | the period floor in minor units of `currency`; strictly positive when present |
+| `cap_minor` | `bigint` | the period cap, same denomination and same rule |
+
+**The cap landed with the floor rather than after it** (**D-319**), and the reason is measured rather than aesthetic: `floor_minor <= cap_minor` is a **table-level** `CHECK`, `SQLite` cannot `ALTER TABLE ... ADD CONSTRAINT`, and `m20260802_000056_add_pricing_price_floor_and_discount` records what that costs — four columns added with **no `CHECK` on either engine**, because one added on Postgres alone would leave the two engines' `EXPECTED_CHECKS` censuses describing different schemas. Deferring the cap would therefore have bought a later table rebuild (`m20260802_000076` measured 47 columns / 21 constraints / 16 dependent objects for `pricing_price`) or a companion guard trigger, to save one nullable column now. The cap is also not speculative: the obligation Rating emits carries it, Billing already executes `min(total, cap)`, and **D-17** named "the per-period money cap" as the sanctioned capping mechanism when it forbade closed top tier bands — so a floor built alone would leave D-17's own stated alternative still unbuilt.
+
+Key constraints (`pricing_plan_period_floor_cap`, all four in the `CREATE TABLE` and identical on both engines — a new table has no `ALTER` problem, which is the argument for this shape over columns on `pricing_plan`): `chk_..._floor_positive` and `chk_..._cap_positive` (`x IS NULL OR x > 0` — `0` is refused, `inst-pfc-amount`); `chk_..._ordered` (`floor_minor IS NULL OR cap_minor IS NULL OR floor_minor <= cap_minor`, **both NULL arms explicit** so NULL propagation cannot silently satisfy it — the shape `chk_pricing_plan_phase_display_trial_days` fell into, D-151); `chk_..._present` (at least one bound). Each is the physical guarantee behind the `PERIOD_FLOOR_CAP_AMOUNT_INVALID` rule that explains it, the arrangement D-148 describes. Unlike a phase graph, a bound row is authored **whole** — `PlanShapeRepo` replaces the set wholesale — so there is no half-authored state for a constraint to refuse, which is why these are `CHECK`s where `inst-ph-duration`'s are not.
+
 Key constraints: at most one terminal phase per plan revision (partial unique on
 `(plan_id, plan_revision) WHERE converts_to_phase_id IS NULL`; **existence** of exactly one
 terminal phase is the PhaseGraph pipeline rule — an index cannot enforce the ≥ 1 half);
@@ -625,13 +671,36 @@ per-tenant `pricing_policy_object` entry checked against `additional_fields` und
 - DB: `pricing_plan_descriptor_set`
 - Entities: `DescriptorSet`
 
+### Period Floor & Cap
+
+- [ ] `p2` - **ID**: `cpt-cf-bss-pricing-dod-period-floor-cap`
+
+The system **MUST** let a plan revision author a period floor and/or cap per sold
+`(currency, region)`, freeze it into `pricingSnapshotRef`, publish it on the read model for
+Rating to build its `PeriodFloorCapObligation` from, and **MUST NOT** evaluate it — Billing
+applies `max(total, floor)` / `min(total, cap)` after step 9. Publish **MUST** reject a bound
+on a market the plan prices nothing in (`PERIOD_FLOOR_CAP_MARKET_UNSOLD`, the market named)
+and a bound that admits no bill — a `0` floor, a `0` cap, a floor above its cap, or an entry
+authoring neither (`PERIOD_FLOOR_CAP_AMOUNT_INVALID`, the offending bound named). A sold
+market carrying **no** bound **MUST NOT** be a violation. The set **MUST** copy forward onto a
+new revision (D-83) and drop with an abandoned one (D-145), and **MUST** be covered by the
+approval content pin, a reviewer's signature over an unseen minimum being one they did not
+give.
+
+**Implements**: `cpt-cf-bss-pricing-algo-period-floor-cap`
+
+**Touches**:
+- API: `PATCH /bss-pricing/v1/plans/{planId}` (the `periodFloorCaps` facet)
+- DB: `pricing_plan_period_floor_cap`
+- Entities: `PeriodFloorCapMarketSold`, `PeriodFloorCapAmounts`
+
 ## 9. Acceptance Criteria
 
 Delta over the Foundation testing architecture (levels + mocking inherited).
 
 Unit:
 
-- [ ] Cycle-matrix validation per §17.1 (each cycle's required/forbidden fields); custom-`n` bounds + anchoring; hybrid completeness; setup-row one-time constraints; one-time purchase-qty range (`minQty > maxQty` rejected) + past-`availableFrom` rejection (any cycle — `inst-cs-availability`); PlanTier equality/override; add-on cycle detection over plan-authored `depends_on` edges (an edge outside the plan's add-on set fails; conflict symmetry normalized; two required conflicting add-ons fail); add-on override-home resolution (unpublished ref or uncovered `(currency, region)` fails); phase-graph acyclicity + single terminal + non-terminal duration required + **linear chain** (a skip/branch/unreachable phase fails, `PHASE_CHAIN_NONLINEAR`; the entry phase = lowest ordinal — L-3 fix); a phase-scoped usage override changing `billingGranularity`/`model_kind`/a window/`package_size` vs its terminal-phase row fails (`PHASE_OVERRIDE_UNIT_MISMATCH`, D-89/D-122) while a `$0` same-denomination trial override passes; a phase-scoped usage row whose `(meter, dimensionKey)` line has **no** terminal-phase row fails (`PHASE_OVERRIDE_ORPHANED`, D-117); a revision re-publishing an **unchanged** now-past `availableFrom` passes while setting a new past value fails (`inst-cs-availability`); descriptor required-set — including an extended key declared in `pricing_policy_object` and absent from `additional_fields` (`DESCRIPTOR_INCOMPLETE`, **D-152**); a plan with no `billing_cycle` and a recurring plan with no `frequency` each fail naming the field (`CYCLE_METADATA_MISSING`, **D-149**); a one-time plan selling two markets with a `one_time` row in one, and a recurring plan likewise, each fail naming cycle, `chargeKind` and market (`BASE_MARKET_INCOMPLETE`, D-149) while a hybrid missing its whole recurring part still reports `HYBRID_INCOMPLETE`; a required add-on with `maxQty = 0`, an inverted `minQty`/`maxQty` pair and a `stepQty` of 0 each fail naming the bound (`ADDON_QTY_RANGE_INVALID`, **D-150**); `displayTrialDays` on an `intro` phase, and on the `evergreen` terminal phase that carries no duration, both fail (`DISPLAY_TRIAL_DAYS_INVALID`, **D-151**) while a `trial` phase projecting its own duration passes
+- [ ] Cycle-matrix validation per §17.1 (each cycle's required/forbidden fields); custom-`n` bounds + anchoring; hybrid completeness; setup-row one-time constraints; one-time purchase-qty range (`minQty > maxQty` rejected) + past-`availableFrom` rejection (any cycle — `inst-cs-availability`); PlanTier equality/override; add-on cycle detection over plan-authored `depends_on` edges (an edge outside the plan's add-on set fails; conflict symmetry normalized; two required conflicting add-ons fail); add-on override-home resolution (unpublished ref or uncovered `(currency, region)` fails); phase-graph acyclicity + single terminal + non-terminal duration required + **linear chain** (a skip/branch/unreachable phase fails, `PHASE_CHAIN_NONLINEAR`; the entry phase = lowest ordinal — L-3 fix); a phase-scoped usage override changing `billingGranularity`/`model_kind`/a window/`package_size` vs its terminal-phase row fails (`PHASE_OVERRIDE_UNIT_MISMATCH`, D-89/D-122) while a `$0` same-denomination trial override passes; a phase-scoped usage row whose `(meter, dimensionKey)` line has **no** terminal-phase row fails (`PHASE_OVERRIDE_ORPHANED`, D-117); a revision re-publishing an **unchanged** now-past `availableFrom` passes while setting a new past value fails (`inst-cs-availability`); descriptor required-set — including an extended key declared in `pricing_policy_object` and absent from `additional_fields` (`DESCRIPTOR_INCOMPLETE`, **D-152**); a plan with no `billing_cycle` and a recurring plan with no `frequency` each fail naming the field (`CYCLE_METADATA_MISSING`, **D-149**); a one-time plan selling two markets with a `one_time` row in one, and a recurring plan likewise, each fail naming cycle, `chargeKind` and market (`BASE_MARKET_INCOMPLETE`, D-149) while a hybrid missing its whole recurring part still reports `HYBRID_INCOMPLETE`; a required add-on with `maxQty = 0`, an inverted `minQty`/`maxQty` pair and a `stepQty` of 0 each fail naming the bound (`ADDON_QTY_RANGE_INVALID`, **D-150**); `displayTrialDays` on an `intro` phase, and on the `evergreen` terminal phase that carries no duration, both fail (`DISPLAY_TRIAL_DAYS_INVALID`, **D-151**) while a `trial` phase projecting its own duration passes; a period floor authored on a `(currency, region)` the plan prices nothing in fails naming the market (`PERIOD_FLOOR_CAP_MARKET_UNSOLD`, **D-319**) while the same amount on a sold market passes, and an unsold **currency** on a sold region fails the same way; a `0` floor, a `0` cap, a floor one minor unit above its cap and an entry authoring neither each fail naming the bound (`PERIOD_FLOOR_CAP_AMOUNT_INVALID`, **D-319**) while an equal floor and cap pass — a fixed-fee plan is not a contradiction — and a plan authoring **no** bound at all passes, absence being how "no minimum" is said
 
 Integration (testcontainers):
 
@@ -643,6 +712,7 @@ Integration (testcontainers):
 - [ ] A phased plan trial→intro→evergreen publishes its phase map + `displayTrialDays`; a cyclic `convertsToPhaseId` fails
 - [ ] The same plan with **zero intro-phase recurring rows** fails publish (`PHASE_UNCOVERED`, naming the phase + market); a single phase-invariant usage row satisfies all phases, and an explicit trial-phase usage row at 0 wins over it for the trial phase
 - [ ] A published plan's shape change opens a new `draft` revision row and publishes it as a new revision — append-only applies to plan-revision rows and price/audit rows (the published revision row never mutates in place; D-56); the publish commit flips the predecessor revision `published → superseded` (D-90): exactly one revision reads `published` afterwards, and retire flips that single current revision
+- [ ] A plan authoring a period floor in one of its two sold markets publishes, and the frozen read-model delta carries the bound with its market and its amount; moving the bound to a third, unpriced market fails publish naming it (`PERIOD_FLOOR_CAP_MARKET_UNSOLD`, D-319). The set copies forward onto a new revision and leaves nothing behind on an abandoned one
 - [ ] The draft revision's phase/add-on/descriptor edits land on **its own copies** (D-83): after the edit the published revision's child rows are unchanged, and a re-warm re-drive of the published version reflects none of the draft's changes
 - [ ] The published read model exposes the setup row's charge-timing semantics (once per lifetime; trial-conversion; never re-charged on migration)
 - [ ] A registry SKU-tier change flags the affected published plan `tier_divergent` and raises the alarm; the frozen tier keeps resolving

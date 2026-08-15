@@ -474,6 +474,20 @@ Recurring and hybrid plans **MAY** declare an optional one-time setup/activation
 
 **Actors**: `cpt-cf-bss-pricing-actor-finance-manager`
 
+#### Plan-level minimum fee / cap per period
+
+- [ ] `p2` - **ID**: `cpt-cf-bss-pricing-fr-period-floor-cap`
+
+A Plan **MAY** declare a **period floor** and/or a **period cap** per sold `(currency, region)` — *"this plan bills at least X, and at most Y, per period in this market"* — frozen in `pricingSnapshotRef` and published on the read model. The catalog **authors, validates and freezes**; it **MUST NOT** evaluate: Rating resolves the amount, currency and attachment scope from the pinned snapshot and emits a `PeriodFloorCapObligation`, and **Billing** executes `max(total, floor)` / `min(total, cap)` over the period's aggregated total after step 9 (rating `fr-period-floor-cap-obligation`, §6.11/§17.2). The **attachment scope is not authored**: a bound published on the plan subject is plan-level by construction, which rating §17.2 already reads as `recurring+usage` (**D-319**).
+
+The market pair is the bound's **key**, and the currency of the market is the denomination of both amounts — no second currency field, and no implicit FX. Publish **MUST** reject a bound authored on a `(currency, region)` the plan prices nothing in (`PERIOD_FLOOR_CAP_MARKET_UNSOLD`, the market named), and **MUST** reject a bound that admits no bill — a `0` floor, a `0` cap, a floor above its cap, or a row authoring neither (`PERIOD_FLOOR_CAP_AMOUNT_INVALID`, the offending bound named). **Absence is the only spelling of "no minimum"** (D-319): the per-line non-negative guard already holds every line at or above zero before the floor applies, so `max(total, 0)` is a no-op and a `0` would be a second spelling of one state. A sold market carrying **no** bound is the ordinary plan and is never a violation.
+
+This is **not** a quantity floor — `minQtyThreshold` / `minQtyUsage` bound a quantity and this bounds money; conflating them is what rating §6.2 forbids. It is **not** a negotiated committed-spend pool either: those are Contracts' system of record (`commitmentPools[]`, `TrueUpObligation`, rating T-D-14) and carry a true-up this does not. The bound is **not cohort-scoped**: it is a fact about the plan revision, so a grandfathered generation is answerable to the revision's bound at the version its subscription is pinned to (D-319).
+
+**Rationale**: "Pay at least $X/month" is a routine commercial ask, and the rating boundary that executes it has been reserved since §17.2 was written; only the catalog authoring field was missing.
+
+**Actors**: `cpt-cf-bss-pricing-actor-finance-manager`, `cpt-cf-bss-pricing-actor-rating`
+
 ### 6.2 Price Structure and Model Kinds
 
 #### Explicit model kind
@@ -2680,7 +2694,7 @@ Enforcement (overlay evaluation, precedence stacking) is owned by Tariffs; this 
 | Closed top tier band (author-acknowledged fail-closed maximum) | `p3` | Follow-on | Forbidden at launch (D-17 — top band always open; capping = quotas / per-period caps); reintroduce with an explicit author-acknowledged marker only if a real SKU needs "price undefined above X" |
 | Plan comparison (side-by-side) | `p2` | Follow-on | Operator/partner decision support |
 | Committed-usage / drawdown flags on plan | `p2` | Cross-PRD | Contracts + Tariffs; catalog may expose reference fields |
-| Minimum fee / cap per period on plan | `p2` | Follow-on | Rating boundary already reserved: Tariffs sets amount/basis/attachment and emits `PeriodFloorCapObligation` (contract/**plan** ref anticipated); **Billing executes** after step 9 (rating `fr-period-floor-cap-obligation`, §6.11/§17.2). Deferred part = the catalog authoring field: plan-level floor/cap per `(currency, region)`, frozen in snapshot. Distinct from committed-usage pools (Contracts SoR, rating T-D-14) — MUST NOT be conflated (rating §6.2) |
+| Minimum fee / cap per period on plan | `p2` | **Decided → Scope (2026-08-15, D-319)** | Re-scoped into **launch**: the deferred part was only ever the **catalog authoring field**, and it has landed as §6.1 `fr-period-floor-cap` — a revision-scoped plan-level floor/cap per `(currency, region)`, frozen in the snapshot and published on the read model. The rating boundary was already reserved and is unchanged: Tariffs sets amount/basis/attachment and emits `PeriodFloorCapObligation` (the **plan** ref is now defined rather than anticipated); **Billing executes** after step 9 (rating `fr-period-floor-cap-obligation`, §6.11/§17.2) — **no new evaluation machinery**, exactly as `STRIPE-GAP-ANALYSIS.md` G-3 predicted. The **cap** landed with the floor rather than after it: the two share one `CHECK` (`floor ≤ cap`) which SQLite cannot add to an existing table, so deferring it would have cost a table rebuild to buy nothing. Distinct from committed-usage pools (Contracts SoR, rating T-D-14) — MUST NOT be conflated (rating §6.2). **What stays Future**: an authored *comparison basis* — whether a contractual floor claws back coupon discount is unresolved rating-side (rating §15), and the catalog does not author a value whose meaning is undecided |
 | Two-dimensional pricing (seats x usage on one plan) | `p2` | Follow-on | Combines per-seat recurring (now in Scope) with a usage meter on the same line; multiple-meter math in Tariffs. **Decision gate** (owner Product): if any launch SKU needs single-line seats x usage it re-scopes out of Future (workaround = two rows) |
 | Derived (composite) meter pricing (e.g. VM = vCPU + RAM) | `p2` | Follow-on | **Primitive defined** (§17.7); composes published units from the registry; unblocks Tariffs composite-meter (Tariffs Follow-on) |
 | Dimensional pricing (event properties) | `p2` | Deferred | OSS/Rating dimension contract |

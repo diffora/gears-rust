@@ -81,8 +81,8 @@ def test_every_requirement_gets_exactly_one_neighbourhood(tmp_path):
     assert run("--gear", "gears/bss/pricing/docs", "--out", str(out)).returncode == 0
     envelope = json.loads(out.read_text(encoding="utf-8"))
     ids = [n["requirement_id"] for n in envelope["neighbourhoods"]]
-    assert len(ids) == 77
-    assert len(set(ids)) == 77
+    assert len(ids) == 78
+    assert len(set(ids)) == 78
     assert all(n["triage"] for n in envelope["neighbourhoods"])
 
 
@@ -1326,7 +1326,7 @@ def test_pricing_triage_histogram_is_pinned(tmp_path):
     assert run("--gear", "gears/bss/pricing/docs", "--out", str(out)).returncode == 0
     counts = json.loads(out.read_text(encoding="utf-8"))["counts"]
     assert counts == PINNED_TRIAGE_PRICING
-    assert sum(counts.values()) == 77
+    assert sum(counts.values()) == 78
 
 
 def test_ledger_triage_histogram_is_pinned(tmp_path):

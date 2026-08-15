@@ -8,6 +8,11 @@
 > hook), G-2 → **D-43** (actioned), G-3 → resolved by inspection (already owned), G-4 →
 > **D-48** (actioned). Nothing here is a live open item; reopening one = a new DECISIONS
 > entry, not an edit of this record.
+>
+> **One §4 deferral has since ended, and it was recorded as this record says to** — a new
+> DECISIONS entry, **D-319** (2026-08-15), building the plan-level period floor/cap authoring
+> field G-3 predicted the shape of. The §4 row and the G-3 resolution below carry the update;
+> nothing else here moved.
 
 <!-- toc -->
 
@@ -106,7 +111,7 @@ gaps; captured here only to map them to their Stripe analogue so we don't "redis
 | per-row `refundable` / `creditPolicy` | Stripe refunds / credit notes | Billing-side; deferred here |
 | self-service term / auto-renew metadata | Stripe subscription settings | Subscriptions-side; deferred here |
 | per-group different-tier structures | Stripe: separate price per segment | Committed to adjustment-only overlays (F-88); different structure = separate plan |
-| plan-level minimum fee / cap per period; committed-usage / drawdown flags on plan | Stripe committed spend / spending minimums on subscriptions | §17.8 rows the original pass missed (it read the shorter DESIGN.md L504 summary). Floor machinery already reserved rating-side (`PeriodFloorCapObligation`, Billing executes); catalog authoring field = the deferred part. Negotiated committed spend = Contracts SoR pools (rating T-D-14) — see G-3 |
+| ~~plan-level minimum fee / cap per period~~ **→ launch (2026-08-15, D-319)**; committed-usage / drawdown flags on plan | Stripe committed spend / spending minimums on subscriptions | §17.8 rows the original pass missed (it read the shorter DESIGN.md L504 summary). **The floor/cap row has left this table**: the catalog authoring field it named as the deferred part is built — `pricing_plan_period_floor_cap`, a plan-level bound per `(currency, region)` frozen in the snapshot ([PRD.md](./PRD.md) §6.1 `fr-period-floor-cap`, S2 `algo-period-floor-cap`) — and the reserved rating-side machinery (`PeriodFloorCapObligation`, Billing executes) is unchanged, exactly as G-3 predicted. Committed-usage / drawdown flags stay deferred: negotiated committed spend = Contracts SoR pools (rating T-D-14) — see G-3 |
 
 ## 5. Gaps worth acting on
 
@@ -234,7 +239,24 @@ negotiated commitments; the plan-level floor is deferred with its machinery rese
 obligation already anticipates a **plan** ref). When a self-service plan needs "\$X/month
 minimum", the §17.8 row activates as an additive plan-level floor amount per
 `(currency, region)`, frozen in the snapshot, feeding the existing obligation — no new
-evaluation machinery. Actioned here: the stale §17.8 note ("Tariffs Future scope") updated
+evaluation machinery.
+
+**The row has since activated, and the prediction held (2026-08-15, D-319).** The clause above
+is left as written because it is the dated record this document is; what follows is what
+happened to it. The catalog authoring field is built as `pricing_plan_period_floor_cap`, a
+**revision-scoped child table of the plan** keyed `(plan_id, plan_revision, currency, region)`
+— the market pair had to be in a key because `pricing_plan` carries no market axis at all —
+with the amount denominated by the market's own currency and **no** new evaluation anywhere in
+this gear. Two things the paragraph above did not anticipate, both recorded rather than
+glossed: the **cap** landed with the floor rather than after it, because `floor ≤ cap` is a
+table-level `CHECK` and `SQLite` cannot add one to an existing table, so deferring it would
+have cost a table rebuild to save one nullable column; and the ownership split above turns out
+to hold **more sharply** than "the amount is a Contracts term by design" states — a plan-level
+bound cannot be cohort-scoped at all, because `cohort` selects a *key* and a period bound
+ranges over a *total*, so a subscription whose lines straddle two generations has no single
+cohort to read one under. The `discountRef`-shaped question — whether the floor compares the
+pre- or post-coupon total — remains **rating §15's**, and the catalog deliberately authors no
+comparison basis until it is answered. Actioned here: the stale §17.8 note ("Tariffs Future scope") updated
 to cite the designed rating boundary; the item added to §4 with its Stripe analogue; the
 DESIGN.md L504 summary list extended with the two omitted money-shaped rows.
 
@@ -266,7 +288,7 @@ consumer contracts until Billing docs exist; Billing countersigns at its gear PR
 |---|---|---|---|
 | G-1 | Coupons / promotion codes | Gear PRD (known open) | Application side already designed (rating 06 / §17.2); stand up Promotions PRD from that contract; put Stripe `duration` on the §15 alignment agenda; typed-`discountRef` bridge rejected |
 | G-2 | Prepaid grant `applicability` + `category` (+ `priority`) | Low–Med | **Actioned → D-43** (fields added + materialized at publish; effective order Billing-owned; confirmed 2026-07-28) |
-| G-3 | Monetary minimum commitment / true-up | — (resolved by inspection) | Already owned: negotiated committed spend = Contracts pools + `TrueUpObligation` (rating T-D-14, step 6); plan-level period floor = conscious §17.8 deferral with `PeriodFloorCapObligation` machinery reserved; no new decision needed |
+| G-3 | Monetary minimum commitment / true-up | — (resolved by inspection) | Already owned: negotiated committed spend = Contracts pools + `TrueUpObligation` (rating T-D-14, step 6); plan-level period floor was a conscious §17.8 deferral with `PeriodFloorCapObligation` machinery reserved, and **the deferral ended 2026-08-15 → D-319** (catalog authoring field built; no new evaluation machinery, as predicted). The ownership split is unchanged |
 | G-4 | Grant-drawdown / tax placement after coupons | Low | **Actioned → D-48** (drawdown post-discount / pre-tax; credit reduces the charge, never pays the invoice; Tax-Engine-GA revisit checkpoint; mirrored pricing design/10 + rating design/11) |
 
 Everything in §2 (customer object), §3 (HAVE), and §4 (§17.8 deferred) needs **no action** —
