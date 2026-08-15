@@ -154,6 +154,7 @@
 //!   strands exactly what this bound exists to protect, and nothing here would
 //!   refuse it. Reported rather than built: the guard needs the plan shape and the
 //!   act's key set, neither of which is this entry's to add.
+//!
 //!   Beware the name: W6 is *called* "the longest billing cycle sold on the key" and
 //!   is *defined* per **plan** — the longest `frequency` among the plan's recurring
 //!   rows on the key's `(currency, region)` — and is **zero** on a plan with no

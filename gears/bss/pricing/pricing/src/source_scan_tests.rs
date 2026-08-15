@@ -34,7 +34,7 @@
 /// A lifetime (`&'a str`) is deliberately not read as a char literal: a `'` opens
 /// one only when the next character is an escape or is followed by a closing
 /// quote, which is what distinguishes `'x'` from `'a` in the one place it matters.
-pub(crate) fn blank_comments_and_literals(text: &str) -> String {
+pub fn blank_comments_and_literals(text: &str) -> String {
     let chars: Vec<(usize, char)> = text.char_indices().collect();
     let mut out = String::with_capacity(text.len());
     let mut state = Lexed::Code;

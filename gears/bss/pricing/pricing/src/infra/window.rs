@@ -1878,10 +1878,10 @@ fn first_uncovered_from(
             // once below for this and for the short run alike.
             break;
         }
-        match interval.effective_to {
-            None => return None,
-            Some(to) => covered_through = covered_through.max(to),
-        }
+        // `?` reads as *"covered forever from here"*: an open-ended interval
+        // leaves no instant after `covered_through` uncovered, whatever `until`
+        // asks for, so the walk's answer is `None` and it is answered now.
+        covered_through = covered_through.max(interval.effective_to?);
     }
     match until {
         Some(end) if covered_through >= end => None,

@@ -154,7 +154,7 @@ fn every_act_half_trigger_answering_true_is_named_by_a_producing_site() {
         {
             continue;
         }
-        if !is_produced(&sources, trigger) {
+        if !is_produced(&sources, *trigger) {
             unproduced.push(trigger.as_str());
         }
     }
@@ -215,7 +215,7 @@ fn every_act_half_trigger_answering_false_is_named_by_no_producing_site() {
         {
             continue;
         }
-        if is_produced(&sources, trigger) {
+        if is_produced(&sources, *trigger) {
             produced_anyway.push(trigger.as_str());
         }
     }
@@ -257,7 +257,7 @@ fn every_act_half_trigger_answering_false_is_named_by_no_producing_site() {
 /// `crate::source_scan` is that removal, and it is **the same instrument**
 /// `approval_repo_tests` uses to tell a writer of an `AuditSubjectKind` from a
 /// doc comment quoting one — one reading, not two.
-fn is_produced(sources: &[String], trigger: &Trigger) -> bool {
+fn is_produced(sources: &[String], trigger: Trigger) -> bool {
     let needle = format!("Trigger::{trigger:?}");
     sources.iter().any(|code| code.contains(&needle))
 }
@@ -353,7 +353,7 @@ fn prose_naming_a_trigger_does_not_produce_it_and_a_construction_does() {
          /// # This call is what makes `Trigger::BundleComposition` real\n",
     )];
     assert!(
-        !is_produced(&prose, &Trigger::BundleComposition),
+        !is_produced(&prose, Trigger::BundleComposition),
         "a comment quoting a trigger is prose about a producer, not one"
     );
 
@@ -362,7 +362,7 @@ fn prose_naming_a_trigger_does_not_produce_it_and_a_construction_does() {
          ChangeSet::of_act(Trigger::BundleComposition, [])\n}\n",
     )];
     assert!(
-        is_produced(&code, &Trigger::BundleComposition),
+        is_produced(&code, Trigger::BundleComposition),
         "the construction the census exists to find must still be found"
     );
 }
