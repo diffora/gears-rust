@@ -55,6 +55,37 @@ pub fn blank_comments_and_literals(text: &str) -> String {
     out
 }
 
+/// The index of the `}` closing the `{` at `open`, counting depth.
+///
+/// Exact over [`blank_comments_and_literals`]'s output and **only** there: with
+/// every comment and every literal already spaces, a brace is a brace. Over raw
+/// text it is not a scanner at all — `"{"` in a string would open a block that
+/// never closes.
+///
+/// It lives beside the blanking rather than in either caller for the reason the
+/// module doc gives about the blanking itself: `approval_repo_tests` bounds a
+/// `NewApproval` initializer with it so a `..template()` site cannot borrow the
+/// next site's literal, and `triggers_tests` bounds a **function body** with it so
+/// a producing site can be attributed to the function that contains it. Two copies
+/// of a depth count would be two answers to *"where does this item end"* on two
+/// censuses that exist to keep one attestation honest.
+pub fn matching_brace(code: &str, open: usize) -> Option<usize> {
+    let mut depth = 0_usize;
+    for (offset, byte) in code.as_bytes()[open..].iter().enumerate() {
+        match byte {
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(open + offset);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
 /// What the scanner is inside of.
 #[derive(Clone, Copy)]
 enum Lexed {

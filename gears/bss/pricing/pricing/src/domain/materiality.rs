@@ -107,7 +107,10 @@
 //! the two gate-clearing republishes, a prepaid grant's non-price fields. (The
 //! sentence said "most", and named cutovers, overlays, memberships, bundles and
 //! **retirement** among them; each of those has since landed, and retirement had
-//! landed before this paragraph was last touched.) They are not omitted:
+//! landed before this paragraph was last touched.) **A seventh answers `false` on
+//! different grounds**: `revenueShareChange`'s subject is authored here and no
+//! surface declares the act, `infra::bundle::rev_share_change_set` being a
+//! constructor nothing calls (D-232, D-321). They are not omitted:
 //! [`triggers::Trigger`] declares
 //! each with its owning slice and answers
 //! [`triggers::Trigger::subject_exists_in_this_crate`] `false`, so the set does not

@@ -17,8 +17,15 @@
 //! is knowable only at the surface performing it —
 //! `domain::materiality::triggers`' module doc makes exactly that argument.
 //! [`composition_change_set`] and [`rev_share_change_set`] are where this slice
-//! makes the declaration, and `evaluate` answers `alwaysMaterialTrigger` from it
+//! builds the declaration, and `evaluate` answers `alwaysMaterialTrigger` from it
 //! **whatever a threshold policy says**, which is the whole of what D-104 buys.
+//!
+//! **A constructor is not a declaration until something calls it**, and only one of
+//! the two is called. `api::rest::bundles::bundle_publish_materiality` evaluates
+//! over [`composition_change_set`] on the mounted publish route; nothing in `src/`
+//! calls [`rev_share_change_set`], so `Trigger::RevenueShareChange` answers
+//! `subject_exists_in_this_crate() == false` (D-232, D-321) even though this file,
+//! `pricing_bundle_revshare` and the D-07 reconciler are all here.
 //!
 //! **Normalise at publish.** D-07's residual lands on the group's absorber and
 //! the effective shares are written back summing to exactly 10000 bp. That is a
@@ -99,9 +106,24 @@ pub fn composition_change_set() -> ChangeSet {
 /// (D-104).
 ///
 /// Separate from [`composition_change_set`] because D-104 registers two triggers
-/// and the stored verdict names which act it was: a rev-share re-split *is*
-/// vendor payout, and an operator reading the approval record should not have to
-/// infer that from a trigger called "composition".
+/// and a rev-share re-split *is* vendor payout, which an operator reading the
+/// approval record should not have to infer from a trigger called "composition".
+///
+/// # It has no caller, and both halves of that are worth saying
+///
+/// Nothing in `src/` calls this (D-232, still owed; D-321 for what was done about
+/// the attestation). `publish_bundle` declares [`composition_change_set`]'s act
+/// unconditionally, so a rev-share-only publish **is** judged always-material —
+/// D-104's rule is enforced. What is not built is the part the two triggers exist
+/// for: telling the two acts apart in the record.
+///
+/// **And that needs more than a caller here.** Picking between the two wants a
+/// composition diff against the published revision, which no operand on the publish
+/// route holds; and the verdict has nowhere to put the answer —
+/// `MaterialityVerdict` carries a `MaterialityReason` and no trigger, so both acts
+/// render byte-identically today. Wiring this function without those two would move
+/// no observable byte and would exist only to satisfy the census that reads it,
+/// which is why the census's `false` is the honest answer meanwhile.
 #[must_use]
 pub fn rev_share_change_set() -> ChangeSet {
     ChangeSet::of_act(Trigger::RevenueShareChange, [])

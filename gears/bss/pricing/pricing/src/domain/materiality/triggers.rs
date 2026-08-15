@@ -14,7 +14,10 @@
 //! Six of this list name a subject this crate has no table, no entity and no
 //! surface for — a bulk group move, a retirement that unwinds a live cutover, a
 //! historical import, the two gate-clearing republishes, a prepaid grant's
-//! non-price fields. They are declared here anyway, each
+//! non-price fields. **They are six of the seven that answer `false`**, and the
+//! seventh is not one of them: `RevenueShareChange`'s subject is here in full and
+//! what it lacks is a surface declaring the act, which the section below states.
+//! The six are declared here anyway, each
 //! with [`Trigger::owning_slice`] naming the document that owns it and
 //! [`Trigger::subject_exists_in_this_crate`] answering `false`, for two reasons.
 //! The set does not then read as **incomplete** — a reader who greps
@@ -31,11 +34,33 @@
 //! exhaustive.
 //!
 //! **Slice 8 flipped two of them on 2026-08-06** — `BundleComposition` and
-//! `RevenueShareChange` — and what that rests on is the whole subject being here:
-//! four tables, four entities, the composition's revision lifecycle,
-//! `infra::bundle`'s two `ChangeSet::of_act` declarations, and three mounted
-//! routes. That is the paragraph above working as designed rather than an
-//! exception to it.
+//! `RevenueShareChange` — on the whole subject being here: four tables, four
+//! entities, the composition's revision lifecycle, *"`infra::bundle`'s two
+//! `ChangeSet::of_act` declarations"*, and three mounted routes. **Only one of the
+//! two has stayed flipped**, and the clause in quotation marks is why: those two
+//! functions are `pub fn`s that *build* a change set, and D-232 found the same day
+//! that nothing called either of them. `composition_change_set` got its caller on
+//! 2026-08-11, when `api::rest::bundles::bundle_publish_materiality` replaced a
+//! hard-coded materiality literal with an evaluated verdict on the mounted publish
+//! route. `rev_share_change_set` still has none, so `RevenueShareChange` went back
+//! to `false` on 2026-08-15 (D-321) — see the note on its arm.
+//!
+//! # A `false` whose subject **is** here, and the axis that found it
+//!
+//! `RevenueShareChange` is the one member of the `false` side that the paragraph
+//! above does not describe: `pricing_bundle_revshare` is a table here, the D-07
+//! reconciler is here, `PATCH …/bundles/{id}` authors the shares. What is absent is
+//! a **surface declaring the act**, which on the act half is what this predicate is
+//! about — the distinction `GrandfatheringCutover` waited three commits on, stated
+//! from the other side.
+//!
+//! It survived both walks above for two waves because both asked whether this
+//! crate's code *names* the trigger, and `rev_share_change_set`'s own body names
+//! it. **Naming is not reachability**, and the walks now ask for a producing site
+//! inside a function something else in the crate calls. That axis is what would
+//! have caught this on the day Slice 8 landed, and it is what will catch the next
+//! one: the two directions are a check of the attestation, and a check a dead
+//! function can pay is a check of the vocabulary.
 //!
 //! **`GrandfatheringCutover` followed on the same rule, and the wait is worth
 //! recording.** Its *store* landed first — `domain::cutover`'s compose, the
@@ -308,6 +333,24 @@ impl Trigger {
     /// is the other walk. An understated `false` is the worse of the two errors:
     /// it reads as "that slice has not landed", and the next author builds the
     /// surface again.
+    ///
+    /// **Both walks ask whether the naming site is *reachable*, and that is a third
+    /// axis rather than a refinement of the first two** (D-321). They used to ask
+    /// only whether this crate's code *names* the trigger, which
+    /// [`Self::RevenueShareChange`] satisfied from inside
+    /// `infra::bundle::rev_share_change_set` — a `pub fn` with no caller anywhere in
+    /// `src/`. A trigger produced by a function nothing calls is produced by nothing,
+    /// and it is the **worst** of the three errors found in this `match`, not the
+    /// mildest: an overstated `true` normally corrects itself on contact, because the
+    /// reader greps and finds nothing, and this one hands the reader a real function
+    /// with a real body and a doc explaining what it declares.
+    ///
+    /// So on the **act** half this predicate is a claim about a *declaration a
+    /// surface makes*, which is the bar every flip in the register was actually
+    /// decided on. `true` still means "the subject exists" only where no surface
+    /// could declare the trigger at all — the content half, whose three members both
+    /// censuses exempt by name — and [`Self::GrandfatherHorizonTightening`] is that
+    /// case, not a counterexample to this one.
     #[must_use]
     pub const fn subject_exists_in_this_crate(self) -> bool {
         match self {
@@ -318,7 +361,6 @@ impl Trigger {
             | Self::PlanShapeRevisionContent
             | Self::GrandfatherHorizonTightening
             | Self::BundleComposition
-            | Self::RevenueShareChange
             | Self::GrandfatheringCutover
             | Self::PriceOverlayMutation
             // The customer-group plane's **one** declared act.
@@ -366,7 +408,31 @@ impl Trigger {
             | Self::HistoricalImport
             | Self::GaGateClearingRepublish
             | Self::PrepaidGateClearingRepublish
-            | Self::GrantNonPriceField => false,
+            | Self::GrantNonPriceField
+            // **The one `false` here whose subject is not absent at all** (D-321),
+            // which is why it sits apart from the six above rather than among them.
+            // `pricing_bundle_revshare` is a table in this crate, `PATCH
+            // …/bundles/{id}` authors it, and `infra::bundle::rev_share_change_set`
+            // builds `ChangeSet::of_act(Trigger::RevenueShareChange, [])`. What is
+            // missing is a **caller**: no file in `src/` calls that function, so no
+            // surface declares the act and `evaluate` can never answer it.
+            //
+            // D-232 said as much on 2026-08-06 — *"a `pub fn` that builds a change
+            // set is not a surface declaring an act"* — and left the `true`
+            // standing on D-209's other reading, that the predicate is about the
+            // subject. The two readings had nothing to disagree about until they
+            // did. On the **act** half the bar is the declaration, which is what
+            // `GrandfatheringCutover` waited three commits for and what
+            // `PriceOverlayMutation` waited a whole strand for; the subject reading
+            // survives only where no surface *could* declare the trigger, which is
+            // the content half's world and is exempted in the censuses by name.
+            //
+            // Its sibling `BundleComposition` is on the `true` side because
+            // `api::rest::bundles::bundle_publish_materiality` calls
+            // `composition_change_set` on the mounted publish route (2026-08-11).
+            // Both censuses read reachability now, so **the day this function gains
+            // a caller the `false`-side walk reddens** and this arm has to move.
+            | Self::RevenueShareChange => false,
         }
     }
 
@@ -375,8 +441,21 @@ impl Trigger {
     /// **Not** a second materiality vocabulary: `pricing_approval.materiality`
     /// stores [`MaterialityReason::as_str`](super::MaterialityReason::as_str)'s
     /// `alwaysMaterialTrigger` and the unit's own `subject_kind` says what the act
-    /// was about. This token is for the diagnostic the verdict carries beside it,
-    /// and for a roster test that would otherwise compare variants to themselves.
+    /// was about.
+    ///
+    /// **It has no production consumer at all, and this doc claimed one** (found
+    /// 2026-08-15, D-321). It read *"this token is for the diagnostic the verdict
+    /// carries beside it, and for a roster test"*; the verdict carries no such
+    /// diagnostic. [`MaterialityVerdict`](super::MaterialityVerdict) is
+    /// `Material { reason, tripped } | AutoPublishable` — the trigger's identity
+    /// enters nothing, reaches no column and no response, and every registered act
+    /// renders byte-identically whichever member of this enum declared it. So the
+    /// only reader of this token is `triggers_tests`, which would otherwise compare
+    /// variants to themselves. Stated rather than left implied, because *"the
+    /// operator reading the approval record should not have to infer the act"* is
+    /// the reason [`Self::RevenueShareChange`] is a separate trigger from
+    /// [`Self::BundleComposition`] at all — and today the record does not carry
+    /// either of them.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {

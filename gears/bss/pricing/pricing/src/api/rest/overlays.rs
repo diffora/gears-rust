@@ -1088,11 +1088,15 @@ async fn submit_overlay(
 ///
 /// **A declaration is not the same as a `pub fn` that builds one**, which is the
 /// sharper half and the reason this sits on a mounted route's path rather than in a
-/// constructor beside the repository: `infra::bundle::composition_change_set` and
-/// `rev_share_change_set` are exactly such constructors, they have **no caller
-/// anywhere in the crate**, and `BundleComposition` and `RevenueShareChange` answer
-/// `true` on the strength of them. Nothing evaluates them, so D-104's rule is not
-/// enforced on the bundle publish route today.
+/// constructor beside the repository. `infra::bundle::composition_change_set` and
+/// `rev_share_change_set` were exactly such constructors, with **no caller anywhere
+/// in the crate**, while `BundleComposition` and `RevenueShareChange` answered
+/// `true` on the strength of them (D-232). Both halves have since been settled and
+/// neither by leaving the claim alone: `composition_change_set` gained its caller on
+/// 2026-08-11, when `bundles::bundle_publish_materiality` gave the composition
+/// publish this function's shape; `rev_share_change_set` has none, so
+/// `RevenueShareChange` answers `false` (D-321) and D-104's second trigger is owed a
+/// surface rather than attested to by a constructor.
 ///
 /// # Errors
 /// [`DomainError::Internal`] when the verdict carries no reason. The only verdict

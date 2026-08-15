@@ -40,7 +40,7 @@ use crate::domain::audit::{AuditStamp, AuditSubjectKind};
 use crate::infra::storage::entity::approval;
 use crate::infra::storage::migrations::Migrator;
 use crate::infra::storage::{RepoError, repo_failure};
-use crate::source_scan::blank_comments_and_literals;
+use crate::source_scan::{blank_comments_and_literals, matching_brace};
 
 fn row(state: &str, subject_kind: &str) -> approval::Model {
     approval::Model {
@@ -395,27 +395,6 @@ fn kinds_opened_in(text: &str) -> Result<Vec<AuditSubjectKind>, String> {
         found.push(kind);
     }
     Ok(found)
-}
-
-/// The index of the `}` closing the `{` at `open`, counting depth.
-///
-/// Exact over the *blanked* text and only there: with every comment and string
-/// literal already spaces, a brace is a brace.
-fn matching_brace(code: &str, open: usize) -> Option<usize> {
-    let mut depth = 0_usize;
-    for (offset, byte) in code.as_bytes()[open..].iter().enumerate() {
-        match byte {
-            b'{' => depth += 1,
-            b'}' => {
-                depth -= 1;
-                if depth == 0 {
-                    return Some(open + offset);
-                }
-            }
-            _ => {}
-        }
-    }
-    None
 }
 
 /// The scan sees a construction whose fields are on **one line**, which the
