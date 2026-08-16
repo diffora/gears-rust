@@ -323,3 +323,98 @@ def test_the_live_pricing_register_resolves_its_gap_analysis_claims():
         ("`STRIPE-GAP-ANALYSIS.md` §4 (the row's disposition) and G-3.", "STRIPE-GAP-ANALYSIS.md"),
     ]:
         assert want in resolve(raw, corpus, seams).paths, raw
+
+
+# --- a shorthand is a citation token, not a path segment (2026-08-16b) -----
+
+
+def test_a_markdown_link_to_a_cross_gear_document_is_one_target_not_two():
+    # D-313's prescribed fix, written in the register's own house style — the
+    # register already contains `[rating PRD](../../rating/docs/PRD.md)`. Before
+    # this rule the label's `PRD` minted a phantom claim into the *citing* gear's
+    # own PRD.md, which cites D-313 nowhere, so the finding the fix was meant to
+    # clear stayed exactly where it was: the remedy could not be applied at all.
+    r = resolve(
+        "`inst-tb-window`'s statement and the schema table; "
+        "[rating PRD](../../rating/docs/PRD.md) §Definitions, §Time and §539.",
+        pricing(),
+        known_seams(),
+    )
+    assert r.paths == ["../../rating/docs/PRD.md"]
+    assert "PRD.md" not in r.paths
+    assert r.unresolved == []
+
+
+def test_a_markdown_link_label_is_part_of_its_target_for_every_shorthand():
+    for label in ["rating PRD", "rating DESIGN", "rating SEAMS", "the S7 rows", "Foundation"]:
+        raw = "[{}](../../rating/docs/PRD.md)".format(label)
+        r = resolve(raw, pricing(), known_seams())
+        assert r.paths == ["../../rating/docs/PRD.md"], raw
+        assert r.seam_undefined == [], raw
+
+
+def test_a_markdown_link_to_an_own_gear_document_is_also_one_target():
+    # D-68's live shape is `` [`design/03-price-structure.md`](./design/03-price-structure.md) ``,
+    # where label and destination name the same file — which cannot tell a link
+    # pass that handles own-gear destinations from one that does not. So the
+    # label here names a *different* document from the destination: only a rule
+    # that claims the whole link gets one target out of it.
+    r = resolve("[the PRD row](./design/03-price-structure.md) Traces-to", pricing(), SeamIndex())
+    assert r.paths == ["design/03-price-structure.md"]
+    assert "PRD.md" not in r.paths
+
+
+def test_a_link_whose_destination_is_not_a_document_claims_nothing():
+    # The bound, and it has to put a shorthand in the label to be worth anything:
+    # an anchor or an external URL is not a target, so the link claims no span
+    # and its label is read exactly as before.
+    for dest in ["#the-anchor", "https://example.invalid/x"]:
+        r = resolve("[the PRD glossary](" + dest + ") and S1 §2.", pricing(), SeamIndex())
+        assert r.paths == ["PRD.md", "design/01-foundation.md"], dest
+
+
+def test_a_shorthand_inside_a_hyphenated_compound_is_not_a_citation():
+    # Live: D-172 cites "S2 §5 (the third-Foundation-refusal paragraph…)", and
+    # `\b` held on both sides of that `Foundation` because `-` is a non-word
+    # character. It minted `design/01-foundation.md`. The phantom was invisible
+    # only because D-172's own `S1` resolves to the same file — masked by
+    # duplication, not by being right.
+    r = resolve("S2 §5 (the third-Foundation-refusal paragraph).", pricing(), SeamIndex())
+    assert r.paths == ["design/02-plan-definition.md"]
+
+
+def test_a_shorthand_that_is_the_head_of_a_longer_filename_is_not_a_citation():
+    # `PRD-product-catalog-marketplace-…`, which the register does write in prose.
+    r = resolve("the source UC PRD-product-catalog-marketplace-202601120119 note.",
+                pricing(), SeamIndex())
+    assert r.paths == []
+
+
+def test_a_shorthand_beside_a_slash_still_resolves_in_both_directions():
+    # The measured bound on the token rule, and why `/` is not rejected:
+    # `DESIGN/README` is a real live citation (D-03) of `DESIGN.md`, and `S7/S11`
+    # is the same shape waiting to be written. Rejecting `/` would silently drop
+    # both — the very defect class this file is being repaired for.
+    assert resolve("DESIGN/README, PRD (12 spots)", pricing(), SeamIndex()).paths == [
+        "DESIGN.md", "PRD.md",
+    ]
+    assert resolve("S7/S11 rows", pricing(), SeamIndex()).paths == [
+        "design/07-pricewindow-linkage.md", "design/11-lifecycle.md",
+    ]
+
+
+def test_a_shorthand_ending_a_sentence_still_resolves():
+    # A trailing period is punctuation, not an extension: only `.` followed by an
+    # alphanumeric (`PRD.md`) ends the token.
+    assert resolve("propagated to DESIGN. And to PRD.", pricing(), SeamIndex()).paths == [
+        "DESIGN.md", "PRD.md",
+    ]
+
+
+def test_a_corpus_stem_is_not_the_head_of_a_longer_name():
+    corpus = Corpus.from_parts(
+        "gears/bss/alpha/docs",
+        [("PRD.md", "R.\n"), ("REVIEW.md", "Review.\n")],
+    )
+    assert resolve("REVIEW-2026-08 was archived.", corpus, SeamIndex()).paths == []
+    assert resolve("REVIEW F-08-1 → fixed.", corpus, SeamIndex()).paths == ["REVIEW.md"]

@@ -482,6 +482,14 @@ def test_missing_pair_ignores_other_invariants():
 #:   `../../rating/docs/PRD.md`, which `resolve` has understood since
 #:   2026-07-31. Left for the register's owner: this program does not edit gear
 #:   documents to make its own checker green.
+#:
+#:   That remedy was **verified applicable** rather than merely prescribed —
+#:   `test_the_prescribed_fix_for_d_313_actually_clears_its_finding` writes it
+#:   into the live register in memory and requires the finding to clear. It did
+#:   not clear at first: the register's house style is
+#:   `[rating PRD](../../rating/docs/PRD.md)`, and the link label's `PRD` minted
+#:   a phantom claim into pricing's own PRD.md. Prescribing a fix nobody can
+#:   apply is its own defect; see REGENERATE.md entry 26.
 LIVE_UNACCEPTED_GAPS_2026_08_16 = (
     ("pricing", "D-313", "PRD.md"),
 )
@@ -594,3 +602,27 @@ def test_the_previously_unchecked_live_claims_are_now_armed_against_their_target
                 id=ident, doc=document
             )
         }, "{} -> {}: {!r}".format(ident, document, sorted(appeared))
+
+
+def test_the_prescribed_fix_for_d_313_actually_clears_its_finding():
+    # The remedy this program's own report prescribes, applied to the live
+    # register in memory and measured rather than asserted. Against 4dd40ad2c it
+    # does **not** clear: the link label's `PRD` minted a phantom claim into
+    # pricing's own PRD.md, and the phantom is what fails — so the report was
+    # prescribing a fix that could not be applied. The register itself is left
+    # alone; it is the owner's.
+    corpora = live_corpora()
+    pricing = corpora[0]
+    files = dict(pricing.files())
+    register = files["DECISIONS.md"]
+    assert register.count("rating PRD §Definitions, §Time") == 1
+    files["DECISIONS.md"] = register.replace(
+        "rating PRD §Definitions, §Time",
+        "[rating PRD](../../rating/docs/PRD.md) §Definitions, §Time",
+        1,
+    )
+    patched = [Corpus.from_parts(pricing.root(), files)] + corpora[1:]
+    findings = [
+        f for f in check(patched[0], SeamIndex.build(patched), patched) if "D-313" in f.message
+    ]
+    assert findings == [], "D-313's claim must verify once written in the resolvable form"

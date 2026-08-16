@@ -1082,6 +1082,65 @@ checker means by "referenced", and that is the skill's contract.
     stems, and a resolver that forgets to exclude already-claimed spans. A test that
     passes against the tool it is supposed to be pinning has proved nothing.
 
+26. **2026-08-16, twenty-sixth entry — a checker fix. Nothing was re-captured, and that
+    is the finding.** Entry 25's repair prescribed a remedy for `D-313 -> PRD.md`: write
+    the cross-gear claim in the resolvable form. **The remedy could not be applied.**
+    Written in the register's own house style —
+    `[rating PRD](../../rating/docs/PRD.md)`, a form the register already contains
+    verbatim elsewhere — the finding does not clear, because the link *label*'s `PRD` mints
+    a second, phantom claim into the **citing** gear's own `PRD.md`, and the phantom is the
+    one that fails. Prescribing a fix nobody can apply is its own defect, so it is repaired
+    here rather than carried as follow-up.
+
+    **Two rules, and the second is the one the register needed.**
+
+    - **A shorthand is a citation token, not a piece of a longer word.** `\b` held on both
+      sides of the `Foundation` in D-172's "the third-**Foundation**-refusal paragraph",
+      because `-` is a non-word character, so an English compound minted
+      `design/01-foundation.md`. Rejected now: a word character, a `-`, a leading `.`, and
+      a trailing `.` followed by an alphanumeric (an extension). A trailing sentence period
+      is still fine.
+    - **A markdown link is one target.** When `[label](dest)`'s destination is a document
+      target, the whole link is that target — the same doctrine that has governed a
+      shorthand inside a bare path since 2026-07-31, extended to the form an author
+      actually writes. A link whose destination is not a document claims nothing.
+
+    **`/` is deliberately not rejected on either side of a shorthand, and that is measured.**
+    `DESIGN/README` is a real live citation of `DESIGN.md` (D-03) and `S7/S11` is the same
+    shape waiting to be written; rejecting `/` would silently drop both, which is the exact
+    defect class entry 25 exists to repair. Path segments are excluded by *claiming the
+    span* of the whole path, which is exact, not by guessing from punctuation, which is not.
+
+    **The class was re-checked, not the instance.** Every live claim naming a
+    `../../<gear>/docs/<FILE>.md` path whose `<FILE>` is also a shorthand: **two**, both
+    D-66's — `../../rating/docs/DESIGN.md` and `../../subscriptions/docs/PRD.md`. Neither
+    is a phantom today, because the span-claiming added 2026-07-31 already covers the bare
+    and backticked path forms; had it not, both would have produced **false**
+    `propagation-missing`, since pricing's own `DESIGN.md` and `PRD.md` cite D-66 **0**
+    times. The **link** form was the uncovered case, and no live Propagated field used it
+    yet — D-68's is the only link in any of them and its label is a path, so it was
+    indistinguishable. Exactly **one** live phantom existed, D-172's `Foundation`, and it
+    was **masked by duplication**: D-172 also cites `S1`, which resolves to the same
+    `design/01-foundation.md`, so the phantom was absorbed into a real target and no output
+    ever differed. Masked, not absent — which is why the class was measured rather than
+    inferred from the finding count.
+
+    **Nothing moved, measured across everything the tool loads.** `resolve` was run over
+    all **275** parsed claims in the three registers at `4dd40ad2c` and after, and diffed:
+    **zero changed**. All three oracle files are byte-identical and were left untouched;
+    `--gear <g>/docs --auto-context --show-known-debt` is byte-identical for all five gears
+    (pricing 1 live / 49 debt, rating 2, subscriptions 0, ledger 24, products 1); the
+    pricing run still exits 1 on the same single finding. No pin moved.
+
+    Suite: **259 -> 269 passed**, 1 skipped. Seven of the ten added tests fail against
+    `4dd40ad2c` outright, including the end-to-end one that writes D-313's remedy into the
+    live register in memory and requires the finding to clear. The other three are bounds,
+    and each was made to discriminate: two crude mis-fixes (reject every path-ish character
+    around a token; claim every markdown link span regardless of destination) and one
+    half-fix (handle only cross-gear link destinations) each turn one of them red. Two of
+    the three were rewritten when the first attempt passed against all of them — a bound
+    test that no wrong implementation can fail is not a bound.
+
 ## How they were produced (2026-07-31 capture)
 
 Run from the repository root:

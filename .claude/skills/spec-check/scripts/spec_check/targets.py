@@ -8,7 +8,49 @@ from pathlib import PurePosixPath
 
 from .corpus import split_lines
 
-_TOKEN = re.compile(r"\b(S(\d{1,2})|Foundation|PRD|DESIGN|SEAMS|ADR-(\d{4}))\b")
+# A shorthand — and a corpus-derived document stem — is a **citation token**: it
+# is recognised where it stands on its own, never where it is a piece of a longer
+# word or filename. `\b` alone was not that rule. `\b` holds on both sides of the
+# `Foundation` in "the third-**Foundation**-refusal paragraph" (D-172, live) and
+# on both sides of the `PRD` in `../../rating/docs/**PRD**.md`, because `-`, `/`
+# and `.` are all non-word characters — so an English compound and a path segment
+# both minted a phantom claim into the *citing* gear's own document.
+#
+# Rejected on each side: a word character (what `\b` already did), a `-` (a
+# hyphenated compound, or a longer id whose head this is), a `.` before (a piece
+# of a dotted filename) and a `.` followed by an alphanumeric after (an
+# extension — `PRD.md`). A trailing sentence period is deliberately still fine:
+# "…propagated to DESIGN." is a citation, and `.md` is not.
+#
+# `/` is deliberately **not** rejected on either side, and that is a measured
+# choice rather than an oversight. `DESIGN/README` is a real, correct live
+# citation of `DESIGN.md` (D-03), and `S7/S11` is the same shape waiting to be
+# written; rejecting `/` would silently drop both — the exact defect class this
+# file is being repaired for. Path segments are excluded by *claiming the span*
+# of the whole path (`_CROSS_GEAR`, `_MD_PATH`, `_MD_LINK`), which is exact,
+# rather than by guessing from punctuation, which is not.
+_TOKEN_BEFORE = r"(?<![\w.-])"
+_TOKEN_AFTER = r"(?![\w-]|\.[A-Za-z0-9])"
+
+_TOKEN = re.compile(
+    _TOKEN_BEFORE + r"(S(\d{1,2})|Foundation|PRD|DESIGN|SEAMS|ADR-(\d{4}))" + _TOKEN_AFTER
+)
+
+# `[label](destination)` — a markdown link, which is the register's house style
+# for a cross-gear document reference: `[rating PRD](../../rating/docs/PRD.md)`
+# and `` [`DESIGN.md`](../../rating/docs/DESIGN.md) `` both appear in it.
+#
+# When the destination is itself a document target, the **label is part of that
+# target and never a second claim** — the same doctrine that already governs a
+# shorthand inside a bare path, extended to the form an author actually writes.
+# Without it, `[rating PRD](../../rating/docs/PRD.md)` resolved to the rating PRD
+# *and* to the citing gear's own `PRD.md`, and the phantom is the one that fails:
+# it is why D-313's prescribed fix — write the cross-gear claim in the resolvable
+# form — could not be applied at all.
+#
+# A link whose destination is not a document target (an anchor, an external URL)
+# claims nothing, so its label's tokens are read exactly as before.
+_MD_LINK = re.compile(r"\[([^\]]*)\]\(([^)\s]+)\)")
 
 # Explicit cross-gear file target: `../../<gear>/docs/<path>.md`, the exact form
 # `text_at` already knows how to read across loaded corpora and the SEAMS branch
@@ -314,6 +356,12 @@ def resolve(raw, corpus, seams):
     `sqlite_window_service.rs` and `infra::window`'s module header, which are real
     propagation surfaces but not documents P1 can read, and pretending to
     interpret them would be a worse lie than saying nothing about them.
+
+    **A markdown link is one target** (2026-08-16): when `[label](dest)`'s `dest`
+    is a document target, the whole link — label included — is that target. The
+    register writes cross-gear references that way, and without this rule
+    `[rating PRD](../../rating/docs/PRD.md)` claimed the rating PRD *and* the
+    citing gear's own `PRD.md`.
     """
     paths = set()
     unresolved = set()
@@ -324,10 +372,36 @@ def resolve(raw, corpus, seams):
     # Spans already claimed by a longer, more specific form. A token inside one of
     # them is part of that target, never a second claim of its own: `PRD` inside
     # `../../subscriptions/docs/PRD.md`, `DESIGN` inside `DESIGN.md`,
-    # `STRIPE-GAP-ANALYSIS` inside `STRIPE-GAP-ANALYSIS.md`.
+    # `STRIPE-GAP-ANALYSIS` inside `STRIPE-GAP-ANALYSIS.md`, and `PRD` inside the
+    # *label* of `[rating PRD](../../rating/docs/PRD.md)`.
     claimed = []
 
+    def claim_document_path(text, token):
+        """Resolves `text` if it is a document-target path. True when it was one."""
+        cross = _CROSS_GEAR.fullmatch(text)
+        if cross is not None:
+            gear, sub = cross.group(1), cross.group(2)
+            if citing_gear == gear:
+                _insert_if_present(corpus, sub, paths, unresolved, token)
+            else:
+                paths.add("../../{}/docs/{}".format(gear, sub))
+            return True
+        own = _MD_PATH.fullmatch(text)
+        if own is not None:
+            _insert_if_present(corpus, _normalize(own.group(1)), paths, unresolved, token)
+            return True
+        return False
+
+    # The link pass runs first, and claims the *whole* `[label](dest)` span — so a
+    # shorthand in the label is already inside a claimed span by the time the
+    # shorthand pass runs, exactly as one inside a bare path is.
+    for match in _MD_LINK.finditer(raw):
+        if claim_document_path(match.group(2), match.group(2)):
+            claimed.append(match.span())
+
     for match in _CROSS_GEAR.finditer(raw):
+        if _within(match.span(), claimed):
+            continue
         claimed.append(match.span())
         gear, sub = match.group(1), match.group(2)
         if citing_gear == gear:
@@ -343,7 +417,11 @@ def resolve(raw, corpus, seams):
         _insert_if_present(corpus, rel, paths, unresolved, match.group(1))
 
     for stem, path in _corpus_stems(corpus):
-        for match in re.finditer(r"\b" + re.escape(stem) + r"\b", raw):
+        # Same citation-token boundary as `_TOKEN`: a stem is a stem, not the head
+        # of a longer name (`REVIEW` is not `REVIEW-2026.md`, and
+        # `STRIPE-GAP-ANALYSIS` is not `STRIPE-GAP-ANALYSIS-V2`).
+        pattern = _TOKEN_BEFORE + re.escape(stem) + _TOKEN_AFTER
+        for match in re.finditer(pattern, raw):
             if _within(match.span(), claimed):
                 continue
             paths.add(path)

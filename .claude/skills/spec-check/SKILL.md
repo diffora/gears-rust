@@ -207,6 +207,22 @@ physical line, as D-313's and D-314's do — is read to the end of its markdown
 block (a blank line, a list item, a heading or a table row ends it). Before
 2026-08-16 only the first line was resolved.
 
+**A shorthand is a citation token, not a path segment.** It is recognised where
+it stands on its own, never as a piece of a longer word or filename:
+`third-Foundation-refusal` is prose, `PRD-product-catalog-…` is not the PRD, and
+`PRD.md` is a path. A `/` beside it is fine on both sides — `DESIGN/README` and
+`S7/S11` are real citations — because path segments are excluded by claiming the
+whole path's span rather than by guessing from punctuation.
+
+**A markdown link is one target.** When `[label](dest)`'s destination is a
+document target, the label belongs to it: `[rating PRD](../../rating/docs/PRD.md)`
+is the rating PRD and *not* also the citing gear's own `PRD.md`. That is the
+register's house style for a cross-gear reference, and until 2026-08-16 writing
+a cross-gear claim that way produced a phantom own-gear claim that failed — so
+the documented remedy for a mis-written cross-gear citation could not be
+applied. A link whose destination is not a document (an anchor, a URL) claims
+nothing and its label is read as ordinary citation text.
+
 ## What it cannot tell you
 
 P1 reports that `D-02` claims propagation into `PRD.md` while `PRD.md` never
