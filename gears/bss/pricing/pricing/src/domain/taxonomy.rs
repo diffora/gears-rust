@@ -85,6 +85,14 @@ pub const REGION_UNKNOWN: &str = "REGION_UNKNOWN";
 /// (§5, 409; `inst-tx-mutation`).
 pub const TAXONOMY_VALUE_IN_USE: &str = "TAXONOMY_VALUE_IN_USE";
 
+/// A price row, or a tenant default, naming a rounding reference the tenant's
+/// rounding-policy taxonomy does not declare as `active` (D-321).
+///
+/// Its own code rather than a reuse of [`REGION_UNKNOWN`] for that code's own
+/// stated reason: the two name different facts about different axes, and an
+/// operator reading a report needs to know which vocabulary to go and fix.
+pub const ROUNDING_POLICY_UNKNOWN: &str = "ROUNDING_POLICY_UNKNOWN";
+
 // ---------------------------------------------------------------------------
 // The classes.
 // ---------------------------------------------------------------------------
@@ -550,6 +558,95 @@ impl ValidationRule<PlanShape> for RegionsDeclared {
                 continue;
             }
             if let Some(violation) = self.violation_for(region) {
+                report.violations.push(violation);
+            }
+        }
+    }
+}
+
+/// Every price row's rounding reference is one the tenant declared (D-321).
+///
+/// # The vocabulary is the tenant's, and that is the whole design
+///
+/// This gear persists a rounding reference and neither defines nor applies the
+/// policy (PRD §15), so it cannot say whether `half_up_2dp` is a sensible
+/// rounding rule — and D-320 refused to invent a list. What it *can* say is that
+/// a reference names nothing the tenant ever declared, which is
+/// [`RegionsDeclared`]'s argument on a different axis.
+///
+/// The hazard is measured rather than imagined. On the stand the day this
+/// landed, one plan's seven rows carried `half_up` while the tenant default
+/// carried `half_up_2dp`; both published, both resolved, and the two spellings
+/// of one intention were invisible to everything.
+///
+/// # An empty set means **unconstrained**, and that is the opposite of
+/// [`RegionsDeclared`]
+///
+/// A tenant with no declared regions fails every row, because `region` is a
+/// scope-key axis every row carries and C2 requires it to be declared. A tenant
+/// with no declared rounding vocabulary is simply a tenant that has not opted
+/// in: refusing there would break every catalog on the day the taxonomy landed,
+/// for a vocabulary nobody had been given a chance to write. Declaring the first
+/// value is what turns the check on, and the asymmetry is stated here because
+/// the two rules otherwise read alike.
+///
+/// # One violation per undeclared **value**
+///
+/// [`RegionsDeclared`]'s reason, and the same arithmetic: forty rows sharing one
+/// bad reference are one authoring mistake, and forty copies of it is a report
+/// nobody reads to the end.
+#[domain_model]
+#[derive(Clone, Debug, Default)]
+pub struct RoundingPolicyDeclared {
+    /// The tenant's `active` rounding references, resolved by the caller. Empty
+    /// means the tenant declared no vocabulary — see the type doc.
+    pub declared: BTreeSet<String>,
+}
+
+impl RoundingPolicyDeclared {
+    /// The violation this reference earns, if any — the shared entry point, so
+    /// the config surface and the publish pipeline report one message.
+    #[must_use]
+    pub fn violation_for(&self, subject: &str, reference: &str) -> Option<Violation> {
+        if self.declared.is_empty() || self.declared.contains(reference) {
+            return None;
+        }
+        Some(Violation {
+            code: ROUNDING_POLICY_UNKNOWN.to_owned(),
+            subject: subject.to_owned(),
+            detail: format!(
+                "rounding policy `{reference}` is not an active value of this tenant's \
+                 rounding-policy taxonomy; rounding decides the last minor unit of every charge, \
+                 so a reference to something nobody declared is refused - declare it at PUT \
+                 /bss-pricing/v1/config/rounding-policies first, or clear the taxonomy to stop \
+                 constraining references at all"
+            ),
+            // `Stage::Write`: every operand is in the request the author sent,
+            // and the declared set is tenant configuration rather than anything
+            // the publish resolves about this plan (D-312's criterion).
+            stage: Stage::Write,
+        })
+    }
+}
+
+impl ValidationRule<PlanShape> for RoundingPolicyDeclared {
+    fn name(&self) -> &'static str {
+        "inst-tx-rounding"
+    }
+
+    fn evaluate(&self, subject: &PlanShape, report: &mut ValidationReport) {
+        if self.declared.is_empty() {
+            return;
+        }
+        let mut reported: BTreeSet<&str> = BTreeSet::new();
+        for record in &subject.rows {
+            let Some(reference) = record.rounding_policy_ref.as_deref() else {
+                continue;
+            };
+            if self.declared.contains(reference) || !reported.insert(reference) {
+                continue;
+            }
+            if let Some(violation) = self.violation_for(&record.price_id.to_string(), reference) {
                 report.violations.push(violation);
             }
         }

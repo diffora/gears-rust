@@ -53,6 +53,7 @@ use bss_pricing::api::rest::prices::{PLAN_PRICE, PLAN_PRICES};
 use bss_pricing::api::rest::publish::PLAN_PUBLISH;
 use bss_pricing::api::rest::repricing_runs::{REPRICING_RUN, REPRICING_RUNS};
 use bss_pricing::api::rest::retirement::PLAN_RETIRE;
+use bss_pricing::api::rest::rounding_policies::ROUNDING_POLICIES;
 use bss_pricing::api::rest::rounding_policy::ROUNDING_POLICY;
 use bss_pricing::api::rest::supersessions::PLAN_SUPERSESSIONS;
 use bss_pricing::api::rest::tax_display_policy::TAX_DISPLAY_POLICY;
@@ -573,6 +574,22 @@ fn config_routes() -> Vec<Route> {
         Route {
             method: "PUT",
             path: ROUNDING_POLICY,
+            resource_type: labels::CONFIG,
+            action: actions::WRITE,
+            mutating: true,
+        },
+        // D-321's declared vocabulary, `config` like every taxonomy: it narrows
+        // what may be authored and decides nothing about who approves what.
+        Route {
+            method: "GET",
+            path: ROUNDING_POLICIES,
+            resource_type: labels::CONFIG,
+            action: actions::READ,
+            mutating: false,
+        },
+        Route {
+            method: "PUT",
+            path: ROUNDING_POLICIES,
             resource_type: labels::CONFIG,
             action: actions::WRITE,
             mutating: true,
@@ -1263,6 +1280,10 @@ async fn registered_paths() -> Vec<String> {
                 &openapi,
             ))
             .merge(bss_pricing::api::rest::rounding_policy::router(
+                Arc::clone(&harness.state),
+                &openapi,
+            ))
+            .merge(bss_pricing::api::rest::rounding_policies::router(
                 Arc::clone(&harness.state),
                 &openapi,
             ))

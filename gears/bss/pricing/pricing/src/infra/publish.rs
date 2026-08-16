@@ -908,6 +908,15 @@ pub(crate) async fn rule_params(
     let declared_regions = taxonomy_repo::active_regions(runner, scope, tenant_id)
         .await
         .map_err(|e| repo_failure(&e))?;
+    // **Loaded, not defaulted.** D-321's rule reads this set and an empty one
+    // means "unconstrained", so a `rule_params` that forgot the read would make
+    // the vocabulary check pass on every plan while looking registered — the
+    // D-254 defect class this file has already paid for once with the composite
+    // definitions.
+    let declared_rounding_policies =
+        taxonomy_repo::active_rounding_policies(runner, scope, tenant_id)
+            .await
+            .map_err(|e| repo_failure(&e))?;
     // C4's `RegionTaxReadiness`, resolved in the same pass and for the same
     // reason. One statement over the tenant's declared regions rather than one
     // per market: a plan at C1's 20-currency floor spans as many, and twenty
@@ -965,6 +974,7 @@ pub(crate) async fn rule_params(
     )
     .with_referencing_markets(referencing)
     .with_declared_regions(declared_regions)
+    .with_declared_rounding_policies(declared_rounding_policies)
     .with_tax_display(tax_display_policy, readiness)
     .with_addon_coverage(addon_coverage)
     .with_change_targets(change_targets))

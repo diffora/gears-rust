@@ -112,6 +112,7 @@ pub mod m20260802_000076_add_per_hour_tier_aggregation_window;
 pub mod m20260802_000077_add_pricing_plan_name;
 pub mod m20260802_000078_guard_pricing_plan_name;
 pub mod m20260802_000079_create_pricing_plan_period_floor_cap;
+pub mod m20260802_000080_create_pricing_rounding_policy_taxonomy;
 
 use sea_orm::{ConnectionTrait, Statement};
 use sea_orm_migration::prelude::*;
@@ -432,6 +433,7 @@ impl MigratorTrait for Migrator {
             // its own `CHECK`s on both engines, which is why the market pair lives
             // in a table of its own rather than as columns on `pricing_plan`.
             Box::new(m20260802_000079_create_pricing_plan_period_floor_cap::Migration),
+            Box::new(m20260802_000080_create_pricing_rounding_policy_taxonomy::Migration),
             // Shared `coord_leases` table, owned by the `coord` crate. This gear's
             // background work is coordinated as a singleton (§3.8: background work
             // is coordinated as a singleton via the coordination lease library),

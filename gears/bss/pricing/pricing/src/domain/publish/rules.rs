@@ -146,7 +146,7 @@ use crate::domain::scope_key::{PriceEligibility, Region};
 use crate::domain::tax_display::{
     MarketBasisUniform, RegionTaxReadiness, TaxBasisComplete, TaxDisplayPolicy,
 };
-use crate::domain::taxonomy::RegionsDeclared;
+use crate::domain::taxonomy::{RegionsDeclared, RoundingPolicyDeclared};
 use crate::domain::validation::{ValidationPipeline, ValidationReport, ValidationRule};
 
 /// A published row resolves neither its own `rounding_policy_ref` nor a tenant
@@ -255,6 +255,7 @@ pub struct PublishRuleParams {
     size_caps: SoftSizeCaps,
     referencing_markets: Vec<ReferencingMarket>,
     declared_regions: BTreeSet<Region>,
+    declared_rounding_policies: BTreeSet<String>,
     addon_coverage: AddonCoverage,
     tax_display_policy: TaxDisplayPolicy,
     region_readiness: RegionTaxReadiness,
@@ -320,6 +321,7 @@ impl PublishRuleParams {
             size_caps,
             referencing_markets: Vec::new(),
             declared_regions: BTreeSet::new(),
+            declared_rounding_policies: BTreeSet::new(),
             // Empty is fail-closed here too: an add-on nobody resolved covers
             // nothing, so a required one blocks. See `AddonCoverage`.
             addon_coverage: AddonCoverage::empty(),
@@ -364,6 +366,20 @@ impl PublishRuleParams {
     #[must_use]
     pub fn with_declared_regions(mut self, regions: BTreeSet<Region>) -> Self {
         self.declared_regions = regions;
+        self
+    }
+
+    /// Attach the tenant's declared rounding vocabulary (D-321).
+    ///
+    /// Its empty set means **unconstrained**, which is neither
+    /// [`Self::with_declared_regions`]' reading nor
+    /// [`Self::with_change_targets`]': a tenant that has declared no rounding
+    /// values has not opted into the check, and refusing there would have broken
+    /// every catalog the day the taxonomy landed. The three defaults are
+    /// deliberately different and each says so where it is set.
+    #[must_use]
+    pub fn with_declared_rounding_policies(mut self, values: BTreeSet<String>) -> Self {
+        self.declared_rounding_policies = values;
         self
     }
 
@@ -538,6 +554,13 @@ fn foundation_plan_rules(params: &PublishRuleParams) -> ValidationPipeline<PlanS
         // to.
         .with_rule(Box::new(RegionsDeclared {
             declared: params.declared_regions.clone(),
+        }))
+        // D-321's vocabulary check, in the base set for `RegionsDeclared`'s
+        // reason with one difference stated on its type: `rounding_policy_ref`
+        // is on every price row, so no publish escapes it — but a tenant who
+        // declared no vocabulary is not constrained by it.
+        .with_rule(Box::new(RoundingPolicyDeclared {
+            declared: params.declared_rounding_policies.clone(),
         }))
         // Slice 4's tax-display pair. In the Foundation set for
         // `RegionsDeclared`'s reason: `tax_inclusive` is a column on every price

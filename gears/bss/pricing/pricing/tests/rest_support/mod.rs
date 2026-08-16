@@ -696,6 +696,10 @@ impl Harness {
                 Arc::clone(&self.state),
                 &openapi,
             ))
+            .merge(bss_pricing::api::rest::rounding_policies::router(
+                Arc::clone(&self.state),
+                &openapi,
+            ))
             .merge(bss_pricing::api::rest::preview::router(
                 Arc::clone(&self.governance),
                 &openapi,

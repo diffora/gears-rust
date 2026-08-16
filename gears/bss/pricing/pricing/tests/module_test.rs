@@ -91,6 +91,7 @@ fn declared_paths() -> Vec<(&'static str, &'static str)> {
     use bss_pricing::api::rest::publish::PLAN_PUBLISH;
     use bss_pricing::api::rest::repricing_runs::{REPRICING_RUN, REPRICING_RUNS};
     use bss_pricing::api::rest::retirement::PLAN_RETIRE;
+    use bss_pricing::api::rest::rounding_policies::ROUNDING_POLICIES;
     use bss_pricing::api::rest::rounding_policy::ROUNDING_POLICY;
     use bss_pricing::api::rest::supersessions::PLAN_SUPERSESSIONS;
     use bss_pricing::api::rest::tax_display_policy::TAX_DISPLAY_POLICY;
@@ -162,6 +163,8 @@ fn declared_paths() -> Vec<(&'static str, &'static str)> {
         ("PUT", TAX_DISPLAY_POLICY),
         ("GET", ROUNDING_POLICY),
         ("PUT", ROUNDING_POLICY),
+        ("GET", ROUNDING_POLICIES),
+        ("PUT", ROUNDING_POLICIES),
         ("POST", BUNDLES),
         ("GET", BUNDLES),
         // D-310: the composition's reader. It was unreadable through any surface,
@@ -249,9 +252,15 @@ fn config_routers(
     authoring: &Arc<bss_pricing::api::rest::state::AuthoringState>,
     openapi: &OpenApiRegistryImpl,
 ) -> axum::Router {
-    bss_pricing::api::rest::tax_display_policy::router(Arc::clone(authoring), openapi).merge(
-        bss_pricing::api::rest::rounding_policy::router(Arc::clone(authoring), openapi),
-    )
+    bss_pricing::api::rest::tax_display_policy::router(Arc::clone(authoring), openapi)
+        .merge(bss_pricing::api::rest::rounding_policy::router(
+            Arc::clone(authoring),
+            openapi,
+        ))
+        .merge(bss_pricing::api::rest::rounding_policies::router(
+            Arc::clone(authoring),
+            openapi,
+        ))
 }
 
 async fn registered_operations() -> OpenApiRegistryImpl {

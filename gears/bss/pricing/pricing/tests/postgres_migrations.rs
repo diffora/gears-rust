@@ -491,6 +491,8 @@ const EXPECTED_PRIMARY_KEYS: &[&str] = &[
     "pricing_read_model: tenant_id, catalog_version, subject_kind, subject_ref",
     "pricing_region_taxonomy: tenant_id, value",
     "pricing_repricing_journal: run_id, price_id",
+    // D-321 (`m20260802_000080`): the taxonomies' key on its own table.
+    "pricing_rounding_policy_taxonomy: tenant_id, value",
     // Read back from `m20260802_000044`'s own DDL rather than from the live server.
     "pricing_snapshot_provenance: provenance_id",
 ];
@@ -678,6 +680,8 @@ const EXPECTED_CHECKS: &[&str] = &[
     "chk_pricing_repricing_journal_failed",
     "chk_pricing_repricing_journal_state",
     "chk_pricing_repricing_journal_successor_is_new",
+    "chk_pricing_rounding_policy_taxonomy_state",
+    "chk_pricing_rounding_policy_taxonomy_value_present",
     "chk_pricing_snapshot_provenance_payload",
     "chk_pricing_snapshot_provenance_resolved",
     "chk_pricing_snapshot_provenance_revision",

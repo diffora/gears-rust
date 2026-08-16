@@ -16,6 +16,8 @@
 //! nothing about what writing it *does*, which is the shape of a green test over
 //! an inert feature.
 
+#![allow(clippy::expect_used, clippy::unwrap_used)]
+
 mod common;
 mod rest_support;
 
@@ -23,11 +25,15 @@ use axum::http::StatusCode;
 use bss_pricing::api::rest::rounding_policy::ROUNDING_POLICY;
 use bss_pricing::domain::price_record::PriceContent;
 use bss_pricing::domain::scope_key::PlanId;
+use bss_pricing::infra::storage::entity::rounding_policy_taxonomy;
 use bss_pricing::infra::storage::repo::NewPriceDraft;
 use rest_support::{
     Harness, body_json, etag_of, problem_code, publishable_row, publishable_scope_key,
     seed_publishable_shape, with_headers,
 };
+use sea_orm::ActiveValue::Set;
+use sea_orm::EntityTrait;
+use toolkit_db::secure::{AccessScope, SecureInsertExt};
 use uuid::Uuid;
 
 /// The submitting principal.
@@ -262,6 +268,149 @@ async fn with_a_default_set_a_plan_whose_rows_have_no_ref_publishes() {
     assert_eq!(body["outcome"], serde_json::json!("submitted_for_approval"));
 }
 
+/// **The vocabulary, end to end**: an undeclared reference is refused at publish,
+/// and declaring it lets the same plan through.
+///
+/// The pair matters more than either half. A test that only declared a value and
+/// published would pass against a rule whose operand nobody loaded — the empty
+/// set means "unconstrained", so an unwired `rule_params` looks exactly like a
+/// satisfied vocabulary. Refusing first is what proves the set reached the rule.
+#[tokio::test]
+async fn an_undeclared_rounding_reference_is_refused_and_declaring_it_lets_the_plan_publish() {
+    let harness = Harness::new().await;
+    let plan_id = Uuid::now_v7();
+    let shape = seed_publishable_shape(&harness, plan_id).await;
+    let plan = PlanId::new(plan_id);
+    let scope = harness.scope();
+
+    let price_id = Uuid::now_v7();
+    harness
+        .state
+        .prices
+        .create_draft(
+            &scope,
+            harness.tenant,
+            NewPriceDraft {
+                price_id,
+                scope_key: publishable_scope_key(plan, shape.phase, "eu"),
+                content: PriceContent {
+                    rounding_policy_ref: Some("half_up_2dp".to_owned()),
+                    ..publishable_row()
+                },
+                created_by: rest_support::SEED_ACTOR,
+                created_at_utc: rest_support::at(10),
+                correlation_id: Uuid::from_u128(0x_c0_11_a7_12),
+            },
+        )
+        .await
+        .expect("author the row");
+    let conn = harness.state.db.conn().expect("conn");
+    common::schedule_coverage_window(
+        &conn,
+        &scope,
+        harness.tenant,
+        price_id,
+        rest_support::seed_stamp(),
+    )
+    .await;
+
+    // A vocabulary that does not contain the row's reference.
+    declare_rounding_value(&harness, "bankers").await;
+
+    let refused = publish(&harness, plan_id, &shape.etag()).await;
+    assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
+    let detail = body_json(refused).await.to_string();
+    assert!(
+        detail.contains("ROUNDING_POLICY_UNKNOWN"),
+        "the refusal names the vocabulary rule; got {detail}"
+    );
+
+    declare_rounding_value(&harness, "half_up_2dp").await;
+
+    let after = publish(&harness, plan_id, &shape.etag()).await;
+    let status = after.status();
+    let body = body_json(after).await;
+    assert_eq!(
+        status,
+        StatusCode::ACCEPTED,
+        "the declared reference clears the rule; got {body}"
+    );
+}
+
+/// An empty vocabulary constrains nothing — the opt-in reading (D-321).
+///
+/// The negative control for the case above: without it, a rule that refused
+/// *every* reference would satisfy the refusal half and look correct.
+#[tokio::test]
+async fn a_tenant_with_no_declared_vocabulary_publishes_any_reference() {
+    let harness = Harness::new().await;
+    let plan_id = Uuid::now_v7();
+    let shape = seed_publishable_shape(&harness, plan_id).await;
+    let plan = PlanId::new(plan_id);
+    let scope = harness.scope();
+
+    let price_id = Uuid::now_v7();
+    harness
+        .state
+        .prices
+        .create_draft(
+            &scope,
+            harness.tenant,
+            NewPriceDraft {
+                price_id,
+                scope_key: publishable_scope_key(plan, shape.phase, "eu"),
+                content: PriceContent {
+                    rounding_policy_ref: Some("anything_at_all".to_owned()),
+                    ..publishable_row()
+                },
+                created_by: rest_support::SEED_ACTOR,
+                created_at_utc: rest_support::at(10),
+                correlation_id: Uuid::from_u128(0x_c0_11_a7_13),
+            },
+        )
+        .await
+        .expect("author the row");
+    let conn = harness.state.db.conn().expect("conn");
+    common::schedule_coverage_window(
+        &conn,
+        &scope,
+        harness.tenant,
+        price_id,
+        rest_support::seed_stamp(),
+    )
+    .await;
+
+    let after = publish(&harness, plan_id, &shape.etag()).await;
+    assert_eq!(
+        after.status(),
+        StatusCode::ACCEPTED,
+        "declaring nothing is not opting in; got {}",
+        body_json(after).await
+    );
+}
+
+/// Declare one rounding value straight at the table.
+///
+/// Direct because the taxonomy surface is not what these cases are about — the
+/// tax-display suite's `declare_region` carries the same reasoning — and because
+/// what is under test is the publish rule's operand.
+async fn declare_rounding_value(harness: &Harness, value: &str) {
+    let conn = harness.db.conn().expect("conn");
+    let row = rounding_policy_taxonomy::ActiveModel {
+        tenant_id: Set(harness.tenant),
+        value: Set(value.to_owned()),
+        display_name: Set(format!("fixture {value}")),
+        state: Set("active".to_owned()),
+    };
+    rounding_policy_taxonomy::Entity::insert(row.clone())
+        .secure()
+        .scope_with_model(&AccessScope::allow_all(), &row)
+        .expect("scope the value")
+        .exec(&conn)
+        .await
+        .expect("declare the value");
+}
+
 async fn publish(
     harness: &Harness,
     plan_id: Uuid,
@@ -276,4 +425,152 @@ async fn publish(
             &[("if-match", tag)],
         ))
         .await
+}
+
+// ---------------------------------------------------------------------------
+// The vocabulary's own surface (D-321)
+// ---------------------------------------------------------------------------
+
+async fn read_vocabulary(harness: &Harness) -> (StatusCode, Option<String>, serde_json::Value) {
+    let response = harness
+        .allowed()
+        .send(with_headers(
+            "GET",
+            "/bss-pricing/v1/config/rounding-policies",
+            None,
+            &[],
+        ))
+        .await;
+    let status = response.status();
+    let tag = etag_of(&response);
+    (status, tag, body_json(response).await)
+}
+
+async fn write_vocabulary(
+    harness: &Harness,
+    values: serde_json::Value,
+    tag: &str,
+) -> axum::http::Response<axum::body::Body> {
+    harness
+        .allowed()
+        .send(with_headers(
+            "PUT",
+            "/bss-pricing/v1/config/rounding-policies",
+            Some(serde_json::json!({ "values": values })),
+            &[("if-match", tag)],
+        ))
+        .await
+}
+
+/// A tenant that has declared nothing reads an empty set **with a tag**.
+#[tokio::test]
+async fn an_undeclared_vocabulary_reads_empty_with_a_tag() {
+    let harness = Harness::new().await;
+
+    let (status, tag, body) = read_vocabulary(&harness).await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["values"], serde_json::json!([]));
+    assert!(tag.is_some(), "the empty set is a state and carries a tag");
+}
+
+/// A `PUT` declares the set and the `GET` agrees; state defaults to `active`.
+#[tokio::test]
+async fn a_declared_set_round_trips_and_defaults_to_active() {
+    let harness = Harness::new().await;
+    let (_, tag, _) = read_vocabulary(&harness).await;
+
+    let response = write_vocabulary(
+        &harness,
+        serde_json::json!([{ "value": "half_up_2dp", "display_name": "Half up, 2dp" }]),
+        &tag.expect("a tag"),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let (_, _, body) = read_vocabulary(&harness).await;
+    assert_eq!(body["values"][0]["value"], serde_json::json!("half_up_2dp"));
+    assert_eq!(body["values"][0]["state"], serde_json::json!("active"));
+}
+
+/// A value the tenant default names cannot be retired, and nothing is written.
+///
+/// The guard's whole point: retiring under a live reference would leave the
+/// default pointing at a value no vocabulary declares, which is the dangling
+/// state the taxonomy exists to prevent.
+#[tokio::test]
+async fn a_value_the_default_names_cannot_be_retired() {
+    let harness = Harness::new().await;
+
+    let (_, vocab_tag, _) = read_vocabulary(&harness).await;
+    write_vocabulary(
+        &harness,
+        serde_json::json!([{ "value": "half_up_2dp", "display_name": "Half up" }]),
+        &vocab_tag.expect("a tag"),
+    )
+    .await;
+
+    let (_, policy_tag, _) = read_policy(&harness).await;
+    let set = write_policy(
+        &harness,
+        serde_json::json!("half_up_2dp"),
+        &policy_tag.expect("a tag"),
+    )
+    .await;
+    assert_eq!(set.status(), StatusCode::OK);
+
+    // Now drop it from the set, which is a retirement.
+    let (_, vocab_tag, _) = read_vocabulary(&harness).await;
+    let refused =
+        write_vocabulary(&harness, serde_json::json!([]), &vocab_tag.expect("a tag")).await;
+
+    assert_eq!(refused.status(), StatusCode::CONFLICT);
+    assert_eq!(problem_code(refused).await, "TAXONOMY_VALUE_IN_USE");
+    let (_, _, body) = read_vocabulary(&harness).await;
+    assert_eq!(
+        body["values"][0]["state"],
+        serde_json::json!("active"),
+        "a refused retirement writes nothing at all"
+    );
+}
+
+/// A stale tag on the vocabulary is refused and writes nothing.
+#[tokio::test]
+async fn a_stale_vocabulary_tag_is_refused() {
+    let harness = Harness::new().await;
+    let (_, first, _) = read_vocabulary(&harness).await;
+    let first = first.expect("a tag");
+    write_vocabulary(
+        &harness,
+        serde_json::json!([{ "value": "bankers", "display_name": "Bankers" }]),
+        &first,
+    )
+    .await;
+
+    let response = write_vocabulary(
+        &harness,
+        serde_json::json!([{ "value": "half_even", "display_name": "Half even" }]),
+        &first,
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    let (_, _, body) = read_vocabulary(&harness).await;
+    assert_eq!(body["values"][0]["value"], serde_json::json!("bankers"));
+}
+
+/// A blank value is refused by the surface rather than by a constraint.
+#[tokio::test]
+async fn a_blank_vocabulary_value_is_refused() {
+    let harness = Harness::new().await;
+    let (_, tag, _) = read_vocabulary(&harness).await;
+
+    let response = write_vocabulary(
+        &harness,
+        serde_json::json!([{ "value": "", "display_name": "nothing" }]),
+        &tag.expect("a tag"),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 }

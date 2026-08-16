@@ -47,4 +47,5 @@ pub mod price_window;
 pub mod read_model;
 pub mod region_taxonomy;
 pub mod repricing_journal;
+pub mod rounding_policy_taxonomy;
 pub mod snapshot_provenance;

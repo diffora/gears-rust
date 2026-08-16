@@ -81,7 +81,7 @@ use crate::domain::taxonomy::{
 use crate::domain::validation::ValidationReport;
 use crate::infra::storage::entity::{
     brand_taxonomy, customer_group_taxonomy, group_membership, org_tier_taxonomy, partner_taxonomy,
-    price, price_overlay, region_taxonomy,
+    policy_object, price, price_overlay, region_taxonomy, rounding_policy_taxonomy,
 };
 use crate::infra::storage::{RepoError, contention_or_db};
 
@@ -249,6 +249,65 @@ impl TaxonomyRepo {
             })
         })
     }
+
+    /// The tenant's declared rounding vocabulary, active and retired alike
+    /// (D-321).
+    ///
+    /// A **parallel, one-table method** for `list_customer_groups`' reason, and
+    /// it is a stronger reason here: [`TaxonomyClass::scope_class`] is a total
+    /// function into [`ScopeClass`], so a fifth class would declare that an
+    /// overlay may be scoped by rounding policy and would reach the
+    /// `pricing_price_overlay.scope_class` `CHECK`. It cannot.
+    ///
+    /// # Errors
+    /// [`RepoError::Db`] on a scope or storage failure; [`RepoError::CorruptRow`]
+    /// when a stored `state` or `value` is outside what its `CHECK` admits.
+    pub async fn list_rounding_policies(
+        &self,
+        scope: &AccessScope,
+        tenant_id: Uuid,
+    ) -> Result<Vec<TaxonomyEntry>, RepoError> {
+        let conn = self
+            .db
+            .conn()
+            .map_err(|e| RepoError::Db(format!("rounding taxonomy conn: {e}")))?;
+        list_rounding_policy_on(&conn, scope, tenant_id).await
+    }
+
+    /// Replace the declared rounding vocabulary wholesale, gated on the tag the
+    /// caller read (D-321).
+    ///
+    /// `replace_customer_groups`' shape, including the reason the premise is
+    /// tested **inside** the transaction: a `PUT` replaces the whole set, so two
+    /// callers whose reads both precede either commit would each pass and the
+    /// second would silently drop what the first added.
+    ///
+    /// # Errors
+    /// [`RepoError::Db`] on a scope or storage failure.
+    pub async fn replace_rounding_policies(
+        &self,
+        scope: &AccessScope,
+        tenant_id: Uuid,
+        entries: Vec<TaxonomyEntry>,
+        asserted: &PolicyTag,
+        stamp: AuditStamp,
+    ) -> Result<Replaced, RepoError> {
+        let scope = scope.clone();
+        let asserted = asserted.clone();
+        let (_, outcome) = self
+            .db
+            .db()
+            .in_transaction::<Replaced, RepoError, _>(move |txn| {
+                Box::pin(async move {
+                    apply_replace_rounding_policy(txn, &scope, tenant_id, entries, &asserted, stamp)
+                        .await
+                })
+            })
+            .await;
+        outcome.map_err(|e| {
+            e.into_domain(|infra| RepoError::Db(format!("rounding taxonomy replace: {infra}")))
+        })
+    }
 }
 
 /// What a `PUT` did, or refused to do.
@@ -320,6 +379,39 @@ pub async fn active_regions(
             })
         })
         .collect()
+}
+
+/// The tenant's **active** rounding references — `inst-tx-rounding`'s universe
+/// (D-321).
+///
+/// [`active_regions`]' shape and its reasons: a runner rather than a provider so
+/// `rule_params` resolves it inside the commit transaction, and `active` only so
+/// a retired value cannot validate a new row against itself.
+///
+/// The values are returned as plain strings. Unlike a region there is no newtype
+/// to parse into: this gear persists a reference to a policy it neither defines
+/// nor applies, so it has nothing to validate the *shape* of a reference against
+/// and inventing a parser here would be the legislating D-320 declined.
+///
+/// # Errors
+/// [`RepoError::Db`] on a scope or storage failure.
+pub async fn active_rounding_policies(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+) -> Result<BTreeSet<String>, RepoError> {
+    let rows = rounding_policy_taxonomy::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(rounding_policy_taxonomy::Column::TenantId.eq(tenant_id))
+                .add(rounding_policy_taxonomy::Column::State.eq(TaxonomyState::Active.as_str())),
+        )
+        .all(runner)
+        .await
+        .map_err(|e| RepoError::Db(format!("read pricing_rounding_policy_taxonomy: {e}")))?;
+    Ok(rows.into_iter().map(|row| row.value).collect())
 }
 
 /// C4's `RegionTaxReadiness` lookup: `(tenant, region) -> { taxCategory, ratePresent }`.
@@ -1312,6 +1404,152 @@ async fn apply_replace_customer_group(
 }
 
 /// [`write_set`]'s single-table analogue.
+/// The rounding vocabulary's `PUT`, inside its transaction (D-321).
+///
+/// `apply_replace_customer_group`'s shape exactly: premise tested here and only
+/// here against the same `held` the write works from, retirement guarded per
+/// value, and nothing written when either refuses.
+async fn apply_replace_rounding_policy(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    entries: Vec<TaxonomyEntry>,
+    asserted: &PolicyTag,
+    stamp: AuditStamp,
+) -> Result<Replaced, RepoError> {
+    let held = list_rounding_policy_on(runner, scope, tenant_id).await?;
+
+    if rounding_policy_tag_of(&held) != *asserted {
+        return Ok(Replaced {
+            entries: held,
+            report: ValidationReport::default(),
+            stale: true,
+        });
+    }
+
+    let submitted: BTreeMap<String, TaxonomyEntry> = entries
+        .into_iter()
+        .map(|entry| (entry.value.as_str().to_owned(), entry))
+        .collect();
+
+    let mut report = ValidationReport::default();
+    for existing in &held {
+        let key = existing.value.as_str();
+        let retiring = submitted
+            .get(key)
+            .is_none_or(|entry| entry.state == TaxonomyState::Retired);
+        if !retiring || existing.state == TaxonomyState::Retired {
+            continue;
+        }
+        let (rows, default_names_it) =
+            references_to_rounding_policy(runner, scope, tenant_id, &existing.value).await?;
+        report.absorb(check_rounding_policy_retirable(
+            &existing.value,
+            rows,
+            default_names_it,
+        ));
+    }
+
+    if !report.is_publishable() {
+        return Ok(Replaced {
+            entries: held,
+            report,
+            stale: false,
+        });
+    }
+
+    write_rounding_policy_set(runner, scope, tenant_id, &held, &submitted).await?;
+    let now = list_rounding_policy_on(runner, scope, tenant_id).await?;
+    record_customer_group_mutation(runner, scope, tenant_id, stamp).await?;
+    Ok(Replaced {
+        entries: now,
+        report,
+        stale: false,
+    })
+}
+
+/// [`write_customer_group_set`]'s shape on this table.
+async fn write_rounding_policy_set(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    held: &[TaxonomyEntry],
+    submitted: &BTreeMap<String, TaxonomyEntry>,
+) -> Result<(), RepoError> {
+    let held_keys: BTreeSet<&str> = held.iter().map(|e| e.value.as_str()).collect();
+
+    for entry in submitted.values() {
+        let row = rounding_policy_taxonomy::ActiveModel {
+            tenant_id: Set(tenant_id),
+            value: Set(entry.value.as_str().to_owned()),
+            display_name: Set(entry.display_name.clone()),
+            state: Set(entry.state.as_str().to_owned()),
+        };
+        if held_keys.contains(entry.value.as_str()) {
+            update_rounding_policy_entry(runner, scope, tenant_id, entry).await?;
+        } else {
+            let inserted = row.clone();
+            rounding_policy_taxonomy::Entity::insert(inserted.clone())
+                .secure()
+                .scope_with_model(scope, &inserted)
+                .map_err(|e| RepoError::Db(format!("scope pricing_rounding_policy_taxonomy: {e}")))?
+                .exec(runner)
+                .await
+                .map(|_| ())
+                .map_err(|e| {
+                    contention_or_db(
+                        &e,
+                        "pricing_rounding_policy_taxonomy",
+                        "insert pricing_rounding_policy_taxonomy",
+                    )
+                })?;
+        }
+    }
+    // A value the caller omitted is **retired, never deleted** — the taxonomies'
+    // rule: something published may still resolve against it, and a deletion
+    // would make that reference dangle rather than merely unauthorable.
+    for existing in held {
+        if submitted.contains_key(existing.value.as_str()) {
+            continue;
+        }
+        let retired = TaxonomyEntry {
+            state: TaxonomyState::Retired,
+            ..existing.clone()
+        };
+        update_rounding_policy_entry(runner, scope, tenant_id, &retired).await?;
+    }
+    Ok(())
+}
+
+/// [`update_customer_group_entry`]'s shape on this table.
+async fn update_rounding_policy_entry(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    entry: &TaxonomyEntry,
+) -> Result<(), RepoError> {
+    rounding_policy_taxonomy::Entity::update_many()
+        .secure()
+        .scope_with(scope)
+        .col_expr(
+            rounding_policy_taxonomy::Column::DisplayName,
+            sea_orm::sea_query::Expr::value(entry.display_name.clone()),
+        )
+        .col_expr(
+            rounding_policy_taxonomy::Column::State,
+            sea_orm::sea_query::Expr::value(entry.state.as_str().to_owned()),
+        )
+        .filter(
+            Condition::all()
+                .add(rounding_policy_taxonomy::Column::TenantId.eq(tenant_id))
+                .add(rounding_policy_taxonomy::Column::Value.eq(entry.value.as_str().to_owned())),
+        )
+        .exec(runner)
+        .await
+        .map(|_| ())
+        .map_err(|e| RepoError::Db(format!("update pricing_rounding_policy_taxonomy: {e}")))
+}
+
 async fn write_customer_group_set(
     runner: &impl DBRunner,
     scope: &AccessScope,
@@ -1395,6 +1633,134 @@ async fn update_customer_group_entry(
         .await
         .map(|_| ())
         .map_err(|e| RepoError::Db(format!("update pricing_customer_group_taxonomy: {e}")))
+}
+
+/// The declared rounding vocabulary, ordered by value.
+async fn list_rounding_policy_on(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+) -> Result<Vec<TaxonomyEntry>, RepoError> {
+    let rows = rounding_policy_taxonomy::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(Condition::all().add(rounding_policy_taxonomy::Column::TenantId.eq(tenant_id)))
+        .order_by(rounding_policy_taxonomy::Column::Value, sea_orm::Order::Asc)
+        .all(runner)
+        .await
+        .map_err(|e| RepoError::Db(format!("read pricing_rounding_policy_taxonomy: {e}")))?;
+
+    rows.into_iter()
+        .map(|row| {
+            Ok(TaxonomyEntry {
+                value: ScopeValue::new(&row.value).ok_or_else(|| {
+                    RepoError::CorruptRow("pricing_rounding_policy_taxonomy.value is blank".into())
+                })?,
+                display_name: row.display_name,
+                state: TaxonomyState::parse(&row.state).ok_or_else(|| {
+                    RepoError::CorruptRow(format!(
+                        "pricing_rounding_policy_taxonomy.state `{}`",
+                        row.state
+                    ))
+                })?,
+                tax: None,
+            })
+        })
+        .collect()
+}
+
+/// How many **published** price rows name this rounding reference, plus whether
+/// the tenant default does (D-321).
+///
+/// The retirement guard's operand. A value nothing references may be retired; a
+/// value a live row resolves against may not, which is `inst-tx-mutation`'s rule
+/// on every taxonomy in this gear. Draft rows are deliberately **not** counted:
+/// a draft is being authored and its author can change the reference, while a
+/// published row's is frozen into a `CatalogVersion` a consumer resolves.
+async fn references_to_rounding_policy(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    value: &ScopeValue,
+) -> Result<(u64, bool), RepoError> {
+    let rows = price::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(price::Column::TenantId.eq(tenant_id))
+                .add(price::Column::RoundingPolicyRef.eq(value.as_str()))
+                .add(price::Column::LifecycleState.eq(LifecycleState::Published.as_str())),
+        )
+        .count(runner)
+        .await
+        .map_err(|e| RepoError::Db(format!("count pricing_price: {e}")))?;
+
+    let default_names_it = policy_object::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(policy_object::Column::TenantId.eq(tenant_id))
+                .add(policy_object::Column::DefaultRoundingPolicyRef.eq(value.as_str())),
+        )
+        .count(runner)
+        .await
+        .map_err(|e| RepoError::Db(format!("count pricing_policy_object: {e}")))?
+        > 0;
+
+    Ok((rows, default_names_it))
+}
+
+/// `TAXONOMY_VALUE_IN_USE`, when something still resolves against the value.
+///
+/// The two references are named separately for `check_customer_group_retirable`'s
+/// reason: an operator whose only reference is the tenant default should not be
+/// sent to audit price rows that were never the problem.
+fn check_rounding_policy_retirable(
+    value: &ScopeValue,
+    published_rows: u64,
+    default_names_it: bool,
+) -> ValidationReport {
+    let mut report = ValidationReport::default();
+    if published_rows == 0 && !default_names_it {
+        return report;
+    }
+    let mut named = Vec::with_capacity(2);
+    if published_rows > 0 {
+        named.push(format!("{published_rows} published price row(s) name it"));
+    }
+    if default_names_it {
+        named.push("the tenant default names it".to_owned());
+    }
+    report.violate(
+        TAXONOMY_VALUE_IN_USE,
+        value.as_str().to_owned(),
+        format!(
+            "rounding policy `{}` cannot be retired: {}. Re-point them first - a retired value \
+             stops being authorable and what already resolves against it would have no declared \
+             vocabulary entry",
+            value.as_str(),
+            named.join(" and ")
+        ),
+    );
+    report
+}
+
+/// The rounding vocabulary's tag — [`customer_group_tag_of`]'s shape over its
+/// own resource name.
+#[must_use]
+pub fn rounding_policy_tag_of(entries: &[TaxonomyEntry]) -> PolicyTag {
+    PolicyTag::of_taxonomy(
+        "rounding-policies",
+        entries.iter().map(|entry| TaxonomyTagEntry {
+            value: entry.value.as_str(),
+            state: entry.state.as_str(),
+            display_name: entry.display_name.as_str(),
+            tax_category: None,
+            tax_rate_present: false,
+        }),
+    )
 }
 
 /// The entity tag of the customer-group taxonomy's representation —
