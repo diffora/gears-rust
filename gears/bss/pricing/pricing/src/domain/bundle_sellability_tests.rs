@@ -207,3 +207,173 @@ fn a_failure_dominates_an_unevaluable_component() {
 
     assert_eq!(verdict, PlanMarketVerdict::NotSellable);
 }
+
+// ---------------------------------------------------------------------------
+// The subsystem has no caller, and that is checked rather than asserted in prose.
+// ---------------------------------------------------------------------------
+
+/// One of this crate's non-test sources, with its comments and string literals
+/// blanked — `crate::source_scan`'s single reading of *"is this token in the
+/// crate's code, or only in its prose"*, borrowed rather than re-implemented for
+/// D-321 clause (4)'s reason: two readings of "code" would be two answers to one
+/// question.
+struct Source {
+    /// The path, relative to the crate root, for the diagnostic.
+    label: String,
+    /// The file with comments and literals blanked.
+    code: String,
+}
+
+/// Every `.rs` file under `src/` that is not itself a test module.
+///
+/// `_tests.rs` is excluded for the trigger census's reason and it is the point of
+/// the instrument: a construction exercised only by the cases asserting about it
+/// is exactly the state this module is in, so counting its own suite as a caller
+/// would make the census unable to see it.
+fn crate_sources(dir: &std::path::Path, out: &mut Vec<Source>) {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    for entry in std::fs::read_dir(dir).expect("the crate's source tree is readable") {
+        let path = entry.expect("a readable directory entry").path();
+        if path.is_dir() {
+            crate_sources(&path, out);
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        if !path
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("rs"))
+            || name.ends_with("_tests.rs")
+        {
+            continue;
+        }
+        let text = std::fs::read_to_string(&path).expect("a readable source file");
+        out.push(Source {
+            label: path
+                .strip_prefix(root)
+                .unwrap_or(&path)
+                .display()
+                .to_string(),
+            code: crate::source_scan::blank_comments_and_literals(&text),
+        });
+    }
+}
+
+/// Every file outside this module that names `needle` in code.
+fn naming_sites<'a>(sources: &'a [Source], needle: &str) -> Vec<&'a str> {
+    sources
+        .iter()
+        .filter(|source| !source.label.ends_with("bundle_sellability.rs"))
+        .filter(|source| source.code.contains(needle))
+        .map(|source| source.label.as_str())
+        .collect()
+}
+
+/// **`inst-sg-bundle` is unevaluated because this module has no caller**, and this
+/// is what makes that a fact of the build rather than an impression a reader forms
+/// by grepping once.
+///
+/// It reddens the day a caller lands — which is the day
+/// [`crate::domain::sellability`]'s `inst-sg-bundle` section and this module's own
+/// "no caller" paragraph both become false and have to be rewritten. That
+/// coupling is deliberate: three accounts of this surface were stale for eight
+/// days precisely because nothing was holding them.
+///
+/// **The positive control is not optional.** A walk that found nothing because the
+/// blanking ate every file, or because the source root moved, would be green for
+/// the wrong reason and would stay green forever. `plan_market_verdict` is the
+/// control: it is the conjunction this one is the bundle-level twin of, and it has
+/// exactly one naming site outside its own module — `api::rest::windows`, where
+/// the surface is rendered. If the walk cannot see that, it cannot see anything.
+#[test]
+fn nothing_in_this_crate_reaches_the_bundle_conjunction() {
+    let mut sources = Vec::new();
+    crate_sources(
+        &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+        &mut sources,
+    );
+
+    // The control first: a green refusal below means nothing until the walk is
+    // shown to read code at all.
+    let control = naming_sites(&sources, "plan_market_verdict");
+    assert!(
+        control.iter().any(|at| at.ends_with("windows.rs")),
+        "the walk cannot see `plan_market_verdict`'s one production caller, so its \
+         silence about the bundle conjunction proves nothing; it saw {} sources and \
+         found {control:?}",
+        sources.len()
+    );
+
+    for needle in [
+        "bundle_verdict",
+        "component_verdict",
+        "ComponentSellability",
+    ] {
+        let sites = naming_sites(&sources, needle);
+        assert!(
+            sites.is_empty(),
+            "`{needle}` is named in this crate's code at {sites:?}. If that is a real \
+             caller, the bundle conjunction is wired and three accounts now lie: this \
+             module's \"no caller\" paragraph, `domain::sellability`'s `inst-sg-bundle` \
+             section, and `api::rest::bundles`' note that a composition publish freezes \
+             nothing. Fix them with the wiring, not this assertion."
+        );
+    }
+}
+
+/// The source that ends in `suffix`, or a panic naming what the walk did see.
+fn source_ending_in<'a>(sources: &'a [Source], suffix: &str) -> &'a Source {
+    sources
+        .iter()
+        .find(|source| source.label.ends_with(suffix))
+        .unwrap_or_else(|| {
+            panic!(
+                "the walk did not reach {suffix}; it saw {} sources",
+                sources.len()
+            )
+        })
+}
+
+/// **The act that would freeze a component set does not exist**, and this is the
+/// half of the blocker that no amount of work in `domain::` can repair.
+///
+/// `inst-ba-return` says a bundle publish leaves the composition *"frozen into the
+/// read model / snapshot"*. A publish unit freezes anything in this gear by
+/// recording a `PendingVersionRow`, which is what the projector later drives; the
+/// composition act records none, so no `CatalogVersion` advances and no subject
+/// re-projects. Until that changes, `inst-sg-bundle`'s *"frozen component key
+/// set"* has nowhere to be frozen **into**, whatever
+/// [`crate::domain::bundle_sellability`] is able to compute over it.
+///
+/// `infra::window` is the positive control and the closest sibling: it is the
+/// other Slice-7 mutation path, it is also a 202, and it *does* record one. A
+/// refusal with no control here would be green the day `PendingVersionRow` is
+/// renamed.
+#[test]
+fn a_composition_publish_advances_no_catalog_version() {
+    let mut sources = Vec::new();
+    crate_sources(
+        &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+        &mut sources,
+    );
+
+    assert!(
+        source_ending_in(&sources, "infra/window.rs")
+            .code
+            .contains("PendingVersionRow"),
+        "the control failed: a publish unit that does record a pending version no \
+         longer names one, so this walk cannot tell a frozen act from an unfrozen one"
+    );
+
+    assert!(
+        !source_ending_in(&sources, "infra/bundle.rs")
+            .code
+            .contains("PendingVersionRow"),
+        "`infra::bundle` now records a pending `CatalogVersion`, so a composition \
+         publish re-projects its subject. That is the operand `inst-sg-bundle` has \
+         been waiting for: `PlanSubjectDelta` may now carry a bundle member, and \
+         `domain::sellability`'s `inst-sg-bundle` section, this module's \"no \
+         caller\" paragraph and `api::rest::bundles`' 202 note are all now wrong."
+    );
+}

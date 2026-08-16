@@ -1192,3 +1192,37 @@ fn every_answer_is_one_of_the_three_tokens() {
             .contains(&surface.plan_market_verdict().as_str())
     );
 }
+
+#[test]
+fn the_gates_facts_carry_no_bundle_operand() {
+    // `inst-sg-bundle` asks the surface to "expose the frozen component key set"
+    // and walk it. **This is the assertion that the operand for that walk is not
+    // here**, and it is an exhaustive destructure rather than a member count
+    // because a count cannot say *which* member arrived: the day `PinnedFacts`
+    // grows a bundle discriminator, a `PriceBasis` or a component set, this stops
+    // compiling and the reader is sent to `crate::domain::bundle_sellability`,
+    // which holds the rule and has waited for exactly this.
+    //
+    // The destructure is over `PinnedFacts` and not over the payload: the payload
+    // roster is already pinned by `read_model_repo_tests`'
+    // `the_payloads_members_partition_into_the_read_and_the_ignored`, and these
+    // are the two ends of one absence — nothing projects a bundle fact, and
+    // nothing here could read one if it did.
+    let PinnedFacts {
+        plan_id,
+        catalog_version,
+        lifecycle_state,
+        available_from,
+        available_to,
+        frequency,
+        price_keys,
+        windows,
+    } = sellable_facts();
+
+    // Named so the destructure is a roster and not eight `let _`s: every member
+    // below is a fact about **this** plan-subject, and not one of them can name
+    // another plan — which is what a component reference is.
+    let _ = (plan_id, catalog_version, lifecycle_state);
+    let _ = (available_from, available_to, frequency);
+    let _ = (price_keys, windows);
+}
