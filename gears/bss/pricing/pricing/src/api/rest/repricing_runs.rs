@@ -11,22 +11,34 @@
 //! into `pricing_repricing_journal`, evaluates the run's materiality **once**
 //! over every plan it touches (`inst-mr-coalesce`), and writes the edge the
 //! verdict names: `validating -> awaiting_approval` under an opened approval
-//! unit when material, `validating -> committing` otherwise. **What it still
-//! does not do** is apply a price, coalesce a `CatalogVersion`, or abort — a run
-//! this module opens now leaves `validating` on every path, but a `committing`
-//! run advances no further than that state, and reading it back through the
-//! `GET` shows exactly that, with every journal row still `pending`.
+//! unit when material, `validating -> committing` otherwise.
 //!
-//! That is a deliberate slice and not an oversight, so the debts that remain
-//! are named rather than left to be discovered:
+//! **And then it applies the run**, on the non-material path, in this handler:
+//! `open_run` has already taken the run to `committing`, nothing else drives a
+//! `committing` run forward, and the call to
+//! [`crate::infra::repricing::apply_run_in`] a few hundred lines below is where
+//! that edge is spent. A **material** run is left where `open_run` put it and
+//! its apply belongs to `api::rest::approvals`, spent when a second principal
+//! approves the batch unit.
 //!
-//! * **The apply** (`inst-mr-apply`, `inst-mr-validate-scope`) — successor
-//!   rows, their outbox records, the journal's `pending -> applied` flips in
-//!   one commit per plan, the re-run of the row-local and plan-aggregate rule
-//!   sets, and (2026-08-12) the bulk lock over the run's own rows — is built
-//!   in [`crate::infra::repricing::apply_run_in`]; see that module's own doc
-//!   for what the lock does and, as plainly, does not close. **Materiality
-//!   does not wait on any of that.** The
+//! **This paragraph said the opposite until 2026-08-16** — "what it still does
+//! not do is apply a price… a `committing` run advances no further than that
+//! state, with every journal row still `pending`" — while the call sat in this
+//! same file. It was read at face value and repeated into the operator-facing
+//! UI, which then told an author that opening a run moves no price. A module's
+//! own doc is a claim; the call sites are the measurement.
+//!
+//! The debts that do remain are named rather than left to be discovered:
+//!
+//! * **No abort.** The surface is a create and a read; a run that should not
+//!   have been opened has no operator remedy on this plane.
+//! * **The apply's own limits** (`inst-mr-apply`, `inst-mr-validate-scope`) —
+//!   successor rows, their outbox records, the journal's `pending -> applied`
+//!   flips in one commit per plan, the re-run of the row-local and
+//!   plan-aggregate rule sets, and (2026-08-12) the bulk lock over the run's
+//!   own rows — live in [`crate::infra::repricing::apply_run_in`]; see that
+//!   module's own doc for what the lock does and, as plainly, does not close.
+//!   **Materiality does not wait on any of that.** The
 //!   `ChangeSet` [`run_materiality`] evaluates carries each selected row with
 //!   the run's own adjustment already applied to it ([`project_row`]) — real
 //!   arithmetic over the row's published amount, not the apply's durable
