@@ -1,13 +1,20 @@
 //! Unit cases for [`super`] — D-51's kept-vs-cancelled split, D-131's per-price-id
 //! map, D-182's absent lane, and `inst-re-references`' two weights.
 
+use chrono::{DateTime, TimeDelta, TimeZone, Utc};
 use uuid::Uuid;
 
 use super::{
-    BlockingReferenceKind, KeptReason, PlanReference, PresenceMap, ReferenceReport,
-    ScheduledWindow, WarningReferenceKind, WindowDisposition, dispose_windows,
+    BlockingReferenceKind, GenerationCoverage, KeptReason, PlanReference, PresenceMap,
+    ReferenceReport, ScheduledWindow, WarningReferenceKind, WindowDisposition, WindowVerdict,
+    dispose_windows, strand_free_disposition,
 };
 use crate::domain::error::DomainError;
+use crate::domain::money::CurrencyCode;
+use crate::domain::scope_key::{
+    ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey,
+};
+use crate::domain::window::{WindowInterval, WindowState};
 
 fn window(price_id: Uuid) -> ScheduledWindow {
     ScheduledWindow {
@@ -194,4 +201,157 @@ fn every_blocking_referrer_is_named_not_just_the_first() {
             "{expected} missing from {detail}"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// D-04's bound over what a retirement's cancellations would leave (D-316's
+// residual). The two arms below have no reachable integration shape: the
+// indefinite generation and the valueless margin are both authored past the
+// publish door rather than through it, so a hand-built operand is the only way
+// to pin them.
+// ---------------------------------------------------------------------------
+
+fn generation_key(cohort: DateTime<Utc>) -> ScopeKey {
+    ScopeKey::new(
+        PlanId::new(Uuid::now_v7()),
+        CurrencyCode::new("USD").expect("currency"),
+        Region::new("us").expect("region"),
+        PhaseId::new(Uuid::from_u128(0x9ba5e)),
+        PriceEligibility::ExistingGrandfathered,
+        ChargeKind::Recurring,
+        Cohort::Generation(cohort),
+    )
+    .expect("scope key")
+}
+
+fn at(day: u32) -> DateTime<Utc> {
+    Utc.with_ymd_and_hms(2099, 8, day, 0, 0, 0)
+        .single()
+        .expect("the fixed instant is unambiguous")
+}
+
+/// One condemned window on a generation, and the verdict list naming it.
+fn condemned_on(window_id: Uuid) -> Vec<WindowVerdict> {
+    vec![WindowVerdict {
+        window_id,
+        price_id: Uuid::now_v7(),
+        disposition: WindowDisposition::Cancelled,
+    }]
+}
+
+#[test]
+fn an_indefinite_generations_window_is_kept_because_no_finite_end_answers_it() {
+    // D-147: a grandfathered row with a null `grandfatherUntil` is indefinite, so
+    // the walk is asked for coverage that never ends. Cancelling the only window
+    // leaves the span uncovered from the anchor onward, whatever the horizon
+    // would have said - and "no horizon" must never be read as "a horizon of
+    // now", which is the direction a money bound cannot round in.
+    let window_id = Uuid::now_v7();
+    let generation = GenerationCoverage {
+        scope_key: generation_key(at(4)),
+        windows: vec![(
+            window_id,
+            WindowInterval::new(at(4), None, WindowState::Scheduled),
+        )],
+        grandfather_until: None,
+        margin: Some(TimeDelta::days(31)),
+    };
+
+    let mut verdicts = condemned_on(window_id);
+    strand_free_disposition(&mut verdicts, &[generation], at(5));
+
+    assert_eq!(
+        verdicts[0].disposition,
+        WindowDisposition::Kept(KeptReason::GrandfatheredCoverageBound)
+    );
+}
+
+#[test]
+fn a_generation_whose_margin_has_no_value_is_kept_rather_than_read_as_zero() {
+    // W6's third case: the market sells recurring and the plan authored no
+    // frequency, so the term has **no value**. That is not `Some(zero)` - the
+    // floor cannot be computed at all, so no interval set can be *shown* to reach
+    // it, and this surface answers by keeping the coverage where the window
+    // surface answers by refusing the act.
+    let window_id = Uuid::now_v7();
+    let generation = GenerationCoverage {
+        scope_key: generation_key(at(4)),
+        windows: vec![(
+            window_id,
+            // Open-ended, so a rule that read `None` as a zero margin would find
+            // the span satisfied and cancel.
+            WindowInterval::new(at(4), None, WindowState::Scheduled),
+        )],
+        grandfather_until: Some(at(20)),
+        margin: None,
+    };
+
+    let mut verdicts = condemned_on(window_id);
+    strand_free_disposition(&mut verdicts, &[generation], at(5));
+
+    assert_eq!(
+        verdicts[0].disposition,
+        WindowDisposition::Kept(KeptReason::GrandfatheredCoverageBound)
+    );
+}
+
+#[test]
+fn a_generation_still_covered_without_the_condemned_window_cancels_it() {
+    // The bound is about the key's coverage and not about any one window: a
+    // second interval carrying the whole span means the condemned one is not
+    // load-bearing, and keeping it would refuse an act that strands nobody.
+    // Without this case the rule is satisfied by "never cancel on a grandfathered
+    // key", which is the overreach the integration controls also guard.
+    let condemned_id = Uuid::now_v7();
+    let generation = GenerationCoverage {
+        scope_key: generation_key(at(4)),
+        windows: vec![
+            (
+                condemned_id,
+                WindowInterval::new(at(4), Some(at(10)), WindowState::Scheduled),
+            ),
+            (
+                Uuid::now_v7(),
+                WindowInterval::new(at(4), None, WindowState::Active),
+            ),
+        ],
+        grandfather_until: Some(at(20)),
+        margin: Some(TimeDelta::days(31)),
+    };
+
+    let mut verdicts = condemned_on(condemned_id);
+    strand_free_disposition(&mut verdicts, &[generation], at(5));
+
+    assert_eq!(verdicts[0].disposition, WindowDisposition::Cancelled);
+}
+
+#[test]
+fn a_window_the_lane_already_kept_is_never_reconsidered() {
+    // The bound runs after the presence judgement and only ever moves a verdict
+    // back to `kept`. A rule that rebuilt the disposition from scratch would
+    // relabel D-51's keeps under D-04's reason and tell the operator the wrong
+    // thing on every retirement this system can actually perform.
+    let window_id = Uuid::now_v7();
+    let generation = GenerationCoverage {
+        scope_key: generation_key(at(4)),
+        windows: vec![(
+            window_id,
+            WindowInterval::new(at(4), Some(at(10)), WindowState::Scheduled),
+        )],
+        grandfather_until: Some(at(20)),
+        margin: Some(TimeDelta::days(31)),
+    };
+
+    let mut verdicts = vec![WindowVerdict {
+        window_id,
+        price_id: Uuid::now_v7(),
+        disposition: WindowDisposition::Kept(KeptReason::InFlightSubscribers),
+    }];
+    strand_free_disposition(&mut verdicts, &[generation], at(5));
+
+    assert_eq!(
+        verdicts[0].disposition,
+        WindowDisposition::Kept(KeptReason::InFlightSubscribers),
+        "D-51's reason survives; this bound adds keeps, it does not relabel them"
+    );
 }

@@ -32,9 +32,29 @@
 //!
 //! That is not a stub standing in for the rule: it *is* the rule, evaluated
 //! against the world as it is. [`dispose_windows`] is written against the map and
-//! not against its absence, so the day the lane client lands, a
-//! [`PresenceMap::resolved`] flows through the same code and the behaviour
-//! becomes what `inst-rt-cancel` describes with no edit here.
+//! not against its absence, so the day the lane client lands a
+//! [`PresenceMap::resolved`] flows through the same code and the presence half of
+//! `inst-rt-cancel` becomes what that step describes.
+//!
+//! **This paragraph used to end "with no edit here", and that was false in a way
+//! worth keeping written down.** It was repeated on three surfaces — here, at
+//! [`crate::infra::retirement`]'s call site (*"nothing below changes"*) and in
+//! `inst-rt-cancel`'s own normative prose — and D-316 had already recorded the
+//! opposite: the presence predicate is **not the only** thing that decides a
+//! scheduled window's fate. D-04's `inst-co-bounds` binds a grandfathered
+//! generation's coverage across a span, retirement's cancellations reach the
+//! window store without passing `infra::window`'s enforcement of it, and a
+//! generation reading *unoccupied* is precisely the case the presence lane waves
+//! through. So an edit here was owed from the moment the lane became imaginable,
+//! and [`strand_free_disposition`] is it.
+//!
+//! # Two questions, two populations, and neither subsumes the other
+//!
+//! `dispose_windows` asks *who is bound to this row now*. The bound asks *what
+//! must this generation still cover*. They are asked in that order and the second
+//! only ever moves a verdict from cancelled back to kept, so the presence lane
+//! keeps its full authority to **keep** and loses only its authority to cancel
+//! something D-04 has spoken for.
 //!
 //! # Kept is not the same fact as cancelled, and the operator sees both
 //!
@@ -46,10 +66,13 @@
 
 use std::collections::BTreeSet;
 
+use chrono::{DateTime, TimeDelta, Utc};
 use toolkit_macros::domain_model;
 use uuid::Uuid;
 
 use crate::domain::error::DomainError;
+use crate::domain::scope_key::ScopeKey;
+use crate::domain::window::{KeyWindows, WindowInterval, WindowState};
 
 /// Wire code for a retirement refused by a blocking reference
 /// (`11-lifecycle.md` §5, `inst-re-references`, 409).
@@ -138,6 +161,20 @@ pub enum KeptReason {
     /// The lane could not be asked, so the key reads occupied (D-131's
     /// fail-closed clause, D-182's absent lane).
     PresenceUnresolved,
+    /// Cancelling it would open a void inside a grandfathered generation's D-04
+    /// span, so the window stands whatever the presence lane says (D-316's
+    /// residual).
+    ///
+    /// The presence lane and this bound answer **different populations**, which is
+    /// why one does not subsume the other. The lane is asked per **price id** and
+    /// reports who is bound to a row *now*; D-04's bound is about a generation's
+    /// coverage having to outlast every bound period that started before its
+    /// horizon, which is a claim about the whole span `[max(cohort, now),
+    /// grandfatherUntil + the margin)` rather than about the instant the question
+    /// was asked. A generation reading unoccupied at retirement time and holding
+    /// the sole window covering that span is exactly the shape D-04 exists to
+    /// protect, and D-51's predicate cannot see it.
+    GrandfatheredCoverageBound,
 }
 
 /// What retirement will do to one scheduled window.
@@ -198,6 +235,202 @@ pub fn dispose_windows(
             },
         })
         .collect()
+}
+
+/// The interval a generation is answerable for, or the fact that it has none.
+///
+/// A named pair rather than a `Result<_, ()>`: the error arm carries no
+/// information and the success arm is two instants whose meaning is not
+/// recoverable from their types — which is the shape `CoverageEnd` is three arms
+/// instead of an `Option` for, one type over.
+enum BoundSpan {
+    /// Walk from `anchor` and report the first uncovered instant before `until`.
+    /// A `None` `until` is D-147's indefinite generation: nothing short of an
+    /// unbroken run into an open interval answers it.
+    Walk {
+        anchor: DateTime<Utc>,
+        until: Option<DateTime<Utc>>,
+    },
+    /// W6's term has **no value** on this key, so the floor cannot be computed
+    /// at all and no interval set can be shown to reach it.
+    Incomputable,
+}
+
+/// One grandfathered generation's coverage, as retirement finds it
+/// (D-04, D-316's residual).
+///
+/// Built by [`crate::infra::retirement`] for **every grandfathered key of the
+/// retiring plan** — one per key, because ADR-0002's cohort axis makes each
+/// generation a key of its own and each carries its own horizon. A key that is
+/// not `existing_grandfathered` has no bound to be judged against and no
+/// instance here.
+#[domain_model]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GenerationCoverage {
+    /// The generation's key. Its `cohort` axis is D-316 clause (3)'s lower
+    /// anchor, and its `price_eligibility` is what selected it.
+    pub scope_key: ScopeKey,
+    /// Every window on this key **as stored**, paired with the id that names it.
+    ///
+    /// The whole set and not the condemned subset: the bound is a question about
+    /// the key's coverage, so the windows retirement is *not* touching are what
+    /// decide whether the ones it is touching can go.
+    pub windows: Vec<(Uuid, WindowInterval)>,
+    /// D-04's horizon, off the key's published row. `None` is D-147's indefinite
+    /// generation, whose coverage no finite end satisfies.
+    pub grandfather_until: Option<DateTime<Utc>>,
+    /// W6's margin on the key's market. `None` when the term has **no value** —
+    /// the market sells recurring and the plan authored no frequency — which is
+    /// not `Some(zero)` and is refused rather than read as no margin.
+    pub margin: Option<TimeDelta>,
+}
+
+impl GenerationCoverage {
+    /// The span this generation is answerable for, as
+    /// [`KeyWindows::first_uncovered_from`]'s two arguments.
+    ///
+    /// `Err` when the margin has no value: the floor cannot be computed at all,
+    /// so no interval set can be *shown* to reach it and the caller keeps every
+    /// window rather than guessing. That is `refuse_horizon_uncovered`'s reading
+    /// of the same `None`, in the direction this surface refuses in — it keeps
+    /// coverage where the window surface refuses the act.
+    fn span(&self, now: DateTime<Utc>) -> BoundSpan {
+        // D-316 clause (3): the cohort, raised by `now`. A generation cannot
+        // strand anybody before it exists, and a void strictly in the past is
+        // repairable by no act at all.
+        let anchor = self
+            .scope_key
+            .cohort()
+            .generation()
+            .map_or(now, |cutover| cutover.max(now));
+        match self.grandfather_until {
+            // D-147: an indefinite generation's coverage must never end, which
+            // `None` spells as the walk's own argument.
+            None => BoundSpan::Walk {
+                anchor,
+                until: None,
+            },
+            Some(horizon) => self
+                .margin
+                .map_or(BoundSpan::Incomputable, |m| BoundSpan::Walk {
+                    anchor,
+                    until: Some(horizon + m),
+                }),
+        }
+    }
+
+    /// The key's interval set, with `cancelled` written onto every id in
+    /// `condemned`.
+    ///
+    /// Sorted, because [`KeyWindows::first_uncovered_from`] walks in
+    /// `effective_from` order and the type's promise is the caller's to keep —
+    /// the same restatement `infra::window`'s `project` makes.
+    fn projected(&self, condemned: &BTreeSet<Uuid>) -> KeyWindows {
+        let mut intervals: Vec<WindowInterval> = self
+            .windows
+            .iter()
+            .map(|(id, interval)| {
+                if condemned.contains(id) {
+                    WindowInterval::new(
+                        interval.effective_from,
+                        interval.effective_to,
+                        WindowState::Cancelled,
+                    )
+                } else {
+                    *interval
+                }
+            })
+            .collect();
+        intervals.sort_by_key(|i| (i.effective_from, i.effective_to));
+        KeyWindows {
+            scope_key: self.scope_key.clone(),
+            intervals,
+        }
+    }
+}
+
+/// Re-keep every condemned window whose cancellation would strand a
+/// grandfathered generation (D-04's `inst-co-bounds`, reached from retirement).
+///
+/// # It keeps rather than refuses, and that is the decision
+///
+/// `infra::window::refuse_horizon_uncovered` answers the same bound with a
+/// **refusal**, because there the act *is* the window mutation and refusing it
+/// leaves the operator holding an act they can re-author. Here the act is the
+/// retirement of a plan, and the cancellations are a **consequence** of it. A
+/// refusal would make a plan carrying a grandfathered generation unretirable for
+/// as long as its horizon runs — years, on a typical grandfathering term — with
+/// no remedy available to the operator at all, since the windows that would
+/// satisfy the bound are the very ones the act wants gone. Keeping costs nothing
+/// that retirement is for: **retirement stops selling, never rating**, and
+/// not-sellable comes from the lifecycle flip rather than from any window. So the
+/// plan retires, sales stop, and the generation keeps the coverage D-04 promised
+/// it — which is D-51's own composition applied to a second protected population.
+///
+/// It also mints **no wire code**, which D-204 clause (2) would refuse: the
+/// outcome is a `kept` window with a reason beside the two `inst-re-cancelflow`
+/// already renders, not a fifth window refusal.
+///
+/// # It keeps only what the cancellation itself would break
+///
+/// Two walks, not one. A generation whose span is **already** broken — a leading
+/// void strictly in the past, which D-316 clause (3) deliberately accepts and
+/// this rule must not start refusing — gains nothing from keeping its windows,
+/// and a rule that kept them would freeze exactly the keys D-316 argued must stay
+/// mutable. So the condemned set is re-kept only when the void opens **after**
+/// the cancellations and did not exist before them.
+///
+/// # The whole key's condemned set moves together
+///
+/// A void is a fact about the key's interval set, not about one window, so
+/// attributing it to a single member and cancelling the rest would be a
+/// minimisation this bound never asked for — and one that can still leave a void,
+/// since two condemned windows may each be load-bearing only in the other's
+/// absence. Per key, all or none.
+pub fn strand_free_disposition(
+    verdicts: &mut [WindowVerdict],
+    generations: &[GenerationCoverage],
+    now: DateTime<Utc>,
+) {
+    for generation in generations {
+        let on_key: BTreeSet<Uuid> = generation.windows.iter().map(|(id, _)| *id).collect();
+        let condemned: BTreeSet<Uuid> = verdicts
+            .iter()
+            .filter(|v| v.is_cancelled() && on_key.contains(&v.window_id))
+            .map(|v| v.window_id)
+            .collect();
+        if condemned.is_empty() {
+            continue;
+        }
+        let BoundSpan::Walk { anchor, until } = generation.span(now) else {
+            // The margin has no value, so nothing can be shown to reach the
+            // floor. Keep, for `refuse_horizon_uncovered`'s reason at full
+            // strength.
+            re_keep(verdicts, &condemned);
+            continue;
+        };
+        let broken_after = generation
+            .projected(&condemned)
+            .first_uncovered_from(anchor, until)
+            .is_some();
+        let broken_before = generation
+            .projected(&BTreeSet::new())
+            .first_uncovered_from(anchor, until)
+            .is_some();
+        if broken_after && !broken_before {
+            re_keep(verdicts, &condemned);
+        }
+    }
+}
+
+/// Flip the named verdicts from cancelled to kept, on this bound's reason.
+fn re_keep(verdicts: &mut [WindowVerdict], condemned: &BTreeSet<Uuid>) {
+    for verdict in verdicts
+        .iter_mut()
+        .filter(|v| condemned.contains(&v.window_id))
+    {
+        verdict.disposition = WindowDisposition::Kept(KeptReason::GrandfatheredCoverageBound);
+    }
 }
 
 /// A reference to the retiring plan that **blocks** the retirement

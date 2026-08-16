@@ -146,14 +146,29 @@
 //!   §4.3, and `infra::repricing` reaches these windows only through that same
 //!   door. `infra::jobs::window_activation` moves a state token and no instant, and
 //!   `KeyWindows::coverage_end` reads every non-cancelled state alike, so no
-//!   coverage it judges changes. `infra::retirement` is the one with a real
-//!   argument rather than a structural one: it cancels only not-yet-active windows
-//!   on keys D-51 reports no in-flight subscribers for, and that lane is
-//!   fail-closed today so the loop does not run — the day the D-79 lane lands, a
-//!   retirement cancelling a grandfathered generation's sole scheduled window
-//!   strands exactly what this bound exists to protect, and nothing here would
-//!   refuse it. Reported rather than built: the guard needs the plan shape and the
-//!   act's key set, neither of which is this entry's to add.
+//!   coverage it judges changes.
+//!
+//!   **`infra::retirement` was the fourth, and it is now checked rather than
+//!   argued — the argument that stood here did not survive being written down.**
+//!   This entry said the guard *"needs the plan shape and the act's key set,
+//!   neither of which is this entry's to add"*, and D-316's residual repeated it
+//!   in the register as a claim about **the retirement path** rather than about
+//!   this function. The first half is true of `window_repo` and the second half is
+//!   false of `infra::retirement`: [`list_for_plan`] resolves every window's
+//!   `ScopeKey` off `pricing_price` on every read, which *is* the act's key set,
+//!   and `infra::retirement::retire_in` already assembled the `PlanShape` for the
+//!   approval pin eleven lines below the composition. So the operand was never
+//!   missing — it was missing **here**, one layer down, and the conclusion drawn
+//!   from that was a claim about a layer this entry cannot see. The guard is
+//!   `domain::retirement::strand_free_disposition`, and it **keeps** the window
+//!   rather than refusing the act, because a refusal would make a plan carrying a
+//!   generation unretirable for as long as its horizon runs.
+//!
+//!   What is still true, and is the reason this roster exists: a retirement's
+//!   cancellations reach [`transition`] directly and pass no rule in
+//!   `infra::window`. The bound is now enforced on both sides of that split by one
+//!   walk — [`crate::domain::window::KeyWindows::first_uncovered_from`] — rather
+//!   than by two copies of it.
 //!
 //!   Beware the name: W6 is *called* "the longest billing cycle sold on the key" and
 //!   is *defined* per **plan** — the longest `frequency` among the plan's recurring

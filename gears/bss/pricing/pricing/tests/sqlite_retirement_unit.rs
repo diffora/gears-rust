@@ -412,3 +412,256 @@ async fn a_kept_window_is_left_alone_and_announces_nothing() {
         "and nothing is announced about it"
     );
 }
+
+// ---------------------------------------------------------------------------
+// D-04's `inst-co-bounds`, reached from retirement (D-316's residual).
+//
+// `infra::window::refuse_horizon_uncovered` binds a grandfathered generation's
+// coverage across `[max(cohort, now), grandfatherUntil + the margin)` on the
+// three acts `mutate_in` performs. Retirement's cancellations reach the window
+// store through `window_repo::transition` and pass none of them, and the key a
+// retirement cancels on is by construction one the presence lane reported
+// **unoccupied** — which is exactly the generation D-04 has spoken for and D-51
+// cannot see.
+//
+// These cases drive `compose_preview_with` against a **resolved** map, because
+// the orchestrator can hand it only `fail_closed` and a rule that fires only once
+// a lane nobody has built starts answering is a rule no suite driving the
+// orchestrator can arm. That is `cancel_windows_in`'s posture, one function up.
+// ---------------------------------------------------------------------------
+
+/// The generation's cutover instant — its `cohort` axis, and the first instant it
+/// can strand anybody.
+///
+/// `common`'s coverage start, so the fixture's generation is one whose window a
+/// cutover would have composed **at** the cohort (`algo-cutover` step 3, D-204
+/// clause (4)) rather than one already stranded before this file's `now()`.
+fn generation_cohort() -> DateTime<Utc> {
+    Utc.with_ymd_and_hms(2099, 8, 4, 0, 0, 0).unwrap()
+}
+
+/// The horizon the fixture's generation is grandfathered until.
+fn generation_horizon() -> DateTime<Utc> {
+    Utc.with_ymd_and_hms(2099, 10, 1, 0, 0, 0).unwrap()
+}
+
+/// `generation_horizon()` + W6's margin.
+///
+/// The seeded plan is `monthly` and W6 rounds a month **up** to its calendar
+/// maximum — 31 days — because a margin rounded down leaves the tail of a bound
+/// period uncovered, which is the hole D-04 exists to close. Spelled as the
+/// arithmetic so the case says what the floor *is*.
+fn generation_floor() -> DateTime<Utc> {
+    generation_horizon() + chrono::TimeDelta::days(31)
+}
+
+/// A published plan carrying an ordinary row **and** a grandfathered generation
+/// on its own cohort key, the generation's window running `[from, to)`.
+///
+/// Both rows carry a window, because the two are this suite's subject and its
+/// control: the ordinary key has no horizon and must stay cancellable, the
+/// generation has one and is what the bound is about.
+async fn plan_with_a_generation(
+    h: &Harness,
+    from: DateTime<Utc>,
+    to: Option<DateTime<Utc>>,
+) -> (PlanId, Uuid, Uuid) {
+    use bss_pricing::domain::scope_key::{Cohort, PriceEligibility};
+
+    let plan_uuid = Uuid::now_v7();
+    let seeded = rest_support::seed_publishable_plan(h, plan_uuid).await;
+    let generation = rest_support::seed_price_keyed_with_horizon(
+        h,
+        plan_uuid,
+        "us",
+        PriceEligibility::ExistingGrandfathered,
+        Cohort::Generation(generation_cohort()),
+        Some(generation_horizon()),
+    )
+    .await;
+    h.publish(plan_uuid, seeded.revision).await;
+    h.publish_price(plan_uuid, seeded.price_id).await;
+    h.publish_price(plan_uuid, generation.price_id).await;
+    schedule_window(h, generation.price_id, from, to).await;
+    (PlanId::new(plan_uuid), seeded.price_id, generation.price_id)
+}
+
+/// Put one window on a price row, straight through the store.
+///
+/// **Through `window_repo::schedule` and not the window service**, which is what
+/// makes the already-stranded control below constructible at all: the service is
+/// where `refuse_horizon_uncovered` lives, and it refuses exactly the interval
+/// that control needs to seed. The store is also where a *retirement* meets the
+/// window plane, so the fixture and the subject reach it by the same door.
+async fn schedule_window(
+    h: &Harness,
+    price_id: Uuid,
+    effective_from: DateTime<Utc>,
+    effective_to: Option<DateTime<Utc>>,
+) -> Uuid {
+    use bss_pricing::infra::storage::repo::window_repo::{NewWindow, schedule};
+    let conn = h.db.conn().expect("conn");
+    let window_id = Uuid::now_v7();
+    schedule(
+        &conn,
+        &h.scope(),
+        NewWindow {
+            window_id,
+            tenant_id: h.tenant,
+            price_id,
+            effective_from,
+            effective_to,
+            reason_code: "fixtureGeneration".to_owned(),
+        },
+        stamp_of(SUBMITTER),
+    )
+    .await
+    .expect("seed the generation's window");
+    window_id
+}
+
+/// Compose the retirement judgement against a lane that answered **nobody is on
+/// any of these rows** — the state D-182 keeps this system out of, and the one
+/// the D-79 client will produce on its first green day.
+async fn disposition_with_an_empty_lane(h: &Harness, plan_id: PlanId) -> Vec<WindowVerdict> {
+    let conn = h.db.conn().expect("conn");
+    bss_pricing::infra::retirement::compose_preview_with(
+        &conn,
+        &h.scope(),
+        h.tenant,
+        plan_id,
+        bss_pricing::domain::retirement::PresenceMap::resolved([]),
+        now(),
+    )
+    .await
+    .expect("compose the retirement preview")
+    .windows
+}
+
+/// **A grandfathered generation's sole scheduled window is kept, however empty
+/// the presence lane says its key is.**
+///
+/// The defect D-316 recorded and did not build: the lane is asked per **price
+/// id** and reports who is bound to a row *now*, while D-04's bound is about what
+/// the generation must still cover — `[max(cohort, now), grandfatherUntil + the
+/// margin)`. A generation reading unoccupied and holding the only window across
+/// that span is precisely the case D-51's predicate waves through, and cancelling
+/// it leaves the generation with no window at all: every bound period that
+/// started before the horizon is unrateable from the cancellation onward, which
+/// is D-04's stranding verbatim.
+///
+/// It is a **keep** and not a refusal. Refusing would make a plan carrying a
+/// generation unretirable for as long as its horizon runs, with no remedy the
+/// operator can reach; keeping costs retirement nothing it is for, since
+/// not-sellable comes from the lifecycle flip and never from a window.
+#[tokio::test]
+async fn a_generations_sole_window_is_kept_against_an_empty_presence_lane() {
+    let h = Harness::new().await;
+    let (plan_id, _ordinary, generation_price) =
+        plan_with_a_generation(&h, generation_cohort(), Some(generation_floor())).await;
+    let generation_window = disposition_with_an_empty_lane(&h, plan_id)
+        .await
+        .into_iter()
+        .find(|v| v.price_id == generation_price)
+        .expect("the generation's window is in the preview");
+
+    assert_eq!(
+        generation_window.disposition,
+        WindowDisposition::Kept(KeptReason::GrandfatheredCoverageBound),
+        "cancelling the generation's only window strands what D-04 protects, and the \
+         preview has to say so under its own reason rather than under D-51's"
+    );
+}
+
+/// **The positive control: an ordinary key's window still cancels.**
+///
+/// Without it the case above is satisfied by a guard that kept every window it
+/// was shown — which is what retirement already does under D-182's fail-closed
+/// map, and which would make the D-79 lane's arrival change nothing at all. The
+/// ordinary row of the *same plan* and the *same preview* carries no horizon, so
+/// it has no bound to be kept by.
+#[tokio::test]
+async fn an_ordinary_keys_window_still_cancels_on_an_empty_lane() {
+    let h = Harness::new().await;
+    let (plan_id, ordinary_price, _generation) =
+        plan_with_a_generation(&h, generation_cohort(), Some(generation_floor())).await;
+
+    let ordinary = disposition_with_an_empty_lane(&h, plan_id)
+        .await
+        .into_iter()
+        .find(|v| v.price_id == ordinary_price)
+        .expect("the ordinary row's window is in the preview");
+
+    assert_eq!(
+        ordinary.disposition,
+        WindowDisposition::Cancelled,
+        "a key with no grandfathering horizon is D-51's ordinary case and cancels"
+    );
+}
+
+/// **The second control: a generation whose span is *already* broken stays
+/// cancellable.**
+///
+/// D-316 clause (3) accepts a void lying strictly in the past — no interval can
+/// be authored backwards over it, and a rule anchored so as to refuse it would
+/// freeze the key against every act that repairs its future. The retirement guard
+/// inherits that reading and it is what the two walks buy: the condemned set is
+/// re-kept only when the void opens **because of** the cancellation. Here the
+/// generation's window opens ten days past its own floor, so the span is
+/// uncovered before retirement touches anything and keeping the window would buy
+/// the stranded population nothing while making the key unretirable forever.
+///
+/// A one-walk guard — "is the span uncovered afterwards" — passes the case above
+/// and reddens here, which is the whole reason this control exists.
+#[tokio::test]
+async fn an_already_stranded_generation_does_not_become_unretirable() {
+    let h = Harness::new().await;
+    let (plan_id, _ordinary, generation_price) =
+        plan_with_a_generation(&h, generation_floor() + chrono::TimeDelta::days(10), None).await;
+
+    let generation_window = disposition_with_an_empty_lane(&h, plan_id)
+        .await
+        .into_iter()
+        .find(|v| v.price_id == generation_price)
+        .expect("the generation's window is in the preview");
+
+    assert_eq!(
+        generation_window.disposition,
+        WindowDisposition::Cancelled,
+        "a generation already uncovered across its own span gains nothing from the \
+         window being kept, and D-316 clause (3) is explicit that such a key must \
+         stay mutable"
+    );
+}
+
+/// **And the fail-closed map still keeps everything, which is the world as built.**
+///
+/// The guard runs after the presence judgement and only ever moves a verdict back
+/// to `kept`, so D-182's posture is untouched: with no lane every key reads
+/// occupied and every window is kept **under D-51's reason**, not under this one.
+/// Without this case a guard that re-labelled every kept window would pass the
+/// three above and silently rewrite what the confirm screen tells an operator on
+/// every retirement this system can actually perform.
+#[tokio::test]
+async fn the_absent_lane_still_keeps_every_window_under_its_own_reason() {
+    let h = Harness::new().await;
+    let (plan_id, _ordinary, _generation) =
+        plan_with_a_generation(&h, generation_cohort(), Some(generation_floor())).await;
+
+    let preview = service(&h)
+        .preview(&h.scope(), h.tenant, plan_id)
+        .await
+        .expect("the dry-run");
+
+    assert!(
+        !preview.windows.is_empty(),
+        "the plan has windows to decide about"
+    );
+    for verdict in &preview.windows {
+        assert_eq!(
+            verdict.disposition,
+            WindowDisposition::Kept(KeptReason::PresenceUnresolved),
+            "D-182's absent lane is what keeps these, and the screen must keep saying so"
+        );
+    }
+}

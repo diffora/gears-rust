@@ -102,13 +102,24 @@ pub struct WindowVerdictView {
     pub price_id: Uuid,
     /// `cancelled` | `kept`.
     pub disposition: String,
-    /// Why it is kept: `in_flight_subscribers` | `presence_unresolved`. `null`
-    /// on a cancelled window.
+    /// Why it is kept: `in_flight_subscribers` | `presence_unresolved` |
+    /// `grandfathered_coverage_bound`. `null` on a cancelled window.
     ///
     /// **The field `inst-re-cancelflow` is about.** The confirm screen has to
     /// label kept windows distinctly from cancelled ones, and an operator shown a
     /// bare count cannot tell a plan whose coverage is being preserved from one
     /// whose coverage is being torn down.
+    ///
+    /// The third token is D-04's bound rather than D-51's predicate, and it is a
+    /// **distinct** token for the same reason the first two are distinct from each
+    /// other: "kept because somebody is on it", "kept because nobody could be
+    /// asked" and "kept because this generation is grandfathered until a date the
+    /// cancellation would not cover through" are three different facts, and an
+    /// operator deciding whether to chase the difference needs the one that
+    /// applies. It is not an error code — no refusal is rendered on this path —
+    /// so D-204 clause (2)'s bar on this crate declaring wire facts the design set
+    /// does not is untouched: §5 declares codes, and this is a reason label on a
+    /// kept window, the vocabulary of which `inst-re-cancelflow` leaves open.
     pub kept_reason: Option<String>,
 }
 
@@ -167,6 +178,9 @@ impl RetirementPreviewView {
                         }
                         WindowDisposition::Kept(KeptReason::PresenceUnresolved) => {
                             Some("presence_unresolved".to_owned())
+                        }
+                        WindowDisposition::Kept(KeptReason::GrandfatheredCoverageBound) => {
+                            Some("grandfathered_coverage_bound".to_owned())
                         }
                     },
                 })

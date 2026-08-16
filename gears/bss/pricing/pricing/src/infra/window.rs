@@ -1691,7 +1691,12 @@ fn refuse_trailing_void(
 /// `infra::cutover`, `infra::supersession`, `infra::retirement` and the activation
 /// sweep all write through `window_repo` without passing here;
 /// [`window_repo`](crate::infra::storage::repo::window_repo)'s module roster names
-/// each and says which are argued shut and which is dormant rather than covered.
+/// each and says which are argued shut and which carries a bound of its own.
+/// Retirement is the second kind: its cancellations are judged by
+/// [`strand_free_disposition`](crate::domain::retirement::strand_free_disposition),
+/// which asks this same span through the same walk and answers by **keeping** the
+/// window rather than refusing the act — the two surfaces differ in what the act
+/// *is*, not in what the bound says.
 ///
 /// # The refusal reuses `WINDOW_TRAILING_VOID`, and that is a reading
 ///
@@ -1781,7 +1786,7 @@ fn refuse_horizon_uncovered(
         // own argument: nothing short of an unbroken run to an open interval
         // answers it, which subsumes the `OpenEnded` test this used to make and
         // additionally sees the interval that opens late.
-        let Some(uncovered_at) = first_uncovered_from(after, anchor, None) else {
+        let Some(uncovered_at) = after.first_uncovered_from(anchor, None) else {
             return Ok(());
         };
         return Err(DomainError::WindowTrailingVoid(format!(
@@ -1818,7 +1823,7 @@ fn refuse_horizon_uncovered(
         CoverageEnd::Ends(at) => at >= floor,
         CoverageEnd::Uncovered => false,
     };
-    let uncovered_at = first_uncovered_from(after, anchor, Some(floor));
+    let uncovered_at = after.first_uncovered_from(anchor, Some(floor));
     if reaches_floor && uncovered_at.is_none() {
         return Ok(());
     }
@@ -1838,55 +1843,6 @@ fn refuse_horizon_uncovered(
             |at| at.to_rfc3339()
         )
     )))
-}
-
-/// The first instant from `from` onward that no window of `after` covers, when
-/// there is one before `until`.
-///
-/// One walk for the three shapes a coverage bound can be broken by — an interval
-/// that opens **late**, a hole **between** two of them, and a run that **stops**
-/// short — because each of them is the same fact, "here is an instant nothing
-/// covers", and a rule that asked them as three questions is how the leading one
-/// went unasked for a whole landing.
-///
-/// `until` is exclusive and `None` means *never*: the caller that passes it is
-/// asking for coverage that runs on forever, and only reaching an open-ended
-/// interval with no break on the way answers that.
-///
-/// **`cancelled` is the only state filtered**, matching
-/// [`KeyWindows::coverage_end`] exactly rather than [`coverage::KeyCoverage`]'s
-/// `COVERING_STATES`. A cancelled window is a schedule that never happened;
-/// `expired` and the stale `scheduled` of a window the activation sweep has not
-/// reached yet both describe real coverage, and filtering on the token would make
-/// this answer depend on when the sweep last ran (D-99).
-///
-/// It relies on `after.intervals` being ordered by `effective_from` — the type's
-/// promise, restated by [`project`], which sorts the set it builds.
-fn first_uncovered_from(
-    after: &KeyWindows,
-    from: DateTime<Utc>,
-    until: Option<DateTime<Utc>>,
-) -> Option<DateTime<Utc>> {
-    let mut covered_through = from;
-    for interval in after
-        .intervals
-        .iter()
-        .filter(|i| i.state != WindowState::Cancelled)
-    {
-        if interval.effective_from > covered_through {
-            // A void opens here. Whether it matters is `until`'s question, asked
-            // once below for this and for the short run alike.
-            break;
-        }
-        // `?` reads as *"covered forever from here"*: an open-ended interval
-        // leaves no instant after `covered_through` uncovered, whatever `until`
-        // asks for, so the walk's answer is `None` and it is answered now.
-        covered_through = covered_through.max(interval.effective_to?);
-    }
-    match until {
-        Some(end) if covered_through >= end => None,
-        _ => Some(covered_through),
-    }
 }
 
 /// Read every fact the validation needs, inside the writing transaction.

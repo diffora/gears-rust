@@ -833,6 +833,68 @@ impl KeyWindows {
             .filter(|i| i.state != WindowState::Cancelled)
             .any(|i| i.covers(at))
     }
+
+    /// The first instant from `from` onward that no interval of this key covers,
+    /// when there is one before `until`.
+    ///
+    /// One walk for the three shapes a coverage bound can be broken by — an
+    /// interval that opens **late**, a hole **between** two of them, and a run
+    /// that **stops** short — because each of them is the same fact, "here is an
+    /// instant nothing covers", and a rule that asked them as three questions is
+    /// how the leading one went unasked for a whole landing (D-316 clause (1)).
+    ///
+    /// `until` is exclusive and `None` means *never*: the caller that passes it
+    /// is asking for coverage that runs on forever, and only reaching an
+    /// open-ended interval with no break on the way answers that.
+    ///
+    /// **`cancelled` is the only state filtered**, matching [`Self::coverage_end`]
+    /// exactly rather than [`coverage::KeyCoverage`](crate::domain::coverage::KeyCoverage)'s
+    /// `COVERING_STATES`. A cancelled window is a schedule that never happened;
+    /// `expired` and the stale `scheduled` of a window the activation sweep has
+    /// not reached yet both describe real coverage, and filtering on the token
+    /// would make this answer depend on when the sweep last ran (D-99).
+    ///
+    /// It relies on `intervals` being ordered by `effective_from` — the type's
+    /// own promise, restated by every producer that builds a set by hand.
+    ///
+    /// # It lives here, and it used to be private to `infra::window`
+    ///
+    /// D-04's bound has **two** enforcement sites since the retirement guard
+    /// landed — `infra::window`'s `refuse_horizon_uncovered`, which judges what a
+    /// window act *produces*, and `domain::retirement`'s
+    /// [`strand_free_disposition`](crate::domain::retirement::strand_free_disposition),
+    /// which judges what a retirement's cancellations would *leave*. A second
+    /// copy of this walk would be a second answer to one money bound, which is
+    /// the defect class three copies of a rate conversion already cost this
+    /// crate. So it is one function on the type it is a fact about.
+    #[must_use]
+    pub fn first_uncovered_from(
+        &self,
+        from: DateTime<Utc>,
+        until: Option<DateTime<Utc>>,
+    ) -> Option<DateTime<Utc>> {
+        let mut covered_through = from;
+        for interval in self
+            .intervals
+            .iter()
+            .filter(|i| i.state != WindowState::Cancelled)
+        {
+            if interval.effective_from > covered_through {
+                // A void opens here. Whether it matters is `until`'s question,
+                // asked once below for this and for the short run alike.
+                break;
+            }
+            // `?` reads as *"covered forever from here"*: an open-ended interval
+            // leaves no instant after `covered_through` uncovered, whatever
+            // `until` asks for, so the walk's answer is `None` and it is
+            // answered now.
+            covered_through = covered_through.max(interval.effective_to?);
+        }
+        match until {
+            Some(end) if covered_through >= end => None,
+            _ => Some(covered_through),
+        }
+    }
 }
 
 /// Where a canonical scope key's coverage stops.

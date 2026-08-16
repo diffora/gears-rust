@@ -57,6 +57,7 @@ use toolkit_security::SecurityContext;
 use uuid::Uuid;
 
 use crate::domain::audit::{AuditAction, AuditStamp, AuditSubjectKind};
+use crate::domain::coverage;
 use crate::domain::error::DomainError;
 use crate::domain::events::CatalogEvent;
 use crate::domain::lifecycle::LifecycleState;
@@ -65,11 +66,11 @@ use crate::domain::materiality::{self, ChangeSet};
 use crate::domain::ports::{CatalogVersionRegistryV1, registry_failure};
 use crate::domain::read_model::SubjectRef;
 use crate::domain::retirement::{
-    BlockingReferenceKind, PlanReference, PresenceMap, ReferenceReport, ScheduledWindow,
-    WindowVerdict, dispose_windows,
+    BlockingReferenceKind, GenerationCoverage, PlanReference, PresenceMap, ReferenceReport,
+    ScheduledWindow, WindowVerdict, dispose_windows, strand_free_disposition,
 };
-use crate::domain::scope_key::PlanId;
-use crate::domain::window::WindowState;
+use crate::domain::scope_key::{PlanId, PriceEligibility, ScopeKey};
+use crate::domain::window::{WindowInterval, WindowState};
 use crate::infra::approval::retirement_unit_ref;
 use crate::infra::publish::assemble_from;
 use crate::infra::storage::RepoError;
@@ -359,7 +360,11 @@ impl RetirementService {
         let conn = self.db.conn().map_err(|e| {
             DomainError::Internal(format!("bss-pricing: retirement preview connection: {e}"))
         })?;
-        compose_preview(&conn, scope, tenant_id, plan_id).await
+        // The dry-run's own clock. The commit stamps its instant and passes it
+        // down; a read that writes nothing has no stamp to take one from, and
+        // D-04's anchor is `max(cohort, now)` — so the screen answers about the
+        // instant the operator is looking at it.
+        compose_preview(&conn, scope, tenant_id, plan_id, chrono::Utc::now()).await
     }
 
     /// The confirm (`inst-rt-cancel`, `inst-rt-event`, `inst-rt-return`).
@@ -422,6 +427,49 @@ async fn compose_preview(
     scope: &AccessScope,
     tenant_id: Uuid,
     plan_id: PlanId,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Result<RetirementPreview, DomainError> {
+    // **One call, a presence map** (D-131) — and in this system the call has no
+    // callee. D-182 makes the absent D-79 lane D-131's fail-closed case, so every
+    // key reads occupied and every window is kept. This is the whole of the
+    // lane's integration: when a client lands it produces a
+    // `PresenceMap::resolved` here, and what it hands to [`compose_preview_with`]
+    // is the only thing that changes.
+    compose_preview_with(
+        runner,
+        scope,
+        tenant_id,
+        plan_id,
+        PresenceMap::fail_closed(),
+        now,
+    )
+    .await
+}
+
+/// [`compose_preview`] over a presence map the caller supplies.
+///
+/// # It is `pub`, and it is [`cancel_windows_in`]'s posture rather than a
+/// testability leak
+///
+/// The D-79 lane has no client, so [`compose_preview`] can hand this exactly one
+/// value — [`PresenceMap::fail_closed`] — under which every window is kept and
+/// the condemned list is empty. Every rule that decides what happens to a
+/// **cancelled** window is therefore unreachable from the orchestrator, and a
+/// rule no suite can arm is how the missing `PriceWindowCancelled` event stayed
+/// green for a slice and how D-04's bound went unenforced on this surface for a
+/// day. So the judgement is addressable on its own, `sqlite_retirement_unit` arms
+/// it against a resolved map, and the day the lane lands its client passes the
+/// map it read instead of a constant.
+///
+/// # Errors
+/// [`compose_preview`]'s, exactly.
+pub async fn compose_preview_with(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    plan_id: PlanId,
+    presence: PresenceMap,
+    now: chrono::DateTime<chrono::Utc>,
 ) -> Result<RetirementPreview, DomainError> {
     let current = plan_repo::load_current(runner, scope, tenant_id, plan_id)
         .await
@@ -447,28 +495,45 @@ async fn compose_preview(
         .await
         .map_err(|e| repo_failure(&e))?;
 
+    // The plane is read **once** and read whole: the disposition needs the
+    // not-yet-active subset, and D-04's bound needs every window of a
+    // grandfathered key whatever state it stands in — a generation's coverage is
+    // carried by its active windows as much as by its scheduled ones, and a rule
+    // that saw only the candidates would read a covered key as uncovered and keep
+    // windows nothing was going to strand.
+    let plane = window_repo::list_for_plan(runner, scope, tenant_id, plan_id)
+        .await
+        .map_err(|e| repo_failure(&e))?;
+
     // Only **not-yet-active** windows are candidates. An active window runs to
     // its natural end for the in-flight subscribers this slice preserves
     // coverage for, so it is not a member of the input set at all.
-    let scheduled: Vec<ScheduledWindow> =
-        window_repo::list_for_plan(runner, scope, tenant_id, plan_id)
-            .await
-            .map_err(|e| repo_failure(&e))?
-            .into_iter()
-            .filter(|w| w.state == WindowState::Scheduled)
-            .map(|w| ScheduledWindow {
-                window_id: w.window_id,
-                price_id: w.price_id,
-            })
-            .collect();
+    let scheduled: Vec<ScheduledWindow> = plane
+        .iter()
+        .filter(|w| w.state == WindowState::Scheduled)
+        .map(|w| ScheduledWindow {
+            window_id: w.window_id,
+            price_id: w.price_id,
+        })
+        .collect();
 
-    // **One call, a presence map** (D-131) — and in this system the call has no
-    // callee. D-182 makes the absent D-79 lane D-131's fail-closed case, so every
-    // key reads occupied and every window is kept. This is the whole of the
-    // lane's integration: when a client lands it produces a
-    // `PresenceMap::resolved` here and nothing below changes.
-    let presence = PresenceMap::fail_closed();
-    let windows = dispose_windows(&scheduled, &presence);
+    let mut windows = dispose_windows(&scheduled, &presence);
+
+    // D-04's `inst-co-bounds`, asked of what the cancellations would **leave**
+    // (D-316's residual). It runs after the presence judgement and only ever
+    // moves a verdict back to `kept`, so nothing the lane decides to keep is
+    // disturbed and nothing it decides to cancel escapes the bound.
+    let generations = generation_coverage(
+        runner,
+        scope,
+        tenant_id,
+        plan_id,
+        current.clone(),
+        &plane,
+        now,
+    )
+    .await?;
+    strand_free_disposition(&mut windows, &generations, now);
 
     Ok(RetirementPreview {
         plan_id,
@@ -477,6 +542,98 @@ async fn compose_preview(
         references,
         presence_unresolved: presence.is_fail_closed(),
     })
+}
+
+/// Every grandfathered generation of the plan, with the coverage and the two
+/// bound terms D-04 judges it by.
+///
+/// # The operands were here all along, and D-316 recorded otherwise
+///
+/// That entry's residual says the guard *"needs the plan shape and the act's key
+/// set, neither of which the retirement path carries"*, and `window_repo`'s
+/// roster says the same one layer down. The roster's version is **true about
+/// `window_repo`** — that function holds one window and its key — and the
+/// conclusion drawn from it does not survive one layer up: every operand
+/// `refuse_horizon_uncovered` reads is already assembled on this path.
+/// [`window_repo::list_for_plan`] resolves each window's `ScopeKey` off
+/// `pricing_price` on every read, which **is** the act's key set;
+/// [`assemble_from`] is called by [`retire_in`] eleven lines below the composition
+/// for the approval pin, which **is** the plan shape; and W6's margin is
+/// [`coverage::longest_cycle_sold`] over that shape. So the guard cost one
+/// additional read — the published price rows, for their horizons — and moved
+/// [`assemble_from`] earlier rather than adding a second call of it.
+async fn generation_coverage(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    plan_id: PlanId,
+    current: crate::domain::plan::PlanRevision,
+    plane: &[window_repo::WindowRecord],
+    now: chrono::DateTime<chrono::Utc>,
+) -> Result<Vec<GenerationCoverage>, DomainError> {
+    // The **grandfathered** keys of the plane, in a stable order. Every other key
+    // carries no horizon and nothing here to judge.
+    let mut keys: Vec<ScopeKey> = Vec::new();
+    for record in plane {
+        if record.scope_key.price_eligibility() == PriceEligibility::ExistingGrandfathered
+            && !keys.contains(&record.scope_key)
+        {
+            keys.push(record.scope_key.clone());
+        }
+    }
+    if keys.is_empty() {
+        // The common case by a wide margin, and it costs neither of the two reads
+        // below. A plan with no generation cannot strand one.
+        return Ok(Vec::new());
+    }
+
+    let shape = assemble_from(runner, scope, tenant_id, plan_id, current, now).await?;
+    // The **published** rows, because the horizon is a published fact: a draft row
+    // carries no generation any subscriber is bound to, which is the same carve-out
+    // `refuse_horizon_uncovered` makes when it reads `planned.plan.published`.
+    let published = price_repo::load_for_plan(
+        runner,
+        scope,
+        tenant_id,
+        plan_id,
+        &[LifecycleState::Published],
+    )
+    .await
+    .map_err(|e| repo_failure(&e))?;
+
+    Ok(keys
+        .into_iter()
+        .filter_map(|key| {
+            // **A key with no published row is skipped, and the `find` is not a
+            // lookup that may fail** — it is the carve-out itself, and collapsing
+            // it into `and_then` would be a bug with a money consequence: a
+            // grandfathered key carrying only a draft row would render
+            // `grandfather_until: None`, which the domain reads as D-147's
+            // **indefinite** generation and answers with "coverage must never
+            // end". That is the strictest arm of the bound applied to a key that
+            // has no bound at all. `refuse_horizon_uncovered` makes the same
+            // carve-out one surface over, by returning `Ok(())` when its `find`
+            // misses.
+            let row = published.iter().find(|row| row.scope_key == key)?;
+            let windows = plane
+                .iter()
+                .filter(|w| w.scope_key == key)
+                .map(|w| {
+                    (
+                        w.window_id,
+                        WindowInterval::new(w.effective_from, w.effective_to, w.state),
+                    )
+                })
+                .collect();
+            let margin = coverage::longest_cycle_sold(&shape, key.currency(), key.region());
+            Some(GenerationCoverage {
+                scope_key: key,
+                windows,
+                grandfather_until: row.grandfather_until,
+                margin,
+            })
+        })
+        .collect())
 }
 
 /// One retirement, composed and committed or composed and submitted, in the
@@ -542,7 +699,7 @@ pub async fn retire_in(
     let now = stamp.recorded_at;
 
     // 1. and 2.
-    let preview = compose_preview(txn, scope, tenant_id, plan_id).await?;
+    let preview = compose_preview(txn, scope, tenant_id, plan_id, now).await?;
     preview.references.ensure_retirable(plan_id.get())?;
     let revision = preview.revision;
 
