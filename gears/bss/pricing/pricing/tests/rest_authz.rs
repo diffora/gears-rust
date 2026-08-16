@@ -521,6 +521,15 @@ fn config_routes() -> Vec<Route> {
         // pair the taxonomy `PUT` above asks for — `dod-customer-group`'s MUST that
         // every committed membership mutation is its own publish unit through the
         // Foundation engine (D-06). No new authz vocabulary.
+        // D-322's read. `customer_group × read`, the pair its taxonomy GET
+        // already uses — a membership list is the same resource read.
+        Route {
+            method: "GET",
+            path: CUSTOMER_GROUP_MEMBERS,
+            resource_type: labels::CUSTOMER_GROUP,
+            action: actions::READ,
+            mutating: false,
+        },
         Route {
             method: "POST",
             path: CUSTOMER_GROUP_MEMBERS,

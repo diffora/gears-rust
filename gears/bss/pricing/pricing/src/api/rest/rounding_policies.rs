@@ -93,6 +93,17 @@ pub struct RoundingPolicyValueView {
 #[derive(Debug, Clone)]
 #[toolkit_macros::api_dto(response)]
 pub struct RoundingPoliciesView {
+    /// What this document is a representation **of**.
+    ///
+    /// A constant, and it exists for a client rather than for a reader: a
+    /// response carries no URL, so a client that must pair this body with the
+    /// `ETag` header — the only source of the `PUT`'s precondition — has nothing
+    /// else to attribute it by. `taxonomies::TaxonomyView` already discriminates
+    /// on `class`; these two documents were structurally identical (`values`
+    /// alone) and a client reading several config documents concurrently could
+    /// pair either one's tag with the other's body, which is a wrong
+    /// precondition rather than a failed one.
+    pub resource: String,
     /// Every declared value, `active` and `retired` alike, ordered by value.
     ///
     /// Retirements are **included** so the round trip is honest: an operator who
@@ -287,6 +298,7 @@ fn render(entries: &[TaxonomyEntry]) -> Response {
             preconditions::policy_etag(&taxonomy_repo::rounding_policy_tag_of(entries)),
         )],
         Json(RoundingPoliciesView {
+            resource: "rounding-policies".to_owned(),
             values: entries
                 .iter()
                 .map(|entry| RoundingPolicyValueView {

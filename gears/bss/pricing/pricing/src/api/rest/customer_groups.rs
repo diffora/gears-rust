@@ -138,11 +138,34 @@ pub struct CustomerGroupValueView {
 #[derive(Debug, Clone)]
 #[toolkit_macros::api_dto(response)]
 pub struct CustomerGroupTaxonomyView {
+    /// What this document is a representation **of**.
+    ///
+    /// A constant, and it exists for a client rather than for a reader: a
+    /// response carries no URL, so a client that must pair this body with the
+    /// `ETag` header — the only source of the `PUT`'s precondition — has nothing
+    /// else to attribute it by. `taxonomies::TaxonomyView` already discriminates
+    /// on `class`; these two documents were structurally identical (`values`
+    /// alone) and a client reading several config documents concurrently could
+    /// pair either one's tag with the other's body, which is a wrong
+    /// precondition rather than a failed one.
+    pub resource: String,
     /// Every declared value, `active` and `retired` alike, ordered by value.
     /// Retirements are **included**, for `taxonomies::TaxonomyView`'s reason: an
     /// operator who reads, edits and writes back has to be able to see the
     /// value they are about to re-activate.
     pub values: Vec<CustomerGroupValueView>,
+}
+
+/// A group's memberships, whole (D-322).
+#[derive(Debug, Clone)]
+#[toolkit_macros::api_dto(response)]
+pub struct MembershipListView {
+    /// The group these belong to — echoed, so a client reading several groups
+    /// can attribute a response that carries no URL.
+    pub group_value: String,
+    /// Every membership recorded in the group, **ended ones included**, oldest
+    /// interval first.
+    pub memberships: Vec<MembershipView>,
 }
 
 /// The body of a `PUT`: the complete value set.
@@ -356,6 +379,7 @@ fn render(entries: &[TaxonomyEntry]) -> Response {
     (
         [(ETAG, tag)],
         Json(CustomerGroupTaxonomyView {
+            resource: "customer-groups".to_owned(),
             values: entries.iter().map(view_of).collect(),
         }),
     )
@@ -675,6 +699,36 @@ const MOVE_MEMBER_OPERATION: &str = "bss_pricing.move_customer_group_member";
 ///
 /// On [`MembershipState`], not [`AuthoringState`] — see the section banner.
 pub fn governance_router(state: Arc<MembershipState>, openapi: &dyn OpenApiRegistry) -> Router {
+    let router = OperationBuilder::get("/bss-pricing/v1/customer-groups/{group}/members")
+        .operation_id("bss_pricing.list_customer_group_members")
+        .summary("Read a customer group's memberships")
+        .description(
+            "Every membership recorded in the group, oldest interval first. **Ended memberships \
+             are included**, and that is the point rather than an oversight: this slice names an \
+             auditor who reads membership history, membership is effective-dated, and a list of \
+             only the currently-active intervals answers neither \"who is in this group\" nor \
+             \"who has been\". A reader wanting the first filters on `effective_to`. \
+             **D-322, 2026-08-16**: the slice's endpoint table specified the three write verbs and \
+             no read at all, so a membership could be created, ended and moved and never looked \
+             at - an operator's only evidence that an enrolment landed was the 202 they had \
+             already seen. Gates on `customer_group` x `read`.",
+        )
+        .tag(TAG)
+        .authenticated()
+        .no_license_required()
+        .path_param("group", "The group whose memberships are read.")
+        .handler(list_memberships)
+        .json_response_with_schema::<MembershipListView>(
+            openapi,
+            StatusCode::OK,
+            "The group's memberships, ended ones included.",
+        )
+        .error_401(openapi)
+        .error_403(openapi)
+        .error_500(openapi)
+        .error_503(openapi)
+        .register(Router::new(), openapi);
+
     let router = OperationBuilder::post("/bss-pricing/v1/customer-groups/{group}/members")
         .operation_id("bss_pricing.create_customer_group_member")
         .summary("Enroll a payer into a customer group")
@@ -716,7 +770,7 @@ pub fn governance_router(state: Arc<MembershipState>, openapi: &dyn OpenApiRegis
         .error_409(openapi)
         .error_500(openapi)
         .error_503(openapi)
-        .register(Router::new(), openapi);
+        .register(router, openapi);
 
     let router = OperationBuilder::patch("/bss-pricing/v1/customer-groups/{group}/members/{id}")
         .operation_id("bss_pricing.adjust_customer_group_member")
@@ -861,6 +915,42 @@ async fn membership_of_group(
             id: membership_id.to_string(),
         })),
     }
+}
+
+/// `GET /customer-groups/{group}/members` (D-322).
+///
+/// Reads through the same repo the resolution walk uses, so an operator and
+/// Tariffs are looking at one set of intervals rather than two projections of
+/// it. The group is **not** validated against the taxonomy here: a group that
+/// has been retired still has the memberships it accumulated, and refusing to
+/// show them would hide exactly what the retire guard is protecting.
+async fn list_memberships(
+    Extension(state): Extension<Arc<MembershipState>>,
+    Extension(enforcer): Extension<authz_resolver_sdk::PolicyEnforcer>,
+    extension_ctx: Option<Extension<SecurityContext>>,
+    Path(group): Path<String>,
+) -> Result<Response, CanonicalError> {
+    let ctx = require_authenticated(extension_ctx)?;
+    let scope = read_scope(&enforcer, &ctx).await?;
+    let group_value = required_group(&group)?;
+
+    let conn = state.db.conn().map_err(|e| {
+        CanonicalError::from(DomainError::Internal(format!("membership conn: {e}")))
+    })?;
+    let rows = group_membership_repo::memberships_in_group(
+        &conn,
+        &scope,
+        ctx.subject_tenant_id(),
+        &group_value,
+    )
+    .await
+    .map_err(|e| CanonicalError::from(repo_failure(&e)))?;
+
+    Ok(Json(MembershipListView {
+        group_value,
+        memberships: rows.iter().map(MembershipView::from).collect(),
+    })
+    .into_response())
 }
 
 /// `POST /customer-groups/{group}/members`.

@@ -397,6 +397,43 @@ pub async fn intervals_for_payer(
     rows.into_iter().map(to_domain).collect()
 }
 
+/// Every membership recorded **in one group**, oldest interval first (D-322).
+///
+/// [`intervals_for_payer`]'s mirror across the other axis of the same table, and
+/// it exists for the reason that read's doc already gives for including ended
+/// rows: an operator asking *"who is in this group"* and an auditor asking *"who
+/// has been"* are the same read, and pre-filtering would only move the filter to
+/// a second caller. Slice 9 names an `actor-auditor` who *"reads membership audit
+/// history"* and gave that actor no surface; this is the store half of it.
+///
+/// Ordered by `effective_from` then `membership_id` for `intervals_for_payer`'s
+/// reason: a reader walks the group's intervals in time order, and the id breaks
+/// a legitimate tie deterministically rather than by paging order.
+///
+/// # Errors
+/// [`RepoError::Db`] on a scope or storage failure.
+pub async fn memberships_in_group(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    group_value: &str,
+) -> Result<Vec<MembershipRow>, RepoError> {
+    let rows = group_membership::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(group_membership::Column::TenantId.eq(tenant_id))
+                .add(group_membership::Column::GroupValue.eq(group_value)),
+        )
+        .order_by(group_membership::Column::EffectiveFrom, Order::Asc)
+        .order_by(group_membership::Column::MembershipId, Order::Asc)
+        .all(runner)
+        .await
+        .map_err(|e| RepoError::Db(format!("list pricing_group_membership: {e}")))?;
+    rows.into_iter().map(to_domain).collect()
+}
+
 /// `inst-cg-resolve`'s narrowing rule: which of the payer's membership
 /// intervals covers `at`, if any.
 ///

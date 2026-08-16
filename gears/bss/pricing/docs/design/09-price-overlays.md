@@ -66,7 +66,7 @@ snapshot-frozen record so a payer's segment price is always reproducible.
 | `cpt-cf-bss-pricing-actor-catalog-admin` | Authors PriceOverlays, the group taxonomy, memberships |
 | `cpt-cf-bss-pricing-actor-rating` | Evaluates overlays (precedence/stacking); resolves membership at `t` |
 | `cpt-cf-bss-pricing-actor-finance-reviewer` | Approves membership changes / group moves (material) |
-| `cpt-cf-bss-pricing-actor-auditor` | Reads membership audit history |
+| `cpt-cf-bss-pricing-actor-auditor` | Reads membership audit history — through `GET /bss-pricing/v1/customer-groups/{group}/members` (§5), which returns ended intervals as well as live ones for exactly this reader (D-322) |
 
 ### 1.4 References
 
@@ -238,6 +238,7 @@ flowchart TB
 | `POST` | `/bss-pricing/v1/price-overlays/{overlayId}/submit` | Submit the draft — always-material Slice 5 approval unit (D-50), then the D-06 publish unit. **Two acts on one call (D-234, 2026-08-07):** with no approved unit over this revision *and this content* it opens the unit → **202**; with one it commits and answers **200** carrying the registry's pending handle | per revision |
 | `GET` | `/bss-pricing/v1/price-overlays` | List overlays (admin/Tariffs read) | — |
 | `GET/PUT` | `/bss-pricing/v1/customer-groups/taxonomy` | The BSS group taxonomy | ETag |
+| `GET` | `/bss-pricing/v1/customer-groups/{group}/members` | The group's memberships, **ended ones included** — the read this table specified nowhere until **D-322** (2026-08-16), leaving the auditor named in §2 with no surface | — |
 | `POST` | `/bss-pricing/v1/customer-groups/{group}/members` | Create an effective-dated membership | idempotency key |
 | `PATCH` | `/bss-pricing/v1/customer-groups/{group}/members/{id}` | End/adjust an interval (audited) | ETag |
 | `POST` | `/bss-pricing/v1/customer-groups/{group}/members/{payerId}/move` | Atomic transfer of the payer into `{group}` (the **target** group): ends the active membership + starts the new one (one audited mutation; D-09) | idempotency key |

@@ -1255,3 +1255,94 @@ async fn patching_a_membership_through_the_wrong_group_is_refused_and_writes_not
         "a refused PATCH must record no pending ref"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Reading a group's memberships (D-322)
+// ---------------------------------------------------------------------------
+
+async fn list_members(harness: &Harness, group: &str) -> (StatusCode, serde_json::Value) {
+    let response = harness
+        .allowed_as(MEMBERSHIP_ADMIN)
+        .send(with_headers(
+            "GET",
+            &CUSTOMER_GROUP_MEMBERS.replace("{group}", group),
+            None,
+            &[],
+        ))
+        .await;
+    let status = response.status();
+    (status, body_json(response).await)
+}
+
+/// An enrolment is **visible** afterwards — the whole reason the read exists.
+///
+/// Before D-322 the only evidence an enrolment landed was the 202 the caller had
+/// already seen; nothing in the contract could show the membership again.
+#[tokio::test]
+async fn an_enrolled_payer_is_readable_in_the_group() {
+    let harness = Harness::new().await;
+    let payer = Uuid::from_u128(0x_d3_22_01);
+    let (status, _) = enroll(&harness, payer).await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, body) = list_members(&harness, "gold").await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["group_value"], json!("gold"));
+    assert_eq!(body["memberships"].as_array().map(Vec::len), Some(1));
+    assert_eq!(body["memberships"][0]["payer_tenant_id"], json!(payer));
+}
+
+/// A group nobody has been enrolled into reads as an **empty list**, not a 404.
+///
+/// A declared group with no members is a state, and answering an absence would
+/// make "is this group empty or does it not exist" unanswerable from the read.
+#[tokio::test]
+async fn a_group_with_no_memberships_reads_empty() {
+    let harness = Harness::new().await;
+    rest_support::declare_customer_group(&harness, "gold").await;
+
+    let (status, body) = list_members(&harness, "gold").await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["memberships"], json!([]));
+}
+
+/// An **ended** membership stays in the list.
+///
+/// The slice names an auditor who reads membership history, and membership is
+/// effective-dated: a list of only the live intervals answers "who is in this
+/// group" and silently loses "who has been", which is the other half of the
+/// same question.
+#[tokio::test]
+async fn an_ended_membership_is_still_listed() {
+    let harness = Harness::new().await;
+    let payer = Uuid::from_u128(0x_d3_22_02);
+    let (_, created) = enroll(&harness, payer).await;
+    let membership_id = created["membership"]["membership_id"]
+        .as_str()
+        .expect("the id")
+        .to_owned();
+    let version = created["membership"]["row_version"].as_u64().unwrap_or(0);
+
+    let ended = harness
+        .allowed_as(MEMBERSHIP_ADMIN)
+        .send(with_headers(
+            "PATCH",
+            &CUSTOMER_GROUP_MEMBER
+                .replace("{group}", "gold")
+                .replace("{id}", &membership_id),
+            Some(json!({ "effective_to": "2026-06-01T00:00:00Z" })),
+            &[("if-match", &format!("\"{version}\""))],
+        ))
+        .await;
+    assert_eq!(ended.status(), StatusCode::OK, "the interval move landed");
+
+    let (_, body) = list_members(&harness, "gold").await;
+    assert_eq!(body["memberships"].as_array().map(Vec::len), Some(1));
+    assert_eq!(
+        body["memberships"][0]["effective_to"],
+        json!("2026-06-01T00:00:00Z"),
+        "the ended interval is shown rather than filtered away"
+    );
+}

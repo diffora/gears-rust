@@ -156,6 +156,7 @@ fn declared_paths() -> Vec<(&'static str, &'static str)> {
         // MUST requires — every committed membership mutation is its own publish
         // unit through the Foundation engine (D-06). Audit-only (`inst-mm-renewal`);
         // no approval unit opens.
+        ("GET", CUSTOMER_GROUP_MEMBERS),
         ("POST", CUSTOMER_GROUP_MEMBERS),
         ("PATCH", CUSTOMER_GROUP_MEMBER),
         ("POST", CUSTOMER_GROUP_MEMBER_MOVE),
