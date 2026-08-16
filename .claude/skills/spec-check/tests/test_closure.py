@@ -224,7 +224,10 @@ def test_the_pinned_code_baseline_has_exactly_fifty_entries():
     # 2026-08-09, sprung the very next time somebody wrote a table. Resolved by
     # naming it in the rule, then verified the way that note prescribes: the
     # register mention was removed and the finding stayed closed.
-    assert len(PINNED_UNREFERENCED_CODES_2026_07_29) == 28
+# The count moved 28 -> 26 on 2026-08-16 when D-329 gave two declared codes a rule.
+# This test's NAME says "fifty entries" and has since it was written; the number in a
+# test name is a comment, and this one has been wrong for longer than the pin has.
+    assert len(PINNED_UNREFERENCED_CODES_2026_07_29) == 26
 
 
 def test_is_pinned_baseline_matches_only_the_recorded_gear():

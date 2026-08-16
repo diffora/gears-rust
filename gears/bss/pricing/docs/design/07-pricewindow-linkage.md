@@ -305,8 +305,8 @@ existing_grandfathered` — everywhere else `grandfatherUntil` is non-null nowhe
 admits the row here, and stating it twice would put one rule under two owners
 
 **Transitions**:
-1. [ ] - `p1` - **FROM** active_indefinite **TO** active_bounded **WHEN** `grandfatherUntil` is set (tightening only; material change) - `inst-gs-bound`
-2. [ ] - `p1` - **FROM** active_bounded **TO** active_bounded **WHEN** `grandfatherUntil` is tightened further (never loosened, never the price) - `inst-gs-tighten`
+1. [ ] - `p1` - **FROM** active_indefinite **TO** active_bounded **WHEN** `grandfatherUntil` is set (tightening only; material change) **The door exists as of D-329 (2026-08-16), and it asks `inst-co-bounds` of the horizon it PROPOSES rather than the one the store holds** — it is the only writer of that span's right-hand end, so the stored value would judge the state the act discards. Setting a horizon can break the bound where tightening one cannot: a null horizon is judged by an arm that never consults the margin, and every finite horizon by an arm that requires it. - `inst-gs-bound`
+2. [ ] - `p1` - **FROM** active_bounded **TO** active_bounded **WHEN** `grandfatherUntil` is tightened further (never loosened, never the price) **The monotonic guard has a caller as of D-329 (2026-08-16).** It had existed on both engines as a trigger nothing reached: the draft swap never enters its arm, and the loosen refusal lived only in comments. The compare-and-swap is the horizon itself, because the row tag is frozen on the published plane — a monotone field is its own version. - `inst-gs-tighten`
 3. [ ] - `p1` - **FROM** active_bounded **TO** expired **WHEN** `now ≥ grandfatherUntil`: the `EligibilityExpirySignal` raises (a read-time-derived condition — no stored state flips, no job); bound subscriptions re-bind at their next renewal (Subscriptions); the row itself stays immutable history - `inst-gs-expire`
 
 ## 5. API Surface

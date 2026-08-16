@@ -161,7 +161,7 @@ def test_the_run_reports_seven_live_findings_and_seventy_three_suppressed():
     # raises it) and one, `RUN_SELECTOR_EMPTY` / design/12, that had already
     # left in an earlier wave and was only surfacing now because the oracles had
     # not been re-captured since D-291. See closure.py for the per-member notes.
-    assert payload["known_debt_suppressed"] == 49
+    assert payload["known_debt_suppressed"] == 47
     assert payload["known_debt_tracked_as"] == "D-69"
 
 

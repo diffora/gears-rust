@@ -341,8 +341,12 @@ PINNED_UNREFERENCED_CODES_2026_07_29 = (
     # shape (a floor with no type is a row with no floor) and names the `{value, type}`
     # shape it is owed in, rather than deleting a declaration that still has a future.
     # Contrast D-239, which paid a member down by deleting the declaration outright.
-    ("pricing", "GRANDFATHERED_ROW_IMMUTABLE", "design/07-pricewindow-linkage.md"),
-    ("pricing", "GRANDFATHER_LOOSEN_FORBIDDEN", "design/07-pricewindow-linkage.md"),
+    # 2026-08-16: both left this pin because they were FIXED, not because the checker
+    # moved. D-329's grandfathering-horizon door is the caller that finally references
+    # them; until it existed they were declared in a Problem-responses block with no
+    # rule naming either. Measured by diffing the known-debt block with the wave
+    # stashed against the wave applied (49 -> 47 suppressed); the closure test named
+    # the same two independently, which is the check that the diff was read right.
     ("pricing", "GRANT_APPLICABILITY_INELIGIBLE", "design/10-advanced-primitives.md"),
     ("pricing", "GRANT_APPLICABILITY_UNIT_MISMATCH", "design/10-advanced-primitives.md"),
     ("pricing", "GRANT_APPLICABILITY_UNPUBLISHED", "design/10-advanced-primitives.md"),
