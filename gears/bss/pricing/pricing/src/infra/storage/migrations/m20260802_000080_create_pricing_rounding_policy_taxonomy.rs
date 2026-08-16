@@ -12,6 +12,12 @@
 //! both publish, both resolve, and nothing anywhere says they are two spellings
 //! of what an operator meant once.
 //!
+//! **Both of those examples are also malformed, which the same day's correction
+//! to D-321 records**: `bss/ledger` §6.8 fixes the scale to the currency's ISO
+//! 4217 minor unit, so `_2dp` in an identifier is the catalog restating a
+//! decision the currency already made — and getting it wrong on the first
+//! currency with a different minor unit. A reference names a **mode**.
+//!
 //! The fix is the one Slice 4 already uses for regions: **the tenant declares
 //! the vocabulary and the gear refuses references outside it**. That keeps
 //! D-320's boundary intact — this gear still neither defines nor applies a

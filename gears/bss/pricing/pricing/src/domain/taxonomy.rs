@@ -569,8 +569,15 @@ impl ValidationRule<PlanShape> for RegionsDeclared {
 /// # The vocabulary is the tenant's, and that is the whole design
 ///
 /// This gear persists a rounding reference and neither defines nor applies the
-/// policy (PRD §15), so it cannot say whether `half_up_2dp` is a sensible
-/// rounding rule — and D-320 refused to invent a list. What it *can* say is that
+/// policy (PRD §15), so it cannot say whether a given mode is the right rounding
+/// rule — and D-320 refused to invent a list.
+///
+/// **The owner is Billing, and D-321's correction records it**: `bss/ledger` §6.8
+/// fixes the scale to the currency's ISO 4217 minor unit and names half-to-even
+/// as the platform default, admitting a tenant override only under recorded
+/// evidence. It enumerates no override set, which is why membership is checked
+/// against what the **tenant** declared rather than against a list invented
+/// here. What it *can* say is that
 /// a reference names nothing the tenant ever declared, which is
 /// [`RegionsDeclared`]'s argument on a different axis.
 ///

@@ -21,7 +21,7 @@
 //! That opt-in is the whole reason the taxonomy could land at all. The
 //! alternative — an empty set refusing every row — would have broken every
 //! catalog on the day of the migration, including the seven rows on the stand
-//! that carry `half_up` while the tenant default carries `half_up_2dp`. Those
+//! that carry `half_up` while the tenant default carries `half_even`. Those
 //! two spellings of one intention are the hazard this surface exists to make
 //! visible.
 //!

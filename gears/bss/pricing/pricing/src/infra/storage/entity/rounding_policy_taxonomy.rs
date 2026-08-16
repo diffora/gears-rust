@@ -28,7 +28,7 @@ use uuid::Uuid;
 pub struct Model {
     #[sea_orm(primary_key, auto_increment = false)]
     pub tenant_id: Uuid,
-    /// The declared reference, e.g. `half_up_2dp`. Never blank: the `CHECK`
+    /// The declared reference, e.g. `half_even`. Never blank: the `CHECK`
     /// refuses it, and an unset default is spelled `NULL` on the policy object
     /// rather than as an empty member here (D-320).
     #[sea_orm(primary_key, auto_increment = false)]

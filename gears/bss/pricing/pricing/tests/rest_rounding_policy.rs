@@ -94,7 +94,7 @@ async fn a_put_under_the_read_tag_sets_the_default_and_the_get_agrees() {
 
     let response = write_policy(
         &harness,
-        serde_json::json!("half_up_2dp"),
+        serde_json::json!("half_even"),
         &tag.expect("a tag"),
     )
     .await;
@@ -102,13 +102,13 @@ async fn a_put_under_the_read_tag_sets_the_default_and_the_get_agrees() {
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(
         body_json(response).await["default_rounding_policy_ref"],
-        serde_json::json!("half_up_2dp")
+        serde_json::json!("half_even")
     );
 
     let (_, _, body) = read_policy(&harness).await;
     assert_eq!(
         body["default_rounding_policy_ref"],
-        serde_json::json!("half_up_2dp"),
+        serde_json::json!("half_even"),
         "the write is what the next reader sees, not just what the response said"
     );
 }
@@ -123,7 +123,7 @@ async fn the_default_can_be_cleared_back_to_null() {
     let (_, tag, _) = read_policy(&harness).await;
     write_policy(
         &harness,
-        serde_json::json!("half_up_2dp"),
+        serde_json::json!("half_even"),
         &tag.expect("a tag"),
     )
     .await;
@@ -146,7 +146,7 @@ async fn a_stale_tag_is_refused_and_writes_nothing() {
     let harness = Harness::new().await;
     let (_, first_tag, _) = read_policy(&harness).await;
     let first_tag = first_tag.expect("a tag");
-    write_policy(&harness, serde_json::json!("half_up_2dp"), &first_tag).await;
+    write_policy(&harness, serde_json::json!("half_even"), &first_tag).await;
 
     // The same tag again: it described the unset state, which has moved.
     let response = write_policy(&harness, serde_json::json!("bankers"), &first_tag).await;
@@ -156,7 +156,7 @@ async fn a_stale_tag_is_refused_and_writes_nothing() {
     let (_, _, body) = read_policy(&harness).await;
     assert_eq!(
         body["default_rounding_policy_ref"],
-        serde_json::json!("half_up_2dp"),
+        serde_json::json!("half_even"),
         "a refused precondition leaves the stored default exactly where it was"
     );
 }
@@ -248,7 +248,7 @@ async fn with_a_default_set_a_plan_whose_rows_have_no_ref_publishes() {
     let (_, tag, _) = read_policy(&harness).await;
     let set = write_policy(
         &harness,
-        serde_json::json!("half_up_2dp"),
+        serde_json::json!("half_even"),
         &tag.expect("a tag"),
     )
     .await;
@@ -294,7 +294,7 @@ async fn an_undeclared_rounding_reference_is_refused_and_declaring_it_lets_the_p
                 price_id,
                 scope_key: publishable_scope_key(plan, shape.phase, "eu"),
                 content: PriceContent {
-                    rounding_policy_ref: Some("half_up_2dp".to_owned()),
+                    rounding_policy_ref: Some("half_even".to_owned()),
                     ..publishable_row()
                 },
                 created_by: rest_support::SEED_ACTOR,
@@ -325,7 +325,7 @@ async fn an_undeclared_rounding_reference_is_refused_and_declaring_it_lets_the_p
         "the refusal names the vocabulary rule; got {detail}"
     );
 
-    declare_rounding_value(&harness, "half_up_2dp").await;
+    declare_rounding_value(&harness, "half_even").await;
 
     let after = publish(&harness, plan_id, &shape.etag()).await;
     let status = after.status();
@@ -482,14 +482,14 @@ async fn a_declared_set_round_trips_and_defaults_to_active() {
 
     let response = write_vocabulary(
         &harness,
-        serde_json::json!([{ "value": "half_up_2dp", "display_name": "Half up, 2dp" }]),
+        serde_json::json!([{ "value": "half_even", "display_name": "Half to even" }]),
         &tag.expect("a tag"),
     )
     .await;
     assert_eq!(response.status(), StatusCode::OK);
 
     let (_, _, body) = read_vocabulary(&harness).await;
-    assert_eq!(body["values"][0]["value"], serde_json::json!("half_up_2dp"));
+    assert_eq!(body["values"][0]["value"], serde_json::json!("half_even"));
     assert_eq!(body["values"][0]["state"], serde_json::json!("active"));
 }
 
@@ -505,7 +505,7 @@ async fn a_value_the_default_names_cannot_be_retired() {
     let (_, vocab_tag, _) = read_vocabulary(&harness).await;
     write_vocabulary(
         &harness,
-        serde_json::json!([{ "value": "half_up_2dp", "display_name": "Half up" }]),
+        serde_json::json!([{ "value": "half_even", "display_name": "Half to even" }]),
         &vocab_tag.expect("a tag"),
     )
     .await;
@@ -513,7 +513,7 @@ async fn a_value_the_default_names_cannot_be_retired() {
     let (_, policy_tag, _) = read_policy(&harness).await;
     let set = write_policy(
         &harness,
-        serde_json::json!("half_up_2dp"),
+        serde_json::json!("half_even"),
         &policy_tag.expect("a tag"),
     )
     .await;

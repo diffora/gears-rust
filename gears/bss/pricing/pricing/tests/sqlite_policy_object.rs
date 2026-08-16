@@ -165,7 +165,7 @@ async fn a_second_write_moves_the_default_through_the_update_arm() {
             &conn,
             &scope,
             tenant,
-            Some("half_up_2dp"),
+            Some("half_even"),
             None,
             &stamp()
         )
@@ -180,7 +180,7 @@ async fn a_second_write_moves_the_default_through_the_update_arm() {
             &scope,
             tenant,
             Some("bankers"),
-            Some("half_up_2dp"),
+            Some("half_even"),
             &stamp()
         )
         .await
@@ -210,7 +210,7 @@ async fn a_premise_that_has_moved_writes_nothing() {
         &conn,
         &scope,
         tenant,
-        Some("half_up_2dp"),
+        Some("half_even"),
         None,
         &stamp(),
     )
@@ -231,7 +231,7 @@ async fn a_premise_that_has_moved_writes_nothing() {
     assert!(!applied, "a moved premise matches no row");
     assert_eq!(
         held(&repo, &provider, tenant).await.as_deref(),
-        Some("half_up_2dp"),
+        Some("half_even"),
         "and the stored value is exactly where it was"
     );
 }
@@ -252,7 +252,7 @@ async fn clearing_the_default_matches_a_null_premise() {
         &conn,
         &scope,
         tenant,
-        Some("half_up_2dp"),
+        Some("half_even"),
         None,
         &stamp(),
     )
@@ -265,7 +265,7 @@ async fn clearing_the_default_matches_a_null_premise() {
             &scope,
             tenant,
             None,
-            Some("half_up_2dp"),
+            Some("half_even"),
             &stamp()
         )
         .await

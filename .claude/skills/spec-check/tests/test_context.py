@@ -27,11 +27,25 @@ def find(gear):
     return [p.replace(str(REPO_ROOT) + "/", "") for p in paths], unresolved
 
 
-def test_pricing_discovers_exactly_the_two_gears_it_needs():
+def test_pricing_discovers_the_three_gears_it_needs():
     # The case the feature exists for, and the one id discovery alone cannot solve:
     # pricing cites no foreign id at all, only `SEAMS M10`-style bare seam ids.
+    #
+    # **`ledger` joined on 2026-08-16 and the movement is the point.** D-321 was
+    # first written on the claim that no vocabulary exists to check a rounding
+    # reference against; that claim was false, and the owner is Billing —
+    # `ledger` §6.8 fixes the scale to ISO 4217's minor unit, names half-to-even
+    # as the platform default and admits a tenant override only under recorded
+    # evidence. The corrected entry cites it, so pricing now genuinely depends on
+    # a third gear's document and discovery says so. Two would be the number to
+    # restore only if that citation were removed, which would put the false
+    # premise back.
     paths, unresolved = find("pricing")
-    assert paths == ["gears/bss/rating/docs", "gears/bss/subscriptions/docs"]
+    assert paths == [
+        "gears/bss/ledger/docs",
+        "gears/bss/rating/docs",
+        "gears/bss/subscriptions/docs",
+    ]
     assert unresolved == []
 
 
