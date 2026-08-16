@@ -216,13 +216,22 @@ def test_an_unknown_only_class_is_a_usage_error(tmp_path):
 #: knife-edge requirements have now crossed the 0.600 floor three times in a
 #: single session, on three waves none of which edited either requirement or its
 #: accounts. Re-pinned rather than tuned, for the reason the first note gives.
+# 2026-08-16, re-pinned from measurement, not from the failure. ONE requirement moved and it
+# was measured by diffing the run with the change stashed against the run with it applied:
+# `cpt-cf-bss-pricing-fr-supersession`, anchored:no-account -> suspicious:weak-coverage,
+# which is why judged moves 70 -> 71 (weak-coverage is judged, anchored:no-account is not).
+# The cause is mechanical and is the FIFTH crossing of one boundary by the same route: the
+# scorer reads the DECISIONS.md preamble window, D-324's veto-round stamp lengthened it, and
+# fr-supersession sits within a thousandth of SCORE_THRESHOLD = 0.6. fr-price-history-export
+# is the other oscillator on the same window and did not move this time. Neither is evidence
+# about coverage; both are evidence that the threshold is too close to these two scores.
 PINNED_TRIAGE_PRICING = {
     "unbuildable:no-prose": 0,
     "no-region": 3,
-    "anchored:no-account": 5,
+    "anchored:no-account": 4,
     "suspicious:multi-region": 63,
     "suspicious:not-normative": 0,
-    "suspicious:weak-coverage": 7,
+    "suspicious:weak-coverage": 8,
     "covered:strong": 0,
 }
 #: Moved 2026-08-15 by the **D-320 rounding-policy surface wave**, landing on top of
@@ -1278,7 +1287,7 @@ PINNED_TRIAGE_LEDGER = {
 #: 69 -> 67 on the 2026-08-08 D-259 tail wave. The triage histogram is unchanged,
 #: so this is the judged-share side of the same knife-edge movement recorded above,
 #: moving for the third time in one day on prose that touched neither requirement.
-PINNED_JUDGE_CALLS = {"pricing": 70, "ledger": 17}
+PINNED_JUDGE_CALLS = {"pricing": 71, "ledger": 17}
 #: pricing 71 -> 70 on the 2026-08-15 **D-320 rounding-policy wave**: the single
 #: mover above leaves the judged set, `anchored:no-account` being triaged rather
 #: than judged. No requirement gained or lost an account of its own.
