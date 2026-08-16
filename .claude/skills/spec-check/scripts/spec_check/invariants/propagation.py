@@ -270,7 +270,6 @@ PINNED_PROPAGATION_GAPS_2026_07_29 = (
     ("pricing", "D-05", "PRD.md"),
     ("pricing", "D-06", "PRD.md"),
     ("pricing", "D-07", "PRD.md"),
-    ("pricing", "D-13", "PRD.md"),
     ("pricing", "D-15", "PRD.md"),
     ("pricing", "D-16", "PRD.md"),
     ("pricing", "D-19", "PRD.md"),

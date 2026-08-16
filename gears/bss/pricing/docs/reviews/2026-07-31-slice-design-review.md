@@ -39,7 +39,7 @@ teams can build incompatible behavior · **[L]** contained.
 
 D-76/D-81 made synthesis tier 2 *reachable*; its output was still unusable, twice over.
 (i) [`05-governance.md`](../design/05-governance.md) §6 gave `pricing_historical_price` no
-tier-band or package storage while the row-shape subset (`inst-bd-pipeline`) requires a
+tier-band or package storage while the row-shape subset (inst-bd-pipeline) requires a
 `graduated`/`volume` row to carry ≥ 1 band (S3 `inst-mk-required`) — a tiered legacy price
 failed its own import validator with nowhere to put the bands. (ii) The synthesized
 `migrated-origin` snapshot recorded resolved price **ids** — but a tier-2 id lives in a store
@@ -260,7 +260,7 @@ unkeepable, so the mechanism (not the wording) had to change.
 
 | Finding | Verdict | Fix | Where it landed |
 |---------|---------|-----|-----------------|
-| H-1 (tier-2 synthesis not consumable; no reference bands) | **CONFIRMED** | **D-87** — self-contained materialized payload; `tier_bands`/package fields on `pricing_historical_price`; no version pin on `migrated-origin` | S5 §6 + `inst-bd-pipeline` + DoD; S11 `inst-sy-payload` (new) + `inst-sy-provenance` + §6 + DoD + AC; S1 §4.4; PRD `fr-migration-safety` + `fr-historical-import-governance` |
+| H-1 (tier-2 synthesis not consumable; no reference bands) | **CONFIRMED** | **D-87** — self-contained materialized payload; `tier_bands`/package fields on `pricing_historical_price`; no version pin on `migrated-origin` | S5 §6 + inst-bd-pipeline + DoD; S11 `inst-sy-payload` (new) + `inst-sy-provenance` + §6 + DoD + AC; S1 §4.4; PRD `fr-migration-safety` + `fr-historical-import-governance` |
 | H-2 + M-5 (no supersession unit; no instant floor) | **CONFIRMED** | **D-88** — the supersession unit (compose/approve/commit atomically) + `SUPERSESSION_INSTANT_PASSED` ≥ commit + max batching SLO, interactive and bulk | S7 `algo-supersession` + `SupersessionOrchestrator` + API + codes + DoD + AC; S3 `inst-ps-supersede`; S1 §4.3; S12 `inst-mr-api`/`inst-mr-apply` + AC; S5 endpoint map; PRD `fr-supersession` + §17.5 |
 | H-3 (phase-axis unit hazard) | **CONFIRMED** | **D-89** — phase-blind counter stated; override preserves the D-82/D-98 field list (`PHASE_OVERRIDE_UNIT_MISMATCH`); fixture scenario | S2 `inst-ph-override-units` (new) + `inst-ph-usage-invariant` + §5 + DoD + AC; S3 `inst-tb-window-continuity` + fixture note; PRD `fr-plan-phases` |
 | M-1 (current revision undefined) | **CONFIRMED** | **D-90** — revision flip-at-commit + partial `UNIQUE` one published revision; retire targets it | S1 §3.7 + §4.3; S2 §4 `inst-pl-supersede` (new) + AC; S11 `inst-rt-cancel` |

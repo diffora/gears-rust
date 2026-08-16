@@ -30,7 +30,7 @@ decision rationale in [`../ADR/`](../ADR/).
 - [`02-plan-definition.md`](./02-plan-definition.md) — billing cycles, custom frequency, per-seat quantity provenance (`quantitySource` persisted/validated in Slice 3), one-time-setup row, mandatory `PlanTier`, meter injectivity, add-on rules, phases + `convertsToPhaseId`, billing descriptors (PRD §6.1, §6.3)
 - [`03-price-structure.md`](./03-price-structure.md) — explicit `modelKind`, tier-band validation, `package` pricing, evaluation-policy placement, level-based aggregation (`aggregationFunction`/`aggregationGranularity`/`maxHoldGranules`, D-44), joint golden-fixture conformance gate (PRD §6.2)
 - [`04-currency-tax.md`](./04-currency-tax.md) — per-`(currency, region)` rows, region/brand taxonomies, tax-display basis + `not_sellable_ga` gate, single-currency-per-invoice binding, base-price preview (PRD §6.4)
-- [`05-governance.md`](./05-governance.md) — materiality + two-person rule, per-currency threshold policy, RBAC deny-by-default + preview/backdating grants, tenant/region isolation, audit trail + retention (PRD §6.7 approval, §6.12)
+- [`05-governance.md`](./05-governance.md) — materiality + two-person rule, per-currency threshold policy, RBAC deny-by-default + the preview grant (the backdating grant and its flow are struck — D-330), tenant/region isolation, audit trail + retention (PRD §6.7 approval, §6.12)
 - [`06-consumer-contracts.md`](./06-consumer-contracts.md) — proration input contract (canonical `prorationBasis` enum), `billingTiming`, entitlement grant set, plan-change contract, rating compatibility (PRD §6.9)
 - [`07-pricewindow-linkage.md`](./07-pricewindow-linkage.md) — `PriceWindow` ownership (store, state machine, activation job, `PriceWindow*` events — consolidated per D-03), window coverage + future-gap, sellability surface (joint gate), grandfathering eligibility + atomic cutover (PRD §6.5)
 - [`08-bundles.md`](./08-bundles.md) — bundle price basis (`sum_of_parts` via component `planId`s / `own_price`), currency + frequency coverage, rev-share reconciliation, itemization (PRD §6.3 bundle)
@@ -65,7 +65,7 @@ dependencies exist).
 
 05-governance additionally gates **every** slice's publish path (approval + authz); the
 column lists it only where a slice depends on 05 beyond that universal gate (cutover
-approval unit, membership materiality, grant-price materiality, backdating grant).
+approval unit, membership materiality, grant-price materiality).
 
 See [`../DESIGN.md` §1.3](../DESIGN.md#13-architecture-layers) for the dependency graph and
 phase rationale.

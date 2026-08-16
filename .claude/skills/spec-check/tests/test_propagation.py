@@ -78,7 +78,15 @@ def test_the_pinned_baseline_has_exactly_twenty_three_entries():
     # 24 until 2026-07-31 (D-01 -> PRD.md removed); 23 until the same day's c-wave
     # pin sweep (D-25 -> PRD.md, D-40 -> design/10 removed — paid down by the
     # a/b review fix rounds); notes beside the list.
-    assert len(PINNED_PROPAGATION_GAPS_2026_07_29) == 21
+    # 21 until 2026-08-16, when D-330's descope wave closed `D-13 -> PRD.md`. D-13
+    # governed the historical import; the PRD's strike record for
+    # `fr-historical-import-governance` names D-13 as one of the rules that left with
+    # the flow, so the claim verifies. Named rather than glossed: the gap was paid by
+    # the PRD finally *citing* the decision, not by the PRD acquiring its content —
+    # which is what P1 asks and is the honest reading, the requirement D-13
+    # propagated into being the one that was struck. Measured against the stashed
+    # pre-wave tree (47 -> 45 suppressed), not inferred.
+    assert len(PINNED_PROPAGATION_GAPS_2026_07_29) == 20
 
 
 def test_cross_gear_propagation_gaps_match_the_expected_set():

@@ -561,16 +561,15 @@ only, including slice-owned tables in every other slice design.
 - **`pricing_outbox`** — the transactional event outbox (frozen event names, dedup/correlation keys, `(tenantId, aggregateId)` ordering — enforced by a **unique sequence per `(tenant_id, aggregate_id)`**, named here 2026-08-03 because the ordering had been asserted with nothing stated to hold it, and because it is one of the three per-aggregate serialization points `CONCURRENT_MUTATION` covers, §3.3/D-159). **The correlation key is the request's, and it is the same value the audit record of that mutation carries** (**D-178**, 2026-08-03: this bullet and `inst-au-complete` both *required* a correlation and neither named a producer, so the one join an auditor and an operator both need — this event, that record, one operator call — rested on nothing; the producer is the request-scoped value the HTTP edge establishes, minted there when nothing is propagated inbound, and an in-process producer such as the publish commit supplies its own). **The key is a `uuid` column and the value is minted here, not adopted from the wire (D-181, 2026-08-03):** the platform's inbound convention (`traceparent` → `x-trace-id` → `x-request-id`) is real and the gear already sits inside it, but a trace id names a distributed trace rather than one operator call, so consuming it would put the *caller's* identifier on the events this outbox emits to Tariffs/Rating/Subscriptions/Billing and make "these rows were one act" a property of the caller's instrumentation. The correlation key stays this gear's own; the dedup key beside it is the consumer-facing one, and neither is the client `Idempotency-Key`.
 - **`pricing_audit_log`** — append-only actor/before-after/approval trail, hash-chained per D-14 and **segmented per `(tenant_id, chain_id)`** with a periodic per-tenant roll-up chaining the segment heads (**D-135**, 2026-08-01 review fix — `chain_id` = the audited subject's aggregate: plan, overlay, payer, policy, bulk operation; a single per-tenant chain serialized *every* mutation of a tenant behind one head, inside the mutation transaction, which the ≥ 50 rows/s repricing SLO never accounted for); normative: [`05-governance.md`](./05-governance.md); ≥ 7-year configurable retention. **Its two discriminators have a declared vocabulary, and `subject_kind` is `pricing_approval`'s enumeration verbatim** (**D-158**, 2026-08-03, found while writing the table's first writer — the two stores discriminate the same aggregates for the same audience, and D-135 already keys the chain on the audited subject's aggregate, so a second vocabulary would let the approval record and the audit record of one decision disagree on what the decision was about); `action` is an additive `snake_case` verb set, never a frozen event name. Both are enumerated in [`05-governance.md`](./05-governance.md) §6, which owns the writer contract, and the `action` set gained the three **draft-authoring** verbs `create` / `update` / `delete` there (**D-175**, 2026-08-03 — the six mutating authoring surfaces owe a record apiece and the opening enumeration named one of them, so the set is now closed by the mutations this design set specifies rather than by that list: *no writer without a token*, the companion of D-158's *no token without a writer*), and the **approval plane's** two verbs `submit` / `withdraw` there as well (**D-180**, 2026-08-03 — applying D-175's closure rule to the approval store rather than to the authoring plane it was written against: `submit` is the record of the change unit §4's initial state opens, written by the non-committing arm of the publish route on `dod-audit`'s ground alone, and `withdraw` is the record of the route `inst-as-void` specifies and calls audited; the **machine-driven** TOCTOU void writes none, so an absent record against a `voided` unit is what says the guard closed it). **A same-segment race is `CONCURRENT_MUTATION` (409, §3.3, D-159):** the segment head is `MAX(seq)` under the primary key `(tenant_id, chain_id, seq)`, so two mutations of one aggregate that read the same head cannot both insert after it — the loser's whole mutation transaction rolls back, which is contention and not a fault of the store.
 
-**Governed backdated reference rows are NOT in `pricing_price` (D-76).** The historical-import
-path writes a disjoint Slice-5-owned store, `pricing_historical_price`
-([`05-governance.md`](./05-governance.md) `inst-bd-store`), which is never window-linked, never
-projected into `pricing_read_model`, and never an input to coverage, sellability or
-`CatalogVersion` addressability; its only reader is snapshot synthesis
-([`11-lifecycle.md`](./11-lifecycle.md) `inst-sy-select`). Every statement in this design about
+~~**Governed backdated reference rows are NOT in `pricing_price` (D-76).**~~ **Struck by D-330**
+(2026-08-16). Historical import is out of scope, so the disjoint Slice-5-owned reference store
+this paragraph carved out — never window-linked, never projected, never an input to coverage,
+sellability or `CatalogVersion` addressability — leaves the design set with the flow that wrote
+it. **Its conclusion survives and is now unconditional**: every statement in this design about
 published `pricing_price` rows — §4.3 immutability, the scope-key partial `UNIQUE`, the
-REVOKE/trigger discipline, "consumers resolve only committed versions" — therefore holds
-**without an exception class**, and a reference row cannot reach live resolution through a
-forgotten query predicate.
+REVOKE/trigger discipline, "consumers resolve only committed versions" — holds **without an
+exception class**, which D-76 had to build a second store to achieve and which is now simply true
+of the only price plane there is.
 
 **The physical enforcement this section claims is now proved by execution on the backend it
 targets (recorded 2026-08-03, no D-number — a fact about the evidence, not a change to any
@@ -1285,8 +1284,9 @@ with them.
 One reference is deliberately **not** version-pinned: a **`migrated-origin`** snapshot (Slice 11,
 D-87) is **self-contained** — synthesis materializes the complete evaluable row content into the
 frozen payload, and consumers evaluate from that payload without resolving its ids through the
-read model (a tier-2 reference row exists in no `CatalogVersion` by construction, D-76; a tier-1
-row's historical instant predates any useful pin). Because it resolves through **no** version, it
+read model (a resolved row's historical instant predates any useful pin, and D-76's second,
+reference tier — which existed in no `CatalogVersion` at all — is struck by D-330, 2026-08-16;
+the rule rests on the absent version either way). Because it resolves through **no** version, it
 needs its own read surface, which the read-model contract does not provide: consumers fetch it
 from `GET /bss-pricing/v1/migrated-origin-snapshots/{subscriptionRef}` (Slice 11 §5, `plan × read`
 service identity — **D-102**, 2026-07-31 review fix; registered as an inbound lane of the Tariffs

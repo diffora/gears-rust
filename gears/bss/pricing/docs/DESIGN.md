@@ -162,7 +162,7 @@ dependency graph, and phase rationale live in [`design/README.md`](./design/READ
 | [`design/02-plan-definition.md`](./design/02-plan-definition.md) | 6.1, 6.3 | 1 | Billing cycles, custom frequency, per-seat quantity provenance (`quantitySource` persisted/validated in Slice 3), one-time-setup row, mandatory `PlanTier`, meter injectivity, add-on rules, phases + `convertsToPhaseId`, billing descriptors. |
 | [`design/03-price-structure.md`](./design/03-price-structure.md) | 6.2 | 1 | Explicit `modelKind`, graduated/volume tier-band validation, `package` (block) pricing, evaluation-policy placement, joint golden-fixture conformance gate. |
 | [`design/04-currency-tax.md`](./design/04-currency-tax.md) | 6.4 | 1/2 | Region/brand taxonomy validation, `taxInclusive`/`taxCategory` display basis + tax-display policy, single-currency-per-invoice binding. |
-| [`design/05-governance.md`](./design/05-governance.md) | 6.7, 6.12 | 1/2 | Two-person rule + segregation of duties, per-currency threshold policy, RBAC deny-by-default, tenant/brand/region isolation, historical-import governance, audit completeness/retention. |
+| [`design/05-governance.md`](./design/05-governance.md) | 6.7, 6.12 | 1/2 | Two-person rule + segregation of duties, per-currency threshold policy, RBAC deny-by-default, tenant/brand/region isolation, audit completeness/retention. (Historical-import governance was this slice's sixth subject and is **struck** — D-330, 2026-08-16.) |
 | [`design/06-consumer-contracts.md`](./design/06-consumer-contracts.md) | 6.9 | 2 | Proration input contract, `billingTiming`, entitlement grant set, plan-change contract, rating compatibility, canonical `prorationBasis` enum. |
 | [`design/07-pricewindow-linkage.md`](./design/07-pricewindow-linkage.md) | 6.5 | 2 | `PriceWindow` ownership (store, state machine, activation job, `PriceWindow*` events — D-03), publish-time window coverage + future-gap checks, sellability gate, `priceEligibility`/`cohort`/`grandfatherUntil` + most-specific-wins resolution. |
 | [`design/08-bundles.md`](./design/08-bundles.md) | 6.3 (bundle) | 2/3 | Bundle price basis, currency coverage, rev-share reconciliation, `invoiceItemization`. |
@@ -298,7 +298,8 @@ configured taxonomies, validated before publish.
 Every API surface enforces through the shared PEP `access_scope` gate with a
 `(resource_type, action)` pair from the single normative catalog — GTS labels
 `gts.cf.bss.pricing.<noun>.v1~` (plan, bundle, price_overlay, customer_group, approval,
-approval_policy, config, historical_import, audit), all outside `gts.cf.resources.*` so only
+approval_policy, config, audit — `historical_import` struck with the import flow, D-330), all
+outside `gts.cf.resources.*` so only
 explicit catalog roles cover them; actions sit on real objects, never authz tiers.
 Normative: [`design/05-governance.md`](./design/05-governance.md) §AuthZ Resource and Action
 Catalog · gate constraint in [`design/01-foundation.md`](./design/01-foundation.md) §2.2.
@@ -486,11 +487,11 @@ outbox, tenant policy objects, and the append-only audit store — is owned by t
 and specified normatively in [`design/01-foundation.md`](./design/01-foundation.md) §4.
 Slice-specific tables (phases, add-on rules, bundles, price overlays, customer-group membership,
 migration schedules) are introduced by their respective slice documents. Money columns are
-stored as integer minor units at the currency's ISO 4217 scale. One store sits deliberately
-**outside** this set: governed backdated reference rows live in `pricing_historical_price`
-([`design/05-governance.md`](./design/05-governance.md), D-76) — never window-linked, never
-projected, never sellable, read only by snapshot synthesis — so every invariant stated about
-published `pricing_price` rows holds without an exception class.
+stored as integer minor units at the currency's ISO 4217 scale. ~~One store sits deliberately **outside** this set: governed backdated reference rows live in
+`pricing_historical_price` (D-76).~~ **Struck by D-330** (2026-08-16): historical import is out of
+scope, so there is no second price plane, and every invariant stated about published
+`pricing_price` rows holds without an exception class because there is nothing to except
+([`design/05-governance.md`](./design/05-governance.md) §6).
 
 ### 3.8 Deployment Topology
 

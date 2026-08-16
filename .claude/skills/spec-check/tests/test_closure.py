@@ -225,9 +225,14 @@ def test_the_pinned_code_baseline_has_exactly_fifty_entries():
     # naming it in the rule, then verified the way that note prescribes: the
     # register mention was removed and the finding stayed closed.
 # The count moved 28 -> 26 on 2026-08-16 when D-329 gave two declared codes a rule.
+# 26 -> 25 later the same day, by D-330's historical-import descope: `BACKDATE_GRANT_REQUIRED`
+# / design/05 left by having its DECLARATION deleted -- the second member ever paid that way
+# (D-239's `BRAND_UNKNOWN` was the first) and the correct resolution for a code whose whole
+# refusal path is struck. Per-member note beside the pinned list, including why
+# `BACKDATE_SIDE_EFFECT`, struck in the same edit, was never a member.
 # This test's NAME says "fifty entries" and has since it was written; the number in a
 # test name is a comment, and this one has been wrong for longer than the pin has.
-    assert len(PINNED_UNREFERENCED_CODES_2026_07_29) == 26
+    assert len(PINNED_UNREFERENCED_CODES_2026_07_29) == 25
 
 
 def test_is_pinned_baseline_matches_only_the_recorded_gear():

@@ -310,7 +310,19 @@ PINNED_UNREFERENCED_CODES_2026_07_29 = (
     ("pricing", "ADDON_OVERRIDE_UNRESOLVED", "design/02-plan-definition.md"),
     ("pricing", "APPROVAL_ROLE_REQUIRED", "design/05-governance.md"),
     ("pricing", "AVAILABILITY_OUTSIDE_COVERAGE", "design/07-pricewindow-linkage.md"),
-    ("pricing", "BACKDATE_GRANT_REQUIRED", "design/05-governance.md"),
+#: - **One removed 2026-08-16, by D-330 (the historical-import descope), and it is the *second*
+#:   member ever paid down by deleting the declaration rather than by naming the code in the rule
+#:   that raises it** — D-239's `BRAND_UNKNOWN` was the first, and the shape is identical: the debt
+#:   said "declared, and nothing raises it", and the fix was to stop declaring it.
+#:   `BACKDATE_GRANT_REQUIRED` / design/05 — the whole Historical Import flow is struck, so the 403
+#:   it named has no path to be raised on. Measured by diffing the known-debt block with the wave
+#:   stashed against the wave applied (47 -> 45 suppressed), not inferred from the edit.
+#:
+#:   **`BACKDATE_SIDE_EFFECT` was struck in the same edit and was never pinned**, for D-239's
+#:   recorded reason exactly: it was declared in the same §5 block *and* named by
+#:   inst-bd-noeffect's rule body, by D-81 and by two ACs, so P3 always saw it referenced. Only
+#:   `BACKDATE_GRANT_REQUIRED` was declared with no rule naming it. Both are now named **outside**
+#:   the Problem-responses block by the strike record, which declares nothing.
     ("pricing", "BASIS_MISSING", "design/08-bundles.md"),
     ("pricing", "CHANGE_TARGET_UNPUBLISHED", "design/06-consumer-contracts.md"),
     ("pricing", "COMPONENT_UNPUBLISHED", "design/08-bundles.md"),

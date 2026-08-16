@@ -195,7 +195,15 @@ PINNED_COUNTS_2026_07_30 = {
     # `fr-period-floor-cap`, the catalog authoring field §17.8 had deferred
     # (D-319). One requirement authored, one counted; the per-id check is beside
     # `PINNED_TRIAGE_PRICING` in `test_neighbourhoods_cli.py`.
-    "pricing": {"fr": 66, "nfr": 12, "total": 78},
+    # pricing fr 66 -> 65 / total 78 -> 77 on 2026-08-16: D-330 **struck**
+    # `fr-historical-import-governance` — historical import is out of scope, so the
+    # requirement's `**ID**:` declaration is removed rather than annotated and Slice 5's
+    # Traces-to line drops it in the same wave. A struck requirement is not an unclaimed
+    # one: leaving the declaration would have left P2 reporting a requirement no slice
+    # owns. This is the first *downward* move of this pin, and a denominator here is
+    # deliberately not monotone (D-239's precedent for error codes, D-330 cl. 1 for
+    # instructions). The per-id check is beside `PINNED_TRIAGE_PRICING`.
+    "pricing": {"fr": 65, "nfr": 12, "total": 77},
     "ledger": {"fr": 35, "nfr": 5, "total": 40},
 }
 

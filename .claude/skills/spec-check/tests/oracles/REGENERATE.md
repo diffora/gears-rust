@@ -1209,6 +1209,72 @@ checker means by "referenced", and that is the skill's contract.
 
     Suite: **269 -> 270 passed**, 1 skipped (one test replaced by two).
 
+28. **2026-08-16, twenty-eighth capture — the D-330 historical-import descope.** Document
+    movement only, no checker change. **Live findings unchanged at 2** (the two rating-side
+    statements). **Suppressed 47 -> 45.** `live-text.txt` and `live-json.json` differ from their
+    predecessors in the debt count and **nothing else**; `live-show-known-debt.txt` loses exactly
+    two lines, and eleven surviving members shift **+1** from the one line D-13's strike record
+    added above them.
+
+    D-330 takes historical import **out of scope** and strikes the flow rather than deferring it:
+    Slice 5 §2's seven steps and Slice 11 §3's synthesis consumer leave the design set —
+    **eight declared instructions**, measured `grep -oE '\`inst-[a-z0-9-]+\`$'` per slice: S5
+    **37 -> 30**, S11 **38 -> 37**. Tier 1 of synthesis is untouched and D-87's consumability
+    argument survives; only its premise that the payload's source is an imported store goes.
+
+    **Both debt movers are named, and they are different kinds of payment.**
+
+    - **`BACKDATE_GRANT_REQUIRED` / design/05** left `PINNED_UNREFERENCED_CODES_2026_07_29` because
+      its **declaration was deleted** — the *second* member ever paid that way, after D-239's
+      `BRAND_UNKNOWN`, and the same shape: the debt said "declared, and nothing raises it", and the
+      fix was to stop declaring it. `BACKDATE_SIDE_EFFECT` was struck in the same edit and was
+      **never a member**, for D-239's recorded reason exactly — it was declared in the block *and*
+      named by the rule body, by D-81 and by two ACs, so P3 always saw it referenced. Both are now
+      named **outside** the Problem-responses block, in prose that declares nothing.
+    - **`D-13 -> PRD.md`** left `PINNED_PROPAGATION_GAPS_2026_07_29` (21 -> 20) because the PRD's
+      strike record for `fr-historical-import-governance` names D-13 as one of the rules that went
+      with the flow. Stated precisely rather than glossed: the gap was paid by the PRD finally
+      *citing* the decision, which is what P1 asks — and the requirement D-13 propagated into is
+      the one that was struck, so the citation is the record and not a technicality.
+
+    **The requirement pin moved down for the first time.** `fr-historical-import-governance`'s
+    `**ID**:` declaration is **removed**, so pricing goes **fr 66 -> 65, total 78 -> 77**, and
+    Slice 5's `**Traces to**:` line drops it in the same edit. Annotating the declaration in place
+    would have left P2 reporting a requirement no slice owns — a struck requirement is not an
+    unclaimed one. A denominator here is deliberately not monotone, which is D-239's precedent for
+    error codes and D-330 clause (1) for instructions.
+
+    **P1 was armed rather than assumed.** The `D-330` token was stripped from each of its seven
+    resolvable targets in turn, in a scratch copy: **exactly one** `propagation-missing` appeared
+    each time, naming exactly the stripped document, with the rest of the finding set constant —
+    `design/05`, `design/11`, `DESIGN.md`, `PRD.md`, `design/01`, `design/02`, `design/README.md`.
+
+    **The triage pin moved, and the two movers are not one story.** Total 78 -> 77,
+    `multi-region` 63 -> 62, `anchored:no-account` 4 -> 3, `weak-coverage` 8 -> 9;
+    `PINNED_JUDGE_CALLS["pricing"]` **unchanged at 71**.
+    `fr-historical-import-governance` leaves the corpus, which is the whole of the total's and
+    `multi-region`'s -1, and applying **only** the PRD edit to the pre-wave tree reproduces that
+    and nothing else. `fr-priceoverlay-referential-integrity` crossed `anchored:no-account` ->
+    `weak-coverage` on the **sixth** crossing of one boundary by the same route: it gained
+    `DECISIONS.md:19-30`, the register's status paragraph, scoring **0.625** against
+    `SCORE_THRESHOLD = 0.6` on 5 matched terms, over a region that is **byte-identical** across the
+    wave. **No single edited document reproduces it** — each of the eight was applied to the
+    pre-wave tree alone and all eight leave the id where it was, as do the PRD alone and
+    `DECISIONS.md` alone — so it is document-frequency movement over a fixed window grid and not
+    evidence about coverage. The wave touched neither that requirement nor
+    `design/09-price-overlays.md`.
+
+    **One thing the strike forced, worth carrying because the next struck instruction will meet
+    it.** A struck `inst-*` id can never be written in backticks again: a backticked id is a
+    *reference* to P3, and a reference to an id no bullet declares is `inst-dangling`, **Medium**.
+    Leaving the eight ids backticked in the register and in the two 2026-07-30/31 review records
+    produced **five** such findings — measured, then resolved by naming them as plain text
+    wherever the record has to name them. It is the mirror of entry 15's warning: a bare token can
+    *pay* a pin falsely, and a backticked one can *manufacture* a finding out of a document that
+    is merely remembering.
+
+    Suite: **270 passed**, 1 skipped — unchanged.
+
 ## How they were produced (2026-07-31 capture)
 
 Run from the repository root:

@@ -16,7 +16,7 @@
   - [1.8 Context & Dependencies](#18-context--dependencies)
 - [2. Actor Flows (CDSL)](#2-actor-flows-cdsl)
   - [Approve or Reject a Material Change](#approve-or-reject-a-material-change)
-  - [Historical Import (Backdating)](#historical-import-backdating)
+  - [~~Historical Import (Backdating)~~ — struck by D-330](#historical-import-backdating--struck-by-d-330)
 - [3. Processes / Business Logic (CDSL)](#3-processes--business-logic-cdsl)
   - [Materiality Evaluation](#materiality-evaluation)
   - [Two-Person Rule Enforcement](#two-person-rule-enforcement)
@@ -32,7 +32,7 @@
   - [Two-Person Rule](#two-person-rule)
   - [Threshold Policy](#threshold-policy)
   - [RBAC & Isolation](#rbac--isolation)
-  - [Backdating Governance](#backdating-governance)
+  - [~~Backdating Governance~~ — struck by D-330](#backdating-governance--struck-by-d-330)
   - [Audit Completeness](#audit-completeness)
 - [9. Acceptance Criteria](#9-acceptance-criteria)
 - [10. Non-Functional Considerations](#10-non-functional-considerations)
@@ -47,8 +47,8 @@ This slice owns the **who-may-do-what layer** that gates every publish: **materi
 evaluation** against the per-currency tenant threshold policy (fail-safe: no threshold ⇒
 everything is material; first publish ⇒ always material), the **two-person rule** (submitter
 + ≥ 1 independent approver, self-approval rejected and audited), **RBAC deny-by-default**
-over both mutate and read/preview surfaces (with the explicit catalog-preview grant and the
-restricted historical-import grant), **tenant/brand/region isolation** with the pricing
+over both mutate and read/preview surfaces (with the explicit catalog-preview grant),
+**tenant/brand/region isolation** with the pricing
 `region` decoupled from the IdP authz-region claim, and the **append-only, tamper-evident
 audit trail** with ≥ 7-year jurisdiction-configurable retention. It plugs into the
 Foundation's publish path as the approval step ([`01-foundation.md`](./01-foundation.md)
@@ -56,7 +56,7 @@ Foundation's publish path as the approval step ([`01-foundation.md`](./01-founda
 
 **Traces to**: `cpt-cf-bss-pricing-fr-approval-two-person`,
 `cpt-cf-bss-pricing-fr-approval-threshold-policy`, `cpt-cf-bss-pricing-fr-rbac-deny-by-default`,
-`cpt-cf-bss-pricing-fr-tenant-brand-isolation`, `cpt-cf-bss-pricing-fr-historical-import-governance`,
+`cpt-cf-bss-pricing-fr-tenant-brand-isolation`,
 `cpt-cf-bss-pricing-fr-audit-completeness`
 
 ### 1.2 Purpose
@@ -64,8 +64,7 @@ Foundation's publish path as the approval step ([`01-foundation.md`](./01-founda
 Make an unauthorized or self-approved price change — the financial-fraud vector this domain
 carries — structurally impossible: no principal can both submit and approve a material
 change, no change slips under an unset threshold, no preview leaks pricing to an unlisted
-role, backdating exists only as a restricted, justified, audited, downstream-side-effect-free
-path, and every mutation leaves an immutable trail an auditor can rely on for 7+ years.
+role, and every mutation leaves an immutable trail an auditor can rely on for 7+ years.
 
 ### 1.3 Actors
 
@@ -73,7 +72,7 @@ path, and every mutation leaves an immutable trail an auditor can rely on for 7+
 |-------|---------------|
 | `cpt-cf-bss-pricing-actor-finance-manager` | Submits publishes |
 | `cpt-cf-bss-pricing-actor-finance-reviewer` | The independent approver; rejects with reason; configures the approval-threshold policy (`approval_policy × write` — deliberately not CatalogAdmin's, see the role-matrix note) |
-| `cpt-cf-bss-pricing-actor-catalog-admin` | Configures roles/grants and the config plane (taxonomies, tax-display); runs governed historical imports |
+| `cpt-cf-bss-pricing-actor-catalog-admin` | Configures roles/grants and the config plane (taxonomies, tax-display) |
 | `cpt-cf-bss-pricing-actor-auditor` | Reads immutable history + approval trails; exports |
 | `cpt-cf-bss-pricing-actor-partner` | Holds (only) the catalog-preview read grant |
 
@@ -81,20 +80,19 @@ path, and every mutation leaves an immutable trail an auditor can rely on for 7+
 
 - **PRD**: [PRD.md](../PRD.md) — §6.7 (approval subset), §6.12, §17.6 (tenant policy objects), §7.1 (audit/retention NFRs), §15 (retention-maximum open item)
 - **Design**: [01-foundation.md](./01-foundation.md) — publish contract step 3 (§4.2), `pricing_policy_object`, `pricing_audit_log`
-- **Dependencies**: Foundation (Slice 1). The approval step gates the publish flows of every capability slice; the backdating grant is exercised by lifecycle snapshot synthesis (Slice 11).
+- **Dependencies**: Foundation (Slice 1). The approval step gates the publish flows of every capability slice.
 
 ### 1.5 Scope
 
 **In scope**: materiality evaluation (per-currency absolute/percent deltas, any-row-trips
 rule, first-publish rule); the approval workflow (submit → approve/reject with reason →
 publish); self-approval rejection + audit; RBAC deny-by-default on mutate **and**
-read/preview (preview grant; backdating grant); tenant/brand/region scope enforcement (authz
+read/preview (preview grant); tenant/brand/region scope enforcement (authz
 region ≠ pricing region); audit-record completeness, tamper-evidence (in-DB hash chain,
 D-14) and retention.
 
 **Out of scope**: what *makes* a change (versioning/supersession — Foundation §4.3); IdP/role
-administration itself (platform IdP; this slice consumes claims); the backdating *use case*
-of legacy snapshot synthesis (Slice 11 — it invokes the grant + audit defined here);
+administration itself (platform IdP; this slice consumes claims);
 customer-group membership changes' materiality semantics (Slice 9 registers its material
 triggers — immediate re-resolutions and bulk group moves — into this slice's evaluator;
 renewal-aligned single-membership changes are audit-only).
@@ -122,7 +120,7 @@ Design-introduced names (Slice 5):
 | `MaterialityEvaluator` | Computes the per-currency delta vs baseline and applies G1/G3; called by the Foundation publish path |
 | `ApprovalWorkflow` | The submitted → approved/rejected state machine with the two-person invariant (G2) |
 | `ScopeGuard` | Request-time RBAC + tenant/brand/region scope enforcement (deny-by-default; authz region ≠ pricing region) |
-| `BackdateGrant` | The distinct restricted grant + mandatory-reason + audit contract for historical import |
+| ~~`BackdateGrant`~~ | **Struck by D-330** (2026-08-16) — historical import is out of scope; the grant, its resource label and its endpoints leave this slice with the flow |
 | `AuditTrail` | Writer over `pricing_audit_log` guaranteeing actor / before-after / approval completeness + tamper evidence (G4) |
 
 ### 1.8 Context & Dependencies
@@ -134,7 +132,6 @@ flowchart TB
         SG["ScopeGuard"]
         ME["MaterialityEvaluator"]
         AW["ApprovalWorkflow"]
-        BG["BackdateGrant"]
         AT["AuditTrail"]
     end
     FND["Foundation (Slice 1)<br/>publish path step 3 · pricing_policy_object · pricing_audit_log"]
@@ -142,13 +139,12 @@ flowchart TB
     SG --> FND
     ME --> AW
     AW --> FND
-    BG --> AT
     AT --> FND
 ```
 
 **Consumed:** IdP claims (roles, tenant, brand/region authz scope); the approval-threshold
 policy (`pricing_policy_object`). **Produced:** the approve/reject gate on every publish; the
-audit trail every other slice's mutations flow through; the preview/backdating grants.
+audit trail every other slice's mutations flow through; the preview grant.
 
 ## 2. Actor Flows (CDSL)
 
@@ -175,29 +171,35 @@ audit trail every other slice's mutations flow through; the preview/backdating g
 4a. [ ] - `p1` - **Approver scope:** the approver's authz claims MUST cover every region/brand touched by the pinned change set (an EU-scoped reviewer cannot approve a US repricing); an out-of-scope approve is denied + audited like any scope violation - `inst-ap-scope`
 5. [ ] - `p1` - **RETURN** approve → Foundation continues (§4.2 steps 4–5); reject → Plan back to `draft`, submitter notified - `inst-ap-return`
 
-### Historical Import (Backdating)
+### ~~Historical Import (Backdating)~~ — struck by D-330
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-pricing-flow-backdating`
-
-**Actor**: `cpt-cf-bss-pricing-actor-catalog-admin` (holding the distinct `BackdateGrant`)
-
-**Success Scenarios**:
-- A historical import with past `availableFrom`/effective dates lands as **reference data** with a mandatory reason, fully audited; used e.g. for legacy snapshot synthesis (Slice 11, `migrated-origin`)
-
-**Error Scenarios**:
-- Principal without the backdating grant → denied (403, audited); the grant is never part of a default role
-- Import that would generate or re-open a downstream billable charge window → rejected (`BACKDATE_SIDE_EFFECT`)
-- A row failing the row-shape pipeline subset (unknown region, bad precision, duplicate scope key, malformed modelKind/eval-policy) → rejected with the enumerated report (D-13)
-- Import applied without an independent approval → impossible: every import is an always-material approval unit (D-13)
-
-**Steps**:
-1. [ ] - `p1` - API: POST /bss-pricing/v1/historical-imports (grant-gated; `reason` REQUIRED) - `inst-bd-api`
-2. [ ] - `p1` - Validate zero downstream billable effect: imported rows are reference/history only — no window scheduling, no event that warms a rateable state. The `BACKDATE_SIDE_EFFECT` predicate is enumerated (**narrowed by D-81, 2026-07-30 review fix, confirmed 2026-07-31**): an imported row whose `effective_from` (or `availableFrom`) is **not strictly past** is rejected (422) — a wholly-future reference row is future authoring and belongs to the publish path — while `effective_to` MAY be any later instant, **including `now`-or-later and open-ended (`null`)**: the legacy price book's standing price is importable as still-in-effect, which is what makes synthesis tier 2 ([`11-lifecycle.md`](./11-lifecycle.md) `inst-sy-select`) reachable for the per-trigger `t`. The pre-D-81 rejection of ranges intersecting a not-yet-closed billing period is **dropped**: it guarded against retroactive effect back when reference rows would have sat beside live rows — the D-76 disjoint store is structurally inert (never window-linked, never projected, never a coverage/sellability/addressability input; sole reader `inst-sy-select`), and the sanctioned **forward** effect — shaping `migrated-origin` snapshots — is exactly what the D-13 always-material approval governs (`inst-bd-twoperson`) - `inst-bd-noeffect`
-2a. [ ] - `p1` - **Row-shape pipeline (D-13):** every imported row runs the fail-closed pipeline's row-shape subset — taxonomy membership, ISO 4217 minor-unit precision, scope-key + effective-interval uniqueness **within the historical set** (`inst-bd-store`), modelKind/evaluation-policy shape **incl. tier-band geometry over the row's `tier_bands` and the package fields (D-87 — a tiered/`package` legacy price is importable field-complete, validated by the same S3 rules)**, **and the Slice-6 consumer-contract field presence on recurring rows** (`billingAnchorPolicy`/`prorationBasis`/`creditOnDowngrade`/`billingTiming` — reference rows shape `migrated-origin` snapshots consumers compute from, so the S6 presence promise must hold for them too; 2026-07-28 review fix, confirmed 2026-07-31); window-coverage, sellability and `CatalogVersion`-addressability checks do **not** apply (reference rows are resolved only via snapshot-synthesis provenance, never via window resolution). An import can never create a row regular authoring would reject - `inst-bd-pipeline`
-2ab. [ ] - `p1` - **Where reference rows live (normative, D-76, 2026-07-30 review fix):** imported rows land in a **separate store**, `pricing_historical_price` (§6) — **never** in `pricing_price`. Two defects forced this. (i) Scope-key uniqueness run against `pricing_price` made the import self-defeating: a historical price for a **still-published** plan carries the same canonical scope key as the live row, so the very case snapshot synthesis exists for — reconstructing a legacy subscription's old price on a plan still being sold — was rejected by its own validator. (ii) Putting a non-publishable, non-window-linked, non-projectable row inside `pricing_price` would create an unnamed exception class in the append-only core: every Foundation statement about published rows (§4.3 immutability, the partial `UNIQUE`, the REVOKE/trigger discipline, "consumers resolve only committed versions") would silently acquire "…except reference rows". Disjoint stores keep those statements true without qualifiers, and make leakage into live resolution impossible **by construction** rather than by a remembered query predicate. Consequently: uniqueness and `[effective_from, effective_to)` non-overlap are enforced **per scope key within `pricing_historical_price` only**; a collision with a live `pricing_price` row is **not** a conflict, because the two sets never resolve together - `inst-bd-store`
-2b. [ ] - `p1` - **Two-person (D-13):** every historical import is an **always-material approval unit** (registered trigger): the `BackdateGrant` holder submits, an independent FinanceReviewer approves — the rows land only on approval (standard pin/void semantics). Rationale: backdated rows shape `migrated-origin` snapshots that rating consumes going forward; "zero billable effect" holds for past periods, not future rating - `inst-bd-twoperson`
-3. [ ] - `p1` - `AuditTrail` records actor, reason, full row set, provenance (+ the approval trail) - `inst-bd-audit`
-4. [ ] - `p1` - **RETURN** 202 (submitted for approval) → 201-equivalent completion on approval (reference rows) — the **only** sanctioned backdated path - `inst-bd-return`
+- **Struck 2026-08-16 by [D-330](../DECISIONS.md).** Historical import is **out of scope**: this
+  gear serves the prices it authored, and a subscriber whose price predates the catalog is
+  re-papered onto a plan the catalog publishes. The flow `cpt-cf-bss-pricing-flow-backdating` and
+  its seven steps — inst-bd-api, inst-bd-noeffect, inst-bd-pipeline, inst-bd-store,
+  inst-bd-twoperson, inst-bd-audit, inst-bd-return — leave the design set, and everything built
+  for them goes with them: the `BackdateGrant` and the `historical_import` resource label with its
+  two endpoints (§3), the `POST /bss-pricing/v1/historical-imports` route and its two codes (§5),
+  the `pricing_historical_price` store and the `backdate_import` audit verb (§6), the Backdating
+  DoD (§8) and its four acceptance criteria (§9). D-13 (the row-shape pipeline and the
+  always-material second person), D-76 (the disjoint reference store) and D-81 (the import's
+  temporal bound) are struck with the flow they governed. **D-87's consumability argument
+  survives** on the surface it was built for — a synthesized payload must carry the complete
+  evaluable row content because no `CatalogVersion` backs it
+  ([`11-lifecycle.md`](./11-lifecycle.md) `inst-sy-payload`); only its premise that the payload's
+  source is an imported historical store goes.
+- **Struck, not deferred.** Nothing here is owed work, and the declared-instruction denominator
+  falls rather than holding a flow nobody intends to reach. Stated plainly: an acquisition or
+  platform migration that means to honour a price signed elsewhere has no path in this gear, and
+  those subscribers move onto a plan this catalog publishes — a commercial act, not a data one.
+- **A struck instruction id is written here without backticks, and that is deliberate.** In this
+  set a backticked `inst-*` id is a *reference*, and a reference to an id no bullet declares is a
+  dangling one; the eight ids D-330 removes are therefore named as plain text wherever the record
+  has to name them — here, in [`11-lifecycle.md`](./11-lifecycle.md) §3, and in the register
+  entries that decided them.
+- **What is NOT struck**: legacy snapshot **synthesis** (`11-lifecycle.md` §3). Reconstructing a
+  snapshot for a subscription whose price this catalog *did* author is a different capability,
+  blocked by a different thing (D-330 cl. 3, D-327), and it stays.
 
 ## 3. Processes / Business Logic (CDSL)
 
@@ -213,7 +215,7 @@ audit trail every other slice's mutations flow through; the preview/backdating g
 2. [ ] - `p1` - First publish (no prior baseline — no delta computable) → **material** (G1) - `inst-mat-first`
 3. [ ] - `p1` - Otherwise compute per-row deltas **in each row's own currency** (absolute or percent per policy); **any** row over its threshold trips the whole change (G3); a row whose currency has **no threshold entry** in the configured policy is **material** (the G1 fail-safe applies per currency, not per policy object). **The delta domain (normative, D-115, 2026-07-31 review fix — "the row's delta" previously had no defined operand for the rows that carry tiered revenue; **amended D-311, 2026-08-11**):** `flat` → the `amount_minor` delta; `per_unit` → the `unit_rate_nano` delta; `graduated`/`volume` → the band-wise `unit_price_nano` vector, compared per band **iff the band geometry (bounds and count) is unchanged**; `package` → the `package_price_minor` delta **iff `package_size` is unchanged**. **A threshold's `absolute_minor` is authored in minor units and the last three operands are rates, so the bar is raised into the rate scale before comparing, never the move rounded down into the bar's** — flooring a sub-minor rate move to zero would put D-311's own truncation one layer further in, and answering "not comparable" for every rate move would make every band change material regardless of size, which deletes the control rather than failing safe. A band's bar always compared against the per-unit band price; D-311 changed how that number is stored, not what the tenant configured it to mean. A `per_unit` row carrying no `unit_rate_nano` has **no computable delta** (`NotComputable`), never a zero move. Any change to a **quantity-determining/geometry field** — band bounds or count, `package_size`, `manual_quantity`, `includedAllowance.quantity` — is **material** regardless of thresholds: no effective-price delta is computable catalog-side (the no-charge-computation principle forbids computing one), so the G1 fail-safe applies — a `manual_quantity` 10 → 1000 or a `[0,1000)` → `[0,10)` band move multiplies the charge at zero amount delta. A **percent-only** policy against a zero (or NULL) baseline is likewise material — no percentage is computable. Materiality is evaluated **once at submit**; a later threshold-policy change neither re-evaluates nor voids a pending approval. **And it is evaluated against the policy in force at the act's own instant, not at the reader's (normative, D-194, 2026-08-05):** the window mutation read the effective policy on the wall clock while stamping the record with the act's instant, so a verdict and its record could fall on opposite sides of an `effective_from` — which, in the direction that matters, makes an act auto-publishable that the fail-safe would have made material. **This step has no authorable subject on a plan revision — permanently, and not "until D-88 lands" (D-183, amended 2026-08-06):** every revision the authoring door admits answers an earlier arm — no baseline, no moved row, or first publish — because the **authoring** door refuses a draft row on a key a published row occupies (occupancy is a property of the door and not of the table — D-195; the supersession unit's own door requires exactly that occupant). D-183 expected D-88 to make the pair reachable *through a publish*. **The publish's *output* never carries it** — D-195's exclusion rule drops a draft on an occupied key from what the commit flips, because it publishes through the unit that staged it — **but the evaluator's *input* is a different set and does carry it (D-200, 2026-08-06)**: the change set is built from the assembled shape, published plus draft, so a plan holding a staged supersession successor presents exactly the pair this step compares. The verdict can then read `thresholdReached` naming a row the revision will not publish. **That divergence is the decided reading and not a defect awaiting closure (normative, D-200, 2026-08-06): a plan revision's materiality ranges over its whole candidate set — the assembled shape, published plus draft — including rows this publish will not flip.** Two grounds. It fails safe in the only direction that matters: over-material, never under, and the row it names is separately two-person through the supersession unit that staged it. And the alternative — building the change set from what the commit will flip — changes this step's sibling `inst-mat-newrow` on **every** publish, dropping a newly-authored not-yet-publishable row out of the change set, which is a different rule's behaviour and a larger move than the legibility it buys. **The cost is stated rather than hidden:** a reviewer of such a revision can be shown a verdict whose reason names a row that is not in the revision, and the window for it is narrow while the supersession unit is `submitted` (`refuse_held_key` refuses the plan-revision submit outright) and open once that unit is rejected, withdrawn, or orphaned per D-198. `thresholdReached`'s producer is **D-88's own surface**: the supersession unit's change set is one authored row against the key's published baseline, which is the standard per-currency evaluation `inst-su-commit` names. The comparison is *also* reached from the window plane, where the change set is the published rows unchanged and the delta is therefore always zero **Which row set the verdict ranges over (normative, D-326, 2026-08-16):** the candidate set **less rows another publish unit staged** — the set the commit publishes, plus the published plane. Since D-195 a material supersession stages its successor as a `draft` beside the published row; handing that row to this evaluator made `moves_no_row` answer `false` on a revision that publishes no row of its own, and D-115's whole-revision trigger then never fired. The correction is monotone: the staged successor shares its key and currency with the published predecessor that stays in the set, and the no-baseline rule runs before the row walk, so any reason it alone could produce is replaced by the always-material trigger rather than lost. - `inst-mat-percurrency`
 3a. [ ] - `p1` - **A row without its own baseline is material:** adding a new row to a published plan (a new currency/region/phase/chargeKind key) has no prior row to delta against — per the G1 fail-safe it is **always material**, regardless of thresholds - `inst-mat-newrow`
-4. [ ] - `p1` - Registered material-change sources beyond price deltas — **always-material triggers**: `grandfatherUntil` tightening (Foundation §4.3), grandfathering cutovers (Slice 7), **plan retirement while a cutover unit is pending/approved-not-yet-effective** (Slice 11 — the retirement unwinds the approved unit, D-05), **immediate** membership re-resolutions and bulk group discounts/moves (Slice 9 — renewal-aligned single-membership changes are audit-only, not material), **historical imports** (this slice, D-13 — every import, since backdated rows shape `migrated-origin` snapshots), and **approval-threshold-policy mutations themselves** (this slice, D-10 — direction-agnostic: any policy diff needs an independent second FinanceReviewer; the two-person rule's foundation must not be single-person-editable. Bootstrap is fail-safe: a single-reviewer tenant simply leaves the policy unset ⇒ everything material), and **GA-gate-clearing re-publishes** (Slice 4 `inst-td-clear`; the Slice 10 prepaid analogue, D-29): the clearing re-publish can be content-identical — zero per-row delta ⇒ auto-publishable under a configured threshold — which would break S4's with-approval promise, so it is a registered always-material trigger (2026-07-28 review fix, confirmed 2026-07-31). Grant-price changes (Slice 10) are **not** always-material: they are evaluated as ordinary price deltas under the per-currency threshold policy. The grant's **non-price** fields (`category`, `applicability`, `drawdownPriority`) carry no numeric delta — per the G1 fail-safe (no delta computable ⇒ material) their changes are **always material** (registered trigger, Slice 10 `inst-pg-material`). **`PriceOverlay` adjustments (D-50, 2026-07-28 review fix — the evaluator previously saw only price rows, so an overlay edit from −10% to −90% reached consumers approver-less):** creating a `PriceOverlay`, adding/removing an adjustment line, and **any line-magnitude or kind change** are **always material** — an overlay line is not a price row (no per-currency baseline delta to threshold; percent lines carry no currency at all), so the G1 no-delta rule applies wholesale; scope/precedence/dating/disclosure edits ride the same rule (they change who receives the adjustment). This closes the authz gap too: `price_overlay × write` still authors, but the commit routes through the material approval workflow before its D-06 publish unit fires. **Window cancellation and `effectiveTo` shortening on a key with in-flight subscribers (Slice 7, D-62, 2026-07-29 review fix):** D-05 and D-51 guarded the *retirement* path into the trailing void, but `DELETE /bss-pricing/v1/price-windows/{id}` and the shortening `PATCH` carry the identical hazard under plain `plan × write` — cancelling an approved scheduled successor silently reverts a two-person-approved price change and leaves the key failing closed once the active window expires. Both are therefore **always-material** triggers, and both are additionally gap-checked by S7 `inst-fg-trailing`; the D-51 exemption — **narrowed by D-80 (2026-07-30): no in-flight subscribers *and* not currently sellable, where "sellable" is evaluated as the plan's sellability on the key's `(currency, region)` market over the full key conjunction (D-94, 2026-07-31 — cancelling any component key's window of a sellable plan-market is never exempt)**, the subscriber predicate resolving through the D-79 Subscriptions lane (fail-closed on outage) — applies to the materiality trigger as well as to the gap check. **One carve-out, and it is the composition's rather than the caller's (normative, D-201, 2026-08-06):** the `effectiveTo` shorten performed as half of a D-88 supersession does **not** trip this trigger — S7 `inst-su-commit` carries the statement and its mechanism. The hazard registered here is coverage *removal*; that unit hands coverage over inside the same transaction, and `compose_windows` refuses the composition outright if any window occupying the key begins at or after the changeover, so it cannot cancel or truncate an approved scheduled successor at all. A shorten reaching this plane by any other route is always material exactly as stated above, and the supersession unit is still two-person whenever its own per-currency delta trips the threshold. **Bundle composition and rev-share (Slice 8, D-104, 2026-07-31 review fix):** bundle creation, component add/remove/replace, any rev-share change (`share_bp`, `platform_cut_bp`, `residual_absorber_party`), a `price_basis` change and an `invoiceItemization` change are **always material** — this evaluator computes per-row deltas over **price rows** and a `sum_of_parts` recomposition touches none, so a component swap or a re-split evaluated `auto_publishable` under any configured threshold and reached consumers approver-free (the D-50 hole one slice over: a rev-share split *is* vendor payout, and a component swap changes what the customer receives at an unchanged price). It also restores D-11's own premise — that decision dropped `bundle × write` from the publish endpoint because "the composition is protected at publish time by the approval content pin", which a non-material publish never creates. **Plan retirement, unconditionally (Slice 11, D-109, 2026-07-31 review fix):** retirement was registered here only for the D-05 case (a live cutover unit to unwind), yet it cancels **every** not-yet-active window of its zero-subscriber keys in one call — the act D-62 made two-person for a *single* window — stops all new sales for the plan, and is **irreversible** (the plan state machine has no `retired → published` edge and the open draft revision is deleted with it). It is therefore an always-material trigger in every case; a dry-run confirm screen is not a second principal. **Mutations with no computable price delta (D-115, 2026-07-31 review fix — the grant-field G1 treatment applied to its siblings):** a change set whose consumer-visible content carries **no computable price delta** is **always material**. Enumerated: the row **contract fields** — `billingTiming` (Billing's sole deferral input), `prorationBasis`, `billing_anchor_policy`, `credit_on_downgrade`, `tax_inclusive`/`tax_category_ref`, `quantity_source` — and **plan-shape revision content**: the descriptor set (GL code, invoice line template, itemization rule), the phase graph/durations (a trial 7 → 90 days is a commercial giveaway with zero price-row delta), the add-on rule set (required flips, `depends_on`/`conflicts_with`, qty bounds, `price_override_ref`), `billing_cycle`/`frequency`, `available_from`/`available_to`, the `PlanTier` override, `invoice_grouping_key`, and the **plan-change contract content** — `usage_counter_on_plan_change` (flipping `reset → carry` on a graduated target plan changes which band the continued `Q` lands in, at zero price-row delta — D-113's lever), `allowed_change_targets` edges and `comparability_rank` (enumeration completed 2026-08-01, billing-domain review C-7: the blanket no-computable-delta clause covers these on a plain reading, but this list is the concrete registered set an implementer codes from), **the derived (composite) meter definitions** (Slice 10, `inst-cm-frozen` — a re-weighting from 1:1 to 1:4 changes every billable quantity the composite derives, at zero price-row delta) and **the plan-level period floor/cap** (**D-319**, 2026-08-15 — a $500/period minimum is money, and it is the first member of this list that is: it changes what a subscriber pays without appearing as a line on the invoice that would explain it). **Two things this enumeration does not fix, named here rather than left to the next reader** (D-319): the trigger it registers fires only on a change set that moves **no** price row at all, so a publish carrying both a shape edit and a sub-threshold row edit reaches consumers with the shape edit unjudged — which is a property of the *detector*, not of this list, and closing it needs a shape-diff operand the change set does not carry; and until 2026-08-15 the list omitted the composites as well, which is how a member of a "concrete registered set" goes missing without any check noticing. A pure-shape revision contains zero price rows, so the per-row evaluation had nothing to trip on — while D-50 (overlays), D-104 (bundle composition), D-62 (windows) and D-109 (retirement) had each already closed this hole on their own surface. Auto-publish therefore remains exactly: a pure amount change on unchanged geometry, below an explicitly configured threshold, not a first publish **D-319's caveat here named a shape that cannot be authored, corrected by D-326 (2026-08-16):** it read "a shape edit **and** a sub-threshold row edit", and a plan revision cannot edit a price row at all — the authoring door refuses an occupied key and a published row. The reachable case was another unit's staged successor, and it published a period bound on one principal until D-326 closed it. - `inst-mat-registered`
+4. [ ] - `p1` - Registered material-change sources beyond price deltas — **always-material triggers**: `grandfatherUntil` tightening (Foundation §4.3), grandfathering cutovers (Slice 7), **plan retirement while a cutover unit is pending/approved-not-yet-effective** (Slice 11 — the retirement unwinds the approved unit, D-05), **immediate** membership re-resolutions and bulk group discounts/moves (Slice 9 — renewal-aligned single-membership changes are audit-only, not material), **approval-threshold-policy mutations themselves** (this slice, D-10 — direction-agnostic: any policy diff needs an independent second FinanceReviewer; the two-person rule's foundation must not be single-person-editable. Bootstrap is fail-safe: a single-reviewer tenant simply leaves the policy unset ⇒ everything material), and **GA-gate-clearing re-publishes** (Slice 4 `inst-td-clear`; the Slice 10 prepaid analogue, D-29): the clearing re-publish can be content-identical — zero per-row delta ⇒ auto-publishable under a configured threshold — which would break S4's with-approval promise, so it is a registered always-material trigger (2026-07-28 review fix, confirmed 2026-07-31). Grant-price changes (Slice 10) are **not** always-material: they are evaluated as ordinary price deltas under the per-currency threshold policy. The grant's **non-price** fields (`category`, `applicability`, `drawdownPriority`) carry no numeric delta — per the G1 fail-safe (no delta computable ⇒ material) their changes are **always material** (registered trigger, Slice 10 `inst-pg-material`). **`PriceOverlay` adjustments (D-50, 2026-07-28 review fix — the evaluator previously saw only price rows, so an overlay edit from −10% to −90% reached consumers approver-less):** creating a `PriceOverlay`, adding/removing an adjustment line, and **any line-magnitude or kind change** are **always material** — an overlay line is not a price row (no per-currency baseline delta to threshold; percent lines carry no currency at all), so the G1 no-delta rule applies wholesale; scope/precedence/dating/disclosure edits ride the same rule (they change who receives the adjustment). This closes the authz gap too: `price_overlay × write` still authors, but the commit routes through the material approval workflow before its D-06 publish unit fires. **Window cancellation and `effectiveTo` shortening on a key with in-flight subscribers (Slice 7, D-62, 2026-07-29 review fix):** D-05 and D-51 guarded the *retirement* path into the trailing void, but `DELETE /bss-pricing/v1/price-windows/{id}` and the shortening `PATCH` carry the identical hazard under plain `plan × write` — cancelling an approved scheduled successor silently reverts a two-person-approved price change and leaves the key failing closed once the active window expires. Both are therefore **always-material** triggers, and both are additionally gap-checked by S7 `inst-fg-trailing`; the D-51 exemption — **narrowed by D-80 (2026-07-30): no in-flight subscribers *and* not currently sellable, where "sellable" is evaluated as the plan's sellability on the key's `(currency, region)` market over the full key conjunction (D-94, 2026-07-31 — cancelling any component key's window of a sellable plan-market is never exempt)**, the subscriber predicate resolving through the D-79 Subscriptions lane (fail-closed on outage) — applies to the materiality trigger as well as to the gap check. **One carve-out, and it is the composition's rather than the caller's (normative, D-201, 2026-08-06):** the `effectiveTo` shorten performed as half of a D-88 supersession does **not** trip this trigger — S7 `inst-su-commit` carries the statement and its mechanism. The hazard registered here is coverage *removal*; that unit hands coverage over inside the same transaction, and `compose_windows` refuses the composition outright if any window occupying the key begins at or after the changeover, so it cannot cancel or truncate an approved scheduled successor at all. A shorten reaching this plane by any other route is always material exactly as stated above, and the supersession unit is still two-person whenever its own per-currency delta trips the threshold. **Bundle composition and rev-share (Slice 8, D-104, 2026-07-31 review fix):** bundle creation, component add/remove/replace, any rev-share change (`share_bp`, `platform_cut_bp`, `residual_absorber_party`), a `price_basis` change and an `invoiceItemization` change are **always material** — this evaluator computes per-row deltas over **price rows** and a `sum_of_parts` recomposition touches none, so a component swap or a re-split evaluated `auto_publishable` under any configured threshold and reached consumers approver-free (the D-50 hole one slice over: a rev-share split *is* vendor payout, and a component swap changes what the customer receives at an unchanged price). It also restores D-11's own premise — that decision dropped `bundle × write` from the publish endpoint because "the composition is protected at publish time by the approval content pin", which a non-material publish never creates. **Plan retirement, unconditionally (Slice 11, D-109, 2026-07-31 review fix):** retirement was registered here only for the D-05 case (a live cutover unit to unwind), yet it cancels **every** not-yet-active window of its zero-subscriber keys in one call — the act D-62 made two-person for a *single* window — stops all new sales for the plan, and is **irreversible** (the plan state machine has no `retired → published` edge and the open draft revision is deleted with it). It is therefore an always-material trigger in every case; a dry-run confirm screen is not a second principal. **Mutations with no computable price delta (D-115, 2026-07-31 review fix — the grant-field G1 treatment applied to its siblings):** a change set whose consumer-visible content carries **no computable price delta** is **always material**. Enumerated: the row **contract fields** — `billingTiming` (Billing's sole deferral input), `prorationBasis`, `billing_anchor_policy`, `credit_on_downgrade`, `tax_inclusive`/`tax_category_ref`, `quantity_source` — and **plan-shape revision content**: the descriptor set (GL code, invoice line template, itemization rule), the phase graph/durations (a trial 7 → 90 days is a commercial giveaway with zero price-row delta), the add-on rule set (required flips, `depends_on`/`conflicts_with`, qty bounds, `price_override_ref`), `billing_cycle`/`frequency`, `available_from`/`available_to`, the `PlanTier` override, `invoice_grouping_key`, and the **plan-change contract content** — `usage_counter_on_plan_change` (flipping `reset → carry` on a graduated target plan changes which band the continued `Q` lands in, at zero price-row delta — D-113's lever), `allowed_change_targets` edges and `comparability_rank` (enumeration completed 2026-08-01, billing-domain review C-7: the blanket no-computable-delta clause covers these on a plain reading, but this list is the concrete registered set an implementer codes from), **the derived (composite) meter definitions** (Slice 10, `inst-cm-frozen` — a re-weighting from 1:1 to 1:4 changes every billable quantity the composite derives, at zero price-row delta) and **the plan-level period floor/cap** (**D-319**, 2026-08-15 — a $500/period minimum is money, and it is the first member of this list that is: it changes what a subscriber pays without appearing as a line on the invoice that would explain it). **Two things this enumeration does not fix, named here rather than left to the next reader** (D-319): the trigger it registers fires only on a change set that moves **no** price row at all, so a publish carrying both a shape edit and a sub-threshold row edit reaches consumers with the shape edit unjudged — which is a property of the *detector*, not of this list, and closing it needs a shape-diff operand the change set does not carry; and until 2026-08-15 the list omitted the composites as well, which is how a member of a "concrete registered set" goes missing without any check noticing. A pure-shape revision contains zero price rows, so the per-row evaluation had nothing to trip on — while D-50 (overlays), D-104 (bundle composition), D-62 (windows) and D-109 (retirement) had each already closed this hole on their own surface. Auto-publish therefore remains exactly: a pure amount change on unchanged geometry, below an explicitly configured threshold, not a first publish **D-319's caveat here named a shape that cannot be authored, corrected by D-326 (2026-08-16):** it read "a shape edit **and** a sub-threshold row edit", and a plan revision cannot edit a price row at all — the authoring door refuses an occupied key and a published row. The reachable case was another unit's staged successor, and it published a period bound on one principal until D-326 closed it. - `inst-mat-registered`
 
 ### Two-Person Rule Enforcement
 
@@ -240,7 +242,7 @@ audit trail every other slice's mutations flow through; the preview/backdating g
 2a. [ ] - `p1` - **Preview-grant scope evaluation (2026-07-31d review fix, N-1):** the preview grant carries an **explicit pricing-region set**, and a preview request resolves only markets whose pricing `region` is a member of that set — `REGION_SCOPE_DENIED` (403) otherwise. Grant presence + tenant is **not** sufficient: pricing `region` is deliberately decoupled from the authz-region claim (S4 C5) and `inst-rb-region` constrains **mutation** only, so without this clause a compliant implementation could check grant + tenant and stop — a grant issued for one market previewing all of them. `brand` scoping has **no selector on the base-price preview surface** — brand is not a price-row field (S4 `inst-tx-brand`); it applies only where a brand-scoped artifact (a brand-scoped `PriceOverlay`) is the object being previewed - `inst-rb-preview-scope`
 3. [ ] - `p1` - Denied attempts are audit-logged (actor, surface, claim set) - `inst-rb-audit`
 4. [ ] - `p1` - **Tenant isolation** (SecureORM, Foundation) + brand/region **authz scoping** at the gateway; mutating a price row whose pricing `region` the caller's authz scope does not grant is denied + audited — pricing `region` is a commercial axis, never conflated with the authz-region claim - `inst-rb-region`
-5. [ ] - `p1` - The **backdating grant** (`historical_import × write`) is a distinct restricted resource, never included in a default role (`BackdateGrant`) - `inst-rb-backdate`
+5. [ ] - `p1` - ~~The **backdating grant** (`historical_import × write`) is a distinct restricted resource, never included in a default role (`BackdateGrant`).~~ **Inverted by D-330 (2026-08-16), and it stays a rule rather than becoming a deletion:** historical import is out of scope, so this catalog declares **no `historical_import` resource and no backdating grant** — neither is registered, no role targets one, and re-introducing either needs a decision rather than a commit. The step is the RBAC-side record of the strike; D-330's eight departing instructions are the seven of the §2 flow and one in S11, and this is not one of them - `inst-rb-backdate`
 
 ### AuthZ Resource and Action Catalog (normative)
 
@@ -263,7 +265,7 @@ roles). Each action sits on its **real object** (a noun), never an authz tier:
 | `gts.cf.bss.pricing.approval.v1~` | Approval decisions | `approve` (approve/reject; `preparer ≠ approver` enforced server-side), `read` |
 | `gts.cf.bss.pricing.approval_policy.v1~` | The tenant approval-threshold policy — deliberately a **SEPARATE** resource from `config` (segregation of duties: a config admin must not weaken its own approval thresholds; ledger `dual_control_policy` precedent), and its mutation is **itself two-person** (always-material approval unit — D-10) | `write`, `read` |
 | `gts.cf.bss.pricing.config.v1~` | Tax-display policy + the region/brand/partner/orgTier taxonomies (the tenant config plane; partner/orgTier added by D-120) | `write`, `read` |
-| `gts.cf.bss.pricing.historical_import.v1~` | Governed backdated reference import — its OWN resource so the restricted `BackdateGrant` is targetable without any other authority | `write`, `read` (the imported row set, so the second person can review what they approve — D-61, 2026-07-29 review fix) |
+| ~~`gts.cf.bss.pricing.historical_import.v1~`~~ | **Struck by D-330** (2026-08-16) — historical import is out of scope, so the label is not registered and no role targets it. D-61's reviewability grant on it goes with the flow; the invariant D-61 states survives below | — |
 | `gts.cf.bss.pricing.audit.v1~` | Audit/history read + export — its OWN resource so a forensic/audit role carries no read of live pricing and no write authority | `read`, `export` |
 
 **Endpoint → `(resource, action)` mapping** — every REST surface declared by Slices 2–12.
@@ -290,8 +292,7 @@ shape.
 | `GET/POST /bss-pricing/v1/approvals*` (S5) | `approval × read` / `approve` |
 | `GET/PUT /bss-pricing/v1/config/approval-threshold-policy` (S5) | `approval_policy × read` / `write` |
 | `GET/PUT /bss-pricing/v1/config/taxonomies/{region\|brand\|partner\|orgTier}` (D-120), `GET/PUT /bss-pricing/v1/config/tax-display-policy` (S4), `GET/PUT /bss-pricing/v1/config/rounding-policy` (D-320 — the tenant default the §17.4 disjunction assumes), `GET/PUT /bss-pricing/v1/config/rounding-policies` (D-322 — the declared vocabulary both the default and every row's reference are checked against; `config` rather than `approval_policy` because it supplies a default publish would otherwise demand row by row and decides nothing about who approves what) | `config × read` / `write` — the customer-group taxonomy is **not** here: it lives at `/bss-pricing/v1/customer-groups/taxonomy` under `customer_group` (more sensitive) |
-| `POST /bss-pricing/v1/historical-imports` (S5/S11) | `historical_import × write` |
-| `GET /bss-pricing/v1/historical-imports/{id}` (S5/S11) | `historical_import × read` — the pending import's row set, readable by the approving FinanceReviewer |
+| ~~`POST` / `GET /bss-pricing/v1/historical-imports`~~ (S5/S11) | **Struck by D-330** (2026-08-16) — neither route exists; the resource they enforced is struck above |
 | `GET /bss-pricing/v1/audit` (S5) | `audit × read` / `export` — **Auditor-only** (actor trails, before/after, approval decisions; D-12) |
 | `GET /bss-pricing/v1/history`, `POST /bss-pricing/v1/history/export` (S12) | `plan × read` — price history is plan/price data (chronological view over append-only rows), Finance-readable by construction (D-12) |
 | Bulk import / mass repricing / clone / bulk-import **abort** (`POST /bss-pricing/v1/bulk-imports/{id}/abort`) (S12) | the **same** `plan × write` / `publish` — bulk is authoring at scale (and abort is un-authoring at scale), no new authority |
@@ -305,10 +306,10 @@ shape.
 | **ProductManager** | `plan × write/read`, `bundle × write/read` |
 | **FinanceManager** | `plan × write/publish/read`, `bundle × read`, `price_overlay × read` |
 | **CatalogAdmin** | `plan × write/publish/retire/migrate/read`, `bundle × write/read`, `price_overlay × write/read`, `customer_group × write/read`, `config × write/read`, `approval × read` |
-| **FinanceReviewer** | `approval × approve/read`, `approval_policy × write/read`, `plan × read`, `bundle × read`, `price_overlay × read`, `customer_group × read`, `historical_import × read` |
+| **FinanceReviewer** | `approval × approve/read`, `approval_policy × write/read`, `plan × read`, `bundle × read`, `price_overlay × read`, `customer_group × read` |
 | **Auditor** | `audit × read/export`, `plan × read` |
 | **Preview grant** (partner) | `plan × preview` only — evaluated against the grant's explicit pricing-region set (`inst-rb-preview-scope`); brand has no selector on the base-price surface |
-| **BackdateGrant** | `historical_import × write` only — never bundled into the roles above |
+| ~~**BackdateGrant**~~ | **Struck by D-330** (2026-08-16) — no such grant is issued; the resource it targeted is struck |
 
 Notes: **no role carries both `plan × publish` and `approval × approve`** in the default
 matrix at the *principal* level — the two-person rule additionally enforces
@@ -323,8 +324,12 @@ always-material trigger (`inst-mat-registered`), the approving role MUST hold `r
 trigger's subject resource. Deny-by-default otherwise turns the two-person rule into a
 hash-blind signature: D-50 made `PriceOverlay` edits always-material and D-13 made every
 historical import always-material, but the matrix granted `FinanceReviewer` neither
-`price_overlay × read` nor any `historical_import` read action, so the approver could not see
-what they were approving. Adding a trigger to `inst-mat-registered` therefore **also** requires
+`price_overlay × read` nor any read action on the import's own resource, so the approver could
+not see what they were approving. **The second of those two examples is now history and the rule
+is not** (D-330, 2026-08-16): the import trigger and its resource are struck, so only the overlay
+half is live — the invariant is kept as written because it is the general statement, and it is
+readable precisely because two independent cases produced it. Adding a trigger to
+`inst-mat-registered` therefore **also** requires
 the matching `read` grant here — and `GET /bss-pricing/v1/approvals/{id}` MUST return the **pinned
 content** the approval's `content_hash` covers (not the hash alone), so approval is never
 hash-blind even where the subject resource is read-restricted. **What the digest covers, the
@@ -338,7 +343,7 @@ never read.
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-pricing-algo-audit`
 
-**Input**: every plan/price mutation, approval decision, denied attempt, backdated import
+**Input**: every plan/price mutation, approval decision, denied attempt
 **Output**: an immutable, tamper-evident audit record
 
 **Steps**:
@@ -372,14 +377,18 @@ never read.
 | `POST` | `/bss-pricing/v1/approvals/{id}/reject` | Reject with mandatory reason | per decision |
 | `POST` | `/bss-pricing/v1/approvals/{id}/withdraw` | Submitter/CatalogAdmin voids a pending record without mutating the subject (audited; frees the pinned scope key — 2026-07-31 review fix) | per decision |
 | `GET/PUT` | `/bss-pricing/v1/config/approval-threshold-policy` | Tenant threshold policy (per-currency; unset ⇒ two-person always). The PUT opens an **always-material approval unit** — the diff applies only after an independent FinanceReviewer approves (D-10). **The ETag half is implemented (D-186, 2026-08-05):** `If-Match` is required on the `PUT` per D-171, and the bootstrap needs no exemption because the `GET` answers 200 with `effective: null`, so a tag always exists — the tag digests **both** facts that representation carries, the effective version and the open proposal, and a stale one is `STALE_VERSION` (409, §3.3) rather than the `412` the entry first asked for, this family carrying no such status | ETag + approval unit |
-| `POST` | `/bss-pricing/v1/historical-imports` | Governed backdated reference import (`BackdateGrant` + reason) | client idempotency key |
+| ~~`POST`~~ | ~~`/bss-pricing/v1/historical-imports`~~ | **Struck by D-330** (2026-08-16) — historical import is out of scope; the route is not mounted and is not owed | — |
 | `GET` | `/bss-pricing/v1/audit` | Auditor read (filters; export; cursor-paginated per D-125) | — |
 
 **Problem responses (RFC 9457):** `SELF_APPROVAL_FORBIDDEN` (403), `APPROVAL_ROLE_REQUIRED`
 (403), `APPROVAL_CONTENT_MISMATCH` (409 — the pinned content hash no longer matches at
 decision time, `inst-ap-pin`), `APPROVAL_NOT_PENDING` (409 — decision on a voided/decided
-record), `REASON_REQUIRED` (422), `BACKDATE_GRANT_REQUIRED` (403), `BACKDATE_SIDE_EFFECT`
-(422), `REGION_SCOPE_DENIED` (403), `THRESHOLD_INVALID` (422).
+record), `REASON_REQUIRED` (422), `REGION_SCOPE_DENIED` (403), `THRESHOLD_INVALID` (422).
+
+`BACKDATE_GRANT_REQUIRED` and `BACKDATE_SIDE_EFFECT` are **struck from that block** with the
+import flow (D-330, 2026-08-16): both were declared here for refusals only the import path could
+raise. They are named outside the block deliberately — a code inside it is a *declaration*, and
+re-declaring a struck code would leave this slice announcing a refusal no rule can reach.
 
 ## 6. Data Model
 
@@ -392,7 +401,7 @@ Slice-owned tables (tenant-scoped, SecureORM per Foundation §2.2 authz-gate + S
 | `approval_id` | `uuid` | PK |
 | `tenant_id` | `uuid` | RLS scope |
 | `subject_ref` | `uuid` | the plan revision / change set under approval |
-| `subject_kind` | `enum` | typed subject discriminator — `plan_revision \| price_unit \| window \| overlay \| membership \| bundle \| retirement \| policy \| historical_import \| bulk_batch` (extensible — the D-91 read-model pattern applied to the approval store; 2026-07-31d review fix, C-4: the kind previously lived only inside `materiality` jsonb as "trigger source", leaving the store with no queryable subject type while `inst-as-reject` dispatches on it). **Which revision a kind's pinned content is re-derived against is a property of the *subject*, not of the token (D-199, 2026-08-06):** `plan_revision` resolves the plan's **open draft**; `price_unit` and `window` resolve its **current** revision, because both name a fact about a plan as it currently stands — a supersession unit is opened over a published key and a published plan nobody has revised has no open draft, so resolving it as a draft subject made every such unit `APPROVAL_CONTENT_MISMATCH` on the first attempt to decide it. D-88 mints the only `price_unit` writer today; a later one over an open draft (a bulk batch, say) splits the two resolutions again, and would split them on the resolution rather than on the token) |
+| `subject_kind` | `enum` | typed subject discriminator — `plan_revision \| price_unit \| window \| overlay \| membership \| bundle \| retirement \| policy \| bulk_batch` (extensible — the D-91 read-model pattern applied to the approval store; 2026-07-31d review fix, C-4: the kind previously lived only inside `materiality` jsonb as "trigger source", leaving the store with no queryable subject type while `inst-as-reject` dispatches on it). **Which revision a kind's pinned content is re-derived against is a property of the *subject*, not of the token (D-199, 2026-08-06):** `plan_revision` resolves the plan's **open draft**; `price_unit` and `window` resolve its **current** revision, because both name a fact about a plan as it currently stands — a supersession unit is opened over a published key and a published plan nobody has revised has no open draft, so resolving it as a draft subject made every such unit `APPROVAL_CONTENT_MISMATCH` on the first attempt to decide it. D-88 mints the only `price_unit` writer today; a later one over an open draft (a bulk batch, say) splits the two resolutions again, and would split them on the resolution rather than on the token) |
 | `content_hash` | `bytes` | hash of the pinned submitted content; approve re-verifies it (TOCTOU guard). For a **batch** subject (bulk import / mass repricing) the pin is a **per-row hash set** and this column holds its digest — enabling Slice 12's subset-commit + unchanged-row approval reuse |
 | `state` | `enum` | `submitted \| approved \| rejected \| voided` |
 | `submitter_principal` | `string` | identity, not role |
@@ -406,32 +415,22 @@ per-currency `{absolute_minor | percent}` thresholds; **unset ⇒ two-person rul
 Shape rules (violations → `THRESHOLD_INVALID`, 422): keys MUST be ISO 4217 currency codes;
 `absolute_minor` ≥ 0 in minor units at the currency's ISO 4217 precision; `percent` > 0.
 
-**`pricing_historical_price`** (PK `historical_price_id`; tenant-scoped, SecureORM; D-76) — the
-governed backdated **reference** store, deliberately disjoint from `pricing_price`:
-
-| Column | Type | Notes |
-|--------|------|-------|
-| `historical_price_id` | `uuid` | PK |
-| `tenant_id` | `uuid` | RLS scope |
-| the **canonical scope-key columns** | — | same shape as `pricing_price` (`plan_id`, `currency`, `region`, `price_overlay`, `phase`, `price_eligibility`, `charge_kind`, `cohort`) — validated identically, but **uniqueness is scoped to this table** (`inst-bd-store`) |
-| `amount_minor`, `model_kind`, evaluation-policy + S6 consumer-contract columns | — | the row-shape subset `inst-bd-pipeline` validates; a reference row is field-complete or it is not importable |
-| `tier_bands` | `jsonb` | **D-87 (2026-07-31 review fix):** the ordered band array of a `graduated`/`volume` reference row — same geometry rules as `pricing_price_tier_band` (ascending, contiguous, open top; validated by the row-shape subset). Without it a tiered legacy price failed its own import validator (`inst-mk-required` demands ≥ 1 band) with nowhere to put the bands |
-| `package_size` / `package_price_minor` | `bigint` | **D-87:** the `package` reference-row fields, same S3 rules |
-| `effective_from` / `effective_to` | `timestamptz` | UTC `[from, to)`; `effective_from` strictly past at import, `effective_to` **nullable** — `null` = open-ended / still-in-effect (D-81) — **replaces window resolution** for this store: reference rows are never window-linked (`inst-bd-noeffect`) and this interval is what `inst-sy-select` reads |
-| `import_id` / `reason` / `imported_by` / `approved_by` | — | provenance + the D-13 approval trail |
-
-Constraints: `UNIQUE (tenant_id, <scope key>, effective_from)` and `[from, to)` non-overlap per
-scope key **within this table** — a `null` `effective_to` reads as +∞ for non-overlap, so at
-most one open-ended row exists per key (D-81); append-only (same REVOKE + trigger discipline as
-`pricing_price`, DELETE always rejected); **never** projected into `pricing_read_model`,
-**never** window-linked, **never** an input to coverage, sellability or `CatalogVersion`
-addressability. Its only reader is Slice 11's `SnapshotSynthesizer` (`inst-sy-select`).
+~~**`pricing_historical_price`**~~ — **struck by D-330** (2026-08-16). The governed backdated
+reference store leaves the design set with the import flow that wrote it and the synthesis tier
+that read it: no table, no columns, no constraints, and nothing owed. D-76 chose it over an
+`origin` discriminator on `pricing_price` so that every Foundation statement about published rows
+would hold without an exception class — that argument was correct and is now moot, because there
+are no reference rows. D-81's temporal bounds on the interval and D-87's `tier_bands` /
+`package_size` / `package_price_minor` columns go with it. **What D-87 argued and D-330 kept** is
+about the *snapshot payload*, not this store: a synthesized payload must carry the complete
+evaluable row content because no `CatalogVersion` backs it, which is
+[`11-lifecycle.md`](./11-lifecycle.md) `inst-sy-payload`'s rule and is untouched.
 
 **`pricing_audit_log` (Foundation-owned; this slice is the writer contract)** — actor,
 timestamp, before/after version refs, approval trail, correlation id (the request's own, one
 producer for the gear — **D-178**, `inst-au-complete`; a v7 UUID this gear mints, never an
-adopted trace id — **D-181**), denied-attempt records,
-backdate provenance; append-only + tamper evidence (G4); per-jurisdiction retention config (G5).
+adopted trace id — **D-181**), denied-attempt records;
+append-only + tamper evidence (G4); per-jurisdiction retention config (G5).
 Hash-chained and segmented per `(tenant_id, chain_id)`, `chain_id` being the audited subject's
 aggregate (D-135, Foundation §3.7).
 
@@ -443,8 +442,9 @@ store with no queryable subject type") and left open on the store that keeps the
 seven years and is the one D-12 confines to the Auditor.
 
 - **`subject_kind`** — **the `pricing_approval` enumeration above, verbatim**: `plan_revision |
-  price_unit | window | overlay | membership | bundle | retirement | policy |
-  historical_import | bulk_batch` (extensible; extended in both places together). Not a parallel
+  price_unit | window | overlay | membership | bundle | retirement | policy | bulk_batch`
+  (extensible; extended in both places together — and **narrowed in both together**:
+  `historical_import` left the two enumerations with D-330's strike). Not a parallel
   vocabulary: the two stores discriminate the *same* aggregates for the *same* audience, and
   D-135 already keys the chain on the audited subject's aggregate, so two spellings would let
   the approval record and the audit record of one decision disagree about what the decision was
@@ -455,7 +455,7 @@ seven years and is the one D-12 confines to the Auditor.
   `submit` (§4's initial state — a material change unit opened over the subject, **D-180**,
   below), `approve` / `reject` (`inst-tp-record`), `withdraw` (`inst-as-void`'s human void —
   **D-180**), `deny` (`inst-rb-audit`, and `inst-tp-selfaudit`'s
-  attempted-violation record), `backdate_import` (`inst-bd-store`), `policy_update` (D-10's
+  attempted-violation record) and `policy_update` (D-10's
   threshold-policy mutations). Two constraints hold the set: an action token is **never a frozen
   event name** — `PlanPublished` is a `CatalogEvent` with one home, and the audit action for the
   same transaction is `publish` — and a token with **no writer is not declared**, because a
@@ -491,7 +491,8 @@ specify these writers normatively; "this gear has no writer" is a statement abou
 exists, which is the implementation's business and moves without any decision being taken. Read
 consistently, `deny` belongs in the roster and the roster is right. The companion rule — **no token
 without a writer** — likewise bars a token no *specified* surface writes, not one whose code is
-merely unbuilt; `backdate_import` and `policy_update` are declared on the same footing. What the
+merely unbuilt; `policy_update` is declared on the same footing (`backdate_import` stood there too,
+until D-330 struck the instruction that specified its writer). What the
 implementation's state governs is not the vocabulary but the **audit of it**: a token whose writers
 are all still unbuilt is owed, and Slice 5 is where `approve`, `reject` and `deny` stop being owed.
 
@@ -530,10 +531,13 @@ and a synthetic principal would destroy.
 **Both closure rules still hold, in both directions.** *No writer without a token*: with these
 two the six authoring mutations, the publish, the discard, the submit, the two decisions, the
 withdraw and the denied attempt are the mutating and attempted-mutating surfaces this set
-specifies, and each carries a verb. *No token without a writer*: `retire`, `backdate_import` and
-`policy_update` remain declared because `inst-rt-cancel`, `inst-bd-store` and D-10 **specify**
-those writers — the rule bars a token no specified surface writes, never one whose code is merely
-unbuilt (the paragraph above). What is owed is the audit of them, and Slice 5 is where `submit`
+specifies, and each carries a verb. *No token without a writer*: `retire` and `policy_update`
+remain declared because `inst-rt-cancel` and D-10 **specify** those writers — the rule bars a
+token no specified surface writes, never one whose code is merely unbuilt (the paragraph above).
+**`backdate_import` was the third of them and is now struck** (D-330, 2026-08-16), which is this
+rule running in the direction it is rarely read in: the instruction that specified its writer left
+the design set with the import flow, so the token had no specified writer left, and a vocabulary
+entry nobody writes reads as coverage to everyone who greps for it. What is owed is the audit of them, and Slice 5 is where `submit`
 and `withdraw` stop being owed. **The second run of each writes a second record, by design:**
 `inst-as-immutable` makes a decided or voided record immutable and a re-submit open a **new**
 one, so a withdraw followed by a fresh submit leaves three records — `submit`, `withdraw`,
@@ -572,8 +576,9 @@ pairing is what makes either half evidence rather than a tautology — the same 
 same segment demonstrably *does* block. §9's integration criterion for this pair is therefore met
 by execution.
 
-**Grants** — the catalog-preview read grant and the `BackdateGrant` are IdP/gateway-managed
-claims; this slice defines their semantics and enforcement points, not their administration.
+**Grants** — the catalog-preview read grant is an IdP/gateway-managed claim; this slice defines
+its semantics and enforcement point, not its administration. The `BackdateGrant` stood beside it
+until D-330 struck the flow it gated (2026-08-16).
 
 ## 7. Events & Alarms
 
@@ -654,30 +659,17 @@ normative per the AuthZ catalog.
 - DB: `pricing_audit_log` (denial records)
 - Entities: `ScopeGuard` (PEP gate + `resource_types`/`actions` catalog + label type-schema registration)
 
-### Backdating Governance
+### ~~Backdating Governance~~ — struck by D-330
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-pricing-dod-backdating`
-
-Historical import **MUST** require the distinct restricted grant + a mandatory reason, run
-the row-shape pipeline subset (an import can never create a row regular authoring would
-reject — incl. band geometry over the reference row's own `tier_bands`/package fields, D-87,
-so tiered legacy prices are importable field-complete), route through an **always-material
-approval** (independent second person — D-13), be
-fully audited (incl. the approval trail), and produce **zero** downstream billable effect —
-writing the disjoint `pricing_historical_price` store, **never** `pricing_price` (D-76), so
-uniqueness is scoped to the reference set (a live row on the same scope key is not a conflict)
-and no reference row can reach coverage, sellability, the read model or a `CatalogVersion`.
-The only sanctioned backdated path; its only reader is snapshot synthesis
-([`11-lifecycle.md`](./11-lifecycle.md) `inst-sy-select`). A reference row's `effective_from`
-MUST be strictly past; its `effective_to` MAY reach `now` or be open-ended (D-81 — a
-still-in-effect legacy price is importable, which is what makes synthesis tier 2 reachable).
-
-**Implements**: `cpt-cf-bss-pricing-flow-backdating`
-
-**Touches**:
-- API: `POST /bss-pricing/v1/historical-imports`
-- DB: `pricing_audit_log`
-- Entities: `BackdateGrant`, `AuditTrail`
+- **Struck 2026-08-16 by [D-330](../DECISIONS.md).** The DoD
+  `cpt-cf-bss-pricing-dod-backdating` and the flow it implemented
+  (`cpt-cf-bss-pricing-flow-backdating`, §2) both leave the design set: historical import is out
+  of scope. Nothing it required is owed — no grant, no reason, no row-shape subset, no
+  always-material import unit (D-13), no disjoint store (D-76), no temporal bound (D-81) and no
+  field-complete tiered reference row (D-87). Its PRD requirement,
+  `cpt-cf-bss-pricing-fr-historical-import-governance`, is struck in the same wave and is
+  therefore claimed by no slice, which is what a struck requirement looks like here rather than an
+  unclaimed one.
 
 ### Audit Completeness
 
@@ -718,10 +710,10 @@ Integration (testcontainers):
 - [ ] An approver whose region/brand scope does not cover the pinned change is rejected (403) and the attempt audited
 - [ ] A below-threshold non-first publish auto-publishes with no approver; a row in a currency with no threshold entry is material
 - [ ] A threshold-policy PUT opens an always-material approval unit: the diff applies only after an **independent** FinanceReviewer approves (self-approval 403); a policy mutation while the unit pends voids it (pin semantics); in-flight submissions keep their submit-time materiality
-- [ ] A backdated import without the grant → 403; with the grant but no reason → 422; a valid one lands **only after an independent approval** (always material) and produces reference rows, an audit record incl. the approval trail, and **no** window/event side effects
-- [ ] An import row with an unknown region / over-precision amount / a scope key + `effective_from` already present **in `pricing_historical_price`** is rejected by the row-shape pipeline (enumerated report) — parity with regular authoring
-- [ ] Temporal bounds (D-81): a row with `effective_from` not strictly past is rejected (`BACKDATE_SIDE_EFFECT`); a row with `effective_to` beyond `now` or open-ended (`null`) is **accepted** — and still appears in no read model, coverage report or sellability response; a second row on the key overlapping the open-ended interval is rejected (`null` = +∞)
-- [ ] An import on the scope key of a **still-published** live row is **accepted** (D-76 — the stores are disjoint, so this is not a duplicate); the imported row appears in no read model, no coverage report and no sellability response, and the live row's resolution is unchanged
+- [ ] ~~Four backdating criteria — the grant/reason refusals, the row-shape parity report, D-81's
+  temporal bounds, and the still-published-plan scope-key acceptance~~ — **struck by D-330**
+  (2026-08-16): they exercised a flow this gear does not have. No coverage is lost, because
+  nothing they covered remains to be built.
 - [ ] A mutation on a pricing region outside the caller's authz scope → 403 + audit record
 - [ ] Audit rows resist UPDATE/DELETE (role + trigger); the tamper-evidence check detects a manually corrupted row (G4 mechanism) — in its **own segment** and, when a whole segment is removed, via the per-tenant roll-up (D-135); two concurrent mutations of **different** aggregates of one tenant both commit without contending on a chain head, while two mutations of the same aggregate serialize
 

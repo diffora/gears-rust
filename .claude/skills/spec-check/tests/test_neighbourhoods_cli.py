@@ -81,8 +81,8 @@ def test_every_requirement_gets_exactly_one_neighbourhood(tmp_path):
     assert run("--gear", "gears/bss/pricing/docs", "--out", str(out)).returncode == 0
     envelope = json.loads(out.read_text(encoding="utf-8"))
     ids = [n["requirement_id"] for n in envelope["neighbourhoods"]]
-    assert len(ids) == 78
-    assert len(set(ids)) == 78
+    assert len(ids) == 77
+    assert len(set(ids)) == 77
     assert all(n["triage"] for n in envelope["neighbourhoods"])
 
 
@@ -225,13 +225,39 @@ def test_an_unknown_only_class_is_a_usage_error(tmp_path):
 # fr-supersession sits within a thousandth of SCORE_THRESHOLD = 0.6. fr-price-history-export
 # is the other oscillator on the same window and did not move this time. Neither is evidence
 # about coverage; both are evidence that the threshold is too close to these two scores.
+# Moved 2026-08-16 by the **D-330 historical-import descope wave**: total 78 -> 77,
+# `multi-region` 63 -> 62, `anchored:no-account` 4 -> 3, `weak-coverage` 8 -> 9.
+# `PINNED_JUDGE_CALLS["pricing"]` is **unchanged at 71** — the two movers are one departure
+# from a judged class and one arrival into another.
+#
+# **Two movers, each attributed by a controlled run against the stashed pre-wave tree rather
+# than by proximity.**
+#   * `fr-historical-import-governance` **leaves the corpus**: D-330 struck the requirement, so
+#     its `**ID**:` declaration is gone. It sat in `multi-region`, which is the whole of that
+#     bucket's -1 and of the total's. Reproduced exactly and alone by applying **only** the
+#     PRD edit to the pre-wave tree.
+#   * `fr-priceoverlay-referential-integrity`, `anchored:no-account` -> `weak-coverage`, and it
+#     is **the sixth crossing of one boundary by the same route**. It gained a second candidate
+#     region, `DECISIONS.md:19-30` — the register's status paragraph, the known oscillator —
+#     scoring **0.625** against `SCORE_THRESHOLD = 0.6` on 5 matched terms. The region is
+#     byte-identical across the wave. **No single edited file reproduces it**: applying each of
+#     the eight edited documents to the pre-wave tree one at a time leaves the id in
+#     `anchored:no-account` in all eight cases, and applying the PRD alone or `DECISIONS.md`
+#     alone likewise moves nothing — it appears only in the aggregate, which is
+#     document-frequency movement over a fixed window grid and not evidence about coverage.
+#     The wave touched neither this requirement nor `design/09-price-overlays.md` at all.
+#
+# **What was checked before accepting both**: live findings stayed at **0** and known debt moved
+# **47 -> 45** with both members named and hand-checked (`D-13 -> PRD.md`,
+# `BACKDATE_GRANT_REQUIRED`), so nothing closed silently — the hazard the 2026-08-05
+# `WINDOW_GAP` episode recorded.
 PINNED_TRIAGE_PRICING = {
     "unbuildable:no-prose": 0,
     "no-region": 3,
-    "anchored:no-account": 4,
-    "suspicious:multi-region": 63,
+    "anchored:no-account": 3,
+    "suspicious:multi-region": 62,
     "suspicious:not-normative": 0,
-    "suspicious:weak-coverage": 8,
+    "suspicious:weak-coverage": 9,
     "covered:strong": 0,
 }
 #: Moved 2026-08-15 by the **D-320 rounding-policy surface wave**, landing on top of
@@ -1394,7 +1420,7 @@ def test_pricing_triage_histogram_is_pinned(tmp_path):
     assert run("--gear", "gears/bss/pricing/docs", "--out", str(out)).returncode == 0
     counts = json.loads(out.read_text(encoding="utf-8"))["counts"]
     assert counts == PINNED_TRIAGE_PRICING
-    assert sum(counts.values()) == 78
+    assert sum(counts.values()) == 77
 
 
 def test_ledger_triage_histogram_is_pinned(tmp_path):

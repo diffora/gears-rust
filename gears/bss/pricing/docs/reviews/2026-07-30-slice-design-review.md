@@ -54,7 +54,7 @@ commit (see M-1, which compounds this).
 
 - Import rejects any reference row whose effective dates "reach `now` or later" or whose
   range intersects a not-yet-closed billing period
-  ([`05-governance.md`](../design/05-governance.md) `inst-bd-noeffect`).
+  ([`05-governance.md`](../design/05-governance.md) inst-bd-noeffect).
 - Synthesis freezes state "as of the **trigger instant**" — effectively now (M4,
   [`11-lifecycle.md`](../design/11-lifecycle.md) `inst-sy-freeze`; PRD `fr-migration-safety`).
 - Tier 2 of D-76's selection rule picks the reference row whose
@@ -68,7 +68,7 @@ resolves through tier 1 at the **current** price — not the legacy price synthe
 reconstruct. D-76 fixed the structural half (disjoint store); the temporal half survived it.
 
 **Fix**: decide one of — (a) the synthesis `t` may be historical (and define which instant:
-subscription inception, rated-period start, …), or (b) `inst-bd-noeffect` gets a carve-out
+subscription inception, rated-period start, …), or (b) inst-bd-noeffect gets a carve-out
 for intervals extending into the future, with an explicit side-effect analysis. Either way,
 re-state `inst-sy-select`'s `t` and add an AC that exercises tier 2 end-to-end.
 
@@ -277,7 +277,7 @@ narrowed exemption with the predicate-(1) coverage horizon and the reconciliatio
 | Finding | Verdict | Fix | Where it landed |
 |---------|---------|-----|-----------------|
 | H-1 (subscriber predicate has no source) | **CONFIRMED** | **D-79** — third §9.2 inbound lane (per-scope-key presence over price ids), fail-closed on outage, re-resolved in-commit; joint w/ Subscriptions, flagged for veto | PRD §9.2; S7 `inst-fg-trailing`; S11 `inst-rt-cancel` + §10; S5 `inst-mat-registered` |
-| H-2 (synthesis tier 2 unreachable) | **CONFIRMED** | **D-81** — per-trigger `t` restated design-side; import allows `effective_to` ≥ now / open-ended (`effective_from` stays strictly past); open-period-intersection rejection dropped (D-76 store is structurally inert); flagged for veto | S5 `inst-bd-noeffect` + §6 + DoD + AC; S11 M4 + `inst-sy-freeze` + `inst-sy-select` + DoD + AC (tier-2 e2e); PRD `fr-migration-safety` + `fr-historical-import-governance` |
+| H-2 (synthesis tier 2 unreachable) | **CONFIRMED** | **D-81** — per-trigger `t` restated design-side; import allows `effective_to` ≥ now / open-ended (`effective_from` stays strictly past); open-period-intersection rejection dropped (D-76 store is structurally inert); flagged for veto | S5 inst-bd-noeffect + §6 + DoD + AC; S11 M4 + `inst-sy-freeze` + `inst-sy-select` + DoD + AC (tier-2 e2e); PRD `fr-migration-safety` + `fr-historical-import-governance` |
 | H-3 (`Q` continuity vs unit-changing successor) | **CONFIRMED** | **D-82** — `SUPERSESSION_UNIT_MISMATCH` publish check: successor preserves `meter`/`dimensionKey`/granularities/aggregation windows; unit changes route via revisioning + migration; negative fixture scenario | S3 `inst-tb-supersession-units` (new) + §5 + DoD + fixture + AC; S1 §4.3; PRD `fr-supersession` + §17.5 |
 | M-1 (exemption races the gate) | **CONFIRMED** | **D-80** — exemption narrowed (+ not-sellable); predicate (1) gains the coverage horizon (`now +` longest cycle sold; count stays six); `pricing.window.coverage_ending_with_subscribers` alarm; joint w/ Subscriptions, flagged for veto | S7 `inst-fg-trailing` + `inst-sg-surface` + §7 + DoD + AC ×2; S5 `inst-mat-registered`; PRD `fr-sellability-gate` + §9.2 |
 | M-2 (draft revisions don't cover child tables) | **CONFIRMED** | **D-83** — copy-on-new-revision: `pricing_plan_phase` PK `(phase_id, plan_revision)`, addon-rule/descriptor-set keyed by revision; projector normatively reads the published revision's rows (warm + re-drive); flagged for veto | S1 §3.7 + §4.3 + §4.4; S2 §6 ×3 tables + AC |

@@ -161,7 +161,15 @@ def test_the_run_reports_seven_live_findings_and_seventy_three_suppressed():
     # raises it) and one, `RUN_SELECTOR_EMPTY` / design/12, that had already
     # left in an earlier wave and was only surfacing now because the oracles had
     # not been re-captured since D-291. See closure.py for the per-member notes.
-    assert payload["known_debt_suppressed"] == 47
+    # 47 -> 45 on 2026-08-16, by the D-330 historical-import descope wave, and the
+    # two members are two different kinds of payment. `BACKDATE_GRANT_REQUIRED` /
+    # design/05 left because its DECLARATION was deleted with the flow whose 403 it
+    # named -- the second member ever paid that way, after D-239's BRAND_UNKNOWN.
+    # `D-13 -> PRD.md` left the propagation pin because the PRD's strike record for
+    # `fr-historical-import-governance` names D-13 as one of the rules that went with
+    # the flow, so a claim that had never verified now does. Debt is 20 propagation
+    # gaps + 25 unreferenced codes. Live findings unchanged at 2, both rating-side.
+    assert payload["known_debt_suppressed"] == 45
     assert payload["known_debt_tracked_as"] == "D-69"
 
 
