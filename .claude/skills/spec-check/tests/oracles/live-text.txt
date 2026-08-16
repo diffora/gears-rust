@@ -1,6 +1,5 @@
-[Medium] DECISIONS.md:3461 — D-313 claims propagation into PRD.md, but that document never cites D-313 (P1/propagation-missing)
 [Low] DECISIONS.md — P1 cannot verify propagation for gears/bss/rating/docs: DECISIONS.md yielded zero decision entries — no `#### <id> …` heading matched the recognised id shape (`D-NN`, optionally gear-prefixed, e.g. `SUB-D-01`) — 0 `**Propagated`-shaped field(s) in that register went unchecked as a result (P1/decision-register-unparsed)
 [Low] design/15-rated-output-balance-effects.md — design/15-rated-output-balance-effects.md declares error codes without a `**Problem responses (RFC 9457):**` block; the rest of the design set uses that convention (P3/code-convention-divergent)
 
-3 finding(s)
+2 finding(s)
 49 known-debt finding(s) suppressed, tracked as D-69 — pass --show-known-debt to see them

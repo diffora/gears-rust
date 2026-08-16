@@ -1141,6 +1141,74 @@ checker means by "referenced", and that is the skill's contract.
     the three were rewritten when the first attempt passed against all of them — a bound
     test that no wrong implementation can fail is not a bound.
 
+27. **2026-08-16, twenty-seventh capture — a document fix, and the exact opposite of
+    entry 26.** Entries 25 and 26 were checker changes; this one changes **one clause of
+    one register entry** and no code at all. **Live findings 3 -> 2. Suppressed unchanged
+    at 49. The live run exits 0 again.**
+
+    D-313's `**Propagated**:` field said `rating PRD §Definitions, §Time and §539` — a
+    cross-gear claim written in prose, which as written named the **citing** gear's own
+    `PRD.md`. It now reads `` `../../rating/docs/PRD.md` ``. That is the whole diff: three
+    lines re-wrapped, ten characters of prose replaced by a path, nothing else in D-313
+    and no other entry.
+
+    **The form was chosen by measurement, not by instruction.** Four candidate forms were
+    written into the live register in memory and all four clear the finding (the bare
+    backticked path; a link labelled with the full path; a link labelled with the
+    basename; a link with a prose label — the last only since entry 26). The control, the
+    unchanged text, still fails, so the probe was armed. The form applied is **D-66's**,
+    because D-66 is the **only precedent inside a `**Propagated**:` field** and it writes
+    bare backticked paths; the eleven markdown links in this register all sit in prose
+    bodies, nine of them labelled with a basename and none with its own full destination
+    path. A link whose label repeats its destination is a shape the register uses nowhere.
+
+    **The claim is verified, not merely quiet, and that was measured both ways.** Rating's
+    `PRD.md` cites D-313 **three** times; stripping those three produces exactly
+    `D-313 claims propagation into ../../rating/docs/PRD.md, but that document never cites
+    D-313` and nothing else. Run pricing **alone** and the claim now reports
+    `P1/propagation-target-not-loaded` — honest about needing the sibling gear, the same
+    answer D-66's targets give, and strictly better than the old text's silent pass
+    against a same-named own-gear document.
+
+    **What moved, by name.** `--gear <g>/docs --auto-context --show-known-debt`: pricing
+    **1 live / 49 debt, exit 1 -> 0 live / 49 debt, exit 0**; rating, subscriptions,
+    ledger and products all **byte-identical**. The three-gear run 3 -> 2 and exit 1 -> 0.
+    In `live-show-known-debt.txt` exactly one line is removed and every one of the 21
+    pinned `P1/propagation-missing` members reproduces **at the same line number** — the
+    edit keeps D-313's field at four lines, and every pinned anchor is at
+    `DECISIONS.md:677` or above anyway. Suppressed unchanged; no member paid down, none
+    added; the triage pin untouched.
+
+    **All three oracle files are now byte-identical to their pre-entry-25 selves**, which
+    is worth stating plainly rather than leaving to be noticed: the checker got better,
+    surfaced a real gap, the gap was fixed, and the output returned to what it had always
+    printed. The two live findings are the same two — but they are now the only two there
+    *are*, rather than the only two the tool could see.
+
+    **Pins re-taken from measurement.** `LIVE_UNACCEPTED_GAPS_2026_08_16` loses its one
+    member and is **kept as an empty tuple** with the closure recorded beside it: it is
+    the slot a newly surfaced, unaccepted gap belongs in, and an existing empty slot is
+    what stops the next one being dropped into the accepted-debt pin for want of anywhere
+    else to put it. `LIVE_EXIT_CODE` 1 -> 0. The gate test was rewritten from "fails on
+    exactly this finding" to "passes because nothing live is above the gate, and every
+    live finding is Low" — the shape that would catch a Medium being buried in the pin
+    rather than fixed, so it outlives the finding it was written for.
+
+    **`test_the_prescribed_fix_for_d_313_actually_clears_its_finding` had its premise
+    removed and was not deleted.** It patched a broken citation in memory and required the
+    finding to clear; the citation is no longer broken. It became
+    `test_d_313_cross_gear_claim_stays_resolvable_and_is_actually_checked`, which asserts
+    three things in the order they can fail — the citation resolves to the sibling
+    document **and to no in-corpus `PRD.md`**, it verifies clean today, and it is
+    *checked*, proved by stripping the id from rating's PRD. The third leg is the point:
+    without it the test would pass against a checker that dropped the target entirely,
+    which is the defect class this whole branch exists to guard. A second test pins the
+    pricing-alone answer. Both were proved red against the pre-edit register, and both
+    against a checker mutated to drop cross-gear targets — the pre-2026-07-31 behaviour —
+    which the "no finding" assertion alone could never have caught.
+
+    Suite: **269 -> 270 passed**, 1 skipped (one test replaced by two).
+
 ## How they were produced (2026-07-31 capture)
 
 Run from the repository root:

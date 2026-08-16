@@ -153,13 +153,14 @@ Two lines at the end matter as much as the findings:
   unreferenced error codes = **58** as of 2026-08-07; the 2026-07-29 pin was
   24 + 51, and every member that has left since was hand-checked with a note
   beside its list), withheld by default. The three-gear invocation above
-  currently prints **`3`** and **`49`** — and **exits 1**, because one of the
-  three live findings is Medium and not accepted debt (`D-313 -> PRD.md`, see
-  REGENERATE.md entry 25). It exited 0 until 2026-08-16.
+  currently prints **`2`** and **`49`**, and **exits 0** — both live findings are
+  Low. It exited 1 for part of 2026-08-16: entry 25's parser fix surfaced a real
+  Medium gap (`D-313 -> PRD.md`) and entry 27 closed it by fixing the register,
+  which is the cycle working rather than a number to smooth over.
 
   Do not quote those two numbers from here without re-running: this line has read
-  `15`/`75`, `7`/`73`, `7`/`69`, `6`/`68`, `5`/`68`, `2`/`59`, `2`/`58`, `2`/`49`
-  and now `3`/`49`.
+  `15`/`75`, `7`/`73`, `7`/`69`, `6`/`68`, `5`/`68`, `2`/`59`, `2`/`58`, `2`/`49`,
+  `3`/`49` and now `2`/`49`.
   `tests/oracles/REGENERATE.md` is the authority on what moved and why — it
   carries one numbered entry per capture, and the numbers here are a convenience
   copy that has twice gone stale behind it.

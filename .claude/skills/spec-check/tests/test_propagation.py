@@ -9,7 +9,7 @@ from spec_check.invariants.propagation import (
     is_pinned_baseline,
     missing_pair,
 )
-from spec_check.targets import SeamIndex, gear_name
+from spec_check.targets import SeamIndex, gear_name, resolve
 
 
 def live_corpora():
@@ -47,12 +47,12 @@ def test_propagation_gaps_match_the_pinned_2026_07_29_baseline():
         if pair is not None and not is_cross_gear(pair[1])
     }
     #
-    # Compared against the pin **plus** `LIVE_UNACCEPTED_GAPS_2026_08_16`: since
-    # 2026-08-16 the register carries one gap that is neither accepted debt nor
-    # drift-to-be-explained, but a real finding the checker's own repair
-    # surfaced. It is listed separately (see the note beside it) so that this
-    # comparison stays exact without the finding being suppressed: it is live in
-    # the CLI's output and it fails the default gate.
+    # Compared against the pin **plus** `LIVE_UNACCEPTED_GAPS_2026_08_16`, which
+    # is empty again as of 2026-08-16b — its one member was closed by fixing the
+    # document, not by being pinned. The union is kept rather than collapsed back
+    # to the pin alone: that list is the place a *newly surfaced, unaccepted* gap
+    # goes, and having it already wired is what stops the next one being dropped
+    # into the accepted-debt pin because that was the only slot available.
     for expected_gaps in (PINNED_PROPAGATION_GAPS_2026_07_29, LIVE_UNACCEPTED_GAPS_2026_08_16):
         assert all(gear == "pricing" for gear, _, _ in expected_gaps), (
             "these baselines are documented as pricing-only snapshots; a non-pricing "
@@ -466,33 +466,30 @@ def test_missing_pair_ignores_other_invariants():
 #: Live, **unaccepted** propagation gaps: reported by the checker, not
 #: suppressed, and failing the default `--max-severity medium` gate.
 #:
-#: Deliberately NOT added to `PINNED_PROPAGATION_GAPS_2026_07_29`, which is a
+#: Deliberately NOT merged into `PINNED_PROPAGATION_GAPS_2026_07_29`, which is a
 #: snapshot of *accepted* debt taken on one day and whose contents are a human
 #: decision — the D-46 precedent beside that list is the rule: a brand-new
-#: finding put there would be buried. This tuple exists so the exact-set
-#: comparison below can still be exact while the gap stays live, and so that
-#: moving one into the pin has to be a deliberate edit in two places.
+#: finding put there would be buried. A gap listed here stays in the CLI's
+#: output and keeps failing the run until someone fixes the document.
+#:
+#: **Empty, and it has been non-empty exactly once.**
 #:
 #: - `D-313 -> PRD.md`: surfaced 2026-08-16 when the parser learned to read a
-#:   citation past its first physical line. D-313's field wraps over four lines
-#:   and its `PRD` token sits on line two, inside the clause **"rating PRD
-#:   §Definitions, §Time and §539"** — a *cross-gear* claim written in prose. As
-#:   written it names the citing gear's own `PRD.md`, which cites D-313 nowhere
-#:   (0 occurrences, measured). The resolvable form is
-#:   `../../rating/docs/PRD.md`, which `resolve` has understood since
-#:   2026-07-31. Left for the register's owner: this program does not edit gear
-#:   documents to make its own checker green.
+#:   citation past its first physical line, and **closed the same day by fixing
+#:   the register** rather than by pinning it. D-313's field wraps over four
+#:   lines and its `PRD` token sat on line two, inside the clause "rating PRD
+#:   §Definitions, §Time and §539" — a *cross-gear* claim written in prose,
+#:   which as written named the citing gear's own `PRD.md` (0 citations). It now
+#:   reads `` `../../rating/docs/PRD.md` ``, D-66's form and the only precedent
+#:   inside a `**Propagated**:` field, and rating's `PRD.md` cites D-313 three
+#:   times. The claim is *verified*, not merely quiet — see
+#:   `test_d_313_cross_gear_claim_stays_resolvable_and_is_actually_checked`.
 #:
-#:   That remedy was **verified applicable** rather than merely prescribed —
-#:   `test_the_prescribed_fix_for_d_313_actually_clears_its_finding` writes it
-#:   into the live register in memory and requires the finding to clear. It did
-#:   not clear at first: the register's house style is
-#:   `[rating PRD](../../rating/docs/PRD.md)`, and the link label's `PRD` minted
-#:   a phantom claim into pricing's own PRD.md. Prescribing a fix nobody can
-#:   apply is its own defect; see REGENERATE.md entry 26.
-LIVE_UNACCEPTED_GAPS_2026_08_16 = (
-    ("pricing", "D-313", "PRD.md"),
-)
+#: The list is kept rather than deleted with its member: it is the slot a newly
+#: surfaced, unaccepted gap belongs in, and an existing empty slot is what stops
+#: the next one being dropped into the accepted-debt pin for want of anywhere
+#: else to put it.
+LIVE_UNACCEPTED_GAPS_2026_08_16 = ()
 
 
 def test_the_live_unaccepted_gaps_are_not_also_pinned_as_accepted_debt():
@@ -604,25 +601,59 @@ def test_the_previously_unchecked_live_claims_are_now_armed_against_their_target
         }, "{} -> {}: {!r}".format(ident, document, sorted(appeared))
 
 
-def test_the_prescribed_fix_for_d_313_actually_clears_its_finding():
-    # The remedy this program's own report prescribes, applied to the live
-    # register in memory and measured rather than asserted. Against 4dd40ad2c it
-    # does **not** clear: the link label's `PRD` minted a phantom claim into
-    # pricing's own PRD.md, and the phantom is what fails — so the report was
-    # prescribing a fix that could not be applied. The register itself is left
-    # alone; it is the owner's.
+def test_d_313_cross_gear_claim_stays_resolvable_and_is_actually_checked():
+    # This replaces `test_the_prescribed_fix_for_d_313_actually_clears_its_finding`,
+    # whose premise the register edit of 2026-08-16b removed: it patched a broken
+    # citation in memory and required the finding to clear, and the citation is no
+    # longer broken. Deleting it would have thrown away the only thing pinning
+    # what the fix bought, so it became the regression instead — and a stronger
+    # one, because "no finding" is exactly what the *pre-fix* tool also reported
+    # for this claim. Three things are asserted, in the order they can fail:
+    #
+    #   1. the citation still resolves to the sibling gear's document, and to no
+    #      in-corpus `PRD.md` — the phantom that made the remedy inapplicable;
+    #   2. it verifies clean against rating's real corpus today;
+    #   3. it is *checked*, proved by stripping the id from rating's PRD and
+    #      requiring the finding to appear. Without (3) this test would pass
+    #      against a checker that dropped the target entirely, which is the whole
+    #      defect class this file exists to guard.
+    import re
+
     corpora = live_corpora()
-    pricing = corpora[0]
-    files = dict(pricing.files())
-    register = files["DECISIONS.md"]
-    assert register.count("rating PRD §Definitions, §Time") == 1
-    files["DECISIONS.md"] = register.replace(
-        "rating PRD §Definitions, §Time",
-        "[rating PRD](../../rating/docs/PRD.md) §Definitions, §Time",
-        1,
+    pricing, rating = corpora[0], corpora[1]
+    assert gear_name(rating) == "rating"
+
+    entry = next(d for d in parse_decisions(pricing.text("DECISIONS.md")) if d.id == "D-313")
+    resolved = resolve(entry.propagated, pricing, SeamIndex.build(corpora))
+    assert "../../rating/docs/PRD.md" in resolved.paths
+    assert "PRD.md" not in resolved.paths, (
+        "the cross-gear target must not also mint a claim into pricing's own PRD.md"
     )
-    patched = [Corpus.from_parts(pricing.root(), files)] + corpora[1:]
-    findings = [
-        f for f in check(patched[0], SeamIndex.build(patched), patched) if "D-313" in f.message
-    ]
-    assert findings == [], "D-313's claim must verify once written in the resolvable form"
+    assert resolved.unresolved == []
+
+    base = {f.message for f in check(pricing, SeamIndex.build(corpora), corpora)}
+    assert not any("D-313" in message for message in base)
+
+    pattern = r"(?<![A-Za-z0-9-])D-313\b"
+    files = dict(rating.files())
+    assert len(re.findall(pattern, files["PRD.md"])) == 3
+    files["PRD.md"] = re.sub(pattern, "<stripped>", files["PRD.md"])
+    armed = [pricing, Corpus.from_parts(rating.root(), files)] + corpora[2:]
+    appeared = {f.message for f in check(armed[0], SeamIndex.build(armed), armed)} - base
+    assert appeared == {
+        "D-313 claims propagation into ../../rating/docs/PRD.md, but that document "
+        "never cites D-313"
+    }, sorted(appeared)
+
+
+def test_d_313_cross_gear_claim_is_honest_about_needing_the_sibling_gear():
+    # The other half of what the corrected citation buys, and the reason the fix
+    # is not a downgrade: run pricing alone and the claim is *reported as
+    # unverified* rather than quietly passing against a same-named own-gear
+    # document. That is the same answer D-66's cross-gear targets give.
+    pricing = live_corpora()[0]
+    alone = [f for f in check(pricing, SeamIndex.build([pricing]), [pricing])
+             if "D-313" in f.message]
+    assert len(alone) == 1
+    assert alone[0].invariant == "P1/propagation-target-not-loaded"
+    assert "../../rating/docs/PRD.md" in alone[0].message

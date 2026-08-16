@@ -3540,9 +3540,9 @@ for *a long period*.
   the pair is legal and deliberately left alone.
 
 **Propagated**: S3 §4 (the orthogonality clause), §5 (the new code),
-`inst-tb-window`'s statement and the schema table; rating PRD §Definitions, §Time
-and §539; the domain enum, its census list, `inst-tb-window`'s second clause, and
-`m20260802_000076`.
+`inst-tb-window`'s statement and the schema table; `../../rating/docs/PRD.md`
+§Definitions, §Time and §539; the domain enum, its census list,
+`inst-tb-window`'s second clause, and `m20260802_000076`.
 
 *(Written inline rather than under a `##### Propagated` heading, which is how this
 entry first carried it: spec-check's P1 matches the **bold inline label only**, so a
