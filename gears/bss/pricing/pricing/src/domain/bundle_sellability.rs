@@ -78,7 +78,8 @@
 //!    re-projects no subject — `inst-ba-return`'s *"composition frozen into the
 //!    read model"* is unbuilt, and it is what would have to land first.
 //!
-//! The module is kept for `rev_share_change_set`'s reason under D-321 clause (3):
+//! The module is kept for the reason D-321 clause (3) kept `rev_share_change_set`
+//! (which has since been given the caller that clause anticipated):
 //! the rule is what Slice 7 owes Slice 8, it is the design set's `inst-bc-sellability`
 //! written out, and deleting it would leave that instruction with nothing to
 //! attach to and the walk to be re-derived by whoever lands the projector member.

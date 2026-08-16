@@ -32,8 +32,15 @@
 //! `a_retirement_over_a_live_cutover_is_material_under_the_trigger_it_already_declares`
 //! shows that D-05's always-material half needs no
 //! `Trigger::RetirementUnwindingACutover` at all, because D-109 made retirement
-//! unconditionally material and `MaterialityVerdict` carries no trigger identity
-//! for the two to differ in.
+//! unconditionally material and both declarations answer under the same rule.
+//!
+//! **The reason that sentence used to give stopped being true on 2026-08-16.** It
+//! read *"and `MaterialityVerdict` carries no trigger identity for the two to
+//! differ in"*, which is how D-327 clause (4) argued the clause paid. The verdict
+//! carries the trigger now, so the two declarations **are** distinguishable in the
+//! stored record; what survives is that neither changes whether a second principal
+//! is required. That case asserts both halves, and the difference is owed back to
+//! the register rather than smoothed over here.
 //!
 //! # Why the whole unwind and not the two clauses that *are* constructible
 //!
@@ -682,22 +689,32 @@ impl WindowVerdictExt for bss_pricing::domain::retirement::WindowVerdict {
 // (5) The clause that is paid, under another name.
 // ---------------------------------------------------------------------------
 
-/// D-05's always-material half needs no trigger of its own, and that is why
-/// `Trigger::RetirementUnwindingACutover` having zero producers costs nothing
-/// observable.
+/// D-05's always-material half is still paid under D-109 — and **the reason
+/// D-327 gave for it stopped being true on 2026-08-16**.
 ///
 /// D-05 registered retirement-with-a-live-cutover as always material; D-109 then
 /// registered retirement **unconditionally**, and `retire_in` declares
-/// `Trigger::PlanRetirement` on every path. `MaterialityVerdict` is
-/// `Material { reason, tripped } | AutoPublishable` and carries no trigger
-/// identity — `Trigger::as_str`'s own doc records that the token reaches no
-/// column and no response — so the two declarations are byte-identical verdicts.
+/// `Trigger::PlanRetirement` on every path. D-327 clause (4) declared the D-05
+/// clause paid on the ground that the two declarations produce **byte-identical
+/// verdicts**: `MaterialityVerdict` was `Material { reason, tripped }`, so the
+/// trigger's identity reached no column and no response, and this case asserted
+/// the two evaluations equal.
 ///
-/// This is the one clause of D-05 that is **done under another name**, and the
-/// case says which name. What it does not say is that the trigger is spare: it is
-/// the vocabulary entry Slice 5's `inst-mat-registered` enumerates, and D-321
-/// clause (3)'s rule is that a correct declaration the design set still owes is
-/// not dead code.
+/// The verdict now carries the trigger, so they are **not** equal. What survives
+/// is the conclusion and not the argument: retirement is material either way, and
+/// under exactly the same rule, so no publish that used to need a second principal
+/// stops needing one and none newly does. What changed is that a producer for
+/// `RetirementUnwindingACutover` would now be **observable** — the record would say
+/// `retirementUnwindingACutover` where it says `planRetirement` — which removes
+/// the very argument D-321 used to refuse building one for the bundle pair. That
+/// is owed back to the register rather than decided here: it makes D-327's clause
+/// (4) rest on the weaker claim it can still support, and it turns "a producer here
+/// would change nothing observable" from a reason into a falsehood.
+///
+/// The trigger is still not spare: it is the vocabulary entry Slice 5's
+/// `inst-mat-registered` enumerates, and D-321 clause (3)'s rule is that a correct
+/// declaration the design set still owes is not dead code. It still has no
+/// producer, which is D-327 clause (1)'s state and unchanged by this.
 #[test]
 fn a_retirement_over_a_live_cutover_is_material_under_the_trigger_it_already_declares() {
     let with_cutover = materiality::evaluate(
@@ -710,11 +727,31 @@ fn a_retirement_over_a_live_cutover_is_material_under_the_trigger_it_already_dec
         None,
         None,
     );
+
+    // The half that carries D-05's clause: same answer, same rule, so the
+    // publish's authorization requirement is identical under either declaration.
+    assert!(with_cutover.is_material() && plain.is_material());
     assert_eq!(
-        with_cutover, plain,
-        "the two declarations answer identically, so nothing an operator or an approver can see \
-         distinguishes them"
+        with_cutover.reason(),
+        plain.reason(),
+        "both are `alwaysMaterialTrigger`, so retirement needs a second principal \
+         whichever trigger declares it, which is what makes D-05's clause paid"
     );
+
+    // And the half D-327 clause (4) got wrong, now that there is somewhere for the
+    // act to be recorded. This assertion is the inverse of the one it replaces.
+    assert_ne!(
+        with_cutover, plain,
+        "the two declarations are distinguishable in the record as of 2026-08-16, so \
+         `a producer here would change nothing observable` is no longer a reason for \
+         anything"
+    );
+    assert_eq!(
+        with_cutover.trigger(),
+        Some(Trigger::RetirementUnwindingACutover)
+    );
+    assert_eq!(plain.trigger(), Some(Trigger::PlanRetirement));
+
     assert!(
         matches!(
             plain,

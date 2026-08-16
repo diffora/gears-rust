@@ -20,10 +20,9 @@
 //! is the **act** plus two operands the crate cannot supply — see that variant's
 //! own doc. Leaving it in the list read as "Slice 11 has not landed", which is
 //! the understating error `PlanRetirement` is the standing example of, arriving
-//! one variant later on the same plane. **They are six of the seven that answer
-//! `false`**, and the
-//! seventh is not one of them: `RevenueShareChange`'s subject is here in full and
-//! what it lacks is a surface declaring the act, which the section below states.
+//! one variant later on the same plane. **They are the whole of the `false`
+//! side as of 2026-08-16**, the seventh member having left it: `RevenueShareChange`
+//! is declared by a surface now, and the section below records what that took.
 //! The six are declared here anyway, each
 //! with [`Trigger::owning_slice`] naming the document that owns it and
 //! [`Trigger::subject_exists_in_this_crate`] answering `false`, for two reasons.
@@ -43,23 +42,23 @@
 //! **Slice 8 flipped two of them on 2026-08-06** — `BundleComposition` and
 //! `RevenueShareChange` — on the whole subject being here: four tables, four
 //! entities, the composition's revision lifecycle, *"`infra::bundle`'s two
-//! `ChangeSet::of_act` declarations"*, and three mounted routes. **Only one of the
-//! two has stayed flipped**, and the clause in quotation marks is why: those two
-//! functions are `pub fn`s that *build* a change set, and D-232 found the same day
-//! that nothing called either of them. `composition_change_set` got its caller on
-//! 2026-08-11, when `api::rest::bundles::bundle_publish_materiality` replaced a
-//! hard-coded materiality literal with an evaluated verdict on the mounted publish
-//! route. `rev_share_change_set` still has none, so `RevenueShareChange` went back
-//! to `false` on 2026-08-15 (D-321) — see the note on its arm.
+//! `ChangeSet::of_act` declarations"*, and three mounted routes. The clause in
+//! quotation marks was the error: those two functions are `pub fn`s that *build* a
+//! change set, and D-232 found the same day that nothing called either of them.
+//! `composition_change_set` got its caller on 2026-08-11, when
+//! `api::rest::bundles::bundle_publish_materiality` replaced a hard-coded
+//! materiality literal with an evaluated verdict on the mounted publish route.
+//! `rev_share_change_set` had none, so `RevenueShareChange` went back to `false` on
+//! 2026-08-15 (D-321) — and returned to `true` on 2026-08-16, on the section below.
 //!
-//! # A `false` whose subject **is** here, and the axis that found it
+//! # The trigger that had to wait for a reader before it could have a writer
 //!
-//! `RevenueShareChange` is the one member of the `false` side that the paragraph
-//! above does not describe: `pricing_bundle_revshare` is a table here, the D-07
-//! reconciler is here, `PATCH …/bundles/{id}` authors the shares. What is absent is
-//! a **surface declaring the act**, which on the act half is what this predicate is
-//! about — the distinction `GrandfatheringCutover` waited three commits on, stated
-//! from the other side.
+//! `RevenueShareChange` spent a day on the `false` side with its whole subject
+//! present: `pricing_bundle_revshare` is a table here, the D-07 reconciler is here,
+//! `PATCH …/bundles/{id}` authors the shares. What was absent was a **surface
+//! declaring the act**, which on the act half is what this predicate is about — the
+//! distinction `GrandfatheringCutover` waited three commits on, stated from the
+//! other side.
 //!
 //! It survived both walks above for two waves because both asked whether this
 //! crate's code *names* the trigger, and `rev_share_change_set`'s own body names
@@ -68,6 +67,19 @@
 //! have caught this on the day Slice 8 landed, and it is what will catch the next
 //! one: the two directions are a check of the attestation, and a check a dead
 //! function can pay is a check of the vocabulary.
+//!
+//! **And the flip back was not the census being satisfied.** D-321 refused to wire
+//! the constructor precisely *because* the census was the only thing that would
+//! have noticed: `MaterialityVerdict` carried no trigger identity, so declaring
+//! `RevenueShareChange` instead of `BundleComposition` produced a byte-identical
+//! response and a byte-identical stored document. Two operands had to arrive first,
+//! and both did on 2026-08-16 — somewhere for the answer to live
+//! ([`MaterialityVerdict::trigger`](super::MaterialityVerdict::trigger), which
+//! reaches every registered act and not only this pair) and a way to tell the two
+//! acts apart (`infra::bundle::declared_act`, a diff of the composition being
+//! published against the last one that was live). The order is the lesson: a
+//! declaration nothing can observe is not a declaration, and the instrument that
+//! would have called it one is the instrument being gamed by its own fix.
 //!
 //! **`GrandfatheringCutover` followed on the same rule, and the wait is worth
 //! recording.** Its *store* landed first — `domain::cutover`'s compose, the
@@ -197,14 +209,27 @@ pub enum Trigger {
     /// function does not do" section carries the argument in full and
     /// `tests/sqlite_cutover_unwind.rs` holds it open.
     ///
-    /// **And a producer here would change nothing observable.** D-109 made
-    /// retirement always material unconditionally, `retire_in` declares
-    /// [`Self::PlanRetirement`] on every path, and
-    /// [`MaterialityVerdict`](super::MaterialityVerdict) carries no trigger
-    /// identity — so the two declarations render byte-identically. That is why
-    /// this variant's absence has no symptom, and it is the reason it survived
-    /// every census: the walks ask whether a producer exists, never whether one
-    /// would be distinguishable.
+    /// **A producer here used to change nothing observable, and that stopped being
+    /// true on 2026-08-16.** D-109 made retirement always material unconditionally
+    /// and `retire_in` declares [`Self::PlanRetirement`] on every path, so the
+    /// *materiality* is identical under either declaration and D-05's
+    /// always-material clause is paid (D-327 clause (4)). What is no longer
+    /// identical is the **record**:
+    /// [`MaterialityVerdict`](super::MaterialityVerdict) carries the trigger now, so
+    /// a verdict declared under this variant reads `retirementUnwindingACutover`
+    /// where one declared under [`Self::PlanRetirement`] reads `planRetirement`.
+    ///
+    /// D-327 clause (4) rested the payment on the two rendering byte-identically,
+    /// and that ground is gone; the clause survives on the weaker and still-true
+    /// claim that no publish's authorization requirement moves either way. **Owed
+    /// back to the register**, and stated here rather than quietly corrected,
+    /// because it also removes the argument D-321 used against wiring the bundle
+    /// pair — a producer for this variant would now be visible to an operator and
+    /// not only to a census. `tests/sqlite_cutover_unwind.rs` carries both halves.
+    ///
+    /// It is why this variant's absence had no symptom, and it is the reason it
+    /// survived every census: the walks ask whether a producer exists, never
+    /// whether one would be distinguishable.
     RetirementUnwindingACutover,
     /// An **immediate** customer-group membership re-resolution (Slice 9).
     /// Renewal-aligned single-membership changes are audit-only, not material.
@@ -379,13 +404,16 @@ impl Trigger {
     /// **Both walks ask whether the naming site is *reachable*, and that is a third
     /// axis rather than a refinement of the first two** (D-321). They used to ask
     /// only whether this crate's code *names* the trigger, which
-    /// [`Self::RevenueShareChange`] satisfied from inside
+    /// [`Self::RevenueShareChange`] satisfied for a day from inside
     /// `infra::bundle::rev_share_change_set` — a `pub fn` with no caller anywhere in
     /// `src/`. A trigger produced by a function nothing calls is produced by nothing,
     /// and it is the **worst** of the three errors found in this `match`, not the
     /// mildest: an overstated `true` normally corrects itself on contact, because the
     /// reader greps and finds nothing, and this one hands the reader a real function
-    /// with a real body and a doc explaining what it declares.
+    /// with a real body and a doc explaining what it declares. That constructor has
+    /// a caller as of 2026-08-16 (`infra::bundle::declared_act`) and the arm has
+    /// moved back — which is the obligation running in the direction the pair of
+    /// walks was built to make it run.
     ///
     /// So on the **act** half this predicate is a claim about a *declaration a
     /// surface makes*, which is the bar every flip in the register was actually
@@ -412,6 +440,24 @@ impl Trigger {
             // "declared, not merely stored" bar `GrandfatheringCutover`'s note
             // states. Its sibling is **not** here: see below.
             | Self::ImmediateMembershipReresolution
+            // **D-104's second bundle act, declared as of 2026-08-16.** It left
+            // this side on 2026-08-15 (D-321) because
+            // `infra::bundle::rev_share_change_set` had no caller anywhere in
+            // `src/`, and D-321 clause (3) kept the constructor on the stated
+            // expectation that "the day it gains a caller the `false`-side walk
+            // reddens and the registry has to flip it back". That is what
+            // happened, and the caller is `infra::bundle::declared_act` — which
+            // diffs the composition being published against the last one that
+            // was live and answers this trigger when the component set is
+            // unchanged and the rev-share moved.
+            //
+            // The bar is the one every flip in this register was decided on: a
+            // **surface declares the act**. `POST …/bundles/{id}/publish` does,
+            // through `BundleService::declared_publish_act`, and the declaration
+            // is now observable — the verdict carries the trigger and the stored
+            // `materiality` document renders it, which is the half D-321
+            // measured as missing and refused to build around.
+            | Self::RevenueShareChange
             // D-109's act, and it was on the wrong side of this `match` from the
             // day `infra::retirement` landed. `retire_in` builds
             // `ChangeSet::of_act(Trigger::PlanRetirement, ..)` and hands it to
@@ -450,54 +496,35 @@ impl Trigger {
             | Self::HistoricalImport
             | Self::GaGateClearingRepublish
             | Self::PrepaidGateClearingRepublish
-            | Self::GrantNonPriceField
-            // **The one `false` here whose subject is not absent at all** (D-321),
-            // which is why it sits apart from the six above rather than among them.
-            // `pricing_bundle_revshare` is a table in this crate, `PATCH
-            // …/bundles/{id}` authors it, and `infra::bundle::rev_share_change_set`
-            // builds `ChangeSet::of_act(Trigger::RevenueShareChange, [])`. What is
-            // missing is a **caller**: no file in `src/` calls that function, so no
-            // surface declares the act and `evaluate` can never answer it.
-            //
-            // D-232 said as much on 2026-08-06 — *"a `pub fn` that builds a change
-            // set is not a surface declaring an act"* — and left the `true`
-            // standing on D-209's other reading, that the predicate is about the
-            // subject. The two readings had nothing to disagree about until they
-            // did. On the **act** half the bar is the declaration, which is what
-            // `GrandfatheringCutover` waited three commits for and what
-            // `PriceOverlayMutation` waited a whole strand for; the subject reading
-            // survives only where no surface *could* declare the trigger, which is
-            // the content half's world and is exempted in the censuses by name.
-            //
-            // Its sibling `BundleComposition` is on the `true` side because
-            // `api::rest::bundles::bundle_publish_materiality` calls
-            // `composition_change_set` on the mounted publish route (2026-08-11).
-            // Both censuses read reachability now, so **the day this function gains
-            // a caller the `false`-side walk reddens** and this arm has to move.
-            | Self::RevenueShareChange => false,
+            | Self::GrantNonPriceField => false,
         }
     }
 
-    /// The trigger's stable token.
+    /// The trigger's stable token — §6's *"trigger source"*.
     ///
     /// **Not** a second materiality vocabulary: `pricing_approval.materiality`
     /// stores [`MaterialityReason::as_str`](super::MaterialityReason::as_str)'s
-    /// `alwaysMaterialTrigger` and the unit's own `subject_kind` says what the act
-    /// was about.
+    /// `alwaysMaterialTrigger` as the discriminator and this rides **beside** it,
+    /// which is the arrangement §6 names in the same sentence as the per-currency
+    /// deltas and the tripped rows.
     ///
-    /// **It has no production consumer at all, and this doc claimed one** (found
-    /// 2026-08-15, D-321). It read *"this token is for the diagnostic the verdict
-    /// carries beside it, and for a roster test"*; the verdict carries no such
-    /// diagnostic. [`MaterialityVerdict`](super::MaterialityVerdict) is
-    /// `Material { reason, tripped } | AutoPublishable` — the trigger's identity
-    /// enters nothing, reaches no column and no response, and every registered act
-    /// renders byte-identically whichever member of this enum declared it. So the
-    /// only reader of this token is `triggers_tests`, which would otherwise compare
-    /// variants to themselves. Stated rather than left implied, because *"the
-    /// operator reading the approval record should not have to infer the act"* is
-    /// the reason [`Self::RevenueShareChange`] is a separate trigger from
-    /// [`Self::BundleComposition`] at all — and today the record does not carry
-    /// either of them.
+    /// **It acquired its first production consumer on 2026-08-16, and the
+    /// preceding state is worth keeping.** Until then this doc claimed a reader it
+    /// did not have — *"this token is for the diagnostic the verdict carries beside
+    /// it"* — and D-321 measured the claim: the verdict was
+    /// `Material { reason, tripped } | AutoPublishable`, so the trigger's identity
+    /// entered nothing, reached no column and no response, and every registered act
+    /// rendered byte-identically whichever member of this enum declared it. That
+    /// fact is what decided D-321 **against** giving
+    /// `infra::bundle::rev_share_change_set` a caller: the call would have been
+    /// observable to a census and to nothing else. So the reader had to be built
+    /// before the caller could be, and both land together —
+    /// [`MaterialityVerdict::trigger`](super::MaterialityVerdict::trigger) is the
+    /// member and `api::rest::approvals::MaterialityView::trigger` is the column
+    /// and the wire. *"The operator reading the approval record should not have to
+    /// infer the act"* is the reason [`Self::RevenueShareChange`] is a separate
+    /// trigger from [`Self::BundleComposition`] at all, and the record now carries
+    /// which of them it was.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {

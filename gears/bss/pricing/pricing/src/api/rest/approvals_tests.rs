@@ -8,6 +8,7 @@ use uuid::Uuid;
 use super::{MaterialityView, PinnedContentView, hex, region_grant_of_this_surface, state_filter};
 use crate::domain::approval::{ApprovalState, content_hash};
 use crate::domain::materiality::delta::MoveScale;
+use crate::domain::materiality::triggers::Trigger;
 use crate::domain::materiality::{MaterialityReason, MaterialityVerdict, TrippedRow};
 use crate::domain::money::CurrencyCode;
 use crate::domain::plan_shape::{BillingCycle, PlanShape};
@@ -169,6 +170,87 @@ fn the_materiality_verdict_survives_the_column_it_is_stored_in() {
 
     assert!(read.material);
     assert_eq!(read.reason.as_deref(), Some("noConfiguredThreshold"));
+    assert_eq!(
+        read.trigger, None,
+        "a fail-safe is an answer about the policy, so it names no act"
+    );
+}
+
+/// **§6's third declared member reaches the column**: the act, not merely the rule.
+///
+/// The reason token is one word — `alwaysMaterialTrigger` — for eighteen registered
+/// acts, so a stored verdict carrying it alone told an auditor a second principal
+/// was required and could not tell them what for. D-104 registers *two* bundle
+/// triggers precisely so a rev-share re-split and a component swap are
+/// distinguishable in this document, and until this member existed they rendered
+/// byte-identically.
+///
+/// Rendered **and read back**, because the column is parsed by `ApprovalView::from`
+/// with a `.ok()` that turns an unparseable document into a `null` materiality — so
+/// a member that serializes and will not deserialize would blank the whole verdict
+/// on the reviewer's screen rather than fail loudly.
+#[test]
+fn a_registered_acts_verdict_carries_the_trigger_that_declared_it() {
+    let verdict = MaterialityVerdict::triggered(Trigger::RevenueShareChange);
+
+    let stored = serde_json::to_value(MaterialityView::from(&verdict)).expect("render");
+    assert_eq!(
+        stored["reason"], "alwaysMaterialTrigger",
+        "the discriminator is unchanged; the act rides beside it"
+    );
+    assert_eq!(
+        stored["trigger"], "revenueShareChange",
+        "section 6's `trigger source`, in the registry's own spelling"
+    );
+
+    let read: MaterialityView = serde_json::from_value(stored.clone()).expect("read back");
+    assert_eq!(read.trigger.as_deref(), Some("revenueShareChange"));
+
+    // And the sibling act renders differently, which is the whole point: a
+    // classifier that answered one trigger for both would satisfy every assertion
+    // above.
+    let sibling = serde_json::to_value(MaterialityView::from(&MaterialityVerdict::triggered(
+        Trigger::BundleComposition,
+    )))
+    .expect("render");
+    assert_ne!(
+        sibling["trigger"], stored["trigger"],
+        "D-104's two acts must not render alike, which is the state D-232 recorded"
+    );
+}
+
+/// **A verdict stored before this member existed still parses**, which is what
+/// keeps every already-open unit readable.
+///
+/// The bytes below are exactly what a pre-2026-08-16 submit wrote. `MaterialityView`
+/// is `(request, response)` because the column is read *back*, and
+/// `ApprovalView::from` swallows a parse failure into `materiality: null` — so a
+/// required member added here would silently blank the verdict on the detail screen
+/// of every unit opened before the deploy, on the one surface the two-person rule
+/// exists to put in front of a second principal. `Option` is what prevents that
+/// (serde reads a missing key as `None`), and this is the case that holds it.
+///
+/// It is deliberately a **literal document** rather than a round-trip: a round-trip
+/// through today's writer can only ever produce today's shape, so it could not fail.
+#[test]
+fn a_stored_verdict_written_before_the_trigger_member_still_parses() {
+    let legacy = serde_json::json!({
+        "material": true,
+        "reason": "alwaysMaterialTrigger",
+        "tripped": null,
+    });
+
+    let read: MaterialityView = serde_json::from_value(legacy).expect(
+        "a document written before the trigger member must still read, or every unit \
+         opened before the deploy loses its verdict on the reviewer's screen",
+    );
+
+    assert!(read.material);
+    assert_eq!(read.reason.as_deref(), Some("alwaysMaterialTrigger"));
+    assert_eq!(
+        read.trigger, None,
+        "an absent key is an unknown act, never a wrong one"
+    );
 }
 
 /// **A rate's move keeps the scale it was measured at, all the way to the

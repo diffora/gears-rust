@@ -20,8 +20,8 @@ mod rest_support;
 use axum::http::StatusCode;
 use bss_pricing::api::rest::bundles::BUNDLES;
 use rest_support::{
-    Harness, approval_row, approval_rows, body_json, etag_of, problem_code, seed_draft_plan,
-    seed_price, with_headers,
+    Harness, approval_row, approval_rows, body_json, etag_of, problem_code, seed_current_plan,
+    seed_draft_plan, seed_price, with_headers,
 };
 use uuid::Uuid;
 
@@ -622,6 +622,17 @@ async fn a_clean_publish_is_accepted_and_opens_the_always_material_unit() {
         unit.materiality["reason"], "alwaysMaterialTrigger",
         "the stored verdict names the rule that fired, which is what an auditor reads"
     );
+    // **The third arm of the classifier, and the control for the two cases above.**
+    // This plan has no live revision at all, so there is no composition for this one
+    // to be a re-split *of* — which is D-104's own first clause, "bundle creation".
+    // Asserted here rather than in a case of its own because this is already the
+    // fixture for it, and because a classifier answering `revenueShareChange`
+    // whenever a rev-share exists would pass both cases above and fail this.
+    assert_eq!(
+        unit.materiality["trigger"], "bundleComposition",
+        "a first composition is the composition act: {}",
+        unit.materiality
+    );
     assert_eq!(
         unit.state,
         bss_pricing::domain::approval::ApprovalState::Submitted,
@@ -715,6 +726,229 @@ async fn an_independent_approval_is_what_publishes_the_composition() {
         published_body["materiality"].as_str(),
         Some("alwaysMaterialTrigger"),
         "and the reason is the evaluator's on both arms, not a per-arm literal"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// D-104's **two** triggers — which act the record names (D-232's second half).
+// ---------------------------------------------------------------------------
+
+/// Write a composition at `revision`, under the plan's current tag.
+async fn write_composition(
+    harness: &Harness,
+    plan_id: Uuid,
+    bundle_id: Uuid,
+    revision: u64,
+    body: serde_json::Value,
+) {
+    let tag = harness.plan_etag(plan_id).await;
+    let mut payload = body;
+    payload["plan_revision"] = serde_json::json!(revision);
+    let response = harness
+        .allowed()
+        .send(with_headers(
+            "PATCH",
+            &bundle_path(bundle_id),
+            Some(payload),
+            &[("if-match", &tag)],
+        ))
+        .await;
+    let status = response.status();
+    let written = body_json(response).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "the composition write must land: {written}"
+    );
+    // **The route writes at the tag's revision, not at the body's**, so a fixture
+    // that assumed otherwise would seed the wrong revision and the case above it
+    // would be asserting about a diff nobody authored.
+    assert_eq!(
+        written["plan_revision"].as_u64(),
+        Some(revision),
+        "the composition must land on the revision this fixture means: {written}"
+    );
+}
+
+/// Publish the bundle at `revision` and hand back the stored unit the call opened.
+async fn staged_unit(
+    harness: &Harness,
+    plan_id: Uuid,
+    bundle_id: Uuid,
+    revision: u64,
+) -> serde_json::Value {
+    let response = harness
+        .allowed()
+        .send(with_headers(
+            "POST",
+            &publish_path(bundle_id),
+            Some(serde_json::json!({ "plan_revision": revision, "markets": [] })),
+            &[],
+        ))
+        .await;
+    let status = response.status();
+    let body = body_json(response).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "publish refused: {body}");
+
+    let expected_ref = format!("{plan_id}/composition/{revision}");
+    let rows = approval_rows(harness).await;
+    let opened = rows
+        .iter()
+        .find(|row| row.subject_ref == expected_ref)
+        .unwrap_or_else(|| {
+            panic!(
+                "the publish must open a unit over {expected_ref}; the store holds {:?}",
+                rows.iter().map(|r| &r.subject_ref).collect::<Vec<_>>()
+            )
+        });
+    approval_row(harness, opened.approval_id).await.materiality
+}
+
+/// A group of two named parties splitting one vendor's revenue.
+///
+/// Rev-share is authorable on `sum_of_parts` only (`REVSHARE_BASIS_UNSUPPORTED`,
+/// D-55), which is why these cases seed the default basis rather than the
+/// `own_price` shape the two cases above them use — and a `sum_of_parts` bundle
+/// referencing no component is refused too, so they carry a real published one.
+fn one_group(vendor: Uuid, alpha_bp: i64, beta_bp: i64) -> serde_json::Value {
+    serde_json::json!([{
+        "vendor_sku_id": vendor,
+        "platform_cut_bp": 0,
+        "parties": [
+            { "party": "alpha", "share_bp": alpha_bp },
+            { "party": "beta", "share_bp": beta_bp },
+        ],
+    }])
+}
+
+/// One published plan, referenced as a component.
+fn one_component(plan: Uuid) -> serde_json::Value {
+    serde_json::json!([{ "component_plan_id": plan, "included_sku_id": Uuid::now_v7() }])
+}
+
+/// **The claim this whole change exists to make**: a publish whose only movement is
+/// a re-split names `revenueShareChange`, and a reader of the approval record can
+/// tell it from a component swap.
+///
+/// D-104 registers two triggers precisely so that *"an operator reading the approval
+/// record should not have to infer"* whether what moved was the customer's
+/// composition or the vendor's payout. Until 2026-08-16 the record named neither:
+/// `publish_bundle` declared `Trigger::BundleComposition` unconditionally, and the
+/// verdict carried no trigger identity at all — so both acts produced a
+/// byte-identical response and a byte-identical stored document (D-232, D-321).
+///
+/// **A weaker probe would have passed before any of it.** `materiality.material` was
+/// already `true` and `materiality.reason` was already `alwaysMaterialTrigger` for
+/// every composition publish, so a case asserting either would have been green
+/// against the state this closes. The assertion is on `trigger`, and it is paired
+/// with the two controls below rather than standing alone: one says a component
+/// change answers the *other* token, and one says a first publish does — so a
+/// classifier that answered `revenueShareChange` for everything cannot pass the set.
+#[tokio::test]
+async fn a_rev_share_only_republish_names_the_rev_share_act() {
+    let harness = Harness::new().await;
+    let (plan_id, bundle_id) = seed_bundle(&harness).await;
+    let vendor = Uuid::now_v7();
+    let component_plan = Uuid::now_v7();
+    seed_current_plan(&harness, component_plan).await;
+    let components = one_component(component_plan);
+
+    // Revision 0's composition, published as the plan's content — this is the
+    // baseline the diff runs against.
+    write_composition(
+        &harness,
+        plan_id,
+        bundle_id,
+        0,
+        serde_json::json!({
+            "components": components,
+            "rev_share": one_group(vendor, 5000, 5000),
+        }),
+    )
+    .await;
+    harness.publish(plan_id, 0).await;
+    harness.open_successor(plan_id).await;
+
+    // Revision 1 moves the split and nothing else. The component set is byte-equal
+    // on both sides, so what changed is who is paid.
+    write_composition(
+        &harness,
+        plan_id,
+        bundle_id,
+        1,
+        serde_json::json!({
+            "components": components,
+            "rev_share": one_group(vendor, 7000, 3000),
+        }),
+    )
+    .await;
+
+    let stored = staged_unit(&harness, plan_id, bundle_id, 1).await;
+
+    assert_eq!(
+        stored["reason"], "alwaysMaterialTrigger",
+        "the rule that fired is unchanged; this case is about the act beside it"
+    );
+    assert_eq!(
+        stored["trigger"], "revenueShareChange",
+        "D-104's second trigger: the shares moved and the component set did not, and \
+         a rev-share re-split *is* vendor payout — got {stored}"
+    );
+}
+
+/// The **positive control**: the same fixture, moving a component instead, answers
+/// the other token.
+///
+/// Without it `a_rev_share_only_republish_names_the_rev_share_act` proves only that
+/// *some* token reaches the column — a classifier hard-coded to `revenueShareChange`
+/// would pass it, which is the literal-shaped defect this surface has now produced
+/// three times (`bundles.rs`' own materiality literal, `overlays.rs`' before it, and
+/// `bulkGroupMove`'s dated comment).
+#[tokio::test]
+async fn a_component_change_over_the_same_baseline_names_the_composition_act() {
+    let harness = Harness::new().await;
+    let (plan_id, bundle_id) = seed_bundle(&harness).await;
+    let vendor = Uuid::now_v7();
+    // Two published plans are two legal components; markets are empty, so the
+    // coverage walk has nothing to refuse either for.
+    let first_component = Uuid::now_v7();
+    let second_component = Uuid::now_v7();
+    seed_current_plan(&harness, first_component).await;
+    seed_current_plan(&harness, second_component).await;
+    let one = one_component(first_component);
+
+    write_composition(
+        &harness,
+        plan_id,
+        bundle_id,
+        0,
+        serde_json::json!({ "components": one, "rev_share": one_group(vendor, 5000, 5000) }),
+    )
+    .await;
+    harness.publish(plan_id, 0).await;
+    harness.open_successor(plan_id).await;
+
+    // The split is held **still** and a second component arrives, which is the
+    // exact inverse of the case above over an identically-built baseline.
+    let mut two = one.clone();
+    two.as_array_mut()
+        .expect("a component list")
+        .push(one_component(second_component)[0].clone());
+    write_composition(
+        &harness,
+        plan_id,
+        bundle_id,
+        1,
+        serde_json::json!({ "components": two, "rev_share": one_group(vendor, 5000, 5000) }),
+    )
+    .await;
+
+    let stored = staged_unit(&harness, plan_id, bundle_id, 1).await;
+
+    assert_eq!(
+        stored["trigger"], "bundleComposition",
+        "the component set moved, so the record must say what the customer receives \
+         changed — got {stored}"
     );
 }
 

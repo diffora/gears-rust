@@ -262,7 +262,7 @@ fn the_controlled_arm_echoes_the_stored_interval_and_not_the_request() {
         Some(20),
     );
 
-    let verdict = MaterialityVerdict::material(MaterialityReason::AlwaysMaterialTrigger);
+    let verdict = MaterialityVerdict::triggered(Trigger::WindowCancellation);
     let pending = pending_approval(
         &planned,
         window_id,
@@ -282,7 +282,7 @@ fn the_controlled_arm_echoes_the_stored_interval_and_not_the_request() {
     assert_eq!(pending.state, WindowState::Scheduled);
     assert_eq!(
         pending.verdict,
-        MaterialityVerdict::material(MaterialityReason::AlwaysMaterialTrigger),
+        MaterialityVerdict::triggered(Trigger::WindowCancellation),
         "the verdict the evaluator produced for D-62's act"
     );
 }

@@ -66,7 +66,7 @@ use crate::domain::bundle::{
 };
 use crate::domain::bundle_rules::check_basis_declared;
 use crate::domain::error::DomainError;
-use crate::domain::materiality::{self, MaterialityVerdict};
+use crate::domain::materiality::{self, ChangeSet, MaterialityVerdict};
 use crate::domain::money::CurrencyCode;
 use crate::domain::scope_key::{PlanId, Region};
 use crate::infra::idempotent::{self, Guarded, GuardedRequest, TxFuture};
@@ -663,6 +663,12 @@ async fn publish_bundle(
     // anywhere in the crate**, which is what made `Trigger::BundleComposition`
     // answer `subject_exists_in_this_crate` while nothing could ever evaluate it.
     //
+    // **And until 2026-08-16 the verdict could not say which act it was.** D-104
+    // registers two triggers because a rev-share re-split *is* vendor payout and a
+    // component swap changes what the customer receives, and the record named
+    // neither: one token, `alwaysMaterialTrigger`, for both. That half is closed
+    // below.
+    //
     // `overlays::submit_overlay` is the precedent, one plane over and the same
     // shape: `priceOverlayMutation` was a mounted surface writing its materiality
     // token as a literal while nothing built its change set, and it was closed the
@@ -704,10 +710,24 @@ async fn publish_bundle(
     let subject_ref =
         crate::infra::approval::bundle_composition_unit_ref(plan_id, body.plan_revision);
 
+    // **Which of D-104's two acts this is** (D-232's remaining half). The request
+    // declares neither — `PublishBundleRequest` carries a revision and a market
+    // set — so the answer is a diff of the composition being published against the
+    // last one that was live, and `BundleService::declared_publish_act` is the one
+    // question that resolves both operands. It is asked on **both** arms and
+    // answers identically on both, which is the property `load_live_predecessor`'s
+    // doc argues: the reviewer must not be shown one act and the publish store
+    // another.
+    let act = state
+        .bundle_service
+        .declared_publish_act(&scope, tenant, plan_id, body.plan_revision)
+        .await
+        .map_err(|e| crate::infra::storage::repo_failure(&e))?;
+
     // One verdict, rendered twice — never built twice. The wire's string and the
     // record's jsonb cannot come from two evaluations.
     let (reason, stored_materiality) =
-        crate::api::rest::overlays::rendered_materiality(&bundle_publish_materiality())?;
+        crate::api::rest::overlays::rendered_materiality(&bundle_publish_materiality(&act))?;
 
     // Matched on the **content** and not merely on the subject: an approval whose
     // composition moved after the decision covers content that no longer exists,
@@ -805,19 +825,24 @@ async fn publish_bundle(
 /// delta to trip on and a component swap reached consumers with no approver,
 /// while a $1 price-row change above threshold took two people.
 ///
-/// # This call is what makes `Trigger::BundleComposition` real
+/// # This call is what makes both of D-104's triggers real
 ///
 /// The act half is `ChangeSet::act()`, reachable through nothing but
 /// [`ChangeSet::of_act`], so a trigger no surface constructs can never be answered
 /// by the evaluator however many tables its subject has.
 /// `infra::bundle::composition_change_set` was exactly such a constructor — a
-/// `pub fn` building a declaration, with no caller — and this is its first one.
-fn bundle_publish_materiality() -> MaterialityVerdict {
-    materiality::evaluate(
-        &crate::infra::bundle::composition_change_set(),
-        /* policy */ None,
-        /* baseline */ None,
-    )
+/// `pub fn` building a declaration, with no caller — and this was its first one on
+/// 2026-08-11.
+///
+/// **It takes the act rather than choosing it**, as of 2026-08-16. Choosing it here
+/// would put the composition diff on the route beside the authz gate and the
+/// validation pass; `infra::bundle::declared_act` is where the rule lives and
+/// `BundleService::declared_publish_act` is where its two operands are read, so
+/// what remains here is the evaluation — which is the same division `infra::window`
+/// takes for a shortening (D-176: the surface classifies inside its own
+/// transaction, the evaluator turns the classification into a verdict).
+fn bundle_publish_materiality(act: &ChangeSet) -> MaterialityVerdict {
+    materiality::evaluate(act, /* policy */ None, /* baseline */ None)
 }
 
 /// `GET /bss-pricing/v1/bundles/{bundleId}` — the bundle and its composition.

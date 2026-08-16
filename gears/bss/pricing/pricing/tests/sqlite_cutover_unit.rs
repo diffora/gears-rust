@@ -440,19 +440,20 @@ async fn a_cutover_is_always_material_and_the_evaluator_is_not_asked() {
         materiality.contains("alwaysMaterialTrigger"),
         "the verdict names the registered trigger: {materiality}"
     );
-    // **It does NOT say which trigger, and that is a finding rather than this
-    // case's business.** `MaterialityReason::AlwaysMaterialTrigger` is a *unit*
-    // variant, so the stored verdict reads `alwaysMaterialTrigger` for a window
+    // **And it says WHICH trigger, as of 2026-08-16.** This assertion is the
+    // inverse of the one it replaces, and the replaced one said so itself: it read
+    // `!materiality.contains("grandfatheringCutover")` with the note *"if this
+    // starts passing, the enum gained its trigger and the register entry is
+    // paid"*. It has, so the case is flipped rather than deleted — an instrument
+    // armed against an absence is evidence the absence is closed, and turning it
+    // into an assertion of the presence is what keeps the closure from silently
+    // regressing. `alwaysMaterialTrigger` alone reads identically for a window
     // cancellation, a shortening, a bundle composition, a rev-share re-split and
-    // this act alike — while D-104's own entry requires the record to name which
-    // act it was, *"an operator reading the approval record should not have to
-    // infer that from a trigger called composition"*. Recorded here and carried to
-    // the register; repairing it moves a shared enum and every stored verdict, so
-    // it is not this clause's to do.
+    // this act; the trigger member is what tells them apart in the record D-104
+    // requires to name the act.
     assert!(
-        !materiality.contains("grandfatheringCutover"),
-        "if this starts passing, the enum gained its trigger and the register entry is paid: \
-         {materiality}"
+        materiality.contains("grandfatheringCutover"),
+        "the stored verdict must name the act, not only the rule: {materiality}"
     );
 }
 

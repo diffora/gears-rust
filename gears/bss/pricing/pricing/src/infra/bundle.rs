@@ -20,12 +20,21 @@
 //! builds the declaration, and `evaluate` answers `alwaysMaterialTrigger` from it
 //! **whatever a threshold policy says**, which is the whole of what D-104 buys.
 //!
-//! **A constructor is not a declaration until something calls it**, and only one of
-//! the two is called. `api::rest::bundles::bundle_publish_materiality` evaluates
-//! over [`composition_change_set`] on the mounted publish route; nothing in `src/`
-//! calls [`rev_share_change_set`], so `Trigger::RevenueShareChange` answers
-//! `subject_exists_in_this_crate() == false` (D-232, D-321) even though this file,
-//! `pricing_bundle_revshare` and the D-07 reconciler are all here.
+//! **A constructor is not a declaration until something calls it**, and for two
+//! waves neither of the two was called: `publish_bundle` evaluated no verdict at
+//! all (D-232), then evaluated [`composition_change_set`]'s unconditionally
+//! (2026-08-11), so a rev-share re-split and a component swap opened units that
+//! were byte-identical. [`declared_act`] is what calls both — it diffs the
+//! composition being published against the last one that was live and answers which
+//! of D-104's two acts the publish is — and
+//! `BundleService::declared_publish_act` is the route's one question.
+//!
+//! **Naming the act was worth nothing until the record could carry it**, which is
+//! why D-321 refused to wire the second constructor and said so: with
+//! `MaterialityVerdict` carrying a reason and no trigger, both declarations rendered
+//! the same bytes. The verdict carries the trigger as of 2026-08-16, so this file's
+//! choice between the two is now the difference between an approval record that says
+//! *"what a vendor is paid moved"* and one that says *"the composition moved"*.
 //!
 //! **Normalise at publish.** D-07's residual lands on the group's absorber and
 //! the effective shares are written back summing to exactly 10000 bp. That is a
@@ -74,6 +83,7 @@ use crate::infra::storage::RepoError;
 use crate::infra::storage::entity::{
     bundle, bundle_component, bundle_revshare, plan, plan_phase, price,
 };
+use crate::infra::storage::repo::bundle_repo::{self, CompositionDraft};
 use crate::infra::storage::repo::outbox_repo::BundleUpdatedPayload;
 use crate::infra::storage::repo::plan_repo::{self, read_frequency};
 use crate::infra::storage::repo::{BundleRepo, NewOutboxEvent, outbox_repo};
@@ -109,24 +119,112 @@ pub fn composition_change_set() -> ChangeSet {
 /// and a rev-share re-split *is* vendor payout, which an operator reading the
 /// approval record should not have to infer from a trigger called "composition".
 ///
-/// # It has no caller, and both halves of that are worth saying
-///
-/// Nothing in `src/` calls this (D-232, still owed; D-321 for what was done about
-/// the attestation). `publish_bundle` declares [`composition_change_set`]'s act
-/// unconditionally, so a rev-share-only publish **is** judged always-material —
-/// D-104's rule is enforced. What is not built is the part the two triggers exist
-/// for: telling the two acts apart in the record.
-///
-/// **And that needs more than a caller here.** Picking between the two wants a
-/// composition diff against the published revision, which no operand on the publish
-/// route holds; and the verdict has nowhere to put the answer —
-/// `MaterialityVerdict` carries a `MaterialityReason` and no trigger, so both acts
-/// render byte-identically today. Wiring this function without those two would move
-/// no observable byte and would exist only to satisfy the census that reads it,
-/// which is why the census's `false` is the honest answer meanwhile.
+/// Its caller is [`declared_act`], as of 2026-08-16. It had none from Slice 8 until
+/// then, and the reason it was not simply given one is the point rather than the
+/// history: until `MaterialityVerdict` could carry a trigger, this constructor and
+/// [`composition_change_set`] produced a byte-identical response and a byte-identical
+/// stored `materiality` document, so a call would have been observable to the trigger
+/// census and to nothing else (D-232, D-321).
 #[must_use]
 pub fn rev_share_change_set() -> ChangeSet {
     ChangeSet::of_act(Trigger::RevenueShareChange, [])
+}
+
+/// Which of D-104's two acts a composition publish **is** — the diff that decision
+/// registered two triggers in order to express.
+///
+/// `published` is the composition on the last revision of this plan that was ever
+/// live, and `None` is *"none was"*. `candidate` is the composition the publish
+/// would freeze.
+///
+/// # The rule, and why the narrow claim is the one made positively
+///
+/// [`Trigger::RevenueShareChange`] is answered **only** when the component set is
+/// unchanged and the rev-share set moved. That is a claim an operator can act on —
+/// *"what a vendor is paid moved, and what the customer receives did not"* — and it
+/// is exactly the sentence D-232 said the record could not make. Everything else is
+/// [`Trigger::BundleComposition`], which covers three worlds and states them here so
+/// no reader has to infer which one a stored token came from:
+///
+/// - **no live predecessor** — the composition has never been anybody's, which is
+///   D-104's own first clause, *"bundle creation"*;
+/// - **the component set moved**, with or without the shares — a swap that also
+///   re-splits is a swap, and reporting it as a re-split would hide the change to
+///   what the customer receives behind the change to who is paid for it;
+/// - **nothing moved at all** — a re-publish of an unchanged composition, which is a
+///   legal act here (a revision may publish more than once) and is still material.
+///
+/// The precedence between the first two is not a coin toss. Both acts are always
+/// material, so the choice moves no verdict and only a token; and of the two
+/// mis-namings available, calling a component swap a re-split is the one that
+/// misleads — it asserts the customer's side did not move. So the sharper claim is
+/// made only when it is provably true, which is `compare`'s own rule in
+/// `domain::materiality` (*"reported in the direction that names something the
+/// operator can look at"*) applied to a naming rather than to a comparison.
+///
+/// # "Was live" is the plan revision's state, and that is the only signal there is
+///
+/// The composition is revision-scoped and carries no lifecycle of its own —
+/// `pricing_bundle` holds no state column, *"a bundle's state is its plan
+/// revision's"*, which `BundlePageQuery::plan_id`'s doc states as a decision. So
+/// [`plan_repo::load_live_predecessor`] reads the plan chain, and the baseline is
+/// the composition riding the last revision of it that ever published.
+///
+/// The limit that follows is named rather than left to be discovered: a revision
+/// can publish without [`BundleService::publish_composition`] having run over it,
+/// so this baseline is *"the composition the last live revision carried"* and not
+/// *"the composition a bundle publish last committed"*. There is no operand for the
+/// second — that call records no `PendingVersionRow` and advances no
+/// `CatalogVersion` (`inst-ba-return`'s read-model half is unbuilt, and
+/// `publish_bundle` says so where it returns its 202), so nothing anywhere marks
+/// one composition as the published one. Naming the revision is the honest
+/// available answer, and it is what a consumer resolving the plan would have seen.
+///
+/// # What this diff does **not** see, and it is already owned
+///
+/// D-104 puts `price_basis` and `invoiceItemization` under the rev-share trigger,
+/// and neither is here: both live on `pricing_bundle`, which is keyed by
+/// `bundle_id` alone and carries no revision, so there is no per-revision value to
+/// compare. **D-206 is the entry that owns that consequence** and has already
+/// decided the fix (split identity from content, the content onto a revision-scoped
+/// carrier), and it also records the fact that makes this a non-issue today rather
+/// than a hole: *"the only writer of either column is `BundleRepo::create`, and no
+/// mounted route mutates them"*. So the two fields cannot move at all, and a diff
+/// that cannot see them is not missing anything that can change. The day D-206's
+/// carrier lands they join this comparison, and
+/// `bundle_tests::the_declared_act_reads_only_what_a_revision_can_carry` is where a
+/// reader meets that.
+///
+/// # Order, not set semantics
+///
+/// [`CompositionDraft`] is compared with `==`, which compares two `Vec`s
+/// element-wise. That is honest here and would not be in general:
+/// `bundle_repo::read_composition` orders components by `component_plan_id`, groups
+/// by `vendor_sku_id` and parties by `(vendor_sku_id, party)` on **both** sides of
+/// this comparison, so two readings of one composition are one value. It is
+/// deliberately not re-sorted here — a normalisation in this function would let the
+/// repository's ordering drift without anything noticing, and the ordering is
+/// load-bearing for other readers too.
+///
+/// The **authored** shares are what is compared, never the effective ones:
+/// `publish_composition` normalises onto `effective_share_bp`, a different column
+/// that `read_composition` does not read. Were it otherwise, publishing a
+/// composition would move the very value the next publish diffs against, and every
+/// second publish would report a rev-share change that no operator authored.
+#[must_use]
+pub fn declared_act(
+    published: Option<&CompositionDraft>,
+    candidate: &CompositionDraft,
+) -> ChangeSet {
+    let Some(published) = published else {
+        return composition_change_set();
+    };
+    if published.components == candidate.components
+        && published.rev_share_groups != candidate.rev_share_groups
+    {
+        return rev_share_change_set();
+    }
+    composition_change_set()
 }
 
 /// The composition service.
@@ -148,6 +246,62 @@ impl BundleService {
             // built without one reports nothing rather than failing to build.
             metrics: Arc::new(crate::domain::ports::metrics::NoopPricingMetrics),
         }
+    }
+
+    /// The change set a publish of `revision` declares — [`declared_act`]'s operand
+    /// resolution, and the only thing the route has to ask for.
+    ///
+    /// Two reads: the composition being published, and the composition on the last
+    /// revision of this plan that was ever live
+    /// ([`plan_repo::load_live_predecessor`]). They go through **one connection**
+    /// so a reader of the two answers is reading one moment; they are deliberately
+    /// **not** in a transaction, because this is a classification made before the
+    /// publish's own mutating work and D-176's rule applies in the other direction
+    /// here — a composition cannot move under it, `replace_composition_on` refusing
+    /// every revision that is not a `draft` and the predecessor being, by
+    /// construction, not one.
+    ///
+    /// **It is a read of two revisions and not a before-image**, which is what makes
+    /// it constructible at all: the composition is revision-scoped (D-92, D-105), so
+    /// "what was live before" is a row set that still exists rather than a value
+    /// somebody had to have recorded. That is the difference between this and the
+    /// operand D-327 declared unrecordable for the cutover's shorten, and it is why
+    /// D-232's second half was buildable and that one was not.
+    ///
+    /// # Errors
+    /// [`RepoError::Db`] on a scope or storage failure; [`RepoError::CorruptRow`]
+    /// for a stored absorber, party or revision value no `CHECK` should have
+    /// admitted.
+    pub async fn declared_publish_act(
+        &self,
+        scope: &AccessScope,
+        tenant_id: Uuid,
+        plan_id: PlanId,
+        revision: u64,
+    ) -> Result<ChangeSet, RepoError> {
+        let conn = self
+            .db
+            .conn()
+            .map_err(|e| RepoError::Db(format!("bundle act conn: {e}")))?;
+        let candidate =
+            bundle_repo::load_composition_on(&conn, scope, tenant_id, plan_id, revision).await?;
+        let published =
+            match plan_repo::load_live_predecessor(&conn, scope, tenant_id, plan_id, revision)
+                .await?
+            {
+                None => None,
+                Some(predecessor) => Some(
+                    bundle_repo::load_composition_on(
+                        &conn,
+                        scope,
+                        tenant_id,
+                        plan_id,
+                        predecessor.revision,
+                    )
+                    .await?,
+                ),
+            };
+        Ok(declared_act(published.as_ref(), &candidate))
     }
 
     /// Assemble one revision's composition into the snapshot the rules read.
@@ -817,3 +971,7 @@ async fn write_effective_share(
     }
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "bundle_tests.rs"]
+mod bundle_tests;

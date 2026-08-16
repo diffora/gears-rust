@@ -107,10 +107,13 @@
 //! the two gate-clearing republishes, a prepaid grant's non-price fields. (The
 //! sentence said "most", and named cutovers, overlays, memberships, bundles and
 //! **retirement** among them; each of those has since landed, and retirement had
-//! landed before this paragraph was last touched.) **A seventh answers `false` on
-//! different grounds**: `revenueShareChange`'s subject is authored here and no
-//! surface declares the act, `infra::bundle::rev_share_change_set` being a
-//! constructor nothing calls (D-232, D-321). They are not omitted:
+//! landed before this paragraph was last touched.) **A seventh answered `false` on
+//! different grounds for one day**: `revenueShareChange`'s subject is authored here
+//! and no surface declared the act, `infra::bundle::rev_share_change_set` being a
+//! constructor nothing called (D-232, D-321). It has a caller as of 2026-08-16 —
+//! `infra::bundle::declared_act`, which diffs the composition being published
+//! against the last one that was live — so the `false` side is the six again.
+//! They are not omitted:
 //! [`triggers::Trigger`] declares
 //! each with its owning slice and answers
 //! [`triggers::Trigger::subject_exists_in_this_crate`] `false`, so the set does not
@@ -210,12 +213,28 @@ pub enum MaterialityReason {
     /// an extension. The content-derived half — D-115's two and the
     /// `grandfatherUntil` horizon — the evaluator derives itself.
     ///
-    /// **Which** trigger fired is recoverable and is deliberately not a second
-    /// stored token: the unit names its subject (`subject_kind` and the subject's
-    /// own id), and the audit record of the act carries the state pair that tells a
-    /// cancel from a shortening. A stored token per trigger would be a vocabulary
-    /// that grows with the trigger list and says nothing the subject does not.
-    /// [`triggers::Trigger::as_str`] exists for the diagnostic, not for the column.
+    /// **Which** trigger fired rides beside this token as
+    /// [`MaterialityVerdict::trigger`], and that paragraph is D-232's remaining
+    /// half rather than a widening for its own sake.
+    ///
+    /// This doc used to argue the opposite — *"deliberately not a second stored
+    /// token: the unit names its subject (`subject_kind` and the subject's own id),
+    /// and the audit record of the act carries the state pair that tells a cancel
+    /// from a shortening"*. Both operands are real and neither answers the question
+    /// D-104 registers **two** bundle triggers to answer. `subject_kind` is
+    /// `bundle` for a component swap and `bundle` for a rev-share re-split; the
+    /// audit record of a composition publish carries the revision's state pair,
+    /// which is identical for both. So an operator reading the approval record
+    /// could not tell a change to what the customer receives from a change to what
+    /// a vendor is paid, and the register said so in as many words — *"an operator
+    /// reading the approval record should not have to infer it"*.
+    ///
+    /// It is not a **second vocabulary**: §6 already describes this column's
+    /// payload as *"per-currency deltas, tripped rows, **trigger source**"*, and
+    /// the token is [`triggers::Trigger::as_str`]'s, which the registry already
+    /// owns and `triggers_tests` already holds distinct. What changed is that it
+    /// now has a production reader; until 2026-08-16 it had none at all, and every
+    /// registered act rendered byte-identically whichever trigger declared it.
     AlwaysMaterialTrigger,
     /// `inst-mat-percurrency` proper — a row's delta **reaches** the threshold its
     /// own currency's entry states (§3's G3: any row trips the whole change).
@@ -330,6 +349,20 @@ pub struct TrippedRow {
 /// reached, which is the distinction `inst-mat-percurrency` is built around. So the
 /// verdict is cloned where it used to be copied; the register priced that before the
 /// change rather than after.
+/// # The trigger rides beside the reason, and it is the operand D-232 left owed
+///
+/// [`MaterialityReason::AlwaysMaterialTrigger`] is one token for eighteen acts.
+/// While that was all a verdict carried, `Trigger::as_str` had **no production
+/// consumer anywhere in the crate** and every registered act rendered
+/// byte-identically whichever member of [`triggers::Trigger`] declared it — which
+/// is precisely why D-321 refused to give `infra::bundle::rev_share_change_set` a
+/// caller: declaring `RevenueShareChange` instead of `BundleComposition` would have
+/// moved no observable byte and existed only to satisfy the census that reads it.
+///
+/// [`Self::trigger`] is where the answer goes, and it reaches **every** registered
+/// act rather than only the bundle pair: a window cancel is now distinguishable
+/// from a shortening, a horizon tightening from a plan retirement, a pure-shape
+/// revision from a policy diff — all of which shared one stored token.
 #[domain_model]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum MaterialityVerdict {
@@ -345,6 +378,22 @@ pub enum MaterialityVerdict {
         /// that tripped — filling it in with the change set's first row would put a
         /// row in front of a reviewer as though it had tripped something.
         tripped: Option<TrippedRow>,
+        /// Which registered trigger fired, when a registered trigger is what
+        /// answered.
+        ///
+        /// `Some` exactly under [`MaterialityReason::AlwaysMaterialTrigger`] and
+        /// `None` under every other reason, and the biconditional is the property
+        /// rather than a convention: a threshold or a fail-safe is not an act, so
+        /// there is no trigger to name, and an `alwaysMaterialTrigger` with no
+        /// trigger is the state this member exists to make unrepresentable in the
+        /// record. Nothing in the type enforces it — [`Self::material`] would
+        /// accept the reason with no trigger — so
+        /// `materiality_tests::a_registered_act_names_its_trigger_and_nothing_else_does`
+        /// walks every arm [`evaluate`] can take and asserts it. That is the same
+        /// arrangement [`Self::tripped_row`] takes for its own operand, and it is
+        /// stated here rather than left to the constructor's doc because the
+        /// **reader** of a stored verdict is who the property is for.
+        trigger: Option<triggers::Trigger>,
     },
     /// The change may publish on one principal. See the module doc for the five
     /// rules that must all have declined for this to be the answer.
@@ -352,16 +401,40 @@ pub enum MaterialityVerdict {
 }
 
 impl MaterialityVerdict {
-    /// Material, for `reason`, with no row to name.
+    /// Material, for `reason`, with no row and no act to name.
     ///
-    /// The constructor every reason but [`MaterialityReason::ThresholdReached`] uses.
-    /// The one that does uses [`Self::tripped_row`], so a caller cannot answer
-    /// `thresholdReached` and forget the evidence by taking the shorter constructor.
+    /// The constructor for the three reasons that are neither: `firstPublish`,
+    /// `noConfiguredThreshold` and `rowWithoutBaseline`.
+    /// [`MaterialityReason::ThresholdReached`] uses [`Self::tripped_row`] and
+    /// [`MaterialityReason::AlwaysMaterialTrigger`] uses [`Self::triggered`], so a
+    /// caller cannot answer either and forget its operand by taking the shorter
+    /// constructor.
     #[must_use]
     pub const fn material(reason: MaterialityReason) -> Self {
         Self::Material {
             reason,
             tripped: None,
+            trigger: None,
+        }
+    }
+
+    /// Material because `trigger` is on §3 step 4's registered list.
+    ///
+    /// The **only** producer of [`MaterialityReason::AlwaysMaterialTrigger`] in
+    /// this crate, which is what makes the reason and the act unable to disagree:
+    /// there is no path that mints the token without the trigger that earned it.
+    /// [`Self::material`] can still be handed the reason and the compiler cannot
+    /// stop it — [`MaterialityReason`] is a `Copy` roster [`MaterialityReason::ALL`]
+    /// ranges over, so folding the trigger into the variant would cost that roster
+    /// its shape (D-187 priced the same trade for the tripped row and made the same
+    /// call) — so the guard is a case rather than a type, and it is named on
+    /// `Material`'s own `trigger` member.
+    #[must_use]
+    pub const fn triggered(trigger: triggers::Trigger) -> Self {
+        Self::Material {
+            reason: MaterialityReason::AlwaysMaterialTrigger,
+            tripped: None,
+            trigger: Some(trigger),
         }
     }
 
@@ -371,6 +444,7 @@ impl MaterialityVerdict {
         Self::Material {
             reason: MaterialityReason::ThresholdReached,
             tripped: Some(tripped),
+            trigger: None,
         }
     }
 
@@ -394,6 +468,15 @@ impl MaterialityVerdict {
     pub const fn tripped(&self) -> Option<&TrippedRow> {
         match self {
             Self::Material { tripped, .. } => tripped.as_ref(),
+            Self::AutoPublishable => None,
+        }
+    }
+
+    /// The registered trigger that fired, when one did — §6's *"trigger source"*.
+    #[must_use]
+    pub const fn trigger(&self) -> Option<triggers::Trigger> {
+        match self {
+            Self::Material { trigger, .. } => *trigger,
             Self::AutoPublishable => None,
         }
     }
@@ -1020,8 +1103,8 @@ pub fn evaluate(
     // cancellation stay material; `alwaysMaterialTrigger` is the fact. §3 numbers
     // its rules; it does not fix their precedence, and the three below already
     // carry a precedence this module chose on the same ground.
-    if triggers::triggered(change).is_some() {
-        return MaterialityVerdict::material(MaterialityReason::AlwaysMaterialTrigger);
+    if let Some(act) = triggers::triggered(change) {
+        return MaterialityVerdict::triggered(act);
     }
     // Step 1, `inst-mat-failsafe`. First of the three because it is the only one
     // that holds with no knowledge of the subject at all.
@@ -1048,8 +1131,10 @@ pub fn evaluate(
     // `planShapeRevisionContent` for one would make every schedule and every
     // lengthening material whatever a threshold said, which is D-62's answer taken
     // for the two acts D-62 deliberately does not govern.
-    if change.revises_plan_content() && triggers::triggered_by_content(change, baseline).is_some() {
-        return MaterialityVerdict::material(MaterialityReason::AlwaysMaterialTrigger);
+    if change.revises_plan_content()
+        && let Some(content) = triggers::triggered_by_content(change, baseline)
+    {
+        return MaterialityVerdict::triggered(content);
     }
     // Step 3, `inst-mat-percurrency`: each row's delta, in its **own** currency
     // (S5's constraint G3), against that currency's own entry.
@@ -1067,8 +1152,8 @@ pub fn evaluate(
             return MaterialityVerdict::material(MaterialityReason::RowWithoutBaseline);
         };
         // Step 4's per-row half — the horizon and D-115's incomputable deltas.
-        if triggers::triggered_by_row(row, published).is_some() {
-            return MaterialityVerdict::material(MaterialityReason::AlwaysMaterialTrigger);
+        if let Some(moved) = triggers::triggered_by_row(row, published) {
+            return MaterialityVerdict::triggered(moved);
         }
         match compare(&delta::row_delta(row, published), entry.basis) {
             Comparison::Below => {}

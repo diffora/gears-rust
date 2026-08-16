@@ -322,7 +322,7 @@ fn an_unchanged_geometry_precondition_violation_is_material() {
 
     assert_eq!(
         verdict,
-        MaterialityVerdict::material(MaterialityReason::AlwaysMaterialTrigger),
+        MaterialityVerdict::triggered(Trigger::NoComputableRowDelta),
         "no delta is computable across a geometry change, so D-115 registers it"
     );
 }
@@ -375,7 +375,7 @@ fn a_registered_act_is_material_in_the_world_that_would_otherwise_auto_publish()
 
     assert_eq!(
         verdict,
-        MaterialityVerdict::material(MaterialityReason::AlwaysMaterialTrigger)
+        MaterialityVerdict::triggered(Trigger::WindowCancellation)
     );
 }
 
@@ -447,7 +447,7 @@ fn a_registered_act_names_the_trigger_even_with_no_policy_at_all() {
 
     assert_eq!(
         verdict,
-        MaterialityVerdict::material(MaterialityReason::AlwaysMaterialTrigger),
+        MaterialityVerdict::triggered(Trigger::WindowCancellation),
         "a registered act is material whatever a threshold says, so the threshold is not the reason"
     );
 }
@@ -502,7 +502,7 @@ fn a_pure_shape_revision_is_material_at_zero_delta() {
 
     assert_eq!(
         verdict,
-        MaterialityVerdict::material(MaterialityReason::AlwaysMaterialTrigger)
+        MaterialityVerdict::triggered(Trigger::PlanShapeRevisionContent)
     );
 }
 
@@ -572,6 +572,126 @@ fn a_currency_listed_twice_is_one_configured_entry() {
             .entry(&CurrencyCode::new("USD").expect("USD"))
             .map(|entry| entry.basis),
         Some(ThresholdBasis::Absolute { minor: 500 })
+    );
+}
+
+/// **The property that makes the stored record able to name the act, and the only
+/// thing holding it.**
+///
+/// [`MaterialityVerdict::Material`]'s `trigger` is `Some` exactly under
+/// `alwaysMaterialTrigger`. The type cannot say so — [`MaterialityVerdict::material`]
+/// would take the reason with no trigger, and folding the trigger into
+/// [`MaterialityReason`] would cost `ALL` its `Copy` roster shape, which D-187
+/// already priced and declined for the tripped row — so this walks every arm
+/// [`evaluate`] can take and asserts the biconditional in both directions.
+///
+/// **Armed against the claim rather than against materiality.** A case asserting
+/// only that these change sets are material passed before the member existed and
+/// would pass again if every arm answered `None`, which is the state this whole
+/// change is about: D-321 measured `Trigger::as_str` as having no production
+/// consumer at all, so *"the publish is material"* was true and *"the record says
+/// which act"* was false, and no case in this file could tell them apart.
+///
+/// The act half ranges over [`Trigger::ALL`] rather than a chosen few, so a
+/// nineteenth trigger is covered the day it is declared. Both halves of the diff
+/// side are here too — a trigger minted inside the registry reaches the verdict by
+/// a different arm of `evaluate` and could have been left behind by either.
+#[test]
+fn a_registered_act_names_its_trigger_and_nothing_else_does() {
+    // The act half: every registered trigger a surface can declare, through the
+    // one door `evaluate` reads it back from.
+    for declared in Trigger::ALL {
+        let verdict = evaluate(&ChangeSet::of_act(*declared, []), None, None);
+        assert_eq!(
+            verdict.reason(),
+            Some(MaterialityReason::AlwaysMaterialTrigger),
+            "{declared:?} is a registered act and must be material for that reason"
+        );
+        assert_eq!(
+            verdict.trigger(),
+            Some(*declared),
+            "{declared:?} declared the act, so the record must name {declared:?} and not \
+             merely `alwaysMaterialTrigger` — that token is one word for eighteen acts"
+        );
+    }
+
+    // The content half, minted inside the registry rather than declared by a
+    // surface: D-115's pure-shape revision.
+    let policy = configured_policy();
+    let published = row("USD", 1000);
+    let baseline = PublishedPriceBaseline::of_records([published.clone()]);
+    assert_eq!(
+        evaluate(
+            &ChangeSet::of_records([published]),
+            Some(&policy),
+            Some(&baseline)
+        )
+        .trigger(),
+        Some(Trigger::PlanShapeRevisionContent),
+        "the whole-change-set half reaches the verdict by its own arm of `evaluate`"
+    );
+
+    // The per-row half, likewise: a geometry change carries no computable delta.
+    let geometry_baseline = PublishedPriceBaseline::of_records([graduated(
+        "USD",
+        &[(0, Some(1000), 5), (1000, None, 3)],
+    )]);
+    assert_eq!(
+        evaluate(
+            &ChangeSet::of_records([graduated("USD", &[(0, Some(10), 5), (10, None, 3)])]),
+            Some(&policy),
+            Some(&geometry_baseline)
+        )
+        .trigger(),
+        Some(Trigger::NoComputableRowDelta),
+        "the per-row half is a third arm and is not covered by either above"
+    );
+
+    // The other direction, and it is the half a one-sided case would miss: a
+    // threshold, a fail-safe and a first publish are answers about a policy, a bar
+    // and a baseline. None of them is an act, so none may name one — a verdict
+    // that filled the member in would put a trigger in front of a reviewer that
+    // nothing declared.
+    let no_baseline = evaluate(
+        &ChangeSet::of_records([row("USD", 1000)]),
+        Some(&policy),
+        None,
+    );
+    assert_eq!(no_baseline.reason(), Some(MaterialityReason::FirstPublish));
+    assert_eq!(no_baseline.trigger(), None, "a first publish is no act");
+
+    let unconfigured = evaluate(&ChangeSet::of_records([row("USD", 1000)]), None, None);
+    assert_eq!(
+        unconfigured.reason(),
+        Some(MaterialityReason::NoConfiguredThreshold)
+    );
+    assert_eq!(unconfigured.trigger(), None, "a missing policy is no act");
+
+    let tripped = evaluate(
+        &ChangeSet::of_records([row("USD", 1900)]),
+        Some(&policy),
+        Some(&baseline),
+    );
+    assert_eq!(
+        tripped.reason(),
+        Some(MaterialityReason::ThresholdReached),
+        "the fixture must actually reach its bar, or the assertion below proves nothing"
+    );
+    assert_eq!(tripped.trigger(), None, "a bar reached is no act");
+
+    // A move of 100 against a bar of 500, which is §3's own residue: a pure amount
+    // change on unchanged geometry, below a configured threshold, not a first
+    // publish. It is the one arm that must carry neither operand.
+    let below = evaluate(
+        &ChangeSet::of_records([row("USD", 1100)]),
+        Some(&policy),
+        Some(&baseline),
+    );
+    assert_eq!(below, MaterialityVerdict::AutoPublishable);
+    assert_eq!(
+        below.trigger(),
+        None,
+        "and an auto-publishable change names neither a reason nor a trigger"
     );
 }
 
@@ -724,7 +844,7 @@ fn a_second_revision_of_a_plan_with_no_price_rows_is_material() {
 
     assert_eq!(
         verdict,
-        MaterialityVerdict::material(MaterialityReason::AlwaysMaterialTrigger),
+        MaterialityVerdict::triggered(Trigger::PlanShapeRevisionContent),
         "a revision that moves no row is D-115's pure-shape revision whether it carries none or \
          carries only rows that did not move"
     );
@@ -765,7 +885,7 @@ fn a_window_mutation_is_not_a_pure_shape_revision() {
 
     assert_eq!(
         evaluate(&as_revision, Some(&policy), Some(&baseline)),
-        MaterialityVerdict::material(MaterialityReason::AlwaysMaterialTrigger),
+        MaterialityVerdict::triggered(Trigger::PlanShapeRevisionContent),
         "a revision that moves no row is D-115's"
     );
     assert_eq!(
@@ -790,7 +910,7 @@ fn a_window_mutation_is_not_a_pure_shape_revision() {
         ChangeSet::of_window_mutation(window_id, Some(Trigger::WindowCancellation), [published]);
     assert_eq!(
         evaluate(&cancelled, Some(&policy), Some(&baseline)),
-        MaterialityVerdict::material(MaterialityReason::AlwaysMaterialTrigger)
+        MaterialityVerdict::triggered(Trigger::WindowCancellation)
     );
 }
 
@@ -922,7 +1042,7 @@ fn a_revision_that_moves_a_row_reaches_no_shape_trigger_however_its_shape_moved(
     let shape_only = ChangeSet::of_records([published]);
     assert_eq!(
         evaluate(&shape_only, Some(&policy), Some(&baseline)),
-        MaterialityVerdict::material(MaterialityReason::AlwaysMaterialTrigger),
+        MaterialityVerdict::triggered(Trigger::PlanShapeRevisionContent),
         "a revision that moves no row is D-115's, and the bound rides that trigger"
     );
 }

@@ -212,12 +212,15 @@ fn every_act_half_trigger_answering_true_is_named_by_a_producing_site() {
 ///
 /// **It shares [`is_produced`]'s reachability axis, and that is what makes a
 /// `false` beside a live constructor legal** — but only while nothing calls it.
-/// `revenueShareChange` answers `false` with `infra::bundle::rev_share_change_set`
-/// sitting in the tree building its change set, because a `pub fn` no surface
-/// calls declares nothing (D-232, D-321). The day that function gains a caller
-/// this case reddens and the registry has to flip it back — which is the whole
-/// obligation the pair is for: the attestation cannot fall out of step with the
-/// code in either direction without a case going red.
+/// `revenueShareChange` answered `false` for a day with
+/// `infra::bundle::rev_share_change_set` sitting in the tree building its change
+/// set, because a `pub fn` no surface calls declares nothing (D-232, D-321). D-321
+/// clause (3) wrote down what would happen next — *"the day it gains a caller the
+/// `false`-side walk reddens and the registry has to flip it back"* — and on
+/// 2026-08-16 that is what happened: `infra::bundle::declared_act` calls it, this
+/// case reddened, and the arm moved. **The obligation ran in the direction the pair
+/// exists for**, which is the first time either walk has been the thing that
+/// noticed rather than a thing that was updated to agree.
 #[test]
 fn every_act_half_trigger_answering_false_is_named_by_no_producing_site() {
     /// [`every_act_half_trigger_answering_true_is_named_by_a_producing_site`]'s
@@ -295,8 +298,8 @@ fn every_act_half_trigger_answering_false_is_named_by_no_producing_site() {
 ///
 /// Both census directions asked whether the crate **names** the trigger. That is
 /// not the same question as whether the crate can **answer** it, and the two came
-/// apart on `revenueShareChange` (D-321): its only naming site is the body of
-/// `infra::bundle::rev_share_change_set`, a `pub fn` with no caller anywhere in
+/// apart on `revenueShareChange` (D-321): its only naming site was the body of
+/// `infra::bundle::rev_share_change_set`, then a `pub fn` with no caller anywhere in
 /// `src/` — so the trigger was "produced" by a function nothing calls, and the
 /// `true` beside it read to every reader as *"this crate declares the act"*. The
 /// register had said as much in prose since D-232 — *"a `pub fn` that builds a
@@ -893,6 +896,17 @@ fn every_trigger_carries_a_distinct_token() {
 /// what reddened is the reachability axis rather than this transcription — which
 /// copies the `match` in both directions and could not have told anyone.
 ///
+/// **`revenueShareChange` rejoined on 2026-08-16**, and what it waited for was not a
+/// caller. D-321 could have written one in a line and refused to, because the call
+/// would have changed no observable byte: the verdict carried no trigger, so both
+/// bundle acts rendered identically and the only thing that would have noticed the
+/// second constructor being called was the census that reads for it. What earns the
+/// place here is `infra::bundle::declared_act` — a diff of the composition being
+/// published against the last one that was ever live — together with
+/// `MaterialityVerdict::trigger`, which makes its answer readable. A declaration
+/// nothing can observe is not a declaration, and satisfying the instrument would
+/// have been the instrument gamed by its own fix.
+///
 /// **`bulkGroupMove` left this list on 2026-08-14**, and it should never have
 /// joined it: the flip credited `ApprovalService::submit_membership_move_on` with
 /// a `ChangeSet::of_act` declaration that writer does not make, and the move route
@@ -929,6 +943,7 @@ fn only_the_triggers_with_a_subject_in_this_crate_answer_true() {
             "windowCancellation",
             "windowShortening",
             "bundleComposition",
+            "revenueShareChange",
             "planRetirement",
             "noComputableRowDelta",
             "planShapeRevisionContent",

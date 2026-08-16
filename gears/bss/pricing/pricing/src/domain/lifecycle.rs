@@ -135,6 +135,32 @@ impl LifecycleState {
         matches!(self, Self::Published | Self::Retired)
     }
 
+    /// Has this revision's content **ever been live** to a consumer?
+    ///
+    /// A different question from [`Self::is_current_revision`] and the difference is
+    /// `superseded`: a superseded revision is not the current one, and its content
+    /// *was* published — a consumer resolved through it until its successor took the
+    /// key. That is what makes it the right referent for *"what was live before this
+    /// publish"*, which is the operand `infra::bundle::declared_act` diffs against.
+    ///
+    /// `draft` and `abandoned` are the two that answer `false`, and both matter.
+    /// A draft's content has never been anybody's but its author's. A tombstone's
+    /// never published either (`is_current_revision`'s own note says why it is
+    /// excluded there), and it holds a revision **number** — so a walk backwards
+    /// through the chain that counted one would diff against content no approver
+    /// ever saw and no consumer ever received.
+    ///
+    /// Written as a `match` over the closed enum rather than as `!is_content_mutable()`
+    /// so the day a sixth state arrives the compiler asks this question too; the
+    /// negation would have answered for it, silently and probably wrongly.
+    #[must_use]
+    pub const fn has_ever_been_live(self) -> bool {
+        match self {
+            Self::Published | Self::Superseded | Self::Retired => true,
+            Self::Draft | Self::Abandoned => false,
+        }
+    }
+
     /// Is a move from `self` to `next` legal?
     #[must_use]
     pub const fn can_transition(self, next: Self) -> bool {

@@ -1532,6 +1532,81 @@ pub async fn load_revision(
         .transpose()
 }
 
+/// The greatest revision **strictly below** `revision` whose content has ever
+/// been live — the predecessor a publish at `revision` supersedes.
+///
+/// # Why this and not [`load_current`]
+///
+/// A caller asking *"what did a consumer have before this publish"* wants the
+/// revision this one replaces, and the current revision is not always it. The two
+/// come apart in the ordinary case, not a contrived one: a plan publishes revision
+/// `0` and then a bundle publishes its composition at revision `0` as well, so the
+/// current revision **is** the candidate and a diff against it is a diff against
+/// itself — which would report every publish as changing nothing. Walking the
+/// chain backwards from the candidate is the answer that holds whether or not the
+/// candidate has published yet, and holds identically on a re-submitted publish:
+/// `revision`'s own state moves `draft → published` and its predecessor's moves
+/// `published → superseded`, and neither move changes which row this returns.
+/// That stability is load-bearing — a bundle publish is a two-call act (submit,
+/// then publish on the strength of an approval), and a classification that
+/// differed between the two calls would put one token in front of the reviewer and
+/// store another.
+///
+/// **`has_ever_been_live` and not "published"**: by the time a successor exists
+/// the predecessor is `superseded`, which is exactly the row wanted. `draft` and
+/// `abandoned` are excluded there, so a tombstone occupying a revision number
+/// cannot become a baseline — the number it holds is D-145's whole mechanism and
+/// its content was never anybody's but its author's.
+///
+/// `None` means no revision below this one ever published, which for a
+/// composition is *"this is the bundle's creation"* rather than a missing read.
+///
+/// # Errors
+/// [`RepoError::Db`] on a scope or storage failure;
+/// [`RepoError::CorruptRow`] when `revision` or a stored row is outside the
+/// storable range.
+pub async fn load_live_predecessor(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    plan_id: PlanId,
+    revision: u64,
+) -> Result<Option<PlanRevision>, RepoError> {
+    let Ok(number) = i64::try_from(revision) else {
+        return Err(RepoError::CorruptRow(format!(
+            "plan {plan_id} revision {revision} exceeds the storable range"
+        )));
+    };
+    let live: Vec<&str> = LifecycleState::ALL
+        .iter()
+        .copied()
+        .filter(|state| state.has_ever_been_live())
+        .map(LifecycleState::as_str)
+        .collect();
+    // Ordered and limited rather than aggregated, for `load_current`'s reason:
+    // the maximum has to be the maximum *this caller can see*, so it runs through
+    // the same scoped path as every other read here.
+    plan::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(plan::Column::TenantId.eq(tenant_id))
+                .add(plan::Column::PlanId.eq(plan_id.get()))
+                .add(plan::Column::Revision.lt(number))
+                .add(plan::Column::LifecycleState.is_in(live)),
+        )
+        .order_by(plan::Column::Revision, Order::Desc)
+        .limit(1)
+        .all(runner)
+        .await
+        .map_err(|e| RepoError::Db(format!("read the live predecessor revision: {e}")))?
+        .into_iter()
+        .next()
+        .map(to_domain)
+        .transpose()
+}
+
 /// Write a rendered revision row.
 async fn insert_revision(
     runner: &impl DBRunner,

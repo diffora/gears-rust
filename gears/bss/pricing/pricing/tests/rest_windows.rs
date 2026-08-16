@@ -931,7 +931,13 @@ async fn a_scheduled_window_with_no_threshold_policy_opens_a_unit_and_writes_not
     assert_eq!(body["outcome"], "submitted_for_approval");
     assert_eq!(
         body["materiality"],
-        serde_json::json!({ "material": true, "reason": "noConfiguredThreshold", "tripped": null }),
+        serde_json::json!({
+            "material": true,
+            "reason": "noConfiguredThreshold",
+            "tripped": null,
+            // A fail-safe is an answer about the policy, so it names no act.
+            "trigger": null,
+        }),
         "the evaluator's own reason, not the trigger list's: {body}"
     );
     assert_eq!(
@@ -1419,7 +1425,13 @@ async fn an_adjusted_window_with_no_threshold_policy_opens_a_unit_and_the_end_st
     assert_eq!(body["outcome"], "submitted_for_approval");
     assert_eq!(
         body["materiality"],
-        serde_json::json!({ "material": true, "reason": "noConfiguredThreshold", "tripped": null }),
+        serde_json::json!({
+            "material": true,
+            "reason": "noConfiguredThreshold",
+            "tripped": null,
+            // A fail-safe is an answer about the policy, so it names no act.
+            "trigger": null,
+        }),
         "an extension is refused by the fail-safe, not by the trigger list: {body}"
     );
     assert_eq!(
@@ -1548,7 +1560,14 @@ async fn a_cancel_opens_a_unit_and_the_window_is_still_scheduled() {
     );
     assert_eq!(
         body["materiality"],
-        serde_json::json!({ "material": true, "reason": "alwaysMaterialTrigger", "tripped": null }),
+        serde_json::json!({
+            "material": true,
+            "reason": "alwaysMaterialTrigger",
+            "tripped": null,
+            // §6's trigger source: the record names D-62's act, not merely that
+            // some registered act fired.
+            "trigger": "windowCancellation",
+        }),
         "D-62's own verdict, not the evaluator's three G1 arms: {body}"
     );
 

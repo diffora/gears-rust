@@ -1094,9 +1094,12 @@ async fn submit_overlay(
 /// `true` on the strength of them (D-232). Both halves have since been settled and
 /// neither by leaving the claim alone: `composition_change_set` gained its caller on
 /// 2026-08-11, when `bundles::bundle_publish_materiality` gave the composition
-/// publish this function's shape; `rev_share_change_set` has none, so
-/// `RevenueShareChange` answers `false` (D-321) and D-104's second trigger is owed a
-/// surface rather than attested to by a constructor.
+/// publish this function's shape; `rev_share_change_set` gained one on 2026-08-16,
+/// through `infra::bundle::declared_act`, which is what picks between the two acts
+/// D-104 registers — and it could not have been written earlier for a reason worth
+/// carrying here: until the verdict could name the trigger, the two declarations
+/// rendered identical bytes, so the call would have been observable to the census
+/// that reads for it and to nothing else (D-321).
 ///
 /// # Errors
 /// [`DomainError::Internal`] when the verdict carries no reason. The only verdict

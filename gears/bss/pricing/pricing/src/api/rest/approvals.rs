@@ -98,6 +98,7 @@ use crate::domain::audit::AuditSubjectKind;
 use crate::domain::bulk::BulkState;
 use crate::domain::contracts::{EntitlementGrants, GrantSet, PlanChangeContract};
 use crate::domain::error::DomainError;
+use crate::domain::materiality::triggers::Trigger;
 use crate::domain::materiality::{
     MaterialityReason, MaterialityVerdict, ThresholdBasis, ThresholdEntry, ThresholdVersion,
 };
@@ -138,14 +139,32 @@ pub const APPROVAL_WITHDRAW: &str = "/bss-pricing/v1/approvals/{approvalId}/with
 /// trigger source"* — without declaring a schema. Two renderings of one column
 /// would be two answers to what it holds.
 ///
-/// **Two of the three fields §6 names are computed and not carried here, and that
-/// is a reported gap rather than the absence this doc used to claim.** It said all
-/// three were properties of "the threshold comparison this phase does not perform";
-/// the comparison is performed — `evaluate` walks per-currency deltas and knows which
-/// row tripped — and what this shape carries is still only the rule that fired.
-/// Widening it means the verdict type carries the tripped row and its currency, which
-/// costs [`MaterialityVerdict`] its `Copy` and every holder of one a borrow; owed
-/// rather than done here.
+/// **All three of the fields §6 names are carried now** — *"per-currency deltas,
+/// tripped rows, trigger source"*. This doc claimed all three were absent, then
+/// that two of them were; [`Self::tripped`] paid the first two (D-187) and
+/// [`Self::trigger`] pays the third. Neither was a widening for completeness:
+/// each closes a question a reviewer of a stored unit could not answer.
+///
+/// # Adding a member to this shape is a wire change and **not** a pin change
+///
+/// The two are easy to confuse and the register has already paid for confusing
+/// them once. `pricing_approval.materiality` is a free-form `jsonb` column the
+/// evaluator writes **about** the subject; the content pin is a digest over the
+/// subject **itself** — `content_pin::content_hash` frames a `PlanShape` and
+/// nothing else, and `bundle_content_hash`, the overlay, threshold, membership and
+/// repricing pins each frame their own subject. No preimage in that module reads a
+/// verdict, so no pending unit's digest moves when this shape gains a field and
+/// `CONTENT_PIN_DOMAIN_SEP` stays at `v14`. `approval_repo::re_derive` re-derives
+/// the **subject**, never this column, so no open unit becomes
+/// `APPROVAL_CONTENT_MISMATCH` either.
+///
+/// What it **is** is a read-compatibility question, and the answer is the reason
+/// this type is `(request, response)`: `ApprovalView::from` parses the stored
+/// document back with `serde_json::from_value(..).ok()`, so a document that will
+/// not parse becomes a `null` materiality on the reviewer's screen rather than an
+/// error. Every member added here is therefore `Option`, which serde reads as
+/// `None` when the key is absent — `approvals_tests::a_stored_verdict_written_before_the_trigger_member_still_parses`
+/// is what holds that, over the exact bytes a pre-2026-08-16 unit carries.
 #[derive(Debug, Clone)]
 #[toolkit_macros::api_dto(request, response)]
 pub struct MaterialityView {
@@ -165,6 +184,25 @@ pub struct MaterialityView {
     /// about the policy and `alwaysMaterialTrigger` about the act, so on those there is
     /// no row that tripped and naming one would mislead a reviewer.
     pub tripped: Option<TrippedRowView>,
+    /// §6's **trigger source**: which registered always-material trigger fired.
+    /// Present exactly under `alwaysMaterialTrigger`, absent under every other
+    /// reason — a threshold or a fail-safe is not an act.
+    ///
+    /// The roster is `materiality::triggers::Trigger::as_str`'s, transcribed from
+    /// the type that owns it for [`Self::reason`]'s reason. **It is not a second
+    /// materiality vocabulary and not a wire code**: §5's Problem-response list is
+    /// what a client branches on, and these tokens are the content of a column §6
+    /// leaves unschematised — the argument `MaterialityReason::as_str` already
+    /// makes for its own five.
+    ///
+    /// Why it is here at all: `subject_kind` is `bundle` for a component swap and
+    /// `bundle` for a rev-share re-split, and the audit record of the act carries
+    /// the same state pair for both. So the record could say a bundle publish
+    /// needed two people and could not say **which act** required them — while
+    /// D-104 registers two triggers rather than one precisely so that an operator
+    /// *"should not have to infer"* whether what moved was the customer's
+    /// composition or the vendor's payout.
+    pub trigger: Option<String>,
 }
 
 /// §6's tripped row, as the wire and the stored `materiality` document render it.
@@ -235,6 +273,7 @@ impl From<&MaterialityVerdict> for MaterialityView {
                 to_minor: tripped.to_minor,
                 scale: tripped.scale.as_str().to_owned(),
             }),
+            trigger: verdict.trigger().map(Trigger::as_str).map(str::to_owned),
         }
     }
 }
