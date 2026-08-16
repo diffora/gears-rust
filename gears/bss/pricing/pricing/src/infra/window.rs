@@ -1743,6 +1743,18 @@ fn refuse_trailing_void(
 /// A grandfathered row that is still a **draft** carries no published generation
 /// on the key, so there is nothing here to judge; the publish pipeline's coverage
 /// rules own that world and do not check this bound either. Reported.
+///
+/// # Two callers, and the second one moves the operand this one reads
+///
+/// The span this rule asks about is `[max(cohort, now), grandfatherUntil + margin)`,
+/// so its **right-hand end is the horizon** — the very column
+/// [`crate::infra::grandfather`]'s door writes. That door therefore cannot ask this
+/// question through this function, whose horizon is the *stored* one: it would
+/// judge the state the act is about to leave behind. It calls
+/// [`refuse_horizon_span_uncovered`] with the horizon it is **proposing**, over the
+/// key's unmoved interval set, which is the same rule asked of the post-state.
+/// Splitting the two here rather than there is what keeps one walk, one anchor and
+/// one message for both.
 fn refuse_horizon_uncovered(
     planned: &Planned,
     after: &KeyWindows,
@@ -1762,20 +1774,52 @@ fn refuse_horizon_uncovered(
     else {
         return Ok(());
     };
+    refuse_horizon_span_uncovered(
+        &planned.plan.key,
+        generation.grandfather_until,
+        planned.plan.margin,
+        after,
+        now,
+    )
+}
+
+/// [`refuse_horizon_uncovered`]'s rule over an **explicit** horizon.
+///
+/// The whole of D-04's span check with the one operand the caller supplies rather
+/// than reads: a window mutation passes the generation's stored
+/// `grandfatherUntil`, and the horizon door passes the one it is about to write.
+/// Everything else — the anchor, the null arm, the missing-margin arm, the walk,
+/// the far-end comparison and the message — is one body, because two spellings of
+/// a money bound is how the two ends of it came to disagree in the first place
+/// (D-316 problem 2).
+///
+/// The caller is responsible for the class test: a key that is not
+/// `existing_grandfathered` carries no horizon at all (D-147), and the two callers
+/// answer that differently — a window mutation returns `Ok` on such a key, while
+/// the horizon door refuses the request with `GRANDFATHER_UNTIL_FORBIDDEN`.
+///
+/// # Errors
+/// [`DomainError::WindowTrailingVoid`] naming the key and the first uncovered
+/// instant, per D-316 clause (4).
+pub(crate) fn refuse_horizon_span_uncovered(
+    key: &ScopeKey,
+    horizon: Option<DateTime<Utc>>,
+    margin: Option<TimeDelta>,
+    after: &KeyWindows,
+    now: DateTime<Utc>,
+) -> Result<(), DomainError> {
     let after_end = after.coverage_end();
     // The generation's own first instant, never earlier than the clock this
     // mutation is stamped with — see the doc's anchor paragraph for both halves.
     // `map_or` rather than an `expect`: the cohort/eligibility biconditional
     // (`check_cohort_eligibility`) makes the `None` unreachable on this arm, and
     // a key that reached it anyway is answered on `now` rather than on a panic.
-    let anchor = planned
-        .plan
-        .key
+    let anchor = key
         .cohort()
         .generation()
         .map_or(now, |cutover| cutover.max(now));
 
-    let Some(horizon) = generation.grandfather_until else {
+    let Some(horizon) = horizon else {
         // D-04's parenthesis — *"open-ended when null"*. D-147: a grandfathered
         // row with a null `grandfatherUntil` is **indefinite**, so no finite end
         // can satisfy a bound that never arrives. Distinct from the margin case
@@ -1790,10 +1834,9 @@ fn refuse_horizon_uncovered(
             return Ok(());
         };
         return Err(DomainError::WindowTrailingVoid(format!(
-            "{}: the generation's grandfatherUntil is null, so its eligibility is indefinite and \
-             its coverage must run unbroken from {} and never end; this leaves {} the first \
+            "{key}: the generation's grandfatherUntil is null, so its eligibility is indefinite \
+             and its coverage must run unbroken from {} and never end; this leaves {} the first \
              uncovered instant",
-            planned.plan.key,
             anchor.to_rfc3339(),
             uncovered_at.to_rfc3339()
         )));
@@ -1803,12 +1846,18 @@ fn refuse_horizon_uncovered(
     // means the market sells recurring and the plan authored no frequency, so
     // W6's term has *no value* — which is not `Some(zero)`, W6's "a plan with no
     // recurring part needs no forward coverage".
-    let Some(margin) = planned.plan.margin else {
+    //
+    // **This arm is why the horizon door has to ask the question at all.** Under a
+    // null horizon the margin is never consulted, so a generation whose plan
+    // authors no frequency passes the null arm and would fail here the instant a
+    // horizon is set: `inst-gs-bound` is the one act that can move a key from the
+    // arm that needs no margin to the arm that requires one. Every other move the
+    // door makes — a finite horizon tightened further — only shrinks the span.
+    let Some(margin) = margin else {
         return Err(DomainError::WindowTrailingVoid(format!(
-            "{}: the plan sells a recurring row on this market and authors no frequency, so \
+            "{key}: the plan sells a recurring row on this market and authors no frequency, so \
              D-04's bound - grandfatherUntil plus the longest billing cycle sold on the key - has \
-             no value, and this generation's coverage cannot be shown to reach it",
-            planned.plan.key
+             no value, and this generation's coverage cannot be shown to reach it"
         )));
     };
 
@@ -1828,11 +1877,10 @@ fn refuse_horizon_uncovered(
         return Ok(());
     }
     Err(DomainError::WindowTrailingVoid(format!(
-        "{}: this generation is grandfathered until {} and its coverage must run unbroken from {} \
-         through {} - that horizon plus the longest billing cycle sold on the key - so that every \
-         bound period stays rateable until its renewal re-bind; this leaves {} the first \
+        "{key}: this generation is grandfathered until {} and its coverage must run unbroken from \
+         {} through {} - that horizon plus the longest billing cycle sold on the key - so that \
+         every bound period stays rateable until its renewal re-bind; this leaves {} the first \
          uncovered instant",
-        planned.plan.key,
         horizon.to_rfc3339(),
         anchor.to_rfc3339(),
         floor.to_rfc3339(),

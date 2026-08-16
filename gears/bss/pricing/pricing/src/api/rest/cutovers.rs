@@ -1,5 +1,15 @@
-//! `POST /bss-pricing/v1/plans/{planId}/cutovers` — the grandfathering cutover
-//! (`inst-gc-api`, `inst-gc-return`, D-100).
+//! The grandfathering surface's two mutating doors: `POST
+//! /bss-pricing/v1/plans/{planId}/cutovers`, which **creates** a retained
+//! generation (`inst-gc-api`, `inst-gc-return`, D-100), and `PATCH
+//! /bss-pricing/v1/prices/{priceId}/grandfather-until`, which moves the bound that
+//! generation expires on (`inst-gs-bound`, `inst-gs-tighten`).
+//!
+//! Two routes in one module because they are one mechanism read from its two ends,
+//! and S7 §5 and S5's endpoint map both list them that way. The horizon door's own
+//! argument — what it refuses, why it asks D-04's span against the horizon it is
+//! *proposing*, why it records a before-image and why it enqueues no event — is in
+//! [`crate::infra::grandfather`], not here; this layer carries only the two PDP
+//! questions the path shape forces and the wire shapes.
 //!
 //! `api::rest::supersessions`' shape, deliberately, because the two acts differ in
 //! three things and a reader should find those and nothing else. Every argument
@@ -37,6 +47,7 @@ use axum::{Json, Router};
 use chrono::{DateTime, Utc};
 use toolkit::api::canonical_prelude::CanonicalError;
 use toolkit::api::{OpenApiRegistry, operation_builder::OperationBuilder};
+use toolkit_db::secure::AccessScope;
 use toolkit_security::SecurityContext;
 use uuid::Uuid;
 
@@ -51,6 +62,7 @@ use crate::api::rest::windows::verdict_json;
 use crate::domain::error::DomainError;
 use crate::domain::scope_key::PlanId;
 use crate::infra::cutover::{CutoverOutcome, CutoverPending, CutoverReceipt, CutoverRequest};
+use crate::infra::grandfather::{HorizonOutcome, HorizonPending, HorizonReceipt};
 use crate::infra::storage::repo::price_repo;
 
 /// The route's registered path template.
@@ -59,6 +71,24 @@ use crate::infra::storage::repo::price_repo;
 /// validates a literal argument and silently passes a `const` one;
 /// `tests/module_test.rs` binds the two spellings together.
 pub const PLAN_CUTOVERS: &str = "/bss-pricing/v1/plans/{planId}/cutovers";
+
+/// The horizon door's registered path template (S7 §5).
+///
+/// Mounted in **this** module rather than a `grandfather.rs` of its own, and the
+/// reason is neither laziness nor the four mount sites a new router would have to
+/// be merged into. The cutover is what *creates* a bounded generation and this is
+/// what moves its bound: S7 §5 lists the two adjacent, S5's endpoint map puts them
+/// in one cell under one permission pair, and a reader looking for "where does the
+/// grandfathering horizon come from and where does it go" should find both without
+/// a second file. It is not folded into `api::rest::prices` for the opposite
+/// reason — that surface is the **draft** plane and holds `AuthoringState`, which
+/// deliberately cannot reach a `CatalogVersion` registry, and this act requests one.
+///
+/// The path carries no `{planId}`, exactly as `PATCH .../price-windows/{windowId}`
+/// carries none: a price row is addressed by its own id and its plan is a fact
+/// about it rather than a segment a caller supplies. That is what makes the handler
+/// ask the PDP twice — see [`resolve_price_plan`].
+pub const PRICE_GRANDFATHER_UNTIL: &str = "/bss-pricing/v1/prices/{priceId}/grandfather-until";
 
 /// The `OpenAPI` tag this surface is filed under — Slice 7's, as the window and
 /// supersession routes are.
@@ -260,9 +290,262 @@ async fn cut_over_key(
     Ok((StatusCode::ACCEPTED, Json(view)).into_response())
 }
 
+/// The body of a horizon tightening.
+///
+/// One member, and it is **not** an `Option`. A null would be the
+/// `active_bounded → active_indefinite` edge S7 §4's machine does not have, so the
+/// wire cannot say it: `GRANDFATHER_LOOSEN_FORBIDDEN` exists for a horizon that
+/// moves the wrong way along the axis, and a request that cannot be spelled needs
+/// no refusal. `domain::grandfather::check_tightening` carries the `Option` on the
+/// **stored** side only, which is where D-147's indefinite generation really lives.
+#[derive(Debug, Clone)]
+#[toolkit_macros::api_dto(request, response)]
+pub struct GrandfatherUntilBody {
+    /// The instant this generation's eligibility ends. Strictly earlier than the
+    /// published one, or the first bound on an indefinite generation.
+    pub grandfather_until: DateTime<Utc>,
+}
+
+/// What the horizon door answers.
+///
+/// `202` on both arms for the cutover's stated reason, and `outcome` is the
+/// discriminator. The committed arm's horizon has moved in the store and is not yet
+/// in any consumer's pinned version; the controlled arm's has not moved at all.
+#[derive(Debug, Clone)]
+#[toolkit_macros::api_dto(response)]
+pub struct GrandfatherUntilView {
+    /// `tightened` | `submitted_for_approval`.
+    pub outcome: String,
+    /// The plan whose subject re-projects.
+    pub plan_id: Uuid,
+    /// The plan revision this act freezes — a content change on a published row
+    /// never advances it.
+    pub revision: u64,
+    /// The generation whose horizon this is.
+    pub price_id: Uuid,
+    /// That generation's canonical scope key, all ten axes.
+    pub scope_key: String,
+    /// What the store held before the act. `null` is D-147's indefinite.
+    pub prior_grandfather_until: Option<DateTime<Utc>>,
+    /// What it holds now on the committed arm, or what was asked for on the
+    /// controlled one — which of the two is what `outcome` says.
+    pub grandfather_until: DateTime<Utc>,
+    /// The registry's pending handle. `null` on the controlled arm: no version is
+    /// requested for an act that did not commit (D-156).
+    pub pending_version_ref: Option<String>,
+    /// The unit a second principal has to decide. `null` on the committed arm.
+    pub approval: Option<ApprovalView>,
+}
+
+impl GrandfatherUntilView {
+    fn of_receipt(receipt: &HorizonReceipt) -> Self {
+        Self {
+            outcome: "tightened".to_owned(),
+            plan_id: receipt.plan_id.get(),
+            revision: receipt.revision,
+            price_id: receipt.price_id,
+            scope_key: receipt.scope_key.to_string(),
+            prior_grandfather_until: receipt.prior_grandfather_until,
+            grandfather_until: receipt.grandfather_until,
+            pending_version_ref: Some(receipt.pending_version_ref.clone()),
+            approval: None,
+        }
+    }
+
+    fn of_pending(pending: &HorizonPending) -> Self {
+        Self {
+            outcome: OUTCOME_SUBMITTED.to_owned(),
+            plan_id: pending.plan_id.get(),
+            revision: pending.revision,
+            price_id: pending.price_id,
+            scope_key: pending.scope_key.to_string(),
+            prior_grandfather_until: pending.prior_grandfather_until,
+            grandfather_until: pending.proposed_grandfather_until,
+            pending_version_ref: None,
+            approval: Some(ApprovalView::from(&pending.approval)),
+        }
+    }
+}
+
+/// Resolve the plan a price row belongs to, under a scope the caller already
+/// holds.
+///
+/// `api::rest::windows::resolve_plan`'s arrangement and its reason: the path
+/// addresses a row, the authz question is about its **plan**, and the row cannot be
+/// read without a scope. So the handler asks the PDP twice — once tenant-wide to
+/// earn the read, once resource-scoped on the plan the read produced — and
+/// `tests/rest_authz.rs`'s `FURTHER_QUESTIONS` roster is where the second question
+/// is catalogued, so a route asking one the census does not know about reddens.
+async fn resolve_price_plan(
+    state: &GovernanceState,
+    scope: &AccessScope,
+    tenant: Uuid,
+    price_id: Uuid,
+) -> Result<PlanId, DomainError> {
+    let conn = state
+        .db
+        .conn()
+        .map_err(|e| DomainError::Internal(format!("bss-pricing: horizon connection: {e}")))?;
+    let key = price_repo::load_scope_key(&conn, scope, tenant, price_id)
+        .await
+        .map_err(|e| crate::infra::storage::repo_failure(&e))?
+        .ok_or_else(|| DomainError::NotFound {
+            subject: "price row".to_owned(),
+            id: price_id.to_string(),
+        })?;
+    Ok(key.plan_id())
+}
+
+async fn tighten_grandfather_until(
+    Extension(state): Extension<Arc<GovernanceState>>,
+    Extension(enforcer): Extension<authz_resolver_sdk::PolicyEnforcer>,
+    extension_ctx: Option<Extension<SecurityContext>>,
+    correlation: Option<Extension<CorrelationId>>,
+    Path(price_id): Path<Uuid>,
+    headers: axum::http::HeaderMap,
+    body: axum::body::Bytes,
+) -> Result<Response, CanonicalError> {
+    let ctx = require_authenticated(extension_ctx)?;
+    let correlation = require_correlation(correlation)?;
+    let tenant = ctx.subject_tenant_id();
+
+    // The tenant-wide question first, for the row read that resolves the plan.
+    let coarse = crate::authz::access_scope(
+        &enforcer,
+        &ctx,
+        &crate::authz::resource_types::PLAN,
+        crate::authz::actions::WRITE,
+        /* owner_tenant_id */ Some(tenant),
+        /* resource_id */ None,
+        /* require_constraints */ true,
+    )
+    .await
+    .map_err(authz_error_to_canonical)?;
+    let plan_id = resolve_price_plan(&state, &coarse, tenant, price_id).await?;
+    let scope = crate::authz::access_scope(
+        &enforcer,
+        &ctx,
+        &crate::authz::resource_types::PLAN,
+        crate::authz::actions::WRITE,
+        /* owner_tenant_id */ Some(tenant),
+        /* resource_id */ Some(plan_id.get()),
+        /* require_constraints */ true,
+    )
+    .await
+    .map_err(authz_error_to_canonical)?;
+
+    let expected = preconditions::if_match(&headers)?;
+    let request: GrandfatherUntilBody = preconditions::parse_body(&body)?;
+    let stamp = crate::api::rest::auth_context::audit_stamp(&ctx, Utc::now(), correlation);
+    let outcome = state
+        .grandfather
+        .tighten(
+            &ctx,
+            &scope,
+            tenant,
+            price_id,
+            request.grandfather_until,
+            expected,
+            verdict_json,
+            stamp,
+        )
+        .await?;
+
+    let view = match &outcome {
+        HorizonOutcome::Committed(receipt) => GrandfatherUntilView::of_receipt(receipt),
+        HorizonOutcome::SubmittedForApproval(pending) => GrandfatherUntilView::of_pending(pending),
+    };
+    // The tag is served by the mutating verb itself, as the window plane's is: a
+    // price row has no `GET` of its own. It is the **same** tag on both arms and
+    // before and after the act, because D-141 freezes `row_version` with a published
+    // row's content — the header is emitted so a caller can present it back, not so
+    // they can watch it move.
+    let etag = preconditions::etag(match &outcome {
+        HorizonOutcome::Committed(receipt) => receipt.row_version,
+        HorizonOutcome::SubmittedForApproval(pending) => pending.row_version,
+    });
+    Ok((
+        StatusCode::ACCEPTED,
+        [(axum::http::header::ETAG, etag)],
+        Json(view),
+    )
+        .into_response())
+}
+
+/// Register the horizon door on the router the cutover built.
+///
+/// Split out of [`router`] for the 200-line function lint, exactly as
+/// `api::rest::windows::mounted_window_mutations` is.
+fn mounted_horizon_door(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
+    OperationBuilder::patch("/bss-pricing/v1/prices/{priceId}/grandfather-until")
+        .operation_id("bss_pricing.tighten_grandfather_until")
+        .summary("Move a grandfathered generation's eligibility horizon earlier")
+        .description(
+            "Sets or tightens `grandfatherUntil` on a **published** `existing_grandfathered` \
+             generation - S7 section 4's `active_indefinite -> active_bounded` (`inst-gs-bound`) and \
+             `active_bounded -> active_bounded` (`inst-gs-tighten`) edges, and the only door in \
+             this gear that moves the column on a published row. Answers `202` on both arms, \
+             `outcome` saying which: `submitted_for_approval` while a second principal has not \
+             decided the unit, `tightened` when it committed. \
+             \
+             **Always material** (`inst-mat-registered`), so no configured threshold makes it \
+             commit on one principal; the approval unit's subject names the transition - the \
+             plan, the row, the prior horizon and the new one - so an approval taken for one \
+             instant cannot authorize another, and a unit approved while the horizon read `T` \
+             cannot complete after somebody else has moved it. \
+             \
+             The horizon only ever moves **earlier**: a later instant re-grants an eligibility a \
+             second principal already approved the end of, and an equal one is a transition that \
+             moves nothing (`GRANDFATHER_LOOSEN_FORBIDDEN`). Clearing it is not expressible - \
+             the machine has no edge back to indefinite. Only an `existing_grandfathered` row \
+             carries a horizon at all (`GRANDFATHER_UNTIL_FORBIDDEN`, D-147), and a draft row's \
+             is authored through `PATCH /bss-pricing/v1/plans/{planId}/prices/{priceId}` with \
+             the rest of its content (`LIFECYCLE_FORBIDDEN`). \
+             \
+             The act is checked against **D-04's coverage bound** as it would leave it: this \
+             generation's windows must run unbroken from `max(cohort, now)` through the new \
+             horizon plus the longest billing cycle sold on the key, so that every bound period \
+             stays rateable until its renewal re-bind (`WINDOW_TRAILING_VOID`). Tightening a \
+             bound that already exists can never break that; setting the **first** bound on a \
+             market whose plan authors no recurring frequency can, and is refused. \
+             \
+             `If-Match` is mandatory and carries the row's own version. That version is **frozen** \
+             with a published row's content (D-141), so it is the same tag before and after: what \
+             actually serialises two tighteners is the horizon itself, which rides the update's \
+             own predicate and answers the loser `409 CONCURRENT_MUTATION`. \
+             \
+             Nothing is written on the controlled arm - no column, no pending version reference, \
+             no audit record beyond the unit itself. Gates on `plan` x `write`.",
+        )
+        .tag(TAG)
+        .authenticated()
+        .no_license_required()
+        .path_param("priceId", "The published grandfathered generation.")
+        .param(crate::api::rest::plans::if_match_param(
+            "On a price route the tag is the row's **own** version and nothing else (D-141: never \
+             derived from the plan's), because the path addresses one row by id. On a published \
+             row it never moves.",
+        ))
+        .json_request::<GrandfatherUntilBody>(openapi, "The instant the eligibility ends.")
+        .handler(tighten_grandfather_until)
+        .json_response_with_schema::<GrandfatherUntilView>(
+            openapi,
+            StatusCode::ACCEPTED,
+            "The horizon moved, or a unit was opened and nothing moved; `outcome` says which.",
+        )
+        .error_400(openapi)
+        .error_401(openapi)
+        .error_403(openapi)
+        .error_404(openapi)
+        .error_409(openapi)
+        .error_500(openapi)
+        .error_503(openapi)
+        .register(router, openapi)
+}
+
 /// Build the Axum router for the cutover surface and register its operation.
 pub fn router(state: Arc<GovernanceState>, openapi: &dyn OpenApiRegistry) -> Router {
-    OperationBuilder::post("/bss-pricing/v1/plans/{planId}/cutovers")
+    let router = OperationBuilder::post("/bss-pricing/v1/plans/{planId}/cutovers")
         .operation_id("bss_pricing.cut_over_key")
         .summary("Reprice a canonical scope key and retain its subscribers, as one atomic unit")
         .description(
@@ -318,7 +601,8 @@ pub fn router(state: Arc<GovernanceState>, openapi: &dyn OpenApiRegistry) -> Rou
         .error_409(openapi)
         .error_500(openapi)
         .error_503(openapi)
-        .register(Router::new(), openapi)
+        .register(Router::new(), openapi);
+    mounted_horizon_door(router, openapi)
         .layer(Extension(state))
         // D-178's correlation edge, per-router as every mutating surface applies it.
         .layer(axum::middleware::from_fn(

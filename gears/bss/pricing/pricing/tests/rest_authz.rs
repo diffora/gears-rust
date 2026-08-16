@@ -42,7 +42,7 @@ use bss_pricing::api::rest::customer_groups::{
     CUSTOMER_GROUP_MEMBER, CUSTOMER_GROUP_MEMBER_MOVE, CUSTOMER_GROUP_MEMBERS,
     CUSTOMER_GROUP_TAXONOMY,
 };
-use bss_pricing::api::rest::cutovers::PLAN_CUTOVERS;
+use bss_pricing::api::rest::cutovers::{PLAN_CUTOVERS, PRICE_GRANDFATHER_UNTIL};
 use bss_pricing::api::rest::frontier::FRONTIER;
 use bss_pricing::api::rest::history::{HISTORY, HISTORY_EXPORT};
 use bss_pricing::api::rest::migrated_origin_snapshots::MIGRATED_ORIGIN_SNAPSHOT;
@@ -402,6 +402,19 @@ fn census() -> Vec<Route> {
         Route {
             method: "POST",
             path: PLAN_CUTOVERS,
+            resource_type: labels::PLAN,
+            action: actions::WRITE,
+            mutating: true,
+        },
+        // The horizon door (S7 §4's `inst-gs-bound`/`inst-gs-tighten`), on the same
+        // pair as the cutover that creates the generation it bounds — S5's endpoint
+        // map names it in that very cell, so this route adds no authz vocabulary
+        // either. It asks the pair **twice**, for the window `PATCH`'s reason: its
+        // path names a row and the question is about the row's plan. See
+        // `FURTHER_QUESTIONS`.
+        Route {
+            method: "PATCH",
+            path: PRICE_GRANDFATHER_UNTIL,
             resource_type: labels::PLAN,
             action: actions::WRITE,
             mutating: true,
@@ -1054,6 +1067,14 @@ fn body_for(
         ),
         ("PATCH", PLAN_PRICE) => (
             Some(serde_json::json!({ "content": { "model_kind": "flat", "amount_minor": 7 } })),
+            vec![("if-match", "\"0\"")],
+        ),
+        // A well-formed instant and a well-formed tag, both deliberately wrong for
+        // the seeded row — the refusal under test is the gate's, and a body the
+        // handler could act on would let a later reader mistake a domain refusal
+        // for one.
+        ("PATCH", PRICE_GRANDFATHER_UNTIL) => (
+            Some(serde_json::json!({ "grandfather_until": "2030-01-01T00:00:00Z" })),
             vec![("if-match", "\"0\"")],
         ),
         ("POST", PLAN_ABANDON | PLAN_PUBLISH) => (None, vec![("if-match", version)]),
@@ -2123,6 +2144,18 @@ const FURTHER_QUESTIONS: &[FurtherQuestion] = &[
     FurtherQuestion {
         method: "DELETE",
         path: PRICE_WINDOW,
+        resource_type: labels::PLAN,
+        action: actions::WRITE,
+        require_constraints: true,
+    },
+    // The horizon door, for the identical reason and with the identical shape: its
+    // path addresses a price row, and the row read that resolves the plan needs a
+    // scope of its own. Both questions are the catalogued pair and both are
+    // constrained — the second is the gate on the plan whose published content
+    // moves.
+    FurtherQuestion {
+        method: "PATCH",
+        path: PRICE_GRANDFATHER_UNTIL,
         resource_type: labels::PLAN,
         action: actions::WRITE,
         require_constraints: true,

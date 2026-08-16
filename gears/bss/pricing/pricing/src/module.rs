@@ -1170,6 +1170,15 @@ impl Gear for BssPricingGear {
                 db.clone(),
                 Arc::clone(&catalog_version_registry),
             ),
+            // The **seventh** (S7 §4's `inst-gs-bound`/`inst-gs-tighten`): the
+            // horizon door writes a published row's `grandfatherUntil`, which
+            // `domain::projection` renders, so it re-projects the plan subject and
+            // requests a version like the six before it. The argument has still
+            // not had to change.
+            grandfather: crate::infra::grandfather::GrandfatherService::new(
+                db.clone(),
+                Arc::clone(&catalog_version_registry),
+            ),
             // The **sixth** (D-128): retirement is a publish unit, so it requests
             // a version too. The argument has not had to change once.
             retirements: crate::infra::retirement::RetirementService::new(

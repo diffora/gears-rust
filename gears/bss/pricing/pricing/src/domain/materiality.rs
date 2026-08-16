@@ -825,6 +825,40 @@ impl ChangeSet {
         }
     }
 
+    /// A **grandfathering horizon tightening** — `inst-mat-registered`'s first
+    /// clause, arriving as the act it is rather than as a diff to be recomputed.
+    ///
+    /// [`Self::of_window_mutation`]'s shape with the plan's own unit, and the two
+    /// differences are both deliberate.
+    ///
+    /// **The unit is [`PublishUnitKind::PlanContent`] and not a kind of its own.**
+    /// What the act moves is a published row's content, so the subject that
+    /// re-projects is the plan — the same subject a publish freezes — and S5 §6
+    /// declares no `grandfather` subject kind for this crate to mint (D-204 clause
+    /// (2), the argument `infra::supersession::unit_request_id` already makes for
+    /// its own handle).
+    ///
+    /// **The act is `Some` unconditionally**, where a window mutation's is `Some`
+    /// on two of four. There is no direction for this door to be undecided about:
+    /// a loosening is refused before the evaluator is reached
+    /// ([`DomainError::GrandfatherLoosenForbidden`](crate::domain::error::DomainError::GrandfatherLoosenForbidden)),
+    /// so every call that gets this far tightens. Declaring it here rather than
+    /// leaving it to [`triggers::triggered_by_row`] buys the **reason**: the
+    /// content half is reached only after the policy and baseline steps, so a
+    /// tenant with no configured threshold would be told `noConfiguredThreshold`
+    /// about an act no threshold governs — the precise substitution `evaluate`'s
+    /// act-half-first ordering exists to prevent. The content half stays exactly
+    /// where it is and keeps answering for the *other* producer of a moved
+    /// horizon, a superseding successor row.
+    #[must_use]
+    pub fn of_horizon_tightening(rows: impl IntoIterator<Item = PriceRecord>) -> Self {
+        Self {
+            unit: Some(PublishUnitKind::PlanContent),
+            act: Some(triggers::Trigger::GrandfatherHorizonTightening),
+            rows: rows.into_iter().collect(),
+        }
+    }
+
     /// A change set from a registered act (§3 step 4) that is **no publish unit** —
     /// today exactly the D-10 threshold-policy diff.
     ///

@@ -133,11 +133,20 @@ fn every_trigger_names_a_design_document_that_opens() {
 fn every_act_half_trigger_answering_true_is_named_by_a_producing_site() {
     /// Minted inside this module by the content half, so no other file names
     /// them — transcribed from `triggered_by_row` and `triggered_by_content`.
-    const MINTED_BY_THE_CONTENT_HALF: &[&str] = &[
-        "grandfatherHorizonTightening",
-        "noComputableRowDelta",
-        "planShapeRevisionContent",
-    ];
+    ///
+    /// **`grandfatherHorizonTightening` left this list on 2026-08-16**, and the
+    /// departure is the point rather than the bookkeeping. It was here because the
+    /// horizon was a *diff* nobody could perform: the route S7 §5 declares was
+    /// unmounted and no repository moved the column on a published row, so
+    /// [`triggered_by_row`] was its only mint and the exemption was honest. With
+    /// `infra::grandfather` mounted it is an **act** as well — one a surface
+    /// declares, because the door refuses a loosening before the evaluator is
+    /// reached and every call that gets there tightens — so the census can ask for
+    /// its producer like any other. An exemption kept past the condition that
+    /// earned it is the same defect this pair of censuses was built to find, one
+    /// level up.
+    const MINTED_BY_THE_CONTENT_HALF: &[&str] =
+        &["noComputableRowDelta", "planShapeRevisionContent"];
 
     let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let sources = rust_sources(&src);
@@ -212,12 +221,9 @@ fn every_act_half_trigger_answering_true_is_named_by_a_producing_site() {
 #[test]
 fn every_act_half_trigger_answering_false_is_named_by_no_producing_site() {
     /// [`every_act_half_trigger_answering_true_is_named_by_a_producing_site`]'s
-    /// list, for its reason.
-    const MINTED_BY_THE_CONTENT_HALF: &[&str] = &[
-        "grandfatherHorizonTightening",
-        "noComputableRowDelta",
-        "planShapeRevisionContent",
-    ];
+    /// list, for its reason and with its 2026-08-16 departure.
+    const MINTED_BY_THE_CONTENT_HALF: &[&str] =
+        &["noComputableRowDelta", "planShapeRevisionContent"];
 
     let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let sources = rust_sources(&src);

@@ -2261,6 +2261,28 @@ async fn load_record(
     to_record(&row, &bands).map(Some)
 }
 
+/// [`PriceRepo::find`] through a runner the caller already holds.
+///
+/// The `_on` half of that method, in this module's existing split: the method
+/// opens a connection of its own, and an orchestrator that must read inside its
+/// **writing** transaction (D-176) cannot use one. `infra::grandfather` is the
+/// caller — it reads the generation, judges it and swaps on it, and a read taken
+/// outside the transaction would make its class, state and horizon checks hints
+/// rather than preconditions.
+///
+/// # Errors
+/// [`RepoError::Db`] on a scope or storage failure; [`RepoError::CorruptRow`] when
+/// the stored row cannot be read as the domain value its columns are
+/// `CHECK`-constrained to hold.
+pub async fn find_on(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    price_id: Uuid,
+) -> Result<Option<PriceRecord>, RepoError> {
+    load_record(runner, scope, tenant_id, price_id).await
+}
+
 /// The draft or published row already on `key`, if there is one.
 ///
 /// A `superseded` row is deliberately not an occupant: it is history and is not
@@ -2368,7 +2390,11 @@ async fn read_key_occupants(
 ///
 /// An `existing_grandfathered` row is **immutable in price and MUST NOT be
 /// superseded**, and S7 §1.7's UC table says the same ("only tightening
-/// `grandfatherUntil` is allowed").
+/// `grandfatherUntil` is allowed") — and as of 2026-08-16 that exception is a
+/// door rather than a sentence: [`tighten_grandfather_until`], reached through
+/// `infra::grandfather`. So the two halves of §4.3's clause now have one
+/// implementation each, and a reader arriving here asking "then how *does* the
+/// horizon move" has somewhere to go.
 ///
 /// Its absence was money, not tidiness, and compounded: the successor would rewrite
 /// the retained cohort's price, and the shorten would walk that generation's coverage
@@ -2414,6 +2440,126 @@ pub fn refuse_unsupersedable_class(key: &ScopeKey) -> Result<(), RepoError> {
         });
     }
     Ok(())
+}
+
+/// Move a **published** generation's `grandfather_until` earlier, inside the
+/// caller's transaction (`inst-gs-bound`, `inst-gs-tighten`).
+///
+/// The one in-place mutation of a published row's *content* Foundation §4.3
+/// sanctions, beside the `published → superseded` flip [`supersede_row`] performs.
+/// Everything about it that looks unusual is that sentence's consequence.
+///
+/// # The compare-and-swap is on the horizon, because the row version cannot move
+///
+/// Every other mutating verb in this crate swaps on `row_version`. This one cannot:
+/// D-141 puts that column on the published row's **frozen** whitelist — *"neither
+/// sanctioned in-place mutation moves it: not the `lifecycle_state` flips, not the
+/// monotonic `grandfather_until` tightening"* — and the physical guard enforces it,
+/// so a statement that advanced the version would be refused by the trigger rather
+/// than by a rule. A frozen counter is also a useless premise: it reads the same
+/// before and after every tightening, so it cannot tell a caller who read the row
+/// an hour ago from one who read it after somebody else's act.
+///
+/// What can serve is the **column itself**. The horizon is monotone by rule, so its
+/// current value is a version of the only fact this statement changes: `prior` is
+/// what the transaction read, it rides the `WHERE`, and a concurrent tightening
+/// between the read and the write moves it and takes the row out of the predicate.
+/// The loser is answered [`RepoError::ConcurrentMutation`] rather than silently
+/// overwriting a horizon a second principal approved. `IS NULL` and `= <instant>`
+/// are two spellings of that predicate because SQL equality does not hold over
+/// null, and the null case is `inst-gs-bound`'s whole arm.
+///
+/// The `lifecycle_state = 'published'` conjunct is in the same predicate rather than
+/// trusted from the read above it, for [`update_draft`]'s stated reason: a read is a
+/// hint and the statement is the guard.
+///
+/// # What it does not judge
+///
+/// The direction of travel (`domain::grandfather::check_tightening`), the row's
+/// eligibility class (D-147), and D-04's coverage span are all the orchestrator's —
+/// `infra::grandfather` asks all three against facts this repository does not hold
+/// (the plan's shape, the key's window set). What is here is the quantum, the swap
+/// and the disambiguation of a swap that matched nothing.
+///
+/// # Errors
+/// [`RepoError::TimestampPrecisionExceeded`] for an instant finer than the
+/// millisecond quantum (D-144); [`RepoError::NotFound`] when no such row is visible
+/// to `scope`; [`RepoError::NotDraft`] carrying the state when the row is not
+/// published; [`RepoError::ConcurrentMutation`] when the horizon moved under the
+/// transaction; [`RepoError::Db`] on a scope or storage failure;
+/// [`RepoError::CorruptRow`] when the row reads back unusable.
+pub async fn tighten_grandfather_until(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    price_id: Uuid,
+    prior: Option<DateTime<Utc>>,
+    horizon: DateTime<Utc>,
+) -> Result<PriceRecord, RepoError> {
+    check_authored_instant("grandfatherUntil", Some(horizon))?;
+    let prior_matches = prior.map_or_else(
+        || price::Column::GrandfatherUntil.is_null(),
+        |at| price::Column::GrandfatherUntil.eq(at),
+    );
+    let result = price::Entity::update_many()
+        .secure()
+        .scope_with(scope)
+        .col_expr(price::Column::GrandfatherUntil, Expr::value(horizon))
+        .filter(
+            Condition::all()
+                .add(price::Column::TenantId.eq(tenant_id))
+                .add(price::Column::PriceId.eq(price_id))
+                .add(price::Column::LifecycleState.eq(LifecycleState::Published.as_str()))
+                .add(prior_matches),
+        )
+        .exec(runner)
+        .await
+        .map_err(|e| RepoError::Db(format!("tighten price grandfather_until: {e}")))?;
+    if result.rows_affected != 1 {
+        return Err(refuse_untightenable(runner, scope, tenant_id, price_id, prior).await);
+    }
+    load_record(runner, scope, tenant_id, price_id)
+        .await?
+        .ok_or_else(|| not_found(price_id))
+}
+
+/// Say precisely why [`tighten_grandfather_until`]'s swap matched nothing.
+///
+/// [`refuse`]'s shape for the horizon door's predicate. Taken **after** the count
+/// comes back short rather than before, because the read that preceded the
+/// statement is not the guard.
+///
+/// Two outcomes and not three. An absent row is [`RepoError::NotFound`]; anything
+/// else is a **serialization** answer, because the orchestrator read this row's
+/// class, state and horizon inside this same transaction and refused every shape
+/// it could refuse. A row that no longer satisfies the predicate therefore moved
+/// under the transaction — the horizon tightened by somebody else, or the row
+/// flipped `superseded` — and both leave the caller the same act: read the
+/// generation again and decide whether their instant is still a tightening. The
+/// message names the horizon at both ends, which is the value that decides it.
+async fn refuse_untightenable(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    price_id: Uuid,
+    prior: Option<DateTime<Utc>>,
+) -> RepoError {
+    let row = match load_row(runner, scope, tenant_id, price_id).await {
+        Err(err) => return err,
+        Ok(None) => return not_found(price_id),
+        Ok(Some(row)) => row,
+    };
+    RepoError::ConcurrentMutation {
+        aggregate: format!(
+            "price row {price_id}: this transaction read a published generation whose \
+             grandfatherUntil was {}, and the store now holds a {} row whose grandfatherUntil is \
+             {}",
+            prior.map_or_else(|| "null".to_owned(), |at| at.to_rfc3339()),
+            row.lifecycle_state,
+            row.grandfather_until
+                .map_or_else(|| "null".to_owned(), |at| at.to_rfc3339())
+        ),
+    }
 }
 
 /// Author the supersession unit's successor **draft** beside the published row it

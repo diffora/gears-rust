@@ -108,20 +108,33 @@
 //! ranges over the whole change set and two range over a row, and folding them
 //! would make the whole-set one unreachable — see [`triggered_by_content`].
 //!
-//! # The horizon trigger has no dedicated surface, and **its subject is not
-//! # authorable either** — restated at its real strength
+//! # The horizon trigger has a dedicated surface as of 2026-08-16, and this
+//! # paragraph is the fourth correction of one sentence
 //!
 //! `inst-mat-registered`'s first clause is `grandfatherUntil` tightening
 //! (Foundation §4.3), whose named surface is S7's
-//! `PATCH /bss-pricing/v1/prices/{priceId}/grandfather-until`. **That route is not
-//! mounted** and no repository tightens a published row's horizon.
-//! [`Trigger::subject_exists_in_this_crate`] answers `true` for it, and what that
-//! rests on is the **column** existing on `PriceRecord` — not on the act being
-//! performable.
+//! `PATCH /bss-pricing/v1/prices/{priceId}/grandfather-until`. **That route is now
+//! mounted** — `api::rest::cutovers`, over `infra::grandfather` — and
+//! `price_repo::tighten_grandfather_until` is the repository half. So
+//! [`Trigger::subject_exists_in_this_crate`]'s `true` no longer rests on the
+//! **column** existing on `PriceRecord` alone: the act is performable, and the
+//! trigger has left `triggers_tests`' content-half exemption list because a census
+//! can now ask for its producing site like any other's.
 //!
-//! This paragraph used to claim a reachable path, then claimed for two waves that
-//! **no** mounted surface reached it. Both are now out of date and the sequence is worth
-//! keeping, because it is the same sentence corrected three times: *"a successor draft
+//! **The act half is where that door declares it**, through
+//! [`ChangeSet::of_horizon_tightening`](super::ChangeSet::of_horizon_tightening),
+//! and the reason is `evaluate`'s ordering rather than a reclassification of the
+//! fact: the content half below is reached only after the policy and baseline
+//! steps, so a tenant with no configured threshold would be told
+//! `noConfiguredThreshold` about an act no threshold governs. The door can declare
+//! it honestly because it refuses a loosening before the evaluator is reached, so
+//! every call that gets that far tightens. [`triggered_by_row`] is unchanged and
+//! keeps answering for the other producer of a moved horizon — a superseding
+//! successor row — which is the case the rest of this paragraph is about.
+//!
+//! This sentence has been corrected three times before: it claimed a reachable path,
+//! then claimed for two waves that **no** mounted surface reached it, and the sequence
+//! is worth keeping because the operand kept moving under it: *"a successor draft
 //! row on a key that already carries a published row, whose `grandfatherUntil` is
 //! earlier than the baseline's"*. The **authoring** door still refuses that row —
 //! `price_repo::insert_prepared` refuses a draft whose key `find_key_occupant` finds
@@ -135,19 +148,19 @@
 //! [`triggered_by_row`]'s **second** arm — the no-computable-delta one — is reachable
 //! from a mounted surface for the first time.
 //!
-//! **The horizon arm is not, and a first draft of this paragraph said it was** (review,
-//! 2026-08-06 — the sentence claimed reachability and then withdrew it four lines later,
-//! which is worse than either half alone). That arm needs a successor whose
-//! `grandfatherUntil` is earlier than its predecessor's; the column is authorable only on
-//! an `existing_grandfathered` generation (`GRANDFATHER_HORIZON_OFF_CLASS`), and
+//! **The horizon arm of `triggered_by_row` is still not reachable that way**, and the
+//! distinction is worth keeping sharp now that the *act* is: that arm needs a
+//! **successor row** whose `grandfatherUntil` is earlier than its predecessor's, which
+//! is a comparison between two rows on one key. The column is authorable only on an
+//! `existing_grandfathered` generation (`GRANDFATHER_UNTIL_FORBIDDEN`), and
 //! `price_repo::refuse_unsupersedable_class` refuses to supersede that class at all
 //! (Foundation §4.3) — which `infra::supersession` now also refuses from the request
-//! alone, ahead of everything. So the horizon arm's subject is a key no door will touch,
-//! and it stays unit-tested over hand-built rows. `update_draft`'s swap guard carries
-//! `lifecycle_state = 'draft'`, so a published row's horizon cannot be moved in place
-//! either. The `true` is left as it is for the reason it always was: the subject — the
-//! column, the comparison, the record — is genuinely here, and flipping it to `false`
-//! would say the design set's clause is another slice's, which is not the defect.
+//! alone, ahead of everything. So the *successor* shape stays unit-tested over
+//! hand-built rows. What changed on 2026-08-16 is a different mechanism reaching the
+//! same trigger: `infra::grandfather` moves **one** row's horizon in place, which
+//! `update_draft`'s `lifecycle_state = 'draft'` swap guard genuinely could not do and
+//! this paragraph correctly said nothing could. Two producers, one trigger, and only
+//! one of them is a diff.
 
 use toolkit_macros::domain_model;
 

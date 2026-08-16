@@ -115,6 +115,25 @@ pub enum DomainError {
     /// has to clear one field.
     #[error("grandfathering horizon forbidden off the grandfathered class: {0}")]
     GrandfatherUntilForbidden(String),
+    /// A grandfathering horizon moved **outwards**, or cleared
+    /// (`07-pricewindow-linkage.md` §5 `GRANDFATHER_LOOSEN_FORBIDDEN`,
+    /// `inst-gs-bound`/`inst-gs-tighten`).
+    ///
+    /// The horizon is the instant a retained generation stops being eligible, so
+    /// pushing it later re-grants an eligibility a second principal already
+    /// approved the end of, and clearing it makes a bounded generation indefinite
+    /// — the state machine's `active_bounded` has no edge back to
+    /// `active_indefinite`. Both are the same fact to the operator: this field
+    /// only ever moves earlier.
+    ///
+    /// The code is **declared** by S7 §5 rather than minted here, which is what
+    /// D-204 clause (2) requires of a refusal this crate renders on the wire. The
+    /// physical guard beneath it — `trg_pricing_price_grandfather_monotonic` on
+    /// both engines — states the identical predicate and had no caller in this
+    /// crate until the horizon door landed; it stays as the floor under the rule,
+    /// exactly as the append-only trigger stays under the lifecycle machine.
+    #[error("grandfathering horizon may only be tightened: {0}")]
+    GrandfatherLoosenForbidden(String),
     /// A `(meter, dimensionKey)` pair that does not belong where it was put
     /// (`01-foundation.md` §4.1, D-196).
     ///

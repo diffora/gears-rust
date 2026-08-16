@@ -160,6 +160,18 @@ pub struct GovernanceState {
     /// `cutover/…` here, from `infra::cutover`'s own builder for
     /// `unit_request_id`'s reason.
     pub cutovers: crate::infra::cutover::CutoverService,
+    /// The grandfathering **horizon** door — `PATCH …/prices/{priceId}/grandfather-until`
+    /// (S7 §4's `inst-gs-bound`/`inst-gs-tighten`), the only writer of
+    /// `grandfather_until` on a published row.
+    ///
+    /// The **seventh** requester of the one registry `Arc`, and the field above's
+    /// argument scales once more: it invents no version, and its handle's first
+    /// segment is `grandfather-until/…`. It is a service of its own rather than a
+    /// method on [`GovernanceState::cutovers`] although its route is mounted in the
+    /// cutover's module — the surfaces are one story and the transactions are not,
+    /// a cutover composing eleven steps across three planes while this one moves a
+    /// column and re-projects a subject.
+    pub grandfather: crate::infra::grandfather::GrandfatherService,
     /// The retirement orchestrator — `POST …/plans/{planId}/retire` (D-128,
     /// Slice 11), the plan's terminal flip.
     ///

@@ -324,6 +324,15 @@ pub enum RepoError {
     /// the caller is told the store failed and the operator reads a 500 for a
     /// request they could have fixed by clearing one field.
     ///
+    /// **The published plane answers the same question one layer up.**
+    /// `infra::grandfather` asks the class before it writes and renders the
+    /// identical code from [`DomainError::GrandfatherUntilForbidden`] — not
+    /// through this variant, because that door holds the whole canonical scope key
+    /// and can refuse before the store is touched at all. Two sites, one code, one
+    /// rule; the physical CHECK is the floor under both.
+    ///
+    /// [`DomainError::GrandfatherUntilForbidden`]: crate::domain::error::DomainError::GrandfatherUntilForbidden
+    ///
     /// The pairing is now normative and has a code of its own —
     /// `GRANDFATHER_UNTIL_FORBIDDEN` (D-147), the `cohort` biconditional's
     /// sibling: one axis-conditioned field, one code. Before it, this refusal

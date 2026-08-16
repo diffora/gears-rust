@@ -500,6 +500,10 @@ impl Harness {
                 db.clone(),
                 Arc::clone(&registry) as Arc<_>,
             ),
+            grandfather: bss_pricing::infra::grandfather::GrandfatherService::new(
+                db.clone(),
+                Arc::clone(&registry) as Arc<_>,
+            ),
             retirements: bss_pricing::infra::retirement::RetirementService::new(
                 db.clone(),
                 Arc::clone(&registry) as Arc<_>,

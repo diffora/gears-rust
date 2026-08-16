@@ -828,6 +828,98 @@ impl ApprovalService {
             .map_err(|e| repo_failure(&e))
     }
 
+    /// Open the **grandfathering horizon**'s unit (`inst-gs-bound`,
+    /// `inst-gs-tighten`, `inst-mat-registered`).
+    ///
+    /// [`Self::submit_window_mutation_on`]'s shape over a price row, and the two
+    /// differences are the design set's.
+    ///
+    /// **The subject kind is `price_unit`, not `window`.** What moves is a
+    /// published row's content, which is exactly what that kind names — the same
+    /// reading [`Self::submit_supersession_on`] takes, and for the same reason S5
+    /// §6 gives: this crate mints no subject token the design set has not declared
+    /// (D-204 clause (2)).
+    ///
+    /// **The subject string names the act**, `infra::grandfather::horizon_unit_ref`
+    /// building it as `<plan>/<priceId>/grandfather-until/<prior>/<new>` — D-184's
+    /// shape, so an approval taken for a tightening to one instant cannot authorize
+    /// a tightening to another, and a reviewer's detail view says which transition
+    /// they are deciding. The prior end is part of it for the same reason it is on
+    /// a window act: a unit approved when the horizon read `T` must not complete
+    /// after somebody else has moved it.
+    ///
+    /// The pin is the plan shape, for the window unit's reason, taken over the
+    /// shape **this transaction assembled**.
+    ///
+    /// # Errors
+    /// [`DomainError::NotFound`] when the row or the plan's current revision is
+    /// absent; [`DomainError::PendingChangeUnitExists`] when a unit already holds
+    /// this act or this key; [`DomainError::ConcurrentMutation`] when `approval_id`
+    /// is taken; [`DomainError::Internal`] on a storage failure.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "`Self::submit_window_mutation_on`'s reason and very nearly its list: the runner \
+                  and the compiled scope, the tenant, the row the horizon sits on, the minted \
+                  approval id, the evaluator's verdict, the caller's stamp and the act's subject. \
+                  The subject is passed rather than rebuilt so the string a unit opens under and \
+                  the string a retry resolves against have one author"
+    )]
+    pub async fn submit_horizon_tightening_on(
+        runner: &impl DBRunner,
+        scope: &AccessScope,
+        tenant_id: Uuid,
+        price_id: Uuid,
+        approval_id: Uuid,
+        materiality: JsonValue,
+        stamp: AuditStamp,
+        subject_ref: &str,
+    ) -> Result<ApprovalRecord, DomainError> {
+        let now = stamp.recorded_at;
+        let key = price_repo::load_scope_key(runner, scope, tenant_id, price_id)
+            .await
+            .map_err(|e| repo_failure(&e))?
+            .ok_or_else(|| DomainError::NotFound {
+                subject: "price row".to_owned(),
+                id: price_id.to_string(),
+            })?;
+        let plan_id = key.plan_id();
+        let revision = plan_repo::load_current(runner, scope, tenant_id, plan_id)
+            .await
+            .map_err(|e| repo_failure(&e))?
+            .ok_or_else(|| DomainError::NotFound {
+                subject: "current plan revision".to_owned(),
+                id: plan_id.to_string(),
+            })?;
+        let shape =
+            crate::infra::publish::assemble_from(runner, scope, tenant_id, plan_id, revision, now)
+                .await?;
+        if let Some(held) =
+            approval_repo::find_pending_for_subject(runner, scope, tenant_id, subject_ref)
+                .await
+                .map_err(|e| repo_failure(&e))?
+        {
+            return Err(DomainError::PendingChangeUnitExists(format!(
+                "price row {price_id}: approval {} is still submitted over this horizon \
+                 tightening; decide it, or withdraw it to free the subject",
+                held.approval_id
+            )));
+        }
+        let held_keys = BTreeSet::from([key.to_string()]);
+        refuse_held_key(runner, scope, tenant_id, &held_keys).await?;
+        let new = NewApproval {
+            approval_id,
+            tenant_id,
+            subject_ref: subject_ref.to_owned(),
+            subject_kind: AuditSubjectKind::PriceUnit,
+            content_hash: content_hash(&shape).to_vec(),
+            materiality,
+            held_keys,
+        };
+        approval_repo::open(runner, scope, new, stamp)
+            .await
+            .map_err(|e| repo_failure(&e))
+    }
+
     /// Open the overlay unit in a transaction of this service's own.
     ///
     /// [`Self::submit_overlay_on`]'s `&self` half, and the split is this module's

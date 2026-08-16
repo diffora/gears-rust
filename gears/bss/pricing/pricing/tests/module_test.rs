@@ -78,7 +78,7 @@ fn declared_paths() -> Vec<(&'static str, &'static str)> {
         CUSTOMER_GROUP_MEMBER, CUSTOMER_GROUP_MEMBER_MOVE, CUSTOMER_GROUP_MEMBERS,
         CUSTOMER_GROUP_TAXONOMY,
     };
-    use bss_pricing::api::rest::cutovers::PLAN_CUTOVERS;
+    use bss_pricing::api::rest::cutovers::{PLAN_CUTOVERS, PRICE_GRANDFATHER_UNTIL};
     use bss_pricing::api::rest::frontier::FRONTIER;
     use bss_pricing::api::rest::history::{HISTORY, HISTORY_EXPORT};
     use bss_pricing::api::rest::migrated_origin_snapshots::MIGRATED_ORIGIN_SNAPSHOT;
@@ -206,6 +206,13 @@ fn declared_paths() -> Vec<(&'static str, &'static str)> {
         // `api::rest::supersessions`.
         ("POST", PLAN_SUPERSESSIONS),
         ("POST", PLAN_CUTOVERS),
+        // Slice 7's horizon door (S7 §5, `inst-gs-bound`/`inst-gs-tighten`),
+        // mounted beside the cutover in the same module because the two are one
+        // mechanism read from its ends. Its §5 Idempotency cell is `ETag`, so it
+        // is in `if_match_routes()` below and deliberately **not** in
+        // `idempotency_key_routes()`: it is a mutation of a row that exists, not
+        // a create.
+        ("PATCH", PRICE_GRANDFATHER_UNTIL),
         ("POST", PLAN_RETIRE),
         // Slice 11's migration plane. `DELETE` is a **cancel** (D-34): the row
         // flips to `cancelled` and is never removed, because an executor
@@ -347,6 +354,12 @@ async fn registered_operations() -> OpenApiRegistryImpl {
             ),
         ),
         cutovers: bss_pricing::infra::cutover::CutoverService::new(
+            db.clone(),
+            Arc::new(
+                bss_pricing_sdk::catalog_version_registry::UnconfiguredCatalogVersionRegistryV1,
+            ),
+        ),
+        grandfather: bss_pricing::infra::grandfather::GrandfatherService::new(
             db.clone(),
             Arc::new(
                 bss_pricing_sdk::catalog_version_registry::UnconfiguredCatalogVersionRegistryV1,
@@ -642,6 +655,7 @@ async fn an_unconfigured_gear_reserves_its_prefix_and_answers_404_under_it() {
 /// `the_window_cancel_declares_no_precondition_header` is what keeps a later group
 /// from adding one to be helpful.
 fn if_match_routes() -> Vec<(&'static str, &'static str)> {
+    use bss_pricing::api::rest::cutovers::PRICE_GRANDFATHER_UNTIL;
     use bss_pricing::api::rest::plans::{PLAN, PLAN_ABANDON, PLAN_CLONE, PLANS};
     use bss_pricing::api::rest::prices::{PLAN_PRICE, PLAN_PRICES};
     use bss_pricing::api::rest::publish::PLAN_PUBLISH;
@@ -660,6 +674,16 @@ fn if_match_routes() -> Vec<(&'static str, &'static str)> {
         // tag is the window row's own version (D-141's rule for a price row, applied
         // to the surface that addresses one window by id).
         ("PATCH", PRICE_WINDOW),
+        // Slice 7's horizon door: §5 gives it an **ETag** too, and on a price route
+        // that is the row's own version (D-141). It is the one entry here whose tag
+        // is **frozen** — a published row's version never moves, so this
+        // precondition refuses a caller who addressed a version the row never had
+        // and cannot refuse one whose *horizon* is stale. What refuses that is the
+        // update's own predicate, which carries the horizon this transaction read;
+        // see `price_repo::tighten_grandfather_until`. The declaration is still
+        // owed: §5 names the cell, and a generated client that does not send the
+        // header cannot write at all.
+        ("PATCH", PRICE_GRANDFATHER_UNTIL),
         // Slice 5's policy `PUT`: §5's cell is *`ETag` + approval unit* and D-186
         // implements the first half. It is the one entry here whose tag is **not** a
         // row version — the store is append-only and has no version column — so the

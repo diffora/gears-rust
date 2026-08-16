@@ -252,6 +252,18 @@ impl From<DomainError> for CanonicalError {
                     "GRANDFATHER_UNTIL_FORBIDDEN",
                 )
                 .create(),
+            // The horizon door's own refusal (`inst-gs-tighten`), mapped beside its
+            // sibling above and for the same reason: §5 types it 422, this platform
+            // renders that 400, and the submitted instant is well-formed — it is
+            // simply on the wrong side of the one the store already published. The
+            // field named is the one the author edits.
+            D::GrandfatherLoosenForbidden(detail) => PlanResource::failed_precondition()
+                .with_precondition_violation(
+                    "grandfather_until",
+                    detail,
+                    "GRANDFATHER_LOOSEN_FORBIDDEN",
+                )
+                .create(),
             // D-196's axis pair, and the same treatment for the same reason: a
             // usage line is a key axis, so a pair in the wrong place is a
             // precondition failure about where the row is filed rather than a
