@@ -674,6 +674,53 @@ async fn generation_coverage(
 /// holding a revision number, rather than a path to publishing on a retired
 /// plan. Reported in the hand-back.
 ///
+/// **It does not unwind a live cutover unit** (`inst-co-retirement-unwind`,
+/// D-05), and this list carried only the paragraph above for as long as it has
+/// existed. `inst-rt-cancel` requires the unwind *in the same transaction* as the
+/// flip: the predecessor window's `effectiveTo` restored to its recorded
+/// pre-cutover value, the scheduled copy and successor cancelled, the unit closed
+/// as `unwound`, a merely `submitted` unit voided. Nothing below performs any of
+/// it — `cancel_windows_in` acts on `preview.windows`, which is the plan's own
+/// window plane judged by `dispose_windows`, and knows nothing about a cutover
+/// unit. `tests/sqlite_cutover_unwind.rs` reads all four clauses back off the
+/// store after a retirement over a committed cutover and finds every one of them
+/// unperformed.
+///
+/// **Two of the four are not merely unbuilt — they are not constructible here**,
+/// and that is the part no account carried anywhere:
+///
+/// * *"its recorded pre-cutover value"* names an operand **nothing records**.
+///   `infra::cutover::commit_cutover` shortens the predecessor through
+///   `window_repo::adjust_effective_to`, an in-place `UPDATE` of a table with no
+///   before-image column; the act enqueues three events and none is about the
+///   shorten; `record_cutover`'s state names three price ids and no window and no
+///   instant. Nor is the value derivable: `compose_cutover_windows` picks the
+///   window `WindowInterval::covers` answers `true` for, which admits an absent
+///   end *and* any end strictly after the cutover, so after the shorten the two
+///   are one row. An unwind that guessed `None` would hand a plan being retired
+///   open-ended coverage it never had.
+/// * *"closed as `unwound`"* names a state this machine does not have and the
+///   design set does not declare: `05-governance.md` §7's list and its `state`
+///   column are `submitted | approved | rejected | voided`, which is exactly what
+///   `chk_pricing_approval_state` admits. Minting a fifth persisted-and-wire
+///   token is what **D-204 clause (2)** refuses, on the same reading
+///   `domain::retirement::strand_free_disposition` cites one surface over.
+///
+/// The other two — finding the live unit, cancelling its two scheduled windows —
+/// **are** constructible today, and building them alone would be worse than
+/// building nothing: a predecessor still ending at the cutover with the schedules
+/// that were to take over from it gone is precisely the trailing void D-05
+/// rejected its option (a) to avoid, arriving as the result of the fix. So the
+/// unwind is one act or none.
+///
+/// What D-05 asks for and **is** already paid is its materiality half: retirement
+/// is always material under `Trigger::PlanRetirement` (D-109, unconditional),
+/// `MaterialityVerdict` carries no trigger identity, and so a verdict declared
+/// under `Trigger::RetirementUnwindingACutover` would be byte-identical. That
+/// trigger's zero producers therefore cost nothing observable — which is why the
+/// `false` beside it in `domain::materiality::triggers` is honest and why the
+/// gap had no symptom for a census to find.
+///
 /// # Errors
 /// [`DomainError::RetirePlanReferenced`] on a blocking reference;
 /// [`DomainError::LifecycleForbidden`] when the plan is not at a published

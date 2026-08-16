@@ -977,6 +977,32 @@ struct CutoverAudit<'a> {
 /// cutover could not establish that a second principal had approved it, and
 /// `inst-tp-record` was unsatisfied for this act. §8's `dod-audit` is "every
 /// mutation MUST record".
+///
+/// # It names three rows and no window, and that leaves D-05 without an operand
+///
+/// [`cutover_state`] carries the predecessor, the successor and the copy with
+/// their lifecycle states. It does not name the window this act **shortened**,
+/// and neither does anything else the act writes: the three outbox events are the
+/// succession and the two schedules, and [`commit_cutover`] reaches
+/// `window_repo::adjust_effective_to`, an in-place `UPDATE` of a table with no
+/// before-image column. `infra::window`'s own adjust path *does* record the
+/// before-image — `before_state: window_state_value(current)` — so the same
+/// shorten performed through `PATCH …/windows/{id}` is auditable and this one is
+/// not.
+///
+/// That asymmetry is not only an audit gap. D-05 requires a retirement to restore
+/// the predecessor's `effectiveTo` *"to its recorded pre-cutover value"*, and this
+/// is the act that would have had to record it; nothing does, and the value is not
+/// derivable afterwards, because [`compose_cutover_windows`] accepts both an
+/// open-ended predecessor and one ending strictly after the cutover.
+/// `infra::retirement::retire_in`'s "what this function does not do" section
+/// carries the consequence and `tests/sqlite_cutover_unwind.rs` measures it.
+///
+/// **Not repaired here.** What to record, where, and under whose read is the
+/// unwind's design and not this record's: `audit_repo` offers `append` and a
+/// tenant-wide keyset `page` with no query by subject, so a field added here
+/// would be written and unaddressable — paying the appearance of the operand
+/// rather than the operand.
 async fn record_cutover(
     txn: &DbTx<'_>,
     scope: &AccessScope,

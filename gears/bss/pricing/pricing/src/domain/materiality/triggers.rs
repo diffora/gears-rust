@@ -14,7 +14,14 @@
 //! Six of this list name a subject this crate has no table, no entity and no
 //! surface for — a bulk group move, a retirement that unwinds a live cutover, a
 //! historical import, the two gate-clearing republishes, a prepaid grant's
-//! non-price fields. **They are six of the seven that answer `false`**, and the
+//! non-price fields. **One of the six does not belong in that sentence**: the
+//! retirement unwind's table (`pricing_approval`), entity and surface
+//! (`POST …/plans/{planId}/retire`) are all here and mounted, and what is missing
+//! is the **act** plus two operands the crate cannot supply — see that variant's
+//! own doc. Leaving it in the list read as "Slice 11 has not landed", which is
+//! the understating error `PlanRetirement` is the standing example of, arriving
+//! one variant later on the same plane. **They are six of the seven that answer
+//! `false`**, and the
 //! seventh is not one of them: `RevenueShareChange`'s subject is here in full and
 //! what it lacks is a surface declaring the act, which the section below states.
 //! The six are declared here anyway, each
@@ -163,6 +170,28 @@ pub enum Trigger {
     GrandfatheringCutover,
     /// Plan retirement while a cutover unit is pending or approved-not-yet-
     /// effective (Slice 11, D-05) — the retirement unwinds the approved unit.
+    ///
+    /// **It answers `false` below for a different reason than its five
+    /// neighbours**, and the module doc's "no table, no entity and no surface"
+    /// sentence does not describe it: the table is `pricing_approval`, the entity
+    /// is here, and `POST …/plans/{planId}/retire` is mounted and serving. What is
+    /// absent is the **act** — `infra::retirement::retire_in` performs no part of
+    /// the unwind — and two of D-05's four clauses cannot be performed from this
+    /// crate at all: the predecessor's pre-cutover `effectiveTo` is overwritten in
+    /// place by `commit_cutover` and recorded by no row, event or audit entry, and
+    /// `unwound` is not a state `05-governance.md` §7 declares (D-204 clause (2)
+    /// forbids minting it here). `infra::retirement::retire_in`'s "what this
+    /// function does not do" section carries the argument in full and
+    /// `tests/sqlite_cutover_unwind.rs` holds it open.
+    ///
+    /// **And a producer here would change nothing observable.** D-109 made
+    /// retirement always material unconditionally, `retire_in` declares
+    /// [`Self::PlanRetirement`] on every path, and
+    /// [`MaterialityVerdict`](super::MaterialityVerdict) carries no trigger
+    /// identity — so the two declarations render byte-identically. That is why
+    /// this variant's absence has no symptom, and it is the reason it survived
+    /// every census: the walks ask whether a producer exists, never whether one
+    /// would be distinguishable.
     RetirementUnwindingACutover,
     /// An **immediate** customer-group membership re-resolution (Slice 9).
     /// Renewal-aligned single-membership changes are audit-only, not material.
