@@ -86,7 +86,7 @@ pub const REGION_UNKNOWN: &str = "REGION_UNKNOWN";
 pub const TAXONOMY_VALUE_IN_USE: &str = "TAXONOMY_VALUE_IN_USE";
 
 /// A price row, or a tenant default, naming a rounding reference the tenant's
-/// rounding-policy taxonomy does not declare as `active` (D-321).
+/// rounding-policy taxonomy does not declare as `active` (D-322).
 ///
 /// Its own code rather than a reuse of [`REGION_UNKNOWN`] for that code's own
 /// stated reason: the two name different facts about different axes, and an
@@ -564,7 +564,7 @@ impl ValidationRule<PlanShape> for RegionsDeclared {
     }
 }
 
-/// Every price row's rounding reference is one the tenant declared (D-321).
+/// Every price row's rounding reference is one the tenant declared (D-322).
 ///
 /// # The vocabulary is the tenant's, and that is the whole design
 ///

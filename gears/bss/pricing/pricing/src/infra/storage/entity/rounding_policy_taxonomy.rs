@@ -1,5 +1,5 @@
 //! `SeaORM` entity for `bss.pricing_rounding_policy_taxonomy` — the rounding
-//! references a tenant declares (D-321).
+//! references a tenant declares (D-322).
 //!
 //! [`super::brand_taxonomy`]'s shape exactly, and its migration
 //! (`m20260802_000080`) carries the argument for why the vocabulary is the

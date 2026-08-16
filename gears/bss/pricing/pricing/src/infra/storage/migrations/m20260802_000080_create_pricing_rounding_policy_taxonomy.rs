@@ -1,5 +1,5 @@
 //! `pricing_rounding_policy_taxonomy` — the rounding-policy references a tenant
-//! declares (D-321).
+//! declares (D-322).
 //!
 //! # Why a declared set, and why it is not this gear legislating
 //!
@@ -35,7 +35,7 @@
 //! # Empty means unconstrained, and that is a decision rather than an oversight
 //!
 //! A tenant that has declared nothing is not refused: the check binds only where
-//! a vocabulary exists (D-321 clause 3). Declaring the set is how a tenant opts
+//! a vocabulary exists (D-322 clause 3). Declaring the set is how a tenant opts
 //! into the constraint, and the alternative — an empty set refusing every row —
 //! would make this migration break every catalog on the day it lands, including
 //! the seven rows above, for a vocabulary nobody has had a chance to write.

@@ -501,7 +501,7 @@ const EXPECTED_CHECKS: &[&str] = &[
     "chk_pricing_repricing_journal_failed",
     "chk_pricing_repricing_journal_state",
     "chk_pricing_repricing_journal_successor_is_new",
-    // D-321's declared rounding vocabulary — `m20260802_000080`, the taxonomy
+    // D-322's declared rounding vocabulary — `m20260802_000080`, the taxonomy
     // shape with its own table.
     "chk_pricing_rounding_policy_taxonomy_state",
     "chk_pricing_rounding_policy_taxonomy_value_present",
@@ -619,7 +619,7 @@ const EXPECTED_PRIMARY_KEYS: &[(&str, &str)] = &[
     ),
     ("pricing_region_taxonomy", "tenant_id, value"),
     ("pricing_repricing_journal", "run_id, price_id"),
-    // D-321 (`m20260802_000080`): the taxonomies' key, on a table of their
+    // D-322 (`m20260802_000080`): the taxonomies' key, on a table of their
     // shape.
     ("pricing_rounding_policy_taxonomy", "tenant_id, value"),
     // Read back from `m20260802_000044`'s own DDL. `provenance_id` and not the

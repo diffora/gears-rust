@@ -337,7 +337,7 @@ async fn an_undeclared_rounding_reference_is_refused_and_declaring_it_lets_the_p
     );
 }
 
-/// An empty vocabulary constrains nothing — the opt-in reading (D-321).
+/// An empty vocabulary constrains nothing — the opt-in reading (D-322).
 ///
 /// The negative control for the case above: without it, a rule that refused
 /// *every* reference would satisfy the refusal half and look correct.
@@ -428,7 +428,7 @@ async fn publish(
 }
 
 // ---------------------------------------------------------------------------
-// The vocabulary's own surface (D-321)
+// The vocabulary's own surface (D-322)
 // ---------------------------------------------------------------------------
 
 async fn read_vocabulary(harness: &Harness) -> (StatusCode, Option<String>, serde_json::Value) {

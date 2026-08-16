@@ -369,7 +369,7 @@ impl PublishRuleParams {
         self
     }
 
-    /// Attach the tenant's declared rounding vocabulary (D-321).
+    /// Attach the tenant's declared rounding vocabulary (D-322).
     ///
     /// Its empty set means **unconstrained**, which is neither
     /// [`Self::with_declared_regions`]' reading nor
@@ -555,7 +555,7 @@ fn foundation_plan_rules(params: &PublishRuleParams) -> ValidationPipeline<PlanS
         .with_rule(Box::new(RegionsDeclared {
             declared: params.declared_regions.clone(),
         }))
-        // D-321's vocabulary check, in the base set for `RegionsDeclared`'s
+        // D-322's vocabulary check, in the base set for `RegionsDeclared`'s
         // reason with one difference stated on its type: `rounding_policy_ref`
         // is on every price row, so no publish escapes it — but a tenant who
         // declared no vocabulary is not constrained by it.

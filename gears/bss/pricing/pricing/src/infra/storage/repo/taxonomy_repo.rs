@@ -251,7 +251,7 @@ impl TaxonomyRepo {
     }
 
     /// The tenant's declared rounding vocabulary, active and retired alike
-    /// (D-321).
+    /// (D-322).
     ///
     /// A **parallel, one-table method** for `list_customer_groups`' reason, and
     /// it is a stronger reason here: [`TaxonomyClass::scope_class`] is a total
@@ -275,7 +275,7 @@ impl TaxonomyRepo {
     }
 
     /// Replace the declared rounding vocabulary wholesale, gated on the tag the
-    /// caller read (D-321).
+    /// caller read (D-322).
     ///
     /// `replace_customer_groups`' shape, including the reason the premise is
     /// tested **inside** the transaction: a `PUT` replaces the whole set, so two
@@ -382,7 +382,7 @@ pub async fn active_regions(
 }
 
 /// The tenant's **active** rounding references — `inst-tx-rounding`'s universe
-/// (D-321).
+/// (D-322).
 ///
 /// [`active_regions`]' shape and its reasons: a runner rather than a provider so
 /// `rule_params` resolves it inside the commit transaction, and `active` only so
@@ -1404,7 +1404,7 @@ async fn apply_replace_customer_group(
 }
 
 /// [`write_set`]'s single-table analogue.
-/// The rounding vocabulary's `PUT`, inside its transaction (D-321).
+/// The rounding vocabulary's `PUT`, inside its transaction (D-322).
 ///
 /// `apply_replace_customer_group`'s shape exactly: premise tested here and only
 /// here against the same `held` the write works from, retirement guarded per
@@ -1670,7 +1670,7 @@ async fn list_rounding_policy_on(
 }
 
 /// How many **published** price rows name this rounding reference, plus whether
-/// the tenant default does (D-321).
+/// the tenant default does (D-322).
 ///
 /// The retirement guard's operand. A value nothing references may be retired; a
 /// value a live row resolves against may not, which is `inst-tx-mutation`'s rule
