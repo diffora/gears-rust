@@ -734,8 +734,20 @@ async fn publish_bundle(
             .await
             .map_err(|e| crate::infra::storage::repo_failure(&e))?;
 
-        // 202, per `inst-ba-return`: the composition is frozen into the read model
-        // by the projector, which this response does not wait for.
+        // 202, per `inst-ba-return`, and on the **event** half of that
+        // instruction only: `BundleUpdated` is enqueued in the same transaction
+        // as the effective shares, and a consumer reads the composition from it.
+        //
+        // **The read-model half is unbuilt and this comment used to claim it.**
+        // `inst-ba-return` also says "composition frozen into the read model /
+        // snapshot", and `publish_composition` records no `PendingVersionRow`:
+        // no `CatalogVersion` advances, no subject re-projects, and
+        // `PlanSubjectDelta` carries no bundle member to re-project into. So the
+        // 202 is asynchrony about the outbox, not about a projector that would
+        // catch up later — nothing will. The divergence is reported here and in
+        // `domain::sellability`'s `inst-sg-bundle` section, which is the surface
+        // it costs: the sellability gate cannot walk a bundle's components
+        // because this act never freezes them.
         return Ok((
             StatusCode::ACCEPTED,
             Json(PublishAcceptedView {
@@ -1185,7 +1197,9 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
         .json_response_with_schema::<PublishAcceptedView>(
             openapi,
             StatusCode::ACCEPTED,
-            "Accepted; the composition is frozen into the read model by the projector.",
+            "Accepted; the effective rev-share split is committed and `BundleUpdated` is \
+             enqueued. The composition is **not** frozen into the read model: a composition \
+             publish advances no `CatalogVersion`, so a pinned read does not carry it.",
         )
         .error_400(openapi)
         .error_401(openapi)

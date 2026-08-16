@@ -277,6 +277,29 @@ impl BundleService {
     /// commit separately from the write it describes is evidence of something
     /// that may not have happened — the outbox's own contract.
     ///
+    /// # `inst-ba-return`'s read-model half is **not** built here, and nothing
+    /// else builds it either
+    ///
+    /// That instruction's third clause is *"composition frozen into the read
+    /// model / snapshot"*. This method records **no**
+    /// [`PendingVersionRow`](crate::infra::storage::repo::PendingVersionRow), so
+    /// no `CatalogVersion` advances and no subject re-projects — and there would
+    /// be nothing to re-project into, because
+    /// [`PlanSubjectDelta`](crate::domain::projection::PlanSubjectDelta) carries
+    /// no bundle member. Every other publish unit in this gear records one
+    /// (`publish`, `window`, `supersession`, `cutover`, `overlay_publish`,
+    /// `retirement`, `membership_publish`); this act is the only one that does
+    /// not, and `bundle_sellability_tests`'
+    /// `a_composition_publish_advances_no_catalog_version` is what holds the
+    /// absence rather than leaving it to be rediscovered.
+    ///
+    /// **It is reported here because of what it costs one surface over.**
+    /// `inst-sg-bundle` and `dod-sellability` both require the sellability
+    /// surface to expose the *frozen* component key set and walk it; with no
+    /// version carrying a composition there is nothing to freeze it into, which
+    /// is why [`crate::domain::bundle_sellability`] is built, tested and
+    /// uncalled.
+    ///
     /// Callers reach this only with a publishable report;
     /// [`Self::validate_publish`] is what produces one, and a group that would
     /// refuse here has already refused there. The refusal is re-derived rather

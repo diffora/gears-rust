@@ -159,13 +159,96 @@
 //! holds it asserts the constructor's inputs, which is the only thing a test can
 //! assert about an absence.
 //!
-//! # `inst-sg-bundle` is not evaluated, and the surface exposes no component key
-//! set
+//! # `inst-sg-bundle` is not evaluated, and the operand it needs is the **frozen**
+//! one
 //!
-//! There is no bundle store, no `bundle`-type plan and no component key set to
-//! freeze; Slice 8 owns the composition rules. A component walk over an empty set
-//! would answer every bundle sellable, which is the one direction a fail-closed
-//! gate must not round in — so the walk is absent rather than vacuous.
+//! Until 2026-08-16 this section read: *"There is no bundle store, no
+//! `bundle`-type plan and no component key set to freeze"*. **Two of those three
+//! claims stopped being true when Slice 8 landed**, and they are corrected here
+//! rather than carried, because a reader who believes them concludes that wiring
+//! the walk is a Slice-8 dependency when it is a projection one:
+//!
+//! - **there is a bundle store** — `pricing_bundle` and
+//!   `pricing_bundle_component` (`m20260802_000024`/`_000025`), read by
+//!   [`bundle_repo`](crate::infra::storage::repo::bundle_repo), with the
+//!   authoring and publish routes mounted;
+//! - **a `bundle`-type plan is resolvable** — it is exactly a plan carrying a
+//!   `pricing_bundle` row, which `bundle_repo::find_by_plan` answers and which
+//!   [`bundle_rules`](crate::domain::bundle_rules)' `COMPONENT_IS_BUNDLE` already
+//!   asks at publish time;
+//! - **there is no frozen component key set**, and that one is still true. It is
+//!   the whole of the blocker.
+//!
+//! ## What is missing is a member of the pin, and nothing in this gear mints one
+//!
+//! `inst-sg-bundle` does not merely ask for a walk; it says *"the
+//! `SellabilitySurface` **exposes the frozen component key set** for this walk"*.
+//! This surface answers from one pinned
+//! [`PlanSubjectDelta`](crate::domain::projection::PlanSubjectDelta), and that
+//! payload has **no bundle member of any kind** — not the composition, not the
+//! basis, not even whether the plan is a bundle at all. The word *bundle* does not
+//! occur in `domain::projection`, `domain::read_model`, `infra::read_model` or
+//! `infra::jobs`; `read_model_repo_tests`'
+//! `the_payloads_members_partition_into_the_read_and_the_ignored` is the roster
+//! that says so exhaustively, and it reddens the day one arrives.
+//!
+//! **And no act would ever put one there.** `inst-ba-return` says a bundle publish
+//! leaves *"composition frozen into the read model / snapshot"*;
+//! `infra::bundle::publish_composition` records **no**
+//! `PendingVersionRow` — it writes the effective shares and one `BundleUpdated`
+//! outbox event, and that is all — so a composition change advances no
+//! `CatalogVersion` and re-projects no subject. Every other publish unit in this
+//! gear records one (`publish`, `window`, `supersession`, `cutover`,
+//! `overlay_publish`, `retirement`, `membership_publish`); the composition act is
+//! the only one that does not. That clause of `inst-ba-return` is unbuilt, and it
+//! is upstream of this one.
+//!
+//! ## Why this is not the seam `infra::synthesis` wires empty
+//!
+//! Tier 2 of `SnapshotSynthesizer` has no store either, and it is nonetheless
+//! *called* — with an empty candidate set — because the **shape** of the question
+//! is known there: a key and an instant, with only the candidates absent. Here the
+//! discriminator itself is absent. [`SellabilityFacts`] cannot say whether the
+//! plan is a bundle, so there is no arm to wire empty: a
+//! [`bundle_verdict`](crate::domain::bundle_sellability::bundle_verdict) over an
+//! empty component set answers [`PlanMarketVerdict::NotSellable`] (that module's
+//! empty-conjunction rule), so calling it for every plan would refuse the whole
+//! catalog, and calling it for none is what this code already does. An empty call
+//! is only honest when the caller knows it is the right caller.
+//!
+//! ## Which way the gap rounds, and that it is latent
+//!
+//! Reported rather than left to be discovered, on D-206's pattern:
+//!
+//! - a **`sum_of_parts`** bundle carries no rows of its own (`inst-bb-rowless`),
+//!   so `gate_input_keys` finds none and
+//!   [`SellabilitySurface::plan_market_verdict`] answers `NotSellable` on the
+//!   *binds-no-key* arm. Fail-closed, and for a reason that names no component;
+//! - an **`own_price`** bundle is gated on its own rows alone and its components
+//!   are not consulted at all. That is the **fail-open** direction, and it is what
+//!   `inst-sg-bundle` exists to close.
+//!
+//! **How much of the fail-open the truth side already covers, measured rather than
+//! assumed.** A component's *publish* is judged against the bundles referencing it
+//! (`infra::bundle::referencing_markets`, reached from `infra::publish`), and a
+//! component's *retirement* is refused while a bundle's current published revision
+//! lists it (`inst-re-references`, `infra::retirement`). What neither covers is
+//! **drift with the clock**: a component key whose window expires, or a component
+//! plan whose `availableTo` passes, changes no truth row and trips no guard — and
+//! those are predicates (1) and (3) exactly, which is what the gate is *for*. So
+//! the residual is the D-80 trailing-void argument one level up: a bundle sold
+//! into a component's uncovered interval.
+//!
+//! It is **latent** today for the reason [`PlanMarketVerdict`] records: predicates
+//! (5) and (6) are `NotEvaluable` on every version this gear can project, so no
+//! answer can reach `Sellable` and the fail-open case is bounded by
+//! `NotEvaluable`. It goes live the day either of those lands.
+//!
+//! The rule itself is built and tested — [`crate::domain::bundle_sellability`] —
+//! and has **no caller in this crate**, which is a checked fact rather than an
+//! impression: `bundle_sellability_tests`'
+//! `nothing_in_this_crate_reaches_the_bundle_conjunction` is the census, and it
+//! reddens the day one appears.
 
 use bss_pricing_sdk::CatalogVersion;
 use chrono::{DateTime, TimeDelta, Utc};

@@ -43,6 +43,45 @@
 //! all_subscriptions` (`cohort = none`) keys **only** — grandfathered generations
 //! are never gate inputs. That narrowing is the caller's, exactly as
 //! [`crate::domain::bundle_rules`]'s coverage set is, and for the same reason.
+//!
+//! # This module has no caller, and the operand it waits for is named here
+//!
+//! Stated at the top of the thing rather than only in the register, because the
+//! reader who arrives here is the one who would otherwise spend the afternoon
+//! looking for the call. `nothing_in_this_crate_reaches_the_bundle_conjunction`
+//! (in `bundle_sellability_tests.rs`) is what makes it a checked fact: it walks
+//! this crate's code with the comments and literals blanked and asserts that no
+//! site outside this module names [`bundle_verdict`], [`component_verdict`] or
+//! [`ComponentSellability`]. It reddens the day a caller lands, which is when the
+//! sentence above stops being true and has to be deleted.
+//!
+//! **What the caller — [`crate::domain::sellability`] — is missing is one member
+//! of the pin.** That surface answers from a frozen
+//! [`PlanSubjectDelta`](crate::domain::projection::PlanSubjectDelta), and the
+//! payload carries no bundle member: not the composition, not the
+//! [`PriceBasis`], not the fact that the plan is a bundle. Three operands would
+//! have to become projected facts before the conjunction below can be evaluated at
+//! a pin:
+//!
+//! 1. **the discriminator** — is this plan-subject a bundle. Today only
+//!    `pricing_bundle` answers it, which is a truth row and not a pinned one;
+//! 2. **the basis** — which of the two arms of [`bundle_verdict`] applies. It
+//!    lives on `pricing_bundle.price_basis`, which D-206 records as **not
+//!    revision-scoped**: it is mutated in place, so even reading it at the
+//!    delta's revision would make a pinned answer swing on an un-versioned column;
+//! 3. **the frozen component key set** — `inst-sg-bundle`'s own words. The
+//!    component *rows* are revision-scoped and trigger-frozen
+//!    (`pricing_bundle_component`, D-92/D-105), so the set is stable at a
+//!    revision; what is absent is any path by which it reaches a
+//!    `CatalogVersion`. `infra::bundle::publish_composition` records no
+//!    `PendingVersionRow`, so a composition change advances no version and
+//!    re-projects no subject — `inst-ba-return`'s *"composition frozen into the
+//!    read model"* is unbuilt, and it is what would have to land first.
+//!
+//! The module is kept for `rev_share_change_set`'s reason under D-321 clause (3):
+//! the rule is what Slice 7 owes Slice 8, it is the design set's `inst-bc-sellability`
+//! written out, and deleting it would leave that instruction with nothing to
+//! attach to and the walk to be re-derived by whoever lands the projector member.
 
 use toolkit_macros::domain_model;
 use uuid::Uuid;

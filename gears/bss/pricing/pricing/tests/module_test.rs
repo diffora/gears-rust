@@ -125,9 +125,13 @@ fn declared_paths() -> Vec<(&'static str, &'static str)> {
         ("GET", PLAN_PRICES),
         ("PATCH", PLAN_PRICE),
         ("DELETE", PLAN_PRICE),
-        // Slice 8's three (`design/08-bundles.md` §5). The publish answers 202,
-        // per `inst-ba-return`: the composition is frozen into the read model by
-        // the projector, which the response does not wait for.
+        // Slice 8's three (`design/08-bundles.md` §5). The publish answers 202
+        // per `inst-ba-return`, on that instruction's **event** half only: the
+        // `BundleUpdated` the response does not wait for. Its read-model half is
+        // unbuilt — a composition publish records no `PendingVersionRow`, so no
+        // `CatalogVersion` advances and the composition never reaches a pin. See
+        // `infra::bundle::publish_composition` and `domain::sellability`'s
+        // `inst-sg-bundle` section for what that costs.
         // Slice 9's overlay half (`design/09-price-overlays.md` §5). The `PATCH`
         // is mounted per-resource rather than on the collection §5 spells,
         // because a precondition addresses a resource — the divergence Slice 8
