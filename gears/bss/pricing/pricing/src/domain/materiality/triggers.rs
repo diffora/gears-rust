@@ -179,7 +179,7 @@ pub enum Trigger {
     /// the unwind — and two of D-05's four clauses cannot be performed from this
     /// crate at all: the predecessor's pre-cutover `effectiveTo` is overwritten in
     /// place by `commit_cutover` and recorded by no row, event or audit entry, and
-    /// `unwound` is not a state `05-governance.md` §7 declares (D-204 clause (2)
+    /// `unwound` is not a state `05-governance.md` §4 declares (D-204 clause (2)
     /// forbids minting it here). `infra::retirement::retire_in`'s "what this
     /// function does not do" section carries the argument in full and
     /// `tests/sqlite_cutover_unwind.rs` holds it open.

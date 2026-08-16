@@ -20,9 +20,9 @@
 //!   entry preserves it. `a_cutover_records_the_effective_to_it_overwrote_nowhere`
 //!   is that fact, measured over the three stores the act writes.
 //! * `unwound` is not a state this crate's approval machine has, and it is not a
-//!   state the **design set** declares either: `05-governance.md` §7 lists
-//!   `submitted | approved | rejected | voided` and the `state` column's enum
-//!   repeats exactly those four. Minting a fifth here is what D-204 clause (2)
+//!   state the **design set** declares either: `05-governance.md` §4's approval
+//!   state machine lists `submitted, approved, rejected, voided` and §6's `state`
+//!   column repeats exactly those four. Minting a fifth here is what D-204 clause (2)
 //!   refuses — *"a gear may mint an internal variant freely; a wire code is the
 //!   set's to declare"* — which
 //!   `domain::retirement::strand_free_disposition` already cites from the other
@@ -407,13 +407,13 @@ async fn a_cutover_records_the_effective_to_it_overwrote_nowhere() {
 /// D-05's fourth clause names an approval state neither this crate nor the design
 /// set has.
 ///
-/// `05-governance.md` §7 states the machine's states as
-/// *"submitted, approved, rejected, voided"* and its `state` column's type as
-/// `submitted | approved | rejected | voided`; `ApprovalState::as_str`'s doc
+/// `05-governance.md` §4 ("Approval State Machine") states the states as
+/// *"submitted, approved, rejected, voided"* and §6's data model gives the
+/// `state` column the type `submitted | approved | rejected | voided`; `ApprovalState::as_str`'s doc
 /// records that those same four literals are exactly what
 /// `chk_pricing_approval_state` admits. `unwound` occurs in the design set only
-/// inside D-05's own sentence and Slice 7's step 7 — in prose, never in a state
-/// list or a column type.
+/// in prose — D-05's own sentence, Slice 7's step 7, Slice 11's step 2 and its AC
+/// list, and PRD AC #35 — and in no state list and no column type anywhere.
 ///
 /// So the unwind's closing move cannot be built here without minting a fifth
 /// persisted **and wire** token, which is what D-204 clause (2) refuses: *"a gear
@@ -431,8 +431,9 @@ fn the_approval_machine_has_no_unwound_state() {
     assert_eq!(
         tokens,
         vec!["submitted", "approved", "rejected", "voided"],
-        "the four `chk_pricing_approval_state` admits, and the four `05-governance.md` section 7 \
-         declares. A fifth here is a wire token the design set has not declared (D-204 (2))"
+        "the four `chk_pricing_approval_state` admits, and the four `05-governance.md` \
+         section 4 declares. A fifth here is a wire token the design set has not declared \
+         (D-204 (2))"
     );
     assert_eq!(
         ApprovalState::from_token("unwound"),

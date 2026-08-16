@@ -700,9 +700,9 @@ async fn generation_coverage(
 ///   are one row. An unwind that guessed `None` would hand a plan being retired
 ///   open-ended coverage it never had.
 /// * *"closed as `unwound`"* names a state this machine does not have and the
-///   design set does not declare: `05-governance.md` §7's list and its `state`
-///   column are `submitted | approved | rejected | voided`, which is exactly what
-///   `chk_pricing_approval_state` admits. Minting a fifth persisted-and-wire
+///   design set does not declare: `05-governance.md` §4's approval state machine
+///   and §6's `state` column are both `submitted | approved | rejected | voided`,
+///   which is exactly what `chk_pricing_approval_state` admits. Minting a fifth persisted-and-wire
 ///   token is what **D-204 clause (2)** refuses, on the same reading
 ///   `domain::retirement::strand_free_disposition` cites one surface over.
 ///
