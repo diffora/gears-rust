@@ -31,14 +31,18 @@ mod rest_support;
 
 use axum::http::StatusCode;
 use bss_pricing::api::rest::migrated_origin_snapshots::MIGRATED_ORIGIN_SNAPSHOT;
+use bss_pricing::domain::money::RateMinor;
 use bss_pricing::domain::money::{CurrencyCode, MinorAmount};
 use bss_pricing::domain::plan_shape::PeriodFloorCap;
+use bss_pricing::domain::price_row::TierBand;
 use bss_pricing::domain::scope_key::{PlanId, Region};
 use bss_pricing::domain::synthesis::SynthesisTrigger;
 use bss_pricing::infra::synthesis::{FrozenKey, SynthesisRequest};
 use chrono::{DateTime, TimeZone, Utc};
 use rest_support::{
-    Harness, body_json, request, seed_publishable_per_unit_plan, seed_publishable_plan, seed_stamp,
+    Harness, body_json, request, seed_publishable_manual_quantity_plan,
+    seed_publishable_per_unit_plan, seed_publishable_plan, seed_publishable_tiered_usage_plan,
+    seed_stamp,
 };
 use uuid::Uuid;
 
@@ -494,6 +498,28 @@ async fn the_frozen_payload_is_self_contained_and_says_it_has_no_catalog_version
         frozen.record.payload
     );
 
+    // **The positive controls for the band set and the S6 contract.** A `flat`
+    // row authors no bands, so its ladder is the **empty** one and not an absent
+    // member — the set is read on every row, so an empty array here means "this
+    // row has no bands" and nothing else. Teaching this builder about ladders
+    // and rewriting what it renders for an untiered row would look the same from
+    // here without this line.
+    assert_eq!(
+        rows[0]["bands"],
+        serde_json::json!([]),
+        "a flat row's ladder is empty and read, not absent and unread: {}",
+        frozen.record.payload
+    );
+    // The seed anchors on the calendar month, which carries no day; the
+    // `fixed_day` arm of the same matrix is
+    // `the_proration_contract_and_the_manual_quantity_reach_the_frozen_payload`.
+    assert_eq!(rows[0]["billingAnchorPolicy"], "calendar_month");
+    assert!(rows[0]["anchorDay"].is_null());
+    assert_eq!(rows[0]["prorationBasis"], "calendar_days_actual");
+    assert_eq!(rows[0]["creditOnDowngrade"], false);
+    assert!(rows[0]["quantitySource"].is_null());
+    assert!(rows[0]["manualQuantity"].is_null());
+
     // C-5's plan-level half, and the absence that is reported rather than hidden:
     // there is no entitlement grant store in this gear, so a consumer must not
     // read the empty set as "this plan grants nothing".
@@ -568,6 +594,209 @@ async fn a_per_unit_lines_rate_reaches_the_frozen_payload() {
         rows[0]["unitRateNanoMinor"], RATE_NANO_MINOR,
         "the rate is the line's only price and the payload is frozen: {}",
         frozen.record.payload
+    );
+    // The second positive control for the band set: `inst-mk-forbidden` refuses
+    // bands on a `per_unit` row — they would be a second, unreachable price — so
+    // the ladder here is empty for a reason the placement matrix states, and a
+    // builder that rendered a ladder on this row would be inventing one.
+    assert_eq!(
+        rows[0]["bands"],
+        serde_json::json!([]),
+        "bands are forbidden on a per_unit row: {}",
+        frozen.record.payload
+    );
+}
+
+/// The ladder the tiered fixture prices on, in D-311's nano-minor scale.
+///
+/// Descending, so no band trips `TIER_BAND_PRICE_INCREASE`'s advisory, and none
+/// of the three rates is a whole number of minor units: a payload that rendered
+/// the band rate through any minor-unit path would have to round, and these
+/// values make the rounding visible instead of plausible.
+fn seeded_bands() -> Vec<TierBand> {
+    let rate = |nano: i64| RateMinor::from_nano_minor(nano).expect("a non-negative rate");
+    vec![
+        TierBand::closed(0, 100, rate(40_500_000)),
+        TierBand::closed(100, 1_000, rate(25_250_000)),
+        TierBand::open(1_000, rate(10_125_000)),
+    ]
+}
+
+/// **A tiered line's band set reaches the frozen payload, and it is the only
+/// price it has.**
+///
+/// D-87 clause 1b names *"the ordered band set"* among the evaluable row content
+/// this payload materializes, and `infra::synthesis` rendered none of it: a band
+/// rate lives in `pricing_price_tier_band.unit_price_nano` and the builder read
+/// only `pricing_price`. This is D-323's defect one class wider — that one lost
+/// a `per_unit` row's rate, this one loses a `graduated` / `volume` row's whole
+/// ladder.
+///
+/// **Both scalar money columns are forbidden here, not merely absent.**
+/// `check_amount_placement` gives `graduated` `(wants_amount, wants_rate) =
+/// (false, false)` and refuses either column present — *"two priced columns are
+/// two competing prices"* — so there is no publishable row of this kind for
+/// which the old rendering could have produced a number anywhere. The two
+/// `is_null` assertions below are what say that: a case asserting only the bands
+/// would not have said the ladder is the line's whole price.
+///
+/// The bands are asserted **as authored**, whole and in `from_qty` order. The
+/// record is INSERT-only and resolves through no `CatalogVersion` (D-87), so
+/// this is not a value a later publish corrects.
+#[tokio::test]
+async fn a_tiered_lines_band_set_reaches_the_frozen_payload() {
+    let h = Harness::new().await;
+    let plan_id = Uuid::now_v7();
+    let seeded = seed_publishable_tiered_usage_plan(&h, plan_id, seeded_bands()).await;
+    h.publish(plan_id, seeded.revision).await;
+    h.publish_price(plan_id, seeded.price_id).await;
+
+    let frozen = h
+        .governance
+        .synthesis
+        .synthesize(
+            &h.scope(),
+            h.tenant,
+            synthesis_request(Uuid::now_v7(), plan_id, covered_at()),
+        )
+        .await
+        .expect("synthesize");
+
+    let rows = frozen.record.payload["rows"].as_array().expect("rows");
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["modelKind"], "graduated");
+    assert!(
+        rows[0]["amountMinor"].is_null() && rows[0]["unitRateNanoMinor"].is_null(),
+        "the placement matrix forbids both scalar money columns on a graduated row, so nothing \
+         else in this payload can be carrying the price: {}",
+        frozen.record.payload
+    );
+    assert_eq!(
+        rows[0]["bands"],
+        serde_json::json!([
+            { "fromQty": 0, "toQty": 100, "unitPriceNanoMinor": 40_500_000_i64 },
+            { "fromQty": 100, "toQty": 1_000, "unitPriceNanoMinor": 25_250_000_i64 },
+            { "fromQty": 1_000, "toQty": null, "unitPriceNanoMinor": 10_125_000_i64 },
+        ]),
+        "the ladder is the line's only price and the payload is frozen: {}",
+        frozen.record.payload
+    );
+}
+
+/// **The Slice-10 content columns reach the frozen payload** — the reservation
+/// pair, the typed floors, the discount hook and the level-aggregation hold.
+///
+/// Every one of them is a column read on every row of `pricing_price`, and every
+/// one was absent from a record that resolves through **no** `CatalogVersion`
+/// and is INSERT-only. `reservedRateMinor` is money by the same argument D-323
+/// made about the rate: `inst-rv-attrs` has Rating source the self-service
+/// reserved rate from the row, and on a `migrated-origin` line there is no other
+/// row to source it from.
+///
+/// The fixture authors all seven non-default, so a builder that dropped one
+/// renders a `null` here rather than leaving a hole that stays a hole.
+#[tokio::test]
+async fn the_slice_10_content_columns_reach_the_frozen_payload() {
+    let h = Harness::new().await;
+    let plan_id = Uuid::now_v7();
+    let seeded = seed_publishable_tiered_usage_plan(&h, plan_id, seeded_bands()).await;
+    h.publish(plan_id, seeded.revision).await;
+    h.publish_price(plan_id, seeded.price_id).await;
+
+    let frozen = h
+        .governance
+        .synthesis
+        .synthesize(
+            &h.scope(),
+            h.tenant,
+            synthesis_request(Uuid::now_v7(), plan_id, covered_at()),
+        )
+        .await
+        .expect("synthesize");
+
+    let row = &frozen.record.payload["rows"][0];
+    let payload = &frozen.record.payload;
+    assert_eq!(row["reservedRateMinor"], 3_100, "{payload}");
+    assert_eq!(row["reservationFlavor"], "capacity", "{payload}");
+    assert_eq!(row["minQtyPurchase"], 7, "{payload}");
+    assert_eq!(row["minQtyUsage"], 11, "{payload}");
+    assert_eq!(row["minQtyUsageFallback"], "exception", "{payload}");
+    assert_eq!(row["discountRef"], "promo/spring", "{payload}");
+    assert_eq!(row["maxHoldGranules"], 6, "{payload}");
+
+    // **No allowance marker, and that is the decision rather than an omission.**
+    // The marker is an artifact of the D-45 compile, and this payload renders the
+    // row as authored — `includedAllowance` is the declaration, and a marker
+    // beside it would be the first compiled artifact in a record that carries
+    // none.
+    assert!(
+        row.get("allowanceMarker").is_none(),
+        "the payload carries authored content only: {payload}"
+    );
+}
+
+/// **The S6 proration contract and the manual quantity reach the frozen
+/// payload.**
+///
+/// The builder's own comment at the site said *"the evaluation-policy and S6
+/// consumer-contract fields: a `migrated-origin` line is evaluated from this and
+/// nothing else"*, and of the S6 set only `billingTiming` had made it. The other
+/// four are what Subscriptions prorates from, and `inst-pi-credit-source` says
+/// in as many words that on a plan change the governing `creditOnDowngrade` is
+/// the source row's, *read from the subscriber's frozen snapshot* — which is
+/// this record.
+///
+/// `manualQuantity` is the other half of a `manual` row's arithmetic: the
+/// payload stated **where** the quantity comes from and never **what** it is,
+/// while `check_quantity_source` refuses to publish the row without it.
+#[tokio::test]
+async fn the_proration_contract_and_the_manual_quantity_reach_the_frozen_payload() {
+    const RATE_NANO_MINOR: i64 = 23_000_000;
+    const MANUAL_QUANTITY: u64 = 12;
+    const ANCHOR_DAY: u8 = 17;
+
+    let h = Harness::new().await;
+    let plan_id = Uuid::now_v7();
+    let seeded = seed_publishable_manual_quantity_plan(
+        &h,
+        plan_id,
+        RATE_NANO_MINOR,
+        MANUAL_QUANTITY,
+        ANCHOR_DAY,
+    )
+    .await;
+    h.publish(plan_id, seeded.revision).await;
+    h.publish_price(plan_id, seeded.price_id).await;
+
+    let frozen = h
+        .governance
+        .synthesis
+        .synthesize(
+            &h.scope(),
+            h.tenant,
+            synthesis_request(Uuid::now_v7(), plan_id, covered_at()),
+        )
+        .await
+        .expect("synthesize");
+
+    let row = &frozen.record.payload["rows"][0];
+    let payload = &frozen.record.payload;
+    assert_eq!(row["quantitySource"], "manual", "{payload}");
+    assert_eq!(
+        row["manualQuantity"], 12,
+        "a manual row's quantity is half its arithmetic and the rate is the other half: {payload}"
+    );
+    assert_eq!(row["billingAnchorPolicy"], "fixed_day", "{payload}");
+    assert_eq!(
+        row["anchorDay"], 17,
+        "the day is a second fact beside the policy token, and only fixed_day carries \
+         one: {payload}"
+    );
+    assert_eq!(row["prorationBasis"], "calendar_days_actual", "{payload}");
+    assert_eq!(
+        row["creditOnDowngrade"], true,
+        "authored true here against the flat seed's false, so the member is pinned to a value \
+         rather than to a default: {payload}"
     );
 }
 

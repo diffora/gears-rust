@@ -51,7 +51,11 @@
 //! D-87 plus C-5. Two halves, and the second is the one that was missing when the
 //! rule was first written:
 //!
-//! * **per resolved row** — the evaluable content, read off `pricing_price`;
+//! * **per resolved row** — the evaluable content, read off `pricing_price` and
+//!   `pricing_price_tier_band`. The band table is the second read and it is not
+//!   optional: `check_amount_placement` forbids **both** scalar money columns on
+//!   a `graduated` / `volume` row, so a payload built from `pricing_price` alone
+//!   priced those two kinds at nothing at all;
 //! * **plan-level** — the billing descriptor set and the resolved entitlement
 //!   grant set, without which the payload is row-complete and invoice-incomplete,
 //!   because Billing has no `CatalogVersion` to fall back to on a
@@ -75,7 +79,9 @@ use crate::domain::synthesis::{
     LiveCandidate, SelectedRow, SynthesisOutcome, UnresolvedKey, select_rows,
 };
 use crate::domain::window::WindowState;
-use crate::infra::storage::entity::{plan_descriptor_set, plan_period_floor_cap, price};
+use crate::infra::storage::entity::{
+    plan_descriptor_set, plan_period_floor_cap, price, price_tier_band,
+};
 use crate::infra::storage::repo::{plan_repo, price_repo, window_repo};
 use crate::infra::storage::{RepoError, repo_failure};
 
@@ -230,63 +236,32 @@ pub async fn materialize(
                 id: row.row_id.to_string(),
             })?;
 
-        rows.push(json!({
-            "rowId": row.row_id,
-            "source": row.tier.as_str(),
-            "currency": stored.currency,
-            "region": stored.region,
-            "phase": stored.phase,
-            "chargeKind": stored.charge_kind,
-            "modelKind": stored.model_kind,
-            "amountMinor": stored.amount_minor,
-            // **The `per_unit` row's money, and between D-311 and D-323 it was
-            // nowhere in this payload.** D-311 moved a `per_unit` rate out of
-            // `amount_minor` into its own column and measured its cost as
-            // references to `unit_price_minor`, the *band* rate; this builder
-            // reads `amount_minor` and touches no band, so it is in neither that
-            // list nor the staging, and went on rendering `amountMinor` alone.
-            //
-            // The absence is not conditional. `check_amount_placement` does not
-            // merely allow `amount_minor` to be NULL on a `per_unit` row, it
-            // **forbids** the column — "two priced columns are two competing
-            // prices" — so every synthesized `per_unit` line carried
-            // `"amountMinor": null` and no price at all, frozen INSERT-only into
-            // a record that resolves through no `CatalogVersion` and can never
-            // be corrected.
-            //
-            // **Rendered as authored**, unlike the read model's member of the
-            // same name: `projection::row_value` nulls it on an
-            // allowance-carrying row because the D-45 compile folds the rate into
-            // the top band, and this payload carries no compiled ladder at all
-            // (`inst-sy-payload` records that and leaves it open), so the same
-            // nulling would take the row's only price away a second time.
-            //
-            // No `*Unavailable` marker rides beside it, and the difference from
-            // `grantSetUnavailable` is the point: that marker reports a set this
-            // payload could not *read*, while this column is read on every row
-            // and `modelKind` — which is right above — says which member holds
-            // the price.
-            "unitRateNanoMinor": stored.unit_rate_nano,
-            "packageSize": stored.package_size,
-            "packagePriceMinor": stored.package_price_minor,
-            "meter": stored.meter,
-            "dimensionKey": stored.dimension_key,
-            // The evaluation-policy and S6 consumer-contract fields: a
-            // `migrated-origin` line is evaluated from this and nothing else.
-            "billingTiming": stored.billing_timing,
-            "quantitySource": stored.quantity_source,
-            "billingGranularity": stored.billing_granularity,
-            "aggregationFunction": stored.aggregation_function,
-            "aggregationGranularity": stored.aggregation_granularity,
-            "tierAggregationWindow": stored.tier_aggregation_window,
-            "tierQualificationWindow": stored.tier_qualification_window,
-            "includedAllowance": stored.included_allowance,
-            // Tax basis and the resolved rounding policy.
-            "taxInclusive": stored.tax_inclusive,
-            "taxCategoryRef": stored.tax_category_ref,
-            "resolvedTaxCategory": stored.resolved_tax_category,
-            "roundingPolicyRef": stored.rounding_policy_ref,
-        }));
+        // **The band set, and it is the whole price of the row that has one.**
+        // Read here by hand for the reason the descriptor set and the period
+        // bounds are: this payload resolves through no `CatalogVersion`, so a
+        // ladder outside it is one Billing can neither apply nor look up.
+        // Ascending by lower bound, which is `inst-tb-order`'s single read-side
+        // guarantee — the table carries no ordinal and authored order does not
+        // survive it, so the order has to come from the query.
+        let bands = price_tier_band::Entity::find()
+            .secure()
+            .scope_with(scope)
+            .filter(
+                Condition::all()
+                    .add(price_tier_band::Column::TenantId.eq(tenant_id))
+                    .add(price_tier_band::Column::PriceId.eq(row.row_id)),
+            )
+            .order_by(price_tier_band::Column::FromQty, Order::Asc)
+            .all(runner)
+            .await
+            .map_err(|e| {
+                repo_failure(&RepoError::Db(format!(
+                    "read the band set of price row {}: {e}",
+                    row.row_id
+                )))
+            })?;
+
+        rows.push(row_value(row, &stored, &bands));
     }
 
     Ok(json!({
@@ -298,6 +273,169 @@ pub async fn materialize(
         "catalogVersion": JsonValue::Null,
         "catalogVersionDeliberatelyAbsent": true,
     }))
+}
+
+/// One resolved row's evaluable content, **as authored**.
+///
+/// Split out of [`materialize`] so neither exceeds the line budget, and because
+/// the two do different jobs: that function decides *which* rows the payload
+/// carries and this one decides what a row *is*.
+///
+/// # Everything here is the stored column, and none of it is a compiled artifact
+///
+/// The rule this builder follows is the one D-323 set for the rate member and it
+/// now governs the whole row: the payload renders what the operator authored,
+/// and `projection::row_value`'s compiled members are deliberately not copied.
+/// The read model materializes the D-45 compile — a presented `graduated` kind,
+/// the `$0` band plus the offset ladder, a nulled rate and an `allowanceMarker`
+/// — because a published row resolves through a `CatalogVersion` that froze it.
+/// This record carries no compiled ladder at all, so copying the nulling would
+/// take a row's only price away, and adding the marker would put the *first*
+/// compiled artifact into a payload whose `includedAllowance` is the authored
+/// declaration beside it.
+fn row_value(
+    row: &SelectedRow,
+    stored: &price::Model,
+    bands: &[price_tier_band::Model],
+) -> JsonValue {
+    json!({
+        "rowId": row.row_id,
+        "source": row.tier.as_str(),
+        "currency": stored.currency,
+        "region": stored.region,
+        "phase": stored.phase,
+        "chargeKind": stored.charge_kind,
+        "modelKind": stored.model_kind,
+        "amountMinor": stored.amount_minor,
+        // **The `per_unit` row's money, and between D-311 and D-323 it was
+        // nowhere in this payload.** D-311 moved a `per_unit` rate out of
+        // `amount_minor` into its own column and measured its cost as
+        // references to `unit_price_minor`, the *band* rate; this builder
+        // reads `amount_minor` and touches no band, so it is in neither that
+        // list nor the staging, and went on rendering `amountMinor` alone.
+        //
+        // The absence is not conditional. `check_amount_placement` does not
+        // merely allow `amount_minor` to be NULL on a `per_unit` row, it
+        // **forbids** the column — "two priced columns are two competing
+        // prices" — so every synthesized `per_unit` line carried
+        // `"amountMinor": null` and no price at all, frozen INSERT-only into
+        // a record that resolves through no `CatalogVersion` and can never
+        // be corrected.
+        //
+        // **Rendered as authored**, unlike the read model's member of the
+        // same name: `projection::row_value` nulls it on an
+        // allowance-carrying row because the D-45 compile folds the rate into
+        // the top band, and this payload carries no **compiled** ladder — the
+        // `bands` member below is the authored set and this function's doc says
+        // why the compile stays out — so the same nulling would take the row's
+        // only price away a second time.
+        //
+        // No `*Unavailable` marker rides beside it, and the difference from
+        // `grantSetUnavailable` is the point: that marker reports a set this
+        // payload could not *read*, while this column is read on every row
+        // and `modelKind` — which is right above — says which member holds
+        // the price.
+        "unitRateNanoMinor": stored.unit_rate_nano,
+        // **The fourth priced member, and the one the placement matrix leaves as
+        // the whole price of two model kinds.** `check_amount_placement` gives
+        // `graduated` and `volume` `(wants_amount, wants_rate) = (false, false)`
+        // and *forbids* either column, so a synthesized tiered line carried
+        // `"amountMinor": null`, `"unitRateNanoMinor": null` and no ladder — no
+        // price at all, frozen INSERT-only into a record that resolves through
+        // no `CatalogVersion` and can never be corrected. Exactly D-323's defect
+        // one class wider.
+        //
+        // **The authored ladder, not the compiled one** — see this function's
+        // doc. `pricing_price_tier_band` holds authored bands only (D-130), so
+        // "as stored" and "as authored" are the same read here.
+        //
+        // Rendered on **every** row, empty where the kind authors none, and no
+        // `*Unavailable` marker beside it. That is `grantSetUnavailable`'s
+        // distinction applied: those markers report a set the payload could not
+        // *read*, and this one is read on every row. D-323 held its own marker
+        // argument open for exactly this member — on a tiered row `modelKind`
+        // pointed at a set the payload did not carry, so the absence was
+        // unreadable — and rendering the set is what closes it: an empty array
+        // beside `"modelKind": "flat"` says the row has no bands, which is what
+        // `inst-mk-forbidden` says too.
+        "bands": bands
+            .iter()
+            .map(|band| {
+                json!({
+                    "fromQty": band.from_qty,
+                    // `null` is the **open top** (D-17) — a state of the band
+                    // rather than an absent value, and the read model's
+                    // spelling of it.
+                    "toQty": band.to_qty,
+                    // D-311's scale and the read model's member name, so one
+                    // number has one name whichever door a consumer read it
+                    // through.
+                    "unitPriceNanoMinor": band.unit_price_nano,
+                })
+            })
+            .collect::<Vec<_>>(),
+        "packageSize": stored.package_size,
+        "packagePriceMinor": stored.package_price_minor,
+        "meter": stored.meter,
+        "dimensionKey": stored.dimension_key,
+        // The evaluation-policy and S6 consumer-contract fields: a
+        // `migrated-origin` line is evaluated from this and nothing else.
+        "billingTiming": stored.billing_timing,
+        "quantitySource": stored.quantity_source,
+        // **What the source says, beside where it comes from.**
+        // `check_quantity_source` does not merely permit `manual_quantity`
+        // beside a `manual` source, it *requires* it — "the fixed quantity is
+        // the whole of what `manual` supplies" — so the payload stated where a
+        // non-usage `per_unit` row's `Q` comes from and never what it is, and
+        // the rate D-323 restored had nothing to multiply.
+        "manualQuantity": stored.manual_quantity,
+        "billingGranularity": stored.billing_granularity,
+        "aggregationFunction": stored.aggregation_function,
+        "aggregationGranularity": stored.aggregation_granularity,
+        "tierAggregationWindow": stored.tier_aggregation_window,
+        "tierQualificationWindow": stored.tier_qualification_window,
+        // The hold bound a level fold reads (`inst-la-hold`); required on a
+        // non-`sum` row, so it is not an optional decoration there.
+        "maxHoldGranules": stored.max_hold_granules,
+        "includedAllowance": stored.included_allowance,
+        // **The rest of the S6 proration contract.** The comment above claimed
+        // this set and only `billingTiming` had made it. `inst-pi-required`
+        // makes all three mandatory on a recurring row precisely because
+        // Subscriptions prorates from the frozen values and the catalog
+        // substitutes no defaults; `inst-pi-credit-source` then reads
+        // `creditOnDowngrade` on a plan change "from the subscriber's frozen
+        // snapshot", which is this record and nothing else.
+        //
+        // `anchorDay` is the stored column rather than the read model's derived
+        // value: the pairing is structural — the domain enum carries the day
+        // inside the `fixed_day` variant and no other policy can hold one — so
+        // the column is already NULL under every policy that anchors without a
+        // day, and re-deriving it here would be a second answer to a question
+        // storage has already answered.
+        "billingAnchorPolicy": stored.billing_anchor_policy,
+        "anchorDay": stored.anchor_day,
+        "prorationBasis": stored.proration_basis,
+        "creditOnDowngrade": stored.credit_on_downgrade,
+        // The reservation pair (`inst-rv-attrs`). **Money**: Rating sources the
+        // self-service reserved rate from the row, and on a `migrated-origin`
+        // line there is no other row to source it from.
+        "reservedRateMinor": stored.reserved_rate_minor,
+        "reservationFlavor": stored.reservation_flavor,
+        // The typed floors and the discount hook, carried verbatim
+        // (`inst-ft-both`, `inst-dr-boundary`). Enforcement is downstream —
+        // Subscriptions at order time, Tariffs/Rating at eligibility, Promotions
+        // for the instrument — so a consumer that cannot read them here cannot
+        // enforce them at all.
+        "minQtyPurchase": stored.min_qty_purchase,
+        "minQtyUsage": stored.min_qty_usage,
+        "minQtyUsageFallback": stored.min_qty_usage_fallback,
+        "discountRef": stored.discount_ref,
+        // Tax basis and the resolved rounding policy.
+        "taxInclusive": stored.tax_inclusive,
+        "taxCategoryRef": stored.tax_category_ref,
+        "resolvedTaxCategory": stored.resolved_tax_category,
+        "roundingPolicyRef": stored.rounding_policy_ref,
+    })
 }
 
 /// C-5's plan-level half of the payload: the descriptor set and the grant set.

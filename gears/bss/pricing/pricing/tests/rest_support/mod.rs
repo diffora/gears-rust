@@ -40,7 +40,9 @@ use bss_pricing::api::rest::history::ApiState as HistoryState;
 use bss_pricing::api::rest::state::{AuthoringState, GovernanceState};
 use bss_pricing::config::LimitsConfig;
 use bss_pricing::domain::concurrency::RowVersion;
-use bss_pricing::domain::contracts::{BillingAnchorPolicy, ProrationBasis, ProrationContract};
+use bss_pricing::domain::contracts::{
+    AnchorDay, BillingAnchorPolicy, ProrationBasis, ProrationContract,
+};
 use bss_pricing::domain::lifecycle::LifecycleState;
 use bss_pricing::domain::money::CurrencyCode;
 use bss_pricing::domain::money::{MinorAmount, RateMinor};
@@ -52,9 +54,12 @@ use bss_pricing::domain::plan_shape::{
 use bss_pricing::domain::ports::metrics::PricingMetricsPort;
 use bss_pricing::domain::price_record::PriceContent as PriceContentAlias;
 use bss_pricing::domain::price_record::{PriceContent, PriceRecord};
-use bss_pricing::domain::price_row::{PriceRow, QuantitySource};
+use bss_pricing::domain::price_row::{
+    AggregationFunction, AggregationGranularity, BillingGranularity, MinQtyUsageFallback, PriceRow,
+    QuantitySource, ReservationFlavor, TierAggregationWindow, TierBand,
+};
 use bss_pricing::domain::scope_key::{
-    ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey,
+    ChargeKind, Cohort, DimensionKey, Meter, PhaseId, PlanId, PriceEligibility, Region, ScopeKey,
 };
 use bss_pricing::infra::approval::ApprovalService;
 use bss_pricing::infra::fixture_gate::FixtureGate;
@@ -2157,6 +2162,32 @@ pub async fn seed_publishable_shape(harness: &Harness, plan_id: Uuid) -> Publish
 /// §4.2 says authoring is allowed to be in. A publish suite needs the other
 /// state, and it is a different seed rather than a widened one.
 pub async fn seed_publishable_plan(harness: &Harness, plan_id: Uuid) -> Publishable {
+    seed_publishable_plan_with(
+        harness,
+        plan_id,
+        |plan, phase| publishable_scope_key(plan, phase, "eu"),
+        publishable_row(),
+    )
+    .await
+}
+
+/// [`seed_publishable_plan`] with the key and the content chosen by the caller.
+///
+/// The three seeds above and below it differ in **exactly** those two values and
+/// in nothing else: the plan shape, the descriptor set, the authoring actor and
+/// the coverage window `inst-wc-required` demands are the same facts every
+/// publishable fixture needs. A third and fourth copy of that body would each be
+/// free to drift from it, and a fixture whose window or descriptor set differs
+/// from the one the positive control uses cannot serve as its comparison.
+///
+/// The key is a closure rather than a value because the phase it names is
+/// created inside — a caller cannot build the key until this function has run.
+pub async fn seed_publishable_plan_with(
+    harness: &Harness,
+    plan_id: Uuid,
+    key_for: impl FnOnce(PlanId, PhaseId) -> ScopeKey,
+    content: PriceContentAlias,
+) -> Publishable {
     let plan = PlanId::new(plan_id);
     let scope = harness.scope();
     let shape = seed_publishable_shape(harness, plan_id).await;
@@ -2171,8 +2202,8 @@ pub async fn seed_publishable_plan(harness: &Harness, plan_id: Uuid) -> Publisha
             harness.tenant,
             NewPriceDraft {
                 price_id,
-                scope_key: publishable_scope_key(plan, phase, "eu"),
-                content: publishable_row(),
+                scope_key: key_for(plan, phase),
+                content,
                 created_by: SEED_ACTOR,
                 created_at_utc: at(10),
                 correlation_id: TEST_CORRELATION,
@@ -2232,41 +2263,72 @@ pub async fn seed_publishable_per_unit_plan(
     plan_id: Uuid,
     rate_nano_minor: i64,
 ) -> Publishable {
-    let plan = PlanId::new(plan_id);
-    let scope = harness.scope();
-    let shape = seed_publishable_shape(harness, plan_id).await;
-    let phase = shape.phase;
+    seed_publishable_plan_with(
+        harness,
+        plan_id,
+        |plan, phase| publishable_scope_key(plan, phase, "eu"),
+        publishable_per_unit_row(rate_nano_minor),
+    )
+    .await
+}
 
-    let price_id = Uuid::now_v7();
-    harness
-        .state
-        .prices
-        .create_draft(
-            &scope,
-            harness.tenant,
-            NewPriceDraft {
-                price_id,
-                scope_key: publishable_scope_key(plan, phase, "eu"),
-                content: publishable_per_unit_row(rate_nano_minor),
-                created_by: SEED_ACTOR,
-                created_at_utc: at(10),
-                correlation_id: TEST_CORRELATION,
-            },
-        )
-        .await
-        .expect("author the per_unit price row");
+/// [`seed_publishable_plan`]'s **tiered** sibling: a `usage` `graduated` row
+/// whose whole price is its band ladder.
+///
+/// `usage` and not `recurring`, and that is a rule rather than a taste:
+/// `inst-mk-chargekind` makes `flat` and `per_unit` the only non-usage kinds, so
+/// a recurring `graduated` row is unpublishable and a fixture built as one would
+/// have failed at the driver rather than at an assertion.
+///
+/// The row carries **every** Slice-10 content column the kind admits — the
+/// reservation pair, both typed floors and their fallback, the discount hook,
+/// the level-aggregation set and its hold bound. That is
+/// `sqlite_price_repo::graduated_content`'s discipline for its reason: a payload
+/// builder that dropped one column would otherwise leave a hole that stays a
+/// hole, and nothing here would read differently. It costs three extra
+/// conformance variants (`level_aggregation`, `supersession_continuity`,
+/// `reserved`), and the corpus registry opens all three for `graduated`.
+///
+/// It carries **no** proration contract and no `billingTiming`: both are
+/// `inst-pi-required` / `inst-bt-required` obligations of a *recurring* row, and
+/// the S6 members of the payload are read off the recurring fixtures instead.
+pub async fn seed_publishable_tiered_usage_plan(
+    harness: &Harness,
+    plan_id: Uuid,
+    bands: Vec<TierBand>,
+) -> Publishable {
+    seed_publishable_plan_with(
+        harness,
+        plan_id,
+        |plan, phase| publishable_usage_scope_key(plan, phase, "eu"),
+        publishable_tiered_usage_row(bands),
+    )
+    .await
+}
 
-    // `inst-wc-required`, and the interval every synthesis fixture reads against.
-    // [`seed_publishable_plan`]'s note applies verbatim.
-    let conn = harness.state.db.conn().expect("conn");
-    crate::common::schedule_coverage_window(&conn, &scope, harness.tenant, price_id, stamp()).await;
-
-    Publishable {
-        phase,
-        revision: shape.revision,
-        version: shape.version,
-        price_id,
-    }
+/// [`seed_publishable_plan`]'s `manual`-quantity sibling: a non-usage `per_unit`
+/// row whose quantity is authored on the row, under a `fixed_day` anchor.
+///
+/// Two facts in one fixture because one row is the only place they can both
+/// stand: `quantitySource = manual` is authorable on a **non-usage** `per_unit`
+/// row and nowhere else (`inst-mk-forbidden`), and `anchorDay` is a number only
+/// under `fixed_day` — under `calendar_month`, which every other publishable
+/// seed uses, the column is NULL and an assertion on it would pass against a
+/// payload that never rendered the member at all.
+pub async fn seed_publishable_manual_quantity_plan(
+    harness: &Harness,
+    plan_id: Uuid,
+    rate_nano_minor: i64,
+    manual_quantity: u64,
+    anchor_day: u8,
+) -> Publishable {
+    seed_publishable_plan_with(
+        harness,
+        plan_id,
+        |plan, phase| publishable_scope_key(plan, phase, "eu"),
+        publishable_manual_quantity_row(rate_nano_minor, manual_quantity, anchor_day),
+    )
+    .await
 }
 
 /// A flat recurring row that passes the Slice-3 rule set.
@@ -2317,6 +2379,104 @@ pub fn publishable_per_unit_row(rate_nano_minor: i64) -> PriceContentAlias {
     let mut content = publishable_row();
     content.row = row;
     content
+}
+
+/// [`publishable_row`]'s **tiered** sibling: the money is the band ladder, and
+/// both scalar money columns are left NULL because
+/// `inst-mk-required`'s placement matrix forbids **both** on a `graduated` row.
+///
+/// That is what makes this fixture worth having: on a `flat` row the amount is a
+/// price beside the bands, and on a `per_unit` row the rate is; here there is no
+/// third column a payload could be carrying the price in, so a rendering that
+/// omits the ladder omits the whole price.
+///
+/// `aggregationFunction = time_weighted` makes it a **level** row, which is what
+/// obliges `maxHoldGranules` (`inst-la-hold`) and what makes
+/// `reservationFlavor = capacity` the only legal flavor here (D-53).
+#[must_use]
+pub fn publishable_tiered_usage_row(bands: Vec<TierBand>) -> PriceContentAlias {
+    let mut row = PriceRow::new(ChargeKind::Usage, Some(ModelKind::Graduated));
+    row.bands = bands;
+    row.meter = Some(USAGE_METER.to_owned());
+    row.billing_granularity = Some(BillingGranularity::PerHour);
+    row.tier_aggregation_window = Some(TierAggregationWindow::CalendarMonth);
+    row.aggregation_function = Some(AggregationFunction::TimeWeighted);
+    row.aggregation_granularity = Some(AggregationGranularity::Hour);
+    row.max_hold_granules = Some(6);
+    row.reserved_rate_minor = Some(MinorAmount::new(3_100).expect("a non-negative amount"));
+    row.reservation_flavor = Some(ReservationFlavor::Capacity);
+    row.min_qty_purchase = Some(7);
+    row.min_qty_usage = Some(11);
+    row.min_qty_usage_fallback = Some(MinQtyUsageFallback::Exception);
+    row.discount_ref = Some("promo/spring".to_owned());
+    PriceContentAlias {
+        row,
+        tax_inclusive: false,
+        tax_category_ref: None,
+        // Both absent by rule rather than by omission: `inst-bt-required` and
+        // `inst-pi-required` oblige a **recurring** row, and `inst-bt-usage`
+        // makes a usage line's timing a constant the author never gives.
+        billing_timing: None,
+        proration_contract: None,
+        rounding_policy_ref: Some("half_up".to_owned()),
+        grandfather_until: None,
+        supersedes_price_id: None,
+    }
+}
+
+/// [`publishable_per_unit_row`]'s `manual` sibling, under a `fixed_day` anchor.
+///
+/// `manual_quantity` is what `check_quantity_source` requires beside
+/// `quantitySource = manual` — *"the fixed quantity is the whole of what
+/// `manual` supplies"* — so on this row it is half the arithmetic: the rate is
+/// the multiplier and this is the multiplicand.
+///
+/// `creditOnDowngrade` is `true` here against the flat seed's `false`, so the
+/// member is pinned to a value rather than to whatever a builder might default
+/// to. It pairs with a basis that can compute the credit, which is what
+/// `inst-pi-credit-none` requires of the pair.
+#[must_use]
+pub fn publishable_manual_quantity_row(
+    rate_nano_minor: i64,
+    manual_quantity: u64,
+    anchor_day: u8,
+) -> PriceContentAlias {
+    let mut content = publishable_per_unit_row(rate_nano_minor);
+    content.row.quantity_source = Some(QuantitySource::Manual);
+    content.row.manual_quantity = Some(manual_quantity);
+    content.proration_contract = Some(ProrationContract {
+        billing_anchor_policy: BillingAnchorPolicy::FixedDay(
+            AnchorDay::new(anchor_day).expect("a day of the month"),
+        ),
+        proration_basis: ProrationBasis::CalendarDaysActual,
+        credit_on_downgrade: true,
+    });
+    content
+}
+
+/// The meter a publishable usage row prices.
+pub const USAGE_METER: &str = "api_calls";
+
+/// [`publishable_scope_key`]'s usage sibling — the same market, on the usage
+/// component of the charge-kind axis, with the `(meter, dimensionKey)` line a
+/// usage row is keyed by.
+#[must_use]
+pub fn publishable_usage_scope_key(plan_id: PlanId, phase: PhaseId, region: &str) -> ScopeKey {
+    ScopeKey::new(
+        plan_id,
+        CurrencyCode::new("EUR").expect("three letters"),
+        Region::new(region).expect("a non-blank region"),
+        phase,
+        PriceEligibility::AllSubscriptions,
+        ChargeKind::Usage,
+        Cohort::None,
+    )
+    .expect("the class pairs with cohort none")
+    .with_usage_line(
+        Some(Meter::new(USAGE_METER).expect("a non-blank meter")),
+        DimensionKey::none(),
+    )
+    .expect("a usage line names its meter")
 }
 
 /// The canonical scope key a publishable row sits on.
