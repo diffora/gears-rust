@@ -50,33 +50,50 @@
 //! reason for a constant: the first threshold a tenant ever sets goes through this
 //! very workflow.
 //!
-//! **The `AutoPublishable` arm below is still unreachable from this route, and the
-//! reason is the D-88 supersession unit rather than the policy.** With a configured
-//! policy, a plan-revision change set is one of exactly two things, because this
-//! route authors through the **authoring** door and
-//! `price_repo::insert_prepared` refuses a draft row on a key `find_key_occupant`
-//! finds occupied — *"this is not the way to reprice an occupied key. That is the
-//! D-88 supersession unit"*. D-88's row half, its compose and its cross-plane
-//! commit are all built (`price_repo::insert_successor_draft_on` D-195,
-//! `domain::supersession`, `infra::supersession`); its orchestrator, approval unit
-//! and route are not, so nothing yet stages a moved row for this route to judge
-//! (enumeration corrected 2026-08-05 — it read "the unit around it is not" for a day
-//! after two thirds of the unit had landed):
-//!
-//! And the successor a staged supersession *does* leave on the plane is not this
-//! route's to publish: `validated_draft_rows` excludes a draft whose key already
-//! carries a published row, for the reason its own doc gives.
+//! **The `AutoPublishable` arm below is unreachable from this route, and the reason
+//! is what this unit may author rather than the policy.** With a configured policy,
+//! this unit's change set is one of exactly two things, because the route authors
+//! through the **authoring** door and `price_repo::insert_prepared` refuses a draft
+//! row on a key `find_key_occupant` finds occupied — *"this is not the way to
+//! reprice an occupied key. That is the D-88 supersession unit"*:
 //!
 //! * it carries a **draft** row, whose key therefore holds no published row, so
 //!   `inst-mat-newrow` answers `rowWithoutBaseline` at step 3a; or
 //! * it carries **no** draft row, so every row is published and unchanged, and
 //!   D-115's pure-shape clause answers `alwaysMaterialTrigger`.
 //!
-//! So the threshold **comparison** — the row walk against a configured entry — has no
-//! authorable subject on this path, and the arm below is written rather than
-//! `unreachable!()` for that reason. It is reached from `infra::window`, whose change
-//! sets are the published rows unchanged, and there always with a delta of zero. The
-//! register entry that closes this is owed, not minted here.
+//! So a plan revision can **add** a price row and change the plan's shape, and can
+//! never **edit** a price; the threshold comparison has no authorable subject here.
+//!
+//! # That argument was true, then load-bearing, then false, and the arm was reached
+//!
+//! This section used to close the same two bullets with *"D-88's orchestrator,
+//! approval unit and route are not [built], so nothing yet stages a moved row for
+//! this route to judge"*, and then — two paragraphs on, without noticing the
+//! collision — *"the successor a staged supersession does leave on the plane is not
+//! this route's to publish: `validated_draft_rows` excludes it"*. Both halves were
+//! written; only the second was true. `infra::supersession` and
+//! `api::rest::supersessions` are built and merged, a material supersession stages
+//! its successor as a `draft` on an occupied key and leaves it there until a
+//! reviewer decides it, and `infra::publish::assemble` loads it — *"`shape.rows`
+//! keeps carrying it, so every completeness and uniformity rule still sees the key
+//! covered"*.
+//!
+//! Excluded from the **publish** and handed to the **evaluator**, that row is a
+//! moved row on a plan-revision change set, which is the one shape
+//! `triggers::triggered_by_content`'s `moves_no_row` cannot see through. Measured
+//! through this router: a plan whose revision authored nothing but a D-319 period
+//! floor at €500 published `AutoPublishable`, `approval: null`, `published_price_ids:
+//! []` — a per-period minimum reaching consumers approver-free on a revision that
+//! published no row at all. `materiality_of` now reads
+//! `infra::publish::unit_row_set`, the set `validated_draft_rows` commits, so the
+//! evaluator and the commit range over one row set and the two bullets above are
+//! exhaustive again.
+//!
+//! The arm below is therefore written rather than `unreachable!()`: what makes it
+//! reachable is a **third** door onto an occupied key, and this crate has now grown
+//! two. It is reached from `infra::window`, whose change sets are the published rows
+//! unchanged, and there always with a delta of zero.
 //!
 //! # The approve→commit window is closed **inside the commit**, not here
 //!
@@ -396,11 +413,23 @@ async fn publish_plan(
         return Ok(submitted(&opened, &verdict));
     }
 
-    // Still unreachable from this route, and the module doc has the corrected
-    // reason: with a configured policy every authorable revision is material either
-    // as `rowWithoutBaseline` or as the pure-shape trigger, because repricing an
-    // occupied key needs the D-88 unit. Written rather than panicked, because what
-    // makes it reachable is a group that builds that unit.
+    // Unreachable from this route, and the reason has been re-measured rather than
+    // re-asserted. With a configured policy every authorable revision is material
+    // either as `rowWithoutBaseline` — `create_draft` refuses a draft on an occupied
+    // key, so a revision can add a row and never edit one — or as the pure-shape
+    // trigger, because a revision that adds no row moves no row.
+    //
+    // **That sentence was false for eleven days and this arm was reached.** Its
+    // clause "repricing an occupied key needs the D-88 unit" stayed true; what
+    // changed is that the unit arrived (`inst-su-api`, D-195), and it stages its
+    // successor as a *draft on an occupied key* that sits in the plan's candidate
+    // set until a reviewer decides it. Handed that row, the evaluator saw a moved
+    // row on a plan-revision change set and answered `AutoPublishable`. The change
+    // set is now `unit_row_set` — this unit's rows — so the row belongs to the act
+    // that staged it and the sentence above is true again;
+    // `rest_publish::a_period_bound_published_beside_a_staged_successor_is_still_judged`
+    // is what holds it. Written rather than panicked, because a third door onto an
+    // occupied key would reach here rather than crash.
     let receipt = state
         .publish
         .commit(
@@ -539,6 +568,29 @@ async fn assemble_subject(
 /// [`ChangeSet::of_records`](crate::domain::materiality::ChangeSet::of_records);
 /// what is registered about a revision is decided from its content, by
 /// `triggers::triggered_by_content`.
+///
+/// # The change set is **this unit's** rows, and it used to be the plan's
+///
+/// `infra::publish::unit_row_set` — the set
+/// [`validated_draft_rows`](crate::infra::publish) commits — rather than
+/// `shape.rows`, and the two differ by exactly one thing: a draft row on a key a
+/// `published` row already holds, which since D-195 is a **supersession successor
+/// another unit staged**. Handing that row to the evaluator was not a rounding
+/// error. It is a row whose content *moved* against the baseline, and it is the
+/// only way a plan-revision change set can hold one — `create_draft` refuses an
+/// occupied key, so this unit can add rows and change shape and can never edit a
+/// price. With one in the set, `triggers::triggered_by_content`'s `moves_no_row`
+/// answers `false`, D-115's whole-revision trigger never fires, and a revision
+/// whose entire content is plan shape — a D-319 period floor at €500 a period —
+/// evaluated `AutoPublishable` and published with no second principal. Measured
+/// through this route before the fix; held by
+/// `rest_publish::a_period_bound_published_beside_a_staged_successor_is_still_judged`
+/// after it.
+///
+/// It is also the right set for a reason that has nothing to do with that hole:
+/// the verdict is **stored** and a `thresholdReached` unit names the row that
+/// tripped, so a plan-revision unit built from the plan's rows could put a
+/// `FinanceReviewer` in front of a `price_id` this commit will not touch.
 async fn materiality_of(
     state: &GovernanceState,
     scope: &AccessScope,
@@ -547,7 +599,11 @@ async fn materiality_of(
     shape: &PlanShape,
     now: DateTime<Utc>,
 ) -> Result<MaterialityVerdict, CanonicalError> {
-    let change = ChangeSet::of_records(shape.rows.iter().cloned());
+    let change = ChangeSet::of_records(
+        crate::infra::publish::unit_row_set(shape)
+            .into_iter()
+            .cloned(),
+    );
     let baseline = if shape.baseline.is_none() {
         None
     } else {

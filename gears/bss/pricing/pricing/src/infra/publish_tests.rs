@@ -218,6 +218,77 @@ fn a_draft_on_a_key_a_published_row_already_holds_is_not_this_units_to_publish()
     assert_eq!(validated.len(), 1);
 }
 
+/// **And it is not this unit's row to be judged on, either** — the instrument that
+/// keeps the evaluator's row set and the commit's from drifting apart.
+///
+/// The case above states the entitlement rule for the *commit*, and for eleven days
+/// that was where the sentence stopped: `api::rest::publish::materiality_of` built
+/// its change set from `shape.rows` whole. The consequence is the one thing this
+/// crate could not otherwise produce — a **moved** row on a plan-revision change set.
+/// `create_draft` refuses an occupied key, so a revision can add a price row and can
+/// never edit one; the staged successor is the single exception, and with it in the
+/// set `triggers::triggered_by_content`'s `moves_no_row` answers `false` and D-115's
+/// whole-revision trigger never fires. A revision whose entire content was a D-319
+/// period floor then published `AutoPublishable` through the real router.
+///
+/// So the assertion is **equality of the two sets' draft halves**, not two
+/// independent lists: a later reader who narrows one must narrow the other or this
+/// reddens.
+///
+/// The **positive control** is `ordinary`. Without it this case would pass against a
+/// `unit_row_set` that returned nothing at all, which is the same fail-closed-looking
+/// mistake in the opposite direction: an evaluator handed an empty change set answers
+/// the pure-shape trigger for every publish and stops distinguishing anything.
+#[test]
+fn the_evaluators_row_set_is_the_set_the_commit_publishes() {
+    let occupied = key(PriceEligibility::AllSubscriptions);
+    let free = key(PriceEligibility::NewSubscriptionsOnly);
+
+    let predecessor = row(0x_c1, &occupied, LifecycleState::Published);
+    let successor = row(0x_c2, &occupied, LifecycleState::Draft);
+    let ordinary = row(0x_c3, &free, LifecycleState::Draft);
+
+    let mut shape = PlanShape::new(PlanId::new(Uuid::from_u128(0x_9f)), 1, now());
+    shape.rows = vec![predecessor.clone(), successor.clone(), ordinary.clone()];
+
+    let judged = super::unit_row_set(&shape);
+    let judged_ids: Vec<Uuid> = judged.iter().map(|record| record.price_id).collect();
+
+    assert!(
+        judged_ids.contains(&predecessor.price_id),
+        "the published plane is what the deltas are taken against and stays in the set"
+    );
+    assert!(
+        judged_ids.contains(&ordinary.price_id),
+        "the revision's own draft row is this act's to publish and this act's to be \
+         judged on"
+    );
+    assert!(
+        !judged_ids.contains(&successor.price_id),
+        "the successor another unit staged is neither: judged here it is a moved row on \
+         a plan-revision change set, which is the one shape `moves_no_row` cannot see \
+         through"
+    );
+
+    // Equality of the draft halves, stated as one assertion rather than as two lists
+    // that happen to agree today.
+    let mut judged_drafts: Vec<Uuid> = judged
+        .iter()
+        .filter(|record| record.lifecycle_state == LifecycleState::Draft)
+        .map(|record| record.price_id)
+        .collect();
+    let mut committed: Vec<Uuid> = super::validated_draft_rows(&shape)
+        .into_iter()
+        .map(|(price_id, _)| price_id)
+        .collect();
+    judged_drafts.sort_unstable();
+    committed.sort_unstable();
+    assert_eq!(
+        judged_drafts, committed,
+        "the rows this unit is judged on and the rows it publishes are one set"
+    );
+}
+
 /// One key per eligibility class, so two rows can be made to share a key or not.
 fn key(class: PriceEligibility) -> ScopeKey {
     ScopeKey::new(

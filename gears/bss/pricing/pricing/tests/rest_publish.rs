@@ -1021,11 +1021,16 @@ async fn the_publish_record_and_its_outbox_row_carry_one_correlation() {
 /// tenant has a policy, and step 2 answered because the plan has never published.
 ///
 /// **It does not become `AutoPublishable`, and that is not this test's failure.** Every
-/// authorable plan-revision change set is material for a rule above the threshold
-/// comparison — `insert_prepared` refuses a draft row on an occupied key, so repricing
-/// one needs the D-88 supersession unit that does not exist. The module doc carries that
-/// argument; what is asserted here is that the policy is *read*, which nothing weaker
-/// than a change of reason can distinguish from a policy being ignored.
+/// change set this unit may author is material for a rule above the threshold
+/// comparison — `insert_prepared` refuses a draft row on an occupied key, so a revision
+/// can add a price row and never edit one. The clause that used to close this sentence,
+/// *"so repricing one needs the D-88 supersession unit that does not exist"*, was false:
+/// that unit exists and is mounted, it stages a moved row on the plan's plane, and until
+/// `materiality_of` narrowed to `unit_row_set` this route reached the `AutoPublishable`
+/// arm through it — see
+/// [`a_period_bound_published_beside_a_staged_successor_is_still_judged`]. What is
+/// asserted *here* is that the policy is *read*, which nothing weaker than a change of
+/// reason can distinguish from a policy being ignored.
 #[tokio::test]
 async fn a_configured_threshold_policy_changes_the_stored_materiality_reason() {
     let h = Harness::new().await;
@@ -1105,5 +1110,241 @@ async fn a_threshold_policy_whose_start_is_ahead_does_not_govern_todays_publish(
     assert_eq!(
         unit.materiality["reason"], "noConfiguredThreshold",
         "and the stored verdict says so too, which is what an auditor reads"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The `AutoPublishable` arm, and the one act that could reach it (D-200, D-319).
+// ---------------------------------------------------------------------------
+
+/// Publish `plan_id`, publish its one row, then submit a supersession that is
+/// **material for the fail-safe** so it stages its successor as a `draft` on the
+/// occupied key instead of committing it.
+///
+/// The supersession has to be submitted **before** any threshold policy is approved.
+/// An auto-publishable supersession commits on one call and leaves nothing on the
+/// plane — `rest_supersessions::an_auto_publishable_supersession_commits_on_one_call_and_says_so`
+/// — and a staged row is the entire subject of both cases below.
+///
+/// Answers `(the staged successor's price id, the supersession unit's id)`.
+async fn a_plan_with_a_staged_successor(h: &Harness, plan_id: Uuid) -> (String, Uuid) {
+    let seeded = seed_publishable_plan(h, plan_id).await;
+    h.publish(plan_id, seeded.revision).await;
+    h.publish_price(plan_id, seeded.price_id).await;
+
+    let staged = body_json(
+        h.allowed_as(SUBMITTER)
+            .send(rest_support::request(
+                "POST",
+                &format!("/bss-pricing/v1/plans/{plan_id}/supersessions"),
+                Some(serde_json::json!({
+                    "predecessor_price_id": seeded.price_id.to_string(),
+                    "changeover": "2099-08-20T00:00:00Z",
+                    "successor": {
+                        "model_kind": "flat",
+                        // 9 900 published, so a 200-minor move — under every bar
+                        // these cases configure.
+                        "amount_minor": 10_100,
+                        "billing_timing": "advance",
+                        "billing_anchor_policy": "calendar_month",
+                        "proration_basis": "calendar_days_actual",
+                        "credit_on_downgrade": false,
+                        "rounding_policy_ref": "half_up"
+                    },
+                    "reason_code": "repricing"
+                })),
+            ))
+            .await,
+    )
+    .await;
+    assert_eq!(
+        staged["outcome"], "submitted_for_approval",
+        "the successor has to be *staged* and not committed for either case to have a \
+         subject: {staged}"
+    );
+    let successor_id = staged["successor_price_id"]
+        .as_str()
+        .expect("the staged successor's id")
+        .to_owned();
+    let unit: Uuid = staged["approval"]["approval_id"]
+        .as_str()
+        .expect("the supersession's unit id")
+        .parse()
+        .expect("a uuid");
+    (successor_id, unit)
+}
+
+/// Author a €500-per-period minimum on the plan's own market and answer the tag the
+/// publish needs. The `PATCH` opens the successor revision, so this **is** the
+/// revision under test and its whole content is D-319's bound.
+async fn a_revision_carrying_only_a_period_floor(h: &Harness, plan_id: Uuid) -> String {
+    let etag = h.plan_etag(plan_id).await;
+    let patched = body_json(
+        h.allowed_as(SUBMITTER)
+            .send(with_headers(
+                "PATCH",
+                &format!("/bss-pricing/v1/plans/{plan_id}"),
+                Some(serde_json::json!({
+                    "period_floor_caps": [
+                        { "currency": "EUR", "region": "eu", "floor_minor": 50_000 }
+                    ]
+                })),
+                &[("if-match", &etag)],
+            ))
+            .await,
+    )
+    .await;
+    format!(
+        "\"{}-{}\"",
+        patched["revision"]
+            .as_u64()
+            .expect("the successor revision"),
+        patched["row_version"].as_u64().expect("its version")
+    )
+}
+
+/// **A plan revision whose whole content is a D-319 period floor is judged, and
+/// before this it published on one principal.**
+///
+/// This is D-200's *wide-open* window, in its own words: the supersession unit is
+/// rejected, *"the register releases the key and the staged draft survives"*. So no
+/// pending unit holds anything, the plan is free to publish, and the only thing on
+/// the plane that is not the published plan is a `draft` row belonging to nobody's
+/// open act.
+///
+/// Measured through this router at `d38359132`, before `materiality_of` narrowed to
+/// `infra::publish::unit_row_set`: `200 OK`, `outcome: "published"`, `approval:
+/// null`, `materiality.material: false`, `published_price_ids: []`. A
+/// €500-per-period minimum reached consumers on one principal, on a revision that
+/// published no price row at all.
+///
+/// # Why the world has to be built exactly this way
+///
+/// Every step is load-bearing and each one is a guard that would otherwise answer
+/// first:
+///
+/// 1. **The plan publishes first**, so `inst-mat-first` is spent and the revision
+///    under test has a baseline. Without it the answer is `firstPublish`.
+/// 2. **The supersession is submitted with no policy configured**, so it is material
+///    for `noConfiguredThreshold` and stages rather than commits.
+/// 3. **It is then rejected**, which frees the key `refuse_held_key` would otherwise
+///    refuse the plan-revision submit on — the guard that made D-200 call the window
+///    narrow, and the one the next case shows the auto-publish arm walked past.
+/// 4. **The policy's bar is above the staged move** (200 minor against 1 000 000), so
+///    nothing about that row is material on its own. A bar under it would answer
+///    `thresholdReached` and this case would pass against the unfixed code for a
+///    reason that has nothing to do with the plan's shape.
+///
+/// Only then is the plan's shape the sole thing that changed, which is what makes
+/// `alwaysMaterialTrigger` here mean *D-115's whole-revision clause fired*.
+///
+/// # What it holds, and what it does not
+///
+/// It holds the **caller**: the evaluator's change set is this unit's rows. It does
+/// not hold the **predicate** — `triggers::triggered_by_content` still answers `None`
+/// for any plan-content change set carrying a moved row, and
+/// `domain::materiality_tests::a_revision_that_moves_a_row_reaches_no_shape_trigger_however_its_shape_moved`
+/// is where that limit is written down with the operand it would need.
+#[tokio::test]
+async fn a_period_bound_published_beside_an_orphaned_successor_is_still_judged() {
+    let h = Harness::new().await;
+    let plan_id = Uuid::now_v7();
+    let (successor_id, unit) = a_plan_with_a_staged_successor(&h, plan_id).await;
+
+    // (3) The unit goes away and its row does not — D-198's orphan, which is the
+    // state D-200 calls wide open.
+    reject_through_the_route(&h, unit).await;
+    // (4) A bar the staged move is under.
+    rest_support::approve_threshold_policy(&h, &[("EUR", 1_000_000)]).await;
+
+    let tag = a_revision_carrying_only_a_period_floor(&h, plan_id).await;
+    let response = publish_as(&h, SUBMITTER, plan_id, &tag).await;
+
+    assert_eq!(
+        response.status(),
+        axum::http::StatusCode::ACCEPTED,
+        "a revision carrying a per-period minimum needs a second principal"
+    );
+    let body = body_json(response).await;
+    assert_eq!(
+        body["outcome"], "submitted_for_approval",
+        "and it was 200 `published` before the change set was narrowed: {body}"
+    );
+    assert_eq!(
+        body["materiality"]["material"], true,
+        "the pre-fix answer here was `false`: {body}"
+    );
+    assert_eq!(
+        body["materiality"]["reason"], "alwaysMaterialTrigger",
+        "D-115's whole-revision clause, which is what the bound is registered under: {body}"
+    );
+    assert_eq!(
+        body["receipt"],
+        serde_json::Value::Null,
+        "nothing was frozen: {body}"
+    );
+
+    // **The control that the narrowing removed a judgement and not a row.** The
+    // orphaned successor is still on the plane and still `draft`: excluding it from
+    // the verdict must not exclude it from existing, or this case would be passing
+    // because the fixture had quietly lost its subject.
+    let rows = price_rows(&h, plan_id).await;
+    let successor = rows
+        .iter()
+        .find(|record| record.price_id.to_string() == successor_id)
+        .unwrap_or_else(|| panic!("the staged successor is still on the plane: {rows:?}"));
+    assert_eq!(successor.lifecycle_state, LifecycleState::Draft);
+}
+
+/// **And while that supersession is still under review, the publish is refused —
+/// which is the guard the auto-publishable arm used to walk straight past.**
+///
+/// D-200 called its own window narrow because *"`refuse_held_key` then refuses the
+/// plan-revision submit outright"* while the supersession unit is `submitted`. It
+/// does; the flaw is in the word **submit**. `publish_plan` calls
+/// `ApprovalService::submit` only on the arm where the verdict is material, and the
+/// arm the staged row created is the other one — it goes straight to `commit`, which
+/// asks nothing about held keys. So the very row that made the verdict
+/// `AutoPublishable` also carried the publish around the guard that was supposed to
+/// make its window narrow, and the measured answer here at `d38359132` was `200 OK`
+/// `published` rather than `409`.
+///
+/// This is the pair to the case above and not a duplicate of it: that one asserts
+/// what the verdict *is* when nothing blocks the publish, this one asserts that the
+/// block is reached at all. A fix that only moved the verdict would leave this at
+/// 200.
+#[tokio::test]
+async fn a_publish_beside_a_pending_supersession_reaches_the_held_key_guard() {
+    let h = Harness::new().await;
+    let plan_id = Uuid::now_v7();
+    let (_successor_id, _unit) = a_plan_with_a_staged_successor(&h, plan_id).await;
+    rest_support::approve_threshold_policy(&h, &[("EUR", 1_000_000)]).await;
+
+    let tag = a_revision_carrying_only_a_period_floor(&h, plan_id).await;
+    let response = publish_as(&h, SUBMITTER, plan_id, &tag).await;
+
+    assert_eq!(
+        response.status(),
+        axum::http::StatusCode::CONFLICT,
+        "a key another unit is reviewing is not this revision's to publish over"
+    );
+    assert_eq!(
+        problem_code(response).await,
+        "PENDING_CHANGE_UNIT_EXISTS",
+        "and by name, because the operator's next action is to decide or withdraw that unit"
+    );
+
+    // Nothing was frozen and nothing was opened: the refusal is ahead of both.
+    assert_eq!(
+        plan_state(&h, plan_id, 1).await.as_deref(),
+        Some("draft"),
+        "the revision carrying the bound is still a draft"
+    );
+    assert!(
+        approval_rows(&h)
+            .await
+            .into_iter()
+            .all(|row| row.subject_kind != "plan_revision"),
+        "and no plan-revision unit was opened either"
     );
 }

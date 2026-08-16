@@ -791,6 +791,77 @@ impl PublishService {
 /// `IMPORT_TARGETS_PUBLISHED` per row on the bulk plane) — which is why no existing
 /// case moves.
 fn validated_draft_rows(shape: &PlanShape) -> Vec<(Uuid, RowVersion)> {
+    unit_row_set(shape)
+        .into_iter()
+        .filter(|record| record.lifecycle_state == LifecycleState::Draft)
+        .map(|record| (record.price_id, record.row_version))
+        .collect()
+}
+
+/// The candidate rows **this** publish unit owns — `shape.rows` less the drafts
+/// another unit staged.
+///
+/// [`validated_draft_rows`]' occupancy argument, hoisted so it has one owner and
+/// two readers. The other reader is `api::rest::publish`'s materiality evaluation,
+/// and the reason it must be the same set is the sentence
+/// [`validated_draft_rows`] already makes about entitlement: a draft row whose
+/// canonical scope key already carries a `published` row was staged by
+/// `price_repo::insert_successor_draft_on` for the D-88 supersession unit, and a
+/// row this act will not publish is not a row this act needs a second principal
+/// for.
+///
+/// **Measured, not feared.** Until this was shared, `materiality::evaluate` was
+/// handed `shape.rows` whole, so a supersession staged and awaiting its reviewer
+/// put a *moved* row into a plan-revision change set — the one shape
+/// `triggered_by_content`'s `moves_no_row` cannot see through. A plan revision
+/// carrying a D-319 period floor and nothing else then evaluated
+/// `AutoPublishable` and published a €500-per-period minimum with no second
+/// principal, through the real router (`rest_publish::
+/// a_period_bound_published_beside_a_staged_successor_is_still_judged`). Three
+/// accounts in this crate said that arm was unreachable; the clause they rested
+/// on — *"repricing an occupied key needs the D-88 unit"* — was true and stopped
+/// being sufficient when D-195 gave that unit a second door and `inst-su-api` gave
+/// it a route.
+///
+/// The rows are returned **whole** rather than as ids, because the second reader
+/// compares content: a delta needs the amount a row moved from.
+///
+/// # This contradicts D-200's normative sentence, and the entry that reverses it
+/// # is owed
+///
+/// D-200 [H] decided **exactly this divergence** on 2026-08-06 and decided to keep
+/// it: *"a plan revision's materiality ranges over its whole candidate set — the
+/// assembled shape, published plus draft — including rows the commit will not
+/// flip"*, now normative in `design/05-governance.md` §3 `inst-mat-percurrency`.
+/// It rests on one premise, stated three times — *"over-material and never
+/// under-material"*, *"fails safe in the direction that matters"*, *"the accepted
+/// cost is legibility, not control"* — and the premise is **false**, measured
+/// through the router: the staged row is the only thing that can make this route
+/// answer `AutoPublishable` at all, because it is the only moved row a plan
+/// revision can hold and `moves_no_row` is what it defeats. The cost is control.
+///
+/// D-200 weighed exactly two options and this is **neither**. Its rejected (a) was
+/// *"building the change set from `validated_draft_rows`"* — the commit's flip
+/// list, drafts only — and it loses for a reason this function does not inherit:
+/// it drops the **published** half, so `inst-mat-newrow` would stop seeing a newly
+/// authored row's absent baseline on every publish. This set is the candidate set
+/// less **another unit's** staged rows: the published plane is intact, a newly
+/// authored row is on a free key and stays, and `inst-mat-newrow` and
+/// `inst-mat-percurrency` range over what they ranged over before, minus one row
+/// that was never this act's. It is never *less* material than D-200's reading in
+/// any world — where that reading answered `thresholdReached` naming a foreign
+/// row, this answers `alwaysMaterialTrigger` naming the revision — and it retires
+/// the legibility cost D-200 accepted in the same move.
+///
+/// **That is still a reversal of a normative statement an owner took directly, so
+/// it is a decision and not a fix**, and this comment is not the decision. §3
+/// `inst-mat-percurrency` still says what D-200 made it say.
+///
+/// It is a no-op on every world that predates that door — nothing else can put a
+/// draft on an occupied key (`inst-pr-return`/D-21 at save,
+/// `IMPORT_TARGETS_PUBLISHED` on the bulk plane) — which is why no existing case
+/// moves.
+pub(crate) fn unit_row_set(shape: &PlanShape) -> Vec<&PriceRecord> {
     // Compared by canonical **rendering**, the way `infra::window`'s pending-key check
     // does: `ScopeKey` is not `Ord`, and the rendering is the ten axes in a fixed
     // order — the same string a `DUPLICATE_SCOPE_KEY` refusal names, so two equal
@@ -804,9 +875,10 @@ fn validated_draft_rows(shape: &PlanShape) -> Vec<(Uuid, RowVersion)> {
     shape
         .rows
         .iter()
-        .filter(|record| record.lifecycle_state == LifecycleState::Draft)
-        .filter(|record| !occupied.contains(&record.scope_key.to_string()))
-        .map(|record| (record.price_id, record.row_version))
+        .filter(|record| {
+            record.lifecycle_state != LifecycleState::Draft
+                || !occupied.contains(&record.scope_key.to_string())
+        })
         .collect()
 }
 

@@ -232,15 +232,31 @@ fn a_row_added_to_a_published_plan_is_material_having_no_baseline() {
 /// **decided 2026-08-06 on option (b)**: the two sets stay different by decision — the
 /// evaluator ranges over the candidate set, the commit flips `validated_draft_rows` — so
 /// a plan-revision unit's stored verdict can name a row the revision will not publish.
-/// That is over-material and never under-material, and S5 §3 now says so normatively.
 /// What is true without qualification is the output half: no publish ever *flips* a
 /// moved row against a published predecessor on one key.
+///
+/// **And the third correction is that D-200's own ground was false.** *"Over-material
+/// and never under-material"* held for `inst-mat-percurrency`, which is the step D-200
+/// reasoned about; it does not hold one step over. The staged row is the **only** moved
+/// row a plan revision can present, so it is also the only thing that can make
+/// `triggers::triggered_by_content`'s `moves_no_row` answer `false` — and with that
+/// answer, D-115's whole-revision trigger never fires and a revision whose entire
+/// content is the plan's shape auto-publishes. Measured through the router: a €500
+/// per-period bound (D-319) published on one principal, `approval: null`,
+/// `published_price_ids: []`. `api::rest::publish::materiality_of` now ranges over
+/// `infra::publish::unit_row_set` — the candidate set less another unit's staged rows,
+/// which is neither of the two options D-200 weighed — and the entry that records the
+/// reversal is owed.
 ///
 /// So this stays a legitimate unit test of `evaluate` over a **hand-built** input, and
 /// it is kept for the reason it always was: it is the only executable statement of the
 /// shape §3 says auto-publishes on a **plan revision**, which is the one subject no
-/// production path will ever present. Deleting it would leave that shape unstated and
-/// the four halves below with nothing to be halves of.
+/// production path presents. That clause used to read *"will ever present"* and was
+/// wrong by one row for eleven days; what makes it true is the caller, and
+/// `infra::publish_tests::the_evaluators_row_set_is_the_set_the_commit_publishes` and
+/// `rest_publish::a_period_bound_published_beside_an_orphaned_successor_is_still_judged`
+/// are the two ends of it. Deleting this would leave the shape unstated and the four
+/// halves below with nothing to be halves of.
 #[test]
 fn a_below_threshold_amount_change_on_unchanged_geometry_auto_publishes() {
     let policy = configured_policy();
@@ -844,5 +860,69 @@ fn a_verdict_that_tripped_no_row_carries_no_tripped_row() {
     assert!(
         unconfigured.tripped().is_none(),
         "the fail-safe is about the policy, not about a row"
+    );
+}
+
+/// **The gap D-319 recorded, held by a probe rather than by a paragraph** — and
+/// the statement of what stops it reaching an operator.
+///
+/// `inst-mat-registered` registers *plan-shape revision content* — the descriptor
+/// set, the phase graph, the add-on rules, the composites, the plan-change
+/// contract and (D-319) the plan-level period floor/cap — as always material. The
+/// detector for it is [`triggers::triggered_by_content`], and the detector is
+/// **narrower than the rule**: it fires on a change set that moves **no** row, so
+/// a change set that moves one is not a shape revision however much shape moved
+/// beside it. That is what this case asserts, in the direction the gap runs.
+///
+/// `ChangeSet` cannot express the difference. Its members are a publish-unit kind,
+/// a declared act and a row set; there is no revision, no shape and nothing to
+/// diff a shape against, so no argument [`evaluate`] is handed could distinguish
+/// *"this revision authored a €500-per-period minimum"* from *"this revision
+/// authored nothing"*. Closing it needs a **shape diff against the published
+/// revision** — a new operand, moving the five plan-shape facets that predate
+/// D-319 as well as its own — and that is a decision, not a fix.
+///
+/// **What holds the line instead is the caller, and it is named here so a reader
+/// of this probe knows what to check.** `api::rest::publish::materiality_of`
+/// builds this change set from `infra::publish::unit_row_set`, and the only moved
+/// row a plan revision could ever hold — a supersession successor another unit
+/// staged on an occupied key — is exactly what that set omits;
+/// `infra::publish_tests::the_evaluators_row_set_is_the_set_the_commit_publishes`
+/// is the other end of it. With the row in, this route published a period floor
+/// on one principal. So a later change that widens the change set again reddens
+/// `rest_publish::a_period_bound_published_beside_a_staged_successor_is_still_judged`
+/// and lands back here.
+///
+/// The **positive control** is the second half: the same shape, the same policy,
+/// the same baseline, with the moved row taken out answers the trigger. Without it
+/// this case would pass against an evaluator that never answered
+/// `alwaysMaterialTrigger` at all.
+#[test]
+fn a_revision_that_moves_a_row_reaches_no_shape_trigger_however_its_shape_moved() {
+    let policy = configured_policy();
+    let published = row("USD", 1000);
+    let baseline = PublishedPriceBaseline::of_records([published.clone()]);
+
+    // A row moved by 50 against a bar of 500 — below it, so nothing about the row
+    // is material either. The revision beside it may have authored any shape at
+    // all; no argument here can say, which is the gap.
+    let with_a_moved_row = ChangeSet::of_records([row("USD", 1050)]);
+    assert_eq!(
+        super::triggers::triggered_by_content(&with_a_moved_row, &baseline),
+        None,
+        "the detector is `moves_no_row`, and one moved row is enough to silence it"
+    );
+    assert_eq!(
+        evaluate(&with_a_moved_row, Some(&policy), Some(&baseline)),
+        MaterialityVerdict::AutoPublishable,
+        "so the whole change publishes on one principal, shape and all"
+    );
+
+    // The control: take the moved row out and the same world is material.
+    let shape_only = ChangeSet::of_records([published]);
+    assert_eq!(
+        evaluate(&shape_only, Some(&policy), Some(&baseline)),
+        MaterialityVerdict::material(MaterialityReason::AlwaysMaterialTrigger),
+        "a revision that moves no row is D-115's, and the bound rides that trigger"
     );
 }
