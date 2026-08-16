@@ -1541,3 +1541,291 @@ async fn a_per_unit_refusal_fails_its_whole_plan_with_a_reason_that_says_so() {
          same adjustment produce {FIXED_LINE_MINOR} when no `per_unit` row shares its plan"
     );
 }
+
+// ---------------------------------------------------------------------------
+// §4 transition 6 (`inst-bs-reject`, D-267) — the refused batch approval.
+//
+// The state has been in the store since `m20260802_000063` and `BulkState`
+// since D-290, and **nothing in production wrote it**: D-267 recorded that
+// finding itself ("Nothing drives the new state") and left the writer to a
+// later group. `approve_approval` grew its bulk-operation arm on 2026-08-12
+// (`apply_approved_repricing_run`); the refusing half had no counterpart, so a
+// run whose batch approval was refused sat in `awaiting_approval` forever with
+// its `run_id` spent against `uq_pricing_bulk_operation_client_key` — which is
+// the exact strand D-267 exists to close, reopened one door along.
+// ---------------------------------------------------------------------------
+
+/// The independent principal who decides a run's batch unit.
+///
+/// Its own constant rather than `POLICY_REVIEWER`: `chk_pricing_approval_distinct_principals`
+/// is real, the run is submitted by the harness's own caller, and a suite that
+/// reused the threshold fixture's reviewer would be asserting against whichever
+/// identity that fixture happens to carry.
+const RUN_REVIEWER: Uuid = Uuid::from_u128(0x5eed_12be);
+
+/// Open a material run over one published row and return `(run_id, operation_id,
+/// approval_id)`.
+///
+/// A fresh harness configures no threshold policy, so `inst-mat-failsafe` makes
+/// the run material and `advance_on_verdict` parks it in `awaiting_approval`
+/// under an open unit — which is the only state transition 6 leaves from.
+async fn a_run_awaiting_its_batch_approval(harness: &Harness) -> (Uuid, Uuid, Uuid) {
+    let run_id = Uuid::now_v7();
+    let response = harness
+        .allowed()
+        .send(with_headers(
+            "POST",
+            REPRICING_RUNS,
+            Some(a_run(run_id, &serde_json::json!({ "currency": "USD" }))),
+            &[],
+        ))
+        .await;
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    let operation_id: Uuid = body_json(response).await["operation_id"]
+        .as_str()
+        .expect("the view carries the minted id")
+        .parse()
+        .expect("a uuid");
+
+    let unit = approval_rows(harness)
+        .await
+        .into_iter()
+        .find(|row| {
+            row.subject_kind == "bulk_operation" && row.subject_ref == plan_free_ref(operation_id)
+        })
+        .expect("the material run opened its batch unit");
+    assert_eq!(unit.state, "submitted");
+    (run_id, operation_id, unit.approval_id)
+}
+
+/// How `audit_repo::bulk_operation_ref` renders a run — the bare operation id.
+fn plan_free_ref(operation_id: Uuid) -> String {
+    operation_id.to_string()
+}
+
+/// §4 transition 6: **FROM** `awaiting_approval` **TO** `rejected` **WHEN** the
+/// batch approval is refused (D-267). Terminal, and carrying the instant it
+/// ended, because `chk_pricing_bulk_operation_completed_at` puts the new state
+/// in the terminal set beside the other three.
+#[tokio::test]
+async fn a_refused_batch_approval_ends_the_run_in_rejected() {
+    let harness = Harness::new().await;
+    let plan = Uuid::now_v7();
+    seed_current_plan(&harness, plan).await;
+    a_published_row(&harness, plan, "eu").await;
+    let (_, operation_id, approval_id) = a_run_awaiting_its_batch_approval(&harness).await;
+
+    let refused = harness
+        .allowed_as(RUN_REVIEWER)
+        .send(with_headers(
+            "POST",
+            &format!("/bss-pricing/v1/approvals/{approval_id}/reject"),
+            Some(serde_json::json!({ "reason": "the segment is repriced next quarter" })),
+            &[],
+        ))
+        .await;
+    assert_eq!(
+        refused.status(),
+        StatusCode::OK,
+        "an independent principal refuses the batch unit"
+    );
+
+    let stored = bulk_operation_row(&harness, operation_id).await;
+    assert_eq!(
+        stored.state,
+        BulkState::Rejected,
+        "inst-bs-reject: a refused batch approval takes the run out of `awaiting_approval`, \
+         which is the one edge D-267 added and the only exit that state has besides approval: \
+         {stored:?}"
+    );
+    assert!(
+        stored.completed_at.is_some(),
+        "a rejected run is over, so it carries the instant it ended (D-267): {stored:?}"
+    );
+}
+
+/// The positive control the case above needs, and it is not a formality: a hook
+/// that moved **every** decided bulk unit's run to `rejected` would pass that
+/// test exactly as a correct one does. An *approved* unit takes the run the
+/// other way, and this asserts the run is not `rejected` after one.
+#[tokio::test]
+async fn an_approved_batch_approval_never_leaves_the_run_rejected() {
+    let harness = Harness::new().await;
+    let plan = Uuid::now_v7();
+    seed_current_plan(&harness, plan).await;
+    a_published_row(&harness, plan, "eu").await;
+    let (_, operation_id, approval_id) = a_run_awaiting_its_batch_approval(&harness).await;
+
+    let approved = harness
+        .allowed_as(RUN_REVIEWER)
+        .send(with_headers(
+            "POST",
+            &format!("/bss-pricing/v1/approvals/{approval_id}/approve"),
+            None,
+            &[],
+        ))
+        .await;
+    assert_eq!(approved.status(), StatusCode::OK);
+
+    let stored = bulk_operation_row(&harness, operation_id).await;
+    assert_ne!(
+        stored.state,
+        BulkState::Rejected,
+        "the approved unit spends `inst-bs-commit`'s edge, never transition 6: {stored:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// §3 `inst-mp-pending` (D-35) — a selector row on a key another unit holds.
+//
+// D-35 decided **both** halves on 2026-07-10: a batch row whose key already
+// holds a pending interactive unit fails **per row** naming that unit, and a
+// submitted batch pins every key it contains. The bulk import has carried the
+// first half since D-286 (`infra::import::key_holds_a_pending_unit`); the run
+// had only the second, so a selector that reached one held key made
+// `approval_repo::open` collide on `uq_pricing_approval_key_pending` and the
+// **whole** `POST` failed — every other row of the run refused with it, and no
+// run opened at all. "Fails per-row" had no referent on this surface.
+// ---------------------------------------------------------------------------
+
+/// Open a pending interactive unit holding exactly `key`, through the approval
+/// store's own writer — the same door every supersession and cutover submit
+/// goes through, so the register row is real rather than fabricated.
+async fn a_pending_unit_holding(harness: &Harness, key: &str) -> Uuid {
+    let conn = harness.db.conn().expect("conn");
+    let approval_id = Uuid::now_v7();
+    bss_pricing::infra::storage::repo::approval_repo::open(
+        &conn,
+        &harness.scope(),
+        bss_pricing::infra::storage::repo::approval_repo::NewApproval {
+            approval_id,
+            tenant_id: harness.tenant,
+            subject_ref: bss_pricing::infra::storage::repo::audit_repo::plan_revision_ref(
+                bss_pricing::domain::scope_key::PlanId::new(Uuid::now_v7()),
+                0,
+            ),
+            subject_kind: bss_pricing::domain::audit::AuditSubjectKind::PlanRevision,
+            content_hash: vec![0u8; 32],
+            materiality: serde_json::json!({ "material": true, "reason": "an interactive unit" }),
+            held_keys: std::iter::once(key.to_owned()).collect(),
+        },
+        rest_support::seed_stamp(),
+    )
+    .await
+    .expect("seed a pending interactive unit holding the key");
+    approval_id
+}
+
+/// `inst-mp-pending`: the held row fails **per row**, naming the unit, and its
+/// sibling on a free key is frozen `pending` like any other selected row.
+///
+/// The sibling is the positive control and it is the half that makes this a test
+/// of *per-row* refusal rather than of refusal: a handler that failed the whole
+/// run — which is what this surface did before — leaves no `pending` row at all,
+/// and a handler that failed nothing leaves no `failed` one.
+#[tokio::test]
+async fn a_selector_row_on_a_held_key_fails_per_row_and_its_sibling_does_not() {
+    let harness = Harness::new().await;
+    let plan = Uuid::now_v7();
+    seed_current_plan(&harness, plan).await;
+    let held = seed_price(&harness, plan, "eu").await;
+    harness.publish_price(plan, held.price_id).await;
+    let free = seed_price(&harness, plan, "us").await;
+    harness.publish_price(plan, free.price_id).await;
+    let unit = a_pending_unit_holding(&harness, &held.scope_key.to_string()).await;
+
+    let run_id = Uuid::now_v7();
+    let response = harness
+        .allowed()
+        .send(with_headers(
+            "POST",
+            REPRICING_RUNS,
+            Some(a_run(run_id, &serde_json::json!({ "currency": "USD" }))),
+            &[],
+        ))
+        .await;
+    assert_eq!(
+        response.status(),
+        StatusCode::ACCEPTED,
+        "the run opens: a held key refuses its own row, never the batch"
+    );
+    let operation_id: Uuid = body_json(response).await["operation_id"]
+        .as_str()
+        .expect("the view carries the minted id")
+        .parse()
+        .expect("a uuid");
+
+    let read = harness
+        .allowed()
+        .send(with_headers("GET", &run_path(run_id), None, &[]))
+        .await;
+    assert_eq!(read.status(), StatusCode::OK);
+    let run = body_json(read).await;
+    let journal = run["journal"].as_array().expect("a journal");
+    assert_eq!(
+        journal.len(),
+        2,
+        "both rows are frozen into the journal: {run}"
+    );
+
+    let held_row = journal
+        .iter()
+        .find(|row| row["price_id"] == serde_json::json!(held.price_id.to_string()))
+        .expect("the held row is in the journal");
+    assert_eq!(
+        held_row["state"],
+        serde_json::json!("failed"),
+        "inst-mp-pending: a selector row whose key holds a pending interactive unit fails \
+         per-row: {run}"
+    );
+    let reason = held_row["failure_reason"]
+        .as_str()
+        .unwrap_or_else(|| panic!("a failed row carries its reason: {run}"));
+    assert!(
+        reason.contains(&unit.to_string()),
+        "the refusal **names the unit** (D-35), which is the whole of what an operator can act \
+         on: {reason}"
+    );
+
+    let free_row = journal
+        .iter()
+        .find(|row| row["price_id"] == serde_json::json!(free.price_id.to_string()))
+        .expect("the free row is in the journal");
+    assert_eq!(
+        free_row["state"],
+        serde_json::json!("pending"),
+        "its sibling on an unheld key is frozen like any other selected row -- never dropped, \
+         and never failed with it: {run}"
+    );
+
+    // The other half of D-35, and it is what makes the first half *possible*: the
+    // run's own batch unit pins the keys it will act on and **not** the one
+    // another unit already holds. Pinning it is what made the whole `POST`
+    // collide.
+    let conn = harness.db.conn().expect("conn");
+    let units: Vec<_> = approval_rows(&harness)
+        .await
+        .into_iter()
+        .filter(|row| row.subject_kind == "bulk_operation")
+        .collect();
+    assert_eq!(
+        units.len(),
+        1,
+        "the material run opened one batch unit: {units:?}"
+    );
+    let pinned = bss_pricing::infra::storage::repo::approval_repo::held_keys_of(
+        &conn,
+        &harness.scope(),
+        harness.tenant,
+        units[0].approval_id,
+    )
+    .await
+    .expect("read the keys the batch unit holds");
+    assert_eq!(
+        pinned,
+        vec![free.scope_key.to_string()],
+        "the batch pins the free key and not the held one (`inst-bk-approval-subset`): a run \
+         cannot pin a key the one-pending-unit rule has already given to somebody else, and \
+         trying to is what refused the whole batch. Operation {operation_id}"
+    );
+}

@@ -571,6 +571,58 @@ pub fn content_hash(shape: &PlanShape) -> [u8; 32] {
     digest32(&buf)
 }
 
+/// The pin a **mass-repricing run's** batch approval unit is opened under
+/// (`inst-bs-approval`, `inst-ap-pin`) — and re-derived under when that unit is
+/// decided.
+///
+/// `SHA-256("bss-pricing/repricing-run/v1/" || the run's frozen report ||
+/// its own operation id)`.
+///
+/// # Not framed like its five neighbours, and that is the existing argument
+/// rather than an exemption taken here
+///
+/// Every other function in this module frames its subject field by field,
+/// because it hashes a **caller-authored** shape a submitter could otherwise
+/// steer into a collision. A run's `report` is not that: it is this crate's own
+/// controlled rendering (`api::rest::repricing_runs::frozen_report`), built once
+/// from the *parsed* domain values rather than echoed from the request, so
+/// hashing its serialization is total and needs no second encoder. That
+/// reasoning was written where this function used to live and travels with it
+/// unchanged.
+///
+/// `operation_id` and not the caller's `run_id`: it is the value the unit's own
+/// `subject_ref` carries, so the pin and the subject name the run by one id and
+/// not by two.
+///
+/// # The preimage is preserved byte for byte, deliberately
+///
+/// This function **moved** here from `api::rest::repricing_runs::repricing_pin`
+/// so that `infra::approval::re_derive` could reach it — a decide surface may
+/// not name an `api` item, which is `DE0202`'s rule and D-270's recorded
+/// encounter with it. Re-framing it on the way would have changed every digest,
+/// and every unit opened before the re-derivation arm existed would have become
+/// `APPROVAL_CONTENT_MISMATCH` instead of decidable. Those units are exactly the
+/// population this move exists to unstrand, so the bytes do not move. It carries
+/// no `*_PIN_DOMAIN_SEP` constant for the same reason: its separator is the
+/// literal below, spelled as it has always been.
+///
+/// # What it does **not** yet pin
+///
+/// `inst-bk-approval-subset`'s **per-row** content hash, which is what would let
+/// a committed subset shrink by row rather than only by whole plan (D-134). The
+/// report names the selector, the adjustment, the changeover and the selected
+/// count — so a run whose selector matched a different row set would pin
+/// differently only if the *count* moved. Named here rather than left to be
+/// inferred from an unframed digest.
+#[must_use]
+pub fn repricing_run_content_hash(report: &serde_json::Value, operation_id: Uuid) -> [u8; 32] {
+    let mut buf = Vec::with_capacity(256);
+    buf.extend_from_slice(b"bss-pricing/repricing-run/v1/");
+    buf.extend_from_slice(report.to_string().as_bytes());
+    buf.extend_from_slice(operation_id.as_bytes());
+    digest32(&buf)
+}
+
 /// `SHA-256(threshold_domain_sep || the canonical framing of one policy version)`.
 ///
 /// The pin of the D-10 unit, and total for the same reason [`content_hash`] is:

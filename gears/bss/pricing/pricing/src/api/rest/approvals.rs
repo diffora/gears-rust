@@ -95,6 +95,7 @@ use std::collections::BTreeMap;
 
 use crate::domain::approval::{ApprovalState, DecisionBy, WithdrawAuthority};
 use crate::domain::audit::AuditSubjectKind;
+use crate::domain::bulk::BulkState;
 use crate::domain::contracts::{EntitlementGrants, GrantSet, PlanChangeContract};
 use crate::domain::error::DomainError;
 use crate::domain::materiality::{
@@ -104,6 +105,7 @@ use crate::domain::plan_shape::{CompositeMeter, PlanShape};
 use crate::domain::window::KeyWindows;
 use crate::infra::approval::{ApprovalDetail, DecideRequest, PinnedSubject, RegionGrant};
 use crate::infra::storage::repo::approval_repo::ApprovalRecord;
+use crate::infra::storage::repo::bulk_repo;
 
 /// `OpenAPI` tag applied to every approval operation (DE0205).
 const TAG: &str = "BSS Pricing Approvals";
@@ -728,6 +730,25 @@ pub struct ApprovalDetailView {
     /// the one act that divides third-party money approved a document in which the
     /// act was invisible. D-61 in its own terms: the pinned content, not the hash.
     pub pinned_composition: Option<PinnedCompositionView>,
+    /// The pinned **mass-repricing run**, on a `bulkOperation` unit
+    /// (`inst-bs-approval`). `null` on every other kind.
+    ///
+    /// The run's frozen `report` — selector, adjustment, changeover instant and
+    /// selected-row count — which is the document
+    /// [`repricing_run_content_hash`](crate::domain::approval::content_pin::repricing_run_content_hash)
+    /// pins and therefore the one a reviewer is signing for. D-61 in its own
+    /// terms, and it is not decorative here: a run spans plans, so
+    /// `pinned_content` is structurally `null` on this kind, and without this
+    /// member the reviewer of a tenant-wide reprice was shown a digest and
+    /// nothing else. The run's own `GET` is not the escape either — it is
+    /// addressed by the caller's `run_id`, and the unit's `subject_ref` carries
+    /// the *minted* `operation_id`, which that route does not take.
+    ///
+    /// Rendered as the stored value rather than re-typed: it is this crate's own
+    /// controlled rendering (`api::rest::repricing_runs::frozen_report`), and a
+    /// second projection of it here would be a second answer to what the run was
+    /// accepted as.
+    pub pinned_repricing_run: Option<serde_json::Value>,
     /// Whether the pinned content above still digests to `approval.content_hash`.
     ///
     /// **Read this before deciding.** `false` means the document above is *not*
@@ -1077,7 +1098,7 @@ async fn reject_approval(
     // body that parses as JSON but not as the target type is a 422, and no path
     // in this gear may emit one.
     let body: RejectApprovalRequest = preconditions::parse_body(&body)?;
-    decide(
+    let record = decide_record(
         &state,
         &scope,
         &ctx,
@@ -1089,7 +1110,20 @@ async fn reject_approval(
         // withdraw is judged against it.
         WithdrawAuthority::OwnUnitsOnly,
     )
-    .await
+    .await?;
+
+    // §4 transition 6 (`inst-bs-reject`, D-267): the refused batch approval of a
+    // mass-repricing run takes that run to `rejected`. The mirror of
+    // `approve_approval`'s own bulk arm one function up, and the two are
+    // deliberately the same shape — see `reject_repricing_run`.
+    if record.subject_kind == AuditSubjectKind::BulkOperation
+        && record.state == ApprovalState::Rejected
+        && let Ok(operation_id) = Uuid::parse_str(&record.subject_ref)
+    {
+        reject_repricing_run(&state, &enforcer, &ctx, operation_id).await;
+    }
+
+    Ok(Json(ApprovalView::from(&record)))
 }
 
 /// `POST /approvals/{approvalId}/withdraw`.
@@ -1306,6 +1340,118 @@ async fn apply_approved_repricing_run(
              for a later redrive"
         );
     }
+}
+
+/// Best-effort: §4 transition 6, spent the moment a second principal **refuses**
+/// a repricing run's batch unit (`inst-bs-reject`, D-267).
+///
+/// `awaiting_approval -> rejected`, which the store's own trigger is the state
+/// machine for — this names the edge and `bulk_repo::advance` writes it, exactly
+/// as `advance_on_verdict` does at the other end. The terminal instant is not
+/// passed: `advance` derives `completed_at` from `BulkState::is_terminal`, which
+/// is what keeps the instant and the state from disagreeing about whether the run
+/// ended (`chk_pricing_bulk_operation_completed_at`).
+///
+/// **The report travels unchanged.** Nothing about the run's frozen parameters
+/// moved by being refused — and it must not, because the report is what the
+/// unit's pin was taken over: rewriting it here would make the digest of the very
+/// record that documents the refusal disagree with the approval that carries it.
+///
+/// **Never fails the `reject` request**, `apply_approved_repricing_run`'s posture
+/// and its reason: the decision itself already committed, so a failure here is
+/// not that request's to report. **What it costs is stated rather than left to be
+/// found**, because it is not the same cost as the approve arm's. An apply that
+/// fails leaves a `committing` run a later call can re-drive; a refusal that fails
+/// to land leaves the run in `awaiting_approval` under a unit that is already
+/// `rejected` — and nothing re-drives *that*, since a second `reject` is refused
+/// `APPROVAL_NOT_PENDING`. The run is then stranded exactly as D-267 found it,
+/// through a crash window rather than through a missing edge. Closing that needs
+/// the transition inside `ApprovalService::decide`'s own transaction, which is a
+/// decision about where a bulk run's state machine is driven from and not this
+/// arm's to take.
+///
+/// The scope asked is **fresh**, `plan × write`, never the approval-decide scope
+/// the caller already holds — `apply_approved_repricing_run`'s rule, for its
+/// reason: deciding a unit and writing the run it was about are two questions the
+/// PDP answers separately.
+async fn reject_repricing_run(
+    state: &GovernanceState,
+    enforcer: &authz_resolver_sdk::PolicyEnforcer,
+    ctx: &SecurityContext,
+    operation_id: Uuid,
+) {
+    if let Err(reason) = advance_run_to_rejected(state, enforcer, ctx, operation_id).await {
+        tracing::error!(
+            run_id = %operation_id,
+            reason = %reason,
+            "bss-pricing: the batch approval was refused and the run did not reach `rejected`; \
+             it is stranded where the decision left it, and a fresh run under a new client key \
+             is the operator's remedy (D-267)"
+        );
+    }
+}
+
+/// [`reject_repricing_run`]'s body, with every failure rendered as the one
+/// sentence its caller logs.
+///
+/// Split out for the reason `clippy::cognitive_complexity` gave when it was one
+/// function: four fallible steps whose *only* handling is "say what went wrong
+/// and stop" read as four branches, and the branching was the whole of the
+/// complexity. `Result<(), String>` rather than a domain error because nothing
+/// upstream can act on the distinction — this arm never fails the request — so
+/// the value of the failure is entirely in what it says.
+///
+/// `Ok(())` when the run is **absent**, which is not a failure: `re_derive`
+/// already answered `None` for such a unit and the reviewer was told their
+/// subject had moved, so there is no state left to advance.
+async fn advance_run_to_rejected(
+    state: &GovernanceState,
+    enforcer: &authz_resolver_sdk::PolicyEnforcer,
+    ctx: &SecurityContext,
+    operation_id: Uuid,
+) -> Result<(), String> {
+    let tenant = ctx.subject_tenant_id();
+    let scope = crate::authz::access_scope(
+        enforcer,
+        ctx,
+        &crate::authz::resource_types::PLAN,
+        crate::authz::actions::WRITE,
+        Some(tenant),
+        None,
+        true,
+    )
+    .await
+    .map_err(|err| format!("the approver holds no plan x write scope: {err}"))?;
+    let conn = state
+        .db
+        .conn()
+        .map_err(|err| format!("no connection: {err}"))?;
+    let Some(run) = bulk_repo::read(&conn, &scope, tenant, operation_id)
+        .await
+        .map_err(|err| format!("the run could not be read: {err}"))?
+    else {
+        return Ok(());
+    };
+    bulk_repo::advance(
+        &conn,
+        &scope,
+        tenant,
+        operation_id,
+        // The state the refusal was taken over, carried into the statement rather
+        // than trusted to still hold — `advance_on_verdict`'s own rule (Z8-7).
+        run.state,
+        BulkState::Rejected,
+        run.report.clone(),
+        Utc::now(),
+    )
+    .await
+    .map(|_| ())
+    .map_err(|err| {
+        format!(
+            "the move {} -> rejected was refused: {err}",
+            run.state.as_str()
+        )
+    })
 }
 
 /// The `approval × read` gate, for the two reads.
@@ -1577,6 +1723,11 @@ fn detail_view(detail: &ApprovalDetail) -> ApprovalDetailView {
             .as_ref()
             .and_then(PinnedSubject::composition)
             .map(PinnedCompositionView::from),
+        pinned_repricing_run: detail
+            .subject
+            .as_ref()
+            .and_then(PinnedSubject::repricing_run)
+            .cloned(),
         content_matches_pin: detail.content_matches_pin,
     }
 }

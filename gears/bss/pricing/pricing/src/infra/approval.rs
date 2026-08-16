@@ -131,7 +131,8 @@ use toolkit_security::SecurityContext;
 use uuid::Uuid;
 
 use crate::domain::approval::content_pin::{
-    bundle_content_hash, membership_content_hash, overlay_content_hash, threshold_content_hash,
+    bundle_content_hash, membership_content_hash, overlay_content_hash, repricing_run_content_hash,
+    threshold_content_hash,
 };
 use crate::domain::approval::{
     DecisionBy, DecisionRefusal, DecisionRequest, WithdrawAuthority, authorize_decision,
@@ -150,7 +151,8 @@ use crate::domain::scope_key::{PlanId, Region};
 use crate::infra::storage::repo::approval_repo::{ApprovalRecord, NewApproval};
 use crate::infra::storage::repo::bundle_repo::{self, CompositionDraft};
 use crate::infra::storage::repo::{
-    NewAuditEntry, approval_repo, audit_repo, plan_repo, price_repo, threshold_repo,
+    NewAuditEntry, approval_repo, audit_repo, bulk_repo, plan_repo, price_repo,
+    repricing_journal_repo, threshold_repo,
 };
 use crate::infra::storage::{RepoError, repo_failure};
 
@@ -367,6 +369,46 @@ pub enum PinnedSubject {
     /// changed since the transaction that wrote it — there is no world for it
     /// to have moved in. See [`re_derive`]'s `Membership` arm.
     Membership(MembershipMoveSet),
+    /// A **mass-repricing run's batch approval** (`inst-bs-approval`, D-267).
+    ///
+    /// The run's own frozen `report` — its selector, adjustment, changeover
+    /// instant and selected-row count — beside the `operation_id` its
+    /// `subject_ref` names, and the pricing regions its **selected rows** sit
+    /// on.
+    ///
+    /// # Why the report and not a plan shape
+    ///
+    /// A run spans plans by construction (D-134 makes the *plan* the
+    /// transaction unit precisely because a run has several), so no one
+    /// `PlanShape` is the document a reviewer of this unit is being shown. What
+    /// they are being asked to approve is the run's parameters, which is what
+    /// `frozen_report` renders and what
+    /// [`repricing_run_content_hash`](crate::domain::approval::content_pin::repricing_run_content_hash)
+    /// pins.
+    ///
+    /// # Why the regions are carried rather than answered empty
+    ///
+    /// [`PinnedSubject::regions`]'s own rule is *"regions live on a row's
+    /// canonical scope key"*, and a run has rows — so the honest set is the one
+    /// its journal names, resolved through those rows' keys. Answering the
+    /// empty set (the reading a policy version and a membership move take, both
+    /// of which genuinely have no rows) would be covered by **every** grant,
+    /// and a region-restricted `FinanceReviewer` would silently gain the
+    /// authority to approve a tenant-wide reprice. That is the scope rule
+    /// deleted rather than applied.
+    ///
+    /// Not boxed: a `serde_json::Value` is one pointer-sized handle and the
+    /// region set is bounded by the run's own key set, so this variant is not
+    /// the `large_enum_variant` hazard [`Self::Plan`] is.
+    BulkRun {
+        /// The run's frozen parameters, exactly as `pricing_bulk_operation.report`
+        /// holds them.
+        report: JsonValue,
+        /// The run this unit is about — the id its `subject_ref` carries.
+        operation_id: Uuid,
+        /// The regions the run's selected rows sit on.
+        regions: BTreeSet<Region>,
+    },
 }
 
 impl PinnedSubject {
@@ -386,6 +428,11 @@ impl PinnedSubject {
             Self::Overlay(revision) => overlay_content_hash(revision),
             Self::BundleComposition(shape, version, _) => bundle_content_hash(shape, *version),
             Self::Membership(set) => membership_content_hash(set),
+            Self::BulkRun {
+                report,
+                operation_id,
+                ..
+            } => repricing_run_content_hash(report, *operation_id),
         }
     }
 
@@ -411,6 +458,10 @@ impl PinnedSubject {
             // covers: there is no region a restricted reviewer would be
             // reaching outside of by deciding either.
             Self::ThresholdPolicy(_) | Self::Membership(_) => BTreeSet::new(),
+            // The run's rows' own regions, resolved when the subject was
+            // re-derived — see the variant's doc for why this is the existing
+            // rule applied rather than a new one.
+            Self::BulkRun { regions, .. } => regions.clone(),
             // **An overlay reaches a region exactly when it is scoped to one.** A
             // brand- or partner-scoped overlay has no region axis at all and answers
             // the empty set, which every grant covers — the same reading the policy
@@ -437,7 +488,10 @@ impl PinnedSubject {
     pub const fn plan(&self) -> Option<&PlanShape> {
         match self {
             Self::Plan(shape) | Self::BundleComposition(shape, ..) => Some(shape),
-            Self::ThresholdPolicy(_) | Self::Overlay(_) | Self::Membership(_) => None,
+            Self::ThresholdPolicy(_)
+            | Self::Overlay(_)
+            | Self::Membership(_)
+            | Self::BulkRun { .. } => None,
         }
     }
 
@@ -449,7 +503,8 @@ impl PinnedSubject {
             Self::Plan(_)
             | Self::Overlay(_)
             | Self::BundleComposition(..)
-            | Self::Membership(_) => None,
+            | Self::Membership(_)
+            | Self::BulkRun { .. } => None,
         }
     }
 
@@ -461,9 +516,26 @@ impl PinnedSubject {
     pub const fn composition(&self) -> Option<&CompositionDraft> {
         match self {
             Self::BundleComposition(_, _, composition) => Some(composition),
-            Self::Plan(_) | Self::ThresholdPolicy(_) | Self::Overlay(_) | Self::Membership(_) => {
-                None
-            }
+            Self::Plan(_)
+            | Self::ThresholdPolicy(_)
+            | Self::Overlay(_)
+            | Self::Membership(_)
+            | Self::BulkRun { .. } => None,
+        }
+    }
+
+    /// The run's frozen report, when this subject is a repricing run's batch
+    /// unit — what D-61 owes that unit's reviewer, and what no other accessor
+    /// here can answer (a run spans plans, so [`Self::plan`] is `None` on it).
+    #[must_use]
+    pub const fn repricing_run(&self) -> Option<&JsonValue> {
+        match self {
+            Self::BulkRun { report, .. } => Some(report),
+            Self::Plan(_)
+            | Self::ThresholdPolicy(_)
+            | Self::Overlay(_)
+            | Self::BundleComposition(..)
+            | Self::Membership(_) => None,
         }
     }
 
@@ -475,7 +547,8 @@ impl PinnedSubject {
             Self::Plan(_)
             | Self::ThresholdPolicy(_)
             | Self::BundleComposition(..)
-            | Self::Membership(_) => None,
+            | Self::Membership(_)
+            | Self::BulkRun { .. } => None,
         }
     }
 }
@@ -2252,11 +2325,51 @@ async fn re_derive(
         // `Err` rather than `Ok(None)`, and the earlier arms' own note explains why:
         // `None` means *the subject is gone*, which is not what "nothing to
         // re-derive yet" means.
-        AuditSubjectKind::BulkOperation => Err(DomainError::Internal(format!(
-            "approval {} is a bulk_operation unit; re-deriving its pinned content is owed by \
-             the decide surface, not built yet",
-            record.approval_id
-        ))),
+        // **Paid here.** This arm returned `Err(Internal)` outright — the same
+        // "storable and not resolvable" posture `Overlay` held before D-225 and
+        // `Membership` held before the customer-group plane — and the cost was
+        // larger than that phrasing suggests: `re_derive` runs on **every**
+        // decision and on the reviewer's own read, so a `bulk_operation` unit
+        // could be neither approved, nor rejected, nor even read in detail. Every
+        // material mass-repricing run was therefore stranded in
+        // `awaiting_approval` with a 500 on both decisions, its `run_id` spent
+        // against `uq_pricing_bulk_operation_client_key` — which is precisely the
+        // strand D-267 added `rejected` to close, reopened one door along. It
+        // also made `api::rest::approvals::apply_approved_repricing_run`
+        // unreachable code from the day it was written: `decide_record` fails
+        // before the hook is consulted.
+        //
+        // This is the fourth instance of the defect this function's own comments
+        // record three times — a unit that can be opened and never decided, which
+        // is worse than none.
+        //
+        // **What is re-derived**: the run's frozen `report`, read back from
+        // `pricing_bulk_operation` in the deciding transaction. That is the
+        // document the pin was taken over
+        // (`api::rest::repricing_runs::advance_on_verdict`), and the table freezes
+        // a run's identity and provenance so that only `state`, `report` and
+        // `completed_at` can move (D-260) — so the one mutation this
+        // re-derivation can catch is a rewritten report, which is exactly the one
+        // that would change what a reviewer signed for.
+        //
+        // `None` when the run is gone, which is `Overlay`'s reading rather than a
+        // 404: an absent subject is `ContentMismatch`'s business and not an error
+        // about the record the reviewer is looking at.
+        AuditSubjectKind::BulkOperation => {
+            let operation_id =
+                approval_repo::subject_bulk_operation(record).map_err(|e| repo_failure(&e))?;
+            let Some(run) = bulk_repo::read(runner, scope, tenant_id, operation_id)
+                .await
+                .map_err(|e| repo_failure(&e))?
+            else {
+                return Ok(None);
+            };
+            Ok(Some(PinnedSubject::BulkRun {
+                report: run.report,
+                operation_id,
+                regions: run_regions(runner, scope, tenant_id, operation_id).await?,
+            }))
+        }
         // **Paid 2026-08-12** (Task 7 of the customer-group plane).
         // `ApprovalService::submit_membership_move_on` is the writer now, and
         // this arm is the re-derivation the module doc's own note anticipated:
@@ -2279,6 +2392,43 @@ async fn re_derive(
             Ok(Some(PinnedSubject::Membership(set)))
         }
     }
+}
+
+/// The pricing regions a repricing run's **selected rows** sit on
+/// ([`PinnedSubject::BulkRun`]'s region set, and the scope rule's operand).
+///
+/// The journal is the run's row set (`inst-mr-journal`) and a row's region is on
+/// its canonical scope key, so this is the same resolution
+/// [`regions_of`] performs over a plan shape, reached through the one store that
+/// knows which rows a run named. **Every** journal row is read, not only the
+/// `pending` ones: a reviewer's authority is judged against what the run is
+/// *about*, and a row the apply has already decided is still part of that.
+///
+/// An empty answer is a real one — a run whose journal is somehow empty reaches
+/// no region — and it is safe rather than permissive here for the reason
+/// `RUN_SELECTOR_EMPTY` exists: `open_repricing_run` refuses an empty expansion
+/// before any run is opened, so no unit is ever opened over one.
+///
+/// # Errors
+/// Whatever the journal or the price repository refuses with.
+async fn run_regions(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    operation_id: Uuid,
+) -> Result<BTreeSet<Region>, DomainError> {
+    let rows = repricing_journal_repo::list_for_run(runner, scope, tenant_id, operation_id)
+        .await
+        .map_err(|e| repo_failure(&e))?;
+    let price_ids: Vec<Uuid> = rows.iter().map(|row| row.price_id).collect();
+    Ok(
+        price_repo::load_scope_keys_for_ids(runner, scope, tenant_id, &price_ids)
+            .await
+            .map_err(|e| repo_failure(&e))?
+            .into_iter()
+            .map(|(_, key)| key.region().clone())
+            .collect(),
+    )
 }
 
 /// The `(overlay, revision)` an overlay unit's `subject_ref` names.

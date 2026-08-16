@@ -2,19 +2,42 @@
 //! (`design/12-operator-efficiency.md` §3 `inst-he-read`, §5; D-12, D-125,
 //! D-270).
 //!
-//! **The first Slice 12 surface an operator can reach.** §5 declares eight and
-//! this is the one whose engine was built and whose shape needs nothing that does
-//! not exist yet: it is a read, so it opens no transaction, claims no idempotency
-//! key and writes no audit record. Its sibling, the clone, is blocked on
-//! something this route is not — see D-272.
+//! **Both of §5's history surfaces, and they are one walk.** The read serves
+//! pages at D-125's server default of 100; the export serves **chunks** the
+//! caller sizes, up to the same hard cap of 1,000, in the same commit order and
+//! on the same cursor. `inst-he-export`'s own words are *"export streams the same
+//! commit order in bounded chunks"*, and the engine says the rest:
+//! [`HistoryExporter`] is one type for both *"because `inst-he-export` describes
+//! the same order in bounded chunks and differs only in the page size a caller
+//! asks for"*. What separates them is not the walk but the **permission** — see
+//! the gate note below — and the SLO the chunk size is stated per: p95 <= 5s per
+//! 100 records, so a full 1,000-row page is budgeted at 50s and is an export
+//! shape rather than an interactive read (C-6).
 //!
-//! # No correlation edge, and that is the same reason `frontier` has none
+//! Neither opens a transaction and neither writes an audit record: `inst-he-nostore`
+//! is normative, so there is no export **job** here, no artifact to collect and
+//! nothing for §5's idempotency column to replay — see [`export_history`] for
+//! that, stated rather than quietly dropped.
 //!
-//! D-178's edge is applied inside each **mutating** router's own `router()`, and
-//! `rest_authz::every_mutating_router_applies_the_correlation_edge` scans this
-//! directory's sources for a mutating builder to decide who owes it. Nothing here
-//! writes an audit record or an outbox row, so nothing here needs an
-//! `AuditStamp`, so the edge would be a layer with no reader.
+//! # The correlation edge is here and has no reader, which is the honest trade
+//!
+//! This section said the opposite until the export arrived, and the reason it
+//! gave still holds: nothing in this module writes an audit record or an outbox
+//! row, so nothing here needs an `AuditStamp` and no handler calls
+//! `require_correlation`. What changed is the census.
+//! `rest_authz::every_mutating_router_applies_the_correlation_edge` decides who
+//! owes D-178's edge by scanning this directory's sources for a **mutating
+//! builder**, and `OperationBuilder::post(HISTORY_EXPORT)` is one — the export is
+//! a `POST` because §5 says so, and it is a **read** because `inst-he-nostore`
+//! leaves it nothing to write.
+//!
+//! Two ways out, and the cheaper one is not the exemption. That census's own
+//! value is that it "starts from the filesystem" rather than from a list somebody
+//! maintains, and a per-router carve-out is precisely the maintained list it was
+//! built to replace — one whose next entry is a router that really does write.
+//! An unused layer costs one `Extension` insert per request and cannot be wrong.
+//! So the edge is applied, and this paragraph is what stops a later reader
+//! deleting it as dead: it is not dead, it is the census's premise being paid.
 //!
 //! # `audit × read`, and the actor is the row's own column
 //!
@@ -66,6 +89,10 @@ const TAG: &str = "BSS Pricing History";
 /// the route-shape rule binds where the literal is, and a route census that
 /// spelled its paths as string literals is a census one rename walks away from.
 pub const HISTORY: &str = "/bss-pricing/v1/history";
+
+/// §5's export path — the same walk, in the chunk sizes the export SLO is stated
+/// per (`inst-he-export`, D-125).
+pub const HISTORY_EXPORT: &str = "/bss-pricing/v1/history/export";
 
 /// What this surface needs, and nothing else.
 pub struct ApiState {
@@ -235,7 +262,35 @@ pub fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Router {
         .error_503(openapi)
         .register(Router::new(), openapi);
 
-    router.layer(Extension(state))
+    let router = OperationBuilder::post(HISTORY_EXPORT)
+        .operation_id("bss_pricing.export_price_history")
+        .summary("Export immutable price history in bounded chunks")
+        .description(
+            "Streams the tenant's price history in the same commit order the interactive read              serves, in bounded chunks: one call returns one chunk and the token for the next,              and a client walks the token to the end of the history. Identical records,              identical order, identical cursor - the only difference is the chunk size a caller              asks for, which is what the SLO is stated per (p95 <= 5s per 100 records, scaling              linearly to the D-125 hard cap of 1,000). That is why this is a separate surface              rather than a larger `limit` on the read: a full 1,000-row page is budgeted at 50s              and is an export shape, never an interactive read, so the read keeps the server              default of 100 and this is where a caller asks for more. It adds no store - the              Foundation's immutability IS the history (`inst-he-nostore`), so an export is a              read and produces no job, no file and no artifact to collect later. Gates on              `audit` x `export` (D-12): bulk extraction of a seven-year actor trail is              grantable separately from reading it, which is the whole reason the action exists              beside `audit` x `read`.",
+        )
+        .tag(TAG)
+        .authenticated()
+        .no_license_required()
+        .param(limit_param())
+        .param(cursor_param())
+        .handler(export_history)
+        .json_response_with_schema::<HistoryPageView>(
+            openapi,
+            StatusCode::OK,
+            "One chunk of history in commit order, with the token for the next chunk when one              remains.",
+        )
+        .error_400(openapi)
+        .error_401(openapi)
+        .error_403(openapi)
+        .error_500(openapi)
+        .error_503(openapi)
+        .register(router, openapi);
+
+    router
+        .layer(axum::middleware::from_fn(
+            crate::api::rest::correlation::establish,
+        ))
+        .layer(Extension(state))
 }
 
 /// `GET /history`: the caller tenant's price history, one page.
@@ -282,6 +337,83 @@ async fn read_history(
         // invented here: `From<RepoError> for DomainError` already decides what a
         // storage failure means, and forking that per handler is how two surfaces
         // start disagreeing about the same failure.
+        .map_err(|e| CanonicalError::from(crate::infra::storage::repo_failure(&e)))?;
+
+    Ok(Json(HistoryPageView::from(page)))
+}
+
+/// `POST /history/export`: one chunk of the caller tenant's price history
+/// (`inst-he-export`).
+///
+/// # The same engine, and deliberately not a second one
+///
+/// [`HistoryExporter`]'s own doc settles this: *"One type for both, because
+/// `inst-he-export` describes the same order in bounded chunks and differs only
+/// in the page size a caller asks for. Two types would be two walk orders free to
+/// disagree, over a store whose whole claim is that the sequence of rows is the
+/// truth."* So this handler is [`read_history`] with a different gate, and the
+/// only thing that differs on the wire is which permission it asks for.
+///
+/// # `POST` with no body, and the two parameters in the query
+///
+/// §5 gives this path the `POST` verb, which is what a caller sends. The chunk it
+/// wants is named the way every other D-125 walk in the gear names one — `limit`
+/// and `cursor`, through [`limit_param`] and [`cursor_param`], the single
+/// spelling of that contract. A request **body** carrying the same two would be a
+/// second spelling of the one pagination contract, and the export SLO is stated
+/// per the value those two produce.
+///
+/// # §5's idempotency column has no operand on this surface, and that is stated
+/// rather than papered over
+///
+/// The API table gives this row a *client key*. A client key buys a replay, a
+/// replay needs somewhere to have stored the first answer, and
+/// `inst-he-nostore` — normative, and restated in §6 ("History/export reads
+/// existing append-only structures — no new store") — leaves this surface no
+/// store to put one in. It also needs nothing from one: this is a read over an
+/// append-only table, so re-issuing it is not a second act to be deduplicated.
+/// So no `Idempotency-Key` is declared, because declaring a header the server
+/// ignores is what
+/// `module_test::a_read_route_declares_no_precondition_header` exists to refuse.
+/// Whether the column is a residue of an asynchronous export shape the design set
+/// forbids elsewhere is a question for the design set, not something to be
+/// settled by a handler.
+async fn export_history(
+    Extension(state): Extension<Arc<ApiState>>,
+    Extension(enforcer): Extension<authz_resolver_sdk::PolicyEnforcer>,
+    extension_ctx: Option<Extension<SecurityContext>>,
+    Query(query): Query<HistoryQuery>,
+) -> Result<Json<HistoryPageView>, CanonicalError> {
+    let ctx = require_authenticated(extension_ctx)?;
+    let scope = crate::authz::access_scope(
+        &enforcer,
+        &ctx,
+        // `audit` x **`export`**, and the second half of that pair is the point.
+        // `/history` is the catalog audit trail (see this module's own gate note),
+        // and `actions::EXPORT`'s own doc states the distinction it was declared
+        // for: "Export the audit trail. Distinct from READ so bulk extraction of a
+        // seven-year actor trail is grantable separately from reading it." A
+        // chunked walk of the whole >= 7-year store at 1,000 records a call **is**
+        // that bulk extraction, so gating it on `read` would have made the export
+        // permission grant nothing and withholding it protect nothing --
+        // `rest_authz`'s own argument, which carried this pair as the gear's one
+        // catalogued-but-unasked permission until this route arrived.
+        &crate::authz::resource_types::AUDIT,
+        crate::authz::actions::EXPORT,
+        /* owner_tenant_id */ None,
+        /* resource_id */ None,
+        /* require_constraints */ true,
+    )
+    .await
+    .map_err(authz_error_to_canonical)?;
+
+    let request = HistoryPageRequest::parse(query.limit, query.cursor.as_deref())
+        .map_err(CanonicalError::from)?;
+
+    let page = state
+        .history
+        .read_page(&scope, ctx.subject_tenant_id(), request)
+        .await
         .map_err(|e| CanonicalError::from(crate::infra::storage::repo_failure(&e)))?;
 
     Ok(Json(HistoryPageView::from(page)))

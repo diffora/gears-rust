@@ -64,6 +64,8 @@ use tower::ServiceExt;
 use uuid::Uuid;
 
 const PATH: &str = "/bss-pricing/v1/history";
+/// §5's export of the same trail (`inst-he-export`).
+const EXPORT_PATH: &str = "/bss-pricing/v1/history/export";
 
 /// Flat-`In` PDP fake: allows, and constrains `owner_tenant_id` to `allowed`.
 /// This is the shape the real PDP returns for this gear (the PEP advertises no
@@ -111,6 +113,55 @@ impl AuthZResolverClient for DenyingResolver {
                 deny_reason: Some(DenyReason {
                     error_code: "no_catalog_role".to_owned(),
                     details: Some("no catalog role grants plan x read".to_owned()),
+                }),
+            },
+        })
+    }
+}
+
+/// A PDP that grants **one action** on whatever resource is asked, and denies
+/// every other.
+///
+/// The two fakes above cannot see an action at all — `FlatInResolver` allows
+/// everything and `DenyingResolver` refuses everything — so neither can tell
+/// `audit x read` from `audit x export`, which is the entire distinction §5 puts
+/// between the two surfaces of this module. Without this the suite would be
+/// silent about the one property the export route exists to have.
+struct OnlyActionResolver {
+    action: &'static str,
+    allowed: Vec<Uuid>,
+}
+
+#[async_trait]
+impl AuthZResolverClient for OnlyActionResolver {
+    async fn evaluate(
+        &self,
+        req: EvaluationRequest,
+    ) -> Result<EvaluationResponse, AuthZResolverError> {
+        if req.action.name == self.action {
+            return Ok(EvaluationResponse {
+                decision: true,
+                context: EvaluationResponseContext {
+                    constraints: vec![Constraint {
+                        predicates: vec![Predicate::In(InPredicate::new(
+                            pep_properties::OWNER_TENANT_ID,
+                            self.allowed.clone(),
+                        ))],
+                    }],
+                    deny_reason: None,
+                },
+            });
+        }
+        Ok(EvaluationResponse {
+            decision: false,
+            context: EvaluationResponseContext {
+                constraints: vec![],
+                deny_reason: Some(DenyReason {
+                    error_code: "action_not_granted".to_owned(),
+                    details: Some(format!(
+                        "this role grants `{}` and not `{}`",
+                        self.action, req.action.name
+                    )),
                 }),
             },
         })
@@ -165,6 +216,19 @@ async fn get_at(router: Router, query: &str) -> axum::http::Response<Body> {
             Request::builder()
                 .method("GET")
                 .uri(format!("{PATH}{query}"))
+                .body(Body::empty())
+                .expect("build request"),
+        )
+        .await
+        .expect("send")
+}
+
+async fn post_at(router: Router, query: &str) -> axum::http::Response<Body> {
+    router
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("{EXPORT_PATH}{query}"))
                 .body(Body::empty())
                 .expect("build request"),
         )
@@ -375,5 +439,114 @@ async fn the_page_is_filtered_by_the_compiled_scope_and_not_by_the_subject() {
         0,
         "the compiled scope constrains to another tenant, so this caller's own \
          rows must not be served: {body}"
+    );
+}
+
+/// **`audit x export` is a second permission, and this is what it buys.**
+///
+/// `inst-he-export` is a bulk walk of the whole >= 7-year trail; `actions::EXPORT`
+/// exists so that extraction is grantable separately from reading
+/// (`authz::actions::EXPORT`'s own doc). A role holding `audit x read` alone
+/// therefore reads the history and cannot export it.
+///
+/// Both directions in one case, over one fixture and one grant, because either
+/// alone proves nothing: a route gated on `read` would pass the 200 half, and a
+/// route gated on nothing reachable would pass the 403 half.
+#[tokio::test]
+async fn a_role_granting_audit_read_alone_reads_the_history_and_cannot_export_it() {
+    let tenant = Uuid::now_v7();
+    let db = provider().await;
+    seed_row(&db, tenant, Uuid::now_v7(), "eu", 10).await;
+
+    let reader = PolicyEnforcer::new(Arc::new(OnlyActionResolver {
+        action: "read",
+        allowed: vec![tenant],
+    }));
+
+    let read = get_at(
+        history_router(db.clone(), reader.clone(), Some(ctx_for(tenant))),
+        "",
+    )
+    .await;
+    assert_eq!(
+        read.status(),
+        StatusCode::OK,
+        "the positive control: `audit x read` is what the interactive read asks for"
+    );
+
+    let export = post_at(
+        history_router(db.clone(), reader, Some(ctx_for(tenant))),
+        "",
+    )
+    .await;
+    assert_eq!(
+        export.status(),
+        StatusCode::FORBIDDEN,
+        "and the export asks for `audit x export`, which this role does not hold"
+    );
+
+    // The mirror, so the 403 above is about the *action* and not about the route
+    // being unreachable: the same caller with the export grant is served.
+    let exporter = PolicyEnforcer::new(Arc::new(OnlyActionResolver {
+        action: "export",
+        allowed: vec![tenant],
+    }));
+    let granted = post_at(history_router(db, exporter, Some(ctx_for(tenant))), "").await;
+    assert_eq!(granted.status(), StatusCode::OK);
+}
+
+/// `inst-he-export`: *"export streams the same commit order in bounded chunks"* —
+/// the same walk, the same cursor, and a chunk the caller sizes.
+///
+/// Asserted against the **read's own** answer rather than against a literal, which
+/// is what makes it a test of "the same order" rather than of "an order": the two
+/// surfaces share `HistoryExporter` precisely so they cannot disagree, and a
+/// second engine behind the export is the defect this pins.
+#[tokio::test]
+async fn the_export_chunk_is_the_same_walk_the_read_serves() {
+    let tenant = Uuid::now_v7();
+    let db = provider().await;
+    seed_row(&db, tenant, Uuid::now_v7(), "eu", 10).await;
+    seed_row(&db, tenant, Uuid::now_v7(), "us", 11).await;
+
+    let enforcer = PolicyEnforcer::new(Arc::new(FlatInResolver {
+        allowed: vec![tenant],
+    }));
+    let read = body_json(
+        get_at(
+            history_router(db.clone(), enforcer.clone(), Some(ctx_for(tenant))),
+            "?limit=1",
+        )
+        .await,
+    )
+    .await;
+    let chunk = body_json(
+        post_at(
+            history_router(db.clone(), enforcer.clone(), Some(ctx_for(tenant))),
+            "?limit=1",
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(
+        chunk, read,
+        "one chunk of the export is one page of the read, cursor included: {chunk}"
+    );
+
+    let cursor = chunk["next_cursor"]
+        .as_str()
+        .expect("a chunk with more behind it hands back a cursor")
+        .to_owned();
+    let next = body_json(
+        post_at(
+            history_router(db, enforcer, Some(ctx_for(tenant))),
+            &format!("?limit=1&cursor={cursor}"),
+        )
+        .await,
+    )
+    .await;
+    assert_ne!(
+        next["entries"][0]["price_id"], chunk["entries"][0]["price_id"],
+        "and the token the export hands back opens the next chunk, not the same one: {next}"
     );
 }

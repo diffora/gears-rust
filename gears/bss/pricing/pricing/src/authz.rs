@@ -72,8 +72,18 @@ pub mod labels {
     pub const HISTORICAL_IMPORT: &str = gts_id!("cf.bss.pricing.historical_import.v1~");
     /// Audit trail read and export (`read`, `export`) — its OWN resource so an
     /// auditor role carries no read of live pricing and no write authority.
-    /// Finance's chronological price history is the separate `plan × read`
-    /// surface (D-12).
+    ///
+    /// **It covers the price history too**, and this paragraph said the opposite
+    /// until the export arrived: "Finance's chronological price history is the
+    /// separate `plan × read` surface (D-12)" was D-12's original reading and
+    /// stopped being true of `GET /bss-pricing/v1/history` when that route was
+    /// recatalogued on 2026-08-14 — it *is* the catalog audit trail, so filing it
+    /// under catalog read handed "who changed what, when" to every holder of
+    /// `plan × read`. `POST /bss-pricing/v1/history/export` follows it under
+    /// `export` (`inst-he-export`), which is what that action was declared for:
+    /// bulk extraction of a seven-year actor trail, grantable separately from
+    /// reading it. The design set's own endpoint tables still carry the withdrawn
+    /// reading (S12 §5, S5 §5) and are owed the correction.
     pub const AUDIT: &str = gts_id!("cf.bss.pricing.audit.v1~");
 
     /// Every authz label, stable order. The single canonical list driving the

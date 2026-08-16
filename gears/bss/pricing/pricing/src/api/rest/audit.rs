@@ -168,7 +168,8 @@ pub fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Router {
              hard cap. **Auditor-only**: gates on `audit` x `read` (D-12), which carries no \
              read of live pricing and no write authority. Two things this surface does not do: \
              it declares no filters, and it is not the export - `audit` x `export` is a second \
-             permission for a chunked shape, and neither is built.",
+             permission for a chunked shape, which `POST /bss-pricing/v1/history/export` is \
+             the gear's one holder of.",
         )
         .tag(TAG)
         .authenticated()

@@ -80,7 +80,7 @@ fn declared_paths() -> Vec<(&'static str, &'static str)> {
     };
     use bss_pricing::api::rest::cutovers::PLAN_CUTOVERS;
     use bss_pricing::api::rest::frontier::FRONTIER;
-    use bss_pricing::api::rest::history::HISTORY;
+    use bss_pricing::api::rest::history::{HISTORY, HISTORY_EXPORT};
     use bss_pricing::api::rest::migrated_origin_snapshots::MIGRATED_ORIGIN_SNAPSHOT;
     use bss_pricing::api::rest::migrations::{MIGRATION_BY_ID, MIGRATIONS};
     use bss_pricing::api::rest::overlays::{
@@ -104,6 +104,11 @@ fn declared_paths() -> Vec<(&'static str, &'static str)> {
     vec![
         ("GET", FRONTIER),
         ("GET", HISTORY),
+        // §5's export. A `POST` that is a **read** — `inst-he-nostore` leaves it
+        // nothing to write — so it is here beside its sibling rather than among
+        // the mutating rows, and `rest_authz`'s census carries it as
+        // `mutating: false` for the same reason.
+        ("POST", HISTORY_EXPORT),
         ("GET", AUDIT),
         ("GET", PLAN),
         ("GET", PLANS),
@@ -748,7 +753,7 @@ fn query_reading_routes() -> Vec<QueryReadingRoute> {
     use bss_pricing::api::rest::approvals::APPROVALS;
     use bss_pricing::api::rest::audit::AUDIT;
     use bss_pricing::api::rest::bundles::{BUNDLE_BY_ID, BUNDLES};
-    use bss_pricing::api::rest::history::HISTORY;
+    use bss_pricing::api::rest::history::{HISTORY, HISTORY_EXPORT};
     use bss_pricing::api::rest::migrations::MIGRATIONS;
     use bss_pricing::api::rest::overlays::PRICE_OVERLAYS;
     use bss_pricing::api::rest::plans::PLANS;
@@ -765,6 +770,17 @@ fn query_reading_routes() -> Vec<QueryReadingRoute> {
             vec!["cursor", "limit", "scope_class"],
         ),
         ("GET", HISTORY, "HistoryQuery", vec!["cursor", "limit"]),
+        // The export takes the **same** extractor, which is why the source scan
+        // above finds no new type: one spelling of D-125's contract, and a chunk
+        // is a page whose size the export SLO is stated per. The row is here
+        // because the roster is per route, not per extractor — a declaration this
+        // route dropped would otherwise be invisible.
+        (
+            "POST",
+            HISTORY_EXPORT,
+            "HistoryQuery",
+            vec!["cursor", "limit"],
+        ),
         ("GET", AUDIT, "AuditQuery", vec!["cursor", "limit"]),
         (
             "GET",

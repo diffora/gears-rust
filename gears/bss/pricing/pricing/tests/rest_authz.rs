@@ -44,7 +44,7 @@ use bss_pricing::api::rest::customer_groups::{
 };
 use bss_pricing::api::rest::cutovers::PLAN_CUTOVERS;
 use bss_pricing::api::rest::frontier::FRONTIER;
-use bss_pricing::api::rest::history::HISTORY;
+use bss_pricing::api::rest::history::{HISTORY, HISTORY_EXPORT};
 use bss_pricing::api::rest::migrated_origin_snapshots::MIGRATED_ORIGIN_SNAPSHOT;
 use bss_pricing::api::rest::migrations::{MIGRATION_BY_ID, MIGRATIONS};
 use bss_pricing::api::rest::overlays::{PRICE_OVERLAY_BY_ID, PRICE_OVERLAY_SUBMIT, PRICE_OVERLAYS};
@@ -127,6 +127,28 @@ fn census() -> Vec<Route> {
             path: HISTORY,
             resource_type: labels::AUDIT,
             action: actions::READ,
+            mutating: false,
+        },
+        // §5's export of that same trail (`inst-he-export`). **`audit x export`,
+        // and it is the gear's first route to ask for that pair** — the one
+        // catalogued permission that granted nothing until it existed, which
+        // `every_catalogued_permission_pair_is_asked_for_by_some_route` carried as
+        // its single exemption. The action's own doc is the argument: bulk
+        // extraction of a seven-year actor trail is grantable separately from
+        // reading it, and a chunked walk of the whole store at 1,000 records a
+        // call is exactly that.
+        //
+        // **`mutating: false` on a `POST`**, which no other row here is. The verb
+        // is §5's; the act is a read, because `inst-he-nostore` gives this surface
+        // no store to write to and no job to enqueue. A row claiming otherwise
+        // would put it in `every_mutating_route_is_denied_with_the_state_unchanged`,
+        // which would then assert that a read changed nothing — true, and true of
+        // every read, so it would measure nothing.
+        Route {
+            method: "POST",
+            path: HISTORY_EXPORT,
+            resource_type: labels::AUDIT,
+            action: actions::EXPORT,
             mutating: false,
         },
         // That separate surface (`inst-au-read`, Z13-8). Same pair as the row
@@ -2562,16 +2584,16 @@ const AT_LEAST_THIS_MANY_PAIRS: usize = 20;
 /// An exemption is a **debt**, stated so it stays visible —
 /// [`LABELS_WITHOUT_A_SURFACE_YET`]'s rule, per pair.
 ///
-/// `audit x export` is the one, and it is documented at the point it would
-/// matter rather than only here: `api::rest::audit`'s registration says "it is not
-/// the export - `audit` x `export` is a second permission for a chunked shape, and
-/// **neither is built**", of which the read half has since been built (Z13-8) and
-/// the export half has not. Z13-8's own reasoning is what keeps it a debt rather
-/// than a deletion: the error ladder's justification for dropping 403 detail leans
-/// on the trail being readable, and a chunked export is the second half of the same
-/// Auditor story. If the design set is ever read as not owing an export, the fix is
-/// to delete the permission instance, not to widen this list.
-const PAIRS_WITHOUT_A_ROUTE_YET: &[(&str, &str)] = &[(labels::AUDIT, actions::EXPORT)];
+/// **Empty, and `audit x export` is why it is.** That pair was this list's one
+/// entry and the gear's one catalogued-but-unasked permission: `api::rest::audit`'s
+/// registration said "it is not the export - `audit` x `export` is a second
+/// permission for a chunked shape, and **neither is built**", of which the read
+/// half was built by Z13-8 and the export half was owed. §5's
+/// `POST /bss-pricing/v1/history/export` is that second half
+/// (`inst-he-export`), and it asks for the pair — so the exemption is deleted
+/// rather than kept describing a debt that has been paid, which is exactly what
+/// `no_pair_exemption_outlives_the_route_that_arrived` refuses one plane down.
+const PAIRS_WITHOUT_A_ROUTE_YET: &[(&str, &str)] = &[];
 
 #[test]
 fn every_catalogued_permission_pair_is_asked_for_by_some_route() {

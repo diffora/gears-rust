@@ -75,10 +75,18 @@
 //!   admitted `bulk_operation` as of `m20260802_000065`; `open_run_in` is now
 //!   the writer that spends it, opening the approval unit with the identical
 //!   `subject_kind`/`subject_ref` pair the `create` record above already
-//!   carries (D-158). What it does not yet do is `inst-mp-pending`'s per-row
-//!   refusal when a held key collides with another pending unit — a collision
-//!   fails the whole open rather than the one row, because the per-row split is
-//!   the apply's (`inst-mr-apply`) and does not exist yet.
+//!   carries (D-158).
+//! * **Paid (`inst-mp-pending`, D-35's first half):** a selected row whose
+//!   canonical key already holds a pending **interactive** unit is failed *per
+//!   row* at selector time, naming that unit, and its key is withheld from what
+//!   the run's own batch approval pins — see [`refuse_rows_on_a_held_key`]. This
+//!   paragraph previously recorded the opposite as owed, and the cost was larger
+//!   than "the per-row split does not exist yet" suggests: the run's own unit
+//!   pinned every selected key, so one held key collided on
+//!   `uq_pricing_approval_key_pending` and refused the **whole** `POST` — no run
+//!   opened, and every other row of the batch was refused with it. D-35 decided
+//!   both halves on one day and only the pinning half had been built, which is
+//!   the shape where half a decision is worse than neither.
 //! * **`inst-mp-grandfathered` clause 2** owes the per-row refusal of an
 //!   explicitly-selected grandfathered row. The *selector* half is built (see
 //!   [`RunSelector::admits_grandfathered`]): a selector that does not name the
@@ -134,10 +142,9 @@
 //! outside the scope with a malformed body would learn their body was malformed
 //! instead of learning they were denied.
 
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 
-use aws_lc_rs::digest::{SHA256, digest};
 use axum::body::Bytes;
 use axum::extract::{Extension, Path};
 use axum::response::{IntoResponse, Response};
@@ -157,6 +164,7 @@ use crate::api::rest::overlays::{AmountRequest, adjustment_of};
 use crate::api::rest::preconditions;
 use crate::api::rest::prices::optional_token;
 use crate::api::rest::state::AuthoringState;
+use crate::domain::approval::content_pin::repricing_run_content_hash;
 use crate::domain::audit::{AuditAction, AuditStamp, AuditSubjectKind};
 use crate::domain::bulk::{BulkKind, BulkState};
 use crate::domain::error::DomainError;
@@ -729,6 +737,14 @@ async fn open_run_in(
         .collect();
     repricing_journal_repo::open_rows(runner, scope, &rows).await?;
 
+    // `inst-mp-pending` (D-35), and it is the **selector-time** refusal the
+    // instruction names — D-124 reads it that way in as many words ("rejects rows
+    // at selector time only, blocking nothing submitted later"), and this is the
+    // only moment that reading is available: the run's own approval unit does not
+    // exist yet, so a key found held here is held by somebody else.
+    let refused_keys =
+        refuse_rows_on_a_held_key(runner, scope, tenant_id, run.operation_id, selected).await?;
+
     // The debt `repricing_runs`' own module doc named: until `AuditSubjectKind`
     // carried a `BulkOperation` member, opening a run wrote no audit record at
     // all. `subject_ref` is `audit_repo::bulk_operation_ref(run.operation_id)`,
@@ -769,12 +785,107 @@ async fn open_run_in(
     // many plans the selector spans.
     let (verdict, held_keys) =
         run_materiality(runner, scope, tenant_id, selected, adjustment, recorded_at).await?;
+    // **The run pins what it will act on, and a key another unit holds is not
+    // that.** Subtracted here rather than inside `run_materiality`, which is
+    // deliberately still evaluated over the **whole** selected set: a row this
+    // run will not apply still counts toward the verdict, which is
+    // `inst-mp-grandfathered`'s established treatment of exactly the same shape
+    // (an explicitly-selected retained row is journalled, counted, and failed) and
+    // is the fail-safe direction — it can only ask for a second principal more
+    // often, never less.
+    let held_keys: BTreeSet<String> = held_keys.difference(&refused_keys).cloned().collect();
     let stamp = AuditStamp {
         actor_principal_id,
         recorded_at,
         correlation_id,
     };
     advance_on_verdict(runner, scope, tenant_id, &run, &verdict, held_keys, stamp).await
+}
+
+/// `inst-mp-pending` (D-35): fail, **per row**, every selected row whose
+/// canonical scope key already holds a pending interactive unit — and answer with
+/// the keys so refused.
+///
+/// # Why the refusal is here and not in the apply
+///
+/// Its sibling clause `inst-mp-grandfathered` is refused in
+/// [`crate::infra::repricing::apply_rows_in`], and copying that placement here
+/// would be wrong for a reason that is about *which* rule it is. A grandfathered
+/// row is refused for a property of the row itself, which no later act changes;
+/// a held key is a fact about a **second unit**, and D-35's other half has the
+/// run's own batch approval pin every key it contains — so the collision this
+/// arm exists to answer happens at
+/// [`approval_repo::open`](crate::infra::storage::repo::approval_repo::open),
+/// three statements below, before any apply ever runs. Leaving it to the apply
+/// leaves the whole `POST` failing on `uq_pricing_approval_key_pending`, which
+/// is what it did: one held key refused the batch, and `inst-mp-pending`'s "fails
+/// per-row" had nothing to refer to on this surface.
+///
+/// # The register read is the import's, not a second one
+///
+/// [`approval_repo::find_pending_key_holders`](crate::infra::storage::repo::approval_repo::find_pending_key_holders)
+/// is the plural read `infra::import::key_holds_a_pending_unit` already answers
+/// D-35's import half with. One decision, one read, two surfaces — D-282's line,
+/// and the alternative is two register queries free to disagree about what
+/// "held" means.
+///
+/// # The row is born `pending` and moved, never born `failed`
+///
+/// D-261: the journal's insert trigger admits only `pending`, so this runs
+/// **after** [`repricing_journal_repo::open_rows`] and moves the row. That is not
+/// a workaround — it is what keeps the frozen row set the set the selector
+/// matched, so an operator reading the run sees the row that was refused rather
+/// than a run that quietly selected one fewer row than it says it did.
+///
+/// # Errors
+/// Whatever the price repository, the approval register or the journal refuses
+/// with.
+async fn refuse_rows_on_a_held_key(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    operation_id: Uuid,
+    selected: &[Uuid],
+) -> Result<BTreeSet<String>, RepoError> {
+    let keys = price_repo::load_scope_keys_for_ids(runner, scope, tenant_id, selected).await?;
+    let rendered: BTreeSet<String> = keys.iter().map(|(_, key)| key.to_string()).collect();
+    let holders: HashMap<String, _> =
+        approval_repo::find_pending_key_holders(runner, scope, tenant_id, &rendered)
+            .await?
+            .into_iter()
+            .map(|(record, key)| (key, record))
+            .collect();
+    if holders.is_empty() {
+        return Ok(BTreeSet::new());
+    }
+
+    let mut refused = BTreeSet::new();
+    for (price_id, key) in keys {
+        let rendered = key.to_string();
+        let Some(unit) = holders.get(&rendered) else {
+            continue;
+        };
+        repricing_journal_repo::mark_failed(
+            runner,
+            scope,
+            tenant_id,
+            operation_id,
+            price_id,
+            // Names the unit, which is the whole of what D-35 asks the refusal to
+            // carry: the operator's remedy is to decide or withdraw that unit and
+            // re-run, and a refusal that did not name it would send them looking.
+            &format!(
+                "inst-mp-pending (D-35): this row's canonical scope key is held by pending \
+                 approval unit {}, and the one-pending-unit rule reserves the key for the \
+                 change already under way; decide or withdraw it and re-run. The run's other \
+                 rows are unaffected",
+                unit.approval_id
+            ),
+        )
+        .await?;
+        refused.insert(rendered);
+    }
+    Ok(refused)
 }
 
 /// The run's materiality, evaluated once over every plan its rows sit on
@@ -949,8 +1060,16 @@ async fn advance_on_verdict(
 }
 
 /// `SHA-256(domain separator || the run's frozen report || its own operation
-/// id)` — an interim content pin for a repricing run's approval unit
-/// (`inst-ap-pin`).
+/// id)` — the content pin of a repricing run's approval unit (`inst-ap-pin`).
+///
+/// **The bytes moved to
+/// [`repricing_run_content_hash`](crate::domain::approval::content_pin::repricing_run_content_hash)
+/// and this is the caller.** `infra::approval::re_derive` has to take the same
+/// digest when the unit is decided, and an `infra` module may not name an `api`
+/// item (`DE0202`, D-270's recorded encounter with it) — so the preimage lives
+/// in the domain now, byte for byte, and both ends spell it once. Kept as a
+/// named function here rather than inlined at the one call site because the
+/// paragraphs below are about *this* unit's pin and not about the encoder.
 ///
 /// **Not `domain::approval::content_pin`'s canonical per-field framing.** That
 /// module hashes a caller-authored shape a submitter could otherwise steer, so
@@ -967,11 +1086,7 @@ async fn advance_on_verdict(
 /// than only by whole plan. Named rather than built: nothing commits a
 /// repricing run's rows yet (`inst-mr-apply`), so a per-row pin has no reader.
 fn repricing_pin(report: &serde_json::Value, operation_id: Uuid) -> Vec<u8> {
-    let mut buf = Vec::with_capacity(256);
-    buf.extend_from_slice(b"bss-pricing/repricing-run/v1/");
-    buf.extend_from_slice(report.to_string().as_bytes());
-    buf.extend_from_slice(operation_id.as_bytes());
-    digest(&SHA256, &buf).as_ref().to_vec()
+    repricing_run_content_hash(report, operation_id).to_vec()
 }
 
 /// Why the expansion came back empty, in the operator's terms.
