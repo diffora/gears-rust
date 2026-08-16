@@ -19,23 +19,45 @@ def pinned_propagation_finding():
 
 # --- oracle 1 -------------------------------------------------------------
 
+#: The live run's exit code. **1 since 2026-08-16**, and it was 0 for the whole
+#: life of this tool before that: the register carries one Medium finding that is
+#: not accepted debt — `D-313 -> PRD.md`, surfaced by teaching the parser to read
+#: a citation past its first physical line. The gate is doing its job; the number
+#: goes back to 0 when the register's owner rewrites that clause's cross-gear
+#: claim as `../../rating/docs/PRD.md`. See `LIVE_UNACCEPTED_GAPS_2026_08_16` in
+#: `test_propagation.py` and REGENERATE.md entry 25.
+LIVE_EXIT_CODE = 1
+
 
 def test_text_output_is_byte_identical_to_the_rust_binary():
     stdout, code = run_check(*live_args())
     assert stdout == oracle("live-text.txt")
-    assert code == 0
+    assert code == LIVE_EXIT_CODE
 
 
 def test_json_output_is_byte_identical_to_the_rust_binary():
     stdout, code = run_check(*(live_args() + ["--format", "json"]))
     assert stdout == oracle("live-json.json")
-    assert code == 0
+    assert code == LIVE_EXIT_CODE
 
 
 def test_show_known_debt_output_is_byte_identical_to_the_rust_binary():
     stdout, code = run_check(*(live_args() + ["--show-known-debt"]))
     assert stdout == oracle("live-show-known-debt.txt")
-    assert code == 0
+    assert code == LIVE_EXIT_CODE
+
+
+def test_the_live_run_fails_the_default_gate_on_exactly_the_one_unaccepted_finding():
+    # The exit code above is an assertion about *why*, not just about a number:
+    # a second Medium finding appearing would keep the code at 1 and go unnoticed
+    # if this were only `code == 1`.
+    stdout, code = run_check(*(live_args() + ["--format", "json"]))
+    payload = json.loads(stdout)
+    above_gate = [f for f in payload["findings"] if f["severity"] in ("medium", "high")]
+    assert [f["message"] for f in above_gate] == [
+        "D-313 claims propagation into PRD.md, but that document never cites D-313"
+    ]
+    assert code == 1
 
 
 def test_the_run_reports_seven_live_findings_and_seventy_three_suppressed():
@@ -90,9 +112,20 @@ def test_the_run_reports_seven_live_findings_and_seventy_three_suppressed():
     # pinned (both were named in `inst-tx-brand`'s prose, so P3 saw them
     # referenced) — D-239's own claim that the debt covered "the three" was
     # wrong and has been corrected in the register.
+    # 2 -> 3 on 2026-08-16, and it is the **checker** that moved, not the
+    # documents — the fourth such capture in the tool's life and the first since
+    # 2026-07-31. P1 learned to read a `**Propagated**:` field past its first
+    # physical line, and D-313's citation wraps over four, so its second line's
+    # `PRD` token became visible: as written ("rating PRD §Definitions") the
+    # claim names the citing gear's own PRD.md, which cites D-313 nowhere. Left
+    # live rather than pinned — see `LIVE_UNACCEPTED_GAPS_2026_08_16`. The same
+    # capture made three previously-invisible claims *checkable* and all three
+    # verify clean (D-43 and D-319 into STRIPE-GAP-ANALYSIS.md, SUB-D-19 into
+    # subscriptions' REVIEW.md), so they add no finding here; they are armed in
+    # `test_the_previously_unchecked_live_claims_are_now_armed_against_their_targets`.
     stdout, _ = run_check(*(live_args() + ["--format", "json"]))
     payload = json.loads(stdout)
-    assert len(payload["findings"]) == 2
+    assert len(payload["findings"]) == 3
     # 58 until the 2026-08-08 Slice 10 merge, which paid down one pinned member --
     # `FLOOR_TYPE_MISSING` / design/10 -- by naming the code in `inst-ft-typed`,
     # the rule that would raise it, together with the reason it cannot fire in the

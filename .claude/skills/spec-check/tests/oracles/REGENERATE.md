@@ -1001,6 +1001,87 @@ checker means by "referenced", and that is the skill's contract.
     Still not built here, for entry 23's reason: it changes what the checker means by
     "referenced", and that is the skill's contract, not a capture's business.
 
+25. **2026-08-16, twenty-fifth capture — the checker moved, not the documents, and the
+    live run goes red.** The **fourth** capture in this file's history justified by
+    *checker* behaviour rather than document movement (entries 4 and the 2026-07-31
+    resolver extension are the others), and the **first** in which the live run stops
+    exiting 0. **Live findings 2 → 3. Suppressed unchanged at 49.** Not one existing
+    finding moved: `live-text.txt` and `live-show-known-debt.txt` differ by exactly one
+    added line and the count line, every pinned member reproduces at the same line
+    number, and `live-json.json` gains one object.
+
+    **Two defects were repaired, both of the "reports success on something it never
+    checked" family.**
+
+    - **A propagation target outside the shorthand table was dropped, and not reported.**
+      `targets.resolve` knew six forms — `S<n>`, `Foundation`, `PRD`, `DESIGN`,
+      `SEAMS <id>`, `ADR-NNNN` — plus the explicit cross-gear path. Anything else in a
+      `**Propagated**:` field vanished, and `propagation-uninterpretable` did *not* fire,
+      because that finding is guarded on the **whole** citation resolving to nothing and
+      these citations always carried a shorthand that did resolve. The claim therefore
+      read exactly like a verified one. `PRD` and `DESIGN` were never shorthands: they are
+      the stems of two top-level documents that happened to be hard-coded, so the fix is
+      to derive the vocabulary from the corpus — every top-level `*.md` contributes its
+      stem, and any corpus-relative `*.md` path resolves as written. A path of that shape
+      naming a document the corpus does not hold is now `propagation-unresolvable`
+      instead of silence, reported per target rather than per citation.
+    - **`**Propagated**:` was parsed per physical line.** A citation that wraps had only
+      its first line resolved; every target below the wrap went unchecked and unreported.
+      The field is now rebuilt as its markdown block, ended by a blank line, a list item
+      (`- **Amended by …**`, including D-319's indented sub-bullet), a heading or a table
+      row.
+
+    **Three claims had never been checked in the life of this tool, and all three verify
+    clean.** D-43 → `STRIPE-GAP-ANALYSIS.md` ("STRIPE-GAP-ANALYSIS G-2 marked actioned",
+    the stem form) and D-319 → `STRIPE-GAP-ANALYSIS.md` (the path form; D-319's own entry
+    predicted this and said so in prose) are cited 5 and 4 times in that document;
+    SUB-D-19 → `REVIEW.md` ("REVIEW F-08-1 → fixed") is cited 3 times. That they are
+    *checked* rather than merely quiet was established by measurement, not inspection:
+    stripping the decision id from each target document produces the expected
+    `propagation-missing` and nothing else, and the same probe against the pre-fix tool
+    produces **nothing at all** for all three. That probe is pinned as
+    `test_the_previously_unchecked_live_claims_are_now_armed_against_their_targets`.
+
+    **One claim was wrong, and it is the whole of the finding-count move.**
+    `D-313 -> PRD.md`, Medium, `DECISIONS.md:3461`. D-313's field wraps over four lines
+    and its `PRD` token sits on line **two**, inside the clause "rating PRD §Definitions,
+    §Time and §539" — a *cross-gear* claim written in prose. As written it names the
+    citing gear's own `PRD.md`, which cites D-313 **0** times (measured). The resolvable
+    form is `../../rating/docs/PRD.md`, which the resolver has understood since
+    2026-07-31.
+
+    **It was deliberately not pinned.** `PINNED_PROPAGATION_GAPS_2026_07_29` is a
+    snapshot of *accepted* debt taken on one day, and the D-46 precedent recorded beside
+    it is the rule — a brand-new finding put there is a finding buried. It lives in
+    `LIVE_UNACCEPTED_GAPS_2026_08_16` in `test_propagation.py` instead, which is compared
+    but never suppressed, so the finding stays in the CLI's output and **the run exits
+    1**. `test_cli.py`'s `LIVE_EXIT_CODE` records that, and one further test asserts the
+    exit code's *reason* rather than only its value. Fixing it is the register owner's
+    call; this program does not edit gear documents to make its own checker green.
+
+    **The regression was measured across every gear the tool loads, not assumed.** Before
+    and after, `--gear <g>/docs --auto-context --show-known-debt` for all five BSS gears
+    with a `docs/` tree: pricing **0 live / 49 debt → 1 / 49**, rating 2 → 2,
+    subscriptions 0 → 0, ledger 24 → 24, products 1 → 1. Independently, `resolve` was run
+    over all **275** parsed propagation claims in the three registers on both sides and
+    diffed: **six** changed, **every one a pure addition** — D-313 (+`PRD.md`, the
+    finding), D-314 (block now read to its end; its continuation names only
+    `sqlite_window_service.rs` and a Rust module header, so no target is added), D-319
+    and D-43 (+`STRIPE-GAP-ANALYSIS.md`), D-68 (+`design/03`, +`design/10`, both cited),
+    SUB-D-19 (+`REVIEW.md`). **No claim lost a target, and nothing that was reported
+    before stopped being reported.** D-324, the other candidate carried into this work,
+    did **not** move: its four shorthand targets all resolved before and all four cite it.
+
+    **The triage pin was not touched** — no neighbourhood or requirement code changed, and
+    `test_pricing_triage_histogram_is_pinned` passes unchanged.
+
+    Suite: **233 passed → 259 passed**, 1 skipped throughout; 26 added (9 wrapped-field,
+    11 target-vocabulary, 5 P1-level, 1 gate-reason). Every one was run against the
+    pre-fix tool in a scratch copy and against three deliberate mis-fixes — an over-greedy
+    block rule, a stem vocabulary that swallows `PRD`/`DESIGN`/`SEAMS` and nested file
+    stems, and a resolver that forgets to exclude already-claimed spans. A test that
+    passes against the tool it is supposed to be pinning has proved nothing.
+
 ## How they were produced (2026-07-31 capture)
 
 Run from the repository root:

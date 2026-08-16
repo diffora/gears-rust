@@ -116,3 +116,137 @@ def test_a_qualifier_without_parentheses_is_not_recognized():
     # still come back None, or P1's `propagation-label-unparsed` fallback could
     # never fire again.
     assert _by_id(parse(SAMPLE), "D-64").propagated is None
+
+
+# --- wrapped citations (2026-08-16) ---------------------------------------
+
+WRAPPED = """
+#### D-70 [H] A citation long enough to wrap
+
+- **Decision**: modelled on the live D-313 and D-314 entries.
+- **Propagated**: S3 §4 (the orthogonality clause), §5 (the new code),
+  `inst-tb-window`'s statement and the schema table; PRD §Definitions
+  and §539.
+
+#### D-71 [M] A wrapped citation followed by a sibling list item
+
+- **Propagated**: S7 §5 (the ordering constraint) and Foundation §3.7 (the
+  `draft` half of the check constraint).
+- **Amended by D-99 (2026-08-16)**: DESIGN §4 is NOT part of the claim above.
+
+#### D-73 [M] A wrapped citation followed by a nested list item
+
+- **Propagated**: S2 §1.1 (the capability) and §5 (the two codes),
+  §6 (the table).
+  - **A note about the entry**: DESIGN §4 is a sub-bullet, not the citation.
+
+#### D-74 [M] A wrapped citation ended by a blank line
+
+- **Propagated**: S5 §3 step 4
+  and §8.
+
+Loose prose naming DESIGN §4, which the field must not reach.
+
+#### D-75 [M] A wrapped citation ended by a heading
+
+- **Propagated**: S6 §3
+  (the credit-source column).
+
+##### The finding
+
+DESIGN §4 sits under a heading and is not part of the claim.
+
+#### D-76 [M] A wrapped citation ended by a table
+
+- **Propagated**: S11 §2
+  (`inst-sy-payload`).
+
+| # | Doc |
+|---|-----|
+| 1 | DESIGN §4 |
+
+#### D-77 [M] A label whose citation begins on the next line
+
+- **Propagated**:
+  S12 §4 (the state list).
+"""
+
+
+def _wrapped(ident):
+    return _by_id(parse(WRAPPED), ident).propagated
+
+
+def test_a_wrapped_citation_is_read_past_its_first_physical_line():
+    # The defect this pins: the field was searched line by line, so only the
+    # first line of a wrapped citation was ever resolved and every target below
+    # the wrap went unchecked *and* unreported. Live instances: D-313 (four
+    # lines) and D-314 (six).
+    assert _wrapped("D-70") == (
+        "S3 §4 (the orthogonality clause), §5 (the new code), `inst-tb-window`'s "
+        "statement and the schema table; PRD §Definitions and §539."
+    )
+
+
+def test_the_wrapped_field_stops_at_a_sibling_list_item():
+    # The bound on the widening, and the shape it must not swallow: D-158,
+    # D-203, D-252 and D-324 all continue with `- **…**:` bullets that are
+    # *about* the decision, not part of its propagation surface.
+    assert _wrapped("D-71") == (
+        "S7 §5 (the ordering constraint) and Foundation §3.7 (the `draft` half of "
+        "the check constraint)."
+    )
+
+
+def test_the_wrapped_field_stops_at_a_nested_list_item():
+    # D-319's live shape: an indented `  - **One of those five targets …**`
+    # sub-bullet directly under the citation.
+    assert _wrapped("D-73") == "S2 §1.1 (the capability) and §5 (the two codes), §6 (the table)."
+
+
+def test_the_wrapped_field_stops_at_a_blank_line():
+    assert _wrapped("D-74") == "S5 §3 step 4 and §8."
+
+
+def test_the_wrapped_field_stops_at_a_heading():
+    # D-313's own entry continues with `##### …` prose two blocks later.
+    assert _wrapped("D-75") == "S6 §3 (the credit-source column)."
+
+
+def test_the_wrapped_field_stops_at_a_table_row():
+    assert _wrapped("D-76") == "S11 §2 (`inst-sy-payload`)."
+
+
+def test_a_citation_beginning_on_the_line_below_its_label_is_read():
+    # Free with the block rebuild, and worth pinning: the old parser required
+    # the citation to start on the label's own physical line, so this shape
+    # produced `propagated is None` — indistinguishable from "nothing to
+    # propagate".
+    assert _wrapped("D-77") == "S12 §4 (the state list)."
+
+
+def test_an_unwrapped_field_is_returned_byte_for_byte():
+    # The regression that matters: every entry in the live corpus but two is one
+    # physical line, and rebuilding the block must not touch any of them.
+    assert _by_id(parse(SAMPLE), "D-60").propagated == "S9 `inst-plain-case` + §7; PRD glossary row."
+
+
+def test_the_live_registers_carry_exactly_two_wrapped_citations():
+    # Measured, not assumed. Both cite their load-bearing target on line one, so
+    # neither was *wrong* before the fix — which is exactly why it was worth
+    # fixing before it bit.
+    from conftest import LIVE_GEARS, REPO_ROOT
+    from spec_check.corpus import Corpus, split_lines
+
+    wrapped = []
+    for gear in LIVE_GEARS:
+        corpus = Corpus.load(str(REPO_ROOT / gear))
+        register = corpus.text("DECISIONS.md")
+        if register is None:
+            continue
+        lines = split_lines(register)
+        for d in parse(register):
+            if d.propagated is None:
+                continue
+            if not any(d.propagated in line for line in lines):
+                wrapped.append((corpus.root(), d.id))
+    assert [ident for _root, ident in wrapped] == ["D-313", "D-314"]

@@ -21,6 +21,32 @@ _TOKEN = re.compile(r"\b(S(\d{1,2})|Foundation|PRD|DESIGN|SEAMS|ADR-(\d{4}))\b")
 # (`propagation-target-not-loaded`), exactly as for a seam target.
 _CROSS_GEAR = re.compile(r"\.\./\.\./([a-z0-9_-]+)/docs/((?:[A-Za-z0-9_-]+/)*[A-Za-z0-9_.-]+\.md)\b")
 
+# An **own-gear document named by path**: `STRIPE-GAP-ANALYSIS.md`,
+# `design/05-governance.md`, `./design/03-price-structure.md`. Corpus-relative, as
+# every `Corpus` key is; `_normalize` folds a leading `./` away before the lookup.
+#
+# This is half of the answer to a whole class of silently-dropped claim. Until
+# 2026-08-16 a propagation target had to be one of six *shorthands* (`S<n>`,
+# `Foundation`, `PRD`, `DESIGN`, `SEAMS <id>`, `ADR-NNNN`) or an explicit
+# cross-gear path. A target naming any other document of the citing gear's own
+# corpus — `STRIPE-GAP-ANALYSIS.md`, which pricing's register cites twice — was
+# dropped, and *not* reported as `propagation-uninterpretable` either, because the
+# same citation carried shorthands that did resolve. The claim therefore read as
+# verified while nothing had checked it. D-43 and D-319 are the live instances;
+# the class is "every document the shorthand table does not happen to name".
+#
+# The lookbehind keeps this from firing on the tail of a longer path (the
+# `../../<gear>/docs/…` form is matched by `_CROSS_GEAR` first and its span is
+# excluded, but a path shape this class does not model must not be half-matched
+# either).
+_MD_PATH = re.compile(r"(?<![\w./-])((?:[A-Za-z0-9_.-]+/)*[A-Za-z0-9_-]+\.md)\b")
+
+#: Shorthands with a dedicated branch in `resolve`. They are recognised whether or
+#: not the corpus holds the document, so a corpus missing its `PRD.md` still gets
+#: `propagation-unresolvable` rather than silence — `_corpus_stems` must never
+#: shadow them into a corpus-derived, silently-absent vocabulary.
+_DEDICATED_STEMS = frozenset(("PRD", "DESIGN", "SEAMS"))
+
 # `\**` tolerates markdown bold around the seam id — the real citation in
 # DECISIONS.md (D-65) reads "subscriptions SEAMS **SUB-P7**.", and without it that
 # seam id is invisible to this regex, so the token falls back to bare SEAMS and
@@ -199,6 +225,12 @@ class SeamIndex:
         return sorted(self._owners.get(ident, ()))
 
 
+def _within(span, claimed):
+    """True when `span` sits inside one of the already-claimed `(start, end)` spans."""
+    start, end = span
+    return any(low <= start and end <= high for low, high in claimed)
+
+
 def _insert_if_present(corpus, rel, paths, unresolved, token):
     if corpus.has(rel):
         paths.add(rel)
@@ -211,6 +243,45 @@ def _first_path_with_prefix(corpus, want):
         if path.startswith(want):
             return path
     return None
+
+
+def _corpus_stems(corpus):
+    """`(stem, path)` for every **top-level** document of `corpus`, minus the three
+    with a dedicated branch — the other half of the answer to the dropped-target
+    class, and the reason it is a class rather than three names.
+
+    `PRD` and `DESIGN` were never really shorthands: they are the stems of
+    `PRD.md` and `DESIGN.md`, hard-coded because those two happened to be the
+    top-level documents when the tool was written. Pricing later grew
+    `STRIPE-GAP-ANALYSIS.md` and subscriptions `REVIEW.md`, and every claim into
+    them went unchecked — not for being written badly, but for being written about
+    a document nobody had added to a list. Deriving the vocabulary from the corpus
+    closes that permanently: a gear that adds a top-level document can cite it the
+    next day, in either the stem form D-43 uses (`STRIPE-GAP-ANALYSIS G-2 marked
+    actioned`) or the path form D-319 uses (`` `STRIPE-GAP-ANALYSIS.md` §4 ``),
+    with no code change here.
+
+    **Top-level only, and that is the boundary.** A `design/` slice and an `ADR/`
+    are addressed by the shorthands built for them (`S<n>`, `Foundation`,
+    `ADR-NNNN`) or by explicit path; minting a bare stem for every nested file
+    would put `01-foundation` and `0002-cpt-cf-bss-pricing-adr-…` into the
+    vocabulary, which no register writes and which cannot be told from prose.
+
+    One consequence to know about: `Corpus.load` reads **every** `*.md` under the
+    docs root, so a stray file dropped at the top level (a session's report, a
+    scratch note) both joins the corpus and mints a stem. That is the same hazard
+    the corpus has always had — a stray document once moved the live finding count
+    7 → 0 — one surface wider. A stray *nested* file is inert here.
+    """
+    out = []
+    for path, _text in corpus.files():
+        if "/" in path or not path.endswith(".md"):
+            continue
+        stem = path[: -len(".md")]
+        if stem in _DEDICATED_STEMS:
+            continue
+        out.append((stem, path))
+    return out
 
 
 def resolve(raw, corpus, seams):
@@ -230,6 +301,19 @@ def resolve(raw, corpus, seams):
     *inside* an explicit cross-gear path — `PRD` inside
     `../../subscriptions/docs/PRD.md` — is part of that path, never a second,
     own-gear claim.
+
+    **Own-gear documents are nameable too** (2026-08-16), by corpus-relative path
+    (`_MD_PATH`) or, for a top-level document, by stem (`_corpus_stems`). The
+    vocabulary of nameable documents is therefore *the corpus*, not a list in this
+    file, which is the honest boundary: P1 can verify a citation in exactly the
+    documents it loaded and no others. A path of that shape naming a document the
+    corpus does **not** hold is reported `unresolved` — never dropped — so a claim
+    into `GONE.md` reads as a finding rather than as a verified claim, and it is
+    reported even when the same citation carries five shorthands that do resolve.
+    Things outside the corpus stay outside the vocabulary on purpose: D-314 cites
+    `sqlite_window_service.rs` and `infra::window`'s module header, which are real
+    propagation surfaces but not documents P1 can read, and pretending to
+    interpret them would be a worse lie than saying nothing about them.
     """
     paths = set()
     unresolved = set()
@@ -237,17 +321,35 @@ def resolve(raw, corpus, seams):
     seam_conflicts = {}
     citing_gear = gear_name(corpus)
 
-    cross_spans = []
+    # Spans already claimed by a longer, more specific form. A token inside one of
+    # them is part of that target, never a second claim of its own: `PRD` inside
+    # `../../subscriptions/docs/PRD.md`, `DESIGN` inside `DESIGN.md`,
+    # `STRIPE-GAP-ANALYSIS` inside `STRIPE-GAP-ANALYSIS.md`.
+    claimed = []
+
     for match in _CROSS_GEAR.finditer(raw):
-        cross_spans.append(match.span())
+        claimed.append(match.span())
         gear, sub = match.group(1), match.group(2)
         if citing_gear == gear:
             _insert_if_present(corpus, sub, paths, unresolved, match.group(0))
         else:
             paths.add("../../{}/docs/{}".format(gear, sub))
 
+    for match in _MD_PATH.finditer(raw):
+        if _within(match.span(1), claimed):
+            continue
+        claimed.append(match.span())
+        rel = _normalize(match.group(1))
+        _insert_if_present(corpus, rel, paths, unresolved, match.group(1))
+
+    for stem, path in _corpus_stems(corpus):
+        for match in re.finditer(r"\b" + re.escape(stem) + r"\b", raw):
+            if _within(match.span(), claimed):
+                continue
+            paths.add(path)
+
     for match in _TOKEN.finditer(raw):
-        if any(start <= match.start(1) and match.end(1) <= end for start, end in cross_spans):
+        if _within(match.span(1), claimed):
             continue
         whole = match.group(1)
         if whole == "PRD":

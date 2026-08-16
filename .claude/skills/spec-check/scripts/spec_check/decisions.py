@@ -42,6 +42,25 @@ _PROPAGATED = re.compile(
     r"\*\*Propagated(?:\s*\([^*)]*\))?\*\*:\s*(.+?)(?:\s*\*\*[A-Z][^*]*\*\*:|\Z)"
 )
 
+# A line that *ends* the `**Propagated**:` field's own markdown block rather than
+# continuing it. The field is authored as one block — a list item, or a bare
+# paragraph — and a citation long enough to wrap has its remainder on the next
+# physical line(s) with no marker of any kind. Everything below starts a *new*
+# block and must not be swallowed:
+#
+#   `- ` / `* ` / `+ ` / `1. `  a sibling or nested list item. The register's real
+#                               shape: D-158's `- **Amended by D-175 …**`,
+#                               D-319's indented `  - **One of those five targets …**`,
+#                               D-267's nineteen following bullets.
+#   `#`                         a heading (`##### The finding`).
+#   `|`                         a table row.
+#   `>`                         a block quote.
+#
+# A blank line ends the block too, checked separately. Nothing here is a
+# *widening* of what counts as the field: a continuation line is only read when
+# the exact `**Propagated…**` anchor already matched on the line above it.
+_BLOCK_BREAK = re.compile(r"^\s*(?:[-*+]\s|\d+[.)]\s|[#|>])")
+
 
 class Decision:
     """One `#### D-NN …` entry of a gear's `DECISIONS.md`."""
@@ -75,14 +94,38 @@ def parse(text):
     out = []
     for n, (start, ident) in enumerate(starts):
         end = starts[n + 1][0] if n + 1 < len(starts) else len(lines)
-        # The label and its citation sit on one physical line in this corpus, but
-        # later prose (`**Amendment**: …`) may follow on that same line — the
-        # regex above cuts the capture at that boundary.
+        # The label and its citation sit on one *markdown block*, which is usually
+        # one physical line — but not always. Reading the field line by line
+        # resolved only the first line of a wrapped citation and dropped every
+        # target below the wrap, unreported: D-313 cites over four lines and D-314
+        # over six, and each had one line checked. The block is rebuilt here
+        # (`_block`) and the field regex run over that, so later prose
+        # (`**Amendment**: …`) still cuts the capture at its own boundary whether
+        # it follows on the same physical line or a later one.
         propagated = None
-        for line in lines[start:end]:
-            match = _PROPAGATED.search(line)
-            if match is not None:
+        for offset in range(start, end):
+            block = _block(lines, offset, end)
+            match = _PROPAGATED.search(block)
+            # The label must open on *this* line: the scan runs top-down, so the
+            # first line carrying the anchor wins, exactly as it did before.
+            if match is not None and match.start() < len(lines[offset]):
                 propagated = match.group(1).strip()
                 break
         out.append(Decision(ident, start + 1, propagated))
     return out
+
+
+def _block(lines, start, end):
+    """`lines[start]` joined with the continuation lines of its markdown block.
+
+    Continuation lines are stripped and joined with a single space: the result is
+    quoted verbatim into `P1/propagation-uninterpretable` findings and compared in
+    frozen oracles, so it must stay one line. A block of one line — every entry in
+    this corpus but two — returns that line unchanged, byte for byte.
+    """
+    out = [lines[start]]
+    index = start + 1
+    while index < end and lines[index].strip() and not _BLOCK_BREAK.search(lines[index]):
+        out.append(lines[index].strip())
+        index += 1
+    return " ".join(out)

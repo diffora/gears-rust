@@ -153,10 +153,13 @@ Two lines at the end matter as much as the findings:
   unreferenced error codes = **58** as of 2026-08-07; the 2026-07-29 pin was
   24 + 51, and every member that has left since was hand-checked with a note
   beside its list), withheld by default. The three-gear invocation above
-  currently prints **`2`** and **`58`**.
+  currently prints **`3`** and **`49`** — and **exits 1**, because one of the
+  three live findings is Medium and not accepted debt (`D-313 -> PRD.md`, see
+  REGENERATE.md entry 25). It exited 0 until 2026-08-16.
 
   Do not quote those two numbers from here without re-running: this line has read
-  `15`/`75`, `7`/`73`, `7`/`69`, `6`/`68`, `5`/`68`, `2`/`59` and now `2`/`58`.
+  `15`/`75`, `7`/`73`, `7`/`69`, `6`/`68`, `5`/`68`, `2`/`59`, `2`/`58`, `2`/`49`
+  and now `3`/`49`.
   `tests/oracles/REGENERATE.md` is the authority on what moved and why — it
   carries one numbered entry per capture, and the numbers here are a convenience
   copy that has twice gone stale behind it.
@@ -168,8 +171,41 @@ went unchecked:
 - `P1/decision-register-unparsed` — a `DECISIONS.md` exists but yielded no
   `#### <id>` entries. Rating's `| T-D-NN |` table legitimately produces this.
 - `P1/propagation-uninterpretable` — a citation naming nothing the resolver knows.
+- `P1/propagation-unresolvable` — a *single* target the resolver recognises the
+  shape of but cannot map, reported even when the same citation carries five
+  targets that resolve. Since 2026-08-16 this includes a document path
+  (`GONE.md`, `design/99-nothing.md`) naming nothing the corpus holds.
 - `P2/traceability-convention-unknown` — the gear uses a traceability convention
   P2 does not parse, so per-id claims are not reported for it at all.
+
+### What a propagation target may name
+
+The vocabulary is **the corpus**, not a list in the code — P1 can verify a
+citation in exactly the documents it loaded and no others:
+
+| Form | Example | Notes |
+|---|---|---|
+| Slice shorthand | `S7 §1` | first `design/07-*` file |
+| `Foundation` | `Foundation §3.7` | `design/01-foundation.md` |
+| `ADR-NNNN` | `ADR-0002 (new)` | first `ADR/NNNN-*` file |
+| `SEAMS <id>` | `SEAMS **SUB-P7**` | the loaded gear whose `SEAMS.md` defines `<id>` |
+| Top-level stem | `PRD §6.1`, `STRIPE-GAP-ANALYSIS G-2` | **any** top-level `*.md` of the corpus, not a fixed list |
+| Own-gear path | `` `design/05-governance.md` §3 `` | corpus-relative, `./` tolerated |
+| Cross-gear path | `../../rating/docs/PRD.md` | verified against that gear if loaded, else `propagation-target-not-loaded` |
+
+`PRD` and `DESIGN` were hard-coded until 2026-08-16 and nothing else was: a claim
+into any other top-level document — pricing's `STRIPE-GAP-ANALYSIS.md`,
+subscriptions' `REVIEW.md` — was **dropped without a finding**, because the same
+citation carried shorthands that did resolve, so the claim read as verified.
+Three live claims had never been checked in the tool's life (D-43, D-319,
+SUB-D-19). What stays outside the vocabulary stays outside on purpose: D-314
+cites `sqlite_window_service.rs` and a Rust module header, which are real
+propagation surfaces but not documents P1 can read.
+
+A wrapped citation — a `**Propagated**:` field whose text continues on the next
+physical line, as D-313's and D-314's do — is read to the end of its markdown
+block (a blank line, a list item, a heading or a table row ends it). Before
+2026-08-16 only the first line was resolved.
 
 ## What it cannot tell you
 

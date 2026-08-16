@@ -199,3 +199,127 @@ def test_a_cross_gear_path_naming_the_citing_gear_folds_to_the_in_corpus_path():
 def test_a_shorthand_token_outside_the_path_still_resolves_own_gear():
     r = resolve("PRD §9.2; also `../../rating/docs/DESIGN.md`", pricing(), SeamIndex())
     assert r.paths == ["../../rating/docs/DESIGN.md", "PRD.md"]
+
+
+# --- own-gear documents by path and by stem (2026-08-16) -------------------
+
+
+def synthetic(*extra):
+    """A corpus shaped like a real gear: the three documents with a dedicated
+    branch, plus whatever the test wants to name.
+    """
+    parts = [
+        ("PRD.md", "Requirements.\n"),
+        ("DESIGN.md", "Design digest.\n"),
+        ("design/01-foundation.md", "Foundation.\n"),
+    ]
+    parts.extend(extra)
+    return Corpus.from_parts("gears/bss/alpha/docs", parts)
+
+
+def test_resolves_a_top_level_document_named_by_path():
+    # D-319's live form: `` `STRIPE-GAP-ANALYSIS.md` §4 (the row's disposition) ``.
+    # Dropped entirely before 2026-08-16 — and *not* reported, because the same
+    # citation named PRD, DESIGN and two slices that did resolve.
+    corpus = synthetic(("STRIPE-GAP-ANALYSIS.md", "Gaps.\n"))
+    r = resolve("PRD §6.1; `STRIPE-GAP-ANALYSIS.md` §4 and G-3.", corpus, SeamIndex())
+    assert r.paths == ["PRD.md", "STRIPE-GAP-ANALYSIS.md"]
+    assert r.unresolved == []
+
+
+def test_resolves_a_top_level_document_named_by_stem():
+    # D-43's live form: `STRIPE-GAP-ANALYSIS G-2 marked actioned` — the same
+    # document, named the way `PRD` and `DESIGN` are named. Those two were never
+    # really shorthands; they are the stems of two top-level documents that
+    # happened to be hard-coded.
+    corpus = synthetic(("STRIPE-GAP-ANALYSIS.md", "Gaps.\n"))
+    r = resolve("S1 rows; STRIPE-GAP-ANALYSIS G-2 marked actioned.", corpus, SeamIndex())
+    assert r.paths == ["STRIPE-GAP-ANALYSIS.md", "design/01-foundation.md"]
+
+
+def test_resolves_a_nested_document_named_by_path():
+    corpus = synthetic(("design/03-price-structure.md", "Structure.\n"))
+    r = resolve("both `design/03-price-structure.md` and ./design/01-foundation.md", corpus,
+                SeamIndex())
+    assert r.paths == ["design/01-foundation.md", "design/03-price-structure.md"]
+
+
+def test_a_path_naming_no_document_of_this_corpus_is_reported_not_dropped():
+    # The rule that keeps the widening from becoming a new silence. A target
+    # shaped like a document of this corpus, naming one the corpus does not
+    # hold, is a Finding — never a claim that reads as verified.
+    r = resolve("PRD §1; `GONE.md` §2.", synthetic(), SeamIndex())
+    assert r.paths == ["PRD.md"]
+    assert r.unresolved == ["GONE.md"]
+
+
+def test_an_unresolvable_path_is_reported_beside_targets_that_did_resolve():
+    # The exact shape of the defect being repaired: one citation, one good token
+    # and one the resolver cannot map. Reporting only when *nothing* resolves is
+    # what let `STRIPE-GAP-ANALYSIS.md` disappear for the life of the tool.
+    r = resolve("PRD §1; DESIGN §2; S1 §3; `docs/nowhere.md` §4.", synthetic(), SeamIndex())
+    assert r.paths == ["DESIGN.md", "PRD.md", "design/01-foundation.md"]
+    assert r.unresolved == ["docs/nowhere.md"]
+
+
+def test_a_corpus_derived_stem_never_shadows_a_dedicated_shorthand():
+    # `PRD`, `DESIGN` and `SEAMS` keep their own branch precisely so a corpus
+    # *missing* one of them still reports `unresolved` rather than falling silent
+    # — a corpus-derived vocabulary alone would simply stop recognising the word.
+    bare = Corpus.from_parts("gears/bss/alpha/docs", [("NOTES.md", "Notes.\n")])
+    r = resolve("PRD §1; DESIGN §2.", bare, SeamIndex())
+    assert r.paths == []
+    assert r.unresolved == ["DESIGN", "PRD"]
+
+
+def test_a_seams_stem_stays_with_the_seam_branch():
+    # `SEAMS.md` is a top-level document of two live gears, so a naive stem
+    # vocabulary would add it to `paths` beside — or instead of — the seam
+    # branch's own answer, silently changing what a dangling `SEAMS <id>` reports.
+    corpus = Corpus.from_parts(
+        "gears/bss/alpha/docs",
+        [("SEAMS.md", "| # | Seam |\n|---|------|\n| **Z1** | Alpha's. |\n")],
+    )
+    resolved_known = resolve("SEAMS Z1 note.", corpus, SeamIndex.build([corpus]))
+    assert resolved_known.paths == ["SEAMS.md"]
+    assert resolved_known.seam_undefined == []
+
+    dangling = resolve("SEAMS Z9 note.", corpus, SeamIndex.build([corpus]))
+    assert dangling.paths == []
+    assert dangling.seam_undefined == ["Z9"]
+
+
+def test_a_stem_inside_its_own_path_form_is_not_a_second_claim():
+    corpus = synthetic(("STRIPE-GAP-ANALYSIS.md", "Gaps.\n"))
+    r = resolve("`STRIPE-GAP-ANALYSIS.md` §4.", corpus, SeamIndex())
+    assert r.paths == ["STRIPE-GAP-ANALYSIS.md"]
+    assert r.unresolved == []
+
+
+def test_a_shorthand_inside_a_cross_gear_path_is_still_not_an_own_gear_claim():
+    # The pre-existing rule, re-asserted now that a second span-claiming pass
+    # runs between the cross-gear pass and the shorthand pass.
+    r = resolve("../../beta/docs/PRD.md §2.", synthetic(), SeamIndex())
+    assert r.paths == ["../../beta/docs/PRD.md"]
+    assert r.unresolved == []
+
+
+def test_only_top_level_documents_contribute_a_stem():
+    # The boundary. A `design/` slice and an `ADR/` are addressed by the
+    # shorthands built for them or by explicit path; minting `01-foundation` as a
+    # bare word would put file stems nobody writes into the vocabulary.
+    corpus = synthetic(("ADR/0001-cpt-cf-bss-alpha-adr-thing.md", "ADR.\n"))
+    r = resolve("01-foundation and 0001-cpt-cf-bss-alpha-adr-thing rows.", corpus, SeamIndex())
+    assert r.paths == []
+    assert r.unresolved == []
+
+
+def test_the_live_pricing_register_resolves_its_gap_analysis_claims():
+    # Both live instances of the class, asserted against the real corpus.
+    corpus = pricing()
+    seams = known_seams()
+    for raw, want in [
+        ("STRIPE-GAP-ANALYSIS G-2 marked actioned.", "STRIPE-GAP-ANALYSIS.md"),
+        ("`STRIPE-GAP-ANALYSIS.md` §4 (the row's disposition) and G-3.", "STRIPE-GAP-ANALYSIS.md"),
+    ]:
+        assert want in resolve(raw, corpus, seams).paths, raw

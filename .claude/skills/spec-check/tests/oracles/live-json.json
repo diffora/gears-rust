@@ -1,6 +1,13 @@
 {
   "findings": [
     {
+      "invariant": "P1/propagation-missing",
+      "severity": "medium",
+      "file": "DECISIONS.md",
+      "line": 3461,
+      "message": "D-313 claims propagation into PRD.md, but that document never cites D-313"
+    },
+    {
       "invariant": "P1/decision-register-unparsed",
       "severity": "low",
       "file": "DECISIONS.md",

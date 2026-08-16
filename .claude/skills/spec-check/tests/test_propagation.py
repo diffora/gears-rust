@@ -46,11 +46,22 @@ def test_propagation_gaps_match_the_pinned_2026_07_29_baseline():
         for pair in (missing_pair(f) for f in check(corpora[0], seams, corpora))
         if pair is not None and not is_cross_gear(pair[1])
     }
-    assert all(gear == "pricing" for gear, _, _ in PINNED_PROPAGATION_GAPS_2026_07_29), (
-        "this baseline is documented as a pricing-only snapshot; a non-pricing entry "
-        "would invalidate this test's (id, path)-only comparison"
-    )
-    expected = {(ident, path) for _, ident, path in PINNED_PROPAGATION_GAPS_2026_07_29}
+    #
+    # Compared against the pin **plus** `LIVE_UNACCEPTED_GAPS_2026_08_16`: since
+    # 2026-08-16 the register carries one gap that is neither accepted debt nor
+    # drift-to-be-explained, but a real finding the checker's own repair
+    # surfaced. It is listed separately (see the note beside it) so that this
+    # comparison stays exact without the finding being suppressed: it is live in
+    # the CLI's output and it fails the default gate.
+    for expected_gaps in (PINNED_PROPAGATION_GAPS_2026_07_29, LIVE_UNACCEPTED_GAPS_2026_08_16):
+        assert all(gear == "pricing" for gear, _, _ in expected_gaps), (
+            "these baselines are documented as pricing-only snapshots; a non-pricing "
+            "entry would invalidate this test's (id, path)-only comparison"
+        )
+    expected = {
+        (ident, path)
+        for _, ident, path in PINNED_PROPAGATION_GAPS_2026_07_29 + LIVE_UNACCEPTED_GAPS_2026_08_16
+    }
 
     appeared = sorted(actual - expected)
     disappeared = sorted(expected - actual)
@@ -447,3 +458,139 @@ def test_is_pinned_baseline_matches_only_the_recorded_gear():
 
 def test_missing_pair_ignores_other_invariants():
     assert missing_pair(Finding("P3/code-unreferenced", Severity.LOW, "f", None, "m")) is None
+
+
+# --- own-gear documents outside the shorthand table (2026-08-16) ----------
+
+
+#: Live, **unaccepted** propagation gaps: reported by the checker, not
+#: suppressed, and failing the default `--max-severity medium` gate.
+#:
+#: Deliberately NOT added to `PINNED_PROPAGATION_GAPS_2026_07_29`, which is a
+#: snapshot of *accepted* debt taken on one day and whose contents are a human
+#: decision — the D-46 precedent beside that list is the rule: a brand-new
+#: finding put there would be buried. This tuple exists so the exact-set
+#: comparison below can still be exact while the gap stays live, and so that
+#: moving one into the pin has to be a deliberate edit in two places.
+#:
+#: - `D-313 -> PRD.md`: surfaced 2026-08-16 when the parser learned to read a
+#:   citation past its first physical line. D-313's field wraps over four lines
+#:   and its `PRD` token sits on line two, inside the clause **"rating PRD
+#:   §Definitions, §Time and §539"** — a *cross-gear* claim written in prose. As
+#:   written it names the citing gear's own `PRD.md`, which cites D-313 nowhere
+#:   (0 occurrences, measured). The resolvable form is
+#:   `../../rating/docs/PRD.md`, which `resolve` has understood since
+#:   2026-07-31. Left for the register's owner: this program does not edit gear
+#:   documents to make its own checker green.
+LIVE_UNACCEPTED_GAPS_2026_08_16 = (
+    ("pricing", "D-313", "PRD.md"),
+)
+
+
+def test_the_live_unaccepted_gaps_are_not_also_pinned_as_accepted_debt():
+    # The two lists answer different questions and must never overlap: one says
+    # "known, tracked, does not fail the run", the other "found, live, fails it".
+    assert not set(LIVE_UNACCEPTED_GAPS_2026_08_16) & set(PINNED_PROPAGATION_GAPS_2026_07_29)
+
+
+def test_a_document_outside_the_shorthand_table_is_checked_by_path():
+    # Before 2026-08-16 this produced **nothing**: the target was dropped, and
+    # `propagation-uninterpretable` never fired either, because the same
+    # citation carried a `PRD` the resolver did recognise. The claim read as
+    # verified. Live instances: D-319 and D-43, both into
+    # `STRIPE-GAP-ANALYSIS.md`, and SUB-D-19 into subscriptions' `REVIEW.md`.
+    corpus = Corpus.from_parts(
+        "gears/bss/alpha/docs",
+        [
+            ("DECISIONS.md",
+             "#### D-86 [M] Gap analysis claim\n\n"
+             "- **Propagated**: PRD §6.1; `STRIPE-GAP-ANALYSIS.md` §4.\n"),
+            ("PRD.md", "Requirement text citing D-86.\n"),
+            ("STRIPE-GAP-ANALYSIS.md", "G-4 stays open. No citation here at all.\n"),
+        ],
+    )
+    findings = check(corpus, SeamIndex(), [])
+    assert len(findings) == 1, "{!r}".format(findings)
+    assert findings[0].invariant == "P1/propagation-missing"
+    assert "STRIPE-GAP-ANALYSIS.md" in findings[0].message
+
+
+def test_a_document_outside_the_shorthand_table_is_checked_by_stem():
+    # D-43's live form, which carries no `.md` at all.
+    corpus = Corpus.from_parts(
+        "gears/bss/alpha/docs",
+        [
+            ("DECISIONS.md",
+             "#### D-85 [M] Gap analysis claim\n\n"
+             "- **Propagated**: PRD §17.7; STRIPE-GAP-ANALYSIS G-2 marked actioned.\n"),
+            ("PRD.md", "Requirement text citing D-85.\n"),
+            ("STRIPE-GAP-ANALYSIS.md", "G-2 is actioned. No citation here at all.\n"),
+        ],
+    )
+    findings = check(corpus, SeamIndex(), [])
+    assert len(findings) == 1, "{!r}".format(findings)
+    assert findings[0].invariant == "P1/propagation-missing"
+    assert "STRIPE-GAP-ANALYSIS.md" in findings[0].message
+
+
+def test_an_unresolvable_document_target_is_reported_beside_resolvable_siblings():
+    # The precise failure mode being repaired, at the invariant's own level: a
+    # citation carrying one good token and one the resolver cannot map must
+    # report the second. Reporting only when *nothing* resolved is what made a
+    # whole class of claim invisible.
+    corpus = Corpus.from_parts(
+        "gears/bss/alpha/docs",
+        [
+            ("DECISIONS.md",
+             "#### D-84 [M] Claim into a document that is not there\n\n"
+             "- **Propagated**: PRD §1; `RETIRED-ANALYSIS.md` §2.\n"),
+            ("PRD.md", "Requirement text citing D-84.\n"),
+        ],
+    )
+    findings = check(corpus, SeamIndex(), [])
+    assert len(findings) == 1, "{!r}".format(findings)
+    assert findings[0].invariant == "P1/propagation-unresolvable"
+    assert findings[0].severity == Severity.LOW
+    assert "RETIRED-ANALYSIS.md" in findings[0].message
+
+
+def test_the_previously_unchecked_live_claims_are_now_armed_against_their_targets():
+    # A claim that resolves is not yet a claim that is *checked*: three of these
+    # verify clean, and a test asserting only "no finding" would pass just as
+    # well against the tool that dropped them. So each is armed — the decision
+    # id is stripped from the document it claims, and the finding must appear.
+    import re
+
+    corpora = live_corpora()
+    by_gear = {gear_name(c): c for c in corpora}
+    cases = [
+        ("pricing", "D-43", "STRIPE-GAP-ANALYSIS.md"),
+        ("pricing", "D-319", "STRIPE-GAP-ANALYSIS.md"),
+        ("subscriptions", "SUB-D-19", "REVIEW.md"),
+    ]
+    for gear, ident, document in cases:
+        corpus = by_gear[gear]
+        seams = SeamIndex.build(corpora)
+        base = {f.message for f in check(corpus, seams, corpora)}
+        assert not any(
+            ident in message and document in message for message in base
+        ), "{} -> {} is expected to verify clean today".format(ident, document)
+
+        pattern = r"(?<![A-Za-z0-9-])" + re.escape(ident) + r"\b"
+        files = dict(corpus.files())
+        assert re.search(pattern, files[document]), (
+            "{} must actually be cited in {} for this arming to mean anything".format(
+                ident, document
+            )
+        )
+        files[document] = re.sub(pattern, "<stripped>", files[document])
+        stripped = list(corpora)
+        stripped[corpora.index(corpus)] = Corpus.from_parts(corpus.root(), files)
+        armed = {f.message for f in check(stripped[corpora.index(corpus)],
+                                          SeamIndex.build(stripped), stripped)}
+        appeared = armed - base
+        assert appeared == {
+            "{id} claims propagation into {doc}, but that document never cites {id}".format(
+                id=ident, doc=document
+            )
+        }, "{} -> {}: {!r}".format(ident, document, sorted(appeared))
