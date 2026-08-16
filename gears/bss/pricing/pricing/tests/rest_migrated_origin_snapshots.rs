@@ -478,7 +478,7 @@ async fn the_frozen_payload_is_self_contained_and_says_it_has_no_catalog_version
     assert!(rows[0].get("taxInclusive").is_some());
     assert!(rows[0].get("roundingPolicyRef").is_some());
 
-    // **The positive control for D-320.** This plan's row is `flat`, so its money
+    // **The positive control for D-322.** This plan's row is `flat`, so its money
     // is in `amountMinor` and the rate member is NULL — the other half of the
     // placement matrix `a_per_unit_lines_rate_reaches_the_frozen_payload` reads.
     // Without a case that pins the amount arm, teaching this builder about rates
@@ -514,7 +514,7 @@ async fn the_frozen_payload_is_self_contained_and_says_it_has_no_catalog_version
 }
 
 /// **A `per_unit` line's rate reaches the frozen payload, and it is the only
-/// price it has** (D-320).
+/// price it has** (D-322).
 ///
 /// D-311 moved a `per_unit` row's money out of `amount_minor` and into
 /// `unit_rate_nano`, and listed ten files as the propagation surface;

@@ -3152,7 +3152,7 @@ below is the mechanism.
 
 ##### What it costs, measured rather than estimated
 
-**The census was of the wrong operand, and one site paid for it — see D-320
+**The census was of the wrong operand, and one site paid for it — see D-322
 (2026-08-15).** It enumerates references to `unit_price_minor`, the *band* rate,
 and the column this decision also split is `amount_minor` on a `per_unit` row.
 `infra::synthesis::materialize` reads `amount_minor` and never touched a band, so
@@ -3840,7 +3840,7 @@ one case so neither can be relaxed alone without a red test.
 - **What it still does not do**: nothing validates the *shape* of a value, so `half_up_2dp` and `hlaf_up_2dp` are both declarable. The taxonomy makes the second one a deliberate act rather than an accident, which is the whole of what a membership check can buy.
 - **Rejected**: **(a) a built-in list of rounding modes** — D-320's argument, unchanged: this gear persists a reference and neither defines nor applies the policy, so a built-in list would refuse references that are correct today. **(b) A fifth `TaxonomyClass`** — clause 2. **(c) Refusing an undeclared reference only at the config surface**, leaving price rows unchecked: the row is where the reference is authored and where the money is, and the default is the smaller of the two surfaces. **(d) Deleting rather than retiring an omitted value**, which would make a published row's reference dangle instead of merely stopping it being authorable.
 - **Propagated**: S4 §5 (the config-surface table gains the route); S5 §10 (the `config × read/write` row); S1 §5 (`ROUNDING_POLICY_UNKNOWN`, declared beside the `ROUNDING_POLICY_UNRESOLVED` it narrows).
-#### D-320 [H] A rate is money too, and the frozen `migrated-origin` payload only ever learned about amounts
+#### D-322 [H] A rate is money too, and the frozen `migrated-origin` payload only ever learned about amounts
 
 - **Where**: [`design/11-lifecycle.md`](./design/11-lifecycle.md) §2 step 1b `inst-sy-payload`. Neighbours, consumed and not moved: D-87 (the payload's own decision), D-102 (its read surface), D-311 (the column split), D-319 (the previous field this builder had to be taught separately), `inst-mk-required`'s placement matrix.
 - **Problem** (found 2026-08-15, re-reading D-311's propagation surface against the one builder it does not name): `infra::synthesis::materialize` renders `"amountMinor": stored.amount_minor` and **carries no rate member in any spelling**. D-311 moved a `per_unit` row's money into `pricing_price.unit_rate_nano` and listed its cost as *"30 references to `unit_price_minor` across 10 files"* — `infra::synthesis` is in neither the list nor the staging. So since 2026-08-11 every synthesized `per_unit` line has reached Rating carrying `"amountMinor": null` and **no price anywhere in the payload**.

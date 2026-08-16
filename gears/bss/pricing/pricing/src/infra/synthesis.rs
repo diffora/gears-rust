@@ -239,7 +239,7 @@ pub async fn materialize(
             "chargeKind": stored.charge_kind,
             "modelKind": stored.model_kind,
             "amountMinor": stored.amount_minor,
-            // **The `per_unit` row's money, and between D-311 and D-320 it was
+            // **The `per_unit` row's money, and between D-311 and D-322 it was
             // nowhere in this payload.** D-311 moved a `per_unit` rate out of
             // `amount_minor` into its own column and measured its cost as
             // references to `unit_price_minor`, the *band* rate; this builder
