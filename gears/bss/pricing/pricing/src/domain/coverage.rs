@@ -388,6 +388,27 @@ pub fn check(billable: &[ScopeKey], windows: &[KeyWindows]) -> CoverageReport {
 /// `published` successor — so the set is what the rules range over, never the row
 /// list.
 #[must_use]
+/// Will this publish open the key's coverage itself (D-332)?
+///
+/// True when every billable row on the key is a **draft** this publish is about
+/// to freeze. A key that already carries a published row is not this case: its
+/// coverage existed and stopped, which is a gap an author has to answer for.
+#[must_use]
+pub fn opened_by_this_publish(shape: &PlanShape, key: &ScopeKey) -> bool {
+    let mut seen = false;
+    for record in shape
+        .rows
+        .iter()
+        .filter(|record| is_billable(record) && &record.scope_key == key)
+    {
+        if record.lifecycle_state != crate::domain::lifecycle::LifecycleState::Draft {
+            return false;
+        }
+        seen = true;
+    }
+    seen
+}
+
 pub fn billable_keys(shape: &PlanShape) -> Vec<ScopeKey> {
     let mut keys: Vec<ScopeKey> = Vec::new();
     for record in shape.rows.iter().filter(|record| is_billable(record)) {
@@ -594,6 +615,20 @@ impl ValidationRule<PlanShape> for KeyCoverageRequired {
         let coverage = check_shape(subject);
         for entry in coverage.required() {
             if entry.has_live_window() {
+                continue;
+            }
+            // **D-332: a key whose rows this publish is freezing for the first
+            // time is covered by the publish itself**, which opens a window on
+            // it at the commit instant. Skipped here so the *submit* arm agrees
+            // with the commit — the rules run on both, and a refusal at submit
+            // would mean the unit never opens and the commit is never reached.
+            //
+            // The rule keeps its whole force on every other key: one carrying a
+            // row that is **already published** has had coverage and lost it,
+            // which is an author's mistake and not an artefact of ordering.
+            // That distinction is the reason this is a filter on the key's rows
+            // rather than a flag on the publish.
+            if opened_by_this_publish(subject, entry.scope_key()) {
                 continue;
             }
             report.violate(

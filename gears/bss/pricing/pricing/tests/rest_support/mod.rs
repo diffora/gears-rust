@@ -1759,11 +1759,28 @@ pub async fn seed_priced_row(
     region: &str,
     amount_minor: i64,
 ) -> PriceRecord {
+    seed_priced_row_on_phase(harness, plan_id, region, amount_minor, seeded_phase()).await
+}
+
+/// [`seed_priced_row`] on a **named** phase.
+///
+/// A row's key names a phase and `PHASE_UNCOVERED` refuses a publish whose phase
+/// no recurring row covers, so a fixture pairing this row with a plan whose
+/// phase was minted elsewhere — `seed_publishable_shape`'s, for one — has to say
+/// which phase it means. The default is [`seeded_phase`] because most suites
+/// seed both halves and never look.
+pub async fn seed_priced_row_on_phase(
+    harness: &Harness,
+    plan_id: Uuid,
+    region: &str,
+    amount_minor: i64,
+    phase: PhaseId,
+) -> PriceRecord {
     let key = ScopeKey::new(
         PlanId::new(plan_id),
         CurrencyCode::new("USD").expect("currency"),
         Region::new(region).expect("region"),
-        seeded_phase(),
+        phase,
         PriceEligibility::AllSubscriptions,
         ChargeKind::Recurring,
         Cohort::None,

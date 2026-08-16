@@ -1171,6 +1171,112 @@ async fn publish_through_the_routes(h: &Harness, plan_id: Uuid, etag: &str) {
 /// the order is forced — publish, author, schedule, and the row rides the next
 /// publish — and nothing about it is a deadlock.
 #[tokio::test]
+/// **D-332: a priced plan publishes on its FIRST call**, and the window it needed
+/// is the one the publish opened.
+///
+/// The test beside this one records the order that used to be forced — empty
+/// publish, then the row and its window, then publish again — and why it was
+/// reachable. This one records that it is no longer *required*: the author files
+/// a row and publishes, once.
+///
+/// What it pins is the pair. The plan reaches `published` **and** the key holds
+/// a live window whose start is the commit instant, because either alone would
+/// pass on a bug: a publish that skipped the coverage rule would satisfy the
+/// first, and a window written without the row being frozen would satisfy the
+/// second.
+async fn a_priced_plan_publishes_on_its_first_call_and_the_publish_opens_the_window() {
+    let h = Harness::new().await;
+    let plan_id = Uuid::now_v7();
+    let shape = rest_support::seed_publishable_shape(&h, plan_id).await;
+    // `seed_priced_row`, not `seed_price`: the latter leaves the row
+    // unpublishable for five other reasons, and a probe that reddened on those
+    // would say nothing about coverage.
+    let row = rest_support::seed_priced_row_on_phase(&h, plan_id, "EU", 1_500, shape.phase).await;
+
+    // Submitted by hand rather than through the helper, so a refusal names the
+    // rule that produced it instead of a bare status.
+    let probe = h
+        .allowed_as(SUBMITTER)
+        .send(with_headers(
+            "POST",
+            &publish_path(plan_id),
+            None,
+            &[("if-match", &shape.etag())],
+        ))
+        .await;
+    let status = probe.status();
+    let seen = rest_support::body_json(probe).await;
+    assert_eq!(
+        status,
+        StatusCode::ACCEPTED,
+        "the submit was refused: {seen}"
+    );
+
+    let approval_id = units_of(&h, AuditSubjectKind::PlanRevision).await[0].approval_id;
+    let approved = h
+        .allowed_as(APPROVER)
+        .send(with_headers(
+            "POST",
+            &format!("/bss-pricing/v1/approvals/{approval_id}/approve"),
+            None,
+            &[],
+        ))
+        .await;
+    assert_eq!(approved.status(), StatusCode::OK, "the approve");
+    let committed = h
+        .allowed_as(SUBMITTER)
+        .send(with_headers(
+            "POST",
+            &publish_path(plan_id),
+            None,
+            &[("if-match", &shape.etag())],
+        ))
+        .await;
+    let committed_status = committed.status();
+    let committed_body = rest_support::body_json(committed).await;
+    assert_eq!(
+        committed_status,
+        StatusCode::OK,
+        "the commit was refused: {committed_body}"
+    );
+
+    assert_eq!(
+        rest_support::plan_state(&h, plan_id, shape.revision)
+            .await
+            .as_deref(),
+        Some("published"),
+        "a priced plan's first publish is refused only by the coverage rule, and the \
+         publish now satisfies it by opening the window itself"
+    );
+
+    let conn = h.state.db.conn().expect("conn");
+    let windows = bss_pricing::infra::storage::repo::window_repo::list_for_plan(
+        &conn,
+        &h.scope(),
+        h.tenant,
+        PlanId::new(plan_id),
+    )
+    .await
+    .expect("read the plane");
+    let _ = row;
+    assert_eq!(
+        windows.len(),
+        1,
+        "exactly one window, opened by the publish: {windows:?}"
+    );
+    assert_eq!(
+        windows[0].state,
+        bss_pricing::domain::window::WindowState::Scheduled,
+        "the publish writes `scheduled` and leaves activation to the sweep, which is \
+         the one thing that decides it"
+    );
+    assert!(
+        windows[0].effective_to.is_none(),
+        "open-ended: the publish opens coverage, it does not end it"
+    );
+}
+
+#[tokio::test]
 async fn a_plans_first_window_is_authorable_through_the_routes_after_an_empty_publish() {
     let h = Harness::new().await;
     let plan_id = Uuid::now_v7();
