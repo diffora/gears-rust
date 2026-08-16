@@ -85,6 +85,9 @@ pub struct BssPricingConfig {
     /// Which `CatalogVersion` source the publish path talks to. Defaults to the
     /// fail-closed one; see [`CatalogVersionRegistryConfig`].
     pub catalog_version_registry: CatalogVersionRegistryConfig,
+    /// Where the SKU pick-lists get their suggestions. Defaults to none; see
+    /// [`ProductCatalogConfig`].
+    pub product_catalog: ProductCatalogConfig,
 }
 
 impl BssPricingConfig {
@@ -119,6 +122,35 @@ impl BssPricingConfig {
 pub struct CatalogVersionRegistryConfig {
     /// Which source to use. Default [`CatalogVersionSource::Unconfigured`].
     pub mode: CatalogVersionSource,
+}
+
+/// Where the SKU pick-lists get their suggestions.
+///
+/// Separate from [`CatalogVersionRegistryConfig`] although both are the Product
+/// & SKU registry: one is a publish dependency that fails closed, the other a
+/// read this gear can do without. A deployment may reasonably have neither, or
+/// invent versions without fabricating a catalog, so they are not one switch.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ProductCatalogConfig {
+    /// Which source to use. Default [`ProductCatalogSource::Unconfigured`].
+    pub mode: ProductCatalogSource,
+}
+
+/// The product-catalog sources a deployment may name.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProductCatalogSource {
+    /// No catalog to ask. The default: the pick-lists offer what the tenant has
+    /// already priced and say that nothing was asked, which is true.
+    #[default]
+    Unconfigured,
+    /// Serve a **fabricated** static set from this process. Named at length so
+    /// it cannot be selected without saying so: a deployment carrying this value
+    /// is showing operators catalog content no registry issued. See
+    /// [`crate::infra::local_dev_catalog`] for what that costs and how it is
+    /// swept afterwards.
+    LocalDevStaticSkus,
 }
 
 /// The `CatalogVersion` sources a deployment may name.

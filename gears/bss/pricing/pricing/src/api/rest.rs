@@ -50,6 +50,7 @@ pub mod audit;
 pub mod auth_context;
 pub mod bulk_imports;
 pub mod bundles;
+pub mod catalog_skus;
 pub mod correlation;
 pub mod cursor;
 pub mod customer_groups;

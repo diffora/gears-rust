@@ -112,7 +112,10 @@ use crate::api::rest::frontier::ApiState as CatalogVersionApiState;
 use crate::api::rest::history::ApiState as HistoryApiState;
 use crate::api::rest::state::{AuthoringState, GovernanceState};
 use crate::config::BssPricingConfig;
-use crate::domain::ports::{CatalogVersionRegistryV1, UnconfiguredCatalogVersionRegistryV1};
+use crate::domain::ports::{
+    CatalogVersionRegistryV1, ProductCatalogClientV1, UnconfiguredCatalogVersionRegistryV1,
+    UnconfiguredProductCatalogClientV1,
+};
 use crate::infra::approval::ApprovalService;
 use crate::infra::fixture_gate::FixtureGate;
 use crate::infra::jobs::readmodel_warm::ReadModelWarmJob;
@@ -197,6 +200,13 @@ pub(crate) struct PricingRuntime {
     pub authoring_api: Arc<AuthoringState>,
     /// Per-request state for the approval surface and the publish mount.
     pub governance_api: Arc<GovernanceState>,
+    /// Per-request state for the SKU pick-list read.
+    ///
+    /// Its own state, not a field on [`Self::authoring_api`]: the port is an
+    /// outbound dependency on another gear and the authoring state deliberately
+    /// carries none — the same separation `api::rest::state`'s doc draws around
+    /// the registry handle.
+    pub catalog_skus_api: Arc<crate::api::rest::catalog_skus::ApiState>,
     /// Per-request state for the three membership mutations
     /// (`api::rest::customer_groups::governance_router`).
     ///
@@ -860,6 +870,43 @@ impl BssPricingGear {
     }
 }
 
+/// Resolve the SKU suggestion source.
+///
+/// Extracted from `init` rather than inlined beside the version registry's own
+/// resolution: the two are the same shape, and together they pushed `init` over
+/// the line budget. **A registered client always wins** over the config mode —
+/// a deployment that later gains a real registry must take it even if the dev
+/// mode was left in its file, since the failure to avoid is a stand quietly
+/// serving fabricated SKUs after the registry arrives.
+fn resolve_product_catalog(
+    ctx: &GearCtx,
+    config: &BssPricingConfig,
+) -> Arc<dyn ProductCatalogClientV1> {
+    ctx.client_hub()
+        .get::<dyn ProductCatalogClientV1>()
+        .unwrap_or_else(|_| match config.product_catalog.mode {
+            crate::config::ProductCatalogSource::LocalDevStaticSkus => {
+                tracing::warn!(
+                    mode = "local_dev_static_skus",
+                    id_prefix = crate::infra::local_dev_catalog::DEV_LOCAL_SKU_PREFIX,
+                    code_prefix = crate::infra::local_dev_catalog::DEV_LOCAL_CODE_PREFIX,
+                    "bss-pricing: serving a FABRICATED product catalog. Operators are being \
+                     shown SKUs no registry issued, and a plan bound to one carries a made-up \
+                     id. Every id is in the reserved namespace above so the rows can be found \
+                     later. Never run this beside the Product & SKU registry."
+                );
+                Arc::new(crate::infra::local_dev_catalog::LocalDevStaticProductCatalog::new())
+            }
+            crate::config::ProductCatalogSource::Unconfigured => {
+                info!(
+                    "bss-pricing: no ProductCatalogClientV1 registered; SKU pick-lists will \
+                     offer only what this tenant already prices"
+                );
+                Arc::new(UnconfiguredProductCatalogClientV1)
+            }
+        })
+}
+
 #[async_trait]
 impl Gear for BssPricingGear {
     /// Build the runtime when the gear is configured. Absent from `gears:` →
@@ -970,6 +1017,16 @@ impl Gear for BssPricingGear {
                     Arc::new(UnconfiguredCatalogVersionRegistryV1)
                 }
             });
+
+        let product_catalog = resolve_product_catalog(ctx, &config);
+
+        let catalog_skus_api = Arc::new(crate::api::rest::catalog_skus::ApiState {
+            catalog: Arc::clone(&product_catalog),
+            source: match config.product_catalog.mode {
+                crate::config::ProductCatalogSource::LocalDevStaticSkus => "local_dev_static",
+                crate::config::ProductCatalogSource::Unconfigured => "unconfigured",
+            },
+        });
 
         // The joint-conformance publish gate. Deliberately NOT fatal when the
         // registry cannot be read: `FixtureGate::load` returns a gate that is
@@ -1158,6 +1215,7 @@ impl Gear for BssPricingGear {
             audit_api,
             authoring_api,
             governance_api,
+            catalog_skus_api,
             membership_api,
             metrics,
         })));
@@ -1398,6 +1456,10 @@ impl RestApiCapability for BssPricingGear {
             ))
             .merge(crate::api::rest::rounding_policies::router(
                 Arc::clone(&rt.authoring_api),
+                openapi,
+            ))
+            .merge(crate::api::rest::catalog_skus::router(
+                Arc::clone(&rt.catalog_skus_api),
                 openapi,
             ))
             .merge(crate::api::rest::windows::router(

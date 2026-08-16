@@ -705,6 +705,15 @@ impl Harness {
                 Arc::clone(&self.state),
                 &openapi,
             ))
+            .merge(bss_pricing::api::rest::catalog_skus::router(
+                Arc::new(bss_pricing::api::rest::catalog_skus::ApiState {
+                    catalog: Arc::new(
+                        bss_pricing::domain::ports::UnconfiguredProductCatalogClientV1,
+                    ),
+                    source: "unconfigured",
+                }),
+                &openapi,
+            ))
             .merge(bss_pricing::api::rest::preview::router(
                 Arc::clone(&self.governance),
                 &openapi,

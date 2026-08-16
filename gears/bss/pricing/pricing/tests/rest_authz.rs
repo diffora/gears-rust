@@ -37,6 +37,7 @@ use bss_pricing::api::rest::approvals::{
 use bss_pricing::api::rest::audit::AUDIT;
 use bss_pricing::api::rest::bulk_imports::{BULK_IMPORT, BULK_IMPORT_ABORT, BULK_IMPORTS};
 use bss_pricing::api::rest::bundles::{BUNDLE_BY_ID, BUNDLE_PUBLISH, BUNDLES};
+use bss_pricing::api::rest::catalog_skus::CATALOG_SKUS;
 use bss_pricing::api::rest::customer_groups::{
     CUSTOMER_GROUP_MEMBER, CUSTOMER_GROUP_MEMBER_MOVE, CUSTOMER_GROUP_MEMBERS,
     CUSTOMER_GROUP_TAXONOMY,
@@ -602,6 +603,16 @@ fn config_routes() -> Vec<Route> {
             resource_type: labels::CONFIG,
             action: actions::WRITE,
             mutating: true,
+        },
+        // A pass-through of another gear's browse list. `config` x `read` like
+        // the taxonomies beside it: it is a suggestion source for authoring and
+        // decides nothing, and it is not `plan` because no plan is named.
+        Route {
+            method: "GET",
+            path: CATALOG_SKUS,
+            resource_type: labels::CONFIG,
+            action: actions::READ,
+            mutating: false,
         },
     ]
 }
@@ -1294,6 +1305,15 @@ async fn registered_paths() -> Vec<String> {
             ))
             .merge(bss_pricing::api::rest::rounding_policies::router(
                 Arc::clone(&harness.state),
+                &openapi,
+            ))
+            .merge(bss_pricing::api::rest::catalog_skus::router(
+                Arc::new(bss_pricing::api::rest::catalog_skus::ApiState {
+                    catalog: Arc::new(
+                        bss_pricing::domain::ports::UnconfiguredProductCatalogClientV1,
+                    ),
+                    source: "unconfigured",
+                }),
                 &openapi,
             ))
             .merge(bss_pricing::api::rest::preview::router(

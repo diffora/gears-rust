@@ -22,3 +22,7 @@ toolkit-canonical-errors = { workspace = true }
 # onto its own fail-closed publish rejection.
 thiserror = { workspace = true }
 toolkit-security = { workspace = true }
+# A registry SKU id, which a plan's `sku_id` binds to and which is a UUID
+# everywhere it appears. The contract carries the type rather than a `String`
+# so a caller cannot pass a code where an id belongs.
+uuid = { workspace = true }

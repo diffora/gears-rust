@@ -73,6 +73,7 @@ fn declared_paths() -> Vec<(&'static str, &'static str)> {
     use bss_pricing::api::rest::audit::AUDIT;
     use bss_pricing::api::rest::bulk_imports::{BULK_IMPORT, BULK_IMPORT_ABORT, BULK_IMPORTS};
     use bss_pricing::api::rest::bundles::{BUNDLE_BY_ID, BUNDLE_PUBLISH, BUNDLES};
+    use bss_pricing::api::rest::catalog_skus::CATALOG_SKUS;
     use bss_pricing::api::rest::customer_groups::{
         CUSTOMER_GROUP_MEMBER, CUSTOMER_GROUP_MEMBER_MOVE, CUSTOMER_GROUP_MEMBERS,
         CUSTOMER_GROUP_TAXONOMY,
@@ -170,6 +171,7 @@ fn declared_paths() -> Vec<(&'static str, &'static str)> {
         ("PUT", ROUNDING_POLICY),
         ("GET", ROUNDING_POLICIES),
         ("PUT", ROUNDING_POLICIES),
+        ("GET", CATALOG_SKUS),
         ("POST", BUNDLES),
         ("GET", BUNDLES),
         // D-310: the composition's reader. It was unreadable through any surface,
@@ -264,6 +266,15 @@ fn config_routers(
         ))
         .merge(bss_pricing::api::rest::rounding_policies::router(
             Arc::clone(authoring),
+            openapi,
+        ))
+        .merge(bss_pricing::api::rest::catalog_skus::router(
+            std::sync::Arc::new(bss_pricing::api::rest::catalog_skus::ApiState {
+                catalog: std::sync::Arc::new(
+                    bss_pricing::domain::ports::UnconfiguredProductCatalogClientV1,
+                ),
+                source: "unconfigured",
+            }),
             openapi,
         ))
 }

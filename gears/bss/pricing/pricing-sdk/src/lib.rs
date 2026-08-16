@@ -14,10 +14,14 @@
 pub mod api;
 pub mod catalog_version;
 pub mod catalog_version_registry;
+pub mod product_catalog;
 
 pub use api::PricingCatalogClientV1;
 pub use catalog_version::{CatalogVersion, PinFrontier};
 pub use catalog_version_registry::{
     CatalogVersionRegistryError, CatalogVersionRegistryV1, PendingVersionRef,
     UnconfiguredCatalogVersionRegistryV1,
+};
+pub use product_catalog::{
+    CatalogSku, ProductCatalogClientV1, ProductCatalogError, UnconfiguredProductCatalogClientV1,
 };

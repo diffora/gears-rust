@@ -1,4 +1,4 @@
-//! Outbound ports the publish engine depends on.
+//! Outbound ports this gear depends on.
 //!
 //! The `CatalogVersion` registry is the one external actor the publish path
 //! cannot proceed without: the Product & SKU registry is the **sole**
@@ -7,12 +7,20 @@
 //! (`bss_pricing_sdk::catalog_version_registry`) so the registry gear can
 //! implement it without depending on this crate; this module is where the
 //! engine resolves it.
+//!
+//! The **product catalog** is the same registry seen from the other side, and
+//! the opposite kind of dependency: nothing is refused for want of it. It is a
+//! suggestion source for the surfaces that author a meter or bind a `sku_id`,
+//! and its absence is reported rather than rendered as an empty catalog.
 
 pub mod metrics;
 
 pub use bss_pricing_sdk::catalog_version_registry::{
     CatalogVersionRegistryError, CatalogVersionRegistryV1, PendingVersionRef,
     UnconfiguredCatalogVersionRegistryV1,
+};
+pub use bss_pricing_sdk::product_catalog::{
+    CatalogSku, ProductCatalogClientV1, ProductCatalogError, UnconfiguredProductCatalogClientV1,
 };
 
 use crate::domain::error::DomainError;
