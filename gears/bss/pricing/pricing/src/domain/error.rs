@@ -303,6 +303,24 @@ pub enum DomainError {
     /// Another current row already occupies the canonical scope key.
     #[error("duplicate canonical scope key: {0}")]
     DuplicateScopeKey(String),
+    /// A `phases` write named a `phase_id` the plan revision already holds
+    /// (`PHASE_ID_IN_USE`, §5, **409**, D-340).
+    ///
+    /// The conflict class for [`DomainError::DuplicateScopeKey`]'s reason and in
+    /// the same words — *this key is already held* — and a separate variant for
+    /// [`DomainError::PrecedenceDuplicate`]'s: that one names a price row's
+    /// canonical key, and a caller told their scope key was duplicated would go
+    /// looking for a price row that has nothing to do with the refusal.
+    ///
+    /// **Not a publish-pipeline violation**, which is why it is a variant of its
+    /// own rather than a `ValidationReport` entry: the store raises it at the
+    /// write, no rule emits it, and a code in the pipeline's roster that no rule
+    /// emits would make the roster claim a rule that does not exist (D-340
+    /// clause 3). §5 declares the code, so unlike
+    /// [`DomainError::BundleExistsOnPlan`] the spelling is not this gear's to
+    /// invent.
+    #[error("phase id already in use: {0}")]
+    PhaseIdInUse(String),
     /// The submitted `ETag` / row version is stale: an interactive edit and a
     /// bulk run collided, or the caller is working from a read it did not
     /// refresh. Neither change is silently overwritten.

@@ -25,7 +25,7 @@ fn clone_path(plan_id: Uuid) -> String {
     format!("{PLANS}/{plan_id}/clone")
 }
 use rest_support::{
-    Harness, audit_rows, body_json, etag_of, location_of, not_found_code, plan_count,
+    Harness, audit_rows, body_json, code_in, etag_of, location_of, not_found_code, plan_count,
     plan_row_version, plan_state, problem_code, request, seed_current_plan, seed_draft_plan,
     seed_foreign_plan, seed_price, with_headers,
 };
@@ -1884,6 +1884,121 @@ async fn a_phase_id_one_tenant_holds_is_free_for_another() {
         body["phases"][0]["phase_id"],
         serde_json::json!(shared_phase),
         "and the foreign tenant's plan holds the id, so this is not a 200 over a no-op"
+    );
+}
+
+/// **A `phases` payload naming one id twice answers `PHASE_ID_IN_USE` (409), not
+/// a `500` advising a retry — D-340.**
+///
+/// The two cases above are the collisions D-340 made legal; this is the one it
+/// left, and after the widening it is the **only reachable** arrangement. The
+/// facet is a wholesale replace — `replace_phases_on` deletes the revision's
+/// phase rows and re-inserts the payload inside one transaction — so no other
+/// writer can be holding a `(tenant, plan, revision, phase)` slot this write
+/// wants. The one caller who can is the payload itself.
+///
+/// What it answered before: every `DbErr` out of `insert_phases` mapped to
+/// `RepoError::Db` and reached the caller as `500 Internal, "please retry
+/// later"` — false for a class no retry can fix, and naming neither the
+/// constraint nor the id, which is the single fact an author needs.
+///
+/// **The second phase converts to the first rather than being terminal too**, and
+/// that is load-bearing: two terminal rows collide on
+/// `uq_pricing_plan_phase_terminal` — `(plan_id, plan_revision) WHERE
+/// converts_to_phase_id IS NULL` — which is a *different* constraint, must keep
+/// answering as it did, and would let this case pass while the primary key's
+/// refusal was still untyped. `plan_shape_repo_tests` pins that discrimination on
+/// both engines' renderings without a database.
+#[tokio::test]
+async fn a_phases_payload_naming_one_id_twice_answers_the_conflict_and_names_it() {
+    let harness = Harness::new().await;
+    let plan_id = Uuid::now_v7();
+    let phase = Uuid::now_v7();
+    seed_draft_plan(&harness, plan_id).await;
+
+    // The positive control, first and on the same plan: a two-row payload is
+    // accepted, so what the refusal below discriminates is the repeated id and
+    // not the arity. Without it a door that refused every multi-phase chain —
+    // every trial-plus-evergreen plan in the gear — would satisfy the assertion
+    // that follows.
+    let chain = harness
+        .allowed()
+        .send(with_headers(
+            "PATCH",
+            &plan_path(plan_id),
+            Some(serde_json::json!({
+                "phases": [
+                    {
+                        "phase_id": phase,
+                        "kind": "trial",
+                        "ordinal": 0,
+                        "converts_to_phase_id": Uuid::now_v7(),
+                        "phase_duration_days": 14
+                    },
+                    { "phase_id": Uuid::now_v7(), "kind": "evergreen", "ordinal": 1 }
+                ]
+            })),
+            &[("if-match", "\"0-0\"")],
+        ))
+        .await;
+    assert_eq!(
+        chain.status(),
+        StatusCode::OK,
+        "two distinct phases in one payload must still be accepted"
+    );
+
+    let collided = harness
+        .allowed()
+        .send(with_headers(
+            "PATCH",
+            &plan_path(plan_id),
+            Some(serde_json::json!({
+                "phases": [
+                    {
+                        "phase_id": phase,
+                        "kind": "trial",
+                        "ordinal": 0,
+                        "converts_to_phase_id": phase,
+                        "phase_duration_days": 14
+                    },
+                    { "phase_id": phase, "kind": "evergreen", "ordinal": 1 }
+                ]
+            })),
+            &[("if-match", "\"0-1\"")],
+        ))
+        .await;
+
+    assert_eq!(collided.status(), StatusCode::CONFLICT);
+    let body = body_json(collided).await;
+    assert_eq!(
+        code_in(&body),
+        "PHASE_ID_IN_USE",
+        "the code is the discriminator a client matches on: {body}"
+    );
+    assert!(
+        body.to_string().contains(&phase.to_string()),
+        "the refusal must name the id, which is the one fact the author acts on: {body}"
+    );
+
+    // The refused replace rolled back whole: the chain the control wrote is
+    // still there and the revision did not move. A 409 over a half-applied
+    // delete-then-insert would leave the plan with fewer phases than it had.
+    assert_eq!(
+        plan_row_version(&harness, plan_id, 0).await,
+        Some(1),
+        "a refused child write must not move the revision"
+    );
+    let read = body_json(
+        harness
+            .allowed()
+            .send(request("GET", &plan_path(plan_id), None))
+            .await,
+    )
+    .await;
+    assert_eq!(
+        read["phases"].as_array().map(Vec::len),
+        Some(2),
+        "the accepted chain survives the refusal: {read}"
     );
 }
 

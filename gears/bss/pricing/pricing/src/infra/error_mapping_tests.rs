@@ -140,6 +140,10 @@ fn conflicts_are_409() {
     let detail = || "detail".to_owned();
 
     assert_eq!(status(DomainError::DuplicateScopeKey(detail())), 409);
+    // D-340's, and the line above's class one table over: `pricing_plan_phase`'s
+    // primary key refused, which §5 types 409 outright. It answered `500` and
+    // advised a retry until 2026-08-17, for a class no retry can fix.
+    assert_eq!(status(DomainError::PhaseIdInUse(detail())), 409);
     assert_eq!(status(DomainError::StaleVersion(detail())), 409);
     assert_eq!(
         status(DomainError::IdempotencyPayloadMismatch(detail())),
@@ -299,6 +303,13 @@ fn the_wire_codes_survive_the_ladder() {
     assert_eq!(
         aborted_reason(DomainError::DuplicateScopeKey(detail())),
         "DUPLICATE_SCOPE_KEY"
+    );
+    // Read off the typed 409 context rather than out of `Debug`, like its
+    // neighbours: `reason` is where a client finds the discriminator, and D-340's
+    // whole complaint about the `500` was that it carried none.
+    assert_eq!(
+        aborted_reason(DomainError::PhaseIdInUse(detail())),
+        "PHASE_ID_IN_USE"
     );
     assert_eq!(
         aborted_reason(DomainError::StaleVersion(detail())),

@@ -369,6 +369,14 @@ impl From<DomainError> for CanonicalError {
             D::DuplicateScopeKey(detail) => {
                 aborted(detail, crate::domain::import::DUPLICATE_SCOPE_KEY)
             }
+            // §5 types `PHASE_ID_IN_USE` **409 outright** (D-340), and it is the
+            // line above's class one table over: the store's own key refused, and
+            // the remedy is to name an id the revision does not hold. It replaced
+            // a bare `500` advising a retry that could never help. The spelling is
+            // a literal here rather than a constant because no rule emits it —
+            // `plan_rules`' roster is the codes the publish pipeline produces, and
+            // a constant filed there would read as a rule this gear does not have.
+            D::PhaseIdInUse(detail) => aborted(detail, "PHASE_ID_IN_USE"),
             D::StaleVersion(detail) => aborted(detail, "STALE_VERSION"),
             D::IdempotencyPayloadMismatch(detail) => {
                 aborted(detail, "IDEMPOTENCY_PAYLOAD_MISMATCH")

@@ -212,6 +212,29 @@ pub enum RepoError {
     /// that do not actually share a key.
     #[error("pricing repo: duplicate canonical scope key: {0}")]
     DuplicateScopeKey(String),
+    /// A `phases` write named a `phase_id` this plan revision already holds
+    /// (`pricing_plan_phase_pkey`, **D-340**).
+    ///
+    /// [`RepoError::DuplicateScopeKey`]'s shape, deliberately, because it is the
+    /// same sentence about a different key: *this key is already held*. The id is
+    /// carried verbatim for that variant's reason — a refusal that dropped it
+    /// would report a collision without saying what collided, which is the fault
+    /// D-340 measured. Before it existed the violation reached the caller as
+    /// [`RepoError::Db`] and therefore as `500 Internal` advising a retry, for a
+    /// class no retry can fix.
+    ///
+    /// After D-340 widened the key to `(tenant_id, plan_id, plan_revision,
+    /// phase_id)` the only reachable collision is a payload naming one id twice:
+    /// the facet deletes the revision's phase rows and re-inserts them wholesale
+    /// in one transaction, so no other writer can hold a slot this write wants.
+    /// It stays a typed refusal rather than a payload pre-check because the
+    /// constraint is the store's and one code per constraint survives the key
+    /// being narrowed again.
+    #[error(
+        "pricing repo: phase id {0} is named twice by this write, or is already held by this \
+         plan revision; a revision holds each phase id at most once"
+    )]
+    PhaseIdInUse(String),
 
     /// The price row is already held by an **in-flight bulk operation**
     /// (`uq`/PK on `pricing_bulk_row_lock`, `inst-bk-lock`).
@@ -891,6 +914,13 @@ pub fn repo_failure(err: &RepoError) -> DomainError {
             "{subject} {id}: current {current}, submitted {submitted}"
         )),
         RepoError::DuplicateScopeKey(key) => DomainError::DuplicateScopeKey(key.clone()),
+        // D-340's `PHASE_ID_IN_USE`, in the conflict class beside the line above
+        // for the reason the variant's own doc gives: the sentence is *this key is
+        // already held*. The whole `Display` is carried rather than the bare id —
+        // `DuplicateScopeKey` above passes the key alone because the key's
+        // rendering *is* the sentence there, while here the id needs the clause
+        // saying what holds it, which is the half the old `500` withheld.
+        RepoError::PhaseIdInUse(_) => DomainError::PhaseIdInUse(err.to_string()),
         // A conflicting state the caller can act on, and not a scope-key
         // collision: `DUPLICATE_SCOPE_KEY` names a price row's canonical key and
         // reporting a bundle under it would tell an operator to go and look at a
