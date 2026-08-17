@@ -291,6 +291,106 @@ async fn a_plan_created_without_a_name_answers_null_for_it() {
     );
 }
 
+/// The create performs D-19's creation-time act: one terminal `evergreen` phase.
+///
+/// Pinned on the **201 body** and not only on a later read, because the id is
+/// what a caller has to key its price rows on — a phase discoverable only by a
+/// second GET is a phase every client has to go looking for, and the client that
+/// does not go looking authors rows against an id it invented (which is exactly
+/// how the stand acquired a plan whose rows name a phase nobody attached).
+#[tokio::test]
+async fn a_created_plan_carries_one_terminal_evergreen_phase() {
+    let harness = Harness::new().await;
+
+    let response = harness
+        .allowed()
+        .send(with_headers(
+            "POST",
+            PLANS,
+            Some(create_body("gold")),
+            &keyed("create-seeds-phase"),
+        ))
+        .await;
+
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let body = body_json(response).await;
+
+    let phases = body["phases"]
+        .as_array()
+        .expect("the created plan answers its phase set");
+    assert_eq!(
+        phases.len(),
+        1,
+        "exactly one phase, and it is the terminal one"
+    );
+    assert_eq!(phases[0]["kind"], serde_json::json!("evergreen"));
+    assert_eq!(phases[0]["converts_to_phase_id"], serde_json::Value::Null);
+    assert_eq!(phases[0]["phase_duration_days"], serde_json::Value::Null);
+    assert_eq!(phases[0]["display_trial_days"], serde_json::Value::Null);
+
+    // The seed is part of creation, not an edit of it: a bumped version would
+    // mean the plan was born carrying a change nobody made, and the next
+    // `If-Match` a client sends is the one this body just handed it.
+    assert_eq!(body["row_version"], serde_json::json!(0));
+
+    let plan_id = body["plan_id"].as_str().expect("the id is answered");
+    let seeded = phases[0]["phase_id"]
+        .as_str()
+        .expect("the phase id is answered");
+
+    let read = harness
+        .allowed()
+        .send(with_headers(
+            "GET",
+            &format!("{PLANS}/{plan_id}"),
+            None,
+            &[],
+        ))
+        .await;
+    assert_eq!(read.status(), StatusCode::OK);
+    let read_body = body_json(read).await;
+    assert_eq!(
+        read_body["phases"][0]["phase_id"],
+        serde_json::json!(seeded),
+        "the read answers the same phase the create minted"
+    );
+}
+
+/// A replay seeds nothing further.
+///
+/// The guard stores the first caller's body, so the second call must answer the
+/// same single phase — not a second one, and not an empty set.
+#[tokio::test]
+async fn a_replayed_create_answers_the_same_single_phase() {
+    let harness = Harness::new().await;
+
+    let first = harness
+        .allowed()
+        .send(with_headers(
+            "POST",
+            PLANS,
+            Some(create_body("gold")),
+            &keyed("create-seed-replay"),
+        ))
+        .await;
+    assert_eq!(first.status(), StatusCode::CREATED);
+    let first_body = body_json(first).await;
+    let minted = first_body["phases"][0]["phase_id"].clone();
+
+    let replay = harness
+        .allowed()
+        .send(with_headers(
+            "POST",
+            PLANS,
+            Some(create_body("gold")),
+            &keyed("create-seed-replay"),
+        ))
+        .await;
+    let replay_body = body_json(replay).await;
+    assert_eq!(replay_body["phases"].as_array().map(Vec::len), Some(1));
+    assert_eq!(replay_body["phases"][0]["phase_id"], minted);
+}
+
 /// An empty name is refused rather than stored beside `NULL` (D-318).
 #[tokio::test]
 async fn an_empty_plan_name_is_refused_at_the_write() {

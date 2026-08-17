@@ -1496,6 +1496,33 @@ pub(super) async fn plan_revision_bump(
 // Domain <-> storage.
 // ---------------------------------------------------------------------------
 
+/// One phase as a row of `pricing_plan_phase`.
+///
+/// Extracted from [`phase_models`] so the creation-time seed and the whole-set
+/// replace build the row **one** way: two constructions of the same row are two
+/// places for a column added later to be forgotten.
+fn phase_model_for(
+    tenant_id: Uuid,
+    plan_id: Uuid,
+    revision: i64,
+    phase: &PlanPhase,
+) -> Result<plan_phase::ActiveModel, RepoError> {
+    Ok(plan_phase::ActiveModel {
+        phase_id: Set(phase.phase_id.get()),
+        plan_revision: Set(revision),
+        tenant_id: Set(tenant_id),
+        plan_id: Set(plan_id),
+        kind: Set(phase.kind.as_str().to_owned()),
+        ordinal: Set(phase.ordinal),
+        converts_to_phase_id: Set(phase.converts_to_phase_id.map(PhaseId::get)),
+        phase_duration_days: Set(stored_count(
+            "phaseDurationDays",
+            phase.phase_duration_days,
+        )?),
+        display_trial_days: Set(stored_count("displayTrialDays", phase.display_trial_days)?),
+    })
+}
+
 /// Render a submitted phase set into the rows that hold it.
 ///
 /// Every row's `tenant_id`, `plan_id` and `plan_revision` are taken from
@@ -1508,26 +1535,51 @@ fn phase_models(
 ) -> Result<Vec<plan_phase::ActiveModel>, RepoError> {
     phases
         .iter()
-        .map(|phase| {
-            Ok(plan_phase::ActiveModel {
-                phase_id: Set(phase.phase_id.get()),
-                plan_revision: Set(parent.revision),
-                tenant_id: Set(parent.tenant_id),
-                plan_id: Set(parent.plan_id),
-                kind: Set(phase.kind.as_str().to_owned()),
-                ordinal: Set(phase.ordinal),
-                converts_to_phase_id: Set(phase.converts_to_phase_id.map(PhaseId::get)),
-                phase_duration_days: Set(stored_count(
-                    "phaseDurationDays",
-                    phase.phase_duration_days,
-                )?),
-                display_trial_days: Set(stored_count(
-                    "displayTrialDays",
-                    phase.display_trial_days,
-                )?),
-            })
-        })
+        .map(|phase| phase_model_for(parent.tenant_id, parent.plan_id, parent.revision, phase))
         .collect()
+}
+
+/// Write the implicit terminal phase a plan is created with (D-19,
+/// `inst-ph-default`).
+///
+/// **Not [`replace_phases_on`].** That is a compare-and-swap: it re-reads the
+/// draft, bumps the revision's row version and writes its own D-135 audit
+/// record. A plan created through it would be born at version 1 carrying a
+/// record of an edit nobody made, and the tag the create answered would already
+/// be stale. Creation is one act; the phase is part of it, so this writes the
+/// child row and nothing else.
+///
+/// **The runner must be the create's transaction** —
+/// [`plan_repo::create_draft_on`](super::plan_repo::create_draft_on)'s house
+/// rule: a committed plan with no phase is the state this call exists to
+/// abolish, so the two writes commit together or neither does.
+///
+/// `tenant_id` is a parameter because [`PlanRevision`] carries none — the
+/// revision is identified by `(plan_id, revision)` and the tenant is the
+/// caller's, checked against the caller's scope by `scope_with_model` on the way
+/// in, exactly as [`phase_models`]' rows are.
+///
+/// # Errors
+/// [`RepoError::ValueOutOfRange`] if the revision number is past what its
+/// `bigint` column holds — checked rather than cast, since a cast would address
+/// a different revision. [`RepoError::Db`] if the insert fails or the model's
+/// tenant does not match the caller's scope, which includes the child table's
+/// append-only trigger refusing a parent that is not a `draft`.
+pub async fn seed_terminal_phase_on(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    revision: &PlanRevision,
+    phase: &PlanPhase,
+) -> Result<(), RepoError> {
+    let Some(stored) = stored_revision(revision.revision) else {
+        return Err(RepoError::ValueOutOfRange {
+            field: "revision".to_owned(),
+            value: revision.revision.to_string(),
+        });
+    };
+    let model = phase_model_for(tenant_id, revision.plan_id.get(), stored, phase)?;
+    insert_phases(runner, scope, vec![model]).await
 }
 
 /// Map a stored row to the domain value, at this boundary and nowhere else.

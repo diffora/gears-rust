@@ -67,7 +67,7 @@ use crate::domain::plan_shape::{
 use crate::domain::scope_key::{PhaseId, PlanId, Region};
 use crate::infra::clone::{CloneNotice, CloneReceipt, clone_plan_on};
 use crate::infra::idempotent::{self, Guarded, GuardedRequest, TxFuture};
-use crate::infra::storage::repo::{NewPlanDraft, PlanRepo, plan_repo};
+use crate::infra::storage::repo::{NewPlanDraft, PlanRepo, plan_repo, plan_shape_repo};
 use crate::infra::storage::{RepoError, repo_failure};
 
 /// `OpenAPI` tag applied to every plan operation (DE0205).
@@ -1310,7 +1310,7 @@ async fn create_plan(
         &state.idempotency,
         &scope,
         guard,
-        move |txn: &DbTx<'_>| -> TxFuture<'_, PlanRevision> {
+        move |txn: &DbTx<'_>| -> TxFuture<'_, (PlanRevision, PlanPhase)> {
             Box::pin(async move {
                 // Minted here rather than before the claim: a replay must answer
                 // the first caller's id, and an id minted outside the guarded
@@ -1327,15 +1327,42 @@ async fn create_plan(
                 // pipeline richer than one repository call has refusals no `RepoError`
                 // can carry. The ladder is the same one, at the call site that knows
                 // what it produced.
-                plan_repo::create_draft_on(txn, &scope_for_body, draft)
+                let revision = plan_repo::create_draft_on(txn, &scope_for_body, draft)
                     .await
-                    .map_err(|e| repo_failure(&e))
+                    .map_err(|e| repo_failure(&e))?;
+
+                // D-19's creation-time act (`inst-ph-default`): the `phase`
+                // scope-key axis is always a `phase_id` and its default value is
+                // the plan's terminal phase, so a plan without one cannot be
+                // priced at all — the add-row surface has nothing to key on.
+                // Minted here, in the same transaction, for the same reason the
+                // plan id is.
+                let phase = PlanPhase {
+                    phase_id: PhaseId::new(Uuid::now_v7()),
+                    kind: PhaseKind::Evergreen,
+                    ordinal: 0,
+                    converts_to_phase_id: None,
+                    phase_duration_days: None,
+                    display_trial_days: None,
+                };
+                plan_shape_repo::seed_terminal_phase_on(
+                    txn,
+                    &scope_for_body,
+                    tenant,
+                    &revision,
+                    &phase,
+                )
+                .await
+                .map_err(|e| repo_failure(&e))?;
+
+                Ok((revision, phase))
             })
         },
-        |revision: &PlanRevision| {
+        |created: &(PlanRevision, PlanPhase)| {
+            let (revision, phase) = created;
             let view = PlanView::new(
                 revision.clone(),
-                Vec::new(),
+                vec![*phase],
                 Vec::new(),
                 None,
                 Vec::new(),
@@ -1349,7 +1376,7 @@ async fn create_plan(
     .map_err(CanonicalError::from)?;
 
     Ok(match outcome {
-        Guarded::Performed(revision) => created(&revision),
+        Guarded::Performed((revision, phase)) => created(&revision, &phase),
         Guarded::Replayed { status, body } => replayed(status, &body),
     })
 }
@@ -1826,10 +1853,18 @@ async fn answer_revision(
 }
 
 /// The 201 a performed create answers with.
-fn created(revision: &PlanRevision) -> Response {
+///
+/// It takes the seeded phase rather than rendering an empty set, and the two
+/// renderings are not interchangeable: this one is the **response**, while the
+/// closure `guarded` was given renders the body it *stores* for a replay. A
+/// create that answered `phases: []` here and the phase on the replay would hand
+/// the first caller — the only one that ever sees a 201 — nothing to key its
+/// price rows on, which is the whole of D-19's creation-time act missed by one
+/// function.
+fn created(revision: &PlanRevision, phase: &PlanPhase) -> Response {
     let view = PlanView::new(
         revision.clone(),
-        Vec::new(),
+        vec![*phase],
         Vec::new(),
         None,
         Vec::new(),
