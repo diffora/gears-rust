@@ -30,8 +30,6 @@ const EXPECTED_PERMISSION_IDS: &[&str] = &[
     gts_id!("cf.toolkit.authz.permission.v1~cf.bss.pricing.approval_policy_read.v1"),
     gts_id!("cf.toolkit.authz.permission.v1~cf.bss.pricing.config_write.v1"),
     gts_id!("cf.toolkit.authz.permission.v1~cf.bss.pricing.config_read.v1"),
-    gts_id!("cf.toolkit.authz.permission.v1~cf.bss.pricing.historical_import_write.v1"),
-    gts_id!("cf.toolkit.authz.permission.v1~cf.bss.pricing.historical_import_read.v1"),
     gts_id!("cf.toolkit.authz.permission.v1~cf.bss.pricing.audit_read.v1"),
     gts_id!("cf.toolkit.authz.permission.v1~cf.bss.pricing.audit_export.v1"),
 ];

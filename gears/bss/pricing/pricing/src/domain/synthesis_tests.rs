@@ -1,18 +1,14 @@
-//! Unit cases for [`super`] — D-76's tier order, D-81's two instants,
-//! `inst-sy-firstrating`'s never-inline rule and clause (3)'s fail-closed refusal.
+//! Unit cases for [`super`] — D-76's live-history rule (its tier *order* went with
+//! tier 2 under D-330), D-81's two instants, `inst-sy-firstrating`'s never-inline
+//! rule and clause (3)'s fail-closed refusal.
 
-use chrono::{TimeZone as _, Utc};
 use uuid::Uuid;
 
 use super::{
-    LiveCandidate, ReferenceCandidate, SelectedRow, SelectionTier, SynthesisOutcome,
-    SynthesisTrigger, UnresolvedKey, select_rows,
+    LiveCandidate, SelectedRow, SelectionTier, SynthesisOutcome, SynthesisTrigger, UnresolvedKey,
+    select_rows,
 };
 use crate::domain::error::DomainError;
-
-fn at(day: u32) -> chrono::DateTime<Utc> {
-    Utc.with_ymd_and_hms(2026, 1, day, 0, 0, 0).unwrap()
-}
 
 fn live(plan_revision: Option<u64>) -> LiveCandidate {
     LiveCandidate {
@@ -21,26 +17,23 @@ fn live(plan_revision: Option<u64>) -> LiveCandidate {
     }
 }
 
-fn reference(day: u32) -> ReferenceCandidate {
-    ReferenceCandidate {
-        historical_price_id: Uuid::now_v7(),
-        effective_from: at(day),
-    }
-}
-
 // ---------------------------------------------------------------------------
-// D-76's two tiers.
+// D-76's live-history rule, as narrowed by D-330.
+//
+// Four cases stood here for tier 2 — its short-circuit, its greatest-
+// `effective_from` order, its at-most-one answer and the "the seam still holds"
+// case that asserted the empty-input shape every real call made. All four are
+// deleted with the tier (D-330), not retargeted: a probe kept pointing at a
+// deleted rule is the shape that reads as coverage to a grep and asserts nothing.
 // ---------------------------------------------------------------------------
 
 #[test]
-fn tier_one_resolves_and_the_reference_set_is_not_consulted() {
-    // "Reference set **only if** (1) is empty". The two tiers are not equally
-    // good evidence: tier 1 *is* what rating resolved at `t`.
+fn live_history_resolves_and_carries_the_revision_it_was_given() {
     let candidate = live(Some(3));
-    let selected = select_rows(&[candidate], &[reference(1)])
+    let selected = select_rows(&[candidate])
         .into_iter()
         .next()
-        .expect("tier 1 answers");
+        .expect("live history answers");
 
     assert_eq!(selected.row_id, candidate.price_id);
     assert_eq!(selected.tier, SelectionTier::LiveHistory);
@@ -48,60 +41,16 @@ fn tier_one_resolves_and_the_reference_set_is_not_consulted() {
 }
 
 #[test]
-fn tier_two_resolves_only_when_live_history_is_empty() {
-    let row = reference(5);
-    let selected = select_rows(&[], &[row])
-        .into_iter()
-        .next()
-        .expect("tier 2 answers");
-
-    assert_eq!(selected.row_id, row.historical_price_id);
-    assert_eq!(selected.tier, SelectionTier::HistoricalImport);
-    // A reference row belongs to no revision, and that is the fact D-87 makes the
-    // payload self-contained *because* of - not a missing lookup.
-    assert_eq!(selected.plan_revision, None);
-}
-
-#[test]
-fn the_reference_set_takes_the_greatest_effective_from_at_or_below_t() {
-    // Implemented as stated rather than as an assertion about the store's own
-    // interval uniqueness, which would be a second place for that invariant.
-    let older = reference(1);
-    let newer = reference(9);
-    let middle = reference(4);
-
-    let selected = select_rows(&[], &[older, newer, middle])
-        .into_iter()
-        .next()
-        .expect("tier 2 answers");
-    assert_eq!(selected.row_id, newer.historical_price_id);
-
-    // Order of presentation must not decide it.
-    let reordered = select_rows(&[], &[newer, older, middle])
-        .into_iter()
-        .next()
-        .expect("tier 2 answers");
-    assert_eq!(reordered.row_id, newer.historical_price_id);
-}
-
-#[test]
-fn neither_tier_answering_is_none_and_never_the_current_row() {
+fn no_live_row_answering_is_empty_and_never_the_current_row() {
     // Clause (3). The whole rule exists for this: the current row is precisely
-    // the price the subscriber was **not** paying.
-    assert!(select_rows(&[], &[]).is_empty());
-}
-
-#[test]
-fn the_reference_set_is_empty_in_the_built_system_and_the_seam_still_holds() {
-    // `pricing_historical_price` is Slice 5's `inst-bd-store` and is unbuilt, so
-    // tier 2 is always handed an empty slice today. This is the shape every call
-    // in this system actually makes, and it must fall to clause (3) rather than
-    // to anything else.
-    assert!(select_rows(&[], &[]).is_empty());
-    // ...while tier 1 keeps working, which is what makes the seam a seam.
+    // the price the subscriber was **not** paying. With clause (2) struck this is
+    // the *only* other outcome, so it is the one every unresolvable key takes.
+    assert!(select_rows(&[]).is_empty());
+    // ...while a covered key still resolves, which is what makes the refusal a
+    // refusal rather than a broken rule.
     let candidate = live(Some(0));
     assert_eq!(
-        select_rows(&[candidate], &[]),
+        select_rows(&[candidate]),
         vec![SelectedRow {
             row_id: candidate.price_id,
             tier: SelectionTier::LiveHistory,
@@ -128,7 +77,7 @@ fn every_live_line_on_one_market_is_frozen_not_the_first() {
     let recurring = live(Some(0));
     let usage = live(Some(0));
 
-    let selected = select_rows(&[recurring, usage], &[]);
+    let selected = select_rows(&[recurring, usage]);
 
     assert_eq!(
         selected.len(),
@@ -142,20 +91,8 @@ fn every_live_line_on_one_market_is_frozen_not_the_first() {
         selected
             .iter()
             .all(|row| row.tier == SelectionTier::LiveHistory),
-        "tier 1 still short-circuits tier 2 (D-76): the set is one tier's, never a merge"
+        "every resolved row carries the one rule that can resolve one (D-76 as narrowed by D-330)"
     );
-}
-
-/// Tier 2 still answers with **at most one**, and that asymmetry is the rule
-/// rather than an oversight: its selection is "the greatest `effective_from <= t`",
-/// which names a single row by construction, where tier 1's set is "every row live
-/// on the market".
-#[test]
-fn the_reference_tier_still_answers_with_one_row() {
-    let selected = select_rows(&[], &[reference(1), reference(9), reference(5)]);
-
-    assert_eq!(selected.len(), 1);
-    assert_eq!(selected[0].tier, SelectionTier::HistoricalImport);
 }
 
 // ---------------------------------------------------------------------------
@@ -188,11 +125,14 @@ fn every_selection_tier_round_trips_in_d76s_own_spelling() {
         assert_eq!(SelectionTier::parse(tier.as_str()), Some(tier));
     }
     assert_eq!(SelectionTier::LiveHistory.as_str(), "live_history");
-    assert_eq!(
-        SelectionTier::HistoricalImport.as_str(),
-        "historical_import"
-    );
     assert_eq!(SelectionTier::parse("live-history"), None);
+    // **`historical_import` must not resolve.** D-330 struck the tier; a stored
+    // token that still parsed would let a hand-written or migrated provenance row
+    // claim a rule this system cannot perform, on a record with a seven-year
+    // horizon. The `source` field survives the strike (S11 §4 clause 2) with
+    // exactly one admissible value.
+    assert_eq!(SelectionTier::parse("historical_import"), None);
+    assert_eq!(SelectionTier::ALL.len(), 1);
 }
 
 // ---------------------------------------------------------------------------

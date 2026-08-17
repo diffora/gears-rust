@@ -75,17 +75,25 @@ pub struct MigratedOriginSnapshotView {
     /// The plan synthesis was about.
     pub source_plan_id: Uuid,
     /// The revision the resolved rows belonged to. **`null` is a fact, not a
-    /// gap**: a tier-2 fully-legacy key belongs to no revision (D-87).
+    /// gap**, and since D-330 it is the live tier's own fact rather than the
+    /// struck one's: every candidate is built from a `PriceWindow`, which carries
+    /// no revision, so a resolution answers `null` here and D-87 obliges the
+    /// self-contained payload either way.
     pub source_revision: Option<u64>,
     /// D-81's instant `t` — the migration effective timestamp, or the earliest
     /// unrated usage timestamp, depending on the trigger.
     pub snapshot_instant: DateTime<Utc>,
     /// `migration` | `first_rating`.
     pub trigger: String,
-    /// Every resolved row id with the **selection tier** it came from
-    /// (`live_history` | `historical_import`, D-76), so an auditor can tell a real
-    /// published price from a governed backdated reconstruction without re-running
-    /// the lookup.
+    /// Every resolved row id with the **selection tier** it came from — `source`,
+    /// D-76 as narrowed by D-330, so an auditor can see which rule resolved the row
+    /// without re-running the lookup.
+    ///
+    /// **`live_history` is the only value emitted.** D-76's second, `historical_import`,
+    /// was struck with the historical-import flow (D-330, 2026-08-16) and this
+    /// description promised it to clients until then. The field stays — dropping a
+    /// provenance member on a seven-year record is a wire break with nothing bought,
+    /// and S11 §4 clause 2 keeps it as the seam any later rule would land on.
     pub resolved: serde_json::Value,
     /// The self-contained payload (D-87 + C-5): the evaluable row content plus the
     /// plan-level descriptor set and grant set. Rating evaluates from this and
@@ -170,10 +178,12 @@ pub fn router(state: Arc<GovernanceState>, openapi: &dyn OpenApiRegistry) -> Rou
              billing descriptor set and grant set. Rating evaluates from it and Billing posts from \
              it, resolving no id through the read model. \
              \
-             Each resolved id carries the **selection tier** it came from - `live_history` for a \
-             `pricing_price` row whose window covered the snapshot instant, `historical_import` for \
-             a governed backdated reference row (D-76). An auditor reconstructing a disputed legacy \
-             charge can tell the two apart without re-running the lookup. \
+             Each resolved id carries the **selection tier** it came from. D-76 declared two and \
+             D-330 struck the second with the historical-import flow, so `live_history` - a \
+             `pricing_price` row whose window covered the snapshot instant - is the only value \
+             this surface can emit. The field is kept rather than dropped: it is provenance on a \
+             record with a seven-year horizon, and an auditor reconstructing a disputed legacy \
+             charge still reads which rule resolved the row without re-running the lookup. \
              \
              **404 before synthesis, and that is the contract.** Rating a legacy subscription \
              before its snapshot exists fails closed into the rating exception path; synthesis then \

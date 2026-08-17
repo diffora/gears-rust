@@ -236,9 +236,17 @@ pub enum Trigger {
     ImmediateMembershipReresolution,
     /// A bulk group discount or group move (Slice 9).
     BulkGroupMove,
-    /// A governed backdated reference import (Slice 5, D-13) — every one, since
-    /// backdated rows shape `migrated-origin` snapshots.
-    HistoricalImport,
+    // `HistoricalImport` — "a governed backdated reference import (Slice 5, D-13)
+    // — every one, since backdated rows shape `migrated-origin` snapshots" — stood
+    // here and is **struck** (D-330, 2026-08-16). D-13's two controls, of which
+    // registering the import as an always-material trigger was one, go with the
+    // flow they governed. It is a **deletion** rather than a `false` arm: a `false`
+    // here says "this repository has no subject for a trigger the design set
+    // registers", and `inst-mat-registered` no longer registers this one — so
+    // keeping it would make the roster claim a clause of §3 step 4 that is not
+    // there, which is the reading the whole `ALL`/`match` discipline above exists
+    // to prevent. The **registered trigger count falls by one**, and a denominator
+    // here is not monotone (D-330 clause 1's own argument, D-239's precedent).
     /// Any diff of the approval-threshold policy itself (Slice 5, D-10),
     /// direction-agnostic: the two-person rule's foundation must not be
     /// single-person-editable.
@@ -313,7 +321,6 @@ impl Trigger {
         Self::RetirementUnwindingACutover,
         Self::ImmediateMembershipReresolution,
         Self::BulkGroupMove,
-        Self::HistoricalImport,
         Self::ThresholdPolicyDiff,
         Self::GaGateClearingRepublish,
         Self::PrepaidGateClearingRepublish,
@@ -347,8 +354,7 @@ impl Trigger {
         match self {
             Self::GrandfatherHorizonTightening => "design/01-foundation.md",
             Self::GaGateClearingRepublish => "design/04-currency-tax.md",
-            Self::HistoricalImport
-            | Self::ThresholdPolicyDiff
+            Self::ThresholdPolicyDiff
             | Self::NoComputableRowDelta
             | Self::PlanShapeRevisionContent => "design/05-governance.md",
             Self::GrandfatheringCutover | Self::WindowCancellation | Self::WindowShortening => {
@@ -493,7 +499,6 @@ impl Trigger {
             // unit) is owed to Slice 9 rather than quietly attested to here.
             Self::BulkGroupMove
             | Self::RetirementUnwindingACutover
-            | Self::HistoricalImport
             | Self::GaGateClearingRepublish
             | Self::PrepaidGateClearingRepublish
             | Self::GrantNonPriceField => false,
@@ -533,7 +538,6 @@ impl Trigger {
             Self::RetirementUnwindingACutover => "retirementUnwindingACutover",
             Self::ImmediateMembershipReresolution => "immediateMembershipReresolution",
             Self::BulkGroupMove => "bulkGroupMove",
-            Self::HistoricalImport => "historicalImport",
             Self::ThresholdPolicyDiff => "thresholdPolicyDiff",
             Self::GaGateClearingRepublish => "gaGateClearingRepublish",
             Self::PrepaidGateClearingRepublish => "prepaidGateClearingRepublish",

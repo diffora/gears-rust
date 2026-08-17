@@ -58,10 +58,6 @@ fn descriptors_carry_their_label_and_the_supported_properties() {
         (&resource_types::APPROVAL, labels::APPROVAL),
         (&resource_types::APPROVAL_POLICY, labels::APPROVAL_POLICY),
         (&resource_types::CONFIG, labels::CONFIG),
-        (
-            &resource_types::HISTORICAL_IMPORT,
-            labels::HISTORICAL_IMPORT,
-        ),
         (&resource_types::AUDIT, labels::AUDIT),
     ] {
         assert_eq!(rt.name(), label);

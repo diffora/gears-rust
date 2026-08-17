@@ -5,7 +5,7 @@
 //!
 //! The catalog is normative in `design/05-governance.md`
 //! (`cpt-cf-bss-pricing-algo-authz-catalog`); this module is its executable
-//! form. Nine object-named labels, all **OUTSIDE** `gts.cf.resources.*` —
+//! form. Eight object-named labels, all **OUTSIDE** `gts.cf.resources.*` —
 //! pricing data is commercially sensitive, so the built-in Reader / Contributor
 //! / Owner roles do NOT auto-cover it and access requires explicit catalog
 //! roles. Each action sits on its real object (a noun), never an authz tier.
@@ -65,11 +65,13 @@ pub mod labels {
     /// region / brand / partner / orgTier taxonomies (D-120). The
     /// customer-group taxonomy is deliberately NOT here.
     pub const CONFIG: &str = gts_id!("cf.bss.pricing.config.v1~");
-    /// Governed backdated reference import (`write`, `read`) — its OWN resource
-    /// so the restricted backdate grant is targetable without any other
-    /// authority, and so the second person can read the row set they approve
-    /// (D-61).
-    pub const HISTORICAL_IMPORT: &str = gts_id!("cf.bss.pricing.historical_import.v1~");
+    // `historical_import` was the ninth label and is **struck** (D-330,
+    // 2026-08-16): historical import is out of scope, so S5 §3 registers no such
+    // resource and no backdating grant, and `inst-rb-backdate` now says so as a
+    // rule rather than being deleted. Re-introducing either needs a decision, not
+    // a commit. Its two permission instances left `gts::permissions` with it, and
+    // the two routes that were asking for it — the bulk import's submit, read and
+    // abort — went back to the `plan` pair S5 §3's endpoint map always gave them.
     /// Audit trail read and export (`read`, `export`) — its OWN resource so an
     /// auditor role carries no read of live pricing and no write authority.
     ///
@@ -99,7 +101,6 @@ pub mod labels {
         APPROVAL,
         APPROVAL_POLICY,
         CONFIG,
-        HISTORICAL_IMPORT,
         AUDIT,
     ];
 }
@@ -110,8 +111,8 @@ pub mod actions {
     /// never-published draft, run a cutover or supersession, tighten
     /// `grandfatherUntil`, schedule a window. Also the bulk plane — bulk is
     /// authoring at scale and carries no new authority. Used by `plan`,
-    /// `bundle`, `price_overlay`, `customer_group`, `approval_policy`,
-    /// `config` and `historical_import`; the resource scopes what it authorizes.
+    /// `bundle`, `price_overlay`, `customer_group`, `approval_policy` and
+    /// `config`; the resource scopes what it authorizes.
     pub const WRITE: &str = "write";
     /// Submit a plan (or a bundle's composition) for publish. Distinct from
     /// [`WRITE`] so an author can prepare a change without being able to put it
@@ -173,9 +174,6 @@ pub mod resource_types {
     /// The tenant config plane.
     pub const CONFIG: ResourceType =
         ResourceType::from_static(labels::CONFIG, SUPPORTED_PROPERTIES);
-    /// Governed backdated reference import.
-    pub const HISTORICAL_IMPORT: ResourceType =
-        ResourceType::from_static(labels::HISTORICAL_IMPORT, SUPPORTED_PROPERTIES);
     /// Audit trail read and export.
     pub const AUDIT: ResourceType = ResourceType::from_static(labels::AUDIT, SUPPORTED_PROPERTIES);
 }

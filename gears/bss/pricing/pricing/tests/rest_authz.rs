@@ -254,24 +254,37 @@ fn census() -> Vec<Route> {
             action: actions::WRITE,
             mutating: true,
         },
+        // The bulk plane, on `plan` — S5 §3's own filing, and it took three
+        // corrections to get here. These three rows read `historical_import`
+        // until 2026-08-17 because the handlers asked for it, and this census
+        // records what a handler asks: the pair check below compares the two
+        // descriptions of one implementation, so it was green throughout. What
+        // the design set says is `plan x read` for the `GET` (S5 §3's read row
+        // names the path outright) and, for both mutating surfaces, *"the
+        // **same** `plan x write` / `publish` — bulk is authoring at scale (and
+        // abort is un-authoring at scale), no new authority"*. The wrong filing
+        // was not merely untidy: `historical_import` was the restricted
+        // backdating grant, "never included in a default role" (S5 §3 step 5),
+        // so the three roles S5's matrix gives `plan x write` were answered 403
+        // on a plane the same table hands them.
         Route {
             method: "POST",
             path: BULK_IMPORTS,
-            resource_type: labels::HISTORICAL_IMPORT,
+            resource_type: labels::PLAN,
             action: actions::WRITE,
             mutating: true,
         },
         Route {
             method: "GET",
             path: BULK_IMPORT,
-            resource_type: labels::HISTORICAL_IMPORT,
+            resource_type: labels::PLAN,
             action: actions::READ,
             mutating: false,
         },
         Route {
             method: "POST",
             path: BULK_IMPORT_ABORT,
-            resource_type: labels::HISTORICAL_IMPORT,
+            resource_type: labels::PLAN,
             action: actions::WRITE,
             mutating: true,
         },
@@ -1453,21 +1466,30 @@ async fn the_census_covers_every_route_the_routers_register() {
     // that govern their own changes. That is invisible to every allow/deny fixture,
     // which is why it is asserted here.
     //
-    // `audit` is the sixth and `historical_import` the seventh, and both arrived
-    // as corrections rather than as new surfaces. `/history` -- the catalog audit
-    // trail -- was filed under `plan × read`, so every holder of catalog read
-    // could read who changed what and when, while `audit_read` ("Read the catalog
-    // audit trail") was grantable and conferred nothing. `/bulk-imports` was
-    // likewise `plan`, while `historical_import` was declared for exactly its two
-    // verbs -- and a backdated import rewrites what the catalog says was true in
-    // the past, which is not the authority that authors a draft.
+    // `audit` is the sixth, and it arrived as a correction rather than as a new
+    // surface. `/history` -- the catalog audit trail -- was filed under `plan ×
+    // read`, so every holder of catalog read could read who changed what and
+    // when, while `audit_read` ("Read the catalog audit trail") was grantable and
+    // conferred nothing.
     //
-    // Both were invisible to every allow/deny fixture AND to
+    // It was invisible to every allow/deny fixture AND to
     // `every_route_asks_the_catalogued_pair`, because that check compares a route
     // against this census and the census recorded the pair the route asked for.
     // Two descriptions of one implementation cannot disagree; what caught it was
     // `every_grantable_label_is_enforced_by_some_route`, which reads the
     // *grantable* catalog instead.
+    //
+    // **`historical_import` was a seventh member of this set and is not one now.**
+    // The same 2026-08-14 wave that moved `/history` moved `/bulk-imports` off
+    // `plan` and onto it, arguing that "a backdated import rewrites what the
+    // catalog says was true in the past". S5 §3 never said that about these three
+    // routes: its read row names `GET …/bulk-imports/{id}` under `plan × read`
+    // and its bulk row files the mutating pair under the *same* `plan × write`
+    // with "no new authority". `historical_import` belonged to the backdating
+    // flow, which D-330 has since struck outright -- so the label is gone, and
+    // the routes are back where the endpoint map always had them. The reading
+    // this comment used to carry is withdrawn rather than edited around: what
+    // caught the second error was the label guard again, from the other side.
     //
     // `config` is the fifth, mounted by Slice 4's taxonomy pair, and it is the
     // other side of that same separation. It is the label the segregation
@@ -1483,7 +1505,6 @@ async fn the_census_covers_every_route_the_routers_register() {
         used,
         std::collections::BTreeSet::from([
             labels::AUDIT,
-            labels::HISTORICAL_IMPORT,
             labels::PLAN,
             labels::BUNDLE,
             labels::PRICE_OVERLAY,
@@ -2529,8 +2550,17 @@ async fn a_write_whose_target_tenant_is_outside_the_scope_is_denied_on_every_wri
 //
 // That is not a hypothetical. `audit_read` and `audit_export` were declared
 // while `/history` -- the catalog audit trail itself -- gated on `plan x read`,
-// so anyone holding catalog read could read who changed what and when. The same
-// held for `historical_import` against `/bulk-imports`.
+// so anyone holding catalog read could read who changed what and when.
+//
+// `historical_import` was the same finding's second half and it was the wrong
+// repair. The permission pair was grantable and no route asked for it, so this
+// guard was satisfied by moving `/bulk-imports` onto the label -- which is the
+// other way to make a set-membership check green, and the one that changes the
+// system rather than describing it. The endpoint map had those routes on `plan`
+// throughout. A label with no route is a question about which of the two the
+// design set names; this guard cannot tell, and the answer here was the label.
+// It is struck with its flow now (D-330), so it is neither grantable nor asked
+// for and there is nothing left to reconcile.
 // ---------------------------------------------------------------------------
 
 /// Labels declared ahead of the surface that will enforce them.
@@ -2575,7 +2605,7 @@ fn every_grantable_label_is_enforced_by_some_route() {
 //
 // The catalogued set is read off the **GTS inventory** rather than re-listed
 // here: `gts::permissions` is where a pair becomes grantable, and a second copy
-// of its 22 rows in a test file is the F-12 shape that produced this finding.
+// of its 20 rows in a test file is the F-12 shape that produced this finding.
 // ---------------------------------------------------------------------------
 
 /// The `(resource_type, action)` pairs `gts::permissions` declares.
@@ -2610,7 +2640,12 @@ fn catalogued_pairs() -> std::collections::BTreeSet<(String, String)> {
 /// suffix — would make all three trivially green while measuring an empty set. That
 /// is this codebase's most common defect shape, and a set-valued guard read out of a
 /// registry is exactly where it hides.
-const AT_LEAST_THIS_MANY_PAIRS: usize = 20;
+///
+/// **It drops with the catalog rather than tracking it.** D-330's strike took
+/// `historical_import`'s two pairs out, leaving 20; a floor left at 20 would be an
+/// exact-count assertion wearing a floor's name — green today, red on the next strike,
+/// and saying nothing either time about whether the inventory read works.
+const AT_LEAST_THIS_MANY_PAIRS: usize = 18;
 
 /// Catalogued pairs declared ahead of the surface that will ask for them.
 ///

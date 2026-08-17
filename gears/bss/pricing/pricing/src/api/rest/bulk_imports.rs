@@ -557,9 +557,19 @@ async fn read_bulk_import(
     let scope = crate::authz::access_scope(
         &enforcer,
         &ctx,
-        // `historical_import_read` -- "Read a pending backdated import's row
-        // set" -- is declared for this surface and for nothing else.
-        &crate::authz::resource_types::HISTORICAL_IMPORT,
+        // **`plan x read`, which is what the catalog always said.** S5 §3's
+        // endpoint map files `GET /bss-pricing/v1/bulk-imports/{id}` under `plan
+        // x read` and its bulk row files the whole plane under "the **same**
+        // `plan x write` / `publish` -- bulk is authoring at scale ... no new
+        // authority". This handler asked for `historical_import x read` instead,
+        // a *restricted* resource S5 §3 step 5 says is "never included in a
+        // default role", so every principal the design set names for this
+        // surface -- ProductManager, FinanceManager, CatalogAdmin -- was
+        // answered 403 on a run they were entitled to read. The resource is
+        // struck outright now (D-330), but the filing was wrong before the
+        // strike: a run's journal is price data, and an operator who may read
+        // prices may read what a run did to them.
+        &crate::authz::resource_types::PLAN,
         crate::authz::actions::READ,
         /* owner_tenant_id */ None,
         /* resource_id */ None,
@@ -658,6 +668,16 @@ async fn abort_bulk_import(
 /// `resource_id = None` for `create_plan`'s reason, sharpened by D-281: a batch
 /// spans plans and writes rows whose ids it mints, so there is no single resource
 /// to name — and an id-shaped constraint could not filter these tables anyway.
+///
+/// **This sentence and the body disagreed until now, and the body was wrong.**
+/// It asked for `historical_import x write`, which S5 §3 step 5 makes a
+/// restricted grant "never included in a default role" — so a `ProductManager`, a
+/// `FinanceManager` or a `CatalogAdmin` holding `plan x write` was refused the
+/// submit and the abort alike. S5 §3's bulk row is unambiguous that no new
+/// authority is involved: *"Bulk import / mass repricing / clone / bulk-import
+/// abort … the **same** `plan x write` / `publish` — bulk is authoring at scale
+/// (and abort is un-authoring at scale), no new authority"*. Slice 12's mass
+/// repricing one route over already reads that way; this plane did not.
 async fn write_scope(
     enforcer: &authz_resolver_sdk::PolicyEnforcer,
     ctx: &SecurityContext,
@@ -665,10 +685,7 @@ async fn write_scope(
     crate::authz::access_scope(
         enforcer,
         ctx,
-        // `historical_import_write` -- "Import governed backdated reference
-        // prices". A backdated import rewrites what the catalog says was true in
-        // the past, which is a different authority from authoring a draft.
-        &crate::authz::resource_types::HISTORICAL_IMPORT,
+        &crate::authz::resource_types::PLAN,
         crate::authz::actions::WRITE,
         /* owner_tenant_id */ Some(ctx.subject_tenant_id()),
         /* resource_id */ None,
