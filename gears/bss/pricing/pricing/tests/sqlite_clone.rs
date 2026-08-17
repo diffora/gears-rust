@@ -884,6 +884,113 @@ async fn a_clone_whose_rows_name_two_phase_ids_mints_and_picks_no_winner() {
     );
 }
 
+/// **A row that stays behind does not vote on the id the clone adopts — D-341, over
+/// `inst-cl-copy`'s exclusions.**
+///
+/// The adoption is computed over the rows that **travel**, and `inst-cl-copy`
+/// excludes `existing_grandfathered` rows from the copy (D-268/O1: a retained
+/// generation is lifecycle state rather than configuration, and copying one with its
+/// eligibility reset collapses it onto the `all_subscriptions` row beside it). So the
+/// two arms of the seed — adopt versus mint — are decided by a row set the reader has
+/// to know is filtered, and this case is where that is written down.
+///
+/// The source here is the ambiguity's near miss: its travelling rows name **one**
+/// absent id, and a grandfathered row names a **second** absent one. Over the source's
+/// published rows the distinct set is two, which is the mint arm; over the travelling
+/// rows it is one, which is adoption. Ordering the exclusion after the count would
+/// therefore mint here — leaving the clone holding a phase nobody authored *and* every
+/// copied row refused by `PHASE_ROW_ORPHANED` at its first publish, for the sake of a
+/// row that is not in the clone at all.
+///
+/// **Armed on the id, not on the count.** `phases.len() == 1` is true on both arms, so
+/// only the equality below tells them apart.
+#[tokio::test]
+async fn a_left_behind_grandfathered_row_does_not_vote_on_the_adopted_phase_id() {
+    let h = harness().await;
+    seed_phaseless_source(&h, &[stranded_phase()]).await;
+
+    // The second absent id, on the class the copy leaves behind. Its own region for
+    // `seed_phaseless_source`'s reason — `eu` is taken by the travelling row — though
+    // the phase and the eligibility already separate the canonical keys; the
+    // generation cohort is what `existing_grandfathered` pairs with.
+    let grandfathered = Uuid::from_u128(0xb_0200);
+    h.prices
+        .create_draft(
+            &h.scope,
+            TENANT,
+            NewPriceDraft {
+                price_id: grandfathered,
+                scope_key: key_in(
+                    source_plan(),
+                    other_stranded_phase(),
+                    PriceEligibility::ExistingGrandfathered,
+                    Cohort::Generation(at(9)),
+                    "jp",
+                ),
+                content: flat_row(),
+                created_by: ACTOR,
+                created_at_utc: at(10),
+                correlation_id: CORRELATION,
+            },
+        )
+        .await
+        .expect("author the grandfathered row on a second unattached phase");
+    common::publish_row_directly(&h.provider, &h.scope, grandfathered).await;
+
+    let receipt = clone_it(&h).await.expect("the clone runs");
+    assert_eq!(
+        receipt.prices_copied, 1,
+        "the premise: only the all_subscriptions row travels"
+    );
+    assert!(
+        receipt
+            .notices
+            .contains(&CloneNotice::GrandfatheredRowsNotCopied { rows: 1 }),
+        "and the row that decides nothing here is the one left behind: {:?}",
+        receipt.notices
+    );
+    // `Adopted` over the travelling row alone. `Minted` would be the receipt of a
+    // clone that counted the excluded row, and the count is the rows the id attaches.
+    assert!(
+        receipt.notices.contains(&CloneNotice::TerminalPhaseSeeded {
+            origin: SeededPhaseOrigin::Adopted,
+            rows: 1,
+        }),
+        "{:?}",
+        receipt.notices
+    );
+
+    let conn = h.provider.conn().expect("conn");
+    let phases = plan_shape_repo::load_phase_set(&conn, &h.scope, TENANT, target_plan(), 0)
+        .await
+        .expect("read the clone's phases");
+    assert_eq!(phases.len(), 1, "still exactly one terminal phase");
+    assert_eq!(
+        phases[0].phase_id,
+        stranded_phase(),
+        "the travelling row's id, adopted: a mint would also leave exactly one phase \
+         here, so the id is the only observation that rules the mint arm out"
+    );
+
+    // What the adoption buys, and the reason the excluded row must not cost it: the
+    // one row that travelled is attached, so this clone can publish.
+    let rows = price_repo::load_for_plan(
+        &conn,
+        &h.scope,
+        TENANT,
+        target_plan(),
+        &[LifecycleState::Draft],
+    )
+    .await
+    .expect("read the clone's rows");
+    assert_eq!(rows.len(), 1, "the grandfathered row stayed behind");
+    assert_eq!(
+        rows[0].scope_key.phase(),
+        phases[0].phase_id,
+        "the copied row keys on the phase the clone attaches"
+    );
+}
+
 /// The clone is lineage-stamped, in `draft`, and carries the source's config.
 #[tokio::test]
 async fn the_clone_is_a_draft_that_names_its_source() {

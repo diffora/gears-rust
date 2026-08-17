@@ -2344,6 +2344,78 @@ async fn an_empty_phases_write_on_a_plan_holding_rows_is_refused_at_the_write() 
     assert_eq!(plan_row_version(&harness, plan_id, 0).await, Some(version));
 }
 
+/// **The empty set is refused on a plan holding no rows at all — D-343, and this is
+/// the arm where the refusal is wider than D-342's.**
+///
+/// D-342 scoped its cost to plans *already holding price rows*, so on a row-less
+/// draft `PATCH {"phases": []}` answered **200** until `inst-ph-graph` joined this
+/// door: `PhaseGraphIntegrity` reports zero terminals over an **empty** phase set,
+/// and there is nothing for `RowPhaseAttached` to strand. The widening is intended
+/// rather than incidental — after `inst-ph-default` every plan is created carrying a
+/// terminal phase, so emptying the set puts the plan back in exactly the state this
+/// program abolished, and no authoring step needs to pass through it. D-343 records
+/// it because D-343 first declined to flag itself on the ground that D-342 had
+/// settled the question, and D-342 was never asked about this class.
+///
+/// **The absence of `PHASE_ROW_ORPHANED` is half the claim.** It is the only thing
+/// separating this arm from its neighbour above, which asserts both codes: a door
+/// that reported the stranding here would be reporting it over a row set that is
+/// empty, and a probe asserting only `PHASE_GRAPH_INVALID` would pass on either.
+///
+/// The plan is created through **`POST /plans`** and not `seed_draft_plan`, because
+/// the seeded terminal phase is the route's act (`inst-ph-default` lives in the
+/// handler, not in `create_draft`) — and it is the phase this write empties.
+#[tokio::test]
+async fn an_empty_phases_write_on_a_plan_holding_no_rows_is_refused_for_the_graph_alone() {
+    let harness = Harness::new().await;
+
+    let created = harness
+        .allowed()
+        .send(with_headers(
+            "POST",
+            PLANS,
+            Some(create_body("gold")),
+            &keyed("empty-phases-no-rows"),
+        ))
+        .await;
+    assert_eq!(created.status(), StatusCode::CREATED);
+    let created_body = body_json(created).await;
+    let plan_id: Uuid = created_body["plan_id"]
+        .as_str()
+        .expect("the id is answered")
+        .parse()
+        .expect("the id is a uuid");
+    assert_eq!(
+        created_body["phases"].as_array().map(Vec::len),
+        Some(1),
+        "the premise: the create seeded the one phase this write removes: {created_body}"
+    );
+
+    let refused = harness
+        .allowed()
+        .send(with_headers(
+            "PATCH",
+            &plan_path(plan_id),
+            Some(serde_json::json!({ "phases": [] })),
+            &[("if-match", "\"0-0\"")],
+        ))
+        .await;
+
+    assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
+    let body = body_json(refused).await;
+    assert_eq!(code_in(&body), "PHASE_GRAPH_INVALID", "{body}");
+    assert!(
+        !body.to_string().contains("PHASE_ROW_ORPHANED"),
+        "there is no row to strand, and reporting one would send the author looking \
+         for rows that do not exist: {body}"
+    );
+    assert_eq!(
+        plan_row_version(&harness, plan_id, 0).await,
+        Some(0),
+        "nothing landed, so the plan still holds the phase it was created with"
+    );
+}
+
 /// **The positive control: a replace that keeps every named phase still
 /// succeeds.**
 ///
