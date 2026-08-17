@@ -64,6 +64,18 @@ chart), while remaining publishable to OCI registries.
 * Gear developers adding a new gear must create a `chart/` directory following the established pattern. The library
   chart handles 90% of the boilerplate.
 
+> **Amended by [ADR-0009 (Instance-Addressable Discovery)](0009-cpt-cf-adr-instance-addressable-discovery.md).**
+> This layout assumed **one chart = one gear = one `Deployment` + `Service`**. A gear that runs in differentiated
+> **roles** now maps to *multiple* role-qualified directory names, so its chart needs a **per-role** layout — a
+> workload + Service per role-name, not one per gear. A **sharded** role (interchangeable instances of *one*
+> contract) instead stays under a **single** name — shards are distinguished by directory labels, not extra
+> names — so it needs one workload + Service, but that workload must be **per-instance-addressable**. The
+> `toolkit-common` library chart must additionally be able to render a **per-instance-addressable** workload for
+> **shard-targeted** names — e.g. a `StatefulSet` + **headless Service**, or a self-registering `Deployment` that
+> advertises each pod's own endpoint — **without mandating** a `StatefulSet` (the mechanism is the gear
+> developer's choice). This extends the shared-template set enumerated above (which today has no `StatefulSet` or
+> headless-Service shape) and the single-chart-per-gear assumption.
+
 ### Confirmation
 
 * CI validation: `helm lint` and `helm template` pass for every gear chart and the umbrella chart.

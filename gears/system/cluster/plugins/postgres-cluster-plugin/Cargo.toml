@@ -1,6 +1,6 @@
 [package]
 name = "cf-postgres-cluster-plugin"
-version = "0.1.0"
+version = "0.1.1"
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
@@ -116,7 +116,9 @@ futures-util = { workspace = true }
 # Layer 2 conformance suite (TESTING.md §3): the same parametrized suites
 # every other backend runs, wired against this plugin's real Postgres-backed
 # cache/lock/leader/discovery in `tests/conformance.rs`.
-cf-gears-cluster-conformance = { workspace = true }
+# Path-only, no version on purpose: cargo drops a path-only dev-dependency from the published
+# manifest, so publishing this plugin never needs the conformance crate on crates.io.
+cf-gears-cluster-conformance = { path = "../../cluster-conformance" }
 # `cluster::defaults::{CasBasedLeaderElectionBackend, CacheBasedServiceDiscoveryBackend}`
 # (TESTING.md §3): leader election and service discovery are always the SDK
 # defaults over this plugin's cache (DESIGN.md §6), so the L2/L3 tests exercise

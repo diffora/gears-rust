@@ -6,6 +6,14 @@ on:
     paths-ignore:
       - '**/*.md'
       - 'docs/**'
+  # PR CI only ever validates the ephemeral refs/pull/N/merge ref, so without
+  # this trigger the integrated tip of main is tested nowhere: a semantic
+  # conflict between two PRs merged minutes apart is caught by neither PR's run.
+  push:
+    branches: [ main ]
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
   workflow_dispatch:
 
 # NOTE: workflow-level paths-ignore above still skips the entire workflow for

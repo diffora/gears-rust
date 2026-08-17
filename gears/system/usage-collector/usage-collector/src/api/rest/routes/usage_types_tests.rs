@@ -160,8 +160,8 @@ async fn list_usage_types_route_is_registered_with_documented_contract() {
     assert_eq!(cursor.param_type, "string");
 
     // OData query params advertised by `with_odata_filter` /
-    // `with_odata_orderby` / `with_odata_select` — pins TOOLKIT-ODATA-001.
-    for odata_param in ["$filter", "$orderby", "$select"] {
+    // `with_odata_orderby` — pins TOOLKIT-ODATA-001.
+    for odata_param in ["$filter", "$orderby"] {
         let p = spec
             .params
             .iter()
@@ -172,6 +172,14 @@ async fn list_usage_types_route_is_registered_with_documented_contract() {
         assert!(!p.required, "`{odata_param}` MUST be optional");
         assert_eq!(p.param_type, "string", "`{odata_param}` MUST be a string");
     }
+
+    // `$select` is deliberately NOT advertised: no code in this gear
+    // applies the projection, so declaring it would publish a parameter
+    // that is parsed and discarded.
+    assert!(
+        !spec.params.iter().any(|p| p.name == "$select"),
+        "the list route MUST NOT declare `$select` while nothing applies the projection",
+    );
 
     // No JSON request body on a GET.
     assert!(

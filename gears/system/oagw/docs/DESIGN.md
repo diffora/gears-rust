@@ -74,6 +74,7 @@ This design satisfies the requirements for centralized outbound traffic manageme
 - `cpt-cf-oagw-adr-error-source-distinction` — Response header for gateway vs upstream errors
 - `cpt-cf-oagw-adr-grpc-support` — HTTP/2 multiplexing with protocol detection
 - `cpt-cf-oagw-adr-rust-abi-client-library` — Rust ABI client for internal gear routing
+- `cpt-cf-oagw-adr-oauth2-client-credentials-auth-plugin` — OAuth2 Client Credentials auth plugin with internal token cache
 
 ### 1.3 Architecture Layers
 
@@ -436,16 +437,15 @@ Alias behavior is determined entirely by endpoint type. The system enforces stri
 
 **Hostname Validation**: Endpoint hostnames are validated per RFC 1123: max 253 characters total, each label 1–63 characters, labels contain only ASCII alphanumeric and hyphen, labels cannot start or end with hyphen. A trailing dot (FQDN notation) is tolerated and stripped.
 
-**Alias Update Behavior**:
+**Alias Update Behavior**: The alias is **immutable once set** — it is the routing key in `/v1/proxy/{alias}/...`, so any endpoint change that would alter the derived alias is rejected (400 Validation); the operator must delete and re-create the upstream instead.
 
-| Transition | Behavior |
-|---|---|
-| Derivable → Derivable (new endpoints) | Alias recomputed from new endpoints |
-| Derivable → Non-derivable | **Rejected** unless user provides explicit alias |
-| Non-derivable → Non-derivable | Existing alias retained; user may provide a new one |
-| Non-derivable → Derivable | Alias recomputed (old explicit alias replaced) |
-| Derivable (no endpoint change) | Alias override **rejected** (400 Validation) |
-| Non-derivable (no endpoint change) | User may update alias freely |
+| Transition | Alias unchanged | Alias would change |
+|---|---|---|
+| Derivable → Derivable (endpoints change) | Allowed — recomputed alias equals existing | **Rejected** — delete and re-create |
+| Derivable → Non-derivable (hostname → IP) | — | **Rejected** always, even when an explicit alias is provided |
+| Non-derivable → Non-derivable (IP → IP) | Existing alias retained | **Rejected** — a differing user-provided alias is not accepted |
+| Non-derivable → Derivable (IP → hostname) | Allowed — derived alias equals existing | **Rejected** — delete and re-create |
+| No endpoint change (derivable or non-derivable) | Exact-match alias tolerated (no-op) | **Rejected** — alias override not allowed |
 
 "Derivable" means `compute_derived_alias()` returns a value (single hostname, or multiple hostnames with a registrable common suffix). "Non-derivable" means derivation fails — this includes IP-based endpoints, heterogeneous hostnames with no common suffix, and hostname pools whose only common suffix is a bare public suffix (e.g., `co.uk`). See `enforce_alias_update_with()` / `enforce_alias_update_derived()` for the full branching logic.
 

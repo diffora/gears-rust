@@ -2,10 +2,33 @@
 
 use anyhow::Result;
 use async_trait::async_trait;
+use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use uuid::Uuid;
 
 use crate::runtime::{Endpoint, GearInstance, GearManager};
+
+/// Compute a content token for an `OpenAPI` document, used to detect changes.
+///
+/// This is a change-detection token (like a k8s `resourceVersion`), **not** a
+/// security digest: the edge only ever compares it against the token from the
+/// previous poll of the *same* directory to decide whether the document
+/// changed. A non-cryptographic `std` hash is therefore sufficient and avoids a
+/// dependency.
+///
+/// Determinism is scoped to a single binary: `DefaultHasher::new()` uses fixed
+/// keys, so identical input yields the same token for the lifetime of one
+/// directory process. `std` does **not** guarantee the algorithm across Rust
+/// toolchain versions, so a rebuilt/upgraded directory may emit a different
+/// token for the same spec — which is benign here, because tokens are only ever
+/// compared within one directory's poll stream (at worst an upgrade triggers a
+/// single spurious refresh). The token must therefore not be persisted or
+/// compared across binaries.
+fn openapi_spec_hash(spec: &str) -> String {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    spec.hash(&mut hasher);
+    format!("{:016x}", hasher.finish())
+}
 
 // Re-export all types from contracts - this is the single source of truth
 pub use cf_system_sdks::directory::{
@@ -65,9 +88,52 @@ impl DirectoryClient for LocalDirectoryClient {
                         .rest_endpoint
                         .as_ref()
                         .map(|ep| ServiceEndpoint::new(ep.uri.clone())),
+                    openapi_spec_hash: inst.openapi_spec.as_deref().map(openapi_spec_hash),
+                    openapi_spec: inst.openapi_spec.clone(),
                 });
             }
         }
+
+        Ok(result)
+    }
+
+    async fn list_all_instances(&self) -> Result<Vec<ServiceInstanceInfo>> {
+        let result = self
+            .mgr
+            .all_instances()
+            .into_iter()
+            .map(|inst| {
+                // Prefer a gRPC endpoint for the primary `endpoint`; fall back to
+                // the REST endpoint (OoP gears often register REST-only).
+                let endpoint = inst
+                    .grpc_services
+                    .values()
+                    .next()
+                    .or(inst.rest_endpoint.as_ref())
+                    .map_or_else(
+                        || ServiceEndpoint::new(String::new()),
+                        |ep| ServiceEndpoint::new(ep.uri.clone()),
+                    );
+                ServiceInstanceInfo {
+                    gear: inst.gear.clone(),
+                    instance_id: inst.instance_id.to_string(),
+                    endpoint,
+                    version: inst.version.clone(),
+                    rest_endpoint: inst
+                        .rest_endpoint
+                        .as_ref()
+                        .map(|ep| ServiceEndpoint::new(ep.uri.clone())),
+                    // The document itself is deliberately omitted here: the
+                    // cross-gear discovery snapshot must stay small and bounded
+                    // (it is polled every sync interval). Consumers that need
+                    // the document fetch it per gear via `get_openapi_spec`.
+                    // The content hash *is* carried so the edge can detect spec
+                    // changes and skip the fetch + rebuild when unchanged.
+                    openapi_spec_hash: inst.openapi_spec.as_deref().map(openapi_spec_hash),
+                    openapi_spec: None,
+                }
+            })
+            .collect();
 
         Ok(result)
     }
@@ -246,5 +312,70 @@ mod tests {
         // Verify state transitioned to Healthy
         let instances = dir.instances_of("test_gear");
         assert_eq!(instances[0].state(), InstanceState::Healthy);
+    }
+
+    #[tokio::test]
+    async fn test_list_all_instances_across_gears() {
+        let dir = Arc::new(GearManager::new());
+        let api = LocalDirectoryClient::new(Arc::clone(&dir));
+
+        // Two REST-only OoP gears (no gRPC services) + one gRPC-only gear.
+        for (gear, port) in [("billing", 8080u16), ("catalog", 8081u16)] {
+            api.register_instance(RegisterInstanceInfo {
+                gear: gear.to_owned(),
+                instance_id: Uuid::new_v4().to_string(),
+                grpc_services: vec![],
+                version: Some("1.0.0".to_owned()),
+                rest_endpoint: Some(ServiceEndpoint::http(gear, port)),
+                openapi_spec: Some(format!("{{\"openapi\":\"3.1.0\",\"x\":\"{gear}\"}}")),
+            })
+            .await
+            .unwrap();
+        }
+
+        // gRPC-only gear: gRPC service metadata and no REST endpoint / spec. This
+        // exercises gRPC endpoint selection in `list_all_instances` (which prefers
+        // a gRPC endpoint for the primary `endpoint`).
+        api.register_instance(RegisterInstanceInfo {
+            gear: "reporting".to_owned(),
+            instance_id: Uuid::new_v4().to_string(),
+            grpc_services: vec![(
+                "reporting.Service".to_owned(),
+                ServiceEndpoint::new("http://reporting:7000"),
+            )],
+            version: Some("1.0.0".to_owned()),
+            rest_endpoint: None,
+            openapi_spec: None,
+        })
+        .await
+        .unwrap();
+
+        let all = api.list_all_instances().await.unwrap();
+        assert_eq!(all.len(), 3);
+
+        let billing = all.iter().find(|i| i.gear == "billing").expect("billing");
+        assert_eq!(
+            billing.rest_endpoint.as_ref().map(|e| e.uri.as_str()),
+            Some("http://billing:8080")
+        );
+        // The cross-gear snapshot never inlines the OpenAPI document; consumers
+        // fetch it per gear via `get_openapi_spec`.
+        assert!(billing.openapi_spec.is_none());
+        assert!(
+            api.get_openapi_spec("billing")
+                .await
+                .expect("billing spec")
+                .contains("billing")
+        );
+
+        // The gRPC-only gear resolves its primary endpoint from gRPC metadata and
+        // carries no REST endpoint or OpenAPI spec.
+        let reporting = all
+            .iter()
+            .find(|i| i.gear == "reporting")
+            .expect("reporting");
+        assert_eq!(reporting.endpoint.uri.as_str(), "http://reporting:7000");
+        assert!(reporting.rest_endpoint.is_none());
+        assert!(reporting.openapi_spec.is_none());
     }
 }

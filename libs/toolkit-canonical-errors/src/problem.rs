@@ -12,6 +12,7 @@ use crate::context::{
     Unauthenticated, Unimplemented, Unknown,
 };
 use crate::error::CanonicalError;
+use crate::transport::TransportOverrides;
 
 /// Media type for RFC 9457 `application/problem+json` responses.
 pub const APPLICATION_PROBLEM_JSON: &str = "application/problem+json";
@@ -190,6 +191,21 @@ pub enum ProblemConversionError {
         #[source]
         source: serde_json::Error,
     },
+
+    /// The wire `status` is not a valid HTTP status code (RFC 9110: a
+    /// three-digit integer in the 100-599 range). Rejected here rather than
+    /// silently stored as an override, since `TryFrom<Problem>` is the
+    /// crate's one boundary for untrusted/out-of-process input.
+    #[error("invalid HTTP status in Problem: {0}")]
+    InvalidStatus(u16),
+
+    /// The wire `status` is syntactically valid but is in a different HTTP
+    /// status-code class than the matched category's default, e.g. an
+    /// `invalid_argument` (4xx) `Problem` carrying `status: 500`. Flipping
+    /// between client-fault and server-fault semantics changes client retry
+    /// behavior, so this is rejected rather than accepted as an override.
+    #[error("status {status} is a different HTTP status class than category {category}'s default")]
+    CategoryStatusMismatch { category: &'static str, status: u16 },
 }
 
 /// Prefix of every canonical GTS identifier. Stripped to expose the category
@@ -262,102 +278,118 @@ impl TryFrom<Problem> for CanonicalError {
         let (resource_type, resource_name) = extract_resource_fields(&problem.context);
         let ctx_value = problem.context;
 
-        let canonical = match category {
+        let mut canonical = match category {
             "cancelled" => Self::Cancelled {
                 ctx: deserialize_ctx::<Cancelled>("cancelled", ctx_value)?,
                 detail,
                 resource_type,
                 resource_name,
+                overrides: TransportOverrides::default(),
             },
             "unknown" => Self::Unknown {
                 ctx: deserialize_ctx::<Unknown>("unknown", ctx_value)?,
                 detail,
                 resource_type,
                 resource_name,
+                overrides: TransportOverrides::default(),
             },
             "invalid_argument" => Self::InvalidArgument {
                 ctx: deserialize_ctx::<InvalidArgument>("invalid_argument", ctx_value)?,
                 detail,
                 resource_type,
                 resource_name,
+                overrides: TransportOverrides::default(),
             },
             "deadline_exceeded" => Self::DeadlineExceeded {
                 ctx: deserialize_ctx::<DeadlineExceeded>("deadline_exceeded", ctx_value)?,
                 detail,
                 resource_type,
                 resource_name,
+                overrides: TransportOverrides::default(),
             },
             "not_found" => Self::NotFound {
                 ctx: deserialize_ctx::<NotFound>("not_found", ctx_value)?,
                 detail,
                 resource_type,
                 resource_name,
+                overrides: TransportOverrides::default(),
             },
             "already_exists" => Self::AlreadyExists {
                 ctx: deserialize_ctx::<AlreadyExists>("already_exists", ctx_value)?,
                 detail,
                 resource_type,
                 resource_name,
+                overrides: TransportOverrides::default(),
             },
             "permission_denied" => Self::PermissionDenied {
                 ctx: deserialize_ctx::<PermissionDenied>("permission_denied", ctx_value)?,
                 detail,
                 resource_type,
                 resource_name,
+                overrides: TransportOverrides::default(),
             },
             "resource_exhausted" => Self::ResourceExhausted {
                 ctx: deserialize_ctx::<ResourceExhausted>("resource_exhausted", ctx_value)?,
                 detail,
                 resource_type,
                 resource_name,
+                overrides: TransportOverrides::default(),
             },
             "failed_precondition" => Self::FailedPrecondition {
                 ctx: deserialize_ctx::<FailedPrecondition>("failed_precondition", ctx_value)?,
                 detail,
                 resource_type,
                 resource_name,
+                overrides: TransportOverrides::default(),
             },
             "aborted" => Self::Aborted {
                 ctx: deserialize_ctx::<Aborted>("aborted", ctx_value)?,
                 detail,
                 resource_type,
                 resource_name,
+                overrides: TransportOverrides::default(),
             },
             "out_of_range" => Self::OutOfRange {
                 ctx: deserialize_ctx::<OutOfRange>("out_of_range", ctx_value)?,
                 detail,
                 resource_type,
                 resource_name,
+                overrides: TransportOverrides::default(),
             },
             "unimplemented" => Self::Unimplemented {
                 ctx: deserialize_ctx::<Unimplemented>("unimplemented", ctx_value)?,
                 detail,
                 resource_type,
                 resource_name,
+                overrides: TransportOverrides::default(),
             },
             "internal" => Self::Internal {
                 // `Internal.description` is `#[serde(skip)]`; the wire
                 // never carries it, so it reconstructs as an empty string.
                 ctx: deserialize_ctx::<Internal>("internal", ctx_value)?,
                 detail,
+                overrides: TransportOverrides::default(),
             },
             "service_unavailable" => Self::ServiceUnavailable {
                 ctx: deserialize_ctx::<ServiceUnavailable>("service_unavailable", ctx_value)?,
                 detail,
                 resource_type,
                 resource_name,
+                overrides: TransportOverrides::default(),
             },
             "data_loss" => Self::DataLoss {
                 ctx: deserialize_ctx::<DataLoss>("data_loss", ctx_value)?,
                 detail,
                 resource_type,
                 resource_name,
+                overrides: TransportOverrides::default(),
             },
             "unauthenticated" => Self::Unauthenticated {
                 ctx: deserialize_ctx::<Unauthenticated>("unauthenticated", ctx_value)?,
                 detail,
                 resource_type,
                 resource_name,
+                overrides: TransportOverrides::default(),
             },
             _ => {
                 return Err(ProblemConversionError::UnknownProblemType(
@@ -365,6 +397,24 @@ impl TryFrom<Problem> for CanonicalError {
                 ));
             }
         };
+
+        if !(100..=599).contains(&problem.status) {
+            return Err(ProblemConversionError::InvalidStatus(problem.status));
+        }
+
+        if !canonical.is_same_status_class(problem.status) {
+            return Err(ProblemConversionError::CategoryStatusMismatch {
+                category: canonical.category_name(),
+                status: problem.status,
+            });
+        }
+
+        // Recover any transport override purely from the wire `status` — no
+        // additional field on `Problem` is needed since the category's
+        // default status is already known (`default_http_status`).
+        if problem.status != canonical.default_http_status() {
+            canonical.transport_overrides_mut().http_status = Some(problem.status);
+        }
 
         Ok(canonical)
     }

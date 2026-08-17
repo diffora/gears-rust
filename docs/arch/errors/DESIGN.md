@@ -94,6 +94,8 @@ GTS ID pattern: `gts.cf.core.errors.err.v1~cf.core.err.{category}.v1~`
 
 Note: this design keeps Google `unavailable` semantics, but uses the explicit platform name `service_unavailable` for the canonical category identifier.
 
+The HTTP column above is the fixed **default** per category. A specific occurrence MAY override it via `TransportOverride` without changing its category — see [§2.2 Transport Overrides](#transport-overrides).
+
 See [§ 4. Category Reference](#4-category-reference) for full definitions including context schemas, constructors, and JSON wire examples.
 
 ### 1.3 Architecture Drivers
@@ -237,6 +239,7 @@ Every error response consists of **contract parts** (fixed per category) and **v
 - `instance` path
 - `trace_id`
 - Context field values
+- Per-occurrence transport override (e.g. `Http::status_code(..)`) — see below
 
 **Breaking changes** (require major version bump of `cf-gears-toolkit-errors`):
 - Removing or renaming a canonical category
@@ -249,6 +252,37 @@ Every error response consists of **contract parts** (fixed per category) and **v
 **Non-breaking changes** (minor version):
 - Adding a new optional field to a context type
 - Adding a new canonical category
+
+#### Transport Overrides
+
+- [ ] `p2` - **ID**: `cpt-cf-errors-constraint-transport-overrides`
+
+A caller MAY attach a transport-specific override to a single `CanonicalError` occurrence, without changing that occurrence's canonical category, GTS type, title, or context schema — only the named transport's wire projection is affected. This is an escape hatch for cases where a specific call site needs to diverge from the category's default HTTP status (e.g. a `not_found` that must read as `410 Gone` for one legacy endpoint) while keeping the category correct for dispatch, classification, and any future gRPC/SSE mapping.
+
+```rust
+use toolkit_canonical_errors::{CanonicalError, Http};
+
+let err = UserResourceError::not_found("Resource permanently removed")
+    .with_resource(id)
+    .with_override(Http::status_code(410))
+    .create();
+
+assert_eq!(err.status_code(), 410);                 // wire status: overridden
+assert_eq!(err.gts_type(), /* not_found GTS id */);  // category: unaffected
+assert_eq!(err.title(), "Not Found");                // title: unaffected
+```
+
+`.with_override(TransportOverride)` is available on every error builder, at any point in the chain. `TransportOverride` is `#[non_exhaustive]`; the only variant today is `Http` (constructed via `Http::status_code(u16)`, a `const fn`), but the shape leaves room for future transports (gRPC, SSE) to add their own variant without a breaking change. Re-applying an override for the same transport replaces the prior value; overrides for different transports are independent of one another.
+
+**Caller contract**: `type` and `title` remain the authoritative signal for programmatic dispatch even when `status` is overridden. Consumers that key behavior off the numeric `status` instead of the canonical `type` should be aware overrides exist and can make `status` diverge from the category's documented default.
+
+**Round-trip**: no change to the `Problem` wire schema is needed to carry an override. `TryFrom<Problem> for CanonicalError` recovers it by comparing the wire `status` against the category's known default — if they differ, the reconstructed `CanonicalError` carries the override, so `status_code()` on the round-tripped value always matches the original wire `status`.
+
+**Known limitation**: an override whose value equals the category's default (e.g. `Http::status_code(404)` on a `not_found` error) is indistinguishable on the wire from "no override was set." `status_code()` is unaffected (`404` either way), but `http_status_override()` on the round-tripped value returns `None` instead of `Some(404)`. This is the direct consequence of recovering the override from the wire `status` alone rather than adding a dedicated `Problem` field (see above) — accepted rather than fixed, since a wire schema change would undo that property.
+
+**Wire validation**: `TryFrom<Problem>` rejects a `status` outside the RFC 9110 range (100-599) with `ProblemConversionError::InvalidStatus`, since that boundary accepts untrusted, out-of-process input. `Http::status_code` (local construction) does not range-validate — that path is trusted caller input, consistent with this crate's existing caller-contract-via-doc-comment style elsewhere (e.g. `ServiceUnavailableBuilder::with_detail`).
+
+**Status-class consistency**: an override MUST stay within the same HTTP status-code class (first digit) as its category's default — an `invalid_argument` (4xx) error cannot be overridden into 5xx, and vice versa. Flipping class would silently change client retry semantics (5xx implies transient/retry-safe, 4xx implies the caller's fault) despite the category staying reported as client-fault or server-fault via `type`. This is enforced at two tiers matching the trust boundaries above: `TryFrom<Problem>` returns `ProblemConversionError::CategoryStatusMismatch` for untrusted wire input; local construction (`.create()` on both builders) uses `debug_assert!` — it catches the mistake in development and tests without adding a panic path to production release builds or changing `.create()`'s (infallible) signature.
 
 #### Macro-Based GTS Construction
 
@@ -439,7 +473,7 @@ Every REST error response follows this structure:
 |-------|--------|------|-------------|
 | `type` | GTS URI from category | **Contract** | Error type URI (e.g., `gts.cf.core.errors.err.v1~cf.core.err.not_found.v1~`) |
 | `title` | Static per category | **Contract** | Human-readable summary (e.g., "Not Found") |
-| `status` | HTTP status from mapping | **Contract** | HTTP status code as integer |
+| `status` | HTTP status from mapping, or a per-occurrence `TransportOverride` | **Contract** (default) / Variable (override) | HTTP status code as integer — see [§2.2 Transport Overrides](#transport-overrides) |
 | `detail` | `CanonicalError.detail` | Variable | Human-readable explanation of this occurrence |
 | `instance` | Request URI path | Variable | URI identifying this specific occurrence |
 | `trace_id` | Request context | Variable | W3C trace ID for correlation |
