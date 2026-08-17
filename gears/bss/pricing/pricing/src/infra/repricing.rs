@@ -85,7 +85,9 @@
 //! * **A clean finish, and an ordinary [`DomainError`] this function's own
 //!   code is still running to handle** — the two paths its own `match` can
 //!   still reach. A clean finish calls [`finish_run`]: release the lock,
-//!   tally, land the run terminal. An ordinary `Err` after lock-taking does
+//!   tally, land the run terminal. An ordinary `Err` from lock-taking onwards
+//!   — [`bulk_repo::take_locks`]'s own refusal included, which is why that call
+//!   sits inside the same `inner` block as everything after it — does
 //!   deliberately *less*: it releases the lock and returns, leaving the run
 //!   `committing` with its unreached rows exactly `pending` —
 //!   [`domain::bulk::JournalState`]'s own doc is explicit that this is what
@@ -316,23 +318,24 @@ pub async fn apply_run_in(
     target_ids.sort_unstable();
     target_ids.dedup();
 
-    // **The bulk lock, taken now that the run is `committing`.** See the
-    // module doc for what this closes and — as plainly — what it does not.
-    bulk_repo::take_locks(
-        &conn,
-        scope,
-        tenant_id,
-        operation_id,
-        &target_ids,
-        stamp.recorded_at,
-    )
-    .await
-    .map_err(|e| repo_failure(&e))?;
-
-    // From here the run holds its row locks, and `RunLockGuard`'s own doc is
-    // why this exists: everything below can still return early through `?`,
-    // and this function's own code handles that explicitly — but a panic or a
-    // dropped future runs none of it, and only `Drop` reaches those two.
+    // **Armed before the first lock row is written, not after.** `RunLockGuard`'s
+    // own doc is why it exists at all: everything below can still return early
+    // through `?`, and this function's own code handles that explicitly — but a
+    // panic or a dropped future runs none of it, and only `Drop` reaches those
+    // two. **Where** it is armed is a second, separate property, and this line
+    // is it: [`bulk_repo::take_locks`] writes one independent statement per row
+    // (its own doc says so, and says why — a partial set has to stay
+    // releasable), so the first lock row is *durable* while that loop is still
+    // awaiting the next insert. A guard armed after the call would therefore
+    // leave a window — the whole of `take_locks` — in which a lock is committed
+    // and nothing owns it, and a cancellation in that window (a client
+    // disconnect, a shutdown signal) is exactly the frozen-rows-and-a-run-stuck-
+    // `committing` outcome this guard exists to prevent. It was measured, not
+    // reasoned about: with the guard armed after the call, cancelling the apply
+    // as soon as its first lock became visible left the locks held and the run
+    // committing in every attempt, and about one full-binary run in forty hit
+    // the same window by accident
+    // (`tests/sqlite_repricing_apply.rs`'s two cancellation tests).
     let mut lock_guard = RunLockGuard::new(db.clone(), scope.clone(), tenant_id, operation_id);
 
     // Everything from here through `finish_run` below is wrapped so a `?`
@@ -341,7 +344,30 @@ pub async fn apply_run_in(
     // inline `async` block reached by `.await` right here is the plain way to
     // get one `Result` out of a body that used to return straight through
     // `apply_run_in`'s own `?`.
+    //
+    // **`take_locks` is inside this block for the guard's sake**, not for the
+    // grouping's: armed above, its `?` has to land on `inner` like every other
+    // failure below, so that a refused lock still takes the ordinary-`Err` exit
+    // (release, disarm, run left `committing` and redrivable) rather than the
+    // `Drop` fallback's force-terminal sweep. `take_locks` releases whatever
+    // partial set it took before returning its own error, so the release that
+    // arm performs is a no-op there — and the run's state and this function's
+    // returned error are both exactly what they were when the call sat above the
+    // guard.
     let inner: Result<(), DomainError> = async {
+        // **The bulk lock, taken now that the run is `committing`.** See the
+        // module doc for what this closes and — as plainly — what it does not.
+        bulk_repo::take_locks(
+            &conn,
+            scope,
+            tenant_id,
+            operation_id,
+            &target_ids,
+            stamp.recorded_at,
+        )
+        .await
+        .map_err(|e| repo_failure(&e))?;
+
         let mut by_plan: BTreeMap<PlanId, Vec<JournalRow>> = BTreeMap::new();
         if !pending.is_empty() {
             let ids: Vec<Uuid> = pending.iter().map(|row| row.price_id).collect();

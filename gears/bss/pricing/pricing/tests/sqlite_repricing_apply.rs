@@ -460,6 +460,32 @@ async fn seed_stray_draft(h: &Harness, plan: PlanId, phase: Uuid) {
         .expect("author the stray draft");
 }
 
+/// One draft row on `plan`, on a phase of its own so the key is unique, for the
+/// only purpose of being lockable: the repricing journal's `price_id` carries a
+/// foreign key into `pricing_price`, and
+/// [`a_future_dropped_while_it_is_still_taking_its_locks_releases_them_too`]
+/// needs many rows on one run's journal rather than many *priced* rows. Nothing
+/// publishes these, and nothing reads their content.
+async fn seed_lockable_draft(h: &Harness, plan: PlanId) -> Uuid {
+    let price_id = Uuid::now_v7();
+    h.prices
+        .create_draft(
+            &h.scope,
+            TENANT,
+            NewPriceDraft {
+                price_id,
+                scope_key: scope_key(plan, Uuid::now_v7(), "eu"),
+                content: publishable_row(1_000),
+                created_by: ACTOR,
+                created_at_utc: at(10),
+                correlation_id: CORRELATION,
+            },
+        )
+        .await
+        .expect("author a lockable draft");
+    price_id
+}
+
 fn stamp() -> AuditStamp {
     AuditStamp {
         actor_principal_id: ACTOR,
@@ -1042,6 +1068,141 @@ async fn a_grandfathered_row_whose_plan_also_fails_its_aggregate_pass_still_ends
 // Task 7 - the bulk lock and its Drop guard.
 // ---------------------------------------------------------------------------
 
+/// Block until `price_id`'s bulk lock is visibly held by `run_id`.
+///
+/// A test that cancelled the apply *before* the lock was ever taken would prove
+/// nothing about the drop guard, so this is the precondition both cancellation
+/// tests below establish first.
+///
+/// # Why the bound counts polls and not seconds
+///
+/// What this waits for is another task's progress, which no amount of polling
+/// makes synchronous - so a bound has to exist, and the question is what it
+/// should measure. A wall clock is the wrong thing: it measures the box, not the
+/// apply. A 5s clock here was measured failing on a box carrying 24 busy
+/// processes while the apply had in fact taken its lock - the clock had simply
+/// run out first, and the failure said "never took its bulk lock", which was
+/// false. **A poll count measures what the assertion actually means.** Every
+/// iteration below sleeps, which hands the runtime a chance to poll every other
+/// runnable task, and reads the database, which requires the driver to have made
+/// real progress; so [`POLL_BUDGET`] iterations mean the apply had that many
+/// opportunities to advance and did not take one. A loaded box makes each
+/// iteration slower in wall time and *more* forgiving, never less - which is the
+/// direction a bound in a test may err in.
+async fn await_lock_taken(h: &Harness, run_id: Uuid, price_id: Uuid) {
+    for _ in 0..POLL_BUDGET {
+        let held = bulk_repo::lock_holder(
+            &h.provider.conn().expect("conn"),
+            &h.scope,
+            TENANT,
+            price_id,
+        )
+        .await
+        .expect("read the lock");
+        if held == Some(run_id) {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+    }
+    panic!(
+        "the apply never took its bulk lock over {price_id} across {POLL_BUDGET} polls - each one \
+         a chance for it to run and a read proving the driver was live, so this is the apply \
+         wedged rather than a slow box; this test cannot prove anything about the drop guard \
+         without first observing the lock taken"
+    );
+}
+
+/// How many times either wait below hands the runtime a turn before calling the
+/// thing it is waiting for wedged.
+///
+/// Sized for the diagnosis, not for a duration: the measured release takes **one
+/// or two** polls (7-9ms), and the measured failure takes *all* of them, because
+/// what fails is a release that never ran rather than one that ran late. Any
+/// value comfortably past two therefore separates the two outcomes identically,
+/// and this one is three orders of magnitude past it.
+const POLL_BUDGET: u32 = 2_000;
+
+/// Wait for the run to land terminal with its locks released after a
+/// cancellation, and say honestly what it means when that never happens.
+///
+/// `RunLockGuard`'s release is a detached `Handle::spawn` - its own doc says so -
+/// so a caller reading the run back the instant the future drops may still see it
+/// `committing` for a beat. Something asynchronous has to be waited on. The trap
+/// is what the giving-up bound is allowed to *claim*: a wall-clock deadline here
+/// reads as "the release took longer than 5s", and that reading is what cost a
+/// day. This suite's flake was reported as exactly that - "the drop guard never
+/// released the lock within 5s", about one run in forty - and the finding behind
+/// it was not latency at all. The guard's `Drop` had never run, because the
+/// future was cancelled while `bulk_repo::take_locks` was still writing lock
+/// rows, before the guard existed
+/// ([`a_future_dropped_while_it_is_still_taking_its_locks_releases_them_too`]
+/// pins that window deliberately). A number raised from 5 to 60 would have hidden
+/// it just as well and for longer.
+///
+/// So the bound counts polls rather than seconds ([`POLL_BUDGET`], and see
+/// [`await_lock_taken`] for why that is the honest unit), and the message names
+/// the two things reaching it can mean - a release that was never spawned, and
+/// one that is wedged - because both are defects in the guard and neither is a
+/// slow test box. What it reports is what it read: the run, the locks still held
+/// and by which run, and the live task count as a hint rather than a verdict (the
+/// `sqlx` pool keeps tasks of its own, so a non-zero count is not proof the
+/// release is among them).
+async fn await_release_settled(
+    h: &Harness,
+    run_id: Uuid,
+    locks: &[Uuid],
+) -> bulk_repo::BulkOperationRecord {
+    for _ in 0..POLL_BUDGET {
+        match read_release_state(h, run_id, locks).await {
+            (Some(run), held) if run.state != BulkState::Committing && held.is_empty() => {
+                return run;
+            }
+            _ => tokio::time::sleep(std::time::Duration::from_millis(5)).await,
+        }
+    }
+    let (run, held) = read_release_state(h, run_id, locks).await;
+    let alive = tokio::runtime::Handle::current()
+        .metrics()
+        .num_alive_tasks();
+    panic!(
+        "the dropped apply's bulk lock was never released and its run never landed terminal, \
+         across {POLL_BUDGET} polls - each one a turn for the guard's detached release task and a \
+         read proving the driver was live. This is not a slow release: it is one that never ran, \
+         or one that is wedged, and the first thing to check is that the guard is armed *before* \
+         the first lock row is written rather than after it. Rows still held (price_id, holder): \
+         {held:?}. This runtime has {alive} live tasks, the `sqlx` pool's own among them, so read \
+         that as a hint and not a verdict. run={run:?}"
+    );
+}
+
+/// The run and whichever of `locks` is still held, read together - what
+/// [`await_release_settled`] tests each turn and reports when it gives up, so the
+/// two cannot drift apart.
+async fn read_release_state(
+    h: &Harness,
+    run_id: Uuid,
+    locks: &[Uuid],
+) -> (Option<bulk_repo::BulkOperationRecord>, Vec<(Uuid, Uuid)>) {
+    let run = bulk_repo::read(&h.provider.conn().expect("conn"), &h.scope, TENANT, run_id)
+        .await
+        .expect("read the run");
+    let mut held = Vec::new();
+    for &price_id in locks {
+        if let Some(holder) = bulk_repo::lock_holder(
+            &h.provider.conn().expect("conn"),
+            &h.scope,
+            TENANT,
+            price_id,
+        )
+        .await
+        .expect("read the lock")
+        {
+            held.push((price_id, holder));
+        }
+    }
+    (run, held)
+}
+
 /// **The RED this task is about.** `infra::bulk`'s own sibling releases the
 /// bulk lock in its `Ok`/`Err` match arms alone (Z8-8/Z9-5) - a shape that
 /// misses two of `apply_run_in`'s three abnormal exits: a panic unwinds past a
@@ -1093,24 +1254,7 @@ async fn a_future_dropped_mid_apply_releases_its_bulk_lock_and_lands_the_run_ter
         .await
     });
 
-    // Wait for the lock to actually be visible - polled rather than slept a
-    // fixed amount, so this is not a timing bet on how fast one test box is.
-    let take_deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    loop {
-        let held =
-            bulk_repo::lock_holder(&h.provider.conn().expect("conn"), &h.scope, TENANT, row_a)
-                .await
-                .expect("read the lock");
-        if held == Some(run_id) {
-            break;
-        }
-        assert!(
-            std::time::Instant::now() < take_deadline,
-            "the apply never took its bulk lock over row_a within 5s - this test cannot prove \
-             anything about the drop guard without first observing the lock taken"
-        );
-        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
-    }
+    await_lock_taken(&h, run_id, row_a).await;
 
     // Cancel it. `JoinHandle::abort` is `select!`'s own mechanism for a losing
     // arm - the future stops running at its next await point and every one of
@@ -1126,37 +1270,11 @@ async fn a_future_dropped_mid_apply_releases_its_bulk_lock_and_lands_the_run_ter
         ),
     }
 
-    // The guard's own fallback is a detached spawn, not synchronous with the
-    // abort - poll for it rather than sleep a fixed amount.
-    let settle_deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    let (mut run, mut lock_a, mut lock_b);
-    loop {
-        run = bulk_repo::read(&h.provider.conn().expect("conn"), &h.scope, TENANT, run_id)
-            .await
-            .expect("read the run");
-        lock_a = bulk_repo::lock_holder(&h.provider.conn().expect("conn"), &h.scope, TENANT, row_a)
-            .await
-            .expect("read the lock");
-        lock_b = bulk_repo::lock_holder(&h.provider.conn().expect("conn"), &h.scope, TENANT, row_b)
-            .await
-            .expect("read the lock");
-        let settled = run
-            .as_ref()
-            .is_some_and(|r| r.state != BulkState::Committing)
-            && lock_a.is_none()
-            && lock_b.is_none();
-        if settled {
-            break;
-        }
-        assert!(
-            std::time::Instant::now() < settle_deadline,
-            "the drop guard never released the lock and landed the run terminal within 5s: \
-             run={run:?} lock_a={lock_a:?} lock_b={lock_b:?}"
-        );
-        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-    }
+    // Both rows' locks gone and the run off `committing`. The guard's release
+    // is a detached task, so this waits - but on the release's own progress,
+    // counted in turns of the runtime rather than in seconds.
+    let run = await_release_settled(&h, run_id, &[row_a, row_b]).await;
 
-    let run = run.expect("the run exists");
     assert_ne!(
         run.state,
         BulkState::Committing,
@@ -1166,8 +1284,104 @@ async fn a_future_dropped_mid_apply_releases_its_bulk_lock_and_lands_the_run_ter
         run.state.is_terminal(),
         "and it lands on one of the seven states that is terminal: {run:?}"
     );
-    assert!(lock_a.is_none(), "row_a's lock is released");
-    assert!(lock_b.is_none(), "row_b's lock is released");
+}
+
+/// **The window the test above cannot see.** It cancels the apply once the lock
+/// over `row_a` is visible, and with two rows that is *almost always* past the
+/// point where the guard exists — so it passes, and passed for weeks, while the
+/// same cancellation one statement earlier left the locks held forever. That is
+/// where this suite's own flake came from: about one run in forty, the abort
+/// landed while `bulk_repo::take_locks` was still inserting, and the run stayed
+/// `committing` with its rows frozen until the process died.
+///
+/// `take_locks` writes **one independent statement per row** on a
+/// non-transactional runner — its own doc says so, and says why (a partial set
+/// has to be releasable) — so the first lock row is durable while the loop is
+/// still awaiting the second insert. Arming the guard after that call therefore
+/// leaves a window in which a lock is committed and nothing owns it: a client
+/// disconnect there is precisely the "run stuck `committing` until an operator
+/// intervenes" outcome the guard was written to prevent.
+///
+/// This test makes that window wide enough to hit on purpose rather than one in
+/// forty: forty rows on the journal, and the cancellation fires the moment the
+/// **first** of their locks appears, leaving thirty-nine inserts still to run
+/// against a poll loop that notices the first within 2ms. Forty is what made it
+/// deterministic in measurement rather than what looked like enough — eleven runs
+/// against a guard armed after `take_locks` failed eleven times, each of them with
+/// the apply's cancellation landing inside `take_locks`, and six runs against one
+/// armed before it passed six times. Nothing else about the apply changes between
+/// the two.
+#[tokio::test]
+async fn a_future_dropped_while_it_is_still_taking_its_locks_releases_them_too() {
+    let h = harness().await;
+
+    // Draft rows, not published ones: the journal's own foreign key into
+    // `pricing_price` is the only thing the ids owe (bare uuids are refused with
+    // `code: 787`), and nothing this test reaches ever prices them — the abort
+    // lands while `take_locks` is still running, long before `apply_by_plan`.
+    // A distinct phase per row is what keeps each scope key unique; the count is
+    // what matters, one INSERT each inside `take_locks`, and the abort has to
+    // land among them rather than after the last.
+    let plan = Uuid::now_v7();
+    let phase = Uuid::now_v7();
+    seed_plan(&h, plan, phase).await;
+    let mut price_ids: Vec<Uuid> = Vec::new();
+    for _ in 0..40 {
+        price_ids.push(seed_lockable_draft(&h, PlanId::new(plan)).await);
+    }
+    price_ids.sort_unstable();
+    let first_lock = price_ids[0];
+    let last_lock = price_ids[price_ids.len() - 1];
+
+    let run_id = open_committing_run(&h, &price_ids).await;
+
+    let provider = h.provider.clone();
+    let policies = h.policies.clone();
+    let registry: Arc<dyn CatalogVersionRegistryV1> =
+        Arc::clone(&h.registry) as Arc<dyn CatalogVersionRegistryV1>;
+    let scope = h.scope.clone();
+    let handle = tokio::spawn(async move {
+        apply_run_in(
+            &provider,
+            &policies,
+            &registry,
+            &ctx(),
+            &scope,
+            TENANT,
+            run_id,
+            apply_stamp(),
+        )
+        .await
+    });
+
+    // The *first* lock, so the other 39 inserts are still ahead of the abort.
+    await_lock_taken(&h, run_id, first_lock).await;
+
+    handle.abort();
+    match handle.await {
+        Err(ref e) if e.is_cancelled() => {}
+        other => panic!(
+            "the task must have been genuinely cancelled mid-flight for this test to prove \
+             anything about the drop guard, not merely finished before the abort landed: \
+             {other:?}"
+        ),
+    }
+
+    // Both ends of the set: the first lock, taken before the old guard existed,
+    // and the last, on whichever side of the abort it fell - the guard releases
+    // the run's whole set, not the part it saw taken.
+    let run = await_release_settled(&h, run_id, &[first_lock, last_lock]).await;
+
+    assert_ne!(
+        run.state,
+        BulkState::Committing,
+        "no run is left committing after a future cancelled while it was still taking its \
+         locks: {run:?}"
+    );
+    assert!(
+        run.state.is_terminal(),
+        "and it lands on one of the seven states that is terminal: {run:?}"
+    );
 }
 
 // A test for the narrowed ordinary-`Err` behaviour lives beside
@@ -1175,11 +1389,23 @@ async fn a_future_dropped_mid_apply_releases_its_bulk_lock_and_lands_the_run_ter
 // own `#[cfg(test)]` module (`step0_probe`'s own precedent in this file) —
 // not here. Forcing a genuine, non-corrupting `Err` out of `apply_run_in`
 // requires racing a direct write against the run's own in-flight processing,
-// and this crate's `sqlite::memory:` harness gives every `DBProvider` a
-// single-connection pool (`libs/toolkit-db`) with real single-writer SQLite
-// semantics under it: a transaction holds that one connection for its whole
-// duration, so a competing write from a second task can only ever land in the
-// narrow gaps *between* transactions, never during one. An earlier version of
+// and this crate's `sqlite::memory:` harness serialises that race away: a
+// competing write from a second task can only ever land in the narrow gaps
+// *between* the run's transactions, never during one.
+//
+// **The reason is not a single-connection pool**, which is what this comment
+// used to say and what a later reader would have reasoned from. `connect_db`'s
+// SQLite arm applies `ConnectOpts::default()` as given — `max_conns: Some(10)`
+// (`libs/toolkit-db/src/pool_opts.rs`), with no in-memory special case like the
+// config-driven path's (`options.rs`, `max_connections(1)` for a memory DSN) —
+// so this harness really does open a second connection, and it was measured
+// doing so. What holds the property up instead is one layer down: `sqlx` rewrites
+// `sqlite::memory:` into a *named, shared-cache* database, so those connections
+// share one store, and a reader or writer that meets an open write transaction's
+// table lock **waits** for it (`sqlite3_unlock_notify`) rather than erroring or
+// proceeding. Measured, not argued: a read issued from a second connection while
+// a transaction held a written table returned only when that transaction ended,
+// 451ms later. An earlier version of
 // this test tried exactly that race and lost it reliably — the raced row was
 // already decided by the time the direct write ran, not merely flaky. The
 // property is real and still worth pinning; it is pinned deterministically
