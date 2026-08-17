@@ -70,6 +70,13 @@ fn key(charge_kind: ChargeKind, currency: &str, region: &str) -> ScopeKey {
 
 /// A row on `scope_key`, publishable as far as every rule outside this module is
 /// concerned.
+///
+/// **Published, and after D-332 that is what makes this module's subject
+/// reachable.** The publish opens coverage itself for a key whose every billable
+/// row is a draft it is freezing, so a draft row is no longer uncovered — it is a
+/// key the publish is about to cover. Every scenario here is about a key that
+/// *has* coverage and lost it, or never had it under a row already frozen, which
+/// is the population the rule still judges.
 fn row_on(price_id: u128, scope_key: ScopeKey) -> PriceRecord {
     PriceRecord {
         price_id: Uuid::from_u128(price_id),
@@ -86,7 +93,7 @@ fn row_on(price_id: u128, scope_key: ScopeKey) -> PriceRecord {
         rounding_policy_ref: Some("half_up".to_owned()),
         grandfather_until: None,
         supersedes_price_id: None,
-        lifecycle_state: LifecycleState::Draft,
+        lifecycle_state: LifecycleState::Published,
         created_by: Uuid::from_u128(0xac_10),
         created_at_utc: at(0),
         row_version: RowVersion::new(1),

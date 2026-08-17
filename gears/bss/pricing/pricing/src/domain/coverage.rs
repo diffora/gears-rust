@@ -382,12 +382,6 @@ pub fn check(billable: &[ScopeKey], windows: &[KeyWindows]) -> CoverageReport {
     CoverageReport { keys }
 }
 
-/// The billable keys of a publish subject, in `rows` order and de-duplicated.
-///
-/// Two rows legitimately share a key — a `superseded` predecessor and its
-/// `published` successor — so the set is what the rules range over, never the row
-/// list.
-#[must_use]
 /// Will this publish open the key's coverage itself (D-332)?
 ///
 /// True when every billable row on the key is a **draft** this publish is about
@@ -409,6 +403,12 @@ pub fn opened_by_this_publish(shape: &PlanShape, key: &ScopeKey) -> bool {
     seen
 }
 
+/// The billable keys of a publish subject, in `rows` order and de-duplicated.
+///
+/// Two rows legitimately share a key — a `superseded` predecessor and its
+/// `published` successor — so the set is what the rules range over, never the row
+/// list.
+#[must_use]
 pub fn billable_keys(shape: &PlanShape) -> Vec<ScopeKey> {
     let mut keys: Vec<ScopeKey> = Vec::new();
     for record in shape.rows.iter().filter(|record| is_billable(record)) {

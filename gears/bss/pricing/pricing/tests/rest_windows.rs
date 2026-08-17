@@ -150,6 +150,16 @@ fn keys_of(report: &serde_json::Value) -> Vec<String> {
 /// assertion **filters** for `WINDOW_COVERAGE_MISSING` instead of taking the whole
 /// violation list: the property is that the coverage finding names this key in this
 /// spelling, not that coverage is the plan's only fault.
+///
+/// # The row is **published** here, and after D-332 that is the whole fixture
+///
+/// The publish now opens coverage itself for a key whose every billable row is a
+/// draft it is freezing, so a draft row — what this test seeded until
+/// 2026-08-17 — no longer produces the refusal this test is about. The case that
+/// keeps the rule's full force is the other one: a key that **had** coverage and
+/// lost it, which is an author's mistake rather than an artefact of ordering.
+/// Publishing the row through `publish_price` and scheduling nothing is exactly
+/// that key, and it is the population an operator actually remediates from.
 #[tokio::test]
 async fn the_report_names_the_uncovered_key_the_publish_refusal_named() {
     let h = Harness::new().await;
@@ -157,6 +167,7 @@ async fn the_report_names_the_uncovered_key_the_publish_refusal_named() {
     seed_draft_plan(&h, plan_id).await;
     h.attach_shape(plan_id, 0).await;
     let row = seed_price(&h, plan_id, "EU").await;
+    h.publish_price(plan_id, row.price_id).await;
 
     let refused = h
         .allowed()
