@@ -1,12 +1,13 @@
 //! The **phase-schedule rules** (`cpt-cf-bss-pricing-algo-phases`).
 //!
-//! Eight rules over a [`PlanShape`], each one an instruction of the slice:
-//! `inst-ph-graph` (in two halves), `inst-ph-duration`, `inst-ph-coverage`,
-//! `inst-ph-usage-invariant`, `inst-ph-override-units` and
-//! `inst-ph-terminal-stable`. They append and never short-circuit, so a plan
-//! with a broken chain *and* an uncovered phase reports both.
+//! Ten rules over a [`PlanShape`], each one an instruction of the slice:
+//! `inst-ph-graph` (in three halves), `inst-ph-duration`, `inst-ph-trial`,
+//! `inst-ph-row-attached`, `inst-ph-coverage`, `inst-ph-usage-invariant`,
+//! `inst-ph-override-units` and `inst-ph-terminal-stable`. They append and never
+//! short-circuit, so a plan with a broken chain *and* an uncovered phase reports
+//! both.
 //!
-//! Three of the eight implement `inst-ph-graph`, which §5 splits into three
+//! Three of the ten implement `inst-ph-graph`, which §5 splits into three
 //! problem responses, so their
 //! [`name`](crate::domain::validation::ValidationRule::name)s carry a suffix -
 //! `inst-ph-graph`, `inst-ph-graph/linear`, `inst-ph-graph/terminal-kind`. The
@@ -86,11 +87,18 @@
 //!   map and the auto-created implicit terminal phase are a projection and a
 //!   creation-time act; there is nothing for a validator to reject. The rows'
 //!   `phase` axis is typed [`PhaseId`] by construction (D-19), so the axis-typing
-//!   half is carried by the type rather than by a check.
-//! - **`inst-ph-trial` is not here either.** `displayTrialDays` as a *published*
-//!   value is a read-model projection, and the equality with
-//!   `phase_duration_days` is guaranteed by a `CHECK` on `pricing_plan_phase`.
-//!   A rule re-checking a column constraint would be a second owner of it.
+//!   half is carried by the type rather than by a check — **and the type carries
+//!   only that much.** `PhaseId` says "this is a phase id" and not "this
+//!   revision's", which is the gap [`RowPhaseAttached`] closes (D-337): a draft
+//!   whose every row keyed on an id nobody attached was refused for having no
+//!   terminal phase and never told about the rows.
+//! - **`inst-ph-trial` used to be listed here as absent, and it is a rule.** The
+//!   withdrawn argument was that `displayTrialDays` is a read-model projection
+//!   whose equality with `phase_duration_days` a `CHECK` on `pricing_plan_phase`
+//!   guarantees. D-151 measured that: the `CHECK` is silent on `kind` and, by
+//!   NULL propagation, satisfied whenever `phase_duration_days` is NULL, so the
+//!   shape it exists to forbid passed it. [`DisplayTrialDaysOnTrialPhase`] is
+//!   what closes both halves.
 //! - **Reachability is not walked.** `PhaseChainLinear` requires every
 //!   non-terminal phase to convert into its ordinal successor, which makes the
 //!   whole set reachable from the entry phase by construction — a separate walk
@@ -111,8 +119,8 @@ use toolkit_macros::domain_model;
 
 use crate::domain::plan_rules::{
     DISPLAY_TRIAL_DAYS_INVALID, PHASE_CHAIN_NONLINEAR, PHASE_DURATION_INVALID, PHASE_GRAPH_INVALID,
-    PHASE_IN_USE, PHASE_OVERRIDE_ORPHANED, PHASE_OVERRIDE_UNIT_MISMATCH, PHASE_UNCOVERED,
-    TERMINAL_PHASE_CHANGED, TERMINAL_PHASE_KIND_INVALID,
+    PHASE_IN_USE, PHASE_OVERRIDE_ORPHANED, PHASE_OVERRIDE_UNIT_MISMATCH, PHASE_ROW_ORPHANED,
+    PHASE_UNCOVERED, TERMINAL_PHASE_CHANGED, TERMINAL_PHASE_KIND_INVALID,
 };
 use crate::domain::plan_shape::{BillingCycle, PhaseGraph, PhaseKind, PlanShape};
 use crate::domain::price_record::PriceRecord;
@@ -336,6 +344,71 @@ impl ValidationRule<PlanShape> for PhaseDuration {
                 PHASE_DURATION_INVALID,
                 phase_subject(subject, phase.phase_id),
                 detail,
+            );
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// inst-ph-row-attached
+// ---------------------------------------------------------------------------
+
+/// `inst-ph-row-attached` (D-337) — every row of the revision names a phase the
+/// revision attaches.
+///
+/// The exact inverse of [`PhaseCoverage`], which asks whether a phase has rows,
+/// and registered immediately before it so the pair reads together in one
+/// report. Both are needed, and each is invisible to the other's iteration: a
+/// phase with no rows leaves a conversion resolving nothing, and a row with no
+/// phase resolves against a phase no subscription can ever be in.
+///
+/// **Unconditional, where `PhaseCoverage` is scoped to plans whose cycle carries
+/// a recurring part.** Coverage cannot be demanded of a plan that has no
+/// recurring row to give; attachment is a statement about a row that exists, so
+/// there is no cycle under which it does not apply.
+///
+/// **Not folded into [`TerminalPhaseStable`] arm (b).** That arm asks the same
+/// question of the *baseline*'s phases and begins with
+/// `let Some(baseline) = … else { return }`, which is precisely why a draft could
+/// carry this fault unreported: a plan that has never published has nothing to be
+/// stable against, and the fault is not about stability.
+///
+/// **Publish-stage, which is the [`Stage`](crate::domain::validation::Stage)
+/// default and is deliberate here rather than inherited.** A `write_stage_only`
+/// reading would refuse the row at authoring time, and "add the row, then attach
+/// the phase" is an order §4.2 allows a draft to be in — the state this rule
+/// refuses is a *publish* of that draft, not the draft.
+#[domain_model]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct RowPhaseAttached;
+
+impl ValidationRule<PlanShape> for RowPhaseAttached {
+    fn name(&self) -> &'static str {
+        "inst-ph-row-attached"
+    }
+
+    fn evaluate(&self, subject: &PlanShape, report: &mut ValidationReport) {
+        for record in &subject.rows {
+            let phase = record.scope_key.phase();
+            if subject.phases.find(phase).is_some() {
+                continue;
+            }
+            // Subject is the phase and not the row: one act — attaching this id —
+            // clears every finding under it, so a consumer grouping by subject
+            // shows the author one entry per remediation rather than one per row.
+            // The row is named in the detail, which is the other remediation.
+            report.violate(
+                PHASE_ROW_ORPHANED,
+                phase_subject(subject, phase),
+                format!(
+                    "price row {} keys on phase {phase}, which this revision does not attach; \
+                     the row resolves against a phase no subscription can be in, and a scope \
+                     key is the row's identity, so the phase has to be attached. Deleting the \
+                     row instead is available only while that row is a draft: the candidate set \
+                     this rule judges includes published rows, and the published plane is \
+                     append-only",
+                    record.price_id
+                ),
             );
         }
     }

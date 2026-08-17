@@ -25,9 +25,9 @@ use super::{
     ADDON_CYCLE, ADDON_INCOMPATIBLE, AVAILABLE_FROM_IN_PAST, DESCRIPTOR_INCOMPLETE,
     HYBRID_INCOMPLETE, INVALID_CUSTOM_INTERVAL, METER_AMBIGUOUS, PHASE_CHAIN_NONLINEAR,
     PHASE_DURATION_INVALID, PHASE_GRAPH_INVALID, PHASE_IN_USE, PHASE_OVERRIDE_ORPHANED,
-    PHASE_OVERRIDE_UNIT_MISMATCH, PHASE_UNCOVERED, PLANTIER_MISSING, PURCHASE_QTY_RANGE_INVALID,
-    SETUP_ROW_INVALID, TERMINAL_PHASE_CHANGED, TERMINAL_PHASE_KIND_INVALID,
-    USAGE_MARKET_INCOMPLETE,
+    PHASE_OVERRIDE_UNIT_MISMATCH, PHASE_ROW_ORPHANED, PHASE_UNCOVERED, PLANTIER_MISSING,
+    PURCHASE_QTY_RANGE_INVALID, SETUP_ROW_INVALID, TERMINAL_PHASE_CHANGED,
+    TERMINAL_PHASE_KIND_INVALID, USAGE_MARKET_INCOMPLETE,
 };
 use crate::domain::rules::{COMPOSITE_SELF_REFERENCE, COMPOSITE_TOO_FEW_CONSTITUENTS};
 
@@ -57,6 +57,7 @@ const DECLARED: &[(&str, &str)] = &[
     (PHASE_CHAIN_NONLINEAR, "PHASE_CHAIN_NONLINEAR"),
     (TERMINAL_PHASE_KIND_INVALID, "TERMINAL_PHASE_KIND_INVALID"),
     (PHASE_DURATION_INVALID, "PHASE_DURATION_INVALID"),
+    (PHASE_ROW_ORPHANED, "PHASE_ROW_ORPHANED"),
     (PHASE_UNCOVERED, "PHASE_UNCOVERED"),
     (PHASE_OVERRIDE_ORPHANED, "PHASE_OVERRIDE_ORPHANED"),
     (PHASE_OVERRIDE_UNIT_MISMATCH, "PHASE_OVERRIDE_UNIT_MISMATCH"),
@@ -72,7 +73,7 @@ fn every_declared_code_is_spelled_as_the_design_set_spells_it() {
     }
     assert_eq!(
         DECLARED.len(),
-        22,
+        23,
         "the codes G4 emits, plus Slice 10's two (D-256)"
     );
 }
@@ -145,6 +146,11 @@ const REGISTERED: &[&str] = &[
     "inst-ph-graph/terminal-kind",
     "inst-ph-duration",
     "inst-ph-trial",
+    // Immediately before `inst-ph-coverage`, and the adjacency is the contract
+    // (D-337): the two are exact inverses over one relation — a row naming a
+    // phase the revision does not attach, a phase no row covers — so a report
+    // carrying both names them together.
+    "inst-ph-row-attached",
     "inst-ph-coverage",
     "inst-ph-usage-invariant",
     "inst-ph-override-units",

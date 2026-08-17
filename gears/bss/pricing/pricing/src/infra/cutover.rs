@@ -757,7 +757,6 @@ pub async fn cutover_in(
     refuse_divergent_staged(&context, request, &copy_key)?;
     let shorten = context.shorten_target(composed.shorten().window_id)?;
     let shorten_seq = shorten.mutation_seq;
-    let shortened_window_id = shorten.window_id;
 
     // 8. Both drafts, staged now if no earlier attempt did — and **before** the
     //    registry request, for `supersede_in` step 8's reason: this insert is the
@@ -917,6 +916,7 @@ pub async fn cutover_in(
             predecessor: context.predecessor.price_id,
             successor: &successor,
             copy: &copy,
+            shortened: ShortenedWindow::of(shorten, &written.shortened),
             approval_ref: authorization.as_ref().map(|record| record.approval_id),
             stamp,
             now,
@@ -932,7 +932,7 @@ pub async fn cutover_in(
         copy_price_id: copy.price_id,
         copy_key,
         cutover_at: request.cutover_at,
-        shortened_window_id,
+        shortened_window_id: shorten.window_id,
         pending_version_ref: pending.pending_ref,
         authorization: authorization.as_ref().map(|record| record.approval_id),
     })))
@@ -948,6 +948,41 @@ pub async fn cutover_in(
 /// call — `clippy::too_many_lines` bounds `cutover_in` at 200 and the inline
 /// spelling put it at 213, which is `error_mapping`'s `precondition` situation and
 /// takes its remedy.
+/// The shortened window on both sides of the act.
+///
+/// A pair rather than two fields on [`CutoverAudit`] for that struct's own reason:
+/// `clippy::too_many_lines` bounds [`cutover_in`] at 200 and this assembly is what
+/// pushed it over, which is the pressure that produced `CutoverAudit` to begin with.
+struct ShortenedWindow<'a> {
+    /// **As the transaction read it before writing** — D-05's *"recorded pre-cutover
+    /// value"*, and the operand D-327 found missing.
+    ///
+    /// The stored row out of [`CutoverContext::stored_plane`], never
+    /// [`ComposedCutover::shorten`]: the composition carries the end the act moves the
+    /// window *to*, which is the cutover instant and is already recorded three other
+    /// places. What is destroyed is the end it moved *from*, and only the stored row
+    /// has it — so a re-read here would record the value the act produced and call it
+    /// the value it destroyed.
+    before: &'a WindowRecord,
+    /// The same window as [`commit_cutover`] left it, returned by the write rather
+    /// than re-read — `enqueue`'s "as written, not as asked for" one step down.
+    after: &'a WindowRecord,
+}
+
+impl<'a> ShortenedWindow<'a> {
+    /// Name the pair.
+    ///
+    /// A constructor rather than a struct literal at the call site, and the reason is
+    /// this struct's own: the literal spans four formatted lines and puts [`cutover_in`]
+    /// back over `clippy::too_many_lines`. Naming the two parameters here is also what
+    /// keeps the order checked in one place instead of at the call site — the two are
+    /// the same type, so a swap would compile and would record the act's own product as
+    /// the value it destroyed.
+    const fn of(before: &'a WindowRecord, after: &'a WindowRecord) -> Self {
+        Self { before, after }
+    }
+}
+
 struct CutoverAudit<'a> {
     tenant_id: Uuid,
     plan_id: PlanId,
@@ -955,6 +990,8 @@ struct CutoverAudit<'a> {
     predecessor: Uuid,
     successor: &'a PriceRecord,
     copy: &'a PriceRecord,
+    /// The window this act shortens, on both sides of the write.
+    shortened: ShortenedWindow<'a>,
     approval_ref: Option<Uuid>,
     stamp: AuditStamp,
     now: DateTime<Utc>,
@@ -978,31 +1015,46 @@ struct CutoverAudit<'a> {
 /// `inst-tp-record` was unsatisfied for this act. §8's `dod-audit` is "every
 /// mutation MUST record".
 ///
-/// # It names three rows and no window, and that leaves D-05 without an operand
+/// # It names three rows **and the window**, and that fourth fact is D-05's operand
 ///
 /// [`cutover_state`] carries the predecessor, the successor and the copy with
-/// their lifecycle states. It does not name the window this act **shortened**,
-/// and neither does anything else the act writes: the three outbox events are the
-/// succession and the two schedules, and [`commit_cutover`] reaches
-/// `window_repo::adjust_effective_to`, an in-place `UPDATE` of a table with no
-/// before-image column. `infra::window`'s own adjust path *does* record the
-/// before-image — `before_state: window_state_value(current)` — so the same
-/// shorten performed through `PATCH …/windows/{id}` is auditable and this one is
-/// not.
+/// their lifecycle states, and — since 2026-08-17 — the interval of the window this
+/// act **shortens**, on both sides of the pair.
 ///
-/// That asymmetry is not only an audit gap. D-05 requires a retirement to restore
-/// the predecessor's `effectiveTo` *"to its recorded pre-cutover value"*, and this
-/// is the act that would have had to record it; nothing does, and the value is not
-/// derivable afterwards, because [`compose_cutover_windows`] accepts both an
-/// open-ended predecessor and one ending strictly after the cutover.
-/// `infra::retirement::retire_in`'s "what this function does not do" section
-/// carries the consequence and `tests/sqlite_cutover_unwind.rs` measures it.
+/// **It named no window until then, and nothing else the act writes named one
+/// either.** The three outbox events are the succession and the two schedules, and
+/// [`commit_cutover`] reaches `window_repo::adjust_effective_to`, an in-place
+/// `UPDATE` of a table with no before-image column — so the end the act moved *from*
+/// existed nowhere the moment the transaction committed. `infra::window`'s own adjust
+/// path always recorded it (`before_state: window_state_value(current)`), which made
+/// the same shorten auditable through `PATCH …/windows/{id}` and unauditable here;
+/// the asymmetry was the defect, not the schema.
 ///
-/// **Not repaired here.** What to record, where, and under whose read is the
-/// unwind's design and not this record's: `audit_repo` offers `append` and a
-/// tenant-wide keyset `page` with no query by subject, so a field added here
-/// would be written and unaddressable — paying the appearance of the operand
-/// rather than the operand.
+/// That was not only an audit gap. D-05 requires a retirement to restore the
+/// predecessor's `effectiveTo` *"to its recorded pre-cutover value"*, and this is the
+/// act that has to record it: the value is **not derivable afterwards**, because
+/// [`compose_cutover_windows`] accepts both an open-ended predecessor and one ending
+/// strictly after the cutover, and after the shorten those two are the same row.
+/// D-327 concluded the unwind was unbuildable on exactly that ground.
+///
+/// # Why the record is now addressable, which is what made writing it worth doing
+///
+/// The reason this was *not* repaired earlier was sound and had to be answered
+/// rather than dropped: `audit_repo` offered [`append`](audit_repo::append) and a
+/// tenant-wide keyset `page` with no query by subject, so a field added here would
+/// have been written and unreadable — the appearance of the operand rather than the
+/// operand. [`audit_repo::for_subject`] is that answer. It is a ~12-line read over
+/// `idx_pricing_audit_log_subject`, an index that had existed since
+/// `m20260802_000010` with no reader at all, and `audit.subject_ref` is already
+/// act-unique and reconstructible from the plan, the key set and the instant
+/// ([`cutover_unit_ref`]) — so a caller holding a cutover can name the record
+/// without having stored anything.
+///
+/// The unwind itself stays unbuilt, and deliberately: D-05's fourth clause closes
+/// the unit as `unwound`, a state D-333 has only just declared and whose store
+/// column does not exist. What lands here is the operand and its reader.
+/// `tests/sqlite_cutover_unwind.rs` holds both, and holds the two clauses that are
+/// still absent.
 async fn record_cutover(
     txn: &DbTx<'_>,
     scope: &AccessScope,
@@ -1028,6 +1080,7 @@ async fn record_cutover(
                 audit.successor,
                 audit.copy,
                 LifecycleState::Draft,
+                &crate::infra::window::shortened_window_state_value(audit.shortened.before),
             )),
             after_state: Some(cutover_state(
                 audit.predecessor,
@@ -1035,6 +1088,7 @@ async fn record_cutover(
                 audit.successor,
                 audit.copy,
                 LifecycleState::Published,
+                &crate::infra::window::shortened_window_state_value(audit.shortened.after),
             )),
             approval_ref: audit.approval_ref,
             correlation_id: audit.stamp.correlation_id,
@@ -1051,6 +1105,7 @@ fn cutover_state(
     successor: &PriceRecord,
     copy: &PriceRecord,
     published_state: LifecycleState,
+    shortened_window: &serde_json::Value,
 ) -> serde_json::Value {
     serde_json::json!({
         "predecessorPriceId": predecessor,
@@ -1061,6 +1116,13 @@ fn cutover_state(
         "copyPriceId": copy.price_id,
         "copyState": published_state.as_str(),
         "copyScopeKey": copy.scope_key.to_string(),
+        // The fourth thing this act moves, and the only one whose prior value the
+        // store overwrites in place. Rendered by
+        // `infra::window::shortened_window_state_value` rather than spelled here,
+        // because `infra::supersession` writes the identical fact for the identical
+        // reason and a second spelling is how two records of one shape come to
+        // disagree about a field name a reader has to guess.
+        "shortenedWindow": shortened_window,
     })
 }
 

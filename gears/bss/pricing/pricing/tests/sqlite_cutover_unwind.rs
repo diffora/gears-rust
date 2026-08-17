@@ -11,14 +11,21 @@
 //! (Slice 11's AC list, *"Slice 7's `inst-co-retirement-unwind` has no
 //! implementation"*) and absent from the one list whose job is to name what
 //! `retire_in` does not do. What was on record **nowhere** is the part this file
-//! exists for: two of D-05's clauses are not merely unbuilt, they are not
-//! **constructible** in this crate as it stands, and each is blocked on a
-//! different missing thing.
+//! exists for: two of D-05's clauses were not merely unbuilt, they were not
+//! **constructible** in this crate as it stood, and each was blocked on a
+//! different missing thing. **One of the two was built on 2026-08-17** and this
+//! file is now the account of both halves.
 //!
-//! * The predecessor's pre-cutover `effectiveTo` is **overwritten in place** by
-//!   the act that would have to be undone, and no row, no event and no audit
-//!   entry preserves it. `a_cutover_records_the_effective_to_it_overwrote_nowhere`
-//!   is that fact, measured over the three stores the act writes.
+//! * The predecessor's pre-cutover `effectiveTo` was **overwritten in place** by
+//!   the act that would have to be undone, with no row, no event and no audit
+//!   entry preserving it. It is recorded now:
+//!   `a_cutover_records_the_effective_to_it_overwrites` reads the value back out
+//!   of the audit pair through `audit_repo::for_subject`, and
+//!   `the_audit_before_image_agrees_with_the_pre_cutover_frozen_delta` checks it
+//!   against the one other store that independently holds the same interval.
+//!   Two cases hold the **restore** the operand exists for:
+//!   `the_append_only_trigger_does_not_refuse_the_unwinds_restore` and
+//!   `an_open_ended_predecessor_is_recorded_as_null_and_restorable_to_null`.
 //! * `unwound` is not a state this crate's approval machine has, and it is not a
 //!   state the **design set** declares either: `05-governance.md` §4's approval
 //!   state machine lists `submitted, approved, rejected, voided` and §6's `state`
@@ -42,14 +49,15 @@
 //! is required. That case asserts both halves, and the difference is owed back to
 //! the register rather than smoothed over here.
 //!
-//! # Why the whole unwind and not the two clauses that *are* constructible
+//! # Why the whole unwind and not the three clauses that *are* constructible
 //!
-//! Finding the live unit and cancelling the two scheduled windows can both be
-//! written today. Writing only those two produces exactly the state D-05 rejected
-//! option (a) to avoid: a predecessor still shortened to the cutover instant with
-//! the schedules that were to take over from it gone — the trailing void no gap
-//! check can see, arriving as the *result* of the fix. A half unwind is worse
-//! than none, so this file records the whole of it as absent and
+//! Finding the live unit, cancelling the two scheduled windows and — since the
+//! operand landed — restoring the bound off the trail can all be written today.
+//! Writing any proper subset produces exactly the state D-05 rejected option (a)
+//! to avoid: a predecessor still shortened to the cutover instant with the
+//! schedules that were to take over from it gone — the trailing void no gap check
+//! can see, arriving as the *result* of the fix. A half unwind is worse than
+//! none, so this file records the whole of it as absent and
 //! `a_retirement_over_a_live_cutover_unwinds_nothing` is the case that flips when
 //! it lands.
 //!
@@ -71,19 +79,27 @@ mod rest_support;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
+use bss_pricing::config::JobsConfig;
 use bss_pricing::domain::approval::ApprovalState;
+use bss_pricing::domain::audit::AuditSubjectKind;
 use bss_pricing::domain::error::DomainError;
 use bss_pricing::domain::materiality::triggers::Trigger;
 use bss_pricing::domain::materiality::{self, ChangeSet, MaterialityReason, MaterialityVerdict};
 use bss_pricing::domain::money::MinorAmount;
 use bss_pricing::domain::price_record::PriceContent;
 use bss_pricing::domain::scope_key::{PlanId, ScopeKey};
+use bss_pricing::domain::sellability::SellabilityFacts;
+use bss_pricing::domain::window::WindowState;
 use bss_pricing::infra::cutover::{
     CutoverOutcome, CutoverReceipt, CutoverRequest, CutoverService, cutover_unit_ref,
 };
+use bss_pricing::infra::jobs::readmodel_warm::ReadModelWarmJob;
 use bss_pricing::infra::retirement::{RetirementOutcome, RetirementService};
+use bss_pricing::infra::storage::RepoError;
 use bss_pricing::infra::storage::entity::{audit_log, outbox, price_window};
-use bss_pricing::infra::storage::repo::approval_repo;
+use bss_pricing::infra::storage::repo::{
+    PendingVersionRow, approval_repo, audit_repo, window_repo,
+};
 use chrono::{DateTime, TimeZone, Utc};
 use rest_support::{Harness, Publishable};
 use sea_orm::{ColumnTrait, Condition, EntityTrait};
@@ -112,6 +128,17 @@ fn cutover_at() -> DateTime<Utc> {
 /// site that has to name the value as a value.
 fn pre_cutover_effective_to() -> DateTime<Utc> {
     Utc.with_ymd_and_hms(2099, 9, 1, 0, 0, 0).unwrap()
+}
+
+/// The instant the fixture's coverage window **begins** — `common::COVERAGE_FROM_UTC`
+/// at midnight.
+///
+/// [`pre_cutover_effective_to`]'s sibling and named here for its reason. It is the
+/// other half of the audit record's identity for this window, and the half that can
+/// never move: the append-only trigger's arm 4 refuses any `UPDATE` that changes
+/// `effective_from`, which is exactly why the record can be keyed on it.
+fn predecessor_effective_from() -> DateTime<Utc> {
+    Utc.with_ymd_and_hms(2099, 8, 4, 0, 0, 0).unwrap()
 }
 
 fn stamp_of(actor: Uuid) -> bss_pricing::domain::audit::AuditStamp {
@@ -318,29 +345,56 @@ async fn window_rows(h: &Harness) -> Vec<price_window::Model> {
 // (1) The operand D-05 calls "its recorded pre-cutover value".
 // ---------------------------------------------------------------------------
 
-/// D-05's first clause names a value the act that destroys it never records.
+/// D-05's first clause names a value, and the act that destroys it records it.
 ///
-/// `commit_cutover` is the only site that shortens a window on this path, and it
-/// calls `window_repo::adjust_effective_to`, which is an `UPDATE` of
-/// `pricing_price_window.effective_to`. The table has no before-image column;
-/// `cutover_in` enqueues three events and none of them is about the shorten;
-/// `record_cutover`'s `cutover_state` names three price ids and their lifecycle
-/// states and no window and no instant at all. So the previous end is gone the
-/// moment the cutover commits.
+/// **This case is the inversion of the one it replaces.** Until 2026-08-17 it was
+/// `a_cutover_records_the_effective_to_it_overwrote_nowhere` and its final
+/// assertion was that *nothing* the act wrote carried the pre-cutover instant —
+/// with the standing instruction that *"if something here now carries it, the
+/// operand exists and this case is the one to delete"*. It does, so this is that
+/// deletion, performed by turning the search around rather than by dropping it:
+/// the same three stores are read the same way, and the claim on the last one is
+/// negated.
 ///
-/// **It is not reconstructible from the shape either.** `compose_cutover_windows`
-/// picks the window `WindowInterval::covers(cutover)` answers `true` for, which
-/// is satisfied by an absent end *and* by any end strictly after the cutover; both
-/// are legal predecessors and after the shorten they are the same row. An unwind
-/// that guessed `None` would hand the predecessor open-ended coverage it never
-/// had — inventing coverage on a plan being retired, which is the one direction
-/// nothing here may move in.
+/// `commit_cutover` still shortens through `window_repo::adjust_effective_to`, an
+/// `UPDATE` of `pricing_price_window.effective_to` over a table with no
+/// before-image column, and `cutover_in`'s three events are still none of them
+/// about the shorten. What changed is `record_cutover`: `cutover_state` now carries
+/// `shortenedWindow`, the interval of the window the act shortens, on **both** sides
+/// of the audit pair.
 ///
-/// The positive control is in the same assertion set: the **cutover** instant is
-/// found in these artefacts, so the search is one that finds instants that are
-/// recorded.
+/// # Why the value and not a digest, and why keyed by `(scopeKey, effectiveFrom)`
+///
+/// The value, because `compose_cutover_windows` picks the window
+/// `WindowInterval::covers(cutover)` answers `true` for, which is satisfied by an
+/// absent end *and* by any end strictly after the cutover; both are legal
+/// predecessors and after the shorten they are the same row. So the pre-cutover end
+/// is not reconstructible from the shape, and a hash of it would let a reader verify
+/// a guess without producing one. An unwind that guessed `None` would hand the
+/// predecessor open-ended coverage it never had — inventing coverage on a plan being
+/// retired, the one direction nothing here may move in.
+///
+/// Keyed by the scope key and the start, because the record's `subject_ref` is the
+/// **act** (`cutover_unit_ref`: plan, key-set hash, instant) and names no window at
+/// all. `effectiveFrom` is the only column of that row the append-only trigger
+/// freezes outright, so it is the one identifier that still names this interval after
+/// the act has moved the other end.
+///
+/// # It is read the way an unwind would read it
+///
+/// Through `audit_repo::for_subject` under a `subject_ref` **rebuilt from the plan,
+/// the key and the instant** rather than remembered from the receipt — which is the
+/// property that makes the operand reachable at all: a retirement holds the plan and
+/// can find the live unit's subject, and does not hold a chain id or a `seq`. The
+/// tenant-wide `page` walk is what the previous version of this case had to use, and
+/// a reader that has to scan a tenant's whole trail to find one act's before-image is
+/// not a reader.
+///
+/// The positive control is the `after_state` half: the same field on the same record
+/// carries the cutover instant, so a green here is the operand being present and not
+/// the assertion reading a field that is absent on both sides.
 #[tokio::test]
-async fn a_cutover_records_the_effective_to_it_overwrote_nowhere() {
+async fn a_cutover_records_the_effective_to_it_overwrites() {
     let h = Harness::new().await;
     let (plan_id, seeded) = published_plan(&h).await;
     let key = key_of(plan_id, &seeded);
@@ -358,7 +412,8 @@ async fn a_cutover_records_the_effective_to_it_overwrote_nowhere() {
     let before_the_act = json_artefacts(&h).await;
     let receipt = committed_cutover(&h, &key).await;
 
-    // Positive control on the write itself: the shorten happened.
+    // Positive control on the write itself: the shorten happened, and the truth side
+    // no longer holds the old end anywhere.
     let after = window_rows(&h).await;
     let shortened = after
         .iter()
@@ -373,7 +428,8 @@ async fn a_cutover_records_the_effective_to_it_overwrote_nowhere() {
         !after
             .iter()
             .any(|row| row.effective_to == Some(pre_cutover_effective_to())),
-        "and no window row carries the old end any more: {after:?}"
+        "and no window row carries the old end any more, which is what makes the trail the only \
+         place it can be: {after:?}"
     );
 
     let artefacts = written_by_the_act(&before_the_act, json_artefacts(&h).await);
@@ -381,29 +437,507 @@ async fn a_cutover_records_the_effective_to_it_overwrote_nowhere() {
         !artefacts.is_empty(),
         "the act must have written something, or the search below proves nothing"
     );
-
-    // Positive control on the search: the instant the act *does* record is found
-    // by exactly this method.
-    let cutover_token = cutover_at().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    let lost = "2099-09-01T00:00:00";
     assert!(
-        artefacts
-            .iter()
-            .any(|rendered| rendered.contains(&cutover_token)
-                || rendered.contains("2099-08-20T00:00:00")),
-        "the search finds the instant the act records: {artefacts:?}"
+        artefacts.iter().any(|rendered| rendered.contains(lost)),
+        "something the act wrote carries the end it overwrote. This is the assertion that used to \
+         read `is_empty()`, and the sentence beside it said that if it ever stopped holding, the \
+         operand existed: {artefacts:?}"
     );
 
-    let lost = "2099-09-01T00:00:00";
-    let carrying: Vec<&String> = artefacts
+    // And now the part that makes it an operand rather than a coincidence: it is
+    // addressable under the act's own subject, rebuilt rather than remembered.
+    let unit_ref = cutover_unit_ref(plan_id, std::slice::from_ref(&key), cutover_at());
+    let records = audit_repo::for_subject(
+        &h.db.conn().expect("conn"),
+        &h.scope(),
+        h.tenant,
+        AuditSubjectKind::PriceUnit,
+        &unit_ref,
+    )
+    .await
+    .expect("read the act's records");
+    // **Three records stand under one subject**, and that is the arrangement rather
+    // than a surprise: the unit's opening, the independent approve and the commit all
+    // carry the act's own `subject_ref`, which is what makes `approval_ref` on the last
+    // one join to the first two rather than point sideways.
+    // `sqlite_supersession_unit::an_approved_unit_commits_all_four_writes_and_announces_two_events`
+    // asserts that trail for the sibling act. So the commit is selected by its action,
+    // not by position - and the whole trail is asserted, because a probe that took
+    // `records[0]` would silently be reading the submit's approval-state pair and
+    // finding no window on it for a reason that has nothing to do with this fix.
+    assert_eq!(
+        records
+            .iter()
+            .map(|row| row.action.as_str())
+            .collect::<Vec<_>>(),
+        vec!["submit", "approve", "publish"],
+        "one act, one subject, three records - and `for_subject` returns them in commit \
+         order: {records:?}"
+    );
+    let record = records
         .iter()
-        .filter(|rendered| rendered.contains(lost))
-        .collect();
+        .find(|row| row.action == "publish")
+        .expect("the commit's own record");
+
+    let before_state = record
+        .before_state
+        .as_ref()
+        .expect("the act's record carries a before-image");
+    let after_state = record.after_state.as_ref().expect("and an after-image");
+
+    assert_eq!(
+        before_state["shortenedWindow"],
+        serde_json::json!({
+            "scopeKey": key.to_string(),
+            "effectiveFrom": predecessor_effective_from(),
+            "effectiveTo": pre_cutover_effective_to(),
+            "state": "scheduled",
+        }),
+        "D-05's operand, as a value: the interval the shorten found, named by the two things a \
+         reader holding only the act can match on. {before_state}"
+    );
+
+    // The positive control on the read: the same field, same record, carries what the
+    // act produced. A `before_state` assertion alone would pass against a record that
+    // rendered the field from the post-write row on both sides.
+    assert_eq!(
+        after_state["shortenedWindow"],
+        serde_json::json!({
+            "scopeKey": key.to_string(),
+            "effectiveFrom": predecessor_effective_from(),
+            "effectiveTo": cutover_at(),
+            "state": "scheduled",
+        }),
+        "and the pair differs in exactly the one field the act moved: {after_state}"
+    );
+}
+
+/// The append-only trigger does **not** bound D-05's restore, and the reason is
+/// pinned here rather than argued in a comment.
+///
+/// # The claim
+///
+/// `m20260802_000016` arm 5 (Postgres twin in `m20260802_000021`) refuses any move
+/// of `effective_to` where `OLD` or `NEW` is non-NULL and `<= now()`. Read cold that
+/// looks like it forbids putting a bound back. It does not, inside D-05's scope, and
+/// the argument has three legs:
+///
+/// 1. the cutover is **approved and not yet effective**, so `OLD` is the cutover
+///    instant `T`, and `T > now`;
+/// 2. `NEW` is the original bound, which the cutover *shortened* — so it is strictly
+///    later than `T`, hence `> T > now`;
+/// 3. a NULL original bound skips the clause entirely (its own case, below).
+///
+/// A comment asserting that is a claim. This is the measurement, and it is armed so
+/// that a change to any leg reddens it: the two instants are asserted to stand in the
+/// order the argument needs **before** the write is attempted, and a control move to
+/// an instant in the past is asserted to be refused, so a green cannot be the trigger
+/// having been dropped or the clause having stopped firing.
+///
+/// # What *does* stand in the restore's way, which is not the trigger
+///
+/// `adjust_effective_to` runs `refuse_overlap` over `OCCUPYING_STATES`, and the
+/// successor's `[cutover, …)` is on the predecessor's own key — so lengthening the
+/// predecessor past the cutover while that window is still `scheduled` is
+/// `WINDOW_OVERLAP`. The cancel therefore has to come first, and that ordering is
+/// forced by a rule rather than chosen; it is the reverse of the order D-05's own
+/// sentence lists the clauses in. The grandfathered copy does not participate:
+/// `inst-co-copy` moves it to a **new generation's** key, so it is on a different
+/// plane. This case performs the cancel first for exactly that reason, and the
+/// refusal it would otherwise take is asserted, so the ordering is pinned rather than
+/// merely obeyed.
+#[tokio::test]
+async fn the_append_only_trigger_does_not_refuse_the_unwinds_restore() {
+    let h = Harness::new().await;
+    let (plan_id, seeded) = published_plan(&h).await;
+    let key = key_of(plan_id, &seeded);
+    let receipt = committed_cutover(&h, &key).await;
+
+    // Leg 1 and leg 2, asserted as the ordering the argument rests on rather than
+    // assumed. If a fixture ever moved the cutover past the original bound, or the
+    // suite's clock past the cutover, this is what would say so.
     assert!(
-        carrying.is_empty(),
-        "D-05 restores the predecessor's `effectiveTo` to *its recorded pre-cutover value*, and \
-         this is the act that would have to have recorded it. If something here now carries \
-         {lost}, the operand exists and this case is the one to delete - until then the first \
-         clause of the unwind has nothing to read: {carrying:?}"
+        cutover_at() > Utc::now(),
+        "leg 1: inside D-05's scope the cutover has not yet taken effect, so OLD > now"
+    );
+    assert!(
+        pre_cutover_effective_to() > cutover_at(),
+        "leg 2: the cutover *shortened* the window, so the end it is restored to is later than \
+         the cutover and therefore also in the future"
+    );
+
+    let conn = h.db.conn().expect("conn");
+    // By **price id**, not by "the one at the cutover that is not the predecessor":
+    // the copy's window starts at the cutover too, and it is the successor's that shares
+    // the predecessor's key and therefore the one the overlap rule is about.
+    let successor_window = window_rows(&h)
+        .await
+        .into_iter()
+        .find(|row| row.price_id == receipt.successor_price_id)
+        .expect("the cutover scheduled the successor's window");
+
+    // The ordering, pinned: with the successor still scheduled on the key, the
+    // restore is refused - and not by the trigger.
+    let held = window_repo::find(&conn, &h.scope(), h.tenant, receipt.shortened_window_id)
+        .await
+        .expect("read the shortened window")
+        .expect("it is there");
+    let premature = window_repo::adjust_effective_to(
+        &conn,
+        &h.scope(),
+        h.tenant,
+        receipt.shortened_window_id,
+        Some(pre_cutover_effective_to()),
+        held.mutation_seq,
+        stamp_of(SUBMITTER),
+    )
+    .await;
+    assert!(
+        matches!(premature, Err(RepoError::WindowOverlap { .. })),
+        "the unwind must cancel the schedules before it restores the bound: with the successor \
+         still occupying `[cutover, …)` on this key, the lengthened predecessor intersects it. \
+         This is the ordering constraint, and it is not the append-only trigger: {premature:?}"
+    );
+
+    // So: cancel the successor's window, the way the unwind's second clause will.
+    window_repo::transition(
+        &conn,
+        &h.scope(),
+        h.tenant,
+        successor_window.window_id,
+        WindowState::Cancelled,
+        now(),
+        stamp_of(SUBMITTER),
+    )
+    .await
+    .expect("a scheduled window may be cancelled");
+
+    // The control that keeps this case honest: the clause **is** live, and fires on a
+    // target that is not in the future. Without this, a green above would be
+    // indistinguishable from the trigger having been dropped by a later migration.
+    let held = window_repo::find(&conn, &h.scope(), h.tenant, receipt.shortened_window_id)
+        .await
+        .expect("read the shortened window")
+        .expect("it is there");
+    let into_the_past = window_repo::adjust_effective_to(
+        &conn,
+        &h.scope(),
+        h.tenant,
+        receipt.shortened_window_id,
+        Some(Utc.with_ymd_and_hms(2020, 1, 1, 0, 0, 0).unwrap()),
+        held.mutation_seq,
+        stamp_of(SUBMITTER),
+    )
+    .await;
+    assert!(
+        matches!(into_the_past, Err(RepoError::WindowHistorical { .. })),
+        "an end may only be moved to a future instant, and the rule that says so is live: \
+         {into_the_past:?}"
+    );
+
+    // And the restore itself, which is what D-05's first clause is.
+    let restored = window_repo::adjust_effective_to(
+        &conn,
+        &h.scope(),
+        h.tenant,
+        receipt.shortened_window_id,
+        Some(pre_cutover_effective_to()),
+        held.mutation_seq,
+        stamp_of(SUBMITTER),
+    )
+    .await
+    .expect(
+        "the append-only trigger does not refuse the restore: OLD is the cutover instant and NEW \
+         is the bound it shortened, so both are in the future and the clause does not apply",
+    );
+    assert_eq!(
+        restored.effective_to,
+        Some(pre_cutover_effective_to()),
+        "the predecessor covers what it covered before the cutover"
+    );
+    assert_eq!(
+        restored.effective_from, held.effective_from,
+        "and the start did not move, which is why it can be the record's name"
+    );
+}
+
+/// Leg 3, on its own: an **open-ended** predecessor is recorded as `null`, and the
+/// restore to `null` skips the trigger's clause outright.
+///
+/// This is the case the operand exists for most sharply. `WindowInterval::covers`
+/// admits an absent end, so an open-ended window is a legal cutover predecessor; after
+/// the shorten it is byte-identical to one that had ended at some later instant. So
+/// `null` here is a **positive claim** — the predecessor's coverage was unbounded —
+/// and not the absence of a record, which is the distinction an unwind has to be able
+/// to make and could not before.
+///
+/// The trigger's clause is `NEW IS DISTINCT FROM OLD AND ((NEW non-NULL AND NEW <=
+/// now) OR (OLD non-NULL AND OLD <= now))`. On the restore, `NEW` is NULL so the first
+/// disjunct is false, and `OLD` is the cutover instant which is in the future, so the
+/// second is too: the clause does not fire at all. Pinned by performing it.
+///
+/// The open-ended predecessor is made by moving the fixture's own bound to NULL
+/// *before* the cutover — itself a move the clause permits, for the same reason — so
+/// the row under test is one this crate's own writer produced rather than one the test
+/// inserted around the rules.
+#[tokio::test]
+async fn an_open_ended_predecessor_is_recorded_as_null_and_restorable_to_null() {
+    let h = Harness::new().await;
+    let (plan_id, seeded) = published_plan(&h).await;
+    let key = key_of(plan_id, &seeded);
+    let conn = h.db.conn().expect("conn");
+
+    // Open the fixture's window, through the sanctioned writer.
+    let seeded_window = window_rows(&h)
+        .await
+        .into_iter()
+        .find(|row| row.effective_to == Some(pre_cutover_effective_to()))
+        .expect("the fixture's coverage window");
+    window_repo::adjust_effective_to(
+        &conn,
+        &h.scope(),
+        h.tenant,
+        seeded_window.window_id,
+        None,
+        u64::try_from(seeded_window.mutation_seq).expect("a small counter"),
+        stamp_of(SUBMITTER),
+    )
+    .await
+    .expect("a future bound may be dropped: NEW is NULL and OLD is in the future");
+
+    let receipt = committed_cutover(&h, &key).await;
+    assert_eq!(
+        receipt.shortened_window_id, seeded_window.window_id,
+        "the open-ended window is the one the compose picked, since `covers` admits an absent end"
+    );
+
+    let unit_ref = cutover_unit_ref(plan_id, std::slice::from_ref(&key), cutover_at());
+    let records = audit_repo::for_subject(
+        &conn,
+        &h.scope(),
+        h.tenant,
+        AuditSubjectKind::PriceUnit,
+        &unit_ref,
+    )
+    .await
+    .expect("read the act's records");
+    let before_state = records
+        .iter()
+        .find(|row| row.action == "publish")
+        .expect("the commit's own record stands under the act's subject")
+        .before_state
+        .as_ref()
+        .expect("with a before-image");
+    assert_eq!(
+        before_state["shortenedWindow"]["effectiveTo"],
+        serde_json::Value::Null,
+        "`null` as the recorded pre-cutover value, which is a claim that the coverage was \
+         unbounded and not the absence of one: {before_state}"
+    );
+    assert_eq!(
+        before_state["shortenedWindow"]["effectiveFrom"],
+        serde_json::json!(predecessor_effective_from()),
+        "and the same record still names which interval it is about: {before_state}"
+    );
+
+    // The restore, with the successor out of the way as the ordering requires.
+    let successor_window = window_rows(&h)
+        .await
+        .into_iter()
+        .find(|row| row.price_id == receipt.successor_price_id)
+        .expect("the successor's window");
+    window_repo::transition(
+        &conn,
+        &h.scope(),
+        h.tenant,
+        successor_window.window_id,
+        WindowState::Cancelled,
+        now(),
+        stamp_of(SUBMITTER),
+    )
+    .await
+    .expect("a scheduled window may be cancelled");
+
+    let held = window_repo::find(&conn, &h.scope(), h.tenant, receipt.shortened_window_id)
+        .await
+        .expect("read it")
+        .expect("it is there");
+    let restored = window_repo::adjust_effective_to(
+        &conn,
+        &h.scope(),
+        h.tenant,
+        receipt.shortened_window_id,
+        None,
+        held.mutation_seq,
+        stamp_of(SUBMITTER),
+    )
+    .await
+    .expect(
+        "restoring to NULL skips the clause entirely: NEW is NULL and OLD is the future cutover \
+         instant, so neither disjunct holds",
+    );
+    assert_eq!(
+        restored.effective_to, None,
+        "open-ended again, which is what the record said it had been"
+    );
+}
+
+/// The audit before-image and the pre-cutover frozen delta **agree**.
+///
+/// # Why a cross-check and not a second source of truth
+///
+/// `pricing_read_model` already carries the pre-cutover interval: the projector's
+/// `project_windows` freezes every key's window plane filtered by
+/// `PROJECTED_WINDOW_STATES`, and `read_model_repo::delta_at` resolves it at a pin. So
+/// after the cutover there are two independent records of what the predecessor's
+/// coverage ended at — the delta frozen *before* the act, and the audit before-image
+/// written *by* it — reached by different code, keyed the same way, and written for
+/// different readers.
+///
+/// Neither is proposed as the operand. The delta is the wrong store to unwind from: it
+/// is keyed by `catalog_version`, so reading it requires knowing which pin preceded
+/// the act, and a plan re-projects only when a publish unit touches it — the version
+/// that answers a pin is almost always an earlier one, which is `delta_at`'s own §4.4
+/// rule. What the agreement buys is that a defect in either writer is visible: a
+/// before-image rendered from the post-write row, or a projector filter that dropped
+/// the covering window, would make the two disagree, and each alone would look fine.
+///
+/// # The two identifiers meet here, which is why the record is keyed as it is
+///
+/// The delta carries no `window_id` — `WindowInterval`'s doc argues at length that it
+/// must not start — and the audit record's subject is the act and carries no window id
+/// either. They are comparable only because both name the interval by `(scope key,
+/// effectiveFrom)`, which is what `shortened_window_state_value` was shaped for. This
+/// case is the measurement of that claim.
+#[tokio::test]
+async fn the_audit_before_image_agrees_with_the_pre_cutover_frozen_delta() {
+    use bss_pricing::domain::read_model::SubjectRef;
+    use bss_pricing::infra::storage::repo::{catalog_version_ref_repo, read_model_repo};
+
+    let h = Harness::new().await;
+    let (plan_id, seeded) = published_plan(&h).await;
+    let key = key_of(plan_id, &seeded);
+    let conn = h.db.conn().expect("conn");
+
+    // Freeze the plan **before** the cutover, through the real projector: a pending
+    // ref, a committed version, and the warm sweep. Nothing here hand-builds a
+    // payload - the whole point is that the delta is what production code derived
+    // from the truth side.
+    catalog_version_ref_repo::record_pending(
+        &conn,
+        &h.scope(),
+        PendingVersionRow::for_subject(
+            h.tenant,
+            "pend-before-cutover".to_owned(),
+            &SubjectRef::Plan(plan_id.get()),
+            Some(seeded.revision),
+            Some(bss_pricing::domain::lifecycle::LifecycleState::Published),
+            now(),
+        ),
+    )
+    .await
+    .expect("record the plan subject's ref");
+    h.registry.commit("pend-before-cutover", 1);
+    ReadModelWarmJob::new(
+        h.db.clone(),
+        Arc::clone(&h.registry) as Arc<dyn bss_pricing::domain::ports::CatalogVersionRegistryV1>,
+        JobsConfig::default(),
+    )
+    .run(now())
+    .await
+    .expect("the warm sweep projects the plan");
+
+    let frozen = read_model_repo::delta_at(
+        &conn,
+        &h.scope(),
+        h.tenant,
+        &SubjectRef::Plan(plan_id.get()),
+        bss_pricing_sdk::CatalogVersion::new(1),
+    )
+    .await
+    .expect("resolve the pin")
+    .expect("version 1 carries this plan");
+
+    // The interval the delta froze for the key under test, read through the gear's
+    // **own** parser of that payload rather than by indexing the JSON. The two stores
+    // spell a key differently on purpose — the delta writes the ten axes as an object
+    // (`projection::scope_key_value`) and the audit record writes the canonical
+    // rendering — so a comparison made on raw JSON would have to re-implement one of
+    // them, which is the second source of truth this case exists to avoid being.
+    let facts = read_model_repo::sellability_facts(&frozen).expect("a payload this gear wrote");
+    let SellabilityFacts::Pinned(pinned) = facts else {
+        panic!("the pin resolves, so the facts are pinned rather than unaddressable");
+    };
+    let frozen_group = pinned
+        .windows
+        .iter()
+        .find(|group| group.scope_key == key)
+        .unwrap_or_else(|| {
+            panic!(
+                "the frozen delta must carry this key's plane, or there is nothing to cross-check \
+                 against: {:?}",
+                pinned.windows
+            )
+        });
+    let frozen_interval = *frozen_group
+        .intervals
+        .first()
+        .expect("the key's coverage window");
+    assert_eq!(
+        frozen_interval.effective_to,
+        Some(pre_cutover_effective_to()),
+        "the pre-cutover pin holds the end the act is about to overwrite: {frozen_interval:?}"
+    );
+
+    let receipt = committed_cutover(&h, &key).await;
+    assert_eq!(
+        receipt.cutover_at,
+        cutover_at(),
+        "the act under test committed"
+    );
+
+    let unit_ref = cutover_unit_ref(plan_id, std::slice::from_ref(&key), cutover_at());
+    let records = audit_repo::for_subject(
+        &conn,
+        &h.scope(),
+        h.tenant,
+        AuditSubjectKind::PriceUnit,
+        &unit_ref,
+    )
+    .await
+    .expect("read the act's records");
+    let audited = records
+        .iter()
+        .find(|row| row.action == "publish")
+        .expect("the commit's own record stands under the act's subject")
+        .before_state
+        .as_ref()
+        .expect("with a before-image")["shortenedWindow"]
+        .clone();
+
+    // The agreement. The audit's `scopeKey` is asserted against the **delta's own
+    // group key** rendered canonically — not against the local `key` fixture — so what
+    // is measured is that the two stores are talking about one interval, rather than
+    // that each independently matches a literal.
+    assert_eq!(
+        audited,
+        serde_json::json!({
+            "scopeKey": frozen_group.scope_key.to_string(),
+            "effectiveFrom": frozen_interval.effective_from,
+            "effectiveTo": frozen_interval.effective_to,
+            "state": frozen_interval.state.as_str(),
+        }),
+        "the audit before-image and the pre-cutover frozen delta agree about the interval the \
+         cutover shortened. Either alone would look fine while wrong: a before-image rendered \
+         from the post-write row, or a projector filter that dropped the covering window"
+    );
+    // And the operand really is the destroyed one, said as a value so this case cannot
+    // pass by both stores agreeing on the cutover instant.
+    assert_eq!(
+        audited["effectiveTo"],
+        serde_json::json!(pre_cutover_effective_to()),
+        "and the value they agree on is the pre-cutover end, not the one the act wrote: {audited}"
     );
 }
 

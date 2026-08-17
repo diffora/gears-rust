@@ -192,7 +192,7 @@ most-specific-wins semantics, the cutover unit, the expiry signal.
 **Output**: pass, or a fail-closed violation directing the operator to schedule a window
 
 **Steps**:
-1. [ ] - `p1` - Every billable row's **canonical scope key** (resolved on the base `priceOverlay`) MUST have an active or scheduled `PriceWindow`; absence fails publish — no silent fallback (Tariffs step 2 would resolve nothing) - `inst-wc-required`
+1. [ ] - `p1` - Every billable row's **canonical scope key** (resolved on the base `priceOverlay`) MUST have an active or scheduled `PriceWindow`; absence fails publish — no silent fallback (Tariffs step 2 would resolve nothing). **Exempt: a key this same publish opens (D-332, 2026-08-17)** — the publish writes each priced row's initial window at the commit instant, so the coverage exists by the end of the act that judged it; the exemption is scoped to the publishing run and never to the rule set, because the identical set runs in the repricing apply where no window is opened - `inst-wc-required`
 2. [ ] - `p1` - Distinct keys hold windows independently: a hybrid's `recurring`/`usage`/`one_time_setup` components and a grandfathered row + successor each carry their own coverage (W2) - `inst-wc-perkey`
 3. [ ] - `p1` - `availableFrom`/`availableTo` (when set) validate **against** window coverage: a purchasability interval reaching outside all coverage fails publish (W5 — dates gate purchase, they do not schedule publish) - `inst-wc-availability`
 
@@ -357,13 +357,17 @@ second (Foundation §3.7 — a mutation that got past the domain check would abo
 which was measured); and the projector reads a pinned revision's **content** live off the truth
 row up to the max batching-delay SLO later, a licence that holds only because a frozen revision
 and its revision-scoped children are physically immutable, which a draft's are not. The
-consequence is an **ordering constraint on a plan's first publish and not a deadlock**:
-`inst-wc-required` refuses a *billable* row whose key holds no live window, and the coverage
-report ranges over the billable set, so a plan whose shape is sound publishes with an **empty**
-row set — after which the row and its window are authorable and ride the next publish. What that
-sequence costs is stated in D-314 rather than here, because the artifact it leaves — an
-addressable revision that prices nothing — is read by the sellability gate below and is not this
-section's to resolve.
+consequence used to be an **ordering constraint on a plan's first publish**: `inst-wc-required`
+refuses a *billable* row whose key holds no live window, so a plan whose shape was otherwise sound
+had to publish an **empty** row set first, after which the row and its window became authorable and
+rode the next publish. **That order is abolished (normative, D-332, 2026-08-17).** The publish
+itself opens each priced row's **initial** window at the commit instant, so the key it freezes is
+covered by the same act that freezes it, and `inst-wc-required` is exempted for exactly the keys
+that publish opens — the exemption is a property of *that* run and not of the rule set, because the
+same rules run in the repricing apply, which opens nothing. Scheduling therefore means moving a
+price **later**, which is what `inst-ws-future-start` (D-63) already required of it. What the old
+order cost is stated in D-314, which is now a record of a cost that was paid rather than one that
+is owed.
 
 **Instants on these surfaces are UTC at millisecond resolution (normative, D-144, 2026-08-02,
 found while building the draft-authoring plane).** `effectiveFrom`/`effectiveTo`, the cutover

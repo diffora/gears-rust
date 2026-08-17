@@ -2092,6 +2092,58 @@ fn window_state_value(record: &WindowRecord) -> JsonValue {
     })
 }
 
+/// One **shortened** window's audited interval, as an act whose subject is not the
+/// window records it.
+///
+/// # Why this exists beside [`window_state_value`] rather than being it
+///
+/// The two answer to different readers. `window_state_value` belongs to a record
+/// whose `subject_ref` is [`audit_repo::window_ref`] — plan and **window id** — so a
+/// reader already holds the window's durable name and what the state adds is the row
+/// it prices. The cutover's and the supersession's records name an **act**
+/// (`cutover_unit_ref`, `supersession_unit_ref`): three price ids and an instant, and
+/// no window id anywhere, because a window id is not a component of either act's
+/// identity. A reader of one of those records who wanted the shortened window would
+/// have nothing to look it up by.
+///
+/// So the identity carried here is `(scopeKey, effectiveFrom)`, and both halves are
+/// chosen rather than convenient:
+///
+/// * **`scopeKey`** is what the frozen delta keys a window plane by
+///   ([`crate::domain::window::WindowInterval`] deliberately carries no `window_id`,
+///   and that doc argues why it must not start), so a record keyed this way is
+///   comparable against `read_model_repo::delta_at` without either side learning the
+///   other's identifier. `tests/sqlite_cutover_unwind.rs` asserts they agree.
+/// * **`effectiveFrom`** can never move. The append-only trigger
+///   (`m20260802_000016`, arm 4) refuses any `UPDATE` that changes it — *"only state,
+///   `effective_to` and the flip timestamps may move"* — so it names one interval of
+///   the key for as long as the row exists. `effectiveTo`, the operand this record
+///   exists to preserve, is precisely the column that does move, which is why it
+///   cannot also be part of the name.
+///
+/// # It is a value, and that is the whole point (D-327)
+///
+/// A digest here would satisfy the appearance of a before-image and none of its use.
+/// D-05 requires a retirement to restore the predecessor's `effectiveTo` *"to its
+/// recorded pre-cutover value"*, and `grandfather::horizon_state_value` states the
+/// same reason one plane over: a trail carrying a hash *"could not answer what the
+/// horizon was, which is the whole operand D-327 found missing on the window plane."*
+/// This is that operand.
+///
+/// `state` is in it although a shorten never moves it. It is what makes the pair
+/// self-describing — a reader finding `before_state` and `after_state` differing in
+/// exactly one field can see that this act moved an end and nothing else, rather
+/// than having to know it — which is `horizon_state_value`'s argument for carrying
+/// `lifecycleState` verbatim.
+pub(crate) fn shortened_window_state_value(record: &WindowRecord) -> JsonValue {
+    serde_json::json!({
+        "scopeKey": record.scope_key.to_string(),
+        "effectiveFrom": record.effective_from,
+        "effectiveTo": record.effective_to,
+        "state": record.state.as_str(),
+    })
+}
+
 #[cfg(test)]
 #[path = "window_tests.rs"]
 mod window_tests;

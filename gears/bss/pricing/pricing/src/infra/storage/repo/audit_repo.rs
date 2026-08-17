@@ -613,6 +613,83 @@ pub async fn page(
         .map_err(|e| RepoError::Db(format!("page pricing_audit_log: {e}")))
 }
 
+/// Every record standing under one subject, in the same commit order [`page`] walks.
+///
+/// # This is the read that makes `idx_pricing_audit_log_subject` addressable
+///
+/// The index `(tenant_id, subject_kind, subject_ref, recorded_at)` has existed since
+/// `m20260802_000010` and was carried through the `SQLite` rebuild in
+/// `m20260802_000074` deliberately — and until this function it had **no reader**.
+/// The module offered [`append`] and [`page`], and `page` is keyed on
+/// `(recorded_at, chain_id, seq)` over a whole tenant, so a caller holding a subject
+/// could only find its records by walking the tenant's entire trail and filtering in
+/// process. An index nothing queries is a cost with no benefit; a before-image
+/// nothing can look up is a record written to be unreadable, which is exactly the
+/// ground `infra::cutover::record_cutover` gave for **not** writing one.
+///
+/// # It is not [`page`] with a filter, and the difference is the argument for both
+///
+/// `page` is a **cursor** read: it exists because a tenant's trail is unbounded, so
+/// its contract is a keyset position and one page. A subject is bounded by
+/// construction — the subjects this gear writes are an act, a revision or a row, and
+/// each is the subject of a handful of records — so this returns the whole set and
+/// takes no cursor. Giving it a `limit` and a position would be fixing a shape
+/// before a caller needs it, and a caller that got a *page* of a before-image would
+/// have to decide whether the record it wanted was on the next one.
+///
+/// # The order is `page`'s, exactly
+///
+/// `(recorded_at, chain_id, seq)`, for the reason `page`'s doc argues at length:
+/// `recorded_at` is the caller's instant and D-135 lets two segments carry the same
+/// one, so it is not a key by itself, and `(chain_id, seq)` is the rest of the
+/// primary key. Restating that order here rather than choosing a simpler one keeps a
+/// reader who consults both surfaces from seeing one subject's records in two
+/// sequences. The leading `recorded_at` is also the index's own trailing column, so
+/// the sort is the index's.
+///
+/// # What it does **not** do, and must not be widened to
+///
+/// It does not verify the hash chain, and a caller must not read the absence of a
+/// verification here as a verification having happened. The links are
+/// `(tenant_id, chain_id, seq)`-local — [`head_hash`] and [`next_seq`] are the whole
+/// of what this module knows about them — and one subject's records are in general
+/// spread across a segment rather than contiguous in it, so a re-walk cannot be done
+/// from this result set at all: it needs the segment. That is the verification job's
+/// read and not this one, and adding a `prev_hash` comparison over a non-contiguous
+/// slice would report every gap as a break.
+///
+/// It also takes `subject_kind` rather than matching on `subject_ref` alone, which is
+/// the index's leading discrimination and not a convenience: `price_unit_ref` renders
+/// a bare `Uuid`, so a ref alone is a string two kinds could legitimately produce.
+///
+/// # Errors
+/// [`RepoError::Db`] on any scope or storage failure. A subject with no records is
+/// an empty `Vec` and not an error — a caller asking whether an act left a trail is
+/// asking exactly that question, and the two answers are different.
+pub async fn for_subject(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    subject_kind: AuditSubjectKind,
+    subject_ref: &str,
+) -> Result<Vec<audit_log::Model>, RepoError> {
+    audit_log::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(audit_log::Column::TenantId.eq(tenant_id))
+                .add(audit_log::Column::SubjectKind.eq(subject_kind.as_str()))
+                .add(audit_log::Column::SubjectRef.eq(subject_ref)),
+        )
+        .order_by(audit_log::Column::RecordedAt, Order::Asc)
+        .order_by(audit_log::Column::ChainId, Order::Asc)
+        .order_by(audit_log::Column::Seq, Order::Asc)
+        .all(runner)
+        .await
+        .map_err(|e| RepoError::Db(format!("read pricing_audit_log by subject: {e}")))
+}
+
 /// A position in the commit-ordered walk — the whole key, because the key is what
 /// a keyset cursor names.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

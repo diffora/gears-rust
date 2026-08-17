@@ -1,11 +1,12 @@
 //! Tests for the phase-schedule rules.
 //!
-//! Every rule is judged **alone**, through [`judge`], because the eight of them
+//! Every rule is judged **alone**, through [`judge`], because the ten of them
 //! overlap by design: a two-terminal graph is both an integrity fault and a
-//! nonlinear chain, and a suite that ran the whole pipeline could not say which
-//! rule caught what. Each arm below is written so that deleting the arm from the
-//! rule turns the test red - a rule with many arms and a suite proving only the
-//! happy path proves nothing at all.
+//! nonlinear chain, and a row on an unattached phase is both `PHASE_ROW_ORPHANED`
+//! and — through the phase it leaves uncovered — `PHASE_UNCOVERED`. A suite that
+//! ran the whole pipeline could not say which rule caught what. Each arm below is
+//! written so that deleting the arm from the rule turns the test red - a rule with
+//! many arms and a suite proving only the happy path proves nothing at all.
 //!
 //! The fixtures are deliberately *clean* in every dimension a test is not
 //! attacking: `linear_chain` is duration-correct, ordinal-correct and
@@ -18,16 +19,16 @@ use uuid::Uuid;
 
 use super::{
     DisplayTrialDaysOnTrialPhase, PhaseChainLinear, PhaseCoverage, PhaseDuration,
-    PhaseGraphIntegrity, PhaseOverrideBase, PhaseOverrideUnits, TerminalPhaseKind,
-    TerminalPhaseStable,
+    PhaseGraphIntegrity, PhaseOverrideBase, PhaseOverrideUnits, RowPhaseAttached,
+    TerminalPhaseKind, TerminalPhaseStable,
 };
 use crate::domain::concurrency::RowVersion;
 use crate::domain::lifecycle::LifecycleState;
 use crate::domain::money::{CurrencyCode, MinorAmount, RateMinor};
 use crate::domain::plan_rules::{
     DISPLAY_TRIAL_DAYS_INVALID, PHASE_CHAIN_NONLINEAR, PHASE_DURATION_INVALID, PHASE_GRAPH_INVALID,
-    PHASE_IN_USE, PHASE_OVERRIDE_ORPHANED, PHASE_OVERRIDE_UNIT_MISMATCH, PHASE_UNCOVERED,
-    TERMINAL_PHASE_CHANGED, TERMINAL_PHASE_KIND_INVALID,
+    PHASE_IN_USE, PHASE_OVERRIDE_ORPHANED, PHASE_OVERRIDE_UNIT_MISMATCH, PHASE_ROW_ORPHANED,
+    PHASE_UNCOVERED, TERMINAL_PHASE_CHANGED, TERMINAL_PHASE_KIND_INVALID,
 };
 use crate::domain::plan_shape::{
     BillingCycle, PhaseGraph, PhaseKind, PlanPhase, PlanShape, PublishedBaseline,
@@ -49,6 +50,9 @@ use crate::domain::validation::{ValidationReport, ValidationRule, Violation};
 const TRIAL: u128 = 0x10;
 const INTRO: u128 = 0x20;
 const EVERGREEN: u128 = 0x30;
+/// A phase id no fixture ever attaches — the id the stand's rows already named
+/// (D-337).
+const GHOST: u128 = 0x60;
 const METER: &str = "egress_bytes";
 
 fn plan() -> PlanId {
@@ -227,11 +231,17 @@ fn a_clean_trial_intro_evergreen_chain_passes_every_structural_rule() {
 fn every_rule_names_the_instruction_it_implements() {
     // The name is what the pipeline attributes a failing rule by, so it is part
     // of the contract and not a debug string.
+    // In the order `plan_shape_rules` registers them, and **every** rule of the
+    // module. `DisplayTrialDaysOnTrialPhase` was missing from this list while its
+    // own cases below exercised it: a census that skips a rule cannot tell anyone
+    // that the rule renamed itself, which is the one thing it is here for.
     let named: Vec<&str> = [
         &PhaseGraphIntegrity as &dyn ValidationRule<PlanShape>,
         &PhaseChainLinear,
         &TerminalPhaseKind,
         &PhaseDuration,
+        &DisplayTrialDaysOnTrialPhase,
+        &RowPhaseAttached,
         &PhaseCoverage,
         &PhaseOverrideBase,
         &PhaseOverrideUnits,
@@ -248,6 +258,11 @@ fn every_rule_names_the_instruction_it_implements() {
             "inst-ph-graph/linear",
             "inst-ph-graph/terminal-kind",
             "inst-ph-duration",
+            "inst-ph-trial",
+            // Immediately before `inst-ph-coverage`, and the adjacency is the
+            // contract (D-337): the two are exact inverses over one relation, so
+            // a report carrying both names them together.
+            "inst-ph-row-attached",
             "inst-ph-coverage",
             "inst-ph-usage-invariant",
             "inst-ph-override-units",
@@ -640,6 +655,112 @@ fn coverage_is_required_in_every_sold_market_independently() {
             .iter()
             .all(|violation| violation.code == PHASE_UNCOVERED
                 && violation.subject.contains("EUR"))
+    );
+}
+
+// ---------------------------------------------------------------------------
+// RowPhaseAttached (D-337)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_row_on_an_unattached_phase_is_reported_with_the_row_and_the_phase_named() {
+    // The stand's shape, in a test: the row keys on a phase nobody attached, and
+    // before this rule the plan was refused only for having no terminal phase.
+    //
+    // Armed against the **detail**, not the count. `PHASE_GRAPH_INVALID` fires on
+    // several of the same shapes, so a probe that counted violations would pass
+    // with this rule deleted; and the phase id is the operand the author acts on,
+    // because a scope key is the row's identity and the only remediations are
+    // attaching *that* id or deleting the row.
+    let mut subject = phased();
+    subject.rows = vec![recurring("usd", "US", phase_id(GHOST))];
+
+    let report = judge(&RowPhaseAttached, &subject);
+    let violation = only(&report);
+
+    assert_eq!(violation.code, PHASE_ROW_ORPHANED);
+    assert!(
+        violation.subject.contains(&phase_id(GHOST).to_string()),
+        "the finding groups under the phase one act would attach: {}",
+        violation.subject
+    );
+    assert!(
+        violation
+            .detail
+            .contains(&Uuid::from_u128(0xb_1000).to_string()),
+        "the row is named, because the other remediation is deleting it: {}",
+        violation.detail
+    );
+    assert!(
+        violation.detail.contains("does not attach"),
+        "the reason is stated rather than left to be inferred: {}",
+        violation.detail
+    );
+}
+
+#[test]
+fn a_row_on_an_attached_phase_is_not_reported() {
+    // The positive control, without which the refusal above proves only that the
+    // rule fires. Every phase of `linear_chain` is exercised: a rule that read
+    // the terminal phase alone would pass the first and fail the other two, which
+    // is `inst-ph-terminal-stable`'s question and not this one.
+    let mut subject = phased();
+    for attached in [TRIAL, INTRO, EVERGREEN] {
+        subject.rows = vec![recurring("usd", "US", phase_id(attached))];
+
+        assert!(
+            judge(&RowPhaseAttached, &subject).violations.is_empty(),
+            "a row on the attached phase {attached:#x} is not a finding"
+        );
+    }
+}
+
+#[test]
+fn every_stranded_row_is_reported_and_not_only_the_first() {
+    // The remediation is per row — attach the phase, or delete *this* row — so a
+    // report naming one of several sends the author back once per row. The shape
+    // that motivated the rule carried four.
+    let mut second = recurring("usd", "US", phase_id(GHOST));
+    second.price_id = Uuid::from_u128(0xb_2000);
+    let mut subject = phased();
+    subject.rows = vec![recurring("usd", "US", phase_id(GHOST)), second];
+
+    let report = judge(&RowPhaseAttached, &subject);
+
+    assert_eq!(report.violations.len(), 2, "{:?}", report.violations);
+    assert!(
+        report
+            .violations
+            .iter()
+            .all(|violation| violation.code == PHASE_ROW_ORPHANED)
+    );
+    // Each names its own row, so the two findings are actionable separately.
+    assert!(
+        report.violations[1]
+            .detail
+            .contains(&Uuid::from_u128(0xb_2000).to_string()),
+        "{}",
+        report.violations[1].detail
+    );
+}
+
+#[test]
+fn a_row_is_judged_against_the_phase_set_and_not_against_the_baseline() {
+    // Why this is a rule of its own rather than a widening of
+    // `inst-ph-terminal-stable` arm (b): that rule's first act is
+    // `let Some(baseline) = … else { return }`, so on a plan that has never
+    // published it says nothing at all. This subject is exactly that plan.
+    let mut subject = phased();
+    subject.rows = vec![recurring("usd", "US", phase_id(GHOST))];
+    subject.baseline = None;
+
+    assert!(
+        judge(&TerminalPhaseStable, &subject).violations.is_empty(),
+        "the rule that used to be the only guard is silent on a first publish"
+    );
+    assert_eq!(
+        only(&judge(&RowPhaseAttached, &subject)).code,
+        PHASE_ROW_ORPHANED
     );
 }
 

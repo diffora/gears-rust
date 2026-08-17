@@ -188,8 +188,14 @@ pub struct SupersessionCommit {
     /// both backends. That is a **design-set gap rather than a code choice** — D-99
     /// makes the shorten a publish unit in its own right and §6 calls `reason_code`
     /// "the operator-supplied change reason", so the shorten's reason has nowhere in
-    /// this schema to live. The only place it can go is the unit's own approval or
-    /// audit record, which this module deliberately does not write.
+    /// this schema to live.
+    ///
+    /// The only place it could go is the unit's own approval or audit record. This
+    /// paragraph used to end *"which this module deliberately does not write"*, and
+    /// that has been false since the record at [`supersede_in`] step 11 landed —
+    /// which is a stronger statement of the gap, not a weaker one: the record exists,
+    /// [`unit_state`] now carries the interval the shorten moved, and the **reason**
+    /// is still not on it. It is owed as a field, not as a surface.
     reason_code: String,
 }
 
@@ -1008,12 +1014,21 @@ pub async fn supersede_in(
                 LifecycleState::Published,
                 &successor,
                 LifecycleState::Draft,
+                // The pre-image is the row **step 7 read**, not a re-read:
+                // `adjust_effective_to` has overwritten the column by now, so a second
+                // read would record the value the act produced and call it the value it
+                // destroyed. `infra::cutover::record_cutover` says the same at its own
+                // site, and this is the second half of the one fix — the defect was
+                // identical on both paths and was found on this one by inspection
+                // rather than by a failing case.
+                &crate::infra::window::shortened_window_state_value(shorten),
             )),
             after_state: Some(unit_state(
                 context.predecessor.price_id,
                 LifecycleState::Superseded,
                 &successor,
                 LifecycleState::Published,
+                &crate::infra::window::shortened_window_state_value(&written.shortened),
             )),
             approval_ref: authorization.as_ref().map(|record| record.approval_id),
             correlation_id: stamp.correlation_id,
@@ -1383,16 +1398,35 @@ fn unit_request_id(tenant_id: Uuid, subject_ref: &str) -> String {
     format!("supersession/{tenant_id}/{subject_ref}")
 }
 
-/// The two rows' states, as the audit record's before/after.
+/// The two rows' states **and the shortened window's interval**, as the audit
+/// record's before/after.
 ///
 /// The **content**, not a digest of it, for `infra::window`'s `window_state_value`
 /// reason: D-180's heuristic is that a test rebuilding its expectation from the data it
 /// checks cannot see that data replaced.
+///
+/// # The window was missing here for the same reason it was missing on the cutover
+///
+/// This record named two price ids, their lifecycle states and the key, and no window
+/// and no instant — while [`commit_supersession`] step 3 reaches
+/// `window_repo::adjust_effective_to` and overwrites the predecessor's `effectiveTo`
+/// in place. D-327 found that defect on the cutover and declared the unwind
+/// unbuildable because of it; this path had it identically, and nothing had found it,
+/// because a supersession has no unwind clause pointing at the missing operand. It is
+/// fixed on both paths at once, through one renderer, so the two records cannot drift:
+/// a reader who learns the shape from a supersession can read a cutover.
+///
+/// **A supersession is not merely the cutover's rehearsal here.** Its shorten is
+/// exactly as destructive — `compose_windows` picks the covering window by
+/// `WindowInterval::covers`, satisfied by an absent end and by any end strictly after
+/// the changeover alike — so "what did this key's coverage end at before the
+/// reprice" had no answer on this path either, for any purpose, not only for D-05's.
 fn unit_state(
     predecessor: Uuid,
     predecessor_state: LifecycleState,
     successor: &PriceRecord,
     successor_state: LifecycleState,
+    shortened_window: &JsonValue,
 ) -> JsonValue {
     serde_json::json!({
         "predecessorPriceId": predecessor,
@@ -1400,6 +1434,7 @@ fn unit_state(
         "successorPriceId": successor.price_id,
         "successorState": successor_state.as_str(),
         "scopeKey": successor.scope_key.to_string(),
+        "shortenedWindow": shortened_window,
     })
 }
 

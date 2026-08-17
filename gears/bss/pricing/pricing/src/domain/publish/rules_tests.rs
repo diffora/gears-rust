@@ -18,7 +18,7 @@ use crate::domain::lifecycle::LifecycleState;
 use crate::domain::money::{CurrencyCode, MinorAmount, RateMinor};
 use crate::domain::plan_rules::{
     CustomIntervalBounds, DescriptorSetComplete, HYBRID_INCOMPLETE, INVALID_CUSTOM_INTERVAL,
-    PHASE_GRAPH_INVALID, PLANTIER_MISSING,
+    PHASE_GRAPH_INVALID, PHASE_ROW_ORPHANED, PLANTIER_MISSING,
 };
 use crate::domain::plan_shape::{BillingCycle, Frequency, PlanShape};
 use crate::domain::price_record::PriceRecord;
@@ -174,7 +174,10 @@ fn a_row_shape_fault_and_a_plan_shape_fault_appear_in_one_report_in_the_fixed_or
     shape.frequency = Some(Frequency::Monthly);
     // No model kind: a Slice-3 row fault.
     shape.rows = vec![record(0xb001, None, Some("half_up"))];
-    // No plan tier, no phases, no descriptor set: Slice-2 plan faults.
+    // No plan tier, no phases, no descriptor set: Slice-2 plan faults. The absent
+    // phase set now costs a second finding rather than one — the row keys on a
+    // phase nothing attached (`PHASE_ROW_ORPHANED`, D-337) — which is why the two
+    // assertions below read the report's **ends** and not its length.
 
     let report = run_publish_rules(&shape, &params(Some("half_up")));
     let found = codes(&report);
@@ -222,7 +225,16 @@ fn one_awful_plan_produces_every_expected_violation_rather_than_the_first() {
         HYBRID_INCOMPLETE,
         PLANTIER_MISSING,
         PHASE_GRAPH_INVALID,
-        // Slice 7's, and the sixth this plan produces: both rows sit on one
+        // D-337's, and the **sixth** distinct code this plan produces: the fixture
+        // attaches no phase at all and both its rows key on one, so each is filed
+        // under a phase the revision does not hold — twice over. It was carrying
+        // that fault before the rule existed, which is what the rule is for and
+        // not a defect in a fixture whose purpose is to be wrong in every way at
+        // once. The roster gains the code rather than the fixture being repaired:
+        // repairing it means attaching a phase, and `PHASE_GRAPH_INVALID` above is
+        // what this plan is here to produce.
+        PHASE_ROW_ORPHANED,
+        // Slice 7's, and the seventh this plan produces: both rows sit on one
         // canonical scope key and it holds no window, so `inst-wc-required` names
         // it once. The roster was five while the report was six, which `any(...)`
         // tolerates in silence — the whole failure mode this test is named for.

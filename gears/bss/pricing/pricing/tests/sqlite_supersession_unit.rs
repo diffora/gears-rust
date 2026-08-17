@@ -653,6 +653,122 @@ async fn an_approved_unit_commits_all_four_writes_and_announces_two_events() {
     );
 }
 
+/// The supersession records the `effectiveTo` it overwrites — the **second** half of
+/// D-327's defect, which nothing had found.
+///
+/// # Why this case exists at all
+///
+/// D-327 found the missing before-image on the grandfathering cutover, where it had a
+/// symptom: D-05 has a *decided* unwind clause naming *"its recorded pre-cutover
+/// value"*, so the absent operand was the reason a clause could not be built. This
+/// path had the identical defect and no symptom — `commit_supersession` step 3 reaches
+/// `window_repo::adjust_effective_to` exactly as `commit_cutover` does, `unit_state`
+/// named two price ids and the key and no window and no instant, and no decision asks
+/// a supersession to be undone. So "what did this key's coverage end at before the
+/// reprice" had no answer here either, and nothing was going to notice.
+///
+/// It is worth the same fix rather than a lesser one because the destruction is the
+/// same: `compose_windows` picks the covering window by `WindowInterval::covers`,
+/// satisfied by an absent end *and* by any end strictly after the changeover, so after
+/// the shorten the two are one row. And it is fixed through the **same renderer** —
+/// `infra::window::shortened_window_state_value` — so a reader who learns the field
+/// from one record can read the other. The parallel case is
+/// `sqlite_cutover_unwind::a_cutover_records_the_effective_to_it_overwrites`.
+///
+/// Read through `audit_repo::for_subject`, which is what makes the record an operand
+/// rather than a field: the subject is rebuilt from the unit's own string, not
+/// remembered from a chain id and a `seq`.
+///
+/// The positive control is the `after_state` half — the same field, same record,
+/// carrying the changeover — so a green is the pre-image being preserved and not the
+/// pair being rendered twice from the post-write row.
+#[tokio::test]
+async fn a_supersession_records_the_effective_to_it_overwrites() {
+    use bss_pricing::infra::storage::repo::audit_repo;
+
+    let h = Harness::new().await;
+    let (plan_id, seeded) = published_plan(&h).await;
+    let key = key_of(plan_id, &seeded);
+
+    // The fixture's coverage window is finite, and this is the value under test. Named
+    // as values, because a test that rebuilt its expectation from the row it checks
+    // could not see that row replaced (D-180).
+    let coverage_from = Utc.with_ymd_and_hms(2099, 8, 4, 0, 0, 0).unwrap();
+    let coverage_to = Utc.with_ymd_and_hms(2099, 9, 1, 0, 0, 0).unwrap();
+
+    let opened = supersede(&h, request_of(&key, 12_000), SUBMITTER)
+        .await
+        .expect("the unit opens");
+    let unit = pending(&opened).approval.approval_id;
+    let subject_ref = pending(&opened).approval.subject_ref.clone();
+    approve(&h, unit).await;
+    let committed = supersede(&h, request_of(&key, 12_000), SUBMITTER)
+        .await
+        .expect("the approved act commits");
+    let receipt = receipt(&committed);
+
+    // Positive control on the write: the shorten happened, and the truth side no
+    // longer holds the old end.
+    let shortened = window_of(&h, receipt.shortened_window_id)
+        .await
+        .expect("the predecessor's window is still there");
+    assert_eq!(
+        shortened.effective_to,
+        Some(changeover()),
+        "the act moved the predecessor's end to the changeover"
+    );
+
+    let records = audit_repo::for_subject(
+        &h.db.conn().expect("conn"),
+        &h.scope(),
+        h.tenant,
+        AuditSubjectKind::PriceUnit,
+        &subject_ref,
+    )
+    .await
+    .expect("read the act's records");
+    let publish = records
+        .iter()
+        .find(|row| row.action == "publish")
+        .unwrap_or_else(|| {
+            panic!(
+                "the commit's own record stands under the act's subject; the subject holds {:?}",
+                records
+                    .iter()
+                    .map(|row| row.action.clone())
+                    .collect::<Vec<_>>()
+            )
+        });
+
+    let before_state = publish
+        .before_state
+        .as_ref()
+        .expect("the commit's record carries a before-image");
+    assert_eq!(
+        before_state["shortenedWindow"],
+        serde_json::json!({
+            "scopeKey": key.to_string(),
+            "effectiveFrom": coverage_from,
+            "effectiveTo": coverage_to,
+            "state": WindowState::Scheduled.as_str(),
+        }),
+        "the interval the shorten found, keyed by the two things a reader holding only the act \
+         can match on — the record's subject names no window: {before_state}"
+    );
+
+    let after_state = publish.after_state.as_ref().expect("and an after-image");
+    assert_eq!(
+        after_state["shortenedWindow"],
+        serde_json::json!({
+            "scopeKey": key.to_string(),
+            "effectiveFrom": coverage_from,
+            "effectiveTo": changeover(),
+            "state": WindowState::Scheduled.as_str(),
+        }),
+        "and the pair differs in exactly the one field the act moved: {after_state}"
+    );
+}
+
 #[tokio::test]
 async fn an_immaterial_supersession_commits_on_one_principal() {
     // `inst-su-commit`: "materiality = the standard per-currency price-delta
