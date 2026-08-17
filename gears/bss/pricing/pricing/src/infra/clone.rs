@@ -366,7 +366,11 @@ pub async fn clone_plan_on(
         scope,
         tenant_id,
         &created,
-        (&source_phases, &remap, &travelling),
+        SourceShape {
+            phases: &source_phases,
+            remap: &remap,
+            travelling: &travelling,
+        },
         created.row_version,
         stamp,
     )
@@ -536,6 +540,21 @@ pub async fn clone_plan_on(
 ///
 /// # Errors
 /// Whatever the shape repository refuses with.
+/// What the phase write reads off the source revision.
+///
+/// Named rather than a tuple of three references. The tuple form was reached for to
+/// keep `write_phases_on`'s argument count down and bought `clippy::type_complexity`
+/// instead — and two of the three members are slices, which is the arrangement a
+/// caller silently transposes.
+struct SourceShape<'a> {
+    /// The source's own phase set. Empty is the case D-341 exists for.
+    phases: &'a [PlanPhase],
+    /// Source `phase_id` → the id the copy files it under (D-19's remap).
+    remap: &'a BTreeMap<Uuid, PhaseId>,
+    /// The rows that will travel, which is where an adopted id comes from.
+    travelling: &'a [PriceRecord],
+}
+
 #[allow(
     clippy::too_many_arguments,
     reason = "every argument is a fact only the caller holds: the runner, the scope, the tenant, \
@@ -548,11 +567,15 @@ async fn write_phases_on(
     scope: &AccessScope,
     tenant_id: Uuid,
     created: &crate::domain::plan::PlanRevision,
-    source: (&[PlanPhase], &BTreeMap<Uuid, PhaseId>, &[PriceRecord]),
+    source: SourceShape<'_>,
     version: RowVersion,
     stamp: AuditStamp,
 ) -> Result<RowVersion, DomainError> {
-    let (source_phases, remap, travelling) = source;
+    let SourceShape {
+        phases: source_phases,
+        remap,
+        travelling,
+    } = source;
     if source_phases.is_empty() {
         plan_shape_repo::seed_terminal_phase_on(
             runner,
