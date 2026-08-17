@@ -193,18 +193,70 @@ fn answerable_publish_cases(corpus: &Corpus) -> usize {
         .sum()
 }
 
+/// The id of the synthesised case in [`corpus_with_one_declined_case`].
+///
+/// Deliberately not `consumption-on-level-rejected`: that case exists in the
+/// committed corpus *without* a marker, and reusing its id here would read as if
+/// the corpus still declined it.
+const SYNTHESISED_DECLINED_ID: &str = "synthesised-declined-until";
+
+/// The committed corpus plus one publish case that carries `declined_until`.
+///
+/// **The committed corpus declines nothing.** `consumption-on-level-rejected`
+/// lost its `declined_until = "slice-10-advanced-primitives"` on 2026-08-08, when
+/// Slice 10 landed `reserved_rate_minor` / `reservation_flavor` on the row and the
+/// rules that judge them: the pair became representable, so no subject can
+/// honestly answer "undecidable" any more. The gear side pins exactly that state
+/// -- `corpus_publish.rs`'s `the_corpus_now_declines_nothing_and_nothing_is_stale`
+/// -- and it is expected to stay true.
+///
+/// So every property *about the marker* is shown over a corpus that carries one by
+/// construction. The alternative -- asserting that `declined()` and
+/// `stale_declines()` are empty against the committed set -- would turn the tests
+/// green by deleting the only coverage the two mechanisms have, and would then go
+/// quiet rather than red the next time a marker comes or goes.
+///
+/// The marked case is the reserved pair cloned under its own id, so the whole
+/// committed corpus still runs beside it. That is load-bearing: the mechanisms
+/// must hold *among* unmarked cases -- a declined case recorded while its
+/// neighbours are counted -- not merely in isolation, where "no failures at all"
+/// would satisfy the same assertions vacuously.
+fn corpus_with_one_declined_case() -> Corpus {
+    let mut corpus = corpus();
+
+    let mut marked = corpus
+        .cases
+        .iter()
+        .find_map(|c| match c {
+            bss_fixtures::Case::Publish(p) if p.id == "consumption-on-level-rejected" => {
+                Some(p.clone())
+            }
+            bss_fixtures::Case::Publish(_) | bss_fixtures::Case::Evaluation(_) => None,
+        })
+        .expect("the reserved publish case is in the corpus");
+
+    marked.id = SYNTHESISED_DECLINED_ID.to_owned();
+    marked.declined_until = Some("slice-10-advanced-primitives".to_owned());
+    corpus.cases.push(bss_fixtures::Case::Publish(marked));
+
+    corpus
+}
+
 #[test]
 fn a_declined_case_never_earns_a_kind() {
     // Failing rather than guessing is the sanctioned answer, and it is still not
     // evidence that the rule holds -- so it earns nothing.
-    let report = run_publish_suite(&CannotAssess, &corpus());
+    //
+    // The corpus is synthesised because the committed one declines nothing -- see
+    // `corpus_with_one_declined_case`. Without a marked case the count below
+    // compares every publish case against every publish case, and the clause it
+    // exists to check does not run.
+    let corpus = corpus_with_one_declined_case();
+    let report = run_publish_suite(&CannotAssess, &corpus);
 
     // Every case the corpus expects an answer to is a failure. The ones it
     // declares undecidable are not: refusing those is agreement.
-    assert_eq!(
-        answerable_publish_cases(&corpus()),
-        report.failures().count()
-    );
+    assert_eq!(answerable_publish_cases(&corpus), report.failures().count());
     assert!(report.earned_kinds().is_empty());
 }
 
@@ -213,11 +265,18 @@ fn a_case_the_corpus_declines_is_recorded_rather_than_counted() {
     // The `trailing-tier` reading at case granularity: an unbuilt slice reads as
     // declined -- recorded, never green, and never mistaken for a fault of the
     // subject that honestly could not represent the row.
-    let report = run_publish_suite(&CannotAssess, &corpus());
+    //
+    // The committed corpus declines nothing since 2026-08-08, so the declining
+    // case is synthesised -- see `corpus_with_one_declined_case`. This is a
+    // property of the runner's bookkeeping, not of today's corpus contents.
+    let report = run_publish_suite(&CannotAssess, &corpus_with_one_declined_case());
 
     let declined: Vec<&str> = report.declined().map(|o| o.case_id.as_str()).collect();
 
-    assert_eq!(declined, vec!["consumption-on-level-rejected"]);
+    assert_eq!(declined, vec![SYNTHESISED_DECLINED_ID]);
+    // And the neighbours it ran beside were counted rather than recorded: the
+    // marker suspends its own case and nothing else.
+    assert!(report.failures().count() > 0);
     assert!(report.failures().all(|o| o.declined_until.is_none()));
 }
 
@@ -227,12 +286,16 @@ fn a_declined_case_answered_with_the_wrong_verdict_is_still_a_failure() {
     // answers `accepted` where the corpus states a rejection, and that is a
     // disagreement whatever the corpus said about buildability -- otherwise the
     // marker would be a way to make a case unfalsifiable.
-    let report = run_publish_suite(&EchoesTheCorpus, &corpus());
+    //
+    // Synthesised for the same reason as its neighbours: with no marked case in
+    // the committed corpus this would assert only that a wrong answer is a
+    // failure, which is a different and much weaker claim.
+    let report = run_publish_suite(&EchoesTheCorpus, &corpus_with_one_declined_case());
 
     assert!(
         report
             .failures()
-            .any(|o| o.case_id == "consumption-on-level-rejected"),
+            .any(|o| o.case_id == SYNTHESISED_DECLINED_ID),
         "a declined case answered wrongly must stay red"
     );
 }
@@ -242,14 +305,20 @@ fn answering_a_declined_case_correctly_marks_the_declaration_stale() {
     // The marker is self-retiring. A subject that reproduces the case has built
     // the slice, so "nothing can answer this yet" has stopped being true and the
     // line owes the registry its evidence again.
-    let report = run_publish_suite(&HasBuiltSliceTen, &corpus());
+    //
+    // This is the mechanism that retired the real marker: `HasBuiltSliceTen`
+    // stands in for the gear the day Slice 10 landed, and the committed corpus has
+    // carried no marker since. The case is therefore synthesised -- see
+    // `corpus_with_one_declined_case` -- so the self-retirement stays covered now
+    // that the corpus it once fired on has moved on.
+    let report = run_publish_suite(&HasBuiltSliceTen, &corpus_with_one_declined_case());
 
     let stale: Vec<&str> = report
         .stale_declines()
         .map(|o| o.case_id.as_str())
         .collect();
 
-    assert_eq!(stale, vec!["consumption-on-level-rejected"]);
+    assert_eq!(stale, vec![SYNTHESISED_DECLINED_ID]);
     assert_eq!(report.declined().count(), 0);
 }
 
@@ -310,7 +379,13 @@ fn only_an_unrepresentable_row_buys_the_decline() {
     // forever. Its disagreement is never answered, so the staleness check, which
     // fires only on an `Ok`, never fires either. Declining is "I cannot hold this
     // row"; anything else is a fault and is counted as one.
-    let report = run_publish_suite(&FailsForAnUnrelatedReason, &corpus());
+    //
+    // The corpus is synthesised -- see `corpus_with_one_declined_case` -- because
+    // the committed one declines nothing: over it both assertions below hold with
+    // no marked case present at all, which is not the claim. The point is that a
+    // case the corpus *does* declare undecidable is still counted as a failure
+    // when the subject's error is not a decline.
+    let report = run_publish_suite(&FailsForAnUnrelatedReason, &corpus_with_one_declined_case());
 
     assert_eq!(
         report.declined().count(),
