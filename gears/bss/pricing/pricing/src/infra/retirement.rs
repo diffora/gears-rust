@@ -686,19 +686,22 @@ async fn generation_coverage(
 /// store after a retirement over a committed cutover and finds every one of them
 /// unperformed.
 ///
-/// **Two of the four are not merely unbuilt — they are not constructible here**,
-/// and that is the part no account carried anywhere:
+/// **One of the four is not merely unbuilt — it is not constructible here**, and
+/// that is the part no account carried anywhere. It was **two** until 2026-08-17:
 ///
-/// * *"its recorded pre-cutover value"* names an operand **nothing records**.
-///   `infra::cutover::commit_cutover` shortens the predecessor through
+/// * *"its recorded pre-cutover value"* named an operand **nothing recorded**, and
+///   now names one that is recorded and addressable. The account of the gap was
+///   exact — `infra::cutover::commit_cutover` shortens the predecessor through
 ///   `window_repo::adjust_effective_to`, an in-place `UPDATE` of a table with no
-///   before-image column; the act enqueues three events and none is about the
-///   shorten; `record_cutover`'s state names three price ids and no window and no
-///   instant. Nor is the value derivable: `compose_cutover_windows` picks the
-///   window `WindowInterval::covers` answers `true` for, which admits an absent
-///   end *and* any end strictly after the cutover, so after the shorten the two
-///   are one row. An unwind that guessed `None` would hand a plan being retired
-///   open-ended coverage it never had.
+///   before-image column, the act's three events are none of them about the shorten,
+///   and the value is not derivable afterwards because `compose_cutover_windows`
+///   picks the window `WindowInterval::covers` answers `true` for, which admits an
+///   absent end *and* any end strictly after the cutover. What changed is the fourth
+///   store: `record_cutover`'s state now carries the shortened window's interval on
+///   both sides of the pair, keyed `(scopeKey, effectiveFrom)`, and
+///   `audit_repo::for_subject` reads it back under the act's own subject. So an
+///   unwind no longer has to guess `None` and hand a plan being retired open-ended
+///   coverage it never had.
 /// * *"closed as `unwound`"* names a state this machine does not have and the
 ///   design set does not declare: `05-governance.md` §4's approval state machine
 ///   and §6's `state` column are both `submitted | approved | rejected | voided`,
@@ -706,12 +709,40 @@ async fn generation_coverage(
 ///   token is what **D-204 clause (2)** refuses, on the same reading
 ///   `domain::retirement::strand_free_disposition` cites one surface over.
 ///
-/// The other two — finding the live unit, cancelling its two scheduled windows —
-/// **are** constructible today, and building them alone would be worse than
-/// building nothing: a predecessor still ending at the cutover with the schedules
-/// that were to take over from it gone is precisely the trailing void D-05
-/// rejected its option (a) to avoid, arriving as the result of the fix. So the
-/// unwind is one act or none.
+/// The other three — finding the live unit, cancelling its two scheduled windows,
+/// restoring the bound off the trail — **are** constructible today, and building
+/// them alone would be worse than building nothing: a predecessor still ending at
+/// the cutover with the schedules that were to take over from it gone is precisely
+/// the trailing void D-05 rejected its option (a) to avoid, arriving as the result of
+/// the fix. So the unwind is one act or none.
+///
+/// # Two things the unwind must do that reading D-05 does not tell you
+///
+/// Recorded here, at the site that will build it, rather than left to be rediscovered:
+///
+/// 1. **Cancel the successor window before restoring the bound, never after.**
+///    `window_repo::adjust_effective_to` runs `refuse_overlap` over
+///    `OCCUPYING_STATES`, and the successor's `[cutover, …)` sits on the
+///    predecessor's own key — so lengthening the predecessor back past the cutover
+///    while that window is still `scheduled` is refused `WINDOW_OVERLAP`. The copy
+///    does not participate: `inst-co-copy` moves it to a **new generation's** key, so
+///    it is on a different plane. The ordering is therefore forced by a rule, not
+///    chosen — and it is the reverse of the order D-05's own sentence lists the
+///    clauses in.
+/// 2. **Re-check `cutover_at > now` inside the unwind's own transaction.** This is
+///    the single reachable path to the append-only trigger's refusal
+///    (`m20260802_000016` arm 5, `m20260802_000021`'s Postgres twin), and
+///    `tests/sqlite_cutover_unwind.rs` pins why every *other* path is unreachable:
+///    inside D-05's scope the cutover is approved and not yet effective, so `OLD` is
+///    the cutover instant `T > now` and `NEW` is the original bound the cutover
+///    shortened, hence `> T > now`; a NULL original bound skips the clause outright.
+///    What that argument depends on is `T > now`, and the cutover instant can pass
+///    between an operator's decision to retire and this transaction's write. A
+///    half-applied unwind — the two schedules cancelled by clause (1) above, the
+///    bound not restored because the trigger refused it — is exactly the coverage
+///    void D-05 exists to prevent, reached by the fix. So the guard belongs in the
+///    same transaction as the writes, and a retirement that finds `T <= now` must
+///    refuse the whole act rather than perform part of it.
 ///
 /// What D-05 asks for and **is** already paid is its materiality half: retirement
 /// is always material under `Trigger::PlanRetirement` (D-109, unconditional),

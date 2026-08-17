@@ -47,12 +47,19 @@
 //!
 //! # It records a before-image, which is D-327's lesson taken rather than repeated
 //!
-//! D-327 records that D-05's cutover unwind cannot restore a shortened
-//! `effectiveTo` because **no before-image is recorded** anywhere: the cutover
+//! D-327 recorded that D-05's cutover unwind could not restore a shortened
+//! `effectiveTo` because **no before-image was recorded** anywhere: the cutover
 //! reaches `window_repo::adjust_effective_to` directly, that is an in-place `UPDATE`
 //! of a table with no before-image column, and the operand the unwind needs
-//! therefore does not exist. A horizon tightening is an in-place `UPDATE` of the
+//! therefore did not exist. A horizon tightening is an in-place `UPDATE` of the
 //! same kind, so it would have been the next instance of that defect.
+//!
+//! **The cutover's own instance was repaired on 2026-08-17**, by this section's
+//! remedy applied where D-327 found the defect: `infra::cutover::record_cutover` and
+//! `infra::supersession`'s step 11 now carry the shortened window's interval as a
+//! value, and `audit_repo::for_subject` reads it back. So the account below is a
+//! description of a shared arrangement rather than of an exception this module
+//! makes.
 //!
 //! It is not, because the audit record carries `before_state` and `after_state` —
 //! `infra::window::mutate_in`'s arrangement, which pays the same debt for the
@@ -61,9 +68,10 @@
 //! anything that ever needs to reverse one of these acts. What this crate does
 //! **not** do is offer a reversal: `active_bounded` has no edge back to
 //! `active_indefinite` and a later horizon is `GRANDFATHER_LOOSEN_FORBIDDEN`, so
-//! the before-image is evidence rather than an undo. That is a deliberate
-//! difference from the cutover's case, where the unwind is a *decided* clause with
-//! no operand.
+//! the before-image is evidence rather than an undo. That is still a deliberate
+//! difference from the cutover's case, where the unwind is a *decided* clause —
+//! it now has its operand and waits on `unwound`, D-333's approval state, whose
+//! store column is not built.
 //!
 //! # No event, and no code minted
 //!
