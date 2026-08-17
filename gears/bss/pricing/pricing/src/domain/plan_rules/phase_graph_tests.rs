@@ -41,7 +41,7 @@ use crate::domain::price_row::{
 use crate::domain::scope_key::{
     ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey,
 };
-use crate::domain::validation::{ValidationReport, ValidationRule, Violation};
+use crate::domain::validation::{Stage, ValidationReport, ValidationRule, Violation};
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -241,7 +241,7 @@ fn every_rule_names_the_instruction_it_implements() {
         &TerminalPhaseKind,
         &PhaseDuration,
         &DisplayTrialDaysOnTrialPhase,
-        &RowPhaseAttached,
+        &RowPhaseAttached::default(),
         &PhaseCoverage,
         &PhaseOverrideBase,
         &PhaseOverrideUnits,
@@ -675,7 +675,7 @@ fn a_row_on_an_unattached_phase_is_reported_with_the_row_and_the_phase_named() {
     let mut subject = phased();
     subject.rows = vec![recurring("usd", "US", phase_id(GHOST))];
 
-    let report = judge(&RowPhaseAttached, &subject);
+    let report = judge(&RowPhaseAttached::default(), &subject);
     let violation = only(&report);
 
     assert_eq!(violation.code, PHASE_ROW_ORPHANED);
@@ -709,7 +709,9 @@ fn a_row_on_an_attached_phase_is_not_reported() {
         subject.rows = vec![recurring("usd", "US", phase_id(attached))];
 
         assert!(
-            judge(&RowPhaseAttached, &subject).violations.is_empty(),
+            judge(&RowPhaseAttached::default(), &subject)
+                .violations
+                .is_empty(),
             "a row on the attached phase {attached:#x} is not a finding"
         );
     }
@@ -725,7 +727,7 @@ fn every_stranded_row_is_reported_and_not_only_the_first() {
     let mut subject = phased();
     subject.rows = vec![recurring("usd", "US", phase_id(GHOST)), second];
 
-    let report = judge(&RowPhaseAttached, &subject);
+    let report = judge(&RowPhaseAttached::default(), &subject);
 
     assert_eq!(report.violations.len(), 2, "{:?}", report.violations);
     assert!(
@@ -759,9 +761,51 @@ fn a_row_is_judged_against_the_phase_set_and_not_against_the_baseline() {
         "the rule that used to be the only guard is silent on a first publish"
     );
     assert_eq!(
-        only(&judge(&RowPhaseAttached, &subject)).code,
+        only(&judge(&RowPhaseAttached::default(), &subject)).code,
         PHASE_ROW_ORPHANED
     );
+}
+
+#[test]
+fn the_default_instance_is_publish_stage_and_the_phases_door_asks_for_write() {
+    // D-342. The two instances must report the **same fault** under two stamps, and
+    // both halves of that are load-bearing.
+    //
+    // If the default were `Write`, every rule set that registers this rule would
+    // start refusing at the price-row write, where "add the row, then attach the
+    // phase" is an order §4.2 allows — so `write_stage_only()` returning `None` for
+    // the default is what keeps the publish pipeline a publish pipeline.
+    //
+    // And if the write instance's finding differed in code, subject or detail, an
+    // author would read two different sentences about one fault depending on which
+    // door refused them.
+    let mut subject = phased();
+    subject.rows = vec![recurring("usd", "US", phase_id(GHOST))];
+
+    let at_publish = judge(&RowPhaseAttached::default(), &subject);
+    let at_write = judge(
+        &RowPhaseAttached {
+            stage: Stage::Write,
+        },
+        &subject,
+    );
+
+    assert!(
+        at_publish.write_stage_only().is_none(),
+        "the pipeline's instance must not refuse a write: {:?}",
+        at_publish.violations
+    );
+    let refused = at_write
+        .write_stage_only()
+        .expect("the phases door's instance is judgeable at the write");
+    assert_eq!(refused.violations.len(), 1);
+    assert_eq!(only(&refused).code, PHASE_ROW_ORPHANED);
+    assert_eq!(
+        only(&refused).subject,
+        only(&at_publish).subject,
+        "one fault, one subject, whichever door asked"
+    );
+    assert_eq!(only(&refused).detail, only(&at_publish).detail);
 }
 
 // ---------------------------------------------------------------------------

@@ -2002,6 +2002,188 @@ async fn a_phases_payload_naming_one_id_twice_answers_the_conflict_and_names_it(
     );
 }
 
+/// A draft plan carrying one draft price row on [`rest_support::seeded_phase`],
+/// with that phase attached.
+///
+/// Returns the revision's row version, because every case below continues the
+/// version chain from here. The row is seeded **before** the phase is attached on
+/// purpose: the attach is itself a `phases` write on a plan carrying a row, and it
+/// is the write that *repairs* a stranding rather than causing one — which the
+/// D-342 door must not refuse, or an author handed an orphaned row would have no
+/// call left that fixes it.
+async fn seed_plan_with_a_row_on_its_phase(harness: &Harness, plan_id: Uuid) -> u64 {
+    seed_draft_plan(harness, plan_id).await;
+    seed_price(harness, plan_id, "eu").await;
+
+    let attached = harness
+        .allowed()
+        .send(with_headers(
+            "PATCH",
+            &plan_path(plan_id),
+            Some(phase_chain(rest_support::seeded_phase().get())),
+            &[("if-match", "\"0-0\"")],
+        ))
+        .await;
+    assert_eq!(
+        attached.status(),
+        StatusCode::OK,
+        "attaching the phase a stranded row names is the repair, not the fault"
+    );
+    1
+}
+
+/// One phases body over a chain that keeps `seeded_phase` and prepends a trial.
+///
+/// The positive control of D-342's door, and the only one of the three cases that
+/// can detect an opt-in applied too widely: the two refusals below would pass
+/// whether the door judged this facet or the whole pipeline.
+fn trial_before_the_seeded_phase() -> serde_json::Value {
+    serde_json::json!({
+        "phases": [
+            {
+                "phase_id": Uuid::now_v7(),
+                "kind": "trial",
+                "ordinal": 0,
+                "converts_to_phase_id": rest_support::seeded_phase().get(),
+                "phase_duration_days": 14
+            },
+            {
+                "phase_id": rest_support::seeded_phase().get(),
+                "kind": "evergreen",
+                "ordinal": 1
+            }
+        ]
+    })
+}
+
+/// **A `phases` write that would strand a draft row is refused when it is made —
+/// D-342.**
+///
+/// `RowPhaseAttached` reported through `violate`, which defaults to the Publish
+/// stage, so this `PATCH` answered 200 and the author learned at publish. The delay
+/// costs the remediation, which is the whole of the argument: at the write there are
+/// two remedies — keep the phase, or drop the rows deliberately — while at publish a
+/// published row cannot be re-pointed at all, a scope key being the row's identity,
+/// and a draft row can only be deleted.
+///
+/// The facet is a wholesale **replace**, so the stranding is one successful call:
+/// it deletes the revision's phase rows and re-inserts the payload rather than
+/// merging it.
+#[tokio::test]
+async fn a_phases_write_dropping_a_phase_a_draft_row_names_is_refused_at_the_write() {
+    let harness = Harness::new().await;
+    let plan_id = Uuid::now_v7();
+    let version = seed_plan_with_a_row_on_its_phase(&harness, plan_id).await;
+
+    let refused = harness
+        .allowed()
+        .send(with_headers(
+            "PATCH",
+            &plan_path(plan_id),
+            // A different id entirely: the row's phase is simply gone from the set.
+            Some(phase_chain(Uuid::now_v7())),
+            &[("if-match", &format!("\"0-{version}\""))],
+        ))
+        .await;
+
+    // 400 for `require_well_formed_plan_name`'s reason, stated there: a
+    // write-stage violation renders through `failed_precondition()`, the
+    // architectural 422 this gear answers as 400.
+    assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
+    let body = body_json(refused).await;
+    assert_eq!(code_in(&body), "PHASE_ROW_ORPHANED", "{body}");
+    assert!(
+        body.to_string()
+            .contains(&rest_support::seeded_phase().get().to_string()),
+        "the refusal names the phase, which is the remedy the author acts on: {body}"
+    );
+
+    // Nothing landed. The refusal has to arrive before the delete half of the
+    // replace, or an author would be told no and left with fewer phases.
+    let read = body_json(
+        harness
+            .allowed()
+            .send(request("GET", &plan_path(plan_id), None))
+            .await,
+    )
+    .await;
+    assert_eq!(
+        read["phases"][0]["phase_id"],
+        serde_json::json!(rest_support::seeded_phase().get()),
+        "the phase the row names is still attached: {read}"
+    );
+    assert_eq!(plan_row_version(&harness, plan_id, 0).await, Some(version));
+}
+
+/// **The empty set is the same refusal — D-342.**
+///
+/// Its own case rather than a line in the one above, because it is the shape
+/// easiest to *type* and option (c) of the decision was to refuse only this one.
+/// That option was rejected for inverting the ordering by likelihood — the
+/// replace-that-drops-one is the shape easiest to reach by accident — so both
+/// cases have to stand or the rejected option is what shipped.
+#[tokio::test]
+async fn an_empty_phases_write_on_a_plan_holding_rows_is_refused_at_the_write() {
+    let harness = Harness::new().await;
+    let plan_id = Uuid::now_v7();
+    let version = seed_plan_with_a_row_on_its_phase(&harness, plan_id).await;
+
+    let refused = harness
+        .allowed()
+        .send(with_headers(
+            "PATCH",
+            &plan_path(plan_id),
+            Some(serde_json::json!({ "phases": [] })),
+            &[("if-match", &format!("\"0-{version}\""))],
+        ))
+        .await;
+
+    assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(problem_code(refused).await, "PHASE_ROW_ORPHANED");
+    assert_eq!(plan_row_version(&harness, plan_id, 0).await, Some(version));
+}
+
+/// **The positive control: a replace that keeps every named phase still
+/// succeeds.**
+///
+/// D-342 clause (3) — the opt-in is scoped to this facet and this rule, and this is
+/// what makes the scoping checkable. A too-wide opt-in shows up **here** rather
+/// than in the refusals, which would pass either way: turning the whole plan
+/// pipeline on at this door would refuse this plan for having no frequency, no
+/// descriptor set and a trial phase carrying no coverage, none of which is a fault
+/// of the request.
+///
+/// Prepending a trial is the ordinary authoring act the facet exists for, and it is
+/// green before D-342 as well as after.
+#[tokio::test]
+async fn a_phases_write_that_keeps_every_named_phase_still_succeeds() {
+    let harness = Harness::new().await;
+    let plan_id = Uuid::now_v7();
+    let version = seed_plan_with_a_row_on_its_phase(&harness, plan_id).await;
+
+    let accepted = harness
+        .allowed()
+        .send(with_headers(
+            "PATCH",
+            &plan_path(plan_id),
+            Some(trial_before_the_seeded_phase()),
+            &[("if-match", &format!("\"0-{version}\""))],
+        ))
+        .await;
+
+    assert_eq!(accepted.status(), StatusCode::OK);
+    let body = body_json(accepted).await;
+    assert_eq!(
+        body["phases"].as_array().map(Vec::len),
+        Some(2),
+        "both phases landed, so this is not a 200 over a rejected write: {body}"
+    );
+    assert_eq!(
+        plan_row_version(&harness, plan_id, 0).await,
+        Some(version + 1)
+    );
+}
+
 #[tokio::test]
 async fn the_abandon_flip_is_audited_exactly_as_the_deletion_it_replaces_was() {
     // D-145 in as many words. The flip is a distinct action from a delete

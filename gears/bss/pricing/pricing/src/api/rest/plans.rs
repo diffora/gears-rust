@@ -881,7 +881,14 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
              (D-90); the `If-Match` is then tested against the current revision. A retired plan \
              answers `PLAN_RETIRED_NO_SUCCESSOR`, a plan that already holds a draft answers \
              `OPEN_DRAFT_REVISION_EXISTS`, and a plan whose every revision is `abandoned` \
-             answers `PLAN_ABANDONED_NO_SUCCESSOR` - its id is spent, so mint a new plan.",
+             answers `PLAN_ABANDONED_NO_SUCCESSOR` - its id is spent, so mint a new plan.\n\nThe \
+             **phases** facet is a wholesale replace and is judged when it is made (D-342): a \
+             payload that drops a phase one of the revision's price rows keys on - the empty set \
+             included - is refused `PHASE_ROW_ORPHANED`, naming the phase, rather than being \
+             accepted and refused at publish, by which time a published row cannot be re-pointed \
+             and a draft row can only be deleted. A replace that keeps every phase the rows name \
+             still succeeds. A payload naming one `phase_id` twice answers \
+             `PHASE_ID_IN_USE` (`409`, D-340).",
         )
         .tag(TAG)
         .authenticated()
@@ -1416,6 +1423,14 @@ async fn patch_plan(
     let target = target_revision(&state, &scope, tenant, plan_id, asserted, stamp).await?;
     let revision = target.revision;
     let expected = target.expected;
+
+    // D-342's write-stage door, on **this facet and no other**. Before the match
+    // rather than inside its arm because every arm answers `RepoError` and this
+    // refusal is a validation report; and after `target_revision` because the rows
+    // it judges belong to the revision the patch will land on.
+    if let Facet::Phases(phases) = &facet {
+        require_no_stranded_rows(&state, &scope, tenant, plan_id, revision, phases).await?;
+    }
 
     match facet {
         Facet::Shape(shape) => {
@@ -2208,6 +2223,95 @@ fn require_well_formed_plan_name(name: Option<&str>) -> Result<(), DomainError> 
         detail,
     );
     Err(DomainError::ValidationFailed(report))
+}
+
+/// The write-stage door for the phase set (**D-342**).
+///
+/// `inst-ph-row-attached` reported through `violate`, which defaults to the Publish
+/// stage, so this facet accepted `{"phases": []}` and any replace dropping a phase
+/// a draft price row names — and the facet is a **wholesale replace**, deleting the
+/// revision's phase rows and re-inserting the payload, so the stranding is one
+/// successful `PATCH`. The author learned at publish, which is the single moment at
+/// which their options are strictly fewer: at the write there are two remedies —
+/// keep the phase, or drop the rows deliberately — while at publish a published row
+/// cannot be re-pointed at all (a scope key is the row's identity, Foundation §3.7)
+/// and a draft row can only be deleted.
+///
+/// **One rule, not the pipeline**, which is the distinction
+/// [`require_well_formed_plan_name`] states above: turning the whole plan pipeline
+/// on here would refuse a draft for having no tier, no frequency and no descriptor
+/// set yet — legitimate intermediate states, and the mistake D-312's stage split
+/// exists to avoid. The one rule applied is the one whose every operand is in hand
+/// at this door: the submitted phase set **is** the request, and the rows are
+/// already stored.
+///
+/// **The rows are the same operand the publish stage judges** —
+/// `publish::CANDIDATE_ROW_STATES`, the published plane plus the drafts this
+/// revision would publish — read through the same repository call
+/// `publish::assemble_from` makes. A door judging a different row set from the gate
+/// behind it is how a write-time check starts disagreeing with the publish it is
+/// supposed to anticipate.
+///
+/// **The subject carries only what the rule reads**, and that is stated rather than
+/// left to be discovered: `RowPhaseAttached` reads `rows`, `phases` and the
+/// `plan_id`/`revision` its finding is filed under. The rest of [`PlanShape`] stays
+/// at its default, which is safe in the one direction that matters — publish
+/// re-judges the whole assembled shape, so a field this door leaves unloaded can
+/// only delay a refusal, never lose one. Assembling the full shape here would cost
+/// six reads on every phase edit to answer a question two of them settle.
+///
+/// **Not a guarantee, and not claimed as one.** The read is not the write's guard:
+/// a price row authored between this check and the replace is judged at publish,
+/// which is why D-342 keeps the publish-stage registration rather than moving the
+/// rule. The two facets are authored through different calls and publish remains
+/// the gate every writer passes through.
+///
+/// It answers the enumerated report shape, so a client already parsing publish
+/// violations parses this unchanged.
+async fn require_no_stranded_rows(
+    state: &AuthoringState,
+    scope: &toolkit_db::secure::AccessScope,
+    tenant: Uuid,
+    plan_id: PlanId,
+    revision: u64,
+    phases: &[PlanPhase],
+) -> Result<(), CanonicalError> {
+    let conn = state.db.conn().map_err(|e| {
+        CanonicalError::from(DomainError::Internal(format!("phase door conn: {e}")))
+    })?;
+    let rows = crate::infra::storage::repo::price_repo::load_for_plan(
+        &conn,
+        scope,
+        tenant,
+        plan_id,
+        crate::infra::publish::CANDIDATE_ROW_STATES,
+    )
+    .await
+    .map_err(|e| CanonicalError::from(repo_failure(&e)))?;
+
+    let mut subject = crate::domain::plan_shape::PlanShape::new(plan_id, revision, Utc::now());
+    subject.phases = crate::domain::plan_shape::PhaseGraph::new(phases.to_vec());
+    subject.rows = rows;
+
+    let mut report = crate::domain::validation::ValidationReport::default();
+    crate::domain::validation::ValidationRule::evaluate(
+        &crate::domain::plan_rules::phase_graph::RowPhaseAttached {
+            stage: crate::domain::validation::Stage::Write,
+        },
+        &subject,
+        &mut report,
+    );
+    // The third caller of `write_stage_only()`, after the price-row write and the
+    // bulk import. It is not decorative on a report this door built: it is the
+    // guarantee that only a write-judgeable finding can refuse a write, so a
+    // publish-stage arm added to this rule later cannot leak into this refusal
+    // without somebody stating its stage.
+    match report.write_stage_only() {
+        None => Ok(()),
+        Some(write_stage) => Err(CanonicalError::from(DomainError::ValidationFailed(
+            write_stage,
+        ))),
+    }
 }
 
 /// Parse a create's shape.

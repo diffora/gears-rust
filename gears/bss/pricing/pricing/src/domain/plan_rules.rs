@@ -483,7 +483,11 @@ pub fn plan_shape_rules(
         // author reading "phase P is uncovered" above "row R keys on phase Q,
         // which this revision does not attach" has the whole mismatch in front of
         // them.
-        .with_rule(Box::new(phase_graph::RowPhaseAttached))
+        // `default()` rather than a unit struct since D-342 gave the rule a stage,
+        // and the default is `Publish` — the aggregate pipeline is the publish
+        // pre-check and the commit's re-validation, and the write-stage instance is
+        // the `phases` facet's own, built at that door.
+        .with_rule(Box::new(phase_graph::RowPhaseAttached::default()))
         .with_rule(Box::new(phase_graph::PhaseCoverage))
         .with_rule(Box::new(phase_graph::PhaseOverrideBase))
         .with_rule(Box::new(phase_graph::PhaseOverrideUnits))
