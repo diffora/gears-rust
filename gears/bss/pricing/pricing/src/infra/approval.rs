@@ -1050,8 +1050,9 @@ impl ApprovalService {
     /// # `price_unit`, not a token of its own
     ///
     /// S5 §6's `subject_kind` enumeration is `plan_revision | price_unit | window |
-    /// overlay | membership | bundle | retirement | policy | historical_import |
-    /// bulk_batch` — there is **no `supersession` member**, and this gear does not mint
+    /// overlay | membership | bundle | retirement | policy | bulk_batch`
+    /// (`historical_import` left it with D-330's strike) — there is **no
+    /// `supersession` member**, and this gear does not mint
     /// tokens the design set has not declared. (`m20260802_000019` is the shape when one
     /// *is* declared: a widening migration, and only once a writer exists.) A
     /// supersession's change set is one price row on one canonical scope key, which is

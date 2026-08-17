@@ -1,6 +1,6 @@
 //! Legacy snapshot synthesis — the `migrated-origin` rule
 //! (`inst-sy-freeze`, `inst-sy-select`, `inst-sy-payload`, `inst-sy-provenance`,
-//! `inst-sy-firstrating`, `inst-sy-backdate`, D-76, D-81, D-87, D-102).
+//! `inst-sy-firstrating`, D-76 as narrowed by D-330, D-81, D-87, D-102).
 //!
 //! A subscription with **no** `pricingSnapshotRef` cannot be rated: there is no
 //! frozen economics to charge from. Synthesis builds one from published state as
@@ -20,42 +20,46 @@
 //! migrated subscriber at whatever the catalog said when someone happened to run
 //! the job.
 //!
-//! # The two-tier lookup, and why tier 2 is unreachable today
+//! # The lookup, narrowed to one tier
 //!
-//! D-76, normative, per scope key of the subscription's frozen
-//! `(currency, region)`:
+//! D-76 as narrowed by **D-330**, normative, per scope key of the subscription's
+//! frozen `(currency, region)`:
 //!
-//! 1. **Live history first** — the `pricing_price` row, **current or
-//!    superseded**, whose `PriceWindow` covered `t` on that key. The supersession
-//!    chain is retained in-table, so this reproduces exactly what rating would
-//!    have resolved at `t` and needs no import at all.
-//! 2. **Reference set only if (1) is empty** — the `pricing_historical_price` row
-//!    on that key with the greatest `effective_from <= t`, and `effective_to > t`
-//!    where set. Its own interval substitutes for a window, because reference rows
-//!    are never window-linked, and it may be **open-ended** (D-81) — which is what
-//!    lets a still-in-effect legacy price cover a `migration`-trigger `t`.
-//! 3. **Neither ⇒ fail closed.** Into the migration exception list, or the rating
-//!    exception path for `first-rating`. Synthesis **never guesses a price and
-//!    never falls back to the current row**, which is the clause the whole rule
-//!    exists for: the current row is precisely the price the subscriber was *not*
-//!    paying.
+//! - **Clause (1), live history** — the `pricing_price` row, **current or
+//!   superseded**, whose `PriceWindow` covered `t` on that key. The supersession
+//!   chain is retained in-table, so this reproduces exactly what rating would have
+//!   resolved at `t`.
+//! - **Clause (3), otherwise ⇒ fail closed** — into the migration exception list,
+//!   or the rating exception path for `first-rating`. Synthesis **never guesses a
+//!   price and never falls back to the current row**, which is the clause the whole
+//!   rule exists for: the current row is precisely the price the subscriber was
+//!   *not* paying.
 //!
-//! **`pricing_historical_price` does not exist in the built system** — it is
-//! Slice 5's `inst-bd-store`, and §1.7 records the absence normatively. So tier 2
-//! always resolves empty and every key that misses tier 1 falls to clause (3).
-//! That is the correct behaviour rather than a defect, and [`select_row`] is
-//! written against the tier-2 *input* rather than around it: the day the store
-//! lands, a non-empty `reference` changes no logic here.
+//! **Clause (2) is struck, and the two survivors keep their numbers** rather than
+//! closing the gap, because every citation of D-76 in this set and in the PRD names
+//! them by those numbers. It read *"reference set only if (1) is empty — the
+//! `pricing_historical_price` row on that key with the greatest `effective_from <=
+//! t`"*, and the store behind it was Slice 5's `inst-bd-store`. **D-330
+//! (2026-08-16) struck the whole historical-import flow**, `inst-bd-store` and
+//! `inst-sy-backdate` — the instruction naming synthesis as its sanctioned consumer
+//! — with it. This module had been carrying tier 2 as a *seam*: an empty candidate
+//! slice passed into the rule on every synthesis, on the argument that "the day the
+//! store lands, a non-empty `reference` changes no logic here". No such day is
+//! coming, so the parameter is gone rather than left as a promise nothing intends to
+//! keep. What is kept is the discriminator the tier was recorded under
+//! ([`SelectionTier`]), because S11 §4 clause 2 keeps it: one value still tells a
+//! reader which rule resolved the row.
 //!
 //! # The payload is self-contained because nothing can resolve its ids
 //!
 //! D-87, plus C-5's plan-level half. A `migrated-origin` ref resolves through
-//! **no** `CatalogVersion` by construction — a tier-2 row exists in none, and a
-//! tier-1 row's historical instant predates any useful pin — so Rating and
-//! Billing cannot look anything up. Everything they need is materialized into the
-//! frozen payload: the row content **and** the plan-level descriptor set and
-//! resolved grant set, without which the payload is row-complete and
-//! invoice-incomplete.
+//! **no** `CatalogVersion` by construction — the resolved row's historical instant
+//! predates any useful pin (C-5's second leg, a fully-legacy tier-2 key that
+//! exists in no version at all, is struck with tier 2 by D-330 and the first leg
+//! carries the rule alone) — so Rating and Billing cannot look anything up.
+//! Everything they need is materialized into the frozen payload: the row content
+//! **and** the plan-level descriptor set and resolved grant set, without which the
+//! payload is row-complete and invoice-incomplete.
 //!
 //! # `first-rating` is never inline
 //!
@@ -68,7 +72,6 @@
 
 use std::fmt;
 
-use chrono::{DateTime, Utc};
 use toolkit_macros::domain_model;
 use uuid::Uuid;
 
@@ -132,33 +135,38 @@ impl fmt::Display for SynthesisTrigger {
     }
 }
 
-/// Which tier of D-76's lookup a resolved row came from (`inst-sy-provenance`).
+/// Which rule of D-76's lookup a resolved row came from (`inst-sy-provenance`).
 ///
-/// Recorded **per resolved id**, not per snapshot: one subscription's keys can
-/// resolve from different tiers, and an auditor reconstructing a disputed charge
-/// must be able to tell a real published price from a governed backdated
-/// reconstruction without re-running the lookup.
+/// Recorded **per resolved id**, not per snapshot: the discriminator belongs to
+/// the row it describes, and an auditor reconstructing a disputed charge must be
+/// able to see which rule resolved it without re-running the lookup.
+///
+/// **One variant, and the enum is kept rather than collapsed.** D-76 declared two
+/// tiers; D-330 struck the second with the historical-import flow that was to fill
+/// it, and S11 §4 clause 2 keeps the field anyway — *"a stored discriminator with
+/// one value still tells a reader which rule resolved the row and is the seam any
+/// later tier would land on"*. Collapsing the type would put the literal
+/// `"live_history"` at both of `infra::synthesis`'s render sites and take the
+/// stored token's one home away, which is the duplicated-conversion shape this
+/// crate has been burned by; and `source` is provenance on a record with a
+/// seven-year horizon, so dropping the wire field is a break with no benefit.
 #[domain_model]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum SelectionTier {
     /// Tier 1 — a `pricing_price` row, current or superseded, whose window
     /// covered `t`. This is what rating would actually have resolved.
     LiveHistory,
-    /// Tier 2 — a `pricing_historical_price` reference row whose own interval
-    /// covered `t`. Governed history, imported through Slice 5's backdating path.
-    HistoricalImport,
 }
 
 impl SelectionTier {
     /// Every tier, stable order.
-    pub const ALL: &'static [Self] = &[Self::LiveHistory, Self::HistoricalImport];
+    pub const ALL: &'static [Self] = &[Self::LiveHistory];
 
     /// The persisted / wire token (D-76's own spelling).
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::LiveHistory => "live_history",
-            Self::HistoricalImport => "historical_import",
         }
     }
 
@@ -186,60 +194,54 @@ pub struct LiveCandidate {
     pub plan_revision: Option<u64>,
 }
 
-/// A candidate row from tier 2 — a reference row whose own interval covered `t`.
-///
-/// **Nothing produces one of these today**: `pricing_historical_price` is Slice
-/// 5's `inst-bd-store` and is unbuilt. The type exists so [`select_row`] is
-/// written against the input rather than around its absence.
-#[domain_model]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct ReferenceCandidate {
-    /// The `pricing_historical_price` row.
-    pub historical_price_id: Uuid,
-    /// When the reference interval opened. The selection rule takes the
-    /// **greatest** `effective_from <= t`, so this is what orders candidates.
-    pub effective_from: DateTime<Utc>,
-}
+// `ReferenceCandidate` — a `pricing_historical_price` row whose own interval
+// covered `t`, ordered by the greatest `effective_from <= t` — stood here and is
+// **struck** (D-330, 2026-08-16). It was the input shape of D-76's tier 2, and its
+// own doc said "nothing produces one of these today"; `inst-bd-store`, the store
+// that was to, has left the design set with the whole historical-import flow, and
+// `inst-sy-backdate` — the instruction naming synthesis as that flow's sanctioned
+// consumer — went with it.
 
-/// One row selected for one scope key, and the tier it came from.
+/// One row selected for one scope key, and the rule it came from.
 #[domain_model]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SelectedRow {
-    /// The resolved row's id — a `pricing_price` id on tier 1, a
-    /// `pricing_historical_price` id on tier 2.
+    /// The resolved `pricing_price` row's id.
     pub row_id: Uuid,
-    /// Which tier resolved it.
+    /// Which rule resolved it. One value since D-330; see [`SelectionTier`].
     pub tier: SelectionTier,
-    /// The plan revision behind it, where there is one. `None` on tier 2, whose
-    /// rows exist in no `CatalogVersion` by construction (D-87).
+    /// The plan revision behind it, where there is one.
+    ///
+    /// **`None` is a fact rather than a gap, and it is now tier 1's own fact.**
+    /// It read "`None` on tier 2, whose rows exist in no `CatalogVersion` by
+    /// construction (D-87)" — the tier that is struck. What makes the field an
+    /// `Option` today is that `infra::synthesis::select_for_key` builds every
+    /// candidate from a `PriceWindow`, which carries no revision, so a live
+    /// resolution answers `None` too. D-87 obliges the self-contained payload
+    /// either way; the difference is only which sentence says why.
     pub plan_revision: Option<u64>,
 }
 
-/// Resolve one scope key against D-76's two tiers.
+/// Resolve one scope key against D-76's live-history rule.
 ///
-/// The caller supplies the candidates each tier produced **for that key at `t`**;
+/// The caller supplies the candidates the rule produced **for that key at `t`**;
 /// deciding which rows those are is a query and lives in
 /// [`crate::infra::synthesis`]. What lives here is the part that must never
-/// drift: the order the tiers are consulted in, and the refusal when neither
-/// answers.
+/// drift: the refusal when nothing answers.
 ///
-/// # Why tier 1 short-circuits
+/// # Why there is one rule and not two
 ///
-/// "Reference set **only if** (1) is empty" is D-76's own wording, and the reason
-/// is that the two tiers are not equally good evidence: tier 1 *is* what rating
-/// resolved at `t`, while tier 2 is a governed reconstruction of it. Consulting
-/// both and preferring the newer, or merging them, would let an imported row
-/// silently restate a price the system actually charged.
+/// D-76 declared two tiers and this function consulted them in order, tier 1
+/// short-circuiting tier 2 because *"the two tiers are not equally good evidence:
+/// tier 1 **is** what rating resolved at `t`, while tier 2 is a governed
+/// reconstruction of it"*. **D-330 struck tier 2** with the historical-import flow
+/// that was to populate it, so the order is no longer a rule this function can
+/// get wrong. The judgement that produced the order survives its subject: a
+/// reconstruction must never silently restate a price the system actually
+/// charged, which is why nothing may be merged into the live set here and why
+/// clause (3) fails closed instead of reaching for the current row.
 ///
-/// # Why more than one tier-2 candidate is not an error
-///
-/// The store's own uniqueness forbids overlapping reference intervals on a key
-/// (`inst-bd-pipeline`), so at most one can cover `t` — but the selection rule is
-/// stated as "the greatest `effective_from <= t`" and is implemented as stated
-/// rather than as an assertion about the store. A rule that trusted the
-/// uniqueness would be a second place for that invariant to live.
-///
-/// # Why tier 1 answers with a **set**
+/// # Why it answers with a **set**
 ///
 /// A [`FrozenKey`] is D-76's frozen `(currency, region)` pair — a **market**, not
 /// a canonical scope key — and a market legitimately carries more than one live
@@ -253,37 +255,20 @@ pub struct SelectedRow {
 /// Rating evaluates from it and Billing posts from it, resolving nothing through
 /// the read model — so **a dropped line is a charge that never happens**, on a
 /// record with a seven-year horizon and no way to notice.
-///
-/// Tier 2 still answers with at most one: its rule is "the greatest
-/// `effective_from <= t`", which names a single row by construction.
 #[must_use]
-pub fn select_rows(live: &[LiveCandidate], reference: &[ReferenceCandidate]) -> Vec<SelectedRow> {
-    // (1) Live history first, and it short-circuits — as a set.
-    if !live.is_empty() {
-        return live
-            .iter()
-            .map(|candidate| SelectedRow {
-                row_id: candidate.price_id,
-                tier: SelectionTier::LiveHistory,
-                plan_revision: candidate.plan_revision,
-            })
-            .collect();
-    }
-    // (2) The reference set, greatest `effective_from` first.
-    reference
-        .iter()
-        .max_by_key(|candidate| candidate.effective_from)
-        .into_iter()
+pub fn select_rows(live: &[LiveCandidate]) -> Vec<SelectedRow> {
+    // (1) Live history — as a set.
+    //
+    // (3) An empty set is fail-closed, and it is what an empty input becomes here:
+    //     the caller turns it into the exception list, exactly as it did when this
+    //     answered `None` and when clause (2) still stood between the two.
+    live.iter()
         .map(|candidate| SelectedRow {
-            row_id: candidate.historical_price_id,
-            tier: SelectionTier::HistoricalImport,
-            // A reference row belongs to no revision. This is not "unknown": it
-            // is the fact D-87 makes the payload self-contained *because* of.
-            plan_revision: None,
+            row_id: candidate.price_id,
+            tier: SelectionTier::LiveHistory,
+            plan_revision: candidate.plan_revision,
         })
         .collect()
-    // (3) An empty set is fail-closed. The caller turns it into the exception
-    //     list, exactly as it did when this answered `None`.
 }
 
 /// A scope key synthesis could not resolve a row for (`inst-sy-select` clause 3).

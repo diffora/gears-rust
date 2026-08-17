@@ -50,7 +50,8 @@
 //! `CHECK`, and **no document in the design set declares either vocabulary**.
 //! S5 §6 declares a `subject_kind` enumeration for `pricing_approval`
 //! (`plan_revision | price_unit | window | overlay | membership | bundle |
-//! retirement | policy | historical_import | bulk_batch`) and nothing declares
+//! retirement | policy | bulk_batch` — `historical_import` left it, and the audit
+//! half with it, when D-330 struck the import flow) and nothing declares
 //! one for `pricing_audit_log`. [`AuditSubjectKind::PlanRevision`] therefore
 //! **borrows S5 §6's spelling** for the one value this group writes, so the two
 //! stores do not end up naming one thing two ways; the borrowing is recorded
@@ -485,8 +486,11 @@ pub enum AuditSubjectKind {
     ///
     /// **Declared in S5 §6 already**, in the same enumeration D-158 takes
     /// verbatim from `pricing_approval` — `plan_revision | price_unit | window |
-    /// overlay | membership | bundle | retirement | policy | historical_import |
-    /// bulk_batch` — so this member implements a token the design set names
+    /// overlay | membership | bundle | retirement | policy | bulk_batch`
+    /// (`historical_import` was a tenth and left **both** enumerations together
+    /// with D-330's strike, which is the narrowing half of the same rule that
+    /// makes them extend together) — so this member implements a token the design
+    /// set names
     /// rather than minting one, held out until its writer existed the way
     /// [`Self::Window`] and [`Self::Policy`] were.
     ///

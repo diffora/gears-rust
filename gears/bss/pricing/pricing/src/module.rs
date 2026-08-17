@@ -1284,13 +1284,20 @@ impl DatabaseCapability for BssPricingGear {
 /// `customer_groups::router` made six without anybody touching the words; and the
 /// read-model clause is a seventh that review did not count.
 ///
-/// **Two absences survive it**, and are named because each is adjacent to something
+/// **One absence survives it**, and is named because it is adjacent to something
 /// that *is* mounted — the case where a reader would otherwise reasonably conclude
-/// the feature is wired. `POST /bss-pricing/v1/historical-imports` has no
-/// reference-price store. And **`audit × export` is gated by no route**: S5 §5's
+/// the feature is wired. **`audit × export` is gated by no route**: S5 §5's
 /// audit surface carries two permissions, `GET /bss-pricing/v1/audit` serves the
 /// `read` half (mounted below, Z13-8), and the export is a chunked shape under its
 /// own p95 that nothing here builds — a large `limit` on the page is not it.
+///
+/// **`POST /bss-pricing/v1/historical-imports` was the other, and it is not an
+/// absence any more.** The clause read that it "has no reference-price store",
+/// which described a debt; D-330 (2026-08-16) struck the whole historical-import
+/// flow, so there is no route owed, no store owed and no grant to register. The
+/// crate's own surfaces for the struck plane — the `historical_import` label and
+/// its two permissions, D-76's tier 2, and the always-material trigger — are
+/// deleted rather than left as `false` arms and empty seams.
 ///
 /// **The audit *read* left this list on 2026-08-14** and the clause is withdrawn
 /// rather than edited around, since half of it was a correct warning against the

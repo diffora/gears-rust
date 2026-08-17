@@ -12,8 +12,10 @@
 //! two of its properties are worth restating where the permissions live:
 //! no default role holds both `plan × publish` and `approval × approve`, and
 //! the approving role holds `read` on every always-material trigger's subject
-//! (D-61) — which is why `price_overlay × read` and `historical_import × read`
-//! exist as their own permissions rather than riding a plan grant.
+//! (D-61) — which is why `price_overlay × read` exists as its own permission
+//! rather than riding a plan grant. `historical_import × read` was D-61's other
+//! instance of that rule and is struck with its trigger and its flow (D-330); the
+//! invariant is unchanged, it just has one fewer subject to range over.
 //!
 //! Instance id layout (instance suffix needs >= 5 dot-separated tokens):
 //! `gts.cf.toolkit.authz.permission.v1~cf.bss.pricing.<entity>_<action>.v1`.
@@ -194,24 +196,15 @@ gts_instance! {
     }
 }
 
-// -- historical_import -- governed backdated reference rows ------------------
-
-gts_instance! {
-    AuthzPermissionV1 {
-        id: gts_id!("cf.toolkit.authz.permission.v1~cf.bss.pricing.historical_import_write.v1"),
-        resource_type: labels::HISTORICAL_IMPORT.to_owned(),
-        action: actions::WRITE.to_owned(),
-        display_name: "Import governed backdated reference prices".to_owned(),
-    }
-}
-gts_instance! {
-    AuthzPermissionV1 {
-        id: gts_id!("cf.toolkit.authz.permission.v1~cf.bss.pricing.historical_import_read.v1"),
-        resource_type: labels::HISTORICAL_IMPORT.to_owned(),
-        action: actions::READ.to_owned(),
-        display_name: "Read a pending backdated import's row set".to_owned(),
-    }
-}
+// `historical_import_write` ("Import governed backdated reference prices") and
+// `historical_import_read` ("Read a pending backdated import's row set") stood
+// here and are **struck** (D-330, 2026-08-16). S5 §3 registers no
+// `historical_import` resource: a grant nobody can be issued and no route asks
+// about confers nothing and withholds nothing, and the label's own strike note in
+// `crate::authz::labels` is why re-adding either needs a decision. Deleting them
+// is what `every_grantable_label_is_enforced_by_some_route` was asking for all
+// along — the 2026-08-14 wave answered it by moving three bulk-import routes onto
+// the label instead, which is the other way to satisfy a membership check.
 
 // -- audit -- the actor / before-after / approval trail ----------------------
 

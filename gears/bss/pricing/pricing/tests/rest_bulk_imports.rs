@@ -14,6 +14,7 @@ mod rest_support;
 
 use axum::http::StatusCode;
 use bss_pricing::api::rest::bulk_imports::BULK_IMPORTS;
+use bss_pricing::authz::{actions, labels};
 use bss_pricing::domain::bulk::{BulkKind, BulkState};
 use bss_pricing::infra::storage::entity::price;
 use bss_pricing::infra::storage::repo::bulk_repo;
@@ -1256,5 +1257,258 @@ async fn a_body_past_the_platform_limit_is_refused_before_the_handler_runs() {
     assert!(
         opened.is_none(),
         "a body refused by the extractor never reaches the handler that opens a run: {opened:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The gate, per pair (Task A).
+//
+// **All three surfaces asked for `historical_import` until 2026-08-17, and three
+// independent accounts said `plan`**: S5 §3's read row names
+// `GET /bss-pricing/v1/bulk-imports/{id}` under `plan × read`; its bulk row files
+// the mutating pair under *"the **same** `plan × write` / `publish` — bulk is
+// authoring at scale (and abort is un-authoring at scale), no new authority"*; and
+// `write_scope`'s own doc comment, four lines above the body that contradicted it,
+// said "the `plan x write` gate both mutating surfaces take".
+//
+// The consequence was not cosmetic. `historical_import` was the **restricted**
+// backdating grant — S5 §3 step 5, "never included in a default role" — so the
+// three roles S5's matrix gives `plan × write` (ProductManager, FinanceManager,
+// CatalogAdmin) were answered **403** on a plane the same table hands them, and
+// the label is struck outright now (D-330).
+//
+// Why these cases and not the census: `rest_authz.rs` pins the pair each route
+// asks the PDP, which is the exact instrument, but both sides of it are
+// descriptions of one implementation and it was green through the whole defect.
+// What no fixture above `SelectiveResolver` can see is the operator-visible fact —
+// a caller holding **only** the catalogued pair, and nothing else, gets served.
+// Each refusal below is paired with that positive control, because a refusal alone
+// passes just as well when the deny is coming from somewhere other than the gate
+// under test.
+// ---------------------------------------------------------------------------
+
+/// The operator every case below acts as.
+const BULK_OPERATOR: Uuid = Uuid::from_u128(0xb0_1c);
+
+/// `plan × write` **alone** submits a batch — the entrance S5 §3's bulk row
+/// promises, and the one that answered 403.
+///
+/// Not merely "not forbidden": the run is driven to `202` and the rows are read
+/// back off the `GET`, so a gate that admitted the caller and then failed to reach
+/// the store could not pass this.
+#[tokio::test]
+async fn a_caller_holding_only_plan_write_submits_a_bulk_import() {
+    let harness = Harness::new().await;
+    let plan = Uuid::now_v7();
+    seed_current_plan(&harness, plan).await;
+
+    let response = harness
+        .selectively_allowed_as(BULK_OPERATOR, &[(labels::PLAN, actions::WRITE)])
+        .send(with_headers(
+            "POST",
+            BULK_IMPORTS,
+            Some(batch(&[row(plan, "eu", 1_500)])),
+            &keyed("bulk-authz-plan-write"),
+        ))
+        .await;
+
+    assert_eq!(
+        response.status(),
+        StatusCode::ACCEPTED,
+        "plan x write alone, with no historical_import grant at all, authorizes the submit"
+    );
+    let body = body_json(response).await;
+    assert_eq!(body["state"], serde_json::json!("completed"));
+    assert_eq!(
+        body["report"]["committed"]
+            .as_array()
+            .expect("an array")
+            .len(),
+        1,
+        "and the row landed rather than the gate merely letting the request past: {body}"
+    );
+}
+
+/// `plan × read` **alone** reads a run.
+///
+/// The batch is submitted by the ordinary admin client: what this case is about is
+/// the `GET`'s gate, not the `POST`'s.
+#[tokio::test]
+async fn a_caller_holding_only_plan_read_reads_a_bulk_import() {
+    let harness = Harness::new().await;
+    let plan = Uuid::now_v7();
+    seed_current_plan(&harness, plan).await;
+    let submitted = harness
+        .allowed()
+        .send(with_headers(
+            "POST",
+            BULK_IMPORTS,
+            Some(batch(&[row(plan, "eu", 1_500)])),
+            &keyed("bulk-authz-plan-read"),
+        ))
+        .await;
+    let operation_id = body_json(submitted).await["operation_id"]
+        .as_str()
+        .expect("the ref")
+        .to_owned();
+
+    let response = harness
+        .selectively_allowed_as(BULK_OPERATOR, &[(labels::PLAN, actions::READ)])
+        .send(with_headers("GET", &import_path(&operation_id), None, &[]))
+        .await;
+
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "plan x read alone authorizes the run's journal - a run's report is price data"
+    );
+    let run = body_json(response).await;
+    assert_eq!(
+        run["operation_id"],
+        serde_json::json!(operation_id),
+        "and it is the run that was asked for: {run}"
+    );
+}
+
+/// `plan × write` **alone** reaches the abort, which is `un-authoring at scale`
+/// and carries no authority of its own.
+///
+/// The run is absent on purpose, so what this case reads is the **404 the store
+/// answers past the gate** rather than a 403 in front of it. Driving a real
+/// `committing` run through HTTP is not reachable from a route suite — Phase 2
+/// completes inside the submit — and `aborting_a_finished_run_...` above already
+/// owns the lifecycle refusal.
+#[tokio::test]
+async fn a_caller_holding_only_plan_write_reaches_the_abort() {
+    let harness = Harness::new().await;
+
+    let response = harness
+        .selectively_allowed_as(BULK_OPERATOR, &[(labels::PLAN, actions::WRITE)])
+        .send(with_headers(
+            "POST",
+            &abort_path(&Uuid::now_v7().to_string()),
+            None,
+            &keyed("bulk-authz-abort"),
+        ))
+        .await;
+
+    assert_ne!(
+        response.status(),
+        StatusCode::FORBIDDEN,
+        "plan x write is the abort's whole gate: S5 section 3 gives it no authority of its own"
+    );
+    assert_eq!(
+        response.status(),
+        StatusCode::NOT_FOUND,
+        "and it got past the gate to the store, which has no such run"
+    );
+}
+
+/// The read grant does **not** carry the submit. The mutating gate is
+/// `plan × write` specifically, not "some pair on `plan`".
+#[tokio::test]
+async fn plan_read_alone_does_not_authorize_the_submit() {
+    let harness = Harness::new().await;
+    let plan = Uuid::now_v7();
+    seed_current_plan(&harness, plan).await;
+
+    let response = harness
+        .selectively_allowed_as(BULK_OPERATOR, &[(labels::PLAN, actions::READ)])
+        .send(with_headers(
+            "POST",
+            BULK_IMPORTS,
+            Some(batch(&[row(plan, "eu", 1_500)])),
+            &keyed("bulk-authz-read-only"),
+        ))
+        .await;
+
+    assert_eq!(
+        response.status(),
+        StatusCode::FORBIDDEN,
+        "plan x read must not author at scale"
+    );
+    let conn = harness.db.conn().expect("conn");
+    let opened = bulk_repo::find_by_client_key(
+        &conn,
+        &harness.scope(),
+        harness.tenant,
+        BulkKind::Import,
+        "bulk-authz-read-only",
+    )
+    .await
+    .expect("read the run by its key");
+    assert!(
+        opened.is_none(),
+        "and the refusal opened no run and spent no key: {opened:?}"
+    );
+}
+
+/// The write grant does **not** carry the read. `plan × read` is the pair S5 §3's
+/// read row names for this path, and the `GET` asks for it rather than for
+/// whatever the caller happens to hold on `plan`.
+#[tokio::test]
+async fn plan_write_alone_does_not_authorize_the_read() {
+    let harness = Harness::new().await;
+    let plan = Uuid::now_v7();
+    seed_current_plan(&harness, plan).await;
+    let submitted = harness
+        .allowed()
+        .send(with_headers(
+            "POST",
+            BULK_IMPORTS,
+            Some(batch(&[row(plan, "eu", 1_500)])),
+            &keyed("bulk-authz-write-only"),
+        ))
+        .await;
+    let operation_id = body_json(submitted).await["operation_id"]
+        .as_str()
+        .expect("the ref")
+        .to_owned();
+
+    let response = harness
+        .selectively_allowed_as(BULK_OPERATOR, &[(labels::PLAN, actions::WRITE)])
+        .send(with_headers("GET", &import_path(&operation_id), None, &[]))
+        .await;
+
+    assert_eq!(
+        response.status(),
+        StatusCode::FORBIDDEN,
+        "the read asks for plan x read, not for any pair on plan"
+    );
+}
+
+/// A **neighbouring** authoring grant confers nothing here. `bundle × write`
+/// authors a composition (S8) and `config × write` declares the taxonomies
+/// (D-120); neither is the plan plane, and bulk is authoring on the plan plane.
+///
+/// This is the case that would still pass if the bulk gate were left on any label
+/// at all, which is why it stands beside the three positives rather than instead
+/// of them.
+#[tokio::test]
+async fn a_neighbouring_authoring_grant_does_not_authorize_the_bulk_plane() {
+    let harness = Harness::new().await;
+    let plan = Uuid::now_v7();
+    seed_current_plan(&harness, plan).await;
+
+    let response = harness
+        .selectively_allowed_as(
+            BULK_OPERATOR,
+            &[
+                (labels::BUNDLE, actions::WRITE),
+                (labels::CONFIG, actions::WRITE),
+            ],
+        )
+        .send(with_headers(
+            "POST",
+            BULK_IMPORTS,
+            Some(batch(&[row(plan, "eu", 1_500)])),
+            &keyed("bulk-authz-neighbour"),
+        ))
+        .await;
+
+    assert_eq!(
+        response.status(),
+        StatusCode::FORBIDDEN,
+        "bundle x write and config x write are not the plan plane"
     );
 }

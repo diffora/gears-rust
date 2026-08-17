@@ -34,17 +34,22 @@
 //! and a row that never published could be frozen — labelled `live_history` —
 //! as what the subscriber was paying.
 //!
-//! # Tier 2 has no store, so it is a parameter rather than a query
+//! # Tier 2 was a seam and is now struck
 //!
-//! `pricing_historical_price` is Slice 5's `inst-bd-store` and is unbuilt (§1.7
-//! records it normatively). [`select_for_key`] therefore passes an **empty**
-//! reference candidate set into the domain rule rather than not calling it: the
-//! call site is the seam, it is exercised on every synthesis today, and the day
-//! the store lands only the query behind it changes.
+//! This section argued that `pricing_historical_price` — Slice 5's
+//! `inst-bd-store` — was merely unbuilt, so [`select_for_key`] passed an **empty**
+//! reference candidate set into the domain rule rather than not calling it: *"the
+//! call site is the seam, it is exercised on every synthesis today, and the day the
+//! store lands only the query behind it changes"*. It also cited
+//! `inst-sy-backdate`, which named synthesis the sanctioned **consumer** of the
+//! backdating path.
 //!
-//! `inst-sy-backdate` names synthesis as the sanctioned **consumer** of that
-//! backdating path — a consumer with nothing to consume is still the consumer,
-//! and this is where it will read.
+//! **D-330 (2026-08-16) struck the flow, the store and that instruction.** There is
+//! no day when the store lands, so the parameter is deleted rather than left
+//! standing as a promise nothing intends to keep — `select_rows` takes the live
+//! candidates alone. What is untouched is tier 1 (D-330 clause 3) and the
+//! per-row `source` discriminator the tier was recorded under, which S11 §4
+//! clause 2 keeps at one value.
 //!
 //! # The payload materializes what nothing can look up
 //!
@@ -157,11 +162,7 @@ pub async fn select_for_key(
     // where a key is covered by more than one admitted window.
     live.sort_by_key(|candidate| candidate.price_id);
 
-    // Tier 2's query has no store. See the module doc: the seam is the call, not
-    // a branch around it.
-    let reference = Vec::new();
-
-    Ok(select_rows(&live, &reference))
+    Ok(select_rows(&live))
 }
 
 /// Resolve every frozen key of one subscription (`inst-sy-select`).
