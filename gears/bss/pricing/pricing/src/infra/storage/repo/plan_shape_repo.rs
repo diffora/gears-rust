@@ -786,8 +786,21 @@ fn phase_id_of(model: &plan_phase::ActiveModel) -> Option<Uuid> {
 /// **The other unique constraint is what makes this a name match and not "a
 /// unique index refused"**: `uq_pricing_plan_phase_terminal` is partial on
 /// `(plan_id, plan_revision) WHERE converts_to_phase_id IS NULL`, so a payload
-/// carrying two terminal phases trips it — a real, reachable, *different* refusal
-/// whose remedy is to give one of them a `convertsToPhaseId`, not to rename it.
+/// carrying two terminal phases trips it — a *different* refusal whose remedy is to
+/// give one of them a `convertsToPhaseId`, not to rename it.
+///
+/// **No longer reachable through the `phases` facet, and this arm is now a
+/// backstop** (2026-08-17 review). Routing that constraint here was right and the
+/// class it landed in was not: `RepoError::Db` renders `500 … please retry later`
+/// for a caller-owned fault no retry fixes, which is what D-340 filed as `[H]` about
+/// this very statement's other constraint. It is fixed at the door instead —
+/// `inst-ph-graph` owns "exactly one terminal phase" and now runs at the write stage
+/// on that facet — rather than by giving this function a second typed code, which
+/// would have put two owners on one requirement. The discrimination below is
+/// therefore unchanged, and both arms still have to be right: a bulk or internal
+/// writer that bypasses the facet reaches this line, and answering such a caller
+/// `PHASE_ID_IN_USE` would send them to change the one thing that is not wrong.
+///
 /// Its `SQLite` rendering names `pricing_plan_phase.plan_id,
 /// pricing_plan_phase.plan_revision` and cannot contain `pricing_plan_phase.phase_id`;
 /// the qualified column is matched rather than the bare one so that

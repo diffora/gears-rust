@@ -1902,25 +1902,35 @@ async fn a_phase_id_one_tenant_holds_is_free_for_another() {
 /// later"` — false for a class no retry can fix, and naming neither the
 /// constraint nor the id, which is the single fact an author needs.
 ///
-/// **The second phase converts to the first rather than being terminal too**, and
-/// that is load-bearing: two terminal rows collide on
-/// `uq_pricing_plan_phase_terminal` — `(plan_id, plan_revision) WHERE
-/// converts_to_phase_id IS NULL` — which is a *different* constraint, must keep
-/// answering as it did, and would let this case pass while the primary key's
-/// refusal was still untyped. `plan_shape_repo_tests` pins that discrimination on
-/// both engines' renderings without a database.
+/// **The colliding payload is a graph-valid chain**, and that is load-bearing twice
+/// over. Two terminal rows collide on `uq_pricing_plan_phase_terminal` —
+/// `(plan_id, plan_revision) WHERE converts_to_phase_id IS NULL` — which is a
+/// *different* constraint whose remedy is to give one of them a `convertsToPhaseId`,
+/// and would let this case pass while the primary key's refusal was still untyped;
+/// `plan_shape_repo_tests` pins that discrimination on both engines' renderings
+/// without a database. **And since the 2026-08-17 review the chain itself is judged
+/// at this door** (`inst-ph-graph`, write stage), so a payload has to be a legal
+/// chain to reach the key at all: this one repeats its **trial** phase, which leaves
+/// exactly one terminal phase, no dangling edge and no cycle. The two-row form this
+/// case used before — one id twice, the first converting to itself — is a self-cycle
+/// and is now refused by the graph rule before the store ever sees it, which would
+/// have turned a pin on `PHASE_ID_IN_USE` into a pin on nothing.
 #[tokio::test]
 async fn a_phases_payload_naming_one_id_twice_answers_the_conflict_and_names_it() {
     let harness = Harness::new().await;
     let plan_id = Uuid::now_v7();
     let phase = Uuid::now_v7();
+    let terminal = Uuid::now_v7();
     seed_draft_plan(&harness, plan_id).await;
 
     // The positive control, first and on the same plan: a two-row payload is
     // accepted, so what the refusal below discriminates is the repeated id and
     // not the arity. Without it a door that refused every multi-phase chain —
     // every trial-plus-evergreen plan in the gear — would satisfy the assertion
-    // that follows.
+    // that follows. The trial converts into the phase beside it: it used to name a
+    // freshly minted id belonging to no phase of the payload, which the write-stage
+    // `inst-ph-graph` now refuses as a dangling edge — a control carrying the fault
+    // the rule judges.
     let chain = harness
         .allowed()
         .send(with_headers(
@@ -1932,10 +1942,10 @@ async fn a_phases_payload_naming_one_id_twice_answers_the_conflict_and_names_it(
                         "phase_id": phase,
                         "kind": "trial",
                         "ordinal": 0,
-                        "converts_to_phase_id": Uuid::now_v7(),
+                        "converts_to_phase_id": terminal,
                         "phase_duration_days": 14
                     },
-                    { "phase_id": Uuid::now_v7(), "kind": "evergreen", "ordinal": 1 }
+                    { "phase_id": terminal, "kind": "evergreen", "ordinal": 1 }
                 ]
             })),
             &[("if-match", "\"0-0\"")],
@@ -1958,10 +1968,17 @@ async fn a_phases_payload_naming_one_id_twice_answers_the_conflict_and_names_it(
                         "phase_id": phase,
                         "kind": "trial",
                         "ordinal": 0,
-                        "converts_to_phase_id": phase,
+                        "converts_to_phase_id": terminal,
                         "phase_duration_days": 14
                     },
-                    { "phase_id": phase, "kind": "evergreen", "ordinal": 1 }
+                    { "phase_id": terminal, "kind": "evergreen", "ordinal": 1 },
+                    {
+                        "phase_id": phase,
+                        "kind": "trial",
+                        "ordinal": 2,
+                        "converts_to_phase_id": terminal,
+                        "phase_duration_days": 14
+                    }
                 ]
             })),
             &[("if-match", "\"0-1\"")],
@@ -1999,6 +2016,114 @@ async fn a_phases_payload_naming_one_id_twice_answers_the_conflict_and_names_it(
         read["phases"].as_array().map(Vec::len),
         Some(2),
         "the accepted chain survives the refusal: {read}"
+    );
+}
+
+/// **Two terminal phases in one payload is refused by the rule that owns the
+/// requirement — 2026-08-17 review, on D-340.**
+///
+/// It answered `500 … Please retry later`. The payload trips
+/// `uq_pricing_plan_phase_terminal`, which `names_the_phase_key` deliberately routes
+/// away from `PHASE_ID_IN_USE` — rightly, since the remedy is to give one of them a
+/// `convertsToPhaseId` rather than to rename it — and the non-matching arm lands in
+/// `RepoError::Db`. That is the exact class D-340 filed as `[H]`: caller-owned,
+/// caller-fixable, no retry helps, and the response withholds the one fact the
+/// author needs.
+///
+/// The fix is at the door and not at the store: `inst-ph-graph` already owns "not
+/// exactly one terminal phase" and says in as many words that the partial `UNIQUE`
+/// can carry only the at-most-one half, the pipeline running before the write. So the
+/// rule refuses it with its own message and the constraint becomes a backstop no
+/// caller reaches — rather than a second store-side owner of one requirement, which
+/// is how two owners of one rule come to disagree.
+#[tokio::test]
+async fn a_phases_payload_carrying_two_terminal_phases_is_refused_by_the_rule_that_owns_it() {
+    let harness = Harness::new().await;
+    let plan_id = Uuid::now_v7();
+    let first = Uuid::now_v7();
+    let second = Uuid::now_v7();
+    seed_draft_plan(&harness, plan_id).await;
+
+    let refused = harness
+        .allowed()
+        .send(with_headers(
+            "PATCH",
+            &plan_path(plan_id),
+            Some(serde_json::json!({
+                "phases": [
+                    { "phase_id": first, "kind": "evergreen", "ordinal": 0 },
+                    { "phase_id": second, "kind": "evergreen", "ordinal": 1 }
+                ]
+            })),
+            &[("if-match", "\"0-0\"")],
+        ))
+        .await;
+
+    assert_eq!(
+        refused.status(),
+        StatusCode::BAD_REQUEST,
+        "a caller-fixable payload fault is not a storage failure"
+    );
+    let body = body_json(refused).await;
+    assert_eq!(code_in(&body), "PHASE_GRAPH_INVALID", "{body}");
+    let rendered = body.to_string();
+    assert!(
+        rendered.contains(&first.to_string()) && rendered.contains(&second.to_string()),
+        "the refusal names both claimants, because either one may be the one to convert: {body}"
+    );
+    assert_eq!(
+        plan_row_version(&harness, plan_id, 0).await,
+        Some(0),
+        "a refused child write must not move the revision"
+    );
+}
+
+/// **A `convertsToPhaseId` naming nothing is refused at the write too — the same
+/// rule, the same door.**
+///
+/// This payload was **accepted** (`200`) and refused at publish. It is the other half
+/// of arming the probe against the rule rather than against one of its faults: a door
+/// wired to a terminal-count check alone would satisfy the case above and leave this
+/// one exactly as it was. Every operand is in the request — the facet is a wholesale
+/// replace, so no later call completes a dangling edge, it replaces the whole set —
+/// which is what makes the edge judgeable here under D-312's test.
+#[tokio::test]
+async fn a_phases_payload_whose_edge_names_no_phase_of_the_set_is_refused_at_the_write() {
+    let harness = Harness::new().await;
+    let plan_id = Uuid::now_v7();
+    let authored = Uuid::now_v7();
+    let absent = Uuid::now_v7();
+    seed_draft_plan(&harness, plan_id).await;
+
+    let refused = harness
+        .allowed()
+        .send(with_headers(
+            "PATCH",
+            &plan_path(plan_id),
+            Some(serde_json::json!({
+                "phases": [{
+                    "phase_id": authored,
+                    "kind": "trial",
+                    "ordinal": 0,
+                    "converts_to_phase_id": absent,
+                    "phase_duration_days": 14
+                }]
+            })),
+            &[("if-match", "\"0-0\"")],
+        ))
+        .await;
+
+    assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
+    let body = body_json(refused).await;
+    assert_eq!(code_in(&body), "PHASE_GRAPH_INVALID", "{body}");
+    assert!(
+        body.to_string().contains(&absent.to_string()),
+        "the refusal names the target that resolves to nothing: {body}"
+    );
+    assert_eq!(
+        plan_row_version(&harness, plan_id, 0).await,
+        Some(0),
+        "nothing landed"
     );
 }
 
@@ -2122,6 +2247,12 @@ async fn a_phases_write_dropping_a_phase_a_draft_row_names_is_refused_at_the_wri
 /// That option was rejected for inverting the ordering by likelihood — the
 /// replace-that-drops-one is the shape easiest to reach by accident — so both
 /// cases have to stand or the rejected option is what shipped.
+///
+/// **The empty set is two faults since the 2026-08-17 review**, and the envelope
+/// carries both: it strands the rows *and* leaves the revision with no terminal
+/// phase (`inst-ph-graph`, which now runs at this door too). The stranding is asserted
+/// as the **first** violation deliberately — it is the one an author acts on, and the
+/// door's rule order is what puts it there.
 #[tokio::test]
 async fn an_empty_phases_write_on_a_plan_holding_rows_is_refused_at_the_write() {
     let harness = Harness::new().await;
@@ -2139,7 +2270,13 @@ async fn an_empty_phases_write_on_a_plan_holding_rows_is_refused_at_the_write() 
         .await;
 
     assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
-    assert_eq!(problem_code(refused).await, "PHASE_ROW_ORPHANED");
+    let body = body_json(refused).await;
+    assert_eq!(code_in(&body), "PHASE_ROW_ORPHANED", "{body}");
+    assert!(
+        body.to_string().contains("PHASE_GRAPH_INVALID"),
+        "an empty phase set is also a revision with no terminal phase, and one \
+         response has to carry both remediations: {body}"
+    );
     assert_eq!(plan_row_version(&harness, plan_id, 0).await, Some(version));
 }
 

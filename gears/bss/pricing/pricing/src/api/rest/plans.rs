@@ -887,8 +887,11 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
              included - is refused `PHASE_ROW_ORPHANED`, naming the phase, rather than being \
              accepted and refused at publish, by which time a published row cannot be re-pointed \
              and a draft row can only be deleted. A replace that keeps every phase the rows name \
-             still succeeds. A payload naming one `phase_id` twice answers \
-             `PHASE_ID_IN_USE` (`409`, D-340).",
+             still succeeds. The submitted chain is judged against itself at the same door: a set \
+             with no terminal phase or with two, a `convertsToPhaseId` naming no phase of the set, \
+             and a cycle are each refused `PHASE_GRAPH_INVALID` - the facet replaces the phase set \
+             wholesale, so none of those is a state a later call completes. A payload naming one \
+             `phase_id` twice answers `PHASE_ID_IN_USE` (`409`, D-340).",
         )
         .tag(TAG)
         .authenticated()
@@ -2253,13 +2256,26 @@ fn require_well_formed_plan_name(name: Option<&str>) -> Result<(), DomainError> 
 /// cannot be re-pointed at all (a scope key is the row's identity, Foundation §3.7)
 /// and a draft row can only be deleted.
 ///
-/// **One rule, not the pipeline**, which is the distinction
+/// **Two rules, not the pipeline**, which is the distinction
 /// [`require_well_formed_plan_name`] states above: turning the whole plan pipeline
 /// on here would refuse a draft for having no tier, no frequency and no descriptor
 /// set yet — legitimate intermediate states, and the mistake D-312's stage split
-/// exists to avoid. The one rule applied is the one whose every operand is in hand
-/// at this door: the submitted phase set **is** the request, and the rows are
-/// already stored.
+/// exists to avoid. The two applied are the ones whose every operand is in hand at
+/// this door: the submitted phase set **is** the request, and the rows are already
+/// stored.
+///
+/// - `inst-ph-row-attached` (D-342), the stranding.
+/// - `inst-ph-graph` (2026-08-17 review), the phase set judged against itself. It
+///   owns "exactly one terminal phase", and the at-most-one half was reaching
+///   `uq_pricing_plan_phase_terminal` instead — a caller-fixable payload answered
+///   `500 … please retry later`, which is the class D-340 filed as `[H]` about the
+///   *other* unique constraint on the same statement.
+///
+/// Its siblings stay out, and that is the boundary rather than an omission:
+/// `PhaseChainLinear` and `TerminalPhaseKind` read the same submitted set, but a
+/// facet that refused a non-evergreen terminal or a non-linear ordinal run at the
+/// write would be a wider refusal than the review measured a fault for, and the
+/// direction that costs an author nothing is to add one when one is measured.
 ///
 /// **The rows are the same operand the publish stage judges** —
 /// `publish::CANDIDATE_ROW_STATES`, the published plane plus the drafts this
@@ -2315,18 +2331,33 @@ async fn require_no_stranded_rows(
     subject.phases = crate::domain::plan_shape::PhaseGraph::new(phases.to_vec());
     subject.rows = rows;
 
+    let write = crate::domain::validation::Stage::Write;
     let mut report = crate::domain::validation::ValidationReport::default();
+    // The stranding first, and the order is the one thing about this pair that is
+    // observable: a payload that both strands rows and holds no terminal phase — the
+    // empty set — reports both, and a client reading the *first* violation of the
+    // envelope reads the one that names the rows. That is the fault the author acts
+    // on; the graph fault is a consequence of the same empty payload.
     crate::domain::validation::ValidationRule::evaluate(
-        &crate::domain::plan_rules::phase_graph::RowPhaseAttached {
-            stage: crate::domain::validation::Stage::Write,
-        },
+        &crate::domain::plan_rules::phase_graph::RowPhaseAttached { stage: write },
+        &subject,
+        &mut report,
+    );
+    // `inst-ph-graph`, added by the 2026-08-17 review. Its at-most-one-terminal half
+    // was reaching `uq_pricing_plan_phase_terminal` and coming back a `500` advising
+    // a retry — the class D-340 filed as [H], on the sibling constraint of the same
+    // statement. The rule owns "exactly one terminal phase", so it refuses it here
+    // with its own message and the store constraint becomes a backstop; a second
+    // typed code at the store would have made two owners of one requirement.
+    crate::domain::validation::ValidationRule::evaluate(
+        &crate::domain::plan_rules::phase_graph::PhaseGraphIntegrity { stage: write },
         &subject,
         &mut report,
     );
     // The third caller of `write_stage_only()`, after the price-row write and the
     // bulk import. It is not decorative on a report this door built: it is the
     // guarantee that only a write-judgeable finding can refuse a write, so a
-    // publish-stage arm added to this rule later cannot leak into this refusal
+    // publish-stage arm added to either rule later cannot leak into this refusal
     // without somebody stating its stage.
     match report.write_stage_only() {
         None => Ok(()),

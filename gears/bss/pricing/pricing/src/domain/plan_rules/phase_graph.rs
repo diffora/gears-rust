@@ -138,9 +138,31 @@ use crate::domain::validation::{Stage, ValidationReport, ValidationRule};
 /// Zero terminals and two terminals are both violations, and the partial
 /// `UNIQUE` on `pricing_plan_phase` can only hold the at-most-one half — the
 /// pipeline runs *before* the write, and no index can require a row to exist.
+///
+/// **Judged at the `phases` write as well as at publish (2026-08-17 review).**
+/// The at-most-one half was reaching the store: a payload carrying two terminal
+/// phases tripped `uq_pricing_plan_phase_terminal` and answered `500 … please
+/// retry later` for a fault no retry can fix, which is the class D-340 filed as
+/// `[H]` one wave earlier and fixed for the *other* unique constraint on the same
+/// statement. The remedy is this rule at the door rather than a second typed code
+/// at the store: one requirement, one owner, and the constraint left standing as a
+/// backstop no caller can reach.
+///
+/// All three of its faults take that door, not the terminal count alone. The
+/// `phases` facet is a **wholesale replace**, so nothing a later call adds
+/// completes a dangling edge or breaks a cycle — the next call replaces the whole
+/// set — which is D-312's test for a write-stage fault: every operand is in the
+/// request and the resolving call retracts what was just sent.
 #[domain_model]
 #[derive(Clone, Copy, Debug, Default)]
-pub struct PhaseGraphIntegrity;
+pub struct PhaseGraphIntegrity {
+    /// Which stage this instance stamps its findings with, on
+    /// [`RowPhaseAttached::stage`]'s reasoning exactly: the rule emits one fault
+    /// set, and whether the surface asking can judge it is a property of **the
+    /// surface**. `Default` is [`Stage::Publish`], which is what the aggregate
+    /// pipeline registers.
+    pub stage: Stage,
+}
 
 impl ValidationRule<PlanShape> for PhaseGraphIntegrity {
     fn name(&self) -> &'static str {
@@ -154,7 +176,8 @@ impl ValidationRule<PlanShape> for PhaseGraphIntegrity {
             if let Some(target) = phase.converts_to_phase_id
                 && graph.find(target).is_none()
             {
-                report.violate(
+                report.violate_at(
+                    self.stage,
                     PHASE_GRAPH_INVALID,
                     phase_subject(subject, phase.phase_id),
                     format!(
@@ -168,7 +191,8 @@ impl ValidationRule<PlanShape> for PhaseGraphIntegrity {
 
         let on_cycle = phases_on_a_cycle(graph);
         if !on_cycle.is_empty() {
-            report.violate(
+            report.violate_at(
+                self.stage,
                 PHASE_GRAPH_INVALID,
                 subject.subject(),
                 format!(
@@ -198,7 +222,7 @@ impl ValidationRule<PlanShape> for PhaseGraphIntegrity {
                 join_ids(&named)
             )
         };
-        report.violate(PHASE_GRAPH_INVALID, subject.subject(), detail);
+        report.violate_at(self.stage, PHASE_GRAPH_INVALID, subject.subject(), detail);
     }
 }
 
@@ -397,8 +421,8 @@ pub struct RowPhaseAttached {
     /// Which stage this instance stamps its findings with (**D-342**).
     ///
     /// **Not the marker [`Stage`]'s own doc warns against.** That caution is that a
-    /// rule cannot carry *the* stage of its violations, because three of the four
-    /// rules emitting a write-stage violation also emit publish-stage ones and a
+    /// rule cannot carry *the* stage of its violations, because most of the rules
+    /// emitting a write-stage violation also emit publish-stage ones and a
     /// rule-level marker would over-refuse. This rule emits one fault, and whether
     /// the surface asking can judge it is a property of **the surface**: at the
     /// `phases` write every operand is in hand, at the price-row write the phase set
@@ -436,14 +460,12 @@ impl ValidationRule<PlanShape> for RowPhaseAttached {
                  append-only",
                 record.price_id
             );
-            // One fault, one detail, one of two stamps. Written as a dispatch on
-            // the stage rather than as two `report.violate*` calls with their own
-            // arguments, so the sentence an author reads cannot come to depend on
-            // which door refused them.
-            match self.stage {
-                Stage::Publish => report.violate(PHASE_ROW_ORPHANED, subject, detail),
-                Stage::Write => report.violate_at_write(PHASE_ROW_ORPHANED, subject, detail),
-            }
+            // One fault, one detail, one of two stamps. Through the shared dispatch
+            // rather than a `report.violate*` pair with their own arguments, so the
+            // sentence an author reads cannot come to depend on which door refused
+            // them — and so the second rule to take its stage from a parameter
+            // (`PhaseGraphIntegrity`, with three faults) does not copy the match.
+            report.violate_at(self.stage, PHASE_ROW_ORPHANED, subject, detail);
         }
     }
 }

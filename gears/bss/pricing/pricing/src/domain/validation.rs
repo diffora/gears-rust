@@ -155,6 +155,32 @@ impl ValidationReport {
         });
     }
 
+    /// Record a blocking violation stamped with `stage`.
+    ///
+    /// For the rules whose stage is a **per-instance parameter** rather than a
+    /// property of the fault — `inst-ph-row-attached` (D-342) and `inst-ph-graph`
+    /// (2026-08-17 review), each emitting one sentence whichever door asks.
+    /// Dispatching here rather than at a pair of `report.violate*` calls per fault
+    /// is what keeps that true: the code, subject and detail an author reads cannot
+    /// come to depend on which door refused them, and `inst-ph-graph` has three
+    /// faults that would otherwise carry three copies of the dispatch.
+    ///
+    /// It is deliberately **not** a shorthand for [`Self::violate_at_write`]: a rule
+    /// that knows its fault is write-judgeable says so directly, and passing a
+    /// constant [`Stage`] here would hide that behind a parameter.
+    pub fn violate_at(
+        &mut self,
+        stage: Stage,
+        code: impl Into<String>,
+        subject: impl Into<String>,
+        detail: impl Into<String>,
+    ) {
+        match stage {
+            Stage::Write => self.violate_at_write(code, subject, detail),
+            Stage::Publish => self.violate(code, subject, detail),
+        }
+    }
+
     /// The write-judgeable part of this report, or `None` when there is none.
     ///
     /// Warnings are dropped rather than carried: an advisory never blocks, and a
