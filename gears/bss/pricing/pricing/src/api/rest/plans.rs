@@ -1417,20 +1417,36 @@ async fn patch_plan(
     let facet = Facet::of(body)?;
     let stamp = audit_stamp(&ctx, Utc::now(), correlation);
 
+    // D-342's write-stage door, on **this facet and no other**. Before the match
+    // rather than inside its arm because every arm answers `RepoError` and this
+    // refusal is a validation report.
+    //
+    // **Before `target_revision`, and that ordering is the fix for a defect the
+    // 2026-08-17 review measured**: on a plan with no open draft that call *writes*
+    // — it opens a successor revision and copies the phase set forward — so a door
+    // behind it refused the payload and left the successor standing, an edit the
+    // author never made on a call they were told did not happen, holding the plan's
+    // one open-draft slot until somebody abandons it. The door can run here because
+    // it needs no revision to judge: the rows it reads are plan-scoped
+    // (`price_repo::load_for_plan` is not filtered by revision) and the number only
+    // labels the finding's subject.
+    //
+    // The cost, stated rather than discovered: on this facet a stranding payload is
+    // now refused ahead of the `If-Match` binding and the has-an-editable-revision
+    // discrimination, so a caller who is wrong about both is told about the payload
+    // first. Both refusals are the caller's own and neither is lost; what the old
+    // order bought was a worse diagnosis plus a revision.
+    if let Facet::Phases(phases) = &facet {
+        require_no_stranded_rows(&state, &scope, tenant, plan_id, asserted.revision, phases)
+            .await?;
+    }
+
     // The revision the patch lands on, and the version the store will match.
     // It takes the **same** stamp: the successor it may open is the first of the
     // two records this one call writes.
     let target = target_revision(&state, &scope, tenant, plan_id, asserted, stamp).await?;
     let revision = target.revision;
     let expected = target.expected;
-
-    // D-342's write-stage door, on **this facet and no other**. Before the match
-    // rather than inside its arm because every arm answers `RepoError` and this
-    // refusal is a validation report; and after `target_revision` because the rows
-    // it judges belong to the revision the patch will land on.
-    if let Facet::Phases(phases) = &facet {
-        require_no_stranded_rows(&state, &scope, tenant, plan_id, revision, phases).await?;
-    }
 
     match facet {
         Facet::Shape(shape) => {
@@ -2254,7 +2270,13 @@ fn require_well_formed_plan_name(name: Option<&str>) -> Result<(), DomainError> 
 ///
 /// **The subject carries only what the rule reads**, and that is stated rather than
 /// left to be discovered: `RowPhaseAttached` reads `rows`, `phases` and the
-/// `plan_id`/`revision` its finding is filed under. The rest of [`PlanShape`](crate::domain::plan_shape::PlanShape) stays
+/// `plan_id`/`revision` its finding is filed under. The `revision` is a **label and
+/// not an operand** — the rows are read plan-wide — which is what lets this door run
+/// before the revision the patch lands on has been resolved, and why the caller
+/// hands it the revision the `If-Match` names: the one the author read. On the
+/// open-draft arm that is the landing revision; on the successor arm it is that
+/// revision's predecessor, and a finding labelled with a successor number the caller
+/// has never seen would locate the fault no better. The rest of [`PlanShape`](crate::domain::plan_shape::PlanShape) stays
 /// at its default, which is safe in the one direction that matters — publish
 /// re-judges the whole assembled shape, so a field this door leaves unloaded can
 /// only delay a refusal, never lose one. Assembling the full shape here would cost

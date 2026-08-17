@@ -2184,6 +2184,134 @@ async fn a_phases_write_that_keeps_every_named_phase_still_succeeds() {
     );
 }
 
+/// A **published** plan holding a published price row on
+/// [`rest_support::seeded_phase`], with that phase attached and **no open draft**.
+///
+/// The arrangement all three of D-342's own cases are missing: each of them edits a
+/// plan that already holds a draft, so the arm of `target_revision` that *opens a
+/// successor* was never under the door. Returns the tag a `PATCH` has to present,
+/// read off the route rather than computed, because the publish moves the
+/// revision's version.
+async fn seed_published_plan_with_a_row_on_its_phase(
+    harness: &Harness,
+    plan_id: Uuid,
+) -> (String, u64) {
+    seed_draft_plan(harness, plan_id).await;
+    let price = seed_price(harness, plan_id, "eu").await;
+    harness.attach_shape(plan_id, 0).await;
+    harness.publish_price(plan_id, price.price_id).await;
+    harness.publish(plan_id, 0).await;
+
+    let version = plan_row_version(harness, plan_id, 0)
+        .await
+        .expect("the published revision stands somewhere");
+    assert_eq!(
+        plan_state(harness, plan_id, 0).await.as_deref(),
+        Some("published"),
+        "the successor arm is only reachable from a plan with no open draft"
+    );
+    assert_eq!(
+        plan_row_version(harness, plan_id, 1).await,
+        None,
+        "the staging is the test: there must be no successor before the call"
+    );
+    (harness.plan_etag(plan_id).await, version)
+}
+
+/// **A refused `phases` write opens no successor — 2026-08-17 review, on D-342's
+/// door.**
+///
+/// The door was placed *after* `target_revision`, which on a plan with no open
+/// draft **writes**: it opens a successor revision and copies the phase set
+/// forward. So a refused phases write on a published plan answered `400` and left
+/// revision 1 sitting in `draft` behind it — an edit the author never made, on a
+/// call they were told did not happen, and one that consumes the plan's single open
+/// draft slot (`OPEN_DRAFT_REVISION_EXISTS`) until somebody abandons it.
+///
+/// The refusal itself was already right, so the status says nothing about this
+/// defect: what has to be read back is **the plan's revisions**, which is why the
+/// two assertions below are about revision 1 and not about the body. The door needs
+/// no revision to judge — `price_repo::load_for_plan` is plan-scoped and not
+/// filtered by revision, and the number appears only in the finding's subject label
+/// — so it now runs before anything is opened.
+#[tokio::test]
+async fn a_refused_phases_write_on_a_published_plan_opens_no_successor() {
+    let harness = Harness::new().await;
+    let plan_id = Uuid::now_v7();
+    let (tag, version) = seed_published_plan_with_a_row_on_its_phase(&harness, plan_id).await;
+
+    let refused = harness
+        .allowed()
+        .send(with_headers(
+            "PATCH",
+            &plan_path(plan_id),
+            Some(serde_json::json!({ "phases": [] })),
+            &[("if-match", &tag)],
+        ))
+        .await;
+
+    assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(
+        problem_code(refused).await,
+        "PHASE_ROW_ORPHANED",
+        "the refusal was already correct; the side effect is the defect"
+    );
+
+    assert_eq!(
+        plan_row_version(&harness, plan_id, 1).await,
+        None,
+        "a refused write must leave no successor revision behind"
+    );
+    assert_eq!(
+        plan_state(&harness, plan_id, 0).await.as_deref(),
+        Some("published"),
+        "and the revision it was refused on stays exactly as it was"
+    );
+    assert_eq!(plan_row_version(&harness, plan_id, 0).await, Some(version));
+}
+
+/// **The positive control: a phases write on a published plan still opens the
+/// successor it is supposed to.**
+///
+/// The other half of moving the door, and the half a refusal test cannot see: an
+/// order that refused *before* resolving the revision would satisfy the case above
+/// by never opening a successor at all — including for the writes that should open
+/// one. Prepending a trial while keeping the phase the row names is that write.
+#[tokio::test]
+async fn an_accepted_phases_write_on_a_published_plan_opens_its_successor() {
+    let harness = Harness::new().await;
+    let plan_id = Uuid::now_v7();
+    let (tag, _) = seed_published_plan_with_a_row_on_its_phase(&harness, plan_id).await;
+
+    let accepted = harness
+        .allowed()
+        .send(with_headers(
+            "PATCH",
+            &plan_path(plan_id),
+            Some(trial_before_the_seeded_phase()),
+            &[("if-match", &tag)],
+        ))
+        .await;
+
+    assert_eq!(accepted.status(), StatusCode::OK);
+    let body = body_json(accepted).await;
+    assert_eq!(
+        body["revision"],
+        serde_json::json!(1),
+        "the patch landed on the successor this call opened: {body}"
+    );
+    assert_eq!(
+        body["phases"].as_array().map(Vec::len),
+        Some(2),
+        "and the payload landed on it: {body}"
+    );
+    assert_eq!(
+        plan_state(&harness, plan_id, 1).await.as_deref(),
+        Some("draft"),
+        "the successor exists and is the open draft"
+    );
+}
+
 #[tokio::test]
 async fn the_abandon_flip_is_audited_exactly_as_the_deletion_it_replaces_was() {
     // D-145 in as many words. The flip is a distinct action from a delete
