@@ -400,8 +400,10 @@ pub fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Router {
              Progress is at `GET /bss-pricing/v1/repricing-runs/{runId}`. Materiality is \
              evaluated once for the whole run against the tenant's configured threshold policy; \
              a material run moves to `awaiting_approval` under an opened approval unit, and an \
-             auto-publishable one moves to `committing`. Neither state advances further yet: \
-             applying the adjustment and the abort are not built.",
+             auto-publishable one moves to `committing`. A `committing` run **applies**: every \
+             selected row is repriced and its journal entry moves off `pending`, which is why a \
+             `pending` entry in the progress read means the row was not attempted rather than \
+             attempted and unchanged (D-261). The abort is the one half still unbuilt.",
         )
         .tag(TAG)
         .authenticated()
