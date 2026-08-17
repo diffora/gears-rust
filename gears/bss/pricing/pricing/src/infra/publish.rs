@@ -247,7 +247,11 @@ impl PublishService {
         // the add-on set this revision composes — the parameters are now a
         // function of the subject, not only of the tenant.
         let shape = assemble(&conn, scope, tenant_id, plan_id, now).await?;
-        let params = rule_params(&self.policies, &conn, scope, tenant_id, &shape).await?;
+        // D-332: the pre-check must judge the plan the way the commit will, or a
+        // plan the commit would publish is refused before a unit ever opens.
+        let params = rule_params(&self.policies, &conn, scope, tenant_id, &shape)
+            .await?
+            .opening_initial_coverage();
         let report = run_publish_rules(&shape, &params);
         crate::infra::metrics::report_market_metrics(&*self.metrics, &shape, &params);
         check_fixtures(&self.fixture_gate, &shape)?;
@@ -525,7 +529,9 @@ impl PublishService {
                     // 1. The second run. Same assembler, same rule set, same
                     // gate - against the world as it now stands.
                     let shape = assemble(txn, &scope, tenant_id, unit.plan_id, now).await?;
-                    let params = rule_params(&policies, txn, &scope, tenant_id, &shape).await?;
+                    let params = rule_params(&policies, txn, &scope, tenant_id, &shape)
+                        .await?
+                        .opening_initial_coverage();
                     if shape.revision != unit.revision {
                         return Err(DomainError::NotFound {
                             subject: "open plan draft revision".to_owned(),
@@ -1334,7 +1340,7 @@ fn quantized(at: DateTime<Utc>) -> DateTime<Utc> {
 /// # Why this is not a relaxation of the future-only rule
 ///
 /// `inst-ws-future-start` exists against one attack: a `plan x write` holder
-/// POSTing a window that starts sixty days ago, having the activation job pick
+/// `POST`ing a window that starts sixty days ago, having the activation job pick
 /// it up, and repricing open arrears periods — bypassing the two-person
 /// `BackdateGrant` that S2 calls the only sanctioned backdating. A window opened
 /// **here** starts at this commit's own instant, on a key that has no coverage

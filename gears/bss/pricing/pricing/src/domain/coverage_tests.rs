@@ -71,12 +71,6 @@ fn key(charge_kind: ChargeKind, currency: &str, region: &str) -> ScopeKey {
 /// A row on `scope_key`, publishable as far as every rule outside this module is
 /// concerned.
 ///
-/// **Published, and after D-332 that is what makes this module's subject
-/// reachable.** The publish opens coverage itself for a key whose every billable
-/// row is a draft it is freezing, so a draft row is no longer uncovered — it is a
-/// key the publish is about to cover. Every scenario here is about a key that
-/// *has* coverage and lost it, or never had it under a row already frozen, which
-/// is the population the rule still judges.
 fn row_on(price_id: u128, scope_key: ScopeKey) -> PriceRecord {
     PriceRecord {
         price_id: Uuid::from_u128(price_id),
@@ -93,7 +87,7 @@ fn row_on(price_id: u128, scope_key: ScopeKey) -> PriceRecord {
         rounding_policy_ref: Some("half_up".to_owned()),
         grandfather_until: None,
         supersedes_price_id: None,
-        lifecycle_state: LifecycleState::Published,
+        lifecycle_state: LifecycleState::Draft,
         created_by: Uuid::from_u128(0xac_10),
         created_at_utc: at(0),
         row_version: RowVersion::new(1),
@@ -133,7 +127,11 @@ fn one_row_plan(windows: Vec<KeyWindows>) -> PlanShape {
 }
 
 fn verdict(shape: &PlanShape) -> ValidationReport {
-    window_coverage_rules().run(shape)
+    // `false`: the contract of every caller except the publish. D-332 lets the
+    // publish skip a key it is about to cover, and this module's subject is the
+    // rule itself — so the default is what it runs under, and the exemption has
+    // its own case below.
+    window_coverage_rules(false).run(shape)
 }
 
 fn codes(report: &ValidationReport) -> Vec<String> {
@@ -150,6 +148,40 @@ fn codes(report: &ValidationReport) -> Vec<String> {
 
 /// `inst-wc-required`: a billable row whose key has no active/scheduled window
 /// fails publish. No silent fallback — Tariffs step 2 would resolve nothing.
+#[test]
+/// **D-332's exemption, and the two halves that make it narrow.**
+///
+/// The publish opens coverage for a key it is freezing, so the rule must not
+/// refuse that key — while a key carrying a row that is **already published**
+/// has had coverage and lost it, which is an author's mistake and stays refused.
+/// Both are asserted from one fixture pair, because the exemption is only sound
+/// if the second half holds: a rule that skipped every uncovered key would pass
+/// this test's first assertion and delete itself.
+fn the_publish_exemption_reaches_a_draft_key_and_not_a_published_one() {
+    // `one_row_plan` with no windows: one billable key, uncovered.
+    let draft = one_row_plan(vec![]);
+    assert!(
+        window_coverage_rules(true).run(&draft).is_publishable(),
+        "the publish opens this key's first window itself, so refusing it would \
+         refuse a plan the same call is about to cover"
+    );
+    assert!(
+        !window_coverage_rules(false).run(&draft).is_publishable(),
+        "and every other caller of this set - the repricing apply's aggregate \
+         pass - opens nothing, so there the same key must still fail"
+    );
+
+    let mut lost = one_row_plan(vec![]);
+    for row in &mut lost.rows {
+        row.lifecycle_state = LifecycleState::Published;
+    }
+    assert!(
+        !window_coverage_rules(true).run(&lost).is_publishable(),
+        "a key whose row is already frozen had coverage and lost it: the \
+         exemption must not reach it even from the publish"
+    );
+}
+
 #[test]
 fn a_billable_row_with_no_window_fails_publish() {
     let report = verdict(&one_row_plan(Vec::new()));

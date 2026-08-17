@@ -583,9 +583,13 @@ fn cycle_length(frequency: Frequency) -> TimeDelta {
 /// deliberately does not have: a rule that carried results between runs is the
 /// one thing §4.2's twice-run clause cannot survive.
 #[must_use]
-pub fn window_coverage_rules() -> crate::domain::validation::ValidationPipeline<PlanShape> {
+pub fn window_coverage_rules(
+    opens_initial_coverage: bool,
+) -> crate::domain::validation::ValidationPipeline<PlanShape> {
     crate::domain::validation::ValidationPipeline::new()
-        .with_rule(Box::new(KeyCoverageRequired))
+        .with_rule(Box::new(KeyCoverageRequired {
+            opens_initial_coverage,
+        }))
         .with_rule(Box::new(NoInteriorGap))
         .with_rule(Box::new(AvailabilityInsideCoverage))
 }
@@ -604,7 +608,16 @@ pub fn window_coverage_rules() -> crate::domain::validation::ValidationPipeline<
 /// for two rows sharing a key.
 #[domain_model]
 #[derive(Clone, Copy, Debug, Default)]
-pub struct KeyCoverageRequired;
+pub struct KeyCoverageRequired {
+    /// **Will the caller open coverage for a key it is freezing?** (D-332)
+    ///
+    /// Carried on the rule because `ValidationRule::evaluate` is handed the
+    /// subject and nothing else, and this is not a fact about the subject: a
+    /// draft row's key looks identical whether a publish is about to cover it or
+    /// a repricing apply is merely re-judging it. False is the fail-closed
+    /// default — a caller that says nothing gets the refusal.
+    pub opens_initial_coverage: bool,
+}
 
 impl ValidationRule<PlanShape> for KeyCoverageRequired {
     fn name(&self) -> &'static str {
@@ -628,7 +641,7 @@ impl ValidationRule<PlanShape> for KeyCoverageRequired {
             // which is an author's mistake and not an artefact of ordering.
             // That distinction is the reason this is a filter on the key's rows
             // rather than a flag on the publish.
-            if opened_by_this_publish(subject, entry.scope_key()) {
+            if self.opens_initial_coverage && opened_by_this_publish(subject, entry.scope_key()) {
                 continue;
             }
             report.violate(

@@ -100,12 +100,6 @@ fn base_params(default_rounding_policy: Option<&str>) -> PublishRuleParams {
     )
 }
 
-/// **Published, and after D-332 that is what keeps the coverage rule in the
-/// aggregate's answer.** The publish opens coverage for a key whose every
-/// billable row is a draft it is freezing, so a draft row here would take
-/// `WINDOW_COVERAGE_MISSING` out of the expected reports — which are about the
-/// aggregate emitting every violation rather than the first, not about which
-/// population coverage judges.
 fn record(price_id: u128, model_kind: Option<ModelKind>, rounding: Option<&str>) -> PriceRecord {
     let scope_key = ScopeKey::new(
         plan(),
@@ -148,7 +142,7 @@ fn record(price_id: u128, model_kind: Option<ModelKind>, rounding: Option<&str>)
         rounding_policy_ref: rounding.map(ToOwned::to_owned),
         grandfather_until: None,
         supersedes_price_id: None,
-        lifecycle_state: LifecycleState::Published,
+        lifecycle_state: LifecycleState::Draft,
         created_by: Uuid::from_u128(0xac_10),
         created_at_utc: now(),
         row_version: RowVersion::new(0),
