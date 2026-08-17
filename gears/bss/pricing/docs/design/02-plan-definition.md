@@ -320,7 +320,7 @@ add-on attached to a one-time plan, **D-149**), `ADDON_QTY_RANGE_INVALID` (422 �
 add-on with `maxQty < 1`, `minQty > maxQty`, or `stepQty ≤ 0`; the offending bound named;
 **D-150**), `ADDON_OVERRIDE_UNRESOLVED` (422 —
 `price_override_ref` unpublished or not covering a sold `(currency, region)`),
-`PHASE_GRAPH_INVALID` (422 at publish; **400 at the write** on the `phases` facet, where its edge and terminal-count clauses also run — D-343), `PHASE_CHAIN_NONLINEAR` (422 — a `convertsToPhaseId` chain that
+`PHASE_GRAPH_INVALID` (422; its edge and terminal-count clauses are judged at the **write** stage on the `phases` facet as well as at publish — D-343), `PHASE_CHAIN_NONLINEAR` (422 — a `convertsToPhaseId` chain that
 skips the ordinal order, branches, or leaves a phase unreachable from the entry phase;
 2026-07-31 review fix), `TERMINAL_PHASE_KIND_INVALID` (422 — a terminal phase whose `kind` is
 not `evergreen`; C-4, 2026-08-01 — a `trial` terminal leaves "the first non-trial phase"

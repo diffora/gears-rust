@@ -560,6 +560,36 @@ pub async fn clone_plan_on(
     })
 }
 
+/// What [`write_phases_on`] did: the row version the next write has to hold, and the
+/// notice the seed owes the operator.
+///
+/// Named for `SourceShape`'s reason one paragraph up — a `(RowVersion,
+/// Option<CloneNotice>)` return is two unrelated values a caller destructures
+/// positionally — and because `notice` is `None` on the ordinary copy path, which is
+/// a fact worth having a field name say.
+struct PhaseWrite {
+    /// The revision's row version after the write. **Unchanged** on the seed path:
+    /// `seed_terminal_phase_on` writes the child row and nothing else.
+    version: RowVersion,
+    /// D-341's notice, or `None` when the source's phases were copied.
+    notice: Option<CloneNotice>,
+}
+
+/// What the phase write reads off the source revision.
+///
+/// Named rather than a tuple of three references. The tuple form was reached for to
+/// keep `write_phases_on`'s argument count down and bought `clippy::type_complexity`
+/// instead — and two of the three members are slices, which is the arrangement a
+/// caller silently transposes.
+struct SourceShape<'a> {
+    /// The source's own phase set. Empty is the case D-341 exists for.
+    phases: &'a [PlanPhase],
+    /// Source `phase_id` → the id the copy files it under (D-19's remap).
+    remap: &'a BTreeMap<Uuid, PhaseId>,
+    /// The rows that will travel, which is where an adopted id comes from.
+    travelling: &'a [PriceRecord],
+}
+
 /// The clone's phase set: the source's rows under new ids, or **D-341's seed** when
 /// the source holds none.
 ///
@@ -590,36 +620,6 @@ pub async fn clone_plan_on(
 ///
 /// # Errors
 /// Whatever the shape repository refuses with.
-/// What the phase write reads off the source revision.
-///
-/// Named rather than a tuple of three references. The tuple form was reached for to
-/// keep `write_phases_on`'s argument count down and bought `clippy::type_complexity`
-/// instead — and two of the three members are slices, which is the arrangement a
-/// caller silently transposes.
-/// What [`write_phases_on`] did: the row version the next write has to hold, and the
-/// notice the seed owes the operator.
-///
-/// Named for `SourceShape`'s reason one paragraph up — a `(RowVersion,
-/// Option<CloneNotice>)` return is two unrelated values a caller destructures
-/// positionally — and because `notice` is `None` on the ordinary copy path, which is
-/// a fact worth having a field name say.
-struct PhaseWrite {
-    /// The revision's row version after the write. **Unchanged** on the seed path:
-    /// `seed_terminal_phase_on` writes the child row and nothing else.
-    version: RowVersion,
-    /// D-341's notice, or `None` when the source's phases were copied.
-    notice: Option<CloneNotice>,
-}
-
-struct SourceShape<'a> {
-    /// The source's own phase set. Empty is the case D-341 exists for.
-    phases: &'a [PlanPhase],
-    /// Source `phase_id` → the id the copy files it under (D-19's remap).
-    remap: &'a BTreeMap<Uuid, PhaseId>,
-    /// The rows that will travel, which is where an adopted id comes from.
-    travelling: &'a [PriceRecord],
-}
-
 #[allow(
     clippy::too_many_arguments,
     reason = "every argument is a fact only the caller holds: the runner, the scope, the tenant, \
