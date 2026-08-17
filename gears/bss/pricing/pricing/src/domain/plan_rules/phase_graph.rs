@@ -403,7 +403,10 @@ impl ValidationRule<PlanShape> for RowPhaseAttached {
                 format!(
                     "price row {} keys on phase {phase}, which this revision does not attach; \
                      the row resolves against a phase no subscription can be in, and a scope \
-                     key is the row's identity — attach that phase, or remove the row",
+                     key is the row's identity, so the phase has to be attached. Deleting the \
+                     row instead is available only while that row is a draft: the candidate set \
+                     this rule judges includes published rows, and the published plane is \
+                     append-only",
                     record.price_id
                 ),
             );

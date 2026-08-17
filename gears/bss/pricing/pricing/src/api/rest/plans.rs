@@ -840,7 +840,13 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
              carrying the same key and the same body is answered the recorded response - the \
              original plan id included: and a retry carrying the same key and a different body \
              is refused `IDEMPOTENCY_PAYLOAD_MISMATCH`. Nothing here judges the plan's shape: \
-             the Slice-2 rules run at publish.",
+             the Slice-2 rules run at publish.\n\nThe answer carries **one phase**: the implicit \
+             terminal `evergreen` phase, auto-created with the plan (`inst-ph-default`, D-19) \
+             because a price row's `scopeKey.phase` is a required `Uuid` with no server-side \
+             default, and the phase axis defaults to the plan's terminal phase. Read its \
+             `phase_id` out of this response rather than minting one: a phase id the store did \
+             not choose can collide, and a row keyed on a phase the revision does not attach is \
+             refused at publish (`PHASE_ROW_ORPHANED`) with no way to re-point the row.",
         )
         .tag(TAG)
         .authenticated()
