@@ -277,7 +277,14 @@ entry**.
 discriminators — under those keys a bundle holds **one** component, **one** rev-share party and
 **one** group per revision, which makes "every referenced component", the per-market coverage
 walk and "sum to 100% **per** included vendor SKU" unsatisfiable. The PKs below restore them
-(`pricing_plan_phase`'s `(phase_id, plan_revision)` is the pattern).
+(`pricing_plan_phase`'s key is the pattern: a **discriminator beside `plan_revision`**, so a
+revision holds as many children as it has of them). That key now reads
+`(tenant_id, plan_id, plan_revision, phase_id)` — widened by **D-340**, 2026-08-17, and the
+discriminator half it lends this section is exactly what the widening left alone. The part of
+D-340 that does **not** transfer is its problem: the phase key named neither the tenant nor the
+owning plan, so a phase id belonged to one plan across the whole table, whereas each key below
+opens with `bundle_id` — its parent's own identity — and is therefore already scoped to the
+composition it belongs to.
 
 **`pricing_bundle_component`** (PK **`(bundle_id, plan_revision, component_plan_id)`** —
 copy-on-new-revision, D-92 + D-105): `included_sku_id`,
