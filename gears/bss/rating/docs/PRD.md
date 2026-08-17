@@ -320,6 +320,16 @@ Tariff evaluation **MUST** expose a conceptual evaluation contract that, for a g
 
 **Actors**: `cpt-cf-bss-rating-actor-rating`
 
+#### Pre-purchase evaluation (order-time price preview)
+
+- [ ] `p2` - **ID**: `cpt-cf-bss-rating-fr-pre-purchase-evaluation`
+
+Tariff evaluation **MUST** expose a **pre-purchase** evaluation contract for a prospective purchase that has **no subscription yet** — no `subscriptionId`, no `activatedAt`, no bound `cohort`. Inputs are order-scope: plan/price references, quantity, the tenant axes, the `(currency, region)` market derived from the payer's commercial profile, and an evaluation timestamp `t`. The contract **MUST** return per-line resolved amounts **decomposed by `chargeKind`** — `recurring`, `one_time`, `one_time_setup` — and **MUST** flag `usage` components as carrying no committed amount (they price at rating time from the pinned snapshot). It **MUST** return the **catalog-frozen prefix** of the snapshot (`catalogVersion`, resolved price ids incl. `cohort`, eval-policy version) so the caller can pin it, and **MUST NOT** present that prefix as a complete `pricingSnapshotRef` — composition remains owned by `fr-snapshot-carry`, whose `(currency, region)` segment is written by Subscriptions at activation and whose overlay/coupon/FX/commitment segments are written at eval. The outcome is **non-authoritative**: it **MUST NOT** be a billing input, **MUST NOT** post, and **MUST NOT** create evaluation state. Scopes that are not resolvable before a subscription exists — brand-scoped `PriceOverlay` matching, and any `priceEligibility` generation keyed on `activatedAt`/`cohort` — **MUST** fail explicitly rather than silently resolving to a default. Access is `sellerTenantId`-scoped: a caller **MUST NOT** be returned overlay layers it is not entitled to see. Aggregation of the returned per-line amounts into an order-level total is the **caller's** summation and is not price computation.
+
+**Rationale**: A purchase must be priced, displayed and threshold-checked **before** the subscription that anchors evaluation exists; without this contract the order-capture path has no input, and every caller would re-implement step-2 selection and fork it. The predecessor PRD carried this as a partner-facing effective-price preview scope item with its access model unresolved; authoring it here as a contract keeps the selection logic single-sourced.
+
+**Actors**: `cpt-cf-bss-rating-actor-partner-admin`, `cpt-cf-bss-rating-actor-catalog`
+
 #### Single outcome per frozen context (pure-function core)
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-rating-fr-single-outcome-determinism`
