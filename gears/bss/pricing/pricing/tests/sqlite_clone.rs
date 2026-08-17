@@ -59,7 +59,7 @@ use bss_pricing::infra::storage::repo::{
 };
 use chrono::{DateTime, TimeZone, Utc};
 use sea_orm_migration::MigratorTrait;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use toolkit_db::migration_runner::run_migrations_for_testing;
 use toolkit_db::secure::AccessScope;
 use toolkit_db::{ConnectOpts, DBProvider, DbError, connect_db};
@@ -90,6 +90,15 @@ fn trial_phase() -> PhaseId {
 }
 fn terminal_phase() -> PhaseId {
     PhaseId::new(Uuid::from_u128(0xfa_5e))
+}
+/// The id a pre-seed source's price rows name and nothing attaches — the shape
+/// D-341 is about, and the stand's own: five drafts keyed rows on one such id.
+fn stranded_phase() -> PhaseId {
+    PhaseId::new(Uuid::from_u128(0x_57_ba))
+}
+/// A second such id, for the case a clone must **not** resolve on its own.
+fn other_stranded_phase() -> PhaseId {
+    PhaseId::new(Uuid::from_u128(0x_57_bb))
 }
 fn at(hour: u32) -> DateTime<Utc> {
     Utc.with_ymd_and_hms(2026, 8, 8, hour, 0, 0).unwrap()
@@ -256,6 +265,78 @@ async fn seed_source(h: &Harness) {
 /// how a copier asserted against nothing would look green.
 async fn seed_bundle_source(h: &Harness) {
     seed(h, Some(source_composition())).await;
+}
+
+/// A published source holding **no phase row at all**, with one published price
+/// row per entry of `row_phases`.
+///
+/// Not a hypothetical shape: every plan created before `inst-ph-default`'s seed
+/// existed is one, and `inst-cl-source` makes a plan clonable exactly when it
+/// holds a **current** revision — so such a source is published while the clone it
+/// produced could not publish at all, every copied row refused by name
+/// (`PHASE_ROW_ORPHANED`). It cannot be authored through `replace_phases`, because
+/// what makes it is the *absence* of that call; hence its own seed rather than a
+/// parameter on [`seed`].
+///
+/// Each row takes its own region, so two rows may name one phase without
+/// colliding on the canonical scope key — the `(currency, region, phase, …)` tuple
+/// is what separates them, and a fixture that reused a region would be refused by
+/// the store rather than testing the copy.
+async fn seed_phaseless_source(h: &Harness, row_phases: &[PhaseId]) {
+    let created = h
+        .plans
+        .create_draft(
+            &h.scope,
+            NewPlanDraft {
+                plan_name: None,
+                plan_id: source_plan(),
+                tenant_id: TENANT,
+                created_by: ACTOR,
+                created_at_utc: at(10),
+                sku_id: Some(Uuid::from_u128(0x5_c1)),
+                plan_tier: Some("gold".to_owned()),
+                billing_cycle: Some(bss_pricing::domain::plan_shape::BillingCycle::Recurring),
+                frequency: Some(bss_pricing::domain::plan_shape::Frequency::Monthly),
+                plan_tier_override: false,
+                purchase_min_qty: None,
+                purchase_max_qty: None,
+                invoice_grouping_key: Some("group/source".to_owned()),
+                available_from: None,
+                available_to: None,
+                cloned_from: None,
+                correlation_id: CORRELATION,
+            },
+        )
+        .await
+        .expect("create the phase-less source draft");
+
+    for (index, phase) in row_phases.iter().enumerate() {
+        let price_id = Uuid::from_u128(0xb_0100 + index as u128);
+        h.prices
+            .create_draft(
+                &h.scope,
+                TENANT,
+                NewPriceDraft {
+                    price_id,
+                    scope_key: key_in(
+                        source_plan(),
+                        *phase,
+                        PriceEligibility::AllSubscriptions,
+                        Cohort::None,
+                        ["eu", "us", "ca"][index],
+                    ),
+                    content: flat_row(),
+                    created_by: ACTOR,
+                    created_at_utc: at(10),
+                    correlation_id: CORRELATION,
+                },
+            )
+            .await
+            .expect("author a source row on a phase nothing attaches");
+        common::publish_row_directly(&h.provider, &h.scope, price_id).await;
+    }
+
+    common::publish_plan_directly(&h.provider, &h.scope, source_plan(), created.revision).await;
 }
 
 /// The source's published price rows: two copied, one excluded.
@@ -605,6 +686,166 @@ async fn every_phase_reference_is_remapped_including_the_grant_map() {
         revision.entitlement_grants.plan_level.feature_flags.len(),
         1,
         "and the plan-level set rides along unchanged"
+    );
+}
+
+/// **A clone creates a plan, so it performs the creation-time act — D-341.**
+///
+/// `inst-ph-default` seeds a terminal phase on *every* path that creates a plan,
+/// and a clone creates one. The copy wrote phase rows only when the source had
+/// some, so a clone of a phase-less source was born in the state the act exists to
+/// abolish — the second time this function's copy set and `POST /plans` were found
+/// disagreeing (D-269 was the first).
+///
+/// The source here carries no rows either, which isolates the seed from the
+/// adoption: what is asserted is that the row appears at all, and that it is the
+/// shape `POST /plans` mints — `evergreen`, ordinal 0, terminal.
+#[tokio::test]
+async fn a_clone_of_a_phaseless_plan_is_seeded_with_a_terminal_phase() {
+    let h = harness().await;
+    seed_phaseless_source(&h, &[]).await;
+
+    let receipt = clone_it(&h).await.expect("the clone runs");
+    assert_eq!(
+        receipt.phases_copied, 0,
+        "nothing was copied, which is the premise: the row below is seeded, not copied"
+    );
+
+    let conn = h.provider.conn().expect("conn");
+    let phases = plan_shape_repo::load_phase_set(&conn, &h.scope, TENANT, target_plan(), 0)
+        .await
+        .expect("read the clone's phases");
+    assert_eq!(phases.len(), 1, "exactly one, and it is the terminal one");
+    assert_eq!(phases[0].kind, PhaseKind::Evergreen);
+    assert_eq!(phases[0].ordinal, 0);
+    assert_eq!(
+        phases[0].converts_to_phase_id, None,
+        "terminal means nothing follows it"
+    );
+    assert_eq!(
+        phases[0].phase_duration_days, None,
+        "a duration on the terminal phase dates a conversion that never happens"
+    );
+}
+
+/// **The clone adopts the one id its copied rows name — D-341, and D-340 is what
+/// makes it legal.**
+///
+/// The source's rows carry a `phase_id` nothing attaches, and the clone copies them
+/// verbatim: the remap `inst-cl-copy` performs has no source phase row to map from,
+/// so a minted terminal id would leave every copied row refused by name at the
+/// clone's first publish — a clone strictly worse than a source that publishes, and
+/// whose only remedy is deleting every row the clone existed to produce.
+///
+/// Adoption was not an option to weigh before D-340: the id belonged to one plan
+/// per revision *number* across the whole table, so a clone holding an id its
+/// source also holds **was** the collision, answered `500`.
+///
+/// Two rows on one id, in two markets, so the assertion is about the distinct id
+/// set and not about the single row a `first()` would have read.
+#[tokio::test]
+async fn a_clone_adopts_the_single_phase_id_its_copied_rows_name() {
+    let h = harness().await;
+    seed_phaseless_source(&h, &[stranded_phase(), stranded_phase()]).await;
+
+    let receipt = clone_it(&h).await.expect("the clone runs");
+    assert_eq!(receipt.prices_copied, 2, "both rows travel");
+
+    let conn = h.provider.conn().expect("conn");
+    let phases = plan_shape_repo::load_phase_set(&conn, &h.scope, TENANT, target_plan(), 0)
+        .await
+        .expect("read the clone's phases");
+    assert_eq!(phases.len(), 1);
+    assert_eq!(
+        phases[0].phase_id,
+        stranded_phase(),
+        "the seed adopts the id the copied rows already name"
+    );
+
+    // The point of adopting it: the copied rows are attached, so the clone is
+    // publishable where the source's own draft plane never was.
+    let rows = price_repo::load_for_plan(
+        &conn,
+        &h.scope,
+        TENANT,
+        target_plan(),
+        &[LifecycleState::Draft],
+    )
+    .await
+    .expect("read the clone's rows");
+    assert_eq!(rows.len(), 2);
+    for row in &rows {
+        assert_eq!(
+            row.scope_key.phase(),
+            phases[0].phase_id,
+            "every copied row keys on the phase the clone attaches"
+        );
+    }
+
+    // And the source keeps the id, which is the consequence D-340 licenses rather
+    // than a side effect: the id belongs to a plan, so two plans may hold it.
+    let source_rows = price_repo::load_for_plan(
+        &conn,
+        &h.scope,
+        TENANT,
+        source_plan(),
+        &[LifecycleState::Published],
+    )
+    .await
+    .expect("read the source's rows");
+    assert!(
+        source_rows
+            .iter()
+            .all(|row| row.scope_key.phase() == stranded_phase()),
+        "the source is untouched by the adoption"
+    );
+}
+
+/// **Two ids is a state a human resolves, and the clone must not pick a winner —
+/// D-341 clause (3).**
+///
+/// The condition is on the **distinct** set, not on the first row read. A clone
+/// that adopted one of two would strand the loser's rows under an id it had just
+/// legitimized — a worse artefact than the ambiguity, because the refusal would
+/// then name rows on a phase the plan visibly attaches. So it mints, leaves the
+/// rows as copied, and `PHASE_ROW_ORPHANED` names each of them at publish, which is
+/// where the operator learns there were two.
+#[tokio::test]
+async fn a_clone_whose_rows_name_two_phase_ids_mints_and_picks_no_winner() {
+    let h = harness().await;
+    seed_phaseless_source(&h, &[stranded_phase(), other_stranded_phase()]).await;
+
+    let receipt = clone_it(&h).await.expect("the clone runs");
+    assert_eq!(receipt.prices_copied, 2);
+
+    let conn = h.provider.conn().expect("conn");
+    let phases = plan_shape_repo::load_phase_set(&conn, &h.scope, TENANT, target_plan(), 0)
+        .await
+        .expect("read the clone's phases");
+    assert_eq!(phases.len(), 1, "still exactly one terminal phase");
+    assert_ne!(
+        phases[0].phase_id,
+        stranded_phase(),
+        "neither claimant wins, and the first read is not the winner"
+    );
+    assert_ne!(phases[0].phase_id, other_stranded_phase());
+
+    // The rows are left exactly as copied. Repairing them here would be the clone
+    // deciding the question, and it has no basis to.
+    let rows = price_repo::load_for_plan(
+        &conn,
+        &h.scope,
+        TENANT,
+        target_plan(),
+        &[LifecycleState::Draft],
+    )
+    .await
+    .expect("read the clone's rows");
+    let named: BTreeSet<PhaseId> = rows.iter().map(|row| row.scope_key.phase()).collect();
+    assert_eq!(
+        named,
+        BTreeSet::from([stranded_phase(), other_stranded_phase()]),
+        "both ids survive the copy, so the operator can see there were two"
     );
 }
 

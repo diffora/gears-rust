@@ -96,14 +96,14 @@ use crate::domain::contracts::{EntitlementGrants, GrantSet};
 use crate::domain::error::DomainError;
 use crate::domain::lifecycle::LifecycleState;
 use crate::domain::plan::PlanShapePatch;
-use crate::domain::plan_shape::PlanPhase;
+use crate::domain::plan_shape::{PhaseKind, PlanPhase};
 use crate::domain::price_record::PriceRecord;
 use crate::domain::scope_key::{PhaseId, PlanId, PriceEligibility, ScopeKey};
 use crate::infra::storage::repo::{
     NewBundle, NewPlanDraft, NewPriceDraft, bundle_repo, plan_repo, plan_shape_repo, price_repo,
 };
 use crate::infra::storage::repo_failure;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// The states a source row is copied from.
 ///
@@ -320,6 +320,19 @@ pub async fn clone_plan_on(
             .map_err(|e| repo_failure(&e))?;
     let remap = phase_remap(&source_phases);
 
+    // **Read here rather than inside [`copy_rows_on`], and split here rather than
+    // in its loop** (D-341). The seed below adopts the id *the copied rows* name,
+    // so the adoption and the copy have to be looking at the same set — one read,
+    // one exclusion, one answer. The two cutover-made classes stay behind, so a
+    // row this partition leaves out must not vote on the id either: a grandfathered
+    // row naming a second phase would make the set look ambiguous and the clone
+    // would mint, stranding the rows it did carry.
+    let (travelling, copied) = partition_copied(
+        price_repo::load_for_plan(runner, scope, tenant_id, source, COPIED_ROW_STATES)
+            .await
+            .map_err(|e| repo_failure(&e))?,
+    );
+
     let created = plan_repo::create_draft_on(
         runner,
         scope,
@@ -346,21 +359,18 @@ pub async fn clone_plan_on(
     .await
     .map_err(|e| repo_failure(&e))?;
 
-    let mut version = created.row_version;
     let revision = created.revision;
 
-    if !source_phases.is_empty() {
-        let phases = source_phases
-            .iter()
-            .map(|phase| remapped_phase(phase, &remap))
-            .collect();
-        version = plan_shape_repo::replace_phases_on(
-            runner, scope, tenant_id, target, revision, version, phases, stamp,
-        )
-        .await
-        .map_err(|e| repo_failure(&e))?
-        .row_version;
-    }
+    let mut version = write_phases_on(
+        runner,
+        scope,
+        tenant_id,
+        &created,
+        (&source_phases, &remap, &travelling),
+        created.row_version,
+        stamp,
+    )
+    .await?;
 
     let rules =
         plan_shape_repo::load_addon_rule_set(runner, scope, tenant_id, source, source_revision)
@@ -470,16 +480,181 @@ pub async fn clone_plan_on(
     .await
     .map_err(|e| repo_failure(&e))?;
 
-    let rows = copy_rows_on(runner, scope, tenant_id, source, target, &remap, now, stamp).await?;
+    copy_rows_on(
+        runner,
+        scope,
+        tenant_id,
+        target,
+        &travelling,
+        &remap,
+        now,
+        stamp,
+    )
+    .await?;
 
     Ok(CloneReceipt {
         plan_id: target,
         cloned_from: source,
+        // The **copies**, so a source that held none reports zero even though the
+        // clone now holds a phase: D-341's row is seeded, not copied, and a count
+        // that folded the two together would tell an operator a phase came across
+        // from a plan that never had one.
         phases_copied: source_phases.len(),
-        prices_copied: rows.copied,
+        prices_copied: copied.copied,
         composites_copied,
-        notices: rows.notices(),
+        notices: copied.notices(),
     })
+}
+
+/// The clone's phase set: the source's rows under new ids, or **D-341's seed** when
+/// the source holds none.
+///
+/// Returns the row version the next write has to hold.
+///
+/// # Two creation paths, one seeding call
+///
+/// `inst-ph-default` is a **creation-time** act — every plan gets a terminal phase
+/// row when it is created — and a clone creates a plan. The copy wrote phase rows
+/// only when the source had some, so a clone of a phase-less source was born in
+/// exactly the state the act abolishes, reached through the one creation path that
+/// is not `POST /plans`. That is D-269's shape a second time in this function's copy
+/// set: two paths that create a plan disagreeing about what a plan is.
+///
+/// The seed therefore goes through [`plan_shape_repo::seed_terminal_phase_on`] —
+/// the function `POST /plans` calls, on the runner this clone already holds — and
+/// not through `replace_phases_on`. It is the *same* call rather than an equivalent
+/// one on purpose: the drift, not the missing row, is what D-341 is written against.
+/// It also leaves the revision's `row_version` alone, writing the child row and
+/// nothing else, so the next write still holds the version the create answered.
+///
+/// A phase-less source is not hypothetical. Every plan authored before the seed
+/// existed is one, and `inst-cl-source` makes a plan clonable exactly when it holds
+/// a **current** revision — so such a source is *published* while the clone it used
+/// to produce could not publish at all, its copied rows refused row by row
+/// (`PHASE_ROW_ORPHANED`) with nothing to attach and no remedy but deletion, a scope
+/// key being the row's identity.
+///
+/// # Errors
+/// Whatever the shape repository refuses with.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "every argument is a fact only the caller holds: the runner, the scope, the tenant, \
+              the revision the create answered, the source's own phase set with the remap and the \
+              rows that will travel, and the version and stamp the compare-and-swap takes. \
+              `copy_rows_on` below carries the same allow for the same reason"
+)]
+async fn write_phases_on(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    created: &crate::domain::plan::PlanRevision,
+    source: (&[PlanPhase], &BTreeMap<Uuid, PhaseId>, &[PriceRecord]),
+    version: RowVersion,
+    stamp: AuditStamp,
+) -> Result<RowVersion, DomainError> {
+    let (source_phases, remap, travelling) = source;
+    if source_phases.is_empty() {
+        plan_shape_repo::seed_terminal_phase_on(
+            runner,
+            scope,
+            tenant_id,
+            created,
+            &seeded_terminal_phase(travelling),
+        )
+        .await
+        .map_err(|e| repo_failure(&e))?;
+        return Ok(version);
+    }
+    let phases = source_phases
+        .iter()
+        .map(|phase| remapped_phase(phase, remap))
+        .collect();
+    Ok(plan_shape_repo::replace_phases_on(
+        runner,
+        scope,
+        tenant_id,
+        created.plan_id,
+        created.revision,
+        version,
+        phases,
+        stamp,
+    )
+    .await
+    .map_err(|e| repo_failure(&e))?
+    .row_version)
+}
+
+/// D-341's terminal phase for a clone whose source held none: the id its copied
+/// rows name when they name exactly one, a fresh id otherwise.
+///
+/// **Adoption is what D-340 makes legal.** A phase id belongs to a plan now
+/// (`(tenant_id, plan_id, plan_revision, phase_id)`), so the clone may hold the id
+/// its source's rows name while the source keeps it too. Before that widening
+/// adoption was not an option to weigh — it *was* the collision, answered `500`.
+/// Nothing checks that the id is unattached because nothing has to: this is called
+/// only where the source holds no phase row at all, so every id the rows name is
+/// unattached by construction.
+///
+/// **The condition is on the distinct set, not on the first row read.** Two or more
+/// ids is a state a human must resolve, and a clone that silently picked a winner
+/// would strand the loser's rows under an id it had just legitimized — a worse
+/// artefact than the ambiguity, because the refusal would then name rows on a phase
+/// the plan visibly attaches. So it mints and leaves the rows as copied, where
+/// `PHASE_ROW_ORPHANED` names each of them and the operator learns there were two.
+///
+/// The `kind`, `ordinal` and the two absent day counts are `POST /plans`' seed
+/// verbatim: an implicit terminal row is `evergreen`, first, and converts to
+/// nothing, and a duration on it would date a conversion that never happens.
+fn seeded_terminal_phase(travelling: &[PriceRecord]) -> PlanPhase {
+    let named: Vec<Uuid> = travelling
+        .iter()
+        .map(|row| row.scope_key.phase().get())
+        .collect::<BTreeSet<Uuid>>()
+        .into_iter()
+        .collect();
+    PlanPhase {
+        phase_id: match named.as_slice() {
+            [single] => PhaseId::new(*single),
+            // None — a source with no rows at all — and two or more both mint.
+            _ => PhaseId::new(Uuid::now_v7()),
+        },
+        kind: PhaseKind::Evergreen,
+        ordinal: 0,
+        converts_to_phase_id: None,
+        phase_duration_days: None,
+        display_trial_days: None,
+    }
+}
+
+/// The source's published rows split into the ones that travel with the clone and
+/// the count of each cutover-made class that stays behind (D-268).
+///
+/// **One spelling of the exclusion**, which is why this is a function rather than
+/// two matches: D-341's seed adopts the id the *copied* rows name, so the adoption
+/// and the copy must agree about which rows those are. The match is exhaustive
+/// rather than two `if`s so that a fourth class added to [`PriceEligibility`] has to
+/// be classified here instead of defaulting into the copy.
+///
+/// `copied` is the travelling rows' own count, so the receipt cannot disagree with
+/// what was written: the copy below writes every row it is handed or fails.
+fn partition_copied(source_rows: Vec<PriceRecord>) -> (Vec<PriceRecord>, CopiedRows) {
+    let mut travelling = Vec::new();
+    let mut counts = CopiedRows {
+        copied: 0,
+        grandfathered: 0,
+        new_subscriptions_only: 0,
+    };
+    for row in source_rows {
+        match row.scope_key.price_eligibility() {
+            PriceEligibility::ExistingGrandfathered => counts.grandfathered += 1,
+            PriceEligibility::NewSubscriptionsOnly => counts.new_subscriptions_only += 1,
+            PriceEligibility::AllSubscriptions => {
+                counts.copied += 1;
+                travelling.push(row);
+            }
+        }
+    }
+    (travelling, counts)
 }
 
 /// Copy the source revision's period floor/cap set onto the clone (**D-319**).
@@ -604,11 +779,13 @@ async fn copy_bundle_on(
     .row_version)
 }
 
-/// Copy the source's published price rows onto the clone, resetting each.
+/// Write the travelling rows onto the clone, resetting each.
 ///
-/// Returns what was copied and what was left behind, per class. Separate from
-/// [`clone_plan_on`] because it is the *rows* rather than the shape, and because
-/// the exclusion arms are the one place this path decides not to copy something.
+/// Separate from [`clone_plan_on`] because it is the *rows* rather than the shape.
+/// It used to load and classify them too; both moved out to
+/// [`partition_copied`](fn.partition_copied.html) so that D-341's seed and this copy
+/// read one set — the exclusion is a decision about which rows the clone carries,
+/// and two callers of that decision must not each make it.
 ///
 /// # Errors
 /// Whatever the price repository refuses with, and
@@ -616,45 +793,21 @@ async fn copy_bundle_on(
 #[allow(
     clippy::too_many_arguments,
     reason = "every argument is a fact only the caller holds: the runner, the scope, the tenant, \
-              the two plans, the phase remap the shape copy already built, the clone instant and \
-              the D-135 audit stamp. `plan_repo::update_draft_on` carries the same allow for the \
-              same reason"
+              the target plan, the rows that travel, the phase remap the shape copy already built, \
+              the clone instant and the D-135 audit stamp. `plan_repo::update_draft_on` carries the \
+              same allow for the same reason"
 )]
 async fn copy_rows_on(
     runner: &impl DBRunner,
     scope: &AccessScope,
     tenant_id: Uuid,
-    source: PlanId,
     target: PlanId,
+    travelling: &[PriceRecord],
     remap: &BTreeMap<Uuid, PhaseId>,
     now: DateTime<Utc>,
     stamp: AuditStamp,
-) -> Result<CopiedRows, DomainError> {
-    let source_rows =
-        price_repo::load_for_plan(runner, scope, tenant_id, source, COPIED_ROW_STATES)
-            .await
-            .map_err(|e| repo_failure(&e))?;
-    let mut counts = CopiedRows {
-        copied: 0,
-        grandfathered: 0,
-        new_subscriptions_only: 0,
-    };
-    for row in source_rows {
-        // **Both cutover-made classes stay behind** (D-268), and the match is
-        // exhaustive rather than two `if`s so that a fourth class added to
-        // `PriceEligibility` has to be classified here instead of defaulting
-        // into the copy.
-        match row.scope_key.price_eligibility() {
-            PriceEligibility::ExistingGrandfathered => {
-                counts.grandfathered += 1;
-                continue;
-            }
-            PriceEligibility::NewSubscriptionsOnly => {
-                counts.new_subscriptions_only += 1;
-                continue;
-            }
-            PriceEligibility::AllSubscriptions => {}
-        }
+) -> Result<(), DomainError> {
+    for row in travelling {
         price_repo::create_draft_on(
             runner,
             scope,
@@ -662,7 +815,7 @@ async fn copy_rows_on(
             NewPriceDraft {
                 price_id: Uuid::new_v4(),
                 scope_key: reset_key(&row.scope_key, target, remap)?,
-                content: reset_content(&row),
+                content: reset_content(row),
                 created_by: stamp.actor_principal_id,
                 created_at_utc: now,
                 correlation_id: stamp.correlation_id,
@@ -670,9 +823,8 @@ async fn copy_rows_on(
         )
         .await
         .map_err(|e| repo_failure(&e))?;
-        counts.copied += 1;
     }
-    Ok(counts)
+    Ok(())
 }
 
 /// Old `phase_id` -> new `phase_id`, one entry per source phase.
