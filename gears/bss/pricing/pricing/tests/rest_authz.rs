@@ -623,7 +623,7 @@ fn config_routes() -> Vec<Route> {
             action: actions::WRITE,
             mutating: true,
         },
-        // D-322's declared vocabulary, `config` like every taxonomy: it narrows
+        // D-334's declared vocabulary, `config` like every taxonomy: it narrows
         // what may be authored and decides nothing about who approves what.
         Route {
             method: "GET",

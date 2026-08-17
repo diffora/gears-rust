@@ -1,5 +1,5 @@
 //! `GET/PUT /bss-pricing/v1/config/rounding-policies` — the rounding references
-//! a tenant declares (D-322).
+//! a tenant declares (D-334).
 //!
 //! # Why this is not `/config/taxonomies/{class}`
 //!
@@ -14,7 +14,7 @@
 //! # What declaring a vocabulary does
 //!
 //! With **no** values declared, nothing changes: a price row may name any
-//! reference, which is where every tenant is today (D-322 clause 3). Declare the
+//! reference, which is where every tenant is today (D-334 clause 3). Declare the
 //! first value and `inst-tx-rounding` starts refusing references outside the
 //! set at publish, under `ROUNDING_POLICY_UNKNOWN`.
 //!

@@ -1006,7 +1006,7 @@ pub(crate) async fn rule_params(
     let declared_regions = taxonomy_repo::active_regions(runner, scope, tenant_id)
         .await
         .map_err(|e| repo_failure(&e))?;
-    // **Loaded, not defaulted.** D-322's rule reads this set and an empty one
+    // **Loaded, not defaulted.** D-334's rule reads this set and an empty one
     // means "unconstrained", so a `rule_params` that forgot the read would make
     // the vocabulary check pass on every plan while looking registered — the
     // D-254 defect class this file has already paid for once with the composite
