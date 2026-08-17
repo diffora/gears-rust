@@ -134,6 +134,48 @@ pub enum CloneNotice {
     /// as a grandfathered generation does, and on a clone the class means
     /// nothing anyway: every subscription on a new plan is new.
     NewSubscriptionsOnlyRowsNotCopied { rows: usize },
+    /// **D-341: the clone's terminal phase was seeded rather than copied**, because
+    /// the source held none — and which of the two things happened to its id, since
+    /// the consequences differ.
+    ///
+    /// The surface said nothing about this. `phases_copied` is `0` (correctly: a
+    /// count that folded the seed in would tell an operator a phase came across from
+    /// a plan that never had one), so a seeded clone was reported as
+    /// `prices_copied: N` plus `NoCoverageScheduled` — which reads as routine
+    /// follow-up, while under [`SeededPhaseOrigin::Minted`] it is an unpublishable
+    /// draft holding a phase nobody authored. D-341 calls the seeded phase an
+    /// operator-visible consequence; this is where the operator sees it.
+    TerminalPhaseSeeded {
+        /// Where the seeded `phase_id` came from.
+        origin: SeededPhaseOrigin,
+        /// The copied rows the seed speaks for: **attached** under `Adopted`,
+        /// **stranded** under `Minted`. Zero when the source carried no rows at all,
+        /// which is a seed with nothing to be about but still a phase the operator
+        /// did not author.
+        rows: usize,
+    },
+}
+
+/// Where a seeded clone's terminal `phase_id` came from (**D-341**).
+///
+/// Two variants rather than a `bool`, and not folded into two [`CloneNotice`]
+/// variants either: it is one act — the seed — with two outcomes, and the outcomes
+/// are what an operator has to tell apart. `max_struct_bools` is the lint that would
+/// have argued the first point eventually; the reason it is right here is that
+/// `adopted: false` names the case by what it is not.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SeededPhaseOrigin {
+    /// The copied rows named exactly one unattached id and the clone **holds** it,
+    /// which D-340 makes legal: a phase id belongs to a plan, so the source may keep
+    /// it too. Every copied row is attached, and the clone can publish.
+    Adopted,
+    /// The copied rows named **two or more** distinct ids, so no winner could be
+    /// picked without stranding the loser's rows under an id the clone had just
+    /// legitimized. A fresh `Uuid::now_v7()`, the rows left exactly as copied, and
+    /// every one of them refused by `PHASE_ROW_ORPHANED` until a human resolves which
+    /// id the plan is meant to hold. Also the case of a source with no rows at all,
+    /// where there is nothing to adopt.
+    Minted,
 }
 
 /// What a clone produced.
@@ -172,8 +214,14 @@ impl CopiedRows {
     /// arm took that method to a cognitive complexity of 21 against a cap of 20
     /// — and because "what the receipt says" is a different question from "what
     /// the copy did", which is the whole reason the receipt carries notices.
-    fn notices(&self) -> Vec<CloneNotice> {
-        let mut notices = Vec::new();
+    ///
+    /// `seeded` is the phase write's own notice (**D-341**), passed in rather than
+    /// computed here because the seed is not something the row copy can see. It goes
+    /// **first**: under [`SeededPhaseOrigin::Minted`] it is the difference between a
+    /// draft that needs windows scheduled and a draft that cannot publish at all, and
+    /// a consumer rendering the head of the list must not lead with the milder fact.
+    fn notices(&self, seeded: Option<CloneNotice>) -> Vec<CloneNotice> {
+        let mut notices = Vec::from_iter(seeded);
         if self.copied > 0 {
             notices.push(CloneNotice::NoCoverageScheduled { rows: self.copied });
         }
@@ -361,7 +409,7 @@ pub async fn clone_plan_on(
 
     let revision = created.revision;
 
-    let mut version = write_phases_on(
+    let phase_write = write_phases_on(
         runner,
         scope,
         tenant_id,
@@ -375,6 +423,7 @@ pub async fn clone_plan_on(
         stamp,
     )
     .await?;
+    let mut version = phase_write.version;
 
     let rules =
         plan_shape_repo::load_addon_rule_set(runner, scope, tenant_id, source, source_revision)
@@ -502,11 +551,12 @@ pub async fn clone_plan_on(
         // The **copies**, so a source that held none reports zero even though the
         // clone now holds a phase: D-341's row is seeded, not copied, and a count
         // that folded the two together would tell an operator a phase came across
-        // from a plan that never had one.
+        // from a plan that never had one. The seed is reported as a **notice**
+        // instead, which is where a fact with two different consequences belongs.
         phases_copied: source_phases.len(),
         prices_copied: copied.copied,
         composites_copied,
-        notices: copied.notices(),
+        notices: copied.notices(phase_write.notice),
     })
 }
 
@@ -546,6 +596,21 @@ pub async fn clone_plan_on(
 /// keep `write_phases_on`'s argument count down and bought `clippy::type_complexity`
 /// instead — and two of the three members are slices, which is the arrangement a
 /// caller silently transposes.
+/// What [`write_phases_on`] did: the row version the next write has to hold, and the
+/// notice the seed owes the operator.
+///
+/// Named for `SourceShape`'s reason one paragraph up — a `(RowVersion,
+/// Option<CloneNotice>)` return is two unrelated values a caller destructures
+/// positionally — and because `notice` is `None` on the ordinary copy path, which is
+/// a fact worth having a field name say.
+struct PhaseWrite {
+    /// The revision's row version after the write. **Unchanged** on the seed path:
+    /// `seed_terminal_phase_on` writes the child row and nothing else.
+    version: RowVersion,
+    /// D-341's notice, or `None` when the source's phases were copied.
+    notice: Option<CloneNotice>,
+}
+
 struct SourceShape<'a> {
     /// The source's own phase set. Empty is the case D-341 exists for.
     phases: &'a [PlanPhase],
@@ -570,41 +635,49 @@ async fn write_phases_on(
     source: SourceShape<'_>,
     version: RowVersion,
     stamp: AuditStamp,
-) -> Result<RowVersion, DomainError> {
+) -> Result<PhaseWrite, DomainError> {
     let SourceShape {
         phases: source_phases,
         remap,
         travelling,
     } = source;
     if source_phases.is_empty() {
-        plan_shape_repo::seed_terminal_phase_on(
-            runner,
-            scope,
-            tenant_id,
-            created,
-            &seeded_terminal_phase(travelling),
-        )
-        .await
-        .map_err(|e| repo_failure(&e))?;
-        return Ok(version);
+        let (phase, origin) = seeded_terminal_phase(travelling);
+        plan_shape_repo::seed_terminal_phase_on(runner, scope, tenant_id, created, &phase)
+            .await
+            .map_err(|e| repo_failure(&e))?;
+        return Ok(PhaseWrite {
+            version,
+            // The count is the travelling rows' own, which is what makes the notice
+            // true under either origin: an adopted id attaches every one of them, and
+            // a minted one strands every one of them, the ids they name all being
+            // absent from a source that held no phase row.
+            notice: Some(CloneNotice::TerminalPhaseSeeded {
+                origin,
+                rows: travelling.len(),
+            }),
+        });
     }
     let phases = source_phases
         .iter()
         .map(|phase| remapped_phase(phase, remap))
         .collect();
-    Ok(plan_shape_repo::replace_phases_on(
-        runner,
-        scope,
-        tenant_id,
-        created.plan_id,
-        created.revision,
-        version,
-        phases,
-        stamp,
-    )
-    .await
-    .map_err(|e| repo_failure(&e))?
-    .row_version)
+    Ok(PhaseWrite {
+        version: plan_shape_repo::replace_phases_on(
+            runner,
+            scope,
+            tenant_id,
+            created.plan_id,
+            created.revision,
+            version,
+            phases,
+            stamp,
+        )
+        .await
+        .map_err(|e| repo_failure(&e))?
+        .row_version,
+        notice: None,
+    })
 }
 
 /// D-341's terminal phase for a clone whose source held none: the id its copied
@@ -628,25 +701,34 @@ async fn write_phases_on(
 /// The `kind`, `ordinal` and the two absent day counts are `POST /plans`' seed
 /// verbatim: an implicit terminal row is `evergreen`, first, and converts to
 /// nothing, and a duration on it would date a conversion that never happens.
-fn seeded_terminal_phase(travelling: &[PriceRecord]) -> PlanPhase {
+///
+/// The [`SeededPhaseOrigin`] rides back out because which branch was taken is a fact
+/// about the artefact and not about this function: under `Minted` the clone holds a
+/// phase nobody authored **and** rows nothing attaches, which is what the receipt's
+/// notice tells the operator (2026-08-17 review).
+fn seeded_terminal_phase(travelling: &[PriceRecord]) -> (PlanPhase, SeededPhaseOrigin) {
     let named: Vec<Uuid> = travelling
         .iter()
         .map(|row| row.scope_key.phase().get())
         .collect::<BTreeSet<Uuid>>()
         .into_iter()
         .collect();
-    PlanPhase {
-        phase_id: match named.as_slice() {
-            [single] => PhaseId::new(*single),
-            // None — a source with no rows at all — and two or more both mint.
-            _ => PhaseId::new(Uuid::now_v7()),
+    let (phase_id, origin) = match named.as_slice() {
+        [single] => (PhaseId::new(*single), SeededPhaseOrigin::Adopted),
+        // None — a source with no rows at all — and two or more both mint.
+        _ => (PhaseId::new(Uuid::now_v7()), SeededPhaseOrigin::Minted),
+    };
+    (
+        PlanPhase {
+            phase_id,
+            kind: PhaseKind::Evergreen,
+            ordinal: 0,
+            converts_to_phase_id: None,
+            phase_duration_days: None,
+            display_trial_days: None,
         },
-        kind: PhaseKind::Evergreen,
-        ordinal: 0,
-        converts_to_phase_id: None,
-        phase_duration_days: None,
-        display_trial_days: None,
-    }
+        origin,
+    )
 }
 
 /// The source's published rows split into the ones that travel with the clone and

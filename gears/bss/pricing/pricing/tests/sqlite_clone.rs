@@ -51,7 +51,7 @@ use bss_pricing::domain::price_row::{ModelKind, PriceRow};
 use bss_pricing::domain::scope_key::{
     ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey,
 };
-use bss_pricing::infra::clone::{CloneNotice, CloneReceipt, clone_plan_on};
+use bss_pricing::infra::clone::{CloneNotice, CloneReceipt, SeededPhaseOrigin, clone_plan_on};
 use bss_pricing::infra::storage::migrations::Migrator;
 use bss_pricing::infra::storage::repo::{
     BundleComponentDraft, BundleRepo, CompositionDraft, NewBundle, NewPlanDraft, NewPriceDraft,
@@ -710,6 +710,18 @@ async fn a_clone_of_a_phaseless_plan_is_seeded_with_a_terminal_phase() {
         receipt.phases_copied, 0,
         "nothing was copied, which is the premise: the row below is seeded, not copied"
     );
+    // And `phases_copied: 0` is therefore not the whole story, which is what the
+    // notice is for (2026-08-17 review): this clone holds a terminal phase the
+    // operator did not author, and with no row to adopt from there was nothing to
+    // adopt.
+    assert!(
+        receipt.notices.contains(&CloneNotice::TerminalPhaseSeeded {
+            origin: SeededPhaseOrigin::Minted,
+            rows: 0,
+        }),
+        "a seed with no claimant is a mint, over no rows: {:?}",
+        receipt.notices
+    );
 
     let conn = h.provider.conn().expect("conn");
     let phases = plan_shape_repo::load_phase_set(&conn, &h.scope, TENANT, target_plan(), 0)
@@ -750,6 +762,16 @@ async fn a_clone_adopts_the_single_phase_id_its_copied_rows_name() {
 
     let receipt = clone_it(&h).await.expect("the clone runs");
     assert_eq!(receipt.prices_copied, 2, "both rows travel");
+    // The receipt says which act it performed, and over how many rows: `Adopted` is
+    // the publishable outcome, and the count is the rows the adopted id **attaches**.
+    assert!(
+        receipt.notices.contains(&CloneNotice::TerminalPhaseSeeded {
+            origin: SeededPhaseOrigin::Adopted,
+            rows: 2,
+        }),
+        "{:?}",
+        receipt.notices
+    );
 
     let conn = h.provider.conn().expect("conn");
     let phases = plan_shape_repo::load_phase_set(&conn, &h.scope, TENANT, target_plan(), 0)
@@ -817,6 +839,19 @@ async fn a_clone_whose_rows_name_two_phase_ids_mints_and_picks_no_winner() {
 
     let receipt = clone_it(&h).await.expect("the clone runs");
     assert_eq!(receipt.prices_copied, 2);
+    // **The receipt has to say this, and `prices_copied: 2` beside
+    // `NoCoverageScheduled` reads as routine follow-up** (2026-08-17 review): this
+    // clone holds a phase nobody authored *and* two rows nothing attaches, so it
+    // cannot publish at all until a human resolves which id it is meant to hold. The
+    // count is the rows the mint leaves **stranded**.
+    assert!(
+        receipt.notices.contains(&CloneNotice::TerminalPhaseSeeded {
+            origin: SeededPhaseOrigin::Minted,
+            rows: 2,
+        }),
+        "{:?}",
+        receipt.notices
+    );
 
     let conn = h.provider.conn().expect("conn");
     let phases = plan_shape_repo::load_phase_set(&conn, &h.scope, TENANT, target_plan(), 0)
@@ -930,6 +965,18 @@ async fn both_cutover_classes_stay_behind_and_the_receipt_names_each() {
             .contains(&CloneNotice::NewSubscriptionsOnlyRowsNotCopied { rows: 1 }),
         "each class is named on its own, so the operator can tell a retained \
          generation from a cutover's going-forward row: {:?}",
+        receipt.notices
+    );
+    // **The control for D-341's notice**: this source holds its own phases, so they
+    // were copied and nothing was seeded. A notice here would be a notice about an act
+    // that did not happen — and the three cases that assert the notice cannot see
+    // that, each of them being a clone that does seed.
+    assert!(
+        !receipt
+            .notices
+            .iter()
+            .any(|notice| matches!(notice, CloneNotice::TerminalPhaseSeeded { .. })),
+        "a copied phase set is not a seeded one: {:?}",
         receipt.notices
     );
 

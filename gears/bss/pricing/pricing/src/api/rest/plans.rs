@@ -65,7 +65,7 @@ use crate::domain::plan_shape::{
     PeriodFloorCap, PhaseKind, PlanPhase,
 };
 use crate::domain::scope_key::{PhaseId, PlanId, Region};
-use crate::infra::clone::{CloneNotice, CloneReceipt, clone_plan_on};
+use crate::infra::clone::{CloneNotice, CloneReceipt, SeededPhaseOrigin, clone_plan_on};
 use crate::infra::idempotent::{self, Guarded, GuardedRequest, TxFuture};
 use crate::infra::storage::repo::{NewPlanDraft, PlanRepo, plan_repo, plan_shape_repo};
 use crate::infra::storage::{RepoError, repo_failure};
@@ -1930,10 +1930,14 @@ fn created(revision: &PlanRevision, phase: &PlanPhase) -> Response {
 #[derive(Debug, Clone)]
 #[toolkit_macros::api_dto(response)]
 pub struct CloneNoticeView {
-    /// Which class was left behind — `no_coverage_scheduled`,
-    /// `grandfathered_rows_not_copied` or `new_subscriptions_only_rows_not_copied`.
+    /// What the clone did not carry across, or did without being asked —
+    /// `no_coverage_scheduled`, `grandfathered_rows_not_copied`,
+    /// `new_subscriptions_only_rows_not_copied`, or D-341's seeded terminal phase as
+    /// `terminal_phase_adopted` / `terminal_phase_minted`.
     pub code: String,
-    /// How many rows it covers.
+    /// How many rows it covers. On `terminal_phase_adopted` the copied rows the seeded
+    /// phase **attaches**; on `terminal_phase_minted` the copied rows it leaves
+    /// **stranded**, which is every row that travelled.
     pub rows: usize,
 }
 
@@ -1946,16 +1950,20 @@ pub struct CloneReceiptView {
     /// The plan it was cloned from — the same value the new row's `cloned_from`
     /// column carries (D-264).
     pub cloned_from: Uuid,
-    /// Phase rows copied, each under a new `phase_id` (D-19).
+    /// Phase rows copied, each under a new `phase_id` (D-19). **Zero does not mean
+    /// the clone holds no phase**: a source that held none has its terminal phase
+    /// *seeded* rather than copied (D-341), which the notices name.
     pub phases_copied: usize,
     /// Price rows copied, each under a new `price_id` and a reset scope key.
     pub prices_copied: usize,
     /// Composite meters copied, each under a new `composite_id` (D-106).
     pub composites_copied: usize,
     /// **What the operator would otherwise learn from a refused publish.** The
-    /// clone's billable rows have no window coverage (`inst-cl-windows`) and both
-    /// cutover-made eligibility classes stay behind (D-268); each is reported
-    /// here, counted per class, rather than discovered later.
+    /// clone's billable rows have no window coverage (`inst-cl-windows`), both
+    /// cutover-made eligibility classes stay behind (D-268), and a phase-less source
+    /// has its terminal phase seeded — adopted from the copied rows, or minted with
+    /// those rows left stranded (D-341). Each is reported here, counted per class,
+    /// rather than discovered later.
     pub notices: Vec<CloneNoticeView>,
 }
 
@@ -1986,6 +1994,21 @@ fn notice_view(notice: &CloneNotice) -> CloneNoticeView {
         CloneNotice::NewSubscriptionsOnlyRowsNotCopied { rows } => {
             ("new_subscriptions_only_rows_not_copied", *rows)
         }
+        // **Two codes for one variant, because the two outcomes are what a client
+        // acts on** (D-341, surfaced by the 2026-08-17 review): under `Adopted` the
+        // copied rows are attached and the clone is publishable once windows are
+        // scheduled; under `Minted` every copied row is stranded and the draft cannot
+        // publish until a human decides which id the plan holds. A single code with
+        // the origin in a second field would make the milder case and the blocking
+        // one indistinguishable to a consumer matching on `code`, which is what §3.3
+        // says a code is for.
+        CloneNotice::TerminalPhaseSeeded { origin, rows } => (
+            match origin {
+                SeededPhaseOrigin::Adopted => "terminal_phase_adopted",
+                SeededPhaseOrigin::Minted => "terminal_phase_minted",
+            },
+            *rows,
+        ),
     };
     CloneNoticeView {
         code: code.to_owned(),

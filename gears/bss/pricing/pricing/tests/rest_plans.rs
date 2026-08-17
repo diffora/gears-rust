@@ -766,6 +766,70 @@ async fn the_receipt_carries_its_counts_and_names_what_stayed_behind() {
         "windows are Slice 7 runtime state and never travel, so the clone is \
          coverage-blocked and the receipt has to say so: {notices:?}"
     );
+    // The control for the case below: this source *has* a phase, so its phases were
+    // copied and nothing was seeded. A notice emitted here would be a notice about
+    // an act that did not happen.
+    assert!(
+        notices
+            .iter()
+            .all(|notice| notice["code"] != "terminal_phase_adopted"
+                && notice["code"] != "terminal_phase_minted"),
+        "a copied phase set is not a seeded one: {notices:?}"
+    );
+}
+
+/// **A clone that seeds a phase the operator did not author says so on the wire —
+/// 2026-08-17 review, on D-341.**
+///
+/// The receipt reported `phases_copied: 0` and no notice at all, so the operator's
+/// only signal was `prices_copied: 2` beside `no_coverage_scheduled` — which reads as
+/// routine follow-up. D-341 calls the seeded phase an operator-visible consequence
+/// and lists two outcomes with different consequences: **adopted**, where the copied
+/// rows all named the seeded id and the clone is publishable, and **minted**, where
+/// they named two or more and every copied row is now stranded under
+/// `PHASE_ROW_ORPHANED`. `phases_copied` stays `0` — nothing was copied, and a count
+/// that folded the seed in would say a phase came across from a plan that never had
+/// one — so the notice is the vehicle.
+///
+/// `seed_current_plan`'s own shape is the phase-less source: `create_draft` writes no
+/// phase row, only `POST /plans` and `attach_shape` do. Which is the point D-341
+/// makes about the population — every plan authored before the seed existed is one.
+#[tokio::test]
+async fn a_clone_that_seeds_its_terminal_phase_names_the_act_in_its_receipt() {
+    let harness = Harness::new().await;
+    let source = Uuid::now_v7();
+    seed_draft_plan(&harness, source).await;
+    let price = seed_price(&harness, source, "eu").await;
+    harness.publish_price(source, price.price_id).await;
+    harness.publish(source, 0).await;
+
+    let response = harness
+        .allowed()
+        .send(with_headers(
+            "POST",
+            &clone_path(source),
+            None,
+            &keyed("clone-9"),
+        ))
+        .await;
+
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let body = body_json(response).await;
+    assert_eq!(
+        body["phases_copied"],
+        serde_json::json!(0),
+        "the source held none, so nothing was copied: {body}"
+    );
+    assert_eq!(body["prices_copied"], serde_json::json!(1));
+    let notices = body["notices"].as_array().expect("an array");
+    assert!(
+        notices
+            .iter()
+            .any(|notice| notice["code"] == "terminal_phase_adopted"
+                && notice["rows"] == serde_json::json!(1)),
+        "the one copied row named one id, so the seed adopted it and the row is \
+         attached: {notices:?}"
+    );
 }
 
 /// The response carries **no** `ETag`, and that is a decision rather than an
