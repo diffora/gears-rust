@@ -121,7 +121,7 @@ Design-introduced names (Slice 5):
 | `ApprovalWorkflow` | The submitted → approved/rejected state machine with the two-person invariant (G2) |
 | `ScopeGuard` | Request-time RBAC + tenant/brand/region scope enforcement (deny-by-default; authz region ≠ pricing region) |
 | ~~`BackdateGrant`~~ | **Struck by D-330** (2026-08-16) — historical import is out of scope; the grant, its resource label and its endpoints leave this slice with the flow |
-| `AuditTrail` | Writer over `pricing_audit_log` guaranteeing actor / before-after / approval completeness + tamper evidence (G4) |
+| `AuditTrail` | Writer over `pricing_audit_log` guaranteeing actor / before-after / approval completeness + tamper evidence (G4). **Not only a writer as of D-338 (2026-08-17):** the table has carried a `(tenant_id, subject_kind, subject_ref, recorded_at)` index since it was created, and that index had no reader — the store offered `append` and a tenant-wide keyset page only, so a value written into `before_state` was recorded and unaddressable. A read by subject now exists, which is what makes the before-after guarantee usable by anything that has to reverse an act rather than merely attest to it. One subject can hold several records — an act's submit, approve and commit stand under one `subject_ref` — so a caller selects by action rather than taking the first |
 
 ### 1.8 Context & Dependencies
 
