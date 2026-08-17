@@ -277,6 +277,25 @@ pub const PHASE_DURATION_INVALID: &str = "PHASE_DURATION_INVALID";
 /// **behind** this rule rather than in front of it.
 pub const DISPLAY_TRIAL_DAYS_INVALID: &str = "DISPLAY_TRIAL_DAYS_INVALID";
 
+/// A price row whose `phase` scope-key axis names a phase the revision does not
+/// attach (`inst-ph-row-attached`, D-337).
+///
+/// The exact inverse of [`PHASE_UNCOVERED`], and its immediate neighbour in the
+/// pipeline so the pair reads together in one report.
+///
+/// [`PHASE_IN_USE`] guards the published set through the baseline; a draft has no
+/// baseline, so `TerminalPhaseStable` returns at its first line and before this
+/// code existed a revision whose every row keyed on a phase nobody authored was
+/// refused only for having no terminal phase. Nothing else could see it either:
+/// `inst-ph-coverage` iterates the phases the revision *holds* and asks which
+/// lack rows, so a row filed outside that set is never a subject it visits.
+///
+/// The finding names the phase **and** the row because a scope key is the row's
+/// identity and cannot be re-pointed: the only remediations are attaching that
+/// exact phase id or deleting the row, and an author told merely to add a
+/// terminal phase strands every row they authored.
+pub const PHASE_ROW_ORPHANED: &str = "PHASE_ROW_ORPHANED";
+
 /// A phase with no covering recurring row for a sold `(currency, region)`, on a
 /// plan whose cycle carries a recurring part (`inst-ph-coverage`, D-15).
 ///
@@ -458,6 +477,13 @@ pub fn plan_shape_rules(
         .with_rule(Box::new(phase_graph::TerminalPhaseKind))
         .with_rule(Box::new(phase_graph::PhaseDuration))
         .with_rule(Box::new(phase_graph::DisplayTrialDaysOnTrialPhase))
+        // Immediately before `PhaseCoverage`, and the adjacency is D-337's: the
+        // two are exact inverses over one relation — a row with no phase, a phase
+        // with no rows — so a report carrying both names them together, and an
+        // author reading "phase P is uncovered" above "row R keys on phase Q,
+        // which this revision does not attach" has the whole mismatch in front of
+        // them.
+        .with_rule(Box::new(phase_graph::RowPhaseAttached))
         .with_rule(Box::new(phase_graph::PhaseCoverage))
         .with_rule(Box::new(phase_graph::PhaseOverrideBase))
         .with_rule(Box::new(phase_graph::PhaseOverrideUnits))

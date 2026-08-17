@@ -26,9 +26,11 @@ mod rest_support;
 
 use bss_pricing::domain::approval::ApprovalState;
 use bss_pricing::domain::lifecycle::LifecycleState;
+use bss_pricing::domain::scope_key::PhaseId;
 use rest_support::{
     Harness, approval_row, approval_rows, audit_rows, body_json, outbox_correlations_of,
-    plan_state, price_rows, problem_code, seed_draft_plan, seed_publishable_plan, with_headers,
+    plan_state, price_rows, problem_code, publishable_row, publishable_scope_key, seed_draft_plan,
+    seed_publishable_plan, seed_publishable_plan_with, with_headers,
 };
 use uuid::Uuid;
 
@@ -394,6 +396,83 @@ async fn a_well_formed_composite_publishes_like_any_other_shape() {
         approval_rows(&h).await.len(),
         1,
         "a plan with a legal composite reaches a reviewer like any other"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// `inst-ph-row-attached` (D-337), driven through this route.
+// ---------------------------------------------------------------------------
+
+/// **The state that started D-337, as a test.**
+///
+/// A plan publishable in every other respect whose one price row keys on a phase
+/// the revision does not attach. That is the stand's plan
+/// `019ff3de-7244-7d52-9496-bc823b1ba2f6`, all four of whose rows named a phase
+/// id nobody had ever attached: it was refused with nine violations and **not one
+/// of them said so**, so the operator was told to add a terminal phase — which
+/// would have stranded every row they had authored, because a scope key is the
+/// row's identity and cannot be re-pointed.
+///
+/// Driven through the route rather than over a hand-built `PlanShape` because the
+/// unit cases already prove the rule; what this proves is that the aggregate the
+/// publish route runs registers it, which is the one thing a rule's own tests
+/// cannot see.
+///
+/// **The whole code list, and it is two codes long on purpose.** `PHASE_ROW_ORPHANED`
+/// and its exact inverse `PHASE_UNCOVERED` — the attached terminal phase now has
+/// no recurring row covering it — are adjacent in the report, which is the
+/// arrangement D-337 registers the rule in. A `contains` check would be satisfied
+/// by the rule firing anywhere in any order, and a count would be satisfied by the
+/// neighbouring `PHASE_GRAPH_INVALID` standing in for it entirely.
+#[tokio::test]
+async fn a_row_keyed_on_a_phase_the_revision_never_attached_is_refused_naming_both() {
+    let h = Harness::new().await;
+    let plan_id = Uuid::now_v7();
+    // Minted here and never attached anywhere: the seed hands its closure the
+    // phase it *did* attach, and this one deliberately ignores it. That is how the
+    // observed plan came to be — a client that invented an id instead of reading
+    // one back.
+    let ghost = PhaseId::new(Uuid::now_v7());
+    let seeded = seed_publishable_plan_with(
+        &h,
+        plan_id,
+        move |plan, _attached| publishable_scope_key(plan, ghost, "eu"),
+        publishable_row(),
+    )
+    .await;
+
+    let refused = publish_as(&h, SUBMITTER, plan_id, &seeded.etag()).await;
+
+    assert_eq!(refused.status(), axum::http::StatusCode::BAD_REQUEST);
+    let body = body_json(refused).await;
+    let violations = body["context"]["violations"]
+        .as_array()
+        .unwrap_or_else(|| panic!("the refusal enumerates its violations: {body}"));
+    assert_eq!(
+        violations
+            .iter()
+            .filter_map(|violation| violation["type"].as_str())
+            .collect::<Vec<_>>(),
+        vec!["PHASE_ROW_ORPHANED", "PHASE_UNCOVERED"],
+        "the row with no phase, then the phase with no rows: {body}"
+    );
+    // Both operands reach the wire, because both remediations need one of them:
+    // attach *that* id, or delete *that* row.
+    assert!(
+        violations[0]["subject"]
+            .as_str()
+            .is_some_and(|subject| subject.contains(&ghost.to_string())),
+        "the phase the rows already name is what an author would attach: {body}"
+    );
+    assert!(
+        violations[0]["description"]
+            .as_str()
+            .is_some_and(|detail| detail.contains(&seeded.price_id.to_string())),
+        "the row is named, because deleting it is the other remediation: {body}"
+    );
+    assert!(
+        approval_rows(&h).await.is_empty(),
+        "an unpublishable plan must not reach a reviewer"
     );
 }
 
