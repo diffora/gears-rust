@@ -399,17 +399,6 @@ impl PublishRuleParams {
         self
     }
 
-    /// Attach what the store found about the plans this one's change contract
-    /// touches (`inst-pc-targets`, `inst-pc-mutual`, D-54).
-    ///
-    /// A second call for [`Self::with_referencing_markets`]' reason — almost no
-    /// plan authors a change edge — but the empty index means what
-    /// [`Self::with_declared_regions`]' empty set means and not what that one's
-    /// does: **fail-closed**. An index nobody resolved knows of no published
-    /// plan, so every authored edge reads as dangling. That is the safe
-    /// direction and it is loud immediately; the opposite default would let a
-    /// dangling edge publish for a caller who forgot to look.
-    #[must_use]
     /// Declare that this run opens coverage for the keys it is freezing (D-332).
     ///
     /// The publish says so; nothing else may. `sqlite_repricing_apply`'s
@@ -428,6 +417,16 @@ impl PublishRuleParams {
         self.opens_initial_coverage
     }
 
+    /// Attach what the store found about the plans this one's change contract
+    /// touches (`inst-pc-targets`, `inst-pc-mutual`, D-54).
+    ///
+    /// A second call for [`Self::with_referencing_markets`]' reason — almost no
+    /// plan authors a change edge — but the empty index means what
+    /// [`Self::with_declared_regions`]' empty set means and not what that one's
+    /// does: **fail-closed**. An index nobody resolved knows of no published
+    /// plan, so every authored edge reads as dangling. That is the safe
+    /// direction and it is loud immediately; the opposite default would let a
+    /// dangling edge publish for a caller who forgot to look.
     #[must_use]
     pub fn with_change_targets(mut self, index: ChangeTargetIndex) -> Self {
         self.change_targets = index;
