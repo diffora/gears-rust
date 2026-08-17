@@ -101,6 +101,30 @@ def check(corpus, declared, codes_declared=None):
     return findings
 
 
+def is_decision_register(path):
+    """True for the gear's `DECISIONS.md`, which records decisions and specifies
+    nothing.
+
+    A code's reference obligation is discharged by the artifact that *fires* it —
+    a rule body, an acceptance criterion, a route's problem-response table. The
+    register is none of those: it narrates why a decision was taken, and a
+    decision that merely names a code has not given the code a rule. Counting
+    register prose as a reference is a false payment twice over — it discharges
+    the `code-unreferenced` debt *and* keeps the code out of the debt set it
+    belongs in, so the missing rule becomes invisible on both sides.
+
+    This is not hypothetical: `PHASE_GRAPH_INVALID` left the pinned baseline on
+    2026-08-17 when D-343's entry wrote the bare token into the register's prose,
+    while `design/02-plan-definition.md` still declared it with no rule naming it.
+    The hazard was described in this module's own comments at the time.
+
+    Declarations are unaffected — a Problem-responses block is honoured wherever
+    it appears — because the discriminator here is only "does a mention count as
+    a reference".
+    """
+    return path == "DECISIONS.md" or path.endswith("/DECISIONS.md")
+
+
 def is_design_slice(path):
     """True for corpus-relative paths that are numbered design slices —
     `design/01-foundation.md`, `design/02-plan-definition.md`, and so on — the
@@ -158,6 +182,9 @@ def _check_error_codes(corpus, codes_declared=None):
         in_block = False
         saw_block = False
         codes_outside = set()
+        # The register narrates decisions; naming a code there is not a rule that
+        # fires it. See `is_decision_register` for what this prevents.
+        register = is_decision_register(path)
         for line in split_lines(text):
             if _PROBLEM_RESPONSES in line:
                 in_block = True
@@ -167,7 +194,7 @@ def _check_error_codes(corpus, codes_declared=None):
             for match in _CODE.finditer(line):
                 if in_block:
                     declared.setdefault(match.group(1), path)
-                else:
+                elif not register:
                     referenced.add(match.group(1))
                     codes_outside.add(match.group(1))
         if codes_outside and not saw_block and is_design_slice(path):
@@ -331,6 +358,13 @@ PINNED_UNREFERENCED_CODES_2026_07_29 = (
     # rules raise, and the same annotation names `COMPOSITE_CONSTITUENT_UNPUBLISHED`
     # as blocked on a registry client this gear does not have -- a code referenced
     # by the rule that would raise it, with the reason it cannot.
+    # Five added 2026-08-17, all made *visible* rather than newly broken, by the
+    # register-prose fix in `is_decision_register`. Each was declared with no rule
+    # naming it and each had its reference obligation discharged by `DECISIONS.md`
+    # prose alone -- hand-checked one by one: every member's only design-slice
+    # occurrence is its own Problem-responses declaration line, verified by
+    # grepping the code across `gears/bss/pricing/docs` and reading each hit.
+    ("pricing", "COMPOSITE_CONSTITUENT_UNPUBLISHED", "design/10-advanced-primitives.md"),
     ("pricing", "CREDIT_UNIT_UNPUBLISHED", "design/10-advanced-primitives.md"),
     # `EVAL_POLICY_MISPLACED` / design/03 paid down 2026-08-14 by D-312's
     # `@write` marking -- `inst-mk-forbidden` now names the code it raises for the
@@ -359,6 +393,8 @@ PINNED_UNREFERENCED_CODES_2026_07_29 = (
     # rule naming either. Measured by diffing the known-debt block with the wave
     # stashed against the wave applied (49 -> 47 suppressed); the closure test named
     # the same two independently, which is the check that the diff was read right.
+    ("pricing", "GRANDFATHERED_ROW_IMMUTABLE", "design/07-pricewindow-linkage.md"),
+    ("pricing", "GRANDFATHER_LOOSEN_FORBIDDEN", "design/07-pricewindow-linkage.md"),
     ("pricing", "GRANT_APPLICABILITY_INELIGIBLE", "design/10-advanced-primitives.md"),
     ("pricing", "GRANT_APPLICABILITY_UNIT_MISMATCH", "design/10-advanced-primitives.md"),
     ("pricing", "GRANT_APPLICABILITY_UNPUBLISHED", "design/10-advanced-primitives.md"),
@@ -366,11 +402,23 @@ PINNED_UNREFERENCED_CODES_2026_07_29 = (
     ("pricing", "GRANT_PRICE_UNSCOPED", "design/10-advanced-primitives.md"),
     ("pricing", "GRANT_REF_UNDEFINED", "design/06-consumer-contracts.md"),
     ("pricing", "GROUP_UNKNOWN", "design/09-price-overlays.md"),
+    # `MIGRATION_ALREADY_EFFECTIVE` is pinned but is NOT the same kind of debt as its
+    # four neighbours above, and the difference is worth more than the entry.
+    # D-34 **replaced** it with `MIGRATION_COMPLETED`, and its only occurrence in the
+    # design set is a parenthetical *inside* design/11's Problem-responses block that
+    # says so: "`MIGRATION_COMPLETED` (409 - cancel of a completed run; replaces the
+    # pre-D-34 `MIGRATION_ALREADY_EFFECTIVE`)". The block scanner counts every code
+    # token inside a block as a **declaration**, so a sentence retiring a code reads
+    # as declaring it -- the mirror image of the register-prose fault fixed above,
+    # and the reason this member exists at all. The honest fix is to stop the
+    # parenthetical from declaring, not to write a rule for a code D-34 retired.
+    ("pricing", "MIGRATION_ALREADY_EFFECTIVE", "design/11-lifecycle.md"),
     ("pricing", "PHASE_GRAPH_INVALID", "design/02-plan-definition.md"),
     ("pricing", "PLANTIER_MISSING", "design/02-plan-definition.md"),
     ("pricing", "PRORATION_INPUTS_MISSING", "design/06-consumer-contracts.md"),
     ("pricing", "QUANTITY_SOURCE_MISSING", "design/03-price-structure.md"),
     ("pricing", "REASON_REQUIRED", "design/05-governance.md"),
+    ("pricing", "ROUNDING_POLICY_UNKNOWN", "design/01-foundation.md"),
     # `RESERVATION_ON_NON_USAGE` / design/10 paid down 2026-08-14 by D-312:
     # `inst-rv-attrs` names the code in the rule body, for the half of the rule the
     # authoring write can judge (a reservation on a frozen non-usage `chargeKind`).

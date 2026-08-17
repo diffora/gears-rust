@@ -232,7 +232,20 @@ def test_the_pinned_code_baseline_has_exactly_fifty_entries():
 # `BACKDATE_SIDE_EFFECT`, struck in the same edit, was never a member.
 # This test's NAME says "fifty entries" and has since it was written; the number in a
 # test name is a comment, and this one has been wrong for longer than the pin has.
-    assert len(PINNED_UNREFERENCED_CODES_2026_07_29) == 25
+# 25 -> 30 on 2026-08-17, and this is the one movement in the list's history that is not a
+# document change at all. `is_decision_register` stopped `DECISIONS.md` prose from
+# discharging a reference obligation, and five members became VISIBLE that had been
+# members all along: COMPOSITE_CONSTITUENT_UNPUBLISHED, GRANDFATHERED_ROW_IMMUTABLE,
+# GRANDFATHER_LOOSEN_FORBIDDEN, MIGRATION_ALREADY_EFFECTIVE, ROUNDING_POLICY_UNKNOWN.
+# Nothing regressed; the checker stopped accepting a payment it should never have taken.
+# Read the history above as evidence rather than as background: this comment block has
+# warned about the false payment since 2026-08-09, recorded it springing again on
+# `EVAL_POLICY_MISPLACED` "the very next time somebody wrote a table", and prescribed a
+# manual verification (remove the register mention, confirm the finding stays closed) that
+# every future author had to remember to run. It sprang a third time on 2026-08-17
+# (`PHASE_GRAPH_INVALID`, D-343). Vigilance was the control and vigilance kept losing, so
+# the control is now the checker: register prose cannot pay, and no one has to remember.
+    assert len(PINNED_UNREFERENCED_CODES_2026_07_29) == 30
 
 
 def test_is_pinned_baseline_matches_only_the_recorded_gear():
@@ -251,3 +264,24 @@ def test_is_pinned_baseline_matches_only_the_recorded_gear():
 
 def test_unreferenced_pair_ignores_other_invariants():
     assert unreferenced_pair(Finding("P1/propagation-missing", Severity.MEDIUM, "f", None, "m")) is None
+
+
+def test_a_bare_code_token_in_the_decision_register_is_not_a_reference():
+    # The register records *decisions*; it neither declares nor specifies. Counting
+    # its prose as a reference lets a decision pay a `code-unreferenced` debt by
+    # mentioning the code, while the rule that should fire it is still missing —
+    # which is a false payment twice over, because it also keeps the code out of
+    # the debt set it belongs in. This module's own comments describe the hazard;
+    # it happened anyway, to `PHASE_GRAPH_INVALID` (D-343, 2026-08-17).
+    corpus = Corpus.from_parts(
+        "synthetic",
+        [
+            ("design/01-a.md", "**Problem responses (RFC 9457):** `ORPHAN_CODE` (409)\n"),
+            ("DECISIONS.md", "#### D-01 - a decision\n\nThe write answers `ORPHAN_CODE`.\n"),
+        ],
+    )
+    findings = check(corpus, DeclaredInstructions.build([corpus]))
+    assert [f.invariant for f in findings] == ["P3/code-unreferenced"], (
+        "register prose must not discharge the reference obligation"
+    )
+    assert "ORPHAN_CODE" in findings[0].message

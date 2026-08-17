@@ -251,11 +251,35 @@ def test_an_unknown_only_class_is_a_usage_error(tmp_path):
 # **47 -> 45** with both members named and hand-checked (`D-13 -> PRD.md`,
 # `BACKDATE_GRANT_REQUIRED`), so nothing closed silently — the hazard the 2026-08-05
 # `WINDOW_GAP` episode recorded.
+# Moved 2026-08-17 by this branch's D-331…D-343 register growth: `multi-region` 62 -> 61,
+# `anchored:no-account` 3 -> 4, and `PINNED_JUDGE_CALLS["pricing"]` 71 -> 70 (one id left a
+# judged class and arrived in a non-judged one, so the judged total falls by exactly one).
+#
+# **One mover, attributed by a controlled run against the pre-wave tree, not by proximity.**
+# `fr-scheduled-migration`, `suspicious:multi-region` -> `anchored:no-account`. The pre-wave
+# tree is `176bdf1e4` (the D-330 strike, the commit this pin was captured against); a
+# `git archive` of its `gears/bss/pricing/docs` reproduces the pinned histogram exactly
+# (`no-account` 3, `multi-region` 62), so the attribution is against a tree that is known
+# to match the pin rather than against a guess.
+#
+# **It is the same oscillation this block has recorded five times, and the same region.**
+# Pre-wave the requirement had four fragments, two of them scoring **0.603** against
+# `SCORE_THRESHOLD = 0.6`: `DECISIONS.md:25-36` — the register's status paragraph, the known
+# oscillator already named beside this pin — and `design/11-lifecycle.md:193-204`. Both fell
+# under the threshold and the requirement now has two fragments, neither an account. No
+# coverage was removed: `design/11-lifecycle.md` differs from the pre-wave tree by a single
+# line, and the requirement itself was not edited at all. What moved is document frequency
+# across a corpus that gained thirteen register entries, over a fixed window grid.
+#
+# **What was checked before accepting it**: live findings stayed at **2** and known debt moved
+# 45 -> 50 with every member named and hand-checked beside `PINNED_UNREFERENCED_CODES_2026_07_29`
+# — five of them made visible by the `is_decision_register` fix rather than newly broken — so
+# nothing closed silently, which is the hazard the 2026-08-05 `WINDOW_GAP` episode recorded.
 PINNED_TRIAGE_PRICING = {
     "unbuildable:no-prose": 0,
     "no-region": 3,
-    "anchored:no-account": 3,
-    "suspicious:multi-region": 62,
+    "anchored:no-account": 4,
+    "suspicious:multi-region": 61,
     "suspicious:not-normative": 0,
     "suspicious:weak-coverage": 9,
     "covered:strong": 0,
@@ -1313,7 +1337,13 @@ PINNED_TRIAGE_LEDGER = {
 #: 69 -> 67 on the 2026-08-08 D-259 tail wave. The triage histogram is unchanged,
 #: so this is the judged-share side of the same knife-edge movement recorded above,
 #: moving for the third time in one day on prose that touched neither requirement.
-PINNED_JUDGE_CALLS = {"pricing": 71, "ledger": 17}
+# pricing 71 -> 70 on 2026-08-17. One id, `fr-scheduled-migration`, left a judged class
+# (`suspicious:multi-region`) for a non-judged one (`anchored:no-account`); the full
+# attribution, including the controlled pre-wave run and the two 0.603 regions that fell
+# under the 0.6 threshold, is beside `PINNED_TRIAGE_PRICING`. Unlike the 2026-08-16 wave —
+# where one departure and one arrival cancelled and this number held at 71 — this movement
+# is one-directional, so it moves.
+PINNED_JUDGE_CALLS = {"pricing": 70, "ledger": 17}
 #: pricing 71 -> 70 on the 2026-08-15 **D-320 rounding-policy wave**: the single
 #: mover above leaves the judged set, `anchored:no-account` being triaged rather
 #: than judged. No requirement gained or lost an account of its own.

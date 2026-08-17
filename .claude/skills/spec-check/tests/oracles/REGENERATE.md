@@ -1275,6 +1275,76 @@ checker means by "referenced", and that is the skill's contract.
 
     Suite: **270 passed**, 1 skipped — unchanged.
 
+29. **2026-08-17, twenty-ninth capture — the checker stopped accepting a payment it should
+    never have taken, and five debts that were paid that way became visible.** Both a document
+    movement and a checker change, and the arithmetic separates them cleanly.
+
+    **Why it was needed at all.** The suite was found red on committed `HEAD` during a branch
+    review — `8 failed, 262 passed, 1 skipped` — because this branch's own pricing-docs commits
+    moved a P3 pin and the oracles were never re-captured, which is the obligation the closing
+    section of this file states. Seven of the eight reproduced against a `git archive HEAD`
+    export; the eighth was a working-tree artifact of an uncommitted rating PRD edit, committed
+    separately before anything here was captured. **Nothing was captured against a dirty tree**:
+    the corpus was diffed against `git archive HEAD` first and confirmed identical.
+
+    **The checker change (`closure.is_decision_register`).** `_check_error_codes` counted a code
+    token anywhere outside a Problem-responses block as a *reference*, including `DECISIONS.md`
+    prose. So a decision could discharge a `code-unreferenced` debt by *mentioning* the code,
+    while the rule that raises it stayed unwritten — a false payment twice over, because it also
+    keeps the code out of the debt set it belongs in. This file has warned about it since entry
+    15; the notes beside `PINNED_UNREFERENCED_CODES_2026_07_29` record it springing on
+    `EVAL_POLICY_MISPLACED` "the very next time somebody wrote a table"; and it sprang a third
+    time on 2026-08-17, on `PHASE_GRAPH_INVALID`, via D-343's entry. Vigilance was the control
+    and vigilance kept losing, so the control is now the checker: the register narrates
+    decisions and specifies nothing, so its prose can no longer pay. Declarations are
+    unaffected — a Problem-responses block is honoured wherever it appears.
+
+    **Live findings 2 -> 3 -> 2.** The rating PRD gained `fr-pre-purchase-evaluation` (the
+    Orders neighbour's pre-purchase price preview), which no slice claimed, so `P2/fr-unclaimed`
+    fired; `design/01-foundation.md` §5 now claims it beside its sibling
+    `fr-deterministic-evaluation-api`, and the count returns to 2. A by-product worth recording:
+    that Traces-to line's own prose said "all seven FRs above" over **six** ids, and is now
+    correct at seven.
+
+    **Suppressed 45 -> 44 -> 50, and the two moves are different in kind.** 45 -> 44 is the
+    document movement: `PHASE_GRAPH_INVALID` left the debt set by false payment. 44 -> 50 is the
+    checker change: that member returns (**+1**) and five more become visible (**+5**) —
+    `COMPOSITE_CONSTITUENT_UNPUBLISHED`, `GRANDFATHERED_ROW_IMMUTABLE`,
+    `GRANDFATHER_LOOSEN_FORBIDDEN`, `MIGRATION_ALREADY_EFFECTIVE`, `ROUNDING_POLICY_UNKNOWN`.
+    **Nothing regressed**: each of the five was already declared with no rule naming it. Each
+    was hand-checked by grepping the code across `gears/bss/pricing/docs` and reading every hit
+    — in all five cases the only design-slice occurrence is the code's own declaration line.
+
+    **One of the five is not the same kind of debt, and the note beside it says so.**
+    `MIGRATION_ALREADY_EFFECTIVE` was **replaced** by `MIGRATION_COMPLETED` in D-34, and its one
+    occurrence is a parenthetical *inside* design/11's Problem-responses block recording that
+    replacement. The block scanner counts every token inside a block as a **declaration**, so a
+    sentence retiring a code reads as declaring it — the mirror image of the fault fixed here.
+    Pinned, with the honest fix named: stop the parenthetical declaring, rather than write a
+    rule for a code D-34 retired.
+
+    **Backtest P3 55 -> 56**, and the pin's own instruction ("verify the new count by hand, then
+    update it deliberately") was followed rather than quoted: `closure.check` was run twice over
+    the frozen `10073c36` corpus, once with `is_decision_register` monkeypatched back to the
+    pre-fix behaviour, and the two code sets diffed — before 54, after 55, **lost 0**, mover
+    `MIGRATION_ALREADY_EFFECTIVE`. The checker did not change what it judges; it stopped
+    accepting a payment, so a code that was always unreferenced at that commit is now reported.
+
+    **Neighbourhoods: `multi-region` 62 -> 61, `anchored:no-account` 3 -> 4, judged 71 -> 70.**
+    One mover, `fr-scheduled-migration`, attributed by a controlled run against `176bdf1e4` —
+    the pre-wave tree, which reproduces the previous histogram exactly (3 / 62), so the
+    attribution is against a tree known to match the pin. It is the same oscillation this file
+    has recorded five times and the same region: pre-wave the requirement carried two fragments
+    scoring **0.603** against `SCORE_THRESHOLD = 0.6` — `DECISIONS.md:25-36`, the register's
+    status paragraph, already named as the known oscillator — and `design/11-lifecycle.md:193-204`.
+    Both fell under the threshold. No coverage was removed: the requirement was not edited and
+    `design/11-lifecycle.md` differs from the pre-wave tree by **one line**. What moved is
+    document frequency over a fixed window grid, across a corpus that gained thirteen register
+    entries (D-331…D-343).
+
+    Suite: **271 passed**, 1 skipped — one added, `test_a_bare_code_token_in_the_decision_register_is_not_a_reference`,
+    which pins the rule rather than the count.
+
 ## How they were produced (2026-07-31 capture)
 
 Run from the repository root:

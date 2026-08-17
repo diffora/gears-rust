@@ -73,7 +73,15 @@ FIXTURE = (
 # the fix makes the checker stricter, not the tree worse.
 PINNED_P1 = 29
 PINNED_P2 = 7
-PINNED_P3 = 55
+# 55 -> 56 on 2026-08-17, and the pin's own instruction was followed: verified by hand
+# before updating. The mover is exactly one, `MIGRATION_ALREADY_EFFECTIVE`, identified by
+# running `closure.check` over this same historical corpus twice — once with
+# `is_decision_register` restored to the pre-fix behaviour and once with it active — and
+# diffing the two code sets (before 54, after 55, lost 0). The checker did not change what
+# it judges; it stopped letting `DECISIONS.md` prose discharge a reference obligation, so a
+# code that was always unreferenced at 10073c36 is now reported as such. This is the
+# effectiveness claim moving in the direction the backtest exists to measure.
+PINNED_P3 = 56
 PINNED_TOTAL = PINNED_P1 + PINNED_P2 + PINNED_P3
 
 

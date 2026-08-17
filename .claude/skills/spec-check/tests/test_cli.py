@@ -169,7 +169,14 @@ def test_the_run_reports_seven_live_findings_and_seventy_three_suppressed():
     # `fr-historical-import-governance` names D-13 as one of the rules that went with
     # the flow, so a claim that had never verified now does. Debt is 20 propagation
     # gaps + 25 unreferenced codes. Live findings unchanged at 2, both rating-side.
-    assert payload["known_debt_suppressed"] == 45
+    # 45 -> 50 on 2026-08-17, one document movement and one checker change, and the
+    # arithmetic separates them: 45 -> 44 when this branch's D-343 commits wrote
+    # `PHASE_GRAPH_INVALID` into the register's prose and it left the debt set by false
+    # payment; then 44 -> 50 when `is_decision_register` stopped register prose paying,
+    # returning that member (+1) and revealing five that had been paid the same way all
+    # along (+5): COMPOSITE_CONSTITUENT_UNPUBLISHED, GRANDFATHERED_ROW_IMMUTABLE,
+    # GRANDFATHER_LOOSEN_FORBIDDEN, MIGRATION_ALREADY_EFFECTIVE, ROUNDING_POLICY_UNKNOWN.
+    assert payload["known_debt_suppressed"] == 50
     assert payload["known_debt_tracked_as"] == "D-69"
 
 
