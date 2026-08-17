@@ -33,7 +33,7 @@ use bss_pricing::domain::plan::PlanShapePatch;
 use bss_pricing::domain::plan_shape::{PhaseKind, PlanPhase};
 use bss_pricing::domain::scope_key::{PhaseId, PlanId};
 use bss_pricing::infra::storage::RepoError;
-use bss_pricing::infra::storage::entity::plan;
+use bss_pricing::infra::storage::entity::{audit_log, plan};
 use bss_pricing::infra::storage::migrations::Migrator;
 use bss_pricing::infra::storage::repo::{NewPlanDraft, PlanRepo, PlanShapeRepo};
 use chrono::{DateTime, TimeZone, Utc};
@@ -41,7 +41,7 @@ use sea_orm::sea_query::Expr;
 use sea_orm::{ColumnTrait, Condition, DatabaseConnection, EntityTrait};
 use sea_orm_migration::MigratorTrait;
 use toolkit_db::migration_runner::run_migrations_for_testing;
-use toolkit_db::secure::{AccessScope, SecureUpdateExt};
+use toolkit_db::secure::{AccessScope, SecureEntityExt, SecureUpdateExt};
 use toolkit_db::{ConnectOpts, DBProvider, DbError, connect_db};
 use uuid::Uuid;
 
@@ -850,6 +850,115 @@ async fn a_published_revisions_chain_is_refused_by_name_not_by_trigger() {
             .expect("read"),
         chain(),
         "the frozen chain must be untouched"
+    );
+}
+
+/// The revision's `row_version` as the table holds it, not as a caller was told.
+async fn stored_row_version(
+    provider: &DBProvider<DbError>,
+    scope: &AccessScope,
+    plan_id: PlanId,
+) -> i64 {
+    let conn = provider.conn().expect("conn");
+    plan::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(plan::Column::PlanId.eq(plan_id.get()))
+                .add(plan::Column::Revision.eq(0_i64)),
+        )
+        .one(&conn)
+        .await
+        .expect("read the revision row")
+        .expect("the revision exists")
+        .row_version
+}
+
+/// How many D-135 records the tenant's chain holds.
+///
+/// Counted straight off the table rather than through a helper on the
+/// repository: what the probe below claims is about rows, and a production
+/// accessor added for a test is a surface nothing else needs.
+async fn audit_entry_count(
+    provider: &DBProvider<DbError>,
+    scope: &AccessScope,
+    tenant: Uuid,
+) -> usize {
+    let conn = provider.conn().expect("conn");
+    audit_log::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(Condition::all().add(audit_log::Column::TenantId.eq(tenant)))
+        .all(&conn)
+        .await
+        .expect("read the audit chain")
+        .len()
+}
+
+/// The seed leaves the revision at the version it was created with (D-19).
+///
+/// `replace_phases_on` would bump it and write a second D-135 record, which is
+/// why the seed does not use it: a plan born at version 1 carries a record of an
+/// edit nobody made, and the `ETag` the create answered its caller is stale
+/// before that caller can spend it. Asserted in the storage tier because the
+/// REST body can only show the version it was told, and the claim is about what
+/// the table holds.
+#[tokio::test]
+async fn seeding_the_terminal_phase_does_not_bump_the_revision_or_record_an_edit() {
+    let (repo, shapes, provider) = repo_harness().await;
+    let tenant = Uuid::from_u128(0x7e_11);
+    let scope = AccessScope::for_tenant(tenant);
+    let plan_id = PlanId::new(Uuid::from_u128(0x9_1a4));
+
+    let revision = repo
+        .create_draft(&scope, draft_of(plan_id, tenant))
+        .await
+        .expect("create");
+    let before = stored_row_version(&provider, &scope, plan_id).await;
+    let audit_before = audit_entry_count(&provider, &scope, tenant).await;
+    // Stated rather than merely captured: a baseline read against an empty
+    // table would make the two assertions below pass for a seed that never ran.
+    assert_eq!(
+        (before, audit_before),
+        (0, 1),
+        "the create is one revision at version 0 and the one record of making it"
+    );
+
+    let terminal = PlanPhase {
+        phase_id: PhaseId::new(Uuid::from_u128(0xf1b)),
+        kind: PhaseKind::Evergreen,
+        ordinal: 0,
+        converts_to_phase_id: None,
+        phase_duration_days: None,
+        display_trial_days: None,
+    };
+    {
+        let conn = provider.conn().expect("conn");
+        bss_pricing::infra::storage::repo::plan_shape_repo::seed_terminal_phase_on(
+            &conn, &scope, tenant, &revision, &terminal,
+        )
+        .await
+        .expect("seed the terminal phase");
+    }
+
+    assert_eq!(
+        stored_row_version(&provider, &scope, plan_id).await,
+        before,
+        "creation is one act: the phase is part of it, not an edit of it"
+    );
+    assert_eq!(
+        audit_entry_count(&provider, &scope, tenant).await,
+        audit_before,
+        "the create's own record covers the phase it was created with"
+    );
+    assert_eq!(
+        shapes
+            .list_phases(&scope, tenant, plan_id, 0)
+            .await
+            .expect("read"),
+        vec![terminal],
+        "and the row is on the table, so this is not a no-op passing by absence"
     );
 }
 
