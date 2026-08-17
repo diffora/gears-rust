@@ -472,7 +472,11 @@ pub fn plan_shape_rules(
         .with_rule(Box::new(composite::CompositeArity))
         .with_rule(Box::new(composite::CompositeSelfReference))
         // Phase schedule: how the plan runs over time.
-        .with_rule(Box::new(phase_graph::PhaseGraphIntegrity))
+        // `default()` since the 2026-08-17 review gave this rule a stage too, and
+        // the default is `Publish` for `RowPhaseAttached`'s reason below: this
+        // pipeline **is** the publish pre-check and the commit's re-validation, and
+        // the write-stage instance is the `phases` facet's own.
+        .with_rule(Box::new(phase_graph::PhaseGraphIntegrity::default()))
         .with_rule(Box::new(phase_graph::PhaseChainLinear))
         .with_rule(Box::new(phase_graph::TerminalPhaseKind))
         .with_rule(Box::new(phase_graph::PhaseDuration))
@@ -483,7 +487,11 @@ pub fn plan_shape_rules(
         // author reading "phase P is uncovered" above "row R keys on phase Q,
         // which this revision does not attach" has the whole mismatch in front of
         // them.
-        .with_rule(Box::new(phase_graph::RowPhaseAttached))
+        // `default()` rather than a unit struct since D-342 gave the rule a stage,
+        // and the default is `Publish` — the aggregate pipeline is the publish
+        // pre-check and the commit's re-validation, and the write-stage instance is
+        // the `phases` facet's own, built at that door.
+        .with_rule(Box::new(phase_graph::RowPhaseAttached::default()))
         .with_rule(Box::new(phase_graph::PhaseCoverage))
         .with_rule(Box::new(phase_graph::PhaseOverrideBase))
         .with_rule(Box::new(phase_graph::PhaseOverrideUnits))

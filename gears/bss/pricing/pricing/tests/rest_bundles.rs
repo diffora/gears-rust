@@ -974,11 +974,12 @@ async fn a_published_components_draft_row_does_not_cover_a_market() {
 
     // A published component plan carrying one row that never published.
     let component = Uuid::now_v7();
-    // No `attach_shape` on the component: `pricing_plan_phase` is keyed
-    // `(phase_id, plan_revision)` and the harness attaches a **fixed** phase id,
-    // so a second plan at revision 0 collides with the bundle plan's own. The
-    // price row does not need the phase row to exist - the `phase` axis is a
-    // bare uuid (D-19) and carries no foreign key.
+    // No `attach_shape` on the component, and the reason is now only the second
+    // one: the price row does not need the phase row to exist at all — the `phase`
+    // axis is a bare uuid (D-19) and carries no foreign key. It used to be forced
+    // as well, the harness attaching a **fixed** phase id onto a key
+    // (`phase_id, plan_revision`) that gave one id to one plan, so a second plan at
+    // revision 0 collided with the bundle plan's own; D-340 widened that key.
     seed_draft_plan(&harness, component).await;
     seed_price(&harness, component, "EU").await;
     harness.publish(component, 0).await;

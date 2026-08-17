@@ -14,9 +14,12 @@
 //! conflicting add-ons fail publish" names a pair. All three were unsatisfiable
 //! by construction, and none of them would have failed a test — a plan simply
 //! could never reach the state the rule rejects, so the rule would have read as
-//! holding while enforcing nothing. `pricing_plan_phase`'s
-//! `(phase_id, plan_revision)` is the shape this table should have had from the
-//! start, and now has.
+//! holding while enforcing nothing. `pricing_plan_phase`'s key is the shape this
+//! table should have had from the start, and now has: a **discriminator** beside
+//! `plan_revision`, so a revision holds as many children as it has of them. That
+//! key has since become `(tenant_id, plan_id, plan_revision, phase_id)` under
+//! D-340 (`m20260802_000081`) — the scope columns joined it, the discriminator
+//! stayed, and it is the discriminator this table copied.
 //!
 //! `plan_revision` is the copy-on-new-revision half (D-83), exactly as on the
 //! phase table: a new revision copies these rows under its own number and the

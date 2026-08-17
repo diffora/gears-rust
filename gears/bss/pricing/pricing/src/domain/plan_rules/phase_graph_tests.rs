@@ -41,7 +41,7 @@ use crate::domain::price_row::{
 use crate::domain::scope_key::{
     ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey,
 };
-use crate::domain::validation::{ValidationReport, ValidationRule, Violation};
+use crate::domain::validation::{Stage, ValidationReport, ValidationRule, Violation};
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -212,7 +212,7 @@ fn a_clean_trial_intro_evergreen_chain_passes_every_structural_rule() {
     let subject = phased();
 
     for rule in [
-        &PhaseGraphIntegrity as &dyn ValidationRule<PlanShape>,
+        &PhaseGraphIntegrity::default() as &dyn ValidationRule<PlanShape>,
         &PhaseChainLinear,
         &TerminalPhaseKind,
         &PhaseDuration,
@@ -236,12 +236,12 @@ fn every_rule_names_the_instruction_it_implements() {
     // own cases below exercised it: a census that skips a rule cannot tell anyone
     // that the rule renamed itself, which is the one thing it is here for.
     let named: Vec<&str> = [
-        &PhaseGraphIntegrity as &dyn ValidationRule<PlanShape>,
+        &PhaseGraphIntegrity::default() as &dyn ValidationRule<PlanShape>,
         &PhaseChainLinear,
         &TerminalPhaseKind,
         &PhaseDuration,
         &DisplayTrialDaysOnTrialPhase,
-        &RowPhaseAttached,
+        &RowPhaseAttached::default(),
         &PhaseCoverage,
         &PhaseOverrideBase,
         &PhaseOverrideUnits,
@@ -281,7 +281,7 @@ fn a_dangling_conversion_target_fails() {
     phases[1].converts_to_phase_id = Some(phase_id(0x99));
     let subject = shape_of(phases);
 
-    let report = judge(&PhaseGraphIntegrity, &subject);
+    let report = judge(&PhaseGraphIntegrity::default(), &subject);
     let violation = only(&report);
 
     assert_eq!(violation.code, PHASE_GRAPH_INVALID);
@@ -299,7 +299,7 @@ fn a_two_cycle_fails_and_names_both_of_its_phases() {
         phase(EVERGREEN, PhaseKind::Evergreen, 2, None),
     ]);
 
-    let report = judge(&PhaseGraphIntegrity, &subject);
+    let report = judge(&PhaseGraphIntegrity::default(), &subject);
     let violation = only(&report);
 
     assert_eq!(violation.code, PHASE_GRAPH_INVALID);
@@ -322,7 +322,7 @@ fn a_phase_set_with_no_terminal_phase_fails() {
     // either, and the count is the only thing left to report. Zero terminals is
     // not a state an index can refuse - the partial UNIQUE holds the
     // at-most-one half and the pipeline runs before the write.
-    let report = judge(&PhaseGraphIntegrity, &shape_of(Vec::new()));
+    let report = judge(&PhaseGraphIntegrity::default(), &shape_of(Vec::new()));
     let violation = only(&report);
 
     assert_eq!(violation.code, PHASE_GRAPH_INVALID);
@@ -336,7 +336,7 @@ fn a_chain_that_only_cycles_reports_both_the_cycle_and_the_missing_terminal() {
         phase(INTRO, PhaseKind::Intro, 1, Some(phase_id(TRIAL))),
     ]);
 
-    let report = judge(&PhaseGraphIntegrity, &subject);
+    let report = judge(&PhaseGraphIntegrity::default(), &subject);
 
     assert_eq!(report.violations.len(), 2, "{:?}", report.violations);
     assert!(
@@ -362,13 +362,80 @@ fn two_terminal_phases_fail_and_are_both_named() {
         phase(EVERGREEN, PhaseKind::Evergreen, 2, None),
     ]);
 
-    let report = judge(&PhaseGraphIntegrity, &subject);
+    let report = judge(&PhaseGraphIntegrity::default(), &subject);
     let violation = only(&report);
 
     assert_eq!(violation.code, PHASE_GRAPH_INVALID);
     for terminal in [phase_id(INTRO), phase_id(EVERGREEN)] {
         assert!(violation.detail.contains(&terminal.to_string()));
     }
+}
+
+#[test]
+fn this_rules_default_instance_is_publish_stage_and_the_phases_door_asks_for_write() {
+    // The 2026-08-17 review, and `RowPhaseAttached`'s own stage case below is the
+    // shape this follows — for the same two reasons, which is why it is a second
+    // case rather than a line added there.
+    //
+    // If the default were `Write`, every registrant of this rule would refuse at the
+    // price-row write, where the phase set is not even an operand of the request.
+    // And **all three faults** must take the stamp, not the terminal count alone:
+    // the door is wired to the rule, so a dispatch left off one arm would make one
+    // of the three vanish from a write refusal rather than fail it.
+    let two_terminals = shape_of(vec![
+        phase(TRIAL, PhaseKind::Trial, 0, Some(phase_id(INTRO))),
+        phase(INTRO, PhaseKind::Evergreen, 1, None),
+        phase(EVERGREEN, PhaseKind::Evergreen, 2, None),
+    ]);
+    let mut dangling = linear_chain();
+    dangling[1].converts_to_phase_id = Some(phase_id(0x99));
+    let cyclic = shape_of(vec![
+        phase(TRIAL, PhaseKind::Trial, 0, Some(phase_id(INTRO))),
+        phase(INTRO, PhaseKind::Intro, 1, Some(phase_id(TRIAL))),
+        phase(EVERGREEN, PhaseKind::Evergreen, 2, None),
+    ]);
+
+    for subject in [two_terminals, shape_of(dangling), cyclic] {
+        let at_publish = judge(&PhaseGraphIntegrity::default(), &subject);
+        let at_write = judge(
+            &PhaseGraphIntegrity {
+                stage: Stage::Write,
+            },
+            &subject,
+        );
+
+        assert!(
+            at_publish.write_stage_only().is_none(),
+            "the pipeline's instance must not refuse a write: {:?}",
+            at_publish.violations
+        );
+        let refused = at_write
+            .write_stage_only()
+            .expect("the phases door's instance is judgeable at the write");
+        // The stamp is the one field that must differ, so the comparison is over
+        // everything else: an author reading two different sentences about one fault
+        // depending on which door refused them is the failure this rules out.
+        assert_eq!(
+            said(&refused),
+            said(&at_publish),
+            "one fault set, one sentence each, whichever door asked"
+        );
+    }
+}
+
+/// What a report says, with the stage stamp left out.
+fn said(report: &ValidationReport) -> Vec<(&str, &str, &str)> {
+    report
+        .violations
+        .iter()
+        .map(|violation| {
+            (
+                violation.code.as_str(),
+                violation.subject.as_str(),
+                violation.detail.as_str(),
+            )
+        })
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -675,7 +742,7 @@ fn a_row_on_an_unattached_phase_is_reported_with_the_row_and_the_phase_named() {
     let mut subject = phased();
     subject.rows = vec![recurring("usd", "US", phase_id(GHOST))];
 
-    let report = judge(&RowPhaseAttached, &subject);
+    let report = judge(&RowPhaseAttached::default(), &subject);
     let violation = only(&report);
 
     assert_eq!(violation.code, PHASE_ROW_ORPHANED);
@@ -709,7 +776,9 @@ fn a_row_on_an_attached_phase_is_not_reported() {
         subject.rows = vec![recurring("usd", "US", phase_id(attached))];
 
         assert!(
-            judge(&RowPhaseAttached, &subject).violations.is_empty(),
+            judge(&RowPhaseAttached::default(), &subject)
+                .violations
+                .is_empty(),
             "a row on the attached phase {attached:#x} is not a finding"
         );
     }
@@ -725,7 +794,7 @@ fn every_stranded_row_is_reported_and_not_only_the_first() {
     let mut subject = phased();
     subject.rows = vec![recurring("usd", "US", phase_id(GHOST)), second];
 
-    let report = judge(&RowPhaseAttached, &subject);
+    let report = judge(&RowPhaseAttached::default(), &subject);
 
     assert_eq!(report.violations.len(), 2, "{:?}", report.violations);
     assert!(
@@ -759,9 +828,51 @@ fn a_row_is_judged_against_the_phase_set_and_not_against_the_baseline() {
         "the rule that used to be the only guard is silent on a first publish"
     );
     assert_eq!(
-        only(&judge(&RowPhaseAttached, &subject)).code,
+        only(&judge(&RowPhaseAttached::default(), &subject)).code,
         PHASE_ROW_ORPHANED
     );
+}
+
+#[test]
+fn the_default_instance_is_publish_stage_and_the_phases_door_asks_for_write() {
+    // D-342. The two instances must report the **same fault** under two stamps, and
+    // both halves of that are load-bearing.
+    //
+    // If the default were `Write`, every rule set that registers this rule would
+    // start refusing at the price-row write, where "add the row, then attach the
+    // phase" is an order §4.2 allows — so `write_stage_only()` returning `None` for
+    // the default is what keeps the publish pipeline a publish pipeline.
+    //
+    // And if the write instance's finding differed in code, subject or detail, an
+    // author would read two different sentences about one fault depending on which
+    // door refused them.
+    let mut subject = phased();
+    subject.rows = vec![recurring("usd", "US", phase_id(GHOST))];
+
+    let at_publish = judge(&RowPhaseAttached::default(), &subject);
+    let at_write = judge(
+        &RowPhaseAttached {
+            stage: Stage::Write,
+        },
+        &subject,
+    );
+
+    assert!(
+        at_publish.write_stage_only().is_none(),
+        "the pipeline's instance must not refuse a write: {:?}",
+        at_publish.violations
+    );
+    let refused = at_write
+        .write_stage_only()
+        .expect("the phases door's instance is judgeable at the write");
+    assert_eq!(refused.violations.len(), 1);
+    assert_eq!(only(&refused).code, PHASE_ROW_ORPHANED);
+    assert_eq!(
+        only(&refused).subject,
+        only(&at_publish).subject,
+        "one fault, one subject, whichever door asked"
+    );
+    assert_eq!(only(&refused).detail, only(&at_publish).detail);
 }
 
 // ---------------------------------------------------------------------------
@@ -1111,7 +1222,11 @@ fn an_evergreen_terminal_phase_publishing_a_trial_length_is_refused() {
     // The three that legitimately pass.
     assert!(judge(&PhaseDuration, &subject).violations.is_empty());
     assert!(judge(&TerminalPhaseKind, &subject).violations.is_empty());
-    assert!(judge(&PhaseGraphIntegrity, &subject).violations.is_empty());
+    assert!(
+        judge(&PhaseGraphIntegrity::default(), &subject)
+            .violations
+            .is_empty()
+    );
 
     // The one that does not.
     let report = judge(&DisplayTrialDaysOnTrialPhase, &subject);

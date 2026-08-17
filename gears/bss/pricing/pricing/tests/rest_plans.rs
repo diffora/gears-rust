@@ -25,7 +25,7 @@ fn clone_path(plan_id: Uuid) -> String {
     format!("{PLANS}/{plan_id}/clone")
 }
 use rest_support::{
-    Harness, audit_rows, body_json, etag_of, location_of, not_found_code, plan_count,
+    Harness, audit_rows, body_json, code_in, etag_of, location_of, not_found_code, plan_count,
     plan_row_version, plan_state, problem_code, request, seed_current_plan, seed_draft_plan,
     seed_foreign_plan, seed_price, with_headers,
 };
@@ -765,6 +765,70 @@ async fn the_receipt_carries_its_counts_and_names_what_stayed_behind() {
             .any(|notice| notice["code"] == "no_coverage_scheduled"),
         "windows are Slice 7 runtime state and never travel, so the clone is \
          coverage-blocked and the receipt has to say so: {notices:?}"
+    );
+    // The control for the case below: this source *has* a phase, so its phases were
+    // copied and nothing was seeded. A notice emitted here would be a notice about
+    // an act that did not happen.
+    assert!(
+        notices
+            .iter()
+            .all(|notice| notice["code"] != "terminal_phase_adopted"
+                && notice["code"] != "terminal_phase_minted"),
+        "a copied phase set is not a seeded one: {notices:?}"
+    );
+}
+
+/// **A clone that seeds a phase the operator did not author says so on the wire —
+/// 2026-08-17 review, on D-341.**
+///
+/// The receipt reported `phases_copied: 0` and no notice at all, so the operator's
+/// only signal was `prices_copied: 2` beside `no_coverage_scheduled` — which reads as
+/// routine follow-up. D-341 calls the seeded phase an operator-visible consequence
+/// and lists two outcomes with different consequences: **adopted**, where the copied
+/// rows all named the seeded id and the clone is publishable, and **minted**, where
+/// they named two or more and every copied row is now stranded under
+/// `PHASE_ROW_ORPHANED`. `phases_copied` stays `0` — nothing was copied, and a count
+/// that folded the seed in would say a phase came across from a plan that never had
+/// one — so the notice is the vehicle.
+///
+/// `seed_current_plan`'s own shape is the phase-less source: `create_draft` writes no
+/// phase row, only `POST /plans` and `attach_shape` do. Which is the point D-341
+/// makes about the population — every plan authored before the seed existed is one.
+#[tokio::test]
+async fn a_clone_that_seeds_its_terminal_phase_names_the_act_in_its_receipt() {
+    let harness = Harness::new().await;
+    let source = Uuid::now_v7();
+    seed_draft_plan(&harness, source).await;
+    let price = seed_price(&harness, source, "eu").await;
+    harness.publish_price(source, price.price_id).await;
+    harness.publish(source, 0).await;
+
+    let response = harness
+        .allowed()
+        .send(with_headers(
+            "POST",
+            &clone_path(source),
+            None,
+            &keyed("clone-9"),
+        ))
+        .await;
+
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let body = body_json(response).await;
+    assert_eq!(
+        body["phases_copied"],
+        serde_json::json!(0),
+        "the source held none, so nothing was copied: {body}"
+    );
+    assert_eq!(body["prices_copied"], serde_json::json!(1));
+    let notices = body["notices"].as_array().expect("an array");
+    assert!(
+        notices
+            .iter()
+            .any(|notice| notice["code"] == "terminal_phase_adopted"
+                && notice["rows"] == serde_json::json!(1)),
+        "the one copied row named one id, so the seed adopted it and the row is \
+         attached: {notices:?}"
     );
 }
 
@@ -1754,29 +1818,28 @@ fn phase_chain(phase_id: Uuid) -> serde_json::Value {
     })
 }
 
-/// **`pricing_plan_phase`'s primary key is client-reachable, and the second
-/// caller to reach it gets a 500.** Pinned, not fixed.
+/// **Two plans of one tenant may each file the same phase id — D-340.**
 ///
-/// `PRIMARY KEY (phase_id, plan_revision)` carries no `plan_id` and no
-/// `tenant_id` (`m20260802_000012_create_pricing_plan_phase.rs`), and `phase_id`
-/// is **client-supplied** — `PlanPhaseView` is `api_dto(request, response)` and
-/// its own doc invites reuse across revisions (D-83). So two plans of one tenant
-/// standing at revision `0` cannot both file a phase under the same id: the
-/// first is a 200 and the second collides on the PK.
+/// This case is the inversion of a pin, and the pin asked for it: it read
+/// `…collide_on_a_shared_phase_id_and_the_second_answers_500` and its doc said
+/// that if a later slice widened the key this would redden and the change would
+/// get written down. `m20260802_000081` widened it, so the change is written down
+/// here.
 ///
-/// The refusal is a generic 500 with no wire code, which is the wrong class —
-/// this gear reserves a conflict for exactly this shape — and the slot is
-/// occupied database-wide rather than per tenant, which the sibling test below
-/// pins.
+/// What it was: `PRIMARY KEY (phase_id, plan_revision)` named neither `plan_id`
+/// nor `tenant_id`, and `phase_id` is **client-supplied** — `PlanPhaseView` is
+/// `api_dto(request, response)` and its own doc invites reuse across revisions
+/// (D-83). So two plans of one tenant standing at revision `0` could not both file
+/// a phase under one id: the first was a 200 and the second a generic `500`
+/// advising a retry that could never succeed. On the stand that produced five
+/// drafts keying price rows on one id of which four could never attach it, and a
+/// scope key is a price row's identity, so those four had nothing but deletion.
 ///
-/// **This is frozen Phase-2 schema and G5 deliberately did not change the
-/// migration.** What a test can do is stop the behaviour being a surprise: if a
-/// later slice widens the key or maps the failure onto a conflict, this reddens
-/// and the change gets written down. `rest_support::Publishable` already works
-/// around it by minting a phase id per plan, with the workaround named in its
-/// doc; this is the same finding stated as an executable fact.
+/// What still refuses, and is **not** asserted here: one plan's revision naming
+/// the same id twice, which the facet's own payload is now the only way to reach.
+/// That is `PHASE_ID_IN_USE`'s job and it is pinned where the code lives.
 #[tokio::test]
-async fn two_plans_of_one_tenant_collide_on_a_shared_phase_id_and_the_second_answers_500() {
+async fn two_plans_of_one_tenant_may_each_file_the_same_phase_id() {
     let harness = Harness::new().await;
     let shared_phase = Uuid::now_v7();
     let first = Uuid::now_v7();
@@ -1799,7 +1862,7 @@ async fn two_plans_of_one_tenant_collide_on_a_shared_phase_id_and_the_second_ans
         "the first filing must succeed, or the second proves nothing"
     );
 
-    let collided = harness
+    let shared = harness
         .allowed()
         .send(with_headers(
             "PATCH",
@@ -1810,39 +1873,43 @@ async fn two_plans_of_one_tenant_collide_on_a_shared_phase_id_and_the_second_ans
         .await;
 
     assert_eq!(
-        collided.status(),
-        StatusCode::INTERNAL_SERVER_ERROR,
-        "the PK collision surfaces as an internal fault, not as the conflict class"
+        shared.status(),
+        StatusCode::OK,
+        "the id belongs to a plan now, so the sibling may hold it too"
     );
-    // And the body is the platform's generic internal fault - no gear code, so a
-    // client cannot tell what happened or that retrying under another phase id
-    // would work. That is half of why this is filed as a defect rather than a
-    // quirk, and it is asserted rather than described so a later reclassification
-    // reddens here.
-    let body = body_json(collided).await;
+    // Read back off the answered body rather than inferred from the status: a 200
+    // over a write that stored a different id would satisfy the line above.
+    let body = body_json(shared).await;
     assert_eq!(
-        body["type"],
-        "gts://gts.cf.core.errors.err.v1~cf.core.err.internal.v1~"
+        body["phases"].as_array().map(Vec::len),
+        Some(1),
+        "the facet is a wholesale replace, so the seeded terminal phase is gone"
     );
-    // The refused PATCH rolled back: the second plan is exactly as it was.
+    assert_eq!(
+        body["phases"][0]["phase_id"],
+        serde_json::json!(shared_phase),
+        "and the phase the second plan holds is the shared one"
+    );
+    // The write landed, which is the other half of the inversion: this assertion
+    // read `Some(0)` while the PATCH was refused and the revision unmoved.
     assert_eq!(
         plan_row_version(&harness, second, 0).await,
-        Some(0),
-        "a failed child write must not have moved the revision"
+        Some(1),
+        "a phase write advances the revision it belongs to"
     );
 }
 
-/// The same collision **across tenants**, which is the half that matters for
-/// isolation.
+/// **And a phase id one tenant holds is free for another — D-340.**
 ///
-/// `phase_id` is client-supplied and the key carries no `tenant_id`, so an
-/// authenticated caller of one tenant can occupy a `(phase_id, 0)` slot that a
-/// caller of another tenant then cannot use. Nothing leaks — the second caller
-/// learns only that their own write failed — but a tenant's write can be made to
-/// fail by a stranger, and that is a property worth a red test if it ever
-/// changes.
+/// The other inversion, and the half that matters for isolation. `phase_id` is
+/// client-supplied and the old key carried no `tenant_id`, so an authenticated
+/// caller of one tenant occupied a `(phase_id, 0)` slot no caller of any other
+/// tenant could then use: a tenant's write could be made to fail by a stranger,
+/// and the difference between that failure and a success answered *is this id in
+/// use somewhere I cannot read* — an existence oracle over another tenant's rows,
+/// on a table this gear scopes by `tenant_id` everywhere else.
 #[tokio::test]
-async fn a_phase_id_taken_by_one_tenant_is_taken_for_the_other_too() {
+async fn a_phase_id_one_tenant_holds_is_free_for_another() {
     let harness = Harness::new().await;
     let shared_phase = Uuid::now_v7();
     let mine = Uuid::now_v7();
@@ -1861,7 +1928,7 @@ async fn a_phase_id_taken_by_one_tenant_is_taken_for_the_other_too() {
         .await;
     assert_eq!(accepted.status(), StatusCode::OK);
 
-    let collided = harness
+    let theirs_too = harness
         .other_tenant()
         .send(with_headers(
             "PATCH",
@@ -1872,9 +1939,577 @@ async fn a_phase_id_taken_by_one_tenant_is_taken_for_the_other_too() {
         .await;
 
     assert_eq!(
-        collided.status(),
-        StatusCode::INTERNAL_SERVER_ERROR,
-        "the key has no tenant column, so the slot is occupied database-wide"
+        theirs_too.status(),
+        StatusCode::OK,
+        "the key carries the tenant now, so one tenant's id says nothing about another's"
+    );
+    let body = body_json(theirs_too).await;
+    assert_eq!(
+        body["phases"][0]["phase_id"],
+        serde_json::json!(shared_phase),
+        "and the foreign tenant's plan holds the id, so this is not a 200 over a no-op"
+    );
+}
+
+/// **A `phases` payload naming one id twice answers `PHASE_ID_IN_USE` (409), not
+/// a `500` advising a retry — D-340.**
+///
+/// The two cases above are the collisions D-340 made legal; this is the one it
+/// left, and after the widening it is the **only reachable** arrangement. The
+/// facet is a wholesale replace — `replace_phases_on` deletes the revision's
+/// phase rows and re-inserts the payload inside one transaction — so no other
+/// writer can be holding a `(tenant, plan, revision, phase)` slot this write
+/// wants. The one caller who can is the payload itself.
+///
+/// What it answered before: every `DbErr` out of `insert_phases` mapped to
+/// `RepoError::Db` and reached the caller as `500 Internal, "please retry
+/// later"` — false for a class no retry can fix, and naming neither the
+/// constraint nor the id, which is the single fact an author needs.
+///
+/// **The colliding payload is a graph-valid chain**, and that is load-bearing twice
+/// over. Two terminal rows collide on `uq_pricing_plan_phase_terminal` —
+/// `(plan_id, plan_revision) WHERE converts_to_phase_id IS NULL` — which is a
+/// *different* constraint whose remedy is to give one of them a `convertsToPhaseId`,
+/// and would let this case pass while the primary key's refusal was still untyped;
+/// `plan_shape_repo_tests` pins that discrimination on both engines' renderings
+/// without a database. **And since the 2026-08-17 review the chain itself is judged
+/// at this door** (`inst-ph-graph`, write stage), so a payload has to be a legal
+/// chain to reach the key at all: this one repeats its **trial** phase, which leaves
+/// exactly one terminal phase, no dangling edge and no cycle. The two-row form this
+/// case used before — one id twice, the first converting to itself — is a self-cycle
+/// and is now refused by the graph rule before the store ever sees it, which would
+/// have turned a pin on `PHASE_ID_IN_USE` into a pin on nothing.
+#[tokio::test]
+async fn a_phases_payload_naming_one_id_twice_answers_the_conflict_and_names_it() {
+    let harness = Harness::new().await;
+    let plan_id = Uuid::now_v7();
+    let phase = Uuid::now_v7();
+    let terminal = Uuid::now_v7();
+    seed_draft_plan(&harness, plan_id).await;
+
+    // The positive control, first and on the same plan: a two-row payload is
+    // accepted, so what the refusal below discriminates is the repeated id and
+    // not the arity. Without it a door that refused every multi-phase chain —
+    // every trial-plus-evergreen plan in the gear — would satisfy the assertion
+    // that follows. The trial converts into the phase beside it: it used to name a
+    // freshly minted id belonging to no phase of the payload, which the write-stage
+    // `inst-ph-graph` now refuses as a dangling edge — a control carrying the fault
+    // the rule judges.
+    let chain = harness
+        .allowed()
+        .send(with_headers(
+            "PATCH",
+            &plan_path(plan_id),
+            Some(serde_json::json!({
+                "phases": [
+                    {
+                        "phase_id": phase,
+                        "kind": "trial",
+                        "ordinal": 0,
+                        "converts_to_phase_id": terminal,
+                        "phase_duration_days": 14
+                    },
+                    { "phase_id": terminal, "kind": "evergreen", "ordinal": 1 }
+                ]
+            })),
+            &[("if-match", "\"0-0\"")],
+        ))
+        .await;
+    assert_eq!(
+        chain.status(),
+        StatusCode::OK,
+        "two distinct phases in one payload must still be accepted"
+    );
+
+    let collided = harness
+        .allowed()
+        .send(with_headers(
+            "PATCH",
+            &plan_path(plan_id),
+            Some(serde_json::json!({
+                "phases": [
+                    {
+                        "phase_id": phase,
+                        "kind": "trial",
+                        "ordinal": 0,
+                        "converts_to_phase_id": terminal,
+                        "phase_duration_days": 14
+                    },
+                    { "phase_id": terminal, "kind": "evergreen", "ordinal": 1 },
+                    {
+                        "phase_id": phase,
+                        "kind": "trial",
+                        "ordinal": 2,
+                        "converts_to_phase_id": terminal,
+                        "phase_duration_days": 14
+                    }
+                ]
+            })),
+            &[("if-match", "\"0-1\"")],
+        ))
+        .await;
+
+    assert_eq!(collided.status(), StatusCode::CONFLICT);
+    let body = body_json(collided).await;
+    assert_eq!(
+        code_in(&body),
+        "PHASE_ID_IN_USE",
+        "the code is the discriminator a client matches on: {body}"
+    );
+    assert!(
+        body.to_string().contains(&phase.to_string()),
+        "the refusal must name the id, which is the one fact the author acts on: {body}"
+    );
+
+    // The refused replace rolled back whole: the chain the control wrote is
+    // still there and the revision did not move. A 409 over a half-applied
+    // delete-then-insert would leave the plan with fewer phases than it had.
+    assert_eq!(
+        plan_row_version(&harness, plan_id, 0).await,
+        Some(1),
+        "a refused child write must not move the revision"
+    );
+    let read = body_json(
+        harness
+            .allowed()
+            .send(request("GET", &plan_path(plan_id), None))
+            .await,
+    )
+    .await;
+    assert_eq!(
+        read["phases"].as_array().map(Vec::len),
+        Some(2),
+        "the accepted chain survives the refusal: {read}"
+    );
+}
+
+/// **Two terminal phases in one payload is refused by the rule that owns the
+/// requirement — 2026-08-17 review, on D-340.**
+///
+/// It answered `500 … Please retry later`. The payload trips
+/// `uq_pricing_plan_phase_terminal`, which `names_the_phase_key` deliberately routes
+/// away from `PHASE_ID_IN_USE` — rightly, since the remedy is to give one of them a
+/// `convertsToPhaseId` rather than to rename it — and the non-matching arm lands in
+/// `RepoError::Db`. That is the exact class D-340 filed as `[H]`: caller-owned,
+/// caller-fixable, no retry helps, and the response withholds the one fact the
+/// author needs.
+///
+/// The fix is at the door and not at the store: `inst-ph-graph` already owns "not
+/// exactly one terminal phase" and says in as many words that the partial `UNIQUE`
+/// can carry only the at-most-one half, the pipeline running before the write. So the
+/// rule refuses it with its own message and the constraint becomes a backstop no
+/// caller reaches — rather than a second store-side owner of one requirement, which
+/// is how two owners of one rule come to disagree.
+#[tokio::test]
+async fn a_phases_payload_carrying_two_terminal_phases_is_refused_by_the_rule_that_owns_it() {
+    let harness = Harness::new().await;
+    let plan_id = Uuid::now_v7();
+    let first = Uuid::now_v7();
+    let second = Uuid::now_v7();
+    seed_draft_plan(&harness, plan_id).await;
+
+    let refused = harness
+        .allowed()
+        .send(with_headers(
+            "PATCH",
+            &plan_path(plan_id),
+            Some(serde_json::json!({
+                "phases": [
+                    { "phase_id": first, "kind": "evergreen", "ordinal": 0 },
+                    { "phase_id": second, "kind": "evergreen", "ordinal": 1 }
+                ]
+            })),
+            &[("if-match", "\"0-0\"")],
+        ))
+        .await;
+
+    assert_eq!(
+        refused.status(),
+        StatusCode::BAD_REQUEST,
+        "a caller-fixable payload fault is not a storage failure"
+    );
+    let body = body_json(refused).await;
+    assert_eq!(code_in(&body), "PHASE_GRAPH_INVALID", "{body}");
+    let rendered = body.to_string();
+    assert!(
+        rendered.contains(&first.to_string()) && rendered.contains(&second.to_string()),
+        "the refusal names both claimants, because either one may be the one to convert: {body}"
+    );
+    assert_eq!(
+        plan_row_version(&harness, plan_id, 0).await,
+        Some(0),
+        "a refused child write must not move the revision"
+    );
+}
+
+/// **A `convertsToPhaseId` naming nothing is refused at the write too — the same
+/// rule, the same door.**
+///
+/// This payload was **accepted** (`200`) and refused at publish. It is the other half
+/// of arming the probe against the rule rather than against one of its faults: a door
+/// wired to a terminal-count check alone would satisfy the case above and leave this
+/// one exactly as it was. Every operand is in the request — the facet is a wholesale
+/// replace, so no later call completes a dangling edge, it replaces the whole set —
+/// which is what makes the edge judgeable here under D-312's test.
+#[tokio::test]
+async fn a_phases_payload_whose_edge_names_no_phase_of_the_set_is_refused_at_the_write() {
+    let harness = Harness::new().await;
+    let plan_id = Uuid::now_v7();
+    let authored = Uuid::now_v7();
+    let absent = Uuid::now_v7();
+    seed_draft_plan(&harness, plan_id).await;
+
+    let refused = harness
+        .allowed()
+        .send(with_headers(
+            "PATCH",
+            &plan_path(plan_id),
+            Some(serde_json::json!({
+                "phases": [{
+                    "phase_id": authored,
+                    "kind": "trial",
+                    "ordinal": 0,
+                    "converts_to_phase_id": absent,
+                    "phase_duration_days": 14
+                }]
+            })),
+            &[("if-match", "\"0-0\"")],
+        ))
+        .await;
+
+    assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
+    let body = body_json(refused).await;
+    assert_eq!(code_in(&body), "PHASE_GRAPH_INVALID", "{body}");
+    assert!(
+        body.to_string().contains(&absent.to_string()),
+        "the refusal names the target that resolves to nothing: {body}"
+    );
+    assert_eq!(
+        plan_row_version(&harness, plan_id, 0).await,
+        Some(0),
+        "nothing landed"
+    );
+}
+
+/// A draft plan carrying one draft price row on [`rest_support::seeded_phase`],
+/// with that phase attached.
+///
+/// Returns the revision's row version, because every case below continues the
+/// version chain from here. The row is seeded **before** the phase is attached on
+/// purpose: the attach is itself a `phases` write on a plan carrying a row, and it
+/// is the write that *repairs* a stranding rather than causing one — which the
+/// D-342 door must not refuse, or an author handed an orphaned row would have no
+/// call left that fixes it.
+async fn seed_plan_with_a_row_on_its_phase(harness: &Harness, plan_id: Uuid) -> u64 {
+    seed_draft_plan(harness, plan_id).await;
+    seed_price(harness, plan_id, "eu").await;
+
+    let attached = harness
+        .allowed()
+        .send(with_headers(
+            "PATCH",
+            &plan_path(plan_id),
+            Some(phase_chain(rest_support::seeded_phase().get())),
+            &[("if-match", "\"0-0\"")],
+        ))
+        .await;
+    assert_eq!(
+        attached.status(),
+        StatusCode::OK,
+        "attaching the phase a stranded row names is the repair, not the fault"
+    );
+    1
+}
+
+/// One phases body over a chain that keeps `seeded_phase` and prepends a trial.
+///
+/// The positive control of D-342's door, and the only one of the three cases that
+/// can detect an opt-in applied too widely: the two refusals below would pass
+/// whether the door judged this facet or the whole pipeline.
+fn trial_before_the_seeded_phase() -> serde_json::Value {
+    serde_json::json!({
+        "phases": [
+            {
+                "phase_id": Uuid::now_v7(),
+                "kind": "trial",
+                "ordinal": 0,
+                "converts_to_phase_id": rest_support::seeded_phase().get(),
+                "phase_duration_days": 14
+            },
+            {
+                "phase_id": rest_support::seeded_phase().get(),
+                "kind": "evergreen",
+                "ordinal": 1
+            }
+        ]
+    })
+}
+
+/// **A `phases` write that would strand a draft row is refused when it is made —
+/// D-342.**
+///
+/// `RowPhaseAttached` reported through `violate`, which defaults to the Publish
+/// stage, so this `PATCH` answered 200 and the author learned at publish. The delay
+/// costs the remediation, which is the whole of the argument: at the write there are
+/// two remedies — keep the phase, or drop the rows deliberately — while at publish a
+/// published row cannot be re-pointed at all, a scope key being the row's identity,
+/// and a draft row can only be deleted.
+///
+/// The facet is a wholesale **replace**, so the stranding is one successful call:
+/// it deletes the revision's phase rows and re-inserts the payload rather than
+/// merging it.
+#[tokio::test]
+async fn a_phases_write_dropping_a_phase_a_draft_row_names_is_refused_at_the_write() {
+    let harness = Harness::new().await;
+    let plan_id = Uuid::now_v7();
+    let version = seed_plan_with_a_row_on_its_phase(&harness, plan_id).await;
+
+    let refused = harness
+        .allowed()
+        .send(with_headers(
+            "PATCH",
+            &plan_path(plan_id),
+            // A different id entirely: the row's phase is simply gone from the set.
+            Some(phase_chain(Uuid::now_v7())),
+            &[("if-match", &format!("\"0-{version}\""))],
+        ))
+        .await;
+
+    // 400 for `require_well_formed_plan_name`'s reason, stated there: a
+    // write-stage violation renders through `failed_precondition()`, the
+    // architectural 422 this gear answers as 400.
+    assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
+    let body = body_json(refused).await;
+    assert_eq!(code_in(&body), "PHASE_ROW_ORPHANED", "{body}");
+    assert!(
+        body.to_string()
+            .contains(&rest_support::seeded_phase().get().to_string()),
+        "the refusal names the phase, which is the remedy the author acts on: {body}"
+    );
+
+    // Nothing landed. The refusal has to arrive before the delete half of the
+    // replace, or an author would be told no and left with fewer phases.
+    let read = body_json(
+        harness
+            .allowed()
+            .send(request("GET", &plan_path(plan_id), None))
+            .await,
+    )
+    .await;
+    assert_eq!(
+        read["phases"][0]["phase_id"],
+        serde_json::json!(rest_support::seeded_phase().get()),
+        "the phase the row names is still attached: {read}"
+    );
+    assert_eq!(plan_row_version(&harness, plan_id, 0).await, Some(version));
+}
+
+/// **The empty set is the same refusal — D-342.**
+///
+/// Its own case rather than a line in the one above, because it is the shape
+/// easiest to *type* and option (c) of the decision was to refuse only this one.
+/// That option was rejected for inverting the ordering by likelihood — the
+/// replace-that-drops-one is the shape easiest to reach by accident — so both
+/// cases have to stand or the rejected option is what shipped.
+///
+/// **The empty set is two faults since the 2026-08-17 review**, and the envelope
+/// carries both: it strands the rows *and* leaves the revision with no terminal
+/// phase (`inst-ph-graph`, which now runs at this door too). The stranding is asserted
+/// as the **first** violation deliberately — it is the one an author acts on, and the
+/// door's rule order is what puts it there.
+#[tokio::test]
+async fn an_empty_phases_write_on_a_plan_holding_rows_is_refused_at_the_write() {
+    let harness = Harness::new().await;
+    let plan_id = Uuid::now_v7();
+    let version = seed_plan_with_a_row_on_its_phase(&harness, plan_id).await;
+
+    let refused = harness
+        .allowed()
+        .send(with_headers(
+            "PATCH",
+            &plan_path(plan_id),
+            Some(serde_json::json!({ "phases": [] })),
+            &[("if-match", &format!("\"0-{version}\""))],
+        ))
+        .await;
+
+    assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
+    let body = body_json(refused).await;
+    assert_eq!(code_in(&body), "PHASE_ROW_ORPHANED", "{body}");
+    assert!(
+        body.to_string().contains("PHASE_GRAPH_INVALID"),
+        "an empty phase set is also a revision with no terminal phase, and one \
+         response has to carry both remediations: {body}"
+    );
+    assert_eq!(plan_row_version(&harness, plan_id, 0).await, Some(version));
+}
+
+/// **The positive control: a replace that keeps every named phase still
+/// succeeds.**
+///
+/// D-342 clause (3) — the opt-in is scoped to this facet and this rule, and this is
+/// what makes the scoping checkable. A too-wide opt-in shows up **here** rather
+/// than in the refusals, which would pass either way: turning the whole plan
+/// pipeline on at this door would refuse this plan for having no frequency, no
+/// descriptor set and a trial phase carrying no coverage, none of which is a fault
+/// of the request.
+///
+/// Prepending a trial is the ordinary authoring act the facet exists for, and it is
+/// green before D-342 as well as after.
+#[tokio::test]
+async fn a_phases_write_that_keeps_every_named_phase_still_succeeds() {
+    let harness = Harness::new().await;
+    let plan_id = Uuid::now_v7();
+    let version = seed_plan_with_a_row_on_its_phase(&harness, plan_id).await;
+
+    let accepted = harness
+        .allowed()
+        .send(with_headers(
+            "PATCH",
+            &plan_path(plan_id),
+            Some(trial_before_the_seeded_phase()),
+            &[("if-match", &format!("\"0-{version}\""))],
+        ))
+        .await;
+
+    assert_eq!(accepted.status(), StatusCode::OK);
+    let body = body_json(accepted).await;
+    assert_eq!(
+        body["phases"].as_array().map(Vec::len),
+        Some(2),
+        "both phases landed, so this is not a 200 over a rejected write: {body}"
+    );
+    assert_eq!(
+        plan_row_version(&harness, plan_id, 0).await,
+        Some(version + 1)
+    );
+}
+
+/// A **published** plan holding a published price row on
+/// [`rest_support::seeded_phase`], with that phase attached and **no open draft**.
+///
+/// The arrangement all three of D-342's own cases are missing: each of them edits a
+/// plan that already holds a draft, so the arm of `target_revision` that *opens a
+/// successor* was never under the door. Returns the tag a `PATCH` has to present,
+/// read off the route rather than computed, because the publish moves the
+/// revision's version.
+async fn seed_published_plan_with_a_row_on_its_phase(
+    harness: &Harness,
+    plan_id: Uuid,
+) -> (String, u64) {
+    seed_draft_plan(harness, plan_id).await;
+    let price = seed_price(harness, plan_id, "eu").await;
+    harness.attach_shape(plan_id, 0).await;
+    harness.publish_price(plan_id, price.price_id).await;
+    harness.publish(plan_id, 0).await;
+
+    let version = plan_row_version(harness, plan_id, 0)
+        .await
+        .expect("the published revision stands somewhere");
+    assert_eq!(
+        plan_state(harness, plan_id, 0).await.as_deref(),
+        Some("published"),
+        "the successor arm is only reachable from a plan with no open draft"
+    );
+    assert_eq!(
+        plan_row_version(harness, plan_id, 1).await,
+        None,
+        "the staging is the test: there must be no successor before the call"
+    );
+    (harness.plan_etag(plan_id).await, version)
+}
+
+/// **A refused `phases` write opens no successor — 2026-08-17 review, on D-342's
+/// door.**
+///
+/// The door was placed *after* `target_revision`, which on a plan with no open
+/// draft **writes**: it opens a successor revision and copies the phase set
+/// forward. So a refused phases write on a published plan answered `400` and left
+/// revision 1 sitting in `draft` behind it — an edit the author never made, on a
+/// call they were told did not happen, and one that consumes the plan's single open
+/// draft slot (`OPEN_DRAFT_REVISION_EXISTS`) until somebody abandons it.
+///
+/// The refusal itself was already right, so the status says nothing about this
+/// defect: what has to be read back is **the plan's revisions**, which is why the
+/// two assertions below are about revision 1 and not about the body. The door needs
+/// no revision to judge — `price_repo::load_for_plan` is plan-scoped and not
+/// filtered by revision, and the number appears only in the finding's subject label
+/// — so it now runs before anything is opened.
+#[tokio::test]
+async fn a_refused_phases_write_on_a_published_plan_opens_no_successor() {
+    let harness = Harness::new().await;
+    let plan_id = Uuid::now_v7();
+    let (tag, version) = seed_published_plan_with_a_row_on_its_phase(&harness, plan_id).await;
+
+    let refused = harness
+        .allowed()
+        .send(with_headers(
+            "PATCH",
+            &plan_path(plan_id),
+            Some(serde_json::json!({ "phases": [] })),
+            &[("if-match", &tag)],
+        ))
+        .await;
+
+    assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(
+        problem_code(refused).await,
+        "PHASE_ROW_ORPHANED",
+        "the refusal was already correct; the side effect is the defect"
+    );
+
+    assert_eq!(
+        plan_row_version(&harness, plan_id, 1).await,
+        None,
+        "a refused write must leave no successor revision behind"
+    );
+    assert_eq!(
+        plan_state(&harness, plan_id, 0).await.as_deref(),
+        Some("published"),
+        "and the revision it was refused on stays exactly as it was"
+    );
+    assert_eq!(plan_row_version(&harness, plan_id, 0).await, Some(version));
+}
+
+/// **The positive control: a phases write on a published plan still opens the
+/// successor it is supposed to.**
+///
+/// The other half of moving the door, and the half a refusal test cannot see: an
+/// order that refused *before* resolving the revision would satisfy the case above
+/// by never opening a successor at all — including for the writes that should open
+/// one. Prepending a trial while keeping the phase the row names is that write.
+#[tokio::test]
+async fn an_accepted_phases_write_on_a_published_plan_opens_its_successor() {
+    let harness = Harness::new().await;
+    let plan_id = Uuid::now_v7();
+    let (tag, _) = seed_published_plan_with_a_row_on_its_phase(&harness, plan_id).await;
+
+    let accepted = harness
+        .allowed()
+        .send(with_headers(
+            "PATCH",
+            &plan_path(plan_id),
+            Some(trial_before_the_seeded_phase()),
+            &[("if-match", &tag)],
+        ))
+        .await;
+
+    assert_eq!(accepted.status(), StatusCode::OK);
+    let body = body_json(accepted).await;
+    assert_eq!(
+        body["revision"],
+        serde_json::json!(1),
+        "the patch landed on the successor this call opened: {body}"
+    );
+    assert_eq!(
+        body["phases"].as_array().map(Vec::len),
+        Some(2),
+        "and the payload landed on it: {body}"
+    );
+    assert_eq!(
+        plan_state(&harness, plan_id, 1).await.as_deref(),
+        Some("draft"),
+        "the successor exists and is the open draft"
     );
 }
 

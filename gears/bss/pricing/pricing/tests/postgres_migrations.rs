@@ -46,9 +46,16 @@
 //! **Every guard must be provable by removal**: delete the `CONSTRAINT` or the
 //! trigger, watch *exactly one* test fail, restore, and report which test it was.
 //!
-//! **This suite issues no DML and is therefore evidence of presence only.** That
-//! the objects reached the server is what it says; that any of them *refuses*
+//! **The rosters issue no DML and are therefore evidence of presence only.** That
+//! the objects reached the server is what they say; that any of them *refuses*
 //! what it claims to is Track P's, one executed refusal per object.
+//!
+//! The one exception is `a_key_widening_applies_over_rows_the_table_already_holds`,
+//! and it is an exception about the **runner** rather than about a guard: a
+//! migration that alters a key has to be applied to a table that already holds
+//! rows, which is a state no boot of an empty chain reaches, so that case writes
+//! rows between two staged runs. It is here and not in a schema suite because what
+//! it exercises is the chain being applied in two halves.
 //!
 //! Ignored by default — they need Docker. Run with
 //! `cargo test -p bss-pricing -- --ignored`.
@@ -480,7 +487,14 @@ const EXPECTED_PRIMARY_KEYS: &[&str] = &[
     "pricing_plan_addon_rule: plan_id, plan_revision, addon_sku_id",
     "pricing_plan_descriptor_set: plan_id, plan_revision",
     "pricing_plan_period_floor_cap: plan_id, plan_revision, currency, region",
-    "pricing_plan_phase: phase_id, plan_revision",
+    // **Widened by `m20260802_000081` (D-340)**: it was `phase_id, plan_revision`
+    // until 2026-08-17, which gave one phase id to one plan per revision *number*
+    // across the whole table, every tenant's included — five stand drafts keyed
+    // price rows on one id and four of them could never attach it, unrecoverably.
+    // The order is the tuple `idx_pricing_plan_phase_revision` already ranged over,
+    // and `PRIMARY_KEYS_SQL` reads `conkey`'s own order, so a key rearranged into a
+    // different key reads differently here.
+    "pricing_plan_phase: tenant_id, plan_id, plan_revision, phase_id",
     "pricing_policy_object: tenant_id",
     "pricing_price: price_id",
     "pricing_price_overlay: price_overlay_id, revision",
@@ -782,6 +796,140 @@ async fn a_bss_first_search_path_crash_loops_on_the_second_boot() {
     assert_eq!(
         bookkeeping, 2,
         "and the mechanism is the duplicate bookkeeping table, not something else"
+    );
+}
+
+/// The migration the staged run below withholds — D-340's widening.
+const KEY_MIGRATION: &str = "m20260802_000081_scope_pricing_plan_phase_key";
+
+/// Run one statement that must land, for the staged run's world-building.
+async fn must_succeed(conn: &DatabaseConnection, sql: &str) {
+    conn.execute(Statement::from_string(
+        sea_orm::DatabaseBackend::Postgres,
+        sql.to_owned(),
+    ))
+    .await
+    .unwrap_or_else(|e| panic!("statement must succeed: {sql}\n{e}"));
+}
+
+/// **A key change applies to a schema that already holds rows.**
+///
+/// Every other case in this suite boots the chain into an empty database, and a
+/// migration that only works on an empty database is the defect class that reaches
+/// production silently: on the stand `pricing_plan_phase` carries a tenant's phase
+/// rows, and D-340's widening is a `DROP CONSTRAINT` / `ADD PRIMARY KEY` over them.
+/// So this one applies the chain **up to** the widening, writes a world, and then
+/// applies the widening — which is the only arrangement where "applied = 1" is a
+/// fact about a live schema rather than about a fresh one.
+///
+/// Three claims: the withheld migrations are exactly what the second run applies
+/// (`applied` grows by them and by nothing else, `skipped` accounts for the rest);
+/// the rows are still there afterwards; and the key the server now reports is the
+/// widened tuple. The last is what makes the first two more than a no-op — a
+/// migration that did nothing at all would satisfy both.
+#[tokio::test]
+#[ignore = "requires Docker (testcontainers)"]
+async fn a_key_widening_applies_over_rows_the_table_already_holds() {
+    const TENANT: &str = "11111111-1111-1111-1111-111111111111";
+    const PLAN: &str = "22222222-0000-0000-0000-00000000000a";
+    const ACTOR: &str = "44444444-4444-4444-4444-444444444444";
+    const TERMINAL_PHASE: &str = "33333333-0000-0000-0000-000000000001";
+    const TRIAL_PHASE: &str = "33333333-0000-0000-0000-000000000002";
+
+    let (port, _guard) = pg().await;
+    let db = connect_db(
+        &url_with_search_path(port, "public,bss"),
+        ConnectOpts::default(),
+    )
+    .await
+    .expect("connect with a public,bss search_path");
+
+    let mut chain = Migrator::migrations();
+    chain.sort_by(|a, b| a.name().cmp(b.name()));
+    let (earlier, withheld): (Vec<_>, Vec<_>) = chain
+        .into_iter()
+        .partition(|migration| migration.name() < KEY_MIGRATION);
+    assert_eq!(
+        withheld.first().map(|migration| migration.name()),
+        Some(KEY_MIGRATION),
+        "the staging is the whole point: the widening must be the first migration \
+         withheld, or the rows below are written under the key it already installed"
+    );
+    let staged = withheld.len();
+
+    let first = run_migrations_for_testing(&db, earlier)
+        .await
+        .expect("the chain up to the widening must apply");
+    assert_eq!(
+        first.applied,
+        chain_len() - staged,
+        "the staged boot applies everything except the withheld tail"
+    );
+
+    // A draft revision and two phase rows under it — one terminal, one trial
+    // carrying every nullable column, so the migration is asked to preserve values
+    // and not only NULLs. The trigger requires a `draft` parent, which is also the
+    // state the stand's five drafts are in.
+    let raw = Database::connect(&plain_url(port))
+        .await
+        .expect("connect plainly");
+    must_succeed(
+        &raw,
+        &format!(
+            "INSERT INTO bss.pricing_plan \
+             (plan_id, revision, tenant_id, lifecycle_state, created_by, created_at_utc) \
+             VALUES ('{PLAN}', 0, '{TENANT}', 'draft', '{ACTOR}', '2026-08-17 09:00:00+00')"
+        ),
+    )
+    .await;
+    must_succeed(
+        &raw,
+        &format!(
+            "INSERT INTO bss.pricing_plan_phase \
+             (phase_id, plan_revision, tenant_id, plan_id, kind, ordinal, \
+              converts_to_phase_id, phase_duration_days, display_trial_days) \
+             VALUES ('{TERMINAL_PHASE}', 0, '{TENANT}', '{PLAN}', 'evergreen', 1, \
+                     NULL, NULL, NULL), \
+                    ('{TRIAL_PHASE}', 0, '{TENANT}', '{PLAN}', 'trial', 0, \
+                     '{TERMINAL_PHASE}', 14, 14)"
+        ),
+    )
+    .await;
+
+    let second = run_migrations_for_testing(&db, Migrator::migrations())
+        .await
+        .expect("the widening must apply over a table that already holds rows");
+    assert_eq!(
+        second.applied, staged,
+        "exactly the withheld tail applies, the widening first among it"
+    );
+    assert_eq!(
+        second.skipped,
+        chain_len() - staged,
+        "and everything the staged boot already booked is skipped"
+    );
+
+    assert_eq!(
+        count(
+            &raw,
+            &format!(
+                "SELECT count(*)::bigint AS n FROM bss.pricing_plan_phase \
+                 WHERE plan_id = '{PLAN}' AND plan_revision = 0"
+            )
+        )
+        .await,
+        2,
+        "both phase rows must survive the key change"
+    );
+    let key: Vec<String> = names(&raw, PRIMARY_KEYS_SQL)
+        .await
+        .into_iter()
+        .filter(|line| line.starts_with("pricing_plan_phase:"))
+        .collect();
+    assert_eq!(
+        key,
+        vec!["pricing_plan_phase: tenant_id, plan_id, plan_revision, phase_id".to_owned()],
+        "and the key the server reports must be the widened one"
     );
 }
 

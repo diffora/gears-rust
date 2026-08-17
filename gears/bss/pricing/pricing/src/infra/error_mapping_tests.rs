@@ -140,6 +140,10 @@ fn conflicts_are_409() {
     let detail = || "detail".to_owned();
 
     assert_eq!(status(DomainError::DuplicateScopeKey(detail())), 409);
+    // D-340's, and the line above's class one table over: `pricing_plan_phase`'s
+    // primary key refused, which §5 types 409 outright. It answered `500` and
+    // advised a retry until 2026-08-17, for a class no retry can fix.
+    assert_eq!(status(DomainError::PhaseIdInUse(detail())), 409);
     assert_eq!(status(DomainError::StaleVersion(detail())), 409);
     assert_eq!(
         status(DomainError::IdempotencyPayloadMismatch(detail())),
@@ -300,6 +304,13 @@ fn the_wire_codes_survive_the_ladder() {
         aborted_reason(DomainError::DuplicateScopeKey(detail())),
         "DUPLICATE_SCOPE_KEY"
     );
+    // Read off the typed 409 context rather than out of `Debug`, like its
+    // neighbours: `reason` is where a client finds the discriminator, and D-340's
+    // whole complaint about the `500` was that it carried none.
+    assert_eq!(
+        aborted_reason(DomainError::PhaseIdInUse(detail())),
+        "PHASE_ID_IN_USE"
+    );
     assert_eq!(
         aborted_reason(DomainError::StaleVersion(detail())),
         "STALE_VERSION"
@@ -328,15 +339,24 @@ fn the_wire_codes_survive_the_ladder() {
         precondition_code(DomainError::GrandfatherUntilForbidden(detail())),
         "GRANDFATHER_UNTIL_FORBIDDEN"
     );
-    // The governance codes, spelled against the domain's own constants rather
-    // than second literals: the ladder holds the literal, `domain::approval`
-    // holds the constant, and the two must render one string. Until these lines
-    // existed the reason on the ladder could be renamed with the whole crate
-    // green, which is the coverage their Foundation neighbours above already
-    // had. Their statuses are asserted with the class each belongs to —
-    // `conflicts_are_409`, `fail_closed_publish_rejections_…` and
-    // `the_two_authority_refusals_…` — so one aspect of one arm reddens one
-    // test.
+}
+
+/// The governance codes, spelled against the domain's own constants rather than
+/// second literals: the ladder holds the literal, `domain::approval` holds the
+/// constant, and the two must render one string. Until these lines existed the
+/// reason on the ladder could be renamed with the whole crate green.
+///
+/// Split out of [`the_wire_codes_survive_the_ladder`] for
+/// [`the_window_codes_survive_the_ladder`]'s reason — one section's set reads as
+/// one — and because the combined census had grown past what one function may
+/// carry (`clippy::cognitive_complexity`, which is denied here). Their statuses
+/// are asserted with the class each belongs to — `conflicts_are_409`,
+/// `fail_closed_publish_rejections_…` and `the_two_authority_refusals_…` — so one
+/// aspect of one arm reddens one test.
+#[test]
+fn the_governance_codes_survive_the_ladder() {
+    let detail = || "detail".to_owned();
+
     assert_eq!(
         aborted_reason(DomainError::ApprovalNotPending(detail())),
         crate::domain::approval::APPROVAL_NOT_PENDING
@@ -353,10 +373,18 @@ fn the_wire_codes_survive_the_ladder() {
         aborted_reason(DomainError::PendingChangeUnitExists(detail())),
         crate::domain::approval::PENDING_CHANGE_UNIT_EXISTS
     );
-    // D-09's two codes. Bare literals, `WindowOverlap`'s own convention beside it:
-    // no `domain::membership` module exists to hold a constant, so — like
-    // `DUPLICATE_SCOPE_KEY` and `STALE_VERSION` above — the ladder's literal is
-    // the only spelling and this is what pins it against a silent rename.
+}
+
+/// D-09's two membership codes. Bare literals, `WindowOverlap`'s own convention
+/// beside it: no `domain::membership` module exists to hold a constant, so — like
+/// `DUPLICATE_SCOPE_KEY` and `STALE_VERSION` — the ladder's literal is the only
+/// spelling and this is what pins it against a silent rename.
+///
+/// Split out for [`the_governance_codes_survive_the_ladder`]'s reason.
+#[test]
+fn the_membership_codes_survive_the_ladder() {
+    let detail = || "detail".to_owned();
+
     assert_eq!(
         aborted_reason(DomainError::MembershipOverlap(detail())),
         "MEMBERSHIP_OVERLAP"

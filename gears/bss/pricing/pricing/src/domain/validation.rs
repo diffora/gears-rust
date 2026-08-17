@@ -48,11 +48,38 @@ use toolkit_macros::domain_model;
 ///   operands are mutable, so `model_kind: graduated` resolves it by adding
 ///   intent rather than by retracting.
 ///
-/// **The stage belongs to the violation, not to the rule.** Three of the four
-/// rules that emit a write-stage violation also emit publish-stage ones, and
-/// `EVAL_POLICY_MISPLACED` is the code for both a key contradiction and a
-/// content-against-content fault — so neither a marker on the rule nor a filter
-/// keyed on the code can express the split without over-refusing.
+/// **The stage belongs to the violation, not to the rule** — with one exception,
+/// named below because an unnamed exception to a rule stated this flatly is how the
+/// next reader decides the code is wrong.
+///
+/// **Six of the eight** rules that emit a write-stage violation also emit
+/// publish-stage ones, and `EVAL_POLICY_MISPLACED` is the code for both a key
+/// contradiction and a content-against-content fault — so neither a marker on the
+/// rule nor a filter keyed on the code can express the split without over-refusing.
+/// The eight, measured 2026-08-17 rather than remembered (this census said "three of
+/// the four" while five of seven was the fact, so re-derive it from
+/// `violate_at_write` / [`ValidationReport::violate_at`] and attribute each call to
+/// its rule rather than trusting this list):
+///
+/// - Both stages: `inst-la-fields`, `inst-mk-forbidden`, `inst-rv-attrs`,
+///   `inst-ac-gate`, and the two per-instance rules below.
+/// - Write stage only: `inst-mk-chargekind`, `inst-cmp-planname`.
+///
+/// **The exception: a rule may take its stage from the door that asks.** What a
+/// marker cannot carry is *the* stage of a rule's violations; what a rule can carry
+/// is a per-instance parameter, when **every** fault it emits is judgeable exactly
+/// where any of them is — because then the answer is a property of the surface and
+/// not of the fault. `inst-ph-row-attached` (D-342) and `inst-ph-graph` (2026-08-17
+/// review) are that shape: both read the submitted phase set, which **is** the
+/// request at the `phases` facet and is not an operand of the price-row write at all.
+///
+/// Three things keep the exception from becoming the marker this doc warns about:
+/// the stage is a field on the instance rather than on the rule type, [`Default`] is
+/// [`Stage::Publish`] so `plan_shape_rules` registers `::default()` and the aggregate
+/// pipeline stays a publish pipeline, and each rule's own case asserts that the
+/// pipeline's instance yields `write_stage_only() == None` over a subject the door's
+/// instance refuses. Reach for it only with that third part: without it, "the door
+/// decides" is indistinguishable from a rule that refuses everywhere.
 #[domain_model]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Stage {
@@ -153,6 +180,32 @@ impl ValidationReport {
             detail: detail.into(),
             stage: Stage::Write,
         });
+    }
+
+    /// Record a blocking violation stamped with `stage`.
+    ///
+    /// For the rules whose stage is a **per-instance parameter** rather than a
+    /// property of the fault — `inst-ph-row-attached` (D-342) and `inst-ph-graph`
+    /// (2026-08-17 review), each emitting one sentence whichever door asks.
+    /// Dispatching here rather than at a pair of `report.violate*` calls per fault
+    /// is what keeps that true: the code, subject and detail an author reads cannot
+    /// come to depend on which door refused them, and `inst-ph-graph` has three
+    /// faults that would otherwise carry three copies of the dispatch.
+    ///
+    /// It is deliberately **not** a shorthand for [`Self::violate_at_write`]: a rule
+    /// that knows its fault is write-judgeable says so directly, and passing a
+    /// constant [`Stage`] here would hide that behind a parameter.
+    pub fn violate_at(
+        &mut self,
+        stage: Stage,
+        code: impl Into<String>,
+        subject: impl Into<String>,
+        detail: impl Into<String>,
+    ) {
+        match stage {
+            Stage::Write => self.violate_at_write(code, subject, detail),
+            Stage::Publish => self.violate(code, subject, detail),
+        }
     }
 
     /// The write-judgeable part of this report, or `None` when there is none.

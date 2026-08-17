@@ -246,6 +246,23 @@ fn an_occupied_scope_key_keeps_its_rendering_verbatim() {
 }
 
 #[test]
+fn a_taken_phase_id_reaches_the_domain_naming_the_id_and_what_holds_it() {
+    // D-340. Unlike its neighbour above, this arm carries the **whole**
+    // `Display` rather than the bare id: the id alone is not the diagnostic, the
+    // clause saying a revision holds each id at most once is — and that clause is
+    // precisely the half the `500` this replaced withheld. So the assertion is on
+    // both, not on the class.
+    let phase = "1e256059-2956-4b3e-8acd-898eb43a1ff7";
+    let err = RepoError::PhaseIdInUse(phase.to_owned());
+
+    let DomainError::PhaseIdInUse(detail) = repo_failure(&err) else {
+        panic!("a taken phase id is its own refusal, not a storage fault");
+    };
+    assert!(detail.contains(phase), "{detail}");
+    assert!(detail.contains("at most once"), "{detail}");
+}
+
+#[test]
 fn a_reused_key_carrying_a_different_payload_is_its_own_refusal() {
     // Not a stale-version conflict, which would invite the one retry that can
     // never succeed: the stored response answers a different request, so

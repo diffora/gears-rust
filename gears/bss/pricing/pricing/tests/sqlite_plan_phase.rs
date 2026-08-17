@@ -13,13 +13,21 @@
 //! cases drive raw SQL through `common::migrated_db`, because the states they
 //! need — a phase row under a published revision, a phase row under an abandoned
 //! one — are states no typed path will ever produce and the guards exist
-//! precisely for what reaches the table outside this gear. The last three cases
+//! precisely for what reaches the table outside this gear. The closing cases
 //! drive `PlanShapeRepo`, because what they prove is the repository's: which
 //! refusal a caller is told, and what is left behind afterwards.
 //!
-//! Postgres mirrors every rule here as one PL/pgSQL trigger function and the
-//! same CHECKs and indexes, so no testcontainers case is added; see the
-//! migration's module doc for the transform.
+//! Postgres mirrors every CHECK, index and trigger here as one PL/pgSQL trigger
+//! function and the same objects, so the guards need no testcontainers case; see
+//! the migration's module doc for the transform.
+//!
+//! **The key's scope is the exception, and is proved on both engines.** D-340
+//! widened the primary key, and the two arms of `m20260802_000081` are not one
+//! rule spelled twice: Postgres names the key as a droppable constraint and
+//! `SQLite` reaches it only by rebuilding the whole table, so the mirror's green
+//! says nothing about the canonical engine. `tests/postgres_schema_plan_shape.rs`
+//! carries the Postgres half of the acceptance and `tests/postgres_migrations.rs`
+//! proves the rebuild's Postgres counterpart applies over rows that already exist.
 
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
@@ -38,8 +46,8 @@ use bss_pricing::infra::storage::migrations::Migrator;
 use bss_pricing::infra::storage::repo::{NewPlanDraft, PlanRepo, PlanShapeRepo};
 use chrono::{DateTime, TimeZone, Utc};
 use sea_orm::sea_query::Expr;
-use sea_orm::{ColumnTrait, Condition, DatabaseConnection, EntityTrait};
-use sea_orm_migration::MigratorTrait;
+use sea_orm::{ColumnTrait, Condition, ConnectionTrait, Database, DatabaseConnection, EntityTrait};
+use sea_orm_migration::{MigrationTrait, MigratorTrait, SchemaManager};
 use toolkit_db::migration_runner::run_migrations_for_testing;
 use toolkit_db::secure::{AccessScope, SecureEntityExt, SecureUpdateExt};
 use toolkit_db::{ConnectOpts, DBProvider, DbError, connect_db};
@@ -320,6 +328,352 @@ async fn a_phase_row_belongs_to_a_revision_that_exists() {
         declared.contains("plan_id->plan_id") && declared.contains("plan_revision->revision"),
         "the composite FK must cover both key columns, got: {declared}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// The key's scope (D-340, `m20260802_000081`).
+// ---------------------------------------------------------------------------
+
+/// The phase id the stand's five drafts share, used verbatim.
+///
+/// Nothing in these cases depends on the value, and it is this one anyway: what
+/// D-340 measured is that four of those five plans could never attach it, and a
+/// probe carrying the id from the measurement says which fault it is about.
+const SHARED_PHASE: &str = "1e256059-2956-4b3e-8acd-898eb43a1ff7";
+
+/// A second plan of [`TENANT`], and a plan of a second tenant.
+const PLAN_TWO: &str = "22222222-2222-2222-2222-2222000000b2";
+const TENANT_TWO: &str = "11111111-1111-1111-1111-1111000000b2";
+const PLAN_THREE: &str = "22222222-2222-2222-2222-2222000000c3";
+
+/// A successor id, so a row stays **outside**
+/// `uq_pricing_plan_phase_terminal`'s predicate and the primary key is what
+/// answers. There is deliberately no FK on `converts_to_phase_id`, so this need
+/// not name a stored row.
+const SUCCESSOR: &str = "33333333-3333-3333-3333-3333000000aa";
+
+/// Revision 0 of `plan` as an open draft under `tenant` — the only state a phase
+/// row can be written under.
+///
+/// [`insert_revision`] is fixed to this suite's single plan and tenant; the key's
+/// scope is the one property that cannot be shown with one of each.
+async fn insert_draft_of(conn: &DatabaseConnection, tenant: &str, plan: &str) {
+    must_succeed(
+        conn,
+        &format!(
+            "INSERT INTO pricing_plan (
+                plan_id, revision, tenant_id, lifecycle_state, created_by, created_at_utc)
+             VALUES ('{plan}', 0, '{tenant}', 'draft', '{ACTOR}', '{AUTHORED}')"
+        ),
+    )
+    .await;
+}
+
+/// One phase row of revision 0 of `plan` under `tenant`.
+fn insert_phase_of(
+    tenant: &str,
+    plan: &str,
+    phase: &str,
+    ordinal: i32,
+    converts_to: Option<&str>,
+) -> String {
+    format!(
+        "INSERT INTO pricing_plan_phase (
+            phase_id, plan_revision, tenant_id, plan_id, kind, ordinal,
+            converts_to_phase_id, phase_duration_days, display_trial_days)
+         VALUES ('{phase}', 0, '{tenant}', '{plan}', 'evergreen', {ordinal}, {}, NULL, NULL)",
+        nullable(converts_to),
+    )
+}
+
+/// How many rows carry `phase` — counted across plans and tenants on purpose,
+/// which is the scope the old key spoke about.
+async fn count_by_phase(conn: &DatabaseConnection, phase: &str) -> String {
+    scalar(
+        conn,
+        &format!(
+            "SELECT CAST(count(*) AS TEXT) AS v FROM pricing_plan_phase \
+             WHERE phase_id = '{phase}'"
+        ),
+    )
+    .await
+}
+
+/// Two plans of one tenant may hold the same phase id at the same revision
+/// number (D-340).
+///
+/// The key was `(phase_id, plan_revision)`, so the second insert was refused —
+/// and refused as a bare `500` through `RepoError::Db`, advising a retry no
+/// retry could satisfy. Five drafts on the stand key price rows on
+/// [`SHARED_PHASE`] and only one of them could attach it; the other four had no
+/// repair at all, because a scope key **is** a price row's identity and cannot be
+/// re-pointed. Nothing about a plan makes an id it holds unavailable to its
+/// sibling, and after the widening nothing about the key says otherwise.
+#[tokio::test]
+async fn two_plans_of_one_tenant_may_hold_the_same_phase_id() {
+    let conn = migrated_db().await;
+    insert_draft_of(&conn, TENANT, PLAN).await;
+    insert_draft_of(&conn, TENANT, PLAN_TWO).await;
+
+    // Terminal in both, which is the shape the stand's drafts want: the partial
+    // UNIQUE is keyed `(plan_id, plan_revision)`, so one terminal per plan is
+    // what it admits and two plans are two.
+    must_succeed(&conn, &insert_phase_of(TENANT, PLAN, SHARED_PHASE, 0, None)).await;
+    must_succeed(
+        &conn,
+        &insert_phase_of(TENANT, PLAN_TWO, SHARED_PHASE, 0, None),
+    )
+    .await;
+
+    assert_eq!(
+        count_by_phase(&conn, SHARED_PHASE).await,
+        "2",
+        "both plans must hold the id, so this is not a refusal passing by absence"
+    );
+}
+
+/// And a second tenant may hold it too — the arm that was an oracle.
+///
+/// The old key crossed the tenant boundary, so the difference between the `500`
+/// and the `200` on this write answered *is this id in use somewhere I cannot
+/// read*, on a table this gear scopes by `tenant_id` everywhere else (S5
+/// `inst-rb-pep`). The write reaching the table is the whole assertion: there is
+/// no longer a fact about another tenant's rows for a caller to read off it.
+#[tokio::test]
+async fn a_second_tenant_may_hold_the_same_phase_id() {
+    let conn = migrated_db().await;
+    insert_draft_of(&conn, TENANT, PLAN).await;
+    insert_draft_of(&conn, TENANT_TWO, PLAN_THREE).await;
+
+    must_succeed(&conn, &insert_phase_of(TENANT, PLAN, SHARED_PHASE, 0, None)).await;
+    must_succeed(
+        &conn,
+        &insert_phase_of(TENANT_TWO, PLAN_THREE, SHARED_PHASE, 0, None),
+    )
+    .await;
+
+    assert_eq!(count_by_phase(&conn, SHARED_PHASE).await, "2");
+}
+
+/// One plan's revision still may not hold the same phase id twice.
+///
+/// The positive controls' inverse, and the reason D-340 is a widening rather than
+/// a removal: `inst-ph-graph` walks a chain and `inst-ph-default` speaks of *the*
+/// terminal phase, both written as though a phase id names at most one row of a
+/// revision. A key widened far enough to admit the duplicate would make those
+/// rules judge a shape nobody can author, and a one-sided probe would be
+/// satisfied by it.
+///
+/// Both rows carry a successor so they sit **outside**
+/// `uq_pricing_plan_phase_terminal`'s predicate: the refusal under test is the
+/// primary key's, and `phase_id` in the column list is what distinguishes the two
+/// unique objects on this table — the partial index names `plan_id` and
+/// `plan_revision` and nothing else. This case is green before the widening as
+/// well as after, which is the only way it can detect one that went too far.
+#[tokio::test]
+async fn one_revision_may_not_hold_the_same_phase_id_twice() {
+    let conn = migrated_db().await;
+    insert_draft_of(&conn, TENANT, PLAN).await;
+    must_succeed(
+        &conn,
+        &insert_phase_of(TENANT, PLAN, SHARED_PHASE, 0, Some(SUCCESSOR)),
+    )
+    .await;
+
+    must_be_rejected(
+        &conn,
+        &insert_phase_of(TENANT, PLAN, SHARED_PHASE, 7, Some(SUCCESSOR)),
+        "pricing_plan_phase.phase_id",
+    )
+    .await;
+    assert_eq!(
+        count_by_phase(&conn, SHARED_PHASE).await,
+        "1",
+        "the duplicate must not have landed"
+    );
+}
+
+/// The name the staged run below stops before.
+const KEY_MIGRATION: &str = "m20260802_000081_scope_pricing_plan_phase_key";
+
+/// Every object `sqlite_master` recorded for `pricing_plan_phase`, keyed by name.
+///
+/// Read as one map so the comparison across the rebuild is between two whole
+/// schemas rather than between a checklist and whatever the second read finds:
+/// an object dropped and not recreated is a missing key, and one recreated with a
+/// paraphrased body is a changed value.
+async fn phase_objects(conn: &DatabaseConnection) -> BTreeMap<String, String> {
+    let rows = conn
+        .query_all(sea_orm::Statement::from_string(
+            sea_orm::DatabaseBackend::Sqlite,
+            // `type <> 'table'` because the table's own DDL is the one thing this
+            // migration is *supposed* to change; it is asserted separately, and
+            // folding it in here would make the comparison unfalsifiable.
+            "SELECT name AS n, type AS t, sql AS v FROM sqlite_master \
+             WHERE tbl_name = 'pricing_plan_phase' AND type <> 'table' \
+               AND name NOT LIKE 'sqlite_%' \
+             ORDER BY name"
+                .to_owned(),
+        ))
+        .await
+        .expect("query sqlite_master");
+    rows.into_iter()
+        .map(|row| {
+            let name: String = row.try_get("", "n").expect("an object name");
+            let kind: String = row.try_get("", "t").expect("an object type");
+            let sql: String = row.try_get("", "v").expect("the object's DDL");
+            (format!("{kind} {name}"), sql)
+        })
+        .collect()
+}
+
+/// Every phase row, every column, in one deterministic string.
+///
+/// Column by column and not `count(*)`: a rebuild whose `INSERT … SELECT` bound
+/// the columns positionally would carry the right number of rows with two of their
+/// values transposed. `coalesce` around the aggregate so an **empty** table reads
+/// as a sentinel rather than a NULL the harness cannot decode — a rebuild that
+/// dropped every row must fail its comparison and say so, not panic in the read.
+/// The `ORDER BY` is inside the subquery because the rebuild leaves the rows in a
+/// different physical order than it found them.
+const READ_BACK_PHASES: &str = "SELECT coalesce(group_concat(
+            phase_id || '|' || plan_revision || '|' || tenant_id || '|' || plan_id || '|' ||
+            kind || '|' || ordinal || '|' || coalesce(converts_to_phase_id, '-') || '|' ||
+            coalesce(phase_duration_days, -1) || '|' || coalesce(display_trial_days, -1),
+            ' ; '), '<no rows>') AS v
+          FROM (SELECT * FROM pricing_plan_phase ORDER BY plan_id, phase_id)";
+
+/// **The rebuild carries the rows it finds, and every guard that governed them.**
+///
+/// `SQLite` has no `ALTER TABLE … PRIMARY KEY`, so `m20260802_000081` drops and
+/// recreates this table — and a rebuild that silently lost its rows, an index or a
+/// trigger looks exactly like a clean install to every other case in this file,
+/// all of which start from a fresh database. This one does not: it applies the
+/// chain **up to** the widening, writes a world, and then applies the widening to
+/// a populated schema, which is the only arrangement in which the `INSERT …
+/// SELECT` is load-bearing.
+///
+/// Three claims, and the third is the one a name census cannot make:
+///
+/// 1. every row survives, column for column;
+/// 2. the two indexes and all three triggers come back with **byte-identical**
+///    DDL — captured before the migration and compared after, rather than
+///    checked off against a list, because `m20260802_000065`'s doc records what
+///    retyping a trigger body from a reading of it did to two of its five;
+/// 3. a trigger still **refuses**. A recreated trigger that were attached to the
+///    dropped table, or whose `WHEN` had lost its subquery, would be present,
+///    correctly named, and dead.
+#[tokio::test]
+async fn the_rebuild_carries_the_rows_the_indexes_and_the_armed_triggers() {
+    let conn = Database::connect("sqlite::memory:")
+        .await
+        .expect("connect in-memory sqlite");
+    let manager = SchemaManager::new(&conn);
+
+    let mut chain: Vec<Box<dyn MigrationTrait>> = Migrator::migrations();
+    chain.sort_by(|a, b| a.name().cmp(b.name()));
+    let (earlier, rest): (Vec<_>, Vec<_>) = chain
+        .into_iter()
+        .partition(|migration| migration.name() < KEY_MIGRATION);
+    assert_eq!(
+        rest.first().map(|migration| migration.name()),
+        Some(KEY_MIGRATION),
+        "the staging is the whole point: the widening must be the first migration \
+         withheld, or the world below is written against a schema that already has it"
+    );
+    for migration in &earlier {
+        migration
+            .up(&manager)
+            .await
+            .unwrap_or_else(|e| panic!("up {} must succeed: {e}", migration.name()));
+    }
+
+    // Two plans of one tenant, each with a phase, and a trial phase carrying
+    // every nullable column so the copy is exercised on values and not only on
+    // NULLs. The ids differ: under the pre-widening key they could not be equal,
+    // and this world has to be one the old schema accepts.
+    insert_draft_of(&conn, TENANT, PLAN).await;
+    insert_draft_of(&conn, TENANT, PLAN_TWO).await;
+    must_succeed(&conn, &insert_phase_of(TENANT, PLAN, FROZEN_PHASE, 1, None)).await;
+    must_succeed(
+        &conn,
+        &insert_phase_of(TENANT, PLAN_TWO, OPEN_PHASE, 1, None),
+    )
+    .await;
+    must_succeed(
+        &conn,
+        &format!(
+            "INSERT INTO pricing_plan_phase (
+                phase_id, plan_revision, tenant_id, plan_id, kind, ordinal,
+                converts_to_phase_id, phase_duration_days, display_trial_days)
+             VALUES ('{TOMBSTONED_PHASE}', 0, '{TENANT}', '{PLAN}', 'trial', 0, \
+             '{FROZEN_PHASE}', 14, 14)"
+        ),
+    )
+    .await;
+
+    let before_rows = scalar(&conn, READ_BACK_PHASES).await;
+    let before_objects = phase_objects(&conn).await;
+    // Stated rather than merely captured: a baseline taken from an empty table
+    // would let every assertion below pass over a rebuild that dropped the lot.
+    assert_eq!(
+        before_rows.matches(" ; ").count() + 1,
+        3,
+        "three phase rows are what the rebuild has to carry"
+    );
+    assert_eq!(
+        before_objects.len(),
+        5,
+        "and five objects: the two indexes and the three triggers ({:?})",
+        before_objects.keys().collect::<Vec<_>>()
+    );
+
+    for migration in &rest {
+        migration
+            .up(&manager)
+            .await
+            .unwrap_or_else(|e| panic!("up {} must succeed: {e}", migration.name()));
+    }
+
+    assert_eq!(
+        scalar(&conn, READ_BACK_PHASES).await,
+        before_rows,
+        "every row must cross the rebuild, column for column"
+    );
+    assert_eq!(
+        phase_objects(&conn).await,
+        before_objects,
+        "and every index and trigger must come back with the DDL it had"
+    );
+    let ddl = scalar(
+        &conn,
+        "SELECT sql AS v FROM sqlite_master \
+         WHERE type = 'table' AND name = 'pricing_plan_phase'",
+    )
+    .await;
+    assert!(
+        ddl.split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .contains("PRIMARY KEY (tenant_id, plan_id, plan_revision, phase_id)"),
+        "and the key must be the widened one, or the rebuild rebuilt nothing: {ddl}"
+    );
+
+    // The third claim: still armed. `PLAN`'s revision publishes, and its phase
+    // becomes immutable — which only a trigger attached to the **new** table can
+    // say.
+    flip(&conn, 0, "published").await;
+    must_be_rejected(
+        &conn,
+        &format!("UPDATE pricing_plan_phase SET ordinal = 9 WHERE phase_id = '{FROZEN_PHASE}'"),
+        "UPDATE of a phase under a non-draft plan revision",
+    )
+    .await;
+    must_succeed(
+        &conn,
+        &format!("UPDATE pricing_plan_phase SET ordinal = 9 WHERE phase_id = '{OPEN_PHASE}'"),
+    )
+    .await;
 }
 
 // ---------------------------------------------------------------------------

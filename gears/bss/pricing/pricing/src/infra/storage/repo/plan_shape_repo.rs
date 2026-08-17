@@ -82,13 +82,13 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use sea_orm::ActiveValue::Set;
+use sea_orm::ActiveValue::{self, Set};
 use sea_orm::sea_query::Expr;
 use sea_orm::{ColumnTrait, Condition, EntityTrait, JsonValue, Order};
 use serde_json::json;
 use toolkit_db::secure::{
-    AccessScope, DBRunner, SecureDeleteExt, SecureEntityExt, SecureInsertExt, SecureUpdateExt,
-    TxError,
+    AccessScope, DBRunner, ScopeError, SecureDeleteExt, SecureEntityExt, SecureInsertExt,
+    SecureUpdateExt, TxError,
 };
 use toolkit_db::{DBProvider, DbError};
 use uuid::Uuid;
@@ -715,15 +715,103 @@ async fn insert_phases(
     phases: Vec<plan_phase::ActiveModel>,
 ) -> Result<(), RepoError> {
     for phase in phases {
+        // The id is read off the model before the insert takes it, because it is
+        // what the refusal has to name and the driver's error carries the
+        // constraint but never the value.
+        let phase_id = phase_id_of(&phase);
         plan_phase::Entity::insert(phase.clone())
             .secure()
             .scope_with_model(scope, &phase)
             .map_err(|e| RepoError::Db(format!("pricing_plan_phase scope: {e}")))?
             .exec(runner)
             .await
-            .map_err(|e| RepoError::Db(format!("insert pricing_plan_phase: {e}")))?;
+            .map_err(|e| phase_id_in_use_or_db(&e, phase_id, "insert pricing_plan_phase"))?;
     }
     Ok(())
+}
+
+/// The taken-phase-id refusal, or an ordinary storage failure (**D-340**).
+///
+/// [`bundle_repo`](super::bundle_repo)'s `duplicate_bundle_or_db` verbatim, down
+/// to the conjunct: the **typed unique class first**, the message only to say
+/// *which* constraint. Reading the driver's text alone would answer
+/// [`RepoError::PhaseIdInUse`] for any failure whose message happened to carry the
+/// DDL name — a lock report naming the index, a planner error quoting it — telling
+/// a caller to rename a phase for a fault that has nothing to do with one. The
+/// fallback runs the safe way: an unrecognised failure stays
+/// [`RepoError::Db`], which is what this call answered for everything before
+/// D-340.
+///
+/// The one-row-at-a-time insert above is what makes the id knowable at all. A
+/// multi-row insert would report the constraint and leave the caller to work out
+/// which of the submitted phases tripped it — the fault D-340 measured, in a
+/// smaller form.
+///
+/// `phase_id` is an `Option` because [`phase_id_of`] is total, and a model that
+/// carries no id takes the storage-failure arm: this refusal exists to name the
+/// id, so one that cannot name it has nothing to offer over the answer it
+/// replaced.
+fn phase_id_in_use_or_db(err: &ScopeError, phase_id: Option<Uuid>, context: &str) -> RepoError {
+    if let Some(phase_id) = phase_id
+        && err.is_unique_violation()
+        && names_the_phase_key(&err.to_string())
+    {
+        return RepoError::PhaseIdInUse(phase_id.to_string());
+    }
+    RepoError::Db(format!("{context}: {err}"))
+}
+
+/// The `phase_id` a model carries, for the refusal to name.
+///
+/// Total rather than `ActiveValue::unwrap`, which panics on `NotSet`. Every
+/// producer in this module — [`phase_model_for`], [`copy_phases`] — `Set`s the
+/// column, so `None` is unreachable today; what it must not be is a panic
+/// discovered on the failure path, where the ordinary answer is a storage error
+/// nobody had to fabricate an id for.
+fn phase_id_of(model: &plan_phase::ActiveModel) -> Option<Uuid> {
+    match model.phase_id {
+        ActiveValue::Set(id) | ActiveValue::Unchanged(id) => Some(id),
+        ActiveValue::NotSet => None,
+    }
+}
+
+/// Does this driver message name `pricing_plan_phase`'s **primary key** rather
+/// than the other unique constraint on the same table?
+///
+/// Two renderings, one per backend, both of them names `m20260802_000081` writes:
+/// Postgres names the **constraint**, `SQLite` spells `PRIMARY KEY` inside the
+/// `CREATE TABLE` and so names the indexed **columns**. Neither engine produces
+/// the other's spelling, so both arms are live.
+///
+/// **The other unique constraint is what makes this a name match and not "a
+/// unique index refused"**: `uq_pricing_plan_phase_terminal` is partial on
+/// `(plan_id, plan_revision) WHERE converts_to_phase_id IS NULL`, so a payload
+/// carrying two terminal phases trips it — a *different* refusal whose remedy is to
+/// give one of them a `convertsToPhaseId`, not to rename it.
+///
+/// **No longer reachable through the `phases` facet, and this arm is now a
+/// backstop** (2026-08-17 review). Routing that constraint here was right and the
+/// class it landed in was not: `RepoError::Db` renders `500 … please retry later`
+/// for a caller-owned fault no retry fixes, which is what D-340 filed as `[H]` about
+/// this very statement's other constraint. It is fixed at the door instead —
+/// `inst-ph-graph` owns "exactly one terminal phase" and now runs at the write stage
+/// on that facet — rather than by giving this function a second typed code, which
+/// would have put two owners on one requirement. The discrimination below is
+/// therefore unchanged, and both arms still have to be right: a bulk or internal
+/// writer that bypasses the facet reaches this line, and answering such a caller
+/// `PHASE_ID_IN_USE` would send them to change the one thing that is not wrong.
+///
+/// Its `SQLite` rendering names `pricing_plan_phase.plan_id,
+/// pricing_plan_phase.plan_revision` and cannot contain `pricing_plan_phase.phase_id`;
+/// the qualified column is matched rather than the bare one so that
+/// `converts_to_phase_id` and other tables' `phase_id` columns cannot be mistaken
+/// for it.
+///
+/// Split out and taking a `&str` so both renderings are asserted directly,
+/// without staging a database race for either — `names_the_bundle_plan_slot`'s
+/// arrangement, for the same reason.
+fn names_the_phase_key(message: &str) -> bool {
+    message.contains("pricing_plan_phase_pkey") || message.contains("pricing_plan_phase.phase_id")
 }
 
 /// Drop one revision's whole phase set.
@@ -2214,3 +2302,7 @@ pub async fn replace_composites_on(
     .await?;
     Ok(updated)
 }
+
+#[cfg(test)]
+#[path = "plan_shape_repo_tests.rs"]
+mod plan_shape_repo_tests;

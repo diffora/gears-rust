@@ -65,7 +65,7 @@ use crate::domain::plan_shape::{
     PeriodFloorCap, PhaseKind, PlanPhase,
 };
 use crate::domain::scope_key::{PhaseId, PlanId, Region};
-use crate::infra::clone::{CloneNotice, CloneReceipt, clone_plan_on};
+use crate::infra::clone::{CloneNotice, CloneReceipt, SeededPhaseOrigin, clone_plan_on};
 use crate::infra::idempotent::{self, Guarded, GuardedRequest, TxFuture};
 use crate::infra::storage::repo::{NewPlanDraft, PlanRepo, plan_repo, plan_shape_repo};
 use crate::infra::storage::{RepoError, repo_failure};
@@ -881,7 +881,17 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
              (D-90); the `If-Match` is then tested against the current revision. A retired plan \
              answers `PLAN_RETIRED_NO_SUCCESSOR`, a plan that already holds a draft answers \
              `OPEN_DRAFT_REVISION_EXISTS`, and a plan whose every revision is `abandoned` \
-             answers `PLAN_ABANDONED_NO_SUCCESSOR` - its id is spent, so mint a new plan.",
+             answers `PLAN_ABANDONED_NO_SUCCESSOR` - its id is spent, so mint a new plan.\n\nThe \
+             **phases** facet is a wholesale replace and is judged when it is made (D-342): a \
+             payload that drops a phase one of the revision's price rows keys on - the empty set \
+             included - is refused `PHASE_ROW_ORPHANED`, naming the phase, rather than being \
+             accepted and refused at publish, by which time a published row cannot be re-pointed \
+             and a draft row can only be deleted. A replace that keeps every phase the rows name \
+             still succeeds. The submitted chain is judged against itself at the same door: a set \
+             with no terminal phase or with two, a `convertsToPhaseId` naming no phase of the set, \
+             and a cycle are each refused `PHASE_GRAPH_INVALID` - the facet replaces the phase set \
+             wholesale, so none of those is a state a later call completes. A payload naming one \
+             `phase_id` twice answers `PHASE_ID_IN_USE` (`409`, D-340).",
         )
         .tag(TAG)
         .authenticated()
@@ -1410,6 +1420,30 @@ async fn patch_plan(
     let facet = Facet::of(body)?;
     let stamp = audit_stamp(&ctx, Utc::now(), correlation);
 
+    // D-342's write-stage door, on **this facet and no other**. Before the match
+    // rather than inside its arm because every arm answers `RepoError` and this
+    // refusal is a validation report.
+    //
+    // **Before `target_revision`, and that ordering is the fix for a defect the
+    // 2026-08-17 review measured**: on a plan with no open draft that call *writes*
+    // — it opens a successor revision and copies the phase set forward — so a door
+    // behind it refused the payload and left the successor standing, an edit the
+    // author never made on a call they were told did not happen, holding the plan's
+    // one open-draft slot until somebody abandons it. The door can run here because
+    // it needs no revision to judge: the rows it reads are plan-scoped
+    // (`price_repo::load_for_plan` is not filtered by revision) and the number only
+    // labels the finding's subject.
+    //
+    // The cost, stated rather than discovered: on this facet a stranding payload is
+    // now refused ahead of the `If-Match` binding and the has-an-editable-revision
+    // discrimination, so a caller who is wrong about both is told about the payload
+    // first. Both refusals are the caller's own and neither is lost; what the old
+    // order bought was a worse diagnosis plus a revision.
+    if let Facet::Phases(phases) = &facet {
+        require_no_stranded_rows(&state, &scope, tenant, plan_id, asserted.revision, phases)
+            .await?;
+    }
+
     // The revision the patch lands on, and the version the store will match.
     // It takes the **same** stamp: the successor it may open is the first of the
     // two records this one call writes.
@@ -1896,10 +1930,14 @@ fn created(revision: &PlanRevision, phase: &PlanPhase) -> Response {
 #[derive(Debug, Clone)]
 #[toolkit_macros::api_dto(response)]
 pub struct CloneNoticeView {
-    /// Which class was left behind — `no_coverage_scheduled`,
-    /// `grandfathered_rows_not_copied` or `new_subscriptions_only_rows_not_copied`.
+    /// What the clone did not carry across, or did without being asked —
+    /// `no_coverage_scheduled`, `grandfathered_rows_not_copied`,
+    /// `new_subscriptions_only_rows_not_copied`, or D-341's seeded terminal phase as
+    /// `terminal_phase_adopted` / `terminal_phase_minted`.
     pub code: String,
-    /// How many rows it covers.
+    /// How many rows it covers. On `terminal_phase_adopted` the copied rows the seeded
+    /// phase **attaches**; on `terminal_phase_minted` the copied rows it leaves
+    /// **stranded**, which is every row that travelled.
     pub rows: usize,
 }
 
@@ -1912,16 +1950,20 @@ pub struct CloneReceiptView {
     /// The plan it was cloned from — the same value the new row's `cloned_from`
     /// column carries (D-264).
     pub cloned_from: Uuid,
-    /// Phase rows copied, each under a new `phase_id` (D-19).
+    /// Phase rows copied, each under a new `phase_id` (D-19). **Zero does not mean
+    /// the clone holds no phase**: a source that held none has its terminal phase
+    /// *seeded* rather than copied (D-341), which the notices name.
     pub phases_copied: usize,
     /// Price rows copied, each under a new `price_id` and a reset scope key.
     pub prices_copied: usize,
     /// Composite meters copied, each under a new `composite_id` (D-106).
     pub composites_copied: usize,
     /// **What the operator would otherwise learn from a refused publish.** The
-    /// clone's billable rows have no window coverage (`inst-cl-windows`) and both
-    /// cutover-made eligibility classes stay behind (D-268); each is reported
-    /// here, counted per class, rather than discovered later.
+    /// clone's billable rows have no window coverage (`inst-cl-windows`), both
+    /// cutover-made eligibility classes stay behind (D-268), and a phase-less source
+    /// has its terminal phase seeded — adopted from the copied rows, or minted with
+    /// those rows left stranded (D-341). Each is reported here, counted per class,
+    /// rather than discovered later.
     pub notices: Vec<CloneNoticeView>,
 }
 
@@ -1952,6 +1994,21 @@ fn notice_view(notice: &CloneNotice) -> CloneNoticeView {
         CloneNotice::NewSubscriptionsOnlyRowsNotCopied { rows } => {
             ("new_subscriptions_only_rows_not_copied", *rows)
         }
+        // **Two codes for one variant, because the two outcomes are what a client
+        // acts on** (D-341, surfaced by the 2026-08-17 review): under `Adopted` the
+        // copied rows are attached and the clone is publishable once windows are
+        // scheduled; under `Minted` every copied row is stranded and the draft cannot
+        // publish until a human decides which id the plan holds. A single code with
+        // the origin in a second field would make the milder case and the blocking
+        // one indistinguishable to a consumer matching on `code`, which is what §3.3
+        // says a code is for.
+        CloneNotice::TerminalPhaseSeeded { origin, rows } => (
+            match origin {
+                SeededPhaseOrigin::Adopted => "terminal_phase_adopted",
+                SeededPhaseOrigin::Minted => "terminal_phase_minted",
+            },
+            *rows,
+        ),
     };
     CloneNoticeView {
         code: code.to_owned(),
@@ -2208,6 +2265,129 @@ fn require_well_formed_plan_name(name: Option<&str>) -> Result<(), DomainError> 
         detail,
     );
     Err(DomainError::ValidationFailed(report))
+}
+
+/// The write-stage door for the phase set (**D-342**).
+///
+/// `inst-ph-row-attached` reported through `violate`, which defaults to the Publish
+/// stage, so this facet accepted `{"phases": []}` and any replace dropping a phase
+/// a draft price row names — and the facet is a **wholesale replace**, deleting the
+/// revision's phase rows and re-inserting the payload, so the stranding is one
+/// successful `PATCH`. The author learned at publish, which is the single moment at
+/// which their options are strictly fewer: at the write there are two remedies —
+/// keep the phase, or drop the rows deliberately — while at publish a published row
+/// cannot be re-pointed at all (a scope key is the row's identity, Foundation §3.7)
+/// and a draft row can only be deleted.
+///
+/// **Two rules, not the pipeline**, which is the distinction
+/// [`require_well_formed_plan_name`] states above: turning the whole plan pipeline
+/// on here would refuse a draft for having no tier, no frequency and no descriptor
+/// set yet — legitimate intermediate states, and the mistake D-312's stage split
+/// exists to avoid. The two applied are the ones whose every operand is in hand at
+/// this door: the submitted phase set **is** the request, and the rows are already
+/// stored.
+///
+/// - `inst-ph-row-attached` (D-342), the stranding.
+/// - `inst-ph-graph` (2026-08-17 review), the phase set judged against itself. It
+///   owns "exactly one terminal phase", and the at-most-one half was reaching
+///   `uq_pricing_plan_phase_terminal` instead — a caller-fixable payload answered
+///   `500 … please retry later`, which is the class D-340 filed as `[H]` about the
+///   *other* unique constraint on the same statement.
+///
+/// Its siblings stay out, and that is the boundary rather than an omission:
+/// `PhaseChainLinear` and `TerminalPhaseKind` read the same submitted set, but a
+/// facet that refused a non-evergreen terminal or a non-linear ordinal run at the
+/// write would be a wider refusal than the review measured a fault for, and the
+/// direction that costs an author nothing is to add one when one is measured.
+///
+/// **The rows are the same operand the publish stage judges** —
+/// `publish::CANDIDATE_ROW_STATES`, the published plane plus the drafts this
+/// revision would publish — read through the same repository call
+/// `publish::assemble_from` makes. A door judging a different row set from the gate
+/// behind it is how a write-time check starts disagreeing with the publish it is
+/// supposed to anticipate.
+///
+/// **The subject carries only what the rule reads**, and that is stated rather than
+/// left to be discovered: `RowPhaseAttached` reads `rows`, `phases` and the
+/// `plan_id`/`revision` its finding is filed under. The `revision` is a **label and
+/// not an operand** — the rows are read plan-wide — which is what lets this door run
+/// before the revision the patch lands on has been resolved, and why the caller
+/// hands it the revision the `If-Match` names: the one the author read. On the
+/// open-draft arm that is the landing revision; on the successor arm it is that
+/// revision's predecessor, and a finding labelled with a successor number the caller
+/// has never seen would locate the fault no better. The rest of [`PlanShape`](crate::domain::plan_shape::PlanShape) stays
+/// at its default, which is safe in the one direction that matters — publish
+/// re-judges the whole assembled shape, so a field this door leaves unloaded can
+/// only delay a refusal, never lose one. Assembling the full shape here would cost
+/// six reads on every phase edit to answer a question two of them settle.
+///
+/// **Not a guarantee, and not claimed as one.** The read is not the write's guard:
+/// a price row authored between this check and the replace is judged at publish,
+/// which is why D-342 keeps the publish-stage registration rather than moving the
+/// rule. The two facets are authored through different calls and publish remains
+/// the gate every writer passes through.
+///
+/// It answers the enumerated report shape, so a client already parsing publish
+/// violations parses this unchanged.
+async fn require_no_stranded_rows(
+    state: &AuthoringState,
+    scope: &toolkit_db::secure::AccessScope,
+    tenant: Uuid,
+    plan_id: PlanId,
+    revision: u64,
+    phases: &[PlanPhase],
+) -> Result<(), CanonicalError> {
+    let conn = state.db.conn().map_err(|e| {
+        CanonicalError::from(DomainError::Internal(format!("phase door conn: {e}")))
+    })?;
+    let rows = crate::infra::storage::repo::price_repo::load_for_plan(
+        &conn,
+        scope,
+        tenant,
+        plan_id,
+        crate::infra::publish::CANDIDATE_ROW_STATES,
+    )
+    .await
+    .map_err(|e| CanonicalError::from(repo_failure(&e)))?;
+
+    let mut subject = crate::domain::plan_shape::PlanShape::new(plan_id, revision, Utc::now());
+    subject.phases = crate::domain::plan_shape::PhaseGraph::new(phases.to_vec());
+    subject.rows = rows;
+
+    let write = crate::domain::validation::Stage::Write;
+    let mut report = crate::domain::validation::ValidationReport::default();
+    // The stranding first, and the order is the one thing about this pair that is
+    // observable: a payload that both strands rows and holds no terminal phase — the
+    // empty set — reports both, and a client reading the *first* violation of the
+    // envelope reads the one that names the rows. That is the fault the author acts
+    // on; the graph fault is a consequence of the same empty payload.
+    crate::domain::validation::ValidationRule::evaluate(
+        &crate::domain::plan_rules::phase_graph::RowPhaseAttached { stage: write },
+        &subject,
+        &mut report,
+    );
+    // `inst-ph-graph`, added by the 2026-08-17 review. Its at-most-one-terminal half
+    // was reaching `uq_pricing_plan_phase_terminal` and coming back a `500` advising
+    // a retry — the class D-340 filed as [H], on the sibling constraint of the same
+    // statement. The rule owns "exactly one terminal phase", so it refuses it here
+    // with its own message and the store constraint becomes a backstop; a second
+    // typed code at the store would have made two owners of one requirement.
+    crate::domain::validation::ValidationRule::evaluate(
+        &crate::domain::plan_rules::phase_graph::PhaseGraphIntegrity { stage: write },
+        &subject,
+        &mut report,
+    );
+    // The third caller of `write_stage_only()`, after the price-row write and the
+    // bulk import. It is not decorative on a report this door built: it is the
+    // guarantee that only a write-judgeable finding can refuse a write, so a
+    // publish-stage arm added to either rule later cannot leak into this refusal
+    // without somebody stating its stage.
+    match report.write_stage_only() {
+        None => Ok(()),
+        Some(write_stage) => Err(CanonicalError::from(DomainError::ValidationFailed(
+            write_stage,
+        ))),
+    }
 }
 
 /// Parse a create's shape.

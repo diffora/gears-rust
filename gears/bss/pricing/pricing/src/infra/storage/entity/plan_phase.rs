@@ -1,12 +1,25 @@
 //! `SeaORM` entity for `bss.pricing_plan_phase` — one phase of **one plan
 //! revision** (`design/02-plan-definition.md` §6), keyed
-//! `(phase_id, plan_revision)`.
+//! `(tenant_id, plan_id, plan_revision, phase_id)`.
 //!
-//! The pair is not a composite id: `plan_revision` says *which copy* of the
+//! The tuple is not a composite id: `plan_revision` says *which copy* of the
 //! phase this row is, and `phase_id` is the phase itself, stable for the life
 //! of the plan. A new revision copies these rows under its own number without
 //! re-minting an id (D-83), because the `phase` axis of the canonical scope key
 //! holds a bare `phase_id` (D-19) and same-key supersession compares it (D-56).
+//!
+//! **`tenant_id` and `plan_id` joined the key under D-340
+//! (`m20260802_000081`).** Without them the key said that one phase id belongs to
+//! one plan per revision *number* across the whole table, every tenant's
+//! included — so five drafts on the stand that shared an id had four members that
+//! could never attach it, unrecoverably, a scope key being a price row's identity.
+//! What the widening leaves standing is the half the phase-graph rules rely on: one
+//! revision still may not hold the same phase id twice.
+//!
+//! The four attributes are in field order rather than in the physical key's order,
+//! and that is not a divergence anything can observe: `SeaORM` names columns in
+//! every statement it builds, and the one construct where key order is a signature
+//! — `Entity::find_by_id`'s tuple — has no call site in this gear.
 //!
 //! There is no `lifecycle_state` here. A phase row is frozen when **its**
 //! revision publishes, so the parent `pricing_plan` row is the referent and the
@@ -23,14 +36,21 @@ use uuid::Uuid;
 pub struct Model {
     #[sea_orm(primary_key, auto_increment = false)]
     pub phase_id: Uuid,
-    /// The revision this copy belongs to — the second half of the key, and the
-    /// row it is frozen with.
+    /// The revision this copy belongs to — and the row it is frozen with.
     #[sea_orm(primary_key, auto_increment = false)]
     pub plan_revision: i64,
     /// Copied from the parent revision by the repository, never taken from a
     /// request: the foreign key covers `(plan_id, plan_revision)` alone, so
     /// nothing in the schema stops a child carrying a foreign tenant.
+    ///
+    /// In the key since D-340, which is what makes a phase id private to its
+    /// tenant rather than a name in a deployment-wide namespace.
+    #[sea_orm(primary_key, auto_increment = false)]
     pub tenant_id: Uuid,
+    /// In the key since D-340: a phase id belongs to a **plan**, so two plans of
+    /// one tenant may hold the same one — which D-19's clone remap and D-83's
+    /// copy-forward both need, since both supply an id the server did not mint.
+    #[sea_orm(primary_key, auto_increment = false)]
     pub plan_id: Uuid,
     /// `trial` | `intro` | `evergreen`, `CHECK`-constrained to those three; the
     /// value set is `domain::plan_shape::PhaseKind`. It is **not** terminality

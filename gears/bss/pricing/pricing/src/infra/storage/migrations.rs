@@ -113,6 +113,7 @@ pub mod m20260802_000077_add_pricing_plan_name;
 pub mod m20260802_000078_guard_pricing_plan_name;
 pub mod m20260802_000079_create_pricing_plan_period_floor_cap;
 pub mod m20260802_000080_create_pricing_rounding_policy_taxonomy;
+pub mod m20260802_000081_scope_pricing_plan_phase_key;
 
 use sea_orm::{ConnectionTrait, Statement};
 use sea_orm_migration::prelude::*;
@@ -434,6 +435,13 @@ impl MigratorTrait for Migrator {
             // in a table of its own rather than as columns on `pricing_plan`.
             Box::new(m20260802_000079_create_pricing_plan_period_floor_cap::Migration),
             Box::new(m20260802_000080_create_pricing_rounding_policy_taxonomy::Migration),
+            // D-340: `pricing_plan_phase`'s key gains `tenant_id` and `plan_id`.
+            // It sorts after `000012`, which created the table, and supersedes
+            // that migration's key without touching either `CHECK`, the foreign
+            // key, the partial UNIQUE or the append-only triggers — all of which
+            // the `SQLite` arm nevertheless has to recreate, a rebuild being the
+            // only way to reach a `PRIMARY KEY` on that engine.
+            Box::new(m20260802_000081_scope_pricing_plan_phase_key::Migration),
             // Shared `coord_leases` table, owned by the `coord` crate. This gear's
             // background work is coordinated as a singleton (§3.8: background work
             // is coordinated as a singleton via the coordination lease library),
