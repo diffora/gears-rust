@@ -382,6 +382,27 @@ pub fn check(billable: &[ScopeKey], windows: &[KeyWindows]) -> CoverageReport {
     CoverageReport { keys }
 }
 
+/// Will this publish open the key's coverage itself (D-332)?
+///
+/// True when every billable row on the key is a **draft** this publish is about
+/// to freeze. A key that already carries a published row is not this case: its
+/// coverage existed and stopped, which is a gap an author has to answer for.
+#[must_use]
+pub fn opened_by_this_publish(shape: &PlanShape, key: &ScopeKey) -> bool {
+    let mut seen = false;
+    for record in shape
+        .rows
+        .iter()
+        .filter(|record| is_billable(record) && &record.scope_key == key)
+    {
+        if record.lifecycle_state != crate::domain::lifecycle::LifecycleState::Draft {
+            return false;
+        }
+        seen = true;
+    }
+    seen
+}
+
 /// The billable keys of a publish subject, in `rows` order and de-duplicated.
 ///
 /// Two rows legitimately share a key — a `superseded` predecessor and its
@@ -562,9 +583,13 @@ fn cycle_length(frequency: Frequency) -> TimeDelta {
 /// deliberately does not have: a rule that carried results between runs is the
 /// one thing §4.2's twice-run clause cannot survive.
 #[must_use]
-pub fn window_coverage_rules() -> crate::domain::validation::ValidationPipeline<PlanShape> {
+pub fn window_coverage_rules(
+    opens_initial_coverage: bool,
+) -> crate::domain::validation::ValidationPipeline<PlanShape> {
     crate::domain::validation::ValidationPipeline::new()
-        .with_rule(Box::new(KeyCoverageRequired))
+        .with_rule(Box::new(KeyCoverageRequired {
+            opens_initial_coverage,
+        }))
         .with_rule(Box::new(NoInteriorGap))
         .with_rule(Box::new(AvailabilityInsideCoverage))
 }
@@ -583,7 +608,16 @@ pub fn window_coverage_rules() -> crate::domain::validation::ValidationPipeline<
 /// for two rows sharing a key.
 #[domain_model]
 #[derive(Clone, Copy, Debug, Default)]
-pub struct KeyCoverageRequired;
+pub struct KeyCoverageRequired {
+    /// **Will the caller open coverage for a key it is freezing?** (D-332)
+    ///
+    /// Carried on the rule because `ValidationRule::evaluate` is handed the
+    /// subject and nothing else, and this is not a fact about the subject: a
+    /// draft row's key looks identical whether a publish is about to cover it or
+    /// a repricing apply is merely re-judging it. False is the fail-closed
+    /// default — a caller that says nothing gets the refusal.
+    pub opens_initial_coverage: bool,
+}
 
 impl ValidationRule<PlanShape> for KeyCoverageRequired {
     fn name(&self) -> &'static str {
@@ -594,6 +628,20 @@ impl ValidationRule<PlanShape> for KeyCoverageRequired {
         let coverage = check_shape(subject);
         for entry in coverage.required() {
             if entry.has_live_window() {
+                continue;
+            }
+            // **D-332: a key whose rows this publish is freezing for the first
+            // time is covered by the publish itself**, which opens a window on
+            // it at the commit instant. Skipped here so the *submit* arm agrees
+            // with the commit — the rules run on both, and a refusal at submit
+            // would mean the unit never opens and the commit is never reached.
+            //
+            // The rule keeps its whole force on every other key: one carrying a
+            // row that is **already published** has had coverage and lost it,
+            // which is an author's mistake and not an artefact of ordering.
+            // That distinction is the reason this is a filter on the key's rows
+            // rather than a flag on the publish.
+            if self.opens_initial_coverage && opened_by_this_publish(subject, entry.scope_key()) {
                 continue;
             }
             report.violate(

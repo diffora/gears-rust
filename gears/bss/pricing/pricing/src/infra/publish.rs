@@ -247,7 +247,11 @@ impl PublishService {
         // the add-on set this revision composes — the parameters are now a
         // function of the subject, not only of the tenant.
         let shape = assemble(&conn, scope, tenant_id, plan_id, now).await?;
-        let params = rule_params(&self.policies, &conn, scope, tenant_id, &shape).await?;
+        // D-332: the pre-check must judge the plan the way the commit will, or a
+        // plan the commit would publish is refused before a unit ever opens.
+        let params = rule_params(&self.policies, &conn, scope, tenant_id, &shape)
+            .await?
+            .opening_initial_coverage();
         let report = run_publish_rules(&shape, &params);
         crate::infra::metrics::report_market_metrics(&*self.metrics, &shape, &params);
         check_fixtures(&self.fixture_gate, &shape)?;
@@ -525,7 +529,9 @@ impl PublishService {
                     // 1. The second run. Same assembler, same rule set, same
                     // gate - against the world as it now stands.
                     let shape = assemble(txn, &scope, tenant_id, unit.plan_id, now).await?;
-                    let params = rule_params(&policies, txn, &scope, tenant_id, &shape).await?;
+                    let params = rule_params(&policies, txn, &scope, tenant_id, &shape)
+                        .await?
+                        .opening_initial_coverage();
                     if shape.revision != unit.revision {
                         return Err(DomainError::NotFound {
                             subject: "open plan draft revision".to_owned(),
@@ -609,6 +615,32 @@ impl PublishService {
                     // Exactly the rows the rule set just judged, at the
                     // versions it judged them at. See `publish_rows`: a
                     // re-derived set would publish rows validated by nothing.
+                    // **D-332: the initial windows, written after the pin.**
+                    //
+                    // Not before the rules, which is where this sat first and
+                    // where it was wrong: the submit computes the content pin
+                    // over a shape with no publish-opened window, so writing one
+                    // ahead of the rules made the commit's content differ from
+                    // the reviewer's and the approval died with
+                    // `APPROVAL_CONTENT_MISMATCH`. The pin was right — the
+                    // placement was not.
+                    //
+                    // It does not need to be early. `inst-wc-required` already
+                    // passes on a key this publish is freezing for the first
+                    // time (`coverage::opened_by_this_publish`), so the rule and
+                    // the write are independent: the rule states that coverage
+                    // *will* exist, and this is where it comes to.
+                    open_initial_windows(
+                        txn,
+                        &scope,
+                        tenant_id,
+                        &shape,
+                        actor_principal_id,
+                        now,
+                        correlation_id,
+                    )
+                    .await?;
+
                     let price_ids = price_repo::publish_rows(
                         txn,
                         &scope,
@@ -980,7 +1012,7 @@ pub(crate) async fn rule_params(
     let declared_regions = taxonomy_repo::active_regions(runner, scope, tenant_id)
         .await
         .map_err(|e| repo_failure(&e))?;
-    // **Loaded, not defaulted.** D-322's rule reads this set and an empty one
+    // **Loaded, not defaulted.** D-334's rule reads this set and an empty one
     // means "unconstrained", so a `rule_params` that forgot the read would make
     // the vocabulary check pass on every plan while looking registered — the
     // D-254 defect class this file has already paid for once with the composite
@@ -1295,6 +1327,96 @@ pub(crate) async fn assemble_from(
 /// # Errors
 /// [`DomainError::Internal`] on a storage failure, or when a window names a price
 /// row that is not on the plan.
+/// Truncate to the millisecond quantum every authored instant is held to (D-144).
+fn quantized(at: DateTime<Utc>) -> DateTime<Utc> {
+    DateTime::from_timestamp_millis(at.timestamp_millis()).unwrap_or(at)
+}
+
+/// Open a window on every billable key of this publish that has none (D-332).
+///
+/// Returns how many were written, so the caller can skip re-reading the plane
+/// when there were none — the ordinary case on every publish after the first.
+///
+/// # Why this is not a relaxation of the future-only rule
+///
+/// `inst-ws-future-start` exists against one attack: a `plan x write` holder
+/// `POST`ing a window that starts sixty days ago, having the activation job pick
+/// it up, and repricing open arrears periods — bypassing the two-person
+/// `BackdateGrant` that S2 calls the only sanctioned backdating. A window opened
+/// **here** starts at this commit's own instant, on a key that has no coverage
+/// at all: there is no earlier interval to overwrite and no arrears period the
+/// instant precedes. The route stays future-only; nothing a client can POST
+/// changes.
+///
+/// # It writes `scheduled`, not `active`
+///
+/// The state machine is untouched: the activation sweep flips it, exactly as it
+/// does for a window an operator scheduled, and `inst-wc-required` is satisfied
+/// by "active **or** scheduled" either way. Writing `active` here would make
+/// this the second thing that decides activation.
+///
+/// The uncovered set is `coverage::check_shape`'s own, not a second reading of
+/// it: a private notion of "covered" here and the rule's there would drift, and
+/// the one that publishes would be the one nobody tested.
+async fn open_initial_windows(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    shape: &PlanShape,
+    actor_principal_id: Uuid,
+    now: DateTime<Utc>,
+    correlation_id: Uuid,
+) -> Result<usize, DomainError> {
+    let report = crate::domain::coverage::check_shape(shape);
+    let uncovered: Vec<_> = report
+        .required()
+        .filter(|entry| !entry.has_live_window())
+        // The same predicate the rule skips on, so the two cannot disagree
+        // about which keys this publish is answering for.
+        .filter(|entry| crate::domain::coverage::opened_by_this_publish(shape, entry.scope_key()))
+        .map(|entry| entry.scope_key().clone())
+        .collect();
+
+    let mut written = 0_usize;
+    for key in uncovered {
+        // The key came out of the shape's own billable set, so a row for it
+        // exists; a `continue` rather than an error keeps this from being a
+        // second place that decides what a publishable shape is.
+        let Some(row) = shape.rows.iter().find(|record| record.scope_key == key) else {
+            continue;
+        };
+        window_repo::schedule(
+            runner,
+            scope,
+            window_repo::NewWindow {
+                window_id: Uuid::now_v7(),
+                tenant_id,
+                price_id: row.price_id,
+                // **Quantised to the millisecond** (D-144). `now` is the
+                // commit's own instant and carries microseconds; an authored
+                // instant may not, and `check_authored_instant` refuses one —
+                // which surfaced as the publish failing on
+                // `TIMESTAMP_PRECISION_EXCEEDED` after every rule had passed.
+                effective_from: quantized(now),
+                effective_to: None,
+                // Named for what it is, so an operator reading the window plane
+                // can tell the ones they scheduled from the one the publish
+                // opened for them.
+                reason_code: "initial coverage opened by publish (D-332)".to_owned(),
+            },
+            crate::domain::audit::AuditStamp {
+                actor_principal_id,
+                recorded_at: now,
+                correlation_id,
+            },
+        )
+        .await
+        .map_err(|e| repo_failure(&e))?;
+        written += 1;
+    }
+    Ok(written)
+}
+
 async fn window_plane(
     runner: &impl DBRunner,
     scope: &AccessScope,

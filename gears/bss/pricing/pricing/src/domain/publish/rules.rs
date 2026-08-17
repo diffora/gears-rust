@@ -260,6 +260,19 @@ pub struct PublishRuleParams {
     tax_display_policy: TaxDisplayPolicy,
     region_readiness: RegionTaxReadiness,
     change_targets: ChangeTargetIndex,
+    /// **Will the caller open coverage for a key this run is freezing?** (D-332)
+    ///
+    /// True from the publish, which writes the initial window itself, and false
+    /// everywhere else the same rule set runs — the repricing apply's aggregate
+    /// pass above all. That distinction cannot be read off the shape: a draft
+    /// row's key is identical in both, and only the caller knows whether a
+    /// window is coming. Held as a field for this struct's own stated reason —
+    /// a rule that decided it for itself would answer differently in the two
+    /// runs for no authored reason.
+    ///
+    /// Defaults to **false**, which is the fail-closed direction: a caller that
+    /// forgets to say so gets the refusal rather than a silently skipped rule.
+    opens_initial_coverage: bool,
 }
 
 /// One market of one **bundle that references this plan as a component**, and the
@@ -334,6 +347,9 @@ impl PublishRuleParams {
             // authored edge reads as dangling and the publish is refused. A
             // caller who forgets is loud immediately.
             change_targets: ChangeTargetIndex::empty(),
+            // False by construction: only the publish may say otherwise, and a
+            // caller that forgets gets the refusal rather than a skipped rule.
+            opens_initial_coverage: false,
         }
     }
 
@@ -369,7 +385,7 @@ impl PublishRuleParams {
         self
     }
 
-    /// Attach the tenant's declared rounding vocabulary (D-322).
+    /// Attach the tenant's declared rounding vocabulary (D-334).
     ///
     /// Its empty set means **unconstrained**, which is neither
     /// [`Self::with_declared_regions`]' reading nor
@@ -393,6 +409,25 @@ impl PublishRuleParams {
     /// plan, so every authored edge reads as dangling. That is the safe
     /// direction and it is loud immediately; the opposite default would let a
     /// dangling edge publish for a caller who forgot to look.
+    #[must_use]
+    /// Declare that this run opens coverage for the keys it is freezing (D-332).
+    ///
+    /// The publish says so; nothing else may. `sqlite_repricing_apply`'s
+    /// aggregate case is what makes the distinction real rather than
+    /// theoretical: it runs this set over a plan carrying a stray draft, and a
+    /// draft whose key the apply will never cover has to keep failing.
+    #[must_use]
+    pub const fn opening_initial_coverage(mut self) -> Self {
+        self.opens_initial_coverage = true;
+        self
+    }
+
+    /// Does the caller open coverage itself? See the field.
+    #[must_use]
+    pub const fn opens_initial_coverage(&self) -> bool {
+        self.opens_initial_coverage
+    }
+
     #[must_use]
     pub fn with_change_targets(mut self, index: ChangeTargetIndex) -> Self {
         self.change_targets = index;
@@ -518,7 +553,7 @@ pub fn run_publish_rules(shape: &PlanShape, params: &PublishRuleParams) -> Valid
     // same doc's reason: coverage is a statement about a key's window plane and
     // reads last.
     report.absorb(consumer_contract_rules(&params.change_targets).run(shape));
-    report.absorb(window_coverage_rules().run(shape));
+    report.absorb(window_coverage_rules(params.opens_initial_coverage()).run(shape));
     report
 }
 
@@ -555,7 +590,7 @@ fn foundation_plan_rules(params: &PublishRuleParams) -> ValidationPipeline<PlanS
         .with_rule(Box::new(RegionsDeclared {
             declared: params.declared_regions.clone(),
         }))
-        // D-322's vocabulary check, in the base set for `RegionsDeclared`'s
+        // D-334's vocabulary check, in the base set for `RegionsDeclared`'s
         // reason with one difference stated on its type: `rounding_policy_ref`
         // is on every price row, so no publish escapes it — but a tenant who
         // declared no vocabulary is not constrained by it.

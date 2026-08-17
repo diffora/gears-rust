@@ -313,7 +313,7 @@ instant a scope-key axis is matched on for equality across a gear boundary),
 `rounding_policy_ref` nor a tenant default; the §17.4 no-implicit-rounding rule, registered
 into the pipeline by the Foundation itself),
 `ROUNDING_POLICY_UNKNOWN` (422 — a row's `rounding_policy_ref`, or the tenant default, names
-no **active** value of the tenant's declared rounding vocabulary; **D-322**, 2026-08-16, and
+no **active** value of the tenant's declared rounding vocabulary; **D-334**, 2026-08-16, and
 registered into the same base set for its sibling's reason — the column is on every price row.
 A tenant that has declared no vocabulary is unconstrained, which is the opposite of
 `REGION_UNKNOWN`'s empty set and is stated on both),

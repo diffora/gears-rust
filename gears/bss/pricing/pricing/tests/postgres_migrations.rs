@@ -491,7 +491,7 @@ const EXPECTED_PRIMARY_KEYS: &[&str] = &[
     "pricing_read_model: tenant_id, catalog_version, subject_kind, subject_ref",
     "pricing_region_taxonomy: tenant_id, value",
     "pricing_repricing_journal: run_id, price_id",
-    // D-322 (`m20260802_000080`): the taxonomies' key on its own table.
+    // D-334 (`m20260802_000080`): the taxonomies' key on its own table.
     "pricing_rounding_policy_taxonomy: tenant_id, value",
     // Read back from `m20260802_000044`'s own DDL rather than from the live server.
     "pricing_snapshot_provenance: provenance_id",
