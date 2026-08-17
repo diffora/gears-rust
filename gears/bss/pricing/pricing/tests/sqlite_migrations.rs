@@ -602,7 +602,16 @@ const EXPECTED_PRIMARY_KEYS: &[(&str, &str)] = &[
         "pricing_plan_period_floor_cap",
         "plan_id, plan_revision, currency, region",
     ),
-    ("pricing_plan_phase", "phase_id, plan_revision"),
+    // **Widened by `m20260802_000081` (D-340)**, 2026-08-17. It was
+    // `phase_id, plan_revision`, which said a phase id belongs to one plan per
+    // revision *number* across the whole table — every tenant's included, so the
+    // refusal on that key was also an oracle over another tenant's ids. The
+    // `plan_revision` half stays for D-83's copy-forward, and one revision still
+    // may not hold the same phase id twice.
+    (
+        "pricing_plan_phase",
+        "tenant_id, plan_id, plan_revision, phase_id",
+    ),
     ("pricing_policy_object", "tenant_id"),
     ("pricing_price", "price_id"),
     ("pricing_price_overlay", "price_overlay_id, revision"),

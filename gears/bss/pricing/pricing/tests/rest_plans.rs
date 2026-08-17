@@ -1754,29 +1754,28 @@ fn phase_chain(phase_id: Uuid) -> serde_json::Value {
     })
 }
 
-/// **`pricing_plan_phase`'s primary key is client-reachable, and the second
-/// caller to reach it gets a 500.** Pinned, not fixed.
+/// **Two plans of one tenant may each file the same phase id — D-340.**
 ///
-/// `PRIMARY KEY (phase_id, plan_revision)` carries no `plan_id` and no
-/// `tenant_id` (`m20260802_000012_create_pricing_plan_phase.rs`), and `phase_id`
-/// is **client-supplied** — `PlanPhaseView` is `api_dto(request, response)` and
-/// its own doc invites reuse across revisions (D-83). So two plans of one tenant
-/// standing at revision `0` cannot both file a phase under the same id: the
-/// first is a 200 and the second collides on the PK.
+/// This case is the inversion of a pin, and the pin asked for it: it read
+/// `…collide_on_a_shared_phase_id_and_the_second_answers_500` and its doc said
+/// that if a later slice widened the key this would redden and the change would
+/// get written down. `m20260802_000081` widened it, so the change is written down
+/// here.
 ///
-/// The refusal is a generic 500 with no wire code, which is the wrong class —
-/// this gear reserves a conflict for exactly this shape — and the slot is
-/// occupied database-wide rather than per tenant, which the sibling test below
-/// pins.
+/// What it was: `PRIMARY KEY (phase_id, plan_revision)` named neither `plan_id`
+/// nor `tenant_id`, and `phase_id` is **client-supplied** — `PlanPhaseView` is
+/// `api_dto(request, response)` and its own doc invites reuse across revisions
+/// (D-83). So two plans of one tenant standing at revision `0` could not both file
+/// a phase under one id: the first was a 200 and the second a generic `500`
+/// advising a retry that could never succeed. On the stand that produced five
+/// drafts keying price rows on one id of which four could never attach it, and a
+/// scope key is a price row's identity, so those four had nothing but deletion.
 ///
-/// **This is frozen Phase-2 schema and G5 deliberately did not change the
-/// migration.** What a test can do is stop the behaviour being a surprise: if a
-/// later slice widens the key or maps the failure onto a conflict, this reddens
-/// and the change gets written down. `rest_support::Publishable` already works
-/// around it by minting a phase id per plan, with the workaround named in its
-/// doc; this is the same finding stated as an executable fact.
+/// What still refuses, and is **not** asserted here: one plan's revision naming
+/// the same id twice, which the facet's own payload is now the only way to reach.
+/// That is `PHASE_ID_IN_USE`'s job and it is pinned where the code lives.
 #[tokio::test]
-async fn two_plans_of_one_tenant_collide_on_a_shared_phase_id_and_the_second_answers_500() {
+async fn two_plans_of_one_tenant_may_each_file_the_same_phase_id() {
     let harness = Harness::new().await;
     let shared_phase = Uuid::now_v7();
     let first = Uuid::now_v7();
@@ -1799,7 +1798,7 @@ async fn two_plans_of_one_tenant_collide_on_a_shared_phase_id_and_the_second_ans
         "the first filing must succeed, or the second proves nothing"
     );
 
-    let collided = harness
+    let shared = harness
         .allowed()
         .send(with_headers(
             "PATCH",
@@ -1810,39 +1809,43 @@ async fn two_plans_of_one_tenant_collide_on_a_shared_phase_id_and_the_second_ans
         .await;
 
     assert_eq!(
-        collided.status(),
-        StatusCode::INTERNAL_SERVER_ERROR,
-        "the PK collision surfaces as an internal fault, not as the conflict class"
+        shared.status(),
+        StatusCode::OK,
+        "the id belongs to a plan now, so the sibling may hold it too"
     );
-    // And the body is the platform's generic internal fault - no gear code, so a
-    // client cannot tell what happened or that retrying under another phase id
-    // would work. That is half of why this is filed as a defect rather than a
-    // quirk, and it is asserted rather than described so a later reclassification
-    // reddens here.
-    let body = body_json(collided).await;
+    // Read back off the answered body rather than inferred from the status: a 200
+    // over a write that stored a different id would satisfy the line above.
+    let body = body_json(shared).await;
     assert_eq!(
-        body["type"],
-        "gts://gts.cf.core.errors.err.v1~cf.core.err.internal.v1~"
+        body["phases"].as_array().map(Vec::len),
+        Some(1),
+        "the facet is a wholesale replace, so the seeded terminal phase is gone"
     );
-    // The refused PATCH rolled back: the second plan is exactly as it was.
+    assert_eq!(
+        body["phases"][0]["phase_id"],
+        serde_json::json!(shared_phase),
+        "and the phase the second plan holds is the shared one"
+    );
+    // The write landed, which is the other half of the inversion: this assertion
+    // read `Some(0)` while the PATCH was refused and the revision unmoved.
     assert_eq!(
         plan_row_version(&harness, second, 0).await,
-        Some(0),
-        "a failed child write must not have moved the revision"
+        Some(1),
+        "a phase write advances the revision it belongs to"
     );
 }
 
-/// The same collision **across tenants**, which is the half that matters for
-/// isolation.
+/// **And a phase id one tenant holds is free for another — D-340.**
 ///
-/// `phase_id` is client-supplied and the key carries no `tenant_id`, so an
-/// authenticated caller of one tenant can occupy a `(phase_id, 0)` slot that a
-/// caller of another tenant then cannot use. Nothing leaks — the second caller
-/// learns only that their own write failed — but a tenant's write can be made to
-/// fail by a stranger, and that is a property worth a red test if it ever
-/// changes.
+/// The other inversion, and the half that matters for isolation. `phase_id` is
+/// client-supplied and the old key carried no `tenant_id`, so an authenticated
+/// caller of one tenant occupied a `(phase_id, 0)` slot no caller of any other
+/// tenant could then use: a tenant's write could be made to fail by a stranger,
+/// and the difference between that failure and a success answered *is this id in
+/// use somewhere I cannot read* — an existence oracle over another tenant's rows,
+/// on a table this gear scopes by `tenant_id` everywhere else.
 #[tokio::test]
-async fn a_phase_id_taken_by_one_tenant_is_taken_for_the_other_too() {
+async fn a_phase_id_one_tenant_holds_is_free_for_another() {
     let harness = Harness::new().await;
     let shared_phase = Uuid::now_v7();
     let mine = Uuid::now_v7();
@@ -1861,7 +1864,7 @@ async fn a_phase_id_taken_by_one_tenant_is_taken_for_the_other_too() {
         .await;
     assert_eq!(accepted.status(), StatusCode::OK);
 
-    let collided = harness
+    let theirs_too = harness
         .other_tenant()
         .send(with_headers(
             "PATCH",
@@ -1872,9 +1875,15 @@ async fn a_phase_id_taken_by_one_tenant_is_taken_for_the_other_too() {
         .await;
 
     assert_eq!(
-        collided.status(),
-        StatusCode::INTERNAL_SERVER_ERROR,
-        "the key has no tenant column, so the slot is occupied database-wide"
+        theirs_too.status(),
+        StatusCode::OK,
+        "the key carries the tenant now, so one tenant's id says nothing about another's"
+    );
+    let body = body_json(theirs_too).await;
+    assert_eq!(
+        body["phases"][0]["phase_id"],
+        serde_json::json!(shared_phase),
+        "and the foreign tenant's plan holds the id, so this is not a 200 over a no-op"
     );
 }
 

@@ -2047,12 +2047,15 @@ fn stamp() -> bss_pricing::domain::audit::AuditStamp {
 pub struct Publishable {
     /// The terminal phase this plan's rows are filed under.
     ///
-    /// **Minted per plan, and that is not tidiness.** `pricing_plan_phase`'s
-    /// primary key is `(phase_id, plan_revision)` and does **not** carry
-    /// `plan_id`, so two plans of one tenant - or of two tenants - cannot share
-    /// a phase id at the same revision number. A fixed `seeded_phase()` here
-    /// made the second publishable plan in one test fail on a UNIQUE violation.
-    /// Reported as a schema finding; worked around here.
+    /// **Minted per plan**, which was once a workaround and is now merely the
+    /// truthful shape. `pricing_plan_phase`'s primary key was
+    /// `(phase_id, plan_revision)` and carried neither `plan_id` nor `tenant_id`,
+    /// so two plans — of one tenant or of two — could not share a phase id at the
+    /// same revision number, and a fixed `seeded_phase()` here made the second
+    /// publishable plan in one test fail on a UNIQUE violation. **D-340
+    /// (`m20260802_000081`) widened the key**, so a shared id would no longer
+    /// collide; a phase per plan is kept because that is what a real catalog
+    /// looks like, not because the schema forces it.
     pub phase: PhaseId,
     /// The open draft revision.
     pub revision: u64,

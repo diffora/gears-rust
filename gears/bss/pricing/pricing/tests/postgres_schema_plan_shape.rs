@@ -97,8 +97,9 @@
 //! carries the accepting cases: all three phase kinds store, a revision holds
 //! many phases beside its one terminal, a revision holds many add-on rules
 //! (D-105's whole point), a descriptor set stores with every optional column
-//! NULL, and INSERT, UPDATE and DELETE all run freely under a `draft` parent.
-//! Without those a table nothing can be written to at all would pass.
+//! NULL, two plans — and two tenants — hold one phase id (D-340), and INSERT,
+//! UPDATE and DELETE all run freely under a `draft` parent. Without those a table
+//! nothing can be written to at all would pass.
 //!
 //! # Objects this suite deliberately does not test by refusal
 //!
@@ -136,6 +137,14 @@ const PLAN_D: &str = "22222222-0000-0000-0000-00000000000d";
 
 /// A plan id no `pricing_plan` row carries, for the missing-parent branch.
 const PLAN_ABSENT: &str = "22222222-0000-0000-0000-0000000000ff";
+
+/// A second tenant, for the one guard on these tables that is a statement about
+/// **whose** rows they are: `pricing_plan_phase`'s key (D-340).
+const TENANT_TWO: &str = "11111111-0000-0000-0000-0000000000b2";
+
+/// The phase id the stand's five drafts share, used verbatim: what D-340 measured
+/// is that four of those five could never attach *this* id.
+const SHARED_PHASE: &str = "1e256059-2956-4b3e-8acd-898eb43a1ff7";
 
 const PHASE_1: &str = "33333333-0000-0000-0000-000000000001";
 const PHASE_2: &str = "33333333-0000-0000-0000-000000000002";
@@ -205,12 +214,20 @@ async fn must_be_rejected(conn: &DatabaseConnection, sql: &str, by: &str) {
 /// Seed revision 0 of a plan as an open `draft` — the only state a child row can
 /// be created under.
 async fn seed_draft(conn: &DatabaseConnection, plan: &str) {
+    seed_draft_for(conn, TENANT, plan).await;
+}
+
+/// The same, under a named tenant.
+///
+/// One tenant is enough for every guard on these tables except the key's scope,
+/// which is a statement about what belongs to whom (D-340).
+async fn seed_draft_for(conn: &DatabaseConnection, tenant: &str, plan: &str) {
     must_succeed(
         conn,
         &format!(
             "INSERT INTO bss.pricing_plan \
              (plan_id, revision, tenant_id, lifecycle_state, created_by, created_at_utc) \
-             VALUES ('{plan}', 0, '{TENANT}', 'draft', '{ACTOR}', '2026-08-03 09:00:00+00')"
+             VALUES ('{plan}', 0, '{tenant}', 'draft', '{ACTOR}', '2026-08-03 09:00:00+00')"
         ),
     )
     .await;
@@ -507,13 +524,19 @@ async fn two_terminal_phases_of_one_revision_cannot_coexist() {
 // `pricing_plan_phase` — the primary key and the foreign key
 // ---------------------------------------------------------------------------
 
-/// `(phase_id, plan_revision)` — the pair D-83 needs and D-19 forbids re-minting.
+/// `(tenant_id, plan_id, plan_revision, phase_id)` — the `plan_revision` half D-83
+/// needs, the `phase_id` half D-19 forbids re-minting, and the two scope columns
+/// **D-340** added (`m20260802_000081`).
 ///
 /// The accepting case is the load-bearing one: **the same `phase_id` under a
 /// different revision is a different row**, which is the whole of the
 /// copy-forward. A key of `phase_id` alone would refuse it and the `phase` axis
 /// of the canonical scope key (D-19) would have to re-mint on every revision,
 /// moving every continuing price row onto a key nothing else is filed under.
+///
+/// The refusing case is what the widening deliberately **kept**: one plan's
+/// revision still may not hold one phase id twice, because `inst-ph-graph` walks a
+/// chain in which a phase id names at most one row.
 #[tokio::test]
 #[ignore = "requires Docker (testcontainers)"]
 async fn one_phase_id_is_one_row_per_revision_and_no_more() {
@@ -545,6 +568,60 @@ async fn one_phase_id_is_one_row_per_revision_and_no_more() {
         &insert_phase(PHASE_1, PLAN_A, &[("plan_revision", "1")]),
     )
     .await;
+}
+
+/// **Two plans may hold the same phase id — one tenant's two, and two tenants'
+/// (D-340).**
+///
+/// The old key named neither `tenant_id` nor `plan_id`, so a phase id belonged to
+/// one plan per revision *number* across the whole table. Measured on the stand
+/// 2026-08-17: five drafts key price rows on [`SHARED_PHASE`] and exactly one of
+/// them could attach it, the other four unrecoverably — a scope key is a price
+/// row's identity and cannot be re-pointed. The cross-tenant arm was worse than a
+/// denial: the difference between the refusal and the acceptance answered *is this
+/// id in use somewhere I cannot read*.
+///
+/// Executed on Postgres because the key is a **server** object here — `SQLite`
+/// spells it inside the `CREATE TABLE` and reaches it only by rebuilding the
+/// table, so the two engines' arms of `m20260802_000081` are different statements
+/// and the mirror's green says nothing about this one.
+#[tokio::test]
+#[ignore = "requires Docker (testcontainers)"]
+async fn two_plans_may_hold_the_same_phase_id_across_plans_and_across_tenants() {
+    let conn = applied().await;
+    seed_draft(&conn, PLAN_A).await;
+    seed_draft(&conn, PLAN_B).await;
+    seed_draft_for(&conn, TENANT_TWO, PLAN_C).await;
+
+    must_succeed(&conn, &insert_phase(SHARED_PHASE, PLAN_A, &[])).await;
+    must_succeed(&conn, &insert_phase(SHARED_PHASE, PLAN_B, &[])).await;
+    must_succeed(
+        &conn,
+        &insert_phase(
+            SHARED_PHASE,
+            PLAN_C,
+            &[("tenant_id", &format!("'{TENANT_TWO}'"))],
+        ),
+    )
+    .await;
+
+    // Counted back, because three statements that all landed prove nothing if the
+    // table kept one row: `INSERT` is not `UPSERT` here, but the assertion should
+    // not depend on that.
+    let held = conn
+        .query_one(Statement::from_string(
+            sea_orm::DatabaseBackend::Postgres,
+            format!(
+                "SELECT count(*)::bigint AS n FROM bss.pricing_plan_phase \
+                 WHERE phase_id = '{SHARED_PHASE}'"
+            ),
+        ))
+        .await
+        .expect("run the count")
+        .expect("the count returns a row")
+        .try_get::<i64>("", "n")
+        .expect("read the count");
+    assert_eq!(held, 3, "all three plans must hold the id");
 }
 
 /// A phase row may not outlive the revision it names.
@@ -606,9 +683,11 @@ async fn a_phase_row_may_not_be_orphaned_by_renumbering_its_revision() {
 #[ignore = "requires Docker (testcontainers)"]
 async fn a_phase_of_a_frozen_revision_cannot_be_deleted() {
     let conn = applied().await;
-    // A phase id per parent: the primary key is `(phase_id, plan_revision)` and
-    // every parent here is at revision 0, so re-using one id across the four
-    // would be answered by `pricing_plan_phase_pkey` instead of by the arm.
+    // A phase id per parent, which the key no longer forces: since D-340 it is
+    // `(tenant_id, plan_id, plan_revision, phase_id)`, so these four plans could
+    // share an id. Kept distinct anyway — each `must_be_rejected` below names the
+    // row it deleted by `phase_id` alone, and four rows under one id would leave
+    // the four assertions unable to say which parent answered.
     for (plan, phase, state) in [
         (PLAN_A, PHASE_1, "published"),
         (PLAN_B, PHASE_2, "abandoned"),
