@@ -335,7 +335,7 @@ Applied in order at step 9, per line:
 
 ## 5. Traceability
 
-**Traces to**: `cpt-cf-bss-rating-fr-deterministic-evaluation-api`, `cpt-cf-bss-rating-fr-single-outcome-determinism`, `cpt-cf-bss-rating-fr-idempotency`,
+**Traces to**: `cpt-cf-bss-rating-fr-deterministic-evaluation-api`, `cpt-cf-bss-rating-fr-pre-purchase-evaluation`, `cpt-cf-bss-rating-fr-single-outcome-determinism`, `cpt-cf-bss-rating-fr-idempotency`,
 `cpt-cf-bss-rating-fr-non-negative-price`, `cpt-cf-bss-rating-fr-separation`, `cpt-cf-bss-rating-fr-evaluation-order`
 
 - **PRD**: §6.1 (all seven FRs above), §6.3 `fr-evaluation-order`, §7.1 NFRs, §17.1 (normative step order), §4.1 (environment constraints).
