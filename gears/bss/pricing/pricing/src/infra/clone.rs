@@ -783,7 +783,7 @@ async fn copy_bundle_on(
 ///
 /// Separate from [`clone_plan_on`] because it is the *rows* rather than the shape.
 /// It used to load and classify them too; both moved out to
-/// [`partition_copied`](fn.partition_copied.html) so that D-341's seed and this copy
+/// [`partition_copied`] so that D-341's seed and this copy
 /// read one set — the exclusion is a decision about which rows the clone carries,
 /// and two callers of that decision must not each make it.
 ///

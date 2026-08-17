@@ -2254,7 +2254,7 @@ fn require_well_formed_plan_name(name: Option<&str>) -> Result<(), DomainError> 
 ///
 /// **The subject carries only what the rule reads**, and that is stated rather than
 /// left to be discovered: `RowPhaseAttached` reads `rows`, `phases` and the
-/// `plan_id`/`revision` its finding is filed under. The rest of [`PlanShape`] stays
+/// `plan_id`/`revision` its finding is filed under. The rest of [`PlanShape`](crate::domain::plan_shape::PlanShape) stays
 /// at its default, which is safe in the one direction that matters — publish
 /// re-judges the whole assembled shape, so a field this door leaves unloaded can
 /// only delay a refusal, never lose one. Assembling the full shape here would cost
