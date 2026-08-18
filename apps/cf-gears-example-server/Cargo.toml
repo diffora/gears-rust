@@ -41,6 +41,7 @@ bss-rate-provider = [
 bss-ledger = ["dep:bss_ledger"]
 usage-collector = ["dep:usage_collector"]
 timescaledb-usage-collector = ["dep:timescaledb_usage_collector_plugin"]
+bss-pricing = ["dep:bss_pricing"]
 
 [dependencies]
 mimalloc = { version = "0.1" }
@@ -102,6 +103,8 @@ bss_rate_provider_http_json_plugin = { package = "bss-rate-provider-http-json-pl
 # Optional Usage Collector gear + its TimescaleDB storage plugin
 usage_collector = { package = "cf-gears-usage-collector", path = "../../gears/system/usage-collector/usage-collector", optional = true }
 timescaledb_usage_collector_plugin = { package = "cf-gears-timescaledb-usage-collector-plugin", path = "../../gears/system/usage-collector/plugins/timescaledb-usage-collector-plugin", optional = true }
+# Optional BSS Plan & Price Modeling gear
+bss_pricing = { package = "bss-pricing", path = "../../gears/bss/pricing/pricing", optional = true }
 
 # Optional example module
 users-info = { path = "../../examples/toolkit/users-info/users-info", optional = true }

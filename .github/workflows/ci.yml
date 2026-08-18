@@ -255,6 +255,14 @@ jobs:
       - name: cargo test (no macros)
         run: make test-no-macros
 
+      # `bss-fixtures` is the only crate in the tree whose *production* surface
+      # is the narrow one: pricing's `FixtureGate` inherits it with
+      # `default-features = false`. `default = ["corpus"]`, so the workspace run
+      # above compiles the wide build, where `tests/production_surface.rs`'s
+      # assertions hold trivially and prove nothing they were written for.
+      - name: cargo test (bss-fixtures narrow production surface)
+        run: make test-fixtures-narrow
+
   integration:
     name: Integration tests
     needs: changes
@@ -335,6 +343,19 @@ jobs:
 
       - name: Test postgres-cluster-plugin (pg integration)
         run: make test-cluster-pg
+
+      # bss-pricing's 346 Postgres tests are `#[ignore]`d behind Docker and ran in
+      # no job until 2026-08-11 — every concurrency and trigger proof the crate
+      # owns lives in them. This job already has Docker.
+      - name: Test bss-pricing with Postgres (integration)
+        run: make test-pricing-pg
+
+      # coord's `m0001_…` writes two independent SQL literals and only the
+      # SQLite one is reachable from the in-crate tests — so the `IF NOT EXISTS`
+      # that stops the `bss-pricing`-beside-`bss-ledger` boot crash, and the
+      # `in_schema("bss")` form both gears actually pass, ran in no job.
+      - name: Test coord with Postgres (integration)
+        run: make test-coord-pg
 
       - name: Test toolkit-db (sqlite integration)
         run: make test-sqlite

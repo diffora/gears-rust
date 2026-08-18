@@ -1,0 +1,107 @@
+[
+{"id": "requirement/cpt-cf-bss-pricing-fr-custom-frequency",
+ "regions": [
+  {"file": "design/02-plan-definition.md", "lines": [43, 54], "role": "mentions", "usefulness": "noise"},
+  {"file": "DECISIONS.md", "lines": [271, 282], "role": "specifies", "usefulness": "useful"}],
+ "coverage": "underspecified", "agreement": "not-applicable", "citations": [],
+ "reasoning": "D-20 in DECISIONS.md states one sub-rule operatively — customEveryN Months(n) MAY anchor subscription_start or calendar_month, the month-end clamp extends to subscription_start anchors, the anchor day is preserved across periods, UTC. It leaves three of the declaration's obligations unstated: persisting interval metadata for quarterly/semiannual/customEveryN at all, rejecting a non-positive n, the custom-interval cap, and the Days-cycle rule that a calendar_month or fixed_day anchor MUST fail publish. The design/02 fragment is the slice overview and its Traces-to list, which names custom frequency as an owned topic without stating anything about it.",
+ "proposed_fix": "AS LABELLED (kept verbatim; this is a measurement artifact): 'Nothing needs to change in the documents: design/02-plan-definition.md already carries the full rule in step inst-cs-customfreq, which this neighbourhood did not select — the gap is in the search, not the design set.' — FALSIFIED 2026-07-30 by direct measurement, see docs/spec-check/N1-evaluation-2026-07-30.md: inst-cs-customfreq does NOT carry the full rule (it omits the interval-metadata clause and never mentions quarterly or semiannual), and the window holding it scored 0.414 for this requirement, so it was cut by the threshold rather than lost by the top-3 rule. The graded axes above are unaffected — coverage underspecified and agreement not-applicable both stand, and both judges agreed with them. The correct fix is the one the judges proposed: state the missing clause in design/02-plan-definition.md."},
+
+{"id": "requirement/cpt-cf-bss-pricing-fr-hybrid-completeness",
+ "regions": [
+  {"file": "ADR/0001-cpt-cf-bss-pricing-adr-canonical-scope-key.md", "lines": [139, 150], "role": "mentions", "usefulness": "useful"},
+  {"file": "design/02-plan-definition.md", "lines": [43, 54], "role": "mentions", "usefulness": "noise"},
+  {"file": "design/02-plan-definition.md", "lines": [199, 210], "role": "specifies", "usefulness": "decisive"}],
+ "coverage": "underspecified", "agreement": "not-applicable", "citations": [],
+ "reasoning": "Step inst-cs-hybrid states the first two obligations exactly — BOTH at least one recurring and at least one usage row on the same planId as distinct chargeKind keys, and missing either part fails publish. The declaration's third obligation, that the read model MUST expose both rows under one planId for Tariffs hybrid evaluation, is stated nowhere in the neighbourhood: the ADR fragment says the two components are distinct keys on one planId, which is about the uniqueness key rather than the read-model projection, and the overview only lists hybrid completeness as an owned topic. From these regions the question 'must the read model surface both rows together?' has no answer.",
+ "proposed_fix": "design/02-plan-definition.md's hybrid step should state the read-model obligation the PRD attaches to it, or name the slice that owns projecting both rows under one planId."},
+
+{"id": "requirement/cpt-cf-bss-pricing-fr-one-time-setup",
+ "regions": [
+  {"file": "ADR/0001-cpt-cf-bss-pricing-adr-canonical-scope-key.md", "lines": [139, 150], "role": "mentions", "usefulness": "useful"},
+  {"file": "design/02-plan-definition.md", "lines": [43, 54], "role": "mentions", "usefulness": "noise"},
+  {"file": "design/02-plan-definition.md", "lines": [199, 210], "role": "specifies", "usefulness": "decisive"}],
+ "coverage": "specified", "agreement": "not-applicable", "citations": [],
+ "reasoning": "Steps inst-cs-setup and inst-cs-setup-timing together state every clause of the declaration: the row is allowed only on recurring and hybrid plans, is validated as one-time with no recurrence, no billingTiming and no tier fields, is a first-class row participating in approval, snapshot and preview rather than a synthetic add-on SKU, charges once per subscription lifetime at activation or at entry into the first non-trial phase for a plan with a trial, and is never re-charged by a plan change or a PlanLink migration. Only one region states the rule, so agreement is not-applicable rather than consistent."},
+
+{"id": "requirement/cpt-cf-bss-pricing-fr-tier-validation",
+ "regions": [
+  {"file": "DESIGN.md", "lines": [85, 96], "role": "specifies", "usefulness": "useful"},
+  {"file": "design/03-price-structure.md", "lines": [43, 54], "role": "mentions", "usefulness": "noise"},
+  {"file": "design/03-price-structure.md", "lines": [187, 198], "role": "specifies", "usefulness": "decisive"},
+  {"file": "DECISIONS.md", "lines": [241, 252], "role": "specifies", "usefulness": "useful"}],
+ "coverage": "specified", "agreement": "consistent", "citations": [],
+ "reasoning": "Three regions state the rule at three levels of detail and agree in every particular. The design/03 band-validation steps are decisive: ascending by fromQty, any overlap fails, any gap fails under the half-open convention, and toQty = null is REQUIRED on the top band with a closed top failing publish as TIER_TOP_CLOSED. The DESIGN.md driver row compresses the same rule and attributes the open-top requirement to D-17. D-17 itself in DECISIONS.md records the decision that closed tops are forbidden entirely, with the same error code and the same rationale — capping is an entitlement quota, a money cap is Tariffs Future, and a different price above X is another band. No region contradicts another."},
+
+{"id": "requirement/cpt-cf-bss-pricing-fr-level-aggregation",
+ "regions": [
+  {"file": "design/03-price-structure.md", "lines": [49, 60], "role": "mentions", "usefulness": "noise"},
+  {"file": "design/03-price-structure.md", "lines": [211, 222], "role": "specifies", "usefulness": "decisive"},
+  {"file": "DECISIONS.md", "lines": [451, 462], "role": "specifies", "usefulness": "useful"}],
+ "coverage": "specified", "agreement": "consistent", "citations": [],
+ "reasoning": "The level-aggregation algorithm states the whole rule: the authorable aggregationFunction and aggregationGranularity sets with LEVEL_FIELDS_INVALID on a non-usage row or an unknown value, both frozen into pricingSnapshotRef with the catalog never computing a fold, the gauge-kind and billable-unit checks behind LEVEL_UNIT_MISMATCH, maxHold as an explicitly authored integer of at least 1 that is required on a non-sum row and forbidden on a sum row, the hold_last semantics with the level reading 0 and an operator signal beyond maxHold, and LEVEL_COMPOSITE_FORBIDDEN for a derived meter. D-44 records the same decision in the same terms. The two agree; the overview fragment only carries the Traces-to list."},
+
+{"id": "requirement/cpt-cf-bss-pricing-fr-pricewindow-coverage",
+ "regions": [
+  {"file": "design/07-pricewindow-linkage.md", "lines": [49, 60], "role": "mentions", "usefulness": "useful"},
+  {"file": "design/07-pricewindow-linkage.md", "lines": [181, 192], "role": "specifies", "usefulness": "decisive"},
+  {"file": "ADR/0001-cpt-cf-bss-pricing-adr-canonical-scope-key.md", "lines": [91, 102], "role": "specifies", "usefulness": "useful"}],
+ "coverage": "specified", "agreement": "consistent", "citations": [],
+ "reasoning": "The window-coverage algorithm states both halves of the declaration: every billable row's canonical scope key resolved on the base priceOverlay MUST have an active or scheduled PriceWindow and absence fails publish with no silent fallback, and distinct keys hold windows independently so a hybrid's components and a grandfathered row with its successor each carry their own coverage. The ADR consequences say the same from the key's side — coverage is enforced by publish-time validation rather than by the uniqueness index, a published predecessor and its scheduled successor legally coexist, and coverage resolves on the base overlay with partner and brand overlays applied at evaluation. The two agree; the slice overview names the check without stating it."},
+
+{"id": "requirement/cpt-cf-bss-ledger-fr-debit-note-charge",
+ "regions": [
+  {"file": "design/05-adjustments-notes-refunds.md", "lines": [49, 60], "role": "mentions", "usefulness": "useful"},
+  {"file": "design/05-adjustments-notes-refunds.md", "lines": [715, 726], "role": "mentions", "usefulness": "noise"}],
+ "coverage": "claim-only", "agreement": "not-applicable", "citations": [],
+ "reasoning": "Neither region states the debit-note posting rule. The declaration requires a debit note to credit Tax payable per the posted TaxBreakdown, to follow the same direct split as S1 with the recognized portion to Revenue and the deferred portion ex-tax to Contract liability, never to change posted invoice line rows, and to be a balanced entry that rolls back fully on failure. The slice overview names debit notes as an owned topic; the second region is an acceptance checklist whose only debit-note clause is that a headroom CHECK blocks over-cap including after debit notes raise it, which is about credit-note capacity rather than about how a debit note posts. The regions gesture at the requirement without stating any of its four obligations.",
+ "proposed_fix": "design/05-adjustments-notes-refunds.md should carry a debit-note posting step stating the S1-identical direct split and the Tax-payable credit, in the same shape as its other per-flow steps, rather than leaving the rule to an acceptance checklist."},
+
+{"id": "requirement/cpt-cf-bss-ledger-fr-allocation-precedence",
+ "regions": [
+  {"file": "design/03-payments-allocation.md", "lines": [61, 72], "role": "mentions", "usefulness": "noise"},
+  {"file": "design/03-payments-allocation.md", "lines": [367, 378], "role": "specifies", "usefulness": "decisive"}],
+ "coverage": "underspecified", "agreement": "not-applicable", "citations": [],
+ "reasoning": "The allocation algorithm states the first two clauses exactly — oldest posting date first with ties broken by smallest invoice_id, then tenant overrides — and then explicitly declines the third: the declaration says statutory jurisdiction rules MUST take precedence over both tenant overrides and the platform default, while the design puts statutory appropriation rules out of v1 scope, offers the customer-instructed override as the B2B compliance path, and defers a jurisdiction-to-rule registry post-MVP. This is not a gap the design forgot to fill; it is the design knowingly not implementing a PRD MUST. Only one region specifies, so the agreement axis cannot express it — the contradiction is between the declaration and its one account, not between two accounts.",
+ "proposed_fix": "One of the two documents must move: either PRD.md drops or scopes the statutory-precedence MUST to match design/03-payments-allocation.md's v1 exclusion, or the design commits to the statutory registry it currently defers."},
+
+{"id": "requirement/cpt-cf-bss-ledger-fr-asc606-po-identification",
+ "regions": [
+  {"file": "DESIGN.md", "lines": [79, 90], "role": "mentions", "usefulness": "noise"},
+  {"file": "design/04-asc606-recognition.md", "lines": [55, 66], "role": "mentions", "usefulness": "noise"},
+  {"file": "design/04-asc606-recognition.md", "lines": [295, 306], "role": "specifies", "usefulness": "decisive"}],
+ "coverage": "underspecified", "agreement": "not-applicable", "citations": [],
+ "reasoning": "The PO/SSP allocation algorithm states the identification rule in full: the three trigger conditions, the Catalog default allocation group otherwise, the immaterial-one-shot exemption, and MISSING_PO_ALLOCATION_GROUP blocking post only on a genuinely ambiguous line. The declaration's final obligation is separate and unstated here — that deferral and recognition timing MUST be derivable from a Contract, Catalog, PO type, billing model precedence chain. The region names Contract/Catalog PO, SSP and VC refs as inputs but never states the precedence order among them, so the operative question of which source wins when two disagree has no answer in this neighbourhood.",
+ "proposed_fix": "design/04-asc606-recognition.md should state the Contract to Catalog to PO-type to billing-model precedence order for deriving deferral and recognition timing, or cite the step that owns it."},
+
+{"id": "requirement/cpt-cf-bss-ledger-fr-ar-tie-out",
+ "regions": [
+  {"file": "design/01-repository-foundation.md", "lines": [55, 66], "role": "mentions", "usefulness": "noise"},
+  {"file": "design/03-payments-allocation.md", "lines": [61, 72], "role": "mentions", "usefulness": "noise"},
+  {"file": "design/07-reconciliation-export.md", "lines": [79, 90], "role": "mentions", "usefulness": "noise"},
+  {"file": "design/03-payments-allocation.md", "lines": [427, 438], "role": "mentions", "usefulness": "useful"},
+  {"file": "design/07-reconciliation-export.md", "lines": [373, 384], "role": "specifies", "usefulness": "decisive"}],
+ "coverage": "specified", "agreement": "not-applicable", "citations": [],
+ "reasoning": "The AR tie-out algorithm states the rule completely: recompute the derived AR projection from actual AR-class journal_line deltas rather than from flow or phase names, apply the named formula over invoice posts, debit notes, allocations, credit notes, AR-restoring refunds and reversals, chargeback outcomes and CreditApplication settlements, exclude the AR-neutral shapes including the dispute-opened sub-class move exactly as the declaration requires, compare cache against projection under an explicit tolerance, and block close on a variance above it. The payments-allocation region shares the tie-out vocabulary but its body is the balance-cache lock order, so it supports the tie-out without stating it. Only one region specifies, so agreement is not-applicable."},
+
+{"id": "requirement/cpt-cf-bss-ledger-fr-fx-rate-source-failure",
+ "regions": [
+  {"file": "design/06-fx-multicurrency.md", "lines": [43, 54], "role": "mentions", "usefulness": "noise"},
+  {"file": "design/06-fx-multicurrency.md", "lines": [229, 240], "role": "specifies", "usefulness": "decisive"},
+  {"file": "design/06-fx-multicurrency.md", "lines": [103, 114], "role": "specifies", "usefulness": "useful"}],
+ "coverage": "specified", "agreement": "divergent",
+ "citations": [
+  {"file": "design/06-fx-multicurrency.md", "line": 109, "quote": "Provider-unreachable at S1 | Post **blocks** until a rate is available"},
+  {"file": "design/06-fx-multicurrency.md", "line": 233, "quote": "A provider being unreachable fails the **sync job** (alarmed), not a post"}],
+ "reasoning": "Both regions state a rule for the same condition and the rules are incompatible. The F4 assumption row says that when the provider is unreachable at S1 the post blocks until a rate is available, except under an explicit tenant last-good policy. The rate-source algorithm says the opposite for that same condition: the posting path never calls a provider, so a provider being unreachable fails the background sync job and raises an alarm rather than affecting any post, and it redefines FX_RATE_UNAVAILABLE to mean no acceptable local rate for the pair rather than a provider timeout. Under F4 a provider outage blocks posting; under inst-rs-local the same outage is invisible to posting until the local store goes stale. Step 1 of the algorithm carries a revision marker, so the algorithm was rewritten to be post-path-local and the assumption row was left behind.",
+ "proposed_fix": "design/06-fx-multicurrency.md must update the F4 assumption row to match inst-rs-local — provider unreachability fails the sync job, and only the absence of an acceptable local rate blocks a post — since the row is now contradicted by the algorithm in its own document."},
+
+{"id": "requirement/cpt-cf-bss-ledger-nfr-data-residency",
+ "regions": [
+  {"file": "design/01-repository-foundation.md", "lines": [67, 78], "role": "mentions", "usefulness": "noise"},
+  {"file": "design/02-audit-immutability-observability.md", "lines": [67, 78], "role": "mentions", "usefulness": "noise"},
+  {"file": "design/02-audit-immutability-observability.md", "lines": [133, 144], "role": "specifies", "usefulness": "decisive"},
+  {"file": "design/02-audit-immutability-observability.md", "lines": [799, 810], "role": "specifies", "usefulness": "useful"}],
+ "coverage": "specified", "agreement": "consistent", "citations": [],
+ "reasoning": "The G3 assumption row and the decision table state the same position and do not contradict each other: tenant data residency is deferred post-MVP, v1 ships a single installation with no region pinning and no cells, multi-AZ and RTO/RPO stay in scope, the retained post-MVP design pins the posted journal, secured audit store, PII map and WORM archive to a region with no copy crossing the boundary in primary, replica, DR or archive, and the consequence is spelled out — a tenant with a hard residency requirement cannot be onboarded in MVP. The mechanism the declaration asks for is therefore specified, and both accounts agree that it is deferred. That the deferral itself sits against a PRD MUST is a declaration-versus-design tension the agreement axis does not measure, since agreement compares accounts with each other."}
+]
