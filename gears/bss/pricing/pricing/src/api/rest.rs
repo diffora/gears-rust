@@ -64,11 +64,19 @@
 //! written down. They are here rather than nowhere, because a reader who greps this
 //! statement for a table and finds it absent concludes the surface is complete.
 //!
-//! * **`pricing_catalog_version_ref` is posted by five routes and read by none.**
-//!   The publish, the bundle publish, the overlay submit, the retirement and the
-//!   three membership writes all hand a caller a `pendingVersionRef`, and
-//!   `grep -rn "catalog_version_ref" src/api/` returns zero hits: no route answers
-//!   whether a handle committed or which version number it became.
+//! * **`pricing_catalog_version_ref` is written all over this gear and read by no
+//!   route.** The writers are
+//!   `grep -rln "catalog_version_ref_repo::record_pending" src/` — nine modules as
+//!   of 2026-08-18 (`publish`, `overlay_publish`, `supersession`, `cutover`,
+//!   `repricing`, `retirement`, `window`, `grandfather`, `membership_publish`,
+//!   the last serving three routes of its own) — and each hands a caller a
+//!   `pendingVersionRef`. **This said "five routes" and then enumerated seven**,
+//!   which is Z7-1 and is the class the paragraphs below this one are about: the
+//!   figure is derivable, so it is stated as the command rather than as a number
+//!   that goes stale the next time a door is added. It went stale in the commit
+//!   that wrote it — D-344 gave the cutover its own `record_pending` in the same
+//!   change. No route answers whether a handle committed or which version number
+//!   it became; that half is unchanged and is the finding.
 //!   `GET /catalog-version/frontier` is not that read — it serves the tenant-level
 //!   pin watermark and says nothing about one publish's outcome. **The intended
 //!   reader is named in the design set and is not this gear's**:
@@ -103,9 +111,9 @@
 //!
 //! **A handler asks its PDP question before it parses anything the caller sent**,
 //! so a caller outside the scope learns they are denied rather than that their
-//! body, header or path segment is malformed. Thirty-four of the thirty-seven
-//! mutating handlers already did; two window mutations did not, and this paragraph
-//! exists because the gear stated the rule **twice in two modules and in opposite
+//! body, header or path segment is malformed. **Two window mutations did not**,
+//! and every other mutating handler already did; this paragraph exists because the
+//! gear stated the rule **twice in two modules and in opposite
 //! directions**, each citing itself as the standard — `bulk_imports.rs` called
 //! gate-first *"this directory's stated discipline"*, `taxonomies.rs` named the
 //! census property that depends on it, and `windows.rs` argued parse-first as *"the
@@ -117,6 +125,17 @@
 //! Nothing was exploitable — the direction is fail-earlier — and it is stated here
 //! rather than left to a fourth module doc because that is what the last three
 //! attempts produced.
+//!
+//! **The population is deliberately not counted here** (Z7-1). This read *"thirty-four
+//! of the thirty-seven mutating handlers already did; two window mutations did not"*,
+//! whose own arithmetic is 36, and neither figure had a derivation: a handler can
+//! serve two routes and
+//! `grep -cE "OperationBuilder::(post|put|patch|delete)\(" src/api/rest/*.rs` counts
+//! **registrations**, not handlers, so the two are not the same number and the prose
+//! never said which it meant. What the exceptions are is the load-bearing half and
+//! it is stated exactly; how many handlers hold the rule is a thing the reader can
+//! derive and this sentence cannot keep true — the lesson `validation.rs`'s stage
+//! census records after being wrong twice about its own.
 //!
 //! **The one exception is `GET /plans/{planId}/sellability`**, which parses its
 //! three market parameters first and says why at the call site: the route is

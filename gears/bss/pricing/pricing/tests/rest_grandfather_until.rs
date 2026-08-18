@@ -106,6 +106,24 @@ async fn cut_over(h: &Harness) -> Generation {
             "model_kind": "flat",
             "amount_minor": 12_000,
             "billing_timing": "advance",
+            // The same three `rest_cutovers`' own successor body gained when
+            // D-344 gave the cutover door its aggregate pass, and the same
+            // reason: `inst-pi-required` obliges a **recurring** row to publish
+            // `billingAnchorPolicy`, `prorationBasis` and `creditOnDowngrade`,
+            // and this body carried none of them. It is the identical fixture
+            // fault one file over, and it stayed because this binary's whole
+            // subject is the horizon rather than the cutover — so nothing here
+            // reads the successor's contract and the omission was invisible
+            // until the aggregate tier started asking.
+            //
+            // `seed_publishable_plan`'s predecessor already carries the trio
+            // (`rest_support::publishable_row`); a successor that does not is a
+            // row Subscriptions cannot prorate, and the catalog substitutes no
+            // defaults. The fixture was authoring an unpublishable successor,
+            // not the rule refusing a legal one.
+            "billing_anchor_policy": "calendar_month",
+            "proration_basis": "calendar_days_actual",
+            "credit_on_downgrade": false,
             "rounding_policy_ref": "half_up"
         },
         "reason_code": "grandfatheringCutover"

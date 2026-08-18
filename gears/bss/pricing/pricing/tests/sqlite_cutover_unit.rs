@@ -34,7 +34,7 @@ use bss_pricing::domain::scope_key::{
 use bss_pricing::infra::cutover::{CutoverOutcome, CutoverRequest, CutoverService};
 use bss_pricing::infra::fixture_gate::FixtureGate;
 use bss_pricing::infra::storage::entity::price;
-use bss_pricing::infra::storage::repo::{NewPriceDraft, approval_repo};
+use bss_pricing::infra::storage::repo::{NewPriceDraft, approval_repo, plan_repo};
 use chrono::{DateTime, TimeZone, Utc};
 use rest_support::{Harness, Publishable};
 use sea_orm::{ColumnTrait, Condition, EntityTrait};
@@ -466,6 +466,109 @@ async fn a_cutover_is_refused_while_the_joint_corpus_is_not_green_for_its_shape(
     assert!(
         matches!(refused, DomainError::FixtureMissing(_)),
         "the gate must be what answered: {refused:?}"
+    );
+}
+
+/// Retire the plan's current revision, the way `retirement` does it.
+///
+/// `plan_repo::retire_revision` flips the **plan** row and nothing else, which is
+/// the whole reason the refusal below has to exist: the plan's price rows still
+/// read `published` afterwards.
+async fn retire_plan(h: &Harness, plan_id: PlanId) {
+    let revision =
+        plan_repo::load_current(&h.db.conn().expect("conn"), &h.scope(), h.tenant, plan_id)
+            .await
+            .expect("read the current revision")
+            .expect("the plan has one")
+            .revision;
+    let scope = h.scope();
+    let tenant = h.tenant;
+    let (_, outcome) =
+        h.db.db()
+            .in_transaction::<_, bss_pricing::infra::storage::RepoError, _>(move |txn| {
+                Box::pin(async move {
+                    plan_repo::retire_revision(txn, &scope, tenant, plan_id, revision).await
+                })
+            })
+            .await;
+    outcome.expect("retire the seeded plan revision");
+}
+
+#[tokio::test]
+async fn a_retired_plan_takes_no_cutover_successor_and_no_version_handle() {
+    // **C3-2's hoist on this door**, and the one arm of the 2026-08-17 wave's
+    // cutover work that landed without a probe while both its siblings have one
+    // (`sqlite_supersession_unit`'s and `sqlite_repricing_apply`'s
+    // `a_retired_plan_takes_no_repricing_successor_and_no_version_handle`).
+    //
+    // `plan_repo::retire_revision` flips only the plan row, so a retired plan's
+    // price rows still read `published`: step 1's `on_key(key, Published)` finds
+    // the predecessor, and nothing further down asks the plan's lifecycle —
+    // `commit_supersession_rows` runs `refuse_mispaired` / `supersede_row` /
+    // `publish_rows` and none of the three reads it. So without the hoist this act
+    // staged two drafts, took a `CatalogVersion` handle and published both rows on
+    // a plan nobody may buy.
+    //
+    // **The handle is the sharper half**, which is why the refusal is hoisted to
+    // step 1a rather than left to any later door: a retirement is **permanent**
+    // (D-156), so a request made past it stands pending forever and trips
+    // `pricing.catalogversion.commit_overdue` for a publish that can never happen.
+    let h = Harness::new().await;
+    let (plan_id, seeded) = published_plan(&h).await;
+    let key = key_of(plan_id, &seeded);
+
+    // **The positive control comes first**, on its own plan: without it a case
+    // asserting "nothing was staged and no handle was taken" would pass just as
+    // well against a `cut_over` that had simply broken.
+    let (clean_plan, clean_seeded) = published_plan(&h).await;
+    let clean_request = request_of(&key_of(clean_plan, &clean_seeded), 12_000);
+    let clean_staged = clean_request.successor_price_id;
+    cut_over(&h, clean_request, SUBMITTER)
+        .await
+        .expect("a live plan opens its unit");
+    assert!(
+        row_exists(&h, clean_staged).await,
+        "the control staged its successor, so an absence below means the refusal"
+    );
+    let handles_before = h.registry.requested().len();
+
+    retire_plan(&h, plan_id).await;
+    assert_eq!(
+        state_of(&h, seeded.price_id).await,
+        LifecycleState::Published.as_str(),
+        "retiring the plan leaves its rows published - the premise this refusal exists for"
+    );
+
+    let request = request_of(&key, 12_000);
+    let staged = request.successor_price_id;
+    let copy = request.copy_price_id;
+    let refused = cut_over(&h, request, SUBMITTER)
+        .await
+        .expect_err("a plan that can never be superseded takes no successor row either");
+
+    // Matched on `refuse_unpublishable_predecessor`'s own sentence, the sibling
+    // probe's reason: this refusal is not a `ValidationFailed` report, so it
+    // renders no rule code, and the clause is produced by no other refusal on this
+    // path.
+    assert!(
+        format!("{refused}").contains("can never be superseded"),
+        "the hoisted refusal is what answered, not a later door: {refused:?}"
+    );
+
+    // Hoisted **above** the staging, so neither draft was written.
+    assert!(
+        !row_exists(&h, staged).await,
+        "no successor draft stands on a retired plan"
+    );
+    assert!(
+        !row_exists(&h, copy).await,
+        "and no grandfathered copy either"
+    );
+    assert_eq!(
+        h.registry.requested().len(),
+        handles_before,
+        "and no CatalogVersion handle was stranded pending forever: {:?}",
+        h.registry.requested()
     );
 }
 

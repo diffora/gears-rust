@@ -186,7 +186,16 @@ pub fn partition_row_fields(row: &PriceRow) -> (Vec<&'static str>, Vec<&'static 
         "manual_quantity",
         "meter",
         "dimension_key",
-        "reserved_rate_minor",
+        // **The field's name, like every other entry here** — it was
+        // `"reserved_rate_minor"` until 2026-08-18 (review Z4-2), which was the
+        // *column's* name and made this the one entry in either list spelled in
+        // the storage vocabulary. `m20260802_000082` then renamed the column to
+        // `reserved_rate_nano`, so the token matched neither the field the
+        // destructure above binds nor any column, while its neighbour `unit_rate`
+        // — the same D-311 class, one rate over — was already spelled as the
+        // field. Outside for `unit_rate`'s reason: a rate is the row's price, not
+        // a knob an evaluator reads to decide *how* to price.
+        "reserved_rate",
         "min_qty_purchase",
         "discount_ref",
     ];

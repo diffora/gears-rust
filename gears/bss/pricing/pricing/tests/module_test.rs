@@ -1100,7 +1100,19 @@ fn no_query_struct_lets_the_extractor_answer() {
     // The whole struct is scanned rather than the `limit` member, because the two
     // uuid members and the `plan_revision` had the same defect and no roster of
     // member names would have found them.
+    //
+    // **It matched `pub struct {name} {` and skipped what it could not find,
+    // which made it fail open** (2026-08-18 review, Z6-1). `preview.rs`'s
+    // `PreviewQuery` is declared without `pub` — it is `Query`-extracted in the
+    // same module and needs no wider visibility — so the one query struct the
+    // scan could not resolve was the one it silently exempted, and the member
+    // filter below exempted every non-`pub` member of every struct on top of
+    // that. Both are closed here, and the miss is now a **failure** rather than
+    // a `continue`: a census that cannot find its subject has not cleared it.
+    // That is the same property `the_registration_scan_reads_the_whole_route_set`
+    // holds over the route scan, applied to this one.
     let mut offenders: Vec<String> = Vec::new();
+    let mut unresolved: Vec<String> = Vec::new();
     for source in rest_sources() {
         let text = scannable(&source);
         for after in text.split("Query<").skip(1) {
@@ -1108,27 +1120,45 @@ fn no_query_struct_lets_the_extractor_answer() {
                 .chars()
                 .take_while(|c| c.is_alphanumeric() || *c == '_')
                 .collect();
+            // No `pub` in the needle: it matches `pub struct X {` and `struct X {`
+            // alike, and the trailing ` {` is what stops `struct Foo {` matching
+            // `struct FooBar {`.
             let Some(body) = text
-                .split_once(&format!("pub struct {name} {{"))
+                .split_once(&format!("struct {name} {{"))
                 .and_then(|(_, rest)| rest.split_once('}'))
                 .map(|(body, _)| body)
             else {
+                unresolved.push(format!("{name} (extracted in {})", source.display()));
                 continue;
             };
             for member in body.split(',') {
                 let Some((field, ty)) = member.split_once(": ") else {
                     continue;
                 };
-                let field = field.trim();
-                if !field.starts_with("pub ") {
+                // The **last** token before the colon, so a `pub` or a `#[serde…]`
+                // ahead of the name is skipped without the name having to carry
+                // one. Taking `pub` as required is what let a private member
+                // through.
+                let Some(field) = field.split_whitespace().next_back() else {
+                    continue;
+                };
+                if !field.chars().all(|c| c.is_alphanumeric() || c == '_') {
                     continue;
                 }
                 if ty.trim() != "Option<String>" {
-                    offenders.push(format!("{name}.{} is {}", &field[4..], ty.trim()));
+                    offenders.push(format!("{name}.{field} is {}", ty.trim()));
                 }
             }
         }
     }
+    unresolved.sort();
+    unresolved.dedup();
+    assert!(
+        unresolved.is_empty(),
+        "this scan could not find the declaration of these `Query<…>` types, so it cleared them \
+         without reading a single member: {unresolved:?}. Resolve them or narrow the scan \
+         deliberately — an unfindable subject is not a clean one"
+    );
     offenders.sort();
     offenders.dedup();
     assert!(

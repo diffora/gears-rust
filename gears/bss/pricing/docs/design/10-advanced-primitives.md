@@ -506,7 +506,7 @@ copy-on-new-revision with a **stable `composite_id`**, published rows immutable 
 revision. The former bare `revision` column, whose referent was never stated, is replaced by
 `plan_revision`.
 
-Key constraints: `CHECK (reservation_flavor IS NULL) = (reserved_rate_minor IS NULL)` — **enforced
+Key constraints: `CHECK (reservation_flavor IS NULL) = (reserved_rate_nano IS NULL)` — **enforced
 as a publish rule, not as a column constraint (**D-256**, 2026-08-08)**, and the reason is a portability one
 worth stating so nobody "fixes" it into the table: `SQLite` has no incremental table-`CHECK` form,
 so a pairing constraint added to `pricing_price` after creation is either a full table rebuild or a

@@ -1164,7 +1164,7 @@ outside:
   unit_rate            money - the per_unit rate, D-311
   bands                money
   package_price_minor  money - D-122's "legitimate price lever"
-  reserved_rate_minor  money - the reserved rate, S10 inst-rv-attrs
+  reserved_rate        rate - the committed reserved rate, S10 inst-rv-attrs, D-311 class
   min_qty_purchase     permission - order-time floor enforced by Subscriptions
   discount_ref         reference - the external instrument Promotions evaluates
   quantity_source      quantity origin, not quantity derivation

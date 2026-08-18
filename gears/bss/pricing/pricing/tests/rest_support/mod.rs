@@ -343,6 +343,29 @@ impl RegistryDouble {
             .expect("no panics in the double")
             .insert(pending_ref.to_owned(), CatalogVersion::new(version));
     }
+
+    /// Every `request_id` a handle has been issued for, in no order.
+    ///
+    /// The **negative** half of a hoisted-refusal probe, and the only one that can
+    /// be asserted: D-156's whole argument for hoisting a *permanent* refusal above
+    /// the registry call is that a handle requested past it stands pending forever
+    /// and trips `pricing.catalogversion.commit_overdue` for a publish that can
+    /// never happen. A case that only checked which rows were written could not see
+    /// that, because the stranded handle leaves no row.
+    ///
+    /// Returned as the ids rather than as a count so a failure names *which* act
+    /// took one, and asserted as a delta against a pre-call reading rather than
+    /// against zero — a probe carrying a positive control has a legitimate handle
+    /// in flight, and one asserting absence outright would redden on it.
+    #[must_use]
+    pub fn requested(&self) -> Vec<String> {
+        self.issued
+            .lock()
+            .expect("no panics in the double")
+            .keys()
+            .cloned()
+            .collect()
+    }
 }
 
 #[async_trait]

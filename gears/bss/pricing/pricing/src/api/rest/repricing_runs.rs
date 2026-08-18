@@ -1215,8 +1215,20 @@ fn frozen_report(
 ///
 /// # Errors
 /// [`DomainError::Internal`] naming the missing or malformed field — this
-/// crate's own stored rendering, so a failure here is corruption rather than a
-/// caller's mistake.
+/// crate's own stored rendering, so a failure *of this function's own reads* is
+/// corruption rather than a caller's mistake.
+///
+/// **[`adjustment_of`]'s refusals reach through it too, and this said otherwise**
+/// (2026-08-18 review, Z1-1). Delegating means a stored adjustment that parses
+/// but is out of D-67's range answers [`DomainError::ValidationFailed`] carrying
+/// `ADJUSTMENT_MAGNITUDE_OUT_OF_RANGE`, and an unknown token answers
+/// [`DomainError::InvalidRequest`] — neither is corruption. The distinction is
+/// load-bearing for the one caller: [`crate::infra::repricing::apply_run_in`]
+/// asks this **above** its `bulk_repo::advance` and above `RunLockGuard::new`, so
+/// any of the three leaves the run exactly where it was rather than stranded in
+/// `committing`. A run opened before the range check landed is therefore
+/// refusable at apply and remains re-openable, which is the intended disposition
+/// and not a stuck state.
 pub(crate) fn adjustment_of_report(report: &serde_json::Value) -> Result<Adjustment, DomainError> {
     let corrupt = |what: &str| {
         DomainError::Internal(format!(

@@ -1291,6 +1291,17 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
         .error_401(openapi)
         .error_403(openapi)
         .error_404(openapi)
+        // C7-1's refusal, declared. `publish_composition` re-reads the revision
+        // inside its writing transaction and answers `RepoError::StaleRowVersion`
+        // when the composition moved after the reviewer's pin was taken over it;
+        // that maps through `DomainError::StaleVersion` to a **409**
+        // (`infra::error_mapping_tests` pins the status). It is the central
+        // outcome of that fix rather than an edge, so a generated client meeting
+        // it must have it modelled — and the two siblings on this same struct,
+        // `POST /bundles` and `PATCH /bundles/{bundleId}`, both declare theirs.
+        // The remedy differs from a retry, which is why the status has to reach
+        // the client at all: the operator re-reviews the composition that moved.
+        .error_409(openapi)
         .error_500(openapi)
         .error_503(openapi)
         .register(router, openapi)
