@@ -356,7 +356,7 @@ pub struct PriceContentView {
     /// `inst-ad-author` says so: primitives "author through the Slice 2/3
     /// plan/price PATCH surfaces", row-attached ones on the price row. S10 §5
     /// declares no endpoint of its own for the same reason.
-    pub reserved_rate_minor: Option<i64>,
+    pub reserved_rate_nano_minor: Option<i64>,
     /// What the reservation reserves: `consumption | capacity` (`inst-rv-attrs`).
     pub reservation_flavor: Option<String>,
     /// The order-time purchase floor (`inst-ft-typed`).
@@ -423,7 +423,7 @@ impl From<&PriceRecord> for PriceContentView {
                     rollover_policy: allowance.rollover_policy.as_str().to_owned(),
                 }
             }),
-            reserved_rate_minor: row.reserved_rate_minor.map(MinorAmount::get),
+            reserved_rate_nano_minor: row.reserved_rate.map(RateMinor::nano_minor),
             reservation_flavor: row.reservation_flavor.map(|f| f.as_str().to_owned()),
             min_qty_purchase: row.min_qty_purchase,
             min_qty_usage: row.min_qty_usage,
@@ -517,7 +517,7 @@ pub struct PatchPriceRequest {
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct PricePageQuery {
     /// Rows per page; server default 100, hard cap 1,000.
-    pub limit: Option<u64>,
+    pub limit: Option<String>,
     /// The opaque token a previous page returned.
     pub cursor: Option<String>,
 }
@@ -802,7 +802,16 @@ async fn patch_price(
     let correlation = require_correlation(extension_correlation)?;
     let tenant = ctx.subject_tenant_id();
     let plan_id = PlanId::new(plan_id);
-    let scope = write_scope(&enforcer, &ctx, price_id, tenant).await?;
+    // **The plan id, not the price row's** — the object the authz catalog's
+    // endpoint map puts `plan × write` on. `windows.rs` states the rule at length
+    // and restructured three handlers rather than pass a window id the PDP carries
+    // no label for; this route passed `price_id` until 2026-08-18, so a role
+    // definition of the form "allow `plan × write` where `resource_id in {planA}`"
+    // — which `SUPPORTED_PROPERTIES` advertises precisely so one can be written —
+    // was evaluated against a price row's id and denied. The direction is
+    // availability rather than escalation, and `row_of_plan` below already binds
+    // the row to the plan.
+    let scope = write_scope(&enforcer, &ctx, plan_id.get(), tenant).await?;
 
     let body: PatchPriceRequest = preconditions::parse_body(&body)?;
     let expected = preconditions::if_match(&headers)?;
@@ -875,7 +884,16 @@ async fn delete_price(
     let correlation = require_correlation(extension_correlation)?;
     let tenant = ctx.subject_tenant_id();
     let plan_id = PlanId::new(plan_id);
-    let scope = write_scope(&enforcer, &ctx, price_id, tenant).await?;
+    // **The plan id, not the price row's** — the object the authz catalog's
+    // endpoint map puts `plan × write` on. `windows.rs` states the rule at length
+    // and restructured three handlers rather than pass a window id the PDP carries
+    // no label for; this route passed `price_id` until 2026-08-18, so a role
+    // definition of the form "allow `plan × write` where `resource_id in {planA}`"
+    // — which `SUPPORTED_PROPERTIES` advertises precisely so one can be written —
+    // was evaluated against a price row's id and denied. The direction is
+    // availability rather than escalation, and `row_of_plan` below already binds
+    // the row to the plan.
+    let scope = write_scope(&enforcer, &ctx, plan_id.get(), tenant).await?;
 
     let expected = preconditions::if_match(&headers)?;
     row_of_plan(&state, &scope, tenant, plan_id, price_id).await?;
@@ -925,7 +943,10 @@ async fn list_plan_prices(
     .await
     .map_err(authz_error_to_canonical)?;
 
-    let page = PageRequest::parse(query.limit, query.cursor.as_deref())?;
+    let page = PageRequest::parse(
+        cursor::parse_limit(query.limit.as_deref())?,
+        query.cursor.as_deref(),
+    )?;
     // One row more than the page, so "is there another page" is answered without
     // a second query and without a page of `next_cursor` pointing at nothing.
     let probe = page.limit.saturating_add(1);
@@ -1306,7 +1327,10 @@ pub(crate) fn content_of(view: &PriceContentView) -> Result<PriceContent, Domain
                 })
             })
             .transpose()?,
-        reserved_rate_minor: amount("content.reserved_rate_minor", view.reserved_rate_minor)?,
+        reserved_rate: view
+            .reserved_rate_nano_minor
+            .map(RateMinor::from_nano_minor)
+            .transpose()?,
         reservation_flavor: optional_token(
             "content.reservation_flavor",
             view.reservation_flavor.as_deref(),

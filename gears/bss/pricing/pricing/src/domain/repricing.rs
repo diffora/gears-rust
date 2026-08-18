@@ -241,6 +241,37 @@ impl RunSelector {
 /// that silence becomes a refusal instead — see [`adjusts_rate`]. All of that
 /// holds verbatim for `per_unit`'s single rate, which is why the two arms
 /// share [`project_rate`] rather than each owning a copy of one formula.
+///
+/// # `reserved_rate` is **not** projected, and that is undecided rather than
+/// decided
+///
+/// This function mutates exactly four things — `amount_minor`,
+/// [`PriceRow::unit_rate`](crate::domain::price_row::PriceRow::unit_rate),
+/// `package_price_minor`, and each band's `unit_price_rate`. The record is cloned
+/// and [`PriceRow::reserved_rate`](crate::domain::price_row::PriceRow::reserved_rate)
+/// rides through unchanged, which the doc above did not say (Z5-5).
+///
+/// `reservedRate` lives on the **same row** as the on-demand price by design
+/// (`design/10-advanced-primitives.md`: *"`reservedRate`/`reservationFlavor` live
+/// **on** the usage row (never a second row)"*), and the commercial relationship
+/// between the two is the whole point of the primitive — the reserved rate is the
+/// discount a customer commits for. So a run that halves the on-demand rate and
+/// leaves the committed one where it was can put a committing customer **above**
+/// on-demand: `$0.030` on-demand with a `$0.020` commitment becomes `$0.015`
+/// against an unchanged `$0.020`. Nothing refuses it and nothing warns:
+/// [`adjusts_rate`] is the only refusal in the apply and it asks about the
+/// *adjustment*, not about which of the row's money columns went unmoved, and
+/// materiality sees the on-demand move alone.
+///
+/// **Whether a reprice should move a committed rate is a product question this
+/// module cannot answer** — a contractually frozen rate is an entirely defensible
+/// reading, and so is the opposite. What is not defensible is leaving it
+/// unrecorded, which is what this paragraph fixes: the behaviour is now stated,
+/// and `repricing::the_reserved_rate_rides_a_reprice_unchanged` pins it so a
+/// change to it cannot be silent. It owes a `D-NNN` either way. If the answer is
+/// "in scope", the arm is gated correctly already —
+/// [`crate::domain::materiality::delta`] classifies a `reserved_rate` move as
+/// `NotComputable`, therefore material regardless of threshold.
 pub(crate) fn project_row(mut row: PriceRecord, adjustment: &Adjustment) -> PriceRecord {
     let currency = row.scope_key.currency().clone();
     match row.row.model_kind {

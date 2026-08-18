@@ -2291,6 +2291,81 @@ async fn every_route_asks_the_catalogued_pair() {
     }
 }
 
+/// **A `plan` question is anchored to a plan id or to nothing — never to some other
+/// object's id.**
+///
+/// The census binds three of the gate's four PDP-visible arguments —
+/// `resource_type`, `action` and `require_constraints` — and `resource_id` was not
+/// one of them. Grepping this file for the word found three hits and all three were
+/// **prose**: comments explaining that a collection read passes `None`. So the
+/// census reasoned about the axis in exactly the place it declined to assert it,
+/// and a route that anchored to the wrong object, or to a caller-supplied id, passed
+/// every property in the file.
+///
+/// It was not hypothetical. `PATCH` and `DELETE /plans/{planId}/prices/{priceId}`
+/// asked `plan × write` with the **price row's** id, `POST /bundles/{id}/publish`
+/// asked `plan × publish` with the bundle's, and `DELETE /migrations/{id}` asked
+/// `plan × migrate` with the migration's — while `windows.rs` states the rule at
+/// length and restructured three handlers rather than break it. A mis-anchored id
+/// cannot widen a scope (`resource_id` is an *input* to the decision, and an unknown
+/// property compiles fail-closed), so the direction is availability: a role
+/// definition constraining `plan × write` to one plan denies against a price row's
+/// id. It arms the day such a definition is written, which
+/// `authz::SUPPORTED_PROPERTIES` advertises the property precisely so one can be.
+///
+/// # Why this shape rather than an `Anchor` per census row
+///
+/// Fifty-eight rows each needing a hand-decided anchor is fifty-eight chances to
+/// transcribe the code rather than the contract — and a roster read off the
+/// implementation binds nothing, which is this whole review's largest recurring
+/// class. What is asserted instead is the *invariant*: the id a `plan` question
+/// carries must be a plan's. Every other seeded id in the fixture is a distinct
+/// `Uuid`, so anchoring to a price row, a window, a bundle, an overlay, an approval,
+/// a migration or a bulk run each fails here, and no row has to say so.
+#[tokio::test]
+async fn a_plan_question_is_never_anchored_to_another_objects_id() {
+    for route in census() {
+        let harness = Harness::new().await;
+        let seeded = seed(&harness).await;
+        let (client, seen) = harness.recording();
+
+        let response = client
+            .send(drive(&route, &seeded, "\"0-3\"", "census-anchor"))
+            .await;
+        assert!(
+            response.status() != StatusCode::UNAUTHORIZED
+                && response.status() != StatusCode::FORBIDDEN,
+            "{} {} was refused before it reached the gate",
+            route.method,
+            route.path
+        );
+
+        let asked = seen.lock().expect("recorder");
+        for request in asked.iter() {
+            if request.resource.resource_type.as_str() != labels::PLAN {
+                continue;
+            }
+            let Some(anchored) = request.resource.id.as_ref() else {
+                // `None` is always legitimate: a collection read, or a batch whose
+                // rows span plans and whose ids it mints. What is refused is
+                // anchoring to the *wrong* thing.
+                continue;
+            };
+            assert_eq!(
+                anchored.to_string(),
+                seeded.plan.to_string(),
+                "{} {} asks a `plan` question anchored to `{anchored}`, which is not the seeded \
+                 plan {}. The authz catalog's endpoint map puts this action on a **plan**, so a \
+                 role definition constraining it by `resource_id` is evaluated against an object \
+                 of the wrong type and denies",
+                route.method,
+                route.path,
+                seeded.plan
+            );
+        }
+    }
+}
+
 #[test]
 fn every_further_question_belongs_to_a_route_that_asks_one() {
     // The table's own staleness guard — `no_exemption_outlives_the_surface_it_was_
@@ -2358,6 +2433,17 @@ async fn every_mutating_route_is_denied_with_the_state_unchanged() {
         // so a handler on any of them that wrote first and gated second moved no
         // plan row, no price row and no approval unit, and this loop stayed green.
         let stores_before = mutable_planes(&harness, seeded.plan).await;
+        // The plane-level twin of the `unit_before` anti-tautology assertion
+        // below. `approval` was added as a whole plane on 2026-08-18 because the
+        // single-field readback could not see a refusal that OPENS A NEW UNIT --
+        // two mutating census routes do exactly that on success -- and a plane
+        // that happened to be empty would compare `[] == []` for every route and
+        // prove nothing at all.
+        assert!(
+            !stores_before["approval"].is_empty(),
+            "the seed must leave an approval unit, or the approval plane's comparison is \
+             vacuous for every route in this loop"
+        );
 
         let response = harness
             .denied()

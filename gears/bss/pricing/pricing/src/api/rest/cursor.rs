@@ -95,6 +95,57 @@ impl PageRequest {
     }
 }
 
+/// The `limit` query parameter, read out of its raw text.
+///
+/// # Why the query types carry `Option<String>` and this exists
+///
+/// A `Query<T>` member typed `Option<u64>` is parsed by **axum's** extractor, and
+/// its rejection is a bare `400` with *no problem document at all* — against a
+/// registration whose declared 400 has `Problem` as its schema. That is the same
+/// defect class as a handler taking the `Json` extractor, one axis over:
+/// `?limit=abc` on any of the nine paginated reads answered outside the canonical
+/// envelope, so a client keying on the document got nothing to key on.
+///
+/// `windows.rs`'s `SellabilityQuery` recorded the lesson and applied it to one
+/// struct of twelve. This is the shared half, so the nine paginated reads cannot
+/// each phrase the refusal differently.
+///
+/// # Errors
+/// [`DomainError::InvalidRequest`] naming the parameter, for a value that is not a
+/// non-negative integer. No new wire code — a parameter this gear cannot interpret
+/// is the Foundation validation envelope's own case, the same reading D-141 gives
+/// an absent `If-Match` and [`decode`] gives an undecodable cursor.
+pub fn parse_limit(raw: Option<&str>) -> Result<Option<u64>, DomainError> {
+    raw.map(|value| {
+        value.trim().parse::<u64>().map_err(|_| {
+            DomainError::InvalidRequest(format!(
+                "limit: `{value}` is not a whole number of rows; send a positive integer, or omit \
+                 it for the server default of {DEFAULT_LIMIT}"
+            ))
+        })
+    })
+    .transpose()
+}
+
+/// A `Uuid`-valued query parameter, read out of its raw text.
+///
+/// [`parse_limit`]'s reason on the other type: `Option<Uuid>` at the query struct
+/// hands the refusal to axum's extractor. `subject` names the parameter in the
+/// refusal, because a caller told only "invalid argument" over a request carrying
+/// two ids cannot act.
+///
+/// # Errors
+/// [`DomainError::InvalidRequest`] naming the parameter and the value.
+pub fn parse_uuid_param(subject: &str, raw: Option<&str>) -> Result<Option<Uuid>, DomainError> {
+    raw.map(|value| {
+        value
+            .trim()
+            .parse::<Uuid>()
+            .map_err(|_| DomainError::InvalidRequest(format!("{subject}: `{value}` is not a UUID")))
+    })
+    .transpose()
+}
+
 /// The opaque token naming the last row of a page.
 ///
 /// The encoding — URL-safe base64 without padding, over the key's 16 raw bytes —

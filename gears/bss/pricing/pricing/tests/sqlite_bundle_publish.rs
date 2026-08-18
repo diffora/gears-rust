@@ -254,7 +254,15 @@ async fn the_reconciled_shares_are_written_to_the_effective_column_on_publish() 
     );
 
     h.service
-        .publish_composition(&scope(), TENANT, plan(), 0, CORRELATION, at(11))
+        .publish_composition(
+            &scope(),
+            TENANT,
+            plan(),
+            0,
+            RowVersion::new(1),
+            CORRELATION,
+            at(11),
+        )
         .await
         .expect("publish the composition");
 
@@ -376,7 +384,15 @@ async fn a_reconciled_share_the_write_cannot_address_is_refused_rather_than_anno
 
     let refused = h
         .service
-        .publish_composition(&scope(), TENANT, plan(), 0, CORRELATION, at(11))
+        .publish_composition(
+            &scope(),
+            TENANT,
+            plan(),
+            0,
+            RowVersion::new(1),
+            CORRELATION,
+            at(11),
+        )
         .await
         .expect_err(
             "a normalisation that stored nothing is not a publish; answering `Ok` leaves the \
@@ -463,7 +479,15 @@ async fn a_second_publish_of_one_revision_makes_progress_rather_than_answering_r
         .expect("author the composition");
 
     h.service
-        .publish_composition(&scope(), TENANT, plan(), 0, CORRELATION, at(11))
+        .publish_composition(
+            &scope(),
+            TENANT,
+            plan(),
+            0,
+            RowVersion::new(1),
+            CORRELATION,
+            at(11),
+        )
         .await
         .expect("the first publish of the revision");
 
@@ -471,7 +495,15 @@ async fn a_second_publish_of_one_revision_makes_progress_rather_than_answering_r
     // finding.
     let second = h
         .service
-        .publish_composition(&scope(), TENANT, plan(), 0, CORRELATION_2, at(12))
+        .publish_composition(
+            &scope(),
+            TENANT,
+            plan(),
+            0,
+            RowVersion::new(1),
+            CORRELATION_2,
+            at(12),
+        )
         .await;
     assert!(
         !matches!(second, Err(RepoError::ConcurrentMutation { .. })),
@@ -502,7 +534,15 @@ async fn a_second_publish_of_one_revision_makes_progress_rather_than_answering_r
     // that dedups nothing at all.
     let replay = h
         .service
-        .publish_composition(&scope(), TENANT, plan(), 0, CORRELATION_2, at(13))
+        .publish_composition(
+            &scope(),
+            TENANT,
+            plan(),
+            0,
+            RowVersion::new(1),
+            CORRELATION_2,
+            at(13),
+        )
         .await;
     assert!(
         matches!(replay, Err(RepoError::ConcurrentMutation { .. })),
@@ -513,5 +553,141 @@ async fn a_second_publish_of_one_revision_makes_progress_rather_than_answering_r
         announcement_rows(&h).await.len(),
         2,
         "and the refused replay added nothing"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// C7-1 — the composition that moved after the reviewer decided over it.
+// ---------------------------------------------------------------------------
+
+/// **This is an approval bypass, not a lost update, and that is why it is here.**
+///
+/// `api::rest::bundles` computes `bundle_content_hash(shape, draft.row_version)`,
+/// matches an approved unit on that digest, and only then calls
+/// `publish_composition` — which used to re-read the composition on a **third**
+/// connection, outside its own writing transaction. So an ordinary authorised
+/// `PATCH …/bundles/{id}` landing between the match and the read left the act
+/// reconciling and paying out a composition no second principal had seen, while
+/// `BundleUpdated` announced it. The column being written is what downstream
+/// vendor parties are paid on.
+///
+/// The version the pin was taken over is now handed down and compared inside the
+/// writing transaction, so the moved composition is `StaleRowVersion` — the
+/// contention refusal the act previously reported as `CorruptRow` when the
+/// divergence happened to strand a party row (Z9-6) and reported not at all when
+/// it did not.
+///
+/// **The edit here changes the split and not only the version**, so a fix that
+/// compared versions but still wrote from the stale read would be caught by the
+/// share assertion as well as by the refusal.
+#[tokio::test]
+async fn a_composition_that_moved_after_the_pin_is_refused_rather_than_paid_out() {
+    let h = harness().await;
+    seeded(&h).await;
+
+    let reviewed = |acme: i32, globex: i32| CompositionDraft {
+        components: vec![component(1)],
+        rev_share_groups: vec![RevShareGroup {
+            vendor_sku_id: VENDOR,
+            platform_cut_bp: 1_000,
+            residual_absorber: Absorber::Platform,
+            parties: vec![
+                PartyShare {
+                    party: Party::new("acme").expect("party"),
+                    share_bp: acme,
+                },
+                PartyShare {
+                    party: Party::new("globex").expect("party"),
+                    share_bp: globex,
+                },
+            ],
+        }],
+    };
+
+    // What the second principal decided over: an even split, at version 0 -> 1.
+    h.bundles
+        .replace_composition(
+            &scope(),
+            TENANT,
+            plan(),
+            0,
+            RowVersion::new(0),
+            reviewed(4_500, 4_500),
+            stamp(),
+        )
+        .await
+        .expect("author the reviewed composition");
+    let pinned = RowVersion::new(1);
+
+    // The edit nobody reviewed, landing between the approve and the publish:
+    // 9 000 of 10 000 bp moves from one party to the other, 1 -> 2.
+    h.bundles
+        .replace_composition(
+            &scope(),
+            TENANT,
+            plan(),
+            0,
+            pinned,
+            reviewed(8_999, 1),
+            stamp(),
+        )
+        .await
+        .expect("an ordinary authorised composition edit");
+
+    let refused = h
+        .service
+        .publish_composition(&scope(), TENANT, plan(), 0, pinned, CORRELATION, at(11))
+        .await
+        .expect_err("the composition the reviewer decided over is not the one in the store");
+    assert!(
+        matches!(
+            refused,
+            RepoError::StaleRowVersion {
+                current: 2,
+                submitted: 1,
+                ..
+            }
+        ),
+        "named as contention, with both versions, so the surface can answer 409 and the operator \
+         knows to re-review rather than to retry: {refused:?}"
+    );
+
+    // Nothing was paid out and nothing was announced. `None` in the third slot is
+    // the effective column still absent — the writes never ran.
+    assert_eq!(
+        stored_shares(&h).await,
+        vec![
+            ("acme".to_owned(), 8_999, None),
+            ("globex".to_owned(), 1, None),
+        ],
+        "the unreviewed split was not normalised onto the column vendors are paid on"
+    );
+    assert!(
+        announcements(&h).await.is_empty(),
+        "and no BundleUpdated announced a composition that did not publish"
+    );
+
+    // **The positive control**, and it is what keeps this case from passing on a
+    // `publish_composition` that simply refuses everything: the same act at the
+    // version the store now holds publishes, and normalises the *stored* split.
+    h.service
+        .publish_composition(
+            &scope(),
+            TENANT,
+            plan(),
+            0,
+            RowVersion::new(2),
+            CORRELATION_2,
+            at(12),
+        )
+        .await
+        .expect("the composition that is actually current publishes");
+    assert_eq!(
+        stored_shares(&h).await,
+        vec![
+            ("acme".to_owned(), 8_999, Some(8_999)),
+            ("globex".to_owned(), 1, Some(1)),
+        ],
+        "and what it normalised is what it read inside its own transaction"
     );
 }

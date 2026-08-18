@@ -229,6 +229,13 @@ pub fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Router {
         .error_400(openapi)
         .error_401(openapi)
         .error_403(openapi)
+        // The replay guard's own status. A spent `Idempotency-Key` resubmitted over
+        // a changed batch is `IDEMPOTENCY_PAYLOAD_MISMATCH`, which the ladder maps
+        // through `aborted(...)` to a 409 — the refusal that stops a corrected batch
+        // being answered `202` over the first batch's report, having imported
+        // nothing. It was undeclared until 2026-08-17 while all four sibling creates
+        // declared theirs.
+        .error_409(openapi)
         .error_500(openapi)
         .error_503(openapi)
         .register(router, openapi);
@@ -251,6 +258,7 @@ pub fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Router {
             StatusCode::OK,
             "The run and its report.",
         )
+        .error_400(openapi)
         .error_401(openapi)
         .error_403(openapi)
         .error_404(openapi)
@@ -623,6 +631,33 @@ async fn abort_bulk_import(
                 id: operation_id.to_string(),
             })
         })?;
+
+    // **A run this operation already abandoned is answered, not refused** — the
+    // half the required `Idempotency-Key` above was owed and never got.
+    //
+    // The key is read for its refusal and bound to nothing, so it opens no dedup
+    // gate; what stood in for one was the state guard below, and that guard gave
+    // exactly the wrong answer. The first abort moves the run out of `committing`,
+    // so a client that timed out and retried — identical request, identical key —
+    // was told `LIFECYCLE_FORBIDDEN` over an abort that had succeeded, which is the
+    // conclusion the key exists to prevent.
+    //
+    // The discriminator is the note and not the state: `abandon_committing_run`
+    // lands the run in `completed_with_conflicts`, the same state an ordinary
+    // partially-conflicted import reaches, so the state alone cannot tell "this
+    // operation ran" from "this run finished on its own". The note is written by
+    // that sweep and by nothing else. That keeps the guard below whole — a
+    // `completed_with_conflicts` run nobody aborted is still refused, for the
+    // reason it states.
+    //
+    // The drop-guard's fallback stamps the same member with its own note, and that
+    // is the right reading too: the locks are released and the run is terminal, so
+    // an operator asking for an abort is asking for a state the run is already in.
+    if run.state != BulkState::Committing
+        && run.report.get(crate::infra::bulk::ABORTED_MEMBER).is_some()
+    {
+        return Ok(Json(run_view(&run)));
+    }
 
     // **The trigger does not refuse this one, and D-293 claimed it did.** A move
     // to the state a run is already in returns early on both engines, so an abort

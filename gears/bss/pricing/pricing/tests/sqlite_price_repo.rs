@@ -120,8 +120,14 @@ fn money(units: i64) -> MinorAmount {
 
 /// A band rate, stated in whole minor units so these cases read as they always
 /// did (D-311). The stored scale is 10^-9 of one.
+///
+/// Through `from_minor_units` and not a `* 1_000_000_000` literal: `NANO_PER_MINOR`
+/// is derived from `RATE_SUB_DECIMALS` so "the scale has exactly one place it can
+/// be changed", and a fixture that writes the factor out would build its rows at
+/// the old scale while production asserted at the new one — green tests over a
+/// 1000x disagreement (Z5-11).
 fn rate(minor_units: i64) -> RateMinor {
-    RateMinor::from_nano_minor(minor_units * 1_000_000_000).expect("a non-negative rate")
+    RateMinor::from_minor_units(minor_units).expect("a non-negative rate")
 }
 
 /// A rate stated in the **stored** 10^-9 scale, for the cases that need two
@@ -227,7 +233,7 @@ fn graduated_content() -> PriceContent {
     // non-default, so a column the store drops is a changed value rather than a
     // hole staying a hole. Their absence was found by probe: dropping
     // `discount_ref` on the read path reddened nothing in the entire fast suite.
-    row.reserved_rate_minor = Some(money(3));
+    row.reserved_rate = Some(rate(3));
     row.reservation_flavor = Some(ReservationFlavor::Capacity);
     row.min_qty_purchase = Some(7);
     row.min_qty_usage = Some(11);
@@ -381,7 +387,7 @@ async fn a_created_row_and_its_bands_read_back_whole() {
             rollover_policy: RolloverPolicy::Carry,
         })
     );
-    assert_eq!(read.row.reserved_rate_minor, Some(money(3)));
+    assert_eq!(read.row.reserved_rate, Some(rate(3)));
     assert_eq!(
         read.row.reservation_flavor,
         Some(ReservationFlavor::Capacity)
@@ -4488,5 +4494,54 @@ async fn the_gated_market_gauge_is_empty_once_the_tax_engine_is_ga() {
         0,
         "a gated market is a market whose rows are not sellable *because the engine \
          is absent*; once it ships there is nothing to report"
+    );
+}
+
+/// A reserved rate below one minor unit survives the round trip (D-311, Z5-3).
+///
+/// `reservedRate` is a **rate**: PRD §2674 calls it a committed *unit price* and
+/// the `capacity` flavor accrues it **per covered granule**, which is D-311's own
+/// definition of one. It was left behind when that decision moved
+/// `TierBand::unit_price_rate` and `PriceRow::unit_rate` to `RateMinor`, because
+/// D-311's census enumerated references to `unit_price_minor` and this field is
+/// not one of them.
+///
+/// Typed as whole minor units the smallest expressible non-zero value is one
+/// cent, so a reserved capacity billed per second — `max_hold_granules`' own doc
+/// names `per_second` as the granularity that motivated widening that column —
+/// cannot be authored at all: `$0.0000166667` per GB-second is `0.00166667`
+/// minor units, and the author must submit `0` or `1`, the latter being 600x the
+/// intended rate. Not truncated: unrepresentable.
+///
+/// The value below is deliberately **not** a whole number of minor units, for
+/// [`nano_rate`]'s stated reason — a value that divides evenly by the scale
+/// factor still reads plausibly at the wrong scale, which is the shape that
+/// nearly defeated D-311's own fix.
+#[tokio::test]
+async fn a_reserved_rate_below_one_minor_unit_reads_back_exactly() {
+    let (repo, _provider) = harness().await;
+    let scope = AccessScope::for_tenant(tenant());
+    let price_id = Uuid::from_u128(0xb_11);
+    let key = grandfathered_key(ChargeKind::Usage, at(9));
+
+    let authored = nano_rate(1_666_670);
+    let mut content = graduated_content();
+    content.row.reserved_rate = Some(authored);
+    content.row.reservation_flavor = Some(ReservationFlavor::Capacity);
+
+    repo.create_draft(&scope, tenant(), draft(price_id, key.clone(), content))
+        .await
+        .expect("create the draft row");
+
+    let read = repo
+        .find(&scope, tenant(), price_id)
+        .await
+        .expect("read")
+        .expect("the row just created is there");
+
+    assert_eq!(
+        read.row.reserved_rate,
+        Some(authored),
+        "a reserved rate is a rate and survives at the stored 10^-9 scale"
     );
 }

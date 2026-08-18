@@ -52,18 +52,62 @@ use toolkit_macros::domain_model;
 /// named below because an unnamed exception to a rule stated this flatly is how the
 /// next reader decides the code is wrong.
 ///
-/// **Six of the eight** rules that emit a write-stage violation also emit
-/// publish-stage ones, and `EVAL_POLICY_MISPLACED` is the code for both a key
-/// contradiction and a content-against-content fault — so neither a marker on the
-/// rule nor a filter keyed on the code can express the split without over-refusing.
-/// The eight, measured 2026-08-17 rather than remembered (this census said "three of
-/// the four" while five of seven was the fact, so re-derive it from
-/// `violate_at_write` / [`ValidationReport::violate_at`] and attribute each call to
-/// its rule rather than trusting this list):
+/// Most of the rules that emit a write-stage violation also emit publish-stage
+/// ones, and `EVAL_POLICY_MISPLACED` is the code for both a key contradiction and
+/// a content-against-content fault — so neither a marker on the rule nor a filter
+/// keyed on the code can express the split without over-refusing.
 ///
-/// - Both stages: `inst-la-fields`, `inst-mk-forbidden`, `inst-rv-attrs`,
-///   `inst-ac-gate`, and the two per-instance rules below.
-/// - Write stage only: `inst-mk-chargekind`, `inst-cmp-planname`.
+/// # This census is derived, not transcribed
+///
+/// It has been wrong twice. It said *"three of the four"* while five of seven was
+/// the fact; the correction said *"the eight, measured 2026-08-17"* and named
+/// eight rule ids, and the 2026-08-17 review found the true figure is **eight of
+/// at least fifteen** — because the prescribed derivation is structurally blind to
+/// a whole plane (below). A number in prose about code the reader can enumerate is
+/// the defect, not the number.
+///
+/// So the roster of *sites* is derived at run time instead:
+/// `validation_tests::every_write_stamping_site_is_accounted_for` scans the crate's
+/// own sources for the three ways a violation acquires [`Stage::Write`] —
+/// [`ValidationReport::violate_at_write`], [`ValidationReport::violate_at`], and a
+/// hand-constructed `Violation { stage: Stage::Write }` — and holds the result
+/// against a list carrying **the reason for each entry**. A new stamping site
+/// reddens that test; the list cannot silently fall behind the code, which is the
+/// only property this paragraph ever wanted.
+///
+/// The hand-constructed form is in that scan because leaving it out is how the
+/// census went wrong the second time: `taxonomy.rs` builds its `Violation` literal
+/// and never calls a `violate*` method, so a derivation over the two methods alone
+/// cannot see it.
+///
+/// # What the derivation cannot see at all: the check-function plane
+///
+/// **`Stage` governs the pipeline plane and nothing else.** The second rule plane
+/// — `overlay_rules`, `bundle_rules`, `window`, `supersession` — does not choose
+/// its door with a stamp. It chooses by *which function the surface calls*, and
+/// its write-door rules therefore stamp `Stage::Publish` or return a `Result` and
+/// construct no [`Violation`] at all. Seven of them refuse at an authoring door
+/// (2026-08-17 review, Z3-5):
+///
+/// | Rule | Door |
+/// | --- | --- |
+/// | `overlay_rules::check_authored_shape` | `api/rest/overlays.rs`, create and line-set `PATCH` |
+/// | `overlay_rules::check_tax_basis_declared` | `api/rest/overlays.rs` |
+/// | `bundle_rules::check_basis_declared` | `api/rest/bundles.rs` |
+/// | `window::check_creation` | `infra/window.rs` |
+/// | `window::check_cancellation` | `infra/window.rs` |
+/// | `window::check_effective_to_adjustment` | `infra/window.rs` |
+/// | `supersession::check_changeover_instant` | `api/rest/repricing_runs.rs`, submit |
+///
+/// A future author consulting this census to decide whether a new fault is
+/// write-judgeable is reading a list that is complete for one plane and empty for
+/// the other. `check_authored_shape` now stamps its violations
+/// [`Stage::Write`] — they satisfy the doctrine above exactly, every operand being
+/// in the authored document — which makes the stamp true there and, more to the
+/// point, makes `write_stage_only()` **safe** on that report: it answered `None`
+/// before, so routing an overlay authoring report through the same filter the
+/// three plan/price doors use would have deleted the whole D-67 / D-42 / §1.7
+/// save-time guard into `Ok(())` with nothing reddening.
 ///
 /// **The exception: a rule may take its stage from the door that asks.** What a
 /// marker cannot carry is *the* stage of a rule's violations; what a rule can carry

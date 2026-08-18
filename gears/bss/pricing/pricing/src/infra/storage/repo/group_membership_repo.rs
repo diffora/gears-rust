@@ -397,7 +397,8 @@ pub async fn intervals_for_payer(
     rows.into_iter().map(to_domain).collect()
 }
 
-/// Every membership recorded **in one group**, oldest interval first (D-322).
+/// One page of the memberships recorded **in one group** (D-322), optionally
+/// narrowed to one payer.
 ///
 /// [`intervals_for_payer`]'s mirror across the other axis of the same table, and
 /// it exists for the reason that read's doc already gives for including ended
@@ -406,9 +407,32 @@ pub async fn intervals_for_payer(
 /// a second caller. Slice 9 names an `actor-auditor` who *"reads membership audit
 /// history"* and gave that actor no surface; this is the store half of it.
 ///
-/// Ordered by `effective_from` then `membership_id` for `intervals_for_payer`'s
-/// reason: a reader walks the group's intervals in time order, and the id breaks
-/// a legitimate tie deterministically rather than by paging order.
+/// # Why the walk is keyed on `membership_id` and not on the interval
+///
+/// This read was **unbounded** until 2026-08-18 — `.all(runner)` with no `LIMIT`,
+/// against `api/rest.rs`'s own opening sentence that every collection surface
+/// paginates on an opaque cursor (D-125). The exposure is a function of the
+/// table's design rather than of its traffic: memberships are effective-dated and
+/// ended rows are deliberately kept, so a group's row count grows monotonically
+/// over a ≥7-year retention and is never pruned. One response was every membership
+/// ever recorded in the group.
+///
+/// It was ordered by `effective_from` then `membership_id`, and that order could
+/// not be the walk's: **a keyset walk must order by the key its cursor names**, and
+/// `cursor::decode` names one `Uuid`. Paging on `membership_id` while ordering by
+/// `effective_from` would skip and repeat rows, which is worse than the unbounded
+/// read it replaced. So the walk is ordered by `membership_id`, the table's own
+/// primary key — **unique**, which the interval start is not: two memberships may
+/// legitimately share an instant, and a keyset cursor over a non-unique column
+/// either loses the tied rows or repeats them. That is why the old order needed
+/// `membership_id` as its tie-break in the first place.
+///
+/// **What that costs is stated rather than absorbed**: the interval order is no
+/// longer the response order. Every row still carries its own `effective_from`, so
+/// a reader wanting time order sorts a page it already holds; what a reader can no
+/// longer do is assume it across pages. The auditor's question the old order served
+/// — *"who has been in this group"* — is answered by the whole walk either way, and
+/// the `payer_id` filter answers *"and when was this payer"* directly.
 ///
 /// # Errors
 /// [`RepoError::Db`] on a scope or storage failure.
@@ -417,17 +441,25 @@ pub async fn memberships_in_group(
     scope: &AccessScope,
     tenant_id: Uuid,
     group_value: &str,
+    payer_tenant_id: Option<Uuid>,
+    after: Option<Uuid>,
+    limit: u64,
 ) -> Result<Vec<MembershipRow>, RepoError> {
+    let mut filter = Condition::all()
+        .add(group_membership::Column::TenantId.eq(tenant_id))
+        .add(group_membership::Column::GroupValue.eq(group_value));
+    if let Some(payer) = payer_tenant_id {
+        filter = filter.add(group_membership::Column::PayerTenantId.eq(payer));
+    }
+    if let Some(after) = after {
+        filter = filter.add(group_membership::Column::MembershipId.gt(after));
+    }
     let rows = group_membership::Entity::find()
         .secure()
         .scope_with(scope)
-        .filter(
-            Condition::all()
-                .add(group_membership::Column::TenantId.eq(tenant_id))
-                .add(group_membership::Column::GroupValue.eq(group_value)),
-        )
-        .order_by(group_membership::Column::EffectiveFrom, Order::Asc)
+        .filter(filter)
         .order_by(group_membership::Column::MembershipId, Order::Asc)
+        .limit(limit)
         .all(runner)
         .await
         .map_err(|e| RepoError::Db(format!("list pricing_group_membership: {e}")))?;

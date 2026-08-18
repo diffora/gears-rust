@@ -7,11 +7,30 @@ use uuid::Uuid;
 use super::{DEFAULT_LIMIT, MAX_LIMIT, PageRequest, decode, encode, page_info};
 use crate::domain::error::DomainError;
 
+/// **D-125's two numbers, pinned to their numbers.**
+///
+/// Every assertion in this file compared against `DEFAULT_LIMIT` and `MAX_LIMIT`
+/// imported from the module under test, so changing either constant kept the whole
+/// file green while breaking the decision it implements. The one place in the
+/// eleven module suites that pins a spec constant to a literal is
+/// `threshold_policy_tests`' `10001`, and it is right; this is the same discipline.
+#[test]
+fn the_page_numbers_are_the_ones_the_decision_names() {
+    assert_eq!(DEFAULT_LIMIT, 100, "D-125's server default");
+    assert_eq!(
+        MAX_LIMIT, 1_000,
+        "D-125's hard cap, the unit the export SLO is in"
+    );
+}
+
 #[test]
 fn an_absent_limit_takes_the_server_default() {
     let page = PageRequest::parse(None, None).expect("no parameters is a valid first page");
 
-    assert_eq!(page.limit, DEFAULT_LIMIT);
+    assert_eq!(
+        page.limit, 100,
+        "the literal, not the constant it came from"
+    );
     assert_eq!(page.after, None);
 }
 
@@ -21,7 +40,10 @@ fn a_limit_above_the_cap_is_clamped_rather_than_refused() {
     // client responsible for knowing a number the server owns.
     let page = PageRequest::parse(Some(5_000), None).expect("an oversized limit is served, capped");
 
-    assert_eq!(page.limit, MAX_LIMIT);
+    assert_eq!(
+        page.limit, 1_000,
+        "the literal, not the constant it came from"
+    );
 }
 
 #[test]
@@ -36,9 +58,18 @@ fn a_cursor_round_trips_and_stays_opaque() {
     let key = Uuid::now_v7();
     let token = encode(key);
 
+    // **Opacity, asserted so it can fail.** This read `!token.contains(&key.to_string())`
+    // until 2026-08-18, which no implementation can violate: the token is URL-safe
+    // base64 of 16 raw bytes, 22 characters, and a uuid's text form is 36 — a
+    // shorter string cannot contain a longer one, for any encoding including a
+    // broken one. What opacity actually means here is that the token is *not* the
+    // key's own text form, so both halves are asserted: the length the encoding
+    // fixes, and the refusal of the text form a caller would otherwise construct.
+    assert_eq!(token.len(), 22, "URL-safe base64 of 16 raw bytes: {token}");
     assert!(
-        !token.contains(&key.to_string()),
-        "a token carrying the key verbatim is a token a caller will construct: {token}"
+        decode(&key.to_string()).is_err(),
+        "the key's own text form is not a token this surface issued, or a caller who \
+         skipped the cursor entirely would page successfully"
     );
     assert_eq!(decode(&token).expect("the token this surface issued"), key);
     assert_eq!(

@@ -302,11 +302,20 @@ use crate::domain::window::{KeyWindows, WindowInterval, WindowState};
 /// its window `expired` — must survive the next re-projection or resolution at
 /// yesterday's `t` fails closed on a legitimately covered period.
 ///
-/// It is listed **now**, though nothing in this gear can produce a `superseded`
-/// price row: `published -> superseded` has exactly two sanctioned producers,
-/// the D-88 supersession unit and the D-100 cutover, and neither is built. The
-/// day either lands, only the D-121 **horizon** is owed here — not the state
-/// set, which is already right.
+/// The state set is right and was always right. **What this doc said about its
+/// consequences was not** (found by review, 2026-08-17 — Z4-1): it read *"though
+/// nothing in this gear can produce a `superseded` price row: `published ->
+/// superseded` has exactly two sanctioned producers, the D-88 supersession unit
+/// and the D-100 cutover, and **neither is built**. The day either lands, only
+/// the D-121 horizon is owed here."*
+///
+/// Both are built and both are mounted — `infra::supersession::commit_supersession`
+/// behind `POST /plans/{planId}/supersessions`, `infra::cutover::commit_cutover`
+/// behind `POST /plans/{planId}/cutovers`, and the repricing apply reaching the
+/// first per journal row behind `POST /repricing-runs`. The day landed; the
+/// horizon was not paid, and `infra::read_model`'s module doc carries what that
+/// costs and what does *not* bound the set in its place. Read that before
+/// repeating any claim about this constant's blast radius.
 ///
 /// `draft` is out because it is the never-published state D-121 excludes;
 /// `abandoned` never occurs on a price row at all (it is a plan-revision state,
@@ -443,8 +452,8 @@ fn overlay_line_value(line: &OverlayLine) -> JsonValue {
         "planId": line.key.plan_id().map(PlanId::get),
         "targetSku": line.key.target_sku().map(TargetSku::as_str),
         "cohort": line.key.cohort(),
-        "kind": line.adjustment.kind(),
-        "magnitudeKind": line.adjustment.magnitude_kind(),
+        "kind": line.adjustment.kind().as_str(),
+        "magnitudeKind": line.adjustment.magnitude_kind().as_str(),
         "percentBp": line.adjustment.percent_bp(),
         "amounts": line.adjustment.amounts().map(|set| {
             set.iter()
@@ -1201,7 +1210,7 @@ fn row_value(row: &PriceRow) -> JsonValue {
         aggregation_granularity,
         max_hold_granules,
         included_allowance,
-        reserved_rate_minor,
+        reserved_rate,
         reservation_flavor,
         min_qty_purchase,
         min_qty_usage,
@@ -1278,7 +1287,7 @@ fn row_value(row: &PriceRow) -> JsonValue {
         // self-service reserved rate from here rather than from Contracts
         // (`inst-rv-runtime`); the reserved *quantity* is runtime input and is
         // deliberately absent -- the catalog neither meters nor allocates it.
-        "reservedRateMinor": reserved_rate_minor.map(crate::domain::money::MinorAmount::get),
+        "reservedRateNanoMinor": reserved_rate.map(crate::domain::money::RateMinor::nano_minor),
         "reservationFlavor": reservation_flavor.map(ReservationFlavor::as_str),
         // The typed floors and the discount hook. Enforcement is downstream --
         // Subscriptions at order time, Tariffs/Rating at eligibility, Promotions

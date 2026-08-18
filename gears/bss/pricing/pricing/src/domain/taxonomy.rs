@@ -611,8 +611,37 @@ pub struct RoundingPolicyDeclared {
 }
 
 impl RoundingPolicyDeclared {
-    /// The violation this reference earns, if any — the shared entry point, so
-    /// the config surface and the publish pipeline report one message.
+    /// The violation this reference earns, if any.
+    ///
+    /// # Two claims this doc used to make and could not keep
+    ///
+    /// It said *"the shared entry point, so the config surface and the publish
+    /// pipeline report one message"*. There is no second caller and never was:
+    /// the only call is [`Self::evaluate`]'s, and `api/rest/rounding_policies.rs`
+    /// mentions `ROUNDING_POLICY_UNKNOWN` twice, both in prose describing that
+    /// *publish* will refuse. [`RegionsDeclared::violation_for`] is the same shape
+    /// and its extraction **is** load-bearing —
+    /// `api::rest::prices::require_declared_region` builds the rule from a fresh
+    /// `active_regions` read and refuses at the price write. This one was built to
+    /// look like it and stopped one step short.
+    ///
+    /// It also stamped its violation [`Stage::Write`], which nothing reads.
+    /// `write_stage_only()` is the sole reader of a violation's stage, and its
+    /// three callers filter `price_row_rules()`, `price_row_rules()` again and a
+    /// hand-built phase report — never `foundation_plan_rules`, where this rule is
+    /// registered. So the stamp asserted that some door judges this fault at the
+    /// write, and no door does. It is gone rather than corrected in prose: a
+    /// marker nobody reads is what makes the next author trust
+    /// `validation.rs`'s census (review B5-2, 2026-08-18).
+    ///
+    /// `RegionsDeclared` keeps its stamp, and the asymmetry is the point: there
+    /// the write door exists, so the claim is true even though nothing reads the
+    /// field to act on it. **Giving this rule the same door** — a
+    /// `require_declared_rounding_policy` beside `require_declared_region` on the
+    /// price write — is the fix that would make the pair symmetric again, and it
+    /// is a behaviour change (a reference the publish refuses today would start
+    /// being refused at the `POST`), so it is left for a decision rather than
+    /// taken here.
     #[must_use]
     pub fn violation_for(&self, subject: &str, reference: &str) -> Option<Violation> {
         if self.declared.is_empty() || self.declared.contains(reference) {
@@ -628,10 +657,11 @@ impl RoundingPolicyDeclared {
                  /bss-pricing/v1/config/rounding-policies first, or clear the taxonomy to stop \
                  constraining references at all"
             ),
-            // `Stage::Write`: every operand is in the request the author sent,
-            // and the declared set is tenant configuration rather than anything
-            // the publish resolves about this plan (D-312's criterion).
-            stage: Stage::Write,
+            // `Stage::Publish`, which is where this fault is actually judged.
+            // It said `Stage::Write` until 2026-08-18 and D-312's criterion is
+            // arguably met — but a stage is a claim about a door, and this rule
+            // has only the publish door. See the method doc.
+            stage: Stage::Publish,
         })
     }
 }

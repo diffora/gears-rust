@@ -175,21 +175,52 @@ impl AmountMove {
 
     /// Is the move at or above `percent_bp` of its baseline?
     ///
-    /// `None` when no percentage is computable — a zero baseline, which step 3 of §3
-    /// names explicitly: *"A **percent-only** policy against a zero (or NULL)
-    /// baseline is likewise material — no percentage is computable."* The caller
-    /// turns that `None` into the material verdict rather than into a division.
+    /// `None` when no percentage is computable — a zero baseline that **moved**,
+    /// which step 3 of §3 names explicitly: *"A **percent-only** policy against a
+    /// zero (or NULL) baseline is likewise material — no percentage is
+    /// computable."* The caller turns that `None` into the material verdict rather
+    /// than into a division.
+    ///
+    /// **A zero baseline that did not move is a different fact and gets a
+    /// different answer.** `0 → 500` is an infinite rise and has no percentage;
+    /// `0 → 0` is a delta of zero, and a delta of zero is below every bar this
+    /// basis can be given. Answering `None` there is not conservative, it is
+    /// wrong: it hands the comparer `NotComparable` about an operand that plainly
+    /// did not move, and — because since D-45 the allowance compile prepends a
+    /// `[0, N) @ $0` band to **every** allowance-bearing row and `band_delta`
+    /// emits it as element zero of the vector — that one unmoved band decided
+    /// every such row material, however small the authored change, and told the
+    /// operator `noConfiguredThreshold` about a threshold they had configured.
+    /// Fail-safe in direction and still a control switched off on the gear's own
+    /// default shape.
+    ///
+    /// The zero *bar* the absolute basis admits has no site here, which is why the
+    /// unmoved answer is unconditional: `m20260802_000018`'s CHECK is
+    /// `percent_bp IS NULL OR percent_bp > 0` against the absolute column's
+    /// `>= 0`, so "a configured zero makes everything material" is
+    /// [`Self::reaches_absolute`]'s reading of an input this basis cannot be
+    /// handed.
     ///
     /// The comparison is `|delta| * 10_000 >= percent_bp * baseline`, cross-
     /// multiplied so it is integer throughout: there is no floating point beside
-    /// money here, which is the reason the store holds basis points at all.
+    /// money here, which is the reason the store holds basis points at all. `i128`
+    /// on both sides for [`Self::reaches_absolute`]'s stated reason — a nano-minor
+    /// magnitude past `i64::MAX / 10_000` is a rate move above `$9,223.37` per
+    /// unit, which is authorable. Saturating in `i64` clamped both sides to
+    /// `i64::MAX` and answered `true` on a comparison that had lost its operands;
+    /// the direction was safe in all four cases and the discipline was still the
+    /// opposite of its sibling's, ten lines apart, with only one of them argued.
     #[must_use]
     pub const fn reaches_percent(self, percent_bp: i64) -> Option<bool> {
         if self.from_minor == 0 {
-            return None;
+            return if self.to_minor == 0 {
+                Some(false)
+            } else {
+                None
+            };
         }
-        let scaled = self.magnitude_minor().saturating_mul(10_000);
-        let bar = self.from_minor.saturating_abs().saturating_mul(percent_bp);
+        let scaled = (self.magnitude_minor() as i128).saturating_mul(10_000);
+        let bar = (self.from_minor.saturating_abs() as i128).saturating_mul(percent_bp as i128);
         Some(scaled >= bar)
     }
 }
@@ -257,11 +288,11 @@ fn quantity_change(current: &PriceRow, baseline: &PriceRow) -> Option<&'static s
     // successor moving only one of them produced a **zero** amount move and was
     // classified immaterial -- a publish on one principal.
     //
-    // `reserved_rate_minor` is money and is nonetheless `NotComputable` for
+    // `reserved_rate` is money and is nonetheless `NotComputable` for
     // clause (2)'s reason: the effective delta needs the covered-granule count
     // (D-139), which is Rating's runtime fact and not the catalog's to compute.
-    if current.reserved_rate_minor != baseline.reserved_rate_minor {
-        return Some("reserved_rate_minor");
+    if current.reserved_rate != baseline.reserved_rate {
+        return Some("reserved_rate");
     }
     // The three the evaluation-policy roster already calls quantity-determining.
     // A field the roster files as deciding the billable quantity and this domain

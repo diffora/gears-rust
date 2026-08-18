@@ -1829,3 +1829,82 @@ async fn a_selector_row_on_a_held_key_fails_per_row_and_its_sibling_does_not() {
          trying to is what refused the whole batch. Operation {operation_id}"
     );
 }
+
+/// D-67's range belongs to the run door too.
+///
+/// `15000` bp is the shape the "150% of list" data-entry inversion takes —
+/// `check_magnitude_range` names it in those words — and `PUT /overlays` refuses
+/// it. This door did not, and nothing behind it does either: the run's adjustment
+/// never becomes an overlay line, so no rule and no CHECK sees it. Left unrefused
+/// it floors every selected row to zero, and an absolute materiality bar above the
+/// row's own price does not see that move, so the run publishes with no approval.
+#[tokio::test]
+async fn a_discount_above_one_hundred_percent_is_refused_at_the_run_door() {
+    let harness = Harness::new().await;
+    let plan = Uuid::now_v7();
+    seed_current_plan(&harness, plan).await;
+    a_published_row(&harness, plan, "eu").await;
+
+    let run_id = Uuid::now_v7();
+    let body = serde_json::json!({
+        "run_id": run_id,
+        "selector": { "region": "eu" },
+        "adjustment": {
+            "adjustment_kind": "discount",
+            "magnitude_kind": "percent_bp",
+            "adjustment_value": 15_000,
+        },
+        "changeover": CHANGEOVER,
+    });
+
+    let response = harness
+        .allowed()
+        .send(with_headers("POST", REPRICING_RUNS, Some(body), &[]))
+        .await;
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert!(
+        problem_code(response)
+            .await
+            .contains("ADJUSTMENT_MAGNITUDE_OUT_OF_RANGE"),
+        "the run door answers the same code the overlay door does"
+    );
+}
+
+/// The kind declares the direction and the magnitude's sign must not invert it.
+///
+/// A `markup` of `-100` bp cut every selected row by 1% while the journal recorded
+/// a markup — the same missing range check, on the half of it that is about sign
+/// rather than ceiling.
+#[tokio::test]
+async fn a_negative_magnitude_is_refused_whatever_the_kind_declares() {
+    let harness = Harness::new().await;
+    let plan = Uuid::now_v7();
+    seed_current_plan(&harness, plan).await;
+    a_published_row(&harness, plan, "eu").await;
+
+    let run_id = Uuid::now_v7();
+    let body = serde_json::json!({
+        "run_id": run_id,
+        "selector": { "region": "eu" },
+        "adjustment": {
+            "adjustment_kind": "markup",
+            "magnitude_kind": "percent_bp",
+            "adjustment_value": -100,
+        },
+        "changeover": CHANGEOVER,
+    });
+
+    let response = harness
+        .allowed()
+        .send(with_headers("POST", REPRICING_RUNS, Some(body), &[]))
+        .await;
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert!(
+        problem_code(response)
+            .await
+            .contains("ADJUSTMENT_MAGNITUDE_OUT_OF_RANGE"),
+        "a magnitude must be strictly positive; the kind carries the direction"
+    );
+}

@@ -131,8 +131,17 @@ def main(argv=None):
     # first and partitioning once. Both baselines are gear-qualified: the
     # known-debt decision needs the gear each finding actually came from, and that
     # context only still exists here, one corpus at a time.
+    # A corpus silently narrowed is the failure mode `Corpus.load` refuses in two
+    # other places, so an exclusion is announced before anything is checked —
+    # ahead of the findings, where it cannot be read as one.
+    for corpus in corpora + context_corpora:
+        for rel in corpus.excluded_paths():
+            print("not read as a document (this tool's own output): {}/{}".format(
+                corpus.root(), rel))
+
     live = []
     known_debt = []
+    dead_pins = []
     failing = False
     for corpus in corpora:
         corpus_findings = []
@@ -145,14 +154,16 @@ def main(argv=None):
         corpus_live, corpus_known_debt = report.partition_known_debt(corpus_findings, gear)
         live.extend(corpus_live)
         known_debt.extend(corpus_known_debt)
+        dead_pins.extend(report.unreproduced_pins(corpus_findings, gear))
 
     if args.format == "json":
-        payload = report.json_report(live, known_debt, args.show_known_debt)
+        payload = report.json_report(live, known_debt, args.show_known_debt, dead_pins)
         # `ensure_ascii=False`: serde_json does not escape non-ASCII, and findings
         # carry §, × and ….
         print(json.dumps(payload, indent=2, ensure_ascii=False))
     else:
-        print(report.render_text(live, known_debt, args.show_known_debt))
+        print(report.render_text(live, known_debt, args.show_known_debt)
+              + report.render_unreproduced_pins(dead_pins))
 
     return 1 if failing else 0
 

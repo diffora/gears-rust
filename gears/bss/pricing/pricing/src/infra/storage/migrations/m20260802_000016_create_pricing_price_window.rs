@@ -213,17 +213,40 @@
 //! so every comparison is lexicographic, and the rule that makes that safe has two
 //! halves rather than one:
 //!
-//! * **Between two stored instants**, lexicographic comparison is exact. Every
-//!   writer renders a `DateTime<Utc>` the same way — `SeaORM` produces RFC 3339
-//!   with a `T` separator and a `+00:00` offset, measured, e.g.
-//!   `2026-08-04T10:09:45+00:00` — and that rendering is fixed-width, zero-padded
-//!   and monotonic, so `chk_pricing_price_window_interval`,
+//! * **Between two stored instants**, lexicographic comparison is exact — but
+//!   **not for the reason this paragraph gave until 2026-08-18** (review Z2-8). It
+//!   said the rendering is "fixed-width, zero-padded and monotonic". It is not
+//!   fixed-width: `sqlx-sqlite` encodes a `DateTime<Utc>` as
+//!   `to_rfc3339_opts(SecondsFormat::AutoSi, false)`, and `AutoSi` picks 0, 3, 6 or
+//!   9 fractional digits **per value**, so one column holds 25-, 29-, 32- and
+//!   35-character renderings side by side. This gear's own writers mix them:
+//!   `check_authored_instant` refuses an *authored* instant finer than a
+//!   millisecond and its doc explicitly excludes storage bookkeeping, so
+//!   `Utc::now()` reaches `created_at_utc`, `submitted_at`, `enqueued_at` and
+//!   `recorded_at` at nanosecond precision.
+//!
+//!   The conclusion survives on a different argument, and it is the argument that
+//!   belongs here: the **offset sign sorts below both the fraction separator and
+//!   the digits** — `'+'` is 0x2B, `'.'` is 0x2E, `'0'`–`'9'` are 0x30–0x39. So
+//!   `…:45+00:00` < `…:45.500+00:00` (`'+'` < `'.'`) and
+//!   `…:45.500+00:00` < `…:45.500000001+00:00` (`'+'` < `'0'`), which is
+//!   chronological order in both cases, and that holds for every pair of `AutoSi`
+//!   renderings. On that ground `chk_pricing_price_window_interval`,
 //!   `chk_pricing_price_window_activation_order`,
-//!   `chk_pricing_price_window_expiry_order` and `list_for_plan`'s `ORDER BY` all
+//!   `chk_pricing_price_window_expiry_order` and `list_for_plan`'s `ORDER BY` do all
 //!   compare the columns directly. This is `m20260802_000002`'s `grandfather_until`
-//!   caveat, one table over. The cost is that a writer producing a *different*
-//!   spelling silently breaks the ordering, which is why the mirror suite's
-//!   fixtures are written in the deployed rendering and not in a legible one.
+//!   caveat, one table over.
+//!
+//!   Why the false premise was worth correcting rather than leaving as a harmless
+//!   overstatement: this sentence is the crate's **standing licence** to compare
+//!   these columns directly, quoted by `m20260802_000043` and by
+//!   `m20260802_000002`, and "fixed-width" is exactly the premise that would license
+//!   a `substr(…, 1, 25)` normalization — which would truncate a nanosecond
+//!   rendering mid-fraction and reintroduce the class this file records having
+//!   already shipped once. The residual cost is unchanged: a writer producing a
+//!   *different* spelling silently breaks the ordering, which is why the mirror
+//!   suite's fixtures are written in the deployed rendering and not in a legible
+//!   one.
 //! * **Against `CURRENT_TIMESTAMP`, it is not** — and arm 5 is the only place one
 //!   side of a comparison is the clock. `CURRENT_TIMESTAMP` renders
 //!   `YYYY-MM-DD HH:MM:SS`: a **space** at byte 11 where the stored text has `T`.

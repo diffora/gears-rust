@@ -461,6 +461,103 @@ fn a_percent_basis_against_a_zero_baseline_computes_nothing() {
     );
 }
 
+/// A zero baseline that **did not move** is below every percent bar, and a zero
+/// baseline that moved is still incomputable.
+///
+/// The two zeroes are different facts and the case above only pins one of them.
+/// `0 → 500` is an infinite rise and has no percentage; `0 → 0` is a delta of
+/// zero, which is below every bar there is — and `Some(false)` is the only answer
+/// that says so. Answering `None` there hands
+/// [`super::super::Comparison::NotComparable`] to the comparer, which the
+/// evaluator renders as `noConfiguredThreshold` about a threshold the tenant did
+/// configure.
+///
+/// This is not a corner: since D-45 the allowance compile prepends a `[0, N) @ $0`
+/// band to every allowance-bearing row (`domain::allowance`), that band never
+/// moves, and `band_delta` emits it as element zero of the vector — so under a
+/// percent policy the unmoved zero decided every such row.
+#[test]
+fn an_unmoved_zero_baseline_is_below_every_percent_bar() {
+    let unmoved = AmountMove {
+        from_minor: 0,
+        to_minor: 0,
+        scale: MoveScale::NanoMinor,
+    };
+    assert_eq!(
+        unmoved.reaches_percent(1),
+        Some(false),
+        "a delta of zero is below a bar of one basis point, baseline or no baseline"
+    );
+    assert_eq!(
+        unmoved.reaches_percent(10_000),
+        Some(false),
+        "and below the widest bar the store will hold"
+    );
+    // The zero *bar* has no site on this basis, which is why the answer above can
+    // be unconditional: `m20260802_000018`'s CHECK is `percent_bp IS NULL OR
+    // percent_bp > 0`, where the absolute basis' is `absolute_minor >= 0`. The
+    // "a configured zero makes everything material" reading that
+    // `a_move_that_reaches_the_threshold_is_not_below_it` pins is therefore
+    // `reaches_absolute`'s alone, and the two bases do not disagree about an
+    // input either of them can be given.
+
+    let moved_off_zero = AmountMove {
+        from_minor: 0,
+        to_minor: 1,
+        scale: MoveScale::NanoMinor,
+    };
+    assert_eq!(
+        moved_off_zero.reaches_percent(10_000),
+        None,
+        "a baseline of nothing that moved still has no percentage; only the \
+         unmoved case gains an answer"
+    );
+}
+
+/// The percent comparison holds its operands where `reaches_absolute` holds its
+/// own — and a rate a tenant can author is enough to make that matter.
+///
+/// Saturating in `i64`, `scaled = |delta| * 10_000` clamps once the magnitude
+/// passes `i64::MAX / 10_000` — a rate move above `$9,223.37` per unit — and
+/// `bar = |baseline| * percent_bp` clamps on the same order. When **both** clamp
+/// they land on `i64::MAX` together, and `S >= S` answers `reached` about a
+/// comparison that has lost both its operands.
+///
+/// The band below is a `$20,000`-per-unit rate rising 50% against a 100% bar: the
+/// answer is `below` and the saturating form said `reached`. Fail-safe in
+/// direction — an over-flagged change costs an approval, not an amount — which is
+/// why this is the widening's proof rather than a wrong-money case.
+#[test]
+fn a_percent_bar_over_a_large_rate_is_not_decided_by_saturation() {
+    // 2e15 nano-minor is 2,000,000 minor units — $20,000 per unit — and 3e15 is a
+    // 50% rise off it. Both `scaled` (1e19) and `bar` (2e19) are past `i64::MAX`
+    // (9.223e18), so `i64` arithmetic clamps both to the same value.
+    let half_again = AmountMove {
+        from_minor: 2_000_000_000_000_000,
+        to_minor: 3_000_000_000_000_000,
+        scale: MoveScale::NanoMinor,
+    };
+    assert_eq!(
+        half_again.reaches_percent(10_000),
+        Some(false),
+        "a 50% rise is below a 100% bar, and both sides of that comparison \
+         overflow an i64"
+    );
+
+    // And the bar still trips over the same overflow, so the case above is not a
+    // widening that answers `below` to everything large.
+    let tripled = AmountMove {
+        from_minor: 2_000_000_000_000_000,
+        to_minor: 6_000_000_000_000_000,
+        scale: MoveScale::NanoMinor,
+    };
+    assert_eq!(
+        tripled.reaches_percent(10_000),
+        Some(true),
+        "a 200% rise reaches a 100% bar"
+    );
+}
+
 /// D-115's three remaining row-contract entries, each on its own — one case
 /// cannot tell an implemented arm from a missing one, which is why the
 /// `billingTiming` test above already splits its three.
@@ -573,7 +670,7 @@ fn gaining_or_losing_the_contract_is_a_change_in_either_direction() {
 /// **A reserved rate that moves is not an immaterial change**, and until D-254 it
 /// was classified as one.
 ///
-/// `reserved_rate_minor` is money — D-139 denominates it per covered granule — but
+/// `reserved_rate` is money — D-139 denominates it per covered granule — but
 /// it is not `amount_minor`, so `amount_delta` compared two unchanged amounts and
 /// answered a **zero move**. A zero move is immaterial, and an immaterial publish
 /// needs one principal. A four-fold rise in the reserved rate therefore reached
@@ -587,14 +684,14 @@ fn gaining_or_losing_the_contract_is_a_change_in_either_direction() {
 fn a_reserved_rate_move_is_not_computable_rather_than_a_zero_delta() {
     let mut current = PriceRow::new(ChargeKind::Usage, Some(ModelKind::PerUnit));
     current.amount_minor = Some(minor(10));
-    current.reserved_rate_minor = Some(minor(4000));
+    current.reserved_rate = Some(RateMinor::from_minor_units(4000).expect("a non-negative rate"));
     let mut baseline = PriceRow::new(ChargeKind::Usage, Some(ModelKind::PerUnit));
     baseline.amount_minor = Some(minor(10));
-    baseline.reserved_rate_minor = Some(minor(1000));
+    baseline.reserved_rate = Some(RateMinor::from_minor_units(1000).expect("a non-negative rate"));
 
     assert_eq!(
         row_delta(&record(current), &record(baseline)),
-        RowDelta::NotComputable("reserved_rate_minor"),
+        RowDelta::NotComputable("reserved_rate"),
         "the on-demand amount is identical, so nothing but this field can have answered"
     );
 }
@@ -612,7 +709,7 @@ fn the_quantity_determining_primitives_fail_closed() {
     let base = || {
         let mut row = PriceRow::new(ChargeKind::Usage, Some(ModelKind::PerUnit));
         row.amount_minor = Some(minor(10));
-        row.reserved_rate_minor = Some(minor(1000));
+        row.reserved_rate = Some(RateMinor::from_minor_units(1000).expect("a non-negative rate"));
         row.reservation_flavor = Some(ReservationFlavor::Capacity);
         row.min_qty_usage = Some(5);
         row.min_qty_usage_fallback = Some(MinQtyUsageFallback::Exception);

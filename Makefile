@@ -456,7 +456,7 @@ dev: dev-fmt dev-clippy dev-test
 
 # -------- Tests --------
 
-.PHONY: test test-no-macros test-macros test-sqlite test-pg test-mysql test-db test-users-info-pg test-usage-collector-pg test-cluster-pg test-pricing-pg test-fips
+.PHONY: test test-no-macros test-macros test-sqlite test-pg test-mysql test-db test-users-info-pg test-usage-collector-pg test-cluster-pg test-pricing-pg test-coord-pg test-fixtures-narrow test-fips
 
 # Run all tests
 test: install-tools
@@ -528,6 +528,34 @@ test-cluster-pg: install-tools
 ## without Docker reports a clean change through a guard that stopped guarding."
 test-pricing-pg: install-tools
 	cargo nextest run -p bss-pricing --run-ignored ignored-only -E 'binary(/^postgres_/)'
+
+## Run coord's Postgres tier (Docker required; testcontainers).
+##
+## `coord`'s `m0001_…` builds two independent SQL literals — a schema-qualified
+## PG `CREATE TABLE` and a bare SQLite one. The in-crate tests connect
+## `sqlite::memory:` and reach the SQLite literal only, so the `IF NOT EXISTS`
+## that stops the two-gear boot crash (`bss-pricing` starting beside a
+## long-running `bss-ledger`) was unexercised on the dialect the crash happened
+## on. `Migration::in_schema("bss")` — the constructor both consumers actually
+## pass — is likewise unreachable from SQLite, which has one namespace.
+##
+## Same `--run-ignored ignored-only` shape as `test-pricing-pg` above, and the
+## same reason: the gate is `#[ignore]` rather than a feature.
+test-coord-pg: install-tools
+	cargo nextest run -p coord --run-ignored ignored-only -E 'binary(/^postgres_/)'
+
+## Compile and run `bss-fixtures` on the surface a **gear** actually takes.
+##
+## Pricing's `FixtureGate` inherits this crate with `default-features = false`
+## (`Cargo.toml`'s workspace entry) — `ModelKind` + `Registry` + `gate_open_for`
+## and nothing else. `default = ["corpus"]`, so every other build in the
+## workspace, `make test-no-macros` included, compiles the wide surface: the
+## test written to guard the narrow one (`tests/production_surface.rs`, whose
+## module doc names this invocation) ran only in the configuration it does not
+## guard, where its assertions hold trivially. The narrow build's only other
+## consumer is the example server's release build, which never runs a test.
+test-fixtures-narrow: install-tools
+	cargo nextest run -p bss-fixtures --no-default-features --test production_surface
 
 ## Run FIPS-mode integration tests (requires Go for aws-lc-fips-sys).
 ## Covers:

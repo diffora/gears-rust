@@ -46,6 +46,7 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use bss_pricing::domain::audit::AuditStamp;
+use bss_pricing::domain::audit::AuditSubjectKind;
 use bss_pricing::domain::bulk::{BulkKind, BulkState, JournalState};
 use bss_pricing::domain::concurrency::RowVersion;
 use bss_pricing::domain::contracts::{BillingAnchorPolicy, ProrationBasis, ProrationContract};
@@ -60,10 +61,12 @@ use bss_pricing::domain::scope_key::{
 };
 use bss_pricing::infra::repricing::apply_run_in;
 use bss_pricing::infra::storage::migrations::Migrator;
+use bss_pricing::infra::storage::repo::approval_repo::NewApproval;
 use bss_pricing::infra::storage::repo::repricing_journal_repo::NewJournalRow;
 use bss_pricing::infra::storage::repo::{
     IdempotencyGate, NewBulkOperation, NewPlanDraft, NewPriceDraft, PlanRepo, PlanShapeRepo,
-    PolicyObjectRepo, PriceRepo, bulk_repo, repricing_journal_repo,
+    PolicyObjectRepo, PriceRepo, approval_repo, audit_repo, bulk_repo, price_repo,
+    repricing_journal_repo,
 };
 use bss_pricing_sdk::catalog_version_registry::{
     CatalogVersionRegistryError, CatalogVersionRegistryV1, PendingVersionRef,
@@ -83,6 +86,22 @@ use uuid::Uuid;
 #[derive(Default)]
 struct RegistryDouble {
     issued: Mutex<HashMap<String, String>>,
+}
+
+impl RegistryDouble {
+    /// The request ids this double has been asked for, in no order.
+    ///
+    /// The map is keyed on the request id and `or_insert_with` is idempotent on
+    /// it, so this counts **distinct** requests — which is what a claim about a
+    /// stranded handle means: one act, one id, however many times it is retried.
+    fn requested(&self) -> Vec<String> {
+        self.issued
+            .lock()
+            .expect("no panics in the double")
+            .keys()
+            .cloned()
+            .collect()
+    }
 }
 
 #[async_trait]
@@ -1410,3 +1429,346 @@ async fn a_future_dropped_while_it_is_still_taking_its_locks_releases_them_too()
 // already decided by the time the direct write ran, not merely flaky. The
 // property is real and still worth pinning; it is pinned deterministically
 // instead, against `release_lock_after_ordinary_failure` directly.
+
+/// Retire the plan's current revision, the way a committed retirement does: the
+/// `plan` row's `lifecycle_state` and nothing else.
+///
+/// **That narrowness is the whole of C3-2.** `retire_revision` does not touch
+/// `pricing_price`, so every price row of a retired plan still reads `published`
+/// and every reader that keys on the row's own state still finds it.
+async fn retire_plan(h: &Harness, plan: PlanId) {
+    let revision = bss_pricing::infra::storage::repo::plan_repo::load_current(
+        &h.provider.conn().expect("conn"),
+        &h.scope,
+        TENANT,
+        plan,
+    )
+    .await
+    .expect("read the current revision")
+    .expect("the plan has one")
+    .revision;
+    let scope = h.scope.clone();
+    let (_, outcome) = h
+        .provider
+        .db()
+        .in_transaction::<_, bss_pricing::infra::storage::RepoError, _>(move |txn| {
+            Box::pin(async move {
+                bss_pricing::infra::storage::repo::plan_repo::retire_revision(
+                    txn, &scope, TENANT, plan, revision,
+                )
+                .await
+            })
+        })
+        .await;
+    outcome.expect("retire the seeded plan revision");
+}
+
+#[tokio::test]
+async fn a_retired_plan_takes_no_repricing_successor_and_no_version_handle() {
+    // **C3-2 on the fourth door.** `refuse_unpublishable_predecessor` was hoisted by
+    // `publish::commit` and `supersede_in` and by neither the cutover nor this
+    // aggregate. Both resolve the plan through `plan_repo::load_current`, which
+    // answers `published` **or** `retired` without distinguishing them, and neither
+    // asked `can_transition(Superseded)`.
+    //
+    // Nothing beneath refuses either: `commit_supersession_rows` runs
+    // `refuse_mispaired` / `supersede_row` / `publish_rows` and none of the three
+    // reads the plan's lifecycle, while `RepoError::NoSuccessorRevision` — the source
+    // of `PLAN_RETIRED_NO_SUCCESSOR` — comes only from the revision-opening path a
+    // repricing apply never takes. So the run superseded published rows on a plan
+    // nobody may buy and took a `CatalogVersion` handle for them.
+    //
+    // The handle is the sharper half. The refusal is **permanent**, so a request made
+    // past it stands pending forever and trips `pricing.catalogversion.commit_overdue`
+    // for a publish that can never happen — which is why this is hoisted rather than
+    // left to any later door.
+    let h = harness().await;
+
+    // The clean plan is the positive control: without it a probe asserting "the run
+    // applied nothing" would pass against an apply that had simply broken.
+    let clean = Uuid::now_v7();
+    let clean_phase = Uuid::now_v7();
+    seed_plan(&h, clean, clean_phase).await;
+    let clean_row = seed_published_row(&h, PlanId::new(clean), clean_phase, "eu", 9_900).await;
+
+    let retired = Uuid::now_v7();
+    let retired_phase = Uuid::now_v7();
+    seed_plan(&h, retired, retired_phase).await;
+    let retired_row =
+        seed_published_row(&h, PlanId::new(retired), retired_phase, "eu", 10_000).await;
+    retire_plan(&h, PlanId::new(retired)).await;
+
+    let run_id = open_committing_run(&h, &[clean_row, retired_row]).await;
+    let handles_before = h.registry.requested().len();
+
+    let outcome = apply_run_in(
+        &h.provider,
+        &h.policies,
+        &(Arc::clone(&h.registry) as Arc<dyn CatalogVersionRegistryV1>),
+        &ctx(),
+        &h.scope,
+        TENANT,
+        run_id,
+        apply_stamp(),
+    )
+    .await
+    .expect("apply_run_in itself does not fail - only a plan's own rows do");
+
+    assert_eq!(outcome.applied, 1, "the clean plan's one row: {outcome:?}");
+    assert_eq!(outcome.failed, 1, "the retired plan's: {outcome:?}");
+
+    let (state, reason, applied) = journal_state(&h, run_id, retired_row).await;
+    assert_eq!(state, JournalState::Failed);
+    assert!(applied.is_none(), "no successor stands on a retired plan");
+    let reason = reason.expect("a failed row carries a reason");
+    // Matched on `refuse_unpublishable_predecessor`'s own sentence rather than on
+    // `PLAN_RETIRED_NO_SUCCESSOR`: the journal records the `DomainError`'s
+    // rendering, and only a `ValidationFailed` report renders rule codes into it
+    // — which is why the sibling case above can match one and this cannot. The
+    // clause is the refusal's own and no other refusal on this path produces it.
+    assert!(
+        reason.contains("can never be superseded"),
+        "the hoisted refusal is what answered: {reason}"
+    );
+
+    // **One handle, not two.** Asserted as a count against the pre-call reading
+    // rather than as "the registry was asked", because the clean plan asks for one
+    // legitimately and a probe that only checked for absence would redden on it.
+    assert_eq!(
+        h.registry.requested().len() - handles_before,
+        1,
+        "the clean plan's handle and no second one stranded on the retired plan: {:?}",
+        h.registry.requested()
+    );
+}
+
+/// **A run whose report cannot be decoded stays where it was** (C4-5).
+///
+/// `apply_run_in` took the `awaiting_approval -> committing` edge and *then*
+/// parsed the stored report, and both parses are `DomainError::Internal` on a
+/// report it cannot decode. The edge is documented as single-spend — its premise
+/// rides into the `UPDATE` so "two approvals landing at once cannot both spend
+/// this edge" — so a run with an undecodable report was left in `committing`,
+/// and by C4-1 `committing` has no door: the abort route is a bulk-import route,
+/// and nothing re-drives a repricing run.
+///
+/// Neither parse reads the store, so moving them above the `advance` costs
+/// nothing and turns an unrecoverable state into a failed call over an unchanged
+/// run.
+#[tokio::test]
+async fn an_undecodable_report_does_not_spend_the_approval_edge() {
+    let h = harness().await;
+    let plan = Uuid::now_v7();
+    let phase = Uuid::now_v7();
+    seed_plan(&h, plan, phase).await;
+    let row = seed_published_row(&h, PlanId::new(plan), phase, "eu", 10_000).await;
+
+    // Opened and parked in `awaiting_approval` — `validating -> awaiting_approval`
+    // is `inst-bs-approval`'s own edge, and the one a material run takes through
+    // `advance_on_verdict` — carrying a report with no `adjustment` member, the
+    // shape `adjustment_of_report` cannot decode.
+    let run_id = Uuid::now_v7();
+    let conn = h.provider.conn().expect("conn");
+    bulk_repo::open(
+        &conn,
+        &h.scope,
+        NewBulkOperation {
+            operation_id: run_id,
+            tenant_id: TENANT,
+            kind: BulkKind::Repricing,
+            client_key: run_id.to_string(),
+            request_hash: IdempotencyGate::payload_hash(&run_id.to_string()),
+            report: report(),
+            submitted_by: ACTOR,
+            submitted_at: at(11),
+        },
+    )
+    .await
+    .expect("open the run");
+    repricing_journal_repo::open_rows(
+        &conn,
+        &h.scope,
+        &[NewJournalRow {
+            run_id,
+            price_id: row,
+            tenant_id: TENANT,
+        }],
+    )
+    .await
+    .expect("freeze the journal");
+    bulk_repo::advance(
+        &conn,
+        &h.scope,
+        TENANT,
+        run_id,
+        BulkState::Validating,
+        BulkState::AwaitingApproval,
+        serde_json::json!({ "selector": serde_json::Value::Null, "selected": 0 }),
+        at(11),
+    )
+    .await
+    .expect("park the run awaiting approval");
+
+    let outcome = apply_run_in(
+        &h.provider,
+        &h.policies,
+        &(Arc::clone(&h.registry) as Arc<dyn CatalogVersionRegistryV1>),
+        &ctx(),
+        &h.scope,
+        TENANT,
+        run_id,
+        apply_stamp(),
+    )
+    .await;
+    assert!(
+        outcome.is_err(),
+        "a report the apply cannot decode is a failure, not a run to attempt: {outcome:?}"
+    );
+
+    let run = bulk_repo::read(&conn, &h.scope, TENANT, run_id)
+        .await
+        .expect("read the run")
+        .expect("the run is there");
+    assert_eq!(
+        run.state,
+        BulkState::AwaitingApproval,
+        "the edge is single-spend and must not be spent on a call that could not \
+         have applied anything; `committing` has no door back out"
+    );
+
+    // And the journal is untouched, so nothing was half-applied under the
+    // spent edge either.
+    assert_eq!(
+        journal_state(&h, run_id, row).await.0,
+        JournalState::Pending
+    );
+}
+
+/// **A key another unit holds refuses the apply, and the refusal does not spend
+/// the approval edge** (C4-6).
+///
+/// `refuse_held_key` is called by `window`, `supersession`, `cutover`,
+/// `grandfather` and five sites in `approval`; `infra::repricing` contained no
+/// occurrence of it at all, so `inst-co-single-pending` was asked once at run
+/// open, in the API layer, and never again.
+///
+/// **This is the only level the check is reachable from today, and that is the
+/// finding's whole priority argument.** Through HTTP it cannot be: a material
+/// run's own batch unit registers every selected key in `held_keys` while it
+/// pends, so a competing unit's `approval_repo::open` is refused by
+/// `uq_pricing_approval_key_pending` before it can create the situation —
+/// measured, not assumed, by an earlier version of this case written at the REST
+/// layer, which failed at the seed with `PendingKeyHeld`. A non-material run
+/// applies in the same request as the open's own check. What is left is the
+/// redrive door: a re-drive of a stalled run arrives arbitrarily later, and
+/// building it without this check is the shape the five sibling paths treat as a
+/// Critical.
+///
+/// The second assertion is what the check's *placement* is for. It sits above
+/// `inst-bs-commit`'s edge, which is single-spend; below it, a refusal would
+/// leave the run `committing`, which section 4 gives it no way out of.
+#[tokio::test]
+async fn a_key_a_pending_unit_holds_refuses_the_apply_without_spending_the_approval_edge() {
+    let h = harness().await;
+    let plan = Uuid::now_v7();
+    let phase = Uuid::now_v7();
+    seed_plan(&h, plan, phase).await;
+    let row = seed_published_row(&h, PlanId::new(plan), phase, "eu", 10_000).await;
+
+    let run_id = Uuid::now_v7();
+    let conn = h.provider.conn().expect("conn");
+    bulk_repo::open(
+        &conn,
+        &h.scope,
+        NewBulkOperation {
+            operation_id: run_id,
+            tenant_id: TENANT,
+            kind: BulkKind::Repricing,
+            client_key: run_id.to_string(),
+            request_hash: IdempotencyGate::payload_hash(&run_id.to_string()),
+            report: report(),
+            submitted_by: ACTOR,
+            submitted_at: at(11),
+        },
+    )
+    .await
+    .expect("open the run");
+    repricing_journal_repo::open_rows(
+        &conn,
+        &h.scope,
+        &[NewJournalRow {
+            run_id,
+            price_id: row,
+            tenant_id: TENANT,
+        }],
+    )
+    .await
+    .expect("freeze the journal");
+    bulk_repo::advance(
+        &conn,
+        &h.scope,
+        TENANT,
+        run_id,
+        BulkState::Validating,
+        BulkState::AwaitingApproval,
+        report(),
+        at(11),
+    )
+    .await
+    .expect("park the run awaiting approval");
+
+    // The key was free when the run opened. An interactive unit takes it before
+    // the apply arrives — the redrive window, in one statement.
+    let keys = price_repo::load_scope_keys_for_ids(&conn, &h.scope, TENANT, &[row])
+        .await
+        .expect("the row's own key");
+    let (_, key) = keys.into_iter().next().expect("one row, one key");
+    approval_repo::open(
+        &conn,
+        &h.scope,
+        NewApproval {
+            approval_id: Uuid::now_v7(),
+            tenant_id: TENANT,
+            subject_ref: audit_repo::plan_revision_ref(PlanId::new(Uuid::now_v7()), 0),
+            subject_kind: AuditSubjectKind::PlanRevision,
+            content_hash: vec![0u8; 32],
+            materiality: serde_json::json!({ "material": true, "reason": "an interactive unit" }),
+            held_keys: std::iter::once(key.to_string()).collect(),
+        },
+        apply_stamp(),
+    )
+    .await
+    .expect("seed a pending interactive unit holding the key");
+
+    let outcome = apply_run_in(
+        &h.provider,
+        &h.policies,
+        &(Arc::clone(&h.registry) as Arc<dyn CatalogVersionRegistryV1>),
+        &ctx(),
+        &h.scope,
+        TENANT,
+        run_id,
+        apply_stamp(),
+    )
+    .await;
+    assert!(
+        outcome.is_err(),
+        "a row whose key another unit holds is not a row this apply may write: {outcome:?}"
+    );
+
+    let run = bulk_repo::read(&conn, &h.scope, TENANT, run_id)
+        .await
+        .expect("read the run")
+        .expect("the run is there");
+    assert_eq!(
+        run.state,
+        BulkState::AwaitingApproval,
+        "and the single-spend edge was not spent on a call that refused: \
+         `committing` has no door back out"
+    );
+    assert_eq!(
+        journal_state(&h, run_id, row).await.0,
+        JournalState::Pending,
+        "nothing was applied under it either"
+    );
+}

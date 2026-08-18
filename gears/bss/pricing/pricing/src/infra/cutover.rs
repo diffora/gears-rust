@@ -5,6 +5,27 @@
 //! same two mechanisms. What this unit adds is a **second arrival**: the
 //! grandfathered copy, on a new generation of the predecessor's key, born in the
 //! same transaction as the successor that replaces it.
+//!
+//! # What this door owes the rows it publishes (D-344)
+//!
+//! It copied `supersede_in`'s *shape* and not its *rule sets*, and for as long as
+//! that stood a cutover's entirely client-authored successor reached `published`
+//! judged by two window checks and two store-level content checks — no
+//! `price_row_rules`, no `supersession_rules`, no plan aggregate, no fixture gate.
+//! D-344 settled which rules a door owes by the **act** it performs rather than by
+//! which door it is, and all three tiers land here:
+//!
+//! * **Tier A**, at steps 2 and 7 — [`plan_supersession`] over the predecessor and
+//!   the successor as the store will hold it, exactly where `supersede_in` spends
+//!   it. A cutover supersedes on the predecessor's own canonical scope key
+//!   (`inst-co-supersede`), so the tier counter continues across the act and
+//!   `SupersessionUnitGuard` binds it for the same reason it binds a supersession.
+//! * **Tier B**, at step 8b — [`run_publish_rules`] over the plan as this act's two
+//!   drafts leave it. A cutover mints a **generation**, and `priceEligibility` is a
+//!   scope-key axis, so this act changes which keys are current; a same-key
+//!   supersession does not, which is why `supersede_in` does not run it.
+//! * **The fixture gate**, beside Tier B, because a cutover's content is authored
+//!   rather than derived.
 
 use std::sync::Arc;
 
@@ -28,13 +49,16 @@ use crate::domain::materiality::{self, ChangeSet, MaterialityVerdict};
 use crate::domain::plan_shape::PlanShape;
 use crate::domain::ports::{CatalogVersionRegistryV1, registry_failure};
 use crate::domain::price_record::{PriceContent, PriceRecord};
+use crate::domain::publish::rules::run_publish_rules;
 use crate::domain::read_model::SubjectRef;
 use crate::domain::scope_key::PlanId;
 use crate::domain::scope_key::{Cohort, PriceEligibility, ScopeKey};
-use crate::domain::supersession::{ChangeoverMoment, NamedWindow};
+use crate::domain::supersession::{ChangeoverMoment, NamedWindow, plan_supersession};
 use crate::domain::window::WindowInterval;
-use crate::infra::publish::assemble_from;
+use crate::infra::fixture_gate::FixtureGate;
+use crate::infra::publish::{assemble_from, check_fixtures, rule_params};
 use crate::infra::storage::RepoError;
+use crate::infra::storage::repo::PolicyObjectRepo;
 use crate::infra::storage::repo::approval_repo::{self, ApprovalRecord};
 use crate::infra::storage::repo::audit_repo::{self, NewAuditEntry};
 use crate::infra::storage::repo::window_repo::{NewWindow, WindowRecord};
@@ -507,17 +531,40 @@ impl CutoverContext {
 #[derive(Clone)]
 pub struct CutoverService {
     db: DBProvider<DbError>,
+    /// D-344 Tier B's parameters. Owned rather than shared, for
+    /// [`crate::infra::migration::MigrationService`]'s reason: the repo is a
+    /// reader bound to the ratified deployment defaults, so a second instance is
+    /// a second reader of the same rows and never a second source of truth.
+    policies: PolicyObjectRepo,
+    /// The joint-conformance gate, asked of a cutover's rows because their
+    /// content is **authored** (D-344). One gate, loaded once at gear init, so
+    /// two doors cannot answer from two corpora.
+    fixture_gate: FixtureGate,
     registry: Arc<dyn CatalogVersionRegistryV1>,
 }
 
 impl CutoverService {
-    /// Build the workflow over one provider and the resolved registry.
+    /// Build the workflow over one provider, the deployment's limits, the joint
+    /// fixture gate and the resolved registry.
     ///
     /// The **same** registry `Arc` every other requester holds; what keeps their
-    /// handles apart is `unit_request_id`'s distinct first segment.
+    /// handles apart is `unit_request_id`'s distinct first segment. The gate is
+    /// likewise the engine's own instance rather than a second `load` — the
+    /// corpus decides what publishes, and two readings of it are two answers.
     #[must_use]
-    pub const fn new(db: DBProvider<DbError>, registry: Arc<dyn CatalogVersionRegistryV1>) -> Self {
-        Self { db, registry }
+    pub fn new(
+        db: DBProvider<DbError>,
+        limits: &crate::config::LimitsConfig,
+        gate: FixtureGate,
+        registry: Arc<dyn CatalogVersionRegistryV1>,
+    ) -> Self {
+        let policies = PolicyObjectRepo::new(db.clone(), limits);
+        Self {
+            db,
+            policies,
+            fixture_gate: gate,
+            registry,
+        }
     }
 
     /// Compose and, if it may, commit one grandfathering cutover.
@@ -539,6 +586,8 @@ impl CutoverService {
         let ctx = ctx.clone();
         let scope = scope.clone();
         let registry = Arc::clone(&self.registry);
+        let policies = self.policies.clone();
+        let gate = self.fixture_gate.clone();
         let (_, outcome) = self
             .db
             .db()
@@ -551,6 +600,8 @@ impl CutoverService {
                     // alternative is that size on every task's stack.
                     Box::pin(cutover_in(
                         txn,
+                        &policies,
+                        &gate,
                         &registry,
                         &ctx,
                         &scope,
@@ -598,12 +649,16 @@ impl CutoverService {
 /// [`DomainError::Internal`] on a storage or registry failure.
 #[allow(
     clippy::too_many_arguments,
-    reason = "`supersede_in`'s argument list exactly: the transaction, the registry, the security \
-              context, the scope, the tenant, the request, the verdict renderer and the stamp. \
-              Every one is a different authority and none is derivable from the others"
+    reason = "`supersede_in`'s argument list, plus D-344's two collaborators: the transaction, the \
+              tenant policy reader and the joint fixture gate the aggregate tier needs, the \
+              registry, the security context, the scope, the tenant, the request, the verdict \
+              renderer and the stamp. Every one is a different authority and none is derivable \
+              from the others"
 )]
 pub async fn cutover_in(
     txn: &DbTx<'_>,
+    policies: &PolicyObjectRepo,
+    gate: &FixtureGate,
     registry: &Arc<dyn CatalogVersionRegistryV1>,
     ctx: &SecurityContext,
     scope: &AccessScope,
@@ -633,16 +688,25 @@ pub async fn cutover_in(
     )
     .await?;
 
-    // 2. `inst-gc-compose` at the floor **every** call must clear. The commit floor is
-    //    stricter and is applied at step 7; this run is what refuses a request nobody
-    //    should be asked to review.
-    check_cutover_instant(request.cutover_at, now, ChangeoverMoment::Submit)?;
-    let composed = compose_cutover_windows(&context.plane, request.cutover_at)?;
-    let copy_key = grandfathered_copy_key(
-        &request.predecessor_key,
-        request.cutover_at,
-        &context.existing_generations,
-    )?;
+    // 1a. A plan whose current revision can never be superseded takes no successor
+    //     row either — `PublishService::commit`'s hoisted refusal and
+    //     `supersede_in`'s step 1a, and it was missing here. `plan_repo::retire_revision`
+    //     flips only the plan row, so a retired plan's price rows still read
+    //     `published`, step 1's `on_key(key, Published)` still finds the predecessor,
+    //     and nothing further down reads the plan's lifecycle: `commit_supersession_rows`
+    //     runs `refuse_mispaired` / `supersede_row` / `publish_rows` and none of the
+    //     three asks. So a cutover onto a retired plan staged two drafts, took a
+    //     registry handle and published both rows. Hoisted because the refusal is
+    //     **permanent** (D-156): past the handle it stands pending forever and trips
+    //     `pricing.catalogversion.commit_overdue` for a publish that can never happen.
+    crate::infra::publish::refuse_unpublishable_predecessor(txn, scope, tenant_id, context.plan_id)
+        .await?;
+
+    // 2 and 2a. `inst-gc-compose` plus D-344 Tier A, at the floor **every** call must
+    //    clear and on both arms, because this is the last point the two share. The
+    //    commit floor is stricter and is applied at step 7; this run is what refuses a
+    //    request nobody should be asked to review.
+    let (composed, copy_key) = compose_and_judge(&context, request, now, ChangeoverMoment::Submit)?;
 
     let selected = [request.predecessor_key.clone()];
     let subject_ref = cutover_unit_ref(context.plan_id, &selected, request.cutover_at);
@@ -722,8 +786,12 @@ pub async fn cutover_in(
 
         // 5. and 6. The controlled arm: stage both rows, open the unit over both
         //    keys, write nothing else.
-        return submitted_cutover(
+        //     Boxed for `cut_over`'s reason one level down: this arm now assembles a
+        //     whole `PlanShape` for the fixture gate, and `clippy::large_futures` is
+        //     what says the caller's stack should not carry it.
+        return Box::pin(submitted_cutover(
             txn,
+            gate,
             scope,
             tenant_id,
             &context,
@@ -733,7 +801,7 @@ pub async fn cutover_in(
             verdict,
             verdict_json,
             stamp,
-        )
+        ))
         .await;
     }
 
@@ -755,6 +823,13 @@ pub async fn cutover_in(
     //    brings, and what commits is the staged one the reviewer saw.
     check_cutover_instant(request.cutover_at, now, ChangeoverMoment::Commit)?;
     refuse_divergent_staged(&context, request, &copy_key)?;
+    // **D-344 Tier A at the commit floor**, `supersede_in`'s step 7 verbatim: the
+    // guard above has just proved the request is the stored successor, and this is
+    // the arm that spends money. Re-run rather than trusted from step 2 for
+    // `inst-su-compose`'s reason — the world moved between the two calls, and a pair
+    // that composed legally at submit is refusable at commit with nothing else
+    // having changed.
+    judge_successor(&context, request, now, ChangeoverMoment::Commit)?;
     let shorten = context.shorten_target(composed.shorten().window_id)?;
     let shorten_seq = shorten.mutation_seq;
 
@@ -765,14 +840,12 @@ pub async fn cutover_in(
     let (successor, copy) =
         stage_both(txn, scope, tenant_id, &context, request, &copy_key, stamp).await?;
 
-    // 9. Addressability, fail closed, after every refusal and before the writes
-    //    (D-156).
-    let pending = registry
-        .request_version(ctx, &cutover_request_id(tenant_id, &subject_ref))
-        .await
-        .map_err(|e| registry_failure(&e))?;
+    // 8a. **D-344's fixture gate**, over the two drafts this act would publish and
+    //     the rows already beside them — after the staging, because that is what
+    //     puts the successor and the copy in the shape it ranges over.
+    judge_authored_shapes(txn, gate, scope, tenant_id, context.plan_id, now).await?;
 
-    // 10. The five writes, in one order, in this transaction.
+    // 9. The five writes, in one order, in this transaction.
     let written = commit_cutover(
         txn,
         scope,
@@ -792,6 +865,29 @@ pub async fn cutover_in(
     )
     .await
     .map_err(|e| repo_failure(&e))?;
+
+    // 9a. **D-344 Tier B**, over the plan as those writes just left it, and this is
+    //     `infra::repricing::commit_plan_aggregate_in`'s placement rather than a new
+    //     one: that door runs the identical pass after its own row writes, for the
+    //     identical reason. See [`judge_plan_aggregate`] for why the aggregate
+    //     cannot be asked before them.
+    judge_plan_aggregate(txn, policies, scope, tenant_id, context.plan_id, now).await?;
+
+    // 10. Addressability, fail closed — **after every refusal**, which is the half of
+    //     D-156 that is load-bearing, and which Tier B's placement moved this line to
+    //     honour. D-156's other half puts the request "before the writes"; step 9's
+    //     writes are inside this transaction and a refusal at 9a rolls every one of
+    //     them back, so nothing durable precedes the handle. Requesting it ahead of
+    //     9a would put a **permanent** refusal — a rule violation is not something a
+    //     retry passes — on the far side of the handle, and a handle stranded there
+    //     stands pending forever and trips `pricing.catalogversion.commit_overdue`
+    //     for a publish that can never happen. That is the failure D-156 exists to
+    //     prevent, and it is why the ordering is stated as the reason rather than as
+    //     the rule.
+    let pending = registry
+        .request_version(ctx, &cutover_request_id(tenant_id, &subject_ref))
+        .await
+        .map_err(|e| registry_failure(&e))?;
 
     // 11. The plan subject the projector re-freezes — one subject, a second reason to
     //     re-project it, exactly as the supersession's step 11 argues.
@@ -1131,11 +1227,13 @@ fn cutover_state(
 #[allow(
     clippy::too_many_arguments,
     reason = "the context, the request, the minted copy key, the selection, the verdict and its \
-              renderer, plus the runner, the scope, the tenant and the stamp. Splitting it would \
-              hand the halves to two functions that would both need all of it"
+              renderer, plus the runner, D-344's fixture gate, the scope, the tenant and the \
+              stamp. Splitting it would hand the halves to two functions that would both need all \
+              of it"
 )]
 async fn submitted_cutover(
     runner: &impl DBRunner,
+    gate: &FixtureGate,
     scope: &AccessScope,
     tenant_id: Uuid,
     context: &CutoverContext,
@@ -1148,6 +1246,29 @@ async fn submitted_cutover(
 ) -> Result<CutoverOutcome, DomainError> {
     let (successor, copy) =
         stage_both(runner, scope, tenant_id, context, request, copy_key, stamp).await?;
+    // **D-344's fixture gate on this arm too**, and for step 2's reason rather
+    // than because this arm publishes anything: it publishes nothing.
+    // `check_cutover_instant` runs its Submit floor here because "this run is what
+    // refuses a request nobody should be asked to review", and an act whose rows
+    // the corpus will refuse is exactly such a request — without it a second
+    // principal reviews and approves a cutover that is then refused permanently on
+    // the call that would have committed it. `PublishService::precheck` asks the
+    // gate for the same reason, on a surface that also writes nothing.
+    //
+    // **Tier B is not asked here and cannot be.** See [`judge_plan_aggregate`]: the
+    // aggregate is a statement about the plan *after* the act, and until the commit
+    // flips the predecessor `superseded` this plan carries two rows on one key —
+    // which `inst-cmp-injective` correctly reports as a duplicate metered line. The
+    // arm that can answer it truthfully is the one that has written.
+    judge_authored_shapes(
+        runner,
+        gate,
+        scope,
+        tenant_id,
+        context.plan_id,
+        stamp.recorded_at,
+    )
+    .await?;
     let record = crate::infra::approval::ApprovalService::submit_cutover_on(
         runner,
         scope,
@@ -1230,6 +1351,198 @@ fn authored_successor(context: &CutoverContext, request: &CutoverRequest) -> Pri
         supersedes_price_id: Some(context.predecessor.price_id),
         ..price_repo::authored_content(&request.predecessor_key, request.successor.clone())
     }
+}
+
+/// **D-344 Tier A on this door**: the per-row rules and the supersession rules over
+/// the successor this act would publish.
+///
+/// [`plan_supersession`] is the pair, and it is called here rather than restated for
+/// the reason D-127 gives about the guard itself: a rule set that can differ by which
+/// mechanism asked already differs. `supersede_in` spends this at its steps 2 and 7
+/// and this door spends it at the same two, so the two acts are judged by one
+/// statement of what a successor may be.
+///
+/// **The successor as the store will hold it**, never the request's row — the
+/// [`authored_successor`] rewrites, whose absence made `is_usage()` answer `false` on
+/// every usage key and cost the supersession three Criticals on 2026-08-06.
+///
+/// # Why it sits after `check_cutover_instant` and `compose_cutover_windows`
+///
+/// [`plan_supersession`] asks three questions and this act has its own spelling of
+/// the first two. Its instant floor is [`changeover_floor`](crate::domain::supersession::changeover_floor)
+/// — the identical bound `check_cutover_instant` applies — and its window composition
+/// is `compose_windows`, which asks `compose_cutover_windows`' first two questions on
+/// the same plane. Both are pure functions of arguments this call does not change, so
+/// once the cutover's own two have passed neither can fire, and the operator hears
+/// `CUTOVER_INSTANT_PASSED` and `CUTOVER_GAP` rather than the supersession's codes for
+/// the same facts. Ordered rather than trimmed to the rule sets alone, because
+/// `plan_supersession` is the one spelling of the pair and a caller picking two of its
+/// three parts is how the next divergence starts.
+///
+/// The composed plan it returns is discarded: this act's three window operations come
+/// from [`compose_cutover_windows`], which is the composer that knows about the copy.
+///
+/// # Errors
+/// [`DomainError::ValidationFailed`] carrying the row and supersession report —
+/// `SUPERSESSION_UNIT_MISMATCH` among them, which is what a cutover moving `meter`,
+/// `dimensionKey`, `model_kind`, `reservationFlavor` or a `carry` allowance under a
+/// continued tier counter now hears.
+fn judge_successor(
+    context: &CutoverContext,
+    request: &CutoverRequest,
+    now: DateTime<Utc>,
+    moment: ChangeoverMoment,
+) -> Result<(), DomainError> {
+    plan_supersession(
+        &context.predecessor.row,
+        &authored_successor(context, request).row,
+        &context.plane,
+        request.cutover_at,
+        now,
+        moment,
+    )?;
+    Ok(())
+}
+
+/// The plan's candidate row set, read through whichever runner the caller holds.
+///
+/// One assembly for both of D-344's plan-scoped arms, so a shape one of them judged
+/// and the other did not cannot exist. `assemble_from` against the plan's **current**
+/// revision — a cutover opens no draft revision — which is `infra::repricing`'s entry
+/// point too.
+///
+/// # Errors
+/// [`DomainError::NotFound`] when the plan has no current revision;
+/// [`DomainError::Internal`] on a storage failure.
+async fn cutover_subject(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    plan_id: PlanId,
+    now: DateTime<Utc>,
+) -> Result<PlanShape, DomainError> {
+    let current = plan_repo::load_current(runner, scope, tenant_id, plan_id)
+        .await
+        .map_err(|e| repo_failure(&e))?
+        .ok_or_else(|| DomainError::NotFound {
+            subject: "current plan revision".to_owned(),
+            id: plan_id.to_string(),
+        })?;
+    assemble_from(runner, scope, tenant_id, plan_id, current, now).await
+}
+
+/// **D-344's fixture gate on this door**: is this deployment's joint corpus green for
+/// every shape the plan carries?
+///
+/// The gate guards acts whose content is **authored** rather than derived, and a
+/// cutover's successor is entirely client-authored, so it is the gate's second
+/// subject. The repricing apply is deliberately not a third: `project_row` derives its
+/// successor from a row whose own publish already passed here, so it can present no
+/// shape this gate has not already seen.
+///
+/// **Asked on both arms**, unlike Tier B, because it is a question about each row
+/// on its own and the answer does not depend on which rows are current. So it can be
+/// put where `check_cutover_instant`'s Submit floor is put, and for that floor's
+/// reason: a request the corpus will refuse is a request nobody should be asked to
+/// review.
+///
+/// # Errors
+/// [`DomainError::FixtureMissing`] naming the kind and the variant that has no green
+/// fixture; whatever [`cutover_subject`] refuses.
+async fn judge_authored_shapes(
+    runner: &impl DBRunner,
+    gate: &FixtureGate,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    plan_id: PlanId,
+    now: DateTime<Utc>,
+) -> Result<(), DomainError> {
+    let shape = cutover_subject(runner, scope, tenant_id, plan_id, now).await?;
+    check_fixtures(gate, &shape)
+}
+
+/// `inst-gc-compose` and D-344 Tier A together, at one moment.
+///
+/// The three refusals are ordered and the order is the reason [`judge_successor`]
+/// goes last: the cutover's own instant floor and its own window composition are what
+/// give an operator `CUTOVER_INSTANT_PASSED` and `CUTOVER_GAP` rather than the
+/// supersession's codes for the same two facts, and Tier A's copy of both is
+/// unreachable once they have passed.
+///
+/// [`grandfathered_copy_key`] sits between them because it is the act's own third
+/// refusal — a generation already carrying this instant — and because Tier A needs no
+/// part of it.
+///
+/// # Errors
+/// [`DomainError::CutoverInstantPassed`], [`DomainError::CutoverGap`],
+/// [`DomainError::WindowOverlap`], [`DomainError::DuplicateScopeKey`], and whatever
+/// [`judge_successor`] refuses.
+fn compose_and_judge(
+    context: &CutoverContext,
+    request: &CutoverRequest,
+    now: DateTime<Utc>,
+    moment: ChangeoverMoment,
+) -> Result<(ComposedCutover, ScopeKey), DomainError> {
+    check_cutover_instant(request.cutover_at, now, moment)?;
+    let composed = compose_cutover_windows(&context.plane, request.cutover_at)?;
+    let copy_key = grandfathered_copy_key(
+        &request.predecessor_key,
+        request.cutover_at,
+        &context.existing_generations,
+    )?;
+    judge_successor(context, request, now, moment)?;
+    Ok((composed, copy_key))
+}
+
+/// **D-344 Tier B**: the plan aggregate, over the plan as this act's writes left it.
+///
+/// A cutover mints a **generation**, and `priceEligibility` is a scope-key axis, so
+/// this act changes which keys are current — which is precisely the condition D-344
+/// binds the aggregate tier to. A same-key supersession does not change that set and
+/// does not run this, which is why `supersede_in` has no such call and its absence
+/// there is a stated consequence rather than an omission.
+///
+/// # Why it runs after the writes and not before them
+///
+/// **Measured, not preferred.** `run_publish_rules` asserts things about *which rows
+/// are current on which key*, and between `stage_both` and `commit_cutover` this plan
+/// carries two rows on one key: the published predecessor and the draft successor
+/// that will replace it. Asked there, `inst-cmp-injective` reports the pair as a
+/// duplicate `(meter, dimensionKey)` line — correctly, on the shape it was handed —
+/// and every cutover of a usage key is refused for a duplication the act itself is
+/// halfway through removing. `inst-wc-required` is the same shape from the other side:
+/// the grandfathered copy stands on a generation key nothing has covered until
+/// `commit_cutover` schedules its window.
+///
+/// After the writes both dissolve without a flag or an exception:
+/// [`CANDIDATE_ROW_STATES`](crate::infra::publish::CANDIDATE_ROW_STATES) excludes
+/// `superseded`, so the predecessor has left the row set, and both new keys carry the
+/// windows this act just wrote. That is the same placement and the same reason as
+/// `infra::repricing::commit_plan_aggregate_in`, which runs the identical pass over
+/// the plan "as this transaction just left it".
+///
+/// The transaction is what makes this safe rather than optimistic: a refusal here
+/// rolls back all five writes, so the act's failure mode is unchanged and only the
+/// registry request had to move (see step 10).
+///
+/// # Errors
+/// [`DomainError::ValidationFailed`] carrying the aggregate report; whatever
+/// [`cutover_subject`] refuses.
+async fn judge_plan_aggregate(
+    runner: &impl DBRunner,
+    policies: &PolicyObjectRepo,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    plan_id: PlanId,
+    now: DateTime<Utc>,
+) -> Result<(), DomainError> {
+    let shape = cutover_subject(runner, scope, tenant_id, plan_id, now).await?;
+    let params = rule_params(policies, runner, scope, tenant_id, &shape).await?;
+    let report = run_publish_rules(&shape, &params);
+    if !report.is_publishable() {
+        return Err(DomainError::ValidationFailed(report));
+    }
+    Ok(())
 }
 
 /// Stage the successor and the grandfathered copy, reusing whatever an earlier

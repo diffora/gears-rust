@@ -128,11 +128,21 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
         .tag(TAG)
         .authenticated()
         .no_license_required()
+        .param(crate::api::rest::plans::if_none_match_param())
         .handler(get_policy)
         .json_response_with_schema::<RoundingPolicyView>(
             openapi,
             StatusCode::OK,
             "The tenant's default rounding policy.",
+        )
+        // The conditional read's answer (RFC 9110 section 15.4.5). Declared
+        // because it is reachable: this route emits an `ETag` and honours the
+        // `If-None-Match` a caller sends it back in, which nothing in this gear
+        // did until 2026-08-17 while seven reads emitted a validator.
+        .no_content_response(
+            StatusCode::NOT_MODIFIED,
+            "The caller's `If-None-Match` matches the current representation, so the body is \
+             not re-sent.",
         )
         .error_401(openapi)
         .error_403(openapi)
@@ -190,11 +200,12 @@ async fn get_policy(
     Extension(state): Extension<Arc<AuthoringState>>,
     Extension(enforcer): Extension<authz_resolver_sdk::PolicyEnforcer>,
     extension_ctx: Option<Extension<SecurityContext>>,
+    headers: HeaderMap,
 ) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(extension_ctx)?;
     let scope = read_scope(&enforcer, &ctx).await?;
     let held = held_ref(&state, &scope, ctx.subject_tenant_id()).await?;
-    Ok(render(held.as_deref()))
+    Ok(render(held.as_deref(), Some(&headers)))
 }
 
 async fn put_policy(
@@ -270,7 +281,7 @@ async fn put_policy(
         )));
     }
 
-    Ok(render(requested))
+    Ok(render(requested, None))
 }
 
 // ---------------------------------------------------------------------------
@@ -299,9 +310,17 @@ async fn held_ref(
 
 /// One rendering for both verbs, so the `GET`'s tag and the `PUT`'s response tag
 /// cannot come from two readings of one policy.
-fn render(value: Option<&str>) -> Response {
+/// `conditional` is `Some` on the `GET` and `None` on the `PUT`: the tag has one
+/// producer and a conditional read must compare against *that* value, so the
+/// comparison lives beside the rendering rather than in a second reading of the
+/// same resource. See [`preconditions::if_none_match`].
+fn render(value: Option<&str>, conditional: Option<&HeaderMap>) -> Response {
+    let tag = preconditions::policy_etag(&tag_of(value));
+    if conditional.is_some_and(|headers| preconditions::if_none_match(headers, &tag)) {
+        return preconditions::not_modified(&tag);
+    }
     (
-        [(ETAG, preconditions::policy_etag(&tag_of(value)))],
+        [(ETAG, tag)],
         Json(RoundingPolicyView {
             default_rounding_policy_ref: value.map(ToOwned::to_owned),
         }),

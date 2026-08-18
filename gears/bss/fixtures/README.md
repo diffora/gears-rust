@@ -253,16 +253,37 @@ authored rule the design set already states. So a publish case may carry
 built the slice this case is authored against, so a subject's refusal is the **anticipated**
 answer rather than a disagreement.
 
-`reserved/consumption-on-level-rejected` is the one that carries it: it expects Slice 10's
-`LEVEL_RESERVATION_CONSUMPTION_FORBIDDEN`, and the only price-row shape that exists is Slice
-3's, which has nowhere to put `reservedRate` / `reservationFlavor`.
+**No committed case carries it today, and the mechanism is the better for it.** The one
+that did was `reserved/consumption-on-level-rejected`, marked `slice-10-advanced-primitives`
+while it expected `LEVEL_RESERVATION_CONSUMPTION_FORBIDDEN` from a `PriceRow` that had
+nowhere to put `reservedRate` / `reservationFlavor`. Slice 10 landed the pair and the rules
+on **2026-08-08**, the marker was retired in the same commit, and the case is answered
+rather than declined now — `corpus_publish.rs`'s `the_reserved_case_is_answered_rather_than_declined_since_slice_10`
+and `the_corpus_now_declines_nothing_and_nothing_is_stale` are the two tests that hold it
+there. A marker is **self-retiring**: leaving it in place once its slice ships makes it
+stale by the runner's own definition (`stale_decline()` fires on `declined_until.is_some()
+&& actual.is_ok()`), so the corpus would be asserting that a built slice is unbuilt.
 
-A decline suspends the evidence; it does **not** suspend the row. That case carried neither
-tier bands nor `tierAggregationWindow`, so the day Slice 10 landed it would have gone red on
-`TIER_BANDS_GAP` — a verdict about a malformed row, read as a D-53 disagreement, in the very
-run that was supposed to test D-53. Both its rows are now whole and clean under every Slice-3
-rule, so the reservation rule is the first thing its successor can fail on. A declined case
-is a case waiting to be answered, and it has to be answerable the moment its slice arrives.
+The mechanism's coverage therefore lives on a **synthesised** case rather than a committed
+one: `runner_tests.rs:224`, `corpus_with_one_declined_case()`, loads the real corpus through
+the real loader, clones the reserved publish case, gives the clone its own id and sets
+`declined_until` on it. That is deliberate. Asserting emptiness instead would have been
+green and would have deleted the only coverage `anticipated_decline()` and `stale_decline()`
+have.
+
+That retirement stranded three readers who each named the marker in the present tense — two
+assertions in `runner_tests.rs`, which went red and stayed red for nine days, and this
+section, which went on describing a corpus state that had ended. Both are repaired; the
+lesson is the shape, not the incident. **A marker is a claim with a date on it, and every
+document that repeats the claim inherits the date.**
+
+A decline suspends the evidence; it does **not** suspend the row. The reserved case once
+carried neither tier bands nor `tierAggregationWindow`, so the day Slice 10 landed it would
+have gone red on `TIER_BANDS_GAP` — a verdict about a malformed row, read as a D-53
+disagreement, in the very run that was supposed to test D-53. Both its rows are now whole
+and clean under every Slice-3 rule, so the reservation rule is the first thing its successor
+can fail on. A declined case is a case waiting to be answered, and it has to be answerable
+the moment its slice arrives.
 
 It suspends **evidence**, never the assertion:
 

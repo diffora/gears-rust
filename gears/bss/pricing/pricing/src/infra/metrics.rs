@@ -319,7 +319,16 @@ pub fn report_market_metrics(
     // would write `0` and clear the alarm while those five markets stayed gated.
     // A per-tenant label would fix the collision and break the module's
     // cardinality bound, so the gauge needs a catalog-wide observer over the read
-    // model rather than a caller on the publish path. `T-17` carries it.
+    // model rather than a caller on the publish path.
+    //
+    // **That observer was built and this sentence had not noticed** (review
+    // Z4-4): it used to end "`T-17` carries it", describing a debt already paid.
+    // `infra::jobs::gated_markets` is D-246's refresher on D-250's tick — it
+    // reads `price_repo::gated_markets` catalog-wide under the system scope, and
+    // it is the only writer of the cell this module's observable gauge reads.
+    // Nothing about *this* function changes: the division of labour the paragraph
+    // argues for is the one that shipped, and the counter below is still the
+    // well-defined half.
     //
     // What *is* well-defined here is the alarm: this plan would gate at least one
     // market. A counter accumulates, so two plans cannot overwrite each other.

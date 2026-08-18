@@ -189,7 +189,7 @@ def test_code_unreferenced_findings_match_the_pinned_2026_07_29_baseline():
     )
 
 
-def test_the_pinned_code_baseline_has_exactly_fifty_entries():
+def test_the_pinned_code_baseline_carries_no_duplicate_and_no_foreign_entry():
     # 51 until 2026-07-31 (PACKAGE_FIELDS_INVALID removed); 50 until the same
     # day's c-wave pin sweep (METER_AMBIGUOUS — D-103's rule reference;
     # TAXONOMY_VALUE_IN_USE — D-120's rule reference); 48 until the 2026-08-01
@@ -224,28 +224,68 @@ def test_the_pinned_code_baseline_has_exactly_fifty_entries():
     # 2026-08-09, sprung the very next time somebody wrote a table. Resolved by
     # naming it in the rule, then verified the way that note prescribes: the
     # register mention was removed and the finding stayed closed.
-# The count moved 28 -> 26 on 2026-08-16 when D-329 gave two declared codes a rule.
-# 26 -> 25 later the same day, by D-330's historical-import descope: `BACKDATE_GRANT_REQUIRED`
-# / design/05 left by having its DECLARATION deleted -- the second member ever paid that way
-# (D-239's `BRAND_UNKNOWN` was the first) and the correct resolution for a code whose whole
-# refusal path is struck. Per-member note beside the pinned list, including why
-# `BACKDATE_SIDE_EFFECT`, struck in the same edit, was never a member.
-# This test's NAME says "fifty entries" and has since it was written; the number in a
-# test name is a comment, and this one has been wrong for longer than the pin has.
-# 25 -> 30 on 2026-08-17, and this is the one movement in the list's history that is not a
-# document change at all. `is_decision_register` stopped `DECISIONS.md` prose from
-# discharging a reference obligation, and five members became VISIBLE that had been
-# members all along: COMPOSITE_CONSTITUENT_UNPUBLISHED, GRANDFATHERED_ROW_IMMUTABLE,
-# GRANDFATHER_LOOSEN_FORBIDDEN, MIGRATION_ALREADY_EFFECTIVE, ROUNDING_POLICY_UNKNOWN.
-# Nothing regressed; the checker stopped accepting a payment it should never have taken.
-# Read the history above as evidence rather than as background: this comment block has
-# warned about the false payment since 2026-08-09, recorded it springing again on
-# `EVAL_POLICY_MISPLACED` "the very next time somebody wrote a table", and prescribed a
-# manual verification (remove the register mention, confirm the finding stays closed) that
-# every future author had to remember to run. It sprang a third time on 2026-08-17
-# (`PHASE_GRAPH_INVALID`, D-343). Vigilance was the control and vigilance kept losing, so
-# the control is now the checker: register prose cannot pay, and no one has to remember.
-    assert len(PINNED_UNREFERENCED_CODES_2026_07_29) == 30
+    # The count moved 28 -> 26 on 2026-08-16 when D-329 gave two declared codes a rule.
+    # 26 -> 25 later the same day, by D-330's historical-import descope: `BACKDATE_GRANT_REQUIRED`
+    # / design/05 left by having its DECLARATION deleted -- the second member ever paid that way
+    # (D-239's `BRAND_UNKNOWN` was the first) and the correct resolution for a code whose whole
+    # refusal path is struck. Per-member note beside the pinned list, including why
+    # `BACKDATE_SIDE_EFFECT`, struck in the same edit, was never a member.
+    # This test's NAME says "fifty entries" and has since it was written; the number in a
+    # test name is a comment, and this one has been wrong for longer than the pin has.
+    # 25 -> 30 on 2026-08-17, and this is the one movement in the list's history that is not a
+    # document change at all. `is_decision_register` stopped `DECISIONS.md` prose from
+    # discharging a reference obligation, and five members became VISIBLE that had been
+    # members all along: COMPOSITE_CONSTITUENT_UNPUBLISHED, GRANDFATHERED_ROW_IMMUTABLE,
+    # GRANDFATHER_LOOSEN_FORBIDDEN, MIGRATION_ALREADY_EFFECTIVE, ROUNDING_POLICY_UNKNOWN.
+    # Nothing regressed; the checker stopped accepting a payment it should never have taken.
+    # Read the history above as evidence rather than as background: this comment block has
+    # warned about the false payment since 2026-08-09, recorded it springing again on
+    # `EVAL_POLICY_MISPLACED` "the very next time somebody wrote a table", and prescribed a
+    # manual verification (remove the register mention, confirm the finding stays closed) that
+    # every future author had to remember to run. It sprang a third time on 2026-08-17
+    # (`PHASE_GRAPH_INVALID`, D-343). Vigilance was the control and vigilance kept losing, so
+    # the control is now the checker: register prose cannot pay, and no one has to remember.
+    # 30 -> 29 on 2026-08-17, by the Z7-2 docs fix, and it closes the round trip the entry above
+    # opened. `GRANDFATHER_LOOSEN_FORBIDDEN` is one of the five that became visible when register
+    # prose stopped paying -- the prose that had been paying it was D-329's own entry. Taking the
+    # `S7 §5` propagation D-329 had claimed and never made wrote the horizon door's preconditions
+    # into design/07 §5, and precondition 3 is the monotonicity rule naming the code it raises. So
+    # the same code was paid falsely by a mention on 2026-08-16 and truly by a rule on 2026-08-17,
+    # which is this comment block's whole thesis demonstrated on a single member in two days.
+    # Measured, not inferred: the unreferenced set was captured with the docs edit stashed and again
+    # with it applied, and the diff is exactly this one member.
+    # `GRANDFATHERED_ROW_IMMUTABLE` was left pinned in the same edit although it sits in the same
+    # block and became visible in the same capture -- D-329 REJECTED co-opting it for the loosen
+    # refusal, it is a different rule, and nothing raises it yet. Naming it to empty the pin would
+    # have been the false payment by another route.
+    # 2026-08-18: the literal is gone and the history above is kept.
+    #
+    # What this test asserted was `len(...) == N` against a hand-maintained N, under
+    # a name that said "fifty" while N was 29 — a number in a test name is a comment,
+    # and that one had been wrong longer than the pin had. It could not fail except
+    # when someone edited a literal in this repo, and the only available fix was to
+    # edit the expectation: the habit SKILL.md forbids, wearing a test's clothes.
+    # `test_code_unreferenced_findings_match_the_pinned_2026_07_29_baseline` above is
+    # the real guard and it is two-directional — a dropped line surfaces there as
+    # "no longer reproduced", which is strictly more than a count.
+    #
+    # These two properties are what a set comparison genuinely CANNOT see, and both
+    # are derived, so neither needs touching when the pin moves:
+    dupes = sorted(
+        entry
+        for entry in set(PINNED_UNREFERENCED_CODES_2026_07_29)
+        if PINNED_UNREFERENCED_CODES_2026_07_29.count(entry) > 1
+    )
+    assert dupes == [], (
+        "a duplicated entry is invisible to the set comparison above and silently "
+        "overstates the debt: {}".format(dupes)
+    )
+    gears = {gear for gear, _, _ in PINNED_UNREFERENCED_CODES_2026_07_29}
+    assert gears == {"pricing"}, (
+        "this baseline is documented as a pricing-only snapshot and `(code, path)` is "
+        "not unique across gears; a foreign entry would suppress a sibling gear's "
+        "finding as if it were pricing's accepted debt: {}".format(sorted(gears))
+    )
 
 
 def test_is_pinned_baseline_matches_only_the_recorded_gear():

@@ -78,6 +78,7 @@ use toolkit_security::SecurityContext;
 use uuid::Uuid;
 
 use crate::api::rest::auth_context::require_authenticated;
+use crate::api::rest::cursor;
 use crate::api::rest::error::authz_error_to_canonical;
 use crate::infra::history::{HistoryExporter, HistoryPage, HistoryPageRequest};
 
@@ -104,7 +105,7 @@ pub struct ApiState {
 #[derive(Debug, Default, Deserialize)]
 pub struct HistoryQuery {
     /// Page size. Absent means D-125's server default; above the cap it clamps.
-    pub limit: Option<u64>,
+    pub limit: Option<String>,
     /// The opaque token the previous page handed back.
     pub cursor: Option<String>,
 }
@@ -326,8 +327,11 @@ async fn read_history(
     // Parsed after the gate, for `plans.rs`'s stated reason: a module doc
     // asserting "the gate before the request" reads as two disciplines if two
     // modules order it differently.
-    let request = HistoryPageRequest::parse(query.limit, query.cursor.as_deref())
-        .map_err(CanonicalError::from)?;
+    let request = HistoryPageRequest::parse(
+        cursor::parse_limit(query.limit.as_deref())?,
+        query.cursor.as_deref(),
+    )
+    .map_err(CanonicalError::from)?;
 
     let page = state
         .history
@@ -407,8 +411,11 @@ async fn export_history(
     .await
     .map_err(authz_error_to_canonical)?;
 
-    let request = HistoryPageRequest::parse(query.limit, query.cursor.as_deref())
-        .map_err(CanonicalError::from)?;
+    let request = HistoryPageRequest::parse(
+        cursor::parse_limit(query.limit.as_deref())?,
+        query.cursor.as_deref(),
+    )
+    .map_err(CanonicalError::from)?;
 
     let page = state
         .history

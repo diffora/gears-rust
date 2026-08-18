@@ -151,7 +151,7 @@ pub fn partition_row_fields(row: &PriceRow) -> (Vec<&'static str>, Vec<&'static 
         aggregation_granularity: _,
         max_hold_granules: _,
         included_allowance: _,
-        reserved_rate_minor: _,
+        reserved_rate: _,
         reservation_flavor: _,
         min_qty_purchase: _,
         min_qty_usage: _,

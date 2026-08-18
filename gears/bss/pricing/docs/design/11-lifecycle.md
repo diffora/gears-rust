@@ -239,6 +239,13 @@ flowchart TB
 
 ## 4. States (CDSL)
 
+**Which rules an act placing a row in `published` owes is decided by the act, not by the
+door (D-344).** Tier A — the per-row rules, and the supersession rules where the act
+replaces a predecessor on a key — binds every such act without exception. Tier B — the
+plan-shape set — binds an act that changes **which keys are current**; a same-key
+replacement does not, which is why supersession runs Tier A alone. The joint fixture
+gate guards acts whose content is authored rather than derived.
+
 ### Migration Schedule State Machine
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-pricing-state-migration`

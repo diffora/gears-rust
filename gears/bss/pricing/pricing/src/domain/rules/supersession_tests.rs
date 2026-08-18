@@ -365,12 +365,18 @@ fn authoring_the_default_qualification_window_is_not_a_unit_change() {
 }
 
 #[test]
-fn the_ten_field_list_is_the_shared_seven_between_this_guards_own_three() {
+fn the_eleven_field_list_is_the_shared_seven_between_this_guards_own_four() {
     // The regression the factoring had to not cause. `mismatched_unit_fields`
     // is `unit_determining_mismatch` with `meter` and `dimensionKey` in front
-    // and the carry-conditioned allowance behind, in that order - a refactor
-    // that reordered the report, dropped a field, or quietly grew a second copy
-    // of the seven would still compile.
+    // and `reservationFlavor` plus the carry-conditioned allowance behind, in
+    // that order - a refactor that reordered the report, dropped a field, or
+    // quietly grew a second copy of the seven would still compile.
+    //
+    // `reservation_flavor` was NOT set here until 2026-08-18, so this test named
+    // ten labels and could not have caught its removal - the one field D-254
+    // added is the one field the guard against dropping a field did not cover.
+    // Same edit, same cause as the stale census on `mismatched_unit_fields`:
+    // D-254 widened the list and left both readers behind.
     let mut successor = predecessor();
     successor.meter = Some("ingress_bytes".to_owned());
     successor.dimension_key = "region".to_owned();
@@ -383,6 +389,7 @@ fn the_ten_field_list_is_the_shared_seven_between_this_guards_own_three() {
     successor.aggregation_granularity = Some(AggregationGranularity::Day);
     successor.tier_aggregation_window = Some(TierAggregationWindow::InvoicePeriod);
     successor.tier_qualification_window = Some(TierQualificationWindow::TrailingPeriod);
+    successor.reservation_flavor = Some(ReservationFlavor::Consumption);
     successor.included_allowance = Some(IncludedAllowance {
         quantity: 100,
         rollover_policy: RolloverPolicy::Carry,
@@ -403,6 +410,7 @@ fn the_ten_field_list_is_the_shared_seven_between_this_guards_own_three() {
             "tierAggregationWindow",
             "tierQualificationWindow",
             "package_size",
+            "reservationFlavor",
             "included_allowance",
         ]
     );
@@ -410,6 +418,13 @@ fn the_ten_field_list_is_the_shared_seven_between_this_guards_own_three() {
     assert_eq!(
         changed[2..9],
         unit_determining_mismatch(&predecessor(), &successor)
+    );
+    // The count is asserted against the two halves rather than against a literal,
+    // so a field added to either side has to be added here too: 2 + 7 + 2 = 11.
+    assert_eq!(
+        changed.len(),
+        2 + unit_determining_mismatch(&predecessor(), &successor).len() + 2,
+        "every label must come from one of the three sources this test names"
     );
 }
 
@@ -446,7 +461,7 @@ fn moving_to_the_trailing_window_is_a_unit_change() {
 #[test]
 fn a_reservation_flavor_flip_is_a_unit_change() {
     let mut before = predecessor();
-    before.reserved_rate_minor = Some(minor(1000));
+    before.reserved_rate = Some(RateMinor::from_minor_units(1000).expect("a non-negative rate"));
     before.reservation_flavor = Some(ReservationFlavor::Capacity);
     let mut successor = before.clone();
     successor.reservation_flavor = Some(ReservationFlavor::Consumption);

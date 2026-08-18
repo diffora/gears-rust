@@ -73,6 +73,23 @@
 //! line's freeze would be worth nothing — the line would be immutable and its
 //! money still editable.
 //!
+//! # The key and the guard below are both superseded
+//!
+//! `m20260802_000085` widened this table's key to
+//! `(tenant_id, overlay_revision, line_id, currency)` and its foreign key to
+//! `(tenant_id, overlay_revision, line_id)`, in the same migration that widened
+//! the parent line's — a narrow key here would have collided on two tenants'
+//! amounts the moment their lines stopped colliding, which is what review A1-4
+//! records as the condition arming `overlay_repo`'s untyped insert catch-all.
+//!
+//! It also **changed the trigger bodies below**, which no other widening in this
+//! chain has had to do. The guard resolves its parent line by
+//! `(line_id, overlay_revision)`, unambiguous only while that pair was globally
+//! unique: without a tenant conjunct, an amount under a *published* line would
+//! find another tenant's *draft* line carrying the same pair and be admitted. All
+//! three `SQLite` bodies and the Postgres function gained `l.tenant_id = …`, and
+//! those three digests are the only ones `m20260802_000085` moves.
+//!
 //! **Backend differences.** As `m20260802_000032` and `m20260802_000033`.
 
 use sea_orm_migration::prelude::*;

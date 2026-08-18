@@ -87,6 +87,35 @@ fn a_currency_that_is_not_iso_4217_alpha_3_is_threshold_invalid() {
 }
 
 #[test]
+fn every_refusal_names_its_field_the_way_the_wire_spells_it() {
+    // `toolkit_macros::api_dto` emits `#[serde(rename_all = "snake_case")]`
+    // unconditionally, so `ThresholdEntryView`'s wire members are `absolute_minor`
+    // and `percent_bp`. Four refusals here named them in camelCase until
+    // 2026-08-17, which pointed a caller at a field their own request does not
+    // carry — the remedy unreachable in exactly the way the ISO 4217 case above
+    // says it must not be.
+    //
+    // Asserted as a negative *and* a positive, because either alone is satisfiable
+    // by a defect: a refusal that named nothing would pass the negative, and one
+    // that named both spellings would pass the positive.
+    for detail in [
+        refusal(&[entry("EUR", None, None)]),
+        refusal(&[entry("EUR", Some(1), Some(1))]),
+        refusal(&[entry("EUR", Some(-1), None)]),
+        refusal(&[entry("EUR", None, Some(0))]),
+    ] {
+        assert!(
+            !detail.contains("absoluteMinor") && !detail.contains("percentBp"),
+            "no refusal names a field the wire does not carry: {detail}"
+        );
+        assert!(
+            detail.contains("absolute_minor") || detail.contains("percent_bp"),
+            "and each names the one it is about: {detail}"
+        );
+    }
+}
+
+#[test]
 fn an_entry_setting_neither_basis_is_threshold_invalid() {
     // §6's `{absolute_minor | percent}` is a choice, and "neither" is the arm that
     // switches the fail-safe off rather than the one that looks empty: the entry
@@ -152,4 +181,18 @@ fn an_empty_entry_list_parses_here_and_is_refused_one_layer_in() {
     // number is minted and before a row is written. Refusing it here as well would
     // be the rule with two owners.
     assert_eq!(parse_entries(&[]).expect("parses"), Vec::new());
+
+    // The second clause, which the name promised and the body did not carry: the
+    // refusal one layer in. Asserted here as well as in `domain::materiality_tests`
+    // because it is the half that makes the acceptance above safe rather than a
+    // hole, and a reader of this file has no way to reach the other suite.
+    let refusal = crate::domain::materiality::ThresholdVersion::new(0, chrono::Utc::now(), vec![])
+        .expect_err("an empty set is refused where the rule lives");
+    assert!(
+        matches!(
+            refusal,
+            crate::domain::materiality::ThresholdRefusal::NoEntries
+        ),
+        "{refusal:?}"
+    );
 }

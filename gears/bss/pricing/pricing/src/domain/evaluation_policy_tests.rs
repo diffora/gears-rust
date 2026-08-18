@@ -79,7 +79,7 @@ fn any_row() -> PriceRow {
         aggregation_granularity: None,
         max_hold_granules: None,
         included_allowance: None,
-        reserved_rate_minor: None,
+        reserved_rate: None,
         reservation_flavor: None,
         min_qty_purchase: None,
         min_qty_usage: None,

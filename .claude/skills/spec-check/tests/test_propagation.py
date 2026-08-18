@@ -72,9 +72,12 @@ def test_propagation_gaps_match_the_pinned_2026_07_29_baseline():
     )
 
 
-def test_the_pinned_baseline_has_exactly_twenty_three_entries():
-    # A transcription guard: the set comparison above would also fail on a typo,
-    # but a dropped line is easier to read as a count.
+def test_the_pinned_baseline_carries_no_duplicate_and_no_foreign_entry():
+    # A transcription guard. It asserted `len(...) == N` against a hand-maintained
+    # N under a name saying "twenty three" while N was 20 — and a dropped line
+    # already surfaces in the two-directional comparison above as "no longer
+    # reproduced", so the count added nothing it could not also get wrong. The
+    # history it carried is kept; the literal is gone (2026-08-18).
     # 24 until 2026-07-31 (D-01 -> PRD.md removed); 23 until the same day's c-wave
     # pin sweep (D-25 -> PRD.md, D-40 -> design/10 removed — paid down by the
     # a/b review fix rounds); notes beside the list.
@@ -86,7 +89,21 @@ def test_the_pinned_baseline_has_exactly_twenty_three_entries():
     # which is what P1 asks and is the honest reading, the requirement D-13
     # propagated into being the one that was struck. Measured against the stashed
     # pre-wave tree (47 -> 45 suppressed), not inferred.
-    assert len(PINNED_PROPAGATION_GAPS_2026_07_29) == 20
+    # The two properties a set comparison cannot see, both derived:
+    dupes = sorted(
+        entry
+        for entry in set(PINNED_PROPAGATION_GAPS_2026_07_29)
+        if PINNED_PROPAGATION_GAPS_2026_07_29.count(entry) > 1
+    )
+    assert dupes == [], (
+        "a duplicated entry is invisible to the set comparison above and silently "
+        "overstates the debt: {}".format(dupes)
+    )
+    gears = {gear for gear, _, _ in PINNED_PROPAGATION_GAPS_2026_07_29}
+    assert gears == {"pricing"}, (
+        "this baseline is documented as a pricing-only snapshot and `(id, path)` is "
+        "not unique across gears: {}".format(sorted(gears))
+    )
 
 
 def test_cross_gear_propagation_gaps_match_the_expected_set():

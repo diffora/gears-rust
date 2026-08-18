@@ -11,19 +11,30 @@
 //!
 //! # Triggers naming absent slices register **with their slice**
 //!
-//! Six of this list name a subject this crate has no table, no entity and no
-//! surface for — a bulk group move, a retirement that unwinds a live cutover, a
-//! historical import, the two gate-clearing republishes, a prepaid grant's
-//! non-price fields. **One of the six does not belong in that sentence**: the
+//! **Five** of this list name a subject this crate has no table, no entity and
+//! no surface for — a bulk group move, a retirement that unwinds a live cutover,
+//! the two gate-clearing republishes, a prepaid grant's non-price fields.
+//!
+//! *(This said **six** and named "a historical import" sixth. `Trigger::ALL` has
+//! never had such a variant and cannot: D-330 struck historical import from the
+//! design set on **2026-08-16** — the very date the next sentence dates itself
+//! to — taking the `BackdateGrant`, the `historical_import` resource label, the
+//! `POST /historical-imports` routes and the `pricing_historical_price` store
+//! with it. The paragraph was describing the pre-D-330 world while claiming to
+//! have been measured after it. Nothing counted the `false` side, so the suite
+//! stayed green through it; `only_the_triggers_with_no_subject_in_this_crate_answer_false`
+//! is the census that pair was missing, added with the correction — review Z3-1.)*
+//!
+//! **One of the five does not belong in that sentence either**: the
 //! retirement unwind's table (`pricing_approval`), entity and surface
 //! (`POST …/plans/{planId}/retire`) are all here and mounted, and what is missing
 //! is the **act** plus two operands the crate cannot supply — see that variant's
 //! own doc. Leaving it in the list read as "Slice 11 has not landed", which is
 //! the understating error `PlanRetirement` is the standing example of, arriving
 //! one variant later on the same plane. **They are the whole of the `false`
-//! side as of 2026-08-16**, the seventh member having left it: `RevenueShareChange`
+//! side as of 2026-08-16**, the sixth member having left it: `RevenueShareChange`
 //! is declared by a surface now, and the section below records what that took.
-//! The six are declared here anyway, each
+//! The five are declared here anyway, each
 //! with [`Trigger::owning_slice`] naming the document that owns it and
 //! [`Trigger::subject_exists_in_this_crate`] answering `false`, for two reasons.
 //! The set does not then read as **incomplete** — a reader who greps

@@ -139,10 +139,14 @@ async fn seed_frontier(
         .expect("seed the frontier");
 }
 
-/// The real router over a real repository, plus the two layers `register_rest`
-/// applies (here without the canonical-error middleware: these assertions are
-/// about status codes, which `CanonicalError` already carries as an
-/// `IntoResponse`).
+/// The real router over a real repository, plus the layers `register_rest` applies
+/// — **including the canonical-error middleware**, which this router omitted until
+/// 2026-08-18 on the ground that *"these assertions are about status codes, which
+/// `CanonicalError` already carries as an `IntoResponse`"*. That ground was the
+/// finding: the suite asserted only statuses precisely because the body it was
+/// handed was not the body production serves. The layer re-serializes every
+/// `application/problem+json` through `Problem`, so a member a handler emits that
+/// the type does not carry is dropped in production and was present here.
 fn frontier_router(
     db: DBProvider<DbError>,
     enforcer: PolicyEnforcer,
@@ -152,7 +156,11 @@ fn frontier_router(
         pin_frontier: PinFrontierRepo::new(db),
     });
     let openapi = OpenApiRegistryImpl::new();
-    let router = router(state, &openapi).layer(axum::Extension(enforcer));
+    let router = router(state, &openapi)
+        .layer(axum::Extension(enforcer))
+        .layer(axum::middleware::from_fn(
+            toolkit::api::canonical_error_middleware,
+        ));
     match ctx {
         Some(ctx) => router.layer(axum::Extension(ctx)),
         None => router,
@@ -170,6 +178,25 @@ async fn get(router: Router) -> axum::http::Response<Body> {
         )
         .await
         .expect("send")
+}
+
+/// The canonical **family** the problem document names.
+///
+/// `rest_support::problem_family`'s reading, re-typed for the same reason
+/// `rest_sources` is re-typed in two test binaries: this suite builds its own
+/// router and deliberately does not pull the shared harness in. Four lines, and
+/// pinned to the same `cf.core.err.*` id space by the assertions that call it.
+async fn problem_family(response: axum::http::Response<Body>) -> String {
+    let body = body_json(response).await;
+    let raw = body["type"]
+        .as_str()
+        .unwrap_or_else(|| panic!("no canonical type in the problem document: {body}"))
+        .to_owned();
+    raw.rsplit("cf.core.err.")
+        .next()
+        .and_then(|tail| tail.split(".v1").next())
+        .unwrap_or_else(|| panic!("not a `cf.core.err.*` id: {raw}"))
+        .to_owned()
 }
 
 async fn body_json(response: axum::http::Response<Body>) -> serde_json::Value {
@@ -197,6 +224,11 @@ async fn an_unauthenticated_request_is_refused_with_401() {
         StatusCode::UNAUTHORIZED,
         "the frontier is tenant-scoped, so an anonymous caller is refused before the PEP"
     );
+    // The family, not only the status. This suite asserted no discriminator at all
+    // on either refusal, so a 401 minted anywhere else in the stack read the same
+    // as the gear's own — and the canonical-error layer this router now carries is
+    // what makes the document under test the one production serves.
+    assert_eq!(problem_family(response).await, "unauthenticated");
 }
 
 #[tokio::test]
@@ -215,6 +247,7 @@ async fn a_denied_request_is_refused_with_403() {
         StatusCode::FORBIDDEN,
         "a caller without plan x read must be denied, not answered with an empty frontier"
     );
+    assert_eq!(problem_family(response).await, "permission_denied");
 }
 
 #[tokio::test]

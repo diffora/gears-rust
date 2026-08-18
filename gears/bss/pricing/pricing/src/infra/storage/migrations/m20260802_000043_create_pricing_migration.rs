@@ -199,8 +199,16 @@ const PG_UP_STATEMENTS: &[&str] = &[
         ON bss.pricing_migration (tenant_id, target_plan_id)",
     // Listing a source plan's schedules, and the retirement pairing Section 3
     // step 4 recommends.
-    "CREATE INDEX idx_pricing_migration_source
-        ON bss.pricing_migration (tenant_id, source_plan_id)",
+    //
+    // **The reader is owed and does not exist** (review Z1-3):
+    // `grep -rn "Column::SourcePlanId" src/infra/storage/repo/` returns 0. The
+    // column is written, read back into DTOs and echoed to callers, but nothing
+    // ever *filters* on it, so this index is never the access path — unlike
+    // `idx_pricing_migration_target` one line up, whose `RETIRE_TARGET_OF_MIGRATION`
+    // reader is real. The owed surface is "list the migrations off a plan". Named
+    // here rather than left to be discovered, which is `entity/policy_object`'s
+    // treatment of the same situation; the cost until then is write amplification
+    // on an append-only table and nothing else.
     // Section 10's `pricing.migration.stalled` alarm scans `in_progress` rows
     // past an expected completion horizon.
     "CREATE INDEX idx_pricing_migration_due

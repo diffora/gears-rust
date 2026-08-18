@@ -337,8 +337,26 @@ pub fn reconcile(group: &RevShareGroup) -> Result<ReconciledGroup, RevShareRefus
         ));
     }
 
-    let authored: i32 =
-        group.platform_cut_bp + group.parties.iter().map(|p| p.share_bp).sum::<i32>();
+    // **Checked, because neither operand is bounded here** (Z5-12). The store's
+    // CHECKs hold each `share_bp` to `0..=10000`, but `reconcile` is a domain
+    // function over a group that reaches it from the wire *before* persistence,
+    // and the party list has no length bound at all. A wrapped `authored` enters
+    // the refusal path below carrying a residual that is not the distance from
+    // anything, so an operator is told how far out they are in a number nobody
+    // computed — and a debug build panics before it gets there.
+    //
+    // Structural rather than residual: a total that does not exist is not a total
+    // that is 4 bp out, and `RESIDUAL_OVER_TOLERANCE`'s whole payload is that
+    // distance.
+    let authored: i32 = group
+        .parties
+        .iter()
+        .try_fold(group.platform_cut_bp, |acc, p| acc.checked_add(p.share_bp))
+        .ok_or_else(|| {
+            unbalanced(
+                "the authored shares and platform cut do not sum inside the basis-point domain",
+            )
+        })?;
     let residual = FULL_ALLOCATION_BP - authored;
     if residual.abs() > RESIDUAL_TOLERANCE_BP {
         return Err(RevShareRefusal::ResidualOverTolerance {

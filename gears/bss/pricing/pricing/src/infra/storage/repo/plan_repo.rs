@@ -1379,6 +1379,52 @@ pub async fn load_current(
     rows.into_iter().next().map(to_domain).transpose()
 }
 
+/// Does this `plan_id` name a plan **the caller can read** — any revision of it,
+/// in any lifecycle state?
+///
+/// The weakest question about a plan reference there is, and deliberately so.
+/// Its one caller, [`bundle_repo::create_on`](super::bundle_repo::create_on),
+/// is resolving a `plan_id` a client put in a request body against a table that
+/// carries **no foreign key onto `pricing_plan`** — `m20260802_000024`'s module
+/// doc explains why one is not expressible — so what it needs to know is whether
+/// the reference resolves inside the caller's own scope, and nothing more.
+/// Narrowing it to a *current* or *draft* revision would be a second, unstated
+/// rule about which plans may be bundled; that is a product decision and this is
+/// an isolation check.
+///
+/// Returned as a `bool` rather than as a [`PlanRevision`] because there is no one
+/// revision to return: a plan holds a chain, the bundle row is not
+/// revision-scoped (D-92 puts the revision discipline on the three composition
+/// tables, not on the identity row), and handing back "some revision" would invite
+/// a caller to read a lifecycle state off a row chosen arbitrarily.
+///
+/// The scope is what makes the answer a refusal worth having: `scope_with` binds
+/// `tenant_id` in SQL, so a plan in another tenant answers `false` exactly as an
+/// absent one does — the fold [`RepoError::NotFound`]'s own doc argues for.
+///
+/// # Errors
+/// [`RepoError::Db`] on a scope or storage failure.
+pub async fn holds_a_revision(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    plan_id: PlanId,
+) -> Result<bool, RepoError> {
+    let found = plan::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(plan::Column::TenantId.eq(tenant_id))
+                .add(plan::Column::PlanId.eq(plan_id.get())),
+        )
+        .limit(1)
+        .one(runner)
+        .await
+        .map_err(|e| RepoError::Db(format!("read plan by id: {e}")))?;
+    Ok(found.is_some())
+}
+
 /// Read the plan's open `draft` revision through whichever runner the caller
 /// holds; see [`load_current`] for why this shape exists.
 ///

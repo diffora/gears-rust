@@ -1156,8 +1156,10 @@ fn graduated_usage(unit_price: i64) -> PriceContent {
     row.bands = vec![TierBand::open(
         0,
         // Stated in whole minor units and scaled to the stored rate scale
-        // (D-311), so this fixture prices what it always priced.
-        RateMinor::from_nano_minor(unit_price * 1_000_000_000).expect("non-negative"),
+        // (D-311), so this fixture prices what it always priced. Through
+        // `from_minor_units` rather than a `* 1_000_000_000` literal, so the scale
+        // keeps the single place `RATE_SUB_DECIMALS` claims for it (Z5-11).
+        RateMinor::from_minor_units(unit_price).expect("non-negative"),
     )];
     PriceContent {
         row,

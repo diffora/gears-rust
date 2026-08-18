@@ -361,9 +361,18 @@ fn an_empty_corpus_earns_nothing() {
 #[test]
 fn the_unbuilt_families_are_declined_not_green() {
     // `trailing-tier` is the one family left unbuilt, and deliberately: SEAMS
-    // M12 is open, so rating has no counterpart for `tierQualificationWindow`
-    // at all. A fixture would pin one side of a contract the other has not
-    // accepted. It must read as declined, never as green.
+    // M12 is open, so rating has no counterpart *behaviour* for
+    // `tierQualificationWindow`. A fixture would pin one side of a contract the
+    // other has not accepted. It must read as declined, never as green.
+    //
+    // "No counterpart behaviour", not "no counterpart at all" — the stronger
+    // phrasing was false by one site. `rating/docs/design/09-period-plan-change.md`
+    // names the field, as one of the nine D-82/D-98/D-122 preserved unit fields
+    // its carry check compares for equality. That is an opaque-value comparison,
+    // not a rating-side reading of what the window means, so the conclusion here
+    // is unaffected and the family is still correctly declined. M12's own
+    // phrasing is the precise one: it scopes the zero-reference claim to rating's
+    // PRD, slices 03/13/14 and its register, all four of which are genuinely 0.
     let report = run_evaluation_suite(&ReferenceOracle, &corpus());
 
     let f = Family::TrailingTier;

@@ -131,7 +131,7 @@ fn clean_view() -> PriceContentView {
         aggregation_granularity: None,
         max_hold_granules: None,
         included_allowance: None,
-        reserved_rate_minor: None,
+        reserved_rate_nano_minor: None,
         reservation_flavor: None,
         min_qty_purchase: None,
         min_qty_usage: None,
@@ -275,6 +275,17 @@ fn the_view_names_the_rows_own_version_and_its_whole_key() {
     let rendered = body(&PriceRowView::from(&record(Vec::new())));
 
     assert_eq!(rendered["row_version"], serde_json::json!(2));
+    // **A second value, because one proves nothing.** `plans_tests` states the
+    // discipline this file did not follow: a view that hardcoded the field would
+    // pass against the value the fixture already carries. Two records at two
+    // versions is what says the view reads the column.
+    let mut older = record(Vec::new());
+    older.row_version = RowVersion::new(1);
+    assert_eq!(
+        body(&PriceRowView::from(&older))["row_version"],
+        serde_json::json!(1),
+        "the view reads the row's version rather than a constant"
+    );
     assert_eq!(
         rendered["scope_key"]["price_overlay"],
         serde_json::json!("base")
@@ -544,5 +555,101 @@ mod key_contradictions {
             ..clean_view()
         };
         check(ChargeKind::Usage, &view).expect("a ladder is laid over several calls");
+    }
+}
+
+/// **What the read half emits, the write half accepts** — the round trip
+/// `PriceContentView` being one type on both halves promises, and which nothing
+/// asserted.
+///
+/// The accept half's only fixture was `clean_view()`, a hand-written literal that
+/// sets `bands: None` and `dimension_key: None`. The **producer** populates both on
+/// every row — `bands: Some(...)` and `dimension_key: Some(...)` at
+/// `PriceContentView::from` — so the request-half case started from a value the
+/// response half cannot emit, and the round trip was never exercised at all. A
+/// literal that the producer cannot produce is a fixture that has stopped being
+/// about the thing it names.
+///
+/// Starting from the producer is what makes the case falsifiable, and it is red the
+/// moment a stored row carries either Slice-10 primitive: `refuse_unlanded_primitives`
+/// is `content_of`'s first statement and refuses **any** request whose
+/// `tier_qualification_window.is_some()`, while the emit half renders that column
+/// for any row that holds one. The two halves were pinned in contradiction in this
+/// one file, by two tests that never met.
+#[test]
+fn every_row_the_read_half_can_emit_is_one_the_write_half_accepts() {
+    // A bare row first: the plain round trip, which must hold unconditionally.
+    let plain = record(Vec::new());
+    content_of(&PriceContentView::from(&plain))
+        .expect("the write half accepts what the read half emitted");
+
+    // A banded row: `bands: Some(vec![...])` is the shape the producer always
+    // emits and the old fixture never had.
+    let banded = record(vec![
+        TierBand::closed(
+            0,
+            100,
+            RateMinor::from_nano_minor(40_500_000).expect("a non-negative rate"),
+        ),
+        TierBand {
+            from_qty: 100,
+            to_qty: BandTop::Open,
+            unit_price_rate: RateMinor::from_nano_minor(10_125_000).expect("a non-negative rate"),
+        },
+    ]);
+    let round_tripped =
+        content_of(&PriceContentView::from(&banded)).expect("a banded row round-trips");
+    assert_eq!(
+        round_tripped.row.bands.len(),
+        2,
+        "and the bands survive the trip rather than being dropped on the way in"
+    );
+}
+
+/// **The two Slice-10 primitives are the exception, and it is stated rather than
+/// discovered.**
+///
+/// A row that carries either cannot be `PATCH`ed with its own representation:
+/// `refuse_unlanded_primitives` refuses the request half while the read half
+/// renders the column. The contradiction is **armed rather than firing** — neither
+/// REST writer can set either column, both going through `content_of` — and it
+/// fires the moment a row acquires one through a path that is not this surface:
+/// the bulk import, a migration, `infra::synthesis`, or the day Slice 10 lands the
+/// write half.
+///
+/// Asserted rather than left implicit, because the sibling above would otherwise
+/// have to be weakened to a subset of rows the day it started failing, and this is
+/// the case that says which subset and why.
+#[test]
+fn a_row_carrying_an_unlanded_primitive_cannot_be_written_back_and_that_is_known() {
+    for (what, mutate) in [
+        (
+            "tier_qualification_window",
+            (|row: &mut PriceRow| {
+                row.tier_qualification_window = Some(TierQualificationWindow::TrailingPeriod);
+            }) as fn(&mut PriceRow),
+        ),
+        ("included_allowance", |row: &mut PriceRow| {
+            row.included_allowance = Some(IncludedAllowance {
+                quantity: 50,
+                rollover_policy: RolloverPolicy::Carry,
+            });
+        }),
+    ] {
+        let mut stored = record(Vec::new());
+        mutate(&mut stored.row);
+
+        // The read half renders it...
+        let emitted = PriceContentView::from(&stored);
+        // ...and the write half refuses exactly that value back.
+        let refusal = content_of(&emitted)
+            .expect_err("the write half refuses the primitive the read half just emitted");
+        assert!(
+            matches!(
+                &refusal,
+                crate::domain::error::DomainError::InvalidRequest(detail) if detail.contains(what)
+            ),
+            "{what}: {refusal:?}"
+        );
     }
 }

@@ -31,9 +31,21 @@ pub struct Model {
     /// The operation holding it — the fact the concurrent-edit conflict names,
     /// and the column the release sweep keys on.
     pub bulk_operation_id: Uuid,
-    /// When the lock was taken. Read by the stalled-run alarm rather than by any
-    /// rule: nothing here expires a lock on age, because D-37 releases through
-    /// lease takeover and operator abort instead.
+    /// When the lock was taken. **Written once and read by nothing in this crate**
+    /// — forensic, not live.
+    ///
+    /// The clause that stood here said "read by the stalled-run alarm", and no such
+    /// alarm exists (review Z1-4): the nine `stalled` matches in `src/` are the
+    /// window-activation lease singleton and `pricing.migration.stalled`, which is a
+    /// different subject on a different table. `grep -rn "PricingAlarm::"
+    /// src/infra/metrics.rs` enumerates the ones that do exist, and none is about a
+    /// lock's age. Corrected rather than softened, which is the standard
+    /// `domain::projection`'s own paragraph set when it found the same defect.
+    ///
+    /// The second half of that sentence was always right and is the interesting
+    /// half: **nothing expires a lock on age**, by design, because D-37 releases
+    /// through lease takeover and operator abort instead. So a reader owes this
+    /// column an alarm or nothing at all; today it is nothing.
     pub locked_at: DateTimeUtc,
 }
 

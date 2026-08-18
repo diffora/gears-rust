@@ -26,7 +26,9 @@ use bss_pricing::api::rest::cutovers::PLAN_CUTOVERS;
 use bss_pricing::domain::approval::{DecisionBy, WithdrawAuthority};
 use bss_pricing::infra::approval::{DecideRequest, RegionGrant};
 use chrono::{DateTime, TimeZone, Utc};
-use rest_support::{Harness, Publishable, audit_rows, body_json, request, seed_publishable_plan};
+use rest_support::{
+    Harness, Publishable, audit_rows, body_json, problem_code, request, seed_publishable_plan,
+};
 use uuid::Uuid;
 
 const SUBMITTER: Uuid = Uuid::from_u128(0x_5d_11);
@@ -48,6 +50,17 @@ fn cutover_body(predecessor: Uuid, amount: i64) -> serde_json::Value {
             "model_kind": "flat",
             "amount_minor": amount,
             "billing_timing": "advance",
+            // `rest_supersessions`' body carries these three and this one did
+            // not, which was invisible until D-344 gave the cutover an aggregate
+            // pass: `inst-pi-required` obliges a recurring row to publish
+            // `billingAnchorPolicy`, `prorationBasis` and `creditOnDowngrade`,
+            // and this successor carried none of them. It published anyway, so
+            // the plan ended up holding a row Subscriptions cannot prorate and
+            // the catalog substitutes no defaults for. The fixture was authoring
+            // an unpublishable successor, not the rule refusing a legal one.
+            "billing_anchor_policy": "calendar_month",
+            "proration_basis": "calendar_days_actual",
+            "credit_on_downgrade": false,
             "rounding_policy_ref": "half_up"
         },
         "reason_code": "grandfatheringCutover"
@@ -190,8 +203,9 @@ async fn the_call_after_an_independent_approve_commits_and_answers_the_pending_h
         ))
         .await;
 
-    assert_eq!(committed.status(), StatusCode::ACCEPTED);
+    let status = committed.status();
     let view = body_json(committed).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{view}");
     assert_eq!(view["outcome"], "cut_over");
     // **The ids are the staged rows', not the ones this call minted**, which is the
     // property `CutoverRequest`'s doc argues and the only one a caller can check from
@@ -297,12 +311,14 @@ async fn a_dormant_instant_is_refused_by_its_own_code() {
         .send(request("POST", &path(plan_id), Some(body)))
         .await;
 
-    let status = response.status();
-    let view = body_json(response).await;
-    let rendered = view.to_string();
-    assert!(
-        rendered.contains("CUTOVER_GAP"),
-        "the refusal carries its own code rather than a generic one: {status} {rendered}"
+    // The status was bound here and never asserted — used only inside a panic
+    // message, so the refusal's whole wire shape rested on a substring search over
+    // the rendered body, which a 200 carrying the token anywhere would satisfy.
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(
+        problem_code(response).await,
+        "CUTOVER_GAP",
+        "the refusal carries its own code rather than a generic one"
     );
 }
 

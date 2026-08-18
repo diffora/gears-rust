@@ -8,6 +8,8 @@ from spec_check.report import (
     json_report,
     partition_known_debt,
     render_text,
+    render_unreproduced_pins,
+    unreproduced_pins,
 )
 
 
@@ -119,8 +121,53 @@ def test_the_json_envelope_reports_the_suppressed_count_and_withholds_the_findin
 
 
 def test_the_json_envelope_key_order_is_serdes_struct_order():
+    # `pins_not_reproduced` was appended on 2026-08-18, after `known_debt_tracked_as`
+    # and before the optional `known_debt`, which is where a new serde struct field
+    # declared in that position would serialise. Appended rather than inserted: the
+    # order is the Rust binary's struct order and every existing consumer's key
+    # offsets stay where they were.
     keys = list(json_report([], [], True).keys())
-    assert keys == ["findings", "known_debt_suppressed", "known_debt_tracked_as", "known_debt"]
+    assert keys == [
+        "findings",
+        "known_debt_suppressed",
+        "known_debt_tracked_as",
+        "pins_not_reproduced",
+        "known_debt",
+    ]
+
+
+def test_a_pin_that_did_not_reproduce_is_reported_rather_than_silently_suppressed():
+    # The whole point of the field. `is_known_debt` only ever subtracts, so a pin
+    # whose document has been fixed goes on suppressing nothing and the run prints
+    # the same summary it always did. Here the run produced NO findings at all, so
+    # every pinned entry for the gear is dead — and the envelope says so.
+    rows = unreproduced_pins([], "pricing")
+    assert len(rows) == len(PINNED_PROPAGATION_GAPS_2026_07_29) + len(
+        PINNED_UNREFERENCED_CODES_2026_07_29
+    )
+    assert render_unreproduced_pins(rows).startswith(
+        "\n{} pinned finding(s) did not reproduce".format(len(rows))
+    )
+
+    payload = json_report([], [], False, rows)
+    assert len(payload["pins_not_reproduced"]) == len(rows)
+    assert payload["pins_not_reproduced"][0]["invariant"] == "P1/propagation-missing"
+
+
+def test_a_pin_from_another_gear_is_not_reported_as_this_gears_dead_pin():
+    # Both baselines are pricing-only snapshots and `(id, path)` is not unique
+    # across gears — the same reason `is_known_debt` takes a gear. A rating run
+    # must not be told that pricing's pins are dead.
+    assert unreproduced_pins([], "rating") == []
+
+
+def test_a_reproduced_pin_is_not_reported_as_dead_and_a_full_house_renders_nothing():
+    _gear, ident, path = PINNED_PROPAGATION_GAPS_2026_07_29[0]
+    rows = unreproduced_pins([pinned_propagation_finding()], "pricing")
+    assert ("P1/propagation-missing", ident, path) not in rows
+    # An empty result renders to nothing at all — never a header with no rows
+    # under it, which reads as a report of something.
+    assert render_unreproduced_pins([]) == ""
 
 
 def test_non_ascii_survives_serialisation_unescaped():

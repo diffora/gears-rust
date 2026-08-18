@@ -107,7 +107,19 @@ pub const COMPONENT_PHASED: &str = "COMPONENT_PHASED";
 
 /// A component has no covering published row for a sold `(currency, region)`
 /// (§5; `inst-bc-coverage`, `inst-bc-fail`).
-pub const CURRENCY_NOT_COVERED: &str = "CURRENCY_NOT_COVERED";
+///
+/// **Re-exported, not re-declared.** §5 gives one code to all three enumerated
+/// configurations — this one and `currency_binding`'s two — because the
+/// operator's remedy is the same in each, and `infra::metrics` depends on the two
+/// planes raising a string that is *equal*: it imports this name and matches
+/// violations with it while its own comments record in prose that
+/// `currency_binding` raises "the same string". Two `pub const`s made that a
+/// coincidence between two literals rather than a fact about one, and only one of
+/// the two had a byte-for-byte spelling pin
+/// (`currency_binding_tests.rs:140`) — this copy had none in the unit layer at
+/// all. One declaration, at the module where §5's shared-code argument is
+/// written down (review B5-3, 2026-08-18).
+pub use crate::domain::currency_binding::CURRENCY_NOT_COVERED;
 
 /// Recurring components disagree on `frequency` (§5; `inst-bc-frequency`).
 pub const FREQUENCY_MISMATCH: &str = "FREQUENCY_MISMATCH";
@@ -360,12 +372,37 @@ fn check_frequency(composition: &BundleComposition, report: &mut ValidationRepor
 /// about *another* plan's publish, and it needs the set of bundles referencing
 /// that component, which is a read this pure walk does not have. It belongs to
 /// the component's own publish path and is owed.
+///
+/// # Every side is rendered, not the ones that differ from whichever came first
+///
+/// This grouped by a **first-seen referent** until 2026-08-18 (review Z3-9),
+/// collecting only the owners whose basis differed from the first row the walk
+/// happened to reach, and it was the outlier in a family of three where the other
+/// two carry a written argument for the opposite. `MarketBasisUniform`
+/// (`tax_display.rs`, D-110 — this rule's direct sibling one plane over) renders
+/// both sides because *"§5 requires the refusal to name the divergent rows"*, and
+/// `ProrationContractMarketUniform` (`contracts.rs`, D-123) states the general
+/// reason: an operator told "these two disagree" still has to find what the
+/// market's contract *is*, and rendering each owner beside its own value answers
+/// that in one read.
+///
+/// Two concrete faults went with the referent, neither of them a missed refusal —
+/// the rule fired on exactly the right input either way — and both of them
+/// message defects an operator pays for:
+///
+/// - **If the outlier is first, every conforming owner is named as divergent.**
+///   One tax-exclusive component ahead of four tax-inclusive ones reported the
+///   four.
+/// - **An owner with two rows disagreeing internally reported only the last**,
+///   because `divergent` was keyed by owner and the second insert overwrote the
+///   first. Under the grouping below such an owner appears on **both** sides,
+///   which is the fact.
 fn check_tax_basis(composition: &BundleComposition, report: &mut ValidationReport) {
     for (currency, region) in &composition.markets {
-        // The first basis seen in this market is the referent; every divergent
-        // row is named against it.
-        let mut basis: Option<bool> = None;
-        let mut divergent: BTreeMap<String, bool> = BTreeMap::new();
+        // Keyed by the basis, holding the owners on that side — `BasesInMarket`'s
+        // shape in `tax_display.rs`, and a `BTreeSet` so an owner contributing
+        // several rows on one basis is named once and the order is stable.
+        let mut by_basis: BTreeMap<bool, BTreeSet<String>> = BTreeMap::new();
 
         let own = composition
             .own_rows
@@ -380,31 +417,38 @@ fn check_tax_basis(composition: &BundleComposition, report: &mut ValidationRepor
             if &row.currency != currency || &row.region != region {
                 continue;
             }
-            match basis {
-                None => basis = Some(row.tax_inclusive),
-                Some(first) if first != row.tax_inclusive => {
-                    divergent.insert(owner.to_string(), row.tax_inclusive);
-                }
-                Some(_) => {}
-            }
+            by_basis
+                .entry(row.tax_inclusive)
+                .or_default()
+                .insert(owner.to_string());
         }
 
-        if !divergent.is_empty() {
-            let named: Vec<String> = divergent
-                .iter()
-                .map(|(owner, inclusive)| format!("{owner} (tax_inclusive = {inclusive})"))
-                .collect();
-            report.violate(
-                BUNDLE_TAX_BASIS_MIXED,
-                format!("{}/{}", currency.as_str(), region.as_str()),
-                format!(
-                    "market ({}, {}) mixes tax display bases; divergent: {}",
-                    currency.as_str(),
-                    region.as_str(),
-                    named.join(", ")
-                ),
-            );
+        // One side is uniform and zero sides is an empty market; the refusal
+        // needs two, which is the same predicate `MarketBasisUniform` uses.
+        if by_basis.len() < 2 {
+            continue;
         }
+        let sides: Vec<String> = by_basis
+            .iter()
+            .map(|(inclusive, owners)| {
+                format!(
+                    "tax_inclusive={inclusive}: {}",
+                    owners.iter().cloned().collect::<Vec<_>>().join(", ")
+                )
+            })
+            .collect();
+        report.violate(
+            BUNDLE_TAX_BASIS_MIXED,
+            format!("{}/{}", currency.as_str(), region.as_str()),
+            format!(
+                "market ({}, {}) mixes tax display bases — {}. An invoice is one document and \
+                 `tax_inclusive` is a display basis, so the bundle's lines cannot be rendered \
+                 coherently side by side (D-119)",
+                currency.as_str(),
+                region.as_str(),
+                sides.join("; ")
+            ),
+        );
     }
 }
 

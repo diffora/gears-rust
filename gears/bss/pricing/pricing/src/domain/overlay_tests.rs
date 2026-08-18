@@ -320,8 +320,8 @@ fn a_fixed_line_is_always_amount_based_and_always_replaces() {
         CurrencyCode::new("EUR").expect("a valid code"),
         5000,
     )]));
-    assert_eq!(fixed.kind(), "fixed");
-    assert_eq!(fixed.magnitude_kind(), "amount");
+    assert_eq!(fixed.kind().as_str(), "fixed");
+    assert_eq!(fixed.magnitude_kind().as_str(), "amount");
     assert_eq!(fixed.percent_bp(), None);
     assert!(fixed.is_amount_based());
     assert!(
@@ -330,7 +330,7 @@ fn a_fixed_line_is_always_amount_based_and_always_replaces() {
     );
 
     let markup = Adjustment::Markup(Magnitude::PercentBp(2000));
-    assert_eq!(markup.magnitude_kind(), "percent_bp");
+    assert_eq!(markup.magnitude_kind().as_str(), "percent_bp");
     assert_eq!(markup.percent_bp(), Some(2000));
     assert!(!markup.is_amount_based());
     assert!(
@@ -349,7 +349,7 @@ fn an_amount_based_markup_carries_per_currency_money() {
         (eur.clone(), 500),
         (usd.clone(), 600),
     ])));
-    assert_eq!(markup.magnitude_kind(), "amount");
+    assert_eq!(markup.magnitude_kind().as_str(), "amount");
     let amounts = markup.amounts().expect("an amount line");
     assert_eq!(amounts.get(&eur), Some(500));
     assert_eq!(amounts.get(&usd), Some(600));

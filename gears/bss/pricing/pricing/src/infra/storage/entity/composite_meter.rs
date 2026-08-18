@@ -1,6 +1,6 @@
 //! `SeaORM` entity for `bss.pricing_composite_meter` — one derived-meter
 //! definition of **one plan revision** (`design/10-advanced-primitives.md` §6),
-//! keyed `(composite_id, plan_revision)`.
+//! keyed `(tenant_id, plan_id, plan_revision, composite_id)`.
 //!
 //! [`plan_phase`](super::plan_phase)'s arrangement exactly, and for D-106's
 //! reason rather than by imitation: `plan_revision` says *which copy* of the
@@ -8,6 +8,21 @@
 //! for the life of the plan. Opening a draft revision copies the rows under its
 //! own number without re-minting an id, so a formula edit on the draft leaves the
 //! published revision's rows byte-identical.
+//!
+//! **`tenant_id` and `plan_id` joined the key under `m20260802_000084` (A1-1),
+//! D-340's class.** The resemblance above was to `plan_phase`'s *pre-fix* key and
+//! outlived it by a day: `m20260802_000081` widened that one on 2026-08-17 and left
+//! this one, its acknowledged twin, standing. Without them the key said that one
+//! composite id belongs to one plan per revision *number* across the whole table,
+//! every tenant's included — and `composite_id` is client-supplied, so any
+//! `plan × write` holder met the key simply by naming an id. What the widening
+//! leaves standing is the half the composite rules rely on: one revision still may
+//! not hold the same composite id twice.
+//!
+//! The four attributes are in field order rather than in the physical key's order,
+//! and that is not a divergence anything can observe: `SeaORM` names columns in
+//! every statement it builds, and the one construct where key order is a signature
+//! — `Entity::find_by_id`'s tuple — has no call site in this gear.
 //!
 //! There is no `lifecycle_state` here for the same reason there is none on a
 //! phase row: the definition is frozen when **its** revision publishes, so the
@@ -30,14 +45,22 @@ use toolkit_db_macros::Scopable;
 pub struct Model {
     #[sea_orm(primary_key, auto_increment = false)]
     pub composite_id: Uuid,
-    /// The revision this copy belongs to — the second half of the key, and the
-    /// row it is frozen with.
+    /// The revision this copy belongs to — and the row it is frozen with.
     #[sea_orm(primary_key, auto_increment = false)]
     pub plan_revision: i64,
     /// Copied from the parent revision by the repository, never taken from a
     /// request: the foreign key covers `(plan_id, plan_revision)` alone, so
     /// nothing in the schema stops a child carrying a foreign tenant.
+    ///
+    /// In the key since `m20260802_000084`, which is what makes a composite id
+    /// private to its tenant rather than a name in a deployment-wide namespace.
+    #[sea_orm(primary_key, auto_increment = false)]
     pub tenant_id: Uuid,
+    /// In the key since `m20260802_000084`: a composite id belongs to a **plan**,
+    /// so two plans of one tenant may hold the same one — which D-19's clone remap
+    /// and D-83's copy-forward both need, since both supply an id the server did
+    /// not mint.
+    #[sea_orm(primary_key, auto_increment = false)]
     pub plan_id: Uuid,
     /// The registry-declared `meteringUnit` this composite rates as
     /// (`inst-cm-output`). Declaring it is the registry's act and not this

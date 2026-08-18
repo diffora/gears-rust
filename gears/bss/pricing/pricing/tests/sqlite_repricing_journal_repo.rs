@@ -365,6 +365,106 @@ async fn marking_a_row_that_is_not_in_the_journal_is_refused() {
     );
 }
 
+/// **A row another pass already decided is a contention, not a store failure.**
+///
+/// `mark_applied`'s doc lists three things its swap refuses — the wrong
+/// `(run_id, price_id)` pair, a row the scope gate filtered out, and *"a row
+/// already decided"*. The third was false. `row_of` is three equalities and no
+/// state conjunct, so a decided row **matches** the predicate; what stopped it was
+/// `trg_pricing_repricing_journal_decided_is_final`, whose `RAISE(ABORT, ..)`
+/// reaches the caller as `RepoError::Db` — a 500 — rather than as the refusal the
+/// doc promised.
+///
+/// The case between the two suites is why the claim survived:
+/// `marking_a_row_that_is_not_in_the_journal_is_refused` covers the absent row and
+/// `sqlite_repricing_journal_store::a_decided_row_never_moves_again` covers the
+/// trigger with raw SQL, so nothing drove `mark_applied` at a decided row and
+/// looked at what class of error came back.
+///
+/// No money moved wrongly either way — the trigger still prevents the double
+/// apply, which is `pending_for_run`'s "whole safety" — but the loser of a race
+/// between two apply passes, or an apply pass racing `finish_run`'s straggler
+/// sweep, was told the store had failed instead of being told another pass took
+/// the row.
+#[tokio::test]
+async fn marking_a_row_a_concurrent_pass_already_decided_is_a_contention_not_a_store_failure() {
+    let p = provider().await;
+    let conn = p.conn().expect("conn");
+    let run = a_run(&p, BulkKind::Repricing, "run-decided").await;
+    let price_id = a_price_row(&p, "eu").await;
+    let successor = a_price_row(&p, "successor").await;
+    let other_successor = a_price_row(&p, "other-successor").await;
+
+    repricing_journal_repo::open_rows(
+        &conn,
+        &scope(),
+        &[NewJournalRow {
+            run_id: run,
+            price_id,
+            tenant_id: TENANT,
+        }],
+    )
+    .await
+    .expect("freeze the row set");
+
+    repricing_journal_repo::mark_applied(&conn, &scope(), TENANT, run, price_id, successor, at(11))
+        .await
+        .expect("the first pass takes the row");
+
+    // A second apply pass reaches the same row. It is `applied`, not `pending`.
+    let second = repricing_journal_repo::mark_applied(
+        &conn,
+        &scope(),
+        TENANT,
+        run,
+        price_id,
+        other_successor,
+        at(12),
+    )
+    .await;
+    let Err(RepoError::ConcurrentMutation { aggregate }) = second else {
+        panic!(
+            "a row another pass decided is a contention the caller can act on, not \
+             a store failure; got {second:?}"
+        );
+    };
+    assert!(
+        aggregate.contains("applied"),
+        "and the refusal names the state the row is in *now*, which is the fact \
+         the caller does not already have: {aggregate}"
+    );
+
+    // The same for the failure swap, and against a row decided the other way — so
+    // this is a property of the state conjunct and not of one terminal token.
+    let second = repricing_journal_repo::mark_failed(
+        &conn,
+        &scope(),
+        TENANT,
+        run,
+        price_id,
+        "a straggler sweep arriving late",
+    )
+    .await;
+    assert!(
+        matches!(second, Err(RepoError::ConcurrentMutation { .. })),
+        "same refusal for the failure path; got {second:?}"
+    );
+
+    // And the decision the first pass took is untouched by either refusal.
+    let journal = repricing_journal_repo::list_for_run(&conn, &scope(), TENANT, run)
+        .await
+        .expect("read the journal");
+    assert_eq!(journal.len(), 1);
+    assert_eq!(journal[0].state, JournalState::Applied);
+    assert_eq!(
+        journal[0].applied_price_id,
+        Some(successor),
+        "the first pass's successor, not the second's"
+    );
+    assert_eq!(journal[0].applied_at, Some(at(11)));
+    assert_eq!(journal[0].failure_reason, None);
+}
+
 #[tokio::test]
 async fn list_for_run_and_pending_for_run_return_the_whole_run_not_a_page() {
     // Characterisation test, not a regression test: it began life as a falsification

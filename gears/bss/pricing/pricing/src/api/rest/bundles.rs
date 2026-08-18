@@ -226,7 +226,7 @@ pub struct CompositionAcceptedView {
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct BundlePageQuery {
     /// Bundles per page; server default 100, hard cap 1,000.
-    pub limit: Option<u64>,
+    pub limit: Option<String>,
     /// The opaque token a previous page returned.
     pub cursor: Option<String>,
     /// Narrow the page to the bundle riding one plan.
@@ -241,14 +241,14 @@ pub struct BundlePageQuery {
     /// A plan carries at most one bundle (`uq_pricing_bundle_plan`), so a
     /// filtered page is the answer to *"does this plan carry a bundle, and what
     /// is its id"* — which nothing on this surface could ask before.
-    pub plan_id: Option<Uuid>,
+    pub plan_id: Option<String>,
 }
 
 /// `GET /bss-pricing/v1/bundles/{bundleId}` — the query half.
 #[derive(Debug, Clone, Default, serde::Deserialize)]
 pub struct ReadBundleQuery {
     /// The revision to read. Absent means the plan's current or draft revision.
-    pub plan_revision: Option<u64>,
+    pub plan_revision: Option<String>,
 }
 
 /// What the read answers with — the bundle's declaration and its composition.
@@ -622,7 +622,25 @@ async fn publish_bundle(
         &crate::authz::resource_types::PLAN,
         crate::authz::actions::PUBLISH,
         Some(tenant),
-        Some(bundle_id),
+        // **`None`, and not this object's own id.** The action is on a **plan** —
+        // that is what the authz catalog's endpoint map puts it on — and the plan
+        // id is not in hand here: it is resolved below, from a row this gate has
+        // to authorize before it may be read. Passing the bundle id asked the
+        // PDP about an object the `plan` label carries no identity for, so a role
+        // definition of the form "allow this action where `resource_id in
+        // {{planA}}`" was evaluated against the wrong object and denied — the
+        // availability arm of the rule `windows.rs` states at length and
+        // restructured three handlers to keep.
+        //
+        // `None` is the tenant-wide question every batch gate in this gear already
+        // asks, and the compiled scope still binds `tenant_id` in SQL, so nothing
+        // widens. **What is still owed** is `windows.rs`'s coarse-then-narrow
+        // pair — this ask to scope the lookup, then a second anchored ask on the
+        // resolved plan — with its `FURTHER_QUESTIONS` row, which is what would
+        // make the narrow authority a fact the census asserts rather than an
+        // absence.
+        /* resource_id */
+        None,
         true,
     )
     .await
@@ -743,11 +761,17 @@ async fn publish_bundle(
         // composition.
         state
             .bundle_service
+            // `draft.row_version` is the version the pin above was computed over
+            // and the unit was matched on, handed down so the write can refuse a
+            // composition that moved between the two (C7-1). Not re-read here:
+            // this is the surface's own read, and a second one would be a second
+            // answer to the question the compare exists to ask.
             .publish_composition(
                 &scope,
                 tenant,
                 plan_id,
                 body.plan_revision,
+                draft.row_version,
                 correlation,
                 now,
             )
@@ -894,16 +918,20 @@ async fn list_bundles(
     .await
     .map_err(authz_error_to_canonical)?;
 
-    let page = PageRequest::parse(query.limit, query.cursor.as_deref())?;
+    let page = PageRequest::parse(
+        cursor::parse_limit(query.limit.as_deref())?,
+        query.cursor.as_deref(),
+    )?;
     // One row more than the page, so "is there another page" needs no second
     // query and no page whose `next_cursor` points at nothing.
     let probe = page.limit.saturating_add(1);
+    let plan_filter = cursor::parse_uuid_param("plan_id", query.plan_id.as_deref())?;
     let mut records = state
         .bundles
         .list(
             &scope,
             tenant,
-            query.plan_id.map(PlanId::new),
+            plan_filter.map(PlanId::new),
             page.after,
             probe,
         )
@@ -945,7 +973,17 @@ async fn read_bundle(
         &ctx,
         &crate::authz::resource_types::BUNDLE,
         crate::authz::actions::READ,
-        Some(tenant),
+        // **`None`, because this is a read** — `authz::access_scope`'s stated
+        // two-way split: reads let the PDP derive the scope from the subject and
+        // its role, never from a caller-supplied tenant, and only a write passes
+        // `Some(target_tenant)` so the membership assertion has a target to test.
+        // Four read gates passed `Some(tenant)` until 2026-08-18, which ran that
+        // write-only assertion on a read. Nothing escalated — the value was
+        // `ctx.subject_tenant_id()` and never caller-supplied — but it was a live
+        // divergence between a module's stated contract and four of its callers,
+        // and the contract is the thing a later reader trusts.
+        /* owner_tenant_id */
+        None,
         Some(bundle_id),
         true,
     )
@@ -976,7 +1014,18 @@ async fn read_bundle(
     // The open draft first, then the current revision: an author editing a
     // composition means the draft, and a plan with none has only its published
     // revision to show. Absent both, the plan has no revision at all.
-    let revision = if let Some(revision) = query.plan_revision {
+    let asked_revision = query
+        .plan_revision
+        .as_deref()
+        .map(|raw| {
+            raw.trim().parse::<u64>().map_err(|_| {
+                DomainError::InvalidRequest(format!(
+                    "plan_revision: `{raw}` is not a revision number"
+                ))
+            })
+        })
+        .transpose()?;
+    let revision = if let Some(revision) = asked_revision {
         revision
     } else {
         let draft = state
@@ -1103,10 +1152,13 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
              invoice itemization. The composition itself is authored through `PATCH \
              /bss-pricing/v1/bundles/{bundleId}`, which is where it becomes revision-scoped. A \
              plan carries at most one bundle. An absent `price_basis` is refused `BASIS_MISSING` \
-             (`inst-bb-declared`). **`Idempotency-Key` is required and is honoured**: a retry \
-             under the same key replays the first call's `201` and its bundle id rather than \
-             creating or refusing anything, and the same key carrying a different request is \
-             `409` `IDEMPOTENCY_PAYLOAD_MISMATCH`. Gates on `bundle` x `write`.",
+             (`inst-bb-declared`). A `plan_id` naming no plan the caller can read is `404` - a \
+             plan in another tenant answers exactly as an absent one does, so the refusal \
+             confirms nothing about a catalog the caller cannot see. **`Idempotency-Key` is \
+             required and is honoured**: a retry under the same key replays the first call's \
+             `201` and its bundle id rather than creating or refusing anything, and the same key \
+             carrying a different request is `409` `IDEMPOTENCY_PAYLOAD_MISMATCH`. Gates on \
+             `bundle` x `write`.",
         )
         .tag(TAG)
         .authenticated()
@@ -1121,6 +1173,12 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
         .error_400(openapi)
         .error_401(openapi)
         .error_403(openapi)
+        // Declared because `bundle_repo::create_on` resolves the body's `plan_id`
+        // in the caller's scope and answers `NotFound` when it does not resolve.
+        // This is the only route in the gear that takes a plan id from a **body**
+        // and creates something out of it, `POST /plans/{planId}/clone` being the
+        // path-parameter one; both answer 404 and both declare it.
+        .error_404(openapi)
         .error_409(openapi)
         .error_500(openapi)
         .error_503(openapi)
@@ -1185,6 +1243,9 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
         .path_param("bundleId", "The bundle whose composition is replaced.")
         .authenticated()
         .no_license_required()
+        .param(crate::api::rest::plans::if_match_param(
+            "The tag is the plan revision's, read off `GET /bundles/{bundleId}`.",
+        ))
         .handler(replace_composition)
         .json_response_with_schema::<CompositionAcceptedView>(
             openapi,

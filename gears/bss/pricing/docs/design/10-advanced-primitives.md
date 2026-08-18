@@ -44,7 +44,9 @@
 
 ### 1.1 Overview
 
-This slice owns the five advanced authoring primitives and one typing rule:
+This slice owns **six** advanced authoring primitives and one typing rule — one per id in the
+`Traces to` block below, which is the roster this sentence must match and the only place the
+membership is maintained:
 **reserved-capacity pricing** as attributes on the single usage row (`reservedRate` +
 `reservationFlavor`, p1 — launch scope), the **prepaid credit grant** (definition only —
 `category`, materialized usage-line `applicability`, drawdown-rank default (D-43); balance
@@ -52,9 +54,20 @@ execution GA-gated on Billing/Rating), the **included allowance** (publish-**com
 D-45 — `none` → $0 band + frozen marker, `carry` → a D-43 promotional grant; zero new
 evaluation machinery), the **derived (composite) meter**
 (formula-as-**data** over ≥ 2 published units, one output unit), the **`discountRef`
-day-1 hook** (referential integrity only), and the **typed `minQtyThreshold`** floor
+day-1 hook** (referential integrity only), **trailing-tier qualification** (the tier rate-lock:
+`tierQualificationWindow`, its pairing with `tierAggregationWindow` and the zero-band rule —
+D-40, D-60, D-68, D-69), and the **typed `minQtyThreshold`** floor
 (`purchase` vs `usage`). Every primitive freezes into `pricingSnapshotRef`; every piece of
 math it implies is evaluated downstream.
+
+**Trailing-tier qualification was missing from this enumeration, from §1.5 and from §2 until
+2026-08-17**, having joined the slice by D-68 (2026-07-29) without the front matter following.
+It is the one place a reader establishes what the slice covers, so four decisions' worth of
+scope was invisible there while §3, §1.7 and the `Traces to` block all carried it. The counts in
+this section are derivable and should be re-derived rather than trusted:
+`grep -c 'cpt-cf-bss-pricing-fr-' <the Traces to block>` is the primitive roster, `grep -n '^### '`
+over §3 is the process list, and §8 is **six** DoDs rather than seven only because the discount
+hook and floor typing share one.
 
 **Traces to**: `cpt-cf-bss-pricing-fr-reserved-capacity`,
 `cpt-cf-bss-pricing-fr-prepaid-credit-grant`, `cpt-cf-bss-pricing-fr-included-allowance`,
@@ -91,7 +104,8 @@ computation in the catalog.
 
 ### 1.5 Scope
 
-**In scope**: authoring + publish validation + snapshot freezing of the five primitives;
+**In scope**: authoring + publish validation + snapshot freezing of **every primitive in the
+`Traces to` roster** (six, plus the floor typing rule);
 the reservation-variant registration into Slice 3's `FixtureGate`; grant-price scoping per
 `(currency, region)`; composite formula-as-data schema + referential/self-reference checks;
 `discountRef` resolution check; floor typing + placement warning.
@@ -167,7 +181,11 @@ flowchart TB
 
 **Steps**:
 1. [ ] - `p1` - Primitives author through the Slice 2/3 plan/price PATCH surfaces (plan-attached: grant, composite; row-attached: reservation, discountRef, floor) - `inst-ad-author`
-2. [ ] - `p1` - Publish: the five validators run in the Foundation pipeline; the reservation variant additionally passes Slice 3's `FixtureGate` - `inst-ad-validate`
+2. [ ] - `p1` - Publish: **this slice's registered validators, the allowance compile and the
+`discountRef` resolve** all run in the Foundation pipeline — §1.7 is the roster and it has seven
+members, of which exactly five are spelled `…Validator`, which is how this step came to say
+"the five validators" and thereby exclude the `AllowanceCompiler` D-45 makes a publish-time
+compile and the `DiscountRefResolver` this slice runs a referential check through; the reservation variant additionally passes Slice 3's `FixtureGate` - `inst-ad-validate`
 3. [ ] - `p1` - **RETURN** definitions frozen in `pricingSnapshotRef`; evaluation/execution downstream - `inst-ad-return`
 
 ## 3. Processes / Business Logic (CDSL)
@@ -177,7 +195,7 @@ flowchart TB
 - [ ] `p1` - **ID**: `cpt-cf-bss-pricing-algo-reserved`
 
 **Steps**:
-1. [ ] - `p1` - **`@write` (D-312) for the non-usage half only** — a reservation on a row whose `chargeKind` is not `usage` (`RESERVATION_ON_NON_USAGE`) has both operands present with the key frozen, so the authoring plane refuses it; the **both-or-neither** pairing below is content-against-content and stays at publish. `reservedRate` (≥ 0, row currency) + `reservationFlavor` (`consumption | capacity`) are attributes **on the single usage row**, alongside the on-demand price/tiers (A1 — never a second row, never a second `(meter, dimensionKey)` line). **Both or neither: a row carrying one and not the other fails publish with `RESERVATION_PAIR_INCOMPLETE`** (422, 2026-08-08) — §9's first AC requires it and §5 had named no code. Judged row-locally at publish rather than as a column `CHECK`, for §6's portability reason **The reserved pair reaches the frozen payload too (D-324, 2026-08-16):** `reservedRateMinor` and `reservationFlavor` were absent from the `migrated-origin` record, so a synthesized reserved line had Rating source a rate that was not there. - `inst-rv-attrs`
+1. [ ] - `p1` - **`@write` (D-312) for the non-usage half only** — a reservation on a row whose `chargeKind` is not `usage` (`RESERVATION_ON_NON_USAGE`) has both operands present with the key frozen, so the authoring plane refuses it; the **both-or-neither** pairing below is content-against-content and stays at publish. `reservedRate` (≥ 0, row currency) + `reservationFlavor` (`consumption | capacity`) are attributes **on the single usage row**, alongside the on-demand price/tiers (A1 — never a second row, never a second `(meter, dimensionKey)` line). **Both or neither: a row carrying one and not the other fails publish with `RESERVATION_PAIR_INCOMPLETE`** (422, 2026-08-08) — §9's first AC requires it and §5 had named no code. Judged row-locally at publish rather than as a column `CHECK`, for §6's portability reason **The reserved pair reaches the frozen payload too (D-324, 2026-08-16):** `reservedRateNanoMinor` and `reservationFlavor` were absent from the `migrated-origin` record, so a synthesized reserved line had Rating source a rate that was not there. - `inst-rv-attrs`
 2. [ ] - `p1` - The row remains a usage row (A2): `billingGranularity` REQUIRED; `tierAggregationWindow` REQUIRED only when tiered - `inst-rv-usage`
 3. [ ] - `p1` - The reserved/allocated **quantity** is runtime input (OSS/Contracts entitlement); the catalog neither meters nor allocates nor computes the charge; Tariffs step 6 sources the self-service rate from the snapshot - `inst-rv-runtime`
 3a. [ ] - `p1` - **Reservation × tiers (normative, money-affecting):** the matched/allocated reserved quantity is **excluded** from the on-demand tier counter `Q` — only the on-demand **remainder** enters the row's bands (150K used with a 100K reservation: 100K at `reservedRate`, the remainder's `Q` starts at 0, not 100K). Frozen semantics; the reservation joint fixture MUST include a tiered-remainder scenario - `inst-rv-tier-q`
@@ -313,10 +331,15 @@ give the value meaning. Four clauses.
    change that lands the rules and the compile together — not before, and not by a group tidying an
    unreachable branch. The group that mounts `POST /bss-pricing/v1/plans/{planId}/publish` (Slice 5)
    inherits this as a precondition to check rather than a detail: at that point publish becomes the
-   freezing act, and it is safe only while every authoring path still refuses. **That condition is
-   not one this set can currently assert, which is why clause 5 exists**: the bulk-import arm
-   clause 1 binds does not exist yet, and a row authored before this refusal landed was never
-   offered to it at all.
+   freezing act, and it is safe only while every authoring path still refuses. **The bulk-import arm
+   clause 1 binds now exists** (corrected 2026-08-17 — this said it did not): it refuses such a row
+   per-row in Phase 1. What clause 5 still covers is the residue the arm cannot reach — a row
+   authored **before** the refusal landed was never offered to any of these doors, and a write that
+   did not come through a handler is not offered to them either. **And the three doors do not share
+   one list**: two read `unjudged_primitives`, the authoring `POST`/`PATCH` re-states the same
+   conditions by hand, so "every authoring path still refuses" is true today and is not held true by
+   anything — see [`12-operator-efficiency.md`](./12-operator-efficiency.md) §2's bulk-import error
+   list, which states the same correction at the site that used to claim the opposite.
 4. **One of the ten cannot be built even with this slice, and by design.** `FIXTURE_MISSING` on the
    `trailing_tier` variant (`inst-tt-fixture`) needs that variant **registered in the joint
    conformance registry**, which is a counterparty act with Rating (D-60) and not pricing's to mint
@@ -383,7 +406,8 @@ review fix), `COMPOSITE_SELF_REFERENCE` (422),
 `DISCOUNT_REF_UNRESOLVED` (422), `FLOOR_TYPE_MISSING` (422), `FLOOR_FALLBACK_MISSING` (422),
 `TIER_QUAL_ON_NON_TIERED` (422 — an **explicit** `tierQualificationWindow` — any value,
 including `current` — on a non-tiered or non-usage row; fail-closed publish, 2026-07-28
-review fix, confirmed 2026-07-31),
+review fix, confirmed 2026-07-31; **D-40** authored the window, **D-59**/**D-60** typed the
+trailing-period lock this refusal guards),
 `TIER_QUAL_WINDOW_INCOMPATIBLE` (422 — `trailing_period` with
 `tierAggregationWindow ∈ {subscription_lifetime, per_event}`: no prior-period total is
 derivable, `inst-tt-window-pair`),
@@ -432,8 +456,8 @@ or the roster:
 
 | Column | Type | Notes |
 |--------|------|-------|
-| `reserved_rate_minor` | `bigint` | ≥ 0; usage rows only |
-| `reservation_flavor` | `enum` | `consumption \| capacity`; present iff `reserved_rate_minor` is |
+| `reserved_rate_nano` | `bigint` | ≥ 0; usage rows only |
+| `reservation_flavor` | `enum` | `consumption \| capacity`; present iff `reserved_rate_nano` is |
 | `discount_ref` | `string` | optional; referential-validated |
 | `min_qty_purchase` | `bigint` | purchase floor (order-time, Subscriptions) |
 | `min_qty_usage` | `bigint` | usage floor (eligibility, Tariffs/Rating) |
@@ -483,7 +507,7 @@ revision. The former bare `revision` column, whose referent was never stated, is
 `plan_revision`.
 
 Key constraints: `CHECK (reservation_flavor IS NULL) = (reserved_rate_minor IS NULL)` — **enforced
-as a publish rule, not as a column constraint (2026-08-08)**, and the reason is a portability one
+as a publish rule, not as a column constraint (**D-256**, 2026-08-08)**, and the reason is a portability one
 worth stating so nobody "fixes" it into the table: `SQLite` has no incremental table-`CHECK` form,
 so a pairing constraint added to `pricing_price` after creation is either a full table rebuild or a
 Postgres-only `ALTER`. The Postgres-only form is the worse of the two — it splits the two
@@ -658,5 +682,5 @@ Integration (testcontainers):
 
 - **Performance**: all validation publish-path; composite formula size is bounded by the plan/tier size caps (ratified launch defaults, 2026-07-28).
 - **Observability**: `pricing_primitive_validation_failures_total{primitive}`, the two §7 gauges.
-- **Security & AuthZ**: grant-price and reserved-rate changes are price mutations — Slice 5 materiality; composite definitions are structural (versioned + approvable). **This line had no enforcement behind it for one wave (D-254, corrected 2026-08-08):** none of this slice's six columns reached `domain::materiality`, so a successor moving only `reserved_rate_minor` produced a **zero** amount delta and published on one principal. The four charge-affecting fields — the reserved rate, the reservation flavour, the usage floor and its fallback — now fail closed as non-computable deltas (D-115 clause (2)'s G1 fail-safe: the effective delta needs the covered-granule count, which is Rating's). `minQtyPurchase` is deliberately **not** among them (an order-time permission Subscriptions enforces, not what a subscriber pays) and neither is `discountRef` (`inst-dr-boundary` — the catalog does not evaluate it).
-- **Risks & open items**: prepaid balance execution absent (A5 — grants definable, not sellable; tracked GA gate with named owner per PRD §13) — when it lands, Billing MUST mirror the D-43 drawdown tie-break chain and the materialized `applicability` scope as a joint-contract line (drawdown placement vs discounts/tax is pinned — D-48 / `inst-pg-drawdown-placement`, post-discount pre-tax with the Tax-Engine-GA revisit; STRIPE-GAP-ANALYSIS G-4 closed 2026-07-28, Billing countersigns at its PRD); Tariffs must land the sourcing change for self-service reserved rates (snapshot, not Contracts) + the joint fixture (PRD §17.2); the Promotions PRD still does not exist — `discountRef` is the committed day-1 hook, the durable owner remains Future.
+- **Security & AuthZ**: grant-price and reserved-rate changes are price mutations — Slice 5 materiality; composite definitions are structural (versioned + approvable). **This line had no enforcement behind it for one wave (D-254, corrected 2026-08-08):** none of this slice's six columns reached `domain::materiality`, so a successor moving only `reserved_rate_nano` produced a **zero** amount delta and published on one principal. The four charge-affecting fields — the reserved rate, the reservation flavour, the usage floor and its fallback — now fail closed as non-computable deltas (D-115 clause (2)'s G1 fail-safe: the effective delta needs the covered-granule count, which is Rating's). `minQtyPurchase` is deliberately **not** among them (an order-time permission Subscriptions enforces, not what a subscriber pays) and neither is `discountRef` (`inst-dr-boundary` — the catalog does not evaluate it).
+- **Risks & open items** (the reservation-level risk below is **D-139**'s, which typed `reservationFlavor` and superseded D-53's gloss): prepaid balance execution absent (A5 — grants definable, not sellable; tracked GA gate with named owner per PRD §13) — when it lands, Billing MUST mirror the D-43 drawdown tie-break chain and the materialized `applicability` scope as a joint-contract line (drawdown placement vs discounts/tax is pinned — D-48 / `inst-pg-drawdown-placement`, post-discount pre-tax with the Tax-Engine-GA revisit; STRIPE-GAP-ANALYSIS G-4 closed 2026-07-28, Billing countersigns at its PRD); Tariffs must land the sourcing change for self-service reserved rates (snapshot, not Contracts) + the joint fixture (PRD §17.2); the Promotions PRD still does not exist — `discountRef` is the committed day-1 hook, the durable owner remains Future.

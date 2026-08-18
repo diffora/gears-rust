@@ -58,8 +58,8 @@ use toolkit_db::{DBProvider, DbError};
 use uuid::Uuid;
 
 use crate::domain::bulk::{BulkKind, BulkState};
-use crate::infra::storage::RepoError;
 use crate::infra::storage::entity::{bulk_operation, bulk_row_lock};
+use crate::infra::storage::{RepoError, contention_or_db};
 
 /// A run as this crate reads it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -159,10 +159,38 @@ impl BulkRepo {
 
 /// Open a run, on a runner the caller owns.
 ///
+/// **A unique violation here is a contention, not a storage failure** (Z2-2). Two
+/// indexes stand on this table and, unusually, both want the same answer:
+///
+/// * `uq_pricing_bulk_operation_client_key` on `(tenant_id, kind, client_key)` is
+///   O4's client idempotency key. Both callers replay by reading
+///   [`find_by_client_key`] first and opening second — in a **different
+///   transaction** from this insert — so two concurrent submits carrying one
+///   `Idempotency-Key` both see the key free and both arrive here. That is the
+///   read-then-write race `idempotency_repo`'s module doc argues is the wrong
+///   shape for a client key, one table over: *"between the read and the write
+///   nothing holds the key, so both callers see it free."* The bulk lane cannot
+///   simply adopt `IdempotencyGate` — its key lives on the run row so a replay can
+///   serve the run's report — but it can classify, and as a bare
+///   [`RepoError::Db`] the loser got a 500 for a request whose contract promises
+///   either the winner's `202` or a refusal it can act on;
+/// * the primary key `operation_id`, which is minted by
+///   `Uuid::now_v7()` at both call sites rather than by the client.
+///
+/// So [`contention_or_db`] is right for both, and this is **not** the divergence
+/// from D-159 its own doc reports: there, a caller-minted id told to retry
+/// resubmits the same id and collides identically, forever. Here a retry does
+/// succeed — the second attempt reads the winner's run through
+/// [`find_by_client_key`] and replays it, and a fresh `now_v7` cannot collide
+/// twice.
+///
+/// The at-most-once guarantee never depended on the class: the loser executes
+/// nothing either way. What was wrong is only the answer.
+///
 /// # Errors
-/// [`RepoError::Db`] on a scope or storage failure — which includes the insert
-/// trigger's refusal of any birth state but `validating`, and the unique client
-/// key's refusal of a second run under one key.
+/// [`RepoError::ConcurrentMutation`] naming the client key, when either unique
+/// index refuses; [`RepoError::Db`] on a scope or other storage failure — which
+/// includes the insert trigger's refusal of any birth state but `validating`.
 pub async fn open(
     runner: &impl DBRunner,
     scope: &AccessScope,
@@ -186,7 +214,17 @@ pub async fn open(
         .map_err(|e| RepoError::Db(format!("pricing_bulk_operation scope: {e}")))?
         .exec(runner)
         .await
-        .map_err(|e| RepoError::Db(format!("insert pricing_bulk_operation: {e}")))?;
+        .map_err(|e| {
+            contention_or_db(
+                &e,
+                &format!(
+                    "bulk operation under {} client key {}",
+                    new.kind.as_str(),
+                    new.client_key
+                ),
+                "insert pricing_bulk_operation",
+            )
+        })?;
 
     read(runner, scope, new.tenant_id, new.operation_id)
         .await?

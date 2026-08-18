@@ -1,4 +1,7 @@
-//! Unit tests for `PriceOverlayValidator` — the nine `inst-plv-*` rules.
+//! Unit tests for `PriceOverlayValidator` — ten of §3's eleven `inst-plv-*`
+//! rules, `inst-plv-member-preview` being the one outside this crate. (This line
+//! said "the nine" and inherited the module's own miscount; see
+//! `overlay_rules.rs`' opening for which id it dropped.)
 //!
 //! Every case here drives the **pure** rules over a hand-built world, which is
 //! deliberate on two counts. Several of these rules have a second guard in the

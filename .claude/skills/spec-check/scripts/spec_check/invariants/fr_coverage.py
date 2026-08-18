@@ -1,5 +1,24 @@
-"""P2 — every `…-fr-…` id defined in the PRD is claimed by exactly one slice's
+"""P2 — every requirement id defined in the PRD is claimed by exactly one slice's
 `**Traces to**:` block, and no slice traces to an id the PRD never defines.
+
+**Both `-fr-` and `-nfr-`, since 2026-08-18.** Until then both regexes required
+the literal `-fr-`, which cannot match `-nfr-`: the character before `fr` is `n`,
+not `-`. So every non-functional requirement was invisible to an invariant whose
+one-line description is "every PRD requirement is claimed by exactly one design
+slice" — 12 of pricing's 77 declared ids, 4 of rating's 48, 6 of subscriptions'
+53. Roughly a sixth of the set, skipped in silence: no finding said so, and the
+module docstring's own honest `…-fr-…` wording was the only place it showed.
+
+Unclaimed NFRs report as **one `P2/nfr-unclaimed` per gear**, naming every id,
+rather than one finding each. Two reasons, and the second is the load-bearing
+one. They are not the same fact as an unclaimed FR: an unclaimed FR is a slice
+that lost its owner, while this design set traces NFRs by a different convention
+entirely (rating's `design/15` carries an NFR-verification table, pricing's
+`design/01` names two in prose), so an unclaimed NFR is a standing property of
+how the set is written. And per-id they are 22 rows against a live set of 2 —
+a noise floor, under which the two findings that are actually about drift would
+be the ones read past. One row per gear stays attributable (it names the ids),
+shrinks as a gear adopts the convention, and disappears when it has.
 
 Port of `tools/spec-check/src/invariants/fr_coverage.rs`.
 """
@@ -10,10 +29,22 @@ from ..corpus import split_lines
 from ..finding import Finding, Severity
 from .closure import is_design_slice
 
-_DEFINED_ID = re.compile(r"\*\*ID\*\*:\s*`(cpt-cf-[a-z0-9-]*-fr-[a-z0-9-]+)`")
-_ID = re.compile(r"`(cpt-cf-[a-z0-9-]*-fr-[a-z0-9-]+)`")
+_DEFINED_ID = re.compile(r"\*\*ID\*\*:\s*`(cpt-cf-[a-z0-9-]*-n?fr-[a-z0-9-]+)`")
+_ID = re.compile(r"`(cpt-cf-[a-z0-9-]*-n?fr-[a-z0-9-]+)`")
+
+#: The kind segment, anchored and **non-greedy**, so the *first* `-fr-`/`-nfr-`
+#: after the `cpt-cf-` prefix decides the kind. A plain `"-nfr-" in ident` reads
+#: `cpt-cf-bss-x-fr-nfr-budget` as non-functional, which would move a real
+#: lost-owner FR into the collapsed per-gear row and hide it there.
+_KIND = re.compile(r"\Acpt-cf-[a-z0-9-]*?-(n?fr)-")
 
 _DIRECTLY_ADDRESSES = "This slice directly addresses:"
+
+
+def is_nfr(ident):
+    """True for a non-functional requirement id."""
+    match = _KIND.match(ident)
+    return match is not None and match.group(1) == "nfr"
 
 
 def _defined_requirements(corpus):
@@ -139,15 +170,33 @@ def check(corpus):
     claimed, findings, convention_seen = _claimed_requirements(corpus)
 
     if convention_seen:
+        unclaimed_nfrs = []
         for ident in defined:
-            if ident not in claimed:
-                findings.append(Finding(
-                    "P2/fr-unclaimed",
-                    Severity.LOW,
-                    "PRD.md",
-                    None,
-                    "{} is claimed by no slice's Traces-to line".format(ident),
-                ))
+            if ident in claimed:
+                continue
+            if is_nfr(ident):
+                unclaimed_nfrs.append(ident)
+                continue
+            findings.append(Finding(
+                "P2/fr-unclaimed",
+                Severity.LOW,
+                "PRD.md",
+                None,
+                "{} is claimed by no slice's Traces-to line".format(ident),
+            ))
+        if unclaimed_nfrs:
+            findings.append(Finding(
+                "P2/nfr-unclaimed",
+                Severity.LOW,
+                "PRD.md",
+                None,
+                "{} of {} non-functional requirement(s) are claimed by no slice's "
+                "Traces-to line: {}".format(
+                    len(unclaimed_nfrs),
+                    sum(1 for ident in defined if is_nfr(ident)),
+                    ", ".join(unclaimed_nfrs),
+                ),
+            ))
     else:
         findings.append(Finding(
             "P2/traceability-convention-unknown",

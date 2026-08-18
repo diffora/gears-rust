@@ -775,7 +775,7 @@ fn a_carry_declaration_freezes_no_band_artifact() {
 #[test]
 fn a_price_row_freezes_the_slice_ten_primitives() {
     let mut record = graduated_row();
-    record.row.reserved_rate_minor = Some(MinorAmount::new(250).expect("non-negative"));
+    record.row.reserved_rate = Some(RateMinor::from_minor_units(250).expect("a non-negative rate"));
     record.row.reservation_flavor = Some(ReservationFlavor::Capacity);
     record.row.min_qty_purchase = Some(7);
     record.row.min_qty_usage = Some(11);
@@ -794,7 +794,13 @@ fn a_price_row_freezes_the_slice_ten_primitives() {
         .expect("array");
     let row = &rows[0];
 
-    assert_eq!(row.get("reservedRateMinor"), Some(&json!(250)));
+    // 250 minor units at the stored 10^-9 scale. The key and the scale moved
+    // together (Z5-3): renaming the field without moving the expected value
+    // would have left this test asserting a number the projection cannot emit.
+    assert_eq!(
+        row.get("reservedRateNanoMinor"),
+        Some(&json!(250_000_000_000_i64))
+    );
     assert_eq!(row.get("reservationFlavor"), Some(&json!("capacity")));
     assert_eq!(row.get("minQtyPurchase"), Some(&json!(7)));
     assert_eq!(row.get("minQtyUsage"), Some(&json!(11)));
@@ -823,7 +829,7 @@ fn a_row_carrying_no_slice_ten_primitive_freezes_nulls_rather_than_omitting_them
         .expect("array")[0];
 
     for key in [
-        "reservedRateMinor",
+        "reservedRateNanoMinor",
         "reservationFlavor",
         "minQtyPurchase",
         "minQtyUsage",

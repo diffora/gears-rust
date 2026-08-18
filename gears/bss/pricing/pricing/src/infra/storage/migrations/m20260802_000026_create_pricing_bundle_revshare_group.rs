@@ -48,6 +48,21 @@
 //! That `SUM(share_bp) + platform_cut_bp` lands within 1 bp of 10000 is likewise
 //! a set property and is `inst-rs-residual`'s. A `CHECK` sees one row.
 //!
+//! **And that `vendor_sku_id` names a SKU that exists** — raised as review A1-6
+//! beside `component_plan_id`, and it is the different half of that pair rather
+//! than a second instance of it. `component_plan_id` names a `pricing_plan` row
+//! and is dereferenced at publish in the caller's scope, so a foreign one is
+//! refused indistinguishably (see `m20260802_000025`'s module doc).
+//! `vendor_sku_id` is dereferenced against **nothing, anywhere in this crate**:
+//! it is a group key and an arithmetic subject, its only readers being the
+//! reconciler and the two composite foreign keys on this table's own children.
+//! Declaring a SKU is the registry's act and not this gear's (D-32), and this gear
+//! holds no registry client, so there is no row to check it against and no scope
+//! in which to check it — which is why an ownership check here would have to be
+//! invented rather than restored. It carries no isolation consequence either: the
+//! key is rooted in a server-minted `bundle_id`, so no value a caller supplies
+//! here occupies anything another tenant can want.
+//!
 //! **Backend differences and the append-only discipline** are
 //! `m20260802_000025`'s, verbatim and for the same reasons; see that module's
 //! doc. `uuid` becomes `text`, `bss.` is dropped, and the single PL/pgSQL

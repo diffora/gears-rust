@@ -84,3 +84,124 @@ def test_the_root_is_echoed_back_exactly_as_passed(tmp_path):
         assert Corpus.load(relative).root() == "docs"
     finally:
         os.chdir(cwd)
+
+
+def _finding_keys(corpus):
+    """Every finding the three invariants produce over `corpus`, as comparable
+    tuples. Built from the real checkers rather than from a fixture: the claim
+    being tested is that a stray document cannot move the *reported* set, which
+    is a property of what the invariants see, not of what the loader returns.
+    """
+    from spec_check.invariants import closure, fr_coverage, propagation
+    from spec_check.targets import SeamIndex
+
+    seams = SeamIndex.build([corpus])
+    declared = closure.DeclaredInstructions.build([corpus])
+    codes = closure.declared_codes_union([corpus])
+    findings = (
+        propagation.check(corpus, seams, [corpus])
+        + fr_coverage.check(corpus)
+        + closure.check(corpus, declared, codes)
+    )
+    return sorted((f.invariant, f.file, f.message) for f in findings)
+
+
+def _write_small_docs_tree(root):
+    """A minimal but genuine gear docs tree, built to be **sensitive** to a stray
+    document rather than merely to contain one.
+
+    `BETA_UNPAID` is declared in a Problem-responses block and named by no rule,
+    so a clean run reports `P3/code-unreferenced` for it. That is the finding a
+    bare mention anywhere else in the corpus discharges — the exact mechanism
+    that made a stray report move the live count 7 -> 0, and the same one
+    `is_decision_register` had to close for `DECISIONS.md` prose.
+    """
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "PRD.md").write_text(
+        "- [ ] `p1` - **ID**: `cpt-cf-bss-x-fr-alpha`\n\nD-01 governs this.\n",
+        encoding="utf-8",
+    )
+    (root / "DECISIONS.md").write_text(
+        "#### D-01 — alpha\n\n**Propagated to**: `PRD.md`\n",
+        encoding="utf-8",
+    )
+    (root / "design").mkdir(exist_ok=True)
+    (root / "design" / "01-alpha.md").write_text(
+        "**Traces to**: `cpt-cf-bss-x-fr-alpha`\n\n"
+        "1. [ ] - `p1` - **Alpha rule:** refuses with `ALPHA_INVALID` - `inst-al-rule`\n\n"
+        "**Problem responses (RFC 9457):**\n"
+        "- `ALPHA_INVALID` — 422\n"
+        "- `BETA_UNPAID` — 409\n",
+        encoding="utf-8",
+    )
+
+
+def test_a_report_dropped_into_a_docs_root_changes_nothing_and_is_reported(tmp_path):
+    # The recorded incident, reproduced: `load` takes EVERY `*.md` under the root,
+    # so a stray document joins the corpus, its prose satisfies P1 citation
+    # searches and P3 code references, and a stray *top-level* one also mints a
+    # citation stem into P1's vocabulary. A stray report once moved the live
+    # finding count 7 -> 0.
+    #
+    # The stray here is this tool's OWN output shape — `judge_report`'s
+    # `docs/spec-check/N1-<gear>.md` — which is the one class the tool can name
+    # with certainty, and the exact file `judge_report` already refuses to WRITE
+    # into a docs tree. This is the other half of that guard: a copy that arrived
+    # by any other route.
+    root = tmp_path / "docs"
+    _write_small_docs_tree(root)
+    before = _finding_keys(Corpus.load(str(root)))
+    assert ("P3/code-unreferenced", "design/01-alpha.md",
+            "`BETA_UNPAID` is declared in a Problem-responses block but referenced by "
+            "no rule") in before, (
+        "the fixture must produce the finding a stray mention would pay, or this test "
+        "passes over a corpus nothing could have moved"
+    )
+
+    # A report that names every id and code in the set — the worst case, because
+    # a bare mention is exactly what pays a P1 citation and a P3 reference.
+    (root / "N1-x.md").write_text(
+        "# N1 report\n\nD-01 was judged specified. `BETA_UNPAID` appears. "
+        "`inst-al-rule` appears. `cpt-cf-bss-x-fr-alpha` appears.\n",
+        encoding="utf-8",
+    )
+    (root / "spec-check").mkdir()
+    (root / "spec-check" / "N1-x.md").write_text("D-01 again.\n", encoding="utf-8")
+    (root / "spec-check" / "notes.md").write_text("D-01 a third time.\n", encoding="utf-8")
+
+    corpus = Corpus.load(str(root))
+    assert _finding_keys(corpus) == before, (
+        "a document this tool wrote must not change what it reports about the gear"
+    )
+    assert corpus.text("N1-x.md") is None
+    assert corpus.excluded_paths() == [
+        "N1-x.md",
+        "spec-check/N1-x.md",
+        "spec-check/notes.md",
+    ], "an exclusion must be disclosed, or it is indistinguishable from a file nobody wrote"
+
+
+def test_an_ordinary_document_whose_name_merely_contains_the_prefix_is_still_read(tmp_path):
+    # The exclusion is a name PREFIX and a directory NAME, not a substring match:
+    # a design set is allowed to grow a document called `plan-N1-notes.md`, and a
+    # `design/spec-check-alignment.md` is a file, not the excluded directory.
+    root = tmp_path / "docs"
+    _write_small_docs_tree(root)
+    (root / "plan-N1-notes.md").write_text("kept\n", encoding="utf-8")
+    (root / "design" / "02-spec-check-alignment.md").write_text("kept\n", encoding="utf-8")
+
+    corpus = Corpus.load(str(root))
+    assert corpus.text("plan-N1-notes.md") == "kept\n"
+    assert corpus.text("design/02-spec-check-alignment.md") == "kept\n"
+    assert corpus.excluded_paths() == []
+
+
+def test_from_parts_applies_the_same_exclusion_as_load():
+    # Or a test could prove a behaviour over a document a real run would never
+    # have read — which is the same class of untruth as the stray file itself.
+    corpus = Corpus.from_parts(
+        "synthetic", [("PRD.md", "kept\n"), ("N1-x.md", "dropped\n")]
+    )
+    assert corpus.text("PRD.md") == "kept\n"
+    assert corpus.text("N1-x.md") is None
+    assert corpus.excluded_paths() == ["N1-x.md"]

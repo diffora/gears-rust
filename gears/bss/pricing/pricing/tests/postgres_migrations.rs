@@ -463,7 +463,13 @@ const EXPECTED_PRIMARY_KEYS: &[&str] = &[
     "pricing_bundle_revshare: bundle_id, plan_revision, vendor_sku_id, party",
     "pricing_bundle_revshare_group: bundle_id, plan_revision, vendor_sku_id",
     "pricing_catalog_version_ref: tenant_id, pending_ref, subject_kind, subject_ref",
-    "pricing_composite_meter: composite_id, plan_revision",
+    // Widened by `m20260802_000084` (A1-1), 2026-08-18. It was
+    // `composite_id, plan_revision` — a client-supplied id with no tenant, so one
+    // composite id belonged to one plan per revision *number* across the whole
+    // table. `m20260802_000081` widened `pricing_plan_phase` for that a day
+    // earlier and left this one, which `m20260802_000046`'s doc had named as its
+    // twin.
+    "pricing_composite_meter: tenant_id, plan_id, plan_revision, composite_id",
     "pricing_customer_group_taxonomy: tenant_id, value",
     // Slice 9's membership plane (`inst-cg-record`). Keyed on its own surrogate
     // id; D-09's non-overlap is `excl_pricing_group_membership_no_overlap`'s
@@ -498,8 +504,12 @@ const EXPECTED_PRIMARY_KEYS: &[&str] = &[
     "pricing_policy_object: tenant_id",
     "pricing_price: price_id",
     "pricing_price_overlay: price_overlay_id, revision",
-    "pricing_price_overlay_line: line_id, overlay_revision",
-    "pricing_price_overlay_line_amount: line_id, overlay_revision, currency",
+    // Both widened by `m20260802_000085` (A1-3, and A1-4 for the child),
+    // 2026-08-18: a client-supplied `line_id` with no tenant in the key, and a
+    // child whose key had to move with the parent's or collide on the amounts
+    // instead.
+    "pricing_price_overlay_line: tenant_id, overlay_revision, line_id",
+    "pricing_price_overlay_line_amount: tenant_id, overlay_revision, line_id, currency",
     "pricing_price_tier_band: band_id",
     "pricing_price_window: window_id",
     "pricing_read_model: tenant_id, catalog_version, subject_kind, subject_ref",
@@ -1066,6 +1076,38 @@ async fn the_client_key_index_spans_the_kind_as_well_as_the_tenant() {
         definition.contains("(tenant_id, kind, client_key)"),
         "D-307 keys a client key per kind, so one run id opens one import and one repricing run \
          alike; this index reads {definition}"
+    );
+}
+
+/// **The bundle plan slot is per tenant** — `m20260802_000083`, A1-2.
+///
+/// Its name is in `EXPECTED_INDEXES` and was there before the widening, which is
+/// exactly why this case exists: a name cannot carry columns, and the widening
+/// deliberately kept the name so the constraint keeps one spelling across the
+/// change. Nothing in the name census could tell `(plan_id)` from
+/// `(tenant_id, plan_id)`.
+///
+/// The narrow form was the only opinion the schema had about a `plan_id` a client
+/// puts in a request body — `pricing_bundle` carries no foreign key at all — so
+/// the first tenant to name one locked every other tenant out of it permanently,
+/// against a row invisible to them and with no `DELETE` in the API.
+#[tokio::test]
+#[ignore = "requires Docker (testcontainers)"]
+async fn the_bundle_plan_slot_is_unique_per_tenant_rather_than_globally() {
+    let (conn, _guard) = applied().await;
+    let definitions = names(
+        &conn,
+        "SELECT indexdef AS v FROM pg_indexes WHERE schemaname = 'bss' \
+         AND indexname = 'uq_pricing_bundle_plan'",
+    )
+    .await;
+    let definition = definitions
+        .first()
+        .expect("uq_pricing_bundle_plan must exist on the server");
+    assert!(
+        definition.contains("(tenant_id, plan_id)"),
+        "a plan's bundle slot belongs to the tenant that owns the plan; this index reads \
+         {definition}"
     );
 }
 

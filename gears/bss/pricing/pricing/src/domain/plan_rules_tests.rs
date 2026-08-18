@@ -22,11 +22,13 @@ use crate::domain::scope_key::PlanId;
 use crate::domain::validation::ValidationPipeline;
 
 use super::{
-    ADDON_CYCLE, ADDON_INCOMPATIBLE, AVAILABLE_FROM_IN_PAST, DESCRIPTOR_INCOMPLETE,
-    HYBRID_INCOMPLETE, INVALID_CUSTOM_INTERVAL, METER_AMBIGUOUS, PHASE_CHAIN_NONLINEAR,
+    ADDON_CYCLE, ADDON_INCOMPATIBLE, ADDON_QTY_RANGE_INVALID, AVAILABLE_FROM_IN_PAST,
+    BASE_MARKET_INCOMPLETE, CYCLE_METADATA_MISSING, DESCRIPTOR_INCOMPLETE,
+    DISPLAY_TRIAL_DAYS_INVALID, HYBRID_INCOMPLETE, INVALID_CUSTOM_INTERVAL, METER_AMBIGUOUS,
+    PERIOD_FLOOR_CAP_AMOUNT_INVALID, PERIOD_FLOOR_CAP_MARKET_UNSOLD, PHASE_CHAIN_NONLINEAR,
     PHASE_DURATION_INVALID, PHASE_GRAPH_INVALID, PHASE_IN_USE, PHASE_OVERRIDE_ORPHANED,
-    PHASE_OVERRIDE_UNIT_MISMATCH, PHASE_ROW_ORPHANED, PHASE_UNCOVERED, PLANTIER_MISSING,
-    PURCHASE_QTY_RANGE_INVALID, SETUP_ROW_INVALID, TERMINAL_PHASE_CHANGED,
+    PHASE_OVERRIDE_UNIT_MISMATCH, PHASE_ROW_ORPHANED, PHASE_UNCOVERED, PLAN_NAME_INVALID,
+    PLANTIER_MISSING, PURCHASE_QTY_RANGE_INVALID, SETUP_ROW_INVALID, TERMINAL_PHASE_CHANGED,
     TERMINAL_PHASE_KIND_INVALID, USAGE_MARKET_INCOMPLETE,
 };
 use crate::domain::rules::{COMPOSITE_SELF_REFERENCE, COMPOSITE_TOO_FEW_CONSTITUENTS};
@@ -36,6 +38,20 @@ use crate::domain::rules::{COMPOSITE_SELF_REFERENCE, COMPOSITE_TOO_FEW_CONSTITUE
 /// for Slice 10's two (D-256), which this Slice-2 pipeline also registers because
 /// a composite is plan-shape configuration. The right-hand side is transcribed from the document, not from the
 /// constant, which is the only arrangement under which this test can fail.
+///
+/// **It said "every code this pipeline emits" and held 21 of `plan_rules`' 28
+/// until 2026-08-18** (review B8-1). The seven outside it were each raised by a
+/// registered rule, and three of them — `BASE_MARKET_INCOMPLETE`,
+/// `ADDON_QTY_RANGE_INVALID`, `DISPLAY_TRIAL_DAYS_INVALID` — had no byte-for-byte
+/// spelling pin anywhere in the crate or its integration suites, which is exactly
+/// the exposure the module doc above names. `BASE_MARKET_INCOMPLETE` is the
+/// sharpest: this file *discusses* it a few dozen lines below, as the code D-149
+/// clause 1 minted, while never adding it here.
+///
+/// `every_code_this_pipeline_declares_is_in_the_list` is what keeps that from
+/// happening again, and it is why the hard count `assert_eq!(DECLARED.len(), 23)`
+/// is gone: a count is a good instrument pointed at whatever list somebody typed,
+/// and it did nothing about the seven already outside.
 const DECLARED: &[(&str, &str)] = &[
     // Slice 10's two, emitted by this pipeline since D-256.
     (
@@ -43,20 +59,25 @@ const DECLARED: &[(&str, &str)] = &[
         "COMPOSITE_TOO_FEW_CONSTITUENTS",
     ),
     (COMPOSITE_SELF_REFERENCE, "COMPOSITE_SELF_REFERENCE"),
+    (CYCLE_METADATA_MISSING, "CYCLE_METADATA_MISSING"),
+    (BASE_MARKET_INCOMPLETE, "BASE_MARKET_INCOMPLETE"),
     (INVALID_CUSTOM_INTERVAL, "INVALID_CUSTOM_INTERVAL"),
     (HYBRID_INCOMPLETE, "HYBRID_INCOMPLETE"),
     (USAGE_MARKET_INCOMPLETE, "USAGE_MARKET_INCOMPLETE"),
     (SETUP_ROW_INVALID, "SETUP_ROW_INVALID"),
     (PURCHASE_QTY_RANGE_INVALID, "PURCHASE_QTY_RANGE_INVALID"),
+    (PLAN_NAME_INVALID, "PLAN_NAME_INVALID"),
     (AVAILABLE_FROM_IN_PAST, "AVAILABLE_FROM_IN_PAST"),
     (PLANTIER_MISSING, "PLANTIER_MISSING"),
     (METER_AMBIGUOUS, "METER_AMBIGUOUS"),
     (ADDON_CYCLE, "ADDON_CYCLE"),
     (ADDON_INCOMPATIBLE, "ADDON_INCOMPATIBLE"),
+    (ADDON_QTY_RANGE_INVALID, "ADDON_QTY_RANGE_INVALID"),
     (PHASE_GRAPH_INVALID, "PHASE_GRAPH_INVALID"),
     (PHASE_CHAIN_NONLINEAR, "PHASE_CHAIN_NONLINEAR"),
     (TERMINAL_PHASE_KIND_INVALID, "TERMINAL_PHASE_KIND_INVALID"),
     (PHASE_DURATION_INVALID, "PHASE_DURATION_INVALID"),
+    (DISPLAY_TRIAL_DAYS_INVALID, "DISPLAY_TRIAL_DAYS_INVALID"),
     (PHASE_ROW_ORPHANED, "PHASE_ROW_ORPHANED"),
     (PHASE_UNCOVERED, "PHASE_UNCOVERED"),
     (PHASE_OVERRIDE_ORPHANED, "PHASE_OVERRIDE_ORPHANED"),
@@ -64,6 +85,14 @@ const DECLARED: &[(&str, &str)] = &[
     (TERMINAL_PHASE_CHANGED, "TERMINAL_PHASE_CHANGED"),
     (PHASE_IN_USE, "PHASE_IN_USE"),
     (DESCRIPTOR_INCOMPLETE, "DESCRIPTOR_INCOMPLETE"),
+    (
+        PERIOD_FLOOR_CAP_MARKET_UNSOLD,
+        "PERIOD_FLOOR_CAP_MARKET_UNSOLD",
+    ),
+    (
+        PERIOD_FLOOR_CAP_AMOUNT_INVALID,
+        "PERIOD_FLOOR_CAP_AMOUNT_INVALID",
+    ),
 ];
 
 #[test]
@@ -71,10 +100,52 @@ fn every_declared_code_is_spelled_as_the_design_set_spells_it() {
     for (constant, in_the_document) in DECLARED {
         assert_eq!(constant, in_the_document);
     }
+}
+
+/// Every code `plan_rules` declares is in [`DECLARED`].
+///
+/// The completeness half, and it is **derived from the source** rather than
+/// counted: `plan_rules.rs`'s own `pub const … : &str` declarations are the
+/// operand, so a code minted there and not added above reddens here on the commit
+/// that mints it. The list this replaced asserted a length of 23 against a module
+/// that declared 28, and the shortfall was invisible precisely because a length is
+/// a fact about the list rather than about the thing the list claims to cover.
+///
+/// Slice 10's two live in `rules.rs` and are extras rather than omissions, so they
+/// are subtracted rather than sought.
+#[test]
+fn every_code_this_pipeline_declares_is_in_the_list() {
+    let source = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/domain/plan_rules.rs"),
+    )
+    .expect("the module this list is the contract for");
+
+    let declared_in_source: BTreeSet<&str> = source
+        .lines()
+        .filter_map(|line| line.strip_prefix("pub const "))
+        .filter_map(|rest| rest.split_once(": &str = \""))
+        .filter_map(|(_, value)| value.split_once("\";"))
+        .map(|(value, _)| value)
+        .collect();
+
+    assert!(
+        declared_in_source.len() >= 21,
+        "the scan found {} codes in plan_rules.rs, fewer than the list it is checking already \
+         held — a scan that silently matched nothing would pass this test vacuously",
+        declared_in_source.len()
+    );
+
+    let listed: BTreeSet<&str> = DECLARED
+        .iter()
+        .map(|(code, _)| *code)
+        .filter(|code| *code != COMPOSITE_TOO_FEW_CONSTITUENTS && *code != COMPOSITE_SELF_REFERENCE)
+        .collect();
+
     assert_eq!(
-        DECLARED.len(),
-        23,
-        "the codes G4 emits, plus Slice 10's two (D-256)"
+        listed, declared_in_source,
+        "a code plan_rules declares is missing from DECLARED, or DECLARED names one it does \
+         not declare; the spelling on the right of each pair is transcribed from section 5, so adding \
+         an entry means reading the document rather than copying the constant"
     );
 }
 

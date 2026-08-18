@@ -295,9 +295,99 @@ fn a_market_whose_components_disagree_on_tax_basis_blocks_publish() {
         .iter()
         .find(|v| v.code == BUNDLE_TAX_BASIS_MIXED)
         .expect("a mixed market must block");
+    // **Both** owners, not only the one that differs from whichever the walk
+    // reached first (review Z3-9). An operator told "component 2 disagrees" still
+    // has to go and find what the market's basis is; naming each owner beside its
+    // own value answers that in one read, which is the argument `MarketBasisUniform`
+    // and `ProrationContractMarketUniform` both carry in writing.
+    for owner in [Uuid::from_u128(1), Uuid::from_u128(2)] {
+        assert!(
+            violation.detail.contains(&owner.to_string()),
+            "every side of the mixed market must be named, not only the divergent one: {}",
+            violation.detail
+        );
+    }
     assert!(
-        violation.detail.contains(&Uuid::from_u128(2).to_string()),
-        "the divergent component must be named: {}",
+        violation.detail.contains("tax_inclusive=true")
+            && violation.detail.contains("tax_inclusive=false"),
+        "each side is rendered beside its own basis: {}",
+        violation.detail
+    );
+}
+
+/// The case the first-seen referent got backwards, and the reason Z3-9 is a
+/// message defect rather than a missed refusal.
+///
+/// Four conforming components and one outlier, with **the outlier first**. Under
+/// the old walk the first row set the referent, so the refusal named the four
+/// conforming owners as "divergent" and stayed silent about the one that was.
+/// The refusal itself fired either way, which is why no existing case could see
+/// it.
+#[test]
+fn the_outlier_arriving_first_does_not_make_the_conforming_rows_the_divergent_ones() {
+    let report = validate(&composition(
+        PriceBasis::SumOfParts,
+        vec![
+            component(1, vec![row(&eur(), &de(), false)]),
+            component(2, vec![row(&eur(), &de(), true)]),
+            component(3, vec![row(&eur(), &de(), true)]),
+            component(4, vec![row(&eur(), &de(), true)]),
+            component(5, vec![row(&eur(), &de(), true)]),
+        ],
+    ));
+
+    let violation = report
+        .violations
+        .iter()
+        .find(|v| v.code == BUNDLE_TAX_BASIS_MIXED)
+        .expect("a mixed market must block whichever side arrives first");
+    assert!(
+        violation
+            .detail
+            .contains(&format!("tax_inclusive=false: {}", Uuid::from_u128(1))),
+        "the lone outlier is named on its own side, alone: {}",
+        violation.detail
+    );
+    for conforming in 2..=5u128 {
+        assert!(
+            violation
+                .detail
+                .contains(&Uuid::from_u128(conforming).to_string()),
+            "and every conforming owner is named on the other side rather than being reported \
+             as the divergence: {}",
+            violation.detail
+        );
+    }
+}
+
+/// An owner whose **own** two rows disagree is on both sides.
+///
+/// Keyed by owner, the old map's second insert overwrote the first, so exactly
+/// one of the two bases reached the message and which one depended on row order.
+#[test]
+fn one_owner_holding_both_bases_is_named_on_both_sides() {
+    let report = validate(&composition(
+        PriceBasis::SumOfParts,
+        vec![component(
+            7,
+            vec![row(&eur(), &de(), true), row(&eur(), &de(), false)],
+        )],
+    ));
+
+    let violation = report
+        .violations
+        .iter()
+        .find(|v| v.code == BUNDLE_TAX_BASIS_MIXED)
+        .expect("one component mixing bases within a market is still a mixed market");
+    let owner = Uuid::from_u128(7).to_string();
+    assert!(
+        violation
+            .detail
+            .contains(&format!("tax_inclusive=false: {owner}"))
+            && violation
+                .detail
+                .contains(&format!("tax_inclusive=true: {owner}")),
+        "the owner appears on both sides, because that is the fact: {}",
         violation.detail
     );
 }

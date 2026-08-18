@@ -355,3 +355,300 @@ fn volume_without_a_covering_band_fails_rather_than_guessing() {
         Err(EvalError::NoBandCoversQuantity(10))
     );
 }
+
+// ---------------------------------------------------------------------------
+// Over-range and out-of-period inputs. This file's own doc says the oracle is
+// "audited by reading", which raises rather than lowers the bar on its
+// arithmetic being total.
+// ---------------------------------------------------------------------------
+
+fn instant(y: i32, m: u32, d: u32) -> chrono::DateTime<chrono::Utc> {
+    use chrono::TimeZone;
+    chrono::Utc
+        .with_ymd_and_hms(y, m, d, 0, 0, 0)
+        .single()
+        .expect("a real instant")
+}
+
+/// A chargeable stretch that leaves the period is refused, on **every** basis.
+///
+/// `prorate` refuses a zero-length period and an inverted stretch and never
+/// asked for containment, so `calendar_days_actual` and `by_second` could both
+/// return a ratio above 1 — a stretch of 59 days apportioned over a 31-day period
+/// is a factor of 1.90, i.e. 190% of a full period. `calendar_days_30` clamps and
+/// says why it clamps ("so a 31-day month never bills 31/30 of itself"), which is
+/// what makes this a sibling outlier rather than a uniform gap: one of three arms
+/// defended against a factor above 1, for a stated reason, and its two siblings
+/// had the same exposure and no defence.
+///
+/// Refused rather than clamped, because that is what this file does everywhere
+/// else it is handed an input it cannot honestly answer — `volume` refuses rather
+/// than inventing a rate, `package` refuses a zero divisor, `integral` refuses a
+/// fold that does not divide. A clamp would silently answer 1.00 for a Given that
+/// is a data error, and the corpus is the contract a second implementation must
+/// reproduce.
+#[test]
+fn a_chargeable_stretch_outside_the_period_is_refused_on_every_basis() {
+    let period_start = instant(2026, 1, 1);
+    let period_end = instant(2026, 2, 1);
+
+    let past_the_end = bss_fixtures::Given {
+        q: 0,
+        period_start: Some(period_start),
+        period_end: Some(period_end),
+        from: Some(period_start),
+        to: Some(instant(2026, 3, 1)),
+    };
+    let before_the_start = bss_fixtures::Given {
+        q: 0,
+        period_start: Some(period_start),
+        period_end: Some(period_end),
+        from: Some(instant(2025, 12, 1)),
+        to: Some(period_end),
+    };
+
+    for basis in [
+        bss_fixtures::ProrationBasis::CalendarDaysActual,
+        bss_fixtures::ProrationBasis::CalendarDays30,
+        bss_fixtures::ProrationBasis::BySecond,
+    ] {
+        assert_eq!(
+            prorate(basis, &past_the_end),
+            Err(EvalError::StretchOutsidePeriod),
+            "{basis:?} must refuse a stretch that ends after the period"
+        );
+        assert_eq!(
+            prorate(basis, &before_the_start),
+            Err(EvalError::StretchOutsidePeriod),
+            "{basis:?} must refuse a stretch that starts before the period"
+        );
+    }
+
+    // And the whole period is still the default and still charges in full, so the
+    // containment check has not made the ordinary case degenerate.
+    let whole = bss_fixtures::Given {
+        q: 0,
+        period_start: Some(period_start),
+        period_end: Some(period_end),
+        from: None,
+        to: None,
+    };
+    assert_eq!(
+        prorate(bss_fixtures::ProrationBasis::CalendarDaysActual, &whole),
+        Ok(Evaluated::Units {
+            charged: 31,
+            in_basis: 31
+        })
+    );
+    // `calendar_days_30`'s own clamp keeps its job: a contained 31-day stretch is
+    // still capped at 30, which is the case its comment is about and is a
+    // different case from the one above.
+    assert_eq!(
+        prorate(bss_fixtures::ProrationBasis::CalendarDays30, &whole),
+        Ok(Evaluated::Units {
+            charged: 30,
+            in_basis: 30
+        })
+    );
+}
+
+/// The band walk refuses a product it cannot hold, rather than wrapping into a
+/// plausible number.
+///
+/// `quantity` exists to "widen a quantity into the money domain, refusing rather
+/// than wrapping", and every caller then multiplied it by a rate unchecked. A
+/// release build wraps and answers; a debug build panics. Both are worse than an
+/// error from a reference implementation whose corpus is the contract another
+/// gear must reproduce.
+#[test]
+fn a_charge_that_does_not_fit_the_money_domain_is_refused_not_wrapped() {
+    let huge = vec![Band {
+        from_qty: 0,
+        to_qty: BandTop::Open,
+        unit_amount_minor: 1_000_000_000,
+    }];
+    assert_eq!(
+        graduated(&huge, 1_000_000_000_000),
+        Err(EvalError::ArithmeticOverflow {
+            what: "graduated band charge"
+        })
+    );
+    assert_eq!(
+        volume(&huge, 1_000_000_000_000),
+        Err(EvalError::ArithmeticOverflow {
+            what: "volume charge"
+        })
+    );
+    assert_eq!(
+        package(1, 1_000_000_000, 1_000_000_000_000),
+        Err(EvalError::ArithmeticOverflow {
+            what: "package charge"
+        })
+    );
+
+    // The accumulator across bands is the other half: each band's own product
+    // fits and the running total does not.
+    let two_halves = vec![
+        Band {
+            from_qty: 0,
+            to_qty: BandTop::Closed(5_000_000_000),
+            unit_amount_minor: 1_000_000_000,
+        },
+        Band {
+            from_qty: 5_000_000_000,
+            to_qty: BandTop::Open,
+            unit_amount_minor: 1_000_000_000,
+        },
+    ];
+    assert_eq!(
+        graduated(&two_halves, 10_000_000_000),
+        Err(EvalError::ArithmeticOverflow {
+            what: "graduated band charge"
+        })
+    );
+
+    // And the ordinary ladder is untouched.
+    assert_eq!(graduated(&two_bands(), 1500), Ok(6500));
+}
+
+/// The reserved-capacity charge is a **triple** product and the most exposed
+/// expression in the file: a `per_second` row over a month carries roughly 2.6e6
+/// covered granules, so `reserved x rate` has about 3.5e12 of headroom left.
+#[test]
+fn a_reserved_capacity_charge_that_overflows_is_refused() {
+    let snap = bss_fixtures::Snapshot {
+        model_kind: bss_fixtures::ModelKind::PerUnit,
+        charge_kind: bss_fixtures::ChargeKind::Usage,
+        currency: "USD".to_owned(),
+        bands: Vec::new(),
+        amount_minor: None,
+        package_size: None,
+        package_price_minor: None,
+        quantity_source: None,
+        tier_aggregation_window: None,
+        billing_granularity: None,
+        proration_basis: None,
+        meter: None,
+        dimension_key: None,
+        aggregation_function: None,
+        aggregation_granularity: None,
+        max_hold_granules: None,
+        tier_qualification_window: None,
+        included_allowance: None,
+        reserved_rate_minor: Some(4_000_000),
+        reservation_flavor: Some(bss_fixtures::ReservationFlavor::Capacity),
+    };
+    // `reserved x rate` is 4e12 and fits; `x granules` takes it to 1.04e19,
+    // past `i64::MAX` at 9.22e18. So it is the **outer** product that refuses.
+    let rt = bss_fixtures::Runtime {
+        reserved_quantity: Some(1_000_000),
+        covered_granules: Some(2_600_000),
+        ..bss_fixtures::Runtime::default()
+    };
+    assert_eq!(
+        reservation(&snap, &rt, 0, bss_fixtures::ReservationFlavor::Capacity),
+        Err(EvalError::ArithmeticOverflow {
+            what: "reserved capacity charge"
+        })
+    );
+
+    // And the inner one, so both halves of the triple are covered: 4e9 x 4e6 is
+    // 1.6e16 — fits — while 4e9 x 4e9 does not, and the granule count never
+    // enters it.
+    let inner = bss_fixtures::Runtime {
+        reserved_quantity: Some(4_000_000_000),
+        covered_granules: Some(1),
+        ..bss_fixtures::Runtime::default()
+    };
+    let mut big_rate = snap.clone();
+    big_rate.reserved_rate_minor = Some(4_000_000_000);
+    assert_eq!(
+        reservation(
+            &big_rate,
+            &inner,
+            0,
+            bss_fixtures::ReservationFlavor::Capacity
+        ),
+        Err(EvalError::ArithmeticOverflow {
+            what: "reserved capacity charge"
+        })
+    );
+
+    // The ordinary shape still answers: 1000 units at 3 minor for 24 granules.
+    let ordinary = bss_fixtures::Runtime {
+        reserved_quantity: Some(1_000),
+        covered_granules: Some(24),
+        ..bss_fixtures::Runtime::default()
+    };
+    // `snap` is not read again, so this moves rather than clones —
+    // `clippy::redundant_clone` is in `clippy::perf`, which `CLIPPY_FLAGS` denies.
+    let mut small_rate = snap;
+    small_rate.reserved_rate_minor = Some(3);
+    assert_eq!(
+        reservation(
+            &small_rate,
+            &ordinary,
+            0,
+            bss_fixtures::ReservationFlavor::Capacity
+        ),
+        Ok(Evaluated::Charge(72_000))
+    );
+}
+
+/// A sample taken before the window opens the level, and no distance ages it out.
+///
+/// `seconds` floors at zero, so every pre-window sample reads as granule 0 and is
+/// held into granule `g` for as long as `g <= max_hold` — a level observed a year
+/// before the window is carried exactly as far as one observed a second before it.
+/// Pinned rather than changed: what a pre-window sample means is a fact about the
+/// reference semantics rating has to reproduce, so it belongs in the corpus, and
+/// no committed case carries one. This test is what makes a change to it visible.
+#[test]
+fn a_sample_before_the_window_opens_the_level_and_is_never_aged_out() {
+    let window_start = instant(2026, 1, 8);
+    let step: u64 = 3_600;
+
+    let a_second_before = vec![bss_fixtures::GaugeSample {
+        at: window_start - chrono::Duration::seconds(1),
+        level: 40,
+    }];
+    let a_year_before = vec![bss_fixtures::GaugeSample {
+        at: window_start - chrono::Duration::days(365),
+        level: 40,
+    }];
+
+    for (label, samples) in [
+        ("one second", &a_second_before),
+        ("one year", &a_year_before),
+    ] {
+        assert_eq!(
+            held_level(samples, window_start, 0, step, 2),
+            Some(40),
+            "{label} before the window opens the level in granule 0"
+        );
+        assert_eq!(
+            held_level(samples, window_start, 2, step, 2),
+            Some(40),
+            "{label} before the window is still held at the edge of max_hold"
+        );
+        assert_eq!(
+            held_level(samples, window_start, 3, step, 2),
+            None,
+            "{label} before the window falls out one granule past max_hold — the \
+             hold is measured from granule 0 in both cases, which is the floor"
+        );
+    }
+
+    // The contrast that makes the floor visible: an *in-window* sample is aged
+    // from the granule it actually fell in.
+    let inside = vec![bss_fixtures::GaugeSample {
+        at: window_start + chrono::Duration::seconds(i64::try_from(step * 3 + 1).expect("fits")),
+        level: 40,
+    }];
+    assert_eq!(held_level(&inside, window_start, 5, step, 2), Some(40));
+    assert_eq!(
+        held_level(&inside, window_start, 6, step, 2),
+        None,
+        "three granules past the sample's own granule is out of a two-granule hold"
+    );
+}

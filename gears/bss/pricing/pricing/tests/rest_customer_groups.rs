@@ -1346,3 +1346,184 @@ async fn an_ended_membership_is_still_listed() {
         "the ended interval is shown rather than filtered away"
     );
 }
+
+// ---------------------------------------------------------------------------
+// D4-4: the list read is bounded and filterable.
+// ---------------------------------------------------------------------------
+
+/// **The membership list pages, and the page is the whole answer to "is there
+/// more".**
+///
+/// This read was unpaginated and unbounded until 2026-08-18 — no `limit`, no
+/// `cursor`, no filter, a bare `Vec` response and `.all(runner)` with no `LIMIT`
+/// behind it — against `api/rest.rs`'s own opening sentence that every collection
+/// surface paginates on an opaque cursor (D-125). The exposure is a property of the
+/// table rather than of its traffic: memberships are effective-dated and ended rows
+/// are deliberately kept, so a group's row count grows monotonically over a ≥7-year
+/// retention and is never pruned. One response was every membership ever recorded.
+///
+/// The walk is asserted rather than the page size, because a `limit` that truncated
+/// would satisfy a size assertion while losing rows: the two pages are concatenated
+/// and compared against the whole set, which fails if the walk skips, repeats or
+/// stops early.
+#[tokio::test]
+async fn the_membership_list_pages_and_the_walk_loses_no_row() {
+    let h = Harness::new().await;
+    rest_support::declare_customer_group(&h, "gold").await;
+
+    let payers: Vec<Uuid> = (0..3).map(|_| Uuid::now_v7()).collect();
+    for (n, payer) in payers.iter().enumerate() {
+        let response = h
+            .allowed_as(MEMBERSHIP_ADMIN)
+            .send(with_headers(
+                "POST",
+                &CUSTOMER_GROUP_MEMBERS.replace("{group}", "gold"),
+                Some(json!({
+                    "payer_tenant_id": payer,
+                    "effective_from": "2026-01-01T00:00:00Z"
+                })),
+                &[("idempotency-key", &format!("page-enroll-{n}"))],
+            ))
+            .await;
+        assert_eq!(response.status(), StatusCode::CREATED, "seed {n}");
+    }
+
+    let members_of = async |query: String| -> serde_json::Value {
+        let response = h
+            .allowed_as(MEMBERSHIP_ADMIN)
+            .send(request(
+                "GET",
+                &format!(
+                    "{}{query}",
+                    CUSTOMER_GROUP_MEMBERS.replace("{group}", "gold")
+                ),
+                None,
+            ))
+            .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        body_json(response).await
+    };
+
+    let whole = members_of(String::new()).await;
+    assert_eq!(
+        whole["memberships"].as_array().map(Vec::len),
+        Some(3),
+        "the fixture seeds three, or the walk below tests nothing: {whole}"
+    );
+    assert!(
+        whole["page_info"]["next_cursor"].is_null(),
+        "one page holds them all at the default limit: {whole}"
+    );
+
+    // Two rows at a time: the first page must hand back a cursor, the second must
+    // not, and the two together must be the whole set in order.
+    let first = members_of("?limit=2".to_owned()).await;
+    assert_eq!(first["memberships"].as_array().map(Vec::len), Some(2));
+    let cursor = first["page_info"]["next_cursor"]
+        .as_str()
+        .unwrap_or_else(|| panic!("a page that stopped short names where to resume: {first}"))
+        .to_owned();
+
+    let second = members_of(format!("?limit=2&cursor={cursor}")).await;
+    assert_eq!(second["memberships"].as_array().map(Vec::len), Some(1));
+    assert!(
+        second["page_info"]["next_cursor"].is_null(),
+        "and the last page says so rather than pointing at an empty one: {second}"
+    );
+
+    let walked: Vec<&serde_json::Value> = first["memberships"]
+        .as_array()
+        .expect("an array")
+        .iter()
+        .chain(second["memberships"].as_array().expect("an array"))
+        .collect();
+    let expected: Vec<&serde_json::Value> = whole["memberships"]
+        .as_array()
+        .expect("an array")
+        .iter()
+        .collect();
+    assert_eq!(
+        walked, expected,
+        "the walk loses no row and repeats none: {first} then {second}"
+    );
+}
+
+/// **The `payer_id` filter is the by-id read this family owes.**
+///
+/// `api/rest.rs` holds every read-shape deviation to a stated mitigation, and this
+/// family's was the only one with none: there is no `GET …/members/{id}`, and
+/// before D4-4 the list had no filter either, so reaching one payer's history meant
+/// paging the whole group.
+///
+/// The negative is the assertion — a payer who is *not* in the filter must be
+/// absent — because a filter that was ignored would pass a positive-only check.
+#[tokio::test]
+async fn the_membership_list_narrows_to_one_payer() {
+    let h = Harness::new().await;
+    rest_support::declare_customer_group(&h, "gold").await;
+
+    let wanted = Uuid::now_v7();
+    let other = Uuid::now_v7();
+    for (n, payer) in [wanted, other].into_iter().enumerate() {
+        let response = h
+            .allowed_as(MEMBERSHIP_ADMIN)
+            .send(with_headers(
+                "POST",
+                &CUSTOMER_GROUP_MEMBERS.replace("{group}", "gold"),
+                Some(json!({
+                    "payer_tenant_id": payer,
+                    "effective_from": "2026-01-01T00:00:00Z"
+                })),
+                &[("idempotency-key", &format!("filter-enroll-{n}"))],
+            ))
+            .await;
+        assert_eq!(response.status(), StatusCode::CREATED);
+    }
+
+    let response = h
+        .allowed_as(MEMBERSHIP_ADMIN)
+        .send(request(
+            "GET",
+            &format!(
+                "{}?payer_id={wanted}",
+                CUSTOMER_GROUP_MEMBERS.replace("{group}", "gold")
+            ),
+            None,
+        ))
+        .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let filtered = body_json(response).await;
+
+    let payers: Vec<&str> = filtered["memberships"]
+        .as_array()
+        .expect("an array")
+        .iter()
+        .filter_map(|row| row["payer_tenant_id"].as_str())
+        .collect();
+    assert_eq!(
+        payers,
+        vec![wanted.to_string().as_str()],
+        "the filter narrows to the payer asked for and excludes the other: {filtered}"
+    );
+
+    // And a malformed filter is this gear's refusal rather than the extractor's.
+    let refused = h
+        .allowed_as(MEMBERSHIP_ADMIN)
+        .send(request(
+            "GET",
+            &format!(
+                "{}?payer_id=not-a-uuid",
+                CUSTOMER_GROUP_MEMBERS.replace("{group}", "gold")
+            ),
+            None,
+        ))
+        .await;
+    assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
+    let problem = body_json(refused).await;
+    assert!(
+        problem["detail"]
+            .as_str()
+            .is_some_and(|detail| detail.contains("payer_id")),
+        "the refusal names the parameter: {problem}"
+    );
+}

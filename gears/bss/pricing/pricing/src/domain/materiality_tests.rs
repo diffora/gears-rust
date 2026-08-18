@@ -433,6 +433,51 @@ fn a_band_vector_entirely_below_the_bar_auto_publishes() {
     );
 }
 
+/// **A percent policy over an allowance-compiled row**, which is the shape D-45
+/// made the preferred authoring — and the one a percent bar could never
+/// auto-publish.
+///
+/// `domain::allowance` compiles `includedAllowance` into a leading `[0, N) @ $0`
+/// band followed by the authored ones, so every allowance-bearing row carries a
+/// band whose baseline is zero and which never moves. `band_delta` emits it as
+/// element zero of the vector, `compare` asks `reaches_percent` of it, and a
+/// `from_minor == 0` answer of `None` made the whole row `NotComparable` —
+/// material, reported as `noConfiguredThreshold` about a policy the tenant had
+/// configured. However small the authored change.
+///
+/// Here the authored band moves `$0.30 → $0.31`, a 3.33% rise under a 10% bar,
+/// with the compiled `$0` band identical on both sides.
+#[test]
+fn a_sub_threshold_move_on_an_allowance_compiled_row_auto_publishes_under_a_percent_bar() {
+    let policy = ThresholdPolicy::of_entries([ThresholdEntry {
+        currency: CurrencyCode::new("USD").expect("USD"),
+        basis: ThresholdBasis::Percent { bp: 1_000 },
+    }])
+    .expect("configured");
+    let baseline = PublishedPriceBaseline::of_records([graduated(
+        "USD",
+        &[(0, Some(1000), 0), (1000, None, 30)],
+    )]);
+    let change = ChangeSet::of_records([graduated("USD", &[(0, Some(1000), 0), (1000, None, 31)])]);
+
+    assert_eq!(
+        evaluate(&change, Some(&policy), Some(&baseline)),
+        MaterialityVerdict::AutoPublishable,
+        "1 of 30 is 3.33%, below the 10% bar, and the unmoved free band decides nothing"
+    );
+
+    // And the bar is still a bar on this shape: the same free opening band, with
+    // the authored band moved 30 -> 34 (13.3%), is material. Without this half the
+    // case above could pass on a `reaches_percent` that answered `Some(false)` to
+    // everything.
+    let over = ChangeSet::of_records([graduated("USD", &[(0, Some(1000), 0), (1000, None, 34)])]);
+    assert_eq!(
+        evaluate(&over, Some(&policy), Some(&baseline)).reason(),
+        Some(MaterialityReason::ThresholdReached),
+        "4 of 30 is 13.3%, over the 10% bar"
+    );
+}
+
 /// A registered act answers **before** the fail-safe, and the reason is what the
 /// operator can act on.
 ///

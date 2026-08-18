@@ -164,8 +164,24 @@ async fn one_client_key_opens_one_run() {
         .await
         .expect("the first");
 
+    // **And the class is the contract's** (Z2-2). Both callers replay by reading
+    // `find_by_client_key` first and opening second, in two different
+    // transactions, so two concurrent submits under one `Idempotency-Key` both see
+    // the key free and both reach `open`. The loser is refused by
+    // `uq_pricing_bulk_operation_client_key`, and as a bare `RepoError::Db` that
+    // is a 500 for a request whose contract promises either the winner's 202 or a
+    // refusal the caller can act on. `ConcurrentMutation` is a 409 whose retry
+    // does succeed: the second attempt finds the winner's run and replays it,
+    // which is the one thing D-159's "a retry is expected to succeed" asks of the
+    // class.
     let second = bulk_repo::open(&conn, &scope(), new_run(BulkKind::Import, "k-2")).await;
-    assert!(second.is_err(), "the second is refused by the unique key");
+    let Err(RepoError::ConcurrentMutation { aggregate }) = second else {
+        panic!("the second is refused by the unique key, as a contention; got {second:?}");
+    };
+    assert!(
+        aggregate.contains("k-2"),
+        "and D-159 requires the refusal to name what the caller retries against: {aggregate}"
+    );
 
     let found = bulk_repo::find_by_client_key(&conn, &scope(), TENANT, BulkKind::Import, "k-2")
         .await

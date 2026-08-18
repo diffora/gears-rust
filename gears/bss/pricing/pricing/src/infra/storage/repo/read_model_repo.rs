@@ -333,6 +333,45 @@ pub async fn warm_subjects_at(
 /// becomes the authority and this reader owes the parse** — recorded because that
 /// is the day the choice matters.
 ///
+/// # `price_keys` takes **every** row of the payload, with no lifecycle filter
+///
+/// Deliberate, and stated here because the divergence from the sibling reader is
+/// real and looks like an omission. `api::rest::preview` walks the same
+/// `payload["prices"]` array and filters `lifecycleState == published` at `:397`
+/// before selecting; this reader does not. The payload carries
+/// [`PROJECTED_ROW_STATES`](crate::domain::projection::PROJECTED_ROW_STATES) —
+/// `published` **and** `superseded` — so the difference is exactly the superseded
+/// rows.
+///
+/// The two surfaces answer different questions and the filter belongs to only one
+/// of them. `preview` **quotes a price**, so it must select a row that is live;
+/// a superseded predecessor quoted as current is a wrong price. This reader feeds
+/// a **gate**, and its two consumers both round the other way:
+///
+/// - `domain::coverage::longest_cycle_sold_on` asks whether the market sells a
+///   recurring row at all, and answers `Some(zero)` when it does not — no forward
+///   coverage required, so predicate (1) admits a key right up to its coverage
+///   end. Dropping a superseded recurring row from a market whose only recurring
+///   row is superseded flips `sells_recurring` false and collapses the D-80
+///   margin from `Some(cycle)` to `Some(zero)`. **That is the fail-open
+///   direction**, and it is the same collapse `active_window_with_horizon`
+///   refuses one type over. Filtering here would be a strictly weaker gate.
+/// - `domain::sellability::gate_input_keys` resolves the most-specific key per
+///   sibling set and the plan-market verdict is a conjunction over what it
+///   returns, so an extra key can only make the verdict harder to satisfy.
+///
+/// So the absence of the filter is fail-closed at both consumers and adding one
+/// would be fail-open at the first. What the absence *does* cost is stated rather
+/// than argued away: the day a path leaves a `superseded` row whose key no
+/// `published` row backs — a row-level retirement, an unwind — this reader counts
+/// that key as present where `preview` does not, and the two readings of one
+/// payload diverge on a key rather than on a duplicate. Nothing produces such a
+/// row today: a supersession and a repricing both write the successor on the
+/// predecessor's canonical key, and a cutover's grandfathered copy is `published`.
+/// Whoever builds the first such path owes this paragraph a second look, and the
+/// answer will be a horizon on the projection (see `infra::read_model`'s D-121
+/// note) rather than a filter here.
+///
 /// # Errors
 /// [`RepoError::CorruptRow`] for any of the above.
 pub fn sellability_facts(delta: &StoredDelta) -> Result<SellabilityFacts, RepoError> {

@@ -1,6 +1,13 @@
 {
   "findings": [
     {
+      "invariant": "P2/nfr-unclaimed",
+      "severity": "low",
+      "file": "PRD.md",
+      "line": null,
+      "message": "12 of 12 non-functional requirement(s) are claimed by no slice's Traces-to line: cpt-cf-bss-pricing-nfr-audit-retention, cpt-cf-bss-pricing-nfr-availability-dr, cpt-cf-bss-pricing-nfr-data-residency, cpt-cf-bss-pricing-nfr-event-propagation, cpt-cf-bss-pricing-nfr-mass-repricing-throughput, cpt-cf-bss-pricing-nfr-multi-currency-scale, cpt-cf-bss-pricing-nfr-mutation-latency, cpt-cf-bss-pricing-nfr-observability, cpt-cf-bss-pricing-nfr-publish-propagation, cpt-cf-bss-pricing-nfr-read-latency, cpt-cf-bss-pricing-nfr-size-limits, cpt-cf-bss-pricing-nfr-validation-latency"
+    },
+    {
       "invariant": "P1/decision-register-unparsed",
       "severity": "low",
       "file": "DECISIONS.md",
@@ -8,13 +15,28 @@
       "message": "P1 cannot verify propagation for gears/bss/rating/docs: DECISIONS.md yielded zero decision entries — no `#### <id> …` heading matched the recognised id shape (`D-NN`, optionally gear-prefixed, e.g. `SUB-D-01`) — 0 `**Propagated`-shaped field(s) in that register went unchecked as a result"
     },
     {
+      "invariant": "P2/nfr-unclaimed",
+      "severity": "low",
+      "file": "PRD.md",
+      "line": null,
+      "message": "4 of 4 non-functional requirement(s) are claimed by no slice's Traces-to line: cpt-cf-bss-rating-nfr-audit-segregation, cpt-cf-bss-rating-nfr-horizontal-scale, cpt-cf-bss-rating-nfr-resilience, cpt-cf-bss-rating-nfr-throughput-latency"
+    },
+    {
       "invariant": "P3/code-convention-divergent",
       "severity": "low",
       "file": "design/15-rated-output-balance-effects.md",
       "line": null,
       "message": "design/15-rated-output-balance-effects.md declares error codes without a `**Problem responses (RFC 9457):**` block; the rest of the design set uses that convention"
+    },
+    {
+      "invariant": "P2/nfr-unclaimed",
+      "severity": "low",
+      "file": "PRD.md",
+      "line": null,
+      "message": "6 of 6 non-functional requirement(s) are claimed by no slice's Traces-to line: cpt-cf-bss-subscriptions-nfr-entitlement-check-latency, cpt-cf-bss-subscriptions-nfr-horizontal-partitioning, cpt-cf-bss-subscriptions-nfr-lifecycle-latency, cpt-cf-bss-subscriptions-nfr-operational-baselines, cpt-cf-bss-subscriptions-nfr-proration-accuracy, cpt-cf-bss-subscriptions-nfr-recurring-cut"
     }
   ],
-  "known_debt_suppressed": 50,
-  "known_debt_tracked_as": "D-69"
+  "known_debt_suppressed": 49,
+  "known_debt_tracked_as": "D-69",
+  "pins_not_reproduced": []
 }

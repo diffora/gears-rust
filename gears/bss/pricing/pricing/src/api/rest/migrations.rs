@@ -252,7 +252,7 @@ async fn schedule_migration(
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct MigrationPageQuery {
     /// Schedules per page; server default 100, hard cap 1,000.
-    pub limit: Option<u64>,
+    pub limit: Option<String>,
     /// The opaque token a previous page returned.
     pub cursor: Option<String>,
     /// One of `scheduled` | `in_progress` | `completed` | `cancelled`. Absent is
@@ -287,14 +287,27 @@ async fn list_migrations(
         &ctx,
         &crate::authz::resource_types::PLAN,
         crate::authz::actions::READ,
-        Some(tenant),
+        // **`None`, because this is a read** — `authz::access_scope`'s stated
+        // two-way split: reads let the PDP derive the scope from the subject and
+        // its role, never from a caller-supplied tenant, and only a write passes
+        // `Some(target_tenant)` so the membership assertion has a target to test.
+        // Four read gates passed `Some(tenant)` until 2026-08-18, which ran that
+        // write-only assertion on a read. Nothing escalated — the value was
+        // `ctx.subject_tenant_id()` and never caller-supplied — but it was a live
+        // divergence between a module's stated contract and four of its callers,
+        // and the contract is the thing a later reader trusts.
+        /* owner_tenant_id */
+        None,
         /* resource_id */ None,
         /* require_constraints */ true,
     )
     .await
     .map_err(authz_error_to_canonical)?;
 
-    let page = PageRequest::parse(query.limit, query.cursor.as_deref())?;
+    let page = PageRequest::parse(
+        cursor::parse_limit(query.limit.as_deref())?,
+        query.cursor.as_deref(),
+    )?;
     let states = state_filter(query.state.as_deref())?;
     // One row more than the page, so "is there another page" needs no second
     // query and no page whose `next_cursor` points at nothing.
@@ -361,7 +374,17 @@ async fn read_migration(
         &ctx,
         &crate::authz::resource_types::PLAN,
         crate::authz::actions::READ,
-        Some(tenant),
+        // **`None`, because this is a read** — `authz::access_scope`'s stated
+        // two-way split: reads let the PDP derive the scope from the subject and
+        // its role, never from a caller-supplied tenant, and only a write passes
+        // `Some(target_tenant)` so the membership assertion has a target to test.
+        // Four read gates passed `Some(tenant)` until 2026-08-18, which ran that
+        // write-only assertion on a read. Nothing escalated — the value was
+        // `ctx.subject_tenant_id()` and never caller-supplied — but it was a live
+        // divergence between a module's stated contract and four of its callers,
+        // and the contract is the thing a later reader trusts.
+        /* owner_tenant_id */
+        None,
         None,
         /* require_constraints */ true,
     )
@@ -398,7 +421,25 @@ async fn cancel_migration(
         &crate::authz::resource_types::PLAN,
         crate::authz::actions::MIGRATE,
         Some(tenant),
-        Some(migration_id),
+        // **`None`, and not this object's own id.** The action is on a **plan** —
+        // that is what the authz catalog's endpoint map puts it on — and the plan
+        // id is not in hand here: it is resolved below, from a row this gate has
+        // to authorize before it may be read. Passing the migration id asked the
+        // PDP about an object the `plan` label carries no identity for, so a role
+        // definition of the form "allow this action where `resource_id in
+        // {{planA}}`" was evaluated against the wrong object and denied — the
+        // availability arm of the rule `windows.rs` states at length and
+        // restructured three handlers to keep.
+        //
+        // `None` is the tenant-wide question every batch gate in this gear already
+        // asks, and the compiled scope still binds `tenant_id` in SQL, so nothing
+        // widens. **What is still owed** is `windows.rs`'s coarse-then-narrow
+        // pair — this ask to scope the lookup, then a second anchored ask on the
+        // resolved plan — with its `FURTHER_QUESTIONS` row, which is what would
+        // make the narrow authority a fact the census asserts rather than an
+        // absence.
+        /* resource_id */
+        None,
         /* require_constraints */ true,
     )
     .await

@@ -459,6 +459,64 @@ async fn a_malformed_plan_id_never_reaches_the_handler() {
     );
 }
 
+/// **A malformed query parameter *does* reach the handler, and is refused as a
+/// problem document.**
+///
+/// The deliberate contrast with the case above, and the reason both sit here. A
+/// path segment is the router's to reject and this gear never sees it; a query
+/// parameter is not, so a `Query<T>` member typed `Option<u64>` handed the refusal
+/// to axum's extractor and answered the same bodiless 400 — against a registration
+/// whose declared 400 has `Problem` as its schema.
+///
+/// `?limit=abc` on the nine paginated reads and `?price_id=nope` here answered that
+/// until 2026-08-17. The members are `Option<String>` now and
+/// `cursor::parse_limit` / `cursor::parse_uuid_param` refuse them, which is what
+/// `SellabilityQuery` had already done for its three and no other struct had.
+/// `module_test`'s `no_query_struct_lets_the_extractor_answer` is the derivation;
+/// this is the wire proof that the derivation is about something real.
+#[tokio::test]
+async fn a_malformed_query_parameter_is_refused_as_a_problem_document() {
+    let h = Harness::new().await;
+
+    for (what, uri) in [
+        (
+            "a limit that is not a number",
+            "/bss-pricing/v1/price-windows?limit=abc",
+        ),
+        (
+            "a price filter that is not a uuid",
+            "/bss-pricing/v1/price-windows?price_id=nope",
+        ),
+    ] {
+        let response = h.allowed().send(request("GET", uri, None)).await;
+        assert_eq!(
+            response.status(),
+            StatusCode::BAD_REQUEST,
+            "{what} is refused"
+        );
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("a readable body");
+        let problem: serde_json::Value = serde_json::from_slice(&body).unwrap_or_else(|_| {
+            panic!(
+                "{what}: the refusal is this gear's, so it is a problem document; got {:?}",
+                String::from_utf8_lossy(&body)
+            )
+        });
+        assert_eq!(
+            problem["type"], "gts://gts.cf.core.errors.err.v1~cf.core.err.invalid_argument.v1~",
+            "{what}: {problem}"
+        );
+        // And it names the parameter, or the remedy is unreachable on a request
+        // carrying three of them.
+        let detail = problem["detail"].as_str().unwrap_or_default();
+        assert!(
+            detail.contains("limit") || detail.contains("price_id"),
+            "{what}: the refusal names the parameter: {problem}"
+        );
+    }
+}
+
 /// The report ranges over the publish check's row set, so a `draft` row's key is
 /// in it.
 ///

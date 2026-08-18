@@ -21,6 +21,7 @@
 mod common;
 mod rest_support;
 
+use bss_pricing::authz::{actions, labels};
 use bss_pricing::config::JobsConfig;
 use bss_pricing::domain::approval::ApprovalState;
 use bss_pricing::domain::window::WindowState;
@@ -247,6 +248,95 @@ async fn the_submitter_may_withdraw_their_own_unit() {
     assert_eq!(
         record.reason.as_deref(),
         Some("superseded by next quarter's book")
+    );
+}
+
+/// **`WITHDRAW_FORBIDDEN`, over the wire, for the first time.**
+///
+/// A second principal who holds the withdraw route's gate (`approval x approve`)
+/// but no catalog authority (`plan x publish`) may not close a unit that is not
+/// theirs.
+///
+/// The code had unit coverage and **appeared in zero file under `tests/`** until
+/// 2026-08-18 (review Z3-10), which is the one gap that matters most on this
+/// surface: a rule whose whole point is *who* may act, tested only at the
+/// pure-function layer, cannot see whether the surface transports the right
+/// authority. `authorize_decision` takes `WithdrawAuthority` as a parameter and
+/// the route is what establishes it — from a second, tenant-wide PDP question
+/// that a unit test can neither ask nor get wrong.
+///
+/// **`selectively_allowed_as` rather than `allowed_as`, and that is the whole
+/// fixture.** `allowed_as` grants every pair uniformly, so the authority question
+/// answers `CatalogAuthority` and this refusal is unreachable — the suite would be
+/// green and would be testing nothing. The pair granted here is exactly the gate,
+/// so a 403 cannot be the gate answering.
+///
+/// A withdraw is not cosmetic: it moves the unit out of `submitted`, which
+/// releases the canonical scope keys it held and re-opens them to whoever wants
+/// them.
+#[tokio::test]
+async fn a_foreign_principal_without_catalog_authority_may_not_withdraw_the_unit() {
+    let h = Harness::new().await;
+    let approval_id = a_pending_unit(&h).await;
+
+    let response = h
+        .selectively_allowed_as(APPROVER, &[(labels::APPROVAL, actions::APPROVE)])
+        .send(with_headers(
+            "POST",
+            &decision_path(approval_id, "withdraw"),
+            None,
+            &[],
+        ))
+        .await;
+
+    assert_eq!(response.status(), axum::http::StatusCode::FORBIDDEN);
+    assert_eq!(problem_code(response).await, "WITHDRAW_FORBIDDEN");
+    assert_eq!(
+        approval_row(&h, approval_id).await.state,
+        ApprovalState::Submitted,
+        "a refused withdraw leaves the unit open and its scope keys held"
+    );
+}
+
+/// **The positive control for the case above**, and it is what makes that case
+/// about *authority* rather than about the selective fixture refusing everything.
+///
+/// The same foreign principal, the same route, one pair more: `plan x publish` is
+/// the expressible proxy for `inst-as-void`'s `CatalogAdmin`, and with it the
+/// withdraw succeeds.
+///
+/// It also pins the residue `WithdrawAuthority`'s doc reports — the proxy is
+/// coarser than the role, so a `FinanceManager` can close a `CatalogAdmin`'s unit
+/// — as a fact of this build rather than as a sentence. If the design set ever
+/// reconciles `inst-as-void`'s identity rule with the `approval x approve` gate
+/// the endpoint map assigns this route, this is the test that has to move.
+#[tokio::test]
+async fn a_foreign_principal_with_catalog_authority_may_withdraw_the_unit() {
+    let h = Harness::new().await;
+    let approval_id = a_pending_unit(&h).await;
+
+    let response = h
+        .selectively_allowed_as(
+            APPROVER,
+            &[
+                (labels::APPROVAL, actions::APPROVE),
+                (labels::PLAN, actions::PUBLISH),
+            ],
+        )
+        .send(with_headers(
+            "POST",
+            &decision_path(approval_id, "withdraw"),
+            None,
+            &[],
+        ))
+        .await;
+
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
+    let record = approval_row(&h, approval_id).await;
+    assert_eq!(record.state, ApprovalState::Voided);
+    assert_eq!(
+        record.approver_principal, None,
+        "a withdraw exercises no review authority, whoever performs it"
     );
 }
 

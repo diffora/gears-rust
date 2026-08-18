@@ -1139,7 +1139,7 @@ async fn every_frozen_column_of_a_published_row_refuses_to_move() {
         // Slice 10's reservation pair (`m20260802_000055`). The rate is the
         // sharpest case on this table: a writer moving it on a published row
         // moves money per covered granule, away from the pin that approved it.
-        "reserved_rate_minor = 250".to_owned(),
+        "reserved_rate = 250".to_owned(),
         "reservation_flavor = 'capacity'".to_owned(),
         // Slice 10's typed floors and discount hook (`m20260802_000057`).
         // `min_qty_purchase` decides who may buy, `min_qty_usage` what is

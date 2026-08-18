@@ -48,6 +48,58 @@ async fn an_unauthenticated_read_is_refused_before_anything_else() {
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 }
 
+/// **The harness runs production's last layer, and these are the two members that
+/// prove it.**
+///
+/// `canonical_error_middleware` was mounted once in `module.rs` and in **no** test
+/// harness, so every functional test in this crate asserted an error body
+/// production then rewrites. What it does is not cosmetic: it deserializes any
+/// `application/problem+json` body into `Problem`, fills `instance` and `trace_id`,
+/// and **re-serializes** — a round trip through one type, which is a projection. A
+/// member a handler emits that `Problem` does not carry is dropped in production
+/// and was present in every test, on the envelope this gear's whole contract tells
+/// a consumer to key on.
+///
+/// `instance` and `trace_id` are the assertion because they are the two the
+/// middleware *adds*: no refusal in the corpus could carry either before it was
+/// mounted, so this case cannot pass against a harness that omits the layer. An
+/// operator correlating a client's 400 to a server log needs both.
+///
+/// Asserted on a **403** rather than a 401, so the document under test is one the
+/// gear's own ladder produced rather than one the auth extension shortcuts.
+#[tokio::test]
+async fn a_refusal_carries_the_instance_and_trace_id_the_error_layer_fills() {
+    let harness = Harness::new().await;
+    let plan_id = Uuid::now_v7();
+    seed_draft_plan(&harness, plan_id).await;
+
+    let response = harness
+        .denied()
+        .send(with_headers(
+            "GET",
+            &plan_path(plan_id),
+            None,
+            &[(
+                "traceparent",
+                "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+            )],
+        ))
+        .await;
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+
+    let problem = body_json(response).await;
+    assert_eq!(
+        problem["instance"],
+        serde_json::json!(plan_path(plan_id)),
+        "the layer fills `instance` from the request path: {problem}"
+    );
+    assert_eq!(
+        problem["trace_id"],
+        serde_json::json!("4bf92f3577b34da6a3ce929d0e0e4736"),
+        "and `trace_id` from the caller's W3C traceparent: {problem}"
+    );
+}
+
 #[tokio::test]
 async fn a_denied_read_is_403_and_the_row_is_untouched() {
     let harness = Harness::new().await;
@@ -2884,25 +2936,30 @@ async fn two_patches_carry_two_correlation_ids() {
     assert_ne!(updates[0], updates[1], "two calls are two acts");
 }
 
-/// One composite id, two plans, and **the second caller gets a 500.** Pinned,
-/// not fixed — `phase_id`'s finding one table over, on a facet mounted after it.
+/// One composite id, two plans, and **both filings are accepted.**
 ///
-/// `PRIMARY KEY (composite_id, plan_revision)` carries no `plan_id` and no
-/// `tenant_id` (`m20260802_000046_create_pricing_composite_meter.rs`), and
-/// `composite_id` is **client-supplied**: `CompositeMeterRequest` makes it
-/// `Option<Uuid>` and its own doc invites a read-modify-write round trip, since a
-/// `GET` echoes the ids. So the flow the doc recommends — read plan A's
-/// composites, paste them onto plan B at revision `0` — collides on the primary
-/// key and answers a generic internal fault.
+/// **Inverted rather than deleted, which is what its own doc asked for.** It
+/// pinned a `500`: `PRIMARY KEY (composite_id, plan_revision)` carried no
+/// `plan_id` and no `tenant_id`, and `composite_id` is **client-supplied** —
+/// `CompositeMeterRequest` makes it `Option<Uuid>` and its own doc invites a
+/// read-modify-write round trip, since a `GET` echoes the ids. So the flow that
+/// doc recommends, read plan A's composites and paste them onto plan B at
+/// revision `0`, collided on the primary key and answered a generic internal
+/// fault. The pin ended *"if a later slice widens the key … this reddens and the
+/// change gets written down (D-304)"*, and `m20260802_000084` is that widening.
 ///
-/// **The optional id is the right call and this is its unpaid cost** (D-298): a
-/// *required* id would be a fresh instance of a known defect on a brand-new
-/// surface, and an optional one still makes it client-reachable. What a test can
-/// do is stop it being a surprise — if a later slice widens the key or maps the
-/// failure onto the conflict class, this reddens and the change gets written
-/// down (D-304).
+/// The optional id was always the right call (D-298) and this was its unpaid cost.
+/// It is paid: a composite id belongs to a **plan**, so two plans of one tenant
+/// may hold the same one, and two tenants may hold it at the same revision number.
+/// The half that stays refused is one revision holding it twice, which the
+/// composite rules are written as though were true —
+/// `sqlite_plan_repo::one_revision_still_may_not_hold_one_composite_id_twice` is
+/// that direction.
+///
+/// The second filing is read back rather than only counted `200`: a widening that
+/// let the row land and then lost it would answer `200` here too.
 #[tokio::test]
-async fn two_plans_of_one_tenant_collide_on_a_shared_composite_id_and_the_second_answers_500() {
+async fn two_plans_of_one_tenant_may_share_a_composite_id() {
     let harness = Harness::new().await;
     let shared = Uuid::now_v7();
     let first = Uuid::now_v7();
@@ -2936,7 +2993,7 @@ async fn two_plans_of_one_tenant_collide_on_a_shared_composite_id_and_the_second
         "the first filing must succeed, or the second proves nothing"
     );
 
-    let collided = harness
+    let second_filing = harness
         .allowed()
         .send(with_headers(
             "PATCH",
@@ -2946,9 +3003,20 @@ async fn two_plans_of_one_tenant_collide_on_a_shared_composite_id_and_the_second
         ))
         .await;
     assert_eq!(
-        collided.status(),
-        StatusCode::INTERNAL_SERVER_ERROR,
-        "the PK collision surfaces as an internal fault, not as the conflict class"
+        second_filing.status(),
+        StatusCode::OK,
+        "a composite id belongs to a plan, not to a revision number"
+    );
+
+    let read = harness
+        .allowed()
+        .send(with_headers("GET", &plan_path(second), None, &[]))
+        .await;
+    assert_eq!(read.status(), StatusCode::OK);
+    assert_eq!(
+        body_json(read).await["composites"][0]["composite_id"],
+        shared.to_string(),
+        "the second plan holds the shared id, so the write landed rather than being swallowed"
     );
 }
 
@@ -2961,8 +3029,14 @@ async fn two_plans_of_one_tenant_collide_on_a_shared_composite_id_and_the_second
 /// caller as an internal fault with no gear code. `composite_of`'s doc says
 /// "nothing here can fail, and that is a statement about where the rules live
 /// rather than an absence of them", and enumerates the CHECK and the two publish
-/// rules; it does not name this refusal or the primary key's. Pinned so that
-/// naming them later reddens here (D-304).
+/// rules; it now names this refusal and records that it is unfixed (review A2-1),
+/// the primary key's sibling having been fixed by `m20260802_000084`. Pinned so
+/// that giving *this* one a code later reddens here (D-304).
+///
+/// It is the half with **no isolation dimension**, which is what made it the one
+/// left standing: `uq_pricing_composite_meter_output` already leads with
+/// `tenant_id` and `plan_id`, so this refusal is about two lines of one payload
+/// and tells the caller nothing about anybody else's catalog.
 #[tokio::test]
 async fn two_composites_of_one_body_sharing_an_output_unit_answer_500() {
     let harness = Harness::new().await;

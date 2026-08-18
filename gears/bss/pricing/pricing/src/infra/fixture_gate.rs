@@ -70,7 +70,7 @@ use crate::domain::price_row::{PriceRow, model_kind_wire};
 /// Whether the publishing row carries a reservation.
 ///
 /// It stays a **parameter** rather than becoming a plain read inside
-/// [`required_variants`], now that Slice 10 has landed `reserved_rate_minor` /
+/// [`required_variants`], now that Slice 10 has landed `reserved_rate` /
 /// `reservation_flavor` and [`Reservation::of_slice3_row`] answers from the row.
 /// Two reasons, and neither is inertia:
 ///
@@ -99,7 +99,7 @@ impl Reservation {
     /// What the row says about itself — **a real read since Slice 10**.
     ///
     /// This body was `{ Unreserved }`, a constant, for as long as [`PriceRow`]
-    /// was the Slice-3 shape and carried neither `reserved_rate_minor` nor
+    /// was the Slice-3 shape and carried neither `reserved_rate` nor
     /// `reservation_flavor`. The hole was stated here rather than left silent
     /// precisely so that closing it would be one function: Slice 10 added the
     /// pair, this reads it, and `infra::publish`'s single call site — which

@@ -102,17 +102,21 @@
 //! policy store, the delta domain, the trigger registry and this evaluator are one
 //! change, not a sequence.
 //!
-//! **Six registered triggers still name subjects this crate cannot author** — a
-//! bulk group move, a retirement that unwinds a live cutover, a historical import,
-//! the two gate-clearing republishes, a prepaid grant's non-price fields. (The
+//! **Five registered triggers still name subjects this crate cannot author** — a
+//! bulk group move, a retirement that unwinds a live cutover, the two
+//! gate-clearing republishes, a prepaid grant's non-price fields. (The
 //! sentence said "most", and named cutovers, overlays, memberships, bundles and
 //! **retirement** among them; each of those has since landed, and retirement had
-//! landed before this paragraph was last touched.) **A seventh answered `false` on
+//! landed before this paragraph was last touched. It then said "six" and listed
+//! **a historical import** among them — a subject D-330 struck on 2026-08-16, the
+//! date this paragraph claims to have been measured on. That count was wrong in
+//! both files that carried it, and this one said "the six again" as though the
+//! other had been checked: review Z3-1.) **A sixth answered `false` on
 //! different grounds for one day**: `revenueShareChange`'s subject is authored here
 //! and no surface declared the act, `infra::bundle::rev_share_change_set` being a
 //! constructor nothing called (D-232, D-321). It has a caller as of 2026-08-16 —
 //! `infra::bundle::declared_act`, which diffs the composition being published
-//! against the last one that was live — so the `false` side is the six again.
+//! against the last one that was live — so the `false` side is the five.
 //! They are not omitted:
 //! [`triggers::Trigger`] declares
 //! each with its owning slice and answers
@@ -665,6 +669,26 @@ pub struct ThresholdVersion {
     entries: Vec<ThresholdEntry>,
 }
 
+/// Every field of a [`ThresholdVersion`], handed over at once so a consumer that
+/// must account for all of them cannot miss one.
+///
+/// [`ScopeKeyParts`](crate::domain::scope_key::ScopeKeyParts)' construction and
+/// for its reason: the fields are private, so the only alternative is a set of
+/// accessor calls — and a set of accessor calls is exactly what a fourth field
+/// arrives without breaking. Produced by [`ThresholdVersion::parts`], which
+/// destructures the version exhaustively, and consumed by
+/// `approval::content_pin::put_threshold_version`, which destructures this
+/// exhaustively. Widening the version therefore costs two compile errors and a
+/// decision at the pin, which is the point.
+pub(crate) struct ThresholdVersionParts<'a> {
+    /// The version number — the `version` half of the store's primary key.
+    pub version: u64,
+    /// The instant the version starts applying.
+    pub effective_from: DateTime<Utc>,
+    /// The entries, in the order the pin frames them.
+    pub entries: &'a [ThresholdEntry],
+}
+
 impl ThresholdVersion {
     /// One proposed or stored version.
     ///
@@ -790,6 +814,37 @@ impl ThresholdVersion {
     #[must_use]
     pub fn entries(&self) -> &[ThresholdEntry] {
         &self.entries
+    }
+
+    /// Every field of this version at once, for a caller that must account for
+    /// **all** of them — the content pin.
+    ///
+    /// [`ScopeKey::parts`](crate::domain::scope_key::ScopeKey::parts)' shape and
+    /// for its reason. The fields are private because [`Self::new`] is what
+    /// refuses an empty or duplicated entry set, so a consumer that has to frame
+    /// the whole version can only reach it through accessors — and three separate
+    /// accessor calls are three things a fourth field is silently absent from.
+    /// The destructure below is exhaustive with no rest pattern, so a fourth
+    /// field stops **this** compiling, and [`ThresholdVersionParts`] is
+    /// destructured in turn at the pin, so the same field then stops the encoder
+    /// compiling until somebody decides whether the pin covers it.
+    ///
+    /// Before 2026-08-18 (review Z3-6) there was no such gate anywhere on this
+    /// path: `put_threshold_version` called `version()`, `effective_from()` and
+    /// `entries()`, and a fourth field would have compiled, pinned nothing, and
+    /// left every test in the crate green.
+    #[must_use]
+    pub(crate) fn parts(&self) -> ThresholdVersionParts<'_> {
+        let Self {
+            version,
+            effective_from,
+            entries,
+        } = self;
+        ThresholdVersionParts {
+            version: *version,
+            effective_from: *effective_from,
+            entries,
+        }
     }
 
     /// This version read as a policy [`evaluate`] can compare against.

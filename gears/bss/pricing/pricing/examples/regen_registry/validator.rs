@@ -207,7 +207,15 @@ pub fn slice3_row(snapshot: &Snapshot) -> Result<PriceRow, EvalError> {
         // different enums for the reason the module doc gives -- the corpus model
         // sits behind a feature this gear does not enable -- so it is mapped
         // rather than passed through.
-        reserved_rate_minor: optional_amount(snapshot.reserved_rate_minor, "reserved_rate_minor")?,
+        // **The corpus still spells this in whole minor units and the gear no
+        // longer does** (Z5-3, 2026-08-17). `reservedRate` is a rate — the oracle
+        // multiplies it by a granule count — so the gear moved it to `RateMinor`
+        // at the 10^-9 scale, and the corpus carries D-311's original defect one
+        // field over: a corpus snapshot cannot express a reserved rate below one
+        // minor unit at all. Converted here rather than silently truncated, and
+        // the corpus-side widening is a joint fixtures/rating change because the
+        // golden vectors are the contract between the two gears.
+        reserved_rate: optional_rate(snapshot.reserved_rate_minor, "reserved_rate_minor")?,
         reservation_flavor: snapshot.reservation_flavor.map(reservation_flavor),
         // **The corpus has no counterpart for any of these four**, and that is a
         // statement about the corpus rather than a mapping shortcut. The typed
@@ -289,14 +297,22 @@ fn tier_bands(bands: &[Band]) -> Result<Vec<TierBand>, EvalError> {
                 // The corpus states band rates in whole minor units (D-311):
                 // scaled here rather than re-authored, so the fixtures keep
                 // meaning the prices they always meant.
-                unit_price_rate: bss_pricing::domain::money::RateMinor::from_nano_minor(
-                    amount(band.unit_amount_minor, "bands.unit_amount_minor")?.get()
-                        * 1_000_000_000,
-                )
-                .map_err(|_| EvalError::UnrepresentableField {
-                    field: "bands.unit_amount_minor",
-                    value: band.unit_amount_minor.to_string(),
-                })?,
+                //
+                // Through [`rate`], which is `RateMinor::from_minor_units` —
+                // a `checked_mul` by `NANO_PER_MINOR_I64` — and not through a
+                // literal `* 1_000_000_000`. That literal was an unchecked `i64`
+                // multiply five lines from the checked helper the same file
+                // already calls, so one file held two implementations of one
+                // conversion and the corpus's band rates travelled the unchecked
+                // one: a band at 2e10 minor units wrapped to a **positive**
+                // 1.55e18 nano, past `from_nano_minor`'s negativity check, and
+                // published a $15,532,559 rate for an authored $200,000,000 one
+                // (Z5-7). It also wrote the scale out where `RATE_SUB_DECIMALS`
+                // says the scale has exactly one place it can be changed (Z5-11).
+                unit_price_rate: rate(
+                    Some(amount(band.unit_amount_minor, "bands.unit_amount_minor")?.get()),
+                    "bands.unit_amount_minor",
+                )?,
             })
         })
         .collect()
@@ -327,6 +343,28 @@ fn rate(units: Option<i64>, field: &'static str) -> Result<RateMinor, EvalError>
         field,
         value: units.to_string(),
     })
+}
+
+/// A reserved rate from a snapshot column stated in whole minor units.
+///
+/// The optional twin of [`rate`], and the seam where the corpus and the gear now
+/// disagree about scale: the gear moved `reservedRate` to `RateMinor` on
+/// 2026-08-17 because it is a rate the oracle multiplies by a granule count,
+/// while the corpus still spells it in whole minor units and therefore carries
+/// D-311's original defect one field over — a snapshot cannot express a reserved
+/// rate below one minor unit at all. Widening the corpus is a joint
+/// fixtures/rating change, because the golden vectors are the contract between
+/// the two gears, so the conversion lives here and the limitation is named
+/// rather than hidden.
+fn optional_rate(units: Option<i64>, field: &'static str) -> Result<Option<RateMinor>, EvalError> {
+    units
+        .map(|units| {
+            RateMinor::from_minor_units(units).map_err(|_| EvalError::UnrepresentableField {
+                field,
+                value: units.to_string(),
+            })
+        })
+        .transpose()
 }
 
 fn optional_amount(

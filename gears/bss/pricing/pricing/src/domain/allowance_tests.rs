@@ -6,7 +6,7 @@ use super::{
     Admissibility, AllowanceSource, compile, is_presented_tiered, presented_bands,
     presented_model_kind,
 };
-use crate::domain::money::{MinorAmount, RateMinor};
+use crate::domain::money::RateMinor;
 use crate::domain::price_row::{
     AggregationFunction, AggregationGranularity, BandTop, BillingGranularity, IncludedAllowance,
     ModelKind, PriceRow, ReservationFlavor, RolloverPolicy, TierAggregationWindow, TierBand,
@@ -235,7 +235,7 @@ fn every_shape_the_gate_refuses_compiles_to_nothing() {
         (Admissibility::WithReservation, {
             let mut row = with(graduated_usage(), 10, RolloverPolicy::None);
             row.reservation_flavor = Some(ReservationFlavor::Capacity);
-            row.reserved_rate_minor = Some(MinorAmount::new(4).expect("an amount"));
+            row.reserved_rate = Some(RateMinor::from_minor_units(4).expect("a non-negative rate"));
             row
         }),
         (Admissibility::DoubleFree, {

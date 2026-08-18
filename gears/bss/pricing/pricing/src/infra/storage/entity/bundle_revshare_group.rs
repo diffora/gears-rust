@@ -14,13 +14,6 @@ use sea_orm::entity::prelude::*;
 use toolkit_db_macros::Scopable;
 use uuid::Uuid;
 
-/// The reserved absorber value standing for the platform itself (D-07).
-///
-/// It is the column's default, which is what makes an "unnominated" state
-/// unrepresentable. `chk_pricing_bundle_revshare_party` forbids a party from
-/// spelling it, so the sentinel and a party id can never collide.
-pub const PLATFORM_ABSORBER: &str = "platform";
-
 #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel, Scopable)]
 #[sea_orm(table_name = "pricing_bundle_revshare_group")]
 #[secure(
@@ -45,9 +38,17 @@ pub struct Model {
     /// (`inst-rs-sum`: *"with an explicit per-group platform cut"*).
     pub platform_cut_bp: i32,
     /// The party of this group that absorbs the publish-time residual, or
-    /// [`PLATFORM_ABSORBER`] (the default, D-07). `text` rather than a `Uuid`
-    /// because one column holds both inhabitants and the reconciler compares it
-    /// against `pricing_bundle_revshare.party`.
+    /// [`PLATFORM_SENTINEL`](crate::domain::bundle::PLATFORM_SENTINEL) (the
+    /// default, D-07). `text` rather than a `Uuid` because one column holds both
+    /// inhabitants and the reconciler compares it against
+    /// `pricing_bundle_revshare.party`.
+    ///
+    /// **The sentinel's one declaration is the domain's**, and this entity used
+    /// to carry a second under the name `PLATFORM_ABSORBER` — same value, no
+    /// reader, declared in the storage layer where the token is a *column
+    /// default* rather than a domain fact. `Party::new` refuses it and
+    /// `Party::as_str` renders it, so a copy here could only ever have gone stale
+    /// against the enum that owns it (review Z2-6, 2026-08-18).
     pub residual_absorber_party: String,
 }
 

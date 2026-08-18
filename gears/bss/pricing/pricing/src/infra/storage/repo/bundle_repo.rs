@@ -86,7 +86,7 @@ use crate::infra::storage::entity::{
     bundle, bundle_component, bundle_revshare, bundle_revshare_group,
 };
 use crate::infra::storage::repo::plan_repo::{
-    load_revision, mutable_draft, not_found, record_revision_mutation, refuse, swap_guard,
+    self, load_revision, mutable_draft, not_found, record_revision_mutation, refuse, swap_guard,
     tx_failure,
 };
 use crate::infra::storage::repo::plan_shape_repo::plan_revision_bump;
@@ -480,6 +480,8 @@ impl BundleRepo {
     /// of `m20260802_000024`'s module doc.
     ///
     /// # Errors
+    /// [`RepoError::NotFound`] when `plan_id` names no plan the caller can read —
+    /// a foreign one and an absent one alike, which is the point;
     /// [`RepoError::DuplicateBundleOnPlan`] when the plan already carries one
     /// (`uq_pricing_bundle_plan`), surfaced as a typed refusal rather than as a
     /// driver error; [`RepoError::Db`] on a scope or storage failure.
@@ -744,6 +746,31 @@ pub async fn create_on(
     stamp: AuditStamp,
 ) -> Result<Uuid, RepoError> {
     let _ = stamp;
+    // **The plan is resolved in the caller's scope before anything else.**
+    //
+    // `plan_id` arrives in the request body of `POST /bss-pricing/v1/bundles` and
+    // `pricing_bundle` holds no foreign key onto `pricing_plan` — one is not
+    // expressible, for the reason `m20260802_000024` gives — so until this read
+    // existed **nothing between the wire and the insert looked at the plan at
+    // all**. The only read here was the one below, which looks for *a bundle* and
+    // not for the plan, and it is tenant-scoped: so a caller naming another
+    // tenant's `plan_id` was told `DuplicateBundleOnPlan` when that tenant had a
+    // bundle and `201 Created` when it did not, the whole discrimination coming
+    // from `uq_pricing_bundle_plan`, which carried no tenant. That is an existence
+    // oracle over another tenant's plans, and in the `201` case the row *landed* —
+    // occupying a slot its owner could then never claim, against a row invisible
+    // to it, with no `DELETE` anywhere in the API.
+    //
+    // `NotFound` and not a forbidden: `RepoError::NotFound`'s own doc argues the
+    // fold, so a foreign plan is indistinguishable from an absent one and the 404
+    // confirms nothing. `m20260802_000083` widens the index in the same change;
+    // this half closes the oracle and that half stops the slot being takeable.
+    if !plan_repo::holds_a_revision(runner, scope, new.tenant_id, new.plan_id).await? {
+        return Err(RepoError::NotFound {
+            subject: "plan".to_owned(),
+            id: new.plan_id.get().to_string(),
+        });
+    }
     // The read is the explanatory path and the index is the guarantee — the
     // read-then-index arrangement D-148 describes, here for a uniqueness the
     // caller can be told about in its own words.
@@ -802,12 +829,17 @@ fn duplicate_bundle_or_db(err: &ScopeError, plan_id: PlanId, context: &str) -> R
 /// Does this driver message name `uq_pricing_bundle_plan` rather than any other
 /// constraint on the bundle table?
 ///
-/// Two renderings, one per backend, both of them names `m20260802_000024` writes:
-/// Postgres names the **index**, `SQLite` names the indexed **column**. Neither
-/// engine produces the other's spelling, so both arms are live. The qualified form
-/// `pricing_bundle.plan_id` is matched rather than the bare column, so
-/// `pricing_bundle_component.plan_id` and the revshare tables' own columns cannot
-/// be mistaken for it.
+/// Two renderings, one per backend: Postgres names the **index**, `SQLite` names
+/// the indexed **columns**. Neither engine produces the other's spelling, so both
+/// arms are live. The qualified form `pricing_bundle.plan_id` is matched rather
+/// than the bare column, so `pricing_bundle_component.plan_id` and the revshare
+/// tables' own columns cannot be mistaken for it.
+///
+/// `m20260802_000083` widened the index to `(tenant_id, plan_id)` and the `SQLite`
+/// rendering moved with it — `pricing_bundle.tenant_id, pricing_bundle.plan_id` —
+/// which still **contains** the fragment below, so this matcher is unchanged
+/// rather than merely still passing. It is the Postgres arm that carries the
+/// index name, and the name was deliberately kept across the widening.
 ///
 /// The other unique constraint on this table is its primary key on `bundle_id`
 /// (`m20260802_000024`, and no later migration rebuilds the table), which is why

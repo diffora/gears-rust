@@ -865,6 +865,147 @@ async fn one_line_id_survives_the_copy_onto_a_new_revision() {
     .await;
 }
 
+/// **A line id belongs to its tenant** — `m20260802_000085`, review A1-3.
+///
+/// The primary key was `(line_id, overlay_revision)` and `line_id` is
+/// **client-supplied** — the route description documents supplying it as the
+/// intended usage, because that is what makes a copy-on-new-revision keep D-92's
+/// stable identity. So a line id belonged to one overlay per revision number
+/// **across the entire table, every tenant included**, and the refusal on it —
+/// typed as `ValueOutOfRange { field: "line_id" }`, which is the mitigation that
+/// held this at Medium — was still an oracle over another tenant's line ids, with
+/// the same permanent-lockout consequence D-340 measured on the stand.
+///
+/// Two tenants, two overlays, one line id, the same revision number. The amount
+/// row goes with it: the child's key widened in the same migration, because a
+/// `line_id` that two tenants can hold at one revision would otherwise collide in
+/// `pricing_price_overlay_line_amount` instead — the finding filed as A1-4,
+/// recorded there so this fix would not create it.
+#[tokio::test]
+async fn two_tenants_may_hold_one_line_id_at_one_revision_number() {
+    const OTHER_TENANT: &str = "99999999-9999-9999-9999-999999999999";
+    let conn = migrated_db().await;
+    must_succeed(&conn, &draft_overlay(OVERLAY, 0)).await;
+    must_succeed(&conn, &default_line(LINE, OVERLAY, 0)).await;
+    must_succeed(
+        &conn,
+        &format!(
+            "INSERT INTO pricing_price_overlay_line_amount (
+                line_id, overlay_revision, currency, tenant_id, value_minor)
+             VALUES ('{LINE}', 0, 'EUR', '{TENANT}', 1000)"
+        ),
+    )
+    .await;
+
+    // The other tenant's own overlay, and the same line id under it.
+    must_succeed(
+        &conn,
+        &format!(
+            "INSERT INTO pricing_price_overlay (
+                price_overlay_id, revision, tenant_id, lifecycle_state,
+                scope_class, scope_value, precedence, tax_basis, disclosure, target_ref)
+             VALUES ('{OTHER_OVERLAY}', 0, '{OTHER_TENANT}', 'draft',
+                     'brand', 'acme', 10, 'delegated_tariffs', 'restricted', '{{}}')"
+        ),
+    )
+    .await;
+    must_succeed(
+        &conn,
+        &format!(
+            "INSERT INTO pricing_price_overlay_line (
+                line_id, price_overlay_id, overlay_revision, tenant_id,
+                plan_id, target_sku, cohort, adjustment_kind, magnitude_kind, adjustment_value)
+             VALUES ('{LINE}', '{OTHER_OVERLAY}', 0, '{OTHER_TENANT}',
+                     NULL, NULL, NULL, 'discount', 'percent_bp', 1500)"
+        ),
+    )
+    .await;
+    must_succeed(
+        &conn,
+        &format!(
+            "INSERT INTO pricing_price_overlay_line_amount (
+                line_id, overlay_revision, currency, tenant_id, value_minor)
+             VALUES ('{LINE}', 0, 'EUR', '{OTHER_TENANT}', 2000)"
+        ),
+    )
+    .await;
+
+    let lines = scalar(
+        &conn,
+        &format!(
+            "SELECT CAST(count(*) AS text) AS v FROM pricing_price_overlay_line \
+             WHERE line_id = '{LINE}' AND overlay_revision = 0"
+        ),
+    )
+    .await;
+    assert_eq!(lines, "2", "one line id, one row per tenant");
+    let amounts = scalar(
+        &conn,
+        &format!(
+            "SELECT CAST(count(*) AS text) AS v FROM pricing_price_overlay_line_amount \
+             WHERE line_id = '{LINE}' AND overlay_revision = 0 AND currency = 'EUR'"
+        ),
+    )
+    .await;
+    assert_eq!(amounts, "2", "and the money follows its own line");
+}
+
+/// **A neighbour's draft does not thaw this tenant's published line** — the half
+/// of `m20260802_000085` that is a trigger change and not a key change.
+///
+/// The amount table's append-only guard resolves its parent by
+/// `(line_id, overlay_revision)` and nothing else. That was unambiguous while the
+/// line key was globally unique, and stopped being so the moment two tenants could
+/// hold one `(line_id, overlay_revision)`: an amount under a **published** line
+/// would find the *other* tenant's draft line, read `draft`, and be admitted —
+/// D-92's freeze defeated across a tenant boundary by a widening meant to close a
+/// leak. All three `SQLite` bodies and the Postgres function gained
+/// `l.tenant_id = NEW.tenant_id` (`OLD` on the delete arm) for that, which is the
+/// one trigger-body change in this migration and the one moved digest set.
+#[tokio::test]
+async fn a_foreign_draft_line_does_not_unfreeze_a_published_lines_money() {
+    const OTHER_TENANT: &str = "99999999-9999-9999-9999-999999999999";
+    let conn = migrated_db().await;
+    // This tenant: a line under a **published** revision.
+    must_succeed(&conn, &draft_overlay(OVERLAY, 0)).await;
+    must_succeed(&conn, &default_line(LINE, OVERLAY, 0)).await;
+    flip(&conn, OVERLAY, 0, "published").await;
+    // The neighbour: the same line id at the same revision, under a **draft**.
+    must_succeed(
+        &conn,
+        &format!(
+            "INSERT INTO pricing_price_overlay (
+                price_overlay_id, revision, tenant_id, lifecycle_state,
+                scope_class, scope_value, precedence, tax_basis, disclosure, target_ref)
+             VALUES ('{OTHER_OVERLAY}', 0, '{OTHER_TENANT}', 'draft',
+                     'brand', 'acme', 10, 'delegated_tariffs', 'restricted', '{{}}')"
+        ),
+    )
+    .await;
+    must_succeed(
+        &conn,
+        &format!(
+            "INSERT INTO pricing_price_overlay_line (
+                line_id, price_overlay_id, overlay_revision, tenant_id,
+                plan_id, target_sku, cohort, adjustment_kind, magnitude_kind, adjustment_value)
+             VALUES ('{LINE}', '{OTHER_OVERLAY}', 0, '{OTHER_TENANT}',
+                     NULL, NULL, NULL, 'discount', 'percent_bp', 1500)"
+        ),
+    )
+    .await;
+
+    must_be_rejected(
+        &conn,
+        &format!(
+            "INSERT INTO pricing_price_overlay_line_amount (
+                line_id, overlay_revision, currency, tenant_id, value_minor)
+             VALUES ('{LINE}', 0, 'EUR', '{TENANT}', 1000)"
+        ),
+        "non-draft overlay revision is not permitted",
+    )
+    .await;
+}
+
 /// Each revision's value set is its own, so a published revision's money is not
 /// shared with the draft that succeeds it.
 #[tokio::test]
@@ -1248,6 +1389,12 @@ async fn the_lines_of_a_published_revision_are_frozen() {
 // ---------------------------------------------------------------------------
 
 /// One value per `(line, currency)` — §6's `UNIQUE (line_id, currency)`.
+///
+/// The fragment gained `tenant_id` with `m20260802_000085`, which widened this
+/// key alongside its parent line's, and the move is the assertion rather than a
+/// loosening: `SQLite` names the offending **columns**, so a fragment still naming
+/// only the three would pass against a key that had lost the tenant it just
+/// gained.
 #[tokio::test]
 async fn a_line_carries_at_most_one_value_per_currency() {
     let conn = migrated_db().await;
@@ -1265,8 +1412,9 @@ async fn a_line_carries_at_most_one_value_per_currency() {
     must_be_rejected(
         &conn,
         &insert_amount(LINE, "EUR", 6000),
-        "UNIQUE constraint failed: pricing_price_overlay_line_amount.line_id, \
+        "UNIQUE constraint failed: pricing_price_overlay_line_amount.tenant_id, \
          pricing_price_overlay_line_amount.overlay_revision, \
+         pricing_price_overlay_line_amount.line_id, \
          pricing_price_overlay_line_amount.currency",
     )
     .await;

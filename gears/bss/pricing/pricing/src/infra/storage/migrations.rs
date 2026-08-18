@@ -114,6 +114,10 @@ pub mod m20260802_000078_guard_pricing_plan_name;
 pub mod m20260802_000079_create_pricing_plan_period_floor_cap;
 pub mod m20260802_000080_create_pricing_rounding_policy_taxonomy;
 pub mod m20260802_000081_scope_pricing_plan_phase_key;
+pub mod m20260802_000082_reserved_rate_is_a_rate_column;
+pub mod m20260802_000083_scope_pricing_bundle_plan_slot;
+pub mod m20260802_000084_scope_pricing_composite_meter_key;
+pub mod m20260802_000085_scope_pricing_price_overlay_line_key;
 
 use sea_orm::{ConnectionTrait, Statement};
 use sea_orm_migration::prelude::*;
@@ -442,6 +446,34 @@ impl MigratorTrait for Migrator {
             // the `SQLite` arm nevertheless has to recreate, a rebuild being the
             // only way to reach a `PRIMARY KEY` on that engine.
             Box::new(m20260802_000081_scope_pricing_plan_phase_key::Migration),
+            Box::new(m20260802_000082_reserved_rate_is_a_rate_column::Migration),
+            // A1-2: `uq_pricing_bundle_plan` gains `tenant_id`. It sorts after
+            // `000024`, which created the index, and is D-340's class one table
+            // over — a uniqueness whose only client-supplied column carried no
+            // tenant, so the first tenant to name a `plan_id` locked every other
+            // one out of it. Two statements on both engines and no rebuild: the
+            // index is a standalone object here rather than an inline `PRIMARY
+            // KEY`, so `DROP INDEX` reaches it on `SQLite` too and no trigger,
+            // `CHECK` or foreign key is restated.
+            Box::new(m20260802_000083_scope_pricing_bundle_plan_slot::Migration),
+            // A1-1: `pricing_composite_meter`'s key gains `tenant_id` and
+            // `plan_id`. It sorts after `000046`, which created the table, and is
+            // the instance D-340 named and left standing — `000046`'s module doc
+            // called the key "`pricing_plan_phase`'s shape one table over", which
+            // `000081` made false. The `SQLite` arm rebuilds the table, a rebuild
+            // being the only way to reach a `PRIMARY KEY` on that engine, and
+            // restores the `CHECK`, the composite foreign key, both indexes and
+            // all three append-only triggers verbatim.
+            Box::new(m20260802_000084_scope_pricing_composite_meter_key::Migration),
+            // A1-3 and A1-4 together: `pricing_price_overlay_line`'s key gains
+            // `tenant_id` and its amount table's key and foreign key move with it,
+            // which A1-4 records as the condition that would otherwise arm the
+            // amount insert's untyped catch-all. It sorts after `000034`, the last
+            // migration to touch either table. Two rebuilds on `SQLite`, child
+            // dropped first and renamed last; the amount table's three triggers
+            // gain a tenant conjunct, and are the only trigger bodies in this
+            // chain's history that this migration moves.
+            Box::new(m20260802_000085_scope_pricing_price_overlay_line_key::Migration),
             // Shared `coord_leases` table, owned by the `coord` crate. This gear's
             // background work is coordinated as a singleton (§3.8: background work
             // is coordinated as a singleton via the coordination lease library),

@@ -951,6 +951,48 @@ fn only_the_triggers_with_a_subject_in_this_crate_answer_true() {
     );
 }
 
+/// The mirror of the case above, and the census this pair was missing.
+///
+/// Both walks in this file hunt for **producers** — one over the `true` side,
+/// one over the `false` side — and neither of them counts the `false` side, so
+/// nothing in the suite reddened when the module doc's own sentence about what
+/// that side *is* went wrong. It went wrong on the same day it dates itself: it
+/// said six and named *"a historical import"*, and D-330 struck historical
+/// import from the design set on 2026-08-16, taking the `BackdateGrant`, the
+/// `historical_import` resource label, the `POST /historical-imports` routes and
+/// the `pricing_historical_price` store with it. `Trigger::ALL` never had such a
+/// variant and could not: five arms answer `false`, not six (review Z3-1).
+///
+/// Transcribed rather than derived, for the reason the `true`-side case gives:
+/// the value under test is what a reader auditing `inst-mat-registered` against
+/// §3 step 4 checks the module doc against, and asserting the `match` against
+/// itself would prove nothing about either.
+#[test]
+fn only_the_triggers_with_no_subject_in_this_crate_answer_false() {
+    let absent: Vec<&str> = Trigger::ALL
+        .iter()
+        .filter(|t| !t.subject_exists_in_this_crate())
+        .map(|t| t.as_str())
+        .collect();
+
+    assert_eq!(
+        absent,
+        [
+            "retirementUnwindingACutover",
+            "bulkGroupMove",
+            "gaGateClearingRepublish",
+            "prepaidGateClearingRepublish",
+            "grantNonPriceField",
+        ]
+    );
+    assert_eq!(
+        absent.len() + 12,
+        Trigger::ALL.len(),
+        "the two sides partition the roster, so a variant added to neither census is a variant \
+         this pair stopped covering"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // The act half
 // ---------------------------------------------------------------------------

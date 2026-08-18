@@ -83,11 +83,18 @@ pub struct Model {
     /// the Auditor-only `pricing_audit_log`.
     pub created_by: Uuid,
     pub created_at_utc: DateTime<Utc>,
-    /// The `ETag` / optimistic-concurrency row version.
     /// The plan this one was cloned from (`inst-cl-copy`, D-19), or `None` for
     /// an authored plan. Lineage only: a clone is an ordinary draft and nothing
     /// reads this to decide behaviour.
     pub cloned_from: Option<Uuid>,
+    /// The `ETag` / optimistic-concurrency row version.
+    ///
+    /// This line was attached to [`Model::cloned_from`] until 2026-08-18 (review
+    /// Z1-2), so the clone-lineage column's rendered doc opened by calling it the
+    /// entity tag and the column an `If-Match` precondition answers against carried
+    /// none at all. The mechanism is visible in the chain:
+    /// `m20260802_000061_add_pricing_plan_cloned_from` inserted the field directly
+    /// above this one and took its doc line with it.
     pub row_version: i64,
 }
 

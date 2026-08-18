@@ -148,6 +148,48 @@ fn an_over_authored_split_is_normalized_downward() {
     assert_eq!(reconciled.sums_to(), 10_000);
 }
 
+/// **The authored total is formed without wrapping** (Z5-12).
+///
+/// `reconcile` is a domain function over a `RevShareGroup` that reaches it from
+/// the wire before persistence — the store's `0..=10000` CHECK on `share_bp` is
+/// downstream of here and the party list is unbounded — so both the `+` and the
+/// `sum` were unchecked accumulations over caller-supplied values. A wrapped
+/// `authored` produces a residual far outside the tolerance, so the refusal path
+/// is entered rather than a wrong split published, but it is entered carrying a
+/// number that is not the sum of anything, and a debug build panics before it gets
+/// there.
+///
+/// A structural refusal rather than a residual one, because a total that does not
+/// exist is not a total that is 4 bp out: `RESIDUAL_OVER_TOLERANCE` tells an
+/// operator how far from the whole they are, and that number would be a fiction.
+#[test]
+fn an_authored_total_that_does_not_fit_is_a_structural_refusal_not_a_wrapped_residual() {
+    // The `sum` across parties: two shares no store would hold, on a function the
+    // store does not gate.
+    let across_parties = reconcile(&group(
+        0,
+        Absorber::Platform,
+        &[("a", i32::MAX), ("b", i32::MAX)],
+    ))
+    .expect_err("the authored total does not fit an i32");
+    assert_eq!(across_parties.code(), REVSHARE_UNBALANCED);
+
+    // And the `+` that folds the platform cut into it, which is the other operator
+    // and would survive a fix to only the first.
+    let onto_the_cut = reconcile(&group(i32::MAX, Absorber::Platform, &[("a", 1)]))
+        .expect_err("the authored total does not fit an i32");
+    assert_eq!(onto_the_cut.code(), REVSHARE_UNBALANCED);
+
+    // And an ordinary group still reconciles, so the guard has not swallowed the
+    // arithmetic it protects.
+    assert_eq!(
+        reconcile(&group(1_000, Absorber::Platform, &[("a", 9_000)]))
+            .expect("an exact split")
+            .sums_to(),
+        FULL_ALLOCATION_BP
+    );
+}
+
 /// D-07's own example of what must **not** normalize: a six-way even split is
 /// 9996 bp, four out, and the operator has to reconcile it.
 #[test]

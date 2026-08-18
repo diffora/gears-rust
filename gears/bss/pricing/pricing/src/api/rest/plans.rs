@@ -102,6 +102,32 @@ pub const PLAN_CLONE: &str = "/bss-pricing/v1/plans/{planId}/clone";
 /// the surface is what the design set's Problem-responses block is about.
 pub const CLONE_SOURCE_NOT_FOUND: &str = "CLONE_SOURCE_NOT_FOUND";
 
+/// The `If-None-Match` header, declared on every read that honours it.
+///
+/// [`if_match_param`]'s reason on the read side, and it is the weaker of the two
+/// claims deliberately: this header is **optional**, so a client that never sends
+/// it is served the representation. What the declaration buys is that a client
+/// generated from this spec knows the round trip is available at all — the gear
+/// emitted validators on seven reads and read this header on none of them until
+/// 2026-08-17, so a caller polling for a fresh precondition re-downloaded the whole
+/// representation every time to obtain one.
+pub(crate) fn if_none_match_param() -> ParamSpec {
+    ParamSpec {
+        name: "If-None-Match".to_owned(),
+        location: ParamLocation::Header,
+        required: false,
+        description: Some(
+            "Optional conditional-read precondition (RFC 9110). Send the `ETag` this route last \
+             answered; if it still names the current representation the answer is `304` with the \
+             tag and no body. The wildcard `*` and a comma-separated list are both accepted, and \
+             comparison is weak, per RFC 9110 section 13.1.2 - deliberately laxer than this \
+             gear's `If-Match`, where a wildcard would be an unconditional write."
+                .to_owned(),
+        ),
+        param_type: "string".to_owned(),
+    }
+}
+
 /// The `If-Match` header, declared so a generated client knows it is mandatory.
 ///
 /// `OperationBuilder` has `path_param` and `query_param` but no header builder,
@@ -371,12 +397,14 @@ pub struct CompositeMeterRequest {
     ///
     /// - **Omitted: author a new definition.** The surface mints the id, as
     ///   `POST /plans` mints a `planId` and for a sharper version of the same
-    ///   reason. `pricing_composite_meter`'s
-    ///   `PRIMARY KEY (composite_id, plan_revision)` carries neither `plan_id` nor
-    ///   `tenant_id`, so it is `pricing_plan_phase`'s collision one table over -
-    ///   two plans of one tenant standing at revision `0` cannot share a child id,
-    ///   and `rest_plans.rs` pins that as a client-reachable `500`. A **required**
-    ///   id would put a fresh instance of a known defect on a brand-new surface.
+    ///   reason. Until `m20260802_000084`, `pricing_composite_meter`'s
+    ///   `PRIMARY KEY (composite_id, plan_revision)` carried neither `plan_id` nor
+    ///   `tenant_id`, so it was `pricing_plan_phase`'s collision one table over -
+    ///   two plans of one tenant standing at revision `0` could not share a child
+    ///   id, and `rest_plans.rs` pinned that as a client-reachable `500`. The key
+    ///   now carries both, so the collision is gone in **both** directions the
+    ///   optionality exposed; a **required** id would still have been the wrong
+    ///   call, for the reading below rather than for a defect.
     /// - **Supplied: keep this definition.** A `GET` echoes the ids, so a
     ///   read-modify-write round trip preserves identity through a facet that
     ///   replaces wholesale - which is what makes D-106's "a draft's formula edit
@@ -603,7 +631,7 @@ impl From<&PlanRevision> for PlanSummaryView {
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct PlanPageQuery {
     /// Plans per page; server default 100, hard cap 1,000.
-    pub limit: Option<u64>,
+    pub limit: Option<String>,
     /// The opaque token a previous page returned.
     pub cursor: Option<String>,
     /// Comma-separated lifecycle states. Absent is the authoring set: each
@@ -1022,12 +1050,23 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
         .authenticated()
         .no_license_required()
         .path_param("planId", "The plan to read.")
+        .param(crate::api::rest::plans::if_none_match_param())
         .handler(get_plan)
         .json_response_with_schema::<PlanView>(
             openapi,
             StatusCode::OK,
             "The plan's open draft revision, or its current revision.",
         )
+        // The conditional read's answer (RFC 9110 section 15.4.5). Declared
+        // because it is reachable: this route emits an `ETag` and honours the
+        // `If-None-Match` a caller sends it back in, which nothing in this gear
+        // did until 2026-08-17 while seven reads emitted a validator.
+        .no_content_response(
+            StatusCode::NOT_MODIFIED,
+            "The caller's `If-None-Match` matches the current representation, so the body is \
+             not re-sent.",
+        )
+        .error_400(openapi)
         .error_401(openapi)
         .error_403(openapi)
         .error_404(openapi)
@@ -1067,7 +1106,8 @@ async fn get_plan(
     Extension(enforcer): Extension<authz_resolver_sdk::PolicyEnforcer>,
     extension_ctx: Option<Extension<SecurityContext>>,
     Path(plan_id): Path<Uuid>,
-) -> Result<([(axum::http::HeaderName, String); 1], Json<PlanView>), CanonicalError> {
+    headers: HeaderMap,
+) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(extension_ctx)?;
     let plan_id = PlanId::new(plan_id);
     let scope = crate::authz::access_scope(
@@ -1092,7 +1132,14 @@ async fn get_plan(
     let view = read_shape(&state, &scope, tenant, plan_id, number, revision)
         .await
         .map_err(|e| CanonicalError::from(repo_failure(&e)))?;
-    Ok(([(ETAG, plan_tag(&view))], Json(view)))
+    let tag = plan_tag(&view);
+    // The conditional read (RFC 9110 §13.1.2). Compared against the tag this
+    // response is about to carry rather than against a second reading of the plan,
+    // which is what `preconditions::if_none_match`'s doc asks of every caller.
+    if preconditions::if_none_match(&headers, &tag) {
+        return Ok(preconditions::not_modified(&tag));
+    }
+    Ok(([(ETAG, tag)], Json(view)).into_response())
 }
 
 /// `GET /plans`.
@@ -1127,7 +1174,10 @@ async fn list_plans(
     .await
     .map_err(authz_error_to_canonical)?;
 
-    let page = PageRequest::parse(query.limit, query.cursor.as_deref())?;
+    let page = PageRequest::parse(
+        cursor::parse_limit(query.limit.as_deref())?,
+        query.cursor.as_deref(),
+    )?;
     let states = lifecycle_filter(query.lifecycle_state.as_deref())?;
     // One row more than the page, so "is there another page" needs no second
     // query and no page whose `next_cursor` points at nothing.
@@ -2611,12 +2661,24 @@ fn addon_of(view: AddonRuleView) -> AddonRule {
 /// assembles a revision's set over several calls, so judging it at save time
 /// would refuse an intermediate state the design expects (D-304).
 ///
-/// **What can fail here is the store, and this doc did not say so.** The primary
-/// key `(composite_id, plan_revision)` carries neither `plan_id` nor `tenant_id`
-/// and the id is client-supplied; `uq_pricing_composite_meter_output` is unique
-/// per revision. A pasted id or a repeated `output_unit` therefore reaches the
-/// caller as a bare `500`. Both are pinned in `rest_plans.rs` rather than fixed,
-/// which is `pricing_plan_phase`'s posture one table over.
+/// **What can fail here is the store, and this doc did not say so.** The
+/// paragraph that stood here named two such faults and said both were "pinned in
+/// `rest_plans.rs` rather than fixed, which is `pricing_plan_phase`'s posture one
+/// table over". One of the two is now fixed and that posture no longer exists:
+///
+/// - A **pasted `composite_id`** was a `500` because the primary key
+///   `(composite_id, plan_revision)` carried neither `plan_id` nor `tenant_id`
+///   while the id is client-supplied, so an id another tenant held at the same
+///   revision number collided. `m20260802_000084` widened the key to
+///   `(tenant_id, plan_id, plan_revision, composite_id)`, D-340's fix one table
+///   over, and the collision it leaves is the one that is genuinely the caller's:
+///   the same id twice inside one revision.
+/// - A **repeated `output_unit`** in one payload still reaches the caller as a
+///   bare `500` through `uq_pricing_composite_meter_output`, which is correctly
+///   tenant-scoped and is an ordinary duplicate-input mistake. It has no isolation
+///   dimension and is pinned rather than fixed (review A2-1); the posture that
+///   fits it is `names_the_phase_key`'s — refuse at the door over the submitted
+///   set — rather than a second typed code from the repository.
 ///
 /// The id is minted when the author omits it - see
 /// [`CompositeMeterRequest::composite_id`] for why the surface mints rather than

@@ -1523,10 +1523,17 @@ async fn terminal_phase(
 /// cannot say whether it reserves, and when Slice 10 lands that constructor
 /// starts reading the row and this call site does not move.
 ///
+/// `pub(crate)` for [`crate::infra::cutover`] (D-344). The gate guards acts whose
+/// content is **authored** rather than derived, and a cutover's successor is
+/// entirely client-authored — so it is the gate's second subject, not a second
+/// gate. The repricing apply is deliberately not a third: its successor is
+/// computed by `project_row` from a row whose own publish already passed here,
+/// so it can present no shape this gate has not already seen.
+///
 /// # Errors
 /// [`DomainError::FixtureMissing`] naming the kind and the variant that has no
 /// green fixture.
-fn check_fixtures(gate: &FixtureGate, shape: &PlanShape) -> Result<(), DomainError> {
+pub(crate) fn check_fixtures(gate: &FixtureGate, shape: &PlanShape) -> Result<(), DomainError> {
     for record in &shape.rows {
         gate.check(&record.row, Reservation::of_slice3_row(&record.row))?;
     }

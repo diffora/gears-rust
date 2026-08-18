@@ -95,6 +95,7 @@ use bss_pricing::domain::bulk::{BulkKind, BulkState, JournalState};
 use bss_pricing::domain::concurrency::RowVersion;
 use bss_pricing::domain::contracts::{BillingAnchorPolicy, ProrationBasis, ProrationContract};
 use bss_pricing::domain::money::{CurrencyCode, MinorAmount};
+use bss_pricing::domain::overlay::{Adjustment, Magnitude};
 use bss_pricing::domain::plan_shape::{
     BillingCycle, DescriptorSet, Frequency, PhaseKind, PlanPhase,
 };
@@ -461,13 +462,21 @@ fn apply_stamp() -> AuditStamp {
 /// suite's only way to hand [`apply_run_in`] an adjustment and a changeover,
 /// since it takes neither directly and reads both off the run's own stored
 /// report.
+///
+/// **The two kind tokens are rendered by the producer, not typed.** They were
+/// JSON literals until 2026-08-18 (review Z2-11): production writes them through
+/// `Adjustment::kind()` / `::magnitude_kind()` and reads them back through
+/// `adjustment_of`, so a rename moved producer and consumer together and left
+/// this fixture asserting against the old spelling — green, and testing nothing
+/// about the round trip it exists to drive.
 fn report() -> serde_json::Value {
+    let adjustment = Adjustment::Discount(Magnitude::PercentBp(500));
     serde_json::json!({
         "selector": serde_json::Value::Null,
         "adjustment": {
-            "adjustment_kind": "discount",
-            "magnitude_kind": "percent_bp",
-            "adjustment_value": 500,
+            "adjustment_kind": adjustment.kind().as_str(),
+            "magnitude_kind": adjustment.magnitude_kind().as_str(),
+            "adjustment_value": adjustment.percent_bp(),
             "amounts": {},
         },
         "changeover": changeover().to_rfc3339(),

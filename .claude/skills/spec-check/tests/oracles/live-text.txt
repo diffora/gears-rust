@@ -1,5 +1,8 @@
+[Low] PRD.md — 12 of 12 non-functional requirement(s) are claimed by no slice's Traces-to line: cpt-cf-bss-pricing-nfr-audit-retention, cpt-cf-bss-pricing-nfr-availability-dr, cpt-cf-bss-pricing-nfr-data-residency, cpt-cf-bss-pricing-nfr-event-propagation, cpt-cf-bss-pricing-nfr-mass-repricing-throughput, cpt-cf-bss-pricing-nfr-multi-currency-scale, cpt-cf-bss-pricing-nfr-mutation-latency, cpt-cf-bss-pricing-nfr-observability, cpt-cf-bss-pricing-nfr-publish-propagation, cpt-cf-bss-pricing-nfr-read-latency, cpt-cf-bss-pricing-nfr-size-limits, cpt-cf-bss-pricing-nfr-validation-latency (P2/nfr-unclaimed)
 [Low] DECISIONS.md — P1 cannot verify propagation for gears/bss/rating/docs: DECISIONS.md yielded zero decision entries — no `#### <id> …` heading matched the recognised id shape (`D-NN`, optionally gear-prefixed, e.g. `SUB-D-01`) — 0 `**Propagated`-shaped field(s) in that register went unchecked as a result (P1/decision-register-unparsed)
+[Low] PRD.md — 4 of 4 non-functional requirement(s) are claimed by no slice's Traces-to line: cpt-cf-bss-rating-nfr-audit-segregation, cpt-cf-bss-rating-nfr-horizontal-scale, cpt-cf-bss-rating-nfr-resilience, cpt-cf-bss-rating-nfr-throughput-latency (P2/nfr-unclaimed)
 [Low] design/15-rated-output-balance-effects.md — design/15-rated-output-balance-effects.md declares error codes without a `**Problem responses (RFC 9457):**` block; the rest of the design set uses that convention (P3/code-convention-divergent)
+[Low] PRD.md — 6 of 6 non-functional requirement(s) are claimed by no slice's Traces-to line: cpt-cf-bss-subscriptions-nfr-entitlement-check-latency, cpt-cf-bss-subscriptions-nfr-horizontal-partitioning, cpt-cf-bss-subscriptions-nfr-lifecycle-latency, cpt-cf-bss-subscriptions-nfr-operational-baselines, cpt-cf-bss-subscriptions-nfr-proration-accuracy, cpt-cf-bss-subscriptions-nfr-recurring-cut (P2/nfr-unclaimed)
 
-2 finding(s)
-50 known-debt finding(s) suppressed, tracked as D-69 — pass --show-known-debt to see them
+5 finding(s)
+49 known-debt finding(s) suppressed, tracked as D-69 — pass --show-known-debt to see them

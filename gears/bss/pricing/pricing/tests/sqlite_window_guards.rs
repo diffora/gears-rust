@@ -14,10 +14,14 @@
 //!
 //! * **every instant is `text` here, so every comparison is lexicographic**, and
 //!   the rule that makes that safe has two halves. Between two **stored** instants
-//!   it is exact, because every writer renders a `DateTime<Utc>` the same way and
-//!   that rendering is fixed-width and monotonic — so
-//!   `chk_pricing_price_window_interval` and the two ordering CHECKs compare the
-//!   columns directly. Against **`CURRENT_TIMESTAMP`** it is not, and arm 5 is the
+//!   it is exact — not because the rendering is fixed-width, which it is not
+//!   (`AutoSi` picks 0, 3, 6 or 9 fractional digits per value), but because the
+//!   offset sign sorts below both the fraction separator and the digits, so a
+//!   coarser rendering of an instant always precedes a finer one. That is review
+//!   Z2-8's correction and
+//!   [`instants_of_three_fractional_widths_inside_one_second_still_order`] executes
+//!   it; on that ground `chk_pricing_price_window_interval` and the two ordering
+//!   CHECKs compare the columns directly. Against **`CURRENT_TIMESTAMP`** it is not, and arm 5 is the
 //!   only guard here with the clock on one side: `CURRENT_TIMESTAMP` renders
 //!   `YYYY-MM-DD HH:MM:SS`, a **space** at byte 11 where the stored text has `T`,
 //!   so the arm normalizes with `datetime(…)`.
@@ -177,6 +181,101 @@ fn insert(id: &str, overrides: &[(&str, &str)]) -> String {
 
 fn update(id: &str, set: &str) -> String {
     format!("UPDATE pricing_price_window SET {set} WHERE window_id = '{id}'")
+}
+
+/// **Variable-width fractions still sort chronologically** — review Z2-8.
+///
+/// `m20260802_000016`'s module doc is this crate's standing licence to compare
+/// these `text` instants directly, and until 2026-08-18 the licence rested on a
+/// false premise: it said the stored rendering is *"fixed-width, zero-padded and
+/// monotonic"*. It is not fixed-width. `sqlx-sqlite` encodes a `DateTime<Utc>` as
+/// `to_rfc3339_opts(SecondsFormat::AutoSi, false)`, and `AutoSi` picks 0, 3, 6 or
+/// 9 fractional digits per value — so one column holds 25-, 29-, 32- and
+/// 35-character renderings side by side, and this gear's own writers mix them:
+/// `check_authored_instant` bounds an *authored* instant at a millisecond and
+/// explicitly excludes storage bookkeeping, so `Utc::now()` reaches `created_at`
+/// at nanosecond precision.
+///
+/// The conclusion survives on a different argument, and this is that argument
+/// executed rather than reasoned about: the offset sign sorts **below** both the
+/// fraction separator and the digits — `'+'` is 0x2B, `'.'` is 0x2E, `'0'`–`'9'`
+/// are 0x30–0x39 — so a coarser rendering always sorts before a finer one of the
+/// same instant, which is chronological in both directions.
+///
+/// Three widths of one second are stored, in the wrong order on purpose, and both
+/// consumers of the licence are asked: `chk_pricing_price_window_interval`
+/// (`effective_to > effective_from`) must admit each pair, and an `ORDER BY` over
+/// the column must return them in chronological order. Written because
+/// "fixed-width" is exactly the premise that would license a `substr(…, 1, 25)`
+/// normalization, which would truncate a nanosecond rendering mid-fraction and
+/// reintroduce the class this file's module doc records having already shipped
+/// once.
+#[tokio::test]
+async fn instants_of_three_fractional_widths_inside_one_second_still_order() {
+    /// The same second at `AutoSi`'s 0-, 3- and 9-digit widths, coarsest first —
+    /// which is chronological, each being a prefix-instant of the next.
+    const WIDTHS: [&str; 3] = [
+        "'2099-01-01T00:00:00+00:00'",
+        "'2099-01-01T00:00:00.500+00:00'",
+        "'2099-01-01T00:00:00.500000001+00:00'",
+    ];
+    let conn = seeded().await;
+
+    // Every ordered pair the interval CHECK could see, submitted finer-as-`to`.
+    // A CHECK reading these as out of order would refuse one of them.
+    for (index, pair) in WIDTHS.windows(2).enumerate() {
+        let id = format!("cccccccc-0000-0000-0000-00000000000{index}");
+        must_succeed(
+            &conn,
+            &insert(
+                &id,
+                &[("effective_from", pair[0]), ("effective_to", pair[1])],
+            ),
+        )
+        .await;
+    }
+    // ...and the widest pair, so the 0-digit / 9-digit comparison is asked too.
+    must_succeed(
+        &conn,
+        &insert(
+            "cccccccc-0000-0000-0000-00000000000f",
+            &[("effective_from", WIDTHS[0]), ("effective_to", WIDTHS[2])],
+        ),
+    )
+    .await;
+
+    // The `ORDER BY` half. Inserted in the wrong order so the answer is the
+    // engine's collation and not the insertion sequence.
+    for (index, instant) in [WIDTHS[2], WIDTHS[0], WIDTHS[1]].into_iter().enumerate() {
+        let id = format!("dddddddd-0000-0000-0000-00000000000{index}");
+        must_succeed(
+            &conn,
+            &insert(
+                &id,
+                &[
+                    ("effective_from", instant),
+                    ("effective_to", "'2099-12-01T00:00:00+00:00'"),
+                ],
+            ),
+        )
+        .await;
+    }
+    let ordered = common::scalar(
+        &conn,
+        "SELECT group_concat(effective_from, '|') AS v FROM (
+             SELECT effective_from FROM pricing_price_window
+              WHERE window_id LIKE 'dddddddd-%'
+              ORDER BY effective_from ASC)",
+    )
+    .await;
+    assert_eq!(
+        ordered,
+        "2099-01-01T00:00:00+00:00|2099-01-01T00:00:00.500+00:00|\
+         2099-01-01T00:00:00.500000001+00:00",
+        "the coarser rendering must sort first: `'+'` (0x2B) is below both `'.'` \
+         (0x2E) and the digits (0x30-0x39), which is what makes the order \
+         chronological without the width being fixed"
+    );
 }
 
 /// The moves that are supposed to work, so that the five arms below are proved to

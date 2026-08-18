@@ -155,17 +155,32 @@ pub async fn open_rows(
 /// id with a null instant is admitted by the pair-wise spelling and would be
 /// applied a second time by the re-drive.
 ///
-/// **The swap is the guard.** A statement matching zero rows — the wrong
-/// `(run_id, price_id)` pair, a row the scope gate filtered out, a row already
-/// decided — is refused rather than answered `Ok(())`; the caller here is the
-/// re-drive, and a silent no-op would leave the row `pending` for it to apply a
-/// second time, minting a second successor on the key (Z8-2).
+/// **The swap is the guard, and `pending` is part of it.** A statement matching
+/// zero rows — the wrong `(run_id, price_id)` pair, a row the scope gate filtered
+/// out, a row already decided — is refused rather than answered `Ok(())`; the
+/// caller here is the re-drive, and a silent no-op would leave the row `pending`
+/// for it to apply a second time, minting a second successor on the key (Z8-2).
+///
+/// The third case is the one this predicate had to grow a conjunct for (Z2-3). It
+/// used to be false: [`row_of`] is three equalities, a decided row **matches**
+/// them, and what refused the write was
+/// `trg_pricing_repricing_journal_decided_is_final` — whose `RAISE` reaches the
+/// caller as [`RepoError::Db`], a 500, for what is a race another pass won. Every
+/// other state-moving write in this layer carries its premise in the statement
+/// (`bulk_repo::advance`, `approval_repo::swap`, `window_repo::transition` and ten
+/// more); these two were the exceptions, and the trigger — not the swap — was
+/// doing the refusing.
+///
+/// The trigger stays and stays load-bearing: it is what makes a decided row final
+/// against **any** writer, including one that never came through this function.
+/// The conjunct only decides which of the two speaks first, and therefore what the
+/// caller is told.
 ///
 /// # Errors
-/// [`RepoError::Db`] on a scope or storage failure, including the trigger's
-/// refusal to move a row that is already decided and the `CHECK` refusing a
-/// successor that wears the selected row's own id; [`RepoError::NotFound`] when
-/// the swap matches no row.
+/// [`RepoError::ConcurrentMutation`] when the row exists and is no longer
+/// `pending`, naming the state it reads now; [`RepoError::NotFound`] when there is
+/// no such row at all; [`RepoError::Db`] on a scope or storage failure, including
+/// the `CHECK` refusing a successor that wears the selected row's own id.
 pub async fn mark_applied(
     runner: &impl DBRunner,
     scope: &AccessScope,
@@ -190,16 +205,13 @@ pub async fn mark_applied(
             repricing_journal::Column::AppliedAt,
             sea_orm::sea_query::Expr::value(applied_at),
         )
-        .filter(row_of(tenant_id, run_id, price_id))
+        .filter(pending_row_of(tenant_id, run_id, price_id))
         .exec(runner)
         .await
         .map_err(|e| RepoError::Db(format!("apply pricing_repricing_journal: {e}")))?
         .rows_affected;
     if affected == 0 {
-        return Err(RepoError::NotFound {
-            subject: "repricing journal row".to_owned(),
-            id: format!("{run_id}/{price_id}"),
-        });
+        return Err(swap_refusal(runner, scope, tenant_id, run_id, price_id).await);
     }
     Ok(())
 }
@@ -231,16 +243,13 @@ pub async fn mark_failed(
             repricing_journal::Column::FailureReason,
             sea_orm::sea_query::Expr::value(reason),
         )
-        .filter(row_of(tenant_id, run_id, price_id))
+        .filter(pending_row_of(tenant_id, run_id, price_id))
         .exec(runner)
         .await
         .map_err(|e| RepoError::Db(format!("fail pricing_repricing_journal: {e}")))?
         .rows_affected;
     if affected == 0 {
-        return Err(RepoError::NotFound {
-            subject: "repricing journal row".to_owned(),
-            id: format!("{run_id}/{price_id}"),
-        });
+        return Err(swap_refusal(runner, scope, tenant_id, run_id, price_id).await);
     }
     Ok(())
 }
@@ -312,11 +321,66 @@ pub async fn pending_for_run(
 /// has — `.scope_with(scope)` is the RLS gate, so this is not load-bearing for
 /// isolation on its own, but a predicate that omits it is the one filter here
 /// that would not stop at a foreign row if the gate above it ever did.
+///
+/// Identity only: it is what [`swap_refusal`] re-reads by, and it is deliberately
+/// **not** what either swap writes by — see [`pending_row_of`].
 fn row_of(tenant_id: Uuid, run_id: Uuid, price_id: Uuid) -> Condition {
     Condition::all()
         .add(repricing_journal::Column::TenantId.eq(tenant_id))
         .add(repricing_journal::Column::RunId.eq(run_id))
         .add(repricing_journal::Column::PriceId.eq(price_id))
+}
+
+/// [`row_of`] plus the premise both swaps hold: the row is still undecided.
+///
+/// The premise is in the statement rather than in a preceding read, for the reason
+/// this layer states everywhere it does the same thing — a read-then-write admits
+/// both of two concurrent callers, because between the read and the write nothing
+/// holds the row.
+fn pending_row_of(tenant_id: Uuid, run_id: Uuid, price_id: Uuid) -> Condition {
+    row_of(tenant_id, run_id, price_id)
+        .add(repricing_journal::Column::State.eq(JournalState::Pending.as_str()))
+}
+
+/// Why a swap matched no row: it is gone, or somebody else decided it.
+///
+/// Read **after** the statement and only to name the refusal — the swap is still
+/// the guard, and this read cannot change what was written. Same shape and same
+/// reason as `bulk_repo::advance`'s zero-row arm.
+///
+/// A read that itself fails is returned as-is rather than folded into a `NotFound`,
+/// so a storage fault is never reported as an absent row.
+async fn swap_refusal(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    run_id: Uuid,
+    price_id: Uuid,
+) -> RepoError {
+    let fresh = repricing_journal::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(row_of(tenant_id, run_id, price_id))
+        .all(runner)
+        .await
+        .map_err(|e| RepoError::Db(format!("read pricing_repricing_journal: {e}")));
+    match fresh {
+        Err(e) => e,
+        Ok(rows) => match rows.first().map(record_of) {
+            None => RepoError::NotFound {
+                subject: "repricing journal row".to_owned(),
+                id: format!("{run_id}/{price_id}"),
+            },
+            Some(Err(e)) => e,
+            Some(Ok(row)) => RepoError::ConcurrentMutation {
+                aggregate: format!(
+                    "repricing journal row {run_id}/{price_id}: the swap names a row that now \
+                     reads {}",
+                    row.state.as_str()
+                ),
+            },
+        },
+    }
 }
 
 /// A stored row as this crate's vocabulary.

@@ -88,13 +88,20 @@ fn the_committed_publish_flags_are_exactly_what_a_run_earned() {
 ///   row, and a row that would not publish on an empty key does not publish on
 ///   an occupied one either. Fixed in the corpus: both sides of each pair now
 ///   carry the window, equal, so the guard's subject is unchanged.
-/// - `consumption-on-level-rejected` — the gear cannot assess it at all: the
-///   snapshot carries the Slice-10 reservation pair and `PriceRow` is the
-///   Slice-3 shape. **The corpus was right and the gear is not there yet**, so
-///   neither side moved. The corpus now *says* so, with `declined_until` on the
-///   case — the `trailing-tier` treatment at case granularity — and a decline is
-///   therefore the anticipated answer rather than a disagreement. The verdict
-///   stays authored and stays checked; see the two tests below.
+/// - `consumption-on-level-rejected` — the gear could not assess it at all: the
+///   snapshot carried the Slice-10 reservation pair and `PriceRow` was the
+///   Slice-3 shape. **The corpus was right and the gear was not there yet**, so
+///   neither side moved; the corpus said so with `declined_until` on the case —
+///   the `trailing-tier` treatment at case granularity — and a decline was the
+///   anticipated answer rather than a disagreement.
+///
+///   **Closed on 2026-08-08**, when Slice 10 landed `reserved_rate_minor` /
+///   `reservation_flavor` on the row and `domain::rules::reservation`. The
+///   marker came off in the same commit, because it is self-retiring: leaving it
+///   would fire `stale_decline()` and the corpus would be asserting that a built
+///   slice is unbuilt. The case is **answered** now, not declined — which is what
+///   the two tests below hold, and this entry is kept as the record of a closed
+///   disagreement rather than a description of the corpus as it stands.
 #[test]
 fn the_open_corpus_disagreements_are_exactly_these() {
     let report = validator::publish_report(&corpus());

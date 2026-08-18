@@ -15,7 +15,7 @@ mod rest_support;
 
 use axum::http::StatusCode;
 use bss_pricing::api::rest::retirement::PLAN_RETIRE;
-use rest_support::{Harness, body_json, plan_state, request, seed_publishable_plan};
+use rest_support::{Harness, body_json, plan_state, problem_code, request, seed_publishable_plan};
 use uuid::Uuid;
 
 const SUBMITTER: Uuid = Uuid::from_u128(0x_5e_11);
@@ -181,8 +181,11 @@ async fn a_plan_that_is_not_published_is_refused() {
 
     // The lifecycle refusal is architecturally a 422 and reaches the wire as a
     // 400 carrying its code (Foundation §3.3) — the code is the discriminator,
-    // not the status.
+    // not the status. This case stated exactly that and then tested the half the
+    // sentence says is not the discriminator; several distinct refusals share this
+    // status, so the status alone passes with the wrong one.
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(problem_code(response).await, "LIFECYCLE_FORBIDDEN");
 }
 
 #[tokio::test]
@@ -195,4 +198,16 @@ async fn an_unknown_plan_is_a_404_rather_than_an_empty_preview() {
         .await;
 
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    // The generic `NotFound` mints **no** wire code — `error_mapping.rs` puts the
+    // id in `context.resource_name` and the subject in the detail — so the subject
+    // is what discriminates this 404 from the four other things on this route that
+    // can be absent. Asserted rather than the status alone, which every one of them
+    // shares.
+    let problem = body_json(response).await;
+    assert!(
+        problem["detail"]
+            .as_str()
+            .is_some_and(|detail| detail.contains("plan") && detail.contains("not found")),
+        "the refusal names what was absent: {problem}"
+    );
 }

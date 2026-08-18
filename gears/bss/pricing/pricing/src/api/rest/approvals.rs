@@ -669,8 +669,11 @@ pub struct PinnedThresholdPolicyView {
 ///
 /// The two bases are two nullable members and **exactly one is set**, which is the
 /// store's column shape rather than the domain's enum. The wire keeps the columns
-/// because a generated client reads `absoluteMinor` or `percentBp` and a tagged
-/// union would make the common case — read the number — a two-step. The invariant
+/// because a generated client reads `absolute_minor` or `percent_bp` — the
+/// spelling `toolkit_macros::api_dto` emits, `#[serde(rename_all = "snake_case")]`
+/// unconditionally — and a tagged union would make the common case, read the
+/// number, a two-step. This sentence said `absoluteMinor` until 2026-08-17 and
+/// four refusals in `threshold_policy::parse_entries` believed it. The invariant
 /// is held one layer in, by `ThresholdBasis`, and it is the constructor that a
 /// caller of the `PUT` meets.
 #[derive(Debug, Clone)]
@@ -821,7 +824,7 @@ pub struct WithdrawApprovalRequest {
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct ApprovalPageQuery {
     /// Records per page; server default 100, hard cap 1,000.
-    pub limit: Option<u64>,
+    pub limit: Option<String>,
     /// The opaque token a previous page returned.
     pub cursor: Option<String>,
     /// One of `submitted` | `approved` | `rejected` | `voided`. Absent is every
@@ -905,6 +908,7 @@ pub fn router(state: Arc<GovernanceState>, openapi: &dyn OpenApiRegistry) -> Rou
             StatusCode::OK,
             "The record and the content its pin covers.",
         )
+        .error_400(openapi)
         .error_401(openapi)
         .error_403(openapi)
         .error_404(openapi)
@@ -1038,7 +1042,10 @@ async fn list_approvals(
     let ctx = require_authenticated(extension_ctx)?;
     let scope = read_scope(&enforcer, &ctx, None).await?;
 
-    let page = PageRequest::parse(query.limit, query.cursor.as_deref())?;
+    let page = PageRequest::parse(
+        cursor::parse_limit(query.limit.as_deref())?,
+        query.cursor.as_deref(),
+    )?;
     let states = state_filter(query.state.as_deref())?;
     // One row more than the page, so "is there another page" is answered without
     // a second query and without a page of `next_cursor` pointing at nothing.

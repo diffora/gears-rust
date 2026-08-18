@@ -135,7 +135,17 @@ async fn read_snapshot(
         &ctx,
         &crate::authz::resource_types::PLAN,
         crate::authz::actions::READ,
-        /* owner_tenant_id */ Some(tenant),
+        // **`None`, because this is a read** — `authz::access_scope`'s stated
+        // two-way split: reads let the PDP derive the scope from the subject and
+        // its role, never from a caller-supplied tenant, and only a write passes
+        // `Some(target_tenant)` so the membership assertion has a target to test.
+        // Four read gates passed `Some(tenant)` until 2026-08-18, which ran that
+        // write-only assertion on a read. Nothing escalated — the value was
+        // `ctx.subject_tenant_id()` and never caller-supplied — but it was a live
+        // divergence between a module's stated contract and four of its callers,
+        // and the contract is the thing a later reader trusts.
+        /* owner_tenant_id */
+        None,
         /* resource_id */ None,
         /* require_constraints */ true,
     )

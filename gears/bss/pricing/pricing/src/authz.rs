@@ -130,9 +130,32 @@ pub mod actions {
     /// `migrated-origin` snapshot. The resource scopes what the read
     /// authorizes.
     pub const READ: &str = "read";
-    /// The partner-facing base-price preview grant, evaluated against the
-    /// grant's explicit pricing-region set. Distinct from [`READ`] so a partner
-    /// never holds an authoring read.
+    /// The partner-facing base-price preview grant. Distinct from [`READ`] so a
+    /// partner never holds an authoring read.
+    ///
+    /// **The grant is tenant- and plan-scoped, and the region clause awaits a
+    /// transport.** This doc said the grant was *"evaluated against the grant's
+    /// explicit pricing-region set"* until 2026-08-18, and nothing evaluated
+    /// anything of the kind: `05-governance.md` §5's `inst-rb-preview-scope`
+    /// requires that a preview resolve only markets whose pricing `region` is a
+    /// member of that set — `REGION_SCOPE_DENIED` (403) otherwise — and
+    /// `api::rest::preview` takes the region from the caller's own query string,
+    /// uses it only to select the market row, and never compares it against
+    /// anything the gate returned.
+    ///
+    /// The substrate is the reason and not an excuse: [`SUPPORTED_PROPERTIES`]
+    /// advertises exactly `owner_tenant_id` and `resource_id`, both uuid-typed, and
+    /// a pricing region is a string on a price row's scope key — nothing transports
+    /// a region grant anywhere on this platform. `REGION_SCOPE_DENIED` exists and is
+    /// mapped, and its only producer is the **approval** plane's `inst-ap-scope`.
+    ///
+    /// What was wrong here was the asymmetry rather than the gap. The approval plane
+    /// declares the same absence with unusual care — `infra::approval` models it as a
+    /// two-valued `RegionGrant::{Untransported, Explicit}` so the day a transport
+    /// arrives is a visible change, and names the test that must change then — while
+    /// the preview plane, the surface the rule was *written for*, asserted the
+    /// opposite in this catalog. A reader trusting this sentence would have taken the
+    /// region question as considered and settled.
     pub const PREVIEW: &str = "preview";
     /// Approve or reject an approval record. Distinct from [`PUBLISH`] so no
     /// default role holds both, on top of the server-side
@@ -147,6 +170,27 @@ pub mod actions {
 /// row is tenant-owned: `owner_tenant_id` is the tenant column the secure-ORM
 /// filter binds to, `id` the row PK for single-row gates. NO subtree/group
 /// property — the PDP pre-expands the subtree to a flat `In`.
+///
+/// # Why four of the eight labels never anchor to a resource id
+///
+/// `config`, `approval_policy` and `audit` are tenant singletons or a log: they have
+/// no per-instance identity, so their permissions are correctly modelled as surface
+/// grants and their gates pass `resource_id: None`.
+///
+/// **`customer_group` is not in that class, and the reason it behaves like one is
+/// this list.** All four membership routes bind `{group}` as a path segment and
+/// `required_group` turns it into a `ScopeValue`, so the gear treats a group as a
+/// named thing with identity — yet both gates pass `None`, which means holding
+/// `customer_group × write` grants write on **every** group in the tenant and no
+/// role definition can be scoped to a subset. The axis physically cannot carry it:
+/// both properties above are **uuid-typed** and a customer group is a taxonomy
+/// *value*, a string.
+///
+/// So this is a modelling gap that **arms** rather than a live hole. The day a
+/// partner model needs per-group delegation, the answer is not "add a constraint" —
+/// it is "give groups uuids", and this paragraph is where a later reader finds that
+/// out instead of discovering it against a constraint that silently compiles to
+/// nothing.
 pub const SUPPORTED_PROPERTIES: &[&str] =
     &[pep_properties::OWNER_TENANT_ID, pep_properties::RESOURCE_ID];
 

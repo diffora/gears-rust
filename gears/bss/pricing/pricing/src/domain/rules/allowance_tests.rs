@@ -268,10 +268,10 @@ fn an_allowance_beside_a_reservation_is_refused_from_either_half() {
     // `is_reserved` is a disjunction, so a half-authored reservation is still a
     // row somebody meant to reserve — the allowance must not slip past on the
     // strength of an incomplete pair.
-    row.reserved_rate_minor = Some(MinorAmount::new(4).expect("an amount"));
+    row.reserved_rate = Some(RateMinor::from_minor_units(4).expect("a non-negative rate"));
     assert!(carries(&row, ALLOWANCE_WITH_RESERVATION));
 
-    row.reserved_rate_minor = None;
+    row.reserved_rate = None;
     row.reservation_flavor = Some(ReservationFlavor::Capacity);
     assert!(carries(&row, ALLOWANCE_WITH_RESERVATION));
 }
@@ -316,7 +316,7 @@ fn a_row_wrong_in_several_ways_reports_each_of_them() {
     let mut row = PriceRow::new(ChargeKind::Recurring, Some(ModelKind::Package));
     row.package_size = Some(10);
     row.aggregation_function = Some(AggregationFunction::Peak);
-    row.reserved_rate_minor = Some(MinorAmount::new(4).expect("an amount"));
+    row.reserved_rate = Some(RateMinor::from_minor_units(4).expect("a non-negative rate"));
     row.included_allowance = Some(allowance(0, RolloverPolicy::None));
 
     let found = codes(&run(&row));

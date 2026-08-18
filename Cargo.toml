@@ -322,6 +322,17 @@ usage-collector-sdk = { package = "cf-gears-usage-collector-sdk", version = "0.3
 
 # BSS gears (ported from vhp-core)
 bss-ledger-sdk = { path = "gears/bss/ledger/ledger-sdk", version = "0.1.0" }
+# No `version` here, unlike the ledger and rate-provider SDKs above and below,
+# because `bss-pricing-sdk/Cargo.toml` declares none either — the crate is not a
+# release target yet. `tools/scripts/check_packaging_metadata.py` agrees rather
+# than merely tolerating it: its second pass skips any package with no
+# `[package] version` ("not a release target yet (WIP), so `cargo publish` never
+# runs on it"), and `bss-pricing` is such a package, so its `workspace = true`
+# dependency on this entry is never examined. Asserting a version here that the
+# crate does not declare would be a claim about a release that has not been
+# planned. The day `bss-pricing` takes a `version`, this entry and
+# `pricing-sdk`'s own `[package]` must gain one in the same change or that gate
+# turns red — which is the intended coupling, not a latent trap.
 bss-pricing-sdk = { path = "gears/bss/pricing/pricing-sdk" }
 bss-rate-provider-sdk = { path = "gears/bss/rate-provider/rate-provider-sdk", version = "0.1.0" }
 coord = { path = "gears/bss/libs/coord" }

@@ -189,8 +189,10 @@ async fn provider() -> DBProvider<DbError> {
 }
 
 /// The real router over a real reader, plus the layers `register_rest` applies —
-/// here without the canonical-error middleware, these assertions being about
-/// status codes, which `CanonicalError` already carries as an `IntoResponse`.
+/// **including the canonical-error middleware**, which this router omitted until
+/// 2026-08-18 on the ground that these assertions were about status codes. That
+/// ground was the finding rather than the reason: the suite asserted only statuses
+/// because the body it was handed was not the body production serves.
 ///
 /// No correlation layer: this is a read, and the edge travels with the mutating
 /// routers only.
@@ -203,7 +205,11 @@ fn history_router(
         history: bss_pricing::infra::history::HistoryExporter::new(db),
     });
     let openapi = OpenApiRegistryImpl::new();
-    let router = router(state, &openapi).layer(axum::Extension(enforcer));
+    let router = router(state, &openapi)
+        .layer(axum::Extension(enforcer))
+        .layer(axum::middleware::from_fn(
+            toolkit::api::canonical_error_middleware,
+        ));
     match ctx {
         Some(ctx) => router.layer(axum::Extension(ctx)),
         None => router,
@@ -234,6 +240,25 @@ async fn post_at(router: Router, query: &str) -> axum::http::Response<Body> {
         )
         .await
         .expect("send")
+}
+
+/// The canonical **family** the problem document names.
+///
+/// `rest_support::problem_family`'s reading, re-typed for the same reason
+/// `rest_sources` is re-typed in two test binaries: this suite builds its own
+/// router and deliberately does not pull the shared harness in. Four lines, and
+/// pinned to the same `cf.core.err.*` id space by the assertions that call it.
+async fn problem_family(response: axum::http::Response<Body>) -> String {
+    let body = body_json(response).await;
+    let raw = body["type"]
+        .as_str()
+        .unwrap_or_else(|| panic!("no canonical type in the problem document: {body}"))
+        .to_owned();
+    raw.rsplit("cf.core.err.")
+        .next()
+        .and_then(|tail| tail.split(".v1").next())
+        .unwrap_or_else(|| panic!("not a `cf.core.err.*` id: {raw}"))
+        .to_owned()
 }
 
 async fn body_json(response: axum::http::Response<Body>) -> serde_json::Value {
@@ -328,6 +353,7 @@ async fn a_refused_caller_gets_403_and_not_an_empty_page() {
     let enforcer = PolicyEnforcer::new(Arc::new(DenyingResolver));
     let response = get_at(history_router(db, enforcer, Some(ctx_for(tenant))), "").await;
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    assert_eq!(problem_family(response).await, "permission_denied");
 }
 
 /// No authenticated context is 401, and it is answered before anything reads.
@@ -337,6 +363,7 @@ async fn an_unauthenticated_caller_gets_401() {
     let enforcer = PolicyEnforcer::new(Arc::new(FlatInResolver { allowed: vec![] }));
     let response = get_at(history_router(db, enforcer, None), "").await;
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(problem_family(response).await, "unauthenticated");
 }
 
 /// **A malformed page request reaches the wire as 400, not as a 500.**
@@ -363,6 +390,11 @@ async fn a_zero_limit_and_a_bad_cursor_are_both_400() {
             response.status(),
             StatusCode::BAD_REQUEST,
             "`{query}` must be refused at the wire with 400"
+        );
+        assert_eq!(
+            problem_family(response).await,
+            "invalid_argument",
+            "`{query}` is refused through the gear's ladder, not by axum's extractor"
         );
     }
 }
@@ -484,6 +516,7 @@ async fn a_role_granting_audit_read_alone_reads_the_history_and_cannot_export_it
         StatusCode::FORBIDDEN,
         "and the export asks for `audit x export`, which this role does not hold"
     );
+    assert_eq!(problem_family(export).await, "permission_denied");
 
     // The mirror, so the 403 above is about the *action* and not about the route
     // being unreachable: the same caller with the export grant is served.

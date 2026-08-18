@@ -40,6 +40,36 @@
 //! carries. In particular **no sort direction is encoded anywhere**, because
 //! §F.1 leaves it undecided — see [`crate::domain::overlay_rules`] for the one
 //! place that absence bites.
+//!
+//! # [`resolve_line`] has no consumer in this crate, and that is the design
+//!
+//! Stated here for the reason [`crate::domain::overlay_rules`]' own "rules this
+//! module deliberately does not hold" section exists: that module names
+//! `inst-plv-disclosure`'s exclusion half and `inst-plv-member-preview` by id
+//! precisely so an **absent** arm does not read as an oversight.
+//! [`resolve_line`] is the mirror image and had no such note (review Z3-3) — a
+//! **present** function, documented "normative and adopted by Rating step 4",
+//! with fifteen assertions across four cases, that nothing in this gear calls.
+//!
+//! Nothing should. The catalog's job on this plane is to **publish the whole
+//! line set**: `infra::read_model` freezes every line of the overlay index into
+//! the version a consumer pins, and resolution — which line applies to which
+//! priced row — happens where the row and its class and generation are known,
+//! which is Tariffs' step 4 and not here. There is no resolution route, no
+//! in-process resolve method and no consumer gear in this tree;
+//! `infra::read_model` contains no `resolve_line`, no `most_specific` and no
+//! `lines`.
+//!
+//! So [`resolve_line`] exists as the **executable statement of a joint
+//! contract**: D-78's eligibility filter and D-42's most-specific-wins ranking,
+//! written once, in the gear that owns the vocabulary, so the adopting side
+//! adopts an implementation rather than a paragraph. Its two helpers,
+//! [`LineKey::eligible_for`] and [`LineKey::specificity`], have exactly one
+//! caller each and it is this function. **The consequence for whoever adopts it
+//! is worth saying plainly**: it has never run against a stored overlay in this
+//! crate, so it is a specification that compiles and is unit-tested, not a path
+//! this gear exercises in production. Do not delete it — the design set calls it
+//! normative — and do not read its presence as enforcement.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -544,6 +574,50 @@ impl AmountSet {
     }
 }
 
+/// The persisted `magnitude_kind` token, as a closed enum.
+///
+/// [`Magnitude`]'s discriminant, in the shape [`ScopeClass`] is
+/// [`ScopeSelector`]'s: the value-carrying type answers with this one and this
+/// one owns the spelling. It exists because a data-carrying enum cannot have an
+/// `ALL` slice, and without an `ALL` slice the repository cannot call
+/// `read_token` — which is why `overlay_repo::line_of` hand-wrote the inverse
+/// list until 2026-08-18 (review Z1-7 / Z2-4), thirteen lines above a sibling
+/// that parses four tokens through their types' own `parse`.
+///
+/// The failure mode that fix closes is stated in `read_token`'s own doc: *"a
+/// hand-written inverse list is one a variant added later goes missing from
+/// while everything still compiles, and what that produces is a perfectly legal
+/// row read back as a corrupt one."* Renaming a token here now moves the writer,
+/// the reader and the wire parser together, because there is one spelling.
+#[domain_model]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum MagnitudeKind {
+    /// A currency-neutral basis-points value.
+    PercentBp,
+    /// Absolute money, per currency.
+    Amount,
+}
+
+impl MagnitudeKind {
+    /// Both kinds, in [`Magnitude`]'s declaration order.
+    pub const ALL: &'static [Self] = &[Self::PercentBp, Self::Amount];
+
+    /// The persisted / wire token.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::PercentBp => "percent_bp",
+            Self::Amount => "amount",
+        }
+    }
+
+    /// Parse a stored or authored token.
+    #[must_use]
+    pub fn parse(token: &str) -> Option<Self> {
+        Self::ALL.iter().copied().find(|k| k.as_str() == token)
+    }
+}
+
 /// A line's magnitude, with its type **declared** (D-08).
 ///
 /// A sum rather than a pair of nullable fields, so "a percent value and an
@@ -556,6 +630,42 @@ pub enum Magnitude {
     PercentBp(i64),
     /// Absolute money, per currency.
     Amount(AmountSet),
+}
+
+/// The persisted `adjustment_kind` token, as a closed enum.
+///
+/// [`Adjustment`]'s discriminant; see [`MagnitudeKind`] for why the pair exists
+/// and what a hand-written inverse list costs.
+#[domain_model]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum AdjustmentKind {
+    /// Adds its magnitude to the layer's input.
+    Markup,
+    /// Subtracts its magnitude from the layer's input.
+    Discount,
+    /// **Replaces** the running line amount (D-138).
+    Fixed,
+}
+
+impl AdjustmentKind {
+    /// Every kind, in [`Adjustment`]'s declaration order.
+    pub const ALL: &'static [Self] = &[Self::Markup, Self::Discount, Self::Fixed];
+
+    /// The persisted / wire token.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Markup => "markup",
+            Self::Discount => "discount",
+            Self::Fixed => "fixed",
+        }
+    }
+
+    /// Parse a stored or authored token.
+    #[must_use]
+    pub fn parse(token: &str) -> Option<Self> {
+        Self::ALL.iter().copied().find(|k| k.as_str() == token)
+    }
 }
 
 /// A line's adjustment: what it does to the running amount, and by how much.
@@ -578,29 +688,34 @@ pub enum Adjustment {
 }
 
 impl Adjustment {
-    /// The persisted / wire kind token.
+    /// The persisted / wire kind.
+    ///
+    /// Answers with [`AdjustmentKind`] rather than a `&str` for
+    /// [`ScopeSelector::class`]'s reason: the token has one spelling, it lives on
+    /// the discriminant, and a repository reading the column back can then ask
+    /// `read_token` for it instead of writing its own inverse list.
     #[must_use]
-    pub const fn kind(&self) -> &'static str {
+    pub const fn kind(&self) -> AdjustmentKind {
         match self {
-            Self::Markup(_) => "markup",
-            Self::Discount(_) => "discount",
-            Self::Fixed(_) => "fixed",
+            Self::Markup(_) => AdjustmentKind::Markup,
+            Self::Discount(_) => AdjustmentKind::Discount,
+            Self::Fixed(_) => AdjustmentKind::Fixed,
         }
     }
 
-    /// The persisted `magnitude_kind` token.
+    /// The persisted `magnitude_kind`.
     #[must_use]
-    pub const fn magnitude_kind(&self) -> &'static str {
+    pub const fn magnitude_kind(&self) -> MagnitudeKind {
         match self {
             Self::Markup(Magnitude::PercentBp(_)) | Self::Discount(Magnitude::PercentBp(_)) => {
-                "percent_bp"
+                MagnitudeKind::PercentBp
             }
             // `fixed` shares this arm rather than carrying its own: D-138
-            // makes it amount-based by construction, so "amount" here is the
+            // makes it amount-based by construction, so `Amount` here is the
             // same fact reached through a different variant.
             Self::Markup(Magnitude::Amount(_))
             | Self::Discount(Magnitude::Amount(_))
-            | Self::Fixed(_) => "amount",
+            | Self::Fixed(_) => MagnitudeKind::Amount,
         }
     }
 
@@ -718,6 +833,11 @@ impl OverlayInterval {
 /// `None` means no line of this overlay applies to the row, which is an ordinary
 /// outcome and not a failure — a `plan`-scoped list simply says nothing about a
 /// plan it does not name.
+///
+/// **Nothing in this crate calls it**, and the module doc's section on that is
+/// the statement of why — the catalog publishes the whole line set and
+/// resolution belongs to the consumer that holds the priced row. Read it before
+/// concluding this function is live enforcement.
 #[must_use]
 pub fn resolve_line<'a>(
     lines: &'a [OverlayLine],

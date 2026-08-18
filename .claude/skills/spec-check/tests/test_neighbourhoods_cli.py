@@ -275,13 +275,80 @@ def test_an_unknown_only_class_is_a_usage_error(tmp_path):
 # 45 -> 50 with every member named and hand-checked beside `PINNED_UNREFERENCED_CODES_2026_07_29`
 # — five of them made visible by the `is_decision_register` fix rather than newly broken — so
 # nothing closed silently, which is the hazard the 2026-08-05 `WINDOW_GAP` episode recorded.
+#
+# Moved back 2026-08-17 by the Z7-2 docs fix (D-329's unpaid `S7 §5` propagation): `multi-region`
+# 61 -> 62, `anchored:no-account` 4 -> 3, `PINNED_JUDGE_CALLS["pricing"]` 70 -> 71. The histogram
+# is exactly the one that stood before the entry above — this is the **same** oscillation
+# oscillating back, on the **same** id and the **same** two regions, one edit later.
+#
+# **One mover**, `fr-scheduled-migration`, `anchored:no-account` -> `suspicious:multi-region`,
+# diffed per-id by running `neighbourhoods.py` over the tree with the docs edit stashed and again
+# with it applied. The two regions that reappear are the two the note above recorded falling
+# under the threshold — `DECISIONS.md` and `design/11-lifecycle.md` — and they come back at
+# **0.603 with 47 matched terms**, which is the score and the match count they left at. Same
+# regions, same numbers, threshold re-crossed from below.
+#
+# **It is document frequency, not coverage, and the edit's own subject proves it.** Z7-2 added
+# ~40 lines to `design/07-pricewindow-linkage.md` §5 stating the grandfathering-horizon door's
+# preconditions. That text says nothing about scheduled migration, is in a slice this requirement
+# has no fragment in, and the requirement itself was not edited. What it did was grow the corpus,
+# which moves every term's document frequency slightly — the mechanism this block has now recorded
+# six times on this id. Nothing was reworded to move the score in either direction.
+#
+# **What was checked before accepting it**: live findings stayed at **2**, and known debt moved
+# 50 -> 49 with the single member named and hand-checked beside
+# `PINNED_UNREFERENCED_CODES_2026_07_29` (`GRANDFATHER_LOOSEN_FORBIDDEN`, paid down for real by
+# the new §5 rule body). Nothing closed silently.
+#
+# Moved 2026-08-17 by the Z7-12/Z7-13 veto-ledger fix: `weak-coverage` 9 -> 7,
+# `multi-region` 62 -> 64, `PINNED_JUDGE_CALLS["pricing"]` unchanged at 71 (both classes are
+# judged, so two ids swapping between them is judge-neutral).
+#
+# **Two movers, and they are the `mentions` class this block has recorded a dozen times.**
+# `fr-event-contract` and `fr-rbac-deny-by-default`, both `weak-coverage` -> `multi-region`,
+# diffed per-id with the edit stashed and applied. Each gained **exactly one** new region, both
+# `DECISIONS.md`, at **0.609** and **0.604** against `SCORE_THRESHOLD = 0.6` — and every
+# pre-existing region of both is unchanged in score to three decimals (`fr-event-contract`
+# 0.478/0.609, `fr-rbac-deny-by-default` 0.229/0.729). So nothing was re-scored; one window
+# crossed.
+#
+# **The cause is the register narration growing, which is the one document a veto-ledger fix has
+# to grow.** The edit rewrote line 26's correcting sentence and its terminal sentence — the
+# narration is a single ~74 KB line, and the fixed 12-line window over it is the region both
+# movers gained. Neither new region says anything about event contracts or deny-by-default
+# authz; what it says is which six entries await veto and how they were derived. A judge should
+# be expected to answer `mentions` for both. Nothing was reworded to move a score.
+#
+# Moved 2026-08-17 by the F3-1 stale-owed sweep: `weak-coverage` 7 -> 6, `multi-region` 64 -> 65,
+# judged unchanged at 71 (both classes are judged).
+#
+# **One mover, `fr-supersession`, and it is this block's most-recorded oscillator on its
+# most-recorded window.** It gained `design/01-foundation.md:559-570` at **0.607** with 74 matched
+# terms — §3.7's `pricing_price` bullet block, the same region entries 16, 18 and 19 of
+# REGENERATE.md each recorded it crossing 0.6 on, in both directions. Its other three regions are
+# unchanged to three decimals, including its existing `01-foundation.md:67-78` at 0.148.
+#
+# Two contributions, both documented mechanisms and neither an account. The sweep added three
+# lines at §3.3 (the bulk-import arm is built, corrected), which shifts §3.7 down and re-slices a
+# 12-line window at step 6 — the effect entry 19 recorded pushing this exact id the *other* way,
+# predicting the return. And an earlier commit in this batch restated the "six mutating authoring
+# surfaces" census inside that bullet block. Neither text says anything about supersession; what
+# the window says about it (`supersedes_price_id`, the published-plane partial UNIQUE, the
+# `published -> superseded` whitelist) is untouched by this batch. Nothing was reworded to move it.
+# Moved again 2026-08-17 by the F3-2/Z8-24/Z8-26 note round: `weak-coverage` 6 -> 5,
+# `multi-region` 65 -> 66, judged unchanged at 71. **One mover, `fr-price-history-export`**,
+# gaining `DECISIONS.md:19-30` at **0.603** and nothing else — the register preamble, grown by
+# thirteen lines of note about three pre-squash shas that resolve from no clone. Its two real
+# regions are unchanged (0.103, 0.707). This is the `mentions` class on the id REGENERATE.md
+# entry 19 named for precisely this window and precisely this cause; the preamble summarises
+# every requirement in the gear, so any requirement can match it once it grows.
 PINNED_TRIAGE_PRICING = {
     "unbuildable:no-prose": 0,
     "no-region": 3,
     "anchored:no-account": 4,
-    "suspicious:multi-region": 61,
+    "suspicious:multi-region": 65,
     "suspicious:not-normative": 0,
-    "suspicious:weak-coverage": 9,
+    "suspicious:weak-coverage": 5,
     "covered:strong": 0,
 }
 #: Moved 2026-08-15 by the **D-320 rounding-policy surface wave**, landing on top of
@@ -1343,7 +1410,22 @@ PINNED_TRIAGE_LEDGER = {
 # under the 0.6 threshold, is beside `PINNED_TRIAGE_PRICING`. Unlike the 2026-08-16 wave —
 # where one departure and one arrival cancelled and this number held at 71 — this movement
 # is one-directional, so it moves.
+# pricing 71 -> 70 on 2026-08-17 by D-344. Same single mover as the earlier capture the
+# same day, `fr-scheduled-migration`, crossing the same boundary for the third time:
+# attributed by a controlled run of `neighbourhoods.py` against a `git archive HEAD`
+# export of the docs tree with D-344 uncommitted, which reproduces the previous
+# histogram exactly (no-account 3, multi-region 66). Nothing about the requirement or
+# its coverage changed; a register entry of ~40 lines moved document frequency over a
+# fixed window grid and its two 0.603-scoring regions fell under SCORE_THRESHOLD = 0.6.
+# Three crossings by one id in one day is the measurement this pin exists to expose:
+# the threshold sits inside this requirement's noise band, which is a property of the
+# ladder rather than of the corpus.
 PINNED_JUDGE_CALLS = {"pricing": 70, "ledger": 17}
+#: pricing 70 -> 71 on the 2026-08-17 **Z7-2 docs fix**: `fr-scheduled-migration` returns to
+#: `suspicious:multi-region`, a judged class, from `anchored:no-account`, which is triaged
+#: rather than judged. It is the exact reverse of the move recorded immediately below, on the
+#: same id and the same two 0.603 regions — a document-frequency oscillation, not an account.
+#: Full attribution beside `PINNED_TRIAGE_PRICING`.
 #: pricing 71 -> 70 on the 2026-08-15 **D-320 rounding-policy wave**: the single
 #: mover above leaves the judged set, `anchored:no-account` being triaged rather
 #: than judged. No requirement gained or lost an account of its own.

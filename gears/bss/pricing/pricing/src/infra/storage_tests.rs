@@ -726,3 +726,93 @@ fn the_mint_guard_is_told_from_the_primary_key_by_the_name_each_backend_prints()
         "the register one plane over is not the mint guard"
     );
 }
+
+// ---------------------------------------------------------------------------
+// `contention_or_db`'s roster, derived rather than transcribed.
+// ---------------------------------------------------------------------------
+
+/// Every `.rs` file under `src`, recursively, that is not a test module.
+///
+/// `approval_repo_tests::production_sources`' construction and for its reason: a
+/// scan that reads one directory level is a guard a reorganisation switches off
+/// silently.
+fn production_sources() -> Vec<std::path::PathBuf> {
+    let mut found = Vec::new();
+    let mut stack = vec![std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src")];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir).expect("the crate's own source tree") {
+            let path = entry.expect("a readable dir entry").path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.extension().is_some_and(|ext| ext == "rs")
+                && !path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.ends_with("_tests.rs"))
+            {
+                found.push(path);
+            }
+        }
+    }
+    found.sort();
+    found
+}
+
+/// The file stems that call [`contention_or_db`], read off the source.
+///
+/// The definition and the one delegation in `storage.rs` are excluded: neither is
+/// a site that *decides* a unique violation is a contention.
+fn modules_calling_contention_or_db() -> std::collections::BTreeSet<String> {
+    production_sources()
+        .into_iter()
+        .filter(|path| {
+            path.file_stem().and_then(|s| s.to_str()) != Some("storage")
+                && std::fs::read_to_string(path)
+                    .expect("a readable source file")
+                    .contains("contention_or_db(")
+        })
+        .map(|path| {
+            path.file_stem()
+                .and_then(|s| s.to_str())
+                .expect("a utf-8 file stem")
+                .to_owned()
+        })
+        .collect()
+}
+
+/// The two unique violations this crate deliberately answers with something
+/// **other** than a contention still do.
+///
+/// [`contention_or_db`]'s doc used to enumerate its call sites, and the
+/// enumeration said five while there were sixteen — so it answered "500 by
+/// omission" for the taxonomy, policy, migration and membership writes, all four
+/// of which are 409. The roster is not the part worth guarding, because it grows
+/// with every serialization point the gear adds; **the exclusions are**, because
+/// an exclusion that decays reads exactly like a site somebody forgot.
+///
+/// Derived from the source rather than transcribed, for the reason the deleted
+/// enumeration demonstrates. The floor is what stops a scan that silently matched
+/// nothing from asserting an empty roster and passing.
+#[test]
+fn the_two_deliberate_exclusions_still_hold() {
+    let callers = modules_calling_contention_or_db();
+
+    assert!(
+        callers.len() >= 8,
+        "the scan found {} callers, which is fewer than this crate had when the scan was \
+         written — a broken scan asserts the exclusions vacuously: {callers:?}",
+        callers.len()
+    );
+
+    assert!(
+        !callers.contains("price_repo"),
+        "a canonical-key collision is DUPLICATE_SCOPE_KEY, which names the key and its \
+         occupant: a caller-fixable authoring fault, not a race a retry resolves"
+    );
+    assert!(
+        !callers.contains("idempotency_repo"),
+        "a lost idempotency claim is a replay, whose remedy is to return the first caller's \
+         answer: the CAS owns it, and folding it into ConcurrentMutation would tell a client \
+         to retry a request that has already been answered"
+    );
+}

@@ -471,9 +471,18 @@ impl PhaseGraph {
     }
 
     /// The phases, in the order they were authored.
+    ///
+    /// Bound through an exhaustive destructure rather than `&self.phases`, and
+    /// that is a guard rather than a style: this is the **only** way the content
+    /// pin reaches a phase graph (`put_plan_shape` frames `phases.phases()`), so
+    /// a second field on this type would be a graph-level fact the pin silently
+    /// omits — a reviewer approving one graph and a commit publishing another
+    /// with every digest equal. The pattern has no `..`, so that field stops this
+    /// accessor compiling and the decision gets made. Review Z3-6, 2026-08-18.
     #[must_use]
     pub fn phases(&self) -> &[PlanPhase] {
-        &self.phases
+        let Self { phases } = self;
+        phases
     }
 
     /// Every phase with no successor.

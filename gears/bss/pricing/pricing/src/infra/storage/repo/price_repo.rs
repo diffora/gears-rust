@@ -96,7 +96,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use chrono::{DateTime, TimeZone, Utc};
-use sea_orm::ActiveValue::Set;
+use sea_orm::ActiveValue::{NotSet, Set};
 use sea_orm::sea_query::Expr;
 use sea_orm::{ColumnTrait, Condition, EntityTrait, Order, Value};
 use serde_json::{Value as JsonValue, json};
@@ -1666,6 +1666,31 @@ async fn load_page(
     hydrate_bands(runner, scope, tenant_id, &rows).await
 }
 
+/// The lexicographic `>` over `(created_at_utc, price_id)`, spelled as the
+/// OR-of-ANDs a `WHERE` clause can carry.
+///
+/// The keyset predicate of a **composite** order, and it has to be written out:
+/// `created_at_utc > c` alone would skip every row that shares the cursor's
+/// instant, and `>=` would return the cursor's own row again on every page.
+/// Written as a row comparison it would also be an engine-dependent predicate —
+/// `audit_repo::after_position` is this function's twin one table over and its
+/// doc carries that half of the argument.
+///
+/// **Lifted out of [`load_history_page`] so it has a unit-level owner** (review
+/// Z2-10). Inline it was reachable only by driving a store, and the failure it
+/// guards against — a page silently skipping or repeating a row — is invisible
+/// to any fixture whose rows all carry distinct instants, which is every fixture
+/// a suite writes without meaning to build this case.
+fn after_history_position(position: HistoryPosition) -> Condition {
+    Condition::any()
+        .add(price::Column::CreatedAtUtc.gt(position.authored_at))
+        .add(
+            Condition::all()
+                .add(price::Column::CreatedAtUtc.eq(position.authored_at))
+                .add(price::Column::PriceId.gt(position.price_id)),
+        )
+}
+
 /// One **page** of the tenant's price history, in commit order, resuming
 /// strictly after `after`.
 ///
@@ -1679,20 +1704,8 @@ async fn load_history_page(
     limit: u64,
 ) -> Result<Vec<PriceRecord>, RepoError> {
     let mut filter = Condition::all().add(price::Column::TenantId.eq(tenant_id));
-    // The keyset predicate of a **composite** order, and it has to be written
-    // out: `created_at_utc > c` alone would skip every row that shares the
-    // cursor's instant, and `>=` would return the cursor's own row again on
-    // every page.
     if let Some(position) = after {
-        filter = filter.add(
-            Condition::any()
-                .add(price::Column::CreatedAtUtc.gt(position.authored_at))
-                .add(
-                    Condition::all()
-                        .add(price::Column::CreatedAtUtc.eq(position.authored_at))
-                        .add(price::Column::PriceId.gt(position.price_id)),
-                ),
-        );
+        filter = filter.add(after_history_position(position));
     }
     let rows = price::Entity::find()
         .secure()
@@ -3080,7 +3093,7 @@ fn content_model(content: &PriceContent) -> Result<price::ActiveModel, RepoError
             .map(|w| w.as_str().to_owned())),
         max_hold_granules: Set(stored_count("max_hold_granules", row.max_hold_granules)?),
         included_allowance: Set(row.included_allowance.map(allowance_json)),
-        reserved_rate_minor: Set(row.reserved_rate_minor.map(MinorAmount::get)),
+        reserved_rate_nano: Set(row.reserved_rate.map(RateMinor::nano_minor)),
         reservation_flavor: Set(row.reservation_flavor.map(|f| f.as_str().to_owned())),
         min_qty_purchase: Set(stored_count("min_qty_purchase", row.min_qty_purchase)?),
         min_qty_usage: Set(stored_count("min_qty_usage", row.min_qty_usage)?),
@@ -3369,9 +3382,86 @@ pub async fn create_draft_on(
 }
 
 /// The whole insert: content, plus the columns only a creation writes.
+///
+/// # Why the content model is destructured field by field, with no `..`
+///
+/// [`content_assignments`] is the update path's version of this decision and its
+/// doc is the argument: a column that reached [`content_model`] and not the
+/// assignment list was written by nothing, twice, silently. Its remedy — an
+/// exhaustive destructure, so *"adding a column to [`price::Model`] makes this
+/// pattern non-exhaustive and the crate stops compiling until someone decides,
+/// here, whether a draft edit may move it"* — reached only the update door.
+///
+/// This one ended `..content`, and [`content_model`] ends
+/// `..price::ActiveModel::default()`, so a column added to the table and to
+/// neither renderer compiled, inserted as `NotSet`, and landed as the column's
+/// default or NULL — while the *update* path reddened. The asymmetry was
+/// one-directional and the loud half fires first in practice, since any new
+/// content column is reachable by `PATCH`; it is closed here because the sibling's
+/// doc reads as though the class is closed, and it was closed on one door of two
+/// (review Z2-9, 2026-08-18).
+///
+/// Every binding is either written from `record` on the line that shadows it or
+/// carried through from `content` verbatim, so an omission is not expressible.
 fn insert_model(tenant_id: Uuid, record: &PriceRecord) -> Result<price::ActiveModel, RepoError> {
     let key = &record.scope_key;
-    let content = content_model(&record.content())?;
+    let price::ActiveModel {
+        // Identity, the scope key and the provenance columns: `content_model`
+        // leaves all of them `NotSet` and this function is what sets them, from
+        // the record rather than from the content. Bound and ignored so the
+        // pattern stays exhaustive.
+        price_id: _,
+        tenant_id: _,
+        plan_id: _,
+        currency: _,
+        region: _,
+        price_overlay: _,
+        phase: _,
+        price_eligibility: _,
+        charge_kind: _,
+        cohort: _,
+        lifecycle_state: _,
+        created_by: _,
+        created_at_utc: _,
+        row_version: _,
+        // D-154's resolved category is frozen inside the publish transaction and
+        // is NULL on a draft by definition, so a creation has nothing to say
+        // about it either — `content_model` leaves it `NotSet` and so does this.
+        resolved_tax_category: _,
+        // --- content, carried through exactly as `content_model` rendered it ---
+        amount_minor,
+        unit_rate_nano,
+        model_kind,
+        tax_inclusive,
+        tax_category_ref,
+        billing_timing,
+        billing_anchor_policy,
+        anchor_day,
+        proration_basis,
+        credit_on_downgrade,
+        quantity_source,
+        manual_quantity,
+        package_size,
+        package_price_minor,
+        meter,
+        dimension_key,
+        billing_granularity,
+        aggregation_function,
+        aggregation_granularity,
+        tier_aggregation_window,
+        tier_qualification_window,
+        max_hold_granules,
+        included_allowance,
+        reserved_rate_nano,
+        reservation_flavor,
+        min_qty_purchase,
+        min_qty_usage,
+        min_qty_usage_fallback,
+        discount_ref,
+        rounding_policy_ref,
+        grandfather_until,
+        supersedes_price_id,
+    } = content_model(&record.content())?;
     Ok(price::ActiveModel {
         price_id: Set(record.price_id),
         tenant_id: Set(tenant_id),
@@ -3386,13 +3476,45 @@ fn insert_model(tenant_id: Uuid, record: &PriceRecord) -> Result<price::ActiveMo
         // — rather than a nullable timestamp, because distinct `NULL`s do not
         // collide in the partial `UNIQUE` that decides row uniqueness.
         cohort: Set(key.cohort().to_string()),
+        amount_minor,
+        unit_rate_nano,
+        model_kind,
+        tax_inclusive,
+        tax_category_ref,
+        resolved_tax_category: NotSet,
+        billing_timing,
+        billing_anchor_policy,
+        anchor_day,
+        proration_basis,
+        credit_on_downgrade,
+        quantity_source,
+        manual_quantity,
+        package_size,
+        package_price_minor,
+        meter,
+        dimension_key,
+        billing_granularity,
+        aggregation_function,
+        aggregation_granularity,
+        tier_aggregation_window,
+        tier_qualification_window,
+        max_hold_granules,
+        included_allowance,
+        reserved_rate_nano,
+        reservation_flavor,
+        min_qty_purchase,
+        min_qty_usage,
+        min_qty_usage_fallback,
+        discount_ref,
+        rounding_policy_ref,
+        grandfather_until,
+        supersedes_price_id,
         lifecycle_state: Set(record.lifecycle_state.as_str().to_owned()),
         created_by: Set(record.created_by),
         created_at_utc: Set(record.created_at_utc),
         row_version: Set(record.row_version.to_stored().map_err(|e| {
             RepoError::CorruptRow(format!("pricing_price {}: {e}", record.price_id))
         })?),
-        ..content
     })
 }
 
@@ -3481,7 +3603,7 @@ fn content_assignments(model: price::ActiveModel) -> Vec<(price::Column, Value)>
         tier_qualification_window,
         max_hold_granules,
         included_allowance,
-        reserved_rate_minor,
+        reserved_rate_nano,
         reservation_flavor,
         min_qty_purchase,
         min_qty_usage,
@@ -3577,8 +3699,8 @@ fn content_assignments(model: price::ActiveModel) -> Vec<(price::Column, Value)>
             included_allowance.into_value(),
         ),
         (
-            price::Column::ReservedRateMinor,
-            reserved_rate_minor.into_value(),
+            price::Column::ReservedRateNano,
+            reserved_rate_nano.into_value(),
         ),
         (
             price::Column::ReservationFlavor,
@@ -3875,10 +3997,11 @@ fn to_price_row(
             .as_ref()
             .map(read_allowance)
             .transpose()?,
-        reserved_rate_minor: read_amount(
-            "pricing_price.reserved_rate_minor",
-            row.reserved_rate_minor,
-        )?,
+        reserved_rate: row
+            .reserved_rate_nano
+            .map(RateMinor::from_nano_minor)
+            .transpose()
+            .map_err(|e| RepoError::CorruptRow(format!("pricing_price.reserved_rate_nano: {e}")))?,
         reservation_flavor: read_optional(
             "pricing_price.reservation_flavor",
             row.reservation_flavor.as_deref(),
@@ -4119,3 +4242,7 @@ fn read_token<T: Copy>(
         .find(|candidate| render(*candidate) == token)
         .ok_or_else(|| RepoError::CorruptRow(format!("{column} holds {token}")))
 }
+
+#[cfg(test)]
+#[path = "price_repo_tests.rs"]
+mod price_repo_tests;

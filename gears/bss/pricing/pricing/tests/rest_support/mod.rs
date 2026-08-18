@@ -496,8 +496,13 @@ impl Harness {
                 db.clone(),
                 Arc::clone(&registry) as Arc<_>,
             ),
+            // D-344: the cutover runs the plan aggregate and the joint gate over
+            // the rows it publishes, so it takes the same limits and the **same**
+            // committed corpus the publish door takes here.
             cutovers: bss_pricing::infra::cutover::CutoverService::new(
                 db.clone(),
+                &LimitsConfig::default(),
+                FixtureGate::load(&committed_registry_path()),
                 Arc::clone(&registry) as Arc<_>,
             ),
             grandfather: bss_pricing::infra::grandfather::GrandfatherService::new(
@@ -762,7 +767,24 @@ impl Harness {
                 Arc::clone(&self.governance),
                 &openapi,
             ))
-            .layer(axum::Extension(PolicyEnforcer::new(resolver)));
+            .layer(axum::Extension(PolicyEnforcer::new(resolver)))
+            // **Production's last layer, and it was in no test harness.**
+            //
+            // `module.rs:1523` mounts it and a crate-wide grep returned exactly
+            // that one hit, so every functional test in this crate asserted an
+            // error body production then rewrites. What the middleware does is not
+            // cosmetic: on any `application/problem+json` response it deserializes
+            // the body into `Problem`, fills `instance` from the request path and
+            // `trace_id` from the request headers, and **re-serializes** — a round
+            // trip through one type, which is a projection. A member a handler
+            // emits that `Problem` does not carry is dropped in production and
+            // present in every test, on the envelope this gear's whole contract
+            // tells a consumer to key on; and `instance`/`trace_id` were never
+            // populated in a test response, so no assertion in the corpus could
+            // pin either.
+            .layer(axum::middleware::from_fn(
+                toolkit::api::canonical_error_middleware,
+            ));
         let router = match ctx {
             Some((tenant, principal)) => {
                 router.layer(axum::Extension(ctx_for_principal(tenant, principal)))
@@ -1140,6 +1162,22 @@ pub struct Client {
 }
 
 impl Client {
+    /// Wrap a router this module did not build.
+    ///
+    /// For the one surface whose collaborator the shared `Harness` cannot vary:
+    /// `catalog_skus` is mounted here, in `module_test` and in `rest_authz` with
+    /// `UnconfiguredProductCatalogClientV1`, which is the right double for a
+    /// census and for the authz properties and leaves the handler's success arm
+    /// unreachable. `rest_catalog_skus.rs` mounts the same router with a
+    /// configured state and drives it through this.
+    ///
+    /// Deliberately not a general escape hatch: it takes an assembled `Router`,
+    /// so a caller still owns the middleware stack it is asserting against, and
+    /// nothing here reaches into the harness's own state.
+    pub fn over(router: Router) -> Self {
+        Self { router }
+    }
+
     /// Drive one request through the whole stack.
     pub async fn send(&self, request: Request<Body>) -> Response<Body> {
         self.router
@@ -1204,6 +1242,34 @@ pub async fn body_json(response: Response<Body>) -> serde_json::Value {
         return serde_json::Value::Null;
     }
     serde_json::from_slice(&bytes).expect("the body is JSON")
+}
+
+/// The canonical **family** the problem document names, as the bare family
+/// segment: `"unauthenticated"`, `"permission_denied"`, `"not_found"`,
+/// `"invalid_argument"`, `"aborted"`, ....
+///
+/// [`problem_code`]'s counterpart for the refusals that carry no code at all. The
+/// 401 and 403 families have no `reason` slot — `permission_denied()` has no detail
+/// slot by design, argued in `error_mapping.rs` on the ground that a detail riding
+/// the code as `"CODE: detail"` would break exact matching — so a suite asserting
+/// only the status was asserting the weaker half of the only two things those
+/// documents carry. Four suites did exactly that.
+///
+/// Also proves the body **is** a problem document, which is the half the
+/// canonical-error layer is about: it deserializes and re-serializes every
+/// `application/problem+json`, so a response that merely had the right status would
+/// fail here.
+pub async fn problem_family(response: Response<Body>) -> String {
+    let body = body_json(response).await;
+    let raw = body["type"]
+        .as_str()
+        .unwrap_or_else(|| panic!("no canonical type in the problem document: {body}"))
+        .to_owned();
+    raw.rsplit("cf.core.err.")
+        .next()
+        .and_then(|tail| tail.split(".v1").next())
+        .unwrap_or_else(|| panic!("the canonical type is not a `cf.core.err.*` id: {raw}"))
+        .to_owned()
 }
 
 /// The RFC 9457 problem document's machine-readable code.
@@ -1417,6 +1483,42 @@ pub async fn seed_foreign_plan(harness: &Harness, plan_id: Uuid) {
         .create_draft(&harness.other_scope(), new_draft(plan_id, harness.other))
         .await
         .expect("seed the foreign draft plan");
+}
+
+/// A **published** plan in the other tenant.
+///
+/// [`seed_foreign_plan`] leaves a draft, which every scoped read reports as
+/// unpublished for the trivial reason that it *is* unpublished — so a probe about
+/// scoping that used it would pass against no scoping at all. The published state
+/// is the one where an unscoped read and a scoped read give different answers, and
+/// therefore the only one that can tell them apart.
+pub async fn seed_foreign_current_plan(harness: &Harness, plan_id: Uuid) {
+    let plan = PlanId::new(plan_id);
+    let scope = harness.other_scope();
+    let tenant = harness.other;
+    harness
+        .state
+        .plans
+        .create_draft(&scope, new_draft(plan_id, tenant))
+        .await
+        .expect("seed the foreign draft plan");
+    let current = harness
+        .state
+        .plans
+        .find_revision(&scope, tenant, plan, 0)
+        .await
+        .expect("read the foreign revision")
+        .expect("the foreign revision exists");
+    let (_, outcome) = harness
+        .db
+        .db()
+        .in_transaction::<PlanRevision, bss_pricing::infra::storage::RepoError, _>(move |txn| {
+            Box::pin(async move {
+                plan_repo::publish_revision(txn, &scope, tenant, plan, 0, current.row_version).await
+            })
+        })
+        .await;
+    outcome.expect("publish the foreign revision");
 }
 
 /// The row version a revision stands at, or `None` when there is no such row.
@@ -2010,6 +2112,14 @@ pub fn security_context(principal: Uuid, tenant: Uuid) -> SecurityContext {
     ctx_for_principal(tenant, principal)
 }
 
+/// The authenticated context every client in this harness carries.
+///
+/// **`token_scopes` is a wildcard, and it hides nothing *today***: nothing under
+/// `src/` reads the field, so no assertion in the corpus turns on it. The day one
+/// does, this line would grant it universally and every refusal built on it would
+/// be untestable while reading as covered — the shape a fixture-grant finding takes
+/// every time. `module_test`'s `no_source_reads_token_scopes` is what surfaces that
+/// day rather than leaving it to be discovered.
 fn ctx_for_principal(tenant: Uuid, principal: Uuid) -> SecurityContext {
     SecurityContext::builder()
         .subject_id(principal)
@@ -2436,7 +2546,8 @@ pub fn publishable_tiered_usage_row(bands: Vec<TierBand>) -> PriceContentAlias {
     row.aggregation_function = Some(AggregationFunction::TimeWeighted);
     row.aggregation_granularity = Some(AggregationGranularity::Hour);
     row.max_hold_granules = Some(6);
-    row.reserved_rate_minor = Some(MinorAmount::new(3_100).expect("a non-negative amount"));
+    row.reserved_rate =
+        Some(RateMinor::from_nano_minor(3_100_000_000_000).expect("a non-negative rate"));
     row.reservation_flavor = Some(ReservationFlavor::Capacity);
     row.min_qty_purchase = Some(7);
     row.min_qty_usage = Some(11);
@@ -2742,9 +2853,10 @@ pub async fn mutable_planes(
     plan_id: Uuid,
 ) -> std::collections::BTreeMap<&'static str, Vec<String>> {
     use bss_pricing::infra::storage::entity::{
-        brand_taxonomy, bulk_operation, bundle, bundle_component, group_membership, migration,
-        org_tier_taxonomy, partner_taxonomy, policy_object, price_overlay, price_overlay_line,
-        price_window, region_taxonomy,
+        approval, audit_log, brand_taxonomy, bulk_operation, bundle, bundle_component,
+        customer_group_taxonomy, group_membership, migration, org_tier_taxonomy, outbox,
+        partner_taxonomy, policy_object, price_overlay, price_overlay_line, price_window,
+        region_taxonomy, rounding_policy_taxonomy,
     };
 
     let conn = harness.db.conn().expect("conn");
@@ -2782,6 +2894,29 @@ pub async fn mutable_planes(
     // with_the_state_unchanged` needs this plane to prove a denied `POST
     // .../members` / `PATCH .../members/{id}` / `POST .../move` wrote nothing.
     plane!("group_membership", group_membership);
+    // The approval plane **whole**, and this is the one the loop's own argument
+    // asked for and did not have. `every_mutating_route_is_denied_with_the_state_
+    // unchanged` read `approval_row(seeded.approval).state` — one field of one
+    // seeded row — so the class it was extended on 2026-08-11 to catch, a handler
+    // that acts and then gates, stayed invisible for a refusal that OPENS A NEW
+    // UNIT. Two mutating census routes do exactly that on success: `PUT
+    // /config/approval-threshold-policy` (the 202 names the `approval_id` it
+    // minted) and the overlay submit. The harness's own doc names the failure
+    // mode one screen up — "a test that only asserted the response would pass
+    // against a handler that minted an id and opened nothing" — and only the
+    // success direction of it was covered.
+    plane!("approval", approval);
+    // The two durable artifacts a refused handler must not leave behind. Neither
+    // is addressed by any census route directly, which is the point: they are
+    // written as a side effect of an act, so a denial that produced one is a
+    // handler that performed the act.
+    plane!("audit_log", audit_log);
+    plane!("outbox", outbox);
+    // The two taxonomies whose routes write ONLY into a plane nothing observed —
+    // the cheapest members to add and the ones that make the loop's assertion
+    // true of every row of the census rather than of most of them.
+    plane!("taxonomy_customer_group", customer_group_taxonomy);
+    plane!("taxonomy_rounding_policy", rounding_policy_taxonomy);
 
     // The price plane whole, not its head: `prices_after.first()` compared one row's
     // version, so a denied write that moved the *second* of several rows was caught

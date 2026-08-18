@@ -286,3 +286,44 @@ fn only_a_percentage_adjustment_is_a_rate_mutation() {
     ))));
     assert!(!adjusts_rate(&Adjustment::Fixed(amounts)));
 }
+
+/// **The reserved rate rides a reprice unchanged, and this pins that it does**
+/// (Z5-5).
+///
+/// `reservedRate` sits on the *same row* as the on-demand price by design, and the
+/// commercial relationship between them is the point of the primitive: the
+/// reserved rate is the discount a customer commits for. `project_row` mutates
+/// four fields and this is not one of them, so a 50% run takes the on-demand rate
+/// to $0.015 against a committed $0.020 and a customer who paid to commit is now
+/// billed **above** on-demand. Nothing refuses it, nothing warns, and materiality
+/// sees the on-demand move alone.
+///
+/// Pinned rather than changed. Whether a reprice moves a committed rate is a
+/// product question — a contractually frozen rate is a defensible reading and so
+/// is the opposite — and it owes a `D-NNN` either way. What this closes is the
+/// half that is a defect under both answers: the behaviour was unstated in
+/// `project_row`'s otherwise exhaustive doc and pinned by nothing, so whichever
+/// way the decision goes, nobody would have seen it change.
+#[test]
+fn the_reserved_rate_rides_a_reprice_unchanged() {
+    let currency = CurrencyCode::new("USD").expect("three letters");
+    let on_demand = RateMinor::from_nano_minor(30_000_000).expect("a non-negative rate");
+    let committed = RateMinor::from_nano_minor(20_000_000).expect("a non-negative rate");
+
+    let mut record = a_per_unit_record(on_demand, currency);
+    record.row.reserved_rate = Some(committed);
+
+    let projected = project_row(record, &Adjustment::Discount(Magnitude::PercentBp(5_000)));
+
+    assert_eq!(
+        projected.row.unit_rate,
+        Some(RateMinor::from_nano_minor(15_000_000).expect("a non-negative rate")),
+        "the on-demand rate is halved, which is the run doing its job"
+    );
+    assert_eq!(
+        projected.row.reserved_rate,
+        Some(committed),
+        "and the committed rate is untouched, which leaves it 33% ABOVE on-demand \
+         on this row: stated and pinned, not decided"
+    );
+}

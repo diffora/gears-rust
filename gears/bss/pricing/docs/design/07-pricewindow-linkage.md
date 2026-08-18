@@ -184,6 +184,11 @@ most-specific-wins semantics, the cutover unit, the expiry signal.
 
 ## 3. Processes / Business Logic (CDSL)
 
+**A cutover owes all three tiers (D-344).** It replaces a predecessor on a key, so Tier A
+binds it; `priceEligibility` is a scope-key axis, so opening a generation changes which
+keys are current and Tier B binds it too; and its successor's content is client-authored,
+which is what the joint fixture gate guards. Until 2026-08-17 it ran none of them.
+
 ### Publish-Time Window Coverage
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-pricing-algo-window-coverage`
@@ -320,7 +325,7 @@ admits the row here, and stating it twice would put one rule under two owners
 **The approval unit a controlled window mutation opens is subject to the ACT, not the window (normative, D-184, 2026-08-05):** its subject is `<plan>/<window>/<operation>/<prior end>/<new end>`, so an approval names the transition it authorizes and cannot answer for another act on the same window. A **schedule**'s subject carries no window id at all — it is `<plan>/schedule/<priceId>/<effectiveFrom>/<effectiveTo>`, the id of the window being an **outcome minted at the commit**, so the call made after the approve reproduces the subject and completes. The same subject is **rendered to the reviewer** on the approval detail, which is what lets a reviewer of a cancel tell their unit from a reviewer of a lengthening (D-61). The act is authenticated by the record's own subject rather than by the content pin. **Each act is named by its operation, the act sequence it was read at, and its transition (D-190, 2026-08-05)** — the window row carries a `mutation_seq` counting **operator acts only**, which the activation and expiry sweeps deliberately leave unmoved, because a counter the clock could move would make an approved retry name a subject no unit was opened under. **Both Idempotency cells are now honoured (D-191, 2026-08-05):** the `POST` replays through the gate — the same key and body return the first answer and mint no second window — and the `PATCH`'s `If-Match` names that same act sequence, compared in the `UPDATE`'s own predicate, with a consumed sequence refused as `STALE_VERSION` (409). A window has no `GET`, so the tag is served by the mutating verbs themselves; and a key identifies an **attempt** rather than an act, so completing an act a reviewer has approved is a new attempt under a new key. The `DELETE`'s empty cell stays empty. **Every act reads the threshold policy at its own instant (D-194, 2026-08-05)**, not at the wall clock the reading happens on.
 | `POST` | `/bss-pricing/v1/plans/{planId}/supersessions` | Compose + submit the atomic **supersession unit** (D-88): successor row + predecessor-window shorten + successor-window schedule, one approval unit / one local ACID transaction; changeover instant ≥ approval commit + the max batching-delay SLO | per `(planId, scope key, changeover instant)` |
 | `POST` | `/bss-pricing/v1/plans/{planId}/cutovers` | Compose + submit the atomic grandfathering cutover — **single- or multi-key** (D-28): the payload carries a scope-key selector; all selected keys cut over at **one instant** as **one approval unit** / one local ACID transaction (per-key generations created; the unit pends every touched key; the S5 per-row hash pin covers the whole set) | per `(planId, key-set hash, cutover instant)` |
-| `PATCH` | `/bss-pricing/v1/prices/{priceId}/grandfather-until` | Tighten `grandfatherUntil` (material change) | ETag |
+| `PATCH` | `/bss-pricing/v1/prices/{priceId}/grandfather-until` | Tighten `grandfatherUntil` (material change). **Preconditions in D-329's order, below** | ETag (see D-329 cl. 3 — it cannot refuse a lost update here) |
 | `GET` | `/bss-pricing/v1/plans/{planId}/sellability?at=&currency=&region=` | The sellability surface for the joint gate | — |
 | `GET` | `/bss-pricing/v1/plans/{planId}/coverage` | Coverage/gap report per scope key (operator remediation) | — |
 
@@ -345,6 +350,44 @@ submit, or closer than the max batching-delay SLO at approval commit; D-88 — t
 `priceEligibility` is not `existing_grandfathered`; D-147, 2026-08-02. Declared here rather than
 in the Foundation catalogue because this slice owns the eligibility machinery the rule is part of,
 exactly as it owns the slice's other grandfathering refusals).
+
+**The horizon door's preconditions, in the order it applies them (normative, D-329, 2026-08-16).**
+`PATCH …/prices/{priceId}/grandfather-until` is the only writer of a live row's
+`grandfatherUntil`, and §4's two transitions (`inst-gs-bound`, `inst-gs-tighten`) say what it may
+move. What it *checks* before moving anything belongs here, because a caller reads this section to
+learn what will refuse it:
+
+1. **Class.** A key whose `priceEligibility` is not `existing_grandfathered` carries no horizon at
+   all (D-147) — `GRANDFATHER_UNTIL_FORBIDDEN` (422). This route refuses such a key; a window
+   mutation asking the same span question passes it, which is the one place the two callers of the
+   shared walk answer differently.
+2. **Tag.** The presented `If-Match` is compared and a mismatch is `STALE_VERSION` (409). **It
+   cannot refuse a lost update on this route**, and the section says so rather than implying
+   otherwise: D-141 freezes `row_version` on the published plane, so the tag is constant across
+   every tightening and two operators holding the same permanently-valid tag both pass it.
+3. **Edge.** Monotonicity — never loosened, never null-ward — `GRANDFATHER_LOOSEN_FORBIDDEN` (422).
+4. **`inst-co-single-pending`** over the one key this act moves, before anything is touched:
+   `PENDING_CHANGE_UNIT_EXISTS` (409).
+5. **D-04's span, asked of the horizon the act PROPOSES rather than the one the store holds** —
+   `WINDOW_TRAILING_VOID` (422). This is the clause that distinguishes the route from every other
+   caller of the coverage bound, and it is not a refinement: the stored value would judge the state
+   the act is about to discard. The asymmetry is measured — *tightening* a finite horizon can never
+   break D-04, while **setting** one can, because a null horizon is judged by an arm that never
+   consults the margin and every finite horizon by an arm that requires it. The interval set is
+   unmoved (this act schedules, shortens and cancels nothing), so the far end alone changes between
+   the stored question and this one.
+6. **Two-person control**, after every check above and before anything is written. The act is
+   always material and is declared on `inst-mat-registered`'s **ACT** half, not its content half:
+   `evaluate` reaches the content half only after the policy step, so a tenant with no configured
+   threshold would otherwise be told `noConfiguredThreshold` about an act no threshold governs.
+7. **The compare-and-swap is the horizon itself**, in the `UPDATE`'s own predicate — a monotone
+   field is its own version — and the loser gets `CONCURRENT_MUTATION` (409). This is what actually
+   serialises two concurrent tightenings, given (2).
+
+Refusals are ordered **state-then-class**, so a mis-doored caller is told which door rather than
+told to clear a field it may not carry. **No event and no code are minted** for either edge (D-329
+cl. 4): §7 declares no event for them, `PriceUpdated` is the supersession's and its dedup key would
+collapse repeated tightenings, and D-204 cl. (2) forbids the code. Visibility is D-06's route.
 
 **All three window mutations address a revision the catalog has already frozen (normative, D-314,
 2026-08-15, found by an operator taking a plan that already carried rows to `published`).** The

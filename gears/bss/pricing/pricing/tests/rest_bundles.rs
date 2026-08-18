@@ -21,7 +21,7 @@ use axum::http::StatusCode;
 use bss_pricing::api::rest::bundles::BUNDLES;
 use rest_support::{
     Harness, approval_row, approval_rows, body_json, etag_of, problem_code, seed_current_plan,
-    seed_draft_plan, seed_price, with_headers,
+    seed_draft_plan, seed_foreign_current_plan, seed_foreign_plan, seed_price, with_headers,
 };
 use uuid::Uuid;
 
@@ -31,6 +31,15 @@ fn bundle_path(bundle_id: Uuid) -> String {
 
 fn publish_path(bundle_id: Uuid) -> String {
     format!("{BUNDLES}/{bundle_id}/publish")
+}
+
+/// A problem document with one id struck out of it, so two answers about
+/// different ids can be compared for everything **except** the id.
+async fn redacting(response: axum::http::Response<axum::body::Body>, id: Uuid) -> String {
+    body_json(response)
+        .await
+        .to_string()
+        .replace(&id.to_string(), "<id>")
 }
 
 /// Create a bundle on a fresh draft plan and hand back both ids.
@@ -77,6 +86,99 @@ async fn a_bundle_is_created_on_its_plan() {
 
     assert_ne!(bundle_id, Uuid::nil());
     assert_ne!(plan_id, Uuid::nil());
+}
+
+/// A `plan_id` in another tenant reads exactly like one that does not exist, and
+/// the plan's own tenant can still bundle it afterwards — A1-2.
+///
+/// This is the second route in the gear that takes a plan id from a **caller** and
+/// creates something out of it; `POST /plans/{planId}/clone` is the first, and
+/// `rest_plans`' `a_foreign_tenants_plan_cannot_be_cloned_and_reads_like_an_absent_one`
+/// is this case's sibling. Nothing between the wire and the insert read the plan
+/// here: the handler gated, parsed the body, claimed the idempotency key, parsed
+/// two tokens and went straight into `bundle_repo::create_on`, whose only read
+/// looks for *a bundle*. So the answer to "does this foreign plan have a bundle"
+/// came out of `uq_pricing_bundle_plan`, which carried no tenant — `409` when it
+/// did and `201` when it did not, and in the `201` case the row **landed** and
+/// took the owner's slot for good.
+///
+/// The last third of the case is the half a fix to the read alone leaves standing:
+/// the owning tenant must still be able to create its own bundle. Asserted as a
+/// `201` rather than as "not a 409", because the wire code is what distinguishes
+/// the two failures — `BUNDLE_EXISTS_ON_PLAN` against a row it cannot read is
+/// precisely the state that has no remedy through this API.
+#[tokio::test]
+async fn a_bundle_on_a_foreign_tenants_plan_is_a_404_and_leaves_the_plan_bundleable() {
+    let harness = Harness::new().await;
+    let foreign = Uuid::now_v7();
+    let absent = Uuid::now_v7();
+    seed_foreign_plan(&harness, foreign).await;
+
+    let foreign_answer = harness
+        .allowed()
+        .send(with_headers(
+            "POST",
+            BUNDLES,
+            Some(serde_json::json!({
+                "plan_id": foreign,
+                "price_basis": "sum_of_parts",
+            })),
+            &[("idempotency-key", &Uuid::now_v7().to_string())],
+        ))
+        .await;
+    let absent_answer = harness
+        .allowed()
+        .send(with_headers(
+            "POST",
+            BUNDLES,
+            Some(serde_json::json!({
+                "plan_id": absent,
+                "price_basis": "sum_of_parts",
+            })),
+            &[("idempotency-key", &Uuid::now_v7().to_string())],
+        ))
+        .await;
+
+    assert_eq!(foreign_answer.status(), StatusCode::NOT_FOUND);
+    assert_eq!(absent_answer.status(), StatusCode::NOT_FOUND);
+
+    // **The whole document, not just the status.** Each answer echoes the id its
+    // own caller supplied and nothing else, so the two are byte-identical once
+    // that id is taken out — which is what makes the 404 uninformative about
+    // whether the foreign plan exists. Comparing the raw bodies would compare two
+    // uuids this test itself chose and would pass against any pair of documents
+    // that differed anywhere.
+    let foreign_document = redacting(foreign_answer, foreign).await;
+    let absent_document = redacting(absent_answer, absent).await;
+    assert!(
+        foreign_document.contains("<id>"),
+        "the substitution must have found the id it removes, or the comparison below proves \
+         nothing: {foreign_document}"
+    );
+    assert_eq!(
+        foreign_document, absent_document,
+        "a foreign plan and an absent one must answer the same document"
+    );
+
+    // The tenant that owns the plan is unobstructed. Under the old index this is
+    // what the squatted row would have taken away, permanently.
+    let owner = harness
+        .other_tenant()
+        .send(with_headers(
+            "POST",
+            BUNDLES,
+            Some(serde_json::json!({
+                "plan_id": foreign,
+                "price_basis": "sum_of_parts",
+            })),
+            &[("idempotency-key", &Uuid::now_v7().to_string())],
+        ))
+        .await;
+    assert_eq!(
+        owner.status(),
+        StatusCode::CREATED,
+        "the plan's own tenant must still be able to bundle it"
+    );
 }
 
 /// `inst-bb-declared`: the basis MUST be declared, and `BASIS_MISSING` is what
@@ -407,6 +509,104 @@ async fn an_unpublished_component_blocks_the_publish_by_code() {
     assert!(
         detail.contains("COMPONENT_UNPUBLISHED"),
         "the report must name the failing rule, got: {detail}"
+    );
+}
+
+/// **A component in another tenant reads exactly like one that does not exist**
+/// — A1-6, traced to the end rather than left as a question.
+///
+/// `bundle_component.component_plan_id` is client-supplied, carries no foreign key
+/// and is checked by nothing on the write path: `PATCH /bundles/{id}` stores any
+/// uuid. The review asked whether a component naming another tenant's plan is
+/// resolved in the caller's scope before it can matter, and the answer is that it
+/// is — at publish, where the reference is first dereferenced.
+/// `component_defects` runs all three of its reads through `.secure()` with the
+/// caller's scope, so a **published** plan in another tenant contributes
+/// `Unpublished` and nothing else, exactly as an absent id does.
+///
+/// The published foreign plan is what makes this a measurement. A foreign *draft*
+/// would answer `COMPONENT_UNPUBLISHED` against an unscoped read too, so a probe
+/// using one would pass with the scoping removed.
+///
+/// The report bodies are compared whole with each component id struck out: it is
+/// not enough that both refuse, because `ComponentDefect` renders three distinct
+/// sentences and a leak here would be a *different sentence*, not a different
+/// status. The positive control is the caller's own published plan, which reaches
+/// a different refusal entirely — proof that the two answers above are the scope
+/// talking and not a rule that refuses every component.
+#[tokio::test]
+async fn a_component_in_another_tenant_reads_exactly_like_an_absent_one() {
+    let harness = Harness::new().await;
+    let (plan_id, bundle_id) = seed_bundle(&harness).await;
+
+    let foreign = Uuid::now_v7();
+    seed_foreign_current_plan(&harness, foreign).await;
+    let absent = Uuid::now_v7();
+
+    let report_for = async |component: Uuid| {
+        let tag = harness.plan_etag(plan_id).await;
+        let patched = harness
+            .allowed()
+            .send(with_headers(
+                "PATCH",
+                &bundle_path(bundle_id),
+                Some(serde_json::json!({
+                    "plan_revision": 0,
+                    "components": [{
+                        "component_plan_id": component,
+                        "included_sku_id": Uuid::now_v7(),
+                    }],
+                })),
+                &[("if-match", &tag)],
+            ))
+            .await;
+        assert_eq!(
+            patched.status(),
+            StatusCode::OK,
+            "the write stores any uuid; the reference is dereferenced at publish"
+        );
+
+        let published = harness
+            .allowed()
+            .send(with_headers(
+                "POST",
+                &publish_path(bundle_id),
+                Some(serde_json::json!({
+                    "plan_revision": 0,
+                    "markets": [{ "currency": "EUR", "region": "EU" }],
+                })),
+                &[],
+            ))
+            .await;
+        assert_eq!(published.status(), StatusCode::BAD_REQUEST);
+        redacting(published, component).await
+    };
+
+    let foreign_report = report_for(foreign).await;
+    let absent_report = report_for(absent).await;
+    assert!(
+        foreign_report.contains("COMPONENT_UNPUBLISHED"),
+        "got: {foreign_report}"
+    );
+    assert!(
+        foreign_report.contains("<id>"),
+        "the substitution must have found the id it removes: {foreign_report}"
+    );
+    assert_eq!(
+        foreign_report, absent_report,
+        "a published plan in another tenant must be indistinguishable from an absent one, \
+         sentence for sentence"
+    );
+
+    // The positive control. The caller's own published plan is *not* refused
+    // `COMPONENT_UNPUBLISHED`, so the two reports above are the caller's scope
+    // talking rather than a rule that refuses every component whatever it names.
+    let own = Uuid::now_v7();
+    seed_current_plan(&harness, own).await;
+    let own_report = report_for(own).await;
+    assert!(
+        !own_report.contains("COMPONENT_UNPUBLISHED"),
+        "the caller's own published plan is published; got: {own_report}"
     );
 }
 
@@ -1627,11 +1827,26 @@ async fn a_foreign_bundle_is_a_404_rather_than_a_403() {
         .send(with_headers("GET", &bundle_path(bundle_id), None, &[]))
         .await;
 
-    // The gate answers first here, which is the stronger of the two: the caller
-    // is refused before the store is asked, so no read happens at all.
-    assert!(
-        response.status() == StatusCode::NOT_FOUND || response.status() == StatusCode::FORBIDDEN,
-        "a neighbour must not read this bundle, got {}",
-        response.status()
+    // **One answer, asserted.** This was a disjunction over the two answers the
+    // contract must *choose between* — `status == NOT_FOUND || status == FORBIDDEN`
+    // — which detects a change in neither direction and made the test's own name
+    // ("rather than a 403") unlocked by its body.
+    //
+    // The answer is the 404, and the reason is the one `rest_plans`' pair records:
+    // the PDP allows this caller in their own tenant, so the gate passes and the
+    // compiled scope binds `tenant_id` in SQL, where the neighbour's bundle is not.
+    // A foreign row therefore reads exactly like an absent one, which is the
+    // property that stops a 403 confirming the row exists.
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+
+    // The positive control: without it a route that 404'd everything would pass.
+    let own = harness
+        .allowed()
+        .send(with_headers("GET", &bundle_path(bundle_id), None, &[]))
+        .await;
+    assert_eq!(
+        own.status(),
+        StatusCode::OK,
+        "the owner reads the same bundle, so the 404 above is about the caller"
     );
 }

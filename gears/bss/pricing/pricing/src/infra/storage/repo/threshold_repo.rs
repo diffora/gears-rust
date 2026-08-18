@@ -300,8 +300,20 @@ pub async fn read_version(
 ///
 /// # Errors
 /// [`RepoError::TimestampPrecisionExceeded`] on an unquantized `effective_from`;
-/// [`RepoError::Db`] on a scope failure, a duplicate `(tenant, version, currency)`,
-/// or any CHECK the row violates.
+/// [`RepoError::ConcurrentMutation`] on a duplicate `(tenant, version, currency)`
+/// — a **lost mint**, not a storage fault, and see the note below;
+/// [`RepoError::Db`] on a scope failure or any CHECK the row violates.
+///
+/// # Why a duplicate version is a 409 and was a 500
+///
+/// The caller mints the version number off [`latest_version`] and then inserts, so
+/// two proposals racing on one tenant can both read the same number and the
+/// physical key decides which lands. That is the ordinary optimistic shape and its
+/// loser wants *retry*, which is what `CONCURRENT_MUTATION` says. Both inserts here
+/// mapped **every** failure to [`RepoError::Db`] until 2026-08-18 — a 500 — while
+/// `approval_repo::open`, on the same policy plane and one file over, classified
+/// the identical shape through `policy_guard_or_contention`. Two policy-plane
+/// writes disagreeing about whether a lost mint is a conflict or a crash.
 pub async fn open_version(
     runner: &impl DBRunner,
     scope: &AccessScope,
@@ -330,10 +342,14 @@ pub async fn open_version(
             .exec(runner)
             .await
             .map_err(|e| {
-                RepoError::Db(format!(
-                    "write threshold entry {}/{version}/{}: {e}",
-                    tenant_id, entry.currency
-                ))
+                crate::infra::storage::contention_or_db(
+                    &e,
+                    &format!("threshold policy of tenant {tenant_id}"),
+                    &format!(
+                        "write threshold entry {}/{version}/{}",
+                        tenant_id, entry.currency
+                    ),
+                )
             })?;
     }
     Ok(())
@@ -358,8 +374,9 @@ pub async fn open_version(
 ///
 /// # Errors
 /// [`RepoError::TimestampPrecisionExceeded`] on an unquantized `effective_from`;
-/// [`RepoError::Db`] on a scope failure, a duplicate `(tenant, version)`, or any
-/// CHECK the row violates.
+/// [`RepoError::ConcurrentMutation`] on a duplicate `(tenant, version)`, for
+/// [`open_version`]'s stated reason — a lost mint is a retriable conflict;
+/// [`RepoError::Db`] on a scope failure or any CHECK the row violates.
 pub async fn open_tombstone(
     runner: &impl DBRunner,
     scope: &AccessScope,
@@ -383,9 +400,11 @@ pub async fn open_tombstone(
         .exec(runner)
         .await
         .map_err(|e| {
-            RepoError::Db(format!(
-                "write threshold tombstone {tenant_id}/{version}: {e}"
-            ))
+            crate::infra::storage::contention_or_db(
+                &e,
+                &format!("threshold policy of tenant {tenant_id}"),
+                &format!("write threshold tombstone {tenant_id}/{version}"),
+            )
         })?;
     Ok(())
 }

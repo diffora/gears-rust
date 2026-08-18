@@ -62,7 +62,7 @@ def test_the_live_run_passes_the_default_gate_because_nothing_live_is_above_it()
     assert code == 0
 
 
-def test_the_run_reports_seven_live_findings_and_seventy_three_suppressed():
+def test_the_run_reports_the_live_finding_and_suppressed_counts_it_was_captured_with():
     # The handoff's headline numbers, asserted directly rather than only through
     # the byte diff — so a failure says *what* moved, not just that something did.
     # 15/75 until 2026-07-31: the 2026-07-30 slice-review fix round closed the 8
@@ -135,7 +135,22 @@ def test_the_run_reports_seven_live_findings_and_seventy_three_suppressed():
     # now the only two there are, rather than the only two the tool could see.
     stdout, _ = run_check(*(live_args() + ["--format", "json"]))
     payload = json.loads(stdout)
-    assert len(payload["findings"]) == 2
+    #
+    # 2 -> 5 on 2026-08-18, checker movement only: no document was touched. P2's two
+    # regexes had required the literal `-fr-` and so could never match `-nfr-`, which
+    # hid every non-functional requirement — 12 of pricing's 77 declared ids, 4 of
+    # rating's 48, 6 of subscriptions' 53. Widening them adds exactly one
+    # `P2/nfr-unclaimed` row per gear (collapsed per gear rather than per id, because
+    # 22 rows against a live set of 2 is a noise floor and the two findings that are
+    # about drift would be the ones read past). The two pre-existing findings are
+    # unchanged and still both rating-side; nothing left the set.
+    assert len(payload["findings"]) == 5
+    nfr = [f for f in payload["findings"] if f["invariant"] == "P2/nfr-unclaimed"]
+    assert len(nfr) == 3, "one per gear, and every gear must be represented"
+    assert all(f["severity"] == "low" for f in payload["findings"]), (
+        "the run is green because everything live is Low — not because a Medium was "
+        "quietly pinned, which is the distinction this file exists to keep"
+    )
     # 58 until the 2026-08-08 Slice 10 merge, which paid down one pinned member --
     # `FLOOR_TYPE_MISSING` / design/10 -- by naming the code in `inst-ft-typed`,
     # the rule that would raise it, together with the reason it cannot fire in the
@@ -176,7 +191,13 @@ def test_the_run_reports_seven_live_findings_and_seventy_three_suppressed():
     # returning that member (+1) and revealing five that had been paid the same way all
     # along (+5): COMPOSITE_CONSTITUENT_UNPUBLISHED, GRANDFATHERED_ROW_IMMUTABLE,
     # GRANDFATHER_LOOSEN_FORBIDDEN, MIGRATION_ALREADY_EFFECTIVE, ROUNDING_POLICY_UNKNOWN.
-    assert payload["known_debt_suppressed"] == 50
+    # 50 -> 49 later on 2026-08-17, document movement only, and it pays one of those five for
+    # real: the Z7-2 fix took the `S7 §5` propagation D-329 had claimed and never made, writing
+    # the horizon door's preconditions into design/07 §5, and precondition 3 is the monotonicity
+    # rule naming GRANDFATHER_LOOSEN_FORBIDDEN. Debt is 20 propagation gaps + 29 unreferenced
+    # codes. Live findings unchanged at 2, both rating-side. Notes beside the pinned list and
+    # REGENERATE.md entry 30, including why GRANDFATHERED_ROW_IMMUTABLE stayed pinned.
+    assert payload["known_debt_suppressed"] == 49
     assert payload["known_debt_tracked_as"] == "D-69"
 
 

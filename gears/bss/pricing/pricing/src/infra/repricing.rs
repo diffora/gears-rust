@@ -1,9 +1,23 @@
 //! The mass-repricing run's apply lane — `inst-mr-apply`, `inst-mr-validate-scope`
 //! (`design/12-operator-efficiency.md` §3; D-134).
 //!
-//! This module owes what `api::rest::repricing_runs`' own module doc names as
-//! undone: a run that reached `awaiting_approval` or `committing` stops there
-//! today. [`apply_run_in`] is the writer that takes it the rest of the way.
+//! [`apply_run_in`] is the writer that takes a run the rest of the way, and it
+//! is called: `api::rest::repricing_runs`' `open_repricing_run` spends the
+//! non-material path's `committing` edge synchronously, and
+//! `api::rest::approvals` spends the material path's when a second principal
+//! approves.
+//!
+//! **This paragraph said the opposite until 2026-08-18** — "this module owes
+//! what `api::rest::repricing_runs`' own module doc names as undone: a run that
+//! reached `awaiting_approval` or `committing` stops there today" — citing a
+//! doc that had itself been corrected two days earlier, in the present tense,
+//! about the writer sitting in this same file. That is the fourth module header
+//! in this gear to describe built work as owed; the call sites are the
+//! measurement, and this one takes fifteen seconds to grep.
+//!
+//! What this module does still owe is [`apply_run_in`]'s redrive door — see the
+//! redrive-contract paragraph below, which is a capability and not a claim about
+//! a caller.
 //!
 //! # The shape, settled 2026-08-11 and not re-opened here
 //!
@@ -98,6 +112,28 @@
 //!   `bulk_repo::take_locks` is called unconditionally at this function's own
 //!   top for a run already `committing` exactly as for one just entering it
 //!   — a second call simply retakes the lock and carries on.
+//!
+//!   **There is no second call, and that is a standing debt rather than a
+//!   refutation of the paragraph above** (review C4-1, 2026-08-17).
+//!   `apply_run_in` has exactly two callers — `api::rest::repricing_runs`'
+//!   `open_repricing_run`, for a run it has just created, and
+//!   `api::rest::approvals`, for one in `awaiting_approval` — and the router
+//!   mounts exactly two operations, a create and a read. There is no apply
+//!   route, no redrive route, and no abort route (that last is named as owed in
+//!   `api::rest::repricing_runs`' own doc). So a run that meets a transient
+//!   storage fault mid-apply is `committing` forever with its unreached rows
+//!   `pending` forever: the gentler exit is right about what it preserves and
+//!   nothing today can spend what it preserved. The cheap door is letting
+//!   `POST /repricing-runs` under a spent `run_id` re-drive a `committing` run;
+//!   the honest one is that plus the abort. **Whichever is built must re-ask
+//!   `inst-co-single-pending` over the run's keys** — the check is made once, at
+//!   run open, by `refuse_rows_on_a_held_key`, and both apply call sites run in
+//!   the same request as it or as the approve, which is the whole of why C4-6 is
+//!   priced Low today. A redrive arriving minutes later has no such protection.
+//!
+//!   This is recorded here rather than in a ticket because the paragraph above
+//!   argues at length for a capability, and a reader has to be able to tell an
+//!   argument for a design from a claim about what exists.
 //! * **A panic, and a dropped future** — the two paths no code of this
 //!   function's own ever runs for again. Only [`Drop`] is the language's own
 //!   guarantee across both (review findings Z8-8/Z9-5 name the gap an
@@ -195,6 +231,50 @@ pub struct RunOutcome {
     pub failed: usize,
 }
 
+/// Re-ask `inst-co-single-pending` of the rows this apply is about to write.
+///
+/// It was asked once, at run open, in the API layer
+/// (`api::rest::repricing_runs::refuse_rows_on_a_held_key`), and never again —
+/// this module was the only one of the six mutating services with **no
+/// occurrence of `refuse_held_key` at all**, where `window`, `supersession`,
+/// `cutover`, `grandfather` and `approval` each re-ask at their own write (C4-6).
+///
+/// **The window it closes is small today, said plainly so the priority is not
+/// overread.** A material run's own batch unit registers every selected key in
+/// `held_keys` while it pends, so no competing unit can open over them — measured
+/// rather than assumed: a first version of this check's test, written at the REST
+/// layer, could not even seed the situation and failed with `PendingKeyHeld`. And
+/// both call sites run in the same request as the open's check or as the approve,
+/// whose decision is durable before the apply is reached, so this run's own unit
+/// is already decided and holds nothing here. What the check is really for is the
+/// **redrive** door: a re-drive of a stalled run arrives arbitrarily later, and
+/// building that door without this check is the shape the five sibling paths treat
+/// as a Critical when they find it.
+///
+/// # Called above `inst-bs-commit`'s edge, and that is the point
+///
+/// The `awaiting_approval -> committing` edge below is single-spend. A refusal
+/// after it would leave the run `committing`, which section 4 gives it no way out
+/// of — the same trap C4-5 moved the two report parses out of.
+///
+/// # Errors
+/// [`DomainError::PendingChangeUnitExists`] naming the holding unit and the key;
+/// a storage failure reading either the keys or the register.
+async fn refuse_targets_on_a_held_key(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    target_ids: &[Uuid],
+) -> Result<(), DomainError> {
+    let held = price_repo::load_scope_keys_for_ids(runner, scope, tenant_id, target_ids)
+        .await
+        .map_err(|e| repo_failure(&e))?
+        .into_iter()
+        .map(|(_, key)| key.to_string())
+        .collect();
+    crate::infra::approval::refuse_held_key(runner, scope, tenant_id, &held).await
+}
+
 /// Apply a mass-repricing run — `inst-mr-apply`'s per-plan commit and
 /// `inst-mr-validate-scope`'s aggregate pass, over whatever the run's journal
 /// still holds `pending`.
@@ -286,6 +366,26 @@ pub async fn apply_run_in(
             run.state.as_str()
         )));
     }
+    // **Both parses run before the edge is spent** (C4-5). Neither reads the
+    // store, and both are `DomainError::Internal` on a report that cannot be
+    // decoded — so with them below the `advance`, a run whose report is
+    // undecodable was left in `committing`, which is a state with no door back
+    // out. Moving them up costs nothing and makes the failure leave the run
+    // exactly where it was.
+    let adjustment = crate::api::rest::repricing_runs::adjustment_of_report(&run.report)?;
+    let changeover = crate::api::rest::repricing_runs::changeover_of_report(&run.report)?;
+
+    let pending = repricing_journal_repo::pending_for_run(&conn, scope, tenant_id, operation_id)
+        .await
+        .map_err(|e| repo_failure(&e))?;
+
+    let mut target_ids: Vec<Uuid> = pending.iter().map(|row| row.price_id).collect();
+    target_ids.sort_unstable();
+    target_ids.dedup();
+
+    // Above the `advance` on purpose — see the function's own doc.
+    refuse_targets_on_a_held_key(&conn, scope, tenant_id, &target_ids).await?;
+
     if run.state == BulkState::AwaitingApproval {
         // `inst-bs-commit`'s own state edge — `awaiting_approval -> committing`
         // — and the one this apply is the sole owner of taking. See the
@@ -306,17 +406,6 @@ pub async fn apply_run_in(
         .await
         .map_err(|e| repo_failure(&e))?;
     }
-
-    let adjustment = crate::api::rest::repricing_runs::adjustment_of_report(&run.report)?;
-    let changeover = crate::api::rest::repricing_runs::changeover_of_report(&run.report)?;
-
-    let pending = repricing_journal_repo::pending_for_run(&conn, scope, tenant_id, operation_id)
-        .await
-        .map_err(|e| repo_failure(&e))?;
-
-    let mut target_ids: Vec<Uuid> = pending.iter().map(|row| row.price_id).collect();
-    target_ids.sort_unstable();
-    target_ids.dedup();
 
     // **Armed before the first lock row is written, not after.** `RunLockGuard`'s
     // own doc is why it exists at all: everything below can still return early
@@ -1327,6 +1416,27 @@ async fn commit_plan_aggregate_in(
     if !report.is_publishable() {
         return Err(DomainError::ValidationFailed(report));
     }
+
+    // A plan whose current revision can never be superseded takes no successor
+    // row either — `PublishService::commit`'s hoisted refusal, `supersede_in`'s
+    // step 1a, and now the cutover's, and this was the fourth path that
+    // superseded a published row without asking (review C3-2, 2026-08-17).
+    //
+    // Reachable rather than theoretical: `plan_repo::retire_revision` flips only
+    // the `plan` row, so a retired plan's price rows still read `published` and
+    // `load_current` above answers `published` **or** `retired` without
+    // distinguishing them. Nothing beneath asks either — `commit_supersession_rows`
+    // runs `refuse_mispaired` / `supersede_row` / `publish_rows`, none of which
+    // reads the plan's lifecycle, and `RepoError::NoSuccessorRevision` comes from
+    // the revision-opening path this act never takes.
+    //
+    // Ahead of the registry request because the refusal is **permanent** (D-156):
+    // a handle taken past it stands pending forever and trips
+    // `pricing.catalogversion.commit_overdue` for a publish that can never happen.
+    // It is deliberately **after** the aggregate report rather than at the top of
+    // this function: an operator whose run touches a retired plan wants both
+    // findings, and the report is the one they can act on.
+    crate::infra::publish::refuse_unpublishable_predecessor(txn, scope, tenant_id, plan_id).await?;
 
     // One `CatalogVersion` per **plan**, not per row (`PublishService::commit`'s
     // own keying, `SubjectRef::Plan`) — D-47's batching then coalesces across

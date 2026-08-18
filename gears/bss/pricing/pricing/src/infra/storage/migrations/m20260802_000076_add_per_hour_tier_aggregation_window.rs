@@ -51,8 +51,19 @@ const DROP_FOREIGN_TRIGGERS: &[&str] = &[
 
 /// The table, restated from `sqlite_master` with one CHECK widened.
 /// Every column by name: a `SELECT *` would silently reorder after an ALTER.
+///
+/// **One column per line since 2026-08-18** (review Z1-6). The thirteen columns
+/// thirteen later migrations added stood inline on the `row_version` line, which
+/// made this — the widest table in the schema, and the one rebuild whose column
+/// list a reviewer most needs to check against a thirteen-`ALTER` history — the
+/// single table definition in this chain that could not be diffed line-wise
+/// against its Postgres arm. It defeated the 2026-08-17 review's own automated
+/// parity check, which reported those thirteen as missing from `SQLite`: exactly
+/// the false alarm the formatting invites, and exactly the true one it would hide.
+/// The content is unchanged, and all 46 columns were re-verified against
+/// `m20260802_000002` plus the thirteen `ALTER`s in the reflow.
 const REBUILD_TABLE: &[&str] = &[
-            "CREATE TABLE pricing_price_rebuilt (
+    "CREATE TABLE pricing_price_rebuilt (
         price_id                  text        NOT NULL PRIMARY KEY,
         tenant_id                 text        NOT NULL,
         plan_id                   text        NOT NULL,
@@ -86,7 +97,22 @@ const REBUILD_TABLE: &[&str] = &[
         lifecycle_state           text        NOT NULL,
         created_by                text        NOT NULL,
         created_at_utc            text        NOT NULL DEFAULT (CURRENT_TIMESTAMP),
-        row_version               bigint      NOT NULL DEFAULT 0, tax_category_ref text, resolved_tax_category text, billing_anchor_policy text, anchor_day integer, proration_basis text, credit_on_downgrade boolean, reserved_rate_minor bigint, reservation_flavor text, min_qty_purchase bigint, min_qty_usage bigint, min_qty_usage_fallback text, discount_ref text, unit_rate_nano bigint,
+        row_version               bigint      NOT NULL DEFAULT 0,
+        -- The thirteen columns thirteen later migrations added. One per line since
+        -- 2026-08-18; see the note above the statement.
+        tax_category_ref          text,
+        resolved_tax_category     text,
+        billing_anchor_policy     text,
+        anchor_day                integer,
+        proration_basis           text,
+        credit_on_downgrade       boolean,
+        reserved_rate_minor       bigint,
+        reservation_flavor        text,
+        min_qty_purchase          bigint,
+        min_qty_usage             bigint,
+        min_qty_usage_fallback    text,
+        discount_ref              text,
+        unit_rate_nano            bigint,
         CONSTRAINT chk_pricing_price_lifecycle_state CHECK (
             lifecycle_state IN ('draft','published','superseded')),
         CONSTRAINT chk_pricing_price_overlay CHECK (price_overlay = 'base'),
@@ -138,7 +164,7 @@ const REBUILD_TABLE: &[&str] = &[
         CONSTRAINT chk_pricing_price_grandfather_until CHECK (
             grandfather_until IS NULL OR price_eligibility = 'existing_grandfathered')
     )",
-            "INSERT INTO pricing_price_rebuilt (
+    "INSERT INTO pricing_price_rebuilt (
          price_id,
          tenant_id,
          plan_id,
@@ -235,8 +261,8 @@ const REBUILD_TABLE: &[&str] = &[
          discount_ref,
          unit_rate_nano
        FROM pricing_price",
-            "DROP TABLE pricing_price",
-            "ALTER TABLE pricing_price_rebuilt RENAME TO pricing_price"
+    "DROP TABLE pricing_price",
+    "ALTER TABLE pricing_price_rebuilt RENAME TO pricing_price",
 ];
 
 /// The five indexes the DROP took with it.

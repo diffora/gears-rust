@@ -47,6 +47,19 @@
 //! published yet. `included_sku_id` points outside this gear entirely, into the
 //! product/SKU registry. Neither referent is a row this schema holds.
 //!
+//! **The isolation half of that, which this doc did not state** (review A1-6, and
+//! the answer to it): `component_plan_id` is client-supplied, so the question is
+//! not only *when* the reference is resolved but *in whose scope*.
+//! `infra::bundle::component_defects` makes all three of its reads through
+//! `.secure()` under the caller's scope, so a **published** plan in another tenant
+//! contributes `Unpublished` and nothing else — indistinguishable from an id
+//! nobody holds, sentence for sentence. That is asserted rather than argued, in
+//! `rest_bundles::a_component_in_another_tenant_reads_exactly_like_an_absent_one`,
+//! against a *published* foreign plan specifically: a foreign draft would answer
+//! the same way with the scoping removed, so it could not tell the two apart. The
+//! key here is rooted in a server-minted `bundle_id`, so there is no slot for a
+//! stranger to take either.
+//!
 //! # Append-only with its revision (D-92; `01-foundation.md` §3.7, the L-2 fix)
 //!
 //! Identical in shape to `pricing_plan_addon_rule`'s and identical deliberately.

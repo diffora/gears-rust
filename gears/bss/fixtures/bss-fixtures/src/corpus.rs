@@ -4,6 +4,14 @@
 //! every other `.toml` is a case. A case whose `family` disagrees with its
 //! directory is an error — the directory is the index, so the two must not
 //! drift.
+//!
+//! The loader is **fail-closed at every edge**, including the root. A `.toml`
+//! other than the generated `registry.toml` sitting at the corpus root is a
+//! [`CorpusError::StrayRootFile`] rather than a file the walk quietly skips: it
+//! was the one place an authored case could exist, never run, and produce no
+//! error at all, with the registry regenerating cleanly without it. Refusing is
+//! cheap and a silently-dropped fixture is not — a corpus that reports coverage
+//! it does not have is the failure this whole artifact exists to prevent.
 
 use crate::model::{Case, CaseHeader, CaseKind, Family, ModelKind};
 use serde::Deserialize;
@@ -32,6 +40,11 @@ pub enum CorpusError {
     },
     #[error("{path}: directory name is not a known family")]
     UnknownFamilyDirectory { path: String },
+    #[error(
+        "{path}: a case file at the corpus root belongs in a family directory; \
+         only registry.toml lives here"
+    )]
+    StrayRootFile { path: String },
 }
 
 /// What a family is for.
@@ -87,13 +100,37 @@ impl Corpus {
     /// # Errors
     ///
     /// Returns [`CorpusError`] if a directory cannot be read, a file does not
-    /// parse, a directory name is not a known family, or a file declares a
-    /// different family than the directory it sits in.
+    /// parse, a directory name is not a known family, a file declares a
+    /// different family than the directory it sits in, or a `.toml` other than
+    /// `registry.toml` sits at the root.
     pub fn load(root: &Path) -> Result<Self, CorpusError> {
         let mut cases = Vec::new();
         let mut families = Vec::new();
 
-        let mut dirs: Vec<PathBuf> = read_dir(root)?.into_iter().filter(|p| p.is_dir()).collect();
+        let entries = read_dir(root)?;
+
+        // The root is the one place an authored case could exist, never run, and
+        // produce no error: the walk below takes directories only, so a `.toml`
+        // dropped here was silently skipped and the registry regenerated cleanly
+        // without it — an authored rule that nothing checks and nothing reports.
+        // Every other misfiling inside the tree is already fail-closed
+        // (`Misfiled`, `UnknownFamilyDirectory`, and the deliberate two-pass
+        // parse that rejects stray keys), so this was the only open edge.
+        //
+        // `registry.toml` is the generated gate file and is the one exception.
+        for path in &entries {
+            if path.is_dir() || path.extension().is_none_or(|e| e != "toml") {
+                continue;
+            }
+            if path.file_name().is_some_and(|n| n == "registry.toml") {
+                continue;
+            }
+            return Err(CorpusError::StrayRootFile {
+                path: display(path),
+            });
+        }
+
+        let mut dirs: Vec<PathBuf> = entries.into_iter().filter(|p| p.is_dir()).collect();
         dirs.sort();
 
         for dir in dirs {

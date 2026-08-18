@@ -1,11 +1,22 @@
-//! `PriceOverlayValidator` — the nine `inst-plv-*` rules of
-//! `design/09-price-overlays.md` §3, as one aggregate pipeline over a snapshot.
+//! `PriceOverlayValidator` — **ten of `design/09-price-overlays.md` §3's eleven
+//! `inst-plv-*` rules**, as one aggregate pipeline over a snapshot.
 //!
 //! Where [`crate::domain::overlay`] is the shapes, this module is the judgement:
 //! `inst-plv-scope`, `inst-plv-lines`, `inst-plv-adjustment`,
-//! `inst-plv-eligibility`, `inst-plv-precedence`, `inst-plv-dating`,
-//! `inst-plv-referential` and `inst-plv-taxbasis`, with `inst-plv-disclosure`'s
-//! catalog half discussed below.
+//! `inst-plv-eligibility`, `inst-plv-precedence`, `inst-plv-class-tiebreak`,
+//! `inst-plv-dating`, `inst-plv-referential` and `inst-plv-taxbasis`, with
+//! `inst-plv-disclosure`'s catalog half discussed below. The one genuinely
+//! outside this crate is `inst-plv-member-preview`, and the section on absences
+//! says so.
+//!
+//! **This opened "the nine" and had counted its own contents one short** (review
+//! Z3-8). The missing member was `inst-plv-class-tiebreak`, which the absences
+//! section three screens down already records as being here *in both its halves*
+//! — so a reader auditing coverage against §3 found a rule the census did not
+//! claim, and the natural conclusion from a census is that an unclaimed rule is
+//! unregistered. The count is kept rather than dropped because §3 has a fixed
+//! roster to be audited against; what is corrected is which side of it each id
+//! sits on.
 //!
 //! # One pipeline, not two, and D-213's shape found once
 //!
@@ -537,6 +548,21 @@ fn check_adjustment(candidate: &OverlayCandidate, report: &mut ValidationReport)
 /// arriving *on a request* that a column refuses is a caller mistake the request
 /// can be reshaped around, and reaching the constraint makes it an internal
 /// fault.
+/// # Every violation it raises is stamped `Stage::Write`, and that is a safety
+/// property rather than bookkeeping
+///
+/// This is a **write door**: the surface calls it on the create and on the
+/// line-set `PATCH`, and each of its three faults is decidable from the authored
+/// document alone — `validation.rs`'s own criterion for the stamp. Until
+/// 2026-08-18 the report was built with `report.violate(...)`, which stamps
+/// `Stage::Publish` unconditionally, so
+/// [`ValidationReport::write_stage_only`](crate::domain::validation::ValidationReport::write_stage_only)
+/// answered `None` for it. That made an ordinary refactor lethal: routing this
+/// report through the same filter the plan and price doors use — the obvious move
+/// if the two rule planes are ever unified — would have collapsed the whole
+/// D-67 / D-42 / §1.7 save-time guard into `Ok(())`, and nothing would have
+/// reddened, because `overlay_rules_tests` calls this function directly and never
+/// through a stage filter (review Z3-5).
 #[must_use]
 pub fn check_authored_shape(interval: OverlayInterval, lines: &[OverlayLine]) -> ValidationReport {
     let mut report = ValidationReport::default();
@@ -563,7 +589,15 @@ fn check_interval_sanity(interval: OverlayInterval, report: &mut ValidationRepor
     if to > from {
         return;
     }
-    report.violate(
+    // `violate_at_write`, not `violate`. Every operand of this fault is in the
+    // request — an authored `[from, to)` — so it is judgeable at the door that
+    // receives it, which is D-312's criterion exactly. It said `Stage::Publish`
+    // until 2026-08-18 (review Z3-5), and the consequence was not cosmetic:
+    // `write_stage_only()` answered `None` for `check_authored_shape`'s whole
+    // report, so routing this door through the same filter the plan and price
+    // doors use — the obvious refactor if the two planes are ever unified — would
+    // have deleted the §1.7 save-time guard into `Ok(())` with nothing reddening.
+    report.violate_at_write(
         OVERLAY_INTERVAL_INVALID,
         "effective_to",
         format!(
@@ -585,7 +619,9 @@ fn check_duplicate_keys(lines: &[OverlayLine], report: &mut ValidationReport) {
     let mut seen: BTreeSet<&LineKey> = BTreeSet::new();
     for line in lines {
         if !seen.insert(&line.key) {
-            report.violate(
+            // `violate_at_write`: two lines of the submitted set carry one key,
+            // which the request states in full. See `check_interval_sanity`.
+            report.violate_at_write(
                 OVERLAY_LINE_DUPLICATE,
                 render_key(&line.key),
                 format!(
@@ -599,38 +635,70 @@ fn check_duplicate_keys(lines: &[OverlayLine], report: &mut ValidationReport) {
     }
 }
 
-/// **D-67's ranges, over a line set alone** — the authoring edge's entry point.
+// `check_magnitudes` used to be here: D-67's ranges over a line set alone,
+// documented as *"the authoring edge's entry point"*. It had **no caller
+// anywhere in the crate** and it was a strict subset of `check_authored_shape`
+// thirty lines up, whose doc opens with the same six words and which runs
+// `check_magnitude_range` over every line as its third step (review Z3-4). Two
+// functions in one module each claiming to be the entry point is the shape that
+// sends a reader to the wrong one, and both surviving doc links did exactly
+// that — `api::rest::overlays::adjustment_of` explained what it deliberately
+// does *not* check by pointing at the dead function, so a reader following it
+// concluded the range check lives somewhere it does not run.
+//
+// Deleted rather than wired: the argument it carried — the store's `CHECK` fires
+// on the INSERT and reaches the caller as a 500 for a request whose whole remedy
+// is one number, measured rather than reasoned about — is already
+// `check_authored_shape`'s, in the same words. Nothing is lost with it.
+// `check_magnitude_range` keeps its live call sites.
+
+/// D-67's range over an [`Adjustment`] alone, with no [`OverlayLine`] around it.
 ///
-/// `inst-plv-adjustment`'s magnitude bound is the one rule in this module that
-/// needs **no world at all**: a magnitude is in range or it is not, whatever the
-/// tenant has published. D-67 says it *"fails save **and** publish"*, and this
-/// is the save half.
+/// `0 < v <= 10000` on a discount, `v > 0` on a markup, `>= 0` on money.
 ///
-/// # It exists because the store's `CHECK` answers a 500
+/// Extracted 2026-08-17 so the **mass-repricing door can ask it**. A run's
+/// adjustment is never persisted as an overlay line, so the rule form below could
+/// not reach that path and neither could the store's two `CHECK`s — the range went
+/// unasked on the repricing plane entirely, and a `discount` of `15000` bp, the
+/// very inversion the ceiling clause names, floored every selected row to zero and
+/// published without an approval because an absolute materiality bar above the
+/// row's own price cannot see that move.
 ///
-/// `chk_pricing_price_overlay_line_discount_ceiling` and its
-/// `..._magnitude_positive` sibling are the physical backstop, and they fire on
-/// the INSERT — which reaches the caller as a driver error, i.e.
-/// `DomainError::Internal` and a **500**, for a request whose whole remedy is to
-/// correct one number. Measured, not reasoned about: before this entry point
-/// existed, authoring `discount / percent_bp = 15000` — D-67's own "150% of
-/// list" example — answered 500.
+/// The `Err` carries the operator-facing clause **without** the line's key, so a
+/// caller holding no [`ValidationReport`] can put it straight into a
+/// [`DomainError::InvalidRequest`]; the rule form re-attaches the key.
 ///
-/// That is exactly the argument `RepoError::GrandfatherHorizonOffClass` records
-/// one plane over: a value arriving *on a request* that a column refuses is a
-/// caller mistake the request can be reshaped around, and reaching the `CHECK`
-/// makes it an internal fault.
-///
-/// The two guards stay in series deliberately — the `CHECK` is what holds
-/// against a writer that is not this crate — and this one is what makes the
-/// refusal legible.
-#[must_use]
-pub fn check_magnitudes(lines: &[OverlayLine]) -> ValidationReport {
-    let mut report = ValidationReport::default();
-    for line in lines {
-        check_magnitude_range(line, &mut report);
+/// # Errors
+/// The clause naming which bound the magnitude broke.
+pub(crate) fn magnitude_out_of_range(adjustment: &Adjustment) -> Result<(), String> {
+    if let Some(bp) = adjustment.percent_bp() {
+        if bp <= 0 {
+            return Err(format!(
+                "a {} magnitude of {bp} bp; a magnitude must be strictly positive — a \
+                 line that adjusts nothing is a line that should not have been authored, \
+                 and the kind carries the direction (D-67)",
+                adjustment.kind().as_str()
+            ));
+        }
+        if matches!(adjustment, Adjustment::Discount(_)) && bp > 10_000 {
+            return Err(format!(
+                "a discount of {bp} bp; a discount above 100% is not authorable, and \
+                 {bp} is the shape the \"150% of list\" data-entry inversion takes (D-67)"
+            ));
+        }
     }
-    report
+    if let Some(amounts) = adjustment.amounts() {
+        for (currency, value) in amounts.iter() {
+            if value < 0 {
+                return Err(format!(
+                    "{value} minor units in {}; an amount magnitude is >= 0 at the \
+                     currency's ISO 4217 minor unit (D-67)",
+                    currency.as_str()
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// D-67: `0 < v <= 10000` on a discount, `v > 0` on a markup, `>= 0` on money.
@@ -639,51 +707,20 @@ pub fn check_magnitudes(lines: &[OverlayLine]) -> ValidationReport {
 /// refusal to **name the line** and a constructor cannot appear in an aggregate
 /// report. The store's two `CHECK`s are the backstop; the two guards are in
 /// series, which is why `overlay_rules_tests` drives this one directly.
+///
+/// The predicate itself lives in [`magnitude_out_of_range`], which the repricing
+/// door asks too; this function is the line-naming half.
 fn check_magnitude_range(line: &OverlayLine, report: &mut ValidationReport) {
-    if let Some(bp) = line.adjustment.percent_bp() {
-        let ceiling = matches!(line.adjustment, Adjustment::Discount(_));
-        if bp <= 0 {
-            report.violate(
-                ADJUSTMENT_MAGNITUDE_OUT_OF_RANGE,
-                render_key(&line.key),
-                format!(
-                    "line {} carries a {} magnitude of {bp} bp; a magnitude must be strictly \
-                     positive — a line that adjusts nothing is a line that should not have been \
-                     authored (D-67)",
-                    render_key(&line.key),
-                    line.adjustment.kind()
-                ),
-            );
-        } else if ceiling && bp > 10_000 {
-            report.violate(
-                ADJUSTMENT_MAGNITUDE_OUT_OF_RANGE,
-                render_key(&line.key),
-                format!(
-                    "line {} carries a discount of {bp} bp; a discount above 100% is not \
-                     authorable, and {bp} is the shape the \"150% of list\" data-entry inversion \
-                     takes (D-67)",
-                    render_key(&line.key)
-                ),
-            );
-        }
-    }
-
-    let Some(amounts) = line.adjustment.amounts() else {
-        return;
-    };
-    for (currency, value) in amounts.iter() {
-        if value < 0 {
-            report.violate(
-                ADJUSTMENT_MAGNITUDE_OUT_OF_RANGE,
-                render_key(&line.key),
-                format!(
-                    "line {} carries {value} minor units in {}; an amount magnitude is >= 0 at \
-                     the currency's ISO 4217 minor unit (D-67)",
-                    render_key(&line.key),
-                    currency.as_str()
-                ),
-            );
-        }
+    if let Err(clause) = magnitude_out_of_range(&line.adjustment) {
+        // `violate_at_write`: a magnitude is in range or it is not, whatever the
+        // tenant has published — this rule's own doc calls it the one rule here
+        // that needs no world at all, and D-67 says it "fails save **and**
+        // publish". See `check_interval_sanity`.
+        report.violate_at_write(
+            ADJUSTMENT_MAGNITUDE_OUT_OF_RANGE,
+            render_key(&line.key),
+            format!("line {} carries {clause}", render_key(&line.key)),
+        );
     }
 }
 

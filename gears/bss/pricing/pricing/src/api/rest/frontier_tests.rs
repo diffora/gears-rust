@@ -50,6 +50,15 @@ fn the_empty_reading_serializes_its_nulls_rather_than_omitting_them() {
     let json = serde_json::to_value(PinFrontierView::none_yet()).expect("serialize");
 
     let object = json.as_object().expect("the view serializes as an object");
-    assert_eq!(object.len(), 3, "three fields, always: {json}");
+    // The **names**, not the count. `len() == 3` is guaranteed by the struct plus
+    // the macro's lack of `skip_serializing_if`, so it could not fail; a rename
+    // passed it, and a rename is exactly what breaks the consumer this case is for.
+    let mut members: Vec<&str> = object.keys().map(String::as_str).collect();
+    members.sort_unstable();
+    assert_eq!(
+        members,
+        ["advanced_at", "catalog_version", "pin_eligible"],
+        "the three fields a consumer discriminates on: {json}"
+    );
     assert!(object.values().any(serde_json::Value::is_null));
 }

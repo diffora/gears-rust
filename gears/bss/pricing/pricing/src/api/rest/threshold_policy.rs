@@ -313,11 +313,21 @@ pub fn router(state: Arc<GovernanceState>, openapi: &dyn OpenApiRegistry) -> Rou
         .tag(TAG)
         .authenticated()
         .no_license_required()
+        .param(crate::api::rest::plans::if_none_match_param())
         .handler(get_threshold_policy)
         .json_response_with_schema::<ThresholdPolicyView>(
             openapi,
             StatusCode::OK,
             "The effective policy and the proposal under review.",
+        )
+        // The conditional read's answer (RFC 9110 section 15.4.5). Declared
+        // because it is reachable: this route emits an `ETag` and honours the
+        // `If-None-Match` a caller sends it back in, which nothing in this gear
+        // did until 2026-08-17 while seven reads emitted a validator.
+        .no_content_response(
+            StatusCode::NOT_MODIFIED,
+            "The caller's `If-None-Match` matches the current representation, so the body is \
+             not re-sent.",
         )
         .error_401(openapi)
         .error_403(openapi)
@@ -340,8 +350,8 @@ pub fn router(state: Arc<GovernanceState>, openapi: &dyn OpenApiRegistry) -> Rou
              patch. A tenant's first proposal is itself material under the fail-safe, so no \
              tenant can configure a threshold without completing an approved unit first. Shape \
              rules, all `THRESHOLD_INVALID` (400): keys are ISO 4217 codes, at least one entry, \
-             no currency twice, exactly one of `absoluteMinor` / `percentBp` per entry, \
-             `absoluteMinor` >= 0, and `percentBp` in `1..=10000`. A second proposal while one is \
+             no currency twice, exactly one of `absolute_minor` / `percent_bp` per entry, \
+             `absolute_minor` >= 0, and `percent_bp` in `1..=10000`. A second proposal while one is \
              under review is `PENDING_CHANGE_UNIT_EXISTS` (409) - decide it or withdraw it. \
              **`If-Match` is required**: send the opaque `ETag` the `GET` returned, verbatim. It \
              is not a row version - this store has none - but a digest over the policy as the \
@@ -396,6 +406,7 @@ async fn get_threshold_policy(
     Extension(state): Extension<Arc<GovernanceState>>,
     Extension(enforcer): Extension<authz_resolver_sdk::PolicyEnforcer>,
     extension_ctx: Option<Extension<SecurityContext>>,
+    headers: HeaderMap,
 ) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(extension_ctx)?;
     let scope = read_scope(&enforcer, &ctx).await?;
@@ -408,6 +419,13 @@ async fn get_threshold_policy(
     // read: `ThresholdState::tag` is the one producer, shared with the comparison
     // inside `propose`.
     let tag = preconditions::policy_etag(&held.tag());
+    // The conditional read, and this resource is the one it was most owed: its
+    // `If-Match` is mandatory and this `GET` is the **only** place a caller can
+    // obtain a tag, so a client holding a fresh precondition had to re-download the
+    // whole threshold set on every poll to get one.
+    if preconditions::if_none_match(&headers, &tag) {
+        return Ok(preconditions::not_modified(&tag));
+    }
     Ok((
         [(ETAG, tag)],
         Json(ThresholdPolicyView {
@@ -425,7 +443,7 @@ async fn put_threshold_policy(
     extension_ctx: Option<Extension<SecurityContext>>,
     extension_correlation: Option<Extension<CorrelationId>>,
     headers: HeaderMap,
-    Json(request): Json<PutThresholdPolicyRequest>,
+    body: axum::body::Bytes,
 ) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(extension_ctx)?;
     let correlation = require_correlation(extension_correlation)?;
@@ -442,6 +460,18 @@ async fn put_threshold_policy(
         tag: preconditions::if_match_policy(&headers).map_err(CanonicalError::from)?,
         now,
     };
+
+    // `Bytes` + `parse_body`, never axum's `Json` extractor — the rule
+    // `preconditions::parse_body` states and the other twenty-nine body-bearing
+    // handlers follow. This route took `Json<PutThresholdPolicyRequest>` until
+    // 2026-08-17, and the sentence three lines above was false of it: an extractor
+    // runs during dispatch, so the body was read *before* `require_authenticated`,
+    // and an anonymous caller who omitted `Content-Type` was answered 415 and one
+    // whose body did not fit the type 422 — two statuses this registration does not
+    // declare, one of them the status `01-foundation.md` §3.3 forbids by name, both
+    // outside the canonical `Problem` envelope, on the route that authors the
+    // tenant's two-person-review thresholds.
+    let request: PutThresholdPolicyRequest = preconditions::parse_body(&body)?;
 
     let materiality = policy_diff_materiality()?;
     let stamp = audit_stamp(&ctx, now, correlation);
@@ -593,7 +623,7 @@ fn parse_entries(authored: &[ThresholdEntryView]) -> Result<Vec<ThresholdEntry>,
             (Some(minor), None) => {
                 if minor < 0 {
                     return Err(refuse(format!(
-                        "entries[{currency}]: absoluteMinor is {minor}; a negative threshold is \
+                        "entries[{currency}]: absolute_minor is {minor}; a negative threshold is \
                          below every change there is, which is the two-person rule switched off \
                          by arithmetic"
                     )));
@@ -603,7 +633,7 @@ fn parse_entries(authored: &[ThresholdEntryView]) -> Result<Vec<ThresholdEntry>,
             (None, Some(bp)) => {
                 if bp == 0 || bp > MAX_PERCENT_BP {
                     return Err(refuse(format!(
-                        "entries[{currency}]: percentBp is {bp}; it must be in 1..={MAX_PERCENT_BP} \
+                        "entries[{currency}]: percent_bp is {bp}; it must be in 1..={MAX_PERCENT_BP} \
                          (basis points, 10000 = 100%)"
                     )));
                 }
@@ -611,13 +641,13 @@ fn parse_entries(authored: &[ThresholdEntryView]) -> Result<Vec<ThresholdEntry>,
             }
             (Some(_), Some(_)) => {
                 return Err(refuse(format!(
-                    "entries[{currency}]: absoluteMinor and percentBp are both set; a threshold \
+                    "entries[{currency}]: absolute_minor and percent_bp are both set; a threshold \
                      has one basis, or the evaluator picks one with nothing saying which"
                 )));
             }
             (None, None) => {
                 return Err(refuse(format!(
-                    "entries[{currency}]: neither absoluteMinor nor percentBp is set; an entry \
+                    "entries[{currency}]: neither absolute_minor nor percent_bp is set; an entry \
                      that thresholds nothing still counts as this currency having one, which is \
                      the fail-safe switched off by an empty row"
                 )));

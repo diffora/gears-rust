@@ -240,7 +240,7 @@ fn a_row_that_authors_a_reservation_now_reports_it_without_the_caller_saying_so(
     // already asked through `of_slice3_row` -- starts gating reserved rows with
     // no call site moving. That is the property this asserts.
     let mut reserved = row(ModelKind::Graduated);
-    reserved.reserved_rate_minor = Some(minor(3));
+    reserved.reserved_rate = Some(RateMinor::from_minor_units(3).expect("a non-negative rate"));
     reserved.reservation_flavor = Some(ReservationFlavor::Capacity);
 
     assert_eq!(
@@ -265,7 +265,8 @@ fn a_half_authored_reservation_still_reports_reserved() {
     for half in [0, 1] {
         let mut half_row = row(ModelKind::Graduated);
         if half == 0 {
-            half_row.reserved_rate_minor = Some(minor(3));
+            half_row.reserved_rate =
+                Some(RateMinor::from_minor_units(3).expect("a non-negative rate"));
         } else {
             half_row.reservation_flavor = Some(ReservationFlavor::Consumption);
         }

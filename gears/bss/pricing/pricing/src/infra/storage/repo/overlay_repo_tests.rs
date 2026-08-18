@@ -17,11 +17,17 @@
 
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
+use std::collections::BTreeSet;
+
 use sea_orm::DbErr;
 use toolkit_db::secure::ScopeError;
+use uuid::Uuid;
 
-use super::{is_line_identity_collision, precedence_held_or_db};
+use super::{is_line_identity_collision, line_of, precedence_held_or_db};
+use crate::domain::money::CurrencyCode;
+use crate::domain::overlay::{Adjustment, AdjustmentKind, AmountSet, Magnitude, MagnitudeKind};
 use crate::infra::storage::RepoError;
+use crate::infra::storage::entity::{price_overlay_line, price_overlay_line_amount};
 
 /// A driver error carrying exactly this message and nothing the typed class can
 /// be read from.
@@ -159,4 +165,141 @@ fn a_unique_violation_on_the_amount_table_is_not_a_line_identity_collision() {
         "the amount row's key is a different constraint, and the qualified table name is \
          what tells them apart"
     );
+}
+
+// ---------------------------------------------------------------------------
+// The two stored kind columns, written by the domain and read back by it.
+// ---------------------------------------------------------------------------
+
+/// The write half of `write_lines`, isolated: the two columns as the producer
+/// renders them.
+///
+/// **The tokens are never typed here.** `line_of`'s inverse used to be a
+/// hand-written literal match, so a fixture that typed `"markup"` on both sides
+/// would have proved the two literals equal and nothing about the round trip. The
+/// row is rendered from the adjustment through the same producer
+/// `overlay_repo::write_lines` uses, so a rename of a token moves this fixture
+/// with it and the assertion still has to hold.
+fn stored_row(adjustment: &Adjustment) -> price_overlay_line::Model {
+    price_overlay_line::Model {
+        line_id: Uuid::from_u128(0x_11),
+        overlay_revision: 1,
+        price_overlay_id: Uuid::from_u128(0x_0f),
+        tenant_id: Uuid::from_u128(0x_7e),
+        plan_id: None,
+        target_sku: None,
+        cohort: None,
+        adjustment_kind: adjustment.kind().as_str().to_owned(),
+        magnitude_kind: adjustment.magnitude_kind().as_str().to_owned(),
+        adjustment_value: adjustment.percent_bp(),
+    }
+}
+
+fn stored_amounts() -> Vec<price_overlay_line_amount::Model> {
+    vec![price_overlay_line_amount::Model {
+        line_id: Uuid::from_u128(0x_11),
+        overlay_revision: 1,
+        currency: "EUR".to_owned(),
+        tenant_id: Uuid::from_u128(0x_7e),
+        value_minor: 1200,
+    }]
+}
+
+fn eur(minor: i64) -> AmountSet {
+    AmountSet::new([(CurrencyCode::new("EUR").expect("three letters"), minor)])
+}
+
+/// Every adjustment this domain can express survives write-then-read unchanged.
+///
+/// The case Z2-4 found missing: `line_of` parsed both kind columns against
+/// hand-written literals while `write_lines` rendered them through
+/// `Adjustment::kind()`, and **no test drove the pair**. A renamed token would
+/// have had the writer storing the new spelling and every read of a row it wrote
+/// answering `RepoError::CorruptRow` — a perfectly legal row read back as a
+/// corrupt one, which is the failure `read_token`'s own doc names.
+///
+/// The sample set is checked against `AdjustmentKind::ALL` and
+/// `MagnitudeKind::ALL` below rather than left as a list somebody keeps in their
+/// head.
+#[test]
+fn every_adjustment_survives_the_two_stored_kind_columns() {
+    for adjustment in samples() {
+        let round_tripped = line_of(&stored_row(&adjustment), &stored_amounts())
+            .expect("a row this domain produced is a row this domain reads")
+            .adjustment;
+        assert_eq!(
+            round_tripped, adjustment,
+            "the read is the write's inverse, on every variant"
+        );
+    }
+}
+
+/// The samples cover every kind the domain declares, in **both** directions.
+///
+/// This is what makes the round trip above a census rather than four cases. A
+/// kind added to `AdjustmentKind::ALL` or `MagnitudeKind::ALL` with no sample
+/// producing it reddens here, so the round trip cannot silently stop covering the
+/// vocabulary it claims to cover — and a kind added to the enum but *not* to
+/// `ALL` cannot hide either, because `as_str` and `line_of`'s own `match` are
+/// both exhaustive and stop compiling first.
+#[test]
+fn the_samples_produce_every_declared_kind() {
+    let adjustment_kinds: BTreeSet<&str> = samples().iter().map(|a| a.kind().as_str()).collect();
+    let magnitude_kinds: BTreeSet<&str> = samples()
+        .iter()
+        .map(|a| a.magnitude_kind().as_str())
+        .collect();
+    assert_eq!(
+        adjustment_kinds,
+        AdjustmentKind::ALL.iter().map(|k| k.as_str()).collect(),
+        "every declared adjustment kind needs a round-tripped sample"
+    );
+    assert_eq!(
+        magnitude_kinds,
+        MagnitudeKind::ALL.iter().map(|k| k.as_str()).collect(),
+        "every declared magnitude kind needs a round-tripped sample"
+    );
+}
+
+/// One adjustment per `(adjustment_kind, magnitude_kind)` pairing the domain
+/// admits. `fixed` is amount-only by construction (D-138), so there are five and
+/// not six.
+fn samples() -> Vec<Adjustment> {
+    vec![
+        Adjustment::Markup(Magnitude::PercentBp(1200)),
+        Adjustment::Markup(Magnitude::Amount(eur(1200))),
+        Adjustment::Discount(Magnitude::PercentBp(1200)),
+        Adjustment::Discount(Magnitude::Amount(eur(1200))),
+        Adjustment::Fixed(eur(1200)),
+    ]
+}
+
+/// Every token parses back to the kind that rendered it, and no two kinds render
+/// alike.
+///
+/// The property `read_token` rests on: it finds a candidate by comparing
+/// `render(candidate)` against the stored string, so two kinds sharing a token
+/// would make the first one win silently.
+#[test]
+fn every_kind_token_round_trips_and_no_two_collide() {
+    let mut seen: BTreeSet<&str> = BTreeSet::new();
+    for kind in AdjustmentKind::ALL {
+        assert_eq!(AdjustmentKind::parse(kind.as_str()), Some(*kind));
+        assert!(
+            seen.insert(kind.as_str()),
+            "two kinds render {}",
+            kind.as_str()
+        );
+    }
+    let mut seen: BTreeSet<&str> = BTreeSet::new();
+    for kind in MagnitudeKind::ALL {
+        assert_eq!(MagnitudeKind::parse(kind.as_str()), Some(*kind));
+        assert!(
+            seen.insert(kind.as_str()),
+            "two kinds render {}",
+            kind.as_str()
+        );
+    }
+    assert_eq!(AdjustmentKind::parse("mark_up"), None);
+    assert_eq!(MagnitudeKind::parse("percentBp"), None);
 }

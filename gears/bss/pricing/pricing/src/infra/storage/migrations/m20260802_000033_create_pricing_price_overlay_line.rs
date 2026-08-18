@@ -67,6 +67,18 @@
 //! nil plan id, so the caller reads a typed refusal rather than a `CHECK`
 //! violation; now the sentence is true as well.
 //!
+//! # The primary key below is no longer the one the schema carries
+//!
+//! `m20260802_000085` widened it to `(tenant_id, overlay_revision, line_id)` on
+//! 2026-08-18 (review A1-3), and both halves of the argument this doc makes for
+//! `(line_id, overlay_revision)` survive it — the revision is in the key for the
+//! reason given, and §6's literal `PK line_id` is still unbuildable. What the
+//! narrow pair additionally asserted, and what nothing here argues for, is that a
+//! **client-supplied** `line_id` belongs to one overlay per revision number across
+//! every tenant. The child amount table's key and foreign key moved in the same
+//! migration; read that one for the whole of it. The statements below stay as
+//! written, being the state the chain passes through.
+//!
 //! # The `CHECK`s, and which decision each is
 //!
 //! * `cohort_needs_plan` (§6, 2026-07-31 review fix) — a `cohort` is validated

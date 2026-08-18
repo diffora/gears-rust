@@ -381,7 +381,7 @@ async fn the_unrepresentable_line_pairings_are_refused_at_the_edge() {
 /// `discount / percent_bp = 15000` is D-67's own "150% of list" data-entry
 /// inversion. It is refused twice over — by
 /// `chk_pricing_price_overlay_line_discount_ceiling` in the store and by
-/// `check_magnitudes` at this edge — and the edge is what makes the refusal
+/// `check_authored_shape` at this edge — and the edge is what makes the refusal
 /// legible: **this case answered 500 before that entry point existed**, because
 /// the `CHECK` reached the caller as a driver error for a request whose whole
 /// remedy is to correct one number.

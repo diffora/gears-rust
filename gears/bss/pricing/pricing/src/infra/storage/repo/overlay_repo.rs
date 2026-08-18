@@ -105,8 +105,9 @@ use crate::domain::lifecycle::LifecycleState;
 use crate::domain::money::CurrencyCode;
 use crate::domain::overlay::OverlayRevision;
 use crate::domain::overlay::{
-    Adjustment, AmountSet, Disclosure, LineKey, Magnitude, OverlayInterval, OverlayLifecycle,
-    OverlayLine, ScopeClass, ScopeSelector, ScopeValue, TargetRef, TargetSku, TaxBasis,
+    Adjustment, AdjustmentKind, AmountSet, Disclosure, LineKey, Magnitude, MagnitudeKind,
+    OverlayInterval, OverlayLifecycle, OverlayLine, ScopeClass, ScopeSelector, ScopeValue,
+    TargetRef, TargetSku, TaxBasis,
 };
 use crate::domain::overlay_rules::{CrossClassTie, OverlayWorld, PublishedLineInterval};
 use crate::domain::scope_key::{PlanId, PriceEligibility};
@@ -1457,8 +1458,8 @@ async fn write_lines(
             plan_id: Set(line.key.plan_id().map(PlanId::get)),
             target_sku: Set(line.key.target_sku().map(|s| s.as_str().to_owned())),
             cohort: Set(line.key.cohort()),
-            adjustment_kind: Set(line.adjustment.kind().to_owned()),
-            magnitude_kind: Set(line.adjustment.magnitude_kind().to_owned()),
+            adjustment_kind: Set(line.adjustment.kind().as_str().to_owned()),
+            magnitude_kind: Set(line.adjustment.magnitude_kind().as_str().to_owned()),
             adjustment_value: Set(line.adjustment.percent_bp()),
         };
         price_overlay_line::Entity::insert(row.clone())
@@ -1469,11 +1470,18 @@ async fn write_lines(
             .await
             .map_err(|e| {
                 // `line_id` is caller-mintable and the line's primary key is
-                // `(line_id, overlay_revision)` — **not** scoped by overlay — so
-                // pasting a line id read off one overlay into another at the same
-                // revision is a primary-key collision. That is a well-formed
-                // request whose whole remedy is to omit one field, so it is a
-                // refusal the caller can act on rather than a storage fault.
+                // `(tenant_id, overlay_revision, line_id)` — **not** scoped by
+                // overlay — so pasting a line id read off one of this tenant's
+                // overlays into another at the same revision is a primary-key
+                // collision. That is a well-formed request whose whole remedy is to
+                // omit one field, so it is a refusal the caller can act on rather
+                // than a storage fault.
+                //
+                // `tenant_id` joined the key under `m20260802_000085` (review
+                // A1-3). Before it, the same collision spanned **every** tenant, so
+                // this refusal was also an oracle over another tenant's line ids;
+                // the sentence it renders is unchanged because what the author has
+                // to do about it is.
                 if is_line_identity_collision(&e) {
                     RepoError::ValueOutOfRange {
                         field: "line_id".to_owned(),
@@ -1503,6 +1511,28 @@ async fn write_lines(
                 })?
                 .exec(runner)
                 .await
+                // **Untyped, and unreachable — review A1-4, recorded rather than
+                // pre-emptively classified.**
+                //
+                // Two independent guards keep every uniqueness failure of this
+                // table out of reach, and each is worth naming because the
+                // catch-all arms the moment either moves. (a) A duplicate currency
+                // within one line cannot arrive: `AmountSet` is a
+                // `BTreeMap<CurrencyCode, i64>` whose constructor documents
+                // last-wins, so the iteration above yields each currency once.
+                // (b) A cross-line collision cannot arrive: the line insert thirty
+                // lines up refuses the colliding `line_id` first, and a `line_id`
+                // past that check is unique at that revision **within the tenant**,
+                // so its amounts are too.
+                //
+                // Guard (b) is the one `m20260802_000085` had to keep true. That
+                // migration made two tenants able to hold one
+                // `(line_id, overlay_revision)`, which would have armed this
+                // catch-all as a `500` had the amount key not widened with the
+                // line's — so it widened in the same statement list, to
+                // `(tenant_id, overlay_revision, line_id, currency)`. A typed code
+                // here today would be a code nothing can produce and no document
+                // declares.
                 .map_err(|e| {
                     RepoError::Db(format!("insert pricing_price_overlay_line_amount: {e}"))
                 })?;
@@ -1702,20 +1732,43 @@ fn line_of(
     }
     let amount_set = AmountSet::new(set);
 
-    let magnitude = match row.magnitude_kind.as_str() {
-        "percent_bp" => Magnitude::PercentBp(row.adjustment_value.ok_or_else(|| {
-            // The biconditional `CHECK` forbids it, so this is a written-around
-            // table rather than a caller mistake.
-            corrupt("percent_bp line with no adjustment_value")
-        })?),
-        "amount" => Magnitude::Amount(amount_set.clone()),
-        _ => return Err(corrupt("magnitude_kind")),
+    // Both kind columns go through [`read_token`] against the domain's own `ALL`,
+    // like the four tokens `record_of` parses thirteen lines below. They were
+    // hand-written literal matches until 2026-08-18 (review Z1-7 / Z2-4), which
+    // made this the only place in the repository layer that parsed a stored enum
+    // column against literals — while the **write** thirty lines up went through
+    // `Adjustment::kind()`. One concept, a producer in the domain and an inverse
+    // here, free to disagree: a renamed token would have had the writer storing
+    // the new spelling and every read of it answering `CorruptRow`, with green
+    // tests. `read_token`'s own doc states the rule this violated.
+    let magnitude = match read_token(
+        "magnitude_kind",
+        &row.magnitude_kind,
+        MagnitudeKind::ALL,
+        MagnitudeKind::as_str,
+    )
+    .map_err(|_| corrupt("magnitude_kind"))?
+    {
+        MagnitudeKind::PercentBp => {
+            Magnitude::PercentBp(row.adjustment_value.ok_or_else(|| {
+                // The biconditional `CHECK` forbids it, so this is a written-around
+                // table rather than a caller mistake.
+                corrupt("percent_bp line with no adjustment_value")
+            })?)
+        }
+        MagnitudeKind::Amount => Magnitude::Amount(amount_set.clone()),
     };
-    let adjustment = match row.adjustment_kind.as_str() {
-        "markup" => Adjustment::Markup(magnitude),
-        "discount" => Adjustment::Discount(magnitude),
-        "fixed" => Adjustment::Fixed(amount_set),
-        _ => return Err(corrupt("adjustment_kind")),
+    let adjustment = match read_token(
+        "adjustment_kind",
+        &row.adjustment_kind,
+        AdjustmentKind::ALL,
+        AdjustmentKind::as_str,
+    )
+    .map_err(|_| corrupt("adjustment_kind"))?
+    {
+        AdjustmentKind::Markup => Adjustment::Markup(magnitude),
+        AdjustmentKind::Discount => Adjustment::Discount(magnitude),
+        AdjustmentKind::Fixed => Adjustment::Fixed(amount_set),
     };
 
     Ok(OverlayLine {

@@ -577,6 +577,8 @@ impl BssPricingGear {
             commit_overdue = report.commit_overdue,
             pin_eligibility_overdue = report.pin_eligibility_overdue,
             frontier_scan_failed = report.frontier_scan_failed,
+            degraded_emit_failed = report.degraded_emit_failed,
+            frontier_block_probe_failed = report.frontier_block_probe_failed,
             "bss-pricing: read-model warm sweep pass"
         );
     }
@@ -597,10 +599,13 @@ impl BssPricingGear {
     /// puts that at `debug` precisely because the e2e that boots this gear without a
     /// registry has to stay readable.
     ///
-    /// **Destructured exhaustively on purpose.** A twelfth counter added to
+    /// **Destructured exhaustively on purpose.** A counter added to
     /// `SweepReport` is then a compile error here rather than a field this rule
     /// silently ignores — which is the one way a report grows a signal that never
-    /// reaches an operator.
+    /// reaches an operator. (This sentence used to say "a **twelfth** counter",
+    /// which is `jobs.rs`' own "no count in prose beside a roster in code": the
+    /// number went stale the day Z4-2 and Z4-8 added their two members, and the
+    /// compile gate the sentence describes is what it is whatever the count.)
     fn sweep_is_noteworthy(report: &crate::infra::jobs::readmodel_warm::SweepReport) -> bool {
         let crate::infra::jobs::readmodel_warm::SweepReport {
             // A deployment state, not an event — see above.
@@ -619,6 +624,13 @@ impl BssPricingGear {
             commit_overdue,
             pin_eligibility_overdue,
             frontier_scan_failed,
+            // The two Z4-2/Z4-8 siblings of `frontier_scan_failed`, and
+            // noteworthy for its reason: each marks a signal that could not be
+            // delivered or could not be evaluated, and neither moves any counter
+            // beside it — so without naming them here a pass in which one fired
+            // is byte-identical to a healthy one.
+            degraded_emit_failed,
+            frontier_block_probe_failed,
         } = report;
         *versions_projected > 0
             || *subjects_failed > 0
@@ -627,6 +639,8 @@ impl BssPricingGear {
             || *commit_overdue > 0
             || *pin_eligibility_overdue > 0
             || *frontier_scan_failed
+            || *degraded_emit_failed
+            || *frontier_block_probe_failed
     }
 
     /// Spawn the window activation/expiry ticker: a cancellable loop driving one
@@ -1130,7 +1144,7 @@ impl Gear for BssPricingGear {
         let publish = PublishService::new(
             db.clone(),
             &config.limits,
-            fixture_gate,
+            fixture_gate.clone(),
             Arc::clone(&catalog_version_registry),
         )
         .with_metrics(Arc::clone(&metrics));
@@ -1165,9 +1179,15 @@ impl Gear for BssPricingGear {
                 db.clone(),
                 Arc::clone(&catalog_version_registry),
             ),
-            // The **fourth**, on the same argument (D-100).
+            // The **fourth**, on the same argument (D-100). It takes the limits and
+            // the fixture gate as well, because D-344 makes a cutover run the plan
+            // aggregate and the joint-conformance gate over the two rows it
+            // publishes: the gate is the engine's own instance rather than a second
+            // `FixtureGate::load`, so the two doors that ask it read one corpus.
             cutovers: crate::infra::cutover::CutoverService::new(
                 db.clone(),
+                &config.limits,
+                fixture_gate.clone(),
                 Arc::clone(&catalog_version_registry),
             ),
             // The **seventh** (S7 §4's `inst-gs-bound`/`inst-gs-tighten`): the

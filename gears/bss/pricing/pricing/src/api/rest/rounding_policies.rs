@@ -158,11 +158,21 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
         .tag(TAG)
         .authenticated()
         .no_license_required()
+        .param(crate::api::rest::plans::if_none_match_param())
         .handler(get_values)
         .json_response_with_schema::<RoundingPoliciesView>(
             openapi,
             StatusCode::OK,
             "The declared vocabulary.",
+        )
+        // The conditional read's answer (RFC 9110 section 15.4.5). Declared
+        // because it is reachable: this route emits an `ETag` and honours the
+        // `If-None-Match` a caller sends it back in, which nothing in this gear
+        // did until 2026-08-17 while seven reads emitted a validator.
+        .no_content_response(
+            StatusCode::NOT_MODIFIED,
+            "The caller's `If-None-Match` matches the current representation, so the body is \
+             not re-sent.",
         )
         .error_401(openapi)
         .error_403(openapi)
@@ -219,6 +229,7 @@ async fn get_values(
     Extension(state): Extension<Arc<AuthoringState>>,
     Extension(enforcer): Extension<authz_resolver_sdk::PolicyEnforcer>,
     extension_ctx: Option<Extension<SecurityContext>>,
+    headers: HeaderMap,
 ) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(extension_ctx)?;
     let scope = read_scope(&enforcer, &ctx).await?;
@@ -227,7 +238,7 @@ async fn get_values(
         .list_rounding_policies(&scope, ctx.subject_tenant_id())
         .await
         .map_err(|e| CanonicalError::from(repo_failure(&e)))?;
-    Ok(render(&held))
+    Ok(render(&held, Some(&headers)))
 }
 
 async fn put_values(
@@ -282,7 +293,7 @@ async fn put_values(
         )));
     }
 
-    Ok(render(&result.entries))
+    Ok(render(&result.entries, None))
 }
 
 // ---------------------------------------------------------------------------
@@ -291,12 +302,17 @@ async fn put_values(
 
 /// The representation with the tag that covers it — one function for both verbs,
 /// so the `GET`'s tag and the `PUT`'s cannot come from two readings.
-fn render(entries: &[TaxonomyEntry]) -> Response {
+/// `conditional` is `Some` on the `GET` and `None` on the `PUT`: the tag has one
+/// producer and a conditional read must compare against *that* value, so the
+/// comparison lives beside the rendering rather than in a second reading of the
+/// same resource. See [`preconditions::if_none_match`].
+fn render(entries: &[TaxonomyEntry], conditional: Option<&HeaderMap>) -> Response {
+    let tag = preconditions::policy_etag(&taxonomy_repo::rounding_policy_tag_of(entries));
+    if conditional.is_some_and(|headers| preconditions::if_none_match(headers, &tag)) {
+        return preconditions::not_modified(&tag);
+    }
     (
-        [(
-            ETAG,
-            preconditions::policy_etag(&taxonomy_repo::rounding_policy_tag_of(entries)),
-        )],
+        [(ETAG, tag)],
         Json(RoundingPoliciesView {
             resource: "rounding-policies".to_owned(),
             values: entries

@@ -151,7 +151,7 @@ fn maximal_row() -> PriceRow {
             quantity: 1_000,
             rollover_policy: RolloverPolicy::Carry,
         }),
-        reserved_rate_minor: Some(money(250)),
+        reserved_rate: Some(RateMinor::from_minor_units(250).expect("a non-negative rate")),
         reservation_flavor: Some(ReservationFlavor::Capacity),
         min_qty_purchase: Some(10),
         min_qty_usage: Some(20),
@@ -732,11 +732,12 @@ fn slice10_row_mutators() -> Vec<Mutator> {
         // because flipping it moves the charge (`inst-rv-tier-q` vs
         // `inst-rv-level`) without moving the rate -- which is exactly the
         // mutation a rate-only pin would miss.
-        ("row.reserved_rate_minor", |s| {
-            s.rows[0].row.reserved_rate_minor = Some(money(251));
+        ("row.reserved_rate", |s| {
+            s.rows[0].row.reserved_rate =
+                Some(RateMinor::from_minor_units(251).expect("a non-negative rate"));
         }),
-        ("row.reserved_rate_minor -> None", |s| {
-            s.rows[0].row.reserved_rate_minor = None;
+        ("row.reserved_rate -> None", |s| {
+            s.rows[0].row.reserved_rate = None;
         }),
         ("row.reservation_flavor", |s| {
             s.rows[0].row.reservation_flavor = Some(ReservationFlavor::Consumption);
@@ -1138,7 +1139,7 @@ fn the_clock_may_flip_a_window_but_not_the_pin() {
 ///   matched on every digest. `record.tax_category_ref` in the mutator table is
 ///   that property; this is its byte vector.
 ///
-/// - `v8` -> `v9`, on **2026-08-08**, when Slice 10's `reserved_rate_minor` and
+/// - `v8` -> `v9`, on **2026-08-08**, when Slice 10's `reserved_rate` and
 ///   `reservation_flavor` joined `put_price_row`. A hole again rather than a
 ///   boundary, and the most direct money one this table offers: the pair is
 ///   authored draft content a `PATCH` moves, so a reviewer who approved a
@@ -1146,7 +1147,7 @@ fn the_clock_may_flip_a_window_but_not_the_pin() {
 ///   digest. The flavor travels with it because flipping `capacity` to
 ///   `consumption` moves the charge (`inst-rv-tier-q` against `inst-rv-level`)
 ///   **without moving the rate**, which is the mutation a rate-only pin would
-///   miss. `row.reserved_rate_minor` and `row.reservation_flavor` in the mutator
+///   miss. `row.reserved_rate` and `row.reservation_flavor` in the mutator
 ///   table are those properties; this is their byte vector.
 ///
 /// - `v9` -> `v10`, on **2026-08-08**, in the same group: `min_qty_purchase`,
@@ -1199,7 +1200,7 @@ fn the_clock_may_flip_a_window_but_not_the_pin() {
 fn the_encoding_is_frozen() {
     assert_eq!(
         hex32(&content_hash(&base())),
-        "2339b20152bccd4390aa82ed5819267922a1b3e82834652db3a0a968572e2a66"
+        "d6ae7ac39a422dbed5b1d821155db6e724487c7443af946c3022b197117c2220"
     );
 }
 
@@ -1360,7 +1361,7 @@ fn the_two_pin_domains_are_disjoint_and_each_names_its_own_generation() {
     );
     assert_eq!(
         super::CONTENT_PIN_DOMAIN_SEP,
-        b"VHP-BSS-PRICING-APPROVAL-PIN-v14\x1f"
+        b"VHP-BSS-PRICING-APPROVAL-PIN-v15\x1f"
     );
     assert_eq!(
         super::THRESHOLD_PIN_DOMAIN_SEP,

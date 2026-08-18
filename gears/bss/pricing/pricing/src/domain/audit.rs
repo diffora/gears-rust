@@ -690,6 +690,16 @@ pub fn genesis_prev_hash(tenant_id: Uuid, chain_id: Uuid) -> [u8; 32] {
 /// distinguish those can be forged by moving a character across a field border
 /// with every link still verifying.
 ///
+/// **There are two hazards of that shape and the prefixes close one.** A field
+/// that is not in the preimage at all is a dimension along which a record can be
+/// altered with every link still verifying, and no framing rule can see it — only
+/// the field list can, so the field list is not written down. It is destructured
+/// out of [`AuditRecord`] in the body, exhaustively and with no `..`, so a
+/// thirteenth field stops this function compiling. `changing_any_single_field_-`
+/// `changes_the_hash` is the behavioural half and cannot be the guard: a
+/// hand-maintained mutation table can only fail for the fields it already knows
+/// about.
+///
 /// # Errors
 ///
 /// The `serde_json::Error` from serializing a canonicalized `before_state` or
@@ -702,21 +712,49 @@ pub fn audit_row_hash(
     record: &AuditRecord<'_>,
     prev_hash: &[u8; 32],
 ) -> Result<[u8; 32], serde_json::Error> {
+    // **Destructured, with no rest pattern, and that is the membership guard.**
+    // The paragraph above closes the *boundary* hazard — two adjacent fields
+    // cannot be re-split, because every one carries its length. It says nothing
+    // about a field that never enters the preimage at all, and that is the other
+    // way a record is alterable with every link still verifying. Twelve
+    // `record.field` reads could not tell the two apart: a thirteenth field would
+    // compile here, hash to nothing, and leave every chain in the fleet verifying
+    // over content it does not cover.
+    //
+    // The type has grown once already. `correlation_id` arrived with D-178 and
+    // its `Option` was reasoned about carefully — see its own doc — because a
+    // human noticed, not because anything forced it. This is what forces it.
+    // Review Z3-7, 2026-08-18.
+    let AuditRecord {
+        tenant_id,
+        chain_id,
+        seq,
+        recorded_at,
+        actor_principal_id,
+        action,
+        subject_kind,
+        subject_ref,
+        before_state,
+        after_state,
+        approval_ref,
+        correlation_id,
+    } = record;
+
     let mut buf = Vec::with_capacity(320);
     buf.extend_from_slice(AUDIT_DOMAIN_SEP);
 
-    put_uuid(&mut buf, record.tenant_id);
-    put_uuid(&mut buf, record.chain_id);
-    put_u64(&mut buf, record.seq);
-    put_i64(&mut buf, record.recorded_at.timestamp_micros());
-    put_uuid(&mut buf, record.actor_principal_id);
-    put_str(&mut buf, record.action.as_str());
-    put_str(&mut buf, record.subject_kind.as_str());
-    put_str(&mut buf, record.subject_ref);
-    put_opt_json(&mut buf, record.before_state)?;
-    put_opt_json(&mut buf, record.after_state)?;
-    put_opt_uuid(&mut buf, record.approval_ref);
-    put_opt_uuid(&mut buf, record.correlation_id);
+    put_uuid(&mut buf, *tenant_id);
+    put_uuid(&mut buf, *chain_id);
+    put_u64(&mut buf, *seq);
+    put_i64(&mut buf, recorded_at.timestamp_micros());
+    put_uuid(&mut buf, *actor_principal_id);
+    put_str(&mut buf, action.as_str());
+    put_str(&mut buf, subject_kind.as_str());
+    put_str(&mut buf, subject_ref);
+    put_opt_json(&mut buf, *before_state)?;
+    put_opt_json(&mut buf, *after_state)?;
+    put_opt_uuid(&mut buf, *approval_ref);
+    put_opt_uuid(&mut buf, *correlation_id);
 
     put(&mut buf, prev_hash);
     Ok(digest32(&buf))

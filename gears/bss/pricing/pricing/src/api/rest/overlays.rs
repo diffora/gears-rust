@@ -75,8 +75,9 @@ use crate::domain::materiality::triggers::Trigger;
 use crate::domain::materiality::{self, ChangeSet, MaterialityReason, MaterialityVerdict};
 use crate::domain::money::CurrencyCode;
 use crate::domain::overlay::{
-    Adjustment, AmountSet, Disclosure, LineKey, Magnitude, OverlayInterval, OverlayLifecycle,
-    OverlayLine, ScopeClass, ScopeSelector, ScopeValue, TargetRef, TargetSku, TaxBasis,
+    Adjustment, AdjustmentKind, AmountSet, Disclosure, LineKey, Magnitude, MagnitudeKind,
+    OverlayInterval, OverlayLifecycle, OverlayLine, ScopeClass, ScopeSelector, ScopeValue,
+    TargetRef, TargetSku, TaxBasis,
 };
 use crate::domain::overlay_rules::{
     OverlayCandidate, check_authored_shape, check_tax_basis_declared, conflict_of, validate,
@@ -97,8 +98,16 @@ const CREATE_OVERLAY_OPERATION: &str = "bss_pricing.create_price_overlay";
 /// `match` does not depend on which plane it called.
 const OUTCOME_SUBMITTED: &str = crate::api::rest::publish::OUTCOME_SUBMITTED;
 
-/// The wire token for the publish arm.
-const OUTCOME_PUBLISHED: &str = "published";
+/// The wire token for the publish arm — `publish.rs`'s, like the line above it.
+///
+/// It was re-spelled `"published"` here until 2026-08-17, three lines below a
+/// sibling that imports its token, so renaming `publish::OUTCOME_PUBLISHED` left
+/// `PATCH /price-overlays/{overlayId}`'s commit arm answering the old word with
+/// every suite green. `rest_authz`'s scan cannot catch it — it excludes `"published"`
+/// deliberately, because the word is also `LifecycleState::Published` in a column
+/// and a text scan would drag the lifecycle renderers in — but that is an argument
+/// about the *scan*, not about re-spelling the const at the one site that did.
+const OUTCOME_PUBLISHED: &str = crate::api::rest::publish::OUTCOME_PUBLISHED;
 
 /// The materiality reason an overlay act always carries (D-50), for the arm that
 /// reads it back off a **stored** verdict rather than evaluating one.
@@ -204,7 +213,7 @@ pub struct ListOverlaysQuery {
     /// Narrow to one scope class.
     pub scope_class: Option<String>,
     /// Rows per page; server default 100, hard cap 1,000 (D-125).
-    pub limit: Option<u64>,
+    pub limit: Option<String>,
     /// The opaque token a previous page returned (D-125).
     pub cursor: Option<String>,
 }
@@ -448,10 +457,21 @@ fn line_of(request: &OverlayLineRequest) -> Result<OverlayLine, DomainError> {
 /// not persisted as an overlay line at all: a copy that drifted would drift
 /// silently.
 ///
-/// Every refusal here is decidable from the request alone. What is deliberately
-/// **not** here is D-67's magnitude *range* — see
-/// [`check_magnitudes`](crate::domain::overlay_rules::check_magnitudes), which is
-/// a rule about an authored overlay document rather than about this shape.
+/// Every refusal here is decidable from the request alone, and **D-67's magnitude
+/// range is one of them**: [`magnitude_out_of_range`](crate::domain::overlay_rules::magnitude_out_of_range)
+/// is asked below, so this door and the overlay rule refuse the same values.
+///
+/// It was deliberately *excluded* until 2026-08-17, on the ground that the range
+/// is a rule about an authored overlay document rather than about this shape. The
+/// ground was sound and the conclusion was not: the mass-repricing door reaches
+/// this parser too, a run's adjustment is never persisted as an overlay line, and
+/// so the rule form had no subject on that path — the range was asked by nothing
+/// at all there. The rule form
+/// ([`check_authored_shape`](crate::domain::overlay_rules::check_authored_shape))
+/// still runs for an authored document, where the refusal is per line and names
+/// the line's key. (This sentence pointed at `check_magnitudes`, which had no
+/// caller in the crate and was deleted — review Z3-4. A reader following the old
+/// link concluded the per-line range check lived somewhere it did not run.)
 ///
 /// # Errors
 /// [`DomainError::InvalidRequest`] for an unknown token, a `percent_bp` with no
@@ -471,15 +491,24 @@ pub(crate) fn adjustment_of(
         AmountSet::new(set)
     };
 
+    // Both tokens go through the domain's own `parse`, which is the same list
+    // `Adjustment::kind()` renders and `overlay_repo::line_of` reads back. Three
+    // hand-written inverse lists is what this vocabulary had until 2026-08-18
+    // (review Z1-7 / Z2-4); it now has one producer and no inverse.
+    let magnitude_kind = MagnitudeKind::parse(magnitude_kind).ok_or_else(|| {
+        DomainError::InvalidRequest(format!(
+            "magnitude_kind `{magnitude_kind}` is neither percent_bp nor amount"
+        ))
+    })?;
     let magnitude = match magnitude_kind {
-        "percent_bp" => Magnitude::PercentBp(adjustment_value.ok_or_else(|| {
+        MagnitudeKind::PercentBp => Magnitude::PercentBp(adjustment_value.ok_or_else(|| {
             DomainError::InvalidRequest(
                 "a percent_bp line must carry an adjustment_value: the magnitude's type is \
                  declared and never inferred (D-08)"
                     .to_owned(),
             )
         })?),
-        "amount" => {
+        MagnitudeKind::Amount => {
             if adjustment_value.is_some() {
                 return Err(DomainError::InvalidRequest(
                     "an amount line must not carry an adjustment_value: its magnitude is money \
@@ -489,17 +518,17 @@ pub(crate) fn adjustment_of(
             }
             Magnitude::Amount(amounts.clone())
         }
-        other => {
-            return Err(DomainError::InvalidRequest(format!(
-                "magnitude_kind `{other}` is neither percent_bp nor amount"
-            )));
-        }
     };
 
-    match adjustment_kind {
-        "markup" => Ok(Adjustment::Markup(magnitude)),
-        "discount" => Ok(Adjustment::Discount(magnitude)),
-        "fixed" => {
+    let adjustment_kind = AdjustmentKind::parse(adjustment_kind).ok_or_else(|| {
+        DomainError::InvalidRequest(format!(
+            "adjustment_kind `{adjustment_kind}` is none of markup, discount, fixed"
+        ))
+    })?;
+    let adjustment = match adjustment_kind {
+        AdjustmentKind::Markup => Adjustment::Markup(magnitude),
+        AdjustmentKind::Discount => Adjustment::Discount(magnitude),
+        AdjustmentKind::Fixed => {
             // Asked of the **value** the parse above built, not of the token it
             // was built from: the two can only disagree if this comparison and
             // that `match` drift apart, and D-138 is a rule about the magnitude
@@ -512,12 +541,34 @@ pub(crate) fn adjustment_of(
                         .to_owned(),
                 ));
             }
-            Ok(Adjustment::Fixed(amounts))
+            Adjustment::Fixed(amounts)
         }
-        other => Err(DomainError::InvalidRequest(format!(
-            "adjustment_kind `{other}` is none of markup, discount, fixed"
-        ))),
+    };
+
+    // D-67's range, asked here rather than only in the overlay rule pipeline.
+    //
+    // It is decidable from the request alone, which is this function's own stated
+    // admission criterion, and the mass-repricing door reaches this parser without
+    // ever producing an overlay line — so the rule form could not see a run's
+    // adjustment and neither could the store's `CHECK`s. Before this call, a
+    // `discount` of 15000 bp was accepted here and refused at `PUT /overlays`, the
+    // same value on the same vocabulary answered two different ways.
+    //
+    // Reported as a `ValidationFailed` carrying `ADJUSTMENT_MAGNITUDE_OUT_OF_RANGE`
+    // rather than as an `InvalidRequest`, for the reason the `tax_basis` refusal a
+    // few lines below states: the client needs the discriminator §5 declares, not a
+    // sentence. An `InvalidRequest` here would have made the two doors agree on the
+    // status and disagree on the code, which is the drift this whole fix is about.
+    if let Err(clause) = crate::domain::overlay_rules::magnitude_out_of_range(&adjustment) {
+        let mut report = crate::domain::validation::ValidationReport::default();
+        report.violate(
+            crate::domain::overlay_rules::ADJUSTMENT_MAGNITUDE_OUT_OF_RANGE,
+            "adjustment",
+            format!("the adjustment carries {clause}"),
+        );
+        return Err(DomainError::ValidationFailed(report));
     }
+    Ok(adjustment)
 }
 
 /// Every authored line, with every **world-free** rule checked before the store
@@ -572,8 +623,8 @@ fn line_view_of(line: &OverlayLine) -> OverlayLineView {
         plan_id: line.key.plan_id().map(PlanId::get),
         target_sku: line.key.target_sku().map(|s| s.as_str().to_owned()),
         cohort: line.key.cohort(),
-        adjustment_kind: line.adjustment.kind().to_owned(),
-        magnitude_kind: line.adjustment.magnitude_kind().to_owned(),
+        adjustment_kind: line.adjustment.kind().as_str().to_owned(),
+        magnitude_kind: line.adjustment.magnitude_kind().as_str().to_owned(),
         adjustment_value: line.adjustment.percent_bp(),
         amounts: line.adjustment.amounts().map_or_else(Vec::new, |set| {
             set.iter()
@@ -1185,7 +1236,10 @@ async fn list_overlays(
         })?),
     };
 
-    let page = PageRequest::parse(query.limit, query.cursor.as_deref())?;
+    let page = PageRequest::parse(
+        cursor::parse_limit(query.limit.as_deref())?,
+        query.cursor.as_deref(),
+    )?;
     // One row more than the page, so "is there another page" is answered without
     // a second query and without a `next_cursor` pointing at nothing.
     let probe = page.limit.saturating_add(1);
@@ -1321,6 +1375,10 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
         .path_param("overlayId", "The overlay whose line set is replaced.")
         .authenticated()
         .no_license_required()
+        .param(crate::api::rest::plans::if_match_param(
+            "The tag is the overlay revision's own, not a plan's; the submit's receipt and the \
+             previous replace both answer one.",
+        ))
         .handler(replace_lines)
         .json_response_with_schema::<OverlayAcceptedView>(
             openapi,

@@ -43,6 +43,27 @@
 //! rule is applied at that granularity instead: the repository call runs
 //! first, and the registry is asked only once it has returned `Ok`.
 //!
+//! **Six of the seven publish units request before writing and cite D-156 for
+//! it; these three do not** (review C7-2, 2026-08-17). Filed as a deviation
+//! rather than a defect, and the two facts that make it one are worth stating
+//! here rather than left to be re-derived at each of the three sites:
+//!
+//! * **A registry failure loses the write.** Every method here runs inside a
+//!   caller-owned transaction — `api::rest::customer_groups` hands `txn` down
+//!   from the idempotency gate — so a `registry_failure` returns `Err` through
+//!   that closure and the enroll or the end rolls back with it. The ordering
+//!   buys no durable row without a handle.
+//! * **Every refusal already precedes the request.** `MembershipOverlap`,
+//!   `MembershipConflict`, `StaleRowVersion` and `GroupUnknown` are all raised
+//!   by the repository call above it — which is the property the sibling
+//!   ordering exists to buy, reached from the other side.
+//!
+//! What the deviation does cost is a handle requested for an act that then
+//! fails at `record_ref`. The request ids are deterministic
+//! ([`enroll_request_id`], [`end_request_id`], [`move_request_id`]), so a retry
+//! is answered with that same handle rather than stranding a second one, and
+//! the registry is idempotent on the id.
+//!
 //! # This is the audit-only path only (`inst-mm-renewal`)
 //!
 //! Every method here commits directly and opens no approval unit. The
@@ -148,6 +169,8 @@ pub async fn enroll_in(
         .await
         .map_err(|e| repo_failure(&e))?;
 
+    // After the write, not before it — the module doc's ordering section carries
+    // why that is safe here and what it costs (C7-2).
     let pending = registry
         .request_version(ctx, &request_id)
         .await
@@ -208,6 +231,8 @@ pub async fn end_in(
     .await
     .map_err(|e| repo_failure(&e))?;
 
+    // After the write, not before it — the module doc's ordering section carries
+    // why that is safe here and what it costs (C7-2).
     let pending = registry
         .request_version(ctx, &request_id)
         .await
@@ -313,6 +338,8 @@ pub async fn move_payer_in(
     .await
     .map_err(|e| repo_failure(&e))?;
 
+    // After the write, not before it — the module doc's ordering section carries
+    // why that is safe here and what it costs (C7-2).
     let pending = registry
         .request_version(ctx, &request_id)
         .await

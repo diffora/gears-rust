@@ -70,7 +70,7 @@ fn a_row_that_reserves_nothing_produces_no_violation() {
 #[test]
 fn a_complete_capacity_reservation_on_a_level_usage_row_is_clean() {
     let mut row = level_row();
-    row.reserved_rate_minor = Some(minor(3));
+    row.reserved_rate = Some(RateMinor::from_minor_units(3).expect("a non-negative rate"));
     row.reservation_flavor = Some(ReservationFlavor::Capacity);
     assert!(
         run(&row).violations.is_empty(),
@@ -84,7 +84,7 @@ fn a_complete_capacity_reservation_on_a_level_usage_row_is_clean() {
 fn a_reservation_on_a_non_usage_row_is_refused() {
     let mut row = PriceRow::new(ChargeKind::Recurring, Some(ModelKind::Flat));
     row.amount_minor = Some(minor(9900));
-    row.reserved_rate_minor = Some(minor(3));
+    row.reserved_rate = Some(RateMinor::from_minor_units(3).expect("a non-negative rate"));
     row.reservation_flavor = Some(ReservationFlavor::Capacity);
 
     let found = codes(&run(&row));
@@ -103,7 +103,7 @@ fn a_reservation_on_a_non_usage_row_is_refused() {
 #[test]
 fn a_rate_without_a_flavor_is_refused() {
     let mut row = usage_row();
-    row.reserved_rate_minor = Some(minor(3));
+    row.reserved_rate = Some(RateMinor::from_minor_units(3).expect("a non-negative rate"));
     assert!(
         codes(&run(&row)).contains(&RESERVATION_PAIR_INCOMPLETE.to_owned()),
         "{:?}",
@@ -129,7 +129,7 @@ fn a_flavor_without_a_rate_is_refused() {
 fn consumption_on_a_level_row_is_refused_and_capacity_on_the_same_row_is_not() {
     let reserved = |flavor| {
         let mut row = level_row();
-        row.reserved_rate_minor = Some(minor(3));
+        row.reserved_rate = Some(RateMinor::from_minor_units(3).expect("a non-negative rate"));
         row.reservation_flavor = Some(flavor);
         codes(&run(&row))
     };
@@ -151,7 +151,7 @@ fn consumption_on_a_level_row_is_refused_and_capacity_on_the_same_row_is_not() {
 #[test]
 fn consumption_on_a_sum_row_is_permitted() {
     let mut row = usage_row();
-    row.reserved_rate_minor = Some(minor(3));
+    row.reserved_rate = Some(RateMinor::from_minor_units(3).expect("a non-negative rate"));
     row.reservation_flavor = Some(ReservationFlavor::Consumption);
     assert!(run(&row).violations.is_empty(), "{:?}", codes(&run(&row)));
 }
@@ -176,7 +176,7 @@ mod write_stage {
         // apply to, and `chargeKind` is frozen — so no later call helps.
         let mut row = PriceRow::new(ChargeKind::Recurring, Some(ModelKind::Flat));
         row.amount_minor = Some(minor(2_500));
-        row.reserved_rate_minor = Some(minor(3));
+        row.reserved_rate = Some(RateMinor::from_minor_units(3).expect("a non-negative rate"));
         row.reservation_flavor = Some(ReservationFlavor::Capacity);
         let report = run(&row);
         assert_eq!(stage_of(&report, RESERVATION_ON_NON_USAGE), Stage::Write);
@@ -187,7 +187,7 @@ mod write_stage {
         // Both operands are content: the missing half is exactly what a later
         // call supplies, which is the authoring the design protects.
         let mut row = usage_row();
-        row.reserved_rate_minor = Some(minor(3));
+        row.reserved_rate = Some(RateMinor::from_minor_units(3).expect("a non-negative rate"));
         let report = run(&row);
         assert_eq!(
             stage_of(&report, RESERVATION_PAIR_INCOMPLETE),

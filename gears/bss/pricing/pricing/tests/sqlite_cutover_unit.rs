@@ -20,15 +20,19 @@ mod rest_support;
 
 use std::sync::Arc;
 
+use bss_pricing::config::LimitsConfig;
 use bss_pricing::domain::error::DomainError;
 use bss_pricing::domain::lifecycle::LifecycleState;
-use bss_pricing::domain::money::{CurrencyCode, MinorAmount};
+use bss_pricing::domain::money::{CurrencyCode, MinorAmount, RateMinor};
 use bss_pricing::domain::price_record::PriceContent;
-use bss_pricing::domain::price_row::{ModelKind, PriceRow};
+use bss_pricing::domain::price_row::{
+    BillingGranularity, ModelKind, PriceRow, TierAggregationWindow, TierBand,
+};
 use bss_pricing::domain::scope_key::{
     ChargeKind, Cohort, DimensionKey, Meter, PhaseId, PlanId, PriceEligibility, Region, ScopeKey,
 };
 use bss_pricing::infra::cutover::{CutoverOutcome, CutoverRequest, CutoverService};
+use bss_pricing::infra::fixture_gate::FixtureGate;
 use bss_pricing::infra::storage::entity::price;
 use bss_pricing::infra::storage::repo::{NewPriceDraft, approval_repo};
 use chrono::{DateTime, TimeZone, Utc};
@@ -92,7 +96,12 @@ fn request_of(key: &ScopeKey, amount: i64) -> CutoverRequest {
 }
 
 fn service(h: &Harness) -> CutoverService {
-    CutoverService::new(h.db.clone(), Arc::clone(&h.registry) as Arc<_>)
+    CutoverService::new(
+        h.db.clone(),
+        &LimitsConfig::default(),
+        FixtureGate::load(&rest_support::committed_registry_path()),
+        Arc::clone(&h.registry) as Arc<_>,
+    )
 }
 
 async fn cut_over(
@@ -227,17 +236,40 @@ fn usage_key(plan_id: PlanId, phase: PhaseId, meter: &str) -> ScopeKey {
     .expect("a usage line names its meter")
 }
 
-/// A flat usage row whose own line agrees with its key — the store refuses
-/// `UsageLineDisagrees` otherwise.
+/// A usage row whose own line agrees with its key — the store refuses
+/// `UsageLineDisagrees` otherwise — and which the **S3 rule set passes**.
+///
+/// `sqlite_supersession_unit`'s `graduated_usage`, modelled in turn on
+/// `domain::rules_tests::graduated_usage`, so a row this suite calls legal is a
+/// row that set calls legal.
+///
+/// **It was `flat` until D-344.** `flat` is in no part of the usage set
+/// (`MODEL_KIND_CHARGEKIND_MISMATCH`) and a usage row must carry a
+/// `billingGranularity` (`EVAL_POLICY_MISSING`), so this fixture had been
+/// carrying two violations — invisibly, because it is authored through
+/// `PriceRepo::create_draft` and published through `publish_row_directly`, and
+/// neither runs a rule. The cutover door ran none either, which is what D-344
+/// closes; the first run of Tier A named both. The fixture was wrong, not the
+/// rule.
+///
+/// `amount` is the band's rate rather than an `amount_minor`, because a tiered
+/// row's money **is** the ladder: `inst-mk-required`'s placement matrix leaves no
+/// scalar column for it here. The three callers use it only to tell rows apart.
 fn usage_content(meter: &str, amount: i64) -> PriceContent {
-    let mut row = PriceRow::new(ChargeKind::Usage, Some(ModelKind::Flat));
-    row.amount_minor = Some(MinorAmount::new(amount).expect("a non-negative amount"));
+    let mut row = PriceRow::new(ChargeKind::Usage, Some(ModelKind::Graduated));
     row.meter = Some(meter.to_owned());
+    row.billing_granularity = Some(BillingGranularity::WholeUnit);
+    row.tier_aggregation_window = Some(TierAggregationWindow::CalendarMonth);
+    row.bands = vec![TierBand::open(
+        0,
+        // Stated in whole minor units and scaled to the stored rate scale (D-311).
+        RateMinor::from_nano_minor(amount * 1_000_000_000).expect("a non-negative rate"),
+    )];
     PriceContent {
         row,
         tax_inclusive: false,
         tax_category_ref: None,
-        billing_timing: Some("arrears".to_owned()),
+        billing_timing: Some("advance".to_owned()),
         proration_contract: None,
         rounding_policy_ref: Some("half_up".to_owned()),
         grandfather_until: None,
@@ -283,6 +315,171 @@ fn usage_request(key: &ScopeKey, meter: &str, amount: i64) -> CutoverRequest {
         copy_window_id: Uuid::now_v7(),
         reason_code: "grandfatheringCutover".to_owned(),
     }
+}
+
+// ---------------------------------------------------------------------------
+// D-344's three tiers, one probe each: each reddens when this door drops the arm
+// it is named for, and none of them reddens for another arm's absence.
+// ---------------------------------------------------------------------------
+
+fn violation_codes(err: &DomainError) -> Vec<String> {
+    match err {
+        DomainError::ValidationFailed(report) => report
+            .violations
+            .iter()
+            .map(|violation| violation.code.clone())
+            .collect(),
+        other => panic!("expected a rule report, got: {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn a_cutover_may_not_flip_the_formula_that_prices_a_continued_counter() {
+    // **D-344 Tier A, and the reason the decision was taken.** A cutover
+    // supersedes the predecessor on its own canonical scope key
+    // (`inst-co-supersede`), so the tier counter `Q` continues across the act —
+    // and `SupersessionUnitGuard` (`inst-tb-supersession-units`, D-98) refuses a
+    // successor that flips `graduated -> volume` for exactly that reason: `volume`
+    // applies the selected band's single rate to the **whole** window `Q`,
+    // including the units already rated marginally under the predecessor.
+    //
+    // The guard was never asked here. `cutover_in` ran two window checks and two
+    // store-level content checks and no rule set at all, so this act **committed**
+    // — the successor published onto the predecessor's key with the continued
+    // counter re-priced under new math. `supersede_in` refuses the same pair one
+    // door over, which is what makes this a door that dropped a rule rather than
+    // a rule nobody wrote.
+    let h = Harness::new().await;
+    let (plan_id, seeded) = published_plan(&h).await;
+    let key = usage_key(plan_id, seeded.phase, "api_calls");
+    published_usage_line(&h, &key, "api_calls").await;
+
+    // Everything else the successor carries is the predecessor's, so `volume` is
+    // the only field that moved and the report can name nothing else.
+    let mut request = usage_request(&key, "api_calls", 8_800);
+    request.successor.row.model_kind = Some(ModelKind::Volume);
+    let staged = request.successor_price_id;
+
+    let refused = cut_over(&h, request, SUBMITTER)
+        .await
+        .expect_err("the tier counter continues across a cutover too");
+
+    let codes = violation_codes(&refused);
+    assert!(
+        codes
+            .iter()
+            .any(|code| code == "SUPERSESSION_UNIT_MISMATCH"),
+        "the unit guard must be what answered: {codes:?}"
+    );
+    // Refused at the compose floor, ahead of every write: the guard runs at step 2,
+    // where `supersede_in` runs it, so nothing is staged for a successor no
+    // reviewer should be shown.
+    assert!(
+        !row_exists(&h, staged).await,
+        "the successor draft was never written"
+    );
+}
+
+#[tokio::test]
+async fn a_cutover_publishing_an_unproratable_successor_is_refused_by_the_aggregate() {
+    // **D-344 Tier B.** `inst-pi-required` is a plan-aggregate rule, not a
+    // row-local one — `price_row_rules` passes this successor and
+    // `run_publish_rules` does not — so it reddens for the aggregate arm alone and
+    // stays green if only Tier A is present. That is the discrimination this probe
+    // is for: a cutover that drops the three proration inputs publishes a recurring
+    // row Subscriptions cannot prorate, and the catalog substitutes no defaults.
+    //
+    // **Driven to the commit**, because Tier B is asked there and only there: the
+    // aggregate is a claim about which rows are current, and between the staging and
+    // the commit this plan carries two rows on one key. `judge_plan_aggregate`
+    // carries the measurement.
+    let h = Harness::new().await;
+    let (plan_id, seeded) = published_plan(&h).await;
+    let key = key_of(plan_id, &seeded);
+
+    let unproratable = |request: &mut CutoverRequest| request.successor.proration_contract = None;
+    let mut opening = request_of(&key, 8_800);
+    unproratable(&mut opening);
+    let opened = cut_over(&h, opening, SUBMITTER)
+        .await
+        .expect("the unit opens: the gate and Tier A both pass this successor");
+    let staged = pending(&opened).successor_price_id;
+    approve(&h, pending(&opened).approval.approval_id).await;
+
+    let mut committing = request_of(&key, 8_800);
+    unproratable(&mut committing);
+    let refused = cut_over(&h, committing, SUBMITTER)
+        .await
+        .expect_err("a successor no consumer can prorate is not publishable");
+
+    let codes = violation_codes(&refused);
+    assert!(
+        codes.iter().any(|code| code == "PRORATION_INPUTS_MISSING"),
+        "the aggregate pass must be what answered: {codes:?}"
+    );
+    // The refusal is after all five writes and the whole transaction rolls back, so
+    // the predecessor is where it was and the draft is still only staged.
+    assert_eq!(
+        state_of(&h, seeded.price_id).await,
+        LifecycleState::Published.as_str(),
+        "the predecessor did not leave its key"
+    );
+    assert_eq!(
+        state_of(&h, staged).await,
+        LifecycleState::Draft.as_str(),
+        "and the successor the first call staged did not publish"
+    );
+}
+
+#[tokio::test]
+async fn a_cutover_is_refused_while_the_joint_corpus_is_not_green_for_its_shape() {
+    // **D-344's fixture-gate arm**, which guards acts whose content is *authored*.
+    // A cutover's successor is entirely client-authored, so it is the gate's second
+    // subject; the repricing apply is deliberately not a third, because
+    // `project_row` derives its successor from a row whose own publish already
+    // passed the gate.
+    //
+    // Driven through a **closed** gate rather than through a shape the committed
+    // corpus happens to lack, so the probe measures whether this door asks at all
+    // rather than what today's `registry.toml` contains — `FixtureGate::closed` is
+    // the same fail-closed posture an unreadable registry produces in production.
+    let h = Harness::new().await;
+    let (plan_id, seeded) = published_plan(&h).await;
+
+    let refused = CutoverService::new(
+        h.db.clone(),
+        &LimitsConfig::default(),
+        FixtureGate::closed(),
+        Arc::clone(&h.registry) as Arc<_>,
+    )
+    .cut_over(
+        &rest_support::security_context(SUBMITTER, h.tenant),
+        &h.scope(),
+        h.tenant,
+        request_of(&key_of(plan_id, &seeded), 8_800),
+        bss_pricing::api::rest::windows::verdict_json,
+        stamp_of(SUBMITTER),
+    )
+    .await
+    .expect_err("no row publishes while nothing pins what its shape means");
+
+    assert!(
+        matches!(refused, DomainError::FixtureMissing(_)),
+        "the gate must be what answered: {refused:?}"
+    );
+}
+
+/// Is there a `pricing_price` row under this id at all?
+async fn row_exists(h: &Harness, price_id: Uuid) -> bool {
+    let conn = h.db.conn().expect("conn");
+    price::Entity::find()
+        .secure()
+        .scope_with(&AccessScope::allow_all())
+        .filter(Condition::all().add(price::Column::PriceId.eq(price_id)))
+        .one(&conn)
+        .await
+        .expect("read the row")
+        .is_some()
 }
 
 #[tokio::test]

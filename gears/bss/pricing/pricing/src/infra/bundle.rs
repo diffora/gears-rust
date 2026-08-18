@@ -67,10 +67,11 @@ use toolkit_db::secure::{AccessScope, DBRunner, SecureEntityExt};
 use toolkit_db::{DBProvider, DbError};
 use uuid::Uuid;
 
-use crate::domain::bundle::{PriceBasis, reconcile};
+use crate::domain::bundle::{FULL_ALLOCATION_BP, PriceBasis, reconcile};
 use crate::domain::bundle_rules::{
     BundleComposition, ComponentDefect, ComponentSnapshot, CoverageRow, validate,
 };
+use crate::domain::concurrency::RowVersion;
 use crate::domain::lifecycle::LifecycleState;
 use crate::domain::materiality::ChangeSet;
 use crate::domain::materiality::triggers::Trigger;
@@ -463,64 +464,166 @@ impl BundleService {
     /// # One revision may publish **more than once**
     ///
     /// Unlike a plan publish, and it is the premise the announcement's dedup key
-    /// used to contradict (Z8-3): nothing here is a compare-and-swap. The writes
-    /// are idempotent — the same composition re-normalises to the same effective
-    /// shares — and a composition edit moves the plan revision's `row_version`,
-    /// which voids the content pin and sends the operator back through a second
-    /// approval **over the same revision**. So the second call is a legal act,
-    /// and it is answered rather than refused; see the dedup key below for what
-    /// keys the announcement instead.
+    /// used to contradict (Z8-3): the writes are idempotent — the same
+    /// composition re-normalises to the same effective shares — and a composition
+    /// edit moves the plan revision's `row_version`, which voids the content pin
+    /// and sends the operator back through a second approval **over the same
+    /// revision**. So the second call is a legal act, and it is answered rather
+    /// than refused; see the dedup key below for what keys the announcement
+    /// instead.
+    ///
+    /// That is also why `expected` is **compared and not bumped**. Advancing the
+    /// version here would move the pin under the act's own approved unit, so the
+    /// legal second call would be refused by the surface that just authorised the
+    /// first — the property this section exists to state.
+    ///
+    /// # `expected` is the version the reviewer's pin was taken over (C7-1)
+    ///
+    /// This paragraph said "nothing here is a compare-and-swap" and treated that
+    /// as harmless, on the ground that the writes are idempotent. They are
+    /// idempotent **for one composition**, and the composition was read on a third
+    /// connection after the surface had already matched the approved unit. So the
+    /// sequence that mattered was not a lost update, it was an approval bypass:
+    ///
+    /// 1. the surface reads the revision at `row_version` *v* and computes
+    ///    `bundle_content_hash(shape, v)`;
+    /// 2. `approvals::approved_unit` matches a second principal's decision over
+    ///    that digest;
+    /// 3. a `PATCH …/bundles/{id}` replaces the composition, taking the revision
+    ///    to *v + 1*;
+    /// 4. this function reads the **new** composition, reconciles it, and writes
+    ///    its effective shares — money split between vendor parties — while
+    ///    `BundleUpdated` announces a composition nobody reviewed.
+    ///
+    /// Step 3 is an ordinary authorised edit, not a race an operator has to
+    /// contrive. `expected` closes it: the revision is re-read **inside the
+    /// writing transaction** and a version that has moved is
+    /// [`RepoError::StaleRowVersion`], which is the contention refusal the act
+    /// previously reported as `CorruptRow` when the divergence happened to strand
+    /// a party row (Z9-6) and reported not at all when it did not.
+    ///
+    /// **What it does not close, stated rather than implied.** The compare is a
+    /// read and the store's isolation is what serialises it against
+    /// `replace_composition_on`'s own swap; this is D-176's posture — read inside
+    /// the transaction that writes — and not a row lock. What it converts is a
+    /// silent wrong write into a refusal on every interleaving the store does
+    /// serialise, which is the same guarantee the other seven publish units have.
     ///
     /// # Errors
-    /// [`RepoError::NotFound`] when the plan carries no bundle, and — Z9-6 —
-    /// when a reconciled share addresses no stored party row, which rolls the
-    /// whole transaction back so no `BundleUpdated` announces a normalisation
-    /// that did not land; [`RepoError::Db`] on a scope or storage failure;
+    /// [`RepoError::NotFound`] when the plan carries no bundle or no such
+    /// revision, and — Z9-6 — when a reconciled share addresses no stored party
+    /// row, which rolls the whole transaction back so no `BundleUpdated`
+    /// announces a normalisation that did not land;
+    /// [`RepoError::StaleRowVersion`] when the composition moved after the pin was
+    /// taken; [`RepoError::Db`] on a scope or storage failure;
     /// [`RepoError::CorruptRow`] when a group refuses reconciliation at commit
     /// time — which is a state the pre-check should have caught, so it is
     /// reported as a corrupt read rather than as a caller error.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the plan coordinate the act addresses, the version its pin was taken over, the \
+                  scope and tenant every read is bounded by, and the correlation and instant the \
+                  announcement carries. `expected` is what C7-1 added and it is the one argument \
+                  that cannot be derived here: it is the surface's read, the digest the reviewer \
+                  decided over was computed from it, and re-reading it inside would be a second \
+                  answer to the question the compare exists to ask"
+    )]
     pub async fn publish_composition(
         &self,
         scope: &AccessScope,
         tenant_id: Uuid,
         plan_id: PlanId,
         revision: u64,
+        expected: RowVersion,
         correlation_id: Uuid,
         at: DateTime<Utc>,
     ) -> Result<(), RepoError> {
-        let Some(record) = self.bundles.find_by_plan(scope, tenant_id, plan_id).await? else {
-            return Err(RepoError::NotFound {
-                subject: "bundle".to_owned(),
-                id: plan_id.get().to_string(),
-            });
-        };
-        let draft = self
-            .bundles
-            .load_composition(scope, tenant_id, plan_id, revision)
-            .await?;
-
-        let mut normalised = Vec::new();
-        for group in &draft.rev_share_groups {
-            let reconciled = reconcile(group).map_err(|refusal| {
-                RepoError::CorruptRow(format!(
-                    "bundle {} vendor {} does not reconcile at commit: {}",
-                    record.bundle_id,
-                    group.vendor_sku_id,
-                    refusal.code()
-                ))
-            })?;
-            for (party, effective) in reconciled.effective_shares {
-                normalised.push((group.vendor_sku_id, party.get().to_owned(), effective));
-            }
-        }
-
-        let bundle_id = record.bundle_id;
         let scope = scope.clone();
         let (_, outcome) = self
             .db
             .db()
             .in_transaction::<(), RepoError, _>(move |txn| {
                 Box::pin(async move {
+                    // **Every read this act judges from, inside the transaction that
+                    // writes** (D-176) — the three that used to run on the service's
+                    // own connection before it opened, where "a comparison made
+                    // before it opened is a hint and not a precondition". The seven
+                    // sibling publish units all read here and cite the same decision;
+                    // this was the only one that did not.
+                    let Some(record) =
+                        bundle_repo::find_by_plan_on(txn, &scope, tenant_id, plan_id).await?
+                    else {
+                        return Err(RepoError::NotFound {
+                            subject: "bundle".to_owned(),
+                            id: plan_id.get().to_string(),
+                        });
+                    };
+                    let bundle_id = record.bundle_id;
+
+                    // The version the reviewer's digest was taken over, asked of the
+                    // row **before** the composition is read, so a composition that
+                    // moved is named as contention rather than reconciled and paid
+                    // out. See this function's own doc for the four-step sequence.
+                    let current =
+                        plan_repo::load_revision(txn, &scope, tenant_id, plan_id, revision)
+                            .await?
+                            .ok_or_else(|| RepoError::NotFound {
+                                subject: "plan revision".to_owned(),
+                                id: format!("{plan_id}/{revision}"),
+                            })?;
+                    if current.row_version != expected {
+                        return Err(RepoError::StaleRowVersion {
+                            subject: "bundle composition".to_owned(),
+                            id: format!("{plan_id}/{revision}"),
+                            current: current.row_version.get(),
+                            submitted: expected.get(),
+                        });
+                    }
+
+                    let draft =
+                        bundle_repo::load_composition_on(txn, &scope, tenant_id, plan_id, revision)
+                            .await?;
+                    let mut normalised = Vec::new();
+                    for group in &draft.rev_share_groups {
+                        let reconciled = reconcile(group).map_err(|refusal| {
+                            RepoError::CorruptRow(format!(
+                                "bundle {} vendor {} does not reconcile at commit: {}",
+                                bundle_id,
+                                group.vendor_sku_id,
+                                refusal.code()
+                            ))
+                        })?;
+                        // **D-07's promise, asked rather than trusted, at the write**
+                        // (Z5-13). `ReconciledGroup::sums_to` exists for exactly this —
+                        // its own doc says "a caller writing the values back should be
+                        // able to check it without re-deriving the sum" — and the only
+                        // code that asked was three unit tests. It is unreachable by
+                        // construction today: `reconcile` returns `authored + residual`,
+                        // which is `FULL_ALLOCATION_BP` by definition. That is the point.
+                        // A future edit to `reconcile` breaking it would be caught by the
+                        // unit tests and not by the transaction that persists the wrong
+                        // split, which is the opposite of what the helper was built for.
+                        //
+                        // A hard refusal and not a `debug_assert!`: production is a
+                        // release build and this is the last read of these numbers before
+                        // they become the stored allocation.
+                        let sum = reconciled.sums_to();
+                        if sum != FULL_ALLOCATION_BP {
+                            return Err(RepoError::CorruptRow(format!(
+                                "bundle {} vendor {} reconciles to {sum} bp, not \
+                                 {FULL_ALLOCATION_BP}",
+                                bundle_id, group.vendor_sku_id,
+                            )));
+                        }
+                        for (party, effective) in reconciled.effective_shares {
+                            normalised.push((
+                                group.vendor_sku_id,
+                                party.get().to_owned(),
+                                effective,
+                            ));
+                        }
+                    }
+
                     let Ok(number) = i64::try_from(revision) else {
                         return Err(RepoError::CorruptRow(format!(
                             "bundle {bundle_id} revision {revision} exceeds the storable range"

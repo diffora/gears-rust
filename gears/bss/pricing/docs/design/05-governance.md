@@ -294,7 +294,7 @@ shape.
 | `GET/PUT /bss-pricing/v1/config/taxonomies/{region\|brand\|partner\|orgTier}` (D-120), `GET/PUT /bss-pricing/v1/config/tax-display-policy` (S4), `GET/PUT /bss-pricing/v1/config/rounding-policy` (D-320 — the tenant default the §17.4 disjunction assumes), `GET/PUT /bss-pricing/v1/config/rounding-policies` (D-334 — the declared vocabulary both the default and every row's reference are checked against; `config` rather than `approval_policy` because it supplies a default publish would otherwise demand row by row and decides nothing about who approves what) | `config × read` / `write` — the customer-group taxonomy is **not** here: it lives at `/bss-pricing/v1/customer-groups/taxonomy` under `customer_group` (more sensitive) |
 | ~~`POST` / `GET /bss-pricing/v1/historical-imports`~~ (S5/S11) | **Struck by D-330** (2026-08-16) — neither route exists; the resource they enforced is struck above |
 | `GET /bss-pricing/v1/audit` (S5) | `audit × read` / `export` — **Auditor-only** (actor trails, before/after, approval decisions; D-12) |
-| `GET /bss-pricing/v1/history`, `POST /bss-pricing/v1/history/export` (S12) | `plan × read` — price history is plan/price data (chronological view over append-only rows), Finance-readable by construction (D-12) |
+| `GET /bss-pricing/v1/history`, `POST /bss-pricing/v1/history/export` (S12) | `audit × read` / `audit × export` — **amended by D-328 (2026-08-17)**, and the amendment is what makes this table agree with the `audit` resource row above. D-12's original reading (price history is plan/price data, Finance-readable by construction) is withdrawn and kept as provenance: `/history` is the catalog audit trail, so `plan × read` handed the trail to every holder of catalog read while `audit` granted nothing. The export asks `export`, the bulk-disclosure action, not `read` |
 | Bulk import / mass repricing / clone / bulk-import **abort** (`POST /bss-pricing/v1/bulk-imports/{id}/abort`) (S12) | the **same** `plan × write` / `publish` — bulk is authoring at scale (and abort is un-authoring at scale), no new authority |
 | `GET /bss-pricing/v1/catalog-version/frontier` (S1 §3.3 — the D-136 pin-eligibility watermark a consumer pins before a resolution/rating run) | `plan × read` — service identity, alongside the read model itself; the value is tenant-scoped like every read |
 | Published read model (Tariffs/Rating/Subscriptions/Billing) | service-to-service identities with `plan × read` scoped by the platform service trust; never the human preview grant |
@@ -435,6 +435,31 @@ append-only + tamper evidence (G4); per-jurisdiction retention config (G5).
 Hash-chained and segmented per `(tenant_id, chain_id)`, `chain_id` being the audited subject's
 aggregate (D-135, Foundation §3.7).
 
+**The store offers two reads, and the second one is new (normative, D-338, 2026-08-17).** Until
+that decision this table was addressable only in bulk: `append`, plus a tenant-wide keyset page.
+So a value written into `before_state` was *recorded and unaddressable*, and D-327 had concluded
+from that shape that reversing a cutover needed a design of its own. It did not — the table has
+carried `idx_pricing_audit_log_subject (tenant_id, subject_kind, subject_ref, recorded_at)` since
+it was created, deliberately preserved through the SQLite rebuild that names it among the four
+objects which must survive, and the index had **zero readers**. What was missing was a query, not
+a store. The read is **by subject** — `(subject_kind, subject_ref)`, returning the subject's
+records in the page's own order and taking no cursor — and two of its properties are contractual
+rather than incidental:
+
+- **One subject holds several records.** An act's `submit`, `approve` and `commit` all stand under
+  one `subject_ref`, so a caller selects **by `action`** and never by taking the first. A probe
+  written against this surface asserted a count of one and reddened at three, which is the shape
+  a reader gets wrong first.
+- **The subject is reconstructible without being stored.** A cutover's ref renders
+  `{plan_id}/cutover/{keyset_hash}/{cutover_at_ms}`, so a holder of the plan can rebuild the
+  address rather than having to have kept it. Nothing has to be written to make a record findable.
+
+This is what makes the before/after guarantee usable by something that must **reverse** an act
+rather than merely attest to it — the difference between an audit trail and an undo source. The
+pre-act interval bound is recorded as a **value** (never a digest: a hash lets a reader verify a
+guess it has no way to produce), identified by `(scopeKey, effectiveFrom)` rather than by
+`window_id`, since `effective_from` is the one column the append-only trigger freezes outright.
+
 **Its two discriminators are declared here (normative, D-158, 2026-08-03, found while writing
 this table's first writer).** Both had been free text with no vocabulary in any document, while
 `pricing_approval` above carries a typed `subject_kind` — a gap the 2026-07-31d review closed on
@@ -456,16 +481,47 @@ seven years and is the one D-12 confines to the Auditor.
   `submit` (§4's initial state — a material change unit opened over the subject, **D-180**,
   below), `approve` / `reject` (`inst-tp-record`), `withdraw` (`inst-as-void`'s human void —
   **D-180**), `deny` (`inst-rb-audit`, and `inst-tp-selfaudit`'s
-  attempted-violation record) and `policy_update` (D-10's
-  threshold-policy mutations). Two constraints hold the set: an action token is **never a frozen
+  attempted-violation record), **`migrate`** (Slice 11's schedule and cancel — added 2026-08-17;
+  see below) and `policy_update` (D-10's
+  threshold-policy mutations — **the roster's one knowing exception**, declared with no writer
+  because there is no threshold-policy store to write one; kept rather than struck because the
+  store is intended, and named here so it is a stated exception instead of a silent violation).
+  Two constraints hold the set: an action token is **never a frozen
   event name** — `PlanPublished` is a `CatalogEvent` with one home, and the audit action for the
   same transaction is `publish` — and a token with **no writer is not declared**, because a
   vocabulary entry nobody writes reads as coverage to everyone who greps for it. A slice that
   adds an audited record adds its token here rather than inventing one at the keyboard.
 
+  **`migrate` was written for ten days before it was declared, and the hand-back that would have
+  declared it never arrived (2026-08-17).** `AuditAction::Migrate` is written on two production
+  paths — inside the migration schedule's and the cancel's own transactions — and renders
+  `"migrate"`. This roster did not list it, so the set violated **D-175's** closure rule (*no
+  writer without a token*) in the one direction nothing checks. The code saw it and routed it
+  correctly: `domain/audit.rs` records that §5 types `migrate` as an **authz** action on `plan`,
+  that whether the audit-token list should name it too belongs to the Slice 11 hand-back's
+  documentation register, and that extending a `docs/` list is not that module's to do. **The
+  register never received the hand-back** — `migrate` returned zero hits in `DECISIONS.md` — so a
+  documentation debt was correctly identified, correctly deferred to a named place, and lost. It
+  is paid here.
+
+  **And it cannot be caught mechanically today, which is the more useful half of the finding.**
+  The one guard that exists runs the other way: `every_declared_action_has_a_production_writer`
+  walks the *code's* tokens and demands a writer for each — D-158's direction, *no token without a
+  writer*. Nothing walks the *written* tokens and demands a §6 declaration, which is what D-175
+  clause (2) actually states. Until such a test exists (a `docs/`-reading test, which this gear
+  already has the machinery for in the evaluation-policy roster), this roster's completeness is
+  maintained by hand and should be re-derived rather than trusted:
+  `grep -rn 'AuditAction::' pricing/src/ | grep -v tests` against the list above.
+
 **The three draft-authoring verbs, and what closes this set (normative, D-175, 2026-08-03, found
 while auditing the writers this section's own MUST obliges).** `create`, `update` and `delete`
-are the records of the six mutating authoring surfaces: `create` for a draft plan revision
+are the records of **every mutating authoring surface this design set specifies** — which is the
+quantifier D-175's closure rule uses, and it is stated as a class here rather than as a count
+because an enumeration is the denominator a future audit of that rule would use, and an
+under-sized one clears the surfaces it omits by never asking about them (corrected 2026-08-17;
+this read "the six" against `AuditAction::{Create, Update, Delete}` written at 25 sites across 9
+modules — `grep -rn 'AuditAction::\(Create\|Update\|Delete\)' pricing/src/` re-derives it).
+Representatively: `create` for a draft plan revision
 minted (a plan's first draft at revision `0`, **and** the successor revision a `PATCH` on a
 published plan opens — Foundation §4.3, D-170) and for a draft price row authored; `update` for a
 plan facet replaced (one per call, D-173) and for a draft price row's content replaced; `delete`
@@ -530,7 +586,7 @@ against a `voided` unit means *the guard closed it* — which is a distinction a
 and a synthetic principal would destroy.
 
 **Both closure rules still hold, in both directions.** *No writer without a token*: with these
-two the six authoring mutations, the publish, the discard, the submit, the two decisions, the
+two the authoring mutations, the publish, the discard, the submit, the two decisions, the
 withdraw and the denied attempt are the mutating and attempted-mutating surfaces this set
 specifies, and each carries a verb. *No token without a writer*: `retire` and `policy_update`
 remain declared because `inst-rt-cancel` and D-10 **specify** those writers — the rule bars a

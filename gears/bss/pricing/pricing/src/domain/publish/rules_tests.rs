@@ -791,7 +791,7 @@ fn the_row_type_gained_no_field_and_the_generation_moved_only_for_a_rostered_one
          another gear evaluates -- the argument for the second bump: the flavor decides whether the reserved \
          quantity leaves the on-demand tier counter (`inst-rv-tier-q`) or never enters it \
          (`inst-rv-level`), which is quantity derivation and therefore evaluation policy by the \
-         roster's own test. Its partner `reserved_rate_minor` is money and is filed outside, so \
+         roster's own test. Its partner `reserved_rate` is money and is filed outside, so \
          it moved no generation. Neither is `grandfather_until`, which is still on no row at \
          all. This assertion is transcribed rather than derived, so a bump has to be argued for \
          here as well as in the document"

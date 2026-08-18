@@ -1,7 +1,7 @@
 from conftest import REPO_ROOT
 from spec_check.corpus import Corpus
 from spec_check.finding import Severity
-from spec_check.invariants.fr_coverage import check
+from spec_check.invariants.fr_coverage import _defined_requirements, check, is_nfr
 
 
 def pricing():
@@ -10,6 +10,98 @@ def pricing():
 
 def test_every_pricing_fr_is_claimed_by_a_slice():
     assert [f for f in check(pricing()) if f.invariant == "P2/fr-unclaimed"] == []
+
+
+def test_pricings_nfrs_are_seen_at_all_and_none_is_yet_traced():
+    # Until 2026-08-18 both regexes required the literal `-fr-`, which cannot
+    # match `-nfr-` (the preceding character is `n`), so all twelve of these were
+    # invisible to an invariant whose description says "every PRD requirement".
+    # The count is derived from the corpus, not transcribed: this asserts the
+    # arm RUNS and covers the whole set, and it keeps holding as the PRD grows.
+    corpus = pricing()
+    defined_nfrs = [i for i in _defined_requirements(corpus) if is_nfr(i)]
+    assert defined_nfrs, "the pricing PRD declares nfr ids; if it stops, delete this test"
+
+    unclaimed = [f for f in check(corpus) if f.invariant == "P2/nfr-unclaimed"]
+    # One row per gear, not one per id: the reasoning is in the module docstring.
+    assert len(unclaimed) == 1
+    assert unclaimed[0].message.startswith(
+        "{n} of {n} non-functional requirement(s)".format(n=len(defined_nfrs))
+    )
+    for ident in defined_nfrs:
+        assert ident in unclaimed[0].message, (
+            "the collapsed finding must name every unclaimed id, or it trades "
+            "attributability for tidiness"
+        )
+
+
+def test_an_nfr_a_slice_does_trace_leaves_the_unclaimed_set():
+    # The arm has to be able to go green, or it is a constant rather than a check.
+    corpus = Corpus.from_parts(
+        "synthetic",
+        [
+            ("PRD.md",
+             "- [ ] `p1` - **ID**: `cpt-cf-bss-x-fr-alpha`\n"
+             "- [ ] `p1` - **ID**: `cpt-cf-bss-x-nfr-latency`\n"
+             "- [ ] `p1` - **ID**: `cpt-cf-bss-x-nfr-uptime`\n"),
+            ("design/01-a.md",
+             "**Traces to**: `cpt-cf-bss-x-fr-alpha`, `cpt-cf-bss-x-nfr-latency`\n"),
+        ],
+    )
+    findings = check(corpus)
+    assert [f.invariant for f in findings if f.invariant == "P2/fr-unclaimed"] == []
+    nfr = [f for f in findings if f.invariant == "P2/nfr-unclaimed"]
+    assert len(nfr) == 1
+    assert nfr[0].message.startswith("1 of 2 non-functional requirement(s)")
+    assert "cpt-cf-bss-x-nfr-uptime" in nfr[0].message
+    assert "cpt-cf-bss-x-nfr-latency" not in nfr[0].message
+
+
+def test_a_fully_traced_nfr_set_reports_nothing_at_all():
+    corpus = Corpus.from_parts(
+        "synthetic",
+        [
+            ("PRD.md", "- [ ] `p1` - **ID**: `cpt-cf-bss-x-nfr-latency`\n"),
+            ("design/01-a.md", "**Traces to**: `cpt-cf-bss-x-nfr-latency`\n"),
+        ],
+    )
+    assert [f for f in check(corpus) if f.invariant == "P2/nfr-unclaimed"] == []
+
+
+def test_a_slice_tracing_an_nfr_the_prd_never_defines_is_dangling_like_an_fr():
+    # `fr-dangling` is Medium and is the one half of P2 that proves a document
+    # states something false. Widening the id shape must have carried it too, or
+    # the widening only added the polite half.
+    corpus = Corpus.from_parts(
+        "synthetic",
+        [
+            ("PRD.md", "- [ ] `p1` - **ID**: `cpt-cf-bss-x-fr-alpha`\n"),
+            ("design/01-a.md",
+             "**Traces to**: `cpt-cf-bss-x-fr-alpha`, `cpt-cf-bss-x-nfr-ghost`\n"),
+        ],
+    )
+    dangling = [f for f in check(corpus) if f.invariant == "P2/fr-dangling"]
+    assert len(dangling) == 1
+    assert dangling[0].severity == Severity.MEDIUM
+    assert "cpt-cf-bss-x-nfr-ghost" in dangling[0].message
+
+
+def test_an_fr_whose_slug_starts_nfr_is_not_mistaken_for_one():
+    # The discriminator is the `-nfr-` SEGMENT, not the substring "nfr": an FR
+    # called `...-fr-nfr-budget` is an FR, and reporting it under the collapsed
+    # per-gear row would hide a real lost owner among a standing property.
+    corpus = Corpus.from_parts(
+        "synthetic",
+        [
+            ("PRD.md", "- [ ] `p1` - **ID**: `cpt-cf-bss-x-fr-nfr-budget`\n"),
+            ("design/01-a.md", "**Traces to**: `cpt-cf-bss-x-fr-other`\n"),
+        ],
+    )
+    findings = check(corpus)
+    assert [f.invariant for f in findings if f.invariant == "P2/nfr-unclaimed"] == []
+    unclaimed = [f for f in findings if f.invariant == "P2/fr-unclaimed"]
+    assert len(unclaimed) == 1
+    assert "cpt-cf-bss-x-fr-nfr-budget" in unclaimed[0].message
 
 
 def test_flags_an_fr_no_slice_traces_to():

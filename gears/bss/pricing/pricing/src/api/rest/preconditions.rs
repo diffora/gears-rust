@@ -51,7 +51,8 @@
 //! [`policy_etag`]/[`if_match_policy`] are still only the header layer.
 
 use axum::http::HeaderMap;
-use axum::http::header::IF_MATCH;
+use axum::http::header::{IF_MATCH, IF_NONE_MATCH};
+use axum::response::IntoResponse as _;
 use serde::Serialize;
 
 use crate::domain::concurrency::{PolicyTag, RowVersion, strong_tag_body};
@@ -262,6 +263,60 @@ pub fn if_match_revision(headers: &HeaderMap) -> Result<RevisionTag, DomainError
 #[must_use]
 pub fn policy_etag(tag: &PolicyTag) -> String {
     tag.to_etag()
+}
+
+/// Whether a conditional `GET`'s `If-None-Match` is satisfied by `tag`.
+///
+/// # Why this exists, and why it is not the mirror of [`if_match`]
+///
+/// Seven reads in this gear emit an `ETag`, and until 2026-08-17 not one of them
+/// read the header a caller sends it back in: `If-None-Match` appeared nowhere in
+/// the crate. That is not a correctness defect — RFC 9110 makes serving a
+/// conditional read the server's option — but it is a **declared-contract** gap on
+/// the resource where this module argues the tag hardest: `policy_etag`'s doc says
+/// emitting the tag is not optional there *because the `GET` is the only place a
+/// caller can obtain one*, so a client that must hold a fresh tag re-downloaded the
+/// whole threshold set on every poll to get it.
+///
+/// **The envelope is deliberately laxer than [`if_match`]'s, and the asymmetry is
+/// the point.** `if_match` refuses the wildcard, weak validators and lists, because
+/// on a mutating verb a wildcard *is* an unconditional write — the one thing these
+/// preconditions exist to make unreachable. On a read none of that is true: a
+/// wildcard means "any current representation", RFC 9110 §13.1.2 specifies the
+/// **weak** comparison function for this header, and a list is how a client that
+/// holds two cached representations asks about both. Refusing them here would be
+/// this module's own rule applied where its reason does not reach, and would make a
+/// conforming client's request fail rather than merely miss the cache.
+///
+/// A header this reader cannot parse is not refused either: an unreadable
+/// `If-None-Match` means the cache validation simply does not fire and the caller
+/// is served the representation, which is the RFC's own fallback and the only
+/// fail-direction that cannot withhold data.
+#[must_use]
+pub fn if_none_match(headers: &HeaderMap, tag: &str) -> bool {
+    let Some(raw) = headers.get(IF_NONE_MATCH).and_then(|v| v.to_str().ok()) else {
+        return false;
+    };
+    raw.split(',').any(|candidate| {
+        let candidate = candidate.trim();
+        // The weak comparison: `W/"x"` and `"x"` are one representation for a
+        // conditional read, which is exactly the case `if_match` refuses.
+        candidate == "*" || candidate.trim_start_matches("W/") == tag.trim_start_matches("W/")
+    })
+}
+
+/// A `304 Not Modified` carrying the validator it matched.
+///
+/// The header is required on a 304 (RFC 9110 §15.4.5) and the body must be empty:
+/// a caller who is told nothing changed and is then handed no tag has to re-read
+/// unconditionally next time, which is the round trip this saves.
+#[must_use]
+pub fn not_modified(tag: &str) -> axum::response::Response {
+    (
+        axum::http::StatusCode::NOT_MODIFIED,
+        [(axum::http::header::ETAG, tag.to_owned())],
+    )
+        .into_response()
 }
 
 /// The policy representation an `If-Match` header asserts (D-186).

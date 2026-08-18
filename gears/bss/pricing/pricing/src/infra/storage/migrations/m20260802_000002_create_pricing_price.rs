@@ -50,6 +50,17 @@
 //! storage and egress is one plan, not three. What is ambiguous, and what fails
 //! publish, is a **duplicate line within one scope-key slice**.
 //!
+//! **It has a `published` arm and no `draft` twin, and that asymmetry is
+//! deliberate** (review A1-5, recorded here so the question retires). The scope-key
+//! pair above has both arms, and the reason its draft arm is load-bearing —
+//! a pre-check is a read and cannot decide a race — is a general argument that
+//! would apply here too. It does not have to: meter injectivity is stated as a
+//! **publish** rule (`inst-cmp-injective`), so a draft holding a duplicate meter
+//! line is a state the design admits and refuses one step later, where the whole
+//! revision's line set is judged at once. Scope-key duplication is different in
+//! kind: D-21 puts it among the **save-time** checks, so a second draft on one key
+//! must never land, and only an index can promise that.
+//!
 //! `charge_kind` is **absent**, which is §6's own spelling and not an omission
 //! this migration should repair. A meter is a usage row's column, so the axis
 //! would discriminate nothing it is here to discriminate — what it would do is

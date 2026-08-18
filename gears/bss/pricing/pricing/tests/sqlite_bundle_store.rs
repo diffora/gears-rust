@@ -144,12 +144,18 @@ async fn an_itemization_outside_the_declared_pair_is_refused() {
 /// bundle's revisions" ambiguous and give the composition tables — which key on
 /// `bundle_id` — two parents inside one revision chain.
 ///
-/// The fragment is the **column**, not `uq_pricing_bundle_plan`: `SQLite` names
-/// the offending column in a uniqueness violation and never the index. It is
-/// still the guard under test and only that one, `plan_id` carrying no other
-/// uniqueness on this table. Postgres names the index instead, which is why the
-/// Postgres proof of this rule lives in `postgres_schema_bundle.rs` rather than
-/// being asserted here against a message this engine does not produce.
+/// The fragment is the **columns**, not `uq_pricing_bundle_plan`: `SQLite` names
+/// the offending columns in a uniqueness violation and never the index. They are
+/// still the guard under test and only that one, `(tenant_id, plan_id)` carrying
+/// no other uniqueness on this table. Postgres names the index instead, which is
+/// why the Postgres proof of this rule lives in `postgres_schema_bundle.rs`
+/// rather than being asserted here against a message this engine does not
+/// produce.
+///
+/// **The fragment gained `tenant_id` with `m20260802_000083`** and the move is
+/// the assertion, not a loosening: the pair is what the index now spans, and a
+/// test still naming the bare column would pass unchanged against an index that
+/// had lost its second column entirely.
 #[tokio::test]
 async fn one_plan_carries_at_most_one_bundle() {
     let conn = migrated_db().await;
@@ -164,9 +170,52 @@ async fn one_plan_carries_at_most_one_bundle() {
              VALUES ('66666666-6666-6666-6666-666666666666', '{TENANT}', '{PLAN}',
                      'own_price', 'itemize')"
         ),
-        "UNIQUE constraint failed: pricing_bundle.plan_id",
+        "UNIQUE constraint failed: pricing_bundle.tenant_id, pricing_bundle.plan_id",
     )
     .await;
+}
+
+/// The plan slot a tenant can occupy is **its own** — `m20260802_000083`.
+///
+/// `uq_pricing_bundle_plan` was `UNIQUE (plan_id)` with no tenant, on the one
+/// column of this table that is a **client-supplied reference to another table**.
+/// So the first tenant to insert a bundle naming a `plan_id` locked every other
+/// tenant out of it: the second was refused `BUNDLE_EXISTS_ON_PLAN` pointing at a
+/// row invisible to it, in a tenant it cannot see, and `pricing_bundle` has no
+/// `DELETE` path anywhere in the API. The index was also narrower than its only
+/// reader assumed — `bundle_repo::bundle_of_plan` filters `tenant_id` **and**
+/// `plan_id`, so the read and the constraint behind it disagreed about what
+/// "taken" meant.
+///
+/// Raw SQL past the repository, which is this suite's whole charter: with the
+/// caller-scope plan read `create_on` now makes, no typed path produces this
+/// state, and the index is nevertheless what decides a race and what binds a
+/// writer that never went through the repository. Postgres carries the same index
+/// and `postgres_schema_bundle.rs` executes the pair there.
+#[tokio::test]
+async fn two_tenants_may_each_bundle_the_same_plan_id() {
+    const OTHER_TENANT: &str = "99999999-9999-9999-9999-999999999999";
+    let conn = migrated_db().await;
+    insert_revision(&conn, 0).await;
+    must_succeed(&conn, &insert_bundle("sum_of_parts", "aggregate")).await;
+
+    must_succeed(
+        &conn,
+        &format!(
+            "INSERT INTO pricing_bundle (
+                bundle_id, tenant_id, plan_id, price_basis, invoice_itemization)
+             VALUES ('77777777-7777-7777-7777-777777777777', '{OTHER_TENANT}', '{PLAN}',
+                     'own_price', 'itemize')"
+        ),
+    )
+    .await;
+
+    let held = scalar(
+        &conn,
+        &format!("SELECT CAST(count(*) AS TEXT) AS v FROM pricing_bundle WHERE plan_id = '{PLAN}'"),
+    )
+    .await;
+    assert_eq!(held, "2", "one plan id, one bundle slot per tenant");
 }
 
 /// **`plan_id` carries no foreign key, and the test says so rather than

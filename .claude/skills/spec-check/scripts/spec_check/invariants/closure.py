@@ -1,5 +1,32 @@
 """P3 — declared-and-referenced closure for instruction ids and error codes.
 
+**One direction per id kind, and that is deliberate rather than a gap.**
+Instruction ids are checked referenced-but-undeclared (`P3/inst-dangling`); error
+codes are checked declared-but-unreferenced (`P3/code-unreferenced`). A 2026-08-17
+review read the asymmetry as half a checker — the same defect class reported for
+one kind and not the other — so the two missing directions were measured against
+the live corpora on 2026-08-18 before anything was built. Neither is a defect
+class:
+
+* **`inst-` declared and never cited elsewhere: 105 of pricing's 374.** An
+  instruction id is not a name that needs a referrer — the declaration line *is*
+  the rule. What a citation adds is a cross-reference, and most rules legitimately
+  have none. An error code is the opposite: a code declared in a Problem-responses
+  block and named by no rule has nothing that raises it, which is a hole in the
+  specification. Emitting the 105 would be 105 rows of "this rule is not quoted
+  anywhere", under which the dangling ids that are real would disappear.
+* **Codes referenced and declared nowhere: 46 in pricing, 9 in rating.** The list
+  is `ABORTED`, `ACTIVE`, `ALTER`, `AUDIT`, `BUILT`, `RATED` — `_CODE` is
+  `[A-Z][A-Z0-9_]{4,}` inside backticks, which is every SCREAMING token the prose
+  uses for a status value, a SQL keyword or an enum variant. The direction is not
+  wrong; the vocabulary to run it over does not exist, and running it anyway would
+  report a checker's regex as a documentation defect.
+
+Both would need a narrower declaration vocabulary before they could say anything
+true. Recorded here rather than in a review note so the next reader measures the
+same thing before re-raising it, and so `SKILL.md`'s description can say what P3
+does instead of what it might.
+
 Port of `tools/spec-check/src/invariants/closure.rs`.
 """
 
@@ -387,14 +414,34 @@ PINNED_UNREFERENCED_CODES_2026_07_29 = (
     # shape (a floor with no type is a row with no floor) and names the `{value, type}`
     # shape it is owed in, rather than deleting a declaration that still has a future.
     # Contrast D-239, which paid a member down by deleting the declaration outright.
-    # 2026-08-16: both left this pin because they were FIXED, not because the checker
-    # moved. D-329's grandfathering-horizon door is the caller that finally references
-    # them; until it existed they were declared in a Problem-responses block with no
-    # rule naming either. Measured by diffing the known-debt block with the wave
-    # stashed against the wave applied (49 -> 47 suppressed); the closure test named
-    # the same two independently, which is the check that the diff was read right.
+    # The grandfathering pair, and the round trip is the entry worth keeping.
+    #
+    # 2026-08-16: both were recorded as leaving this pin, credited to D-329's
+    # horizon door. That reading was wrong and the pin block said so in the
+    # confident voice -- what actually dropped them was D-329's **register entry**
+    # naming both codes in prose, under the pre-`is_decision_register` rule that
+    # counted any mention outside a Problem-responses block as a reference. The
+    # design set's rule bodies still named neither.
+    #
+    # 2026-08-17 morning: `is_decision_register` landed and both came straight back
+    # (see the five-member note above; these are two of the six).
+    #
+    # 2026-08-17, this edit: `GRANDFATHER_LOOSEN_FORBIDDEN` is paid down for real
+    # and leaves the pin. Z7-2's fix wrote D-329's route preconditions into
+    # design/07 §5 -- the propagation the register had claimed and never taken --
+    # and precondition 3 is the monotonicity rule naming the code it raises. That
+    # is the artifact that fires it, which is the only thing that discharges this
+    # debt. Measured, not inferred: the unreferenced set was captured with the
+    # docs edit stashed and again with it applied, and the diff is exactly this
+    # one member (50 -> 49 suppressed).
+    #
+    # `GRANDFATHERED_ROW_IMMUTABLE` STAYS, and deliberately. D-329 considered
+    # co-opting it for the loosen refusal and **rejected** that -- it is the
+    # immutability refusal for a grandfathered row, a different rule, and no rule
+    # body in the design set names it yet. Writing it into the horizon door's
+    # precondition list to empty the pin would have been the false payment this
+    # block already records twice (`EVAL_POLICY_MISPLACED`, entry 15's warning).
     ("pricing", "GRANDFATHERED_ROW_IMMUTABLE", "design/07-pricewindow-linkage.md"),
-    ("pricing", "GRANDFATHER_LOOSEN_FORBIDDEN", "design/07-pricewindow-linkage.md"),
     ("pricing", "GRANT_APPLICABILITY_INELIGIBLE", "design/10-advanced-primitives.md"),
     ("pricing", "GRANT_APPLICABILITY_UNIT_MISMATCH", "design/10-advanced-primitives.md"),
     ("pricing", "GRANT_APPLICABILITY_UNPUBLISHED", "design/10-advanced-primitives.md"),

@@ -40,7 +40,7 @@ use bss_pricing::domain::synthesis::SynthesisTrigger;
 use bss_pricing::infra::synthesis::{FrozenKey, SynthesisRequest};
 use chrono::{DateTime, TimeZone, Utc};
 use rest_support::{
-    Harness, body_json, request, seed_publishable_manual_quantity_plan,
+    Harness, body_json, problem_family, request, seed_publishable_manual_quantity_plan,
     seed_publishable_per_unit_plan, seed_publishable_plan, seed_publishable_tiered_usage_plan,
     seed_stamp,
 };
@@ -688,10 +688,19 @@ async fn a_tiered_lines_band_set_reaches_the_frozen_payload() {
 ///
 /// Every one of them is a column read on every row of `pricing_price`, and every
 /// one was absent from a record that resolves through **no** `CatalogVersion`
-/// and is INSERT-only. `reservedRateMinor` is money by the same argument D-323
-/// made about the rate: `inst-rv-attrs` has Rating source the self-service
-/// reserved rate from the row, and on a `migrated-origin` line there is no other
-/// row to source it from.
+/// and is INSERT-only. `reservedRateNanoMinor` is a **rate** and not money
+/// (D-311): `inst-rv-attrs` has Rating source the self-service reserved rate from
+/// the row, and on a `migrated-origin` line there is no other row to source it
+/// from, so it is carried at the rate's own 10⁻⁹ precision rather than rounded to
+/// the currency's minor unit on the way out.
+///
+/// This paragraph and the assertion below both said `reservedRateMinor` until
+/// 2026-08-18, and the assertion had been **failing on this branch** since the
+/// emitter was renamed: `serde_json::Value` indexes a missing key to `Null`, so
+/// the case reddened with `left: Null` rather than naming the rename. The fixture
+/// had already been moved to the rate — it seeds `3_100_000_000_000` nano-minor,
+/// which is the same 3,100 minor units the old assertion named — so what was
+/// stale was this reading of it and nothing else.
 ///
 /// The fixture authors all seven non-default, so a builder that dropped one
 /// renders a `null` here rather than leaving a hole that stays a hole.
@@ -716,7 +725,10 @@ async fn the_slice_10_content_columns_reach_the_frozen_payload() {
 
     let row = &frozen.record.payload["rows"][0];
     let payload = &frozen.record.payload;
-    assert_eq!(row["reservedRateMinor"], 3_100, "{payload}");
+    assert_eq!(
+        row["reservedRateNanoMinor"], 3_100_000_000_000_i64,
+        "{payload}"
+    );
     assert_eq!(row["reservationFlavor"], "capacity", "{payload}");
     assert_eq!(row["minQtyPurchase"], 7, "{payload}");
     assert_eq!(row["minQtyUsage"], 11, "{payload}");
@@ -872,6 +884,63 @@ async fn a_period_bound_is_materialized_into_the_frozen_payload() {
 // D-102's read surface.
 // ---------------------------------------------------------------------------
 
+/// **The route serves the payload the service stored, member for member.**
+///
+/// The coverage inversion this file is, closed at one assertion rather than at
+/// fourteen. Fourteen of its seventeen cases call
+/// `h.governance.synthesis.synthesize(...)` directly and assert
+/// `frozen.record.payload` — the value the *service* stored, not the value the
+/// *route* serves — so every "the frozen payload carries X" claim in this file
+/// would pass against a read handler that filtered, renamed or projected a member
+/// on the way out. That is a real risk on this surface and not a theoretical one:
+/// the payload is a free-form `serde_json::Value` with no DTO between the store and
+/// the wire, so nothing types the shape a consumer receives.
+///
+/// Comparing the whole document is what makes this one case stand in for all
+/// fourteen: any projection, at any depth, in any member, fails here.
+#[tokio::test]
+async fn the_route_serves_the_stored_payload_unprojected() {
+    let h = Harness::new().await;
+    let plan_id = covered_plan(&h).await;
+    let subscription = Uuid::now_v7();
+    let frozen = h
+        .governance
+        .synthesis
+        .synthesize(
+            &h.scope(),
+            h.tenant,
+            synthesis_request(subscription, plan_id, covered_at()),
+        )
+        .await
+        .expect("synthesize");
+
+    let response = h
+        .allowed_as(RATING_SERVICE)
+        .send(request("GET", &path(subscription), None))
+        .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let view = body_json(response).await;
+
+    assert_eq!(
+        view["payload"], frozen.record.payload,
+        "the wire payload is the stored payload; a handler that projected any member \
+         of it would leave every `frozen.record.payload` assertion in this file green"
+    );
+    assert_eq!(
+        view["resolved"], frozen.record.resolved,
+        "and the provenance travels with it, which is what `inst-sy-provenance` is"
+    );
+
+    // The anti-tautology: the payload has to be a document with members in it, or
+    // an equality between two empty values would satisfy the assertions above.
+    assert!(
+        view["payload"]["rows"]
+            .as_array()
+            .is_some_and(|rows| !rows.is_empty()),
+        "the fixture froze at least one row: {view}"
+    );
+}
+
 #[tokio::test]
 async fn the_surface_returns_the_frozen_payload_with_its_provenance() {
     let h = Harness::new().await;
@@ -913,6 +982,11 @@ async fn the_surface_answers_404_before_synthesis_and_that_is_the_contract() {
         .await;
 
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    // The family, not only the status. This suite carried no discriminator on
+    // either refusal, so the 404 that says "synthesis has not run" and any other
+    // 404 in the stack read identically — which is the pair `inst-sy-firstrating`
+    // needs told apart.
+    assert_eq!(problem_family(response).await, "not_found");
 }
 
 #[tokio::test]
@@ -936,4 +1010,5 @@ async fn a_caller_without_plan_read_is_denied() {
         .await;
 
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    assert_eq!(problem_family(response).await, "permission_denied");
 }

@@ -17,6 +17,17 @@
 //! it. A bare `revision` column whose referent was never stated is what §6
 //! replaced to get here.
 //!
+//! **That key is no longer the one the schema carries, and the resemblance it
+//! names stopped being true first.** `m20260802_000081` widened
+//! `pricing_plan_phase` to `(tenant_id, plan_id, plan_revision, phase_id)` on
+//! 2026-08-17 — precisely because the narrow pair gave a client-supplied id one
+//! owner per revision *number* across every tenant — and did not move this
+//! acknowledged twin, so for one day the sentence above advertised a shape that no
+//! longer existed. `m20260802_000084` widens this key the same way. The D-106
+//! argument above is untouched by it: `plan_revision` is in the key for the reason
+//! given, and one revision still may not hold the same composite id twice. The
+//! statement below stays as written, being the state the chain passes through.
+//!
 //! # Two rules this table deliberately does **not** enforce
 //!
 //! **Arity (`≥ 2` constituents) and self-reference are publish rules, not column

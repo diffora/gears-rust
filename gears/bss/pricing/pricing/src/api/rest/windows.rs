@@ -302,7 +302,7 @@ impl From<&WindowInterval> for WindowIntervalView {
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct WindowPageQuery {
     /// Windows per page; server default 100, hard cap 1,000.
-    pub limit: Option<u64>,
+    pub limit: Option<String>,
     /// The opaque token a previous page returned.
     pub cursor: Option<String>,
     /// Narrow the page to one price row's windows.
@@ -313,7 +313,7 @@ pub struct WindowPageQuery {
     /// that a window's row and its key cannot disagree. A plan's whole window
     /// plane is `GET …/plans/{planId}/coverage`, which answers it per key and is
     /// the surface that question already had.
-    pub price_id: Option<Uuid>,
+    pub price_id: Option<String>,
 }
 
 /// One window on a page: the interval, where it stands, and the precondition the
@@ -759,6 +759,7 @@ pub fn router(state: Arc<GovernanceState>, openapi: &dyn OpenApiRegistry) -> Rou
             StatusCode::OK,
             "The plan's per-key coverage and gap report.",
         )
+        .error_400(openapi)
         .error_401(openapi)
         .error_403(openapi)
         .error_500(openapi)
@@ -992,6 +993,7 @@ fn mounted_window_mutations(router: Router, openapi: &dyn OpenApiRegistry) -> Ro
             StatusCode::ACCEPTED,
             "The window is cancelled, or a unit was opened and nothing moved; `outcome` says which.",
         )
+        .error_400(openapi)
         .error_401(openapi)
         .error_403(openapi)
         .error_404(openapi)
@@ -1125,16 +1127,21 @@ async fn schedule_window(
 ) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(extension_ctx)?;
     let correlation = require_correlation(correlation)?;
-    // The key is required (D-171) and is read before anything is resolved, so a
-    // caller who omitted it is told that rather than being told a price id does
-    // not exist.
-    let key = preconditions::idempotency_key(&headers)?;
-    let request: ScheduleWindowRequest = preconditions::parse_body(&body)?;
-    let digest = preconditions::request_digest(&request)?;
     let tenant = ctx.subject_tenant_id();
     let coarse = tenant_write_scope(&enforcer, &ctx, tenant).await?;
     let plan_id = resolve_plan(&state, &coarse, tenant, Lookup::Price(price_id)).await?;
     let scope = window_write_scope(&enforcer, &ctx, plan_id, tenant).await?;
+    // **After the gate**, `api/rest.rs`'s stated discipline. It read the key and
+    // parsed the body first until 2026-08-18, on the argument that a caller who
+    // omitted the key should be told that rather than that a price id does not
+    // exist — which is sound about the *lookup* and wrong about the *gate*: a
+    // caller with no authority on the window plane was answered 400 where the two
+    // rules written elsewhere in this layer both say 403, and the PDP was asked
+    // only on the well-formed path, so the census's recorded question sequence for
+    // this route was a claim about a subset of requests.
+    let key = preconditions::idempotency_key(&headers)?;
+    let request: ScheduleWindowRequest = preconditions::parse_body(&body)?;
+    let digest = preconditions::request_digest(&request)?;
 
     let now = Utc::now();
     let stamp = crate::api::rest::auth_context::audit_stamp(&ctx, now, correlation);
@@ -1210,15 +1217,17 @@ async fn adjust_window(
 ) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(extension_ctx)?;
     let correlation = require_correlation(correlation)?;
+    let tenant = ctx.subject_tenant_id();
+    let coarse = tenant_write_scope(&enforcer, &ctx, tenant).await?;
+    let plan_id = resolve_plan(&state, &coarse, tenant, Lookup::Window(window_id)).await?;
+    let scope = window_write_scope(&enforcer, &ctx, plan_id, tenant).await?;
+    // **After the gate**, with its thirteen sibling `If-Match` consumers rather
+    // than against them; see `schedule_window` above for the argument that moved.
     // Required and parsed here; the comparison itself is the store's, inside the
     // writing transaction (D-176 — a tag compared out here is a hint), where it rides
     // the `UPDATE`'s own `WHERE` over the window's act sequence (D-191).
     let expected = preconditions::if_match(&headers)?;
     let request: AdjustWindowRequest = preconditions::parse_body(&body)?;
-    let tenant = ctx.subject_tenant_id();
-    let coarse = tenant_write_scope(&enforcer, &ctx, tenant).await?;
-    let plan_id = resolve_plan(&state, &coarse, tenant, Lookup::Window(window_id)).await?;
-    let scope = window_write_scope(&enforcer, &ctx, plan_id, tenant).await?;
 
     let stamp = crate::api::rest::auth_context::audit_stamp(&ctx, Utc::now(), correlation);
     let outcome = state
@@ -1419,7 +1428,10 @@ async fn list_price_windows(
     .await
     .map_err(authz_error_to_canonical)?;
 
-    let page = PageRequest::parse(query.limit, query.cursor.as_deref())?;
+    let page = PageRequest::parse(
+        cursor::parse_limit(query.limit.as_deref())?,
+        query.cursor.as_deref(),
+    )?;
     let conn = state.db.conn().map_err(|e| {
         CanonicalError::internal(format!("bss-pricing: price window listing: {e}")).create()
     })?;
@@ -1427,11 +1439,12 @@ async fn list_price_windows(
     // One row more than the page, so "is there another page" needs no second
     // query and no page whose `next_cursor` points at nothing.
     let probe = page.limit.saturating_add(1);
+    let price_filter = cursor::parse_uuid_param("price_id", query.price_id.as_deref())?;
     let mut rows = window_repo::list_page(
         &conn,
         &scope,
         ctx.subject_tenant_id(),
-        query.price_id,
+        price_filter,
         page.after,
         probe,
     )

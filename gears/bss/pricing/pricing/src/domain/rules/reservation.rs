@@ -121,7 +121,7 @@ impl ValidationRule<PriceRow> for ReservationWellFormed {
 
         // The pairing, from either side. Reported with the half that is present,
         // because that is what the author has to reconcile.
-        match (subject.reserved_rate_minor, subject.reservation_flavor) {
+        match (subject.reserved_rate, subject.reservation_flavor) {
             (Some(_), None) => report.violate(
                 RESERVATION_PAIR_INCOMPLETE,
                 subject.subject(),

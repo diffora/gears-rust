@@ -29,7 +29,16 @@ pub struct Model {
     pub subject_kind: String,
     #[sea_orm(primary_key, auto_increment = false)]
     pub subject_ref: String,
+    /// **The live one.** The resolution path consults this flag; the module doc
+    /// above is about it.
     pub warm_completed: bool,
+    /// **Forensic, not live** — written at `repo::read_model_repo` and read by
+    /// nothing in `src/` (review Z1-5).
+    ///
+    /// Recorded rather than removed: an audit column with no live dereference is a
+    /// forward dependency, not waste, and the pair reads as symmetric until
+    /// somebody says which of the two decides anything. The flag is what a
+    /// resolution asks; this is when the warm that set it finished.
     pub warm_completed_at: Option<DateTime<Utc>>,
     /// The frozen projected payload for this subject at this version.
     pub payload: JsonValue,

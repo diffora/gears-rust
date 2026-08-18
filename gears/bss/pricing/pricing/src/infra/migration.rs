@@ -249,6 +249,43 @@ pub struct ScheduleRequest {
 ///    Re-validating first would let a retry fail because the world moved after
 ///    the original succeeded, which is precisely what an idempotency key exists
 ///    to prevent.
+///
+///    **This is the gear's only idempotent create path that stores no request
+///    digest, and the divergence is recorded rather than closed** (review Z4-5).
+///    Its two siblings both carry one and made two *different* deliberate
+///    choices: the shared gate (`idempotent::guarded`) stores the hash **and
+///    compares** it, answering `IDEMPOTENCY_PAYLOAD_MISMATCH` (409) on a changed
+///    body; the repricing run (`pricing_bulk_operation`) stores it and does
+///    **not** compare, answering the frozen run, with the reason written at
+///    `api::rest::repricing_runs`. `pricing_migration` has no digest column at
+///    all — the grep for `request_hash` across `src/` returns
+///    `pricing_idempotency_dedup` and `pricing_bulk_operation` and nothing else —
+///    so a replay under a spent id answers the stored schedule silently.
+///
+///    **What that costs, traced rather than assumed.** Not a cross-tenant read:
+///    `migration_repo::load` is scoped and tenant-qualified. Not a silent
+///    substitution either — `MigrationSchedule::created` is `false`, the route
+///    answers `200` rather than `202`, and the rendered view is the **stored**
+///    record, so an operator who reads the response sees the plan pair they did
+///    not send. What is lost is the forensic half the sibling column exists for:
+///    after the fact, nothing on the row says whether the schedule was created
+///    from the body its requester sent.
+///
+///    It stays absent here because adding it is a schema act, not a repair — a
+///    column, a migration, the frozen migration lists on both engines and the two
+///    schema suites — and the design set's own cross-reference is the thing that
+///    is misleading rather than the behaviour: `design/11-lifecycle.md` points
+///    this create at *"Slice 12's `run_id` pattern"* and
+///    `design/12-operator-efficiency.md` says that pattern *"reuses the
+///    Foundation's dedup machinery"*, which is the row that has a digest. Whoever
+///    closes it should close the document and the column together.
+///
+///    **A second-order note on the same arm**, because the remedy is not obvious
+///    from a `200`: the replay read filters by id and **not by state**, so a
+///    `cancelled` or `completed` `migration_id` is permanently spent and a
+///    re-post under it returns the terminal row. That is `inst-ms-api`'s "never a
+///    second one" read literally and is the right reading of a client-supplied
+///    at-most-once key — the remedy is a new id.
 /// 2. **The cheap total refusals** — distinct plans, then the target's lifecycle
 ///    state (`inst-mg-target`). Both are permanent for this world state.
 /// 3. **The notice period** (D-49), measured from *this* commit as the

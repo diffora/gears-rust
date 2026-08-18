@@ -505,3 +505,170 @@ async fn a_draft_rows_entity_tag_advances_with_each_edit() {
     .await;
     assert_eq!(version, "1", "the authoring edit advanced the draft's tag");
 }
+
+// ---------------------------------------------------------------------------
+// The census, over the rest of the frozen-column trigger family.
+// ---------------------------------------------------------------------------
+
+/// The census above, parameterised on the table — the shape `pg_support::frozen_columns`
+/// already had and the `SQLite` half did not.
+///
+/// The migrations install **six** frozen-column trigger families and the
+/// catalog-derived census guarded **two** of them: `pricing_price` and
+/// `pricing_plan`. The other four were guarded by hand-enumerated per-column
+/// cases, which is precisely the blindness the census exists to close — and the
+/// bill for that blindness on `pricing_price` alone is five migrations
+/// (`…000040`, `…000051`, `…000055`, `…000057`, `…000069`), each found by a
+/// person reading a diff rather than by a test.
+///
+/// The overlay plane is the one that mattered most and was on the wrong side of
+/// the line: it is the only per-tenant discount surface, `pricing_price_overlay_line`
+/// carries the money, and a column added there and forgotten becomes mutable
+/// under a frozen `CatalogVersion`.
+///
+/// `sanctioned_mutable` is declared **in the test**, which is where an exemption
+/// becomes reviewable: a column added to the table is owed a guard line unless
+/// somebody writes it into one of these lists and says why.
+///
+/// **It reads the trigger off `sqlite_master`, not off a migration file, and
+/// that distinction is not academic.** Proving these censuses bite, the first
+/// attempt deleted a column from the overlay trigger in
+/// `m20260802_000032_create_pricing_price_overlay.rs` — where the trigger is
+/// created — and the census stayed green, correctly:
+/// `m20260802_000045_add_price_overlay_abandoned_state.rs` drops and recreates
+/// it, so the creating migration's text is dead. Deleting the same line at
+/// `…000045` reddens it naming `target_ref`. Anything that checks a rule against
+/// a DB constraint has to ask the schema as it now stands.
+async fn census(
+    conn: &DatabaseConnection,
+    table: &str,
+    trigger: &str,
+    sanctioned_mutable: &[&str],
+) {
+    let columns = scalar(
+        conn,
+        &format!("SELECT group_concat(name) AS v FROM pragma_table_info('{table}')"),
+    )
+    .await;
+    let predicate = scalar(
+        conn,
+        &format!(
+            "SELECT sql AS v FROM sqlite_master \
+             WHERE type = 'trigger' AND name = '{trigger}'"
+        ),
+    )
+    .await;
+    // A census that quietly read an empty predicate would report every column
+    // unguarded, or be silenced with an exemption. `pg_support::frozen_columns`
+    // panics for this reason; the SQLite half asserts it.
+    assert!(
+        !predicate.is_empty(),
+        "the trigger {trigger} must exist, or this census is measuring nothing"
+    );
+    assert!(
+        !columns.is_empty(),
+        "the table {table} must have columns, or this census is measuring nothing"
+    );
+
+    let missing: Vec<&str> = columns
+        .split(',')
+        .filter(|column| !sanctioned_mutable.contains(column))
+        // The trailing space, for the reason the `pricing_price` census gives:
+        // it is what keeps a column from matching a longer sibling's line.
+        .filter(|column| !predicate.contains(&format!("NEW.{column} ")))
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "these columns are on `{table}` and absent from {trigger}, so an ad-hoc \
+         UPDATE moves them on a frozen row: {missing:?}"
+    );
+}
+
+#[tokio::test]
+async fn the_overlay_frozen_whitelist_names_every_content_column_the_table_holds() {
+    // The money-bearing plane. One exemption, and it is the same one
+    // `pricing_price` claims: the sanctioned lifecycle flip the whitelist exists
+    // to permit, which the trigger's own refusal message names.
+    const SANCTIONED_MUTABLE: [&str; 1] = ["lifecycle_state"];
+
+    census(
+        &migrated_db().await,
+        "pricing_price_overlay",
+        "trg_pricing_price_overlay_frozen_columns",
+        &SANCTIONED_MUTABLE,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn the_window_frozen_whitelist_names_every_content_column_the_table_holds() {
+    // Six exemptions, and the trigger's own refusal message declares exactly
+    // this set: "only state, effective_to and the flip timestamps may move".
+    //
+    // Two of them are not unguarded, they are guarded by a **different**
+    // trigger, which is the `grandfather_until` shape one table over:
+    // `effective_to` by `trg_pricing_price_window_future_end` (movable only
+    // while future, and only to a future instant) and `mutation_seq` by
+    // `trg_pricing_price_window_act_sequence` (+1 per act, never reused, never
+    // backwards). `state` is bounded by `trg_pricing_price_window_flip_whitelist`.
+    // So the exemption list is "guarded elsewhere or lifecycle progress", never
+    // "free".
+    const SANCTIONED_MUTABLE: [&str; 6] = [
+        "state",
+        "effective_to",
+        "activated_at",
+        "expired_at",
+        "cancelled_at",
+        "mutation_seq",
+    ];
+
+    census(
+        &migrated_db().await,
+        "pricing_price_window",
+        "trg_pricing_price_window_frozen_columns",
+        &SANCTIONED_MUTABLE,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn the_migration_frozen_whitelist_names_every_content_column_the_table_holds() {
+    // The scheduled-migration plane. The exemptions are the run's own progress:
+    // its state, the two records the run writes as it goes, and the three
+    // timestamps that mark it. Everything that describes *what* the migration
+    // will do is frozen at schedule time.
+    const SANCTIONED_MUTABLE: [&str; 6] = [
+        "state",
+        "exclusion_snapshot",
+        "completion_record",
+        "started_at",
+        "completed_at",
+        "cancelled_at",
+    ];
+
+    census(
+        &migrated_db().await,
+        "pricing_migration",
+        "trg_pricing_migration_frozen_columns",
+        &SANCTIONED_MUTABLE,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn the_bulk_operation_frozen_whitelist_names_every_content_column_the_table_holds() {
+    // Slice 12's bulk-operation state machine. Same shape: the request is frozen
+    // once accepted, and only the run's own progress moves. `request_hash` is
+    // NOT here — `m20260802_000073` dropped and recreated this trigger precisely
+    // to freeze it, which is why the census reads the trigger as it now stands
+    // rather than as its creating migration wrote it.
+    const SANCTIONED_MUTABLE: [&str; 3] = ["state", "report", "completed_at"];
+
+    census(
+        &migrated_db().await,
+        "pricing_bulk_operation",
+        "trg_pricing_bulk_operation_frozen_columns",
+        &SANCTIONED_MUTABLE,
+    )
+    .await;
+}

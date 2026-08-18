@@ -46,7 +46,7 @@
 
 use std::sync::Arc;
 
-use axum::extract::{Extension, Path};
+use axum::extract::{Extension, Path, Query};
 use axum::http::HeaderMap;
 use axum::http::header::ETAG;
 use axum::response::{IntoResponse, Response};
@@ -156,16 +156,47 @@ pub struct CustomerGroupTaxonomyView {
     pub values: Vec<CustomerGroupValueView>,
 }
 
-/// A group's memberships, whole (D-322).
+/// `GET /customer-groups/{group}/members` — the query half (D-125, D4-4).
+///
+/// All three members are `Option<String>` and parsed in the handler, the shape
+/// `SellabilityQuery` records the reason for: a value axum's extractor parses is
+/// one it refuses, with a bare 400 carrying no problem document at all.
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+pub struct MembershipPageQuery {
+    /// Rows per page; server default 100, hard cap 1,000 (D-125).
+    pub limit: Option<String>,
+    /// The opaque token the previous page's `next_cursor` carried.
+    pub cursor: Option<String>,
+    /// Narrow the page to one payer's intervals in this group.
+    ///
+    /// The filter that makes this list the practical by-id read the membership
+    /// family owes (`api/rest.rs`'s read-shape statement): there is no
+    /// `GET …/members/{id}`, and this answers *"what has this payer's history in
+    /// this group been"* without paging the group.
+    pub payer_id: Option<String>,
+}
+
+/// One page of a group's memberships (D-322, paginated by D4-4).
 #[derive(Debug, Clone)]
 #[toolkit_macros::api_dto(response)]
 pub struct MembershipListView {
     /// The group these belong to — echoed, so a client reading several groups
     /// can attribute a response that carries no URL.
     pub group_value: String,
-    /// Every membership recorded in the group, **ended ones included**, oldest
-    /// interval first.
+    /// This page's memberships, **ended ones included**.
+    ///
+    /// Ordered by `membership_id`, which is the walk's cursor key; see
+    /// [`group_membership_repo::memberships_in_group`] for why that is not the
+    /// interval order it used to be. Every row carries its own `effective_from`,
+    /// so a reader wanting time order sorts the page it already holds.
     pub memberships: Vec<MembershipView>,
+    /// D-125's envelope: `next_cursor`, `prev_cursor` (always `null`) and the
+    /// `limit` this page was served at.
+    ///
+    /// Spelled `page_info` on `Page<T>`, the shape every other paginated read in
+    /// this gear answers. This family keeps its own view because the response also
+    /// echoes `group_value`, which `Page<T>` has nowhere to carry.
+    pub page_info: toolkit_odata::PageInfo,
 }
 
 /// The body of a `PUT`: the complete value set.
@@ -226,13 +257,30 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
         .tag(TAG)
         .authenticated()
         .no_license_required()
+        .param(crate::api::rest::plans::if_none_match_param())
         .handler(get_customer_group_taxonomy)
         .json_response_with_schema::<CustomerGroupTaxonomyView>(
             openapi,
             StatusCode::OK,
             "The declared customer-group values.",
         )
-        .error_400(openapi)
+        // The conditional read's answer (RFC 9110 section 15.4.5). Declared
+        // because it is reachable: this route emits an `ETag` and honours the
+        // `If-None-Match` a caller sends it back in, which nothing in this gear
+        // did until 2026-08-17 while seven reads emitted a validator.
+        .no_content_response(
+            StatusCode::NOT_MODIFIED,
+            "The caller's `If-None-Match` matches the current representation, so the body is \
+             not re-sent.",
+        )
+        // No `.error_400`, and the absence is the measurement rather than an
+        // oversight: this handler binds no path parameter, no `Query` and no body,
+        // so its whole error surface is `require_authenticated` (401), `read_scope`
+        // (403/503) and `repo_failure` over a plain `SELECT`, whose 400-producing
+        // arms are all state-machine edges a list read cannot reach. Its four config
+        // `GET` peers declare none either. The one config `GET` that legitimately
+        // declares a 400 is `GET /config/taxonomies/{class}`, which earns it by
+        // parsing a path segment.
         .error_401(openapi)
         .error_403(openapi)
         .error_500(openapi)
@@ -299,6 +347,7 @@ async fn get_customer_group_taxonomy(
     Extension(state): Extension<Arc<AuthoringState>>,
     Extension(enforcer): Extension<authz_resolver_sdk::PolicyEnforcer>,
     extension_ctx: Option<Extension<SecurityContext>>,
+    headers: HeaderMap,
 ) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(extension_ctx)?;
     let scope = read_scope(&enforcer, &ctx).await?;
@@ -309,7 +358,7 @@ async fn get_customer_group_taxonomy(
         .await
         .map_err(|e| CanonicalError::from(repo_failure(&e)))?;
 
-    Ok(render(&held))
+    Ok(render(&held, Some(&headers)))
 }
 
 /// `PUT /customer-groups/taxonomy`.
@@ -364,7 +413,7 @@ async fn put_customer_group_taxonomy(
         )));
     }
 
-    Ok(render(&result.entries))
+    Ok(render(&result.entries, None))
 }
 
 // ---------------------------------------------------------------------------
@@ -374,8 +423,15 @@ async fn put_customer_group_taxonomy(
 /// The representation, with the tag that covers it — `taxonomies::render`'s
 /// reason: one function for both verbs, so the `GET`'s tag and the `PUT`'s
 /// response tag cannot come from two renderings of one taxonomy.
-fn render(entries: &[TaxonomyEntry]) -> Response {
+/// `conditional` is `Some` on the `GET` and `None` on the `PUT`: the tag has one
+/// producer and a conditional read must compare against *that* value, so the
+/// comparison lives beside the rendering rather than in a second reading of the
+/// same resource. See [`preconditions::if_none_match`].
+fn render(entries: &[TaxonomyEntry], conditional: Option<&HeaderMap>) -> Response {
     let tag = preconditions::policy_etag(&customer_group_tag_of(entries));
+    if conditional.is_some_and(|headers| preconditions::if_none_match(headers, &tag)) {
+        return preconditions::not_modified(&tag);
+    }
     (
         [(ETAG, tag)],
         Json(CustomerGroupTaxonomyView {
@@ -717,12 +773,21 @@ pub fn governance_router(state: Arc<MembershipState>, openapi: &dyn OpenApiRegis
         .authenticated()
         .no_license_required()
         .path_param("group", "The group whose memberships are read.")
+        // D-125's pair plus the family's own filter. The route declared **no query
+        // parameter at all** and read none until 2026-08-18: the response was every
+        // membership ever recorded in the group, over a table whose ended rows are
+        // deliberately kept for a >=7-year retention, against this layer's own
+        // opening sentence.
+        .param(crate::api::rest::history::limit_param())
+        .param(crate::api::rest::history::cursor_param())
+        .param(payer_id_param())
         .handler(list_memberships)
         .json_response_with_schema::<MembershipListView>(
             openapi,
             StatusCode::OK,
             "The group's memberships, ended ones included.",
         )
+        .error_400(openapi)
         .error_401(openapi)
         .error_403(openapi)
         .error_500(openapi)
@@ -833,8 +898,14 @@ pub fn governance_router(state: Arc<MembershipState>, openapi: &dyn OpenApiRegis
                  is simply enrolled - `ended` answers `null`. `{group}` MUST be declared and \
                  **active** in the tenant's customer-group taxonomy - absent or retired both \
                  answer `422` `GROUP_UNKNOWN`, `create_customer_group_member`'s own reason. **An \
-                 `Idempotency-Key` header is required and is honoured.** Gates on `customer_group` \
-                 x `write`.",
+                 `Idempotency-Key` header is required and is honoured.** \
+                 **`immediate: true` is a second arm and answers a different body**, the Slice 5 \
+                 two-person rule (`inst-mm-immediate`): the first such call commits nothing and \
+                 answers `202` with `MembershipMoveMaterialView` carrying the opened unit, and \
+                 the call made after a second principal approves it answers `200` with the same \
+                 type carrying `outcome: \"committed\"` and the move. As on every two-arm \
+                 mutation in this gear, `outcome` is the discriminator and the status alone does \
+                 not say which arm ran. Gates on `customer_group` x `write`.",
             )
             .tag(TAG)
             .authenticated()
@@ -849,6 +920,26 @@ pub fn governance_router(state: Arc<MembershipState>, openapi: &dyn OpenApiRegis
                 StatusCode::OK,
                 "The ended membership (if any), the new one, and the publish unit's pending \
                  handle.",
+            )
+            // The `immediate` arm's status, which was declared **nowhere** until
+            // 2026-08-17 — and with it `MembershipMoveMaterialView`, whose schema
+            // was absent from the emitted document entirely because no
+            // registration referenced the type.
+            //
+            // What is still owed, and is a contract decision rather than a
+            // declaration: the *commit* call of that arm answers `200` with this
+            // same type, so this operation has two schemas on one status. An
+            // OpenAPI document keys a response by its status, so the two cannot
+            // both be declared; the way out is to make the default arm answer
+            // `MembershipMoveMaterialView` too — `windows.rs`'s
+            // `WindowMutationOutcomeView` shape, which this type's own doc says it
+            // copies — and that changes the body of the arm every current caller
+            // uses. Filed as review finding D4-3's residual.
+            .json_response_with_schema::<MembershipMoveMaterialView>(
+                openapi,
+                StatusCode::ACCEPTED,
+                "`immediate: true` and the unit is open: nothing moved, and `approval` names what \
+                 a second principal must decide.",
             )
             .error_400(openapi)
             .error_401(openapi)
@@ -865,6 +956,26 @@ pub fn governance_router(state: Arc<MembershipState>, openapi: &dyn OpenApiRegis
         .layer(axum::middleware::from_fn(
             crate::api::rest::correlation::establish,
         ))
+}
+
+/// The `payer_id` filter this family's list read offers.
+///
+/// The mitigation the read-shape statement asks of every deviation: there is no
+/// `GET .../members/{id}`, and until this filter existed the list had none either
+/// — the only deviation in the gear with no way to reach one member.
+fn payer_id_param() -> ParamSpec {
+    ParamSpec {
+        name: "payer_id".to_owned(),
+        location: ParamLocation::Query,
+        required: false,
+        description: Some(
+            "Narrow the page to one payer's intervals in this group, ended ones included. \
+             Answers `what has this payer's history in this group been` without paging the \
+             group."
+                .to_owned(),
+        ),
+        param_type: "string".to_owned(),
+    }
 }
 
 /// The group path segment, non-blank — [`authored_entries`]'s validation,
@@ -929,26 +1040,48 @@ async fn list_memberships(
     Extension(enforcer): Extension<authz_resolver_sdk::PolicyEnforcer>,
     extension_ctx: Option<Extension<SecurityContext>>,
     Path(group): Path<String>,
+    Query(query): Query<MembershipPageQuery>,
 ) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(extension_ctx)?;
     let scope = read_scope(&enforcer, &ctx).await?;
     let group_value = required_group(&group)?;
+    let page = crate::api::rest::cursor::PageRequest::parse(
+        crate::api::rest::cursor::parse_limit(query.limit.as_deref())?,
+        query.cursor.as_deref(),
+    )?;
+    let payer = crate::api::rest::cursor::parse_uuid_param("payer_id", query.payer_id.as_deref())?;
 
     let conn = state.db.conn().map_err(|e| {
         CanonicalError::from(DomainError::Internal(format!("membership conn: {e}")))
     })?;
-    let rows = group_membership_repo::memberships_in_group(
+    // One row more than the page, so "is there another page" needs no second query
+    // and no page whose `next_cursor` points at nothing — the probe every other
+    // paginated read in this gear uses.
+    let probe = page.limit.saturating_add(1);
+    let mut rows = group_membership_repo::memberships_in_group(
         &conn,
         &scope,
         ctx.subject_tenant_id(),
         &group_value,
+        payer,
+        page.after,
+        probe,
     )
     .await
     .map_err(|e| CanonicalError::from(repo_failure(&e)))?;
 
+    let has_more = u64::try_from(rows.len()).unwrap_or(u64::MAX) > page.limit;
+    if has_more {
+        rows.pop();
+    }
+    let next = has_more
+        .then(|| rows.last().map(|row| row.membership_id))
+        .flatten();
+
     Ok(Json(MembershipListView {
         group_value,
         memberships: rows.iter().map(MembershipView::from).collect(),
+        page_info: crate::api::rest::cursor::page_info(next, page.limit),
     })
     .into_response())
 }

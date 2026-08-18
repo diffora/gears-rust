@@ -3,9 +3,15 @@
 //! D-138).
 //!
 //! D-42 made an overlay a container of lines rather than a single adjustment;
-//! this is the line. Its key is `(plan_id?, target_sku?, cohort?)` inside a
-//! revision, enforced null-safely by `uq_pricing_price_overlay_line_key` — see
-//! `m20260802_000033` for why a plain `UNIQUE` would enforce none of it.
+//! this is the line. Its **logical** key is `(plan_id?, target_sku?, cohort?)`
+//! inside a revision, enforced null-safely by `uq_pricing_price_overlay_line_key`
+//! — see `m20260802_000033` for why a plain `UNIQUE` would enforce none of it.
+//! Its **identity** key is `(tenant_id, overlay_revision, line_id)`; the tenant
+//! joined it under `m20260802_000085` and the three attributes below are in field
+//! order rather than in the physical key's order, which is not a divergence
+//! anything can observe — `SeaORM` names columns in every statement it builds, and
+//! the one construct where key order is a signature, `Entity::find_by_id`'s tuple,
+//! has no call site in this gear.
 //!
 //! # `cohort` is an eligibility **filter**, not a specificity level (D-78)
 //!
@@ -62,6 +68,14 @@ pub struct Model {
     pub price_overlay_id: Uuid,
     /// Copied from the parent overlay by the repository, never taken from a
     /// request (Global Constraint 9).
+    ///
+    /// **In the key since `m20260802_000085`** (review A1-3), which is what makes
+    /// a line id private to its tenant rather than a name in a deployment-wide
+    /// namespace: `line_id` is client-supplied and the route documents supplying
+    /// it, so the refusal on the narrow key — typed, but still a refusal — was an
+    /// oracle over another tenant's line ids, with the same permanent lockout
+    /// D-340 measured for `phase_id`.
+    #[sea_orm(primary_key, auto_increment = false)]
     pub tenant_id: Uuid,
     /// `None` is the **list-default line** — it applies to every target of the
     /// overlay's `target_ref`. A value must be a published plan inside that

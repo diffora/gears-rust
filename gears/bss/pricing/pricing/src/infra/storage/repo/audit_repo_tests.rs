@@ -11,7 +11,10 @@
 
 use uuid::Uuid;
 
-use super::{bulk_operation_chain, overlay_chain, payer_chain, plan_chain, policy_chain};
+use super::{
+    AuditPosition, after_position, bulk_operation_chain, overlay_chain, payer_chain, plan_chain,
+    policy_chain,
+};
 use crate::domain::scope_key::PlanId;
 
 /// The version nibble — the 13th hex digit, `xxxxxxxx-xxxx-Vxxx-…`.
@@ -151,5 +154,107 @@ fn distinct_payers_get_distinct_chains() {
     assert_eq!(
         payer_chain(a).as_u128() & !VERSION_MASK,
         a.as_u128() & !VERSION_MASK
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The keyset cursor's predicate (review Z2-10)
+// ---------------------------------------------------------------------------
+
+/// [`super::after_position`] rendered, on **both** query builders.
+///
+/// This walk had no unit-level owner at all: it was driven only through a store,
+/// and its failure mode is *silently skipping or repeating an audit record* —
+/// which is precisely the failure a keyset test is for, and precisely the one a
+/// store-driven page over rows with distinct instants never reaches.
+///
+/// **The assertion is armed against the function's own stated claim.** Its doc
+/// says the lexicographic `>` is spelled as an OR-of-ANDs rather than as a row
+/// comparison *"because the two backends do not agree on tuple comparison
+/// syntax, and a predicate that worked on one engine and not the other would
+/// make the walk's guarantee a deployment property"*. So the operand under test
+/// is the rendered SQL on each engine, and the property is that the two render
+/// the same shape. A `(a, b, c) > (?, ?, ?)` rewrite — the obvious tidy-up —
+/// reddens here, on the engine it would break.
+fn rendered(position: AuditPosition) -> (String, String) {
+    use sea_orm::sea_query::{PostgresQueryBuilder, Query, SqliteQueryBuilder};
+
+    let condition = after_position(position).expect("a non-negative seq converts");
+    let mut select = Query::select();
+    select
+        .expr(sea_orm::sea_query::Expr::cust("1"))
+        .cond_where(condition);
+    (
+        select.to_string(SqliteQueryBuilder),
+        select.to_string(PostgresQueryBuilder),
+    )
+}
+
+#[test]
+fn the_cursor_predicate_is_the_same_three_tier_shape_on_both_engines() {
+    let (sqlite, postgres) = rendered(AuditPosition {
+        recorded_at: chrono::DateTime::from_timestamp(1_700_000_000, 0).expect("a valid instant"),
+        chain_id: Uuid::from_u128(0x5eed),
+        seq: 7,
+    });
+
+    for (engine, sql) in [("sqlite", &sqlite), ("postgres", &postgres)] {
+        // Tier 1: a strictly later instant, on its own.
+        assert!(
+            sql.contains("\"recorded_at\" >"),
+            "{engine}: the instant must advance strictly, or a page repeats its own last row: \
+             {sql}"
+        );
+        // Tier 2 and 3: the tie-breaks, each gated on equality of the tier above.
+        // `=` on the instant is what stops the walk skipping every row that
+        // shares the cursor's instant — the whole reason this is not a bare `>`.
+        assert!(
+            sql.contains("\"recorded_at\" =") && sql.contains("\"chain_id\" >"),
+            "{engine}: rows sharing the cursor's instant must be broken by chain, or the walk \
+             skips every one of them: {sql}"
+        );
+        assert!(
+            sql.contains("\"chain_id\" =") && sql.contains("\"seq\" >"),
+            "{engine}: rows sharing instant and chain must be broken by seq, which is the only \
+             total order left: {sql}"
+        );
+        // And it must not have become a tuple comparison, which is the rewrite
+        // the function's doc exists to refuse.
+        assert!(
+            !sql.contains("(\"recorded_at\", "),
+            "{engine}: a row-value comparison is what the OR-of-ANDs is written out to avoid: \
+             {sql}"
+        );
+    }
+
+    // The claim itself: one predicate, not two. Both builders inline the bound
+    // values, so this is the whole rendered shape rather than a fragment of it.
+    assert_eq!(
+        sqlite, postgres,
+        "the two engines must carry one predicate; a shape that differs on one of them makes \
+         the walk's guarantee a deployment property, which is the sentence this function's own \
+         doc gives as its reason for existing"
+    );
+}
+
+#[test]
+fn a_seq_beyond_the_columns_width_is_a_corrupt_row_and_not_a_silent_wrap() {
+    // The positive control first: an ordinary seq converts, so the refusal below
+    // is about the value and not about the function refusing everything.
+    let ok = after_position(AuditPosition {
+        recorded_at: chrono::DateTime::from_timestamp(1_700_000_000, 0).expect("a valid instant"),
+        chain_id: Uuid::from_u128(1),
+        seq: u64::try_from(i64::MAX).expect("i64::MAX is a u64"),
+    });
+    assert!(ok.is_ok(), "the widest value the column holds must convert");
+
+    let err = after_position(AuditPosition {
+        recorded_at: chrono::DateTime::from_timestamp(1_700_000_000, 0).expect("a valid instant"),
+        chain_id: Uuid::from_u128(1),
+        seq: u64::MAX,
+    });
+    assert!(
+        matches!(err, Err(crate::infra::storage::RepoError::CorruptRow(_))),
+        "a seq the signed column cannot hold is a corrupt cursor, never a wrapped one: {err:?}"
     );
 }

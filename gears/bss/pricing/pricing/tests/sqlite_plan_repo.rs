@@ -1312,6 +1312,135 @@ async fn a_composite_set_request_naming_a_foreign_tenant_writes_nothing() {
     );
 }
 
+/// **A composite id belongs to a plan, not to a revision number** — A1-1, D-340's
+/// class one table over.
+///
+/// `pricing_composite_meter`'s primary key was `(composite_id, plan_revision)`
+/// with a **client-supplied** `composite_id`
+/// (`api/rest/plans.rs`: `view.composite_id.unwrap_or_else(Uuid::now_v7)`) and
+/// neither `tenant_id` nor `plan_id` in it — `pricing_plan_phase`'s pre-fix key
+/// exactly, which the migration's own module doc named as the resemblance it was
+/// modelled on. So one composite id belonged to one plan **per revision number
+/// across the whole table**, every tenant's included: the first tenant to take an
+/// id at revision `0` locked every other tenant out of it at that number for good,
+/// and the difference between the refusal and the `200` answered *is this id in
+/// use somewhere I cannot read*.
+///
+/// Two tenants, two plans, one id, the same revision number — the shape the old
+/// key could not represent. Both drafts are written and both read back whole,
+/// because a widening that let the row land and lost it in the read would look
+/// identical here to one that worked.
+#[tokio::test]
+async fn two_tenants_may_hold_one_composite_id_at_one_revision_number() {
+    let (repo, provider) = harness().await;
+    let first = Uuid::from_u128(0x7e_11);
+    let second = Uuid::from_u128(0x7e_22);
+    let first_scope = AccessScope::for_tenant(first);
+    let second_scope = AccessScope::for_tenant(second);
+    let first_plan = PlanId::new(Uuid::from_u128(0x9_1a4));
+    let second_plan = PlanId::new(Uuid::from_u128(0x9_1a5));
+    let shapes = PlanShapeRepo::new(provider.clone());
+
+    repo.create_draft(&first_scope, new_draft(first_plan, first))
+        .await
+        .expect("the first tenant opens revision 0");
+    repo.create_draft(&second_scope, new_draft(second_plan, second))
+        .await
+        .expect("the second tenant opens revision 0");
+
+    shapes
+        .replace_composites(
+            &first_scope,
+            first,
+            first_plan,
+            0,
+            RowVersion::new(0),
+            two_composites(),
+            stamp(),
+        )
+        .await
+        .expect("the first tenant authors its composite set");
+    shapes
+        .replace_composites(
+            &second_scope,
+            second,
+            second_plan,
+            0,
+            RowVersion::new(0),
+            // The **same ids**, at the same revision number, in another tenant.
+            two_composites(),
+            stamp(),
+        )
+        .await
+        .expect("a composite id is not a name in a deployment-wide namespace");
+
+    assert_eq!(
+        shapes
+            .list_composites(&first_scope, first, first_plan, 0)
+            .await
+            .expect("read"),
+        two_composites(),
+        "the first tenant still holds its own set whole"
+    );
+    assert_eq!(
+        shapes
+            .list_composites(&second_scope, second, second_plan, 0)
+            .await
+            .expect("read"),
+        two_composites(),
+        "and the second holds its own, under the same ids"
+    );
+}
+
+/// What the widening deliberately keeps: **one revision may still not hold the
+/// same composite id twice**.
+///
+/// The negative control for the case above, and green before the widening as well
+/// as after — which is what makes it a control rather than a second probe. The
+/// half that had to survive: `list_composites` returns a set the self-reference
+/// walk and the arity rule quantify over, and both are written as though a
+/// composite id names at most one row of a revision. A widening that also admitted
+/// the duplicate would have satisfied A1-1 and quietly made those rules judge a
+/// set nobody can author.
+#[tokio::test]
+async fn one_revision_still_may_not_hold_one_composite_id_twice() {
+    let (repo, provider) = harness().await;
+    let tenant = Uuid::from_u128(0x7e_11);
+    let scope = AccessScope::for_tenant(tenant);
+    let plan_id = PlanId::new(Uuid::from_u128(0x9_1a4));
+    let shapes = PlanShapeRepo::new(provider.clone());
+
+    repo.create_draft(&scope, new_draft(plan_id, tenant))
+        .await
+        .expect("the tenant opens revision 0");
+
+    let mut twice = two_composites();
+    twice[1].composite_id = twice[0].composite_id;
+    twice[1].output_unit = "vm-hour".to_owned();
+
+    let err = shapes
+        .replace_composites(
+            &scope,
+            tenant,
+            plan_id,
+            0,
+            RowVersion::new(0),
+            twice,
+            stamp(),
+        )
+        .await
+        .expect_err("one revision, one row per composite id");
+    assert!(matches!(err, RepoError::Db(_)), "got: {err:?}");
+    assert!(
+        shapes
+            .list_composites(&scope, tenant, plan_id, 0)
+            .await
+            .expect("read")
+            .is_empty(),
+        "and the refused set left nothing behind"
+    );
+}
+
 /// The one pairing the table cannot refuse, refused where the row is read.
 ///
 /// `chk_pricing_plan_custom_interval_pairing` compares

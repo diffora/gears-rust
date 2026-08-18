@@ -784,3 +784,77 @@ async fn a_version_that_is_both_a_tombstone_and_an_entry_set_is_a_corrupt_row() 
         "the ambiguous version is skipped, not raised: {effective:?}"
     );
 }
+
+/// **A lost version mint is a retriable conflict, not a storage failure.**
+///
+/// The caller mints the version number off `latest_version` and then inserts, so two
+/// proposals racing on one tenant can both read the same number and the physical key
+/// decides which lands. That is the ordinary optimistic shape and its loser wants
+/// *retry* — `CONCURRENT_MUTATION`, 409.
+///
+/// Both writes here mapped **every** failure to `RepoError::Db` until 2026-08-18, so
+/// the loser was answered a 500: "this gear is broken", over a request that was well
+/// formed and would succeed on the next attempt. `approval_repo::open` sits on the
+/// same policy plane one file over and classifies the identical shape through
+/// `policy_guard_or_contention` — two policy-plane writes disagreeing about whether a
+/// lost mint is a conflict or a crash.
+///
+/// The variant is the assertion and not the status: `Db` and `ConcurrentMutation` both
+/// exist, and a test that only checked "an error came back" passed before the fix.
+#[tokio::test]
+async fn a_duplicate_version_number_is_a_conflict_and_not_a_storage_failure() {
+    use bss_pricing::infra::storage::RepoError;
+    use bss_pricing::infra::storage::repo::threshold_repo;
+
+    let tenant = TENANT.parse::<uuid::Uuid>().expect("a uuid");
+    let scope = toolkit_db::secure::AccessScope::for_tenant(tenant);
+    let stamp = bss_pricing::domain::audit::AuditStamp {
+        actor_principal_id: ACTOR.parse().expect("a uuid"),
+        recorded_at: at_utc(1),
+        correlation_id: uuid::Uuid::from_u128(0x_c0_12),
+    };
+    let provider = migrated_provider().await;
+    let conn = provider.conn().expect("a scoped connection");
+
+    threshold_repo::open_version(
+        &conn,
+        &scope,
+        tenant,
+        0,
+        at_utc(1),
+        &[row_for("EUR")],
+        stamp,
+    )
+    .await
+    .expect("the first mint lands");
+
+    // The same `(tenant, version, currency)`: the primary key the racing loser hits.
+    let refused = threshold_repo::open_version(
+        &conn,
+        &scope,
+        tenant,
+        0,
+        at_utc(1),
+        &[row_for("EUR")],
+        stamp,
+    )
+    .await
+    .expect_err("the second mint of one number is refused");
+    assert!(
+        matches!(refused, RepoError::ConcurrentMutation { .. }),
+        "a lost mint is retriable, not a crash: {refused:?}"
+    );
+
+    // The tombstone half is the same write on the other table, and had the same
+    // defect; without this the fix could be applied to one of the two and look done.
+    threshold_repo::open_tombstone(&conn, &scope, tenant, 1, at_utc(2), stamp)
+        .await
+        .expect("the first tombstone lands");
+    let refused = threshold_repo::open_tombstone(&conn, &scope, tenant, 1, at_utc(2), stamp)
+        .await
+        .expect_err("the second tombstone of one number is refused");
+    assert!(
+        matches!(refused, RepoError::ConcurrentMutation { .. }),
+        "{refused:?}"
+    );
+}

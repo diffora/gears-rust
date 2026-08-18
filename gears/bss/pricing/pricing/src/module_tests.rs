@@ -240,6 +240,28 @@ fn a_warm_pass_is_worth_logging_exactly_when_it_moved_or_failed_at_something() {
             },
             "the cross-tenant frontier read failed",
         ),
+        (
+            // Z4-2's, and it is the arm that was left out when Z10-5's was
+            // added: `degraded_emitted` does not move when the enqueue fails, so
+            // a pass that lost a `PlanPublishDegraded` was byte-identical here to
+            // one that had none to send.
+            SweepReport {
+                degraded_emit_failed: true,
+                ..SweepReport::default()
+            },
+            "a PlanPublishDegraded could not be enqueued",
+        ),
+        (
+            // Z4-8's. Reached only where the tenant's pending refs are all inside
+            // the SLO — so on this path there is no ref alarm to fall back on,
+            // which is the argument `frontier_is_blocked` used to make and could
+            // not support.
+            SweepReport {
+                frontier_block_probe_failed: true,
+                ..SweepReport::default()
+            },
+            "the committed-version probe behind pin-eligibility could not read",
+        ),
     ] {
         assert!(
             BssPricingGear::sweep_is_noteworthy(&report),

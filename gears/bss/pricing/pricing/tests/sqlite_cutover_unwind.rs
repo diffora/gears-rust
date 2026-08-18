@@ -80,6 +80,7 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use bss_pricing::config::JobsConfig;
+use bss_pricing::config::LimitsConfig;
 use bss_pricing::domain::approval::ApprovalState;
 use bss_pricing::domain::audit::AuditSubjectKind;
 use bss_pricing::domain::error::DomainError;
@@ -93,6 +94,7 @@ use bss_pricing::domain::window::WindowState;
 use bss_pricing::infra::cutover::{
     CutoverOutcome, CutoverReceipt, CutoverRequest, CutoverService, cutover_unit_ref,
 };
+use bss_pricing::infra::fixture_gate::FixtureGate;
 use bss_pricing::infra::jobs::readmodel_warm::ReadModelWarmJob;
 use bss_pricing::infra::retirement::{RetirementOutcome, RetirementService};
 use bss_pricing::infra::storage::RepoError;
@@ -185,16 +187,21 @@ async fn cut_over(
     request: CutoverRequest,
     actor: Uuid,
 ) -> Result<CutoverOutcome, DomainError> {
-    CutoverService::new(h.db.clone(), Arc::clone(&h.registry) as Arc<_>)
-        .cut_over(
-            &rest_support::security_context(actor, h.tenant),
-            &h.scope(),
-            h.tenant,
-            request,
-            bss_pricing::api::rest::windows::verdict_json,
-            stamp_of(actor),
-        )
-        .await
+    CutoverService::new(
+        h.db.clone(),
+        &LimitsConfig::default(),
+        FixtureGate::load(&rest_support::committed_registry_path()),
+        Arc::clone(&h.registry) as Arc<_>,
+    )
+    .cut_over(
+        &rest_support::security_context(actor, h.tenant),
+        &h.scope(),
+        h.tenant,
+        request,
+        bss_pricing::api::rest::windows::verdict_json,
+        stamp_of(actor),
+    )
+    .await
 }
 
 async fn retire(h: &Harness, plan_id: PlanId) -> Result<RetirementOutcome, DomainError> {
@@ -1297,4 +1304,73 @@ fn a_retirement_over_a_live_cutover_is_material_under_the_trigger_it_already_dec
         "positive control: the verdict `retire_in` actually declares is the material one \
          D-05 asked for: {plain:?}"
     );
+}
+
+/// C3-2: a plan whose current revision can never be superseded takes no successor
+/// row either, and this door was one of the two that did not ask.
+///
+/// **Reachability first, because the finding turns on it.** `plan_repo::retire_revision`
+/// flips only the `plan` row's `lifecycle_state`; it does not touch `pricing_price`. So
+/// after a committed retirement the plan's price rows still read `published`,
+/// `read_cutover_context`'s `on_key(key, Published)` still finds the predecessor, and
+/// nothing further down asks: `commit_supersession_rows` runs `refuse_mispaired` /
+/// `supersede_row` / `publish_rows` and none of the three reads the plan's lifecycle,
+/// while `RepoError::NoSuccessorRevision` — the source of `PLAN_RETIRED_NO_SUCCESSOR`
+/// — is raised only by the revision-opening path this act never takes. The cutover
+/// therefore ran to completion on a retired plan: two drafts staged, a registry handle
+/// taken, the predecessor superseded and two rows published onto a plan nobody may buy.
+///
+/// The refusal is **permanent**, which is why `supersede_in` and `PublishService::commit`
+/// hoist it ahead of the registry request and why this door now does too: a handle
+/// requested past it stands pending forever and trips
+/// `pricing.catalogversion.commit_overdue` for a publish that can never happen.
+#[tokio::test]
+async fn a_cutover_onto_a_retired_plan_is_refused_before_a_handle_is_taken() {
+    let h = Harness::new().await;
+    let (plan_id, seeded) = published_plan(&h).await;
+    let key = key_of(plan_id, &seeded);
+
+    committed_retirement(&h, plan_id).await;
+
+    let request = request_of(&key, 12_000);
+    let staged = request.successor_price_id;
+    let refused = cut_over(&h, request, SUBMITTER)
+        .await
+        .expect_err("a retired plan takes no successor row");
+
+    assert!(
+        matches!(refused, DomainError::PlanRetiredNoSuccessor(_)),
+        "the hoisted refusal must be what answered: {refused:?}"
+    );
+    // Ahead of everything: step 1a is the first thing past the context read, so
+    // nothing was staged and no version was requested.
+    assert!(
+        !window_rows(&h)
+            .await
+            .iter()
+            .any(|row| row.effective_from == cutover_at()),
+        "no window was composed for an act that may not happen"
+    );
+    assert!(
+        price_row(&h, staged).await.is_none(),
+        "and no draft was written"
+    );
+}
+
+/// Is there a `pricing_price` row under this id at all?
+async fn price_row(
+    h: &Harness,
+    price_id: Uuid,
+) -> Option<bss_pricing::infra::storage::entity::price::Model> {
+    use bss_pricing::infra::storage::entity::price;
+    use sea_orm::{ColumnTrait, Condition, EntityTrait};
+    use toolkit_db::secure::SecureEntityExt;
+    let conn = h.db.conn().expect("conn");
+    price::Entity::find()
+        .secure()
+        .scope_with(&h.scope())
+        .filter(Condition::all().add(price::Column::PriceId.eq(price_id)))
+        .one(&conn)
+        .await
+        .expect("read the row")
 }

@@ -123,8 +123,13 @@ const PG_UP_STATEMENTS: &[&str] = &[
     "CREATE UNIQUE INDEX uq_pricing_snapshot_provenance_subscription
         ON bss.pricing_snapshot_provenance (tenant_id, subscription_ref)",
     // The audit read: every legacy snapshot synthesized off one plan.
-    "CREATE INDEX idx_pricing_snapshot_provenance_plan
-        ON bss.pricing_snapshot_provenance (tenant_id, source_plan_id)",
+    //
+    // **That read is owed and does not exist** (review Z1-3). `Column::SourcePlanId`
+    // has no filtering use anywhere in the repo layer, here or on
+    // `pricing_migration`, which is the other index in this pair — they are the only
+    // two in the schema with a zero. The surface is "find the snapshots for a plan".
+    // Named rather than left implied: the schema is ahead of the read plane by two
+    // indexes and nothing said so.
     "CREATE OR REPLACE FUNCTION bss.pricing_snapshot_provenance_frozen() RETURNS trigger AS $$
         BEGIN
           IF TG_OP = 'DELETE' THEN

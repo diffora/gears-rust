@@ -420,7 +420,7 @@ fn row_value(
         // The reservation pair (`inst-rv-attrs`). **Money**: Rating sources the
         // self-service reserved rate from the row, and on a `migrated-origin`
         // line there is no other row to source it from.
-        "reservedRateMinor": stored.reserved_rate_minor,
+        "reservedRateNanoMinor": stored.reserved_rate_nano,
         "reservationFlavor": stored.reservation_flavor,
         // The typed floors and the discount hook, carried verbatim
         // (`inst-ft-both`, `inst-dr-boundary`). Enforcement is downstream —

@@ -213,6 +213,104 @@ async fn a_foreign_tenants_bundle_is_invisible() {
     assert!(found.is_none(), "a foreign tenant must see nothing");
 }
 
+/// A create naming a plan the caller cannot read is a `NotFound`, and it takes
+/// nothing away from the tenant that owns the plan.
+///
+/// Both halves of A1-2 in one case, because a fix to either alone leaves the
+/// other's damage standing. `create_on` used to read only for *a bundle*
+/// (`bundle_of_plan`), never for the plan, and that read is tenant-scoped — so a
+/// caller naming a foreign plan was told `DuplicateBundleOnPlan` when the owner
+/// had a bundle and `201` when it did not, which is an existence oracle over
+/// another tenant's plans; and in the `201` case the row landed in
+/// `uq_pricing_bundle_plan`, which was globally unique on `plan_id` alone, so the
+/// owner was then refused `BUNDLE_EXISTS_ON_PLAN` forever against a row it cannot
+/// read, in a tenant it cannot see, with no `DELETE` anywhere in the API.
+///
+/// The second half is the assertion that matters and it is not decorative: it is
+/// the one an index still keyed `(plan_id)` fails even with the plan read in
+/// place, on any database that already holds a squatted row.
+#[tokio::test]
+async fn a_bundle_on_a_foreign_tenants_plan_is_refused_and_leaves_the_slot_free() {
+    let (plans, bundles, _) = harness().await;
+    let owner = Uuid::from_u128(0x7e_11);
+    let owner_scope = AccessScope::for_tenant(owner);
+    let plan_id = PlanId::new(Uuid::from_u128(0x9_1a4));
+    plans
+        .create_draft(&owner_scope, new_draft(plan_id, owner))
+        .await
+        .expect("the owner's plan draft");
+
+    let stranger = Uuid::from_u128(0x7e_22);
+    let stranger_scope = AccessScope::for_tenant(stranger);
+    let err = bundles
+        .create(
+            &stranger_scope,
+            NewBundle {
+                bundle_id: Uuid::from_u128(0xb0_5d),
+                tenant_id: stranger,
+                plan_id,
+                price_basis: PriceBasis::SumOfParts,
+                invoice_itemization: InvoiceItemization::Aggregate,
+            },
+            stamp(),
+        )
+        .await
+        .expect_err("a plan the caller cannot read is not a plan it can bundle");
+    assert!(
+        matches!(&err, RepoError::NotFound { subject, .. } if subject == "plan"),
+        "a foreign plan must read exactly like an absent one, not like a taken slot: {err:?}"
+    );
+
+    // The owner's own create still works — the half `uq_pricing_bundle_plan`
+    // carries, and the half that made the damage irreversible.
+    bundles
+        .create(
+            &owner_scope,
+            NewBundle {
+                bundle_id: Uuid::from_u128(0xb0_1d),
+                tenant_id: owner,
+                plan_id,
+                price_basis: PriceBasis::SumOfParts,
+                invoice_itemization: InvoiceItemization::Aggregate,
+            },
+            stamp(),
+        )
+        .await
+        .expect("the plan's own tenant may bundle it");
+}
+
+/// An absent plan and a foreign one are the same answer.
+///
+/// The negative control for the case above: without it, a `NotFound` that only
+/// ever fires for a plan nobody has would look identical in the log and close
+/// nothing. [`RepoError::NotFound`]'s own doc is what this asserts — out of scope
+/// folds into not-found so that a foreign row's existence is not confirmed.
+#[tokio::test]
+async fn a_bundle_on_a_plan_that_does_not_exist_is_the_same_refusal() {
+    let (_, bundles, _) = harness().await;
+    let tenant = Uuid::from_u128(0x7e_11);
+    let scope = AccessScope::for_tenant(tenant);
+
+    let err = bundles
+        .create(
+            &scope,
+            NewBundle {
+                bundle_id: Uuid::from_u128(0xb0_6d),
+                tenant_id: tenant,
+                plan_id: PlanId::new(Uuid::from_u128(0x9_9a9)),
+                price_basis: PriceBasis::SumOfParts,
+                invoice_itemization: InvoiceItemization::Aggregate,
+            },
+            stamp(),
+        )
+        .await
+        .expect_err("a bundle needs a plan");
+    assert!(
+        matches!(&err, RepoError::NotFound { subject, .. } if subject == "plan"),
+        "unexpected: {err:?}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Replacing the composition under the revision's tag.
 // ---------------------------------------------------------------------------

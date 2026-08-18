@@ -38,6 +38,19 @@ pub struct Model {
     #[sea_orm(primary_key, auto_increment = false)]
     pub migration_id: Uuid,
     /// The owning tenant, and the other half of the primary key.
+    ///
+    /// **Declared second and physically first.** The table is
+    /// `PRIMARY KEY (tenant_id, migration_id)` (`m20260802_000065:65`), so these two
+    /// attributes are in field order rather than in the physical key's, and that is
+    /// not a divergence anything can observe: `SeaORM` names columns in every
+    /// statement it builds, and the one construct where key order is a signature —
+    /// `Entity::find_by_id`'s tuple — has no call site in this gear.
+    ///
+    /// Said here because the crate's other entity with the same divergence says it
+    /// ([`plan_phase`](super::plan_phase)), and these two are the pair a reader
+    /// compares: they are the two whose keys were widened by a tenant column. One
+    /// explaining the order and the other silent reads as an undocumented instance
+    /// of a thing this crate treats as worth an explanation (review Z1-1).
     #[sea_orm(primary_key, auto_increment = false)]
     pub tenant_id: Uuid,
     /// The retiring side.

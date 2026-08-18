@@ -147,9 +147,11 @@ use uuid::Uuid;
 
 use crate::config::JobsConfig;
 use crate::domain::error::DomainError;
+use crate::domain::events::CatalogEvent;
 use crate::domain::ports::{CatalogVersionRegistryError, CatalogVersionRegistryV1};
 use crate::domain::read_model::SubjectKind;
 use crate::domain::scope_key::PlanId;
+use crate::infra::jobs::unconvertible_threshold;
 use crate::infra::read_model::{PassCoverage, ReadModelProjector};
 use crate::infra::storage::repo::{
     NewOutboxEvent, PendingVersionRow, PlanPublishDegradedPayload, catalog_version_ref_repo,
@@ -206,6 +208,28 @@ struct Resolution {
 
 /// What one pass did. Returned rather than only logged so the suite can assert
 /// the pass's behaviour instead of scraping its output.
+///
+/// # Why three `bool`s rather than a state enum
+///
+/// `clippy::struct_excessive_bools` is denied workspace-wide and its usual remedy
+/// — replace the flags with an enum — is the wrong one here, because these are
+/// **not** three states of one thing. They are three independent facts about one
+/// pass, and a pass can hold any subset of them at once: the cross-tenant
+/// frontier scan can fail while a degraded emit also fails while a per-tenant
+/// block probe also fails. An enum would force a choice between them and lose
+/// exactly what each field is for, which is telling an operator *which* signal
+/// went missing. `inert` is a fourth and different kind again — a deployment
+/// state, not an event.
+///
+/// The alternative shape, a nested `struct UndeliverableSignals { .. }`, moves
+/// the three bools rather than removing them and costs `module.rs`'
+/// `sweep_is_noteworthy` its flat exhaustive destructure — the compile gate that
+/// is the one thing stopping a report from growing a signal that never reaches an
+/// operator.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "three independent per-pass facts, any subset of which can hold at once; see above"
+)]
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SweepReport {
     /// The pass returned early because no registry is wired.
@@ -245,6 +269,36 @@ pub struct SweepReport {
     /// [`ReadModelWarmJob::observe_pin_eligibility`] — so no existing member of
     /// this report is a proxy for it.
     pub frontier_scan_failed: bool,
+    /// A `PlanPublishDegraded` enqueue failed, so a degradation this pass
+    /// observed reached no consumer.
+    ///
+    /// [`SweepReport::frontier_scan_failed`]'s sibling, and it exists for the
+    /// identical reason. `outbox_repo::enqueue` returns one `RepoError::Db` for
+    /// the dedup index refusing a repeat *and* for a store that is down, so the
+    /// `Err` arm of [`ReadModelWarmJob::mark_degraded`] cannot tell the expected
+    /// case from the fault — and without this field both spell themselves the
+    /// same way in the report: [`SweepReport::degraded_emitted`] does not move
+    /// on either, and no other member moves at all.
+    ///
+    /// What goes silent without it is bounded but is the window the signal
+    /// exists for: `PlanPublishDegraded` is `fr-publish-fanout-atomicity`'s
+    /// signal and fires at `readmodel_degraded_after` (5s), while the nearest
+    /// other alarm on the same fault — `pin_eligibility_overdue` — needs
+    /// `catalog_version_overdue_after` (300s).
+    pub degraded_emit_failed: bool,
+    /// The committed-version probe behind the pin-eligibility alarm's second arm
+    /// failed to read, so a blocked frontier could not be seen this pass.
+    ///
+    /// [`ReadModelWarmJob::frontier_is_blocked`] answers `false` on a storage
+    /// failure and the reason it gives — *"the pass has already alarmed on the
+    /// ref itself"* — holds only where a ref alarm exists. It is asked exactly
+    /// when the `waiting` arm above it is **false**, i.e. where the tenant's
+    /// pending refs are all younger than the SLO and a committed version
+    /// standing above a stale frontier is the only thing that would raise the
+    /// Critical. On that path there is no other alarm to fall back on, and every
+    /// other counter of this pass is identical between a probe that read and one
+    /// that failed.
+    pub frontier_block_probe_failed: bool,
 }
 
 /// The read-model warm re-drive: one pass, cross-tenant.
@@ -531,9 +585,17 @@ impl ReadModelWarmJob {
         now: DateTime<Utc>,
         report: &mut SweepReport,
     ) {
-        let Ok(threshold) = chrono::Duration::from_std(self.jobs.catalog_version_overdue_after())
-        else {
-            return;
+        let threshold = match chrono::Duration::from_std(self.jobs.catalog_version_overdue_after())
+        {
+            Ok(threshold) => threshold,
+            Err(e) => {
+                unconvertible_threshold(
+                    e,
+                    "catalog_version_overdue_after",
+                    ALARM_PIN_ELIGIBILITY_OVERDUE,
+                );
+                return;
+            }
         };
         let mut tenants = self.frontier_ages(conn, report).await;
         for row in pending {
@@ -556,7 +618,7 @@ impl ReadModelWarmJob {
                 row.tenant_id == tenant_id
                     && now.signed_duration_since(row.requested_at) >= threshold
             });
-            if !waiting && !self.frontier_is_blocked(conn, tenant_id).await {
+            if !waiting && !self.frontier_is_blocked(conn, tenant_id, report).await {
                 continue;
             }
             tracing::error!(
@@ -858,9 +920,13 @@ impl ReadModelWarmJob {
             return;
         }
         let waited = now.signed_duration_since(row.requested_at);
-        let Ok(threshold) = chrono::Duration::from_std(self.jobs.catalog_version_overdue_after())
-        else {
-            return;
+        let threshold = match chrono::Duration::from_std(self.jobs.catalog_version_overdue_after())
+        {
+            Ok(threshold) => threshold,
+            Err(e) => {
+                unconvertible_threshold(e, "catalog_version_overdue_after", ALARM_COMMIT_OVERDUE);
+                return;
+            }
         };
         if waited < threshold {
             return;
@@ -903,8 +969,16 @@ impl ReadModelWarmJob {
         let Some(seen_at) = row.commit_observed_at else {
             return;
         };
-        let Ok(threshold) = chrono::Duration::from_std(self.jobs.readmodel_degraded_after()) else {
-            return;
+        let threshold = match chrono::Duration::from_std(self.jobs.readmodel_degraded_after()) {
+            Ok(threshold) => threshold,
+            Err(e) => {
+                unconvertible_threshold(
+                    e,
+                    "readmodel_degraded_after",
+                    CatalogEvent::PlanPublishDegraded.as_str(),
+                );
+                return;
+            }
         };
         if now.signed_duration_since(seen_at) < threshold {
             return;
@@ -918,7 +992,7 @@ impl ReadModelWarmJob {
             return;
         };
 
-        if self.mark_degraded(row, version, seen_at, now).await {
+        if self.mark_degraded(row, version, seen_at, now, report).await {
             report.degraded_emitted += 1;
         }
     }
@@ -931,22 +1005,63 @@ impl ReadModelWarmJob {
     ///
     /// Read under the tenant's own scope, not the system one: this is a
     /// per-tenant read on behalf of a per-tenant alarm, and narrowing here is
-    /// the same discipline the writes below follow. A storage failure answers
-    /// `false` — an alarm that cannot read must not become a second fault, and
-    /// the pass has already alarmed on the ref itself.
-    async fn frontier_is_blocked(&self, conn: &impl DBRunner, tenant_id: Uuid) -> bool {
+    /// the same discipline the writes below follow.
+    ///
+    /// **A storage failure still answers `false`, and now says so.** The
+    /// direction is unchanged — an alarm that cannot read must not become a
+    /// second fault — but the reason this arm used to give for staying silent,
+    /// *"the pass has already alarmed on the ref itself"*, does not hold where
+    /// it is asked. It is reached only when the `waiting` arm above it is
+    /// **false**: the tenant's pending refs are all younger than the SLO, so
+    /// there is no ref alarm to fall back on and a committed version standing
+    /// above a stale frontier is the only thing that would raise the Critical.
+    /// [`SweepReport::frontier_block_probe_failed`] is what a case and an
+    /// operator can see, `frontier_ages`' rule one screen up applied to the
+    /// swallow it left standing.
+    async fn frontier_is_blocked(
+        &self,
+        conn: &impl DBRunner,
+        tenant_id: Uuid,
+        report: &mut SweepReport,
+    ) -> bool {
         let scope = AccessScope::for_tenant(tenant_id);
-        let Ok(standing) = pin_frontier_repo::read_at(conn, &scope, tenant_id).await else {
-            return false;
+        let standing = match pin_frontier_repo::read_at(conn, &scope, tenant_id).await {
+            Ok(standing) => standing.map(|frontier| frontier.catalog_version),
+            Err(e) => {
+                report.frontier_block_probe_failed = true;
+                // `degraded_guard`, never `alarm` — `frontier_ages`' rule: the
+                // Critical was not raised, it could not be evaluated, and an
+                // operator's runbook greps the other string.
+                tracing::warn!(
+                    error = ?e,
+                    tenant_id = %tenant_id,
+                    degraded_guard = ALARM_PIN_ELIGIBILITY_OVERDUE,
+                    "bss-pricing: this tenant's pin frontier could not be read, so the \
+                     committed-version arm of pin-eligibility was not evaluated; the tenant's \
+                     pending refs are all inside the SLO, so nothing else this pass alarms on it"
+                );
+                return false;
+            }
         };
-        let standing = standing.map(|frontier| frontier.catalog_version);
-        matches!(
-            catalog_version_ref_repo::next_committed_version_after(
-                conn, &scope, tenant_id, standing
-            )
-            .await,
-            Ok(Some(_))
+        match catalog_version_ref_repo::next_committed_version_after(
+            conn, &scope, tenant_id, standing,
         )
+        .await
+        {
+            Ok(standing_above) => standing_above.is_some(),
+            Err(e) => {
+                report.frontier_block_probe_failed = true;
+                tracing::warn!(
+                    error = ?e,
+                    tenant_id = %tenant_id,
+                    degraded_guard = ALARM_PIN_ELIGIBILITY_OVERDUE,
+                    "bss-pricing: the committed-version read above this tenant's frontier failed, \
+                     so the arm of pin-eligibility that does not need a pending ref was not \
+                     evaluated"
+                );
+                false
+            }
+        }
     }
 
     /// Enqueue one `PlanPublishDegraded` for a plan publish still waiting.
@@ -955,7 +1070,19 @@ impl ReadModelWarmJob {
     /// repeat of one degradation one event, and a pre-check would be a read the
     /// insert races with anyway — the posture `outbox_repo::enqueue`'s own doc
     /// takes for both refusals that index makes. A repeat therefore arrives as
-    /// a storage refusal and is logged at debug, which is exactly what it is.
+    /// a storage refusal.
+    ///
+    /// **The `Err` arm is not the repeat, and it cannot be.** `enqueue`'s own
+    /// contract says `RepoError::Db` *"includes the two refusals this table's
+    /// indexes make"*, so the dedup refusal and a store that is down are one
+    /// variant carrying different strings. This arm used to name the repeat, log
+    /// at `debug` and answer `false` — the shape `frontier_ages` was found and
+    /// fixed for one screen up. It now sets
+    /// [`SweepReport::degraded_emit_failed`] and logs at `warn`, which is what
+    /// makes the two outcomes distinguishable to a case and to an operator
+    /// without inventing a `RepoError` variant this layer cannot mint. The
+    /// wording stays honest about which of the two it is, because the code still
+    /// cannot tell.
     ///
     /// The **correlation id is minted per emission** because a background pass
     /// is its own causal origin: the ref row carries none, the publish that
@@ -965,11 +1092,16 @@ impl ReadModelWarmJob {
     ///
     /// Only `plan` subjects are marked, and **not because the others cannot
     /// occur** — that was this comment's reason and D-234 falsified it. The
-    /// projector dispatches `price_overlay` and `overlay_index` (only
-    /// `group_membership` is still refused by name), an overlay publish writes
-    /// one ref row per subject, and `list_pending_for_tenant` carries no
+    /// projector answers **every** `SubjectKind`, an overlay publish writes one
+    /// ref row per subject, and `list_pending_for_tenant` carries no
     /// subject-kind predicate — so those rows do reach this method, and are
-    /// refused here rather than never arriving.
+    /// refused here rather than never arriving. (This parenthesis used to read
+    /// *"only `group_membership` is still refused by name"*, and `read_model.rs`
+    /// has had a complete `SubjectKind::GroupMembership` arm since 2026-08-12 —
+    /// `subject_of`'s own doc records the by-name refusal going with the last of
+    /// them, and `read_model_tests.rs` records deleting the case that asserted
+    /// it. The **decision** below is untouched by the correction: D-237's reason
+    /// for the plan-only filter never depended on any kind being unbuildable.)
     ///
     /// **The reason is what the event is** (D-237). `PlanPublishDegraded` names
     /// a `plan_id` and is addressed to a consumer of that plan; what it adds
@@ -992,6 +1124,7 @@ impl ReadModelWarmJob {
         catalog_version: CatalogVersion,
         commit_observed_at: DateTime<Utc>,
         now: DateTime<Utc>,
+        report: &mut SweepReport,
     ) -> bool {
         if row.subject_kind != SubjectKind::Plan {
             return false;
@@ -1040,13 +1173,21 @@ impl ReadModelWarmJob {
         match outcome {
             Ok(_) => true,
             Err(e) => {
-                // The expected case: the dedup index refusing a repeat of a
-                // degradation an earlier pass already reported.
-                tracing::debug!(
+                report.degraded_emit_failed = true;
+                // `degraded_guard`, never `alarm` — see `frontier_ages`. The
+                // ordinary case is the dedup index refusing a repeat of a
+                // degradation an earlier pass already reported, and the
+                // exceptional one is a store that will not take the write; this
+                // arm receives both as one variant, so it names both rather than
+                // asserting the benign reading.
+                tracing::warn!(
                     error = ?e,
+                    tenant_id = %row.tenant_id,
                     pending_ref = %row.pending_ref,
-                    "bss-pricing: PlanPublishDegraded not enqueued (already reported, or the \
-                     store refused)"
+                    degraded_guard = CatalogEvent::PlanPublishDegraded.as_str(),
+                    "bss-pricing: PlanPublishDegraded was not enqueued - either an earlier pass \
+                     already reported this degradation and the dedup index refused the repeat, or \
+                     the store refused the write and this degradation reached no consumer"
                 );
                 false
             }

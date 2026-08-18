@@ -440,6 +440,7 @@ pub fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Router {
             StatusCode::OK,
             "The run and its journal.",
         )
+        .error_400(openapi)
         .error_401(openapi)
         .error_403(openapi)
         .error_404(openapi)
@@ -597,19 +598,27 @@ async fn open_repricing_run(
             // sees exactly what happened rather than a 500 for a run that did
             // open.
             //
-            // **Re-read, not the stale `run` this match started from.**
-            // Before `apply_run_in` took its own bulk lock (task 7), an
-            // `Err` here left the run exactly where it was — `committing`,
-            // nothing to release — and returning the pre-call `run` was
-            // accurate. `apply_run_in`'s own tail now lands the run terminal
-            // and releases the lock on an ordinary `Err` too
-            // (`infra::repricing::RunLockGuard`/`finish_run`), so the stale
-            // `run` this closure captured before the call is not what the
-            // store holds by the time this arm runs, most of the time — the
-            // one exception is a failure raised before the apply ever took
-            // its lock (a corrupt stored report, the run failing to resolve),
-            // where the run genuinely is still wherever it was and `unwrap_or`
-            // below is the honest fallback if the re-read itself fails too.
+            // **Re-read, not the stale `run` this match started from**, and
+            // the reason is narrower than this comment used to claim. It
+            // asserted that `apply_run_in`'s tail "now lands the run terminal
+            // and releases the lock on an ordinary `Err` too", so the captured
+            // `run` was stale "most of the time". That is false and was when it
+            // was written: the ordinary-`Err` arm calls
+            // `release_lock_after_ordinary_failure` and **not** `finish_run`,
+            // touching neither the run's state nor its journal
+            // (`infra::repricing`, pinned by that module's own test). On the
+            // ordinary exit the captured `run` is exactly what the store holds.
+            //
+            // What is genuinely stale is the other two exits — a panic or a
+            // drop, where `RunLockGuard`'s `Drop` force-lands the run terminal
+            // and fails its pending rows. Those do not surface here as an `Err`
+            // at all, but the sweep they run is asynchronous, so a re-read is
+            // the only way this arm can answer about a run either exit may have
+            // moved. It is also right on the ordinary exit for a duller reason:
+            // re-reading a row that did not move costs one indexed lookup, and
+            // returning the pre-call value is a second answer to a question the
+            // store can be asked. `unwrap_or` below is the honest fallback if
+            // the re-read itself fails.
             Err(err) => {
                 tracing::error!(
                     error = %err,
@@ -1177,8 +1186,8 @@ fn frozen_report(
             "dimension_key": selector.dimension_key.as_ref().map(DimensionKey::as_str),
         },
         "adjustment": {
-            "adjustment_kind": adjustment.kind(),
-            "magnitude_kind": adjustment.magnitude_kind(),
+            "adjustment_kind": adjustment.kind().as_str(),
+            "magnitude_kind": adjustment.magnitude_kind().as_str(),
             "adjustment_value": adjustment.percent_bp(),
             "amounts": amounts,
         },

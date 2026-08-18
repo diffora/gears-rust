@@ -66,13 +66,18 @@
 //!   would add nothing a content field does not already carry, and would make
 //!   the pin depend on how many times a draft had been saved.
 //!
-//! **What keeps this honest is not the compiler.** The `PlanShape`
+//! **What keeps *this* boundary honest is not the compiler.** The `PlanShape`
 //! destructuring below fails to compile on a field added to *the shape*; it
 //! says nothing about a column added to `pricing_plan`. So the obligation is
 //! written down instead: a revision column added by a later slice is either
 //! carried onto [`PlanShape`] — where the guard picks it up — or argued into the
 //! list above. `sqlite_plan_repo.rs`'s per-table copy tests are the same
 //! discipline for the same table.
+//!
+//! That is the **only** residual, and it was not always: until 2026-08-18 the
+//! sentence above was the file's whole account of what the destructures miss,
+//! while six nested aggregates inside the shape were reached by dotted field
+//! access with no gate at all. See *Every struct is destructured* below.
 //!
 //! # Two fields of `PlanShape` are deliberately **not** hashed
 //!
@@ -165,10 +170,13 @@
 //!
 //! # Every struct is **destructured**, and that is the guard
 //!
-//! No field is reached through a dot. Each encoder binds its struct with an
-//! exhaustive pattern and no `..`, so a field added to `PlanShape`,
-//! `PriceRecord`, `PriceRow`, `PlanPhase`, `AddonRule`, `DescriptorSet`,
-//! `TierBand`, `IncludedAllowance`, `KeyWindows` or `WindowInterval` **fails to
+//! No field of any struct this encoder frames is reached through a dot. Each
+//! encoder binds its struct with an exhaustive pattern and no `..`, so a field
+//! added to `PlanShape`, `PriceRecord`, `PriceRow`, `PlanPhase`, `AddonRule`,
+//! `DescriptorSet`, `TierBand`, `IncludedAllowance`, `KeyWindows`,
+//! `WindowInterval`, `OverlayRevision`, `OverlayLine`, `MembershipMoveProposal`,
+//! `ThresholdEntry`, `GrantSet`, `EntitlementGrants`, `CompositeMeter`,
+//! `PlanChangeContract`, `PeriodFloorCap` or `ProrationContract` **fails to
 //! compile here** until somebody decides whether the pin covers it. A test
 //! cannot give that guarantee: it can only fail for the fields it already knows
 //! about, which is the wrong set by definition.
@@ -176,46 +184,77 @@
 //! It worked: `PlanShape::windows` could not be added without E0027 here, and
 //! the decision it forced is recorded on [`CONTENT_PIN_DOMAIN_SEP`].
 //!
-//! **Three** types this cannot be done for, all because their fields are private
-//! and reached through accessors:
+//! **The last six of those types were reached through a dot until 2026-08-18**,
+//! and that is worth recording rather than quietly fixing. The claim above was
+//! written about the outer types and stated as though it held for everything —
+//! so `EntitlementGrants`, `GrantSet`, `CompositeMeter`, `PlanChangeContract`,
+//! `PeriodFloorCap` and `ProrationContract` were each framed field by field with
+//! nothing holding the field list to the type's. Every field was in fact framed;
+//! what was missing was the gate, and the gate is the whole claim. Review Z3-6
+//! proved it in both directions: `pub scratch: bool` on `EntitlementGrants`
+//! compiled with **zero** errors from this file, while the same field on
+//! `PlanShape` raised E0027 at `put_plan_shape`. Three of the six carry an
+//! inline note naming what an unpinned field would cost — a trial capped at
+//! 20 000 instead of 20, a plan changeable to `enterprise` instead of
+//! `standard`, a $500 period floor nobody approved — so the arming condition sat
+//! beside its own consequence.
+//!
+//! **Two** types this cannot be done for directly, because their fields are
+//! private and their constructors are load-bearing. Both are now reached through
+//! a `parts()` accessor that destructures the type exhaustively, so a new field
+//! is a compile error in the owning module *and* — because the parts struct is
+//! destructured here in turn — a decision at the pin:
 //!
 //! - [`ScopeKey`](crate::domain::scope_key::ScopeKey), whose ten axes are
 //!   frozen by the canonical key itself and by ten columns of `pricing_price`,
-//!   so an eleventh would not arrive quietly.
-//! - [`PhaseGraph`](crate::domain::plan_shape::PhaseGraph), read through
-//!   `phases()`. It holds one field today — the phase vector — and a second
-//!   would be a graph-level fact this encoder would silently omit. The
-//!   [`PlanPhase`] elements themselves *are* destructured, so the exposure is
-//!   the container and not its contents.
+//!   read through
+//!   [`ScopeKeyParts`](crate::domain::scope_key::ScopeKeyParts).
 //! - [`ThresholdVersion`](crate::domain::materiality::ThresholdVersion), read
-//!   through `version()`, `effective_from()` and `entries()`. Its fields are
-//!   private because its constructor is what refuses an empty or duplicated entry
-//!   set, and a public field set would be that refusal bypassed. It holds three
-//!   fields today, all three are framed, and a fourth would be a version-level
-//!   fact this encoder would silently omit — [`PhaseGraph`]'s exposure exactly,
-//!   with the same remedy: the [`ThresholdEntry`] elements and the
-//!   [`ThresholdBasis`] inside each **are** destructured.
+//!   through [`ThresholdVersionParts`]. Its fields are private because its
+//!   constructor is what refuses an empty or duplicated entry set, and a public
+//!   field set would be that refusal bypassed. It held three fields and three
+//!   bare accessor calls until 2026-08-18; a fourth would have been a
+//!   version-level fact this encoder silently omitted.
 //!
-//! [`PhaseGraph`]: crate::domain::plan_shape::PhaseGraph
+//! [`PhaseGraph`](crate::domain::plan_shape::PhaseGraph) is the third private
+//! type and needs no parts struct: this encoder frames exactly one thing off it,
+//! `phases()`, and that accessor now destructures `Self`, so a second field stops
+//! it compiling where it is declared.
+//!
+//! # The one residual, and it is not a hole in the encoding
+//!
+//! The destructures speak only for the types they destructure. What none of them
+//! can see is **a column added to `pricing_plan` that never reaches
+//! [`PlanShape`]** — the boundary argued at the head of this file. So the
+//! obligation is written down instead: a revision column added by a later slice
+//! is either carried onto [`PlanShape`], where the guard picks it up, or argued
+//! into that list. `sqlite_plan_repo.rs`'s per-table copy tests are the same
+//! discipline for the same table.
+//!
 //! [`ThresholdEntry`]: crate::domain::materiality::ThresholdEntry
 //! [`ThresholdBasis`]: crate::domain::materiality::ThresholdBasis
-//!
-//! None is a hole in the encoding; all three are places where the compiler is not
-//! the reader's guard, and they are counted here so the count is right.
+//! [`ThresholdVersionParts`]: crate::domain::materiality::ThresholdVersionParts
 
 use aws_lc_rs::digest::{SHA256, digest as sha256};
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
 use crate::domain::concurrency::RowVersion;
-use crate::domain::materiality::{ThresholdBasis, ThresholdEntry, ThresholdVersion};
+use crate::domain::contracts::{
+    AnchorDay, BillingAnchorPolicy, EntitlementGrants, GrantSet, PlanChangeContract,
+    ProrationBasis, ProrationContract,
+};
+use crate::domain::materiality::{
+    ThresholdBasis, ThresholdEntry, ThresholdVersion, ThresholdVersionParts,
+};
 use crate::domain::membership_change::MembershipMoveSet;
 use crate::domain::money::{CurrencyCode, MinorAmount, RateMinor};
 use crate::domain::overlay::{
     Adjustment, AmountSet, Magnitude, OverlayLine, OverlayRevision, ScopeValue, TargetSku,
 };
 use crate::domain::plan_shape::{
-    AddonRule, BillingCycle, DescriptorSet, Frequency, PeriodFloorCap, PlanPhase, PlanShape,
+    AddonRule, BillingCycle, CompositeMeter, DescriptorSet, Frequency, PeriodFloorCap, PlanPhase,
+    PlanShape,
 };
 use crate::domain::price_record::PriceRecord;
 use crate::domain::price_row::{
@@ -483,7 +522,32 @@ use crate::domain::window::{KeyWindows, WindowInterval, WindowState};
 /// case this constant's own doc argues against — a digest that cannot say which
 /// encoding produced it. `v13` is what the name was frozen under and stays that;
 /// the bound arrives as `v14`.
-pub const CONTENT_PIN_DOMAIN_SEP: &[u8] = b"VHP-BSS-PRICING-APPROVAL-PIN-v14\x1f";
+///
+/// # `v15`: the reserved rate is framed as a rate (2026-08-17, D-311, review Z5-3)
+///
+/// `reserved_rate_minor` became `reserved_rate_nano`, so [`put_price_row`] frames
+/// a nano-minor rate where it framed whole minor units. `PRESENT|len|bytes` makes
+/// the two preimages unequal by construction and the bump records **which**
+/// framing a stored digest was taken under, which is the argument every entry
+/// above makes for not leaving it to be re-derived.
+///
+/// This entry was written on 2026-08-18, a day after the bump it describes:
+/// the constant moved and this list did not. That is the same class the
+/// *Every struct is destructured* section below records — a hand-maintained
+/// account of a thing the code already knows, one item behind — landing on the
+/// one list in this file the compiler genuinely cannot derive.
+///
+/// # What did **not** move it: the Z3-6 destructures (2026-08-18)
+///
+/// Six nested aggregates stopped being reached by dotted field access and
+/// started being destructured, and `ThresholdVersion` and `PhaseGraph` gained
+/// `parts()`-shaped accessors. Not one `put_*` call changed order, argument or
+/// arity, so the preimage is byte-identical and the generation stays `v15`:
+/// `the_encoding_is_frozen` and `the_threshold_encoding_is_frozen` pass on their
+/// existing golden vectors, which is the proof rather than the claim. Recorded
+/// because "a change to the encoder" and "a change to the encoding" are the two
+/// things this constant exists to keep apart.
+pub const CONTENT_PIN_DOMAIN_SEP: &[u8] = b"VHP-BSS-PRICING-APPROVAL-PIN-v15\x1f";
 
 /// Versioned domain-separation tag for the **threshold-policy** content pin.
 ///
@@ -799,7 +863,7 @@ fn put_overlay_line(buf: &mut Vec<u8>, line: &OverlayLine) {
     put_opt_uuid(buf, key.plan_id().map(PlanId::get));
     put_opt_str(buf, key.target_sku().map(TargetSku::as_str));
     put_opt_instant(buf, key.cohort());
-    put_str(buf, adjustment.kind());
+    put_str(buf, adjustment.kind().as_str());
     match adjustment {
         Adjustment::Markup(magnitude) | Adjustment::Discount(magnitude) => {
             put_magnitude(buf, magnitude);
@@ -839,17 +903,121 @@ fn put_amount_set(buf: &mut Vec<u8>, amounts: &AmountSet) {
 }
 
 /// One grant set: the flags, then the quotas, each behind its count.
-fn put_grant_set(buf: &mut Vec<u8>, set: &crate::domain::contracts::GrantSet) {
-    put_u64(buf, count_of(set.feature_flags.len()));
-    for (key, on) in &set.feature_flags {
+fn put_grant_set(buf: &mut Vec<u8>, set: &GrantSet) {
+    let GrantSet {
+        feature_flags,
+        quotas,
+    } = set;
+    put_u64(buf, count_of(feature_flags.len()));
+    for (key, on) in feature_flags {
         put_str(buf, key);
         put_bool(buf, *on);
     }
-    put_u64(buf, count_of(set.quotas.len()));
-    for (key, value) in &set.quotas {
+    put_u64(buf, count_of(quotas.len()));
+    for (key, value) in quotas {
         put_str(buf, key);
         put_i64(buf, *value);
     }
+}
+
+/// Slice 6's entitlement grant set: the tier it resolved from, the plan-level
+/// set, then the per-phase sets behind their count.
+///
+/// **In the pin because a `PATCH` moves it and because it decides what a
+/// subscriber may use** — a reviewer who approved a trial capped at 20 cloudlets
+/// and a commit that publishes one capped at 20 000, with every digest equal, is
+/// `sku_id`'s re-verification hole with an entitlement consequence.
+///
+/// Every map is framed with its **count** first, per [`put_descriptor_set`]'s
+/// rule: without one, two adjacent collections can be re-split, and a plan with
+/// two feature flags and no quota would pin identically to one with one of each.
+/// `BTreeMap` is what makes the order deterministic across replicas.
+fn put_entitlement_grants(buf: &mut Vec<u8>, grants: &EntitlementGrants) {
+    let EntitlementGrants {
+        plan_tier_ref,
+        plan_level,
+        per_phase,
+    } = grants;
+    put_opt_str(buf, plan_tier_ref.as_deref());
+    put_grant_set(buf, plan_level);
+    put_u64(buf, count_of(per_phase.len()));
+    for (phase_id, set) in per_phase {
+        put_uuid(buf, *phase_id);
+        put_grant_set(buf, set);
+    }
+}
+
+/// One composite meter definition (`inst-cm-frozen`, D-256).
+fn put_composite_meter(buf: &mut Vec<u8>, composite: &CompositeMeter) {
+    let CompositeMeter {
+        composite_id,
+        output_unit,
+        constituent_units,
+        formula,
+    } = composite;
+    put_uuid(buf, *composite_id);
+    put_str(buf, output_unit);
+    put_u64(buf, count_of(constituent_units.len()));
+    for unit in constituent_units {
+        put_str(buf, unit);
+    }
+    // The formula is framed as its **canonical JSON text** — this crate never
+    // reads inside it (A4), and a structural walk would be a second spelling of a
+    // value the store already holds as one string.
+    put_str(buf, &formula.to_string());
+}
+
+/// Slice 6's plan-change contract.
+///
+/// **In the pin because a `PATCH` moves it**, and because an edge list is what
+/// decides who may move where — a reviewer who approved a plan changeable only
+/// to `standard` and a commit that publishes one changeable to `enterprise`,
+/// with every digest equal, is the re-verification hole `sku_id`'s own note
+/// describes, with an authorization consequence rather than a billing one.
+///
+/// Framed **unconditionally and member by member**, per [`put_scope_key`]'s rule
+/// about ambiguous runs.
+fn put_plan_change_contract(buf: &mut Vec<u8>, contract: &PlanChangeContract) {
+    let PlanChangeContract {
+        allowed_change_targets,
+        comparability_rank,
+        usage_counter_on_plan_change,
+    } = contract;
+    // The edge list's `None` and its empty vector are framed **differently** — a
+    // leading `bool` then the count — because `inst-pc-failsafe` gives them
+    // different meanings and a preimage that collapsed them would let a plan
+    // leave self-service change without moving its digest.
+    match allowed_change_targets {
+        None => put_bool(buf, false),
+        Some(targets) => {
+            put_bool(buf, true);
+            let mut ordered: Vec<&uuid::Uuid> = targets.iter().collect();
+            ordered.sort_unstable();
+            put_u64(buf, count_of(ordered.len()));
+            for target in ordered {
+                put_uuid(buf, *target);
+            }
+        }
+    }
+    put_opt_u64(
+        buf,
+        comparability_rank.map(|rank| rank.cast_unsigned().into()),
+    );
+    put_str(buf, usage_counter_on_plan_change.as_str());
+}
+
+/// One market's period floor/cap bound (D-319).
+fn put_period_floor_cap(buf: &mut Vec<u8>, bound: &PeriodFloorCap) {
+    let PeriodFloorCap {
+        currency,
+        region,
+        floor_minor,
+        cap_minor,
+    } = bound;
+    put_str(buf, currency.as_str());
+    put_str(buf, region.as_str());
+    put_opt_i64(buf, floor_minor.map(MinorAmount::get));
+    put_opt_i64(buf, cap_minor.map(MinorAmount::get));
 }
 
 fn put_plan_shape(buf: &mut Vec<u8>, shape: &PlanShape) {
@@ -896,73 +1064,17 @@ fn put_plan_shape(buf: &mut Vec<u8>, shape: &PlanShape) {
     put_opt_u64(buf, *purchase_max_qty);
     put_opt_str(buf, invoice_grouping_key.as_deref());
 
-    // Slice 6's plan-change contract. **In the pin because a `PATCH` moves it**,
-    // and because an edge list is what decides who may move where -- a reviewer
-    // who approved a plan changeable only to `standard` and a commit that
-    // publishes one changeable to `enterprise`, with every digest equal, is the
-    // re-verification hole `sku_id`'s own note describes, with an authorization
-    // consequence rather than a billing one.
-    //
-    // Framed **unconditionally and member by member**, per `put_scope_key`'s
-    // rule about ambiguous runs. The edge list's `None` and its empty vector are
-    // framed **differently** -- a leading `bool` then the count -- because
-    // `inst-pc-failsafe` gives them different meanings and a preimage that
-    // collapsed them would let a plan leave self-service change without moving
-    // its digest.
-    // Slice 6's entitlement grant set. **In the pin because a `PATCH` moves it
-    // and because it decides what a subscriber may use** -- a reviewer who
-    // approved a trial capped at 20 cloudlets and a commit that publishes one
-    // capped at 20 000, with every digest equal, is `sku_id`'s re-verification
-    // hole with an entitlement consequence.
-    //
-    // Every map is framed with its **count** first, per `put_descriptor_set`'s
-    // rule: without one, two adjacent collections can be re-split, and a plan
-    // with two feature flags and no quota would pin identically to one with one
-    // of each. `BTreeMap` is what makes the order deterministic across replicas.
-    put_opt_str(buf, entitlement_grants.plan_tier_ref.as_deref());
-    put_grant_set(buf, &entitlement_grants.plan_level);
-    put_u64(buf, count_of(entitlement_grants.per_phase.len()));
-    for (phase_id, set) in &entitlement_grants.per_phase {
-        put_uuid(buf, *phase_id);
-        put_grant_set(buf, set);
-    }
+    put_entitlement_grants(buf, entitlement_grants);
 
     // Slice 10's composite definitions (`inst-cm-frozen`, D-256). Length-framed
     // like every other collection here, for the reason stated above: without the
-    // count two adjacent collections can be re-split. The formula is framed as
-    // its **canonical JSON text** -- this crate never reads inside it (A4), and a
-    // structural walk would be a second spelling of a value the store already
-    // holds as one string.
+    // count two adjacent collections can be re-split.
     put_u64(buf, count_of(composites.len()));
     for composite in composites {
-        put_uuid(buf, composite.composite_id);
-        put_str(buf, &composite.output_unit);
-        put_u64(buf, count_of(composite.constituent_units.len()));
-        for unit in &composite.constituent_units {
-            put_str(buf, unit);
-        }
-        put_str(buf, &composite.formula.to_string());
+        put_composite_meter(buf, composite);
     }
 
-    match &change_contract.allowed_change_targets {
-        None => put_bool(buf, false),
-        Some(targets) => {
-            put_bool(buf, true);
-            let mut ordered: Vec<&uuid::Uuid> = targets.iter().collect();
-            ordered.sort_unstable();
-            put_u64(buf, count_of(ordered.len()));
-            for target in ordered {
-                put_uuid(buf, *target);
-            }
-        }
-    }
-    put_opt_u64(
-        buf,
-        change_contract
-            .comparability_rank
-            .map(|rank| rank.cast_unsigned().into()),
-    );
-    put_str(buf, change_contract.usage_counter_on_plan_change.as_str());
+    put_plan_change_contract(buf, change_contract);
 
     // D-319's period floor/cap set. **In the pin because a `PATCH` moves it and
     // because it decides what a subscriber is billed at minimum** -- a reviewer
@@ -979,10 +1091,7 @@ fn put_plan_shape(buf: &mut Vec<u8>, shape: &PlanShape) {
     });
     put_u64(buf, count_of(ordered_bounds.len()));
     for bound in ordered_bounds {
-        put_str(buf, bound.currency.as_str());
-        put_str(buf, bound.region.as_str());
-        put_opt_i64(buf, bound.floor_minor.map(MinorAmount::get));
-        put_opt_i64(buf, bound.cap_minor.map(MinorAmount::get));
+        put_period_floor_cap(buf, bound);
     }
 
     let mut ordered_phases: Vec<&PlanPhase> = phases.phases().iter().collect();
@@ -1222,26 +1331,36 @@ fn put_price_record(buf: &mut Vec<u8>, record: &PriceRecord) {
     // number of members as a present one, with the empty token and `0`, so an
     // absent contract and one anchoring `calendar_month` on day 0 cannot
     // collide.
+    //
+    // Destructured through the `Option` rather than reached with four dotted
+    // `map_or`s, so a fourth field of the contract stops this compiling instead
+    // of leaving the pin quietly short by one (review Z3-6).
+    let (billing_anchor_policy, proration_basis, credit_on_downgrade) = match proration_contract {
+        None => (None, None, false),
+        Some(ProrationContract {
+            billing_anchor_policy,
+            proration_basis,
+            credit_on_downgrade,
+        }) => (
+            Some(*billing_anchor_policy),
+            Some(*proration_basis),
+            *credit_on_downgrade,
+        ),
+    };
     put_str(
         buf,
-        proration_contract.map_or("", |c| c.billing_anchor_policy.as_str()),
+        billing_anchor_policy.map_or("", BillingAnchorPolicy::as_str),
     );
     put_u64(
         buf,
         u64::from(
-            proration_contract
-                .and_then(|c| c.billing_anchor_policy.anchor_day())
-                .map_or(0, crate::domain::contracts::AnchorDay::get),
+            billing_anchor_policy
+                .and_then(BillingAnchorPolicy::anchor_day)
+                .map_or(0, AnchorDay::get),
         ),
     );
-    put_str(
-        buf,
-        proration_contract.map_or("", |c| c.proration_basis.as_str()),
-    );
-    put_bool(
-        buf,
-        proration_contract.is_some_and(|c| c.credit_on_downgrade),
-    );
+    put_str(buf, proration_basis.map_or("", ProrationBasis::as_str));
+    put_bool(buf, credit_on_downgrade);
     put_opt_str(buf, rounding_policy_ref.as_deref());
     put_opt_instant(buf, *grandfather_until);
     put_opt_uuid(buf, *supersedes_price_id);
@@ -1325,7 +1444,7 @@ fn put_price_row(buf: &mut Vec<u8>, row: &PriceRow) {
         aggregation_granularity,
         max_hold_granules,
         included_allowance,
-        reserved_rate_minor,
+        reserved_rate,
         reservation_flavor,
         min_qty_purchase,
         min_qty_usage,
@@ -1394,7 +1513,7 @@ fn put_price_row(buf: &mut Vec<u8>, row: &PriceRow) {
     // holds: the pairing is a publish rule, so a half-authored reservation is a
     // state a *draft* can be in and a reviewer can be shown. Framing it as a
     // pair would make the two half-states frame alike.
-    put_opt_i64(buf, reserved_rate_minor.map(MinorAmount::get));
+    put_opt_i64(buf, reserved_rate.map(RateMinor::nano_minor));
     put_opt_str(buf, reservation_flavor.map(ReservationFlavor::as_str));
 
     // The typed floors and the discount hook (`inst-ft-typed`,
@@ -1423,13 +1542,20 @@ fn put_tier_band(buf: &mut Vec<u8>, band: &TierBand) {
 
 /// One policy version: its number, the instant it takes effect, and its entries.
 ///
-/// The container is reached through accessors rather than destructured — see the
-/// module doc's list of the three types that cannot be the compiler's guard, and
-/// the obligation that goes with each.
+/// The container's fields are private — [`ThresholdVersion::new`] is what refuses
+/// an empty or duplicated entry set — so it is reached through
+/// [`ThresholdVersion::parts`], whose own body destructures the version
+/// exhaustively. That is [`put_scope_key`]'s arrangement and it replaced three
+/// bare accessor calls on 2026-08-18 (review Z3-6): a fourth field on the version
+/// used to compile, pin nothing, and leave every test green.
 fn put_threshold_version(buf: &mut Vec<u8>, version: &ThresholdVersion) {
-    put_u64(buf, version.version());
-    put_instant(buf, version.effective_from());
-    let entries = version.entries();
+    let ThresholdVersionParts {
+        version,
+        effective_from,
+        entries,
+    } = version.parts();
+    put_u64(buf, version);
+    put_instant(buf, effective_from);
     // The count precedes the elements, as every collection's does: without it two
     // versions differing only in where one entry ends and the next begins could
     // frame alike.

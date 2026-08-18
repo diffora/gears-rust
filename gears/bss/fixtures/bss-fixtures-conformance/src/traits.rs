@@ -50,6 +50,24 @@ pub enum EvalError {
     QuantityOutOfRange(u64),
     #[error("the period is empty or inverted")]
     DegeneratePeriod,
+    /// The chargeable stretch is not inside the period it is apportioned over.
+    ///
+    /// Distinct from [`EvalError::DegeneratePeriod`] on purpose: the period is
+    /// well-formed and the stretch is well-formed, and the pair is still
+    /// unanswerable — apportioning a stretch that leaves the period yields a
+    /// factor above 1, which is not a share of anything.
+    #[error("the chargeable stretch is not contained in the period it is apportioned over")]
+    StretchOutsidePeriod,
+    /// A product or sum the evaluator's integer domain cannot hold, named by the
+    /// computation that overflowed.
+    ///
+    /// A refusal rather than a wrap: this is the reference implementation of PRD
+    /// §17.2 and the corpus is the contract a second evaluator must reproduce, so
+    /// an answer nobody can derive by hand is worse than no answer. In a release
+    /// build the alternative wraps to a positive-looking number; in a debug build
+    /// it panics.
+    #[error("`{what}` does not fit the evaluator's integer domain")]
+    ArithmeticOverflow { what: &'static str },
     #[error("`sum` is not a granule fold")]
     SumIsNotAFold,
     #[error(

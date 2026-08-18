@@ -462,6 +462,103 @@ async fn aborting_a_run_that_finished_with_conflicts_is_refused_too() {
     );
 }
 
+/// **An abort replayed under its own key is answered the run, not told it failed.**
+///
+/// The route reads a required `Idempotency-Key` for its refusal and binds nothing —
+/// which leaves the key doing the opposite of its job. The first abort moves the run
+/// out of `committing`; a client that timed out and retried sent the identical
+/// request with the identical key and met the state guard, which answered **400
+/// `LIFECYCLE_FORBIDDEN`** — a caller whose abort succeeded told it did not, the
+/// precise conclusion the key exists to prevent.
+///
+/// The guard's own argument is kept whole rather than weakened, and the sibling
+/// above is the control that proves it: a `completed_with_conflicts` run **that was
+/// never aborted** is still refused, because a move to the state a run is already in
+/// returns early and would stamp an abort note over a report where every row was
+/// attempted. What distinguishes the two is not the state — an abort lands in that
+/// same state — but the note the sweep writes, which is the only record of *this
+/// operation having run*.
+#[tokio::test]
+async fn a_replayed_abort_is_answered_the_run_it_already_aborted() {
+    let harness = Harness::new().await;
+
+    // A run in `committing`, which is the one state the abort acts on. The submit
+    // runs both phases synchronously, so no live batch can be caught mid-flight;
+    // the repository is the only way to hold one there.
+    let conn = harness.db.conn().expect("conn");
+    let operation_id = Uuid::now_v7();
+    bulk_repo::open(
+        &conn,
+        &harness.scope(),
+        bss_pricing::infra::storage::repo::NewBulkOperation {
+            operation_id,
+            tenant_id: harness.tenant,
+            kind: BulkKind::Import,
+            client_key: "bulk-abort-replay".to_owned(),
+            request_hash: b"digest".to_vec(),
+            report: serde_json::json!({ "rows": [] }),
+            submitted_by: Uuid::from_u128(0xac_13),
+            submitted_at: chrono::Utc::now(),
+        },
+    )
+    .await
+    .expect("open the run");
+    bulk_repo::advance(
+        &conn,
+        &harness.scope(),
+        harness.tenant,
+        operation_id,
+        BulkState::Validating,
+        BulkState::Committing,
+        serde_json::json!({ "rows": [] }),
+        chrono::Utc::now(),
+    )
+    .await
+    .expect("hold the run in committing");
+
+    let first = harness
+        .allowed()
+        .send(with_headers(
+            "POST",
+            &abort_path(&operation_id.to_string()),
+            None,
+            &keyed("abort-replay"),
+        ))
+        .await;
+    assert_eq!(first.status(), StatusCode::OK, "the abort acts");
+    let aborted = body_json(first).await;
+    assert!(
+        aborted["report"].get("aborted").is_some(),
+        "and stamps the note that records it: {aborted}"
+    );
+
+    // The retry. The identical request, under the identical key.
+    let replay = harness
+        .allowed()
+        .send(with_headers(
+            "POST",
+            &abort_path(&operation_id.to_string()),
+            None,
+            &keyed("abort-replay"),
+        ))
+        .await;
+    assert_eq!(
+        replay.status(),
+        StatusCode::OK,
+        "a caller whose abort succeeded is not told it failed"
+    );
+    let replayed = body_json(replay).await;
+    assert_eq!(
+        replayed["operation_id"],
+        serde_json::json!(operation_id),
+        "and is answered the run it aborted: {replayed}"
+    );
+    assert_eq!(
+        replayed["completed_at"], aborted["completed_at"],
+        "the second call is a read, not a second abort: nothing was re-stamped"
+    );
+}
+
 #[tokio::test]
 async fn the_refusal_names_the_run_and_the_run_serves_the_per_row_report() {
     // **The ref is a field, not a phrase** (D-295). Phase 1's entire value is the

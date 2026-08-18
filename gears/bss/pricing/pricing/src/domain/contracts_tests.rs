@@ -7,6 +7,7 @@ use std::collections::BTreeMap;
 use chrono::{DateTime, TimeZone, Utc};
 use uuid::Uuid;
 
+use super::consumer_contract_rules;
 use super::{
     AnchorDay, BILLING_TIMING_MISSING, BillingAnchorPolicy, BillingTimingPresent,
     PRORATION_CONTRACT_MIXED_MARKET, PRORATION_INPUTS_CONTRADICTORY, PRORATION_INPUTS_MISSING,
@@ -1111,4 +1112,153 @@ fn pairing_a_day_replaces_the_placeholder_and_leaves_the_dayless_policies_alone(
             "{dayless} anchors without a day and must not silently acquire one"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// The pipeline's own wire — that each rule above is *registered*, not merely
+// correct.
+// ---------------------------------------------------------------------------
+
+/// **Every rule `consumer_contract_rules` registers is reached through it.**
+///
+/// Every case above drives a rule with `run(&Rule, &shape)` — the rule directly,
+/// bypassing the pipeline. That covers each `evaluate` body and covers the wire
+/// into [`consumer_contract_rules`] with nothing: deleting any one
+/// `.with_rule(..)` line left `cargo test -p bss-pricing --lib` at 1530 passed /
+/// 0 failed, which is a feature shipped inert while its code sits in the catalog
+/// looking enforced. `PRORATION_INPUTS_MISSING` appeared in no file under
+/// `tests/` for exactly that reason — nothing exercised the door, only the room
+/// behind it.
+///
+/// Each shape here is one an existing case above already proves trips exactly its
+/// own rule; what is new is that the report comes from the pipeline. The
+/// assertion is `contains` rather than an equality on the code list, so a shape
+/// that also trips a sibling still names its own rule and a removed registration
+/// reddens exactly the row it removed.
+///
+/// A rule registered later with no row here is the gap this test exists to close,
+/// so the count is asserted against the pipeline's own length rather than left to
+/// a reader.
+#[test]
+fn every_rule_this_pipeline_registers_is_reached_through_it() {
+    let empty = ChangeTargetIndex::empty();
+
+    // `inst-pi-uniform`: one market, two rows, contracts differing in one member.
+    let mixed_market = shape_of(vec![
+        priced(
+            0xe4,
+            "EUR",
+            "eu",
+            PriceEligibility::AllSubscriptions,
+            Some(baseline_contract()),
+        ),
+        priced(
+            0xe5,
+            "EUR",
+            "eu",
+            PriceEligibility::AllSubscriptions,
+            Some(contract(
+                BillingAnchorPolicy::SubscriptionStart,
+                ProrationBasis::CalendarDaysActual,
+                false,
+            )),
+        ),
+    ]);
+
+    // `inst-pc-targets`: an edge to a plan the index does not carry as published.
+    let dangling_target = shape_with(PlanChangeContract {
+        allowed_change_targets: Some(vec![other(1)]),
+        comparability_rank: Some(10),
+        usage_counter_on_plan_change: UsageCounterOnPlanChange::Reset,
+    });
+
+    // D-41: a per-phase grant key naming a phase the schedule does not have.
+    let unknown_phase = granted(
+        phased(),
+        EntitlementGrants {
+            per_phase: [(Uuid::from_u128(0xdead), quota("cloudlets", 20))]
+                .into_iter()
+                .collect(),
+            ..EntitlementGrants::default()
+        },
+    );
+
+    // Keyed by the rule's own `name()` — the instruction id — and in registration
+    // order, so the roster assertion below is a census of the pipeline rather than
+    // a count of this array.
+    let cases: [(&str, &str, &PlanShape); 6] = [
+        (
+            "inst-bt-required",
+            BILLING_TIMING_MISSING,
+            &shape_of(vec![row(
+                0xe1,
+                ChargeKind::Recurring,
+                "EUR",
+                "eu",
+                PriceEligibility::AllSubscriptions,
+                None,
+                None,
+            )]),
+        ),
+        (
+            "inst-pi-required",
+            PRORATION_INPUTS_MISSING,
+            &shape_of(vec![priced(
+                0xe2,
+                "EUR",
+                "eu",
+                PriceEligibility::AllSubscriptions,
+                None,
+            )]),
+        ),
+        (
+            "inst-pi-credit-none",
+            PRORATION_INPUTS_CONTRADICTORY,
+            &shape_of(vec![priced(
+                0xe3,
+                "EUR",
+                "eu",
+                PriceEligibility::AllSubscriptions,
+                Some(contract(
+                    BillingAnchorPolicy::CalendarMonth,
+                    ProrationBasis::None,
+                    true,
+                )),
+            )]),
+        ),
+        (
+            "inst-pi-uniform",
+            PRORATION_CONTRACT_MIXED_MARKET,
+            &mixed_market,
+        ),
+        (
+            "inst-pc-targets",
+            CHANGE_TARGET_UNPUBLISHED,
+            &dangling_target,
+        ),
+        ("inst-gs-perphase", GRANT_SET_PHASE_UNKNOWN, &unknown_phase),
+    ];
+
+    // The behavioural half first: on a removed `.with_rule` this is the assertion
+    // that reddens, and it reddens naming the instruction whose door is gone.
+    for (rule, code, shape) in cases {
+        let report = consumer_contract_rules(&empty).run(shape);
+        assert!(
+            codes(&report).iter().any(|found| found == code),
+            "{rule} did not answer {code} through the pipeline on a shape that \
+             trips it when the rule is driven directly - it is either not \
+             registered or no longer fires; the report was {:?}",
+            codes(&report)
+        );
+    }
+
+    // And the roster half, which catches the other direction: a rule registered
+    // later with no row above, whose wire would then be as unproven as this one's
+    // was.
+    assert_eq!(
+        consumer_contract_rules(&empty).rule_names(),
+        cases.iter().map(|&(rule, ..)| rule).collect::<Vec<_>>(),
+        "a rule registered with no row here has an unproven wire, and a row for a \
+         rule nobody registers proves nothing"
+    );
 }

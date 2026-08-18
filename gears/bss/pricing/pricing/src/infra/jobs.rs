@@ -52,3 +52,42 @@
 pub mod gated_markets;
 pub mod readmodel_warm;
 pub mod window_activation;
+
+/// Say that an alarm's age threshold could not be **converted**, so the alarm
+/// was not evaluated this pass.
+///
+/// Every alarm in these jobs is "this thing is older than `<knob>`", and every
+/// one of them reaches its comparison through
+/// `chrono::Duration::from_std(self.jobs.<knob>())`. Four of those conversions
+/// were `let Ok(..) else { return; }` with no log, no counter and no report
+/// member (Z4-6): a deployment whose knob will not convert simply stopped
+/// raising that Critical or Warn, and the pass looked exactly like a pass with
+/// nothing to raise.
+///
+/// **Operationally unreachable, and logged anyway.** `from_std` fails past
+/// roughly 292 million years and [`JobsConfig::validate`](crate::config::JobsConfig)
+/// refuses zero and orders tick < overdue — but it sets no upper bound, so the
+/// value is a deployment's to make unconvertible. What earns the four lines is
+/// this plane's own house rule, stated at `readmodel_warm`'s `frontier_ages`: a
+/// guard that could not be **evaluated** must say so rather than look like a
+/// guard that passed.
+///
+/// **`degraded_guard`, never `alarm`.** `alarm = …` is what an operator's
+/// runbook greps for and what `metrics.alarm` labels; stamping it here would
+/// report the alarm as *raised*, where what happened is that it could not be
+/// judged at all. `frontier_ages` names the same distinction and this is the
+/// same field.
+pub(crate) fn unconvertible_threshold(
+    error: chrono::OutOfRangeError,
+    knob: &'static str,
+    guarded: &str,
+) {
+    tracing::error!(
+        error = ?error,
+        knob,
+        degraded_guard = guarded,
+        "bss-pricing: a job's age threshold could not be converted to a chrono duration, so the \
+         guard it bounds was not evaluated this pass and the alarm it raises cannot fire; the \
+         configured value is out of range rather than merely large"
+    );
+}

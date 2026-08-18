@@ -291,6 +291,15 @@ fn config_routers(
         ))
 }
 
+/// The registry every service in this harness holds.
+///
+/// One spelling rather than eight copies of a four-line `Arc::new`: the harness is
+/// about which operations mount, and a service that took a *different* registry here
+/// would be a difference this file is not testing.
+fn unconfigured_registry() -> Arc<dyn bss_pricing::domain::ports::CatalogVersionRegistryV1> {
+    Arc::new(bss_pricing_sdk::catalog_version_registry::UnconfiguredCatalogVersionRegistryV1)
+}
+
 async fn registered_operations() -> OpenApiRegistryImpl {
     let db = connect_db("sqlite::memory:", ConnectOpts::default())
         .await
@@ -337,39 +346,26 @@ async fn registered_operations() -> OpenApiRegistryImpl {
         overlays: bss_pricing::infra::storage::repo::OverlayRepo::new(db.clone()),
         overlay_publish: bss_pricing::infra::overlay_publish::OverlayPublishService::new(
             db.clone(),
-            Arc::new(
-                bss_pricing_sdk::catalog_version_registry::UnconfiguredCatalogVersionRegistryV1,
-            ),
+            unconfigured_registry(),
         ),
-        windows: WindowService::new(
-            db.clone(),
-            Arc::new(
-                bss_pricing_sdk::catalog_version_registry::UnconfiguredCatalogVersionRegistryV1,
-            ),
-        ),
+        windows: WindowService::new(db.clone(), unconfigured_registry()),
         supersessions: bss_pricing::infra::supersession::SupersessionService::new(
             db.clone(),
-            Arc::new(
-                bss_pricing_sdk::catalog_version_registry::UnconfiguredCatalogVersionRegistryV1,
-            ),
+            unconfigured_registry(),
         ),
         cutovers: bss_pricing::infra::cutover::CutoverService::new(
             db.clone(),
-            Arc::new(
-                bss_pricing_sdk::catalog_version_registry::UnconfiguredCatalogVersionRegistryV1,
-            ),
+            &LimitsConfig::default(),
+            FixtureGate::closed(),
+            unconfigured_registry(),
         ),
         grandfather: bss_pricing::infra::grandfather::GrandfatherService::new(
             db.clone(),
-            Arc::new(
-                bss_pricing_sdk::catalog_version_registry::UnconfiguredCatalogVersionRegistryV1,
-            ),
+            unconfigured_registry(),
         ),
         retirements: bss_pricing::infra::retirement::RetirementService::new(
             db.clone(),
-            Arc::new(
-                bss_pricing_sdk::catalog_version_registry::UnconfiguredCatalogVersionRegistryV1,
-            ),
+            unconfigured_registry(),
         ),
         // Slice 11's migration plane. Requests no `CatalogVersion`, so it
         // takes no registry - only the limits its policy reader is bound to.
@@ -384,9 +380,7 @@ async fn registered_operations() -> OpenApiRegistryImpl {
             db.clone(),
             &LimitsConfig::default(),
             FixtureGate::load(std::path::Path::new("/nonexistent/registry.toml")),
-            Arc::new(
-                bss_pricing_sdk::catalog_version_registry::UnconfiguredCatalogVersionRegistryV1,
-            ),
+            unconfigured_registry(),
         ),
     });
 
@@ -396,9 +390,7 @@ async fn registered_operations() -> OpenApiRegistryImpl {
     let membership_state = Arc::new(bss_pricing::api::rest::customer_groups::MembershipState {
         db: db.clone(),
         idempotency: IdempotencyGate::new(Duration::from_hours(1)),
-        registry: Arc::new(
-            bss_pricing_sdk::catalog_version_registry::UnconfiguredCatalogVersionRegistryV1,
-        ),
+        registry: unconfigured_registry(),
     });
 
     drop(
@@ -583,6 +575,84 @@ async fn no_operation_declares_a_422() {
     }
 }
 
+#[tokio::test]
+async fn every_route_with_a_path_parameter_declares_a_400() {
+    // The derivation, and not a seventh hand-maintained roster.
+    //
+    // A `{…}` segment is refused before the handler by axum's own `Path<T>`
+    // rejection when `T` parses — 400 with **no problem document at all**, the
+    // shape `rest_windows`'s `a_malformed_plan_id_never_reaches_the_handler` pins
+    // — and refused *by* the handler when `T` is a `String` this gear validates
+    // (`required_group`, `parse_class`, `ScopeValue::new`). Both are 400s, so
+    // every parameterized route in this gear can produce one and every one must
+    // say so.
+    //
+    // Seven did not when this was written, and one artifact in this repository
+    // asserted the 400 that a second artifact in this repository denied the route
+    // could emit — both green, because nothing compared them. Of the seven by-id
+    // `GET`s, three declared it and four did not, with nothing distinguishing the
+    // two sets.
+    let openapi = registered_operations().await;
+
+    let mut undeclared: Vec<String> = Vec::new();
+    for entry in &openapi.operation_specs {
+        let key = entry.key();
+        // `METHOD:/path` — the parameter lives in the path half.
+        if !key.contains('{') {
+            continue;
+        }
+        if !entry.value().responses.iter().any(|r| r.status == 400) {
+            undeclared.push(key.clone());
+        }
+    }
+    undeclared.sort();
+    assert!(
+        undeclared.is_empty(),
+        "these routes bind a path parameter and declare no 400, which a malformed segment \
+         produces before their handler ever runs: {undeclared:?}"
+    );
+}
+
+#[test]
+fn no_handler_takes_axums_json_extractor() {
+    // The derivation `no_operation_declares_a_422` cannot perform, and the reason
+    // this scan exists rather than a fourth prose statement.
+    //
+    // That test reads the *declarations*; an extractor emits its status without
+    // one. `axum::extract::Json`'s rejection for a body that parses as JSON but
+    // not as the target type is a **422** — the status §3.3 forbids by name — and
+    // for a missing `Content-Type` a **415**, and both answer plain text outside
+    // the canonical `Problem` envelope. Worse, an extractor runs during dispatch,
+    // *before* the handler body, so the route answers on the shape of the body
+    // before `require_authenticated` has run at all: an anonymous caller is
+    // fingerprinted against the request schema where every other route answers
+    // 401.
+    //
+    // The gear stated the rule in three places in prose —
+    // `preconditions::parse_body`, `prices.rs`'s router note, `approvals.rs` — and
+    // one of thirty body-bearing handlers took the extractor anyway
+    // (`put_threshold_policy`, until 2026-08-17). Three sentences where one scan
+    // was owed.
+    //
+    // The needle is the **parameter** form `Json(x): Json<T>` and not `Json<` on
+    // its own: `Json` as a *response* type is correct and is used by most of the
+    // 67 routes, so a scan keyed on the type name would have to be weakened to
+    // pass, which is the shape that makes a guard read as coverage while binding
+    // nothing.
+    let mut offenders: Vec<String> = Vec::new();
+    for path in rest_sources() {
+        if scannable(&path).contains(": Json<") {
+            offenders.push(path.display().to_string());
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "these sources bind axum's `Json` extractor in a parameter position: {offenders:?}. Take \
+         `body: Bytes` and call `preconditions::parse_body` after the gate, as the other \
+         body-bearing handlers do"
+    );
+}
+
 /// A config provider that knows about no gear at all.
 struct NoConfig;
 
@@ -654,11 +724,32 @@ async fn an_unconfigured_gear_reserves_its_prefix_and_answers_404_under_it() {
 /// for that surface is **empty**, so it declares neither header, and
 /// `the_window_cancel_declares_no_precondition_header` is what keeps a later group
 /// from adding one to be helpful.
+///
+/// **The roster is no longer the census, and that is the 2026-08-17 repair.** It
+/// carried twelve rows against fourteen routes that read an `If-Match`, and its
+/// sibling four against ten that read a key, while
+/// `every_mutating_route_declares_its_precondition_header` iterated it — so a route
+/// absent from it was compared against nothing, which is how two `PATCH`es came to
+/// require a header they declared nowhere. What binds the population now is
+/// `every_precondition_reading_route_is_in_the_precondition_census`, which reads the
+/// call sites out of `src/api/rest/**` and refuses a row this list is missing. The
+/// list survives for what a scan cannot say: *which* header, and why.
 fn if_match_routes() -> Vec<(&'static str, &'static str)> {
+    use bss_pricing::api::rest::bulk_imports::{BULK_IMPORT_ABORT, BULK_IMPORTS};
+    use bss_pricing::api::rest::bundles::{BUNDLE_BY_ID, BUNDLES};
+    use bss_pricing::api::rest::customer_groups::{
+        CUSTOMER_GROUP_MEMBER, CUSTOMER_GROUP_MEMBER_MOVE, CUSTOMER_GROUP_MEMBERS,
+        CUSTOMER_GROUP_TAXONOMY,
+    };
     use bss_pricing::api::rest::cutovers::PRICE_GRANDFATHER_UNTIL;
+    use bss_pricing::api::rest::overlays::{PRICE_OVERLAY_BY_ID, PRICE_OVERLAYS};
     use bss_pricing::api::rest::plans::{PLAN, PLAN_ABANDON, PLAN_CLONE, PLANS};
     use bss_pricing::api::rest::prices::{PLAN_PRICE, PLAN_PRICES};
     use bss_pricing::api::rest::publish::PLAN_PUBLISH;
+    use bss_pricing::api::rest::rounding_policies::ROUNDING_POLICIES;
+    use bss_pricing::api::rest::rounding_policy::ROUNDING_POLICY;
+    use bss_pricing::api::rest::tax_display_policy::TAX_DISPLAY_POLICY;
+    use bss_pricing::api::rest::taxonomies::TAXONOMY;
     use bss_pricing::api::rest::threshold_policy::APPROVAL_THRESHOLD_POLICY;
     use bss_pricing::api::rest::windows::{PRICE_WINDOW, PRICE_WINDOWS};
     vec![
@@ -704,12 +795,54 @@ fn if_match_routes() -> Vec<(&'static str, &'static str)> {
         // writes nothing to the source, and there is no version of a plan that
         // does not exist yet to assert about the target (D-275).
         ("POST", PLAN_CLONE),
+        // The six the derived census brought in, and the pair worth naming: the two
+        // `PATCH`es required the header and declared **nothing**, so a generated
+        // client could not call either. The other four already declared it and were
+        // simply unguarded — a distinction worth keeping, because it is the reason
+        // "the roster is a subset" is a finding on its own rather than only when a
+        // live defect happens to sit inside the gap.
+        ("PATCH", BUNDLE_BY_ID),
+        ("PATCH", PRICE_OVERLAY_BY_ID),
+        // The membership adjust: `preconditions::if_match` over the membership row's
+        // own version.
+        ("PATCH", CUSTOMER_GROUP_MEMBER),
+        // The four whole-document config `PUT`s, each asserting a `PolicyTag` over
+        // the representation its own `GET` serves rather than a row version.
+        ("PUT", CUSTOMER_GROUP_TAXONOMY),
+        ("PUT", TAXONOMY),
+        ("PUT", TAX_DISPLAY_POLICY),
+        ("PUT", ROUNDING_POLICY),
+        ("PUT", ROUNDING_POLICIES),
+        // The creates the derived census brought in, listed here for the same reason
+        // the four above them are: they assert through the idempotency gate.
+        ("POST", BUNDLES),
+        ("POST", PRICE_OVERLAYS),
+        ("POST", BULK_IMPORTS),
+        ("POST", CUSTOMER_GROUP_MEMBERS),
+        ("POST", CUSTOMER_GROUP_MEMBER_MOVE),
+        // The abort is the one row here that reads a key and binds nothing —
+        // deliberately, as its refusal rather than as a value. It is in the roster
+        // because it *declares* the header and a client must send one; it is out of
+        // `every_route_that_binds_an_idempotency_key_declares_a_409` because it has
+        // no dedup gate for a replay to conflict with.
+        ("POST", BULK_IMPORT_ABORT),
     ]
 }
 
-/// The creates, each of which requires an `Idempotency-Key` (D-141/D-142, and §5's
-/// Idempotency column for the window schedule).
+/// The routes that require an `Idempotency-Key` (D-141/D-142, and §5's Idempotency
+/// column for the window schedule).
+///
+/// Every row is also in [`if_match_routes`], because a create asserts its
+/// precondition through the gate rather than through a version; the two lists differ
+/// in what `every_mutating_route_declares_its_precondition_header` expects to find
+/// declared.
 fn idempotency_key_routes() -> Vec<(&'static str, &'static str)> {
+    use bss_pricing::api::rest::bulk_imports::{BULK_IMPORT_ABORT, BULK_IMPORTS};
+    use bss_pricing::api::rest::bundles::BUNDLES;
+    use bss_pricing::api::rest::customer_groups::{
+        CUSTOMER_GROUP_MEMBER_MOVE, CUSTOMER_GROUP_MEMBERS,
+    };
+    use bss_pricing::api::rest::overlays::PRICE_OVERLAYS;
     use bss_pricing::api::rest::plans::{PLAN_CLONE, PLANS};
     use bss_pricing::api::rest::prices::PLAN_PRICES;
     use bss_pricing::api::rest::windows::PRICE_WINDOWS;
@@ -718,6 +851,12 @@ fn idempotency_key_routes() -> Vec<(&'static str, &'static str)> {
         ("POST", PLAN_PRICES),
         ("POST", PRICE_WINDOWS),
         ("POST", PLAN_CLONE),
+        ("POST", BUNDLES),
+        ("POST", PRICE_OVERLAYS),
+        ("POST", BULK_IMPORTS),
+        ("POST", BULK_IMPORT_ABORT),
+        ("POST", CUSTOMER_GROUP_MEMBERS),
+        ("POST", CUSTOMER_GROUP_MEMBER_MOVE),
     ]
 }
 
@@ -777,6 +916,7 @@ fn query_reading_routes() -> Vec<QueryReadingRoute> {
     use bss_pricing::api::rest::approvals::APPROVALS;
     use bss_pricing::api::rest::audit::AUDIT;
     use bss_pricing::api::rest::bundles::{BUNDLE_BY_ID, BUNDLES};
+    use bss_pricing::api::rest::customer_groups::CUSTOMER_GROUP_MEMBERS;
     use bss_pricing::api::rest::history::{HISTORY, HISTORY_EXPORT};
     use bss_pricing::api::rest::migrations::MIGRATIONS;
     use bss_pricing::api::rest::overlays::PRICE_OVERLAYS;
@@ -842,6 +982,17 @@ fn query_reading_routes() -> Vec<QueryReadingRoute> {
             "MigrationPageQuery",
             vec!["cursor", "limit", "state"],
         ),
+        // D4-4's repair: this read declared **no** query parameter and read none,
+        // so its response was every membership ever recorded in the group — over a
+        // table whose ended rows are deliberately kept for a >=7-year retention.
+        // `payer_id` is also the mitigation the read-shape statement asks of a
+        // family with no by-id read, which this one had been missing entirely.
+        (
+            "GET",
+            CUSTOMER_GROUP_MEMBERS,
+            "MembershipPageQuery",
+            vec!["cursor", "limit", "payer_id"],
+        ),
         // The reads whose query is not a page. `plan_revision` was the last
         // undeclared parameter in the gear: the description *narrated* it ("absent,
         // it is the plan's open draft"), and a generated client could not send it,
@@ -904,6 +1055,87 @@ async fn every_query_reading_route_declares_the_parameters_it_reads() {
              one it does not declare"
         );
     }
+}
+
+#[test]
+fn no_source_reads_token_scopes() {
+    // A guard on a **fixture**, not on the gear, and it is the only shape that
+    // works: `rest_support::ctx_for_principal` sets `token_scopes: ["*"]` on every
+    // client it builds, `denied()` included. Nothing under `src/` reads the field,
+    // so the wildcard hides nothing today — and the day a scope check lands it
+    // would hide all of it, every refusal built on it passing against a fixture
+    // that grants everything.
+    //
+    // The gear is what is scanned because the fixture cannot see its own future:
+    // the wildcard becomes a defect at the moment a reader appears, and this is
+    // where that moment is noticed.
+    let mut readers: Vec<String> = Vec::new();
+    for source in rest_sources() {
+        if scannable(&source).contains("token_scopes") {
+            readers.push(source.display().to_string());
+        }
+    }
+    assert!(
+        readers.is_empty(),
+        "these sources read `token_scopes` while every harness client is built with the wildcard \
+         `[\"*\"]`, so a refusal keyed on a scope cannot be tested: {readers:?}. Narrow \
+         `rest_support::ctx_for_principal` before relying on the field"
+    );
+}
+
+#[test]
+fn no_query_struct_lets_the_extractor_answer() {
+    // The other half of `no_handler_takes_axums_json_extractor`, on the parameter
+    // axis, and the lesson `windows.rs` recorded once and applied to one struct of
+    // twelve.
+    //
+    // A `Query<T>` member that is not `Option<String>` is parsed by axum, and its
+    // rejection is a bare 400 with **no problem document at all** — against a
+    // registration whose declared 400 has `Problem` as its schema. `?limit=abc` on
+    // any of the nine paginated reads answered exactly that. The remedy is the one
+    // `SellabilityQuery` already used: optional strings at the type, required and
+    // parsed in the handler, so the refusal names the parameter through the
+    // canonical ladder.
+    //
+    // The whole struct is scanned rather than the `limit` member, because the two
+    // uuid members and the `plan_revision` had the same defect and no roster of
+    // member names would have found them.
+    let mut offenders: Vec<String> = Vec::new();
+    for source in rest_sources() {
+        let text = scannable(&source);
+        for after in text.split("Query<").skip(1) {
+            let name: String = after
+                .chars()
+                .take_while(|c| c.is_alphanumeric() || *c == '_')
+                .collect();
+            let Some(body) = text
+                .split_once(&format!("pub struct {name} {{"))
+                .and_then(|(_, rest)| rest.split_once('}'))
+                .map(|(body, _)| body)
+            else {
+                continue;
+            };
+            for member in body.split(',') {
+                let Some((field, ty)) = member.split_once(": ") else {
+                    continue;
+                };
+                let field = field.trim();
+                if !field.starts_with("pub ") {
+                    continue;
+                }
+                if ty.trim() != "Option<String>" {
+                    offenders.push(format!("{name}.{} is {}", &field[4..], ty.trim()));
+                }
+            }
+        }
+    }
+    offenders.sort();
+    offenders.dedup();
+    assert!(
+        offenders.is_empty(),
+        "these query members are parsed by axum's extractor, which answers a bare 400 with no \
+         problem document: {offenders:?}. Take them as `Option<String>` and parse in the handler"
+    );
 }
 
 /// The forcing function under the roster above: a route that reads a query it does
@@ -1000,6 +1232,433 @@ fn scannable(path: &std::path::Path) -> String {
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+/// Every `pub const NAME: &str = "/bss-pricing/…"` declared under `src/api/rest`.
+///
+/// A registration names its path as a `const` about a fifth of the time, so a scan
+/// that read only the string literals would silently skip those routes — the
+/// failure mode that makes a derived census read as coverage while binding a
+/// subset, which is the one this whole arrangement exists to close.
+fn route_path_consts() -> std::collections::BTreeMap<String, String> {
+    let mut found = std::collections::BTreeMap::new();
+    for path in rest_sources() {
+        for line in std::fs::read_to_string(&path)
+            .expect("a readable REST source")
+            .lines()
+        {
+            let line = line.trim();
+            let Some(after) = line.strip_prefix("pub const ") else {
+                continue;
+            };
+            let Some((name, rest)) = after.split_once(": &str = ") else {
+                continue;
+            };
+            let Some(value) = rest
+                .trim()
+                .strip_prefix('"')
+                .and_then(|v| v.split('"').next())
+            else {
+                continue;
+            };
+            if value.starts_with("/bss-pricing/") {
+                found.insert(name.to_owned(), value.to_owned());
+            }
+        }
+    }
+    found
+}
+
+/// `(method, path, handler)` for every `OperationBuilder` registration, read from
+/// the source rather than from the registry.
+///
+/// From the *source*, because the registry knows a route's path and its declared
+/// parameters and does not know which function serves it — and the handler is the
+/// half every derivation below needs: what a route *does* is in its body, and what
+/// it *declares* is in its registration, and the whole class of finding this closes
+/// is the two disagreeing.
+fn registered_handlers() -> Vec<(String, String, String)> {
+    let consts = route_path_consts();
+    let mut found = Vec::new();
+    for source in rest_sources() {
+        let text = scannable(&source);
+        for block in text.split("OperationBuilder::").skip(1) {
+            // The block runs to the next registration; `.register(` ends it, and
+            // taking the shorter of the two keeps a `.handler(` from a following
+            // block out of this one.
+            let block = block.split(".register(").next().unwrap_or(block);
+            let Some((method, rest)) = block.split_once('(') else {
+                continue;
+            };
+            let Some(argument) = rest.split(')').next() else {
+                continue;
+            };
+            let argument = argument.trim();
+            let path = match argument.strip_prefix('"').and_then(|a| a.split('"').next()) {
+                Some(literal) => literal.to_owned(),
+                None => match consts.get(argument) {
+                    Some(resolved) => resolved.clone(),
+                    // Not a route registration — `OperationBuilder::get` is the
+                    // only shape here, so anything unresolvable is a parse fault
+                    // rather than a route, and the count assertion below catches it.
+                    None => continue,
+                },
+            };
+            let Some(handler) = block
+                .split(".handler(")
+                .nth(1)
+                .and_then(|after| after.split(')').next())
+            else {
+                continue;
+            };
+            found.push((method.to_ascii_uppercase(), path, handler.trim().to_owned()));
+        }
+    }
+    found
+}
+
+/// Every function's own text under `src/api/rest`, keyed by name.
+///
+/// Split at each `fn ` rather than brace-matched: a body carries format strings
+/// full of `{…}`, so a brace counter would mis-close on the first refusal message
+/// it met. Splitting at the item boundary needs no such counting and attributes a
+/// private helper sitting between two handlers to itself rather than to the
+/// handler above it.
+fn function_texts() -> std::collections::BTreeMap<String, String> {
+    let mut found = std::collections::BTreeMap::new();
+    for source in rest_sources() {
+        let text = scannable(&source);
+        let mut chunks: Vec<usize> = Vec::new();
+        let mut at = 0;
+        while let Some(hit) = text[at..].find("fn ") {
+            let start = at + hit;
+            at = start + 3;
+            // `fn` must stand alone: `#[cfg]`-free, and not the tail of an
+            // identifier like `authz_fn`.
+            if start > 0 && !text.as_bytes()[start - 1].is_ascii_whitespace() {
+                continue;
+            }
+            chunks.push(start);
+        }
+        for (index, start) in chunks.iter().enumerate() {
+            let end = chunks.get(index + 1).copied().unwrap_or(text.len());
+            let body = &text[*start..end];
+            let name: String = body["fn ".len()..]
+                .chars()
+                .take_while(|c| c.is_alphanumeric() || *c == '_')
+                .collect();
+            if name.is_empty() {
+                continue;
+            }
+            // Two modules may each declare a private `render`; the census only
+            // asks about handlers, whose names are unique across the layer because
+            // an operation id is built from them.
+            found.entry(name).or_insert_with(|| body.to_owned());
+        }
+    }
+    found
+}
+
+/// `(method, path)` for every registered route whose handler's body contains
+/// `needle`.
+fn routes_whose_handler_calls(needle: &str) -> std::collections::BTreeSet<(String, String)> {
+    let bodies = function_texts();
+    registered_handlers()
+        .into_iter()
+        .filter(|(_, _, handler)| {
+            bodies
+                .get(handler)
+                .is_some_and(|body| body.contains(needle))
+        })
+        .map(|(method, path, _)| (method, path))
+        .collect()
+}
+
+#[test]
+fn the_registration_scan_reads_the_whole_route_set() {
+    // The guard on the derivations below, and the reason it is its own test: a
+    // scan that parsed nothing would make every census beneath it vacuously true,
+    // which is the exact way a derived roster becomes worse than a hand-written
+    // one — it reads as coverage and binds nothing.
+    let handlers = registered_handlers();
+    assert_eq!(
+        handlers.len(),
+        declared_paths().len(),
+        "the source scan found {} registrations against {} declared paths; the parse is broken, \
+         not the layer",
+        handlers.len(),
+        declared_paths().len()
+    );
+
+    let scanned: std::collections::BTreeSet<(String, String)> = handlers
+        .iter()
+        .map(|(method, path, _)| (method.clone(), path.clone()))
+        .collect();
+    let declared: std::collections::BTreeSet<(String, String)> = declared_paths()
+        .into_iter()
+        .map(|(method, path)| (method.to_owned(), path.to_owned()))
+        .collect();
+    assert_eq!(
+        scanned, declared,
+        "the source scan and `declared_paths()` name different route sets"
+    );
+
+    // And every handler it named is a function the body scan can find, or the
+    // needle tests below quietly match nothing for that route.
+    let bodies = function_texts();
+    let missing: Vec<&String> = handlers
+        .iter()
+        .filter(|(_, _, handler)| !bodies.contains_key(handler))
+        .map(|(_, _, handler)| handler)
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "these handlers were registered and their bodies were not found: {missing:?}"
+    );
+}
+
+#[test]
+fn every_precondition_reading_route_is_in_the_precondition_census() {
+    // The derivation both rosters were owed, and the failure mode is filed:
+    // `if_match_routes()` carried 12 rows against 14 routes that read an
+    // `If-Match`, and `idempotency_key_routes()` 4 against 10 that read a key.
+    // `every_mutating_route_declares_its_precondition_header` iterates the roster,
+    // so a route absent from it was compared against nothing — and that test's own
+    // doc records the roster going stale twice, which is the tell.
+    //
+    // Two of the six unrostered If-Match readers declared no header at all
+    // (`PATCH /bundles/{bundleId}`, `PATCH /price-overlays/{overlayId}`), so the
+    // subset was not merely untidy: a generated client could not call either.
+    //
+    // Modelled on `every_query_reading_route_is_in_the_parameter_census`, which is
+    // the same guard one axis over.
+    let if_match = routes_whose_handler_calls("preconditions::if_match");
+    let idempotency = routes_whose_handler_calls("preconditions::idempotency_key");
+
+    assert!(
+        if_match.len() >= 14 && idempotency.len() >= 10,
+        "the scan found {} If-Match readers and {} key readers, fewer than this gear has had \
+         since Slice 7 - the scan is broken, not the layer",
+        if_match.len(),
+        idempotency.len()
+    );
+
+    let rostered: std::collections::BTreeSet<(String, String)> = if_match_routes()
+        .into_iter()
+        .chain(idempotency_key_routes())
+        .map(|(method, path)| (method.to_owned(), path.to_owned()))
+        .collect();
+
+    let unrostered: Vec<&(String, String)> = if_match
+        .union(&idempotency)
+        .filter(|route| !rostered.contains(*route))
+        .collect();
+    assert!(
+        unrostered.is_empty(),
+        "these routes read a precondition and are in neither roster, so nothing checks that they \
+         declare it: {unrostered:?}"
+    );
+}
+
+#[tokio::test]
+async fn every_precondition_reading_route_declares_the_header_it_reads() {
+    // The half a roster cannot do at all: the roster says *a* precondition is
+    // declared, this says the declared header is the one the handler reads. Both
+    // are needed - `every_mutating_route_declares_its_precondition_header` accepts
+    // an `Idempotency-Key` in place of an `If-Match` for the creates, which is
+    // right for them and would hide a `PATCH` that declared the wrong one.
+    let openapi = registered_operations().await;
+
+    for (method, path) in routes_whose_handler_calls("preconditions::if_match") {
+        let headers = declared_headers(&openapi, &method, &path);
+        assert!(
+            headers.iter().any(|name| name == "if-match"),
+            "{method} {path} reads an If-Match and declares none: {headers:?}"
+        );
+    }
+    for (method, path) in routes_whose_handler_calls("preconditions::idempotency_key") {
+        let headers = declared_headers(&openapi, &method, &path);
+        assert!(
+            headers.iter().any(|name| name == "idempotency-key"),
+            "{method} {path} reads an Idempotency-Key and declares none: {headers:?}"
+        );
+    }
+}
+
+/// The mutating routes that assert **no** precondition, each with the reason.
+///
+/// A positive list, and unusually that is the right shape here: this is the set the
+/// derived census must *not* find a precondition call in, so it is compared for
+/// equality against the derivation rather than iterated. A route that starts
+/// asserting one, or a new mutating route that asserts none, moves the set and the
+/// comparison reddens either way.
+///
+/// **Three of these are review finding Z6-3-2 and are asymmetric with a sibling in
+/// their own module**, recorded here rather than silently: `POST /bundles/{id}/publish`
+/// against `POST /plans/{planId}/publish`, which asserts the revision it was composed
+/// against; `POST /price-overlays/{id}/submit` against `PATCH /price-overlays/{id}`,
+/// which addresses the same overlay by the same id and asserts a tag; and
+/// `POST /plans/{planId}/cutovers` against `PATCH /prices/{id}/grandfather-until`,
+/// two handlers in one file. Adding a required header to a live route is a contract
+/// change and not this test's to make; what this list does is stop the asymmetry
+/// being invisible.
+fn routes_asserting_no_precondition() -> Vec<(&'static str, &'static str)> {
+    use bss_pricing::api::rest::approvals::{APPROVAL_APPROVE, APPROVAL_REJECT, APPROVAL_WITHDRAW};
+    use bss_pricing::api::rest::bundles::BUNDLE_PUBLISH;
+    use bss_pricing::api::rest::cutovers::PLAN_CUTOVERS;
+    use bss_pricing::api::rest::migrations::{MIGRATION_BY_ID, MIGRATIONS};
+    use bss_pricing::api::rest::overlays::PRICE_OVERLAY_SUBMIT;
+    use bss_pricing::api::rest::repricing_runs::REPRICING_RUNS;
+    use bss_pricing::api::rest::retirement::PLAN_RETIRE;
+    use bss_pricing::api::rest::supersessions::PLAN_SUPERSESSIONS;
+    use bss_pricing::api::rest::windows::PRICE_WINDOW;
+    vec![
+        // Argued and guarded: an approval carries no version column, and the
+        // compare-and-swap carries `state = 'submitted'` in its own predicate, so a
+        // retry is refused `APPROVAL_NOT_PENDING` whether or not a header was sent.
+        ("POST", APPROVAL_APPROVE),
+        ("POST", APPROVAL_REJECT),
+        ("POST", APPROVAL_WITHDRAW),
+        // §5's Idempotency cell is empty and
+        // `the_window_cancel_declares_no_precondition_header` is the guard.
+        ("DELETE", PRICE_WINDOW),
+        // Its key is `run_id` **inside the body** (`inst-rr-idem`), so it reads no
+        // header and is invisible to the header census by design;
+        // `the_repricing_run_declares_no_precondition_header` guards that.
+        ("POST", REPRICING_RUNS),
+        // The three asymmetries named in this function's doc.
+        ("POST", BUNDLE_PUBLISH),
+        ("POST", PRICE_OVERLAY_SUBMIT),
+        ("POST", PLAN_CUTOVERS),
+        // The four with no sibling to be asymmetric with. Each is a create or a
+        // lifecycle move over a subject the request names in its path, and none has
+        // a version a caller could have read.
+        ("POST", PLAN_RETIRE),
+        ("POST", PLAN_SUPERSESSIONS),
+        ("POST", MIGRATIONS),
+        ("DELETE", MIGRATION_BY_ID),
+    ]
+}
+
+#[test]
+fn the_mutating_routes_that_assert_nothing_are_exactly_the_stated_ones() {
+    // What `preconditions.rs` has no structure to notice: it is nine free functions
+    // each handler opts into by calling, so there is no verb dispatch to leave a
+    // verb unhandled — and nothing that observes a mutating route calling none of
+    // them.
+    //
+    // Derived from the same scan the two censuses use, so the negatives are as
+    // bound as the positives. Before this, eight mutating routes asserted nothing
+    // and only two of the eight were written down anywhere.
+    let asserting: std::collections::BTreeSet<(String, String)> =
+        routes_whose_handler_calls("preconditions::if_match")
+            .union(&routes_whose_handler_calls(
+                "preconditions::idempotency_key",
+            ))
+            .cloned()
+            .collect();
+
+    let mut silent: Vec<(String, String)> = registered_handlers()
+        .into_iter()
+        .filter(|(method, path, _)| {
+            matches!(method.as_str(), "POST" | "PUT" | "PATCH" | "DELETE")
+                // The one `POST` that is a **read**: `inst-he-nostore` leaves the
+                // export nothing to write, which is why `declared_paths()` lists it
+                // among the reads and `rest_authz`'s census carries it as
+                // `mutating: false`. A precondition on it would assert a version of
+                // something it does not change.
+                && path != bss_pricing::api::rest::history::HISTORY_EXPORT
+                && !asserting.contains(&(method.clone(), path.clone()))
+        })
+        .map(|(method, path, _)| (method, path))
+        .collect();
+    silent.sort();
+    silent.dedup();
+
+    let mut stated: Vec<(String, String)> = routes_asserting_no_precondition()
+        .into_iter()
+        .map(|(method, path)| (method.to_owned(), path.to_owned()))
+        .collect();
+    stated.sort();
+
+    assert_eq!(
+        silent, stated,
+        "a mutating route asserts no precondition and is not in `routes_asserting_no_precondition`, \
+         or a row there names a route that now asserts one"
+    );
+}
+
+#[tokio::test]
+async fn the_conditional_read_declares_both_halves_or_neither() {
+    // `If-None-Match` and `304` are one contract, and a route carrying one without
+    // the other is the halves disagreeing: a declared header the server ignores
+    // tells a client to send something that does nothing, and an undeclared 304
+    // leaves a generated client parsing an empty body as the view type.
+    //
+    // Seven reads emitted an `ETag` and read the header on none of them until
+    // 2026-08-17 — `If-None-Match` appeared nowhere in the crate — so a client that
+    // had to poll for a fresh precondition re-downloaded the whole representation
+    // to obtain one. The count is deliberately not asserted here; what is asserted
+    // is that the two halves cannot drift apart.
+    let openapi = registered_operations().await;
+
+    let mut conditional = 0;
+    for entry in &openapi.operation_specs {
+        let spec = entry.value();
+        let declares_header = spec.params.iter().any(|param| {
+            matches!(param.location, ParamLocation::Header)
+                && param.name.eq_ignore_ascii_case("if-none-match")
+        });
+        let declares_304 = spec.responses.iter().any(|r| r.status == 304);
+        assert_eq!(
+            declares_header,
+            declares_304,
+            "{} declares one half of the conditional read and not the other",
+            entry.key()
+        );
+        if declares_header {
+            conditional += 1;
+            assert!(
+                entry.key().starts_with("GET:"),
+                "{} is not a read and cannot serve a conditional one",
+                entry.key()
+            );
+        }
+    }
+    assert!(
+        conditional >= 7,
+        "the gear emits an ETag on seven reads; only {conditional} serve a conditional one"
+    );
+}
+
+#[tokio::test]
+async fn every_route_that_binds_an_idempotency_key_declares_a_409() {
+    // `IdempotencyGate::claim` answers `IDEMPOTENCY_PAYLOAD_MISMATCH` when a spent
+    // key is replayed over a changed request, and that variant maps through
+    // `aborted(…)` to a **409**. So the declaration follows from the binding, and
+    // this derives it rather than rostering it.
+    //
+    // `POST /bulk-imports` was the one route that bound a key and declared no 409
+    // — the refusal that closed a data-integrity hole, invisible to every generated
+    // client, while its four sibling creates all declared theirs.
+    //
+    // The needle is `let … = preconditions::idempotency_key`, not the call: a route
+    // that reads the key for its *refusal* and binds nothing has no dedup gate to
+    // conflict with, which is `abort_bulk_import`'s shape.
+    let openapi = registered_operations().await;
+
+    for (method, path) in routes_whose_handler_calls("= preconditions::idempotency_key") {
+        let key = format!("{method}:{path}");
+        let entry = openapi
+            .operation_specs
+            .get(&key)
+            .unwrap_or_else(|| panic!("{key} is not a registered operation"));
+        assert!(
+            entry.value().responses.iter().any(|r| r.status == 409),
+            "{key} binds an idempotency key and declares no 409, which a replay over a changed \
+             request produces"
+        );
+    }
 }
 
 #[tokio::test]

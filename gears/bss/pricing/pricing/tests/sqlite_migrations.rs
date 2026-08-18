@@ -567,7 +567,19 @@ const EXPECTED_PRIMARY_KEYS: &[(&str, &str)] = &[
     // Slice 10's composite meter, D-106's revision discipline in the key
     // itself: `composite_id` is stable across revisions and the revision is the
     // second column, so a copy-forward is a new row rather than an edit.
-    ("pricing_composite_meter", "composite_id, plan_revision"),
+    // **Widened by `m20260802_000084` (A1-1)**, 2026-08-18, and for the reason
+    // `pricing_plan_phase`'s row below records one day earlier: it was
+    // `composite_id, plan_revision`, with a client-supplied `composite_id` and no
+    // tenant, so a composite id belonged to one plan per revision *number* across
+    // the whole table. `m20260802_000046`'s module doc named this key as
+    // `pricing_plan_phase`'s shape one table over; `m20260802_000081` moved that
+    // one and left this one. The `plan_revision` half stays for D-106's
+    // copy-forward, and one revision still may not hold the same composite id
+    // twice.
+    (
+        "pricing_composite_meter",
+        "tenant_id, plan_id, plan_revision, composite_id",
+    ),
     // Slice 9's own taxonomy (`inst-cg-taxonomy`), the four's own key shape on
     // its own table.
     ("pricing_customer_group_taxonomy", "tenant_id, value"),
@@ -615,10 +627,20 @@ const EXPECTED_PRIMARY_KEYS: &[(&str, &str)] = &[
     ("pricing_policy_object", "tenant_id"),
     ("pricing_price", "price_id"),
     ("pricing_price_overlay", "price_overlay_id, revision"),
-    ("pricing_price_overlay_line", "line_id, overlay_revision"),
+    // **Both widened by `m20260802_000085` (A1-3, and A1-4 for the child)**,
+    // 2026-08-18. The line was `line_id, overlay_revision` with a client-supplied
+    // `line_id`, so a line id belonged to one overlay per revision *number* across
+    // the whole table. The child moves in the same migration and not later: once
+    // two tenants may hold one `(line_id, overlay_revision)`, a narrow key here
+    // collides on their amounts instead, which is the condition A1-4 records as
+    // the one that arms this table's untyped insert catch-all.
+    (
+        "pricing_price_overlay_line",
+        "tenant_id, overlay_revision, line_id",
+    ),
     (
         "pricing_price_overlay_line_amount",
-        "line_id, overlay_revision, currency",
+        "tenant_id, overlay_revision, line_id, currency",
     ),
     ("pricing_price_tier_band", "band_id"),
     ("pricing_price_window", "window_id"),
@@ -967,9 +989,17 @@ const EXPECTED_TRIGGER_BODIES: &[(&str, u64)] = &[
     // **Exactly one digest moved in this roster on each occasion**, which is the
     // evidence a whole-trigger restatement lost nothing, and the only evidence
     // there is, since neither engine has an incremental form for this check.
+    // Moved 2026-08-17 by `m20260802_000082`, and moved by exactly the mechanism
+    // this census exists to observe: `RENAME COLUMN reserved_rate_minor TO
+    // reserved_rate_nano` carried the trigger's reference into the trigger body,
+    // so the guard still freezes the same column under its new name and its digest
+    // is necessarily different. Nothing was restated by hand. This is the property
+    // `m20260802_000066`'s doc relies on, measured rather than assumed: the name
+    // census was unchanged (97 triggers, same names) and this is the only body
+    // that moved.
     (
         "trg_pricing_price_frozen_columns",
-        6_740_267_230_346_231_336_u64,
+        18_153_255_249_562_156_606_u64,
     ),
     (
         "trg_pricing_price_grandfather_monotonic",
@@ -994,17 +1024,34 @@ const EXPECTED_TRIGGER_BODIES: &[(&str, u64)] = &[
         "trg_pricing_price_overlay_frozen_flip",
         15_942_597_115_297_834_987_u64,
     ),
+    // **The three digests `m20260802_000085` moves, and the only three it moves.**
+    //
+    // Each body gained one conjunct — `l.tenant_id = NEW.tenant_id`, and
+    // `OLD.tenant_id` on the arms that ask where the row comes from. Hand-checked
+    // against the reason rather than accepted because the suite asked: this guard
+    // resolves its parent line by `(line_id, overlay_revision)`, which was
+    // unambiguous only while that pair was globally unique. The same migration
+    // makes it unique **per tenant**, so without the conjunct an amount under a
+    // *published* line would find another tenant's *draft* line carrying the same
+    // pair, read `draft`, and be admitted — D-92's freeze defeated across a tenant
+    // boundary by a widening meant to close a leak.
+    // `sqlite_overlay_store::a_foreign_draft_line_does_not_unfreeze_a_published_lines_money`
+    // is that statement, and it was red before the conjunct.
+    //
+    // The line's **own** three triggers are unmoved, above: they resolve their
+    // parent through `price_overlay_id`, whose key is rooted in a server-minted id
+    // and stays globally unique, so nothing about them became ambiguous.
     (
         "trg_pricing_price_overlay_line_amount_no_delete",
-        6_126_575_409_268_361_048_u64,
+        3_714_365_576_296_145_019_u64,
     ),
     (
         "trg_pricing_price_overlay_line_amount_no_insert",
-        14_004_697_873_420_631_368_u64,
+        14_314_258_200_111_500_272_u64,
     ),
     (
         "trg_pricing_price_overlay_line_amount_no_update",
-        10_194_414_681_832_050_017_u64,
+        12_239_200_085_824_832_826_u64,
     ),
     (
         "trg_pricing_price_overlay_line_no_delete",

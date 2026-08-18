@@ -7,11 +7,17 @@
 //! save and publish (`ADJUSTMENT_CURRENCY_NOT_COVERED`, naming the line). A
 //! percent line is currency-neutral and has no rows here at all.
 //!
-//! The key is `(line_id, overlay_revision, currency)`. §6 spells it
+//! The key is `(tenant_id, overlay_revision, line_id, currency)`. §6 spells it
 //! `UNIQUE (line_id, currency)`, which stops being a key once the line's own key
 //! carries the revision — see `m20260802_000034`'s module doc. It is the
-//! **primary key** rather than a surrogate plus a unique index, because the
-//! triple *is* the row's identity.
+//! **primary key** rather than a surrogate plus a unique index, because the tuple
+//! *is* the row's identity.
+//!
+//! `tenant_id` joined it under `m20260802_000085`, in the same statement list that
+//! put it in the line's key: once two tenants may hold one
+//! `(line_id, overlay_revision)`, a narrow key here collides on their amounts
+//! instead — which is exactly the condition review A1-4 records as the one that
+//! would arm this table's untyped insert catch-all.
 //!
 //! There is no `lifecycle_state` here. A value is frozen when the revision its
 //! **line** belongs to publishes, so the reference is the overlay revision and
@@ -37,10 +43,14 @@ pub struct Model {
     /// ISO 4217.
     #[sea_orm(primary_key, auto_increment = false)]
     pub currency: String,
-    /// Copied from the parent line by the repository, never taken from a
-    /// request: the foreign key covers `(line_id, overlay_revision)` and says
-    /// nothing about the tenant, so nothing in the schema stops a child carrying
-    /// a foreign one.
+    /// Copied from the parent line by the repository, never taken from a request.
+    ///
+    /// **In the key, and in the foreign key, since `m20260802_000085`**: the
+    /// reference is now `(tenant_id, overlay_revision, line_id)`, so a child
+    /// carrying a tenant its line does not have is refused by the schema rather
+    /// than merely never written. The table's append-only trigger gained the same
+    /// conjunct in that migration, for a sharper reason — see its module doc.
+    #[sea_orm(primary_key, auto_increment = false)]
     pub tenant_id: Uuid,
     /// The magnitude, in the currency's ISO 4217 minor unit. `>= 0` (D-67), and
     /// **zero is admitted**: a `fixed 0` line is how a market is priced at

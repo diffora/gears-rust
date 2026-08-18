@@ -1345,6 +1345,232 @@ checker means by "referenced", and that is the skill's contract.
     Suite: **271 passed**, 1 skipped — one added, `test_a_bare_code_token_in_the_decision_register_is_not_a_reference`,
     which pins the rule rather than the count.
 
+30. **2026-08-17, thirtieth capture — a debt the twenty-ninth capture made visible is paid for
+    real, one edit later.** Document movement only, no checker change (the pinned-list edit is a
+    member leaving, not a rule changing).
+
+    **What moved and why.** The docs fix is Z7-2 from the branch review's zone 7: D-329's
+    register entry claimed a `S7 §5` propagation it had never taken — the horizon door's
+    preconditions were nowhere in the section that states the route's preconditions, and the
+    `PATCH …/prices/{priceId}/grandfather-until` row was unchanged. Taking it wrote the door's
+    seven preconditions into `design/07-pricewindow-linkage.md` §5 in the order the code applies
+    them, and precondition 3 is the monotonicity rule naming the code it raises.
+
+    **Suppressed 50 -> 49.** One member, `GRANDFATHER_LOOSEN_FORBIDDEN` / design/07, and it is
+    the honest kind of payment: the artifact that fires the code now names it. Measured rather
+    than inferred — the unreferenced set was captured with the docs edit stashed and again with
+    it applied, and the diff is exactly that one line. Live findings unchanged at **2** (both
+    rating-side). `live-show-known-debt.txt` moves by the member and the three counts and **not
+    by a single line number**: every pinned `P1/propagation-missing` anchor is at
+    `DECISIONS.md:632` or earlier and this edit's register changes are at D-328/D-329, ~3,960.
+
+    **The round trip is the entry worth reading, and it is recorded beside the pin.**
+    `GRANDFATHER_LOOSEN_FORBIDDEN` was recorded as *leaving* this pin on 2026-08-16, credited to
+    D-329's door. That was wrong: what dropped it was D-329's **register entry** naming the code
+    in prose, under the pre-`is_decision_register` rule. The twenty-ninth capture's fix brought it
+    straight back. So the code has now been paid twice, once falsely by a mention and once truly
+    by a rule, and the two payments are eight lines apart in the pinned list's comments. That is
+    the clearest demonstration this file has of why entry 15's warning became a checker change.
+
+    **`GRANDFATHERED_ROW_IMMUTABLE` stays pinned, deliberately.** It sits in the same block, it
+    was made visible by the same twenty-ninth-capture fix, and the same edit could have named it.
+    It was not: D-329 **rejected** co-opting it for the loosen refusal, it is a different rule,
+    and no rule body in the design set raises it yet. Naming it to empty the pin is the false
+    payment this file has now recorded three times.
+
+    **Neighbourhoods: `multi-region` 61 -> 62, `anchored:no-account` 4 -> 3, judged 70 -> 71 —
+    the twenty-ninth capture's move, running backwards.** One mover, `fr-scheduled-migration`,
+    diffed per-id with the edit stashed and applied. The two regions the previous entry recorded
+    falling under `SCORE_THRESHOLD = 0.6` come back at **0.603 with 47 matched terms** — the same
+    two regions, the same score, the same match count, re-crossing from below. The cause is
+    document frequency over a fixed window grid: this edit grew the corpus by ~40 lines of §5
+    prose about grandfathering horizons, which says nothing about scheduled migration, lands in a
+    slice the requirement has no fragment in, and did not touch the requirement. Sixth recorded
+    oscillation on this id. Nothing was reworded in either direction to move it.
+
+    Suite: **271 passed**, 1 skipped.
+
+31. **2026-08-17, thirty-first capture — thirteen propagation targets re-pointed, and only line
+    numbers moved.** Document movement only, no checker change.
+
+    The fix is Z7-4/Z7-6 from the branch review's zone 7: thirteen `Propagated` claims named the
+    wrong `§`, so the content and the citation had both landed and the register sent an auditor
+    to the wrong place. Every one was re-resolved before editing by locating each id's actual
+    occurrences in the named file and mapping them onto the document's own heading numbering, so
+    the new addresses are measured rather than guessed.
+
+    **Only `live-show-known-debt.txt` moved, and only in line numbers**: 20 differing lines,
+    **one distinct shift, uniformly +24** — the conventions block the fix adds under "How to use
+    this document", which sits above every pinned `P1/propagation-missing` anchor (all at
+    `DECISIONS.md:632` or earlier, as entry 12 recorded). Verified by normalising `DECISIONS.md:<n>`
+    and confirming the two files are then identical, and by asserting there is exactly one shift
+    value rather than eyeballing the diff. `live-text.txt` and `live-json.json` are byte-identical.
+    Live findings unchanged at **2**, suppressed unchanged at **49**, and the neighbourhood
+    histogram did not move.
+
+    **Nothing was paid down or added**, which is the point worth checking on an edit of this
+    shape: re-pointing a claim from `§10` to `§3` cannot change P1's verdict, because P1 is
+    document-granular by construction — it asks whether the *file* cites the decision. That is
+    precisely why these thirteen went unreported for so long, and why the register now carries the
+    four addressing rules rather than only the corrected addresses.
+
+32. **2026-08-17, thirty-second entry — the veto ledger is re-derived. Nothing was re-captured,
+    and the triage pin moved anyway.** This entry exists to say so; it is the fourth case in this
+    file of "the oracles did not move but the pin did", after entries 11, 12 and 26.
+
+    The edit is Z7-12/Z7-13: the register's narration is the status source by its own rule, and
+    its **terminal** sentence still read "Nothing in pricing awaits veto" while a correction sat
+    mid-narration saying otherwise. Under the register's own rule the last sentence is the
+    operative one, so a reader who read to the end was told the opposite of the correction. The
+    unratified set was re-derived independently rather than copied from the review: entry spans
+    walked in **file** order (three entries sit out of id sequence, and an id-ordered span merges
+    three into one), live "flagged for veto" markers kept, `Not`/`Never`/`Was`/`Un` forms
+    excluded, then bodies carrying their own `CONFIRMED` dropped and bodies named by a veto round
+    dropped. Fourteen live markers, four confirmed in body, four named by a round, **six remain**
+    — `D-287`, `D-337`, `D-340`, `D-341`, `D-342`, `D-343` — which matches the review's list
+    exactly, arrived at by a separate pass.
+
+    Three numbers the correcting sentence carried were re-measured and were all wrong: "110
+    flagged markers" (**138** in the file, **121** in entry bodies, **115** distinct entries),
+    "the five closing sentences **elsewhere** in this file" (**six**, and **none** elsewhere —
+    all six are inside the narration), and the boundary "entries through D-329 have been through
+    a round" (false for `D-287`, open since 2026-08-09). Z7-13's "which every other entry in this
+    register does" was false by **218** entries and is withdrawn.
+
+    **All three oracle files are byte-identical and were left untouched.** Every pinned
+    `P1/propagation-missing` anchor is a `DECISIONS.md` line number at `:632` or earlier, and
+    this edit changes text *within* line 26 and within one `D-318` clause — no line was added
+    above any anchor, so not even a line number moved. Live findings unchanged at 2, suppressed
+    unchanged at 49.
+
+    **The triage pin moved: `suspicious:weak-coverage` 9 -> 7, `suspicious:multi-region` 62 -> 64,
+    judged unchanged at 71** (both classes are judged, so the swap is judge-neutral). **Two
+    movers**, `fr-event-contract` and `fr-rbac-deny-by-default`, diffed per-id with the edit
+    stashed and applied. Each gained **exactly one** region, both `DECISIONS.md`, at 0.609 and
+    0.604 — and every pre-existing region of both is unchanged in score. The narration is a single
+    ~74 KB line and the fixed 12-line window over it is what both gained; neither new region says
+    anything about event contracts or deny-by-default authz. The `mentions` class, arriving by the
+    one document a veto-ledger fix is obliged to grow. Nothing was reworded to move a score.
+
+33. **2026-08-17, thirty-third capture — the stale-owed sweep.** Document movement only, no
+    checker change.
+
+    Pass 1's `F3-1`: eighteen sites in the design set and the register describe as owed
+    something that is built. Each was re-verified against the code before editing, not taken
+    from the report. The five design-set sites came first, on the report's own reasoning — a
+    stale ledger line in `DECISIONS.md` misleads a session, a stale clause in `design/*.md`
+    misleads the specification — plus the three severe register bullets (`D-332`, `D-333`,
+    `D-321`).
+
+    **`live-show-known-debt.txt` moved in line numbers only** (the register additions sit at
+    `D-321` and beyond, far below the `:632` anchor ceiling, so the movement is from the earlier
+    commits in this batch rather than this one); `live-text.txt` and `live-json.json` are
+    byte-identical. Live findings unchanged at **2**, suppressed unchanged at **49**.
+
+    **The triage pin moved: `weak-coverage` 7 -> 6, `multi-region` 64 -> 65, judged unchanged at
+    71.** **One mover, `fr-supersession`** — this file's most-recorded oscillator, on its
+    most-recorded window. It gained `design/01-foundation.md:559-570` at **0.607**, §3.7's
+    `pricing_price` bullet block, which entries 16, 18 and 19 each recorded it crossing 0.6 on.
+    Entry 19 recorded it falling *out* (0.6091 -> 0.5676) when 38 lines were added above §3.7 and
+    named the mechanism; this batch added three lines at §3.3 and restated a census inside the
+    bullet block, and it came back. Its other three regions are unchanged to three decimals.
+    Prediction made, prediction kept. Nothing was reworded in either direction.
+
+34. **2026-08-17, thirty-fourth capture — three unresolvable shas, and two cross-gear notes.**
+    Document movement only, no checker change.
+
+    `F3-2`, re-checked rather than assumed: the brief said this branch was pushed today and asked
+    whether the finding still stood. It does. `0b8247a97`, `5bcfe617f` and `b65201b52` are real
+    commit objects, none is an ancestor of `HEAD`, and all three live only on
+    `pre-squash/2026-08-05-phase4`, which `git ls-remote` shows on no remote. Eleven citations are
+    unresolvable from a fresh clone. Recorded once in the register's conventions block rather than
+    eleven times at the citations, and left in place as provenance.
+
+    `Z8-24` and `Z8-26` are the two cross-gear notes: rating's `SEAMS.md` M12 named three pricing
+    gates that exist only in the design set (the guarantee holds by a stronger route — the field
+    cannot be authored at all — so M12 now cites that mechanism), and rating's `T-D-27` mirror is
+    still owed against a Contracts PRD that now exists and greps zero for it.
+
+    **`live-show-known-debt.txt` moved in line numbers only**: 20 lines, one distinct shift,
+    uniformly **+13**, the conventions-block note. `live-text.txt` and `live-json.json` are
+    byte-identical. Live findings **2**, suppressed **49**.
+
+    **Triage: `weak-coverage` 6 -> 5, `multi-region` 65 -> 66, judged unchanged at 71.** One mover,
+    `fr-price-history-export`, gaining `DECISIONS.md:19-30` at 0.603 and nothing else, its two real
+    regions unchanged. Entry 19 named this id, this window and this cause by name. The `mentions`
+    class, arriving on schedule.
+
+35. **2026-08-18, thirty-fifth capture — the checker moved, no document did, and the count went
+    2 -> 5.** Three changes land in this capture and only one of them touches the oracles.
+
+    **P2 learned to see NFRs.** Both regexes had required the literal `-fr-`, which cannot match
+    `-nfr-`: the character before `fr` is `n`, not `-`. So every non-functional requirement was
+    invisible to an invariant whose one-line description is "every PRD requirement is claimed by
+    exactly one design slice" — **12 of pricing's 77 declared ids, 4 of rating's 48, 6 of
+    subscriptions' 53**, about a sixth of the set, skipped with nothing emitted to say so. The
+    only place it showed was the module docstring's own honest `…-fr-…` wording, which is what
+    made it easy to read past. Widened to `-n?fr-`.
+
+    **Reported one row per gear, not one per id, and the reasoning is worth carrying.** Per id it
+    is 22 new rows against a live set of 2 — a noise floor, under which the two findings that are
+    actually about drift are the ones a caller stops reading. The collapsed row names every
+    unclaimed id, so nothing is lost to a grep; it shrinks as a gear adopts the convention and
+    disappears when it has. It also gets its own tag, `P2/nfr-unclaimed`: an unclaimed FR is a
+    slice that lost its owner, while an unclaimed NFR is a standing property of how this set is
+    written (rating's `design/15` carries an NFR-verification table, pricing's `design/01` names
+    two in prose). Under one tag the regression and the property would be indistinguishable.
+
+    `is_nfr` reads the kind off an **anchored, non-greedy** `-(n?fr)-` rather than asking whether
+    `"-nfr-"` is a substring: a plain `in` reads `cpt-cf-bss-x-fr-nfr-budget` as non-functional
+    and would move a real lost-owner FR into the collapsed row and hide it there. Caught by the
+    test that names that shape, which went red on the first implementation.
+
+    **`live-text.txt` and `live-show-known-debt.txt` each gain three lines; `live-json.json`
+    gains those three plus the new `pins_not_reproduced` key.** Live findings **2 -> 5**,
+    suppressed **unchanged at 49** — no pinned member moved in either direction, which is the
+    check that separates "the checker sees more" from "the documents got worse". The two
+    pre-existing findings are byte-identical and still both rating-side.
+
+    **`test_backtest.py`'s `PINNED_P2` 7 -> 8**, and the fixture cannot change, so this is the
+    checker by construction. Hand-identified before updating, as that pin's own instruction
+    requires: the +1 is exactly one `P2/nfr-unclaimed` row over the eleven `nfr` ids the
+    10073c36 PRD declares, and the other seven P2 findings are unchanged member for member.
+    `PINNED_P1` and the P3 count did not move.
+
+    **Two changes that do NOT move the oracles, recorded here so the capture is complete.**
+
+    `Corpus.load` now refuses this tool's own output — `N1-*.md` at any depth, and anything under
+    a `spec-check/` or `.spec-check/` directory — and `excluded_paths()` reports what it skipped,
+    because a checker that silently narrows its own input is the failure mode `load` already
+    refuses for a missing root and an unreadable subtree. `judge_report` has always refused to
+    *write* a report into a gear docs tree; this is the other half, for a copy that arrives by
+    any other route. It is a denylist and says so: it cannot recognise an arbitrary scratch note,
+    and an allowlist is unavailable because `_corpus_stems` must read a top-level document the
+    day it lands. The test drops an `N1-x.md` naming a code that a Problem-responses block
+    declares and no rule raises — so without the exclusion the stray *pays* the
+    `P3/code-unreferenced` finding, which is the 7 -> 0 incident in miniature. It was written
+    vacuous first (the fixture had nothing a stray could move) and re-armed until the
+    finding-set assertion, not a `text() is None`, was the one that failed.
+
+    `unreproduced_pins` prints the pins a run did **not** reproduce, in text and in JSON. Until
+    now `is_known_debt` only ever subtracted: a pin whose document had been fixed went on
+    suppressing nothing forever and the run printed the same summary. The two set-equality tests
+    were the only two-directional signal and they are pytest, which no CI job runs. Today's live
+    run reports none, which is itself the first time that has been asserted rather than assumed.
+
+    **Not done, and measured rather than deferred.** A review asked for P3's two missing
+    directions — `inst-` declared-but-uncited, and codes referenced-but-undeclared. Both were
+    measured against the live corpora first: the former is **105 of pricing's 374** and is not a
+    defect (an instruction's declaration line *is* the rule; a citation only adds a
+    cross-reference), and the latter is **46 in pricing, 9 in rating**, consisting of `ABORTED`,
+    `ACTIVE`, `ALTER`, `AUDIT`, `BUILT`, `RATED` — `_CODE` matches every SCREAMING token in
+    backticks. Both would report the checker's own regex as a documentation defect. The
+    measurement is in `closure.py`'s module docstring so the next reader repeats it rather than
+    the request.
+
+    **pytest: 271 passed, 1 skipped -> 282 passed, 1 skipped.** 271 + 11 added = 282; no test was
+    deleted or renamed out of the count.
+
 ## How they were produced (2026-07-31 capture)
 
 Run from the repository root:

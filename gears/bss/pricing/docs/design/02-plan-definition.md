@@ -355,7 +355,7 @@ terminal-phase row of its `(meter, dimensionKey)` line; D-117 — without the ba
 guard has no referent, D-84 completeness never sees the line, and the line resolves to nothing
 after conversion),
 `TERMINAL_PHASE_CHANGED` (422 — a revision re-terminalizing an existing phase or introducing a
-different terminal phase, `inst-ph-terminal-stable`), `PHASE_IN_USE` (422 — a revision dropping
+different terminal phase, `inst-ph-terminal-stable`, **D-64**), `PHASE_IN_USE` (422 — a revision dropping
 a phase still referenced by a current published price row), `SETUP_ROW_INVALID` (422 — setup row on a
 one-time plan, or carrying recurrence/`billingTiming`/tier fields),
 `PURCHASE_QTY_RANGE_INVALID` (422 — `purchase_min_qty > purchase_max_qty`),
@@ -703,7 +703,7 @@ per-tenant `pricing_policy_object` entry checked against `additional_fields` und
 - [ ] `p2` - **ID**: `cpt-cf-bss-pricing-dod-period-floor-cap`
 
 The system **MUST** let a plan revision author a period floor and/or cap per sold
-`(currency, region)`, freeze it into `pricingSnapshotRef`, publish it on the read model for
+`(currency, region)` (**D-319**, which landed the cap with the floor rather than after it), freeze it into `pricingSnapshotRef`, publish it on the read model for
 Rating to build its `PeriodFloorCapObligation` from, and **MUST NOT** evaluate it — Billing
 applies `max(total, floor)` / `min(total, cap)` after step 9. Publish **MUST** reject a bound
 on a market the plan prices nothing in (`PERIOD_FLOOR_CAP_MARKET_UNSOLD`, the market named)

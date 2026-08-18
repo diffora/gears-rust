@@ -72,7 +72,17 @@ FIXTURE = (
 # claim had been false-resolving through it. More findings, honestly counted —
 # the fix makes the checker stricter, not the tree worse.
 PINNED_P1 = 29
-PINNED_P2 = 7
+# P2 7 -> 8 on 2026-08-18, and the mover is the CHECKER, not the fixture — which
+# cannot change. Both P2 regexes had required the literal `-fr-`, which cannot match
+# `-nfr-` (the character before `fr` is `n`, not `-`), so every non-functional
+# requirement in every corpus was invisible to an invariant described as "every PRD
+# requirement is claimed by exactly one design slice". Identified by hand rather than
+# by re-running and trusting the output: the +1 is exactly one `P2/nfr-unclaimed`
+# row, `11 of 11 …`, over the eleven `**ID**: \`cpt-cf-bss-pricing-nfr-…\`` rows this
+# 10073c36 PRD declares. One row and not eleven because unclaimed NFRs collapse per
+# gear (see `fr_coverage`'s module docstring); the other seven P2 findings are
+# unchanged, member for member.
+PINNED_P2 = 8
 # 55 -> 56 on 2026-08-17, and the pin's own instruction was followed: verified by hand
 # before updating. The mover is exactly one, `MIGRATION_ALREADY_EFFECTIVE`, identified by
 # running `closure.check` over this same historical corpus twice — once with

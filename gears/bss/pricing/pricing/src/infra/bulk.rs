@@ -96,6 +96,19 @@ pub const BULK_ROW_CONFLICT: &str = "BULK_ROW_CONFLICT";
 /// out that one happened.
 pub const ABORTED_MEMBER: &str = "aborted";
 
+/// Where a report that was not a JSON object is kept when the abort note is
+/// stamped beside it (C5-1).
+///
+/// Every current writer stores an object — [`report_of`] serializes a
+/// `CommitReceipt`, and `commit_batch` writes that — so this is robustness rather
+/// than a live path. It exists because the alternative was `as_object_mut()`
+/// returning `None` and the note being **silently dropped**, and the note is the
+/// only evidence the sweep ran at all: an operator reading the run then cannot
+/// tell an abort from an ordinary completion. Refusing instead is not an option,
+/// because this sweep *is* the remedy — a refusal would leave the run
+/// `committing` with its locks already released.
+pub const PRIOR_REPORT_MEMBER: &str = "priorReport";
+
 /// The note `POST …/abort` stamps: an operator stopped a run that had stalled.
 pub const ABORT_NOTE: &str = "uncommitted rows were not attempted";
 
@@ -131,7 +144,9 @@ const INTERRUPTED_NOTE: &str = "the commit was interrupted (a panic or a dropped
 /// again.
 ///
 /// **The report is added to, never replaced**, so what the run committed survives
-/// the note wherever a receipt did reach the column.
+/// the note wherever a receipt did reach the column — including on the one shape
+/// that has no member to add to, where the prior value moves under
+/// [`PRIOR_REPORT_MEMBER`] rather than the note being dropped (C5-1).
 ///
 /// # Errors
 /// [`RepoError::NotFound`] when no run in this scope answers to the id;
@@ -155,6 +170,15 @@ pub async fn abandon_committing_run(
     let mut report = run.report;
     if let Some(object) = report.as_object_mut() {
         object.insert(ABORTED_MEMBER.to_owned(), serde_json::json!(note));
+    } else {
+        // Not an object: keep what was there under [`PRIOR_REPORT_MEMBER`] rather
+        // than dropping the note. "Added to, never replaced" still holds — the
+        // prior value is carried, not discarded — and the run stops being
+        // indistinguishable from one that completed normally.
+        report = serde_json::json!({
+            ABORTED_MEMBER: note,
+            PRIOR_REPORT_MEMBER: report,
+        });
     }
 
     bulk_repo::release_locks(runner, scope, tenant_id, operation_id).await?;

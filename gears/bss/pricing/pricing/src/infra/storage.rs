@@ -688,13 +688,40 @@ pub enum RepoError {
 /// is the difference between a shared predicate and a substring this crate
 /// invented.
 ///
-/// Called at the three per-aggregate serialization points D-159 names — the audit
-/// chain head, the outbox's per-aggregate sequence, and the current-revision
-/// partial `UNIQUE` — **and at two primary keys besides**: a caller-minted
-/// `approval_id` and a caller-minted `window_id` already taken. It is not called on
-/// every unique violation in this crate, which is the part that matters: a
-/// canonical-key collision is `DUPLICATE_SCOPE_KEY` and an idempotency claim has
-/// its own CAS, and each is answered by the check that owns it.
+/// # Where it is called, stated as a rule rather than as a list
+///
+/// **Every unique index whose loser's remedy is to re-read and retry.** That
+/// includes the three per-aggregate serialization points D-159 names — the audit
+/// chain head, the outbox's per-aggregate sequence, the current-revision partial
+/// `UNIQUE` — and it includes caller-minted primary keys, taxonomy values, policy
+/// objects, migration schedules, threshold versions, bulk operations and
+/// memberships. `grep -rn 'contention_or_db(' src` is the roster; there is no
+/// transcription of it here, deliberately.
+///
+/// This doc **enumerated five call sites until 2026-08-18** (review Z2-5), by
+/// which time there were sixteen in ten modules, and there are nineteen in eleven
+/// as this sentence is written — the number moved again between the review and
+/// its fix, which is the whole argument. A reader consulting the list to answer
+/// *"does a duplicate taxonomy value, a second policy object, a racing enrollment
+/// or a duplicate migration schedule come back as a 409 or a 500?"* was told 500
+/// by omission, and the answer is 409 at all four. `migrations.rs:8-13` records
+/// this crate deleting a per-slice roster for the same reason, and
+/// `plan_repo.rs:901-904` records a five that was seven.
+///
+/// # What it is **not** called on, which is the half that carries meaning
+///
+/// It is not called on every unique violation in this crate. Two are answered by
+/// the check that owns them and must stay that way:
+///
+/// - **The canonical scope key.** `price_repo` answers a collision with
+///   [`RepoError::DuplicateScopeKey`], which names the key and its occupant —
+///   §5's `DUPLICATE_SCOPE_KEY`, a caller-fixable authoring fault, not a race.
+/// - **The idempotency claim.** `idempotency_repo` has its own compare-and-swap
+///   and a lost claim is a *replay*, whose remedy is to return the first
+///   caller's answer rather than to retry.
+///
+/// `the_two_deliberate_exclusions_still_hold` derives that from the source rather
+/// than restating it, so the exclusion cannot decay into an omission.
 ///
 /// **The two primary-key sites are a divergence from D-159's own semantics and are
 /// reported rather than quietly counted in.** D-159's code says *another mutation of

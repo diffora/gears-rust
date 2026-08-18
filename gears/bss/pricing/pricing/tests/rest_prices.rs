@@ -16,7 +16,6 @@ mod rest_support;
 
 use axum::http::StatusCode;
 use bss_pricing::api::rest::plans::PLANS;
-use bss_pricing::domain::money::MinorAmount;
 use bss_pricing::domain::price_row::{MinQtyUsageFallback, ReservationFlavor};
 use rest_support::{
     Harness, body_json, etag_of, location_of, price_rows, problem_code, request, seed_draft_plan,
@@ -1578,7 +1577,7 @@ async fn a_patch_that_moves_the_usage_line_is_refused_by_its_code() {
 /// `inst-ft-typed`, `inst-ft-fallback`, `inst-dr-boundary`).
 ///
 /// **This case exists because a probe found its absence.** Replacing
-/// `content_of`'s `reserved_rate_minor` mapping with a hard `None` -- a client
+/// `content_of`'s `reserved_rate_nano_minor` mapping with a hard `None` -- a client
 /// authoring a reserved rate and the gear silently discarding it -- reddened
 /// *nothing* across the whole fast suite. The authoring path was the third of
 /// four layers found untested this way, after the store round trip and the
@@ -1601,7 +1600,7 @@ async fn a_create_carrying_every_slice_ten_primitive_stores_all_of_them() {
         "tax_inclusive": false,
         "meter": "storage.gb",
         "billing_granularity": "per_hour",
-        "reserved_rate_minor": 250,
+        "reserved_rate_nano_minor": 250_000_000_000_i64,
         "reservation_flavor": "capacity",
         "min_qty_purchase": 7,
         "min_qty_usage": 11,
@@ -1625,8 +1624,9 @@ async fn a_create_carrying_every_slice_ten_primitive_stores_all_of_them() {
     let row = &rows[0].row;
 
     assert_eq!(
-        row.reserved_rate_minor.map(MinorAmount::get),
-        Some(250),
+        row.reserved_rate
+            .map(bss_pricing::domain::money::RateMinor::nano_minor),
+        Some(250_000_000_000),
         "the reserved rate the caller authored"
     );
     assert_eq!(
@@ -1658,7 +1658,7 @@ async fn a_create_naming_an_unknown_reservation_flavor_is_refused() {
     body["scope_key"]["charge_kind"] = serde_json::json!("usage");
     body["content"]["meter"] = serde_json::json!("storage.gb");
     body["content"]["billing_granularity"] = serde_json::json!("per_hour");
-    body["content"]["reserved_rate_minor"] = serde_json::json!(250);
+    body["content"]["reserved_rate_nano_minor"] = serde_json::json!(250_000_000_000_i64);
     body["content"]["reservation_flavor"] = serde_json::json!("burst");
 
     let response = harness

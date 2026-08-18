@@ -597,13 +597,33 @@ pub struct ScopeKey {
 ///
 /// # What this does *not* gate
 ///
-/// The three sites that build a key **from** a stored row or a JSON payload
-/// (`price_repo::to_scope_key`, `price_repo::scope_key_columns`,
-/// `read_model_repo::read_scope_key`) do not consume a `ScopeKey` and so cannot
-/// take its parts. Their partial cover is [`ScopeKey::new`]'s positional
-/// signature, and that cover fails for exactly the widening D-196 performed — an
-/// axis pair added through a `with_*` builder rather than a constructor
-/// parameter, which is how `meter` and `dimension_key` arrived.
+/// **Four sites**, not three, and their cover is not the same. All four build or
+/// compare a key **from** a stored row or a JSON payload rather than consuming a
+/// `ScopeKey`, so none of them can take its parts.
+///
+/// Three of them — `price_repo::to_scope_key`, `price_repo::scope_key_columns`,
+/// `read_model_repo::read_scope_key` — have [`ScopeKey::new`]'s positional
+/// signature as a partial cover, and that cover fails for exactly the widening
+/// D-196 performed: an axis pair added through a `with_*` builder rather than a
+/// constructor parameter, which is how `meter` and `dimension_key` arrived.
+///
+/// **`price_repo::market_columns` has no cover at all**, and this register said
+/// nothing about it until 2026-08-18 (review Z2-1). It touches no constructor —
+/// it is a bare eight-element tuple literal off `price::Model` — so neither kind
+/// of widening reaches it, and it is deliberately *partial* ("all of them but
+/// `priceEligibility` and `cohort`"), which is what makes an omission invisible
+/// there: an eleventh axis silently absent does not read as "eight of ten", it
+/// reads as "modulo three axes", which is the shape the function is supposed to
+/// have. It also decides `refuse_ungenerational`, the row plane's last guard
+/// before `publish_rows`. It sits ten lines from `scope_key_columns`, whose doc
+/// is this crate's own account of this exact defect shipping once — so the sweep
+/// that wrote this register walked past it.
+///
+/// Its cover is now a test rather than a type: `price_repo_tests` drives one case
+/// per axis from an exhaustive [`ScopeKeyParts`] destructure, so an eleventh axis
+/// stops **that file** compiling. A refactor was rejected on `scope_key_columns`'
+/// own stated ground — a comparison that had to parse first would answer
+/// "corrupt" where the honest answer is "these two rows are not on one key".
 pub(crate) struct ScopeKeyParts<'a> {
     pub plan_id: PlanId,
     pub currency: &'a CurrencyCode,

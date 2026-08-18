@@ -620,6 +620,19 @@ pub struct KeyCoverageRequired {
 }
 
 impl ValidationRule<PlanShape> for KeyCoverageRequired {
+    /// `inst-wc-required` — **and this rule holds `inst-wc-perkey` too**, which
+    /// makes it the one place in this set where `rule_names()` is not 1:1 with the
+    /// instruction ids the module doc names (review B7-1, 2026-08-18).
+    ///
+    /// The fold is deliberate: `inst-wc-perkey`'s obligation — no `ChargeKind` is
+    /// excluded — is a property of the same walk over the same key set, so
+    /// splitting it out would be two rules asking one question twice. It is
+    /// recorded here rather than left to be noticed because a census written over
+    /// this set from the design document's ids would look for four names, find
+    /// three, and be "fixed" by weakening it against a pipeline that is correct.
+    /// The register of what this module holds is `coverage.rs`'s module doc; the
+    /// register of what it *names* is `rule_names()`, and they are one entry
+    /// apart on purpose.
     fn name(&self) -> &'static str {
         "inst-wc-required"
     }

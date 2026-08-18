@@ -1,6 +1,6 @@
 ---
 name: spec-check
-description: Cross-document invariants over a gear's design set — checks that every decision's claimed propagation surface actually cites it (P1), that every PRD requirement is claimed by exactly one design slice (P2), and that instruction ids and error codes are both declared and referenced (P3). Run on demand against one or more gear `docs/` directories. Trigger on "spec-check", "check the design set", "does the PRD reflect D-NN", "propagation gaps", "unreferenced error codes".
+description: Cross-document invariants over a gear's design set — checks that every decision's claimed propagation surface actually cites it (P1), that every PRD requirement, functional and non-functional, is claimed by exactly one design slice (P2), and that no instruction id is referenced undeclared and no error code is declared unraised (P3). Run on demand against one or more gear `docs/` directories. Trigger on "spec-check", "check the design set", "does the PRD reflect D-NN", "propagation gaps", "unreferenced error codes".
 user-invocable: true
 allowed-tools: Bash, Read
 ---
@@ -88,6 +88,7 @@ Flags:
 | `--format json` | Machine-readable envelope instead of the text report |
 | `--show-known-debt` | Also print the pinned D-69 findings the default output only counts. Never changes the exit code |
 | `--max-severity low\|medium\|high` | Lowest severity that fails the run (default `medium`). Pinned known debt is exempt at every level |
+| `--auto-context` | Load the gears this one's documents point at, for resolution only — never checked, never reported on. See § Context gears |
 
 Exit codes: `0` clean, `1` the gate tripped **or** a `--gear` directory does not
 exist (that one also prints `Error: …` on stderr — a docs tree that will not load
@@ -98,8 +99,12 @@ is never reported as a clean run), `2` usage error.
 **A bare invocation runs the deterministic layer only** — P1, P2, P3, seconds, free, no
 judge. That is the default because it is the part that costs nothing to repeat.
 
-**N1 runs only when asked for**, because it spends judge dispatches: 52 for pricing, 17
-for ledger, and the caller is paying. Ask for it in words — "including N1", "with the
+**N1 runs only when asked for**, because it spends judge dispatches, and the caller
+is paying. **The bill is `PINNED_JUDGE_CALLS` in `tests/test_neighbourhoods_cli.py`,
+per gear — read it there, and never from a number written here.** A figure copied into
+this file is a claim nothing re-checks: the one that used to sit on this line said 52
+for pricing when the pin had read 70 for a week, so a caller sizing a run
+under-budgeted by a third. Ask for it in words — "including N1", "with the
 semantic layer", "полный прогон" — and follow § N1's four-step runbook. If the request is
 ambiguous, run the deterministic layer, report it, and say what N1 would cost before
 spending it.
@@ -149,21 +154,24 @@ Two lines at the end matter as much as the findings:
 
 - `N finding(s)` — the live set.
 - `N known-debt finding(s) suppressed, tracked as D-69 — pass --show-known-debt
-  to see them` — pinned, accepted debt (**21** propagation gaps + **37**
-  unreferenced error codes = **58** as of 2026-08-07; the 2026-07-29 pin was
-  24 + 51, and every member that has left since was hand-checked with a note
-  beside its list), withheld by default. The three-gear invocation above
-  currently prints **`2`** and **`49`**, and **exits 0** — both live findings are
-  Low. It exited 1 for part of 2026-08-16: entry 25's parser fix surfaced a real
-  Medium gap (`D-313 -> PRD.md`) and entry 27 closed it by fixing the register,
-  which is the cycle working rather than a number to smooth over.
+  to see them` — pinned, accepted debt, withheld by default. Two lists carry it:
+  `PINNED_PROPAGATION_GAPS_2026_07_29` in `scripts/spec_check/invariants/propagation.py`
+  and `PINNED_UNREFERENCED_CODES_2026_07_29` in `.../closure.py`. **Both are
+  `len()`-able and neither total is repeated here**, because every copy this file
+  ever carried went stale: the last one read 21 + 37 = 58 while the lists held
+  20 + 29 = 49. Each member that has ever left was hand-checked with a note beside
+  its list, and those notes are the history.
 
-  Do not quote those two numbers from here without re-running: this line has read
-  `15`/`75`, `7`/`73`, `7`/`69`, `6`/`68`, `5`/`68`, `2`/`59`, `2`/`58`, `2`/`49`,
-  `3`/`49` and now `2`/`49`.
-  `tests/oracles/REGENERATE.md` is the authority on what moved and why — it
-  carries one numbered entry per capture, and the numbers here are a convenience
-  copy that has twice gone stale behind it.
+  The run's own two numbers are in `tests/oracles/live-text.txt`, captured from a
+  real invocation and byte-diffed by `tests/test_cli.py`. Read them there.
+  `tests/oracles/REGENERATE.md` carries one numbered entry per capture saying what
+  moved and why, and is the authority on all of it.
+
+  The run **exits 0** when nothing live is at or above the gate, which is a
+  statement about severity rather than about a count. It exited 1 for part of
+  2026-08-16: entry 25's parser fix surfaced a real Medium gap (`D-313 -> PRD.md`)
+  and entry 27 closed it by fixing the register — the cycle working, rather than a
+  number to smooth over.
 
 Several invariants report **their own coverage** rather than staying silent when
 they cannot read something. These are not defects in the documents; they say what
@@ -178,6 +186,25 @@ went unchecked:
   (`GONE.md`, `design/99-nothing.md`) naming nothing the corpus holds.
 - `P2/traceability-convention-unknown` — the gear uses a traceability convention
   P2 does not parse, so per-id claims are not reported for it at all.
+- `P2/nfr-unclaimed` — **one row per gear**, naming every non-functional
+  requirement no slice traces to. Its own tag rather than `P2/fr-unclaimed`
+  because the two are different facts: an unclaimed FR is a slice that lost its
+  owner, while this design set traces NFRs by other conventions entirely (rating's
+  `design/15` has an NFR-verification table, pricing's `design/01` names two in
+  prose). Collapsed per gear because per id it is 22 rows against a live set of 2,
+  and a noise floor is where a real regression goes to hide. Until 2026-08-18 P2
+  skipped NFRs altogether: both regexes required the literal `-fr-`, which cannot
+  match `-nfr-`.
+
+**P3 checks one direction per id kind, and that is a measurement rather than an
+omission.** Instruction ids are checked referenced-but-undeclared; error codes
+declared-but-unreferenced. The two missing directions were measured on 2026-08-18
+before being built: `inst-` declared and never cited elsewhere is 105 of pricing's
+374 and is not a defect (an instruction's declaration line *is* the rule), and
+codes referenced but declared nowhere is 46 in pricing — `ABORTED`, `ACTIVE`,
+`ALTER`, `BUILT` — because the code regex matches every SCREAMING token in
+backticks. The numbers and the reasoning are in `closure.py`'s module docstring;
+repeat the measurement before re-raising it.
 
 ### What a propagation target may name
 
@@ -322,8 +349,12 @@ payload. Three controls, in order of effect:
 
 | Control | Effect, measured |
 |---|---|
-| The ladder judges only what needs judging | 116 → **69** judged (52 pricing, 17 ledger) |
-| `judge_batches.py`, 4 per dispatch | 69 → **22 dispatches** (14 pricing, 8 ledger) |
+| The ladder judges only what needs judging | most requirements never reach a judge; the survivors are `PINNED_JUDGE_CALLS` |
+| `judge_batches.py`, 4 per dispatch | divides that by four, so the dispatch bill is `ceil(judged / 4)` per gear |
+
+Both rows are deliberately unnumbered. The effect is the ratio, which is stable;
+the operands move with every docs wave, and a transcribed pair of them is a claim
+this file cannot re-check — `tests/test_neighbourhoods_cli.py` can and does.
 
 A third control was **deliberately given up on 2026-07-30**: the judge used to run on
 Sonnet, which is cheaper per token. The A/B in
@@ -398,8 +429,11 @@ the id; does any of them state the rule?* Expect two kinds of answer, both usefu
 and `specified`, which is where the terse-prose penalty below lands, since a rule
 stated in one dense line scores low however correct it is.
 
-Opt-in, never default. It takes ledger from 17 judge calls to 40 (11 extra
-dispatches) and pricing from 52 to 70, undoing most of what the ladder buys.
+Opt-in, never default: it promotes `anchored:no-account` into the judged set, which
+undoes much of what the ladder buys. How much is `PINNED_TRIAGE_*`'s
+`anchored:no-account` row divided by four, in dispatches. Not stated as a pair of
+numbers here — the version that was said "pricing from 52 to 70" when 70 was already
+the *baseline*, i.e. it described the whole judged set as the surcharge.
 
 ### Thresholds, and how they were arrived at
 
@@ -442,16 +476,13 @@ Frozen in `tests/test_neighbourhoods_cli.py`, together with the judge-call count
 that number is what the ladder exists to control, so a change that quietly doubles
 it must read as a diff.
 
-| class | pricing | ledger |
-|---|---|---|
-| `unbuildable:no-prose` | 0 | 0 |
-| `no-region` | 6 | 0 |
-| `anchored:no-account` | 18 | 23 |
-| `suspicious:multi-region` | 14 | 3 |
-| `suspicious:not-normative` | 0 | 0 |
-| `suspicious:weak-coverage` | 38 | 14 |
-| `covered:strong` | 0 | 0 |
-| **total / judged** | **76 / 52** | **40 / 17** |
+The classes, in ladder order: `unbuildable:no-prose`, `no-region`,
+`anchored:no-account`, `suspicious:multi-region`, `suspicious:not-normative`,
+`suspicious:weak-coverage`, `covered:strong`. **The counts are
+`PINNED_TRIAGE_PRICING` and `PINNED_TRIAGE_LEDGER` and are not copied here.** The
+table that used to stand in this place read `6/18/14/38`, total 76, judged 52,
+against pins of `3/4/65/5`, total 77, judged 70 — every populated cell wrong, two of
+them by more than 4×, and the judged figure it fed was the caller's budget.
 
 Hand-checked before being frozen, which is the whole point of a pin. Two findings
 came out of that check, before any judge ran:
@@ -575,15 +606,20 @@ References in the report are plain `path:line` text, not links, because
 cd .claude/skills/spec-check && python3 -m pytest
 ```
 
-217 tests, no third-party runtime dependencies — 110 for the deterministic layer
-and 107 for N1. Four of them are the oracles this port was accepted against, and
-they are the ones to distrust a change that reddens them rather than edit:
+No third-party runtime dependencies. The collected count is whatever
+`python3 -m pytest --collect-only -q | tail -1` says; it is not written here,
+because the copy that was read 217 against 271 collected. Four of these are the
+oracles this port was accepted against, and they are the ones to distrust a change
+that reddens them rather than edit:
 
 1. `tests/test_cli.py` — stdout in all three forms, diffed byte-for-byte against
    output frozen from the Rust implementation this was ported from
    (`tests/oracles/`; how it was captured is in `tests/oracles/REGENERATE.md`).
-2. `tests/test_propagation.py` — the 24 pinned propagation gaps, reproduced
-   exactly against the live corpus.
-3. `tests/test_closure.py` — the 51 pinned unreferenced error codes, likewise.
+2. `tests/test_propagation.py` — the pinned propagation gaps, reproduced exactly
+   against the live corpus. Two-directional: a *fixed* gap fails it too, so a pin is
+   never left to become a floor.
+3. `tests/test_closure.py` — the pinned unreferenced error codes, likewise.
 4. `tests/test_backtest.py` — all three invariants against the frozen `10073c36`
-   pricing tree under `tests/fixtures/`: P1 28, P2 7, P3 55.
+   pricing tree under `tests/fixtures/`. Its per-invariant pins are `PINNED_P1`,
+   `PINNED_P2` and the P3 literal in that file, each with the hand-check that moved
+   it recorded beside it.

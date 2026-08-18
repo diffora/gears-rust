@@ -104,39 +104,92 @@
 //! from the name alone builds the per-key reading and gets `None` where the answer
 //! is a number, or a number where the answer is zero.
 //!
-//! **The horizon itself is still absent, and the premise that makes projecting
-//! without it safe is untouched.** What the bound buys is stated in D-121's own
-//! words: "a delta is O(live keys x windows within `H`), never O(the plan's
-//! accumulated history)". A plan's accumulated history is its `superseded` price
-//! rows — and `published -> superseded` has exactly two sanctioned producers, the
-//! D-88 supersession unit and the D-100 cutover. **The premise here has narrowed and
-//! this paragraph had not noticed** (found by review, 2026-08-05): as of that date the
-//! flip has a producer in this crate — `price_repo::supersede_row`, inside
-//! `commit_supersession_rows` — so what holds the premise is no longer "nothing
-//! produces it" but the strictly weaker **"no surface reaches it"**: the orchestrator,
-//! the approval unit and the route do not exist, so nothing a client can call flips a
-//! published row. [`crate::infra::publish`] states its own version of this at the same
-//! strength and names the group that deletes it. So the set D-121 filters is still
-//! exactly the plan's `published` rows, capped at 500 by §14 — and the window set
-//! beside them is the live keys' own rather than an accumulation, because a key's
-//! history is made of `superseded` rows that no *mounted* path yet produces.
+//! **The horizon itself is still absent. The premise that made projecting
+//! without it safe is gone, and nothing has replaced it** (found by review,
+//! 2026-08-17 — Z4-1). What the bound buys is stated in D-121's own words: "a
+//! delta is O(live keys x windows within `H`), never O(the plan's accumulated
+//! history)". A plan's accumulated history is its `superseded` price rows, and
+//! `published -> superseded` has exactly two sanctioned producers — the D-88
+//! supersession unit and the D-100 cutover.
 //!
-//! **The group that builds the supersession unit or the cutover deletes that
-//! premise and owes the horizon** — and, with it, `H`'s own input, "the longest
-//! billing cycle sold on the plan", which is W6's term under a third margin. Whether
-//! it exists by then depends on G3 having landed it; nothing in this tree produces it
-//! today, and this paragraph does not promise that anything will. This is where they
-//! will find out that they owe it.
+//! This paragraph has now been wrong twice about those producers, each time in
+//! the same direction, and both corrections are kept because the *pattern* is
+//! the warning:
+//!
+//! 1. It said "nothing produces it". Review 2026-08-05 found
+//!    `price_repo::supersede_row` inside `commit_supersession_rows`, and the
+//!    claim narrowed to the strictly weaker **"no surface reaches it"** — the
+//!    orchestrator, the approval unit and the route do not exist, so nothing a
+//!    client can call flips a published row.
+//! 2. That is false too. **Three mounted routes reach the flip**, and each was
+//!    merged into this gear's router before the sentence above was last edited:
+//!
+//!    | Route | merged at | reaches |
+//!    |---|---|---|
+//!    | `POST /plans/{planId}/supersessions` | `module.rs`, `supersessions::router` | `supersede_in` -> [`crate::infra::supersession::commit_supersession`] -> `price_repo::commit_supersession_rows` |
+//!    | `POST /plans/{planId}/cutovers` | `module.rs`, `cutovers::router` | `cutover_in` -> [`crate::infra::cutover::commit_cutover`] |
+//!    | `POST /repricing-runs` | `module.rs`, `repricing_runs::router` | `apply_run_in` -> `commit_supersession` per journal row |
+//!
+//! **So the group that "deletes the premise and owes the horizon" has already
+//! landed, and the horizon was not paid.** The set this projector reads is
+//! [`crate::domain::projection::PROJECTED_ROW_STATES`] — `published` **and**
+//! `superseded` — with no horizon predicate, and [`project_windows`] draws its
+//! window set from those same rows with `expired` included. Every plan delta
+//! therefore re-projects the plan's entire accumulated supersession history into
+//! an INSERT-only store on a seven-year horizon whose contract is that a
+//! completed version never changes. That is exactly the growth D-121's bound
+//! exists to stop.
+//!
+//! **What bounds the set today: nothing.** This paragraph used to say the
+//! projected set was "capped at 500 by §14" and that is wrong three ways.
+//! `SoftSizeCaps::max_price_rows_per_plan` is **advisory** — it raises
+//! `PLAN_SIZE_SOFT_CAP_EXCEEDED` as a *warning* whose own message says "the
+//! publish proceeds" — its subject is the publish's candidate row set
+//! [`CANDIDATE_ROW_STATES`](crate::infra::publish::CANDIDATE_ROW_STATES), which
+//! is `[published, draft]`, and it is a cap on **rows per plan revision**, not on
+//! the history those rows accumulate. Superseded rows are outside the cap, outside
+//! the states it counts, and unbounded by anything else in this crate: a plan
+//! repriced monthly grows its delta payload monthly and forever. The real bound
+//! is the number of supersessions a tenant performs, which is a rate rather than
+//! a limit.
+//!
+//! **The predicate now has both operands it lacked.**
+//! `domain::coverage::longest_cycle_sold` is `H`'s input and is built (see the
+//! trap above for the reading it must take — per **plan**, not per key), and
+//! [`project_windows`] supplies the interval set the predicate ranges over.
+//! Building it is a design act rather than a repair, which is why this note
+//! records the debt instead of discharging it: the filter decides what a *frozen*
+//! version carries, rating rates past instants against exactly those payloads, and
+//! choosing `H` chooses how far back a resolution can still succeed. That is a
+//! decision the register owes an entry, not something a doc correction may smuggle in.
+//!
+//! **Why this is a cost and not yet a fault.** No wrong price results. The one
+//! live consumer that selects a row by market filters on state —
+//! `api::rest::preview` asks `row["lifecycleState"] == published` — so a
+//! superseded predecessor can never be quoted. What it costs is payload size on a
+//! monotonically growing store, deserialized per `/preview` and per
+//! window-sellability request.
 //!
 //! The cost of projecting anyway is still real, and it is smaller by one fact than
 //! it was: the per-fact list in [`crate::domain::projection`] now records the
 //! window facts as **present**, and predicate (5)'s GA-gate flags and predicate
 //! (6)'s registry `sellable` flag as the two that remain absent — so a version
-//! this projector writes answers four of six rather than three. What makes the
-//! remainder bearable rather than reckless is unchanged: **nothing reads a delta
-//! payload today and nothing can** — `bss_pricing_sdk::api` says resolution
-//! "arrives with the slices that own those payloads", there is no resolution
-//! route, no in-process resolve method and no consumer gear here.
+//! this projector writes answers four of six rather than three.
+//!
+//! **The second half of that argument is also gone.** This paragraph used to end
+//! *"nothing reads a delta payload today and nothing can — there is no resolution
+//! route, no in-process resolve method and no consumer gear here"*. Two mounted
+//! read surfaces resolve a frozen delta and walk its payload:
+//!
+//! - `api::rest::preview` calls `read_model_repo::delta_at` at the tenant's
+//!   frontier and then walks `payload["prices"]` for the requested market;
+//! - `api::rest::windows`' sellability report calls the same `delta_at` and then
+//!   [`read_model_repo::sellability_facts`](crate::infra::storage::repo::read_model_repo::sellability_facts),
+//!   which reads every member of the same array.
+//!
+//! So the payload is not write-only, the growth above is paid on every one of
+//! those reads, and a reader deciding how much this projector may safely freeze
+//! must not take this module's word that nobody is looking.
 //!
 //! ## 2. D-136's advance strands a version that completes out of order
 //!

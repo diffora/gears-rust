@@ -40,6 +40,17 @@
 //! `UNIQUE` rather than a partial one because it constrains identity, not
 //! lifecycle — the bundle row does not have a lifecycle of its own.
 //!
+//! **The index below is no longer the one the schema carries.**
+//! `m20260802_000083` widened it to `(tenant_id, plan_id)` on 2026-08-18, and
+//! every word above survives that: one plan still carries at most one bundle. What
+//! the statement here additionally asserted, and what nothing above argues for, is
+//! that a `plan_id` belongs to one bundle **across every tenant** — on the one
+//! column of this table that is a client-supplied reference and the one the
+//! paragraph above explains cannot carry a foreign key. The first tenant to name a
+//! `plan_id` therefore locked every other tenant out of it, irreversibly. Read
+//! `m20260802_000083` for the whole of it; this statement stays as written because
+//! it is the state the chain passes through.
+//!
 //! # `price_basis` and `invoice_itemization` are **not** revision-scoped, and
 //! # that is D-92's own defect arriving one row up
 //!

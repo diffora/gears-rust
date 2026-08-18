@@ -526,10 +526,18 @@ impl WindowActivationJob {
         now: DateTime<Utc>,
         report: &mut ActivationReport,
     ) {
-        let Ok(threshold) = chrono::Duration::from_std(self.jobs.window_activation_overdue_after())
-        else {
-            return;
-        };
+        let threshold =
+            match chrono::Duration::from_std(self.jobs.window_activation_overdue_after()) {
+                Ok(threshold) => threshold,
+                Err(e) => {
+                    crate::infra::jobs::unconvertible_threshold(
+                        e,
+                        "window_activation_overdue_after",
+                        ALARM_WINDOW_ACTIVATION_OVERDUE,
+                    );
+                    return;
+                }
+            };
         let late = now.signed_duration_since(window.at);
         if late < threshold {
             return;

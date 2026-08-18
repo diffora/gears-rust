@@ -196,7 +196,7 @@ impl fmt::Display for TierQualificationWindow {
 ///
 /// A reservation is an **attribute of the usage row it reserves**, never a
 /// second row: A1 keeps one priced line per `(meter, dimensionKey)`, so the pair
-/// `reserved_rate_minor` + this flavor rides the on-demand row alongside its
+/// `reserved_rate` + this flavor rides the on-demand row alongside its
 /// price and tiers.
 ///
 /// **There is no default, deliberately.** The two flavors bill differently
@@ -207,7 +207,7 @@ impl fmt::Display for TierQualificationWindow {
 /// `reservedRate x reservedQuantity x duration` per covered granule
 /// (`inst-rv-level`, D-139). Absent means *the row reserves nothing*, which is
 /// why the field is an `Option` on the row and why the pairing with
-/// `reserved_rate_minor` is a publish rule rather than a default.
+/// `reserved_rate` is a publish rule rather than a default.
 #[domain_model]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ReservationFlavor {
@@ -597,12 +597,32 @@ pub struct PriceRow {
     pub included_allowance: Option<IncludedAllowance>,
     /// The reserved rate, in the row's currency (`inst-rv-attrs`, A1).
     ///
-    /// Money, and therefore **outside** the evaluation-policy roster. Under
-    /// D-139 it is denominated in the row's billable unit — level unit x granule
-    /// duration on a `capacity` reservation — so it is money per granule rather
-    /// than a period charge.
-    pub reserved_rate_minor: Option<MinorAmount>,
-    /// What the reservation reserves; present iff [`Self::reserved_rate_minor`]
+    /// **A rate, at the stored 10^-9 scale — not an amount.** Outside the
+    /// evaluation-policy roster all the same: what keeps it out is that it is
+    /// money rather than a quantity-derivation input, and that is unchanged.
+    /// Under D-139 it is denominated in the row's billable unit — level unit x
+    /// granule duration on a `capacity` reservation — so it is money **per
+    /// granule** rather than a period charge, which is D-311's own definition of
+    /// a rate.
+    ///
+    /// It was typed [`MinorAmount`] until 2026-08-17, and that is the same defect
+    /// D-311 fixed one column over: *"a metered rate routinely prices below the
+    /// currency's minor unit"*, and truncation *"collapsed a `0.0150 / 0.0110`
+    /// ladder and a `0.0230 / 0.0120` ladder both to `0.01` at every band, so two
+    /// different tariffs became the same tariff on rows that looked well-formed."*
+    /// D-311 moved [`TierBand::unit_price_rate`] and [`Self::unit_rate`] and
+    /// missed this one, because its census enumerated references to
+    /// `unit_price_minor` and this field is not one of them — the wrong-operand
+    /// census D-323 already records as having cost one site.
+    ///
+    /// In whole minor units the smallest expressible non-zero value was one cent,
+    /// so a per-second reserved capacity — `max_hold_granules` names `per_second`
+    /// as the granularity that motivated widening that column — could not be
+    /// authored at all: `$0.0000166667` per GB-second is `0.00166667` minor units,
+    /// and the author had to submit `0` or `1`, the latter 600x the intent. Not
+    /// truncated; unrepresentable.
+    pub reserved_rate: Option<RateMinor>,
+    /// What the reservation reserves; present iff [`Self::reserved_rate`]
     /// is (`inst-rv-attrs`).
     ///
     /// **In** the evaluation-policy roster: it decides whether the reserved
@@ -673,7 +693,7 @@ impl PriceRow {
             aggregation_granularity: None,
             max_hold_granules: None,
             included_allowance: None,
-            reserved_rate_minor: None,
+            reserved_rate: None,
             reservation_flavor: None,
             min_qty_purchase: None,
             min_qty_usage: None,
@@ -694,7 +714,7 @@ impl PriceRow {
     /// discover the two problems in.
     #[must_use]
     pub const fn is_reserved(&self) -> bool {
-        self.reserved_rate_minor.is_some() || self.reservation_flavor.is_some()
+        self.reserved_rate.is_some() || self.reservation_flavor.is_some()
     }
 
     /// Is this a metered usage row?

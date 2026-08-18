@@ -24,8 +24,8 @@ use bss_pricing::domain::scope_key::{
     ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey,
 };
 use bss_pricing::infra::bulk::{
-    ABORT_NOTE, ABORTED_MEMBER, BULK_ROW_CONFLICT, CommitReceipt, abandon_committing_run,
-    commit_batch,
+    ABORT_NOTE, ABORTED_MEMBER, BULK_ROW_CONFLICT, CommitReceipt, PRIOR_REPORT_MEMBER,
+    abandon_committing_run, commit_batch,
 };
 use bss_pricing::infra::storage::RepoError;
 use bss_pricing::infra::storage::entity::price;
@@ -1014,6 +1014,69 @@ async fn a_run_no_guard_swept_is_recoverable_through_the_abort_sweep() {
         Some(1),
         "and it is added to the report rather than replacing it, so what the column already \
          held survives the sweep: {report}"
+    );
+}
+
+/// **The note survives a report that is not a JSON object** (C5-1).
+///
+/// `abandon_committing_run` stamped its note through `report.as_object_mut()`
+/// and did nothing at all when that answered `None`: the sweep still landed the
+/// run terminal, so an operator reading it could not tell an abort from an
+/// ordinary completion, and the note is the only evidence the sweep ran. Every
+/// current writer stores an object — `report_of` serializes a `CommitReceipt` —
+/// so this is robustness rather than a live defect, which is exactly why it
+/// needed a case: nothing else can reach the arm.
+///
+/// Refusing instead would be wrong. This sweep *is* the remedy for a run stuck
+/// `committing`, and by the time the note is stamped the locks are about to be
+/// released; a refusal would leave the run with no door out for the sake of a
+/// malformed column.
+#[tokio::test]
+async fn an_abort_note_is_kept_even_when_the_stored_report_is_not_an_object() {
+    let h = harness().await;
+    let (price_id, _) = seed_draft(&h, key("eu"), 9_900).await;
+    let run = a_run_stuck_committing(&h, "c-stuck-3", price_id).await;
+
+    let conn = h.provider.conn().expect("conn");
+    // A shape no current writer produces, put there directly. `advance` is the
+    // only writer of this column and it takes whatever JSON it is handed.
+    bulk_repo::advance(
+        &conn,
+        &scope(),
+        TENANT,
+        run,
+        BulkState::Committing,
+        BulkState::Committing,
+        serde_json::json!("a report that is not an object"),
+        at(11),
+    )
+    .await
+    .expect("seed the malformed report");
+
+    abandon_committing_run(&conn, &scope(), TENANT, run, ABORT_NOTE, at(12))
+        .await
+        .expect("the sweep must still land: it is the remedy, not a validator");
+
+    let report = report_of(&h, run).await;
+    assert_eq!(
+        report
+            .get(ABORTED_MEMBER)
+            .and_then(serde_json::Value::as_str),
+        Some(ABORT_NOTE),
+        "the note is where an operator reads it whatever the column held: {report}"
+    );
+    assert_eq!(
+        report
+            .get(PRIOR_REPORT_MEMBER)
+            .and_then(serde_json::Value::as_str),
+        Some("a report that is not an object"),
+        "and `added to, never replaced` holds on the one shape with no member to \
+         add to: the prior value moves rather than being discarded: {report}"
+    );
+    assert_eq!(
+        state_of(&h, run).await,
+        BulkState::CompletedWithConflicts,
+        "and the run still leaves `committing`"
     );
 }
 

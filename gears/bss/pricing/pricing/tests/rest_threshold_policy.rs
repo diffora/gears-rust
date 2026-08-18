@@ -1424,6 +1424,199 @@ async fn a_rejected_retirement_leaves_the_thresholds_in_force() {
 }
 
 // ---------------------------------------------------------------------------
+// The body is read by this gear's parser, not by an extractor that answers
+// outside the canonical envelope.
+// ---------------------------------------------------------------------------
+
+/// **The `GET` serves a conditional read, and this resource is the one that most
+/// owed it.**
+///
+/// Its `If-Match` is mandatory and this `GET` is the *only* place a caller can
+/// obtain a tag, so a client holding a fresh precondition had to re-download the
+/// whole threshold set on every poll. `If-None-Match` was handled nowhere in the
+/// gear until 2026-08-17 while seven reads emitted a validator.
+///
+/// Three clauses, because the first alone is satisfiable by a defect: the matching
+/// tag is 304, the 304 carries the validator it matched (or the caller must re-read
+/// unconditionally next time and the round trip saves nothing), and a **stale** tag
+/// is still answered 200 with the body — which is the half that says the comparison
+/// happened rather than that the header switched the body off.
+#[tokio::test]
+async fn a_conditional_read_under_the_current_tag_is_not_modified() {
+    let h = Harness::new().await;
+
+    let tag = policy_etag_of(&h, PROPOSER).await;
+    let unchanged = h
+        .allowed_as(PROPOSER)
+        .send(with_headers(
+            "GET",
+            APPROVAL_THRESHOLD_POLICY,
+            None,
+            &[("if-none-match", tag.as_str())],
+        ))
+        .await;
+    assert_eq!(unchanged.status(), StatusCode::NOT_MODIFIED);
+    assert_eq!(
+        unchanged
+            .headers()
+            .get("etag")
+            .and_then(|value| value.to_str().ok()),
+        Some(tag.as_str()),
+        "the 304 carries the validator it matched (RFC 9110 section 15.4.5)"
+    );
+
+    // A tag this surface never issued: the representation is served, not withheld.
+    let stale = h
+        .allowed_as(PROPOSER)
+        .send(with_headers(
+            "GET",
+            APPROVAL_THRESHOLD_POLICY,
+            None,
+            &[(
+                "if-none-match",
+                "\"0000000000000000000000000000000000000000000000000000000000000000\"",
+            )],
+        ))
+        .await;
+    assert_eq!(stale.status(), StatusCode::OK);
+    assert!(
+        body_json(stale).await["effective"].is_null(),
+        "and the body is the whole representation"
+    );
+
+    // And the tag moves with the representation, so a caller that polled through a
+    // proposal is not held on a 304 across a change. This is the clause a digest
+    // over only `effective` would fail.
+    let opened = propose_as(&h, PROPOSER, proposal("EUR", 500)).await;
+    assert_eq!(opened.status(), StatusCode::ACCEPTED);
+    let after = h
+        .allowed_as(PROPOSER)
+        .send(with_headers(
+            "GET",
+            APPROVAL_THRESHOLD_POLICY,
+            None,
+            &[("if-none-match", tag.as_str())],
+        ))
+        .await;
+    assert_eq!(
+        after.status(),
+        StatusCode::OK,
+        "a proposal moved the representation, so the old tag no longer matches"
+    );
+}
+
+/// **An anonymous caller is answered 401 whatever their body looks like.**
+///
+/// `preconditions::parse_body`'s doc is the rule — an axum `Json` extractor rejects
+/// a body it cannot deserialize with a **422**, which `01-foundation.md` §3.3 says
+/// no path in this gear can produce, and a missing `Content-Type` with a **415**,
+/// which no registration declares either. The half that makes it more than a
+/// declaration drift is *ordering*: an extractor runs during dispatch, **before**
+/// the handler body, so a route that lets it answer refuses an unauthenticated
+/// caller on the shape of their body rather than on their absence of a subject —
+/// an unauthenticated fingerprint of the route's request schema, on the route that
+/// authors the tenant's two-person-review thresholds.
+///
+/// `rest_authz`'s `an_unauthenticated_caller_is_refused_on_every_route` cannot see
+/// this: it drives every route with a **well-formed** body and the right
+/// content type, so the extractor admits and the 401 arrives from the handler. The
+/// two cases below are the ones outside that property.
+#[tokio::test]
+async fn an_anonymous_caller_is_refused_on_the_subject_and_never_on_the_body() {
+    let h = Harness::new().await;
+
+    // No `Content-Type` at all: `MissingJsonContentType` is a 415 in axum 0.8.
+    let no_content_type = h
+        .anonymous()
+        .send(
+            axum::http::Request::builder()
+                .method("PUT")
+                .uri(APPROVAL_THRESHOLD_POLICY)
+                .body(axum::body::Body::from(proposal("EUR", 500).to_string()))
+                .expect("build request"),
+        )
+        .await;
+    assert_eq!(
+        no_content_type.status(),
+        StatusCode::UNAUTHORIZED,
+        "a caller with no subject is told that, not that their media type is wrong"
+    );
+
+    // Syntactically valid JSON that does not fit the request type:
+    // `JsonDataError` is a 422, the one status §3.3 forbids by name.
+    let wrong_shape = h
+        .anonymous()
+        .send(with_headers(
+            "PUT",
+            APPROVAL_THRESHOLD_POLICY,
+            Some(serde_json::json!({ "entries": "not-an-array" })),
+            &[],
+        ))
+        .await;
+    assert_eq!(
+        wrong_shape.status(),
+        StatusCode::UNAUTHORIZED,
+        "and the same for a body the request type cannot read"
+    );
+}
+
+/// **A body the request type cannot read is a 400 inside the canonical envelope.**
+///
+/// The status alone is the half a half-fix passes: axum's own `JsonDataError`
+/// could be re-statused to 400 and still answer the serde message as **plain
+/// text**, with no `type`, no `detail` and no `context` — and the gear's whole
+/// contract tells a client to key on the document. So the document is asserted,
+/// not the status. `InvalidRequest` is the ladder's one class with no `reason`
+/// slot, so the canonical family `type` is the machine-readable half here.
+#[tokio::test]
+async fn a_body_the_request_type_cannot_read_is_a_four_hundred_inside_the_envelope() {
+    let h = Harness::new().await;
+
+    let refused = propose_as(
+        &h,
+        PROPOSER,
+        serde_json::json!({ "entries": "not-an-array" }),
+    )
+    .await;
+    assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
+    let problem = body_json(refused).await;
+    assert_eq!(
+        problem["type"], "gts://gts.cf.core.errors.err.v1~cf.core.err.invalid_argument.v1~",
+        "the refusal rides this gear's one ladder rather than the extractor's own rendering"
+    );
+    assert!(
+        problem["detail"]
+            .as_str()
+            .is_some_and(|detail| detail.contains("the request body is not readable")),
+        "and it says the body is what could not be read: {problem}"
+    );
+
+    // And a missing media type is refused the same way rather than by a 415 the
+    // registration does not declare.
+    let no_content_type = h
+        .allowed_as(PROPOSER)
+        .send(
+            axum::http::Request::builder()
+                .method("PUT")
+                .uri(APPROVAL_THRESHOLD_POLICY)
+                .body(axum::body::Body::from(proposal("EUR", 500).to_string()))
+                .expect("build request"),
+        )
+        .await;
+    assert_ne!(
+        no_content_type.status(),
+        StatusCode::UNSUPPORTED_MEDIA_TYPE,
+        "no registration in this gear declares a 415"
+    );
+
+    assert_eq!(
+        latest_minted(&h).await,
+        None,
+        "and nothing was minted by a request whose body was never understood"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // D-186: §5's `ETag` half. The precondition, and the premise it replaced.
 // ---------------------------------------------------------------------------
 

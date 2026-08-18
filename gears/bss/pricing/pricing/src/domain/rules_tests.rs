@@ -142,6 +142,7 @@ mod write_stage_over_the_whole_set {
     use crate::domain::rules::reservation::RESERVATION_ON_NON_USAGE;
     use crate::domain::rules::{
         EVAL_POLICY_MISPLACED, LEVEL_FIELDS_INVALID, MODEL_KIND_CHARGEKIND_MISMATCH,
+        PACKAGE_FIELDS_INVALID,
     };
 
     fn minor(units: i64) -> MinorAmount {
@@ -170,7 +171,7 @@ mod write_stage_over_the_whole_set {
         row.amount_minor = Some(minor(2_500));
         row.billing_granularity = Some(BillingGranularity::WholeUnit);
         row.aggregation_function = Some(AggregationFunction::Peak);
-        row.reserved_rate_minor = Some(minor(3));
+        row.reserved_rate = Some(RateMinor::from_minor_units(3).expect("a non-negative rate"));
         row.reservation_flavor = Some(ReservationFlavor::Capacity);
         assert_eq!(
             write_codes(&row),
@@ -206,6 +207,67 @@ mod write_stage_over_the_whole_set {
         let mut row = PriceRow::new(ChargeKind::Recurring, None);
         row.billing_granularity = Some(BillingGranularity::WholeUnit);
         assert_eq!(write_codes(&row), vec![EVAL_POLICY_MISPLACED.to_owned()]);
+    }
+
+    /// `inst-pk-fields` was the one member of the frozen-key family with no such
+    /// arm (review B3-1), so the two package fields beside a frozen non-usage
+    /// `chargeKind` were judged at **neither** stage until a model kind arrived.
+    ///
+    /// The row below is the population the sibling case above describes, one
+    /// field over: `package_size` on a `recurring` key with the kind picker
+    /// untouched. Its only two readers in the whole rule set —
+    /// `inst-mk-required` and `inst-pk-fields` — both sat behind
+    /// `let Some(kind) = subject.model_kind else { return }`, and `inst-pk-window`
+    /// early-returns on `!is_usage()`, so the report named `MODEL_KIND_MISSING`
+    /// and nothing at all about the package fields. Setting any kind then surfaced
+    /// it at publish only, under a message naming the *kind* — which points the
+    /// author at `model_kind: package`, the one value `inst-mk-chargekind` then
+    /// refuses.
+    #[test]
+    fn package_fields_on_a_frozen_non_usage_key_answer_before_a_kind_is_picked() {
+        let mut row = PriceRow::new(ChargeKind::Recurring, None);
+        row.package_size = Some(100);
+        assert_eq!(write_codes(&row), vec![PACKAGE_FIELDS_INVALID.to_owned()]);
+
+        // The other field alone reaches it too, and both together report once.
+        let mut price_only = PriceRow::new(ChargeKind::OneTime, None);
+        price_only.package_price_minor = Some(minor(900));
+        assert_eq!(
+            write_codes(&price_only),
+            vec![PACKAGE_FIELDS_INVALID.to_owned()]
+        );
+
+        // And the positive control the arm must not over-refuse: the same key
+        // with neither field is a legitimate half-built row.
+        let bare = PriceRow::new(ChargeKind::Recurring, None);
+        assert!(
+            price_row_rules().run(&bare).write_stage_only().is_none(),
+            "a recurring row that authored no package field must still save"
+        );
+    }
+
+    /// The kind-present half, kept beside the case above so the two readings of
+    /// one fault cannot drift apart: a non-usage row that *has* picked a kind
+    /// reports the same code once, at the write, and not twice.
+    #[test]
+    fn package_fields_beside_a_picked_non_usage_kind_report_once() {
+        let mut row = PriceRow::new(ChargeKind::Recurring, Some(ModelKind::Flat));
+        row.amount_minor = Some(minor(2_500));
+        row.package_size = Some(100);
+
+        assert_eq!(write_codes(&row), vec![PACKAGE_FIELDS_INVALID.to_owned()]);
+
+        let all = price_row_rules().run(&row);
+        assert_eq!(
+            all.violations
+                .iter()
+                .filter(|v| v.code == PACKAGE_FIELDS_INVALID)
+                .count(),
+            1,
+            "the hoisted write arm and the publish arm below it are two spellings of one \
+             fault, not two faults: {:?}",
+            all.violations
+        );
     }
 
     #[test]
