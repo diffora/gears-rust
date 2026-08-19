@@ -497,35 +497,6 @@ pub async fn set_tax_display_policy(
         .map_err(|e| contention_or_db(&e, "pricing_policy_object", "insert policy object"))
 }
 
-/// Set the tenant's **default rounding policy**, gated on the premise the caller
-/// asserted (D-320).
-///
-/// `pricing_policy_object`'s second content writer, and the reason there is one
-/// at all: `default_rounding_policy_ref` was *declared and unreachable* — this
-/// module's own header said so — so the fail-closed arm of
-/// `foundation.rounding_policy_resolved` was the only reachable path, and every
-/// row of every plan had to carry its own ref or the plan did not publish. The
-/// per-tenant default PRD §17.4 contemplates now has a writer.
-///
-/// # The premise is a value, not an enumeration
-///
-/// [`set_tax_display_policy`] resolves its caller's `If-Match` by **enumerating**
-/// the two modes and finding the one whose tag matches. A rounding ref is free
-/// text, so nothing can be enumerated; the caller's asserted tag is resolved
-/// against the value the tenant currently **holds**, and that value is what goes
-/// in the `WHERE`. The compare-and-swap is unchanged in strength: a concurrent
-/// writer who moved the ref between the caller's read and this statement affects
-/// zero rows rather than being overwritten. Comparing in the handler and
-/// updating unconditionally is the T-7 defect, and it has been rebuilt on this
-/// table once already.
-///
-/// # `None` is a value on both sides
-///
-/// Clearing the default back to unset is legitimate — it is the state every
-/// tenant is in today — so `ref_value` may be `None`, and so may `expected`. SQL
-/// equality is not null-safe, so the premise is matched with `IS NULL` on that
-/// arm rather than `= NULL`, which matches nothing and would turn every clear
-/// into a spurious `409`.
 /// The tenant's `default_rounding_policy_ref`, read in the caller's transaction.
 ///
 /// A free function rather than [`PolicyObjectRepo::authoring_policy_on`] for the
@@ -555,6 +526,39 @@ pub async fn default_rounding_policy_on(
     Ok(row.and_then(|row| row.default_rounding_policy_ref))
 }
 
+/// Set the tenant's **default rounding policy**, gated on the premise the caller
+/// asserted (D-320).
+///
+/// `pricing_policy_object`'s second content writer, and the reason there is one
+/// at all: `default_rounding_policy_ref` was *declared and unreachable* — this
+/// module's own header said so — so the fail-closed arm of
+/// `foundation.rounding_policy_resolved` was the only reachable path, and every
+/// row of every plan had to carry its own ref or the plan did not publish. The
+/// per-tenant default PRD §17.4 contemplates now has a writer.
+///
+/// # The premise is a value, not an enumeration
+///
+/// [`set_tax_display_policy`] resolves its caller's `If-Match` by **enumerating**
+/// the two modes and finding the one whose tag matches. A rounding ref is free
+/// text, so nothing can be enumerated; the caller's asserted tag is resolved
+/// against the value the tenant currently **holds**, and that value is what goes
+/// in the `WHERE`. The compare-and-swap is unchanged in strength: a concurrent
+/// writer who moved the ref between the caller's read and this statement affects
+/// zero rows rather than being overwritten. Comparing in the handler and
+/// updating unconditionally is the T-7 defect, and it has been rebuilt on this
+/// table once already.
+///
+/// # `None` is a value on both sides
+///
+/// Clearing the default back to unset is legitimate — it is the state every
+/// tenant is in today — so `ref_value` may be `None`, and so may `expected`. SQL
+/// equality is not null-safe, so the premise is matched with `IS NULL` on that
+/// arm rather than `= NULL`, which matches nothing and would turn every clear
+/// into a spurious `409`.
+///
+/// # Errors
+/// [`RepoError::Db`] on a scope or storage failure. Answers `Ok(false)` — not
+/// an error — when the premise no longer holds, which is the caller's `409`.
 pub async fn set_default_rounding_policy(
     runner: &impl DBRunner,
     scope: &AccessScope,

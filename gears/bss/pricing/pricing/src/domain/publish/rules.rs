@@ -1,9 +1,12 @@
 //! The **aggregate** publish rule set: one report over one publish subject.
 //!
-//! Until this module the rules existed as disconnected pipelines — thirteen
-//! Slice-3 rules over a [`PriceRow`], twenty Slice-2 rules over a [`PlanShape`],
-//! one supersession guard over a pair — each registered and none of them run by
-//! anything but a test and a dev-only conformance validator.
+//! Until this module the rules existed as disconnected pipelines — Slice-3 rules
+//! over a [`PriceRow`], Slice-2 rules over a [`PlanShape`], one supersession
+//! guard over a pair — each registered and none of them run by anything but a
+//! test and a dev-only conformance validator. (The counts this sentence carried,
+//! "thirteen" and "twenty", were of pipelines that still exist under those names
+//! and had grown to 18 and 30, with nothing in the sentence telling a reader they
+//! were frozen at a date — review T-6.)
 //! [`run_publish_rules`] is what §4.2 step 2 and step 4 actually call, and it is
 //! the same call in both: approval approves *content*, the commit re-validates
 //! *state*, and the only way those two runs can be compared is if they are the
@@ -48,18 +51,28 @@
 //! predecessor it found (D-195), and `commit_supersession_rows` flips the
 //! predecessor. **The compose exists too** — `domain::supersession::plan_supersession`,
 //! which runs this very guard (corrected 2026-08-05: this paragraph was written before
-//! that landed, later in the same commit series, and denied it for a day). What does
-//! **not** exist is the orchestrator, the approval unit and the route, so no *surface*
-//! reaches any of it — and the pair this guard judges still cannot arrive on **this**
-//! path in any case: the supersession unit is its own publish unit and runs the guard
-//! itself (`inst-su-compose`). The clause is corrected rather than deleted, because a
-//! premise resting on a fact that has changed is a premise a later reader will
-//! believe for the wrong reason.
+//! that landed, later in the same commit series, and denied it for a day).
 //!
-//! So the guard still has no pair to judge here, and running it over a fabricated
-//! one would be a rule reporting on a subject nobody authored. **The supersession
-//! unit does run it**, in `plan_supersession`; what is owed is the surface that
-//! reaches that function.
+//! **Corrected again 2026-08-19 (review T-4).** This paragraph went on to say that
+//! the orchestrator, the approval unit and the route did not exist, "so no
+//! *surface* reaches any of it", and that "what is owed is the surface that
+//! reaches that function". All three exist and have existed for some time:
+//! `POST /plans/{planId}/supersessions` (`api::rest::supersessions`),
+//! `infra::supersession`'s `supersede` / `supersede_in` / `commit_supersession`,
+//! and `ApprovalService::submit_supersession_on` — driven end to end by
+//! `tests/rest_supersessions.rs`. Nothing is owed. The clause is corrected rather
+//! than deleted for the reason the 2026-08-05 correction above gives, and because
+//! this paragraph is the stated justification for `run_publish_rules` **not**
+//! registering `supersession_rules`: a reader auditing that omission was handed a
+//! premise that had expired.
+//!
+//! The conclusion survives on the premise that always did the work: the pair this
+//! guard judges cannot arrive on **this** path, because `create_draft` refuses an
+//! occupied key and `infra::publish::validated_draft_rows` excludes a draft on an
+//! occupied key from the unit's set (D-195) — and the supersession unit, which
+//! does produce such a pair, is its own publish unit and runs the guard itself in
+//! `plan_supersession` (`inst-su-compose`). Running it over a fabricated pair here
+//! would be a rule reporting on a subject nobody authored.
 //!
 //! # The Foundation's base set: what is enforced structurally, and what was
 //! missing
@@ -558,10 +571,17 @@ pub fn run_publish_rules(shape: &PlanShape, params: &PublishRuleParams) -> Valid
 
 /// The Foundation's own rules over a publish subject.
 ///
-/// One rule today. It is a pipeline rather than a bare call so that the next
-/// Foundation-owned rule registers beside it instead of being appended to a
-/// slice's set — which is exactly the "whichever slice happens to load first"
-/// outcome §4.2 keeps the base set out of.
+/// A pipeline rather than a bare call so that the next Foundation-owned rule
+/// registers beside the others instead of being appended to a slice's set —
+/// which is exactly the "whichever slice happens to load first" outcome §4.2
+/// keeps the base set out of.
+///
+/// **The roster below is the roster.** This said "one rule today" while the body
+/// registered ten (review T-5), and the sentence is cited by name three times
+/// inside that body — so a reader consulting it before placing a new rule was
+/// told the base set was a placeholder, which is the outcome the sentence exists
+/// to prevent. No count is stated here for `if_match_routes`' reason: a number
+/// beside a list is one more thing to keep true, and nothing holds this one true.
 #[must_use]
 fn foundation_plan_rules(params: &PublishRuleParams) -> ValidationPipeline<PlanShape> {
     ValidationPipeline::new()

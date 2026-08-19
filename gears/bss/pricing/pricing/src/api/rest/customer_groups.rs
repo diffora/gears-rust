@@ -1124,6 +1124,7 @@ async fn create_membership(
     let registry = Arc::clone(&state.registry);
     let mutation_ctx = ctx.clone();
     let mutation_scope = scope.clone();
+    refuse_a_move_by_the_side_door(&state, &scope, tenant, &request).await?;
     let payer_tenant_id = request.payer_tenant_id;
     let effective_from = request.effective_from;
     let effective_to = request.effective_to;
@@ -1282,7 +1283,20 @@ async fn move_membership(
     // principal has approved — the same "a fresh Idempotency-Key marks a
     // fresh attempt" contract `windows::schedule_window`'s material arm
     // relies on) and it may commit nothing on this call at all.
-    if request.immediate == Some(true) {
+    // **The act decides, not the caller** (review O-1, 2026-08-19, D-350).
+    //
+    // `immediate` was the sole discriminator, so the two-person rule
+    // `inst-mm-immediate` states was *elective*: one principal holding
+    // `customer_group x write` omitted the member and `move_payer_in` committed
+    // the identical rows — byte for byte, no outbox event, nothing in the store
+    // distinguishing an approved move from an unapproved one. The flag stays,
+    // because a caller declaring intent up front is worth answering precisely, but
+    // it can only ever *widen*: a move that lands at or before now **is** an
+    // immediate re-resolution whatever the body says. `inst-ws-future-start`'s
+    // strictness is the precedent for reading an instant against the clock rather
+    // than against a claim.
+    let lands_now = request.effective_from <= Utc::now();
+    if request.immediate == Some(true) || lands_now {
         return move_membership_immediate(
             &state,
             &ctx,
@@ -1345,6 +1359,65 @@ async fn move_membership(
     })
 }
 
+/// Refuse an enrollment that **composes a group move** out of an audit-only door
+/// (review O-1, 2026-08-19, D-350).
+///
+/// `inst-mm-immediate` makes an immediate re-resolution a material change needing
+/// a second principal, and the move route opens that unit. Half-open intervals
+/// mean `PATCH …/members/{id}` closing an interval at `T` and this route opening
+/// one at `T` compose **exactly** the row pair `move_payer_in` writes — no
+/// overlap for `refuse_overlap` to catch, no approval anywhere, two calls one
+/// principal can make.
+///
+/// **Narrow on purpose, and the narrowness is the decision.** A first enrollment
+/// is onboarding, not a move: the payer was in no group, so nothing re-resolves
+/// and refusing it would refuse the ordinary act this route exists for. What
+/// cannot be audit-only is an enrollment landing **now or in the past** for a
+/// payer who **already has membership history** — that is a re-resolution of a
+/// payer who was somewhere else, which is the act `inst-mm-immediate` names. A
+/// future-dated enrollment is renewal-aligned by construction and stays open.
+///
+/// One extra read on the create path, and it is the read `move_payer_in` already
+/// makes for the same payer.
+///
+/// # Errors
+/// [`DomainError::InvalidRequest`] when the enrollment re-resolves a payer who
+/// already holds membership history; [`RepoError`]'s ladder on a storage failure.
+async fn refuse_a_move_by_the_side_door(
+    state: &MembershipState,
+    scope: &AccessScope,
+    tenant: Uuid,
+    request: &EnrollMembershipRequest,
+) -> Result<(), CanonicalError> {
+    if request.effective_from > Utc::now() {
+        return Ok(());
+    }
+    let conn = state.db.conn().map_err(|e| {
+        CanonicalError::from(DomainError::Internal(format!("membership lookup: {e}")))
+    })?;
+    let held = crate::infra::storage::repo::group_membership_repo::intervals_for_payer(
+        &conn,
+        scope,
+        tenant,
+        request.payer_tenant_id,
+    )
+    .await
+    .map_err(|e| CanonicalError::from(repo_failure(&e)))?;
+    if held.is_empty() {
+        return Ok(());
+    }
+    Err(CanonicalError::from(DomainError::InvalidRequest(
+        "`effectiveFrom` takes effect now or in the past for a payer who already holds \
+         membership history, which re-resolves them into this group immediately \
+         (`inst-mm-immediate`) - a material change needing a second principal. This route is \
+         audit-only and opens no approval unit, and paired with an end on the payer's current \
+         membership it composes the same interval pair a move writes. Use POST \
+         /bss-pricing/v1/customer-groups/{group}/members/{payerId}/move, which opens the unit - \
+         or author this enrollment to take effect at a future instant"
+            .to_owned(),
+    )))
+}
+
 /// The material half of `POST .../move`: `inst-mm-immediate`'s two acts on one
 /// route (`overlays::submit_overlay`'s D-234 shape, applied to a subject with
 /// no draft table).
@@ -1380,6 +1453,7 @@ async fn move_membership_immediate(
     effective_from: DateTime<Utc>,
     correlation: Uuid,
 ) -> Result<Response, CanonicalError> {
+    let set_group_value = group_value.clone();
     let set = MembershipMoveSet::new(vec![MembershipMoveProposal {
         payer_tenant_id: payer_id,
         group_value,
@@ -1393,6 +1467,16 @@ async fn move_membership_immediate(
     let conn = state.db.conn().map_err(|e| {
         CanonicalError::internal(format!("bss-pricing: membership move lookup: {e}")).create()
     })?;
+    // **The target group is judged on this arm too** (review O-1, D-350). The
+    // refusal lives inside `move_payer_in`, which this arm does not reach until an
+    // approval exists — so an undeclared or retired group used to be refused on
+    // the committing arm and answered `202` here, opening a unit over a move that
+    // can never commit. Invisible while `immediate` was the only way in; D-350
+    // routes a backdated move here, and this is the door it arrives at.
+    membership_publish::require_active_group(&conn, scope, tenant, &set_group_value)
+        .await
+        .map_err(CanonicalError::from)?;
+
     let approved =
         approval_repo::find_approved_for_content(&conn, scope, tenant, &subject_ref, &pin)
             .await

@@ -337,7 +337,13 @@ pub fn router(state: Arc<GovernanceState>, openapi: &dyn OpenApiRegistry) -> Rou
         .authenticated()
         .no_license_required()
         .path_param("planId", "The plan being retired.")
-        .json_request::<RetireBody>(openapi, "Whether this is a dry-run, and the change reason.")
+        // Describes what the DTO **holds**: `reason_code` was removed from
+        // `RetireBody` by the same commit that left this sentence naming it
+        // (review F9), and no DTO in this gear sets `deny_unknown_fields`, so an
+        // integrator following the description sent a `reasonCode` that was
+        // accepted and silently discarded — the outcome the removal's own comment
+        // calls worse than an absent field.
+        .json_request::<RetireBody>(openapi, "Whether this is a dry-run.")
         .handler(retire_plan)
         .json_response_with_schema::<RetirementPreviewView>(
             openapi,

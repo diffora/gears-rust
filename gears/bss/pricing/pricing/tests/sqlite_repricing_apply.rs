@@ -50,12 +50,14 @@ use bss_pricing::domain::audit::AuditSubjectKind;
 use bss_pricing::domain::bulk::{BulkKind, BulkState, JournalState};
 use bss_pricing::domain::concurrency::RowVersion;
 use bss_pricing::domain::contracts::{BillingAnchorPolicy, ProrationBasis, ProrationContract};
-use bss_pricing::domain::money::{CurrencyCode, MinorAmount};
+use bss_pricing::domain::money::{CurrencyCode, MinorAmount, RateMinor};
 use bss_pricing::domain::plan_shape::{
     BillingCycle, DescriptorSet, Frequency, PhaseKind, PlanPhase,
 };
 use bss_pricing::domain::price_record::PriceContent;
-use bss_pricing::domain::price_row::{ModelKind, PriceRow};
+use bss_pricing::domain::price_row::{
+    BillingGranularity, ModelKind, PriceRow, TierAggregationWindow, TierBand,
+};
 use bss_pricing::domain::scope_key::{
     ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey,
 };
@@ -219,6 +221,63 @@ fn publishable_row(amount_minor: i64) -> PriceContent {
     }
 }
 
+/// [`publishable_row`]'s graduated sibling: a two-band ladder, priced from
+/// **rates** rather than from `amount_minor` (D-311).
+///
+/// Its bands are the pair `a_markup_that_overflows_one_band_of_a_ladder_is_out_of_range_for_the_row`
+/// uses — one that survives a fat-fingered markup and one that does not — because
+/// the defect only exists where the two disagree.
+fn publishable_graduated_row() -> PriceContent {
+    let mut row = PriceRow::new(ChargeKind::Usage, Some(ModelKind::Graduated));
+    row.meter = Some("cloudlets".to_owned());
+    // `EVAL_POLICY_MISSING`'s two operands for a tiered usage row: the unit the
+    // bands are counted in, and the window the tier counter resets on.
+    row.billing_granularity = Some(BillingGranularity::WholeUnit);
+    row.tier_aggregation_window = Some(TierAggregationWindow::CalendarMonth);
+    row.bands = vec![
+        TierBand::closed(
+            0,
+            1_000,
+            RateMinor::from_nano_minor(1_000_000_000).expect("a non-negative rate"),
+        ),
+        TierBand::open(
+            1_000,
+            RateMinor::from_nano_minor(100_000_000_000).expect("a non-negative rate"),
+        ),
+    ];
+    PriceContent {
+        row,
+        tax_inclusive: false,
+        tax_category_ref: None,
+        billing_timing: Some("advance".to_owned()),
+        proration_contract: Some(ProrationContract {
+            billing_anchor_policy: BillingAnchorPolicy::CalendarMonth,
+            proration_basis: ProrationBasis::CalendarDaysActual,
+            credit_on_downgrade: false,
+        }),
+        rounding_policy_ref: Some("half_up".to_owned()),
+        grandfather_until: None,
+        supersedes_price_id: None,
+    }
+}
+
+/// [`report`] under a **markup** of `value_bp`, which is the adjustment the
+/// out-of-range refusal is about: `magnitude_out_of_range` bounds a discount at
+/// 10 000 bp and leaves a markup unbounded above zero.
+fn markup_report(value_bp: i64) -> serde_json::Value {
+    serde_json::json!({
+        "selector": serde_json::Value::Null,
+        "adjustment": {
+            "adjustment_kind": "markup",
+            "magnitude_kind": "percent_bp",
+            "adjustment_value": value_bp,
+            "amounts": {},
+        },
+        "changeover": changeover().to_rfc3339(),
+        "selected": 0,
+    })
+}
+
 /// A plan the whole aggregate rule set passes: one evergreen terminal phase, a
 /// complete descriptor set, a tier and a frequency — [`seed_publishable_shape`]
 /// in `tests/rest_support/mod.rs`'s own recipe, built here at the repository
@@ -332,6 +391,21 @@ fn scope_key(plan: PlanId, phase: Uuid, region: &str) -> ScopeKey {
     .expect("scope key")
 }
 
+/// [`scope_key`]'s usage sibling: `graduated` and `volume` are usage-only kinds
+/// (`MODEL_KIND_CHARGEKIND_MISMATCH`), so a ladder cannot ride a recurring key.
+fn usage_scope_key(plan: PlanId, phase: Uuid, region: &str) -> ScopeKey {
+    ScopeKey::new(
+        plan,
+        CurrencyCode::new("USD").expect("currency"),
+        Region::new(region).expect("region"),
+        PhaseId::new(phase),
+        PriceEligibility::AllSubscriptions,
+        ChargeKind::Usage,
+        Cohort::None,
+    )
+    .expect("scope key")
+}
+
 /// Author and publish one row, with a scheduled coverage window
 /// (`inst-wc-required`) — the shape every row this suite selects for
 /// repricing needs.
@@ -342,15 +416,27 @@ async fn seed_published_row(
     region: &str,
     amount_minor: i64,
 ) -> Uuid {
+    seed_published_content(
+        h,
+        scope_key(plan, phase, region),
+        publishable_row(amount_minor),
+    )
+    .await
+}
+
+/// [`seed_published_row`] over content the caller chooses, for the cases whose
+/// subject is the row's **shape** rather than its amount.
+async fn seed_published_content(h: &Harness, key: ScopeKey, content: PriceContent) -> Uuid {
     let price_id = Uuid::now_v7();
+    let plan = key.plan_id();
     h.prices
         .create_draft(
             &h.scope,
             TENANT,
             NewPriceDraft {
                 price_id,
-                scope_key: scope_key(plan, phase, region),
-                content: publishable_row(amount_minor),
+                scope_key: key,
+                content,
                 created_by: ACTOR,
                 created_at_utc: at(10),
                 correlation_id: CORRELATION,
@@ -546,6 +632,15 @@ fn report() -> serde_json::Value {
 /// `pending` — [`open_repricing_run`]'s own two writes, built directly rather
 /// than through HTTP: this suite's subject is the apply, not the freeze.
 async fn open_committing_run(h: &Harness, price_ids: &[Uuid]) -> Uuid {
+    open_committing_run_reporting(h, price_ids, report()).await
+}
+
+/// [`open_committing_run`] under an adjustment the caller chooses.
+async fn open_committing_run_reporting(
+    h: &Harness,
+    price_ids: &[Uuid],
+    report: serde_json::Value,
+) -> Uuid {
     let operation_id = Uuid::now_v7();
     let conn = h.provider.conn().expect("conn");
     bulk_repo::open(
@@ -557,7 +652,7 @@ async fn open_committing_run(h: &Harness, price_ids: &[Uuid]) -> Uuid {
             kind: BulkKind::Repricing,
             client_key: operation_id.to_string(),
             request_hash: IdempotencyGate::payload_hash(&operation_id.to_string()),
-            report: report(),
+            report: report.clone(),
             submitted_by: ACTOR,
             submitted_at: at(11),
         },
@@ -582,7 +677,7 @@ async fn open_committing_run(h: &Harness, price_ids: &[Uuid]) -> Uuid {
         operation_id,
         BulkState::Validating,
         BulkState::Committing,
-        report(),
+        report,
         at(11),
     )
     .await
@@ -613,6 +708,126 @@ async fn journal_state(
 // ---------------------------------------------------------------------------
 // Step 1's atomicity test.
 // ---------------------------------------------------------------------------
+
+/// The M-6 refusal on the **apply path**, which is the half nothing drove
+/// (review F7, 2026-08-19).
+///
+/// `projection_out_of_range` has a unit test in `domain::repricing_tests` and the
+/// `if` that calls it in `apply_rows_in` had none: deleting the refusal left the
+/// whole suite green while the defect it exists for — a `graduated` ladder under a
+/// markup that overflows one band and not another, committed `applied` with one
+/// band moved and its sibling at its published rate — was live again. A unit test
+/// of the callee cannot see that nobody calls it.
+#[tokio::test]
+async fn a_markup_that_overflows_one_band_fails_the_whole_plan_rather_than_moving_the_other() {
+    let h = harness().await;
+
+    let plan = Uuid::now_v7();
+    let phase = Uuid::now_v7();
+    seed_plan(&h, plan, phase).await;
+    let ladder = seed_published_content(
+        &h,
+        usage_scope_key(PlanId::new(plan), phase, "eu"),
+        publishable_graduated_row(),
+    )
+    .await;
+    // A second, ordinary row on the same plan, **in the ladder's own market**:
+    // D-134's unit is the plan, so the refusal has to take this one down with it,
+    // and a plan selling usage in `eu` with no recurring base row there fails the
+    // aggregate pass instead — which would make this case pass for the wrong
+    // reason.
+    let flat = seed_published_row(&h, PlanId::new(plan), phase, "eu", 12_000).await;
+
+    // The fat-fingered extra six digits nothing in the authoring path refuses.
+    let run_id =
+        open_committing_run_reporting(&h, &[ladder, flat], markup_report(1_000_000_000_000)).await;
+
+    let outcome = apply_run_in(
+        &h.provider,
+        &h.policies,
+        &(Arc::clone(&h.registry) as Arc<dyn CatalogVersionRegistryV1>),
+        &ctx(),
+        &h.scope,
+        TENANT,
+        run_id,
+        apply_stamp(),
+    )
+    .await
+    .expect("apply_run_in itself does not fail - only a plan's own rows do");
+
+    assert_eq!(outcome.applied, 0, "nothing applied: {outcome:?}");
+    assert_eq!(outcome.failed, 2, "the plan is the unit: {outcome:?}");
+
+    let (ladder_state, ladder_reason, ladder_applied) = journal_state(&h, run_id, ladder).await;
+    assert_eq!(ladder_state, JournalState::Failed);
+    assert!(
+        ladder_applied.is_none(),
+        "no successor stands on the ladder's key - a written successor is the unauthored ladder \
+         itself"
+    );
+    let reason = ladder_reason.expect("a failed row carries a reason");
+    assert!(
+        reason.contains("leaves the representable range"),
+        "the refusal names why, so an operator can re-run with a smaller magnitude: {reason}"
+    );
+
+    let (flat_state, _, flat_applied) = journal_state(&h, run_id, flat).await;
+    assert_eq!(
+        flat_state,
+        JournalState::Failed,
+        "the plan's other row fails with it (D-134): a partial plan is the one outcome forbidden"
+    );
+    assert!(flat_applied.is_none());
+}
+
+/// The **positive control** for the case above: the same ladder under an ordinary
+/// markup applies both bands.
+///
+/// Without it the refusal would pass against an apply that refused every
+/// `graduated` row, which is the shape that makes a guard read as coverage.
+#[tokio::test]
+async fn the_same_ladder_under_an_ordinary_markup_applies() {
+    let h = harness().await;
+
+    let plan = Uuid::now_v7();
+    let phase = Uuid::now_v7();
+    seed_plan(&h, plan, phase).await;
+    let ladder = seed_published_content(
+        &h,
+        usage_scope_key(PlanId::new(plan), phase, "eu"),
+        publishable_graduated_row(),
+    )
+    .await;
+
+    // The recurring base row the aggregate pass requires of a plan selling in this
+    // market; not selected for repricing, so it changes nothing this case reads.
+    seed_published_row(&h, PlanId::new(plan), phase, "eu", 12_000).await;
+
+    let run_id = open_committing_run_reporting(&h, &[ladder], markup_report(500)).await;
+
+    let outcome = apply_run_in(
+        &h.provider,
+        &h.policies,
+        &(Arc::clone(&h.registry) as Arc<dyn CatalogVersionRegistryV1>),
+        &ctx(),
+        &h.scope,
+        TENANT,
+        run_id,
+        apply_stamp(),
+    )
+    .await
+    .expect("apply_run_in itself does not fail");
+
+    let (state, reason, applied) = journal_state(&h, run_id, ladder).await;
+    assert_eq!(
+        outcome.applied, 1,
+        "an ordinary markup computes on both bands and must not be refused: {outcome:?}; the \
+         journal says {state:?} / {reason:?}"
+    );
+    assert_eq!(state, JournalState::Applied);
+    assert!(reason.is_none());
+    assert!(applied.is_some(), "a real successor stands on the key");
+}
 
 #[tokio::test]
 async fn a_plan_whose_aggregate_pass_fails_applies_none_of_that_plans_rows() {

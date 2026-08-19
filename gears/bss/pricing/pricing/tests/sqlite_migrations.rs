@@ -1920,6 +1920,78 @@ async fn a_partial_rollback_past_the_rescale_keeps_the_append_only_guard() {
 }
 
 #[tokio::test]
+async fn a_partial_rollback_below_the_rate_columns_can_roll_forward_again() {
+    // The other half of the partial-rollback contract, and the half that had no
+    // probe (review F2, 2026-08-19): a rollback that stops **below** `m066` must
+    // be able to go back up.
+    //
+    // `m066`'s SQLite `down` deliberately leaves `unit_rate_nano` in place —
+    // `m076`'s rebuild carries `chk_pricing_price_unit_rate_nano` and SQLite
+    // refuses to drop a column a `CHECK` still names — so its `up` met a table
+    // that already had the column and aborted with `duplicate column name`,
+    // leaving the database stuck at `m065` with a schema partly at `m066`.
+    //
+    // The case above stops at `m082` and so could never reach this; the
+    // round-trip walks to the bottom, where `m002` drops the table and erases the
+    // divergence before turning around. Nothing in between was measured.
+    let conn = Database::connect("sqlite::memory:")
+        .await
+        .expect("connect in-memory sqlite");
+    let manager = SchemaManager::new(&conn);
+    let chain = name_ordered_chain();
+
+    for migration in &chain {
+        migration
+            .up(&manager)
+            .await
+            .unwrap_or_else(|e| panic!("up {} must succeed: {e}", migration.name()));
+    }
+
+    // Down to and including `m066`, and no further.
+    let rate_columns = "m20260802_000066_rate_columns_are_not_amount_columns";
+    let mut rolled_back = 0_usize;
+    for migration in chain.iter().rev() {
+        migration
+            .down(&manager)
+            .await
+            .unwrap_or_else(|e| panic!("down {} must succeed: {e}", migration.name()));
+        rolled_back += 1;
+        if migration.name() == rate_columns {
+            break;
+        }
+    }
+    // Anti-vacuity: a loop that broke immediately would assert a roll-forward
+    // over an untouched database.
+    assert!(
+        rolled_back > 20,
+        "the rollback walked only {rolled_back} migrations, so it never reached `{rate_columns}`"
+    );
+
+    // And back up from the stop point. This is the assertion: before `m066`'s
+    // `up` asked whether the column was there, this panicked.
+    let mut replaying = false;
+    for migration in &chain {
+        if migration.name() == rate_columns {
+            replaying = true;
+        }
+        if !replaying {
+            continue;
+        }
+        migration
+            .up(&manager)
+            .await
+            .unwrap_or_else(|e| panic!("rolling forward from `{rate_columns}` must succeed: {e}"));
+    }
+
+    assert!(
+        objects_of(&conn, "trigger")
+            .await
+            .contains(&"trg_pricing_price_frozen_columns".to_owned()),
+        "and the head state is whole again after the round trip"
+    );
+}
+
+#[tokio::test]
 async fn down_then_up_round_trips() {
     // A raw `SeaORM` connection: `SchemaManager` needs one, and the toolkit
     // runner owns bookkeeping but exposes no `down` — this walks the chain the

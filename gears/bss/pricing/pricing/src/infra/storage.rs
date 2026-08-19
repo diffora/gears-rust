@@ -271,6 +271,36 @@ pub enum RepoError {
          overlay; choose another precedence, or supersede the overlay holding it"
     )]
     OverlayPrecedenceHeld,
+    /// A row would publish with **no rounding resolution at all** — it carries no
+    /// `rounding_policy_ref` and the tenant has no default.
+    ///
+    /// Raised where the resolution is frozen rather than where it is judged, and
+    /// that is the whole point. `foundation.rounding_policy_resolved` refuses
+    /// exactly this, and it runs on one of `publish_rows`' four callers: the
+    /// other three — `infra::supersession`, `infra::cutover` and mass repricing
+    /// through `commit_supersession` — resolve the default themselves and freeze
+    /// whatever it is. So the guarantee `m20260802_000089`'s header states of the
+    /// column ("`NULL` for a published row cannot happen") and
+    /// [`price_repo::FrozenResolution`] repeats held on one door in four until
+    /// 2026-08-19 (review F1). Refusing at the freeze restores it by
+    /// construction, which is the argument
+    /// [`AuthzError::Denied`](crate::api::rest::authz::AuthzError) was reshaped
+    /// on: make the omission impossible rather than remembered.
+    ///
+    /// Carries `ROUNDING_POLICY_UNRESOLVED` through [`repo_failure`], the same
+    /// code the publish rule reports, because it is the same fault reaching the
+    /// operator through a different door — and the remedy the rule's message
+    /// names (set the row's policy, or configure the tenant default) is the
+    /// remedy here too.
+    #[error(
+        "pricing repo: price row {price_id} carries no roundingPolicyRef and this tenant has \
+         no default rounding policy; rounding decides the last minor unit of every charge, so \
+         the publish stops rather than freezing nothing"
+    )]
+    RoundingPolicyUnresolved {
+        /// The first row of the set whose resolution is absent.
+        price_id: String,
+    },
     /// The overlay already holds an open draft revision, named by the refusal
     /// (`uq_pricing_price_overlay_open_draft`, D-92).
     ///
@@ -963,6 +993,13 @@ pub fn repo_failure(err: &RepoError) -> DomainError {
         // re-reading the class's overlays is the remedy — which is what a 409
         // asks for.
         RepoError::OverlayPrecedenceHeld => DomainError::PrecedenceDuplicate(err.to_string()),
+        // The publish rule's own code, for the reason the variant's doc gives:
+        // one fault, three doors. `RoundingPolicyUnresolved` is an architectural
+        // 422 rendered 400 like every other fail-closed publish rejection, so the
+        // caller of a supersession sees exactly what the caller of a publish sees.
+        RepoError::RoundingPolicyUnresolved { .. } => {
+            DomainError::RoundingPolicyUnresolved(err.to_string())
+        }
         // A uniqueness conflict on the overlay's one editable slot, and the
         // `OPEN_DRAFT_REVISION_EXISTS` class for `OpenDraftExists`' reason: the
         // operator's next action is a real one — go and edit that revision.

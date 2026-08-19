@@ -443,6 +443,17 @@ impl From<DomainError> for CanonicalError {
                     crate::domain::taxonomy::REGION_UNKNOWN,
                 )
                 .create(),
+            // `RegionUnknown` one clause up, one taxonomy over: the subject is the
+            // field the caller actually sent, so an operator reads the refusal and
+            // knows which of the two rounding references — the row's or the
+            // tenant default's — was refused.
+            D::RoundingPolicyUnknown(detail) => PlanResource::failed_precondition()
+                .with_precondition_violation(
+                    "default_rounding_policy_ref",
+                    detail,
+                    crate::domain::taxonomy::ROUNDING_POLICY_UNKNOWN,
+                )
+                .create(),
             D::ApprovalNotPending(detail) => aborted(detail, "APPROVAL_NOT_PENDING"),
             // The one-pending-unit-per-subject conflict
             // (`07-pricewindow-linkage.md` `inst-co-single-pending`). It sits in

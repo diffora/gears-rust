@@ -1025,9 +1025,15 @@ impl Harness {
                         plan_id,
                         &[(price_id, RowVersion::new(0))],
                         &fixture_readiness(),
-                        // The harness seeds a row-level rounding policy, so the
-                        // tenant default is not the operand under test here.
-                        None,
+                        // **A tenant default, because a published row must resolve
+                        // a rounding policy at all** (review F1, 2026-08-19).
+                        // This passed `None` under a comment saying the harness
+                        // seeds a row-level policy — true of `publishable_row` and
+                        // not of every content a caller hands this seeder, and the
+                        // bundle suite's rows carry none. `publish_rows` refuses a
+                        // set that resolves nothing, so a seeder passing `None`
+                        // refuses four cases on a ground none of them is about.
+                        Some("half_up"),
                     )
                     .await
                 })

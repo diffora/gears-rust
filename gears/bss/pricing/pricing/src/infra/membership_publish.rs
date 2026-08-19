@@ -385,7 +385,7 @@ pub async fn move_payer_in(
 /// while live references exist, and this refuses the mirror act — a *new*
 /// membership naming a value that is already retired. Neither substitutes for
 /// the other.
-async fn require_active_group(
+pub(crate) async fn require_active_group(
     runner: &impl DBRunner,
     scope: &AccessScope,
     tenant_id: Uuid,

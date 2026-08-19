@@ -222,6 +222,7 @@ pub fn router(state: Arc<GovernanceState>, openapi: &dyn OpenApiRegistry) -> Rou
         .tag(TAG)
         .authenticated()
         .no_license_required()
+        .path_param("planId", "The plan to preview.")
         .param(currency_param())
         .param(region_param())
         .handler(preview_plan_price)

@@ -2158,10 +2158,52 @@ async fn publish_rows(
         .in_transaction::<Vec<Uuid>, RepoError, _>(move |txn| {
             Box::pin(async move {
                 bss_pricing::infra::storage::repo::price_repo::publish_rows(
-                    txn, &scope, tenant_id, plan_id, &validated, &readiness,
-                    // No tenant default: these cases author a row-level policy or
-                    // assert the refusal when neither exists.
-                    None,
+                    txn,
+                    &scope,
+                    tenant_id,
+                    plan_id,
+                    &validated,
+                    &readiness,
+                    // **A tenant default, because a published row must resolve a
+                    // rounding policy at all** — `publish_rows` refuses a set that
+                    // resolves none (review F1, 2026-08-19), so a helper passing
+                    // `None` would refuse every case here on a ground none of them
+                    // is about. This comment used to say the cases author a
+                    // row-level policy; they do not, and the helper passed `None`,
+                    // which is how five cases whose subject is the tax category
+                    // came to publish rows with no rounding resolution at all.
+                    // The cases whose subject *is* the resolution use
+                    // `publish_rows_with_default` and
+                    // `publish_rows_resolving_nothing`.
+                    Some("half_up/2"),
+                )
+                .await
+            })
+        })
+        .await;
+    outcome.map_err(|err| {
+        err.into_domain(|infra| RepoError::Db(format!("publish transaction: {infra}")))
+    })
+}
+
+/// [`publish_rows`] with **no** tenant default, for the cases whose subject is a
+/// set that resolves no rounding policy at all.
+async fn publish_rows_resolving_nothing(
+    provider: &DBProvider<DbError>,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    plan_id: PlanId,
+    validated: Vec<(Uuid, RowVersion)>,
+    readiness: &RegionTaxReadiness,
+) -> Result<Vec<Uuid>, RepoError> {
+    let scope = scope.clone();
+    let readiness = readiness.clone();
+    let (_, outcome) = provider
+        .db()
+        .in_transaction::<Vec<Uuid>, RepoError, _>(move |txn| {
+            Box::pin(async move {
+                bss_pricing::infra::storage::repo::price_repo::publish_rows(
+                    txn, &scope, tenant_id, plan_id, &validated, &readiness, None,
                 )
                 .await
             })
@@ -2830,6 +2872,46 @@ async fn a_successor_publishes_only_after_its_predecessor_leaves_the_published_p
 /// `inst-su-commit`, whose whole point is that the caller does not order the two
 /// moves.
 async fn commit_supersession_rows(
+    provider: &DBProvider<DbError>,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    plan_id: PlanId,
+    predecessor: Uuid,
+    successor: (Uuid, RowVersion),
+) -> Result<(), RepoError> {
+    let scope = scope.clone();
+    let (_, outcome) = provider
+        .db()
+        .in_transaction::<(), RepoError, _>(move |txn| {
+            Box::pin(async move {
+                bss_pricing::infra::storage::repo::price_repo::commit_supersession_rows(
+                    txn,
+                    &scope,
+                    tenant_id,
+                    plan_id,
+                    predecessor,
+                    successor,
+                    &fixture_readiness(),
+                    // The tenant default the predecessor published under. A
+                    // successor cloned from a row that carries no policy of its
+                    // own resolves nothing without it, and `publish_rows` refuses
+                    // that set (review F1) — which is the subject of
+                    // `a_supersession_whose_tenant_lost_its_default_is_refused_at_the_commit`
+                    // and of nothing else on this plane.
+                    Some("half_up/2"),
+                )
+                .await
+            })
+        })
+        .await;
+    outcome.map_err(|err| {
+        err.into_domain(|infra| RepoError::Db(format!("supersession commit transaction: {infra}")))
+    })
+}
+
+/// [`commit_supersession_rows`] for a tenant with **no** default rounding policy
+/// — the world F1 describes, where the successor resolves nothing.
+async fn commit_supersession_rows_resolving_nothing(
     provider: &DBProvider<DbError>,
     scope: &AccessScope,
     tenant_id: Uuid,
@@ -3602,6 +3684,12 @@ fn usage_key(meter: Option<&str>, dimension: &str) -> ScopeKey {
 /// A usage row's content, carrying the same line its key does.
 fn usage_line_content(meter: Option<&str>, dimension: &str) -> PriceContent {
     let mut content = flat_content();
+    // Its own rounding policy, because these rows publish through **real** doors —
+    // `infra::cutover::commit_cutover` resolves the tenant default itself and
+    // `publish_rows` refuses a set that resolves none at all (review F1,
+    // 2026-08-19). `flat_content` carries none, and this fixture's subject is the
+    // usage line's key, never its rounding.
+    content.rounding_policy_ref = Some("half_up/2".to_owned());
     content.row = PriceRow::new(ChargeKind::Usage, Some(ModelKind::PerUnit));
     content.row.amount_minor = Some(money(1_000));
     content.row.meter = meter.map(std::borrow::ToOwned::to_owned);
@@ -3947,7 +4035,11 @@ async fn cutover_rows(
                     copy,
                     cutover_at,
                     &fixture_readiness(),
-                    None,
+                    // The tenant default the predecessor published under. A
+                    // successor and a copy cloned from a row that carries no
+                    // policy of its own resolve nothing without it, and
+                    // `publish_rows` refuses that set (review F1, 2026-08-19).
+                    Some("half_up/2"),
                 )
                 .await
             })
@@ -4760,5 +4852,138 @@ async fn publish_freezes_the_tenant_rounding_default_onto_a_row_that_carries_non
             .and_then(|r| r.rounding_policy.as_deref()),
         Some("half_even/2"),
         "and the row published under the new default carries the new one"
+    );
+}
+
+/// A set that resolves **no** rounding policy is refused at the freeze, not
+/// frozen as `NULL` (review F1, 2026-08-19).
+///
+/// `foundation.rounding_policy_resolved` says the same thing and runs on one of
+/// `publish_rows`' four callers. `m20260802_000089`'s header states of this
+/// column that `NULL` on a published row "cannot happen ... the publish rule
+/// refuses the publish", and `m20260802_000090` then makes the row immutable — so
+/// the claim has to hold on every door that writes it or there is no repair
+/// afterwards. This is the guarantee stated where it is actually enforceable.
+#[tokio::test]
+async fn a_publish_that_resolves_no_rounding_policy_is_refused_rather_than_frozen_as_null() {
+    let (repo, provider) = harness().await;
+    let scope = AccessScope::for_tenant(tenant());
+    let price_id = Uuid::from_u128(0xb_0d11);
+
+    let mut content = flat_content();
+    content.rounding_policy_ref = None;
+    repo.create_draft(
+        &scope,
+        tenant(),
+        draft(price_id, base_key(ChargeKind::Recurring), content),
+    )
+    .await
+    .expect("author a row with no rounding policy of its own");
+
+    let err = publish_rows_resolving_nothing(
+        &provider,
+        &scope,
+        tenant(),
+        plan(),
+        vec![(price_id, RowVersion::new(0))],
+        &readiness_for(
+            base_key(ChargeKind::Recurring).region().as_str(),
+            Some("standard"),
+        ),
+    )
+    .await
+    .expect_err("a row resolving no rounding policy cannot publish");
+    assert!(
+        matches!(
+            &err,
+            RepoError::RoundingPolicyUnresolved { price_id: named }
+                if named == &price_id.to_string()
+        ),
+        "the refusal names the row whose resolution is absent, which is the edit: {err}"
+    );
+
+    assert_eq!(
+        stored_row(&provider, &scope, price_id)
+            .await
+            .lifecycle_state,
+        LifecycleState::Draft.as_str(),
+        "and nothing flipped: the refusal lands before any group's statement executes, or a \
+         plan with two resolutions publishes half of itself and then refuses"
+    );
+}
+
+/// The **positive control** for the case above, on the door F1 was actually
+/// about: the same set publishes once a resolution exists.
+///
+/// Without this row the refusal above would pass against an implementation that
+/// refused every publish.
+#[tokio::test]
+async fn the_same_set_publishes_once_the_tenant_default_resolves_it() {
+    let (repo, provider) = harness().await;
+    let scope = AccessScope::for_tenant(tenant());
+    let price_id = Uuid::from_u128(0xb_0d12);
+
+    let mut content = flat_content();
+    content.rounding_policy_ref = None;
+    repo.create_draft(
+        &scope,
+        tenant(),
+        draft(price_id, base_key(ChargeKind::Recurring), content),
+    )
+    .await
+    .expect("author a row with no rounding policy of its own");
+
+    publish_rows_with_default(
+        &provider,
+        &scope,
+        tenant(),
+        plan(),
+        vec![(price_id, RowVersion::new(0))],
+        &readiness_for(
+            base_key(ChargeKind::Recurring).region().as_str(),
+            Some("standard"),
+        ),
+        "half_up/2",
+    )
+    .await
+    .expect("the identical set publishes when the tenant has a default");
+}
+
+/// The supersession door, which is where F1 actually bites: a price change on a
+/// key whose rows lean on a tenant default that has since been cleared.
+///
+/// `infra::supersession` reads the default itself and passes it here, and no rule
+/// on that path judges it — `plan_supersession` runs `price_row_rules()` and
+/// `supersession_rules()`, neither of which holds a rounding rule. Before the
+/// refusal below, this froze `NULL` onto a **published** successor and
+/// `m20260802_000090` made it immutable.
+#[tokio::test]
+async fn a_supersession_whose_tenant_lost_its_default_is_refused_at_the_commit() {
+    let (repo, provider) = harness().await;
+    let scope = AccessScope::for_tenant(tenant());
+    let (predecessor, successor) = composed_supersession(&repo, &provider, &scope).await;
+
+    let err = commit_supersession_rows_resolving_nothing(
+        &provider,
+        &scope,
+        tenant(),
+        plan(),
+        predecessor,
+        (successor, RowVersion::new(0)),
+    )
+    .await
+    .expect_err("the successor resolves no rounding policy, so the pair does not commit");
+    assert!(
+        matches!(&err, RepoError::RoundingPolicyUnresolved { .. }),
+        "the supersession door reports the same fault the publish rule reports: {err}"
+    );
+
+    assert_eq!(
+        stored_row(&provider, &scope, predecessor)
+            .await
+            .lifecycle_state,
+        LifecycleState::Published.as_str(),
+        "and the predecessor is still the key's current row - a refusal after the flip would \
+         leave the key with no published row at all"
     );
 }

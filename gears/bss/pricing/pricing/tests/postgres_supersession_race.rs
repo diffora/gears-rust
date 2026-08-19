@@ -149,7 +149,10 @@ fn content(amount: i64) -> PriceContent {
         tax_category_ref: None,
         billing_timing: Some("advance".to_owned()),
         proration_contract: None,
-        rounding_policy_ref: None,
+        // Its own policy, so the row resolves a rounding mode without a tenant
+        // default: `publish_rows` refuses a set that resolves none at all (review
+        // F1, 2026-08-19), and this suite's subject is the supersession race.
+        rounding_policy_ref: Some("half_up".to_owned()),
         grandfather_until: None,
         supersedes_price_id: None,
     }

@@ -389,6 +389,91 @@ async fn a_tenant_with_no_declared_vocabulary_publishes_any_reference() {
     );
 }
 
+/// A default naming a value the tenant's own vocabulary does not declare is
+/// refused **at this door** (review F1, 2026-08-19, D-348).
+///
+/// The default is a reference like any other, and until this refusal it was the
+/// one reference nothing judged: `RoundingPolicyDeclared` carries `tenant_default`
+/// but runs only on the publish path, while `infra::supersession`,
+/// `infra::cutover` and mass repricing freeze the default onto a row with no rule
+/// over it at all. So a default outside the vocabulary was refused at publish and
+/// frozen through the other three doors — the asymmetry
+/// `RoundingPolicyDeclared::violation_for`'s own doc describes and leaves for a
+/// decision.
+#[tokio::test]
+async fn a_default_outside_the_declared_vocabulary_is_refused() {
+    let harness = Harness::new().await;
+    declare_rounding_value(&harness, "half_even/2").await;
+    let (_, tag, _) = read_policy(&harness).await;
+
+    let response = write_policy(
+        &harness,
+        serde_json::json!("banker/7"),
+        &tag.expect("a tag"),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(
+        problem_code(response).await,
+        "ROUNDING_POLICY_UNKNOWN",
+        "the code is the one the publish rule reports for the same fault, not a fresh one"
+    );
+    let (_, _, body) = read_policy(&harness).await;
+    assert_eq!(
+        body["default_rounding_policy_ref"],
+        serde_json::Value::Null,
+        "and the refusal wrote nothing"
+    );
+}
+
+/// The **positive control**: the same write lands when the value is declared.
+///
+/// Without it the refusal above would pass against a door that refused every
+/// default.
+#[tokio::test]
+async fn a_default_inside_the_declared_vocabulary_is_stored() {
+    let harness = Harness::new().await;
+    declare_rounding_value(&harness, "half_even/2").await;
+    let (_, tag, _) = read_policy(&harness).await;
+
+    let response = write_policy(
+        &harness,
+        serde_json::json!("half_even/2"),
+        &tag.expect("a tag"),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let (_, _, body) = read_policy(&harness).await;
+    assert_eq!(body["default_rounding_policy_ref"], "half_even/2");
+}
+
+/// The **second positive control**, and the one that keeps this from becoming a
+/// migration every existing tenant has to run: a tenant who has declared no
+/// vocabulary constrains nothing.
+///
+/// `violation_for`'s own first clause (`self.declared.is_empty()`), which is how
+/// `RegionsDeclared` behaves at its write door too. Without this case the refusal
+/// above would be indistinguishable from one that requires a vocabulary before a
+/// default can be set at all.
+#[tokio::test]
+async fn a_tenant_with_no_declared_vocabulary_may_set_any_default() {
+    let harness = Harness::new().await;
+    let (_, tag, _) = read_policy(&harness).await;
+
+    let response = write_policy(
+        &harness,
+        serde_json::json!("anything/9"),
+        &tag.expect("a tag"),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let (_, _, body) = read_policy(&harness).await;
+    assert_eq!(body["default_rounding_policy_ref"], "anything/9");
+}
+
 /// Declare one rounding value straight at the table.
 ///
 /// Direct because the taxonomy surface is not what these cases are about — the

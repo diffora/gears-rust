@@ -388,7 +388,7 @@ fn authoring_the_default_qualification_window_is_not_a_unit_change() {
 }
 
 #[test]
-fn the_eleven_field_list_is_the_shared_seven_axes_between_this_guards_own_four() {
+fn the_twelve_field_list_is_the_shared_seven_axes_between_this_guards_own_five() {
     // The regression the factoring had to not cause. `mismatched_unit_fields`
     // is `unit_determining_mismatch` with `meter` and `dimensionKey` in front
     // and `reservationFlavor` plus the carry-conditioned allowance behind, in
@@ -400,6 +400,14 @@ fn the_eleven_field_list_is_the_shared_seven_axes_between_this_guards_own_four()
     // added is the one field the guard against dropping a field did not cover.
     // Same edit, same cause as the stale census on `mismatched_unit_fields`:
     // D-254 widened the list and left both readers behind.
+    //
+    // **And it happened again the same week.** `max_hold_granules` (review M-3,
+    // 2026-08-19) was added to `mismatched_unit_fields` by a wave that had this
+    // very paragraph in front of it, and was not set here either - so reverting
+    // that `changed.push` left this census green and only a one-element assertion
+    // elsewhere red, which cannot see ordering, duplication, or a second copy of
+    // the shared seven. Set every field this guard names, or the guard against
+    // dropping a field has a blind one to hide in (review F5).
     let mut successor = predecessor();
     successor.meter = Some("ingress_bytes".to_owned());
     successor.dimension_key = "region".to_owned();
@@ -413,6 +421,7 @@ fn the_eleven_field_list_is_the_shared_seven_axes_between_this_guards_own_four()
     successor.tier_aggregation_window = Some(TierAggregationWindow::InvoicePeriod);
     successor.tier_qualification_window = Some(TierQualificationWindow::TrailingPeriod);
     successor.reservation_flavor = Some(ReservationFlavor::Consumption);
+    successor.max_hold_granules = Some(8760);
     successor.included_allowance = Some(IncludedAllowance {
         quantity: 100,
         rollover_policy: RolloverPolicy::Carry,
@@ -434,6 +443,7 @@ fn the_eleven_field_list_is_the_shared_seven_axes_between_this_guards_own_four()
             "tierQualificationWindow",
             "package_size",
             "reservationFlavor",
+            "maxHoldGranules",
             "included_allowance",
         ]
     );
@@ -443,7 +453,7 @@ fn the_eleven_field_list_is_the_shared_seven_axes_between_this_guards_own_four()
         unit_determining_mismatch(&predecessor(), &successor)
     );
     // The count is asserted against the two halves rather than against a literal,
-    // so an axis added to either side has to be added here too: 2 + 7 + 2 = 11.
+    // so an axis added to either side has to be added here too: 2 + 7 + 3 = 12.
     //
     // Seven and not eight although the shared list holds eight **labels**: its
     // first axis reports as `model_kind` or as
@@ -454,7 +464,7 @@ fn the_eleven_field_list_is_the_shared_seven_axes_between_this_guards_own_four()
     // at this same door.
     assert_eq!(
         changed.len(),
-        2 + unit_determining_mismatch(&predecessor(), &successor).len() + 2,
+        2 + unit_determining_mismatch(&predecessor(), &successor).len() + 3,
         "every label must come from one of the three sources this test names"
     );
 }

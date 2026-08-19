@@ -2,7 +2,7 @@
 
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -613,6 +613,67 @@ async fn every_route_with_a_path_parameter_declares_a_400() {
     );
 }
 
+#[tokio::test]
+async fn every_path_template_segment_is_a_declared_path_parameter() {
+    // The axis the four censuses beside it did not cover (review T-1, 2026-08-19).
+    //
+    // `every_route_with_a_path_parameter_declares_a_400` above asks whether a
+    // parameterized route declares a **400**; nothing asked whether it declares
+    // the **parameter**. Nothing in the toolkit derives one either:
+    // `OperationBuilder::path_param` is the only thing that pushes a
+    // `ParamLocation::Path` spec, `openapi_registry` renders exactly what the spec
+    // holds, and `axum_to_openapi_path` rewrites the template without consulting
+    // the parameter list. So a `{…}` segment with no declaration emits a document
+    // that is **structurally invalid** — OpenAPI 3.x requires every path template
+    // expression to have a corresponding `in: path` parameter — and a generated
+    // client either cannot fill the segment or requests the literal `%7B…%7D`.
+    // Over the wire the route works, so no runtime case can see it;
+    // `preview_plan_price` carried it from the day it was registered.
+    //
+    // **Set equality in both directions**, for the reason
+    // `every_query_reading_route_declares_the_parameters_it_reads` gives for its
+    // own: a declared path parameter the template does not carry is the same
+    // defect from the other side — it documents a segment no caller can place.
+    let openapi = registered_operations().await;
+
+    let mut wrong: Vec<String> = Vec::new();
+    for entry in &openapi.operation_specs {
+        let key = entry.key();
+        let Some(path) = key.split_once(':').map(|(_, path)| path) else {
+            continue;
+        };
+        let mut templated: Vec<String> = path
+            .split('/')
+            .filter_map(|segment| {
+                segment
+                    .strip_prefix('{')
+                    .and_then(|inner| inner.strip_suffix('}'))
+                    .map(ToOwned::to_owned)
+            })
+            .collect();
+        let mut declared: Vec<String> = entry
+            .value()
+            .params
+            .iter()
+            .filter(|param| matches!(param.location, ParamLocation::Path))
+            .map(|param| param.name.clone())
+            .collect();
+        templated.sort();
+        declared.sort();
+        if templated != declared {
+            wrong.push(format!(
+                "{key}: template {templated:?}, declared {declared:?}"
+            ));
+        }
+    }
+    wrong.sort();
+    assert!(
+        wrong.is_empty(),
+        "every `{{…}}` segment must be a declared path parameter and every declared path \
+         parameter must be a segment: {wrong:?}"
+    );
+}
+
 #[test]
 fn no_handler_takes_axums_json_extractor() {
     // The derivation `no_operation_declares_a_422` cannot perform, and the reason
@@ -1057,13 +1118,82 @@ fn query_reading_routes() -> Vec<QueryReadingRoute> {
 /// grep-shape mistake, in mirror, that the entry made about `/history`. What the
 /// wider census did find is one genuine survivor, `GET /bundles/{bundleId}`'s
 /// `plan_revision`, and that is what the accompanying commit declares.
+/// The members of every `Query<T>` extractor type, by type name.
+///
+/// The parser [`no_query_struct_lets_the_extractor_answer`] runs over the same
+/// declarations, lifted out so that the census above can compare a route's
+/// **declared** parameters against the handler's **actual** read set rather than
+/// against a second declaration (review T-2, 2026-08-19). Unresolved types are
+/// returned as such rather than skipped, for that test's stated reason: a census
+/// that cannot find its subject has not cleared it.
+fn query_extractor_fields() -> (BTreeMap<String, Vec<String>>, Vec<String>) {
+    let mut fields: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let mut unresolved: Vec<String> = Vec::new();
+    for source in rest_sources() {
+        let text = scannable(&source);
+        for after in text.split("Query<").skip(1) {
+            let name: String = after
+                .chars()
+                .take_while(|c| c.is_alphanumeric() || *c == '_')
+                .collect();
+            let Some(body) = text
+                .split_once(&format!("struct {name} {{"))
+                .and_then(|(_, rest)| rest.split_once('}'))
+                .map(|(body, _)| body)
+            else {
+                unresolved.push(format!("{name} (extracted in {})", source.display()));
+                continue;
+            };
+            let mut members: Vec<String> = Vec::new();
+            for member in body.split(',') {
+                let Some((field, _ty)) = member.split_once(": ") else {
+                    continue;
+                };
+                let Some(field) = field.split_whitespace().next_back() else {
+                    continue;
+                };
+                if !field.chars().all(|c| c.is_alphanumeric() || c == '_') {
+                    continue;
+                }
+                members.push(field.to_owned());
+            }
+            members.sort();
+            fields.insert(name, members);
+        }
+    }
+    unresolved.sort();
+    unresolved.dedup();
+    (fields, unresolved)
+}
+
 #[tokio::test]
 async fn every_query_reading_route_declares_the_parameters_it_reads() {
     let openapi = registered_operations().await;
+    // **The handler's own members are the operand** (review T-2, 2026-08-19).
+    // This compared `declared_query_params` with the roster's fourth column, and
+    // both sides of that comparison are *declarations*: the fields of `T` — what
+    // the handler can actually read — were never an operand of any assertion, so
+    // adding an `Option<String>` member and reading it while declaring nothing
+    // stayed green through every census in this file. That is Z13-10, the defect
+    // this test exists for, reachable through the one seam its repair left open.
+    let (fields, unresolved) = query_extractor_fields();
+    assert!(
+        unresolved.is_empty(),
+        "this scan could not find the declaration of these `Query<…>` types, so it would have \
+         cleared their routes without reading a member: {unresolved:?}"
+    );
 
-    for (method, path, _extractor, expected) in query_reading_routes() {
+    for (method, path, extractor, expected) in query_reading_routes() {
         let mut expected = expected;
         expected.sort_unstable();
+        let read = fields
+            .get(extractor)
+            .unwrap_or_else(|| panic!("{extractor} is extracted by no source under src/api/rest"));
+        assert_eq!(
+            read, &expected,
+            "the roster says {method} {path} reads {expected:?}, and {extractor} has members \
+             {read:?}"
+        );
         assert_eq!(
             declared_query_params(&openapi, method, path),
             expected,
@@ -1847,22 +1977,42 @@ async fn a_read_route_declares_no_precondition_header() {
     // satisfiable by declaring both headers everywhere. A GET has no precondition
     // to assert, and a declared one would tell a client to send a header the
     // server ignores.
+    //
+    // **Derived, not a roster** (review T-3, 2026-08-19). This iterated a literal
+    // array of six `GET`s against the 28 the gear registers, so it was the only
+    // population claim in its group covering 21% of its population: an `If-Match`
+    // added to any of the other 22 reddened nothing — not here, not in
+    // `every_precondition_reading_route_declares_the_header_it_reads` (which walks
+    // only routes whose *handler* calls `preconditions::if_match`), and not in
+    // `the_conditional_read_declares_both_halves_or_neither` (which pairs
+    // `if-none-match` with a 304). The derivation is the idiom eighty lines up:
+    // key off `GET:`.
     let openapi = registered_operations().await;
 
-    for (method, path) in [
-        ("GET", bss_pricing::api::rest::plans::PLAN),
-        ("GET", bss_pricing::api::rest::prices::PLAN_PRICES),
-        ("GET", bss_pricing::api::rest::approvals::APPROVALS),
-        ("GET", bss_pricing::api::rest::approvals::APPROVAL),
-        ("GET", bss_pricing::api::rest::windows::PLAN_COVERAGE),
-        ("GET", bss_pricing::api::rest::windows::PLAN_SELLABILITY),
-    ] {
-        let headers = declared_headers(&openapi, method, path);
-        assert!(
-            !headers.iter().any(|name| name == "if-match"),
-            "{method} {path} declares an If-Match it cannot honour: {headers:?}"
-        );
+    let mut offenders: Vec<String> = Vec::new();
+    let mut reads = 0_usize;
+    for entry in &openapi.operation_specs {
+        let key = entry.key();
+        let Some(path) = key.strip_prefix("GET:") else {
+            continue;
+        };
+        reads += 1;
+        let headers = declared_headers(&openapi, "GET", path);
+        if headers.iter().any(|name| name == "if-match") {
+            offenders.push(key.clone());
+        }
     }
+    // Anti-vacuity: a scan that matched no route would clear every read in the
+    // gear, which is the failure mode the roster this replaced could not have.
+    assert!(
+        reads >= 20,
+        "the GET scan found only {reads} reads, so it is not measuring the population it claims"
+    );
+    offenders.sort();
+    assert!(
+        offenders.is_empty(),
+        "these reads declare an If-Match they cannot honour: {offenders:?}"
+    );
 }
 
 #[tokio::test]

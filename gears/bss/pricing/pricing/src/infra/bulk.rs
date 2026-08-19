@@ -195,6 +195,66 @@ pub async fn abandon_committing_run(
     .await
 }
 
+/// The `validating` half of the abort door: land a run that never reached a
+/// decision, so an operator has the same remedy one phase earlier (review O-2).
+///
+/// [`abandon_committing_run`]'s sibling, and deliberately **not** that function
+/// with a widened premise: this run holds no row locks, so there is nothing to
+/// release, and its edge is `validating -> validation_failed` rather than the
+/// terminal conflict state. Sharing one body would mean a `release_locks` on a run
+/// that never took any and a state pair chosen by an `if` — which is how a sweep
+/// starts writing the wrong `WHERE`.
+///
+/// The note goes under the same [`ABORTED_MEMBER`] key for that constant's stated
+/// reason: an operator reading a run's report should not have to know which door
+/// stopped it.
+///
+/// # Errors
+/// [`RepoError::NotFound`] when the run is not visible to `scope`;
+/// [`RepoError::Db`] on a storage failure or when the run has left `validating`
+/// since it was read, which is the compare-and-swap refusing rather than a lost
+/// update.
+pub async fn abandon_validating_run(
+    runner: &impl toolkit_db::secure::DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    operation_id: Uuid,
+    note: &str,
+    at: DateTime<Utc>,
+) -> Result<BulkOperationRecord, RepoError> {
+    let run = bulk_repo::read(runner, scope, tenant_id, operation_id)
+        .await?
+        .ok_or_else(|| RepoError::NotFound {
+            subject: "bulk import".to_owned(),
+            id: operation_id.to_string(),
+        })?;
+    let mut report = run.report;
+    if let Some(object) = report.as_object_mut() {
+        object.insert(ABORTED_MEMBER.to_owned(), serde_json::json!(note));
+    } else {
+        report = serde_json::json!({
+            ABORTED_MEMBER: note,
+            PRIOR_REPORT_MEMBER: report,
+        });
+    }
+
+    bulk_repo::advance(
+        runner,
+        scope,
+        tenant_id,
+        operation_id,
+        BulkState::Validating,
+        BulkState::ValidationFailed,
+        report,
+        at,
+    )
+    .await
+}
+
+/// The note `POST …/abort` stamps on a run it stopped during **validation**.
+pub const ABORT_VALIDATING_NOTE: &str = "an operator stopped this batch during validation; nothing was imported and nothing was \
+     locked - resubmit under a new idempotency key";
+
 /// Owns [`commit_batch`]'s row locks across the two exits no match arm reaches: a
 /// panic, and a dropped future.
 ///
@@ -301,6 +361,133 @@ impl Drop for CommitLockGuard {
                     "bss-pricing: a dropped bulk commit's guard failed to release its row locks \
                      and land the run terminal; the run may still be committing and its rows \
                      frozen, and `POST /bulk-imports/{{id}}/abort` is the remedy"
+                );
+            }
+        });
+    }
+}
+
+/// What a Phase-1 landing says when the future carrying it was dropped.
+///
+/// [`INTERRUPTED_NOTE`]'s sibling one phase earlier, and a different sentence
+/// because a different thing happened: Phase 1 holds no locks and has committed
+/// nothing, so the operator's remedy is simply a new batch under a new key. What
+/// they must **not** be told is that the import succeeded, which is what the
+/// replay arm answered while the run sat `validating` (review O-2).
+const VALIDATION_INTERRUPTED_NOTE: &str = "validation was interrupted (a client disconnect, a shutdown or a panic) before this batch \
+     reached a decision; nothing was imported and nothing is locked - resubmit the batch under a \
+     new idempotency key";
+
+/// Owns a run that is `validating` and lands it `validation_failed` if the future
+/// carrying Phase 1 never reaches a decision (review O-2, 2026-08-19).
+///
+/// [`CommitLockGuard`]'s arrangement one phase earlier, and it exists for the same
+/// reason its doc gives: a panic unwinds past every match arm and a dropped future
+/// — "a client disconnect, a shutdown signal, a losing `select!` arm" — never
+/// reaches one. Phase 2 was hardened for both three times (D-294, D-297, D-300)
+/// and Phase 1 not once, although Phase 1 is the phase that awaits a store read
+/// per plan while the client's own timeout is running.
+///
+/// **Nothing owned the run between `bulk_repo::open` and Phase 2's `advance`.**
+/// `validating` is a state nothing else can leave: the abort route refuses
+/// anything that is not `committing`, the lock table has no sweeper, and D-37's
+/// lease takeover is unbuilt. So a stranded run held its idempotency key forever
+/// and the retry — which is the same client, timed out — was answered `202` over
+/// the placeholder report `{"rows": []}`. Z11-4 closed exactly that inversion for
+/// a store fault inside `classify_against_store`; this closes it for the two exits
+/// that run no code of ours.
+///
+/// **The `Drop` must not call [`abandon_committing_run`]**: that sweep's premise
+/// is `committing` and rides its `WHERE`, so it would refuse this run and log a
+/// failure rather than land it. It advances `Validating -> ValidationFailed`
+/// instead, which is the same statement-level premise, so a Phase-1 landing that
+/// raced the drop cannot be overwritten by it.
+pub(crate) struct ValidationGuard {
+    db: DBProvider<DbError>,
+    scope: AccessScope,
+    tenant_id: Uuid,
+    operation_id: Uuid,
+    disarmed: bool,
+}
+
+impl ValidationGuard {
+    /// Arm the guard over a run that has just been opened `validating`.
+    #[must_use]
+    pub(crate) const fn new(
+        db: DBProvider<DbError>,
+        scope: AccessScope,
+        tenant_id: Uuid,
+        operation_id: Uuid,
+    ) -> Self {
+        Self {
+            db,
+            scope,
+            tenant_id,
+            operation_id,
+            disarmed: false,
+        }
+    }
+
+    /// The run has left `validating` under its own power, so `Drop` has nothing to
+    /// do. [`CommitLockGuard::disarm`]'s shape, for that method's reason.
+    pub(crate) fn disarm(&mut self) {
+        self.disarmed = true;
+    }
+}
+
+impl Drop for ValidationGuard {
+    fn drop(&mut self) {
+        if self.disarmed {
+            return;
+        }
+        let db = self.db.clone();
+        let scope = self.scope.clone();
+        let tenant_id = self.tenant_id;
+        let operation_id = self.operation_id;
+        let Ok(handle) = tokio::runtime::Handle::try_current() else {
+            tracing::error!(
+                operation_id = %operation_id,
+                "bss-pricing: a bulk import's validation was dropped with no Tokio runtime \
+                 current to land the run on; it is left validating, which has no exit, and its \
+                 idempotency key is spent"
+            );
+            return;
+        };
+        handle.spawn(async move {
+            let conn = match db.conn() {
+                Ok(conn) => conn,
+                Err(e) => {
+                    tracing::error!(
+                        error = %e,
+                        operation_id = %operation_id,
+                        "bss-pricing: a dropped bulk import's guard could not open a connection \
+                         to land its run"
+                    );
+                    return;
+                }
+            };
+            let report = serde_json::json!({
+                "rows": [],
+                "failure": VALIDATION_INTERRUPTED_NOTE,
+            });
+            if let Err(e) = bulk_repo::advance(
+                &conn,
+                &scope,
+                tenant_id,
+                operation_id,
+                BulkState::Validating,
+                BulkState::ValidationFailed,
+                report,
+                Utc::now(),
+            )
+            .await
+            {
+                tracing::error!(
+                    error = %e,
+                    operation_id = %operation_id,
+                    "bss-pricing: a dropped bulk import's guard failed to land the run \
+                     validation_failed; it is left validating, which has no exit, and its \
+                     idempotency key is spent"
                 );
             }
         });

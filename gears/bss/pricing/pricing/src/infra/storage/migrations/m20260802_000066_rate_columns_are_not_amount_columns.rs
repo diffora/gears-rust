@@ -77,22 +77,32 @@ const PG_DOWN_STATEMENTS: &[&str] = &[
         RENAME COLUMN unit_price_nano TO unit_price_minor",
 ];
 
-const SQLITE_UP_STATEMENTS: &[&str] = &[
-    "ALTER TABLE pricing_price_tier_band
-        RENAME COLUMN unit_price_minor TO unit_price_nano",
-    // SQLite cannot add a CHECK to an existing table, so this migration adds the
-    // column without one and the constraint arrives with the next rebuild.
-    //
-    // **That rebuild happened**: `m20260802_000076` rebuilt `pricing_price` ten
-    // migrations later for the tier-aggregation window, and it now carries
-    // `chk_pricing_price_unit_rate_nano` beside `amount_minor`'s. This comment
-    // used to argue the asymmetry was permanent because rebuilding "would be a
-    // large edit" — a reason that stopped being true the moment somebody paid
-    // that cost for another reason, and which then kept half of `amount_minor`'s
-    // non-negativity rule off the mirror for ten migrations. Kept as a record of
-    // why the gap existed, not as a live claim.
-    "ALTER TABLE pricing_price ADD COLUMN unit_rate_nano bigint",
-];
+/// The half of the `SQLite` `up` that is safe to replay unconditionally — its own
+/// `down` puts the name back, so the reverse walk leaves nothing for it to trip
+/// over.
+const SQLITE_UP_RENAME: &[&str] = &["ALTER TABLE pricing_price_tier_band
+        RENAME COLUMN unit_price_minor TO unit_price_nano"];
+
+/// The half that **cannot** be replayed blind (review F2, 2026-08-19).
+///
+/// `SQLite` cannot add a `CHECK` to an existing table, so this migration adds the
+/// column without one and the constraint arrives with the next rebuild.
+///
+/// **That rebuild happened**: `m20260802_000076` rebuilt `pricing_price` ten
+/// migrations later for the tier-aggregation window, and it now carries
+/// `chk_pricing_price_unit_rate_nano` beside `amount_minor`'s. An earlier comment
+/// here argued the asymmetry was permanent because rebuilding "would be a large
+/// edit" — a reason that stopped being true the moment somebody paid that cost
+/// for another reason. Kept as a record of why the gap existed, not as a live
+/// claim.
+///
+/// The consequence is this constant's own: because `m076`'s `CHECK` names
+/// `unit_rate_nano`, this migration's `down` can no longer drop the column, so a
+/// partial rollback to below `m066` leaves it in place — and `ADD COLUMN` has no
+/// `IF NOT EXISTS`. Rolling forward again therefore failed with `duplicate column
+/// name` and left the database stuck at `m065` with a schema partly at `m066`.
+/// The `up` asks first.
+const SQLITE_UP_ADD_COLUMN: &str = "ALTER TABLE pricing_price ADD COLUMN unit_rate_nano bigint";
 
 const SQLITE_DOWN_STATEMENTS: &[&str] = &[
     // **The column is left in place, deliberately.** `m20260802_000076` rebuilt
@@ -114,7 +124,18 @@ const SQLITE_DOWN_STATEMENTS: &[&str] = &[
 #[async_trait::async_trait]
 impl MigrationTrait for Migration {
     async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
-        super::exec_backend(manager, PG_UP_STATEMENTS, SQLITE_UP_STATEMENTS).await
+        super::exec_backend(manager, PG_UP_STATEMENTS, SQLITE_UP_RENAME).await?;
+        // **SQLite only, and the asymmetry is the point.** Postgres needs no
+        // guard because its own `down` genuinely drops both the constraint and
+        // the column (`PG_DOWN_STATEMENTS`), so a partial rollback there leaves
+        // nothing behind to collide with. On SQLite the `down` cannot, so the
+        // `up` asks. See `SQLITE_UP_ADD_COLUMN`.
+        if manager.get_database_backend() == sea_orm::DatabaseBackend::Sqlite
+            && !super::sqlite_column_exists(manager, "pricing_price", "unit_rate_nano").await?
+        {
+            super::exec_backend(manager, &[], &[SQLITE_UP_ADD_COLUMN]).await?;
+        }
+        Ok(())
     }
 
     async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {

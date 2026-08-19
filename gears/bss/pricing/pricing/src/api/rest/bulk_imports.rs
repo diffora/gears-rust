@@ -425,6 +425,35 @@ async fn submit_bulk_import(
     .await
     .map_err(|e| CanonicalError::from(repo_failure(&e)))?;
 
+    // **The open is audited** (review O-3, 2026-08-19), in a helper rather than
+    // inline: this handler is at its cognitive-complexity ceiling, and the record
+    // is one act with one failure reading.
+    audit_the_open(
+        &conn,
+        &scope,
+        tenant,
+        &ctx,
+        correlation,
+        &run,
+        body.rows.len(),
+    )
+    .await;
+
+    // **Armed the instant the run exists** (review O-2, 2026-08-19). From here to
+    // Phase 2's `advance` nothing owned this run: a client disconnect or a panic
+    // stopped at the next await inside `classify_against_store` and left it
+    // `validating` — a state nothing else can leave — with its idempotency key
+    // spent, so the retry was answered `202` over the placeholder report. Phase 2
+    // has had a `Drop` guard for both exits since Z8-8; Phase 1 had none. Disarmed
+    // at every point below where the run has left `validating` under its own
+    // power.
+    let mut validation_guard = crate::infra::bulk::ValidationGuard::new(
+        state.authoring.db.clone(),
+        scope.clone(),
+        tenant,
+        run.operation_id,
+    );
+
     // **Phase 1 begins by reading the rows, and it reads all of them** (Z11-6).
     // This used to run *before* the run was opened and with a `?` per row, so the
     // first bad value aborted the whole body with one `DomainError` carrying no
@@ -435,6 +464,8 @@ async fn submit_bulk_import(
     let rows = match rows_of(&body) {
         Ok(rows) => rows,
         Err(unreadable) => {
+            // `refuse_unreadable_rows` lands the run itself.
+            validation_guard.disarm();
             return Err(refuse_unreadable_rows(
                 &conn,
                 &scope,
@@ -496,6 +527,9 @@ async fn submit_bulk_import(
                  run; it is left validating, which has no exit, and its idempotency key is spent"
             );
         }
+        // Landed (or logged as unlandable) just above either way, so the guard
+        // has nothing left to do and would only race its own advance.
+        validation_guard.disarm();
         return Err(CanonicalError::from(failure));
     }
 
@@ -513,6 +547,7 @@ async fn submit_bulk_import(
         )
         .await
         .map_err(|e| CanonicalError::from(repo_failure(&e)))?;
+        validation_guard.disarm();
         // **A `400`, not the `422` §5 writes.** Foundation §3.3 states it once
         // for the whole design set: the platform has no 422 category, and every
         // architectural 422 reaches the wire as a 400 carrying its code. The
@@ -529,6 +564,8 @@ async fn submit_bulk_import(
         }));
     }
 
+    // Phase 2 owns the run from its own `advance` onwards, under `CommitLockGuard`.
+    validation_guard.disarm();
     commit_batch(
         &state.authoring.db,
         &state.authoring.prices,
@@ -607,10 +644,14 @@ async fn abort_bulk_import(
     Extension(state): Extension<Arc<ApiState>>,
     Extension(enforcer): Extension<authz_resolver_sdk::PolicyEnforcer>,
     extension_ctx: Option<Extension<SecurityContext>>,
+    extension_correlation: Option<Extension<CorrelationId>>,
     Path(operation_id): Path<Uuid>,
     headers: HeaderMap,
 ) -> Result<Json<BulkImportView>, CanonicalError> {
     let ctx = require_authenticated(extension_ctx)?;
+    // Required, not optional, for D-178's reason: the audit record this route now
+    // writes (review O-3) would otherwise carry no correlation id.
+    let correlation = require_correlation(extension_correlation)?;
     let tenant = ctx.subject_tenant_id();
     let scope = write_scope(&enforcer, &ctx).await?;
     // Read for its refusal, not for a value: an abort with no key is a request the
@@ -659,6 +700,29 @@ async fn abort_bulk_import(
         return Ok(Json(run_view(&run)));
     }
 
+    // **A `validating` run has a door too** (review O-2, 2026-08-19). Phase 1 owns
+    // no locks and has committed nothing, but `validating` is a state nothing else
+    // can leave — the sweep below refuses it, there is no sweeper, and D-37's
+    // lease takeover is unbuilt — so a run stranded there held its idempotency key
+    // forever and the retry was answered `202` over an empty report. The Phase-1
+    // drop guard covers the dropped future; this covers everything the guard
+    // cannot, including a process killed outright, which is the residue
+    // `CommitLockGuard`'s own doc says the abort route stays for.
+    if run.state == BulkState::Validating {
+        let landed = crate::infra::bulk::abandon_validating_run(
+            &conn,
+            &scope,
+            tenant,
+            operation_id,
+            crate::infra::bulk::ABORT_VALIDATING_NOTE,
+            Utc::now(),
+        )
+        .await
+        .map_err(|e| CanonicalError::from(repo_failure(&e)))?;
+        audit_the_abort(&conn, &scope, tenant, &ctx, correlation, &landed).await;
+        return Ok(Json(run_view(&landed)));
+    }
+
     // **The trigger does not refuse this one, and D-293 claimed it did.** A move
     // to the state a run is already in returns early on both engines, so an abort
     // against a run already in `completed_with_conflicts` — the ordinary terminal
@@ -695,7 +759,125 @@ async fn abort_bulk_import(
     .await
     .map_err(|e| CanonicalError::from(repo_failure(&e)))?;
 
+    audit_the_abort(&conn, &scope, tenant, &ctx, correlation, &aborted).await;
     Ok(Json(run_view(&aborted)))
+}
+
+/// Record that an operator submitted a batch (review O-3, 2026-08-19).
+///
+/// Nothing on this plane wrote an audit record at all: neither
+/// `api::rest::bulk_imports` nor `infra::bulk` nor
+/// `infra::storage::repo::bulk_repo` mentions `audit_repo`, while the sibling
+/// repricing run writes a `BulkOperation`-kind `Create` for the same act — and
+/// `AuditAction::Create`'s own doc names it. So a batch that Phase 1 refused, or
+/// that the Phase-1 window swallowed, left no trace that anything was submitted.
+///
+/// Written on the same autocommit connection as the open rather than in one
+/// transaction with it, which is a real and stated limitation: a fault landing
+/// exactly between the two leaves a run with no record of its opening. The run
+/// must be durable before Phase 1 starts — that is what makes the abort door and
+/// the replay arm able to see it — and this plane holds no transaction to join.
+/// The repricing run's `append` rides a `txn` because its caller already has one.
+///
+/// Best-effort: the run is open and the client key is spent, so refusing here
+/// would strand exactly the run the Phase-1 guard exists to rescue, over a record
+/// rather than over the import.
+async fn audit_the_open(
+    conn: &impl toolkit_db::secure::DBRunner,
+    scope: &toolkit_db::secure::AccessScope,
+    tenant: Uuid,
+    ctx: &SecurityContext,
+    correlation: Uuid,
+    run: &crate::infra::storage::repo::BulkOperationRecord,
+    row_count: usize,
+) {
+    if let Err(e) = crate::infra::storage::repo::audit_repo::append(
+        conn,
+        scope,
+        crate::infra::storage::repo::NewAuditEntry {
+            tenant_id: tenant,
+            chain_id: crate::infra::storage::repo::audit_repo::bulk_operation_chain(
+                run.operation_id,
+            ),
+            recorded_at: Utc::now(),
+            actor_principal_id: ctx.subject_id(),
+            action: crate::domain::audit::AuditAction::Create,
+            subject_kind: crate::domain::audit::AuditSubjectKind::BulkOperation,
+            subject_ref: crate::infra::storage::repo::audit_repo::bulk_operation_ref(
+                run.operation_id,
+            ),
+            before_state: None,
+            after_state: Some(serde_json::json!({
+                "kind": BulkKind::Import.as_str(),
+                "state": run.state.as_str(),
+                "rowCount": row_count,
+            })),
+            approval_ref: None,
+            correlation_id: correlation,
+        },
+    )
+    .await
+    {
+        tracing::error!(
+            error = %e,
+            operation_id = %run.operation_id,
+            "bss-pricing: a bulk import opened without its audit record"
+        );
+    }
+}
+
+/// Record who stopped a run, and from which state (review O-3, 2026-08-19).
+///
+/// Nothing on this plane wrote an audit record at all, so `GET /audit` could not
+/// answer "who aborted import X": the only trace was an `aborted` note on a
+/// report the abort itself rewrote. The sibling repricing run writes a
+/// `BulkOperation`-kind record for the same act.
+///
+/// `AuditAction::Abandon` and not `Delete`, for that variant's stated reason — the
+/// row survives and the run keeps its identity. Best-effort for the same reason
+/// the open's is: the sweep has already released the locks and landed the run, and
+/// refusing here would leave an operator believing the abort failed when it is the
+/// one thing that certainly succeeded.
+async fn audit_the_abort(
+    conn: &impl toolkit_db::secure::DBRunner,
+    scope: &toolkit_db::secure::AccessScope,
+    tenant: Uuid,
+    ctx: &SecurityContext,
+    correlation: Uuid,
+    aborted: &crate::infra::storage::repo::BulkOperationRecord,
+) {
+    if let Err(e) = crate::infra::storage::repo::audit_repo::append(
+        conn,
+        scope,
+        crate::infra::storage::repo::NewAuditEntry {
+            tenant_id: tenant,
+            chain_id: crate::infra::storage::repo::audit_repo::bulk_operation_chain(
+                aborted.operation_id,
+            ),
+            recorded_at: Utc::now(),
+            actor_principal_id: ctx.subject_id(),
+            action: crate::domain::audit::AuditAction::Abandon,
+            subject_kind: crate::domain::audit::AuditSubjectKind::BulkOperation,
+            subject_ref: crate::infra::storage::repo::audit_repo::bulk_operation_ref(
+                aborted.operation_id,
+            ),
+            before_state: None,
+            after_state: Some(serde_json::json!({
+                "kind": aborted.kind.as_str(),
+                "state": aborted.state.as_str(),
+            })),
+            approval_ref: None,
+            correlation_id: correlation,
+        },
+    )
+    .await
+    {
+        tracing::error!(
+            error = %e,
+            operation_id = %aborted.operation_id,
+            "bss-pricing: a bulk import was aborted without its audit record"
+        );
+    }
 }
 
 /// The `plan x write` gate both mutating surfaces take.

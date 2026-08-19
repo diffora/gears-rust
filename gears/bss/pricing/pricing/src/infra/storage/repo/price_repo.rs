@@ -849,6 +849,15 @@ fn tx_failure(err: TxError<RepoError>) -> RepoError {
     err.into_domain(|infra| RepoError::Db(format!("price draft transaction: {infra}")))
 }
 
+/// `(resolved tax category, resolved rounding policy)` — the pair a publish
+/// freezes onto a row, and the key its rows are grouped by so one statement
+/// serves every row sharing a resolution.
+///
+/// A named type because the tuple is a map key in one place and its shape is the
+/// thing a reader has to hold: `Option` on both halves is "the resolution is
+/// genuinely absent", not "not computed yet".
+type ResolutionKey = (Option<String>, Option<String>);
+
 /// Publish **exactly the validated price rows**, inside the caller's
 /// transaction, returning the ids that moved.
 ///
@@ -950,16 +959,9 @@ fn tx_failure(err: TxError<RepoError>) -> RepoError {
 /// concurrent commit landing between the pre-read and the UPDATE, reported as
 /// the row-count mismatch it is; [`RepoError::CorruptRow`] when a stored row
 /// cannot be read as the domain value its columns are `CHECK`-constrained to
-/// hold.
-/// `(resolved tax category, resolved rounding policy)` — the pair a publish
-/// freezes onto a row, and the key its rows are grouped by so one statement
-/// serves every row sharing a resolution.
-///
-/// A named type because the tuple is a map key in one place and its shape is the
-/// thing a reader has to hold: `Option` on both halves is "the resolution is
-/// genuinely absent", not "not computed yet".
-type ResolutionKey = (Option<String>, Option<String>);
-
+/// hold; [`RepoError::RoundingPolicyUnresolved`] when a row carries no
+/// `rounding_policy_ref` and no tenant default resolves one, which is the
+/// publish rule's refusal restated where all four callers pass through it.
 pub async fn publish_rows(
     txn: &DbTx<'_>,
     scope: &AccessScope,
@@ -1055,6 +1057,29 @@ pub async fn publish_rows(
             .push(*price_id);
     }
 
+    // **The resolution is refused here, not merely frozen here** (review F1,
+    // 2026-08-19). `foundation.rounding_policy_resolved` judges exactly this and
+    // runs on one of this function's four callers; `infra::supersession`,
+    // `infra::cutover` and mass repricing reach the freeze through
+    // `commit_supersession_rows` with a default they read themselves and no rule
+    // over it. Freezing `None` on those three doors writes the state
+    // `m20260802_000089`'s header calls impossible onto a **published** row, and
+    // `m20260802_000090` then makes that row immutable — so there is no repair
+    // after the fact and the check has to be on this side of the write.
+    //
+    // Before the loop rather than inside it: the refusal must land before any
+    // group's statement executes, or a plan with two resolutions publishes half
+    // of itself and then refuses.
+    if let Some(price_id) = by_resolution
+        .iter()
+        .find(|((_, rounding), _)| rounding.is_none())
+        .and_then(|(_, price_ids)| price_ids.first())
+    {
+        return Err(RepoError::RoundingPolicyUnresolved {
+            price_id: price_id.to_string(),
+        });
+    }
+
     let mut result_rows = 0_u64;
     for ((resolved, rounding), price_ids) in by_resolution {
         let mut group = Condition::any();
@@ -1112,6 +1137,28 @@ pub async fn publish_rows(
     Ok(validated.iter().map(|(price_id, _)| *price_id).collect())
 }
 
+/// What a publish froze onto one row: the effective values, both of them.
+///
+/// Read together because they are frozen together, by one statement, for one
+/// reason — a consumer replaying a pinned `CatalogVersion` must see the tax
+/// category and the rounding mode the rule set judged the row with, not the ones
+/// the tenant's mutable config happens to name now. Two readers would be two
+/// scans of the same rows on the projector's sweep.
+///
+/// `None` on either half means the publish resolved nothing for it, which is a
+/// state a draft row is always in and a published row cannot be: the publish
+/// rules refuse a row that resolves no rounding policy, and `TaxBasisComplete`
+/// refuses one that resolves no category.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct FrozenResolution {
+    /// `coalesce(tax_category_ref, readiness.taxCategory)` as judged (D-154).
+    pub tax_category: Option<String>,
+    /// `coalesce(rounding_policy_ref, tenant.default_rounding_policy_ref)` as
+    /// judged. Lives in its own column since `m20260802_000089`; the publish used
+    /// to write it over the authored `rounding_policy_ref`.
+    pub rounding_policy: Option<String>,
+}
+
 /// Each row's **frozen** resolved tax category, by `price_id` (D-154).
 ///
 /// Read rather than re-derived: the value was resolved inside the publish
@@ -1138,28 +1185,6 @@ pub async fn publish_rows(
 ///
 /// # Errors
 /// [`RepoError::Db`] on a scope or storage failure.
-/// What a publish froze onto one row: the effective values, both of them.
-///
-/// Read together because they are frozen together, by one statement, for one
-/// reason — a consumer replaying a pinned `CatalogVersion` must see the tax
-/// category and the rounding mode the rule set judged the row with, not the ones
-/// the tenant's mutable config happens to name now. Two readers would be two
-/// scans of the same rows on the projector's sweep.
-///
-/// `None` on either half means the publish resolved nothing for it, which is a
-/// state a draft row is always in and a published row cannot be: the publish
-/// rules refuse a row that resolves no rounding policy, and `TaxBasisComplete`
-/// refuses one that resolves no category.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct FrozenResolution {
-    /// `coalesce(tax_category_ref, readiness.taxCategory)` as judged (D-154).
-    pub tax_category: Option<String>,
-    /// `coalesce(rounding_policy_ref, tenant.default_rounding_policy_ref)` as
-    /// judged. Lives in its own column since `m20260802_000089`; the publish used
-    /// to write it over the authored `rounding_policy_ref`.
-    pub rounding_policy: Option<String>,
-}
-
 pub async fn frozen_resolutions(
     runner: &impl DBRunner,
     scope: &AccessScope,

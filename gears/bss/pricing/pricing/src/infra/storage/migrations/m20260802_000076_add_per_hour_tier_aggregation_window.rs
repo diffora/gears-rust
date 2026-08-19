@@ -128,6 +128,16 @@ const REBUILD_TABLE: &[&str] = &[
             billing_timing IS NULL OR billing_timing IN ('advance','arrears')),
         CONSTRAINT chk_pricing_price_amount_non_negative CHECK (
             amount_minor IS NULL OR amount_minor >= 0),
+        -- **Added to this migration's text on 2026-08-19, which reaches only
+        -- databases built from scratch afterwards.** `sea_orm_migration` records a
+        -- migration by name and runs it once, so editing an applied migration's
+        -- SQL changes nothing on any database that already holds it (review F3).
+        -- The mirror of `amount_minor`'s rule is therefore a from-scratch
+        -- guarantee here and a live one on Postgres, where `m20260802_000066`
+        -- adds the named constraint directly. Closing the gap on an existing
+        -- SQLite database needs its own forward migration - a whole-table rebuild
+        -- restating the column set as of `m20260802_000089` - and that is a named
+        -- debt (D-349) rather than something this text can do.
         CONSTRAINT chk_pricing_price_unit_rate_nano CHECK (
             unit_rate_nano IS NULL OR unit_rate_nano >= 0),
         CONSTRAINT chk_pricing_price_max_hold_granules CHECK (

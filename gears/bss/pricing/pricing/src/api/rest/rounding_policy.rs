@@ -245,6 +245,41 @@ async fn put_policy(
     }
     let requested = request.default_rounding_policy_ref.as_deref();
 
+    // **The default is a reference, so it is judged like one** (review F1,
+    // 2026-08-19). `RoundingPolicyDeclared` carries `tenant_default` precisely
+    // because the publish walk skips every `None` row — the set the default
+    // stands in for — but that rule runs on the publish path alone, and
+    // `infra::supersession`, `infra::cutover` and mass repricing freeze the
+    // default onto a row with no rule over it at all. Judging it at its own write
+    // door is what makes the three of them safe without a fourth hand-enumerated
+    // site, and it is the door `RoundingPolicyDeclared::violation_for`'s doc says
+    // is owed ("giving this rule the same door ... is the fix that would make the
+    // pair symmetric again ... left for a decision") — D-348 takes it.
+    //
+    // Modelled on `prices::require_declared_region`, including its empty-set
+    // reading: a tenant who has declared no vocabulary constrains nothing, which
+    // is `violation_for`'s own first clause and keeps this from becoming a
+    // migration every existing tenant has to run before their next config write.
+    if let Some(reference) = requested {
+        let conn = state.db.conn().map_err(|e| {
+            CanonicalError::from(DomainError::Internal(format!("taxonomy conn: {e}")))
+        })?;
+        let declared = crate::infra::storage::repo::taxonomy_repo::active_rounding_policies(
+            &conn, &scope, tenant,
+        )
+        .await
+        .map_err(|e| CanonicalError::from(repo_failure(&e)))?;
+        let rule = crate::domain::taxonomy::RoundingPolicyDeclared {
+            declared,
+            tenant_default: None,
+        };
+        if let Some(violation) = rule.violation_for("defaultRoundingPolicyRef", reference) {
+            return Err(CanonicalError::from(DomainError::RoundingPolicyUnknown(
+                violation.detail,
+            )));
+        }
+    }
+
     // **The premise is what the tenant holds, resolved here and matched in the
     // store's `WHERE`.** The tax-display surface enumerates its two modes to
     // resolve the tag; a free-text ref cannot be enumerated, so the held value is

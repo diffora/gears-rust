@@ -623,7 +623,10 @@ async fn a_move_records_both_membership_subjects_against_one_pending_ref() {
             &CUSTOMER_GROUP_MEMBER_MOVE
                 .replace("{group}", "silver")
                 .replace("{payerId}", &payer_tenant_id.to_string()),
-            Some(json!({ "effective_from": "2026-06-01T00:00:00Z" })),
+            // Future-dated, so this case stays on the renewal-aligned arm it is
+            // about: D-350 routes a move landing now or in the past to the
+            // material arm, which writes no membership row for this to read.
+            Some(json!({ "effective_from": "2099-06-01T00:00:00Z" })),
             &[("idempotency-key", "move-1")],
         ))
         .await;
@@ -959,7 +962,13 @@ async fn moving_a_payer_without_immediate_still_opens_no_approval_unit() {
             &CUSTOMER_GROUP_MEMBER_MOVE
                 .replace("{group}", "silver")
                 .replace("{payerId}", &payer_tenant_id.to_string()),
-            Some(json!({ "effective_from": "2026-06-01T00:00:00Z" })),
+            // **A future instant, and that is now load-bearing** (review O-1,
+            // D-350). This case read `2026-06-01`, which is in the past, so what
+            // it pinned was that a *backdated* move — an immediate re-resolution
+            // by any reading — committed with one principal. The renewal-aligned
+            // arm is the one where the effect lands at a future renewal, and that
+            // is what this fixture has to express.
+            Some(json!({ "effective_from": "2099-06-01T00:00:00Z" })),
             &[("idempotency-key", "move-renewal-1")],
         ))
         .await;
@@ -970,6 +979,110 @@ async fn moving_a_payer_without_immediate_still_opens_no_approval_unit() {
         before,
         "a renewal-aligned move must open no approval unit (inst-mm-renewal)"
     );
+}
+
+/// A move that lands **now or in the past** is material whatever the body says
+/// (review O-1, 2026-08-19, D-350).
+///
+/// `immediate` was the sole discriminator, so `inst-mm-immediate`'s two-person
+/// rule was elective: omit the member and the identical rows committed under one
+/// principal, with no outbox event and nothing in the store telling an approved
+/// move from an unapproved one. The instant is the one fact the server owns.
+#[tokio::test]
+async fn a_backdated_move_is_material_even_though_the_body_does_not_say_immediate() {
+    let harness = Harness::new().await;
+    let payer_tenant_id = Uuid::now_v7();
+    let (status, body) = enroll(&harness, payer_tenant_id).await;
+    assert_eq!(status, StatusCode::CREATED, "body: {body}");
+    rest_support::declare_customer_group(&harness, "silver").await;
+    let before = approval_rows(&harness).await.len();
+
+    let response = harness
+        .allowed_as(MEMBERSHIP_ADMIN)
+        .send(with_headers(
+            "POST",
+            &CUSTOMER_GROUP_MEMBER_MOVE
+                .replace("{group}", "silver")
+                .replace("{payerId}", &payer_tenant_id.to_string()),
+            Some(json!({ "effective_from": "2026-06-01T00:00:00Z" })),
+            &[("idempotency-key", "move-backdated-1")],
+        ))
+        .await;
+
+    assert_eq!(
+        response.status(),
+        StatusCode::ACCEPTED,
+        "a move landing in the past is an immediate re-resolution and opens the unit"
+    );
+    assert_eq!(
+        approval_rows(&harness).await.len(),
+        before + 1,
+        "and the unit is in the store, not merely in the response"
+    );
+}
+
+/// The side door, closed: an enrollment that **re-resolves** a payer who already
+/// has membership history is refused (review O-1, D-350).
+///
+/// Half-open intervals mean an end at `T` plus an enrollment at `T` compose
+/// exactly the row pair a move writes, with no overlap for `refuse_overlap` to
+/// see and no approval anywhere. The refusal names the move route, which has the
+/// unit.
+#[tokio::test]
+async fn re_enrolling_a_payer_immediately_is_refused_by_the_audit_only_door() {
+    let harness = Harness::new().await;
+    let payer_tenant_id = Uuid::now_v7();
+    let (status, body) = enroll(&harness, payer_tenant_id).await;
+    assert_eq!(status, StatusCode::CREATED, "body: {body}");
+    rest_support::declare_customer_group(&harness, "silver").await;
+
+    // The second half of the composition: the same payer, another group, landing
+    // now. Its first half (ending the current interval) is legitimate on its own.
+    let response = harness
+        .allowed_as(MEMBERSHIP_ADMIN)
+        .send(with_headers(
+            "POST",
+            &CUSTOMER_GROUP_MEMBERS.replace("{group}", "silver"),
+            Some(json!({
+                "payer_tenant_id": payer_tenant_id,
+                "effective_from": "2026-06-01T00:00:00Z"
+            })),
+            &[("idempotency-key", "side-door-1")],
+        ))
+        .await;
+
+    assert_eq!(
+        response.status(),
+        StatusCode::BAD_REQUEST,
+        "an immediate re-resolution by another door is refused"
+    );
+}
+
+/// The **positive control**, and the narrowness of the rule in one case: a payer
+/// with no membership history is being onboarded, not moved, so the identical
+/// request lands.
+///
+/// Without it the refusal above would pass against a door that refused every
+/// enrollment — which would refuse the ordinary act this route exists for.
+#[tokio::test]
+async fn a_first_enrollment_landing_now_is_onboarding_and_still_lands() {
+    let harness = Harness::new().await;
+    rest_support::declare_customer_group(&harness, "silver").await;
+
+    let response = harness
+        .allowed_as(MEMBERSHIP_ADMIN)
+        .send(with_headers(
+            "POST",
+            &CUSTOMER_GROUP_MEMBERS.replace("{group}", "silver"),
+            Some(json!({
+                "payer_tenant_id": Uuid::now_v7(),
+                "effective_from": "2026-06-01T00:00:00Z"
+            })),
+            &[("idempotency-key", "onboarding-1")],
+        ))
+        .await;
+
+    assert_eq!(response.status(), StatusCode::CREATED);
 }
 
 /// **The positive half of the control pair.** `immediate: true` makes the

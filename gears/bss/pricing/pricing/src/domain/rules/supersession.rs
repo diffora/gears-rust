@@ -112,27 +112,33 @@ impl SupersessionPair {
     /// field moved is not remediable, and the whole point of the rule is that
     /// the offending field is structural.
     ///
-    /// **Eleven fields, seven axes of them shared.** The middle seven are
+    /// **Twelve fields, seven axes of them shared.** The middle seven are
     /// [`unit_determining_mismatch`] — the same list `inst-ph-override-units`
     /// binds a phase-scoped override to, written once for the reason the module
-    /// doc gives. The **four** this guard adds are its own because they are
+    /// doc gives. The **five** this guard adds are its own because they are
     /// supersession-specific: `meter` and `dimensionKey` are two of the four
     /// components of the counter's own key, so a successor that moved either
     /// would not inherit the counter at all but silently read a different one;
     /// `reservationFlavor` decides whether the reserved quantity leaves the
-    /// on-demand counter (see the comment at its comparison, and D-254); and
-    /// `included_allowance` binds only under the D-129 `carry` condition.
+    /// on-demand counter (see the comment at its comparison, and D-254);
+    /// `maxHoldGranules` decides what a gap in the hold is worth (review M-3);
+    /// and `included_allowance` binds only under the D-129 `carry` condition.
     ///
     /// The census read "ten fields … the three this guard adds" from the day
     /// D-254 added the fourth until 2026-08-18 — under a comment twenty lines
     /// below that said in as many words that `reservation_flavor` is this
     /// guard's own. Both readers of the count were left behind by the same edit;
-    /// the other was `the_eleven_field_list_…`, which did not set the field at
+    /// the other was `the_twelve_field_list_…`, which did not set the field at
     /// all and so could not have caught its removal. **Do not re-derive this
-    /// number by counting the prose.** `mismatched_unit_fields` has four
+    /// number by counting the prose.** `mismatched_unit_fields` has five
     /// `changed.push` calls of its own and splices
     /// [`unit_determining_mismatch`]'s seven axes, and that test asserts the total
     /// against those two sources rather than against a literal.
+    ///
+    /// It happened a third time on 2026-08-19: `max_hold_granules` (review M-3)
+    /// made it five and left this sentence saying four. The census now sets every
+    /// field the function names, which is the only reader of this count that
+    /// cannot go stale silently (review F5).
     ///
     /// Deliberately **not** listed, because they are the legitimate price
     /// levers: the band amounts, the band set itself, `amount_minor`,

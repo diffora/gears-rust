@@ -437,7 +437,14 @@ pub const PERIOD_FLOOR_CAP_AMOUNT_INVALID: &str = "PERIOD_FLOOR_CAP_AMOUNT_INVAL
 /// author submits, and again inside the commit transaction, because approval
 /// approves *content* while the commit re-validates *state* and the world moved
 /// between the two. No rule may therefore carry anything between runs, and none
-/// of the twenty below holds mutable state at all.
+/// of the rules below holds mutable state at all.
+///
+/// **The count is gone rather than corrected** (review T-6). It said "the twenty
+/// below" against thirty registered, and this is a stated invariant *with a
+/// scope*: a reviewer auditing it walked twenty entries and stopped, leaving ten
+/// unaudited. The invariant holds for all of them — the two that look stateful,
+/// `PhaseGraphIntegrity` and `RowPhaseAttached`, hold a `Stage` that is
+/// configuration — but the scope must not be a number nothing keeps true.
 #[must_use]
 pub fn plan_shape_rules(
     interval_bounds: CustomIntervalBounds,

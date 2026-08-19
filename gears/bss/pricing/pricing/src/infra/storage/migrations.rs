@@ -196,6 +196,35 @@ pub(crate) async fn exec_backend(
     Ok(())
 }
 
+/// Does `table` already carry `column` on `SQLite`?
+///
+/// The one thing `SQLite` has no `DDL` spelling for. `ALTER TABLE … ADD COLUMN` has
+/// no `IF NOT EXISTS`, so a migration whose column can already be present — one
+/// whose `down` deliberately leaves it, because a later rebuild's `CHECK` names
+/// it and `SQLite` refuses to drop such a column — has no way to be re-applied
+/// after a partial rollback without asking first (review F2, 2026-08-19).
+///
+/// Reads `pragma_table_info` rather than parsing `sqlite_master`: the pragma is
+/// the engine's own answer and does not depend on how the DDL was spelled.
+///
+/// # Errors
+/// [`DbErr`] when the query itself fails.
+pub(crate) async fn sqlite_column_exists(
+    manager: &SchemaManager<'_>,
+    table: &str,
+    column: &str,
+) -> Result<bool, DbErr> {
+    let backend = manager.get_database_backend();
+    let rows = manager
+        .get_connection()
+        .query_all_raw(Statement::from_string(
+            backend,
+            format!("SELECT name FROM pragma_table_info('{table}') WHERE name = '{column}'"),
+        ))
+        .await?;
+    Ok(!rows.is_empty())
+}
+
 /// The gear's migration chain.
 pub struct Migrator;
 

@@ -533,6 +533,20 @@ pub enum DomainError {
     /// The code is **§5's**, not minted here.
     #[error("region unknown: {0}")]
     RegionUnknown(String),
+    /// A tenant default naming a rounding policy the tenant's own taxonomy does
+    /// not declare active (D-334, `03-price-structure.md` §3.3, **422 → 400**).
+    ///
+    /// [`DomainError::RegionUnknown`]'s exact shape one taxonomy over, and it
+    /// exists for the reason that one does: the remedy is to correct the
+    /// reference or declare it, and nothing about the world moved under the
+    /// caller. The code is `ROUNDING_POLICY_UNKNOWN`, §5's, not minted here.
+    ///
+    /// Raised only at the config write door. A *row's* unknown reference is still
+    /// judged at publish by `RoundingPolicyDeclared` inside the report, because
+    /// there the caller is authoring many rows and an enumerated report is the
+    /// answer; here the caller is setting one field.
+    #[error("rounding policy unknown: {0}")]
+    RoundingPolicyUnknown(String),
     /// The preview names a `(currency, region)` this plan publishes no row on
     /// (`04-currency-tax.md` §2, §5, `inst-pv-return`, **404**).
     ///
