@@ -1214,161 +1214,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "bss-ledger"
-version = "0.0.0"
-dependencies = [
- "anyhow",
- "arc-swap",
- "async-trait",
- "aws-lc-rs",
- "axum",
- "bss-ledger",
- "bss-ledger-sdk",
- "cf-gears-account-management",
- "cf-gears-account-management-sdk",
- "cf-gears-authz-resolver",
- "cf-gears-authz-resolver-sdk",
- "cf-gears-toolkit",
- "cf-gears-toolkit-canonical-errors",
- "cf-gears-toolkit-db",
- "cf-gears-toolkit-db-macros",
- "cf-gears-toolkit-gts",
- "cf-gears-toolkit-macros",
- "cf-gears-toolkit-odata",
- "cf-gears-toolkit-security",
- "cf-gears-types-registry",
- "cf-gears-types-registry-sdk",
- "chrono",
- "coord",
- "futures",
- "gts",
- "opentelemetry",
- "opentelemetry_sdk",
- "sea-orm",
- "sea-orm-migration",
- "serde",
- "serde_json",
- "testcontainers-modules",
- "thiserror 2.0.18",
- "tokio",
- "tokio-util",
- "tower",
- "tracing",
- "utoipa",
- "uuid",
-]
-
-[[package]]
-name = "bss-ledger-sdk"
-version = "0.1.2"
-dependencies = [
- "async-trait",
- "cf-gears-toolkit-canonical-errors",
- "cf-gears-toolkit-gts",
- "cf-gears-toolkit-odata",
- "cf-gears-toolkit-security",
- "chrono",
- "gts",
- "schemars 1.2.1",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "uuid",
-]
-
-[[package]]
-name = "bss-rate-provider"
-version = "0.1.2"
-dependencies = [
- "anyhow",
- "async-trait",
- "bss-ledger-sdk",
- "bss-rate-provider-sdk",
- "cf-gears-toolkit",
- "cf-gears-toolkit-macros",
- "cf-gears-toolkit-security",
- "cf-gears-types-registry",
- "cf-gears-types-registry-sdk",
- "chrono",
- "inventory",
- "serde",
- "serde_json",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "bss-rate-provider-ecb-plugin"
-version = "0.1.2"
-dependencies = [
- "anyhow",
- "async-trait",
- "axum",
- "bss-ledger-sdk",
- "bss-rate-provider-sdk",
- "cf-gears-toolkit",
- "cf-gears-toolkit-http",
- "cf-gears-toolkit-security",
- "cf-gears-types-registry",
- "chrono",
- "inventory",
- "quick-xml 0.41.0",
- "serde",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "bss-rate-provider-http-json-plugin"
-version = "0.1.2"
-dependencies = [
- "anyhow",
- "async-trait",
- "axum",
- "bss-ledger-sdk",
- "bss-rate-provider-sdk",
- "cf-gears-toolkit",
- "cf-gears-toolkit-http",
- "cf-gears-toolkit-security",
- "cf-gears-types-registry",
- "chrono",
- "inventory",
- "secrecy",
- "serde",
- "serde-saphyr 0.0.22",
- "serde_json",
- "temp-env",
- "tokio",
- "tokio-util",
- "tracing",
- "uuid",
-]
-
-[[package]]
-name = "bss-rate-provider-sdk"
-version = "0.1.2"
-dependencies = [
- "anyhow",
- "axum",
- "bss-ledger-sdk",
- "cf-gears-toolkit",
- "cf-gears-toolkit-gts",
- "cf-gears-toolkit-http",
- "cf-gears-types-registry-sdk",
- "chrono",
- "gts",
- "http",
- "opentelemetry",
- "opentelemetry_sdk",
- "rust_decimal",
- "schemars 1.2.1",
- "serde",
- "serde_json",
- "tokio",
- "tracing",
-]
-
-[[package]]
 name = "bstr"
 version = "1.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1981,6 +1826,258 @@ dependencies = [
 ]
 
 [[package]]
+name = "cf-gears-bss-coord"
+version = "0.0.0"
+dependencies = [
+ "async-trait",
+ "cf-gears-toolkit-db",
+ "cf-gears-toolkit-db-macros",
+ "cf-gears-toolkit-security",
+ "chrono",
+ "sea-orm",
+ "sea-orm-migration",
+ "testcontainers-modules",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "cf-gears-bss-fixtures"
+version = "0.0.0"
+dependencies = [
+ "chrono",
+ "serde",
+ "thiserror 2.0.18",
+ "toml 1.1.2+spec-1.1.0",
+]
+
+[[package]]
+name = "cf-gears-bss-fixtures-conformance"
+version = "0.0.0"
+dependencies = [
+ "cf-gears-bss-fixtures",
+ "chrono",
+ "serde",
+ "thiserror 2.0.18",
+ "toml 1.1.2+spec-1.1.0",
+]
+
+[[package]]
+name = "cf-gears-bss-ledger"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "arc-swap",
+ "async-trait",
+ "aws-lc-rs",
+ "axum",
+ "cf-gears-account-management",
+ "cf-gears-account-management-sdk",
+ "cf-gears-authz-resolver",
+ "cf-gears-authz-resolver-sdk",
+ "cf-gears-bss-coord",
+ "cf-gears-bss-ledger",
+ "cf-gears-bss-ledger-sdk",
+ "cf-gears-toolkit",
+ "cf-gears-toolkit-canonical-errors",
+ "cf-gears-toolkit-db",
+ "cf-gears-toolkit-db-macros",
+ "cf-gears-toolkit-gts",
+ "cf-gears-toolkit-macros",
+ "cf-gears-toolkit-odata",
+ "cf-gears-toolkit-security",
+ "cf-gears-types-registry",
+ "cf-gears-types-registry-sdk",
+ "chrono",
+ "futures",
+ "gts",
+ "opentelemetry",
+ "opentelemetry_sdk",
+ "sea-orm",
+ "sea-orm-migration",
+ "serde",
+ "serde_json",
+ "testcontainers-modules",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-util",
+ "tower",
+ "tracing",
+ "utoipa",
+ "uuid",
+]
+
+[[package]]
+name = "cf-gears-bss-ledger-sdk"
+version = "0.1.2"
+dependencies = [
+ "async-trait",
+ "cf-gears-toolkit-canonical-errors",
+ "cf-gears-toolkit-gts",
+ "cf-gears-toolkit-odata",
+ "cf-gears-toolkit-security",
+ "chrono",
+ "gts",
+ "schemars 1.2.1",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "uuid",
+]
+
+[[package]]
+name = "cf-gears-bss-pricing"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "arc-swap",
+ "async-trait",
+ "aws-lc-rs",
+ "axum",
+ "base64 0.22.1",
+ "cf-gears-authz-resolver",
+ "cf-gears-authz-resolver-sdk",
+ "cf-gears-bss-coord",
+ "cf-gears-bss-fixtures",
+ "cf-gears-bss-fixtures-conformance",
+ "cf-gears-bss-pricing",
+ "cf-gears-bss-pricing-sdk",
+ "cf-gears-toolkit",
+ "cf-gears-toolkit-canonical-errors",
+ "cf-gears-toolkit-db",
+ "cf-gears-toolkit-db-macros",
+ "cf-gears-toolkit-gts",
+ "cf-gears-toolkit-macros",
+ "cf-gears-toolkit-odata",
+ "cf-gears-toolkit-security",
+ "cf-gears-types-registry",
+ "cf-gears-types-registry-sdk",
+ "chrono",
+ "gts",
+ "opentelemetry",
+ "opentelemetry_sdk",
+ "sea-orm",
+ "sea-orm-migration",
+ "serde",
+ "serde_json",
+ "testcontainers-modules",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-util",
+ "tower",
+ "tracing",
+ "utoipa",
+ "uuid",
+]
+
+[[package]]
+name = "cf-gears-bss-pricing-sdk"
+version = "0.0.0"
+dependencies = [
+ "async-trait",
+ "cf-gears-toolkit-canonical-errors",
+ "cf-gears-toolkit-security",
+ "chrono",
+ "thiserror 2.0.18",
+ "uuid",
+]
+
+[[package]]
+name = "cf-gears-bss-rate-provider"
+version = "0.1.2"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "cf-gears-bss-ledger-sdk",
+ "cf-gears-bss-rate-provider-sdk",
+ "cf-gears-toolkit",
+ "cf-gears-toolkit-macros",
+ "cf-gears-toolkit-security",
+ "cf-gears-types-registry",
+ "cf-gears-types-registry-sdk",
+ "chrono",
+ "inventory",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "cf-gears-bss-rate-provider-ecb-plugin"
+version = "0.1.2"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "axum",
+ "cf-gears-bss-ledger-sdk",
+ "cf-gears-bss-rate-provider-sdk",
+ "cf-gears-toolkit",
+ "cf-gears-toolkit-http",
+ "cf-gears-toolkit-security",
+ "cf-gears-types-registry",
+ "chrono",
+ "inventory",
+ "quick-xml 0.41.0",
+ "serde",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "cf-gears-bss-rate-provider-http-json-plugin"
+version = "0.1.2"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "axum",
+ "cf-gears-bss-ledger-sdk",
+ "cf-gears-bss-rate-provider-sdk",
+ "cf-gears-toolkit",
+ "cf-gears-toolkit-http",
+ "cf-gears-toolkit-security",
+ "cf-gears-types-registry",
+ "chrono",
+ "inventory",
+ "secrecy",
+ "serde",
+ "serde-saphyr 0.0.22",
+ "serde_json",
+ "temp-env",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "cf-gears-bss-rate-provider-sdk"
+version = "0.1.2"
+dependencies = [
+ "anyhow",
+ "axum",
+ "cf-gears-bss-ledger-sdk",
+ "cf-gears-toolkit",
+ "cf-gears-toolkit-gts",
+ "cf-gears-toolkit-http",
+ "cf-gears-types-registry-sdk",
+ "chrono",
+ "gts",
+ "http",
+ "opentelemetry",
+ "opentelemetry_sdk",
+ "rust_decimal",
+ "schemars 1.2.1",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "cf-gears-cluster"
 version = "0.2.1"
 dependencies = [
@@ -2149,10 +2246,6 @@ name = "cf-gears-example-server"
 version = "0.6.1"
 dependencies = [
  "anyhow",
- "bss-ledger",
- "bss-rate-provider",
- "bss-rate-provider-ecb-plugin",
- "bss-rate-provider-http-json-plugin",
  "calculator",
  "calculator-gateway",
  "cf-chat-engine",
@@ -2160,6 +2253,11 @@ dependencies = [
  "cf-gears-api-gateway",
  "cf-gears-authn-resolver",
  "cf-gears-authz-resolver",
+ "cf-gears-bss-ledger",
+ "cf-gears-bss-pricing",
+ "cf-gears-bss-rate-provider",
+ "cf-gears-bss-rate-provider-ecb-plugin",
+ "cf-gears-bss-rate-provider-http-json-plugin",
  "cf-gears-credstore",
  "cf-gears-file-parser",
  "cf-gears-file-storage",
@@ -4058,25 +4156,6 @@ name = "convert_case"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6245d59a3e82a7fc217c5828a6692dbc6dfb63a0c8c90495621f7b9d79704a0e"
-
-[[package]]
-name = "coord"
-version = "0.0.0"
-dependencies = [
- "async-trait",
- "cf-gears-toolkit-db",
- "cf-gears-toolkit-db-macros",
- "cf-gears-toolkit-security",
- "chrono",
- "sea-orm",
- "sea-orm-migration",
- "testcontainers-modules",
- "thiserror 2.0.18",
- "tokio",
- "tokio-util",
- "tracing",
- "uuid",
-]
 
 [[package]]
 name = "core-foundation"

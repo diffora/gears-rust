@@ -6,7 +6,7 @@
 //! (`prev_hash == first.row_hash`); a raw UPDATE/DELETE on the record is
 //! rejected (append-only); a clean re-walk recomputes the seal exactly, and a
 //! tampered row (trigger disabled + UPDATE) breaks the recompute.
-//! Ignored by default; run with `cargo test -p bss-ledger -- --ignored`.
+//! Ignored by default; run with `cargo test -p cf-gears-bss-ledger -- --ignored`.
 
 #![allow(
     clippy::non_ascii_literal,

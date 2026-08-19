@@ -1,0 +1,1532 @@
+//! Postgres-only: the migration chain, executed against the backend it targets
+//! and **through the runner production uses**.
+//!
+//! Until this suite existed the chain had never run on Postgres. Every trigger,
+//! CHECK and partial index was verified by reading the statement text beside the
+//! executed `SQLite` mirror — which proves the two branches say the same thing
+//! and proves nothing about whether either is accepted by the server.
+//!
+//! # Two things this suite is careful about, both learned the hard way
+//!
+//! **It runs the chain the way the gear boots.** `DatabaseCapability` hands
+//! `Migrator::migrations()` to the toolkit runner
+//! ([`run_migrations_for_testing`] is its test entry point), which applies in
+//! **name** order and books into an *unqualified* `toolkit_migrations_*` table.
+//! `MigratorTrait::up` does neither — it applies in vec order and books into
+//! `seaql_migrations` — so a suite built on it exercises an ordering production
+//! never uses and cannot see the C1 bug class the sibling ledger found: an
+//! unqualified bookkeeping table resolving into whichever schema the
+//! connection's `search_path` puts first, so that boot 2 finds an empty history
+//! and re-runs every migration into a crash loop.
+//!
+//! **It pins rosters by name, not by count.** A count is satisfied by *any* set
+//! of the right size, so a constraint replaced by `CHECK (1 = 1)` keeps a count
+//! green — which is exactly how fourteen `pricing_price` CHECKs once could each
+//! have been neutralised with the whole suite green. Every CHECK in this chain is
+//! uniquely named, so the roster was free and the count was a false economy.
+//!
+//! This paragraph said "any **62** objects" until 2026-08-04, and by then the
+//! roster held 76. That is the small, characteristic way a count rots and a
+//! roster does not: the assertion stayed correct because it names its members,
+//! while the sentence explaining the assertion carried a number nobody was
+//! obliged to update. The number is gone rather than corrected — the rosters
+//! below are the count, and a second copy of it in prose is a second thing to
+//! keep true.
+//!
+//! # What a Postgres suite has to do to be evidence
+//!
+//! **Prove a constraint by executing the statement it must refuse**, and assert
+//! the error names that constraint. A test that writes only valid values catches
+//! a constraint that got *narrower* and never one that stopped refusing.
+//!
+//! **Put the world in the state where the object under test is what answers.** A
+//! refusal an earlier guard produces is not evidence about the guard named in the
+//! test.
+//!
+//! **Every guard must be provable by removal**: delete the `CONSTRAINT` or the
+//! trigger, watch *exactly one* test fail, restore, and report which test it was.
+//!
+//! **The rosters issue no DML and are therefore evidence of presence only.** That
+//! the objects reached the server is what they say; that any of them *refuses*
+//! what it claims to is Track P's, one executed refusal per object.
+//!
+//! The one exception is `a_key_widening_applies_over_rows_the_table_already_holds`,
+//! and it is an exception about the **runner** rather than about a guard: a
+//! migration that alters a key has to be applied to a table that already holds
+//! rows, which is a state no boot of an empty chain reaches, so that case writes
+//! rows between two staged runs. It is here and not in a schema suite because what
+//! it exercises is the chain being applied in two halves.
+//!
+//! Ignored by default — they need Docker. Run with
+//! `cargo test -p cf-gears-bss-pricing -- --ignored`.
+
+#![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+
+use std::time::Duration;
+
+use bss_pricing::infra::storage::migrations::Migrator;
+use sea_orm::{ConnectionTrait, Database, DatabaseConnection, Statement};
+use sea_orm_migration::MigratorTrait;
+use testcontainers_modules::postgres::Postgres;
+use testcontainers_modules::testcontainers::runners::AsyncRunner;
+use testcontainers_modules::testcontainers::{ContainerAsync, ImageExt};
+use toolkit_db::migration_runner::run_migrations_for_testing;
+use toolkit_db::{ConnectOpts, connect_db};
+
+/// Every migration the gear boots with, coord's spliced lease table included.
+///
+/// **Derived, never written down.** It was a literal `17`, and the literal went
+/// stale the day the chain gained `pricing_approval_key`: two boot tests then failed
+/// on a count nobody had changed on purpose, which is the same "a count beside a
+/// roster, and only one stays true" failure the register migration's own module doc
+/// records — here with the roster in code rather than in prose. `Migrator::migrations()`
+/// is the roster, so the count comes off it.
+///
+/// It is more than the `pricing_*` files: the list also carries
+/// `coord::migration::Migration::in_schema("bss")`, whose `m0001_…` name sorts
+/// **first** under the runner's name ordering and therefore runs before anything
+/// in this gear. That is why the number is taken from the list the runner is handed
+/// and not from a directory listing.
+fn chain_len() -> usize {
+    Migrator::migrations().len()
+}
+
+/// `testcontainers-modules` defaults to `postgres:11-alpine`, which reached end
+/// of life in 2023. Nothing in this repository pins the production server
+/// version, so "the backend it targets" is an assumption either way; running on
+/// a current major is the closer of the two guesses, and pinning it here means a
+/// bump is a diff rather than a dependency's default quietly moving.
+const PG_TAG: &str = "16-alpine";
+
+/// A running Postgres, its port, and the container guard.
+///
+/// The guard is returned because dropping it stops the container: a caller that
+/// bound only the port would race its own database to the end of the test.
+async fn pg() -> (u16, ContainerAsync<Postgres>) {
+    let container = Postgres::default()
+        .with_tag(PG_TAG)
+        .start()
+        .await
+        .expect("start postgres");
+    let port = host_port(&container).await;
+    (port, container)
+}
+
+/// The published host port for the container's 5432, waited for rather than read
+/// once.
+///
+/// # Why this is a loop, measured rather than assumed
+///
+/// This suite failed intermittently with
+/// `PortNotExposed { port: Tcp(5432) }` — 1–3 of the 11 tests per run, a different
+/// member each time, which is what made it look like contention over the shared
+/// harness the sibling suites use. It is not: these tests each start their own
+/// container, and the failure was diagnosed by printing the container's own log at
+/// the moment of the error. The log says the container is **healthy**:
+///
+/// ```text
+/// LOG:  listening on IPv4 address "0.0.0.0", port 5432
+/// LOG:  database system is ready to accept connections
+/// ```
+///
+/// No crash and no exit. So the container is up and the *port map* is what is
+/// missing: `get_host_port_ipv4` performs a live `inspect` (`RawContainer::ports`
+/// → `docker_client.ports`, no cache), and under load Docker answers with
+/// `NetworkSettings.Ports` not yet carrying the binding it is about to publish.
+/// Reading once is reading too early.
+///
+/// The first guess — that `PortNotExposed` meant the container had stopped, Docker
+/// dropping a dead container's bindings — was wrong, and only the container log
+/// ruled it out. That is why the log stays in the failure path below: without it
+/// this reads as a crash and the retry looks like papering over one.
+async fn host_port(container: &ContainerAsync<Postgres>) -> u16 {
+    /// Long enough to cover the observed gap by two orders of magnitude, short
+    /// enough that a genuinely unexposed port still fails inside a test timeout.
+    const ATTEMPTS: u32 = 40;
+    const GAP: Duration = Duration::from_millis(50);
+
+    let mut last = None;
+    for attempt in 0..ATTEMPTS {
+        match container.get_host_port_ipv4(5432).await {
+            Ok(port) => return port,
+            Err(cause) => {
+                last = Some(cause);
+                if attempt + 1 < ATTEMPTS {
+                    tokio::time::sleep(GAP).await;
+                }
+            }
+        }
+    }
+
+    let out = container.stdout_to_vec().await.unwrap_or_default();
+    let err = container.stderr_to_vec().await.unwrap_or_default();
+    panic!(
+        "map the postgres port after {ATTEMPTS} attempts over {:?}: {}\n\
+         --- container stdout ---\n{}\n--- container stderr ---\n{}",
+        GAP * ATTEMPTS,
+        last.expect("the loop ran at least once and every arm records its error"),
+        String::from_utf8_lossy(&out),
+        String::from_utf8_lossy(&err)
+    );
+}
+
+/// A DSN carrying `search_path` as a libpq option, the way the gear's runtime
+/// config sets it per connection.
+fn url_with_search_path(port: u16, search_path: &str) -> String {
+    format!(
+        "postgres://postgres:postgres@127.0.0.1:{port}/postgres?options=-c%20search_path%3D{search_path}"
+    )
+}
+
+fn plain_url(port: u16) -> String {
+    format!("postgres://postgres:postgres@127.0.0.1:{port}/postgres")
+}
+
+async fn count(conn: &DatabaseConnection, sql: &str) -> i64 {
+    let row = conn
+        .query_one_raw(Statement::from_string(
+            sea_orm::DatabaseBackend::Postgres,
+            sql.to_owned(),
+        ))
+        .await
+        .expect("run the catalog query")
+        .expect("the catalog query must return a row");
+    row.try_get::<i64>("", "n").expect("read the count")
+}
+
+/// `EXPLAIN`'s output, joined. Its column is always named `QUERY PLAN`, so
+/// [`names`] cannot read it and an `AS v` inside the explained statement renames
+/// the *inner* projection rather than `EXPLAIN`'s own.
+async fn explain(conn: &DatabaseConnection, sql: &str) -> String {
+    conn.query_all_raw(Statement::from_string(
+        sea_orm::DatabaseBackend::Postgres,
+        format!("EXPLAIN {sql}"),
+    ))
+    .await
+    .expect("run the explain")
+    .iter()
+    .map(|row| {
+        row.try_get::<String>("", "QUERY PLAN")
+            .expect("read the plan line")
+    })
+    .collect::<Vec<_>>()
+    .join("\n")
+}
+
+/// One `v` column of a catalog query, in the order the query asked for.
+async fn names(conn: &DatabaseConnection, sql: &str) -> Vec<String> {
+    conn.query_all_raw(Statement::from_string(
+        sea_orm::DatabaseBackend::Postgres,
+        sql.to_owned(),
+    ))
+    .await
+    .expect("run the catalog query")
+    .iter()
+    .map(|row| row.try_get::<String>("", "v").expect("read the name"))
+    .collect()
+}
+
+const FUNCTIONS_SQL: &str = "SELECT p.proname AS v FROM pg_proc p \
+     JOIN pg_namespace n ON n.oid = p.pronamespace \
+     WHERE n.nspname = 'bss' ORDER BY 1";
+const TRIGGERS_SQL: &str = "SELECT t.tgname AS v FROM pg_trigger t \
+     JOIN pg_class c ON c.oid = t.tgrelid \
+     JOIN pg_namespace n ON n.oid = c.relnamespace \
+     WHERE n.nspname = 'bss' AND NOT t.tgisinternal ORDER BY 1";
+const CHECKS_SQL: &str = "SELECT co.conname AS v FROM pg_constraint co \
+     JOIN pg_namespace n ON n.oid = co.connamespace \
+     WHERE n.nspname = 'bss' AND co.contype = 'c' ORDER BY 1";
+const PARTIAL_INDEXES_SQL: &str = "SELECT indexname AS v FROM pg_indexes \
+     WHERE schemaname = 'bss' AND indexdef LIKE '%WHERE%' ORDER BY 1";
+/// Every index this chain writes a `CREATE INDEX` for (Z6-5).
+///
+/// The `NOT EXISTS` is what makes the set comparable to the `SQLite` roster: a
+/// primary key's backing index is created *by the constraint*, named by the server
+/// and rostered by `PRIMARY_KEYS_SQL`, so counting it here would compare a
+/// migration's declarations against the server's bookkeeping.
+const INDEXES_SQL: &str = "SELECT i.indexname AS v FROM pg_indexes i \
+     JOIN pg_class c ON c.relname = i.indexname \
+     JOIN pg_namespace n ON n.oid = c.relnamespace AND n.nspname = i.schemaname \
+     WHERE i.schemaname = 'bss' AND c.relkind = 'i' \
+     AND NOT EXISTS (SELECT 1 FROM pg_constraint co WHERE co.conindid = c.oid) \
+     ORDER BY 1";
+/// Every table's primary key as `table: col, col` (D-236).
+///
+/// `unnest(conkey) WITH ORDINALITY` is what makes this a mirror of the `SQLite`
+/// side rather than a near-miss: `conkey` is the key's **own** column order, and
+/// aggregating without it would sort by `attnum` — the order the columns were
+/// declared in — so a composite key rearranged into a different key would read
+/// identical on both engines.
+const PRIMARY_KEYS_SQL: &str = "SELECT c.relname || ': ' \
+     || string_agg(a.attname, ', ' ORDER BY k.ord) AS v \
+     FROM pg_constraint co \
+     JOIN pg_class c ON c.oid = co.conrelid \
+     JOIN pg_namespace n ON n.oid = c.relnamespace \
+     CROSS JOIN LATERAL unnest(co.conkey) WITH ORDINALITY AS k(attnum, ord) \
+     JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum = k.attnum \
+     WHERE n.nspname = 'bss' AND co.contype = 'p' \
+     GROUP BY c.relname ORDER BY c.relname";
+
+/// The PL/pgSQL functions the chain declares — the objects the `SQLite` mirror
+/// cannot carry at all, since it has no procedural language.
+///
+/// Fewer than the mirror's triggers, and deliberately: `SQLite` needs several
+/// literal-message triggers where Postgres needs one function interpolating
+/// `TG_OP`. **No count is written here.** It said "eleven" over a roster of
+/// thirteen and "forty-seven `CREATE TRIGGER` statements" over a chain that has
+/// more than that — a number in prose beside a roster in code is one of them
+/// wrong the first time either grows, and the roster is the one the assertion
+/// reads.
+const EXPECTED_FUNCTIONS: &[&str] = &[
+    "pricing_approval_append_only",
+    "pricing_approval_key_append_only",
+    "pricing_approval_key_follow_state",
+    "pricing_approval_threshold_no_delete",
+    "pricing_approval_threshold_no_update",
+    "pricing_approval_threshold_tombstone_no_delete",
+    "pricing_approval_threshold_tombstone_no_update",
+    "pricing_audit_log_append_only",
+    // Slice 12: one PL/pgSQL function, three SQLite triggers.
+    "pricing_bulk_operation_transitions",
+    "pricing_bulk_row_lock_custody",
+    "pricing_bundle_component_append_only",
+    "pricing_bundle_revshare_append_only",
+    "pricing_bundle_revshare_group_append_only",
+    // Slice 10's composite meter: one PL/pgSQL function, three SQLite triggers.
+    "pricing_composite_meter_append_only",
+    // Slice 11. One PL/pgSQL function carrying the five arms the SQLite mirror
+    // spells as five triggers.
+    "pricing_migration_append_only",
+    "pricing_plan_addon_rule_append_only",
+    "pricing_plan_append_only",
+    "pricing_plan_descriptor_set_append_only",
+    "pricing_plan_period_floor_cap_append_only",
+    "pricing_plan_phase_append_only",
+    "pricing_price_append_only",
+    "pricing_price_overlay_append_only",
+    "pricing_price_overlay_line_amount_append_only",
+    "pricing_price_overlay_line_append_only",
+    "pricing_price_tier_band_append_only",
+    "pricing_price_tier_band_kind",
+    "pricing_price_tier_band_parent_kind",
+    "pricing_price_window_append_only",
+    // Slice 12: one PL/pgSQL function, four SQLite triggers.
+    "pricing_repricing_journal_progress",
+    // Slice 11. Two unconditional arms in one function: a migrated-origin
+    // snapshot is frozen, so no UPDATE is sanctioned at all.
+    "pricing_snapshot_provenance_frozen",
+];
+
+/// The triggers those functions are bound to, one per function.
+const EXPECTED_TRIGGERS: &[&str] = &[
+    "trg_pricing_approval_append_only",
+    "trg_pricing_approval_key_append_only",
+    "trg_pricing_approval_key_follow_state",
+    "trg_pricing_approval_threshold_no_delete",
+    "trg_pricing_approval_threshold_no_update",
+    "trg_pricing_approval_threshold_tombstone_no_delete",
+    "trg_pricing_approval_threshold_tombstone_no_update",
+    "trg_pricing_audit_log_append_only",
+    "trg_pricing_bulk_operation_transitions",
+    "trg_pricing_bulk_row_lock_custody",
+    "trg_pricing_bundle_component_append_only",
+    "trg_pricing_bundle_revshare_append_only",
+    "trg_pricing_bundle_revshare_group_append_only",
+    "trg_pricing_composite_meter_append_only",
+    "trg_pricing_migration_append_only",
+    "trg_pricing_plan_addon_rule_append_only",
+    "trg_pricing_plan_append_only",
+    "trg_pricing_plan_descriptor_set_append_only",
+    "trg_pricing_plan_period_floor_cap_append_only",
+    "trg_pricing_plan_phase_append_only",
+    "trg_pricing_price_append_only",
+    "trg_pricing_price_overlay_append_only",
+    "trg_pricing_price_overlay_line_amount_append_only",
+    "trg_pricing_price_overlay_line_append_only",
+    "trg_pricing_price_tier_band_append_only",
+    "trg_pricing_price_tier_band_kind",
+    "trg_pricing_price_tier_band_parent_kind",
+    "trg_pricing_price_window_append_only",
+    "trg_pricing_repricing_journal_progress",
+    "trg_pricing_snapshot_provenance_frozen",
+];
+
+/// The partial indexes — the `WHERE`-carrying ones, where the predicate *is* the
+/// rule (one current revision per plan, one open draft, one terminal phase).
+/// Every column in the chain whose name says it holds a revision, as
+/// `table.column type` (Z6-7).
+///
+/// Matched on the name because that is what a reader matches on: a column called
+/// `…_revision` that is not `bigint` is the outlier this exists to find, whichever
+/// table grows it next. `plan_revision`, `subject_revision`, `source_revision` and
+/// the bare `revision` all end in the same eight characters.
+const REVISION_COLUMNS_SQL: &str = "SELECT table_name || '.' || column_name || ' ' || data_type \
+     AS v FROM information_schema.columns \
+     WHERE table_schema = 'bss' AND column_name LIKE '%revision' ORDER BY 1";
+const EXPECTED_PARTIAL_INDEXES: &[&str] = &[
+    "idx_pricing_outbox_undrained",
+    "idx_pricing_price_supersedes",
+    "uq_pricing_approval_key_pending",
+    "uq_pricing_approval_policy_pending",
+    "uq_pricing_plan_current",
+    "uq_pricing_plan_open_draft",
+    "uq_pricing_plan_phase_terminal",
+    "uq_pricing_price_meter_line_current",
+    // D-107. Without the predicate a draft revision of a published overlay
+    // collides with itself and an overlay is authorable exactly once.
+    "uq_pricing_price_overlay_open_draft",
+    "uq_pricing_price_overlay_precedence",
+    "uq_pricing_price_scope_key_current",
+    "uq_pricing_price_scope_key_draft",
+];
+
+/// Every index the chain declares, **by name** — the whole set, of which
+/// [`EXPECTED_PARTIAL_INDEXES`] above is the twelve whose predicate *is* the rule
+/// (Z6-5).
+///
+/// Two rosters over one set is deliberate and not duplication: the partial one is
+/// asserted against a `WHERE`-filtered query, so it also proves the twelve are
+/// still *partial* — dropping a predicate leaves the name in this list and removes
+/// it from that one. A single roster could not tell those apart.
+///
+/// This list is `tests/sqlite_migrations.rs`'s `EXPECTED_INDEXES` verbatim, which
+/// is the convention `EXPECTED_CHECKS` and `EXPECTED_TRIGGERS` already follow:
+/// one roster per engine, so a missing statement in **one** arm of a migration
+/// reddens on that engine rather than being averaged away by a shared list.
+const EXPECTED_INDEXES: &[&str] = &[
+    "idx_pricing_approval_key_approval",
+    "idx_pricing_approval_subject",
+    "idx_pricing_audit_log_recorded",
+    "idx_pricing_audit_log_subject",
+    "idx_pricing_bulk_operation_live",
+    "idx_pricing_bulk_row_lock_operation",
+    "idx_pricing_bundle_component_plan",
+    "idx_pricing_bundle_component_revision",
+    "idx_pricing_bundle_revshare_group_revision",
+    "idx_pricing_bundle_revshare_revision",
+    "idx_pricing_bundle_tenant",
+    "idx_pricing_catalog_version_ref_version",
+    "idx_pricing_composite_meter_revision",
+    "idx_pricing_group_membership_payer",
+    "idx_pricing_group_membership_walk",
+    "idx_pricing_idempotency_dedup_created",
+    "idx_pricing_migration_due",
+    "idx_pricing_migration_source",
+    "idx_pricing_migration_target",
+    "idx_pricing_operator_flag_by_flag",
+    "idx_pricing_outbox_undrained",
+    "idx_pricing_plan_addon_rule_revision",
+    "idx_pricing_plan_descriptor_set_revision",
+    "idx_pricing_plan_period_floor_cap_revision",
+    "idx_pricing_plan_phase_revision",
+    "idx_pricing_plan_tenant",
+    "idx_pricing_price_overlay_line_amount_tenant",
+    "idx_pricing_price_overlay_line_plan",
+    "idx_pricing_price_overlay_line_revision",
+    "idx_pricing_price_overlay_scope",
+    "idx_pricing_price_plan",
+    "idx_pricing_price_supersedes",
+    "idx_pricing_price_tier_band_price",
+    "idx_pricing_price_window_due",
+    "idx_pricing_price_window_price",
+    "idx_pricing_read_model_resolve",
+    "idx_pricing_snapshot_provenance_plan",
+    "uq_pricing_approval_key_pending",
+    "uq_pricing_approval_policy_pending",
+    // D-307's physical half, and the one this roster exists for: it is not partial,
+    // so it was in no Postgres roster at all, and `m20260802_000064` had just
+    // re-keyed it. `the_client_key_index_spans_the_kind_as_well_as_the_tenant`
+    // below asserts its columns, because a name cannot carry them.
+    "uq_pricing_bulk_operation_client_key",
+    "uq_pricing_bundle_plan",
+    "uq_pricing_composite_meter_output",
+    "uq_pricing_outbox_dedup_key",
+    "uq_pricing_outbox_sequence",
+    "uq_pricing_plan_current",
+    "uq_pricing_plan_open_draft",
+    "uq_pricing_plan_phase_terminal",
+    "uq_pricing_price_meter_line_current",
+    "uq_pricing_price_overlay_line_key",
+    "uq_pricing_price_overlay_open_draft",
+    "uq_pricing_price_overlay_precedence",
+    "uq_pricing_price_scope_key_current",
+    "uq_pricing_price_scope_key_draft",
+    "uq_pricing_snapshot_provenance_subscription",
+];
+
+/// Every CHECK constraint the chain declares, **by name**.
+///
+/// Pinned as a roster rather than as a **count**, because a count cannot tell a guard
+/// from a tautology: dropping `chk_pricing_plan_revision` and adding `CHECK (1 = 1)` in
+/// its place leaves the count exactly where it was while a plan revision of `-999`
+/// reaches the table. Every constraint here is uniquely named, so the roster costs
+/// nothing the count saved.
+///
+/// **The number is deleted rather than corrected.** This paragraph said `== 62` twice
+/// while the roster below held eighty entries — the file's own opening denounces
+/// exactly that shape and had already deleted one number ten lines above. A count
+/// beside a roster is one fact with two spellings and only the roster stays true.
+/// Seeded from the live server once and hand-checked against the declaring
+/// migrations (D-236) — see the `SQLite` roster's note for which four were read
+/// back that way and why a roster taken from the code's own output pins the bug.
+const EXPECTED_PRIMARY_KEYS: &[&str] = &[
+    "coord_leases: key",
+    "pricing_approval: approval_id",
+    "pricing_approval_key: approval_id, scope_key",
+    "pricing_approval_threshold: tenant_id, version, currency",
+    "pricing_approval_threshold_tombstone: tenant_id, version",
+    "pricing_audit_log: tenant_id, chain_id, seq",
+    "pricing_brand_taxonomy: tenant_id, value",
+    "pricing_bulk_operation: operation_id",
+    "pricing_bulk_row_lock: tenant_id, price_id",
+    "pricing_bundle: bundle_id",
+    "pricing_bundle_component: bundle_id, plan_revision, component_plan_id",
+    "pricing_bundle_revshare: bundle_id, plan_revision, vendor_sku_id, party",
+    "pricing_bundle_revshare_group: bundle_id, plan_revision, vendor_sku_id",
+    "pricing_catalog_version_ref: tenant_id, pending_ref, subject_kind, subject_ref",
+    // Widened by `m20260802_000084` (A1-1), 2026-08-18. It was
+    // `composite_id, plan_revision` — a client-supplied id with no tenant, so one
+    // composite id belonged to one plan per revision *number* across the whole
+    // table. `m20260802_000081` widened `pricing_plan_phase` for that a day
+    // earlier and left this one, which `m20260802_000046`'s doc had named as its
+    // twin.
+    "pricing_composite_meter: tenant_id, plan_id, plan_revision, composite_id",
+    "pricing_customer_group_taxonomy: tenant_id, value",
+    // Slice 9's membership plane (`inst-cg-record`). Keyed on its own surrogate
+    // id; D-09's non-overlap is `excl_pricing_group_membership_no_overlap`'s
+    // job, not the primary key's.
+    "pricing_group_membership: membership_id",
+    "pricing_idempotency_dedup: tenant_id, operation, client_key",
+    // Client-supplied (`inst-ms-api`, M2), and therefore **tenant-scoped since
+    // `m20260802_000065`**: it was `migration_id` alone until 2026-08-11, which put
+    // a client-chosen identifier in a deployment-wide namespace and let one tenant
+    // deny an id to every other permanently. The order matters as much as the
+    // membership here — `(tenant_id, migration_id)` is also the index every
+    // tenant-scoped read of this table uses, which is why
+    // `idx_pricing_migration_tenant` was dropped rather than kept beside it.
+    "pricing_migration: tenant_id, migration_id",
+    "pricing_operator_flag: tenant_id, subject_ref, flag",
+    "pricing_org_tier_taxonomy: tenant_id, value",
+    "pricing_outbox: outbox_id",
+    "pricing_partner_taxonomy: tenant_id, value",
+    "pricing_pin_frontier: tenant_id",
+    "pricing_plan: plan_id, revision",
+    "pricing_plan_addon_rule: plan_id, plan_revision, addon_sku_id",
+    "pricing_plan_descriptor_set: plan_id, plan_revision",
+    "pricing_plan_period_floor_cap: plan_id, plan_revision, currency, region",
+    // **Widened by `m20260802_000081` (D-340)**: it was `phase_id, plan_revision`
+    // until 2026-08-17, which gave one phase id to one plan per revision *number*
+    // across the whole table, every tenant's included — five stand drafts keyed
+    // price rows on one id and four of them could never attach it, unrecoverably.
+    // The order is the tuple `idx_pricing_plan_phase_revision` already ranged over,
+    // and `PRIMARY_KEYS_SQL` reads `conkey`'s own order, so a key rearranged into a
+    // different key reads differently here.
+    "pricing_plan_phase: tenant_id, plan_id, plan_revision, phase_id",
+    "pricing_policy_object: tenant_id",
+    "pricing_price: price_id",
+    "pricing_price_overlay: price_overlay_id, revision",
+    // Both widened by `m20260802_000085` (A1-3, and A1-4 for the child),
+    // 2026-08-18: a client-supplied `line_id` with no tenant in the key, and a
+    // child whose key had to move with the parent's or collide on the amounts
+    // instead.
+    "pricing_price_overlay_line: tenant_id, overlay_revision, line_id",
+    "pricing_price_overlay_line_amount: tenant_id, overlay_revision, line_id, currency",
+    "pricing_price_tier_band: band_id",
+    "pricing_price_window: window_id",
+    "pricing_read_model: tenant_id, catalog_version, subject_kind, subject_ref",
+    "pricing_region_taxonomy: tenant_id, value",
+    "pricing_repricing_journal: run_id, price_id",
+    // D-334 (`m20260802_000080`): the taxonomies' key on its own table.
+    "pricing_rounding_policy_taxonomy: tenant_id, value",
+    // Read back from `m20260802_000044`'s own DDL rather than from the live server.
+    "pricing_snapshot_provenance: provenance_id",
+];
+
+const EXPECTED_CHECKS: &[&str] = &[
+    "chk_pricing_approval_approver",
+    "chk_pricing_approval_decided_at",
+    "chk_pricing_approval_distinct_principals",
+    "chk_pricing_approval_key_state",
+    "chk_pricing_approval_reason",
+    "chk_pricing_approval_state",
+    "chk_pricing_approval_subject_kind",
+    "chk_pricing_approval_threshold_absolute_non_negative",
+    "chk_pricing_approval_threshold_basis",
+    "chk_pricing_approval_threshold_currency",
+    "chk_pricing_approval_threshold_percent_positive",
+    "chk_pricing_approval_threshold_tombstone_version",
+    "chk_pricing_approval_threshold_version",
+    "chk_pricing_audit_log_entry_kind",
+    "chk_pricing_audit_log_rollup",
+    "chk_pricing_audit_log_seq",
+    // Z6-6 (`m20260802_000074`), the same name the SQLite mirror carries: one enum
+    // spells two columns and only `pricing_approval`'s was CHECK-constrained.
+    "chk_pricing_audit_log_subject_kind",
+    "chk_pricing_brand_taxonomy_state",
+    "chk_pricing_brand_taxonomy_value_present",
+    // Slice 12's bulk operation, the same four the SQLite mirror carries.
+    "chk_pricing_bulk_operation_completed_at",
+    "chk_pricing_bulk_operation_import_never_awaits",
+    "chk_pricing_bulk_operation_kind",
+    "chk_pricing_bulk_operation_state",
+    "chk_pricing_bundle_component_min_qty",
+    "chk_pricing_bundle_component_qty_range",
+    "chk_pricing_bundle_invoice_itemization",
+    "chk_pricing_bundle_price_basis",
+    "chk_pricing_bundle_revshare_effective_share_bp",
+    "chk_pricing_bundle_revshare_group_absorber",
+    "chk_pricing_bundle_revshare_group_platform_cut_bp",
+    "chk_pricing_bundle_revshare_party",
+    "chk_pricing_bundle_revshare_share_bp",
+    "chk_pricing_catalog_version_ref_commit",
+    "chk_pricing_catalog_version_ref_subject_kind",
+    "chk_pricing_catalog_version_ref_subject_lifecycle",
+    "chk_pricing_catalog_version_ref_subject_revision",
+    "chk_pricing_catalog_version_ref_version",
+    // Slice 10's composite meter. One CHECK only: arity and self-reference are
+    // publish rules, for `m20260802_000046`'s portability reason.
+    "chk_pricing_composite_meter_output_unit",
+    // Slice 9's own taxonomy (`inst-cg-taxonomy`), the four's own two CHECKs
+    // restated over `pricing_customer_group_taxonomy` — see
+    // `m20260802_000066`'s module doc for why it is on its own route and not
+    // filed under `config`'s four.
+    "chk_pricing_customer_group_taxonomy_state",
+    "chk_pricing_customer_group_taxonomy_value_present",
+    // Slice 9's membership plane (`inst-cg-record`). Two: the value-present
+    // guard the four taxonomies also carry, and the half-open interval sanity
+    // check `pricing_price_window`/`pricing_price_overlay` carry too. D-09's
+    // non-overlap invariant is `excl_pricing_group_membership_no_overlap`, a
+    // separate `contype = 'x'` object `CHECKS_SQL` does not select (`contype =
+    // 'c'` only) and does not belong in this roster.
+    "chk_pricing_group_membership_group_value_present",
+    "chk_pricing_group_membership_interval",
+    "chk_pricing_idempotency_dedup_answered",
+    "chk_pricing_idempotency_dedup_status",
+    // Slice 11, the same twelve the SQLite mirror carries, name for name.
+    "chk_pricing_migration_announced_before_effective",
+    "chk_pricing_migration_cancelled_at",
+    "chk_pricing_migration_cancelled_order",
+    "chk_pricing_migration_completed_at",
+    "chk_pricing_migration_completed_order",
+    "chk_pricing_migration_distinct_plans",
+    "chk_pricing_migration_exclusion_snapshot",
+    "chk_pricing_migration_scheduled_unstarted",
+    "chk_pricing_migration_source_revision",
+    "chk_pricing_migration_started_order",
+    "chk_pricing_migration_started_required",
+    "chk_pricing_migration_state",
+    "chk_pricing_operator_flag_name",
+    "chk_pricing_org_tier_taxonomy_state",
+    "chk_pricing_org_tier_taxonomy_value_present",
+    "chk_pricing_outbox_event_name",
+    "chk_pricing_outbox_sequence",
+    "chk_pricing_partner_taxonomy_state",
+    "chk_pricing_partner_taxonomy_value_present",
+    "chk_pricing_pin_frontier_version",
+    "chk_pricing_plan_addon_rule_qty_range",
+    "chk_pricing_plan_addon_rule_required_max_qty",
+    "chk_pricing_plan_addon_rule_step_qty",
+    "chk_pricing_plan_availability",
+    "chk_pricing_plan_billing_cycle",
+    "chk_pricing_plan_custom_interval_n",
+    "chk_pricing_plan_custom_interval_pairing",
+    "chk_pricing_plan_custom_interval_unit",
+    "chk_pricing_plan_frequency",
+    "chk_pricing_plan_lifecycle_state",
+    "chk_pricing_plan_period_floor_cap_cap_positive",
+    "chk_pricing_plan_period_floor_cap_floor_positive",
+    "chk_pricing_plan_period_floor_cap_ordered",
+    "chk_pricing_plan_period_floor_cap_present",
+    "chk_pricing_plan_phase_display_trial_days",
+    "chk_pricing_plan_phase_kind",
+    "chk_pricing_plan_purchase_qty",
+    "chk_pricing_plan_revision",
+    "chk_pricing_policy_object_interval_days_cap",
+    "chk_pricing_policy_object_interval_months_cap",
+    "chk_pricing_policy_object_notice_floor",
+    "chk_pricing_policy_object_price_row_cap",
+    // Slice 4's C4 switch (`m20260802_000038`), and since D-240
+    // (`m20260802_000041`) the only tax-display constraint on this table.
+    // `chk_pricing_policy_object_tax_display` stood above it until then, holding
+    // a display *basis* default under a name section 6 spends on this
+    // fail-closed *enforcement* mode; retiring it is what makes the name
+    // unambiguous rather than merely adjacent.
+    "chk_pricing_policy_object_tax_display_policy",
+    // `chk_pricing_policy_object_threshold` and its `_non_negative` sibling are
+    // deliberately absent: `m20260802_000018` dropped the two columns they guarded
+    // when the threshold moved to `pricing_approval_threshold`, and a CHECK over a
+    // column that no longer exists is what a stale claim looks like.
+    "chk_pricing_policy_object_tier_band_cap",
+    "chk_pricing_price_aggregation_function",
+    "chk_pricing_price_aggregation_granularity",
+    "chk_pricing_price_amount_non_negative",
+    "chk_pricing_price_billing_granularity",
+    "chk_pricing_price_billing_timing",
+    "chk_pricing_price_charge_kind",
+    "chk_pricing_price_cohort_eligibility",
+    "chk_pricing_price_eligibility",
+    "chk_pricing_price_grandfather_until",
+    "chk_pricing_price_lifecycle_state",
+    "chk_pricing_price_manual_quantity",
+    "chk_pricing_price_max_hold_granules",
+    "chk_pricing_price_model_kind",
+    "chk_pricing_price_overlay",
+    // Slice 9's seventeen. `chk_pricing_price_overlay` one line up is the
+    // **price row's** `price_overlay` axis CHECK (always `base`); everything from
+    // here down belongs to the overlay object, which is a separate row.
+    "chk_pricing_price_overlay_disclosure",
+    "chk_pricing_price_overlay_interval",
+    "chk_pricing_price_overlay_lifecycle_state",
+    "chk_pricing_price_overlay_line_adjustment_kind",
+    "chk_pricing_price_overlay_line_amount_currency",
+    "chk_pricing_price_overlay_line_amount_value_minor",
+    "chk_pricing_price_overlay_line_cohort_needs_plan",
+    "chk_pricing_price_overlay_line_discount_ceiling",
+    "chk_pricing_price_overlay_line_fixed_is_amount",
+    "chk_pricing_price_overlay_line_magnitude_kind",
+    "chk_pricing_price_overlay_line_magnitude_pairing",
+    "chk_pricing_price_overlay_line_magnitude_positive",
+    "chk_pricing_price_overlay_line_plan_id_not_nil",
+    "chk_pricing_price_overlay_line_sku_needs_plan",
+    "chk_pricing_price_overlay_line_target_sku_present",
+    "chk_pricing_price_overlay_revision",
+    "chk_pricing_price_overlay_scope_class",
+    "chk_pricing_price_overlay_scope_value",
+    "chk_pricing_price_overlay_tax_basis",
+    "chk_pricing_price_package_fields_kind",
+    "chk_pricing_price_package_price",
+    "chk_pricing_price_package_size",
+    "chk_pricing_price_quantity_source",
+    "chk_pricing_price_tier_aggregation_window",
+    "chk_pricing_price_tier_band_from_qty",
+    "chk_pricing_price_tier_band_unit_price",
+    "chk_pricing_price_tier_band_width",
+    "chk_pricing_price_tier_qualification_window",
+    // D-311's `per_unit` rate, non-negative for the reason `amount_minor` is:
+    // typed credit rows are Future scope, so a negative price is a mistake
+    // caught where it lands. Postgres only -- `m20260802_000066`'s doc records
+    // why `SQLite` carries no twin and what holds the rule there instead.
+    "chk_pricing_price_unit_rate_nano",
+    "chk_pricing_price_window_activated_at",
+    "chk_pricing_price_window_activation_order",
+    "chk_pricing_price_window_cancelled_at",
+    "chk_pricing_price_window_expired_at",
+    "chk_pricing_price_window_expiry_order",
+    "chk_pricing_price_window_interval",
+    "chk_pricing_price_window_open_ended",
+    "chk_pricing_price_window_state",
+    "chk_pricing_read_model_catalog_version",
+    "chk_pricing_read_model_subject_kind",
+    "chk_pricing_read_model_warm_marker",
+    "chk_pricing_region_taxonomy_state",
+    "chk_pricing_region_taxonomy_value_present",
+    // Slice 12's repricing journal, the same four the SQLite mirror carries.
+    "chk_pricing_repricing_journal_applied",
+    "chk_pricing_repricing_journal_failed",
+    "chk_pricing_repricing_journal_state",
+    "chk_pricing_repricing_journal_successor_is_new",
+    "chk_pricing_rounding_policy_taxonomy_state",
+    "chk_pricing_rounding_policy_taxonomy_value_present",
+    "chk_pricing_snapshot_provenance_payload",
+    "chk_pricing_snapshot_provenance_resolved",
+    "chk_pricing_snapshot_provenance_revision",
+    "chk_pricing_snapshot_provenance_trigger",
+];
+
+// ---------------------------------------------------------------------------
+// The chain through production's runner
+// ---------------------------------------------------------------------------
+
+/// Boot 1 applies everything and boot 2 applies nothing.
+///
+/// This is the C1 regression the sibling ledger pinned, asked of this gear. The
+/// hazard is the runner's *unqualified* bookkeeping table: with `bss` first in
+/// the path it lands in `public` on boot 1 (before `bss` exists) and a **second,
+/// empty** one is created in `bss` on boot 2, whereupon the history reads empty,
+/// every migration re-runs, and a non-`IF NOT EXISTS` `CREATE TABLE` aborts the
+/// boot. `public` first is the arrangement that cannot do that.
+#[tokio::test]
+#[ignore = "requires Docker (testcontainers)"]
+async fn a_second_boot_applies_nothing_under_a_public_first_search_path() {
+    let (port, _guard) = pg().await;
+    let db = connect_db(
+        &url_with_search_path(port, "public,bss"),
+        ConnectOpts::default(),
+    )
+    .await
+    .expect("connect with a public,bss search_path");
+
+    let first = run_migrations_for_testing(&db, Migrator::migrations())
+        .await
+        .expect("boot 1 must apply the whole chain");
+    assert_eq!(first.applied, chain_len(), "boot 1 applies every migration");
+
+    let second = run_migrations_for_testing(&db, Migrator::migrations())
+        .await
+        .expect("boot 2 must be a clean no-op");
+    assert_eq!(second.applied, 0, "boot 2 applies nothing");
+    assert_eq!(second.skipped, chain_len(), "boot 2 skips every migration");
+}
+
+/// **This gear carries C1, and the second boot crash-loops under `bss,public`.**
+///
+/// Found 2026-08-03 by the first run of this suite, and it is a defect rather
+/// than a test artifact: with `bss` first, boot 1 puts the runner's *unqualified*
+/// bookkeeping table in `public` because `bss` does not exist yet; boot 2 finds
+/// `bss` first, creates a **second, empty** bookkeeping table there, reads an
+/// empty history, and re-runs the chain into
+/// `relation "coord_leases" already exists`.
+///
+/// The chain's module doc argues this gear is safe here, and it argues the wrong
+/// half: `m20260802_000001` and coord's `m0001_…` do both issue `CREATE SCHEMA IF
+/// NOT EXISTS bss`, so *schema creation* is order-proof — but C1 is about where
+/// the **bookkeeping** table resolves, which no `IF NOT EXISTS` affects.
+///
+/// Nothing in this repository configures a `search_path` for this gear, so the
+/// hazard is latent rather than live: the server default puts bookkeeping in
+/// `public` and the boot above is the one that happens. It becomes live the day a
+/// deployment sets `bss,public`, which is the arrangement the sibling ledger
+/// shipped and had to fix.
+///
+/// Pinned as executable documentation in ledger's own idiom
+/// (`postgres_migration_idempotency.rs::bss_first_search_path_crash_loops_on_second_boot`).
+/// **When the hazard is closed this test reddens, and that is deliberate** — it
+/// forces whoever closes it to invert the assertion rather than to discover
+/// later that the fix was never exercised.
+#[tokio::test]
+#[ignore = "requires Docker (testcontainers); documents the C1 crash"]
+async fn a_bss_first_search_path_crash_loops_on_the_second_boot() {
+    let (port, _guard) = pg().await;
+    let db = connect_db(
+        &url_with_search_path(port, "bss,public"),
+        ConnectOpts::default(),
+    )
+    .await
+    .expect("connect with a bss,public search_path");
+
+    let first = run_migrations_for_testing(&db, Migrator::migrations())
+        .await
+        .expect("boot 1 succeeds even under the hazardous order");
+    assert_eq!(first.applied, chain_len());
+
+    let second = run_migrations_for_testing(&db, Migrator::migrations()).await;
+    assert!(
+        second.is_err(),
+        "boot 2 under bss,public must reproduce C1; got {second:?}"
+    );
+
+    let raw = Database::connect(&plain_url(port))
+        .await
+        .expect("connect plainly");
+    let bookkeeping = count(
+        &raw,
+        "SELECT count(*)::bigint AS n FROM information_schema.tables \
+         WHERE table_name LIKE 'toolkit_migrations%'",
+    )
+    .await;
+    assert_eq!(
+        bookkeeping, 2,
+        "and the mechanism is the duplicate bookkeeping table, not something else"
+    );
+}
+
+/// The migration the staged run below withholds — D-340's widening.
+const KEY_MIGRATION: &str = "m20260802_000081_scope_pricing_plan_phase_key";
+
+/// Run one statement that must land, for the staged run's world-building.
+async fn must_succeed(conn: &DatabaseConnection, sql: &str) {
+    conn.execute_raw(Statement::from_string(
+        sea_orm::DatabaseBackend::Postgres,
+        sql.to_owned(),
+    ))
+    .await
+    .unwrap_or_else(|e| panic!("statement must succeed: {sql}\n{e}"));
+}
+
+/// **A key change applies to a schema that already holds rows.**
+///
+/// Every other case in this suite boots the chain into an empty database, and a
+/// migration that only works on an empty database is the defect class that reaches
+/// production silently: on the stand `pricing_plan_phase` carries a tenant's phase
+/// rows, and D-340's widening is a `DROP CONSTRAINT` / `ADD PRIMARY KEY` over them.
+/// So this one applies the chain **up to** the widening, writes a world, and then
+/// applies the widening — which is the only arrangement where "applied = 1" is a
+/// fact about a live schema rather than about a fresh one.
+///
+/// Three claims: the withheld migrations are exactly what the second run applies
+/// (`applied` grows by them and by nothing else, `skipped` accounts for the rest);
+/// the rows are still there afterwards; and the key the server now reports is the
+/// widened tuple. The last is what makes the first two more than a no-op — a
+/// migration that did nothing at all would satisfy both.
+#[tokio::test]
+#[ignore = "requires Docker (testcontainers)"]
+async fn a_key_widening_applies_over_rows_the_table_already_holds() {
+    const TENANT: &str = "11111111-1111-1111-1111-111111111111";
+    const PLAN: &str = "22222222-0000-0000-0000-00000000000a";
+    const ACTOR: &str = "44444444-4444-4444-4444-444444444444";
+    const TERMINAL_PHASE: &str = "33333333-0000-0000-0000-000000000001";
+    const TRIAL_PHASE: &str = "33333333-0000-0000-0000-000000000002";
+
+    let (port, _guard) = pg().await;
+    let db = connect_db(
+        &url_with_search_path(port, "public,bss"),
+        ConnectOpts::default(),
+    )
+    .await
+    .expect("connect with a public,bss search_path");
+
+    let mut chain = Migrator::migrations();
+    chain.sort_by(|a, b| a.name().cmp(b.name()));
+    let (earlier, withheld): (Vec<_>, Vec<_>) = chain
+        .into_iter()
+        .partition(|migration| migration.name() < KEY_MIGRATION);
+    assert_eq!(
+        withheld.first().map(|migration| migration.name()),
+        Some(KEY_MIGRATION),
+        "the staging is the whole point: the widening must be the first migration \
+         withheld, or the rows below are written under the key it already installed"
+    );
+    let staged = withheld.len();
+
+    let first = run_migrations_for_testing(&db, earlier)
+        .await
+        .expect("the chain up to the widening must apply");
+    assert_eq!(
+        first.applied,
+        chain_len() - staged,
+        "the staged boot applies everything except the withheld tail"
+    );
+
+    // A draft revision and two phase rows under it — one terminal, one trial
+    // carrying every nullable column, so the migration is asked to preserve values
+    // and not only NULLs. The trigger requires a `draft` parent, which is also the
+    // state the stand's five drafts are in.
+    let raw = Database::connect(&plain_url(port))
+        .await
+        .expect("connect plainly");
+    must_succeed(
+        &raw,
+        &format!(
+            "INSERT INTO bss.pricing_plan \
+             (plan_id, revision, tenant_id, lifecycle_state, created_by, created_at_utc) \
+             VALUES ('{PLAN}', 0, '{TENANT}', 'draft', '{ACTOR}', '2026-08-17 09:00:00+00')"
+        ),
+    )
+    .await;
+    must_succeed(
+        &raw,
+        &format!(
+            "INSERT INTO bss.pricing_plan_phase \
+             (phase_id, plan_revision, tenant_id, plan_id, kind, ordinal, \
+              converts_to_phase_id, phase_duration_days, display_trial_days) \
+             VALUES ('{TERMINAL_PHASE}', 0, '{TENANT}', '{PLAN}', 'evergreen', 1, \
+                     NULL, NULL, NULL), \
+                    ('{TRIAL_PHASE}', 0, '{TENANT}', '{PLAN}', 'trial', 0, \
+                     '{TERMINAL_PHASE}', 14, 14)"
+        ),
+    )
+    .await;
+
+    let second = run_migrations_for_testing(&db, Migrator::migrations())
+        .await
+        .expect("the widening must apply over a table that already holds rows");
+    assert_eq!(
+        second.applied, staged,
+        "exactly the withheld tail applies, the widening first among it"
+    );
+    assert_eq!(
+        second.skipped,
+        chain_len() - staged,
+        "and everything the staged boot already booked is skipped"
+    );
+
+    assert_eq!(
+        count(
+            &raw,
+            &format!(
+                "SELECT count(*)::bigint AS n FROM bss.pricing_plan_phase \
+                 WHERE plan_id = '{PLAN}' AND plan_revision = 0"
+            )
+        )
+        .await,
+        2,
+        "both phase rows must survive the key change"
+    );
+    let key: Vec<String> = names(&raw, PRIMARY_KEYS_SQL)
+        .await
+        .into_iter()
+        .filter(|line| line.starts_with("pricing_plan_phase:"))
+        .collect();
+    assert_eq!(
+        key,
+        vec!["pricing_plan_phase: tenant_id, plan_id, plan_revision, phase_id".to_owned()],
+        "and the key the server reports must be the widened one"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// What reached the server
+// ---------------------------------------------------------------------------
+
+/// A chain applied through the runner, for the census tests to inspect.
+async fn applied() -> (DatabaseConnection, ContainerAsync<Postgres>) {
+    let (port, guard) = pg().await;
+    let db = connect_db(
+        &url_with_search_path(port, "public,bss"),
+        ConnectOpts::default(),
+    )
+    .await
+    .expect("connect");
+    run_migrations_for_testing(&db, Migrator::migrations())
+        .await
+        .expect("apply the chain");
+    let raw = Database::connect(&plain_url(port))
+        .await
+        .expect("connect plainly");
+    (raw, guard)
+}
+
+/// The PL/pgSQL functions and their triggers, by name.
+///
+/// What this does **not** say: that any body is correct. `check_function_bodies`
+/// is a syntax check — a trigger function may reference a column that does not
+/// exist and still be created, failing only when it fires. Whether these
+/// triggers refuse what they claim to is Track P's, and needs DML this suite
+/// deliberately does not issue.
+#[tokio::test]
+#[ignore = "requires Docker (testcontainers)"]
+async fn every_declared_trigger_function_and_trigger_reaches_the_server() {
+    let (conn, _guard) = applied().await;
+    assert_eq!(names(&conn, FUNCTIONS_SQL).await, EXPECTED_FUNCTIONS);
+    assert_eq!(names(&conn, TRIGGERS_SQL).await, EXPECTED_TRIGGERS);
+}
+
+#[tokio::test]
+#[ignore = "requires Docker (testcontainers)"]
+async fn every_table_key_reaches_the_server_with_the_columns_and_the_order_it_was_declared_in() {
+    // The Postgres half of D-236's roster. The `SQLite` half is on the fast tier on
+    // purpose: D-236's own finding is that the pin which caught `m20260802_000036`
+    // was `#[ignore]`d behind Docker, so a run without it reported a clean change —
+    // "one premise duplicated across tiers breaks in instalments", arriving from the
+    // direction where the premise lived on *one* tier only. This half exists because
+    // the two engines declare these keys in separate statements and could drift.
+    let (conn, _guard) = applied().await;
+    assert_eq!(
+        names(&conn, PRIMARY_KEYS_SQL).await,
+        EXPECTED_PRIMARY_KEYS,
+        "a primary key that lost a column, gained one, or reordered: the one piece of DDL whose \
+         loss first shows up as a duplicate row in a table whose whole contract is that it has none"
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires Docker (testcontainers)"]
+async fn every_declared_check_constraint_reaches_the_server_by_name() {
+    let (conn, _guard) = applied().await;
+    assert_eq!(
+        names(&conn, CHECKS_SQL).await,
+        EXPECTED_CHECKS,
+        "a CHECK that vanished or was renamed is a guard nobody removed on purpose"
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires Docker (testcontainers)"]
+async fn every_declared_partial_index_reaches_the_server() {
+    let (conn, _guard) = applied().await;
+    assert_eq!(
+        names(&conn, PARTIAL_INDEXES_SQL).await,
+        EXPECTED_PARTIAL_INDEXES
+    );
+}
+
+/// **Every index the chain declares reaches the server, by name** — Z6-5.
+///
+/// The suite's only index assertion used to be the partial one above, and its SQL
+/// filters on `indexdef LIKE '%WHERE%'`. So the roster covered **12 of 51**, and
+/// the 39 without a predicate had no Postgres assertion at all — including
+/// `uq_pricing_bulk_operation_client_key`, which `m20260802_000064` had just
+/// re-keyed and which is the physical half of D-307's cross-kind admission. An
+/// index that vanished from a Postgres arm, or that a rebuild restated with the
+/// wrong columns, was invisible on the engine that ships.
+///
+/// Constraint-backed indexes are excluded rather than rostered: a primary key's
+/// index is created by the constraint, is named by Postgres rather than by this
+/// chain, and has its own roster in `PRIMARY_KEYS_SQL`. So what this ranges over is
+/// exactly the indexes the migrations write `CREATE INDEX` for — which is what the
+/// `SQLite` roster ranges over too, and why the two lists are the same names.
+///
+/// The count is deliberately not written here. It said `51` from the day
+/// `m20260802_000087` made it 52, which is the whole trouble with a number kept
+/// in prose beside the list it counts: the list is the measurement, and a
+/// literal beside it can only ever go stale or be right by accident.
+#[tokio::test]
+#[ignore = "requires Docker (testcontainers)"]
+async fn every_declared_index_reaches_the_server_by_name() {
+    let (conn, _guard) = applied().await;
+    assert_eq!(
+        names(&conn, INDEXES_SQL).await,
+        EXPECTED_INDEXES,
+        "an index that vanished, was renamed, or was never written into the Postgres arm of its \
+         migration is a read path nobody removed on purpose - and on the engine that ships, \
+         nothing else in this suite would have noticed"
+    );
+}
+
+/// **The D-307 index carries the kind, and it is measured on both engines.**
+///
+/// A name roster cannot see a rebuild that restated an index over the wrong
+/// columns, and this is the index that happened to: `m20260802_000063`'s `SQLite`
+/// rebuild restated `uq_pricing_bulk_operation_client_key` with the pre-D-307
+/// columns and `m20260802_000064` had to correct it. On Postgres the correction was
+/// asserted by nothing.
+///
+/// `indexdef` and not a count of columns: what D-307 decided is *which* axes the
+/// key spans, so the assertion names them. `m20260802_000023`'s own doc states the
+/// principle this applies — "a measurement on one engine is not a fact about the
+/// other".
+#[tokio::test]
+#[ignore = "requires Docker (testcontainers)"]
+async fn the_client_key_index_spans_the_kind_as_well_as_the_tenant() {
+    let (conn, _guard) = applied().await;
+    let definitions = names(
+        &conn,
+        "SELECT indexdef AS v FROM pg_indexes WHERE schemaname = 'bss' \
+         AND indexname = 'uq_pricing_bulk_operation_client_key'",
+    )
+    .await;
+    let definition = definitions
+        .first()
+        .expect("uq_pricing_bulk_operation_client_key must exist on the server");
+    assert!(
+        definition.contains("(tenant_id, kind, client_key)"),
+        "D-307 keys a client key per kind, so one run id opens one import and one repricing run \
+         alike; this index reads {definition}"
+    );
+}
+
+/// **The bundle plan slot is per tenant** — `m20260802_000083`, A1-2.
+///
+/// Its name is in `EXPECTED_INDEXES` and was there before the widening, which is
+/// exactly why this case exists: a name cannot carry columns, and the widening
+/// deliberately kept the name so the constraint keeps one spelling across the
+/// change. Nothing in the name census could tell `(plan_id)` from
+/// `(tenant_id, plan_id)`.
+///
+/// The narrow form was the only opinion the schema had about a `plan_id` a client
+/// puts in a request body — `pricing_bundle` carries no foreign key at all — so
+/// the first tenant to name one locked every other tenant out of it permanently,
+/// against a row invisible to them and with no `DELETE` in the API.
+#[tokio::test]
+#[ignore = "requires Docker (testcontainers)"]
+async fn the_bundle_plan_slot_is_unique_per_tenant_rather_than_globally() {
+    let (conn, _guard) = applied().await;
+    let definitions = names(
+        &conn,
+        "SELECT indexdef AS v FROM pg_indexes WHERE schemaname = 'bss' \
+         AND indexname = 'uq_pricing_bundle_plan'",
+    )
+    .await;
+    let definition = definitions
+        .first()
+        .expect("uq_pricing_bundle_plan must exist on the server");
+    assert!(
+        definition.contains("(tenant_id, plan_id)"),
+        "a plan's bundle slot belongs to the tenant that owns the plan; this index reads \
+         {definition}"
+    );
+}
+
+/// **Every revision column in the chain is `bigint`** — Z6-7.
+///
+/// A plan revision is a `u64` wherever it is a value, and `pricing_plan.revision`
+/// is `bigint`. Two columns were `integer` — `pricing_migration.source_revision`
+/// and `pricing_snapshot_provenance.source_revision` — which made them addressable
+/// to 2^31-1, guarded at the boundary by an `i32::try_from` that answered
+/// `CorruptRow`. `m20260802_000075` widened both.
+///
+/// The property is stated over the **schema** rather than over those two columns,
+/// which is the point: a spot check on the two known outliers would be green
+/// against the third. It reads `information_schema` after the whole chain, so a
+/// later `CREATE TABLE` that types a revision `integer` reddens here — including
+/// through a rebuild that restates a column verbatim, which is exactly how
+/// `m20260802_000065` carried this outlier forward without anyone seeing it.
+#[tokio::test]
+#[ignore = "requires Docker (testcontainers)"]
+async fn every_revision_column_is_bigint() {
+    let (conn, _guard) = applied().await;
+    let columns = names(&conn, REVISION_COLUMNS_SQL).await;
+    assert!(
+        columns.len() >= 12,
+        "the scan found {columns:?}, which is fewer revision columns than the chain has carried \
+         since Slice 8 - the query is broken, not the schema"
+    );
+    let narrow: Vec<&String> = columns
+        .iter()
+        .filter(|column| !column.ends_with(" bigint"))
+        .collect();
+    assert!(
+        narrow.is_empty(),
+        "a revision column narrower than the u64 a revision is: {narrow:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Down, and back up
+// ---------------------------------------------------------------------------
+
+/// A rolled-back chain leaves no table **and no function**.
+///
+/// Functions are the class this can actually miss: indexes, triggers and CHECKs
+/// go with their table by cascade, while every PL/pgSQL function needs an
+/// explicit `DROP FUNCTION` in its migration's `down`. Deleting **any one** of those
+/// statements leaves an orphan a tables-only assertion cannot see.
+///
+/// The number is deleted rather than corrected, for `EXPECTED_CHECKS`' reason: it read
+/// "one of those nine statements" over fifteen, and what the test ranges over is the
+/// chain's functions as the chain declares them rather than a count of `down` bodies.
+///
+/// The `bss` schema itself is expected to **survive**: coord and the sibling
+/// gears live there, and a `down` that dropped it would take their tables with
+/// it.
+#[tokio::test]
+#[ignore = "requires Docker (testcontainers)"]
+async fn the_chain_rolls_back_leaving_no_table_and_no_function() {
+    let (port, _guard) = pg().await;
+    let conn = Database::connect(&plain_url(port))
+        .await
+        .expect("connect postgres");
+    Migrator::up(&conn, None).await.expect("apply the chain");
+    Migrator::down(&conn, None)
+        .await
+        .expect("the whole chain must roll back");
+
+    let tables = count(
+        &conn,
+        "SELECT count(*)::bigint AS n FROM pg_tables WHERE schemaname = 'bss'",
+    )
+    .await;
+    assert_eq!(tables, 0, "a rolled-back chain leaves no table in `bss`");
+
+    let functions = count(
+        &conn,
+        "SELECT count(*)::bigint AS n FROM pg_proc p \
+         JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = 'bss'",
+    )
+    .await;
+    assert_eq!(
+        functions, 0,
+        "nor an orphan PL/pgSQL function: each `down` must drop its own"
+    );
+
+    let schema = count(
+        &conn,
+        "SELECT count(*)::bigint AS n FROM information_schema.schemata \
+         WHERE schema_name = 'bss'",
+    )
+    .await;
+    assert_eq!(
+        schema, 1,
+        "and the shared schema survives, because coord and the sibling gears live in it"
+    );
+}
+
+/// The re-entry that is actually evidence: down, then up again.
+///
+/// Applying twice in a row proves nothing — the runner filters what it has
+/// already booked, so the second call executes no statements at all and the
+/// chain's own SQL is not idempotent (`CREATE TABLE` without `IF NOT EXISTS`).
+/// Rolling back and re-applying is the run that reaches the statements, and it
+/// answers this program's standing question: what does the **second** run of the
+/// mechanism read?
+#[tokio::test]
+#[ignore = "requires Docker (testcontainers)"]
+async fn the_chain_survives_a_roll_back_and_a_re_apply() {
+    let (port, _guard) = pg().await;
+    let conn = Database::connect(&plain_url(port))
+        .await
+        .expect("connect postgres");
+
+    Migrator::up(&conn, None).await.expect("apply");
+    let before_functions = names(&conn, FUNCTIONS_SQL).await;
+    let before_checks = names(&conn, CHECKS_SQL).await;
+    let before_indexes = names(&conn, PARTIAL_INDEXES_SQL).await;
+
+    Migrator::down(&conn, None).await.expect("roll back");
+    Migrator::up(&conn, None)
+        .await
+        .expect("the chain must re-apply onto the ground it cleared");
+
+    assert_eq!(names(&conn, FUNCTIONS_SQL).await, before_functions);
+    assert_eq!(names(&conn, CHECKS_SQL).await, before_checks);
+    assert_eq!(names(&conn, PARTIAL_INDEXES_SQL).await, before_indexes);
+}
+
+/// **The publish commit's approval read is served by an index and not by a scan.**
+///
+/// Every commit path in the crate runs this predicate — `infra::retirement` runs
+/// it *inside* the retirement transaction, and `infra::cutover`,
+/// `infra::supersession`, `infra::window` and `infra::grandfather` each run it on
+/// their own. `pricing_approval` is `DELETE`-refused and has no purge job, so
+/// without an index the cost grows with the retention horizon and with every other
+/// tenant's history rather than with the plan being published.
+///
+/// **Armed against the plan shape, and seeded on purpose.** Two ways this probe
+/// could be green while proving nothing, both avoided here:
+///
+/// * On the empty database every other test in this file leaves behind, Postgres
+///   picks a sequential scan whatever indexes exist, because a scan of nothing is
+///   the cheapest plan there is. So the table is seeded and `ANALYZE`d first — the
+///   assertion is about which plan the planner *chooses* when it has a choice.
+/// * "An index is used" is satisfied by the primary key's index doing a full pass.
+///   So the index is named, and the absence of `Seq Scan` is asserted separately.
+#[tokio::test]
+#[ignore = "requires Docker (testcontainers)"]
+async fn the_approval_subject_read_is_served_by_an_index() {
+    let (conn, _guard) = applied().await;
+    let tenant = "11111111-1111-1111-1111-111111111111";
+
+    // One tenant's history among many, which is the shape that makes the missing
+    // index expensive: the predicate selects a handful of rows out of a table that
+    // grows with every other tenant.
+    // Born submitted and decided afterwards, because that is the only way a row
+    // gets into this table: `trg_pricing_approval_append_only` refuses an INSERT
+    // that arrives already `approved` -- "a record is born submitted". A seed that
+    // fought the guard rather than following it would be testing a state the
+    // domain cannot produce.
+    must_succeed(
+        &conn,
+        "INSERT INTO bss.pricing_approval \
+         (approval_id, tenant_id, subject_ref, subject_kind, content_hash, state, \
+          submitter_principal, materiality, submitted_at) \
+         SELECT gen_random_uuid(), gen_random_uuid(), g::text || '/1', 'plan_revision', \
+                decode(md5(g::text), 'hex'), 'submitted', gen_random_uuid(), \
+                '{}'::jsonb, now() \
+         FROM generate_series(1, 20000) g",
+    )
+    .await;
+    must_succeed(
+        &conn,
+        "UPDATE bss.pricing_approval \
+         SET state = 'approved', approver_principal = gen_random_uuid(), decided_at = now() \
+         WHERE state = 'submitted'",
+    )
+    .await;
+    must_succeed(&conn, "ANALYZE bss.pricing_approval").await;
+
+    let plan = explain(
+        &conn,
+        &format!(
+            "SELECT approval_id FROM bss.pricing_approval \
+             WHERE tenant_id = '{tenant}'::uuid AND state = 'approved' \
+             AND subject_ref = '7/1' ORDER BY decided_at ASC LIMIT 1"
+        ),
+    )
+    .await;
+
+    assert!(
+        !plan.contains("Seq Scan"),
+        "the approval read runs on every commit path and must not scan the table; plan was:\n{plan}"
+    );
+    assert!(
+        plan.contains("idx_pricing_approval_subject"),
+        "the plan must use the read-shape index and not merely some index; plan was:\n{plan}"
+    );
+}
+
+/// The migration the rescale staging withholds.
+const RESCALE_MIGRATION: &str = "m20260802_000082_reserved_rate_is_a_rate_column";
+
+/// One `bigint` of a query.
+async fn scalar_i64(conn: &DatabaseConnection, sql: &str) -> i64 {
+    conn.query_one_raw(Statement::from_string(
+        sea_orm::DatabaseBackend::Postgres,
+        sql.to_owned(),
+    ))
+    .await
+    .expect("run the scalar query")
+    .expect("one row")
+    .try_get::<i64>("", "v")
+    .expect("read the value")
+}
+
+/// **The reserved-rate rescale applies over a row the table already holds**
+/// (review P-2).
+///
+/// `m20260802_000082` renames `reserved_rate_minor` to `reserved_rate_nano` and
+/// then rescales it by 10^9 with an `UPDATE`. `pricing_price` carries a
+/// `BEFORE UPDATE` guard that freezes that column on every row whose
+/// `lifecycle_state` is not `draft`, and nothing in the chain stood it down — so
+/// on Postgres the statement met `pricing_price_append_only`'s body still naming
+/// `reserved_rate_minor` (`RENAME COLUMN` does not rewrite `pg_proc.prosrc`) and
+/// raised `42703`, and on `SQLite` it tripped `trg_pricing_price_frozen_columns`.
+/// Either way the chain aborted and the gear could not boot against that database.
+///
+/// **`published` is the armed half.** The guard returns early on
+/// `OLD.lifecycle_state = 'draft'`, so the same staging on a draft row passes
+/// against the unfixed code and proves nothing. Every other migration test in this
+/// file applies the chain to an empty schema, which is why this was invisible.
+#[tokio::test]
+#[ignore = "requires Docker (testcontainers)"]
+async fn the_reserved_rate_rescale_applies_over_a_published_row() {
+    const PRICE: &str = "55555555-0000-0000-0000-00000000000b";
+
+    let (port, _guard) = pg().await;
+    let db = connect_db(
+        &url_with_search_path(port, "public,bss"),
+        ConnectOpts::default(),
+    )
+    .await
+    .expect("connect with a public,bss search_path");
+
+    let mut chain = Migrator::migrations();
+    chain.sort_by(|a, b| a.name().cmp(b.name()));
+    let (earlier, withheld): (Vec<_>, Vec<_>) = chain
+        .into_iter()
+        .partition(|migration| migration.name() < RESCALE_MIGRATION);
+    assert_eq!(
+        withheld.first().map(|migration| migration.name()),
+        Some(RESCALE_MIGRATION),
+        "the staging is the whole point: the rescale must be the first migration withheld, or \
+         the row below is written into a schema that has already been rescaled"
+    );
+
+    run_migrations_for_testing(&db, earlier)
+        .await
+        .expect("the chain up to the rescale must apply");
+
+    // A plain connection for the raw statements, as the staged run above uses:
+    // `connect_db` hands back the gear's `Db` wrapper and `execute_raw` wants the
+    // sea-orm connection under it.
+    let raw = Database::connect(&plain_url(port))
+        .await
+        .expect("connect plainly");
+
+    // Born a draft and published afterwards, which is the only transition the
+    // guard admits -- and it is what makes the row `published` when the rescale
+    // arrives.
+    must_succeed(
+        &raw,
+        &format!(
+            "INSERT INTO bss.pricing_price \
+             (price_id, tenant_id, plan_id, currency, region, price_overlay, phase, \
+              price_eligibility, charge_kind, cohort, tax_inclusive, dimension_key, \
+              lifecycle_state, created_by, created_at_utc, row_version, reserved_rate_minor) \
+             VALUES ('{PRICE}'::uuid, gen_random_uuid(), gen_random_uuid(), 'USD', 'us-east', \
+                     'base', gen_random_uuid(), 'all_subscriptions', 'recurring', 'none', false, '', \
+                     'draft', gen_random_uuid(), now(), 0, 5)"
+        ),
+    )
+    .await;
+    must_succeed(
+        &raw,
+        &format!(
+            "UPDATE bss.pricing_price SET lifecycle_state = 'published' \
+             WHERE price_id = '{PRICE}'::uuid"
+        ),
+    )
+    .await;
+
+    run_migrations_for_testing(&db, withheld)
+        .await
+        .expect("the rescale must apply to a database that holds a published reserved rate");
+
+    assert_eq!(
+        scalar_i64(
+            &raw,
+            &format!(
+                "SELECT reserved_rate_nano AS v FROM bss.pricing_price \
+                 WHERE price_id = '{PRICE}'::uuid"
+            ),
+        )
+        .await,
+        5_000_000_000,
+        "the published row's rate is rescaled, not skipped: a migration that stood the guard \
+         down and then filtered the row out would leave it a billion times too small"
+    );
+}
+
+/// **Every column a trigger function dereferences exists on the table it guards**
+/// (review P-6).
+///
+/// The gap this closes, stated as itself: the Postgres census pins 30 function
+/// names and 30 trigger names and **nothing about what those functions say**. Its
+/// own doc admits it — *"`check_function_bodies` is a syntax check; a trigger
+/// function may reference a column that does not exist and still be created,
+/// failing only when it fires."* `SQLite` has no such hole, because
+/// `sqlite_migrations` pins a digest for all 94 trigger bodies.
+///
+/// And the asymmetry is not academic: `ALTER TABLE … RENAME COLUMN` **rewrites**
+/// `SQLite` trigger bodies and leaves `pg_proc.prosrc` untouched, so the one
+/// defect class it produces is invisible on exactly the engine where it can
+/// happen. It did happen — `m20260802_000082` renamed a `pricing_price` column and
+/// `bss.pricing_price_append_only()` went on naming the old one, taking the whole
+/// append-only guarantee down until some other suite issued DML.
+///
+/// **Armed against dereference, not against a digest.** A digest pin over
+/// `prosrc` would redden on every deliberate guard restatement — this chain has
+/// six — and would be turned off within a wave. This asks the only question that
+/// is always wrong to answer badly: does each `NEW.x` / `OLD.x` name a live column
+/// of the table the trigger is attached to?
+#[tokio::test]
+#[ignore = "requires Docker (testcontainers)"]
+async fn every_trigger_function_dereferences_only_live_columns() {
+    let (conn, _guard) = applied().await;
+
+    // One row per (function, trigger, table, dereferenced identifier), straight
+    // from the catalog: `prosrc` is the body as stored, `regexp_matches` pulls
+    // every `NEW.<ident>` / `OLD.<ident>` out of it, and the join to
+    // `information_schema.columns` is the question.
+    let orphans = names(
+        &conn,
+        "SELECT DISTINCT p.proname || ' -> ' || c.relname || '.' || m[2] AS v \
+         FROM pg_proc p \
+         JOIN pg_namespace n ON n.oid = p.pronamespace AND n.nspname = 'bss' \
+         JOIN pg_trigger t ON t.tgfoid = p.oid AND NOT t.tgisinternal \
+         JOIN pg_class c ON c.oid = t.tgrelid \
+         CROSS JOIN LATERAL regexp_matches(p.prosrc, '(NEW|OLD)\\.([a-z_][a-z0-9_]*)', 'g') AS m \
+         WHERE NOT EXISTS ( \
+             SELECT 1 FROM information_schema.columns col \
+             WHERE col.table_schema = 'bss' \
+               AND col.table_name = c.relname \
+               AND col.column_name = m[2]) \
+         ORDER BY 1",
+    )
+    .await;
+
+    assert!(
+        orphans.is_empty(),
+        "a trigger function dereferences a column its table does not have; the guard is down \
+         until it next fires, and nothing else in this suite can see it: {orphans:?}"
+    );
+}
+
+/// The anti-vacuity control for the census above.
+///
+/// A scan that matched nothing would report an empty orphan set and read as a
+/// clean bill of health. This pins that the extraction actually finds
+/// dereferences — the guards are full of them — so the emptiness above is a
+/// measurement rather than a silence.
+#[tokio::test]
+#[ignore = "requires Docker (testcontainers)"]
+async fn the_dereference_census_actually_finds_dereferences() {
+    let (conn, _guard) = applied().await;
+
+    let found = names(
+        &conn,
+        "SELECT DISTINCT p.proname || '.' || m[2] AS v \
+         FROM pg_proc p \
+         JOIN pg_namespace n ON n.oid = p.pronamespace AND n.nspname = 'bss' \
+         JOIN pg_trigger t ON t.tgfoid = p.oid AND NOT t.tgisinternal \
+         CROSS JOIN LATERAL regexp_matches(p.prosrc, '(NEW|OLD)\\.([a-z_][a-z0-9_]*)', 'g') AS m \
+         ORDER BY 1",
+    )
+    .await;
+
+    assert!(
+        found.len() >= 40,
+        "the extraction found only {} dereferences across the guard functions; it has stopped \
+         matching, which would make the census above vacuously green",
+        found.len()
+    );
+}

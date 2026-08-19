@@ -6,7 +6,7 @@
 //! read of a B-owned account returns `None`. This closes the gap where the
 //! highest-value isolation guarantee was only covered at e2e (live cluster),
 //! never at the Rust layer. Ignored by default; run with
-//! `cargo test -p bss-ledger --test postgres_bola -- --ignored`.
+//! `cargo test -p cf-gears-bss-ledger --test postgres_bola -- --ignored`.
 
 #![allow(
     clippy::non_ascii_literal,

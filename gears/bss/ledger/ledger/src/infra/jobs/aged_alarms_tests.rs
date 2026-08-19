@@ -8,7 +8,7 @@
 //! scans find them and `run()` completes.
 //!
 //! Ignored Docker tests run with
-//! `cargo test -p bss-ledger --lib 'infra::jobs::aged_alarms::tests' -- --ignored`.
+//! `cargo test -p cf-gears-bss-ledger --lib 'infra::jobs::aged_alarms::tests' -- --ignored`.
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,

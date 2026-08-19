@@ -248,7 +248,12 @@ export PATH := $(HOME)/.local/bin:$(PATH)
 #
 # Use `make clippy-deep` for the full 182-run matrix (nightly / pre-release).
 CLIPPY_FLAGS := -- -D warnings -D clippy::perf
-CLIPPY_HACK_CRATES := -p cf-gears-toolkit -p cf-gears-toolkit-db -p cf-gears-toolkit-http
+# `bss-fixtures` is on the list because it is the one crate whose *production*
+# surface is the narrow one: pricing's `FixtureGate` inherits it with
+# `default-features = false`, while `default = ["corpus"]` means every ordinary
+# build compiles the wide one. A feature-combination pass is the only thing that
+# lints the surface a gear actually takes.
+CLIPPY_HACK_CRATES := -p cf-gears-toolkit -p cf-gears-toolkit-db -p cf-gears-toolkit-http -p cf-gears-bss-fixtures
 # `_any-backend` is toolkit-db's internal "some backend is on" marker (see its
 # [features] block); enabling it *alone* asserts a driver exists while none does,
 # which the outbox benchmarks reject with a compile_error!. Not a configuration
@@ -465,7 +470,7 @@ dev: dev-fmt dev-clippy dev-test
 
 # -------- Tests --------
 
-.PHONY: test test-no-macros test-macros test-sqlite test-pg test-mysql test-db test-users-info-pg test-usage-collector-pg test-cluster-pg test-rg-pg test-fips
+.PHONY: test test-no-macros test-macros test-sqlite test-pg test-mysql test-db test-users-info-pg test-usage-collector-pg test-cluster-pg test-rg-pg test-pricing-pg test-coord-pg test-fixtures-narrow test-fips
 
 # Run all tests
 test: install-tools
@@ -521,6 +526,67 @@ test-cluster-pg: install-tools
 ## gears/system/resource-group/resource-group/tests/pg_smoke_test.rs)
 test-rg-pg: install-tools
 	cargo nextest run -p cf-gears-resource-group --features integration
+
+## Run bss-pricing's Postgres tier (Docker required; each suite spins up its own
+## postgres container via testcontainers).
+##
+## Gated behind `#[ignore]` rather than a feature, which is why this needs
+## `--run-ignored ignored-only` where its siblings above pass `--features`. Every
+## test in `tests/postgres_*.rs` carries the attribute — 376 of them on
+## 2026-08-18, stated as the invariant rather than as a number because the count
+## has already drifted once here — and until 2026-08-11
+## nothing in this Makefile or in `.github/` passed `--run-ignored` at all — so
+## the tier compiled on every run and executed on none.
+##
+## What that cost is specific, not theoretical. Every proof this crate owns about
+## two racing writers, a lock held by a crashed pass, `FOR UPDATE` semantics,
+## READ COMMITTED re-evaluation and the PL/pgSQL half of every dual-spelled
+## trigger lives here: the five test files using `tokio::spawn`/`join!` are all
+## `postgres_*`. Each suite's module doc states that its property is unprovable
+## on SQLite, and two note that the SQLite twin passes either way —
+## `sqlite_bulk_commit.rs` is a test that cannot fail on the property it is named
+## for. `sqlite_append_only.rs:110` names the cost from experience: "D-236 is the
+## record of what that costs — a premise living on one tier only means a run
+## without Docker reports a clean change through a guard that stopped guarding."
+##
+## `--no-fail-fast`, and it is not a preference. On 2026-08-18 this tier was red
+## with nine failures: one stale probe at test 68 of 376 and, behind it, six
+## proving that price supersession was broken on the engine that ships. nextest
+## stops at the first failure by default, so the PR page reported the stale probe
+## and nothing else — the cheap failure hid the expensive one, and a reader fixing
+## the one line would have met the other six only on the next run. A tier whose
+## whole purpose is to be the one place a Postgres-only defect surfaces must
+## report every failure it found, not the first.
+test-pricing-pg: install-tools
+	cargo nextest run -p cf-gears-bss-pricing --run-ignored ignored-only -E 'binary(/^postgres_/)' --no-fail-fast
+
+## Run coord's Postgres tier (Docker required; testcontainers).
+##
+## `coord`'s `m0001_…` builds two independent SQL literals — a schema-qualified
+## PG `CREATE TABLE` and a bare SQLite one. The in-crate tests connect
+## `sqlite::memory:` and reach the SQLite literal only, so the `IF NOT EXISTS`
+## that stops the two-gear boot crash (`bss-pricing` starting beside a
+## long-running `bss-ledger`) was unexercised on the dialect the crash happened
+## on. `Migration::in_schema("bss")` — the constructor both consumers actually
+## pass — is likewise unreachable from SQLite, which has one namespace.
+##
+## Same `--run-ignored ignored-only` shape as `test-pricing-pg` above, and the
+## same reason: the gate is `#[ignore]` rather than a feature.
+test-coord-pg: install-tools
+	cargo nextest run -p cf-gears-bss-coord --run-ignored ignored-only -E 'binary(/^postgres_/)'
+
+## Compile and run `bss-fixtures` on the surface a **gear** actually takes.
+##
+## Pricing's `FixtureGate` inherits this crate with `default-features = false`
+## (`Cargo.toml`'s workspace entry) — `ModelKind` + `Registry` + `gate_open_for`
+## and nothing else. `default = ["corpus"]`, so every other build in the
+## workspace, `make test-no-macros` included, compiles the wide surface: the
+## test written to guard the narrow one (`tests/production_surface.rs`, whose
+## module doc names this invocation) ran only in the configuration it does not
+## guard, where its assertions hold trivially. The narrow build's only other
+## consumer is the example server's release build, which never runs a test.
+test-fixtures-narrow: install-tools
+	cargo nextest run -p cf-gears-bss-fixtures --no-default-features --test production_surface
 
 ## Run FIPS-mode integration tests (requires Go for aws-lc-fips-sys).
 ## Covers:

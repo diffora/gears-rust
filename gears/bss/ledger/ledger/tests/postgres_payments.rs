@@ -1,6 +1,6 @@
 //! Postgres-only repo-level tests for `PaymentRepo` (the payment counter
 //! tables + the allocation candidate / view reads). Ignored by default; run
-//! with `cargo test -p bss-ledger --test postgres_payments -- --ignored`.
+//! with `cargo test -p cf-gears-bss-ledger --test postgres_payments -- --ignored`.
 //!
 //! Covers: (a) `seed_settlement` then `read_settlement` round-trips
 //! `settled_minor`; (b) two `add_allocated` calls net; (c) `add_allocated`

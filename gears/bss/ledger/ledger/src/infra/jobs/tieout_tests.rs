@@ -4,7 +4,7 @@
 //! Uses `noop()` publisher (no broker/assert-via-report).
 //!
 //! Ignored by default; run with
-//! `cargo test -p bss-ledger --lib 'infra::jobs::tieout::tests' -- --ignored`.
+//! `cargo test -p cf-gears-bss-ledger --lib 'infra::jobs::tieout::tests' -- --ignored`.
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
