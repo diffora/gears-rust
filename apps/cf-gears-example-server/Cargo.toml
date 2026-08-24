@@ -51,6 +51,7 @@ timescaledb-usage-collector = ["dep:timescaledb_usage_collector_plugin"]
 # Content-based file type detection in file-parser (see that crate's `magika`
 # feature doc comment for what it pulls in).
 magika = ["file_parser/magika"]
+bss-pricing = ["dep:bss_pricing"]
 
 [dependencies]
 mimalloc = { version = "0.1" }
@@ -105,14 +106,16 @@ account_management = { package = "cf-gears-account-management", path = "../../ge
 static-idp-plugin = { package = "cf-gears-static-idp-plugin", path = "../../gears/system/account-management/plugins/static-idp-plugin", optional = true }
 
 # Optional BSS Billing Ledger gear
-bss_ledger = { package = "bss-ledger", path = "../../gears/bss/ledger/ledger", optional = true }
-bss_rate_provider = { package = "bss-rate-provider", path = "../../gears/bss/rate-provider/rate-provider", optional = true }
-bss_rate_provider_ecb_plugin = { package = "bss-rate-provider-ecb-plugin", path = "../../gears/bss/rate-provider/plugins/ecb-plugin", optional = true }
-bss_rate_provider_http_json_plugin = { package = "bss-rate-provider-http-json-plugin", path = "../../gears/bss/rate-provider/plugins/http-json-plugin", optional = true }
+bss_ledger = { package = "cf-gears-bss-ledger", path = "../../gears/bss/ledger/ledger", optional = true }
+bss_rate_provider = { package = "cf-gears-bss-rate-provider", path = "../../gears/bss/rate-provider/rate-provider", optional = true }
+bss_rate_provider_ecb_plugin = { package = "cf-gears-bss-rate-provider-ecb-plugin", path = "../../gears/bss/rate-provider/plugins/ecb-plugin", optional = true }
+bss_rate_provider_http_json_plugin = { package = "cf-gears-bss-rate-provider-http-json-plugin", path = "../../gears/bss/rate-provider/plugins/http-json-plugin", optional = true }
 
 # Optional Usage Collector gear + its TimescaleDB storage plugin
 usage_collector = { package = "cf-gears-usage-collector", path = "../../gears/system/usage-collector/usage-collector", optional = true }
 timescaledb_usage_collector_plugin = { package = "cf-gears-timescaledb-usage-collector-plugin", path = "../../gears/system/usage-collector/plugins/timescaledb-usage-collector-plugin", optional = true }
+# Optional BSS Plan & Price Modeling gear
+bss_pricing = { package = "cf-gears-bss-pricing", path = "../../gears/bss/pricing/pricing", optional = true }
 
 # Optional example module
 users-info = { path = "../../examples/toolkit/users-info/users-info", optional = true }
