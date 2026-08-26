@@ -335,7 +335,9 @@ slice.
 
 **The design set is COMPLETE: all twelve slices authored, agent-reviewed, and fix-waved**
 (2026-08-25/26; per-slice reports in `~/Documents/pricing-reviews/`). Human flags awaiting the
-owner: P-D-06/P-D-07 review, the composition-clear gate exemption, the mechanical-retry AC #40
-reading, the M6 role-predicate-replaces-base reading, quorum strictness for small tenants, the
-SchemaPin widening proposal. Next phase: implementation planning against the phase column;
+owner (six): P-D-06 (metadata placement) and P-D-07 (stamp floor) review, the mechanical-retry
+AC #40 reading, the role-predicate-replaces-base rule, quorum strictness for small tenants, the
+SchemaPin widening. *(The composition-clear gate exemption is no longer among them — the
+2026-08-26 CodeRabbit pass forced its resolution: a `system_signal` approval subject with the
+inbound governed signal as the authorizing principal.)* Next phase: implementation planning against the phase column;
 first build acts: slice 01 + the P-D-03 watermark joint build with pricing.
