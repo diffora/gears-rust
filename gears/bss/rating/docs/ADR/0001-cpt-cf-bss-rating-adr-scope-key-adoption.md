@@ -53,12 +53,21 @@ Tariffs use so that selection is unique without banning hybrid / grandfathered /
 
 ## Decision Outcome
 
-Chosen option: **Adopt the pricing 8-axis canonical scope key verbatim** —
-`(planId, currency, region, priceOverlay, phase, priceEligibility, chargeKind, cohort)` — for both
+Chosen option: **Adopt the pricing canonical scope key verbatim — ten axes since pricing D-196
+(2026-08-06; eight at this ADR's decision date)** —
+`(planId, currency, region, priceOverlay, phase, priceEligibility, chargeKind, cohort)` plus the
+usage pair `(meter, dimensionKey)` (`''` sentinel on non-usage rows) — for both
 selection and the non-overlap invariant. `phase` is a `phase_id` (uuid). Within
 `existing_grandfathered`, the generation is selected by the `cohort` of the subscription's **pinned
 price id** in `pricingSnapshotRef`, never by `activatedAt` alone. Eligibility classes order
 `existing_grandfathered > new_subscriptions_only > all_subscriptions`.
+
+> **Amendment (2026-08-25).** Pricing D-196 (2026-08-06) widened the canonical key it owns to
+> **ten axes**: the usage pair `(meter, dimensionKey)` joined as normative axes (`''` sentinel on
+> non-usage rows; the pricing store holds one price row per usage line, both unique indexes key
+> over the pair). This ADR's adoption is *verbatim*, so the adopted key is the full ten; the
+> 8-axis spelling above is the key as of the decision date. The slice-02 `SelectionKey`
+> carries the full ten since T-D-35 (2026-08-25; SEAMS K6 resolved).
 
 ### Consequences
 

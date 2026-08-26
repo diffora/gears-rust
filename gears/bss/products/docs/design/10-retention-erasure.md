@@ -1,0 +1,198 @@
+<!-- Related: ../DESIGN.md, ../PRD.md, ../DECISIONS.md, ./01-foundation.md, ./02-taxonomy-attributes.md, ./06-catalog-version.md | Owners: BSS Product Catalog team -->
+
+# DESIGN — Retention & Erasure (Slice 10)
+
+<!-- toc -->
+
+- [1. Context](#1-context)
+  - [1.1 Overview](#11-overview)
+  - [1.2 Purpose](#12-purpose)
+  - [1.3 Actors](#13-actors)
+  - [1.4 References](#14-references)
+  - [1.5 Scope](#15-scope)
+  - [1.6 Constraints & Assumptions](#16-constraints--assumptions)
+  - [1.7 Naming & Design-Introduced Names](#17-naming--design-introduced-names)
+  - [1.8 Context & Dependencies](#18-context--dependencies)
+- [2. Actor Flows (CDSL)](#2-actor-flows-cdsl)
+  - [Erase an actor (right to erasure)](#erase-an-actor-right-to-erasure)
+  - [Enforce the content-PII prohibition](#enforce-the-content-pii-prohibition)
+  - [Run retention (the GC)](#run-retention-the-gc)
+  - [Verify durability (the drill)](#verify-durability-the-drill)
+- [3. Processes / Business Logic](#3-processes--business-logic)
+  - [3.1 The identity-reference map](#31-the-identity-reference-map)
+  - [3.2 Error taxonomy (slice-owned codes)](#32-error-taxonomy-slice-owned-codes)
+- [4. Data / Storage (normative shape; DDL in migrations)](#4-data--storage-normative-shape-ddl-in-migrations)
+- [5. Testing posture (slice-local)](#5-testing-posture-slice-local)
+- [6. Traces to / Risks & Open items](#6-traces-to--risks--open-items)
+
+<!-- /toc -->
+
+## 1. Context
+
+### 1.1 Overview
+
+This slice owns the reconciliation the PRD calls logically hardest: **immutable financial
+records** (versions, snapshots, audit, events) versus **GDPR/CCPA erasure**. The resolution is
+structural, not procedural: **content PII never gets in** (the write-block whose hook slice 02
+hosts — this slice owns the detector policy and its allow-list), and **actor PII lives only in
+the identity-reference map** (every audit row, event, and version field carries a pseudonymous
+ref — erasure updates the map and touches no immutable record). Plus: retention classes to the
+statutory maximum, the **retention↔grandfathering coupling** (expiry gated on the 06
+freeze-registration liveness records, fail-closed), and the NFR #5 durability mechanics
+(storage class, periodic checksum restore verification, DR posture).
+
+### 1.2 Purpose
+
+Byte-identical reproducibility and the right to erasure coexist only if erasure never has an
+operand inside a frozen record. The whole gear was built that way from slice 01 (pseudonymous
+`actor_ref`, `created_by`); this slice supplies the map, the erasure act, the retention clocks,
+and the guards that keep a GC from orphaning a live contract.
+
+### 1.3 Actors
+
+| Actor | Role in this slice |
+|-------|--------------------|
+| `cpt-cf-bss-products-actor-auditor` | Compliance reads/exports over pseudonymized trails |
+| `cpt-cf-bss-products-actor-catalog-admin` | Executes erasure requests; monitors retention |
+| `cpt-cf-bss-products-actor-billing` | The grandfathered-reference beneficiary of the retention gate |
+
+### 1.4 References
+
+- [`../PRD.md`](../PRD.md) §6.11 (`fr-retention-erasure`), §6.13
+  (`fr-grandfathered-retention-coupling` — the gate half; the liveness-records half is 06's),
+  §4.1 (snapshots are financial records), NFR #5; AC #35, #44; §17.1 (retention rows: statutory
+  max; PII pseudonymization age)
+- [`../DECISIONS.md`](../DECISIONS.md) P-D-06 (the metadata map's **placement** — still flagged
+  for review; its PII prohibition comes from the PRD glossary / 02 C4, L4); [`./02-taxonomy-attributes.md`](./02-taxonomy-attributes.md) `inst-av-pii-block`
+  (the hook this slice's policy plugs into); [`./06-catalog-version.md`](./06-catalog-version.md)
+  `inst-fz-liveness` (the operand of the retention gate)
+
+### 1.5 Scope
+
+**In**: the identity-reference map + the erasure act; the content-PII detector policy +
+allow-list governance (Legal); retention classes + clocks + the GC; the grandfathered-retention
+gate; the durability mechanics (checksum restore verification cadence, DR posture as config +
+probes); the compliance-export surface.
+
+**Out**: the write-block **hook placement** (02); the liveness records themselves (06); audit
+row production (every slice writes its own; this slice never edits them); break-glass reads
+(05).
+
+### 1.6 Constraints & Assumptions
+
+| # | Constraint | Source |
+|---|-----------|--------|
+| C1 | Erasure = **pseudonym-map update only**: immutable financial/version/audit/event records are never edited or deleted; because they carry only refs, updating the map completes erasure | PRD `fr-retention-erasure` |
+| C2 | Content free-text is PII-prohibited at write: hard prohibition, **fail-closed on uncertainty**, curated allow-list for legitimate person-named products, Legal sign-off recorded (PRD §15) | PRD AC #35 |
+| C3 | Retention: financial/version/audit → statutory maximum (never "indefinite"); operator PII pseudonymized at erasure request or the configured max age, whichever first | PRD §17.1 |
+| C4 | Retention expiry of a `catalogVersionId` is **gated on zero live references** in the 06 freeze-registration records; a GC that would orphan a live grandfathered reference fails closed + alerts | PRD `fr-grandfathered-retention-coupling`, AC #44 |
+| C5 | Snapshots + version history: ≥ 11-nines-class replicated storage, periodic **checksum restore verification** (a restore drill that re-verifies 06 checksums, not a backup-exists check), RPO/RTO per the NFR workshop | NFR #5 |
+
+### 1.7 Naming & Design-Introduced Names
+
+| Name | Meaning |
+|------|---------|
+| `IdentityRefMap` | `actor_ref → operator identity` — the single erasure operand |
+| `PiiDetector` | The write-time content check behind 02's hook: policy + allow-list, fail-closed on uncertainty |
+| `RetentionClock` | Per record class: the statutory-max schedule the GC reads |
+| `RetentionGate` | The AC #44 evaluator: version-liveness from 06's records, fail-closed |
+
+### 1.8 Context & Dependencies
+
+**Consumed**: 02's hook (every content free-text write); 06's freeze-registration records +
+checksums; config (retention durations, pseudonymization age, drill cadence); the 05 gate
+(allow-list mutations are `GovernedLiveOp`s — enumerated in 05's inputs (d) as this slice's
+kind). **Produced**: `ActorErased` (audit-plane semantics below), the compliance export, the
+GC + its alarms, the restore-drill results surface.
+
+## 2. Actor Flows (CDSL)
+
+### Erase an actor (right to erasure)
+
+- [ ] `p1` - **ID**: `cpt-cf-bss-products-flow-erasure`
+
+1. [ ] - `p1` - `POST /bss-products/v1/erasure-requests` (`erasure × execute`): resolves the operator identity to its `actor_ref`s and **overwrites the map entries with tombstones** (pseudonym retained, identity gone) — one transaction, audited with a reason; no immutable record is touched (C1), and every historical read through the map now renders the tombstone - `inst-er-erase`
+2. [ ] - `p1` - The act itself is recorded pseudonymously too (the eraser's own ref) — audit-plane, explicit **no broker event** carrying identity; a minimal `ActorErased(actor_ref)` broker event exists as a **defensive cache-buster**: no projection in the set materializes identities (renders join the map — M1 corrected: 08 holds pseudonyms only, and materializing an identity into any projection is a slice-12 lint failure), so the event's consumer set is legitimately empty today - `inst-er-event`
+3. [ ] - `p1` - Age-based pseudonymization: the same tombstone act (emitting the same `ActorErased` — L3) runs automatically at the configured max age — **the age of the principal's last activity in the tenant** (`last_seen_at`, refreshed by every ref-minting act; age-since-first-appearance would tombstone an active employee mid-employment — M2) — erasure-on-request and erasure-on-age are one mechanism, two triggers - `inst-er-age`
+4. [ ] - `p1` - **The compliance export (H3 fix)**: `GET /bss-products/v1/compliance/identity-export` (`compliance × export` — its own grant, never `audit × export`, honoring §4's exclusion): DSAR-shaped, per named principal, returning the principal's map entries + the audit-row references that carry their refs; every access individually audited. **Erasure reach (L5)**: map rows are per-tenant with one active ref per principal; a DSAR erasure enumerates the principal's rows across tenants under the platform DSAR grant, each tenant's tombstone audited in-tenant (a design statement, flagged) - `inst-er-export`
+
+### Enforce the content-PII prohibition
+
+- [ ] `p1` - **ID**: `cpt-cf-bss-products-flow-pii-policy`
+
+1. [ ] - `p1` - `PiiDetector` answers 02's hook: block (fail-closed, `CONTENT_PII_BLOCKED` naming the field, never the detected value) / allow / allow-by-list; **uncertainty blocks** (C2) - `inst-pp-detect`
+2. [ ] - `p1` - The allow-list is a `GovernedLiveOp` (material; the **Legal-designated role is an IdP-configured claim named in a §17.1-style config row**, and per the 05 rule a registered kind's role predicate REPLACES the base approver set for that kind — M6) recording the justification per entry; emits `PiiAllowlistChanged` (L3); entries are per-tenant, audited, and exportable for the Legal review - `inst-pp-allowlist`
+
+### Run retention (the GC)
+
+- [ ] `p1` - **ID**: `cpt-cf-bss-products-flow-retention`
+
+1. [ ] - `p1` - `RetentionClock` per class — frozen versions, catalog versions, audit, outbox-delivered, bulk ledgers, **and the evidential stores this slice owns the interplay for (M4): approval records/decisions, break-glass sessions, correction overrides (audit-grade, statutory max); watermark/member tables are operational-current state (continuously replaced, no clock needed)**: expiry candidates are computed, and for a `catalogVersionId` the `RetentionGate` requires **every freeze registration `released`** (06's release door — the H1 end-of-liveness; acked-and-unreleased = live) — a candidate with a live registration is skipped with the `retention_orphan_blocked` alarm (fail-closed: skipped, never forced; C4); GC deletes are audit-plane, explicit **no broker event** (L3) - `inst-rt-gc`
+2. [ ] - `p1` - Deletion order respects reference topology (capture/entry rows before their catalog-version row; entity versions only after every referencing manifest — M3's phantom "counter history" removed); every GC act is audited with the class, the clock, and the gate verdict - `inst-rt-order`
+3. [ ] - `p1` - Entity-version rows referenced by ANY retained `CatalogVersion` manifest are retained with it (p1 — the only rule stopping the GC from orphaning a manifest, M3) (the manifest's entity half references frozen rows — 06 H3): version-row retention derives from catalog-version retention, never shorter - `inst-rt-derive`
+
+### Verify durability (the drill)
+
+- [ ] `p2` - **ID**: `cpt-cf-bss-products-flow-restore-drill`
+
+1. [ ] - `p2` - On the configured cadence: restore a sampled set of catalog versions **and their referenced entity versions** from backup into an isolated target and re-verify **both** the 06 manifest checksums and the per-row entity-version digests (01 §4.3 — H2 fix: manifest checksums alone are blind to version-history corruption) byte-for-byte (C5) — a mismatch is a compliance incident alarm, not a log line; results land on an operator surface with the last-verified watermark per tenant - `inst-rd-drill`
+
+## 3. Processes / Business Logic
+
+### 3.1 The identity-reference map
+
+- [ ] `p1` - **ID**: `cpt-cf-bss-products-algo-identity-map`
+
+1. [ ] - `p1` - `products_identity_ref` — `(tenant_id, actor_ref)` → identity payload | tombstone, `first_seen_at`, **`last_seen_at`** (refreshed by every ref-minting act — the M2 age operand); one active ref per `(tenant, principal)` (L5); written on first appearance of a principal (01's doors mint refs through it); **the only table in the gear where PII may live**, and the only one erasure writes - `inst-im-map`
+2. [ ] - `p1` - Reads join through the map at render time (08 projections, audit exports, approval queues) — no surface caches resolved identities beyond its own rebuildable projections - `inst-im-render`
+
+### 3.2 Error taxonomy (slice-owned codes)
+
+- [ ] `p2` - **ID**: `cpt-cf-bss-products-contract-retention-errors`
+
+`ERASURE_UNKNOWN_ACTOR`. (`CONTENT_PII_BLOCKED` is **declared in 02's taxonomy** — the door is
+02's, only the verdict policy lives here; kept out of this owned list per the one-declaration
+rule, L1.) The GC and drill raise alarms, not API errors.
+
+## 4. Data / Storage (normative shape; DDL in migrations)
+
+§3.1's map (the PII exception table — excluded from every export except the compliance
+surface, encrypted at rest per platform posture); `products_pii_allowlist` (governed entries +
+justifications); retention/drill state is config + audit, no new record tables. Events per
+§2 (the deliberately minimal `ActorErased`).
+
+## 5. Testing posture (slice-local)
+
+- **The reproducibility-vs-erasure flagship**: freeze a version → erase its approver → the old
+  snapshot's checksum is unchanged AND the rendered audit shows the tombstone (both halves in
+  one probe — C1 is only proven by asserting both).
+- Detector matrix: block / allow / allow-by-list / uncertainty-blocks, each with a positive
+  control; the allow-list mutation requires the Legal-role quorum.
+- Retention gate RED: a candidate version with one live freeze-registration is skipped +
+  alarmed; the same version GCs cleanly once the registration ends (the AC #44 pair).
+- Derived retention: an entity-version row referenced only by a retained catalog version
+  survives its own class clock.
+- Restore drill: a deliberately corrupted backup sample fails the drill loudly (the oracle must
+  be seen to fail — the perturbation discipline).
+- Age-based pseudonymization fires without a request and is byte-identical in effect to the
+  requested path.
+
+## 6. Traces to / Risks & Open items
+
+**Traces to (PRD)**: `fr-retention-erasure`, `fr-grandfathered-retention-coupling` (gate
+half), `fr-expected-failure-behavior` (the "retention process that would orphan a live
+grandfathered reference" row — `retention_orphan_blocked`, L2), AC #35, #38 (that row), #44;
+NFR #5 (mechanics); §17.1 retention rows; C2's Legal sign-off (§15 open — the design is ready
+either way).
+
+**Risks & open items**:
+- **Detector quality is a product risk, not a design one**: fail-closed-on-uncertainty
+  guarantees safety and guarantees friction; the allow-list loop must exist before GA (the 02
+  risk restated as this slice's operational owner), and the §15 Legal sign-off covers the
+  posture itself.
+- **Watermark/member tables (07) and bulk ledgers** carry `skuId`s and row payloads, not PII —
+  asserted here so their retention rides ordinary classes; if a future producer's payload grew
+  identity-bearing fields, the map discipline would apply — named to keep it from drifting in
+  silently.
+- **Encrypted-at-rest for the map** rides the platform storage posture; if a deployment lacks
+  it, this table is the one that must not ship — a deployment gate, not a code path.

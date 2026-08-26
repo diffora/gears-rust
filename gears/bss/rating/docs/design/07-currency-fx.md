@@ -77,7 +77,7 @@ after conversion; a missing FX record where one is required fails closed, never 
 
 | ADR ID | Decision Summary |
 |--------|------------------|
-| `cpt-cf-bss-rating-adr-scope-key-adoption` | `currency` is an axis of the adopted 8-axis key: each market is its own catalog row selected at step 2 — step 8 never fabricates a missing market row via FX derivation. |
+| `cpt-cf-bss-rating-adr-scope-key-adoption` | `currency` is an axis of the adopted ten-axis key: each market is its own catalog row selected at step 2 — step 8 never fabricates a missing market row via FX derivation. |
 | `cpt-cf-bss-pricing-adr-canonical-scope-key` (adopted) | The key definition carrying the `currency`/`region` axes; per-`(currency, region)` rows are authored independently in the pricing gear ([`../../../pricing/docs/design/04-currency-tax.md`](../../../pricing/docs/design/04-currency-tax.md)). |
 
 ### 1.3 Architecture Layers

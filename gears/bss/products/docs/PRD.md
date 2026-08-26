@@ -31,6 +31,32 @@ refs:
 > reference table localized to `gears/bss/rating/docs/PRD.md` / `gears/bss/subscriptions/docs/PRD.md`.
 > **Further local change (D-46, 2026-07-16):** the `sellable` flag FR (`fr-sku-sellable`) —
 > offering eligibility, enforced as pricing sellability-gate predicate 6.
+> **Consistency fix wave (2026-08-25):** AC #8 aligned with the post-RG2 FR (the stale
+> separate-SKUs-per-dimension mandate removed; the `usageTypeRef` publish validation mirrored from
+> the FR, veto flag preserved); dangling risk-table references repaired (`AC #48`/`#55`/`#45` did
+> not exist — now named AC/NFR-show-stopper refs); remaining RG3 tails closed (§13 dependency rows
+> merged into the one rating gear; §17.2 evaluation pointer localized). **Same-day cross-review
+> round (PRD↔code + PRD↔designs, reports in `~/Documents/pricing-reviews/2026-08-25-*`):**
+> "CI-verified" seam claims re-tensed to gated-future (the suite does not exist yet), the §5.2
+> manual-publish bullet reconciled with D-47's demand-driven lanes, and five cross-gear opens
+> added to §15 (event-envelope GATE, D-47-vs-governance GATE, `compositionPending` counterpart,
+> freeze-ack silence, UC3(c) operand). **Two of those gates were then decided the same day
+> (product calls, §15):** the registry adopts the event-broker's **broker-native envelope**
+> (not CloudEvents 1.0; manifest §7.2 amendment owed), and a `CatalogVersion` increment is
+> **mechanical** — the uncomposed-bundle two-person override moves to the bundle's entity
+> publish; a system-initiated D-47 increment never waits on approval. **Two more the same day:**
+> `SkuReferenceCount` v1 producer set = **{pricing}**, built jointly with this gear's development
+> (Subscriptions/Contracts register at their own build); and Product **name uniqueness made
+> absolute** per `(tenant, brand)` — region-independent, the region algebra surviving only as the
+> parent-child containment check. **Veto round 2026-08-25:** the UC3 `usageTypeRef` block
+> CONFIRMED as amended — "is active" dropped (a UsageType has no lifecycle state) and the UC3(c)
+> dimension-set cross-validation re-placed onto pricing `inst-cmp-usagetype` (priced ⊆
+> `metadata_fields` at plan publish); nothing in this PRD now awaits veto. **Industry-gap wave
+> (same day, vs Stripe/Zuora/Kill Bill):** environment promotion (rides bulk import/export,
+> AC #33a + use case), catalog-version diff (`fr-catalog-version-diff`, AC #20a), well-known
+> attribute seed widened (`imageUri`, `unitDisplayLabel`, `marketingFeatures[]`), feature-vocabulary
+> ownership question → §15, `skuCode`-vs-`lookup_key` strictness contrast recorded in the
+> identifier rationale.
 
 <!-- toc -->
 
@@ -117,7 +143,7 @@ This PRD carves the **registry** scope out of the combined predecessor (`PRD-pro
 
 - **Flexibility / time-to-market**: Product Managers self-serve Product, SKU, category, and attribute changes across offering types without engineering involvement.
 - **Stable monetization foundation**: every published SKU exposes a stable identifier, type, `PlanTier` classification, and metering-unit declaration, so plan/price authoring and rating bind to a fixed reference.
-- **Auditable governance**: two-person approval for material catalog changes, immutable version history, and a complete CloudEvents audit trail satisfy financial and regulatory controls.
+- **Auditable governance**: two-person approval for material catalog changes, immutable version history, and a complete event + audit trail satisfy financial and regulatory controls.
 - **Safe evolution**: backward-compatible schema evolution and immutable `CatalogVersion` snapshots let the catalog change without breaking posted invoices, active contracts, or in-flight subscriptions.
 - **Single source of truth**: one authoritative registry feeds partner/brand/region-scoped offerings, marketplace listings, and contract quotes.
 
@@ -138,7 +164,7 @@ This PRD carves the **registry** scope out of the combined predecessor (`PRD-pro
 | **Attribute** | A **governed** (defined, typed, optionally localized) key/value descriptor attached to a Product or SKU with brand/region visibility, managed via attribute **definitions**. Contrast the ungoverned **Metadata map**. |
 | **Metadata map** | An **ungoverned**, per-entity free-form key/value channel for machine metadata (external ids, sync markers, migration tags): tenant-scoped, size-bounded, non-localized, excluded from read-model search, still PII-prohibited, captured in `CatalogVersion` snapshots. |
 | **Brand** | A commercial/presentation identity within a tenant under which Products/SKUs/attributes are scoped for visibility, isolation, and localized display. A **visibility/legal scope, not a pricing dimension**. |
-| **Region** | A geography/jurisdiction scope on Product/SKU/Attribute governing **visibility, legal availability, and localization fallback** — **never** pricing (currency/price-region/FX are plan-price/Tariffs). Drives name-uniqueness and read-model scoping. The region-set algebra is a pre-approval gate (§15). |
+| **Region** | A geography/jurisdiction scope on Product/SKU/Attribute governing **visibility, legal availability, and localization fallback** — **never** pricing (currency/price-region/FX are plan-price/Tariffs). Drives read-model scoping and parent-child scope containment; name uniqueness is **region-independent** (§15 decision 2026-08-25). Region-set semantics are needed only for containment (pinned in Design; interim conservative subset-check, fail-closed). |
 | **PlanTier** | Mandatory classification carried on SKUs/Plans (manifest §4.1) consumed by Subscriptions, `SlaPolicy`, and quota/entitlement policies. This PRD owns the **PlanTier taxonomy and the SKU-level value**; plan-price enforces presence at **plan** publish. Distinct from **OrgTier** (a partner commercial standing that never changes tenant topology). |
 | **Metering-unit declaration** | The unit identity (e.g. vCPU-hours, GB-storage) declared on a usage SKU. This PRD owns the **declaration and its validation**; usage collection is OSS metering, plan-level meter binding is plan-price, and rating is Rating. |
 | **Lifecycle state** | The Product/SKU state machine: `draft → published [↔ deprecated] → retired`, plus `draft → discarded` for never-published entities. `deprecated` is a governed sub-state of `published` (referenceable by existing consumers, closed to new adoption). `retired` is terminal (revival only via clone). `discarded` is terminal for an abandoned never-published draft (releases the `skuCode` reservation, audited, emits a discard event). |
@@ -163,7 +189,7 @@ This PRD carves the **registry** scope out of the combined predecessor (`PRD-pro
 | **Field** | **Value** |
 |-----------|----------|
 | **Applicable Manifest(s)** | BSS |
-| **Manifest Chapters** | §4.1 Product and Service Catalog (primary — catalog **registry**: Product, SKU, Category, Attribute, CatalogVersion, lifecycle, approvals, publish); §4.4 Billing and Invoicing (posting/snapshot immutability); §4.3 Subscriptions, §4.2 Rating, §4.6 Contracts, §4.8 Marketplace (consumers of published SKUs); §2.1.3 Multi-tenant semantics; §7.2 Event governance (CloudEvents 1.0) |
+| **Manifest Chapters** | §4.1 Product and Service Catalog (primary — catalog **registry**: Product, SKU, Category, Attribute, CatalogVersion, lifecycle, approvals, publish); §4.4 Billing and Invoicing (posting/snapshot immutability); §4.3 Subscriptions, §4.2 Rating, §4.6 Contracts, §4.8 Marketplace (consumers of published SKUs); §2.1.3 Multi-tenant semantics; §7.2 Event governance (CloudEvents 1.0 — **re-scoped for this gear to the broker-native envelope, §15 decision 2026-08-25; manifest amendment owed**) |
 
 > **Normative alignment**: This PRD owns the **catalog registry** half of BSS §4.1 — the SoR for **Product, SKU, Category, Attribute, and CatalogVersion**, plus their authoring, versioning, lifecycle, taxonomy, localization, governance, publishing, and catalog-wide snapshotting. It MUST NOT contradict the sibling decomposition PRDs and MUST delegate, by reference, every commercial-pricing concern.
 
@@ -294,7 +320,7 @@ The combined Catalog (§4.1) capability is split across complementary PRDs (regi
 - **Multi-tenant isolation**: tenant/brand/region scoping via IdP claims; deny-by-default at the gateway; cross-tenant access audited; time-boxed break-glass for platform-owner access.
 - **`region` is visibility/legal scope, never pricing**; currency/price-region/FX live in plan-price/Tariffs.
 - **Time**: scheduled publish (`publishAt`) and scheduled retirement (`effectiveAt`) are UTC; retirement lead-time ≥ 30 days (interim).
-- **Eventing**: every state-changing mutation emits CloudEvents 1.0 onto the shared event system (Common Core) with `dataschema`+semver, correlation/causation, and per-aggregate ordering keys `(tenant, aggregate)`; **pseudonymous actor references only** (no direct PII). Delivery/ordering/dead-letter mechanics are owned by the common event system, not re-specified here.
+- **Eventing**: every state-changing mutation emits an event in the platform event-broker's **broker-native envelope** (event-broker ADR-0003 — **not** CloudEvents 1.0; §15 decision 2026-08-25) with a versioned (semver) schema reference, correlation/causation, and per-aggregate ordering keys `(tenant, aggregate)`; **pseudonymous actor references only** (no direct PII). Delivery/ordering/dead-letter mechanics are owned by the event-broker, not re-specified here.
 - **Snapshots are financial records**: `CatalogVersion` snapshots + version history require a durability class (interim ≥ 11 nines / replicated storage), backup/restore with periodic checksum verification, and a cross-region/DR posture.
 
 ## 5. Scope
@@ -315,13 +341,13 @@ The combined Catalog (§4.1) capability is split across complementary PRDs (regi
 | Catalog versioning & snapshots (CatalogVersion) | `p1` | Stage/publish immutable full `CatalogVersion` with checksum + monotonic id; byte-identical re-resolution; emit `CatalogVersionPublished`; expose `freezeComplete`. |
 | Catalog approval & publishing workflow | `p1` | Approval-gated publish with two-person rule above a typed materiality policy; approvals pinned to the approved revision; idempotent mutation boundary. Categories & attribute definitions are governed live entities. |
 | Multi-tenant isolation & brand/region scoping | `p1` | Tenant/brand/region scoping via IdP claims; deny-by-default; audited cross-tenant; time-boxed break-glass; RBAC. |
-| Eventing, audit & integration surface | `p1` | Publish CloudEvents 1.0 for every state-changing mutation with `dataschema`+semver + correlation/causation + ordering keys; pseudonymous actors; replay/bootstrap; immutable audit. |
+| Eventing, audit & integration surface | `p1` | Publish a broker-native event (§15 decision 2026-08-25) for every state-changing mutation with versioned schema ref + correlation/causation + ordering keys; pseudonymous actors; replay/bootstrap; immutable audit. |
 | Data retention & right-to-erasure | `p1` | Defined retention for retired entities/versions/audit; reconcile immutable audit + version history with GDPR/CCPA (pseudonymize operator PII, retain financial records). |
 | Catalog read models (core browse/search) | `p1` | Cache-first read models scoped by tenant/brand/region, bounded convergence; premise of the show-stopper NFRs (§7). |
-| Bulk import (catalog onboarding at scale) | `p1` | Bulk create/update/import with idempotency + per-row partial-failure; imports land in draft and pass the gated publish. Required at ≥ 10K-SKU scale. |
+| Bulk import (catalog onboarding at scale) | `p1` | Bulk create/update/import with idempotency + per-row partial-failure; imports land in draft and pass the gated publish. Required at ≥ 10K-SKU scale. Deterministic export/import doubles as **environment promotion** (staging → prod; AC #33a). |
 | Advanced search, filter & faceting | `p2` | Rich faceted search/filter over the core read model. |
-| Catalog lint / validation & snapshot export | `p2` | `validate(lint)` before publish (warn at SKU publish, blocking-with-override at `CatalogVersion` publish for uncomposed bundles); `export snapshot`. |
-| Bulk export & bulk lifecycle tooling | `p2` | Deterministic snapshot export; bulk lifecycle (mass deprecate/retire) beyond parent→child cascade. |
+| Catalog lint / validation & snapshot export | `p2` | `validate(lint)` before publish (blocking-with-override at the **bundle's entity publish** for an uncomposed bundle — §15 decision 2026-08-25; informational report at `CatalogVersion` publish); `export snapshot`. |
+| Bulk export & bulk lifecycle tooling | `p2` | Deterministic snapshot export; bulk lifecycle (mass deprecate/retire) beyond parent→child cascade; catalog-version diff (`fr-catalog-version-diff`, AC #20a). |
 | Product/SKU cloning / templating | `p3` | Clone to a new draft with new identifiers; explicit copy/reset field disposition; pricing not copied. |
 
 ### 5.2 Out of Scope
@@ -338,13 +364,13 @@ The combined Catalog (§4.1) capability is split across complementary PRDs (regi
 - **Promotional/coupon pricing, eligibility, lifecycle** — Promotions (TBD) + plan-price. A *sellable* promo/$0/"Free" offering is a **normal registry SKU** here (identity, type, `PlanTier`, visibility); only its $0/promotional **price** is out of scope. Registry rules apply identically; no separate promo entity.
 - **Tenant merge/split and brand transfer between tenants** — explicit non-goal for v1.
 - **Binary / media assets** (images, icons, datasheets) — not stored here in v1; the registry MAY carry asset reference URIs as attribute values.
-- **Recurring availability windows and scheduled `CatalogVersion` publish** — out of scope for v1 (entity-level scheduled publish IS in scope; `CatalogVersion` publish stays manual so the freeze protocol is untouched).
+- **Recurring availability windows and time-triggered `CatalogVersion` publish** — out of scope for v1 (entity-level scheduled publish IS in scope). **Operator-initiated** `CatalogVersion` publish stays manual; the **demand-driven increment lanes of D-47** (`fr-catalog-version-publish`: interactive/bulk downstream publish requests) are IN scope and system-initiated. The composition is decided (§15, 2026-08-25): **an increment is mechanical** — every governance gate (incl. the uncomposed-bundle two-person override) attaches to the **entity publish** that introduces the exception, never to the increment itself.
 - **Configurable products / CPQ** — not modeled; the registry uses a concrete SKU per variant.
 - **Product-to-product relationships beyond `bundle`, parent-child, and `replacedBy`/supersedes** — not modeled in v1; a governed catalog-relationship block is a post-v1 consideration (§15).
 
 ## 6. Functional Requirements
 
-> **Content boundary**: FRs define WHAT the registry must do, not schemas. Any concrete field/flag/event/idempotency-key name or format is an illustrative handle; canonical field schemas, formats/regexes, error codes, event catalog, and payloads are owned by the gear's DESIGN (`gears/bss/products/docs/DESIGN.md`, pending). Full Given/When/Then acceptance detail is preserved in §12; interim configurable-policy defaults are in §17.1.
+> **Content boundary**: FRs define WHAT the registry must do, not schemas. Any concrete field/flag/event/idempotency-key name or format is an illustrative handle; canonical field schemas, formats/regexes, error codes, event catalog, and payloads are owned by the gear's DESIGN (`gears/bss/products/docs/DESIGN.md` — authored 2026-08-25 as the canonical index over the `design/` slice set; slice 01 done, 02–12 mapped). Full Given/When/Then acceptance detail is preserved in §12; interim configurable-policy defaults are in §17.1.
 
 ### 6.1 Identifiers & Integrity
 
@@ -354,7 +380,7 @@ The combined Catalog (§4.1) capability is split across complementary PRDs (regi
 
 `productId` and `skuId` **MUST** be server-generated immutable identifiers (never operator-supplied). `skuCode` **MUST** be operator-supplied, fixed-format, tenant-unique, reserved **atomically at create time**, and immutable after first publish; once first published a `skuCode` **MUST** be permanently reserved within the tenant and **MUST NOT** be reissued. Downstream consumers **MUST** bind to `skuId`. Products **MAY** carry an optional `productCode` under the same rules.
 
-**Rationale**: Stable system identity plus a protected human/external code is the foundation every downstream reference depends on.
+**Rationale**: Stable system identity plus a protected human/external code is the foundation every downstream reference depends on. Permanent `skuCode` reservation is deliberate and **stricter than industry** (e.g. Stripe's `lookup_key` is atomically re-pointable to another price): a re-pointable human key trades auditability for flexibility, and this registry is financial-grade — the code is also the portable identity for environment promotion (AC #33a).
 
 **Actors**: `cpt-cf-bss-products-actor-product-manager`
 
@@ -394,9 +420,9 @@ For a correctable immutable field (`type` or metering-unit declaration; **never*
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-fr-create-product`
 
-Creating a Product **MUST** generate a `productId`, persist as `draft` (published version 0) with full multi-tenant isolation and an audit entry (primary category optional at draft, required at publish; optional secondary categories allowed). Name uniqueness **MUST** be enforced on `(tenantId, brandId, normalized(name))` within any overlapping region scope; two same-named Products are allowed only when region scopes are **disjoint**. Indeterminate region overlap **MUST** fail closed with an operator-facing reason. The uniqueness key is the **canonical internal name**; localized display name/description are well-known attributes.
+Creating a Product **MUST** generate a `productId`, persist as `draft` (published version 0) with full multi-tenant isolation and an audit entry (primary category optional at draft, required at publish; optional secondary categories allowed). Name uniqueness **MUST** be enforced on `(tenantId, brandId, normalized(name))` **absolutely — region-independent** (§15 decision 2026-08-25): two same-named Products under one tenant+brand are forbidden regardless of region scope. The uniqueness key is the **canonical internal name** (a quasi-code); localized display name/description are well-known attributes and **MAY repeat freely** — regional variants keep distinct internal names with identical display names. Relaxing to region-disjoint coexistence is a compatible post-v1 widening; the reverse would be a breaking tightening, which is why v1 starts strict.
 
-**Rationale**: Multi-region catalogs need same-name coexistence without mangling, while same-region collisions must be rejected deterministically.
+**Rationale**: The canonical internal name is a quasi-code, unique across all regions (P-D-04) — deterministic collisions with no region algebra at the create door; multi-region catalogs get same-*display*-name coexistence through localized display attributes, never through duplicate internal names.
 
 **Actors**: `cpt-cf-bss-products-actor-product-manager`
 
@@ -416,7 +442,7 @@ Category operations **MUST** validate name uniqueness within parent (re-checked 
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-fr-define-sku`
 
-Defining a SKU **MUST** link it to the Product, assign `skuId`/`skuCode`, type it `product`/`service`/`bundle`, and validate the per-type required-field set. A `bundle`-typed SKU **MUST** persist only the type flag and identity (composition authored in plan-price; blocking completeness enforced at `CatalogVersion` publish). Promotional/$0/"Free" SKUs **MUST** follow identical registry rules; there is no separate promo entity.
+Defining a SKU **MUST** link it to the Product, assign `skuId`/`skuCode`, type it `product`/`service`/`bundle`, and validate the per-type required-field set. A `bundle`-typed SKU **MUST** persist only the type flag and identity (composition authored in plan-price; publishing it **uncomposed** requires the explicit two-person override at its **entity publish** — §15 decision 2026-08-25). Promotional/$0/"Free" SKUs **MUST** follow identical registry rules; there is no separate promo entity.
 
 **Rationale**: A uniform, type-aware SKU contract lets downstream bind without re-validation.
 
@@ -438,7 +464,7 @@ A SKU **MUST** carry a dedicated `sellable` flag (default `true`), independent o
 
 Declaring a metering unit **MUST** validate it against the configured recognized-unit set and reject an unrecognized unit unless elevated approval marks a new validated unit. A usage SKU declares **exactly one** unit — the counted identity only. Pricing dimensions (`dimensionKey`) are **not** units: the declared dimension set over a meter is a plan-price concern (plan-level meter binding, §2.1), persisted on the plan-price revision and frozen into `pricingSnapshotRef` by Rating; multi-dimension usage on one unit **does not require separate SKUs**, and separate SKUs remain available where variants differ commercially (accounting codes, lifecycle). For a composite (derived) meter the SKU declares the composite's **output** unit; input units are referenced by the plan-price formula against the recognized-unit set and need no SKUs of their own. A draft whose unit was `deprecated` before first publish **MUST** be treated as a new declaration and rejected. The declared unit **MUST** be carried on publish; this PRD **MUST NOT** compute charges.
 
-**Usage-source binding (UC3 seam adoption, 2026-07-28, flagged for veto)**: a metering-unit declaration **MUST** carry a **`usageTypeRef`** — the usage-collector `gts_id` of the UsageType whose accepted entries feed this meter — as the authoritative attribution binding (rating SEAMS **UC3**(a); the phase-2 usage-event feed the **rating PRD** commits to as the UC1 remedy — not yet authored in the usage-collector design set). Publish **MUST** validate that the referenced UsageType exists and is active, and that the meter's **declared dimension set equals the referenced UsageType's declared `metadata_fields` keys** (UC3(c) cross-validation — a mismatch means emitted usage carries dimensions the catalog cannot attribute, or the catalog prices dimensions the source never emits); either failure blocks publish with the offending keys named. Rating never guesses the binding: an unresolvable `usageTypeRef` quarantines the usage record rather than mis-attributing it.
+**Usage-source binding (UC3 seam adoption 2026-07-28; veto round 2026-08-25 — CONFIRMED as amended)**: a metering-unit declaration **MUST** carry a **`usageTypeRef`** — the usage-collector `gts_id` of the UsageType (a platform-global catalog row `(gts_id, kind, metadata_fields)`) whose accepted entries feed this meter — as the authoritative attribution binding (rating SEAMS **UC3**(a); the phase-2 usage-event feed the **rating PRD** commits to as the UC1 remedy — not yet authored in the usage-collector design set). Publish **MUST** validate that the referenced UsageType **exists** (resolves in the catalog); *"and is active" was dropped by the veto round — a UsageType carries no lifecycle state (its catalog offers register/get/list/delete only, deletion FK-guarded against usage records)*. The UC3(c) **dimension-set cross-validation is NOT performed here** (vetoed as written: this PRD assigns dimension sets to plan-price, so the registry holds no operand to compare) — it lives at the **plan-price meter binding**: pricing `inst-cmp-usagetype` (confirmed 2026-07-31, built) blocks plan publish when a priced `dimensionKey` falls outside the UsageType's declared `metadata_fields` keys. Rating never guesses the binding: an unresolvable `usageTypeRef` quarantines the usage record rather than mis-attributing it — which also fail-safes a UsageType deleted after publish (the collector's delete-RESTRICT guards only its own usage records, not catalog meters). **Quarantine is a fail-safe, not an operating mode**: a deleted UsageType leaves a sold-but-unrateable meter until remediation; closing that hole (extend the collector's delete guard to published declarations, or a deletion signal feeding pricing's `meter_binding_divergent` remediation) is a cross-gear open (§15).
 
 **Rationale**: Declaring the unit is what defines a usage SKU; validation prevents downstream rate corruption.
 
@@ -480,7 +506,7 @@ Setting tax-category and GL codes **MUST** persist them as stable codes and **va
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-fr-localized-attributes`
 
-Adding i18n attribute **values** **MUST** validate against the attribute **definition**, require the default-locale value (rejected at publish if absent), and resolve locale via `(locale, region, brand) → (locale, brand) → (default-locale, brand) → global` (default-locale resolved per brand, falling back to tenant default). The registry **MUST** seed **well-known display attribute definitions** (localized display name/description for Product/SKU/Category). Managing attribute **definitions** is a governed live-entity operation emitting `AttributeDefinitionUpdated`; changes **MUST** be backward-compatible and follow a deprecate-then-remove lifecycle. The registry **MUST** provide an ungoverned, size-bounded, non-localized, search-excluded, PII-prohibited **metadata map** for machine metadata.
+Adding i18n attribute **values** **MUST** validate against the attribute **definition**, require the default-locale value (rejected at publish if absent), and resolve locale via `(locale, region, brand) → (locale, brand) → (default-locale, brand) → global` (default-locale resolved per brand, falling back to tenant default). The registry **MUST** seed **well-known display attribute definitions**: localized display name/description for Product/SKU/Category, plus (industry parity, 2026-08-25) `imageUri` (asset reference URI — binaries stay out per §5.2), `unitDisplayLabel` (the sales-facing unit label, e.g. "per vCPU-hour" — display only, never the metering-unit identity), and `marketingFeatures[]` (localized feature bullets for price pages). Managing attribute **definitions** is a governed live-entity operation emitting `AttributeDefinitionUpdated`; changes **MUST** be backward-compatible and follow a deprecate-then-remove lifecycle. The registry **MUST** provide an ungoverned, size-bounded, non-localized, search-excluded, PII-prohibited **metadata map** for machine metadata.
 
 **Rationale**: Localized display without a second identity key, plus a governed/ungoverned split, keeps portals correct and integrations from flooding the definition registry.
 
@@ -522,7 +548,7 @@ A SKU **MUST NOT** reach `published` while its parent Product is not `published`
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-fr-deprecation`
 
-Marking a `published` SKU `deprecated` **MUST** move it to the `deprecated` sub-state, mark it so consumers **block new adoption** while existing references continue, and emit `SkuDeprecated`. `deprecated` **MUST** be a tracked, queryable state (not a flag), recording provenance `direct` (vs `cascaded`). The registry marks and exposes; the consumer enforces the new-adoption block (CI-verified via the seam suite).
+Marking a `published` SKU `deprecated` **MUST** move it to the `deprecated` sub-state, mark it so consumers **block new adoption** while existing references continue, and emit `SkuDeprecated`. `deprecated` **MUST** be a tracked, queryable state (not a flag), recording provenance `direct` (vs `cascaded`). The registry marks and exposes; the consumer enforces the new-adoption block (to be CI-verified via the `fr-plan-price-seam` suite — which does not exist yet, §15).
 
 **Rationale**: A tracked sub-state makes the new-adoption guard testable and consistent with the composition-pending pattern.
 
@@ -556,7 +582,7 @@ Retiring a referenced SKU **MUST** require explicit confirmation with the active
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-fr-catalog-version-publish`
 
-Publishing a `CatalogVersion` **MUST** persist a **full** snapshot (published Product/SKU set + their versions + current categories/attributes captured together), assign a monotonic `catalogVersionId`, generate a checksum, record `stagedAt`/`publishedAt`, capture the freeze-participant set, and make it immutable (storing references to plan-price/Contracts/Billing content, not that content). An uncomposed `bundle` SKU **MUST** require explicit two-person override (blocking-with-override) and be flagged `compositionPending = true`. It **MUST** emit `CatalogVersionPublished` and expose per-version `freezeComplete`. A published `CatalogVersion` **cannot be withdrawn or rolled back** (roll-forward N+1 only); snapshot boundary is the whole tenant (serialized). **Increment-trigger taxonomy + batching SLO (pricing D-47, ratified 2026-07-28 — the joint contract with plan-price's `PlanPublished` pending-ref model):** an **interactive** downstream publish request increments immediately (coalescing window <= 5s); **bulk** operations (mass repricing, migrations, bulk enrollments) coalesce into one version with a **5-minute hard max delay**; the delay from a pending publish request to `CatalogVersionPublished` is bounded by **p95 <= 60s / max 5 min**, and the registry stays the **sole** incrementer.
+Publishing a `CatalogVersion` **MUST** persist a **full** snapshot (published Product/SKU set + their versions + current categories/attributes captured together), assign a monotonic `catalogVersionId`, generate a checksum, record `stagedAt`/`publishedAt`, capture the freeze-participant set, and make it immutable (storing references to plan-price/Contracts/Billing content, not that content). An uncomposed `bundle` SKU enters the snapshot flagged `compositionPending = true`; its explicit two-person override (blocking-with-override) is exercised at its **entity publish** — a `CatalogVersion` increment, operator- or system-initiated, is **mechanical** over already-governed content and is never itself a new approval gate (§15 decision 2026-08-25). It **MUST** emit `CatalogVersionPublished` and expose per-version `freezeComplete`. A published `CatalogVersion` **cannot be withdrawn or rolled back** (roll-forward N+1 only); snapshot boundary is the whole tenant (serialized). **Increment-trigger taxonomy + batching SLO (pricing D-47, ratified 2026-07-28 — the joint contract with plan-price's `PlanPublished` pending-ref model):** an **interactive** downstream publish request increments immediately (coalescing window <= 5s); **bulk** operations (mass repricing, migrations, bulk enrollments) coalesce into one version with a **5-minute hard max delay**; the delay from a pending publish request to `CatalogVersionPublished` is bounded by **p95 <= 60s / max 5 min**, and the registry stays the **sole** incrementer. A system-initiated increment **MUST NOT** wait on any human approval — it snapshots only content whose governance already happened at entity publish.
 
 **Rationale**: A full, immutable, checksummed snapshot is the reproducibility anchor for posted invoices and contracts.
 
@@ -572,11 +598,21 @@ Re-resolving a `catalogVersionId` at any future time **MUST** yield a byte-ident
 
 **Actors**: `cpt-cf-bss-products-actor-billing`
 
+#### Catalog-version diff
+
+- [ ] `p2` - **ID**: `cpt-cf-bss-products-fr-catalog-version-diff`
+
+The system **MUST** compute a structured diff between any two `catalogVersionId`s of one tenant — entities added/removed, per-entity published-version deltas (reusing the per-version field diff of `fr-revision-vs-version`) — deterministic for a given pair, **read-only** (neither frozen snapshot is touched or re-frozen). It is the reviewer's view for approvals and the operator's view for environment promotion (AC #33a). *(Added 2026-08-25, industry parity: catalog-compare tooling — Zuora Deployment Manager class.)*
+
+**Rationale**: Two immutable full snapshots make the diff cheap, and both approval review and promotion need "what changes between versions" as a first-class read.
+
+**Actors**: `cpt-cf-bss-products-actor-catalog-admin`
+
 #### Cross-module snapshot freeze atomicity
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-fr-freeze-atomicity`
 
-The system **MUST** expose a `freezeComplete` flag per `catalogVersionId` and **reject resolution for posted/contractual use** until all registered freeze-participants acknowledge, with a bounded timeout that **fails closed**. Read-only browse **MAY** proceed during the freeze window. The resolution API **MUST** require the consumer to **declare intent** (`browse` vs `posted/contractual`) so a consumer cannot post against a not-yet-`freezeComplete` version by mislabeling its call (consumer-side obligation, CI-verified in the seam suite).
+The system **MUST** expose a `freezeComplete` flag per `catalogVersionId` and **reject resolution for posted/contractual use** until all registered freeze-participants acknowledge, with a bounded timeout that **fails closed**. Read-only browse **MAY** proceed during the freeze window. The resolution API **MUST** require the consumer to **declare intent** (`browse` vs `posted/contractual`) so a consumer cannot post against a not-yet-`freezeComplete` version by mislabeling its call (consumer-side obligation, to be CI-verified in the `fr-plan-price-seam` suite once it exists, §15).
 
 **Rationale**: Cross-module atomicity prevents posting against a partially-frozen snapshot.
 
@@ -616,7 +652,7 @@ The registry **MUST** guarantee a grandfathered frozen snapshot is **never mutat
 
 - [ ] `p2` - **ID**: `cpt-cf-bss-products-fr-bundle-adoption-guard`
 
-A `bundle` SKU published with the uncomposed override **MUST** carry `compositionPending = true` until plan-price composes it, and consumers **MUST** treat `compositionPending` SKUs as **not-yet-adoptable** for new references. Clearing it **MUST** be driven by a plan-price composition signal, audited, and emitted as `BundleCompositionCompleted` (producing a new published version, never mutating a prior frozen `CatalogVersion`).
+A `bundle` SKU published with the uncomposed override (exercised at its entity publish, §15 decision 2026-08-25) **MUST** carry `compositionPending = true` until plan-price composes it, and consumers **MUST** treat `compositionPending` SKUs as **not-yet-adoptable** for new references. Clearing it **MUST** be driven by a plan-price composition signal, audited, and emitted as `BundleCompositionCompleted` (producing a new published version, never mutating a prior frozen `CatalogVersion`).
 
 **Rationale**: An incomplete bundle must be reproducible-as-pending and blocked from new adoption until composed.
 
@@ -648,7 +684,7 @@ For a retried create/update/publish with an idempotency key, the same key + iden
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-fr-registry-eventing-audit`
 
-Every state-changing mutation **MUST** publish the corresponding CloudEvents 1.0 event onto the shared event system, stamping correlation/causation + idempotency key + per-aggregate ordering keys `(tenant, aggregate)`; delivery/ordering/durability are owned by the common event system. Every state-changing requirement **MUST** map to exactly one named event (or an explicit "no event" decision in Design). Event payloads **MUST** carry **pseudonymous actor references only** (never direct operator PII). The mutation **MUST** be recorded in an immutable, queryable audit trail. Plan/Price/Bundle-composition events **MUST NOT** be emitted here (owned by plan-price).
+Every state-changing mutation **MUST** publish the corresponding event onto the platform event-broker in its **broker-native envelope** (event-broker ADR-0003), stamping correlation/causation + idempotency key + per-aggregate ordering keys `(tenant, aggregate)`; delivery/ordering/durability are owned by the event-broker. **Envelope decision (§15, 2026-08-25):** the registry adopts the broker-native schema — **not** CloudEvents 1.0; the manifest §7.2 CloudEvents mandate is re-scoped for this gear (manifest amendment owed). The semantic obligations of this section are envelope-agnostic and bind unchanged: versioned schemas with `vN`→`vN+1` compatibility, correlation/causation, ordering keys, pseudonymous actors. Every state-changing requirement **MUST** map to exactly one named event (or an explicit "no event" decision in Design). Event payloads **MUST** carry **pseudonymous actor references only** (never direct operator PII). The mutation **MUST** be recorded in an immutable, queryable audit trail. Plan/Price/Bundle-composition events **MUST NOT** be emitted here (owned by plan-price).
 
 **Rationale**: Complete, pseudonymous, ordered eventing + immutable audit is what makes erasure (AC #35) and downstream consumption work.
 
@@ -658,7 +694,7 @@ Every state-changing mutation **MUST** publish the corresponding CloudEvents 1.0
 
 - [ ] `p2` - **ID**: `cpt-cf-bss-products-fr-event-versioning-replay`
 
-Every event **MUST** carry a `dataschema` URI with a semantic version; a consumer pinned to `vN` **MUST** deserialize `vN+1` (new fields optional with defaults); out-of-order/duplicate delivery beyond the idempotency window **MUST** be detectable via `(tenant, aggregate, sequence)`. The system **MUST** provide a **bootstrap path** (latest `CatalogVersion` + event tail) for published-scope consumers, and **MUST** detect when a consumer checkpoint predates the available event tail and **fail loudly**.
+Every event **MUST** carry a versioned (semver) schema reference — the broker-native equivalent of CloudEvents `dataschema` (§15 envelope decision); a consumer pinned to `vN` **MUST** deserialize `vN+1` (new fields optional with defaults); out-of-order/duplicate delivery beyond the idempotency window **MUST** be detectable via `(tenant, aggregate, sequence)`. The system **MUST** provide a **bootstrap path** (latest `CatalogVersion` + event tail) for published-scope consumers, and **MUST** detect when a consumer checkpoint predates the available event tail and **fail loudly**.
 
 **Rationale**: Forward-compatible schemas + a bootstrap path let consumers evolve and recover without full historical replay.
 
@@ -702,7 +738,7 @@ Browse/search/filter **MUST** be served from cache-first read models scoped to t
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-fr-bulk-import-export`
 
-Bulk import/export **MUST** apply **per-row idempotency**, report per-row success/failure (no hidden partial failure), and never leave a partially-inconsistent published state. Dependent rows **MUST** apply two-phase (stage-all-then-commit) or dependency-ordered, never committing an orphan. Idempotency operates at two levels (batch key + per-row keys). A bulk operation **MUST** emit a coalesced `CatalogBulkOperationCompleted` (no event storm). **Bulk import lands entities in `draft`**; publication remains gated, approved against an **aggregated change report** (counts, per-type summary, sample, lint findings). Export **MUST** be deterministic for a given `catalogVersionId`.
+Bulk import/export **MUST** apply **per-row idempotency**, report per-row success/failure (no hidden partial failure), and never leave a partially-inconsistent published state. Dependent rows **MUST** apply two-phase (stage-all-then-commit) or dependency-ordered, never committing an orphan. Idempotency operates at two levels (batch key + per-row keys). A bulk operation **MUST** emit a coalesced `CatalogBulkOperationCompleted` (no event storm). **Bulk import lands entities in `draft`**; publication remains gated, approved against an **aggregated change report** (counts, per-type summary, sample, lint findings). Export **MUST** be deterministic for a given `catalogVersionId`. **Environment promotion (2026-08-25, industry parity — Stripe test/live, Zuora Deployment Manager):** a deterministic export from one environment **MUST** be importable into another with identity carried by stable codes: `skuCode` for SKUs, and for Products `productCode` when present, else `(brandId, canonical internal name)` — total by construction, since P-D-04 makes the name absolutely unique per tenant+brand (system ids are re-minted by the target); imported rows land in `draft` and pass the same gated publish — promotion IS bulk import, never a governance bypass; an identity collision with existing target content is a per-row conflict, never a silent merge.
 
 **Rationale**: Onboarding/migration at ≥ 10K-SKU scale cannot be row-by-row and must stay consistent and governed.
 
@@ -760,7 +796,7 @@ The PRD **MUST** expose a traceability map (§17.2) so the registry's deliberate
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-fr-expected-failure-behavior`
 
-Invalid/conflicting authoring **MUST** fail closed with an audited reason and **MUST NOT** partially apply, for each of: stale-revision write, duplicate idempotency key with different body, taxonomy cycle, unrecognized metering unit without elevation, publish of an incomplete entity, immutable-field change without a valid correction path, reissue of a reserved `skuCode` and concurrent `skuCode` collision, EOL retirement without an acknowledged migration consumer (post-v1), publishing a SKU under a non-`published` parent, a SKU scope falling outside its parent, authoring/cloning against a de-listed/deprecated unit, a bulk row whose in-batch dependency failed, adopting a `compositionPending` bundle, an indeterminate region overlap, and a retention process that would orphan a live grandfathered reference.
+Invalid/conflicting authoring **MUST** fail closed with an audited reason and **MUST NOT** partially apply, for each of: stale-revision write, duplicate idempotency key with different body, taxonomy cycle, unrecognized metering unit without elevation, publish of an incomplete entity, immutable-field change without a valid correction path, reissue of a reserved `skuCode` and concurrent `skuCode` collision, EOL retirement without an acknowledged migration consumer (post-v1), publishing a SKU under a non-`published` parent, a SKU scope falling outside its parent, authoring/cloning against a de-listed/deprecated unit, a bulk row whose in-batch dependency failed, adopting a `compositionPending` bundle, an indeterminate parent-child region-containment, and a retention process that would orphan a live grandfathered reference.
 
 **Rationale**: A single enumerated fail-closed contract keeps negative paths deterministic and auditable.
 
@@ -810,7 +846,7 @@ For two concurrent reserve requests for the same `skuCode` within a tenant, the 
 
 - [ ] `p2` - **ID**: `cpt-cf-bss-products-fr-reference-producer-registration`
 
-Only **registered** producers' signals or silence **MUST** factor into the `referenced` predicate; an unregistered producer's absence **MUST NOT** pin every SKU immutable. Producer-set membership **MUST** be a governed, audited change **snapshotted symmetrically with the freeze-participant set**, and onboarding a new producer **MUST NOT** retroactively flip historical mutability/retirement decisions.
+Only **registered** producers' signals or silence **MUST** factor into the `referenced` predicate; an unregistered producer's absence **MUST NOT** pin every SKU immutable. **The v1 registered producer set = {plan-price (pricing gear)}** (§15 decision 2026-08-25, delivery joint with this gear's build); Subscriptions and Contracts register at their own build time, their GA gated on producing the signal. Producer-set membership **MUST** be a governed, audited change **snapshotted symmetrically with the freeze-participant set**, and onboarding a new producer **MUST NOT** retroactively flip historical mutability/retirement decisions.
 
 **Rationale**: Registration prevents a not-yet-onboarded producer from freezing the whole catalog and keeps history stable.
 
@@ -830,7 +866,7 @@ For a `catalogVersionId` referenced by ≥ 1 **live** grandfathered reference, t
 
 - [ ] `p2` - **ID**: `cpt-cf-bss-products-fr-prepublish-lint`
 
-The `validate(lint)` operation before `CatalogVersion` publish **MUST** return a **structured, per-entity report** of every override-requiring or attention condition (uncomposed `bundle` SKUs, missing default-locale attribute values, declarations against a `deprecated` unit) so the two-person override is an **informed** decision and the audit records **what** was overridden.
+The `validate(lint)` operation before `CatalogVersion` publish **MUST** return a **structured, per-entity report** of every attention condition (uncomposed `bundle` SKUs, missing default-locale attribute values, declarations against a `deprecated` unit) so an operator-initiated publish is an **informed** act and the audit records **what was outstanding**; the uncomposed-bundle two-person override itself is exercised at the bundle's **entity publish** (§15 decision 2026-08-25), where the same lint findings **MUST** be presented to the approvers.
 
 **Rationale**: An informed override beats a blind acknowledgment and produces a meaningful audit trail.
 
@@ -998,7 +1034,7 @@ The cache-first **read** path **MUST** meet **99.9%** availability and the **wri
 
 **Direction**: provided by the registry to the shared event system
 
-**Protocol/Format**: CloudEvents 1.0 with `dataschema`+semver, correlation/causation, per-aggregate ordering keys, pseudonymous actor refs; includes `CatalogVersionPublished` and the full Product/SKU/Category/Attribute/governance event set (Design owns names/schemas).
+**Protocol/Format**: broker-native envelope (event-broker ADR-0003; §15 decision 2026-08-25) with versioned schema refs (semver), correlation/causation, per-aggregate ordering keys, pseudonymous actor refs; includes `CatalogVersionPublished` and the full Product/SKU/Category/Attribute/governance event set (Design owns names/schemas).
 
 **Compatibility**: `vN` consumer deserializes `vN+1`; bootstrap path (latest `CatalogVersion` + tail); no direct PII.
 
@@ -1006,11 +1042,11 @@ The cache-first **read** path **MUST** meet **99.9%** availability and the **wri
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-contract-sku-reference-count`
 
-**Direction**: required from Subscriptions, Contracts, plan-price
+**Direction**: required from the registered producer set — **v1 = plan-price (pricing gear)** (§15 decision 2026-08-25); Subscriptions and Contracts join at their own build
 
 **Protocol/Format**: per-producer watermark ("as of `T`, complete live-reference set is {…}"); freshness on the watermark; registered producers only (Design owns shape).
 
-**Compatibility**: absence under a fresh watermark ⇒ zero; boolean OR across producers; stale/never-received ⇒ conservatively referenced + alert. **Pre-approval gate**: owner + delivery date (§15).
+**Compatibility**: absence under a fresh watermark ⇒ zero; boolean OR across producers; stale/never-received ⇒ conservatively referenced + alert. Producer-set decision recorded in §15 (2026-08-25), mirrored in the pricing PRD.
 
 #### Freeze acknowledgment (inbound)
 
@@ -1135,6 +1171,27 @@ The cache-first **read** path **MUST** meet **99.9%** availability and the **wri
 **Alternative Flows**:
 - **Dependent-row failure**: dependent rows fail with a distinct per-row error; no orphan committed.
 
+#### Promote a catalog between environments
+
+- [ ] `p2` - **ID**: `cpt-cf-bss-products-usecase-environment-promotion`
+
+**Actor**: `cpt-cf-bss-products-actor-catalog-admin`
+
+**Preconditions**:
+- A source environment holding a published `CatalogVersion` to promote; a target environment (e.g. staging → prod).
+
+**Main Flow**:
+1. Export the deterministic snapshot at the source `catalogVersionId`.
+2. Import into the target: identity carries via stable codes (`skuCode`; `productCode` else `(brandId, canonical internal name)` for Products), system ids re-minted, rows land as `draft` with per-row idempotency.
+3. Review the aggregated change report and the catalog-version diff against the target's current version (AC #20a).
+4. Submit for gated approval (two-person on the batch); publish.
+
+**Postconditions**:
+- Target catalog matches the promoted content through the same governance as any authoring; nothing bypassed.
+
+**Alternative Flows**:
+- **Identity collision**: a `skuCode`/`productCode` already bound to different content in the target fails per-row as a conflict, never silently merged.
+
 #### Inspect and recover a stuck freeze
 
 - [ ] `p2` - **ID**: `cpt-cf-bss-products-usecase-freeze-monitoring`
@@ -1211,8 +1268,8 @@ The cache-first **read** path **MUST** meet **99.9%** availability and the **wri
 - **Given** a CatalogAdmin/ProductManager in a tenant/brand/region context
 - **When** they create a Product (primary category optional at draft, required at publish)
 - **Then** the system MUST generate `productId`, persist as `draft` (version 0) with isolation + audit
-- **And** name uniqueness MUST hold on `(tenantId, brandId, normalized(name))` within any overlapping region scope; two same-named Products allowed only when region scopes are disjoint
-- **And** indeterminate region overlap MUST fail closed with an operator-facing reason; the region-set algebra is a pre-approval gate
+- **And** name uniqueness MUST hold on `(tenantId, brandId, normalized(name))` absolutely — region-independent (§15 decision 2026-08-25); a same-named create under one tenant+brand is rejected regardless of region scope
+- **And** the canonical internal name is a quasi-code; localized display names are attributes and MAY repeat — regional variants use distinct internal names with identical display names
 
 **6. Manage taxonomy (create, rename, re-parent, retire, delete)**
 - **Given** a CatalogAdmin managing the taxonomy
@@ -1227,14 +1284,15 @@ The cache-first **read** path **MUST** meet **99.9%** availability and the **wri
 - **Given** an existing Product
 - **When** a ProductManager defines a SKU typed `product`/`service`/`bundle`
 - **Then** the system MUST link it, assign `skuId`/`skuCode`, and validate the per-type required-field set
-- **And** a `bundle` SKU persists only type flag + identity (composition in plan-price; blocking completeness at `CatalogVersion` publish)
+- **And** a `bundle` SKU persists only type flag + identity (composition in plan-price; the uncomposed-publish two-person override is exercised at the bundle's entity publish, §15 decision 2026-08-25)
 - **And** promotional/$0/"Free" SKUs follow identical registry rules; no separate promo entity
 
 **8. Declare metering unit (defines a "usage SKU")**
 - **Given** a SKU to be metered (declaring a unit is what defines a usage SKU)
 - **When** a ProductManager declares its metering unit
 - **Then** the system MUST validate against the configured recognized-unit set and reject an unrecognized unit unless elevated approval marks a new validated unit
-- **And** a usage SKU declares exactly one unit (single-dimension); multi-dimension via separate SKUs composed at plan/bundle level
+- **And** a usage SKU declares exactly one unit — the counted identity only; pricing dimensions (`dimensionKey`) are not units: the declared dimension set over a meter is plan-price-owned (plan-level meter binding), and multi-dimension usage on one unit does NOT require separate SKUs (separate SKUs remain available where variants differ commercially); a composite (derived) meter declares its **output** unit only
+- **And** *(UC3 seam adoption; veto round 2026-08-25 — confirmed as amended, mirrors the FR)* the declaration MUST carry a `usageTypeRef`; publish MUST validate that the referenced UsageType **exists** (resolves in the platform-global catalog; a UsageType has no lifecycle state to check); the dimension-set cross-validation is NOT performed here — it lives at the plan-price meter binding (pricing `inst-cmp-usagetype`: priced `dimensionKey` ⊆ the UsageType's `metadata_fields`)
 - **And** a draft whose unit was `deprecated` before first publish MUST be treated as a new declaration and rejected; the declared unit MUST be carried on publish
 
 **9. Metering-unit de-listing**
@@ -1263,7 +1321,7 @@ The cache-first **read** path **MUST** meet **99.9%** availability and the **wri
 - **Given** a Product/SKU with attributes
 - **When** a ProductManager adds i18n values with brand/region visibility
 - **Then** the system MUST validate against the attribute definition, require the default-locale value, and resolve locale via `(locale, region, brand) → (locale, brand) → (default-locale, brand) → global`
-- **And** the registry MUST seed well-known display attribute definitions (localized display name/description for Product/SKU/Category)
+- **And** the registry MUST seed well-known display attribute definitions (localized display name/description for Product/SKU/Category; plus `imageUri`, `unitDisplayLabel`, `marketingFeatures[]` — industry parity, 2026-08-25)
 - **And** managing definitions is a governed live-entity op emitting `AttributeDefinitionUpdated`; changes MUST be backward-compatible with a deprecate-then-remove lifecycle
 - **And** the registry MUST provide an ungoverned, size-bounded, non-localized, search-excluded, PII-prohibited metadata map for machine metadata
 
@@ -1315,7 +1373,7 @@ The cache-first **read** path **MUST** meet **99.9%** availability and the **wri
 - **Given** approved catalog changes
 - **When** a CatalogAdmin publishes a `CatalogVersion`
 - **Then** the system MUST persist a full snapshot (published Product/SKU set + versions + current categories/attributes), assign a monotonic `catalogVersionId`, generate a checksum, record timestamps, capture the freeze-participant set, and make it immutable
-- **And** an uncomposed `bundle` SKU MUST require explicit two-person override (blocking-with-override), recorded in audit, and be flagged `compositionPending = true`
+- **And** an uncomposed `bundle` SKU enters the snapshot flagged `compositionPending = true`; its two-person override was exercised at its entity publish (§15 decision 2026-08-25) — an increment, operator- or system-initiated, is never itself a new approval gate
 - **And** it MUST emit `CatalogVersionPublished` and expose per-version `freezeComplete`; a published version cannot be withdrawn/rolled back (roll-forward N+1 only); publishes serialize per tenant
 
 **20. Snapshot reproducibility**
@@ -1323,6 +1381,12 @@ The cache-first **read** path **MUST** meet **99.9%** availability and the **wri
 - **When** the catalog later changes
 - **Then** re-resolving that `catalogVersionId` MUST yield a byte-identical checksum and unchanged registry content
 - **And** `CatalogVersion` MUST be exposable as one component of a downstream `pricingSnapshotRef` without asserting it equals the full snapshot
+
+**20a. Catalog-version diff**
+- **Given** two `catalogVersionId`s of one tenant
+- **When** an operator or approver requests their diff
+- **Then** the system MUST return a structured, deterministic diff (entities added/removed, per-entity published-version deltas) computed **read-only** from the two frozen snapshots — byte-stable for a given pair
+- **And** the diff is presentational: it MUST NOT mutate, re-freeze, or extend the retention of either version
 
 **21. Cross-module snapshot freeze atomicity**
 - **Given** a `CatalogVersionPublished` consumed by the registered freeze-participants
@@ -1373,14 +1437,14 @@ The cache-first **read** path **MUST** meet **99.9%** availability and the **wri
 **28. Registry eventing & audit**
 - **Given** any state-changing registry mutation that completes
 - **When** the write commits
-- **Then** the registry MUST publish the corresponding CloudEvents 1.0 event onto the shared event system with correlation/causation + idempotency key + ordering keys `(tenant, aggregate)`; every state-changing AC maps to exactly one named event (or an explicit "no event" in Design)
+- **Then** the registry MUST publish the corresponding event in the broker-native envelope (§15 envelope decision) onto the event-broker with correlation/causation + idempotency key + ordering keys `(tenant, aggregate)`; every state-changing AC maps to exactly one named event (or an explicit "no event" in Design)
 - **And** payloads MUST carry pseudonymous actor references only (never direct operator PII); the mutation MUST be recorded in an immutable, queryable audit trail
 - **And** Plan/Price/Bundle-composition events MUST NOT be emitted here (owned by plan-price)
 
 **29. Event schema versioning & replay**
-- **Given** the CloudEvents of AC #28
+- **Given** the events of AC #28
 - **When** the schema evolves or a consumer must rebuild state
-- **Then** every event MUST carry a `dataschema` URI with a semantic version; a consumer pinned to `vN` MUST deserialize `vN+1`; out-of-order/duplicate delivery beyond the idempotency window MUST be detectable via `(tenant, aggregate, sequence)`
+- **Then** every event MUST carry a versioned (semver) schema reference (broker-native `dataschema` equivalent, §15 envelope decision); a consumer pinned to `vN` MUST deserialize `vN+1`; out-of-order/duplicate delivery beyond the idempotency window MUST be detectable via `(tenant, aggregate, sequence)`
 - **And** the system MUST provide a bootstrap path (latest `CatalogVersion` + event tail) for published-scope consumers and MUST fail loudly when a consumer checkpoint predates the available event tail
 
 ### Multi-Tenancy & Read Models
@@ -1412,6 +1476,12 @@ The cache-first **read** path **MUST** meet **99.9%** availability and the **wri
 - **Then** the system MUST apply per-row idempotency, report per-row success/failure (no hidden partial failure), and never leave a partially-inconsistent published state
 - **And** dependent rows MUST apply two-phase or dependency-ordered, never committing an orphan; idempotency operates at batch + per-row levels; a coalesced `CatalogBulkOperationCompleted` is emitted (no event storm)
 - **And** bulk import lands entities in `draft`; publication remains gated, approved against an aggregated change report; export MUST be deterministic for a given `catalogVersionId`
+
+**33a. Environment promotion via export/import**
+- **Given** a deterministic export produced at a `catalogVersionId` in one environment
+- **When** it is imported into another environment
+- **Then** identity MUST carry via stable codes — `skuCode` for SKUs; `productCode`, else `(brandId, canonical internal name)`, for Products (total under P-D-04's absolute name uniqueness) — with system ids re-minted by the target; rows land in `draft` with per-row idempotency, and publication passes the same gated approval as any bulk import — promotion is never a governance bypass
+- **And** an identity collision with existing target content is a per-row conflict, never a silent merge; the catalog-version diff (AC #20a) is the reviewer's view of what the promotion changes
 
 ### Cloning
 
@@ -1450,7 +1520,7 @@ The cache-first **read** path **MUST** meet **99.9%** availability and the **wri
 **38. Expected failure behavior**
 - **Given** an invalid or conflicting authoring request
 - **When** the system processes it
-- **Then** it MUST fail closed with an audited reason and MUST NOT partially apply, for each of the enumerated cases (see the `expected-failure-behavior` FR): stale-revision write, duplicate idempotency key with a different body, taxonomy cycle, unrecognized unit without elevation, publish of an incomplete entity, immutable-field change without a valid correction path, reissue/collision of a reserved `skuCode`, EOL without an acknowledged migration consumer (post-v1), SKU under a non-`published` parent, SKU scope outside its parent, authoring/cloning against a de-listed/deprecated unit, a bulk row whose in-batch dependency failed, adopting a `compositionPending` bundle, an indeterminate region overlap, and a retention process that would orphan a live grandfathered reference
+- **Then** it MUST fail closed with an audited reason and MUST NOT partially apply, for each of the enumerated cases (see the `expected-failure-behavior` FR): stale-revision write, duplicate idempotency key with a different body, taxonomy cycle, unrecognized unit without elevation, publish of an incomplete entity, immutable-field change without a valid correction path, reissue/collision of a reserved `skuCode`, EOL without an acknowledged migration consumer (post-v1), SKU under a non-`published` parent, SKU scope outside its parent, authoring/cloning against a de-listed/deprecated unit, a bulk row whose in-batch dependency failed, adopting a `compositionPending` bundle, an indeterminate parent-child region-containment, and a retention process that would orphan a live grandfathered reference
 
 ### Operational Resilience & Concurrency
 
@@ -1477,7 +1547,7 @@ The cache-first **read** path **MUST** meet **99.9%** availability and the **wri
 - **And** a `skuCode` changed while still `draft` MUST release the previous code; discarding a never-published draft MUST also release its `skuCode`/`productCode` reservation
 
 **43. Reference-producer registration**
-- **Given** the set of `SkuReferenceCount` producers (Subscriptions, Contracts, plan-price)
+- **Given** the set of registered `SkuReferenceCount` producers (v1 = plan-price, §15 decision 2026-08-25; Subscriptions and Contracts register at their own build)
 - **When** the registry evaluates `referenced`
 - **Then** only registered producers' signals or silence MUST factor in; an unregistered producer's absence MUST NOT pin SKUs conservatively-referenced; membership MUST be a governed, audited change snapshotted symmetrically with the freeze-participant set
 - **And** onboarding a new producer MUST NOT retroactively flip historical mutability/retirement decisions
@@ -1491,7 +1561,7 @@ The cache-first **read** path **MUST** meet **99.9%** availability and the **wri
 **45. Pre-publish lint report**
 - **Given** the `validate(lint)` operation before `CatalogVersion` publish
 - **When** an admin runs it (or publish triggers it)
-- **Then** the lint MUST return a structured, per-entity report of every override-requiring/attention condition (uncomposed bundles, missing default-locale attribute values, declarations against a `deprecated` unit) so the two-person override is informed and the audit records what was overridden
+- **Then** the lint MUST return a structured, per-entity report of every attention condition (uncomposed bundles, missing default-locale attribute values, declarations against a `deprecated` unit) so an operator publish is informed and the audit records what was outstanding; the uncomposed-bundle override itself is exercised at the bundle's entity publish (§15 decision), with the same lint findings presented to its approvers
 
 ### Non-Functional Requirements (Show-Stoppers)
 
@@ -1552,8 +1622,7 @@ The cache-first **read** path **MUST** meet **99.9%** availability and the **wri
 |------------|-------------|-------------|
 | Tenant identity & hierarchy (OSS/AMS + IdP) | `tenantId`, brand/region claims, OrgTier projection targets, role claims (registry MUST NOT mutate tenant topology) | `p1` |
 | Plan & Price Modeling | Consumes published SKU identity/type, metering-unit declaration, `PlanTier`, `CatalogVersion`; produces `SkuReferenceCount`, `freezeComplete` ack, bundle composition-completed signal | `p1` |
-| Tariffs / Pricing Logic | Consumes published SKU refs + `CatalogVersion` (price resolution there) | `p1` |
-| Rating & Charging | Consumes metering-unit declaration + published SKU refs | `p1` |
+| Rating (evaluation core + pipeline) | The one rating gear (post ADR-0002; absorbs the former "Tariffs / Pricing Logic" consumer): consumes published SKU refs + `CatalogVersion` (price resolution) and the metering-unit declaration (usage rating) | `p1` |
 | OSS metering | Emits usage values (external); consumes the metering-unit declaration | `p1` |
 | Subscriptions (lifecycle & entitlements) | Produces `SkuReferenceCount`; consumes SKU refs + `PlanTier` + `replacedBy` + `mustMigrateBy` (post-v1); owns live-subscription migration | `p1` |
 | Contracts & Agreements | Produces `SkuReferenceCount` (incl. draft/quote refs per contract) + `freezeComplete` ack; consumes `CatalogVersion` snapshots for quotes | `p1` |
@@ -1567,7 +1636,7 @@ The cache-first **read** path **MUST** meet **99.9%** availability and the **wri
 
 ## 14. Assumptions
 
-- The `SkuReferenceCount` signal will be delivered by Subscriptions, Contracts, and plan-price with a committed owner + date (pre-approval gate); until then AC #2/#4/#18 run fail-safe, bounded by the break-glass path and the fail-safe tripwire.
+- The `SkuReferenceCount` signal's **v1 registered producer set = {plan-price (pricing gear)}** (§15 decision 2026-08-25), built jointly with this gear's development and delivered before its v1 GA; Subscriptions and Contracts register as producers at their own build time (their GA gated on producing). Until the pricing watermark ships, AC #2/#4/#18 run fail-safe, bounded by the break-glass path and the fail-safe tripwire.
 - Interim configurable-policy defaults (§17.1) are enforceable at launch; each final value is owned by another function and changes are governed/audited.
 - Numeric NFR targets are binding **design targets** until the NFR workshop (within 2 weeks of approval; DRI = BSS Program Lead).
 - The shared event system (Common Core) provides ordering/at-least-once/DLQ transport; the registry states only its own emission/projection obligations.
@@ -1576,13 +1645,21 @@ The cache-first **read** path **MUST** meet **99.9%** availability and the **wri
 
 ## 15. Open Questions
 
-> **Pre-approval gates (must be closed at approval).** Two items MUST carry a committed owner/decision **before** sign-off because they govern launch behavior: (1) **`SkuReferenceCount` owner + delivery date** — until committed, AC #2/#18 run fail-safe; (2) **Region-set algebra** for AC #5 overlap semantics. Event delivery resilience and `CatalogVersion` publish concurrency are build conditions captured as FRs/ACs.
+> **Pre-approval gates.** All four launch-governing gates are **closed as of 2026-08-25** (see the struck rows below): `SkuReferenceCount` v1 producer set, name-uniqueness/region-algebra scope reduction, event-envelope conformance, and the D-47/governance composition. Event delivery resilience and `CatalogVersion` publish concurrency are build conditions captured as FRs/ACs.
 
 | **Question** | **Answer** | **Date Answered** |
 |--------------|------------|-------------------|
-| **GATE — `SkuReferenceCount` signal owner + delivery date** | Contract + counting defined; owner sign-off + committed delivery date MUST be recorded at approval. Until it ships, AC #2/#18 run fail-safe (bounded by break-glass + tripwire). *(Owner: Architecture + Subscriptions/Contracts.)* | TBD (gate) |
-| **GATE — Region-set algebra** (containment/wildcard/disjointness for AC #5) | Interim conservative rule live (non-disjoint ⇒ overlapping, fail-closed); exact algebra pinned in Design before implementation. *(Owner: Design + Product.)* | TBD (gate) |
-| Contracts draft/quote references: count toward `referenced`? + re-resolve-at-freeze behavior | Producer contract must declare both, identical across AC #2/#4/#18; recorded at sign-off. *(Owner: Contracts + Architecture.)* | TBD |
+| ~~GATE — `SkuReferenceCount` signal owner + delivery date~~ | **Answered (product call, 2026-08-25): v1 registered producer set = {plan-price (pricing gear)}** — the only coded counterpart, and it already holds the data (live plan→SKU references). Built **jointly with this gear's development**, delivered before products v1 GA (mirrored in the pricing PRD §15). Subscriptions/Contracts register as producers at their own build time; per `fr-reference-producer-registration`, their unregistered silence pins nothing and their late onboarding never re-flips history. Until the pricing watermark ships, AC #2/#4/#18 run fail-safe (break-glass + tripwire). Propagated: §9.2, §14, `fr-reference-producer-registration`, AC #43. | **2026-08-25** |
+| ~~GATE — Region-set algebra~~ (was: overlap semantics for AC #5) | **Answered (product call, 2026-08-25): same-named Products are forbidden outright** — name uniqueness on `(tenantId, brandId, normalized(name))` is absolute, region-independent. Rationale: the sales-facing name is a localized display attribute and repeats freely, so the canonical internal name is a quasi-code; and strict→loose is a compatible later widening while loose→strict is a breaking migration. The overlap/disjointness algebra thereby **disappears from AC #5**; region-set semantics remain only for **parent-child scope containment** (`fr-parent-child-integrity`) — pinned in Design, interim conservative subset-check fail-closed. Propagated: glossary (Region), `fr-create-product`, `fr-expected-failure-behavior`, AC #5, AC #38, §16. *(Owner of the containment rule: Design.)* | **2026-08-25** |
+| ~~GATE — Event-envelope conformance~~ (CloudEvents 1.0 vs the built event-broker) | **Answered (product call, 2026-08-25): the registry adopts the event-broker's broker-native envelope** (ADR-0003 — no CloudEvents conformance, no `dataschema` field). Semantic obligations (versioned schemas, `vN`→`vN+1`, correlation/causation, ordering keys, pseudonymous actors) bind unchanged on the broker-native envelope. Residue owed: **manifest §7.2 amendment** re-scoping the CloudEvents mandate. Propagated: §1.3, §2, §4.1, §5.1, FRs `fr-registry-eventing-audit`/`fr-event-versioning-replay`, §9.2, AC #28/#29. *(Owner of the manifest amendment: Architecture / Common Core.)* | **2026-08-25** |
+| ~~GATE — D-47 demand-driven increments vs publish governance~~ | **Answered (product call, 2026-08-25): a `CatalogVersion` increment is mechanical, never an approval gate.** All governance attaches to the **entity publish** that introduces the exception: the uncomposed-bundle two-person override moves from `CatalogVersion` publish to the bundle's entity publish (lint findings presented there); a system-initiated D-47 increment never waits on a human; the `CatalogVersion`-publish lint becomes an informational report for operator publishes. Propagated: §4.1/§5.1 (lint row), §5.2, FRs `fr-define-sku`/`fr-catalog-version-publish`/`fr-bundle-adoption-guard`/`fr-prepublish-lint`, AC #7/#19/#25/#45. *(Design owns the entity-publish override surface.)* | **2026-08-25** |
+| `compositionPending` clearing signal unregistered on the pricing side | `fr-bundle-adoption-guard` requires a plan-price composition signal (`BundleCompositionCompleted`), but the shipped pricing bundles design (Slice 8) registers no such outbound signal. Pricing must adopt the counterpart or the guard needs a different clearing mechanism. *(Owner: pricing + Product; raised by the 2026-08-25 cross-review.)* | TBD |
+| `freezeComplete` ack counterparts silent | All three named freeze-participants are silent: pricing and Contracts docs never mention producing an ack, and Billing has no gear at all — where does its ack obligation live? Rating SEAMS independently tracks the freeze-protocol composition as open. *(Owner: Architecture + participants; raised 2026-08-25.)* | TBD |
+| Feature/entitlement vocabulary on SKUs | Industry binds a feature vocabulary to catalog items (Stripe Entitlements: Feature objects on Products; Zuora Product Features); here nothing owns "which features a SKU includes". Probable split: registry owns the governed vocabulary + SKU binding (it describes *what is sold*), subscriptions-entitlements enforces. Decide owner + v1/post-v1. *(Owner: Product + Subscriptions; raised by the 2026-08-25 industry comparison.)* | TBD |
+| `resourceTypeRef` — SKU → provisioned-resource GTS binding | When a fulfillment requirement appears ("what does this SKU provision"), the governed binding follows the `usageTypeRef` pattern: an optional GTS-typed ref to the infrastructure resource type (infrastructure-resource-manager / serverless-runtime), validated for resolvability at publish. Until then the ungoverned metadata map carries such refs. **SKUs/Products themselves are never GTS instances** — DESIGN §2.2 records the boundary (tenant-scoped business data vs platform-global types; a third identity would break the identifier contract). *(Owner: Product + Architecture; raised 2026-08-25.)* | TBD |
+| UsageType deletion vs published declarations | The collector's delete-RESTRICT counts only its own usage records — a UsageType referenced by a **published** metering-unit declaration can be deleted, leaving a sold-but-unrateable meter (rating quarantines, correctly but indefinitely). Negotiate with usage-collector: (a) extend the delete guard to registry-published declarations (needs a reference signal from us), or (b) a deletion event consumed here + by pricing's `meter_binding_divergent` remediation path. Until decided, quarantine is the fail-safe and the pre-publish lint warns on `deprecated`/dangling units. *(Owner: Product + usage-collector + pricing; raised by PR #14 review, 2026-08-25.)* | TBD |
+| ~~UC3(c) registry-side operand undefined~~ | **Answered by the veto round (2026-08-25): the cross-validation moved to where the operand lives.** Registry publish validates only that `usageTypeRef` **resolves** ("is active" dropped too — a UsageType carries no lifecycle state); the dimension check is pricing's `inst-cmp-usagetype` at plan publish (priced `dimensionKey` ⊆ `metadata_fields` — subset, not equality: pricing fewer dimensions than the source emits is harmless, pricing one it never emits is the hazard). Rating SEAMS UC3 row updated in the same round. Propagated: `fr-metering-unit-declaration`, AC #8, SEAMS UC3 + ownership matrix, pricing design/02 premise phrase. | **2026-08-25** |
+| Contracts draft/quote references: count toward `referenced`? + re-resolve-at-freeze behavior | Producer contract must declare both, identical across AC #2/#4/#18; recorded at sign-off. **Note (2026-08-25):** the contracts gear PRD explicitly positions a Contract as "not a quote", excludes CPQ, and never cites `CatalogVersion` — the quote-snapshot delegation in §3.2/§13 may have no taker and needs renegotiation with Contracts. *(Owner: Contracts + Architecture.)* | TBD |
 | EOL `mustMigrateBy`: pull into v1 or confirm the post-v1 deferral? | Registry side deferred; needs a date to pull in or confirmation. Gates EOL child cascade. *(Owner: Subscriptions.)* | TBD |
 | Finance materiality threshold production value + date | Dimension + interim default resolved; needs a committed production value + date. *(Owner: Finance.)* | TBD |
 | Legal content-PII prohibition sign-off | Normative position = hard prohibition, no carve-out; Legal to confirm sufficiency + detector posture, recorded at approval. *(Owner: Legal.)* | TBD |
@@ -1609,11 +1686,11 @@ The cache-first **read** path **MUST** meet **99.9%** availability and the **wri
 | Risk | Impact | Mitigation |
 |------|--------|------------|
 | `SkuReferenceCount` signal slips | AC #2/#4/#18 stuck in fail-safe (no immutable-field correction on referenced SKUs) | Pre-approval gate on owner + date; break-glass bounds per-operation debt; the fail-safe tripwire (> 5/30d) bounds it in time |
-| Region-set algebra undefined | False name collisions/allows on create (AC #5) | Interim conservative fail-closed rule; pin the algebra in Design before implementation (gate) |
-| Snapshot lost/corrupted | Breaks byte-identical reproducibility for every contract frozen to it — a compliance event | Snapshots as financial records: ≥ 11 nines durability, periodic checksum restore verification, retention gated on live references (AC #44/#55) |
-| Registry ↔ plan-price schema drift | Silent divergence breaks downstream binding/posting | Shared schema pin + CI seam contract test that fails closed (AC #36/#48) |
+| Region-containment semantics undefined | False rejects on parent-child scope checks (`fr-parent-child-integrity`) | Name uniqueness made region-independent (§15, 2026-08-25) — the algebra survives only as the containment subset-check; interim conservative fail-closed, pinned in Design |
+| Snapshot lost/corrupted | Breaks byte-identical reproducibility for every contract frozen to it — a compliance event | Snapshots as financial records: ≥ 11 nines durability, periodic checksum restore verification, retention gated on live references (AC #44; NFR show-stopper #5) |
+| Registry ↔ plan-price schema drift | Silent divergence breaks downstream binding/posting | Shared schema pin + CI seam contract test that fails closed (AC #36; NFR show-stopper #9) |
 | Stuck cross-module freeze | Posting blocked or unsafe | `freezeComplete` fail-closed + idempotent re-trigger + governed force-completion (AC #21/#22) |
-| Full-snapshot-per-publish cost growth | `CatalogVersion` storage/economics at 10K+ SKUs × frequent publishes | Batching-as-policy; publishes/day/tenant target + archival economics at the NFR workshop (AC #44/#45) |
+| Full-snapshot-per-publish cost growth | `CatalogVersion` storage/economics at 10K+ SKUs × frequent publishes | Batching-as-policy (FR `cpt-cf-bss-products-fr-catalog-version-publish`, D-47 increment-trigger taxonomy); publishes/day/tenant target + archival economics at the NFR workshop (NFR show-stoppers #5/#6) |
 | Combined predecessor PRD left authoritative for registry | Duplicate/divergent catalog requirements | Refactor `PRD-product-catalog-marketplace` to Marketplace-only after approval (§15) |
 
 ## 17. Reference Materials
@@ -1627,6 +1704,7 @@ The cache-first **read** path **MUST** meet **99.9%** availability and the **wri
 | Subscriptions — Lifecycle | `docs/bss/prd/PRD-subscriptions-lifecycle-202604021200/PRD-subscriptions-lifecycle-202604021200.md` | Consumes SKU refs + PlanTier + CatalogVersion; owns live-subscription migration |
 | Product Catalog & Marketplace (predecessor) | `docs/bss/prd/PRD-product-catalog-marketplace-202601120119/PRD-product-catalog-marketplace-202601120119.md` | Combined §4.1+§4.8 predecessor; registry scope superseded here, Marketplace retained there |
 | Project glossary | `docs/project-glossary.md` | Canonical terms |
+| BSS ownership matrix | `gears/bss/rating/docs/SEAMS.md` (§ "Ownership matrix") | The cross-gear register of contested/adjacent responsibilities (e.g. `pricingSnapshotRef` → Tariffs). Products rows added 2026-08-25: CatalogVersion+freeze, snapshot component, PlanTier, `sellable`, `SkuReferenceCount` |
 | Trace chain | `AGENTS.md` (repository root) | Manifest → PRD → ADR → Design → Stories |
 
 ### 17.1 Configurable-Policy Interim Defaults
@@ -1639,6 +1717,7 @@ The cache-first **read** path **MUST** meet **99.9%** availability and the **wri
 | Idempotency-key retention | ≥ 24h and ≥ the maximum freeze timeout | Eng/Design |
 | `SkuReferenceCount` freshness threshold | 15 min; staler → conservative + alert | Architecture |
 | Fail-safe break-glass tripwire | > 5 break-glass corrections / 30 days → escalate + signal delivery becomes release blocker | Architecture |
+| Break-glass elevation window (§6.8 read-only sessions) | Time-boxed, interim **4 hours**, no renewal without a new session (design-interim, raised by the 2026-08-25 slice-05 review L-5) | Security/Architecture |
 | Retirement / EOL lead-time | ≥ 30 days between event and effective hide | Subscriptions + Product |
 | Recognized metering-unit set | Seeded with platform base units (`vCPU-hours`, `GB-storage`, `GB-egress`, `request-count`); new units require elevated approval; de-list blocked while referenced | Product + Rating |
 | Retention — financial/version/audit | Retain to statutory maximum (not "indefinite") | Legal/Finance |
@@ -1654,12 +1733,12 @@ The cache-first **read** path **MUST** meet **99.9%** availability and the **wri
 
 | Monetization model | Where authored / evaluated |
 |--------------------|----------------------------|
-| flat, per-seat, tiered, volume, hybrid, commitment | `PRD-plan-price-modeling-202605281200` (authoring) + `PRD-tariffs-pricing-logic-202604011200` (evaluation) |
+| flat, per-seat, tiered, volume, hybrid, commitment | `PRD-plan-price-modeling-202605281200` (authoring) + `gears/bss/rating/docs/PRD.md` (evaluation; post-ADR-0002 home of the former tariffs-pricing-logic PRD) |
 | usage | Metering-unit **declaration** here (registry) + plan-level meter binding (plan-price) + rating (Rating) |
 
 Absence of a monetization-model marker on a SKU is **intentional**, not a missing field.
 
 ---
 
-*Child artifacts: ADR(s) for versioning/snapshot strategy and lifecycle/deprecation modeling; the gear's DESIGN (`gears/bss/products/docs/DESIGN.md`, pending) for entity schemas, APIs, events, and read-model design; STORY documents per scope item. The §4.1 registry↔commercial decomposition is recorded in the manifest §4.1 Decomposition (BSS realization) note, not a separate ADR.*
+*Child artifacts: ADR(s) for versioning/snapshot strategy and lifecycle/deprecation modeling; the gear's DESIGN (`gears/bss/products/docs/DESIGN.md` — canonical index + `design/` slice set + `DECISIONS.md` P-D register, started 2026-08-25) for entity schemas, APIs, events, and read-model design; STORY documents per scope item. The §4.1 registry↔commercial decomposition is recorded in the manifest §4.1 Decomposition (BSS realization) note, not a separate ADR.*
 

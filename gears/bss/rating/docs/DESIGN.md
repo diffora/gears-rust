@@ -58,7 +58,7 @@ pricing gear owns the catalog (the canonical scope key, `PriceWindow`, `PriceOve
 `CatalogVersion`, and publish governance); the core **adopts** those and evaluates over a frozen
 snapshot ([`PRD.md`](./PRD.md) §1.1).
 
-The complementarity contract with the pricing gear — the 8-axis key, cohort selection, overlay
+The complementarity contract with the pricing gear — the canonical scope key (ten axes since pricing D-196), cohort selection, overlay
 stacking, snapshot composition, single governance engine, launch-scope models — is frozen in
 [`SEAMS.md`](./SEAMS.md); every slice here implements the rating side of a resolved seam.
 
@@ -224,7 +224,7 @@ Horizontal per-partition evaluation with no cross-partition locks on the hot pat
 
 **Cross-cutting normatives** (frozen resolutions from [`SEAMS.md`](./SEAMS.md), binding every slice):
 
-- **Canonical scope key (K1-K5):** selection and non-overlap use the pricing 8-axis key `(planId, currency, region, priceOverlay, phase, priceEligibility, chargeKind, cohort)`; `phase` is a `phase_id`; grandfathering selects the generation by the pinned price id's `cohort`.
+- **Canonical scope key (K1-K5, K6):** selection and non-overlap use the pricing canonical key — eight unconditional axes `(planId, currency, region, priceOverlay, phase, priceEligibility, chargeKind, cohort)` plus, since pricing D-196 (2026-08-06), the usage pair `(meter, dimensionKey)`; `phase` is a `phase_id`; grandfathering selects the generation by the pinned price id's `cohort`. The slice-02 `SelectionKey` carries the full ten (K6 resolved, T-D-35).
 - **Overlays (O1-O3):** step 4 **stacks** all PriceOverlay survivors; the class-specificity order `customerGroup > partner > orgTier > brand > region > global` breaks ties, not exclusivity.
 - **Snapshot (S1):** one `pricingSnapshotRef`, **four writers** (D-66 producer split; review #10) — the registry commits `catalogVersion`, pricing pre-stamps its catalog subset, Rating (composition SoR) adds overlay/coupon/FX-lock/`commitmentReservation` (T-D-09), Subscriptions freezes the `(currency, region)` binding.
 - **Determinism / corrections (W2, M7):** replay strictly from the pinned snapshot; counter key `(subscription, meter, dimensionKey, window)`.
@@ -244,7 +244,7 @@ Horizontal per-partition evaluation with no cross-partition locks on the hot pat
 
 **ADR index:**
 
-- [`ADR/0001-cpt-cf-bss-rating-adr-scope-key-adoption.md`](./ADR/0001-cpt-cf-bss-rating-adr-scope-key-adoption.md) (`cpt-cf-bss-rating-adr-scope-key-adoption`) — adopt the pricing 8-axis canonical scope key + cohort selection rather than define a Rating key.
+- [`ADR/0001-cpt-cf-bss-rating-adr-scope-key-adoption.md`](./ADR/0001-cpt-cf-bss-rating-adr-scope-key-adoption.md) (`cpt-cf-bss-rating-adr-scope-key-adoption`) — adopt the pricing canonical scope key (8 axes at adoption; **ten** since pricing D-196 — dated amendment note in the ADR) + cohort selection rather than define a Rating key.
 - [`ADR/0002-cpt-cf-bss-rating-adr-rating-gear-consolidation.md`](./ADR/0002-cpt-cf-bss-rating-adr-rating-gear-consolidation.md) (`cpt-cf-bss-rating-adr-rating-gear-consolidation`) — consolidate Rating (evaluation core) and the Rating pipeline into one `rating` gear; core = no-I/O crate; naming + migration map (T-D-16).
 - _Further ADRs (determinism/replay model; snapshot composition split; single governance engine) to be seeded during Design._
 

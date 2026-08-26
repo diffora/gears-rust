@@ -78,7 +78,7 @@ is the S1 coupon segment of `pricingSnapshotRef` (§4.5).
 
 | ADR ID | Decision Summary |
 |--------|------------------|
-| `cpt-cf-bss-rating-adr-scope-key-adoption` | Not load-bearing at step 7 itself — coupons discount the already-resolved line; listed because the rows being discounted resolve on the adopted 8-axis key upstream (slice 02) and the coupon segment joins that same composed ref. |
+| `cpt-cf-bss-rating-adr-scope-key-adoption` | Not load-bearing at step 7 itself — coupons discount the already-resolved line; listed because the rows being discounted resolve on the adopted ten-axis key upstream (slice 02) and the coupon segment joins that same composed ref. |
 
 No slice-local ADR: coupon semantics are PRD-normative ([`../PRD.md`](../PRD.md) §6.8, §17.2);
 the segment ownership follows **T-D-03** and replay follows **T-D-04**

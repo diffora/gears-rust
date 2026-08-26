@@ -54,7 +54,7 @@ added by the 2026-07-31 review, #11: a p1 dependency authoring pool balances, dr
 T-D-10/T-D-27 re-resolution triggers had no contract row while 05 §3.5 pointed here for one)
 ([`../PRD.md`](../PRD.md) §9).
 
-Two rules shape the surface. **Adopt verbatim**: whatever the pricing gear owns — the 8-axis key,
+Two rules shape the surface. **Adopt verbatim**: whatever the pricing gear owns — the ten-axis key,
 the `modelKind` set, `prorationBasis`, `billingAnchorPolicy`, band shapes — arrives as published,
 CI-gated against drift; no local re-declaration exists to diverge (SEAMS C1/P1). **One writer per
 fact**: every boundary fact has exactly one producing gear, and Rating writes back to none — it
@@ -90,7 +90,7 @@ reads frozen inputs, records lineage, and seals exactly its own `pricingSnapshot
 
 | ADR ID | Decision Summary |
 |--------|------------------|
-| `cpt-cf-bss-rating-adr-scope-key-adoption` | Adopt the pricing 8-axis canonical scope key verbatim (selection + non-overlap); cohort generation selected by the pinned price id; no Rating-local key — the §4.2 read model is consumed on exactly this key (SEAMS K1–K5). |
+| `cpt-cf-bss-rating-adr-scope-key-adoption` | Adopt the pricing canonical scope key (ten axes since D-196) verbatim (selection + non-overlap); cohort generation selected by the pinned price id; no Rating-local key — the §4.2 read model is consumed on exactly this key (SEAMS K1–K5; K6 resolved T-D-35). |
 | `cpt-cf-bss-pricing-adr-canonical-scope-key` (adopted) | The key definition itself — the manifest key extended additively; the pricing gear is its SoR. |
 | `cpt-cf-bss-pricing-adr-grandfathering-cohort-axis` (adopted) | `cohort` = the cutover instant; Rating resolves the generation by the cohort of the subscription's pinned price id (§4.3 eligibility inputs). |
 | `cpt-cf-bss-pricing-adr-pricewindow-consolidation` (adopted) | `PriceWindow*` events are produced by the pricing gear; Rating consumes all four (incl. `Cancelled`) as read-only resolution inputs (§4.2). |
@@ -190,7 +190,7 @@ The evaluation shapes (`EvaluationContext`, `EvaluationUnit`, `ResolvedPriceOutc
 and who writes them**:
 
 - **Outcome envelope** (→ Rating, §4.1) — `ResolvedPriceOutcome` + obligations (`TrueUpObligation`: slice 05 shape; `PeriodFloorCapObligation`: slice 09 shape) + discount lineage + evaluation metadata + the sealed `pricingSnapshotRef` + `{skuId, planId, priceId}`.
-- **Pinned catalog read model** (← pricing, §4.2) — 8-axis key rows, windows, `modelKind` rows + bands, eligibility/cohort, `prorationBasis`/`billingAnchorPolicy`, prepaid-grant set, bundle component sets + `effective_share_bp`.
+- **Pinned catalog read model** (← pricing, §4.2) — ten-axis key rows, windows, `modelKind` rows + bands, eligibility/cohort, `prorationBasis`/`billingAnchorPolicy`, prepaid-grant set, bundle component sets + `effective_share_bp`.
 - **Subscription context** (← Subscriptions, §4.3) — `phase_id`, `activatedAt` + bound cohort, seat count, `(changeEffectiveAt, changeMode)`, the frozen `(currency, region)` binding.
 - **FX policy record** (← Finance, §4.4) — rate tables + lock policy + `fxTableVersion`.
 - **Coupon snapshot** (← Promotions, §4.5) — the frozen field set of §4.5.
@@ -342,7 +342,7 @@ changes take a major version bump (PRD §9.1).
 consumer contract
 ([`06-consumer-contracts.md`](../../../pricing/docs/design/06-consumer-contracts.md); SEAMS C1).
 
-- **Read model (pinned)**: rows on the 8-axis canonical scope key with UTC half-open windows (non-overlap on the full key); `modelKind ∈ {flat, per_unit, graduated, volume, package}` with the pricing §17.2 kind → formula mapping as shared SoR (T-D-05); tier bands; `priceEligibility` + `cohort` generation; `prorationBasis ∈ {calendar_days_actual, calendar_days_30, by_second, whole_unit, none}`; `billingAnchorPolicy ∈ {calendar_month, subscription_start, fixed_day(d)}` with the D-20 last-of-month clamp (anchor day preserved, no drift); the prepaid-grant set (plan-attached credit grants whose balance/drawdown executor is Billing/Rating — distinct from `commitmentPools[]`, SEAMS M8); the rating-compat triple.
+- **Read model (pinned)**: rows on the ten-axis canonical scope key with UTC half-open windows (non-overlap on the full key); `modelKind ∈ {flat, per_unit, graduated, volume, package}` with the pricing §17.2 kind → formula mapping as shared SoR (T-D-05); tier bands; `priceEligibility` + `cohort` generation; `prorationBasis ∈ {calendar_days_actual, calendar_days_30, by_second, whole_unit, none}`; `billingAnchorPolicy ∈ {calendar_month, subscription_start, fixed_day(d)}` with the D-20 last-of-month clamp (anchor day preserved, no drift); the prepaid-grant set (plan-attached credit grants whose balance/drawdown executor is Billing/Rating — distinct from `commitmentPools[]`, SEAMS M8); the rating-compat triple.
 - **Pin discipline** (pricing design 01 §4.4): one committed `CatalogVersion` per resolution run; a version is pin-eligible only after `CatalogVersionPublished`, its warm-completion marker, **and every earlier version being itself pin-eligible — pin-eligibility is version-level and prefix-closed, a monotonic frontier (pricing D-114, adopted as T-D-31: without the prefix a stuck older version's late warm made one pin resolve two contents over time — the replay divergence one version out)**; pin lag ≤ 5s; no draft read; no default substitution.
 - **customerGroup resolution (review #40)**: the payer's customer group at `t` — the step-4 `customerGroup` scope input (slice 04 §4.1) — resolves from the pinned read model's **membership subject** (pricing D-91/D-06 units) at context assembly and freezes into the evaluation context; no caller claims are read at evaluation, and a period-tick-synthesized unit resolves it identically (assembly rule: slice 14 §4.3).
 - **Enums verbatim (P1/P2, T-D-07)**: adopted byte-identical under CI gate `pricing.contracts.enum_drift` (**Critical**) — drift is a build-time block; the runtime alarm covers registry divergence (pricing design 06 §7). Rating never prorates a `none` row (pricing rejects `creditOnDowngrade = true` + `none` at publish) but MUST recognize the value for the conformance fixture (SEAMS P1). The plan-change fields (`allowedChangeTargets`, `comparabilityRank`) are published for Subscriptions; Rating's plan-change inputs are §4.3's `(changeEffectiveAt, changeMode)` plus these frozen enums.

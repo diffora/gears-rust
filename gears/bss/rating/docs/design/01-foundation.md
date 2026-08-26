@@ -40,7 +40,7 @@ The Evaluation Foundation is the pure-function core every Rating capability runs
 the mirror image of the pricing gear's *publish through the engine*: here the contract is
 **evaluate through the core**. It owns the **evaluation pipeline** (the invariant §17.1 step
 order with registered step evaluators), the **evaluation context** and **evaluation unit**
-shapes, the **adopted** pricing 8-axis canonical scope key, the **determinism contract**
+shapes, the **adopted** pricing ten-axis canonical scope key, the **determinism contract**
 (byte-identical replay over frozen inputs), `pricingSnapshotRef` **composition** (Rating is
 the composition SoR), the usage/delta **idempotency** keys, and the **emission guards**
 (non-negative line, full-precision emission, no rounding). It owns **no step policy**: what a
@@ -83,7 +83,7 @@ plus its snapshot ref *is* the output, and Rating owns its persistence
 
 | ADR ID | Decision Summary |
 |--------|------------------|
-| `cpt-cf-bss-rating-adr-scope-key-adoption` | Adopt the pricing 8-axis canonical scope key verbatim (selection + non-overlap); cohort generation selected by the pinned price id; no Rating-local key (SEAMS K1–K5). |
+| `cpt-cf-bss-rating-adr-scope-key-adoption` | Adopt the pricing canonical scope key (ten axes since D-196) verbatim (selection + non-overlap); cohort generation selected by the pinned price id; no Rating-local key (SEAMS K1–K5; K6 resolved T-D-35). |
 | `cpt-cf-bss-pricing-adr-canonical-scope-key` (adopted) | The key definition itself — the manifest key extended additively; the pricing gear is its SoR. |
 | `cpt-cf-bss-pricing-adr-grandfathering-cohort-axis` (adopted) | `cohort` = the cutover instant; Rating resolves the generation by the cohort of the subscription's pinned price id. |
 | `cpt-cf-bss-pricing-adr-pricewindow-consolidation` (adopted) | `PriceWindow*` events are produced by the pricing gear; Rating consumes all four (incl. `Cancelled`) as read-only resolution inputs. |
@@ -185,7 +185,7 @@ This satisfies the PRD §6.1 requirement that the owner be named before the Adju
 - [ ] `p1` - **ID**: `cpt-cf-bss-rating-component-evaluation-core-fnd`
 
 - **`EvaluationPipeline`** — composes the registered step evaluators in the fixed §17.1 order; short-circuits fail-closed on any step error.
-- **`ScopeKeyAdapter`** — materializes the adopted 8-axis key from context + snapshot (§4.1): full-key window selection, eligibility class order, cohort-by-pinned-price-id.
+- **`ScopeKeyAdapter`** — materializes the adopted ten-axis key from context + snapshot (§4.1; the usage pair from the line being priced, `''` sentinel otherwise — T-D-35): full-key window selection, eligibility class order, cohort-by-pinned-price-id.
 - **`SnapshotComposer`** — verifies the pricing pre-stamp + Subscriptions binding, appends the eval-time segments, seals the ref (§4.3).
 - **`DeterminismGuard`** — derives the usage/correction idempotency keys, enforces partition-key serialization for re-resolve, and stamps the frozen-input digest into metadata so replay divergence is detectable (§4.2).
 - **`EmissionGuard`** — non-negative clamp/credit, full-precision emission, rounding-policy id record, obligation envelope (§4.4).
@@ -227,7 +227,7 @@ per-line flow (retroactivity, period obligations); 10 registers publish validato
 **Evaluate one line** (implements `cpt-cf-bss-rating-seq-evaluate-tariff`):
 
 1. Assemble `EvaluationContext`; verify every frozen input is present (fail closed otherwise).
-2. Steps 1–2 (slice 02): resolve `phase_id`; select the single window on the full 8-axis key; eligibility class order; cohort by pinned price id.
+2. Steps 1–2 (slice 02): resolve `phase_id`; select the single window on the full ten-axis key; eligibility class order; cohort by pinned price id.
 3. Step 3 (slice 03): map `(meter, dimensionKey)` injectively; granularity round-up on the merged measure; model formula over the evaluation unit.
 4. Steps 4–5 (slice 04): stack scope-matching PriceOverlays (class order breaks ties); apply contract overlay; enforce the anti-drift cap.
 5. Step 6 (slice 05): reservation match first — a consumption split re-runs steps 3–5 as a unit over the on-demand remainder (T-D-13) — then commitment-pool waterfall; obligations surfaced, never posted.
