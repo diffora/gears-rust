@@ -34,6 +34,14 @@ joint contracts, cited from here by their pricing numbers, never duplicated.
 
 ## Decision register
 
+### Entries
+
+*Entries stay at `####` deliberately. `spec-check`'s propagation parser recognises a decision
+only as `#### <id> …`; promoting them to `###` to satisfy MD001's heading-increment rule —
+CodeRabbit's suggestion of 2026-08-26 — would make this register parse as zero decisions, which
+is a regression this gear has already paid for once. This intermediate heading satisfies MD001
+instead.*
+
 #### P-D-01 — Broker-native event envelope (not CloudEvents 1.0)
 
 - **Date**: 2026-08-25 (product call; PRD §15 gate "Event-envelope conformance")
@@ -48,7 +56,7 @@ joint contracts, cited from here by their pricing numbers, never duplicated.
 - **Residue owed**: manifest §7.2 amendment re-scoping the CloudEvents mandate (owner:
   Architecture / Common Core).
 - **Propagated**: PRD §2, §4.1, §5.1, `fr-registry-eventing-audit`,
-  `fr-event-versioning-replay`, §9.2, AC #28/#29; design slice 01 §4 (event fan-out); `DESIGN.md` §1.2 Key decisions.
+  `fr-event-versioning-replay`, §9.2, AC #28/#29; S1 §4 (event fan-out); `DESIGN.md` §1.2 Key decisions.
 
 #### P-D-02 — CatalogVersion increments are mechanical; governance at entity publish
 
@@ -65,7 +73,7 @@ joint contracts, cited from here by their pricing numbers, never duplicated.
   for two humans, skipping them breaks governance, and refusing breaks the ratified SLO. Moving
   the override to the human act dissolves the contradiction without weakening either control.
 - **Propagated**: PRD §5.1/§5.2, `fr-define-sku`, `fr-catalog-version-publish`,
-  `fr-bundle-adoption-guard`, `fr-prepublish-lint`, AC #7/#19/#25/#45; design slices 03 (`inst-cl-bundle-override`), 05, 06, 09 (`inst-bk-override`) — **§4.1 struck**: its bullets say nothing about mechanical increments or entity-publish governance (item 31 of the 2026-08-26 review); `DESIGN.md` §1.2 Key decisions.
+  `fr-bundle-adoption-guard`, `fr-prepublish-lint`, AC #7/#19/#25/#45; S3 (`inst-cl-bundle-override`), 05, 06, 09 (`inst-bk-override`) — **§4.1 struck**: its bullets say nothing about mechanical increments or entity-publish governance (item 31 of the 2026-08-26 review); `DESIGN.md` §1.2 Key decisions.
 
 #### P-D-03 — SkuReferenceCount v1 producer set = {pricing}
 
@@ -81,7 +89,7 @@ joint contracts, cited from here by their pricing numbers, never duplicated.
   commitment instead of a three-party negotiation with two docs-only gears.
 - **Propagated**: PRD §9.2, §14, `fr-reference-producer-registration`, AC #43; pricing PRD §15
   (mirrored answered row); the rating gear's ownership matrix in
-  ../../rating/docs/SEAMS.md; design slice 07; `DESIGN.md` §1.2 Key decisions.
+  ../../rating/docs/SEAMS.md; S7; `DESIGN.md` §1.2 Key decisions.
 
 #### P-D-04 — Absolute product-name uniqueness (region-independent)
 
@@ -97,7 +105,7 @@ joint contracts, cited from here by their pricing numbers, never duplicated.
   false-allow risk; absolute uniqueness deletes the whole question from the create door.
   Strict→loose later is a compatible widening; loose→strict would be a breaking migration.
 - **Propagated**: PRD glossary (Region), `fr-create-product`, `fr-expected-failure-behavior`,
-  AC #5, AC #33a (the promotion fallback identity), AC #38, §16; design slices 01 (uniqueness index + `normalized(name)` pin), 02 (display-name coexistence), 04 (containment), 09 (C5 promotion identity); `DESIGN.md` §1.2 Key decisions.
+  AC #5, AC #33a (the promotion fallback identity), AC #38, §16; S1 (uniqueness index + `normalized(name)` pin), 02 (display-name coexistence), 04 (containment), 09 (C5 promotion identity); `DESIGN.md` §1.2 Key decisions.
 
 #### P-D-05 — `usageTypeRef` validates resolvability only; UC3(c) lives at the pricing meter binding
 
@@ -122,7 +130,7 @@ joint contracts, cited from here by their pricing numbers, never duplicated.
   harmless, pricing one it never emits is the hazard.
 - **Propagated**: PRD `fr-metering-unit-declaration`, AC #8, §15 (answered row); rating SEAMS
   UC3 row + ownership matrix; pricing design/02 (stale "registry holds equality" premise
-  retired); design slice 03; `DESIGN.md` §1.2 Key decisions.
+  retired); S3; `DESIGN.md` §1.2 Key decisions.
 - **Residue (2026-08-25, PR #14 review)**: quarantine-on-deleted-UsageType is a fail-safe, not
   an operating mode — the deletion-guard/deletion-signal negotiation with usage-collector is a
   PRD §15 open ("UsageType deletion vs published declarations").
@@ -145,7 +153,7 @@ joint contracts, cited from here by their pricing numbers, never duplicated.
   A value overwritten before the next `CatalogVersion` survives only as the audit row recording
   the write. That is the ungoverned channel's nature; a key that needs version history is an
   **Attribute**, which has governance, versioning and localization.
-- **Propagated**: design slice 02 §2 (`inst-md-placement`) + §4.1/§5 + §6 (flag struck); slice
+- **Propagated**: S2 §2 (`inst-md-placement`) + §4.1/§5 + §6 (flag struck); slice
   06 owes the snapshot-capture step; `DESIGN.md` slice row + status line.
 - **No PRD edit owed**: the PRD glossary's "Metadata map" row is compatible as written. *(This
   sentence sat inside the `**Propagated**` field, where a propagation check reads "PRD" as a
@@ -183,7 +191,7 @@ joint contracts, cited from here by their pricing numbers, never duplicated.
   and two ACs for a field nobody reads yet, and pricing has already shipped the same two-field
   shape (`pricing_read_model` carries both `projected_at` and `catalog_version`, asserted in
   its tests). Revisit with the first real portal consumer.
-- **Propagated**: design slice 08 (`inst-rp-stamp`, §6 — flag struck); `DESIGN.md` slice row +
+- **Propagated**: S8 (`inst-rp-stamp`, §6 — flag struck); `DESIGN.md` slice row +
   status line; PRD `fr-cache-first-browse` rationale re-derived + §15 serving-store row; NFR #7
   unchanged.
 
@@ -258,8 +266,8 @@ joint contracts, cited from here by their pricing numbers, never duplicated.
   - **S9 — Coverage.** The seal MUST cover **every** mutating door of the participating gear,
     **rejections included**. A seal over part of a trail is evidence about that part only; the
     registry writes rejection rows (01 §4.4) specifically so the part is the whole.
-- **Propagated**: design slice 01 §4.4 (the reserved seam + its CHECK); slice 05 §1.6 C7 (the
-  G4-shaped constraint row, deferral stated); slice 10 §1.6 C1/C3 (sealing requirements seven
+- **Propagated**: S1 §4.4 (the reserved seam + its CHECK); S5 §1.6 C7 (the
+  G4-shaped constraint row, deferral stated); S10 §1.6 C1/C3 (sealing requirements seven
   and eight — the exclusion and the retention, spelled in words because the short label collides
   with the slice shorthand and was read as a claim into two slices that know nothing of this
   decision; 2026-08-26 branch review);
@@ -296,7 +304,7 @@ joint contracts, cited from here by their pricing numbers, never duplicated.
   is the review's own H2 fix; a version-only comparison misses a retirement, which is exactly
   the case the AC spells "retired".
 - **Propagated**: PRD `fr-catalog-publish-concurrency` (normative sentence, rationale, actor
-  list) + AC #40; design slice 06 `inst-sn-revalidate` (flag struck) and §5's both-arm probes
+  list) + AC #40; S6 `inst-sn-revalidate` (flag struck) and §5's both-arm probes
   (already assert both lanes, unchanged); `DESIGN.md` slice row + status line.
 
 #### P-D-10 — No gear-side Legal role: the allow-list records Legal's decision, it does not enact it
@@ -335,8 +343,8 @@ joint contracts, cited from here by their pricing numbers, never duplicated.
 - **What the gear does not claim**: that Legal approved. It proves only that a reference was
   recorded. The control remains the §15 paper sign-off plus the per-tenant audited export.
   Stated explicitly so the recorded reference is not later mistaken for an enforced approval.
-- **Propagated**: design slice 05 §1.6 **C8** (the narrow-never-replace rule + the two guards
-  any future replacing predicate would owe); slice 10 `inst-pp-allowlist` + §5 probe (base
+- **Propagated**: S5 §1.6 **C8** (the narrow-never-replace rule + the two guards
+  any future replacing predicate would owe); S10 `inst-pp-allowlist` + §5 probe (base
   quorum, mandatory reference, positive control); `design/README.md` slice-10 summary;
   `DESIGN.md` slice row + status line.
 - **No PRD edit owed** — `fr-materiality-gated-publish` and AC #26 keep their closed approver
@@ -413,12 +421,12 @@ joint contracts, cited from here by their pricing numbers, never duplicated.
   likeliest origin of the floor being three without anyone deciding it. Normative text now
   states the number.
 - **Propagated**: PRD `fr-materiality-gated-publish` (normative sentence) + AC #26 (two
-  bullets) + §17.1 materiality-threshold row; design slice 05 §1.6 C1, §1.7 `ApprovalRecord`,
+  bullets) + §17.1 materiality-threshold row; S5 §1.6 C1, §1.7 `ApprovalRecord`,
   `inst-gv-materiality` (the "nothing publishes approver-less" interim retired),
   `inst-gv-queue` (envelope gains `predicateUnsatisfiable` **and `configuredQuorum`** — its
   `required` is the record's *effective* count, `N` for material and `min(N, 1)` for non-material,
   never the raw configured `N`, so a card cannot show "2 required" for a record closing on one),
-  §6 (flag struck); **slice 03 `inst-ac-required`** — the rule this decision's own amendment
+  §6 (flag struck); **S3 `inst-ac-required`** — the rule this decision's own amendment
   names as the operand of the hole it closed (`taxCategory` required at publish for
   `product`/`service` types is what made the `N = 0` tenant unpublishable forever), which
   restated the substance without citing the decision until the 2026-08-26 branch review;
@@ -461,7 +469,7 @@ joint contracts, cited from here by their pricing numbers, never duplicated.
   "proposed: `api-contracts` CI"). This widens a **specification**, not a running gate. Getting
   the membership right before the job is built is cheaper than after, and nobody should read
   this as drift becoming detectable tomorrow.
-- **Propagated**: PRD `fr-plan-price-seam` (normative sentence); design slice 12 §1.6 C1,
+- **Propagated**: PRD `fr-plan-price-seam` (normative sentence); S12 §1.6 C1,
   `inst-sdk-catalogsku` (`status` + vocabulary now normative pin members, previously a flagged
   widening), §3.2 **`inst-cc-pin`** (CoverageChecks #9 — the count in prose moved with it),
   §6 (flag struck); `DESIGN.md` slice row + status line.
@@ -525,11 +533,11 @@ joint contracts, cited from here by their pricing numbers, never duplicated.
   and the break-glass correction still read a bare "two-person" a full wave after the decision
   that governs them. **An enumeration is only as good as its ids** — an id that resolves to
   another slice's instruction is worse than no id, because it reads as swept.
-- **Propagated**: PRD glossary **Two-person rule** row; AC #17, #19, #22, #30; design slice 05
+- **Propagated**: PRD glossary **Two-person rule** row; AC #17, #19, #22, #30; S5
   §1.6 C1, §1.7 `ApprovalRecord` + `OverrideCeremony`, `inst-bg-open`, `inst-gv-override`,
   `inst-gv-queue`, `inst-mt-inputs` (the metering-unit clause that routes to the 07 door),
-  §4 `products_approval`/`products_breakglass_session`; slice 03 `inst-cl-bundle-override`;
-  slice 04 `inst-lc-undeprecate`; slice 06 `inst-fz-force`; **slice 07 C4, C5,
+  §4 `products_approval`/`products_breakglass_session`; S3 `inst-cl-bundle-override`;
+  S4 `inst-lc-undeprecate`; S6 `inst-fz-force`; **S7 C4, C5,
   `inst-cr-republish`, `inst-bc-ceremony`**; `DESIGN.md` decision register summary.
 
 #### P-D-14 — `system_signal` is an approval subject kind, not an exemption; the authorizing principal is the signal
@@ -563,7 +571,7 @@ joint contracts, cited from here by their pricing numbers, never duplicated.
 - **What "governed" means for the signal**: it arrives through a registered inbound machine
   contract (PRD §9.2), S2S-authenticated as the producing gear, and is itself recorded. An
   ungoverned or unauthenticated signal cannot open this path.
-- **Propagated**: design slice 05 `inst-gv-one-shot`; slice 06 §2 composition-clear flow and its
+- **Propagated**: S5 `inst-gv-one-shot`; S6 §2 composition-clear flow and its
   `compositionPending` clearing; `design/README.md` slice-06 bullet; `DESIGN.md` §6 status block
   + decision register summary; PRD `fr-materiality-gated-publish` (the subject-kind sentence)
   and AC #7.
@@ -596,8 +604,8 @@ joint contracts, cited from here by their pricing numbers, never duplicated.
 - **Rejected alternative**: REST doors for both. Rejected on the cost above, not on principle;
   if the owner expects an out-of-process producer inside v1's horizon, this decision flips and
   §9.2 gains two door definitions.
-- **Propagated**: PRD §9.2 (both inbound contract blocks); design slice 06 increment-request
-  intake; slice 12 `inst-sdk-surface` + the `ObligationRegister`; `DESIGN.md` §6 transport paragraph.
+- **Propagated**: PRD §9.2 (both inbound contract blocks); S6 increment-request
+  intake; S12 `inst-sdk-surface` + the `ObligationRegister`; `DESIGN.md` §6 transport paragraph.
 
 #### P-D-16 — A third correction-admission arm: an unresolvable meter target
 
@@ -632,7 +640,7 @@ joint contracts, cited from here by their pricing numbers, never duplicated.
 - **Rejected alternative**: drop `inst-bc-unresolvable` and leave the wedged SKU to the §15
   negotiation. Rejected because the negotiation has no v1 landing and the state is reachable in
   v1 — but this is the arm to strike if the owner prefers the quarantine fail-safe §15 names.
-- **Propagated**: PRD `fr-immutable-field-correction`, AC #4, §15 row (closed); design slice 07
+- **Propagated**: PRD `fr-immutable-field-correction`, AC #4, §15 row (closed); S7
   C5, `inst-bc-admission` (the "only" quantifier now names both arms), `inst-bc-unresolvable`,
   `inst-cr-republish` (the validator re-checks the admitting lane's own predicate).
 
@@ -661,7 +669,7 @@ joint contracts, cited from here by their pricing numbers, never duplicated.
   `inst-pm-resolve`. Rejected on the modal-row argument above; it is the change to make if the
   owner reads promotion as a create-only channel.
 - **Propagated**: PRD `fr-bulk-import-export`, AC #33a, `usecase-environment-promotion`
-  (Alternative Flows); design slice 09 C5 + `inst-pm-resolve`.
+  (Alternative Flows); S9 C5 + `inst-pm-resolve`.
 
 #### P-D-18 — Version liveness ends by an explicit release; the release is a fifth inbound contract
 
@@ -689,8 +697,8 @@ joint contracts, cited from here by their pricing numbers, never duplicated.
   increment request (PRD §9.2: "the two inbound machine contracts from the same counterparty had
   been documented asymmetrically"). The release door was missed by that sweep.
 - **Propagated**: PRD §9.2 (`contract-freeze-ack` gains the release half), AC #44, §15 row
-  (closed); design slice 06 `inst-fz-liveness`; slice 05 RBAC (`catalog_version × release`);
-  slice 10 `inst-rt-gc`; slice 12 `ObligationRegister` row.
+  (closed); S6 `inst-fz-liveness`; S5 RBAC (`catalog_version × release`);
+  S10 `inst-rt-gc`; S12 `ObligationRegister` row.
 
 #### P-D-19 — A force-completed version stays refused for posted use until opt-in; the pin is the registry's own door
 
@@ -721,8 +729,8 @@ joint contracts, cited from here by their pricing numbers, never duplicated.
   consumer, and promote slice 12's register row from `owed` to a launch gate. Rejected because
   it makes v1 depend on a gear that does not exist — but it is the right change if the owner
   intends posted resolution to stay available on forced versions.
-- **Propagated**: PRD `fr-freeze-recovery`, AC #22; design slice 06 `inst-fz-force` +
-  `IntentfulResolver`, §5 error taxonomy (`VERSION_FORCED_INCOMPLETE`); slice 12
+- **Propagated**: PRD `fr-freeze-recovery`, AC #22; S6 `inst-fz-force` +
+  `IntentfulResolver`, §5 error taxonomy (`VERSION_FORCED_INCOMPLETE`); S12
   `ObligationRegister` row (the consumer duty becomes belt-and-braces, not the only enforcement).
 
 #### P-D-20 — A publish during the retirement lead window re-announces `SkuRetired`; the door stays open
@@ -767,10 +775,11 @@ joint contracts, cited from here by their pricing numbers, never duplicated.
   is the change to make if the owner reads a retiring SKU as frozen by intent — but it should
   then be a requirement, decided, and not a refusal that appeared in a fix commit.
 - **Propagated**: PRD `fr-retirement-eol` + AC #18 (`fromVersion`'s definition and the
-  re-announcement rule); design slice 04 `inst-rt-initiate` (`RETIREMENT_PENDING` struck from the
-  publish door, re-emission added), §5 error taxonomy; slice 01 `inst-fd-containment` (the
-  live-retire-intent clause on parents is unaffected); slice 12 `ObligationRegister` (the
-  latest-wins consumer duty).
+  re-announcement rule); S4 `inst-rt-initiate` (`RETIREMENT_PENDING` struck from the
+  publish door, re-emission added), §5 error taxonomy; S12 `ObligationRegister` (the
+  latest-wins consumer duty). *(Slice 01's `inst-fd-containment` is deliberately not a target
+  here — the clause did not move; the bullet below says why in words, because a target list is
+  a list of documents this decision changed.)*
 - **What the exemption leaves standing.** Corrected 2026-08-26: this entry first described
   `inst-fd-containment` as guarding *re-parenting*, a door slice 01 does not have. It guards
   **child creation** under a parent holding a live retire intent, and it is genuinely unaffected

@@ -220,8 +220,8 @@ migration consumer (post-v1)".
 
 ## 6. Traces to / Risks & Open items
 
-**Traces to**: `cpt-cf-bss-products-fr-lifecycle-transitions` (scheduling clauses), `cpt-cf-bss-products-fr-parent-child-integrity`,
-`cpt-cf-bss-products-fr-deprecation`, `cpt-cf-bss-products-fr-undeprecation`, `cpt-cf-bss-products-fr-retirement-eol`; AC #14–#18; AC #38 rows above;
+**Traces to**: `cpt-cf-bss-products-usecase-lifecycle-deprecation` (§10 use case, claimed by id here 2026-08-26 — all seven were in lint 1's universe and none was claimed); `cpt-cf-bss-products-fr-lifecycle-transitions` (scheduling clauses), `cpt-cf-bss-products-fr-parent-child-integrity` (the final containment rule plus publish ordering; the interim check is slice 01's),
+`cpt-cf-bss-products-fr-deprecation` (the deprecation/un-deprecation machine and its cascades), `cpt-cf-bss-products-fr-undeprecation`, `cpt-cf-bss-products-fr-retirement-eol`; AC #14–#18; AC #38 rows above;
 pricing D-47 (joint contract), P-D-04 (containment residue).
 
 **Risks & open items**:

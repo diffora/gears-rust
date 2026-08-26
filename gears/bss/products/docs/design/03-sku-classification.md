@@ -168,10 +168,10 @@ currently lacks** (consumer-side addition owed there).
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-contract-classification-errors`
 
-`SKU_TYPE_UNKNOWN`, `ACCOUNTING_CODE_REQUIRED`, `ACCOUNTING_CODE_UNKNOWN`,
+`SKU_TYPE_UNKNOWN` (raised by `inst-cl-type-profile` when `type` is absent or outside the closed set — named 2026-08-26; the rule described the check and named no code), `ACCOUNTING_CODE_REQUIRED`, `ACCOUNTING_CODE_UNKNOWN`,
 `METER_DECLARATION_INCOMPLETE`, `UNRECOGNIZED_UNIT`, `UNIT_DEPRECATED`, `USAGE_TYPE_UNRESOLVED`,
 `USAGE_TYPE_UNAVAILABLE` (retryable, fail-closed), `UNIT_DELIST_BLOCKED`, `PLAN_TIER_UNKNOWN`, `PLAN_TIER_DEPRECATED`,
-`PLAN_TIER_RETIRE_BLOCKED`, `BUNDLE_OVERRIDE_REQUIRED`. Registered into 01 §3.3; the AC #38
+`PLAN_TIER_RETIRE_BLOCKED`, `BUNDLE_OVERRIDE_REQUIRED` (the interactive refusal of `inst-cl-bundle-override`, the P-D-02 gate's API behaviour — named 2026-08-26; the bulk analogue already had `BULK_OVERRIDE_UNACKNOWLEDGED`). Registered into 01 §3.3; the AC #38
 rows "unrecognized metering unit without elevation" and "authoring/cloning against a
 de-listed/deprecated unit" map here.
 

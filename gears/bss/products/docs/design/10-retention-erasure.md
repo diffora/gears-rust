@@ -155,7 +155,7 @@ GC + its alarms, the restore-drill results surface.
 
 - [ ] `p2` - **ID**: `cpt-cf-bss-products-contract-retention-errors`
 
-`ERASURE_UNKNOWN_ACTOR`. (`CONTENT_PII_BLOCKED` is **declared in 02's taxonomy** — the door is
+`ERASURE_UNKNOWN_ACTOR` (the erasure door, when the named principal resolves to no `actor_ref` in this tenant — named 2026-08-26). (`CONTENT_PII_BLOCKED` is **declared in 02's taxonomy** — the door is
 02's, only the verdict policy lives here; kept out of this owned list per the one-declaration
 rule, L1.) The GC and drill raise alarms, not API errors.
 
@@ -186,10 +186,10 @@ justifications); retention/drill state is config + audit, no new record tables. 
 
 ## 6. Traces to / Risks & Open items
 
-**Traces to**: `cpt-cf-bss-products-fr-retention-erasure`, `cpt-cf-bss-products-fr-grandfathered-retention-coupling` (gate
+**Traces to**: `cpt-cf-bss-products-fr-retention-erasure` (clocks, the erasure act and the retention gate; the content write-block is slice 02's), `cpt-cf-bss-products-fr-grandfathered-retention-coupling` (gate
 half), `cpt-cf-bss-products-fr-expected-failure-behavior` (the "retention process that would orphan a live
 grandfathered reference" row — `retention_orphan_blocked`, L2), AC #35, #38 (that row), #44;
-**NFR #5 `cpt-cf-bss-products-nfr-snapshot-archival-dr`** by id (mechanics); §17.1 retention rows; C2's Legal sign-off (§15 open — the design is ready
+**NFR #5 `cpt-cf-bss-products-nfr-snapshot-archival-dr` (the restore-drill and archival mechanics; durability is slice 06's)** by id (mechanics); §17.1 retention rows; C2's Legal sign-off (§15 open — the design is ready
 either way).
 
 **Risks & open items**:

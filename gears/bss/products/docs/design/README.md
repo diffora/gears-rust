@@ -54,7 +54,7 @@ Requirements live in [`../PRD.md`](../PRD.md); decisions in [`../DECISIONS.md`](
 - [`05-governance.md`](./05-governance.md) — `MaterialityEvaluator` (bucket-registry-driven +
   enumerated ops + affected-entity trigger; the policy's own mutation is material), the
   approval workflow with a **stored** content snapshot (never re-derived — the pricing lesson),
-  quorum by **principals** (the tenant's configured `N`, default 2 floor 0 — P-D-11; FinanceReviewer predicate binding at every `N >= 1`; the shorthand's reach enumerated by P-D-13). *This line read "author + ≥2 approvers" until 2026-08-26 — the fixed count P-D-11 retired, in the very phrasing that decision names as the origin of the floor being three without anyone deciding it.* the P-D-02
+  quorum by **principals** (the tenant's configured `N`, default 2 floor 0 — P-D-11; FinanceReviewer predicate binding at every `N >= 1`; the shorthand's reach enumerated by P-D-13). *This line read "author + ≥2 approvers" until 2026-08-26 — the fixed count P-D-11 retired, in the very phrasing that decision names as the origin of the floor being three without anyone deciding it.* The list continues: the P-D-02
   `OverrideCeremony`, one-shot approval consumption, the studio-inbox queue envelope
   (merge-compatible with pricing's), RBAC catalog, time-boxed read-only break-glass. (§6.7, §6.8)
 - [`06-catalog-version.md`](./06-catalog-version.md) — the `CatalogVersion` machine: D-47 lanes

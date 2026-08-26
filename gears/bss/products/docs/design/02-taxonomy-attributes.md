@@ -181,7 +181,7 @@ lint 3 could not see it).*
 
 `DUPLICATE_CATEGORY_NAME`, `TAXONOMY_CYCLE`, `TAXONOMY_LIMIT`, `CATEGORY_REFERENCED`,
 `CATEGORY_RETIRED` (assignment to a retired node), `ATTRIBUTE_DEFINITION_UNKNOWN`,
-`ATTRIBUTE_DEFINITION_DEPRECATED`, `DEFINITION_IN_USE`, `ATTRIBUTE_TYPE_MISMATCH`,
+`ATTRIBUTE_DEFINITION_DEPRECATED`, `DEFINITION_IN_USE`, `ATTRIBUTE_TYPE_MISMATCH` (the attribute-value write, when a value does not match its definition's declared type — named 2026-08-26),
 `ATTRIBUTE_SCOPE_VIOLATION`, `DEFAULT_LOCALE_MISSING` (publish-time), `PRIMARY_CATEGORY_REQUIRED`, `CONTENT_PII_BLOCKED` (verdict policy owned by slice 10 — L1),
 `METADATA_LIMIT`, `STALE_LIVE_OP`. Registered into the Foundation taxonomy (01 §3.3); the
 AC #38 row "taxonomy cycle" maps here; the PII write-block is **AC #35's** clause (L1 fix —

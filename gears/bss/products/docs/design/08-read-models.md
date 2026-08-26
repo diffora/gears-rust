@@ -207,8 +207,8 @@ the point.
 
 ## 6. Traces to / Risks & Open items
 
-**Traces to**: **§9.1 by id** — `cpt-cf-bss-products-interface-read-model` (the browse/search surface this slice serves; claimed by id here for the first time, 2026-08-26 branch review). `cpt-cf-bss-products-fr-cache-first-browse`; AC #32; **NFRs by id** (#1 `cpt-cf-bss-products-nfr-read-latency`,
-#2 `cpt-cf-bss-products-nfr-read-throughput`, #3 `cpt-cf-bss-products-nfr-publication-propagation`, #7 `cpt-cf-bss-products-nfr-graceful-degradation`,
+**Traces to**: `cpt-cf-bss-products-usecase-catalog-browser-history` (§10 use case, claimed by id here 2026-08-26 — all seven were in lint 1's universe and none was claimed); **§9.1 by id** — `cpt-cf-bss-products-interface-read-model` (the browse/search surface this slice serves; claimed by id here for the first time, 2026-08-26 branch review). `cpt-cf-bss-products-fr-cache-first-browse`; AC #32; **NFRs by id** (#1 `cpt-cf-bss-products-nfr-read-latency`,
+#2 `cpt-cf-bss-products-nfr-read-throughput`, #3 `cpt-cf-bss-products-nfr-publication-propagation` (the projection-convergence half), #7 `cpt-cf-bss-products-nfr-graceful-degradation`,
 #10 `cpt-cf-bss-products-nfr-availability-audit` — positional numbers alone left `inst-cc-fr` reporting zero claims
 for all ten NFRs, item 30 of the 2026-08-26 review) + the convergence interim (§17.1);
 **AC #39** (the registry-side obligations: durable acceptance before reported success, the

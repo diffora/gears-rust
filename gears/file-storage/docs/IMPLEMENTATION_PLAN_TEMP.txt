@@ -47,19 +47,24 @@ on this feature branch — never on `main`.
 ### Global preconditions (run once, before Step 1)
 
 ```bash
-# Run these from the repository root (paths were absolute into one machine's checkout
+# Run the git and cargo commands in this block from the repository root. Every per-step
+# `rg` pre-state check below resolves from `gears/file-storage/file-storage/` instead — see the
+# header: run those from the gear directory, or they report "no matches" from the wrong place
+# and the plan reads that as the expected confirmation. (Paths were absolute into one machine's checkout
 # until 2026-08-26 — item 38 of that day's review; a tracked file must not name a home dir).
 
 # 1. Confirm you are on the feature branch, not main
 git branch --show-current   # expect: feat/file-storage-p2
 
-# 2. Fast-forward local main so future diffs are clean (audit found local main is stale)
+# 2. Refresh origin/main and record the remote baseline (these two commands do NOT move
+#    local `main` — the earlier comment said "fast-forward local main", which they never did,
+#    so a stale local main passed this precondition; diff against origin/main, not main)
 git fetch origin
 git log --oneline origin/main -1
 
 # 3. Baseline: the gear builds and the existing suite is green BEFORE you change anything
-cargo test -p file-storage -p file-storage-sdk 2>&1 | tail -20     # expect: all pass
-cargo build -p file-storage --bin sidecar                          # expect: ok
+cargo test -p cf-gears-file-storage -p cf-gears-file-storage-sdk 2>&1 | tail -20     # expect: all pass
+cargo build -p cf-gears-file-storage --bin sidecar                          # expect: ok
 ```
 
 > **Note on the `rg`/`sed` snippets in this doc.** Pre-state checks use plain `rg -n 'pat'`
@@ -74,8 +79,8 @@ later failure to your change otherwise.
 
 ```bash
 cargo fmt --all -- --check
-cargo clippy -p file-storage -p file-storage-sdk --all-targets -- -D warnings
-cargo test -p file-storage -p file-storage-sdk
+cargo clippy -p cf-gears-file-storage -p cf-gears-file-storage-sdk --all-targets -- -D warnings
+cargo test -p cf-gears-file-storage -p cf-gears-file-storage-sdk
 # e2e lifecycle (real server + sidecar) — gated, opt-in:
 #   build sidecar, export FS_E2E_BINARY / FS_SIDECAR_BINARY per tools/scripts/ci.py, then:
 #   pytest testing/e2e/suites/file_storage -q
@@ -134,7 +139,7 @@ missing input validation) and should be reviewed together.
      the service layer a distinct, PDP-checkable action for cross-owner /
      tenant-wide policy administration, separate from ordinary file
      read/write/delete.
-  2. **Verify**: `cargo build -p file-storage 2>&1 | tail -20` — compiles
+  2. **Verify**: `cargo build -p cf-gears-file-storage 2>&1 | tail -20` — compiles
      clean (new `pub const` only).
   3. **File**: `src/domain/policy_service.rs`, `PolicyService::set_policy`
      (currently L79-106). Replace the single coarse `authorize` call with:
@@ -174,7 +179,7 @@ missing input validation) and should be reviewed together.
      method that just calls the same private/shared `Store::require_file` the
      `MultipartStore` impl calls. WHY: satisfies the new trait method with zero
      new SQL — same underlying `FileRepo` lookup already exists.
-  7. **Verify after 5-6**: `cargo build -p file-storage 2>&1 | tail -30` —
+  7. **Verify after 5-6**: `cargo build -p cf-gears-file-storage 2>&1 | tail -30` —
      compiles; any other `PolicyStore` implementors (test fakes, if any —
      `rg -n "PolicyStore for" tests/ src/`) must add the same delegating method
      or the build fails there first (fix those too).
@@ -217,8 +222,8 @@ missing input validation) and should be reviewed together.
      authorizes with the same resource-less `DELETE, "", None` check and then
      deletes by bare `rule_id` with no ownership comparison at all — any
      tenant member can delete any other member's retention rule.
-  10. **Verify after 8-9**: `cargo build -p file-storage 2>&1 | tail -30` —
-      compiles; `cargo clippy -p file-storage -- -D warnings` clean.
+  10. **Verify after 8-9**: `cargo build -p cf-gears-file-storage 2>&1 | tail -30` —
+      compiles; `cargo clippy -p cf-gears-file-storage -- -D warnings` clean.
 
 - **New/changed tests** — new `tests/policy_authz_test.rs` (mirror the
   `build_db`/`ctx(tenant)` harness from `tests/multipart_test.rs`; use
@@ -248,7 +253,7 @@ missing input validation) and should be reviewed together.
   - `delete_retention_rule_foreign_owner_is_denied` — create a `User`-scope
     rule as user A, attempt delete as user B; assert denial and the rule row
     still exists (direct DB read).
-  Run: `cargo test -p file-storage --test policy_authz_test` — all pass.
+  Run: `cargo test -p cf-gears-file-storage --test policy_authz_test` — all pass.
   - **E2E** (justified negative — real cross-**subject**, same-tenant AuthZ
     decision is a genuine seam unit tests can't prove): add
     `test_cross_user_policy_write_denied_by_real_authz` to
@@ -261,7 +266,7 @@ missing input validation) and should be reviewed together.
 
 - **Done-check**:
   ```
-  cargo test -p file-storage --test policy_authz_test && \
+  cargo test -p cf-gears-file-storage --test policy_authz_test && \
   rg -n "scope_owner_id != ctx.subject_id\(\)|scope_owner_id == Some\(ctx.subject_id" src/domain/policy_service.rs
   ```
   Green tests + at least one ownership-comparison match = complete.
@@ -320,7 +325,7 @@ missing input validation) and should be reviewed together.
      step needs `version.backend_path`, which the current code never
      extracts; a version that doesn't exist should never reach a blob
      read-back attempt anyway (tightens an adjacent latent gap for free).
-  2. **Verify**: `cargo build -p file-storage 2>&1 | tail -20` — will fail at
+  2. **Verify**: `cargo build -p cf-gears-file-storage 2>&1 | tail -20` — will fail at
      the two downstream `.map_or_else` reads of `version_mime`/`backend_id`;
      update those two lines to read `version.mime_type.clone()` /
      `version.backend_id.clone()` directly (no `Option` handling left).
@@ -380,8 +385,8 @@ missing input validation) and should be reviewed together.
      read-back will always succeed on the happy path; it exists here purely
      as the same defense-in-depth the plan calls for on both finalize
      entry points, and keeps the two code paths from silently diverging.
-  6. **Verify after 3-5**: `cargo build -p file-storage 2>&1 | tail -30` —
-     compiles. `cargo clippy -p file-storage -- -D warnings` clean.
+  6. **Verify after 3-5**: `cargo build -p cf-gears-file-storage 2>&1 | tail -30` —
+     compiles. `cargo clippy -p cf-gears-file-storage -- -D warnings` clean.
 
 - **New/changed tests** — new `tests/finalize_test.rs` (mirror the
   `build_db`/`build_service`/`ctx`/`new_file` helper pattern from
@@ -411,7 +416,7 @@ missing input validation) and should be reviewed together.
     with hand-built `Claims` (mirrors how `handlers::finalize_version`
     constructs/verifies them) to cover the token path specifically, since it
     has zero existing coverage.
-  Run: `cargo test -p file-storage --test finalize_test` — all pass.
+  Run: `cargo test -p cf-gears-file-storage --test finalize_test` — all pass.
   - **E2E** (justified negative — the vulnerability is the trust boundary at
     the real `.public()` route + real token verification, which a unit test
     calling the Rust function directly cannot prove is wired correctly):
@@ -426,7 +431,7 @@ missing input validation) and should be reviewed together.
 
 - **Done-check**:
   ```
-  cargo test -p file-storage --test finalize_test && \
+  cargo test -p cf-gears-file-storage --test finalize_test && \
   rg -n "verify_content_hash" src/domain/service/write.rs
   ```
   Green tests + the verification call present in `write.rs` = complete.
@@ -451,7 +456,7 @@ missing input validation) and should be reviewed together.
   exists. The gap is a missing status predicate in the WHERE clause, not the SET.
   Confirm the gap with a quick manual double-call check (optional):
   ```
-  cargo test -p file-storage --test multipart_test complete -- --nocapture 2>&1 | tail -5
+  cargo test -p cf-gears-file-storage --test multipart_test complete -- --nocapture 2>&1 | tail -5
   ```
   (existing tests pass today because none of them call `finalize`/`complete`
   twice on the same version — this is the coverage gap, not a failing test.)
@@ -474,7 +479,7 @@ missing input validation) and should be reviewed together.
      missing-guard shape; add the identical `Column::Status.eq(Pending)` predicate
      to it in the same commit (a double `mark_available` on an already-available
      row is the same class of silent overwrite).
-  2. **Verify**: `cargo build -p file-storage 2>&1 | tail -20` — compiles
+  2. **Verify**: `cargo build -p cf-gears-file-storage 2>&1 | tail -20` — compiles
      (no signature change; `VersionStatus` is already imported at the top of
      the file).
   3. **File**: `src/infra/storage/repo/version_repo.rs`. No caller changes
@@ -494,8 +499,8 @@ missing input validation) and should be reviewed together.
      race/replay" (409) for callers/telemetry, at zero extra DB cost (the
      `version` value was already read earlier in the same function for the
      read-back check in 0.1).
-  4. **Verify**: `cargo build -p file-storage 2>&1 | tail -20` and
-     `cargo clippy -p file-storage -- -D warnings` clean.
+  4. **Verify**: `cargo build -p cf-gears-file-storage 2>&1 | tail -20` and
+     `cargo clippy -p cf-gears-file-storage -- -D warnings` clean.
 
 - **New/changed tests**:
   - New test in `tests/finalize_test.rs` (repo-level, no service layer):
@@ -522,7 +527,7 @@ missing input validation) and should be reviewed together.
     flips the session to `completed` on the first call — confirms 0.4's
     version-level guard is defense-in-depth behind the session-level guard,
     not the only line of defense).
-  Run: `cargo test -p file-storage --test finalize_test --test multipart_test`
+  Run: `cargo test -p cf-gears-file-storage --test finalize_test --test multipart_test`
   — all pass.
   - **E2E**: none — deterministic status-guard tightening, fully
     reproducible on SQLite, no PG/AuthZ dependency involved. "Unit only, not
@@ -530,7 +535,7 @@ missing input validation) and should be reviewed together.
 
 - **Done-check**:
   ```
-  cargo test -p file-storage --test finalize_test version_repo_finalize_twice_second_call_returns_false
+  cargo test -p cf-gears-file-storage --test finalize_test version_repo_finalize_twice_second_call_returns_false
   ```
   Green = complete.
 
@@ -573,7 +578,7 @@ missing input validation) and should be reviewed together.
      (currently latent, same-shaped) `all.len() == 0` edge case, where the
      old code would call `delete_file_inner` on a file with zero versions
      for *any* `version_id` at all; now it 404s instead.
-  2. **Verify**: `cargo build -p file-storage 2>&1 | tail -20` — compiles
+  2. **Verify**: `cargo build -p cf-gears-file-storage 2>&1 | tail -20` — compiles
      (no new imports needed; `DomainError::version_not_found` already used
      elsewhere in this file).
 
@@ -593,14 +598,14 @@ missing input validation) and should be reviewed together.
     read confirms the `files` row is gone (preserves today's intended
     behavior — this is the existing regression-lock case, add it only if
     not already covered by an existing test in the file).
-  Run: `cargo test -p file-storage --test service_test delete_version` (or
+  Run: `cargo test -p cf-gears-file-storage --test service_test delete_version` (or
   wherever colocated) — all pass.
   - **E2E**: none — pure conditional-branch-ordering bug, deterministic,
     fully reproducible on SQLite. "Unit only, not a seam."
 
 - **Done-check**:
   ```
-  cargo test -p file-storage delete_version_single_version_file_wrong_id_returns_not_found
+  cargo test -p cf-gears-file-storage delete_version_single_version_file_wrong_id_returns_not_found
   ```
   Green = complete.
 
@@ -665,7 +670,7 @@ missing input validation) and should be reviewed together.
      WHY: this is exactly the CAS-first pattern `abort_multipart_upload`
      (the user-driven path, `multipart_service.rs:614-627`) already uses —
      the sweep was doing the two steps in the wrong order.
-  2. **Verify**: `cargo build -p file-storage 2>&1 | tail -20` — compiles;
+  2. **Verify**: `cargo build -p cf-gears-file-storage 2>&1 | tail -20` — compiles;
      `sweep_expired_multipart`'s caller contract (`usize` per session) is
      unchanged.
   3. **File**: `src/domain/multipart_service.rs`, `complete_multipart_upload`
@@ -685,7 +690,7 @@ missing input validation) and should be reviewed together.
      passed, races ahead of the next sweep tick, and finalizes content that
      should have been aborted. Reuses the existing error variant (adds an
      `"expired"` state string) rather than introducing a new one.
-  4. **Verify**: `cargo build -p file-storage 2>&1 | tail -20`.
+  4. **Verify**: `cargo build -p cf-gears-file-storage 2>&1 | tail -20`.
   5. **Recommended additional hardening (goes beyond the plan's literal
      text, included because analysis below shows step 1 alone leaves a
      narrower residual race)**: even with step 1's reordering, a session can
@@ -711,8 +716,8 @@ missing input validation) and should be reviewed together.
      mid-flight interleaving can no longer delete an `Available` row — the
      `UPDATE`/`DELETE ... WHERE status = 'pending'` simply matches zero rows
      in that case, exactly like 0.4's fix for `finalize`.
-  6. **Verify after 5**: `cargo build -p file-storage 2>&1 | tail -30`;
-     `cargo clippy -p file-storage -- -D warnings` clean.
+  6. **Verify after 5**: `cargo build -p cf-gears-file-storage 2>&1 | tail -30`;
+     `cargo clippy -p cf-gears-file-storage -- -D warnings` clean.
 
 - **New/changed tests** — extend `tests/cleanup_test.rs` (unit only; races
   are tested as deterministic call-orderings per the unit-testing doctrine,
@@ -747,7 +752,7 @@ missing input validation) and should be reviewed together.
     the session row is still `in_progress`, then call
     `cleanup_expired_session_version` directly; assert the version row is
     untouched (status-guarded delete matched zero rows).
-  Run: `cargo test -p file-storage --test cleanup_test` — all pass, suite
+  Run: `cargo test -p cf-gears-file-storage --test cleanup_test` — all pass, suite
   stays sleep-free and completes in well under 5s.
   - **E2E**: none — "unit only, not a seam." The orderings above **are** the
     race, expressed deterministically; e2e's no-sleep rule makes a
@@ -755,7 +760,7 @@ missing input validation) and should be reviewed together.
 
 - **Done-check**:
   ```
-  cargo test -p file-storage --test cleanup_test sweep_after_complete_wins_does_not_delete_bound_version sweep_before_complete_wins_cleans_up_expired_session
+  cargo test -p cf-gears-file-storage --test cleanup_test sweep_after_complete_wins_does_not_delete_bound_version sweep_before_complete_wins_cleans_up_expired_session
   ```
   Both green = complete.
 
@@ -862,8 +867,8 @@ missing input validation) and should be reviewed together.
      to the uploading client — same "the client should retry" contract
      finalize already uses). WHY: this is the sidecar half of group B — today
      it silently drops this responsibility entirely.
-  8. **Verify after 4-7**: `cargo build -p file-storage --bin sidecar 2>&1 | tail -30`
-     and `cargo build -p file-storage 2>&1 | tail -30` both compile.
+  8. **Verify after 4-7**: `cargo build -p cf-gears-file-storage --bin sidecar 2>&1 | tail -30`
+     and `cargo build -p cf-gears-file-storage 2>&1 | tail -30` both compile.
 
 - **New/changed tests** — rewrite the misleading topology in
   `tests/multipart_test.rs` (per Tier 3 item 3.3's verifier finding: existing
@@ -891,7 +896,7 @@ missing input validation) and should be reviewed together.
   - `multipart_initiate_rejected_when_backend_not_multipart_native` —
     table-driven: `[("local-fs"-only registry, expect reject), ("memory"-only
     registry, expect accept)]`.
-  Run: `cargo test -p file-storage --test multipart_test` — all pass.
+  Run: `cargo test -p cf-gears-file-storage --test multipart_test` — all pass.
   - **E2E**: none for the structural bug itself (deterministic
     registration/wiring defect, fully caught by the unit test above — "unit
     only, not a seam"). Once a real backend supports multipart (S3, item
@@ -903,7 +908,7 @@ missing input validation) and should be reviewed together.
 
 - **Done-check**:
   ```
-  cargo test -p file-storage --test multipart_test multipart_initiate_against_real_default_topology_is_rejected_until_backend_supports_it multipart_complete_uses_reported_parts_not_empty_list
+  cargo test -p cf-gears-file-storage --test multipart_test multipart_initiate_against_real_default_topology_is_rejected_until_backend_supports_it multipart_complete_uses_reported_parts_not_empty_list
   ```
   Both green = the two structural fixes are independently verified.
 
@@ -954,7 +959,7 @@ missing input validation) and should be reviewed together.
      exact pattern `maybe_expire_file` already uses for `list_metadata`; a
      confirmed version list is now a precondition for ever calling
      `delete_file_with_event`.
-  2. **Verify**: `cargo build -p file-storage 2>&1 | tail -20` — compiles
+  2. **Verify**: `cargo build -p cf-gears-file-storage 2>&1 | tail -20` — compiles
      (no signature change, same `usize` return type via the early `return 0`).
 
 - **New/changed tests** — extend `tests/cleanup_test.rs` with a
@@ -973,7 +978,7 @@ missing input validation) and should be reviewed together.
     for this file, (c) a **second**, unrelated matching file in the same
     sweep (real `list_versions`, no fault injected) **is** deleted —
     proving one file's fault doesn't abort the whole sweep.
-  Run: `cargo test -p file-storage --test cleanup_test expire_file_list_versions_error_does_not_delete_file`
+  Run: `cargo test -p cf-gears-file-storage --test cleanup_test expire_file_list_versions_error_does_not_delete_file`
   — passes.
   - **E2E**: none — fault injection via a fake store trait is inherently a
     unit concern; there is no stable, non-flaky way to force this specific
@@ -982,7 +987,7 @@ missing input validation) and should be reviewed together.
 
 - **Done-check**:
   ```
-  cargo test -p file-storage --test cleanup_test expire_file_list_versions_error_does_not_delete_file
+  cargo test -p cf-gears-file-storage --test cleanup_test expire_file_list_versions_error_does_not_delete_file
   ```
   Green = complete.
 
@@ -1017,8 +1022,8 @@ missing input validation) and should be reviewed together.
      needed). WHY: makes in-memory-backend registration an explicit,
      off-by-default opt-in rather than an unconditional constant, matching
      how `enable_background_sweep` is already gated.
-  2. **Verify**: `cargo build -p file-storage 2>&1 | tail -20` — compiles;
-     `cargo test -p file-storage config_tests::rejects_unknown_fields` still
+  2. **Verify**: `cargo build -p cf-gears-file-storage 2>&1 | tail -20` — compiles;
+     `cargo test -p cf-gears-file-storage config_tests::rejects_unknown_fields` still
      passes (new field has a default, so omitting it from JSON config stays
      valid).
   3. **File**: `src/gear.rs`, `init` (L62-79). Change the backend-vec
@@ -1040,10 +1045,10 @@ missing input validation) and should be reviewed together.
      `config/quickstart.yaml`, and any test harness config and add
      `enable_in_memory_backend: true` there if they rely on the `"memory"`
      backend id being registered.
-  4. **Verify**: `cargo build -p file-storage 2>&1 | tail -30`; run the full
+  4. **Verify**: `cargo build -p cf-gears-file-storage 2>&1 | tail -30`; run the full
      existing suite once to catch any test/config that silently depended on
      `"memory"` being present unconditionally:
-     `cargo test -p file-storage 2>&1 | tail -60` — any new failures here
+     `cargo test -p cf-gears-file-storage 2>&1 | tail -60` — any new failures here
      point at a config that needs the new flag added (see step 3's note).
   5. **File**: `src/infra/backend/mod.rs`, `BackendCapabilities`
      (L31-44). Add `pub durable: bool,` to the struct. Since the struct
@@ -1056,7 +1061,7 @@ missing input validation) and should be reviewed together.
      (`src/infra/backend/in_memory.rs:58-64`) relying on the `false`
      default (add a comment noting it's intentional). WHY: this is the
      capability flag the plan's `migrate_backend` guard (next step) keys off.
-  6. **Verify**: `cargo build -p file-storage 2>&1 | tail -20` — compiles
+  6. **Verify**: `cargo build -p cf-gears-file-storage 2>&1 | tail -20` — compiles
      (struct field addition + two explicit-set edits).
   7. **File**: `src/domain/service/backend.rs`, `migrate_backend`
      (L35-117). After resolving `dest = self.backends.get(target_backend_id)?`
@@ -1074,8 +1079,8 @@ missing input validation) and should be reviewed together.
      even for a legitimately-configured non-durable backend (e.g. a
      dev-tenant `memory` backend) — an ordinary WRITE-authorized caller can
      no longer silently migrate durable content onto it.
-  8. **Verify**: `cargo build -p file-storage 2>&1 | tail -20`;
-     `cargo clippy -p file-storage -- -D warnings` clean.
+  8. **Verify**: `cargo build -p cf-gears-file-storage 2>&1 | tail -20`;
+     `cargo clippy -p cf-gears-file-storage -- -D warnings` clean.
 
 - **New/changed tests**:
   - Extend `src/gear_tests.rs`:
@@ -1103,7 +1108,7 @@ missing input validation) and should be reviewed together.
     `migrate_backend_allows_non_durable_target_for_admin_scope` — same with
     an admin-scoped authorizer; assert `Ok(())` and the DB row now points at
     `"alt"`.
-  Run: `cargo test -p file-storage gear_default_config_excludes_in_memory_backend gear_dev_flag_enables_in_memory_backend migrate_backend_rejects_non_durable_target_for_non_admin migrate_backend_allows_non_durable_target_for_admin_scope`
+  Run: `cargo test -p cf-gears-file-storage gear_default_config_excludes_in_memory_backend gear_dev_flag_enables_in_memory_backend migrate_backend_rejects_non_durable_target_for_non_admin migrate_backend_allows_non_durable_target_for_admin_scope`
   — all pass.
   - **E2E**: none — "unit only, not a seam." Registration is a pure
     config-to-registry construction function; the authorization gate is a
@@ -1111,7 +1116,7 @@ missing input validation) and should be reviewed together.
 
 - **Done-check**:
   ```
-  cargo test -p file-storage gear_default_config_excludes_in_memory_backend migrate_backend_rejects_non_durable_target_for_non_admin
+  cargo test -p cf-gears-file-storage gear_default_config_excludes_in_memory_backend migrate_backend_rejects_non_durable_target_for_non_admin
   ```
   Both green = complete.
 
@@ -1157,7 +1162,7 @@ missing input validation) and should be reviewed together.
      simpler and eliminates the parameter as an attack surface. Bring this
      product decision to the team (🛑, same discussion as 0.7's admin scope);
      the ownership-gate above is the minimal fix either way.
-  3. **Verify**: `cargo build -p file-storage 2>&1 | tail -20`; clippy clean.
+  3. **Verify**: `cargo build -p cf-gears-file-storage 2>&1 | tail -20`; clippy clean.
 - **New/changed tests** — extend `tests/service_test.rs` (or a new
   `tests/list_authz_test.rs`) using the deny-capable `ScopedTestAuthorizer`
   from 0.7 (not `TenantOnlyAuthorizer`, which grants everything):
@@ -1169,7 +1174,7 @@ missing input validation) and should be reviewed together.
     assert the victim's files are returned.
   - **E2E**: same optional cross-subject seam as 0.7 (reuse
     `E2E_AUTH_TOKEN_USER_B`); `test_cross_user_file_listing_denied_by_real_authz`.
-- **Done-check**: `cargo test -p file-storage list_files_foreign_owner_without_admin_is_denied` green.
+- **Done-check**: `cargo test -p cf-gears-file-storage list_files_foreign_owner_without_admin_is_denied` green.
 
 ---
 
@@ -1211,7 +1216,7 @@ missing input validation) and should be reviewed together.
      request / `Forbidden`). WHY: one caller's key can never surface another's
      ticket. Coordinate the column addition with 2.1's `request_hash` migration
      — do both in one additive migration to avoid two schema churns.
-  3. **Verify**: `cargo build -p file-storage 2>&1 | tail -20`; clippy clean.
+  3. **Verify**: `cargo build -p cf-gears-file-storage 2>&1 | tail -20`; clippy clean.
 - **New/changed tests** — extend `tests/multipart_test.rs`' idempotency block
   (L584-677) with the deny-capable authorizer:
   - `idempotency_replay_requires_authorization` — seed a ticket as an
@@ -1222,7 +1227,7 @@ missing input validation) and should be reviewed together.
     receive A's ticket (fresh request or denial), and A's replay still works.
   - **E2E**: fold into the 0.9/0.7 cross-subject seam if `E2E_AUTH_TOKEN_USER_B`
     exists; otherwise unit coverage is sufficient to land.
-- **Done-check**: `cargo test -p file-storage idempotency_replay_requires_authorization idempotency_key_scoped_to_subject` green, and
+- **Done-check**: `cargo test -p cf-gears-file-storage idempotency_replay_requires_authorization idempotency_key_scoped_to_subject` green, and
   `rg -n "authorize" src/domain/service/create.rs` shows the authorize call
   precedes the idempotency lookup.
 
@@ -1269,7 +1274,7 @@ missing input validation) and should be reviewed together.
      count-based safety valve — if a single rule would match more than N% of the
      tenant's files in one sweep tick, log loudly / require a confirmation flag.
      Track as a fast-follow; not required to land the validation above.
-  4. **Verify**: `cargo build -p file-storage 2>&1 | tail -20`; clippy clean.
+  4. **Verify**: `cargo build -p cf-gears-file-storage 2>&1 | tail -20`; clippy clean.
 - **New/changed tests** — extend `tests/enforce_test.rs` or `src/domain/policy_tests.rs`:
   - `create_retention_rule_zero_max_age_is_rejected` — assert
     `DomainError::Validation` and zero rows written; **and** a companion
@@ -1280,7 +1285,7 @@ missing input validation) and should be reviewed together.
   - `set_policy_star_slash_star_mime_is_rejected_or_defined` (assert whichever
     semantic the team picks — reject, or documented allow-all).
   - **E2E**: none — deterministic input-validation logic, "unit only, not a seam."
-- **Done-check**: `cargo test -p file-storage create_retention_rule_zero_max_age_is_rejected` green.
+- **Done-check**: `cargo test -p cf-gears-file-storage create_retention_rule_zero_max_age_is_rejected` green.
 
 ---
 
@@ -1810,7 +1815,7 @@ This is the largest item — four sub-items plus a dedicated test strategy. Re-v
      `mime::validate` logic (the one already in `data_plane.rs`), do not
      duplicate sniffing. On mismatch return a clean 400/validation, and persist
      the **validated** MIME, not the client's claim.
-  3. **Verify**: `cargo build -p file-storage --bin sidecar 2>&1 | tail -20`;
+  3. **Verify**: `cargo build -p cf-gears-file-storage --bin sidecar 2>&1 | tail -20`;
      clippy clean.
 - **New/changed tests**:
   - `finalize_rejects_content_not_matching_declared_mime` — presign as
@@ -1821,7 +1826,7 @@ This is the largest item — four sub-items plus a dedicated test strategy. Re-v
   - **E2E** (justified — the trust boundary is the real sidecar stream + token):
     add `test_upload_content_mime_mismatch_is_rejected` to
     `lifecycle/test_file_storage_lifecycle.py`.
-- **Done-check**: `cargo test -p file-storage finalize_rejects_content_not_matching_declared_mime` green.
+- **Done-check**: `cargo test -p cf-gears-file-storage finalize_rejects_content_not_matching_declared_mime` green.
 
 ---
 
@@ -1858,7 +1863,7 @@ This is the largest item — four sub-items plus a dedicated test strategy. Re-v
      `status`/`body_text`/`reqwest` error **only** in the server-side
      `tracing::error!` (already emitted). WHY: the client must not learn the
      internal control-plane hostname/port or the control plane's error body.
-  3. **Verify**: `cargo build -p file-storage --bin sidecar 2>&1 | tail -20`.
+  3. **Verify**: `cargo build -p cf-gears-file-storage --bin sidecar 2>&1 | tail -20`.
 - **New/changed tests** — in the sidecar `#[cfg(test)]` module (uses the
   `build_router` refactor from 1.6):
   - `download_range_response_includes_content_range` — request a sub-range via
@@ -1869,7 +1874,7 @@ This is the largest item — four sub-items plus a dedicated test strategy. Re-v
     callback failure; assert the client-facing body contains neither the control
     URL nor the raw upstream body.
   - **E2E**: piggyback range assertions on the existing lifecycle download step.
-- **Done-check**: `cargo test -p file-storage download_range_response_includes_content_range finalize_failure_does_not_leak_control_plane_url` green.
+- **Done-check**: `cargo test -p cf-gears-file-storage download_range_response_includes_content_range finalize_failure_does_not_leak_control_plane_url` green.
 
 ---
 
@@ -1913,7 +1918,7 @@ This is the largest item — four sub-items plus a dedicated test strategy. Re-v
   - Invariant test `usage_deltas_sum_to_zero_over_create_upload_delete` — a full
     create→finalize→delete cycle nets to zero bytes and zero files.
   - **E2E**: cross-gear, deferred to the same track as 1.4's quota e2e.
-- **Done-check**: `cargo test -p file-storage usage_deltas_sum_to_zero_over_create_upload_delete` green.
+- **Done-check**: `cargo test -p cf-gears-file-storage usage_deltas_sum_to_zero_over_create_upload_delete` green.
 
 ---
 
@@ -1934,7 +1939,7 @@ replaying the original ticket. An identical retry still replays unchanged.
 
 **Pre-state check**:
 ```
-cargo test -p file-storage --test enforce_test idempotency 2>&1 | tail -20
+cargo test -p cf-gears-file-storage --test enforce_test idempotency 2>&1 | tail -20
 grep -n "request_hash" gears/file-storage/file-storage/src/infra/storage/entity/idempotency_key.rs
 ```
 Expect: no `request_hash` symbol anywhere yet; `create_file` (`src/domain/service/create.rs:106-121`)
@@ -2013,20 +2018,20 @@ returns the stored ticket unconditionally once a live record is found.
    - Add `request_hash` to the `IdempotencyInsert` literal built at lines
      220-229.
 
-5. Rebuild the SDK/gear if `cargo check -p file-storage` surfaces any other
+5. Rebuild the SDK/gear if `cargo check -p cf-gears-file-storage` surfaces any other
    call site missing the new field (expected: none outside the files above,
    since `IdempotencyInsert`/`IdempotencyRecord` are gear-internal types).
 
 **Verify after each step**:
-- After step 1: `cargo test -p file-storage --lib migrations 2>&1 | tail -5` and
+- After step 1: `cargo test -p cf-gears-file-storage --lib migrations 2>&1 | tail -5` and
   a throwaway `sea_orm_migration` smoke: `cargo run --bin <migration-check-if-any>`
   is unnecessary — `migration_test.rs`'s `migrated_db()` helper (step 6 below)
   already runs every registered migration against SQLite `:memory:` on every
   test invocation, so a broken `up()` fails the whole suite immediately.
-- After step 2-3: `cargo check -p file-storage` compiles with no dangling
+- After step 2-3: `cargo check -p cf-gears-file-storage` compiles with no dangling
   field errors.
-- After step 4: `cargo test -p file-storage --test enforce_test` and
-  `cargo test -p file-storage --test multipart_test idempotency` both green.
+- After step 4: `cargo test -p cf-gears-file-storage --test enforce_test` and
+  `cargo test -p cf-gears-file-storage --test multipart_test idempotency` both green.
 
 **New/changed tests** (naming per `{area}_{scenario}`, unit only per the
 doctrine — this is pure request-comparison logic plus an additive column, no
@@ -2049,7 +2054,7 @@ PG-specific behavior):
     via raw SQL omitting `request_hash`, assert it defaults to an empty blob
     (not a constraint violation) via a subsequent `SELECT`.
 
-**Done-check**: `cargo test -p file-storage` green; the new migration file is
+**Done-check**: `cargo test -p cf-gears-file-storage` green; the new migration file is
 registered in `mod.rs`; `idempotency_replay_with_diverging_owner_returns_conflict`
 and its siblings fail on `main`/pre-fix and pass post-fix (sanity-check by
 temporarily reverting the comparison in `create_file` and re-running).
@@ -2140,8 +2145,8 @@ secure layer"); `list_versions` handler has no `Query<...>` extractor at all.
 **Verify after each step**:
 - Step 1-2: a throwaway test creating 3 versions for one file and 3 for
   another, calling `get()` for a version in the first file, asserting the
-  correct row and no cross-file bleed; `cargo test -p file-storage --lib` green.
-- Step 3-4: `cargo test -p file-storage --test service_test` green (extend
+  correct row and no cross-file bleed; `cargo test -p cf-gears-file-storage --lib` green.
+- Step 3-4: `cargo test -p cf-gears-file-storage --test service_test` green (extend
   per "New tests" below before this passes meaningfully).
 - Step 5-6: `curl -s "$BASE/files/$ID/versions?limit=2&offset=0"` (or the
   route's e2e equivalent) returns exactly 2 items when the file has more.
@@ -2166,7 +2171,7 @@ secure layer"); `list_versions` handler has no `Query<...>` extractor at all.
   reproducible entirely on SQLite; the amplification-DoS angle is explicitly
   deferred to Tier 4 item 4.10 per the plan's own coverage matrix.
 
-**Done-check**: `cargo test -p file-storage` green; `routes.rs` diff shows the
+**Done-check**: `cargo test -p cf-gears-file-storage` green; `routes.rs` diff shows the
 two new query params; the OpenAPI diff is clean; the version_repo
 investigation's outcome (fixed vs. documented-deferral) is recorded in the PR
 description either way.
@@ -2233,8 +2238,8 @@ takes no "expected current backend" parameters either.
    branch.
 
 **Verify after each step**:
-- Step 1-2: `cargo check -p file-storage` (signature change compiles).
-- Step 3: `cargo test -p file-storage --test cleanup_test migrate_backend`
+- Step 1-2: `cargo check -p cf-gears-file-storage` (signature change compiles).
+- Step 3: `cargo test -p cf-gears-file-storage --test cleanup_test migrate_backend`
   green (extend per below before this is meaningful); manually trace one
   `migrate_backend` call in a debugger/log line to confirm the two new CAS
   columns appear in the emitted SQL (`RUST_LOG=sea_orm=debug`).
@@ -2262,7 +2267,7 @@ takes no "expected current backend" parameters either.
   against a naive fix that unconditionally cleans up the destination.
 - No E2E — deterministic CAS logic, no PG-specific SQL semantics involved.
 
-**Done-check**: `cargo test -p file-storage` green;
+**Done-check**: `cargo test -p cf-gears-file-storage` green;
 `concurrent_migrate_backend_second_racer_is_rejected` fails against the
 pre-fix code (temporarily drop the two new `.add()` predicates and confirm
 both racer calls report `rows_affected == 1`) and passes post-fix.
@@ -2356,7 +2361,7 @@ confirm whether the surrounding call site wraps it, per step 2 below);
   local Postgres if available (`docker compose`/`quickstart` DB) and confirm
   `\d policies` shows both partial unique indexes — this is the PG-specific
   concern the plan flags as an e2e/manual check, not a required automated gate.
-- Step 3-4: `cargo test -p file-storage --test enforce_test` (policy tests)
+- Step 3-4: `cargo test -p cf-gears-file-storage --test enforce_test` (policy tests)
   green; a manual two-sequential-calls test (below) shows one row.
 
 **New/changed tests**:
@@ -2386,7 +2391,7 @@ confirm whether the surrounding call site wraps it, per step 2 below);
   not duplicate here; only add it to this item's test file if 0.7 lands
   without that specific check.
 
-**Done-check**: `cargo test -p file-storage` green; two sequential `upsert`
+**Done-check**: `cargo test -p cf-gears-file-storage` green; two sequential `upsert`
 calls for the same scope leave exactly one row (assert via direct count);
 migration applies cleanly on a fresh SQLite `:memory:` DB and (spot-check) a
 real Postgres instance.
@@ -2478,7 +2483,7 @@ description — do not silently pick one without recording the choice):
 **Verify after each step**:
 - Step 1-2: regenerate OpenAPI, diff shows only the expected status-code/
   declaration changes on the three routes touched.
-- Step 3: `cargo test -p file-storage --test error_mapping_test` green,
+- Step 3: `cargo test -p cf-gears-file-storage --test error_mapping_test` green,
   and (regression check) temporarily revert step 2 and confirm the new test
   fails — proving the test actually pins the contract.
 
@@ -2521,7 +2526,7 @@ description — do not silently pick one without recording the choice):
   already has `test_unknown_file_returns_problem_json` (404) as the template
   for the `Content-Type` assertion shape.
 
-**Done-check**: `cargo test -p file-storage` green; `error_mapping_test.rs`
+**Done-check**: `cargo test -p cf-gears-file-storage` green; `error_mapping_test.rs`
 enumerates every `DomainError` variant (grep the enum definition and the test
 file line counts to confirm parity); api.md updated in the same or an
 immediately-following PR (3.7).
@@ -2604,7 +2609,7 @@ logic, deterministic, no PG-specific behavior):
   - `finalize_oversized_hash_hex_is_rejected` — 48-byte hex; same assertion,
     covers the "too long" direction the length check now catches.
 
-**Done-check**: `cargo test -p file-storage` green; manually confirm (by
+**Done-check**: `cargo test -p cf-gears-file-storage` green; manually confirm (by
 temporarily removing the new guards) that a negative size / wrong-length hash
 previously surfaced as `DomainError::Database` → 500, and now surfaces as
 `DomainError::Validation` → 400.
@@ -2658,7 +2663,7 @@ content; ETag derives from a dangling id. The reverse interleaving dangles too
   have dangled pre-fix; assert `content_id` always resolves to an existing row.
 - No E2E — deterministic ordering, unit-tier per doctrine.
 
-**Done-check**: `cargo test -p file-storage delete_current_version_is_rejected` green.
+**Done-check**: `cargo test -p cf-gears-file-storage delete_current_version_is_rejected` green.
 
 ---
 
@@ -2696,7 +2701,7 @@ it keeps showing up in listings as a file that can never serve content.
   abandoned pending version and one `Available` version keeps the file row.
 - No E2E — deterministic, unit-tier.
 
-**Done-check**: `cargo test -p file-storage sweep_deletes_abandoned_zero_version_file` green.
+**Done-check**: `cargo test -p cf-gears-file-storage sweep_deletes_abandoned_zero_version_file` green.
 
 ---
 
@@ -2761,7 +2766,7 @@ the clients that tried to use it.
 - `patch_metadata_stale_if_match_returns_conflict` (existing CAS behavior lock-in).
 - No E2E — deterministic header parsing.
 
-**Done-check**: `cargo test -p file-storage patch_metadata_malformed_if_match_returns_400` green.
+**Done-check**: `cargo test -p cf-gears-file-storage patch_metadata_malformed_if_match_returns_400` green.
 
 ---
 
@@ -2799,7 +2804,7 @@ default backend (in-memory or S3) is configured.
 - `round_up_to_does_not_overflow_on_max_input` (unit on the helper).
 - No E2E — deterministic arithmetic.
 
-**Done-check**: `cargo test -p file-storage round_up_to_does_not_overflow_on_max_input` green.
+**Done-check**: `cargo test -p cf-gears-file-storage round_up_to_does_not_overflow_on_max_input` green.
 
 ---
 
@@ -2834,7 +2839,7 @@ grant.
 - `transfer_to_same_tenant_member_succeeds` (positive control).
 - **E2E**: only if the principal-validation SDK is wired; otherwise unit.
 
-**Done-check**: `cargo test -p file-storage transfer_to_nonexistent_owner_is_rejected` green.
+**Done-check**: `cargo test -p cf-gears-file-storage transfer_to_nonexistent_owner_is_rejected` green.
 
 ---
 
@@ -2867,7 +2872,7 @@ latent wrong mapping.
   behavior the fix chooses.
 - No E2E — pure mapping logic.
 
-**Done-check**: `cargo test -p file-storage sign_url_rejects_or_correctly_maps_multipart_part` green.
+**Done-check**: `cargo test -p cf-gears-file-storage sign_url_rejects_or_correctly_maps_multipart_part` green.
 
 ---
 
@@ -3260,7 +3265,7 @@ resource type, misleading clients.
 **New/changed tests**: `delete_missing_retention_rule_returns_retention_not_found`
 — assert the problem+json `type`/detail names a retention rule, not a file.
 
-**Done-check**: `cargo test -p file-storage delete_missing_retention_rule_returns_retention_not_found` green.
+**Done-check**: `cargo test -p cf-gears-file-storage delete_missing_retention_rule_returns_retention_not_found` green.
 
 ---
 
@@ -3455,7 +3460,7 @@ Within Tier 2/3:
 
 - **PR-T2a: `error_mapping_test.rs` + error-code drift (2.5)** — standalone,
   no migration, touches `error.rs`/`routes.rs` only. Verification gate:
-  `cargo test -p file-storage --test error_mapping_test` green and pinned
+  `cargo test -p cf-gears-file-storage --test error_mapping_test` green and pinned
   against every `DomainError` variant; one e2e Content-Type assertion added
   to an existing lifecycle call (no new HTTP request).
 - **PR-T2b: negative size / hash length validation (2.6)** — standalone, tiny,
@@ -3466,7 +3471,7 @@ Within Tier 2/3:
 - **PR-T2c: idempotency request-hash migration + replay validation (2.1)** —
   needs its own migration file; land independently since it touches
   `create.rs`/`idempotency_repo.rs`/entity/store layers not shared with
-  other Tier 2 items. Gate: `cargo test -p file-storage --test multipart_test idempotency`
+  other Tier 2 items. Gate: `cargo test -p cf-gears-file-storage --test multipart_test idempotency`
   green, new migration registered and SQLite-tested.
 - **PR-T2d: policy upsert unique-constraint + `ON CONFLICT` rewrite (2.4)** —
   its own migration; can land in parallel with T2c (different tables). Gate:
@@ -3543,7 +3548,7 @@ only has to happen once against the final schema rather than twice.
 > steps. Eight DCO-signed commits. Working tree clean.
 >
 > NOTE: the Cargo package is `cf-gears-file-storage` (+ `-sdk`), not
-> `file-storage` — every `-p file-storage` command in this plan must use
+> `file-storage` — every `-p cf-gears-file-storage` command in this plan must use
 > `-p cf-gears-file-storage`.
 
 ### Commits (branch `feat/file-storage-p2-remediation`, off `main`)

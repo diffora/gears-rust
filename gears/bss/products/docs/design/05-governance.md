@@ -180,7 +180,7 @@ GTS-typed resources × actions, deny-by-default: `product × read|write|publish`
 `sku × read|write|publish`, `category × read|write`, `attribute_definition × write`,
 `recognized_set × write`, `plan_tier × write`, `approval × submit|read|decide`,
 `scheduled_transition × write|cancel|read` (04's doors + the 08 dashboard projection — M4; the
-governed cancel is a `GovernedLiveOp` subject kind on `ApprovalRecord`), `catalog_version × read|publish|request|ack|release|force_complete` (06's doors: S2S
+governed cancel is a `GovernedLiveOp` subject kind on `ApprovalRecord`), `catalog_version × read|publish|request|ack|release|force_complete` (the `release` action is **P-D-18**'s door) (06's doors: S2S
 request/ack/release via service-identity claims, operator publish/force-complete),
 `freeze_participant × write` (06), **`metadata × write`** (02's metadata-map door — added
 2026-08-26: the door existed with no pair, and P-D-06 makes the map mutable in place on a
@@ -245,7 +245,7 @@ through the gate).
 
 ## 6. Traces to / Risks & Open items
 
-**Traces to**: `cpt-cf-bss-products-fr-materiality-gated-publish`, `cpt-cf-bss-products-fr-tenant-isolation-breakglass`,
+**Traces to**: `cpt-cf-bss-products-usecase-approval-publish` (§10 use case, claimed by id here 2026-08-26 — all seven were in lint 1's universe and none was claimed); `cpt-cf-bss-products-fr-materiality-gated-publish`, `cpt-cf-bss-products-fr-tenant-isolation-breakglass`,
 `cpt-cf-bss-products-fr-breakglass-action-scope`; AC #26, #30, #31; §17.1 (interim default, enforced); P-D-02
 (ceremony); consumed by 01 (`inst-fd-governance-gate`), 02 (`GovernedLiveOp`), 03 (override,
 finance fields), 04 (un-deprecation, retirement confirmation, scheduled-approval pinning).

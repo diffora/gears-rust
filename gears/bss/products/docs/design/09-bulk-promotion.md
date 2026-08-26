@@ -174,7 +174,7 @@ are streamed, not stored (determinism makes storage redundant); events per C6.
 
 ## 6. Traces to / Risks & Open items
 
-**Traces to**: `cpt-cf-bss-products-fr-bulk-import-export` (whole), the promotion clause + AC #33/#33a +
+**Traces to**: `cpt-cf-bss-products-usecase-bulk-operations`, `cpt-cf-bss-products-usecase-environment-promotion` (§10 use cases, claimed by id here 2026-08-26 — all seven were in lint 1's universe and none was claimed); `cpt-cf-bss-products-fr-bulk-import-export` (whole), the promotion clause + AC #33/#33a +
 the promotion use case + `usecase-bulk-operations` (L8); §5.1 "Bulk export & bulk lifecycle
 tooling" (p2 half — priorities reconciled: export determinism and promotion are MUSTs of the
 p1 FR, so their flows build at p1 while faceted bulk-lifecycle tooling stays p2, L3); AC #38

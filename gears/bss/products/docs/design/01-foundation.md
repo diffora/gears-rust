@@ -336,7 +336,7 @@ and the ordering key.
 
 ## 6. Traces to / Risks & Open items
 
-**Traces to**: **NFRs by id** — #6 `cpt-cf-bss-products-nfr-scale-extensibility`, #8
+**Traces to**: `cpt-cf-bss-products-usecase-product-sku-editor` (§10 use case, claimed by id here 2026-08-26 — all seven were in lint 1's universe and none was claimed); **NFRs by id** — #6 `cpt-cf-bss-products-nfr-scale-extensibility` (the entity-count half: the head/version split and the index shape; `CatalogVersion` growth is slice 06's), #8
 `cpt-cf-bss-products-nfr-determinism-integrity` (version immutability, taxonomy acyclicity, identity uniqueness and
 metering-unit validity enforced fail-closed: this slice's pipeline, edge list and trigger
 whitelist are its whole mechanism, and it was referenced nowhere in the set — item 30 of the
