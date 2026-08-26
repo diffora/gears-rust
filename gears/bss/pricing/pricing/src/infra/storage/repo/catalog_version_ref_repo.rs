@@ -51,15 +51,20 @@
 //! [`next_committed_version_after`] answers "the smallest committed version of
 //! this tenant strictly above the frontier". D-114 says pin-eligibility
 //! requires "every **earlier version** to be itself pin-eligible", and
-//! `CatalogVersion` is minted by a **cross-tenant** registry — so a tenant's
-//! committed versions are a *subset* of the global sequence and are not
-//! contiguous. On the global reading no tenant could ever advance past a
-//! version another tenant's publish consumed, and every frontier in the
-//! deployment would stick at the first gap. `pricing_pin_frontier` is keyed
-//! `tenant_id` alone, which settles which reading was meant.
+//! `CatalogVersion` is minted **per tenant, gapless** — the registry's slice 06
+//! owns a per-tenant counter (`gears/bss/products/docs/design/06-catalog-version.md`
+//! §4). So "every earlier version" and "every earlier version this tenant has a
+//! ref for" describe the same set, and the reading is settled by the data model
+//! rather than by a choice this repo makes.
 //!
-//! **The ambiguity is reported**; what is implemented is the only buildable
-//! reading — every earlier version *this tenant has a ref for*.
+//! *Corrected 2026-08-26.* This doc argued from a **cross-tenant** registry
+//! minting one global sequence, of which a tenant held a sparse subset — the
+//! premise that made the walk look ambiguous and made a global reading stick at
+//! the first gap. That premise was retracted across pricing's own documents in
+//! `7f07b0d1e`, on the registry design cited above, and the retraction did not
+//! reach this file. What is implemented has not changed; the argument for it has.
+//! `pricing_pin_frontier` stays keyed `tenant_id` alone, which is correct under
+//! either premise.
 //!
 //! # What is deliberately absent, and whose it is
 //!
@@ -858,8 +863,8 @@ pub async fn overlay_revisions_at_or_below(
 /// smallest committed version at all, when the tenant has no frontier yet.
 ///
 /// This is what "the frontier's **next** version in order" means for a store
-/// whose version numbers come from a cross-tenant registry; the module doc
-/// carries the argument and reports the ambiguity.
+/// whose version numbers come from the registry's per-tenant gapless counter;
+/// the module doc carries the argument.
 ///
 /// # Errors
 /// [`RepoError::Db`] on a scope or storage failure;

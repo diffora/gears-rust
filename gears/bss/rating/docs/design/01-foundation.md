@@ -281,7 +281,7 @@ Selection and non-overlap use the pricing canonical key **verbatim**:
 
 The usage pair is an axis of the key **conditionally** (pricing D-196, 2026-08-06; adopted here
 verbatim per ADR-0001, and materialized on `SelectionKey` since T-D-35 / SEAMS K6, 2026-08-25):
-taken from the evaluation line for `chargeKind = usage`, the `''` sentinel otherwise — mirroring
+taken from the evaluation line for `chargeKind = usage`, absent otherwise — and *absent* is spelled per surface, exactly as pricing spells it (corrected 2026-08-26: this said "the `''` sentinel", which is only pricing's index-expression spelling and would have put `''` into a **rendered** key that pricing renders `none`, breaking the byte-identity ADR-0001 requires of the shared fixture set): the rendered `SelectionKey` carries pricing's absent-axis token — the literal `none` — in both usage positions, while the storage/index surface mirrors
 pricing's `COALESCE(meter,'')` index spelling. *Verbatim adoption is what makes this key ten and
 not eight; this block was short by the pair until 2026-08-26.*
 
