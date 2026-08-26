@@ -204,7 +204,10 @@ not consumed here**: `SkuReferenceCount` (slice 07), pricing signals (06/07).
 `ILLEGAL_TRANSITION`, `ILLEGAL_FIELD_MUTATION` (bucket-i write), `SCOPE_NOT_CONTAINED`,
 `PARENT_NOT_PUBLISHED` (registered by slice 04 on the publish edge but named here so AC #38's
 map is complete), `INCOMPLETE_ENTITY`, `APPROVAL_REQUIRED` (raised through the governance
-gate), `VALIDATION` (per-field envelope). Every code appears in exactly one raising **door** — a door, not a slice: validators registered into the `PublishDoor` raise through it;
+gate), `VALIDATION` (per-field envelope), `RETIREMENT_PENDING` (the create door's parent guard,
+`inst-fd-containment` — declared here 2026-08-26; slice 04 owns the un-deprecation arm of the
+same code, so this is the one code in the gear with two raising doors, and §3.3's
+one-door rule is stated per **arm** for it). Every code appears in exactly one raising **door** — a door, not a slice: validators registered into the `PublishDoor` raise through it;
 slice-owned codes (taxonomy cycles, unit rules, freeze, bulk rows…) are declared in their
 slices and the AC #38 ↔ code ↔ slice map is completed by slice 12's coverage check. Codes are
 part of the SDK contract; renames are breaking.

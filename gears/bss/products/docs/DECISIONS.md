@@ -108,7 +108,14 @@ joint contracts, cited from here by their pricing numbers, never duplicated.
   against usage records — not against catalog meters, which rating's quarantine rule
   fail-safes). The UC3(c) dimension-set cross-validation is **not** performed here (the registry
   assigns dimension sets to plan-price and holds no operand): its home is pricing
-  `inst-cmp-usagetype` (confirmed 2026-07-31, built) — priced `dimensionKey` **⊆** the
+  `inst-cmp-usagetype` (confirmed 2026-07-31 — **specified, not built**, corrected 2026-08-26:
+  pricing's `design/01-foundation.md` calls the binding "registry-dependent and deferred",
+  `design/03-price-structure.md` says "neither is enforced today and both codes are emitted
+  nowhere", and `pricing/src/domain/plan_rules.rs` lists `METER_USAGE_TYPE_UNBOUND` and
+  `METER_DIMENSION_UNDECLARED` under *What is deliberately absent*. **So no gate enforces
+  UC3(c) today, on either side** — the registry validates resolvability only, and pricing's
+  rule is authored and unbuilt. The invariant has a home and no enforcer; whoever builds
+  pricing's registry client owes it) — priced `dimensionKey` **⊆** the
   UsageType's `metadata_fields` at plan publish.
 - **Why**: both original clauses named operands that do not exist registry-side; subset (not
   equality) is the load-bearing invariant — pricing fewer dimensions than the source emits is
@@ -568,11 +575,17 @@ joint contracts, cited from here by their pricing numbers, never duplicated.
   this entry closes)
 - **Status**: **FLAGGED for the owner.** It is a shape counterpart gears build against, so it is
   the one entry here a neighbouring team can be broken by.
-- **Decision**: the inbound machine contracts of PRD §9.2 — the `CatalogVersion` **increment
-  request** and the **bundle composition-completed** signal — are consumed as **`products-sdk`
-  clients resolved from `ClientHub`**, in-process, rather than as REST doors that bind the
-  counterpart out-of-process. The increment request is registered in PRD §9.2 beside its
-  sibling, which is where the asymmetry between the two was first visible.
+- **Decision**: **every** inbound machine contract of PRD §9.2 is consumed as a **`products-sdk`
+  client resolved from `ClientHub`**, in-process, rather than as a REST door that binds the
+  counterpart out-of-process. §9.2 declares four — the `CatalogVersion` **increment request**,
+  the **`SkuReferenceCount`** watermark, the **freeze acknowledgment** (and its release half,
+  P-D-18) and the **bundle composition-completed** signal — so the rule is stated over the set
+  rather than over a pair. The increment request is registered in PRD §9.2 beside its sibling,
+  which is where the asymmetry between them was first visible.
+  *(Corrected 2026-08-26: this entry said "the two inbound machine contracts" and named the
+  increment request and the composition signal, while slice 12's `inst-sdk-surface` said "the
+  two" and named the increment request and the watermark. Two registers, two different pairs,
+  and §9.2 holds four contracts — so neither reading was right and the count was the defect.)*
 - **Why**: the platform's own composition model puts sibling BSS gears in one process behind
   `ClientHub`; a REST door for an in-process call buys a network hop, a second authz surface and
   a second failure mode for no isolation the deployment actually has. The SDK client keeps the
@@ -609,8 +622,13 @@ joint contracts, cited from here by their pricing numbers, never duplicated.
   stop a correction from silently changing what a live consumer already bound. Here the binding
   is *already* broken — the declared target does not exist — so refusing preserves nothing and
   repairs nothing. The reference being real is what makes the repair urgent.
-- **What this closes**: PRD §15 row *"UsageType deletion vs published declarations"*, whose
-  answer column read **TBD** while slice 07 already implemented an answer.
+- **What this closes, and what it does not**: it closes the **registry-side** half of the PRD §15
+  row *"UsageType deletion vs published declarations"* — the wedged-SKU repair, whose answer
+  column read **TBD** while slice 07 already implemented an answer. It does **not** close the
+  cross-gear half: the deletion-guard / deletion-signal negotiation with usage-collector stays
+  an open §15 item owned by that gear, exactly as P-D-05's residue records it. (Corrected
+  2026-08-26: this entry read as closing the whole row, which contradicted P-D-05 on the same
+  row — a local repair arm is not a deletion contract.)
 - **Rejected alternative**: drop `inst-bc-unresolvable` and leave the wedged SKU to the §15
   negotiation. Rejected because the negotiation has no v1 landing and the state is reachable in
   v1 — but this is the arm to strike if the owner prefers the quarantine fail-safe §15 names.
@@ -751,5 +769,15 @@ joint contracts, cited from here by their pricing numbers, never duplicated.
 - **Propagated**: PRD `fr-retirement-eol` + AC #18 (`fromVersion`'s definition and the
   re-announcement rule); design slice 04 `inst-rt-initiate` (`RETIREMENT_PENDING` struck from the
   publish door, re-emission added), §5 error taxonomy; slice 01 `inst-fd-containment` (the
-  live-retire-intent clause on parents is unaffected — it guards re-parenting, not publishing);
-  slice 12 `ObligationRegister` (the latest-wins consumer duty).
+  live-retire-intent clause on parents is unaffected); slice 12 `ObligationRegister` (the
+  latest-wins consumer duty).
+- **What the exemption leaves standing.** Corrected 2026-08-26: this entry first described
+  `inst-fd-containment` as guarding *re-parenting*, a door slice 01 does not have. It guards
+  **child creation** under a parent holding a live retire intent, and it is genuinely unaffected
+  by P-D-20, whose subject is the publish door. The consequence is worth stating rather than
+  leaving to be rediscovered: during the lead window the retiring parent's head stays
+  publishable while **no new SKU may be created under it**, and building the successor the
+  retirement's `replacedBy` must name is the window's most predictable use — slice 11's C1 says
+  exactly that. If that is the wrong trade, the fix belongs in `inst-fd-containment`, not here.
+  Named in words rather than as a propagation target, because this is a statement about a
+  clause that did **not** move.

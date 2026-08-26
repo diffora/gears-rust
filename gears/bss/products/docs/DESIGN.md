@@ -316,7 +316,7 @@ goldens.
 
 ## 4. Decision register & joint contracts
 
-- [`DECISIONS.md`](./DECISIONS.md) — P-D-01…13 (both summaries said "…06" / listed five while
+- [`DECISIONS.md`](./DECISIONS.md) — P-D-01…20 (both summaries said "…06" / listed five while
   the register held twelve — item 26 of the 2026-08-26 review; P-D-13 landed with that review's
   fix wave).
 - Joint contracts consumed here: **D-46**, **D-47** (pricing register); **UC3** binding (rating

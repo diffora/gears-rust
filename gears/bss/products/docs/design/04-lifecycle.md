@@ -169,7 +169,10 @@ only projects it); the deprecation mark pricing consumes — through AC #82 when
 
 `PARENT_NOT_PUBLISHED` (named in 01, registered here), `SCOPE_NOT_CONTAINED` (final semantics),
 `SCOPE_NARROWING_BLOCKED`, `RETIREMENT_LEAD_TIME`, `REPLACED_BY_NOT_PUBLISHED`,
-`SCHEDULE_STALE_APPROVAL` (raised by the `ActivationRunner` — its own door), `CASCADE_CONFIRMATION_REQUIRED`, `RETIREMENT_PENDING` (**un-deprecation only** — P-D-20 struck it from the publish door), `EOL_DISABLED`. AC #38 rows mapped:
+`SCHEDULE_STALE_APPROVAL` (raised by the `ActivationRunner` — its own door), `CASCADE_CONFIRMATION_REQUIRED`, `RETIREMENT_PENDING` (**this slice's arm is un-deprecation only** — P-D-20 struck it from the
+publish door; the code's other arm is slice 01's create-door parent guard `inst-fd-containment`,
+declared there — corrected 2026-08-26, "un-deprecation only" was false of the shipped design and
+would have mis-attributed the code in the SDK enum), `EOL_DISABLED`. AC #38 rows mapped:
 "publishing a SKU under a non-published parent", "a SKU scope falling outside its parent",
 "an indeterminate parent-child region-containment", "EOL retirement without an acknowledged
 migration consumer (post-v1)".

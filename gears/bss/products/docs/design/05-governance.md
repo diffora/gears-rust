@@ -182,7 +182,10 @@ GTS-typed resources × actions, deny-by-default: `product × read|write|publish`
 `scheduled_transition × write|cancel|read` (04's doors + the 08 dashboard projection — M4; the
 governed cancel is a `GovernedLiveOp` subject kind on `ApprovalRecord`), `catalog_version × read|publish|request|ack|release|force_complete` (06's doors: S2S
 request/ack/release via service-identity claims, operator publish/force-complete),
-`freeze_participant × write` (06), **`materiality_policy × write`** (the C4/P-D-11 object —
+`freeze_participant × write` (06), **`metadata × write`** (02's metadata-map door — added
+2026-08-26: the door existed with no pair, and P-D-06 makes the map mutable in place on a
+**published** entity with no version bump, so inheriting `sku × write` would let anyone who can
+author drafts mutate content a `CatalogVersion` captures), **`materiality_policy × write`** (the C4/P-D-11 object —
 field set + trigger + `N`; separate from every config grant so the threshold's own holder cannot
 weaken it, item 36 of the 2026-08-26 review), `compliance × export` (10's DSAR surface — never
 folded into `audit × export`),
@@ -207,7 +210,10 @@ through the gate).
 
 - **`products_approval`** — `approval_id` (PK) · `tenant_id` · subject `(kind, ref)` · pinned
   `internal_revision` · **`content_snapshot`** (stored at submission — never re-derived) ·
-  `diff_basis` (the published version id diffed against) · `quorum_descriptor` (required count,
+  `diff_basis` (the published version id diffed against) · `quorum_descriptor` (**stored at submission, never re-derived** — 2026-08-26: `predicateUnsatisfiable`
+  and `configuredQuorum` were required by §3.1 and §4's evaluator and named in neither shape, and
+  deriving `configuredQuorum` from current policy would change a **pending** record when the
+  tenant edits `N`) — `configuredQuorum` (the `N` in force at submission), required count,
   finance predicate, override conditions, **`quorum_reduced`** — P-D-13) · `state ∈ {pending, satisfied, consumed, rejected,
   superseded}` · `submitter` (pseudonymous) · timestamps. Partial `UNIQUE (tenant_id,
   subject_kind, subject_ref) WHERE state IN ('pending','satisfied')` — one open approval per

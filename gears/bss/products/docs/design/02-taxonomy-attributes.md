@@ -150,6 +150,10 @@ contract slice 08 projects.
 
 - [ ] `p2` - **ID**: `cpt-cf-bss-products-flow-metadata`
 
+*Door: `PATCH /bss-products/v1/{products|skus}/{id}/metadata`, grant **`metadata × write`** (05's
+catalog — named here 2026-08-26; the flow had named neither a path nor a pair, so slice 12's
+lint 3 could not see it).*
+
 1. [ ] - `p2` - Per-entity string→string map; size-bounded (configured caps on key count, key and value byte length — `METADATA_LIMIT`); non-localized; PII-prohibited (the same `inst-av-pii-block` hook, no carve-out); excluded from read-model search by construction (08 never projects it) - `inst-md-write`
 2. [ ] - `p2` - **Placement (P-D-06)**: the map lives **beside** the entity, outside the frozen published-version content — mutable in place on any non-terminal entity without a version bump, audited + `MetadataUpdated`-evented per write; a `CatalogVersion` captures the map **as of its own snapshot instant**, and that copy is frozen with the snapshot (old snapshots never move — byte-identity holds) - `inst-md-placement`
 
