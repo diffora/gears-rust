@@ -151,6 +151,16 @@ review), **`BULK_OVERRIDE_UNACKNOWLEDGED`** (`inst-bk-override`), `BULK_LIMIT`.
 Row-level failures otherwise reuse the owning slices' codes verbatim inside the ledger — bulk
 introduces no parallel taxonomy.
 
+**Problem responses (RFC 9457):** `PROMOTION_IDENTITY_CONFLICT`, `PROMOTION_DIRTY_HEAD` (409); `BULK_DEPENDENCY_FAILED`, `BULK_OVERRIDE_UNACKNOWLEDGED`, `BULK_LIMIT` (422).
+
+*Statuses added 2026-08-26. The gear declared its codes with no HTTP status and no
+problem-response block in any slice, against `guidelines/DNA/README.md`'s RFC 9457 rule and
+`.cf-studio/config/rules/api-contracts.md`. The mapping follows pricing's convention — 422 for
+content the door cannot process, 409 where the current state refuses the act, 403 where the
+caller may not perform it at all, 404 for a path naming a resource this tenant has none of,
+412 for the `If-Match` precondition, 503 where retry is the remedy. Proposed per row and open
+to correction; the requirement is that every code carries one.*
+
 ## 4. Data / Storage (normative shape; DDL in migrations)
 
 §3.1's two tables (tenant-scoped; ledger append-only after terminal states); export artifacts

@@ -195,6 +195,16 @@ inbound signal, not a request, so a blocked clear is an **alert plus a retained 
 (`composition_clear_held`) and never a refusal a producer would have to interpret — the same
 posture as 04's deferred retirement flip.
 
+**Problem responses (RFC 9457):** `CATALOG_VERSION_UNKNOWN`, `PARTICIPANT_UNKNOWN` (404); `FREEZE_INCOMPLETE`, `VERSION_FORCED_INCOMPLETE`, `STAGED_ENTITY_CHANGED` (409); `INTENT_REQUIRED` (422).
+
+*Statuses added 2026-08-26. The gear declared its codes with no HTTP status and no
+problem-response block in any slice, against `guidelines/DNA/README.md`'s RFC 9457 rule and
+`.cf-studio/config/rules/api-contracts.md`. The mapping follows pricing's convention — 422 for
+content the door cannot process, 409 where the current state refuses the act, 403 where the
+caller may not perform it at all, 404 for a path naming a resource this tenant has none of,
+412 for the `If-Match` precondition, 503 where retry is the remedy. Proposed per row and open
+to correction; the requirement is that every code carries one.*
+
 ### 3.3 Observability (the posting-safe budget)
 
 - [ ] `p2` - **ID**: `cpt-cf-bss-products-algo-posting-safe`

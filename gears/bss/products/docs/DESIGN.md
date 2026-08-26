@@ -351,6 +351,20 @@ schema-oracle goldens.
 
 ## 4. Additional context
 
+**On ADRs — an open convention question, raised 2026-08-26.** This gear has no `ADR/`
+directory. Pricing carries three, rating two, subscriptions three, and their `DESIGN.md`
+files reference those ADR ids. `docs/spec-templates/README.md` reserves an ADR for a
+decision where "there was a meaningful discussion/debate and the rationale needs to be
+preserved as a historical decision record", and at least three register entries have that
+shape: **P-D-01** (a broker-native envelope weighed against CloudEvents 1.0), **P-D-11**
+(the approver count as a policy value with floor 0) and **P-D-15** (SDK clients from
+`ClientHub` against out-of-process REST doors). Each carries its options and its rejected
+alternatives here rather than in an ADR. No written rule says a `DECISIONS.md` register
+substitutes for an ADR, and none says it does not. **Owner: Architecture** — either promote
+those three to ADRs under the template's naming, or record that this gear's register is its
+decision-record artifact. Until then products is the only BSS gear whose rejected-alternative
+record lives in no artifact `cfs` recognises as an ADR.
+
 **Decision register & joint contracts.**
 
 - [`DECISIONS.md`](./DECISIONS.md) — P-D-01…20 (both summaries said "…06" / listed five while

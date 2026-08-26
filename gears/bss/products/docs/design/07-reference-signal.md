@@ -174,6 +174,16 @@ exists by design; watermarks are state, not history)**; `SkuImmutableFieldCorrec
 `BREAKGLASS_CORRECTION_DISABLED`, `PRODUCER_SET_EMPTY_FORBIDDEN`. The correction door's quorum refusals ride the 05 gate's
 codes; structural-identity attempts ride 01's `ILLEGAL_FIELD_MUTATION`.
 
+**Problem responses (RFC 9457):** `PRODUCER_UNREGISTERED`, `BREAKGLASS_CORRECTION_DISABLED`, `PRODUCER_SET_EMPTY_FORBIDDEN` (403); `WATERMARK_REGRESSION`, `WATERMARK_CONFLICT`, `PRODUCER_RETIREMENT_WOULD_FREE`, `CORRECTION_REFERENCED`, `CORRECTION_DIRTY_HEAD`, `CORRECTION_APPROVAL_OPEN`, `CORRECTION_SIGNAL_AVAILABLE` (409); `WATERMARK_FUTURE`, `ILLEGAL_FIELD_MUTATION` (422).
+
+*Statuses added 2026-08-26. The gear declared its codes with no HTTP status and no
+problem-response block in any slice, against `guidelines/DNA/README.md`'s RFC 9457 rule and
+`.cf-studio/config/rules/api-contracts.md`. The mapping follows pricing's convention — 422 for
+content the door cannot process, 409 where the current state refuses the act, 403 where the
+caller may not perform it at all, 404 for a path naming a resource this tenant has none of,
+412 for the `If-Match` precondition, 503 where retry is the remedy. Proposed per row and open
+to correction; the requirement is that every code carries one.*
+
 ## 4. Data / Storage (normative shape; DDL in migrations)
 
 §3.1's two tables; **`products_reference_producer`** (F2 fix) — `(tenant_id, producer)` →

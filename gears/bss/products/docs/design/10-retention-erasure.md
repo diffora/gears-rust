@@ -159,6 +159,16 @@ GC + its alarms, the restore-drill results surface.
 02's, only the verdict policy lives here; kept out of this owned list per the one-declaration
 rule, L1.) The GC and drill raise alarms, not API errors.
 
+**Problem responses (RFC 9457):** `ERASURE_UNKNOWN_ACTOR` (404); `CONTENT_PII_BLOCKED` (422).
+
+*Statuses added 2026-08-26. The gear declared its codes with no HTTP status and no
+problem-response block in any slice, against `guidelines/DNA/README.md`'s RFC 9457 rule and
+`.cf-studio/config/rules/api-contracts.md`. The mapping follows pricing's convention — 422 for
+content the door cannot process, 409 where the current state refuses the act, 403 where the
+caller may not perform it at all, 404 for a path naming a resource this tenant has none of,
+412 for the `If-Match` precondition, 503 where retry is the remedy. Proposed per row and open
+to correction; the requirement is that every code carries one.*
+
 ## 4. Data / Storage (normative shape; DDL in migrations)
 
 §3.1's map (the PII exception table — excluded from every export except the compliance

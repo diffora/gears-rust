@@ -212,6 +212,16 @@ slice-owned codes (taxonomy cycles, unit rules, freeze, bulk rows…) are declar
 slices and the AC #38 ↔ code ↔ slice map is completed by slice 12's coverage check. Codes are
 part of the SDK contract; renames are breaking.
 
+**Problem responses (RFC 9457):** `APPROVAL_REQUIRED` (403); `DUPLICATE_NAME`, `DUPLICATE_SKU_CODE`, `IDEMPOTENCY_CONFLICT`, `ILLEGAL_TRANSITION`, `RETIREMENT_PENDING` (409); `STALE_REVISION` (412); `ILLEGAL_FIELD_MUTATION`, `SCOPE_NOT_CONTAINED`, `PARENT_NOT_PUBLISHED`, `INCOMPLETE_ENTITY`, `VALIDATION` (422).
+
+*Statuses added 2026-08-26. The gear declared its codes with no HTTP status and no
+problem-response block in any slice, against `guidelines/DNA/README.md`'s RFC 9457 rule and
+`.cf-studio/config/rules/api-contracts.md`. The mapping follows pricing's convention — 422 for
+content the door cannot process, 409 where the current state refuses the act, 403 where the
+caller may not perform it at all, 404 for a path naming a resource this tenant has none of,
+412 for the `If-Match` precondition, 503 where retry is the remedy. Proposed per row and open
+to correction; the requirement is that every code carries one.*
+
 ### 3.4 Concurrency doors (PRD §6.13 residents of this slice)
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-algo-concurrency`

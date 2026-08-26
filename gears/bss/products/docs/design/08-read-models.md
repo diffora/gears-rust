@@ -156,6 +156,16 @@ history timeline, the dashboards; the convergence and staleness metrics.
 
 `READ_MODEL_OVERLOADED` (shed; carries `Retry-After`) — raised by the **single per-tenant-partition limiter component in front of every read endpoint** (browse, history, facets, dashboards): one door (L4). Everything else on this surface is standard not-found/validation via 01's envelope — reads introduce no new failure semantics.
 
+**Problem responses (RFC 9457):** `READ_MODEL_OVERLOADED` (503).
+
+*Statuses added 2026-08-26. The gear declared its codes with no HTTP status and no
+problem-response block in any slice, against `guidelines/DNA/README.md`'s RFC 9457 rule and
+`.cf-studio/config/rules/api-contracts.md`. The mapping follows pricing's convention — 422 for
+content the door cannot process, 409 where the current state refuses the act, 403 where the
+caller may not perform it at all, 404 for a path naming a resource this tenant has none of,
+412 for the `If-Match` precondition, 503 where retry is the remedy. Proposed per row and open
+to correction; the requirement is that every code carries one.*
+
 ### 3.3 NFR measurement
 
 - [ ] `p2` - **ID**: `cpt-cf-bss-products-algo-read-nfrs`
