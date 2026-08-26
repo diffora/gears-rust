@@ -602,7 +602,7 @@ Re-resolving a `catalogVersionId` at any future time **MUST** yield a byte-ident
 
 - [ ] `p2` - **ID**: `cpt-cf-bss-products-fr-catalog-version-diff`
 
-The system **MUST** compute a structured diff between any two `catalogVersionId`s of one tenant — entities added/removed, per-entity published-version deltas (reusing the per-version field diff of `fr-revision-vs-version`) — deterministic for a given pair, **read-only** (neither frozen snapshot is touched or re-frozen). It is the reviewer's view for approvals and the operator's view for environment promotion (AC #33a). *(Added 2026-08-25, industry parity: catalog-compare tooling — Zuora Deployment Manager class.)*
+The system **MUST** compute a structured diff between any two `catalogVersionId`s of one tenant covering **every member of the snapshot** — entities added/removed, per-entity published-version deltas (reusing the per-version field diff of `fr-revision-vs-version`), **and the captured live content: categories and their localized display values, attribute definitions, recognized sets, per-entity metadata maps** (a metadata-only or category-only change between two versions MUST be visible) — deterministic for a given pair, **read-only** (neither frozen snapshot is touched or re-frozen). It is the reviewer's view for approvals and the operator's view for environment promotion (AC #33a). *(Added 2026-08-25, industry parity: catalog-compare tooling — Zuora Deployment Manager class.)*
 
 **Rationale**: Two immutable full snapshots make the diff cheap, and both approval review and promotion need "what changes between versions" as a first-class read.
 
@@ -1385,7 +1385,7 @@ The cache-first **read** path **MUST** meet **99.9%** availability and the **wri
 **20a. Catalog-version diff**
 - **Given** two `catalogVersionId`s of one tenant
 - **When** an operator or approver requests their diff
-- **Then** the system MUST return a structured, deterministic diff (entities added/removed, per-entity published-version deltas) computed **read-only** from the two frozen snapshots — byte-stable for a given pair
+- **Then** the system MUST return a structured, deterministic diff over **every snapshot member** (entities added/removed, per-entity published-version deltas, and the captured live content: categories + display values, attribute definitions, recognized sets, metadata maps) computed **read-only** from the two frozen snapshots — byte-stable for a given pair
 - **And** the diff is presentational: it MUST NOT mutate, re-freeze, or extend the retention of either version
 
 **21. Cross-module snapshot freeze atomicity**

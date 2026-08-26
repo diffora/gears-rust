@@ -223,8 +223,10 @@ part of the SDK contract; renames are breaking.
 
 `product_id` (PK, uuid) · `tenant_id` · `brand_id` · `name` · `name_normalized` ·
 `product_code` (nullable) · `lifecycle_state` (`draft|published|deprecated|retired|discarded`) ·
-`internal_revision` · `published_version` · `primary_category_id` (nullable at draft; slice 02
-registers the required-at-publish rule) · `secondary_category_ids` · `region_scope` /
+`internal_revision` · `published_version` · **category assignments live ONLY in slice 02's `products_product_category`** (the assignment
+table with the exactly-one-primary partial index — a second inline representation here would
+be a divergence channel with no authority rule; the frozen version content carries the
+assignment set as a copy at publish, like every other content class) · `region_scope` /
 `brand_scope` · `created_by` (pseudonymous ref) · `cloned_from` (create-only, immutable —
 slice 11) · timestamps.
 

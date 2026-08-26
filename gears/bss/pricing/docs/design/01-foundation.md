@@ -961,14 +961,17 @@ pin-eligible** (D-114) — pin-eligibility is a **monotonic frontier**, and "the
 version" — the referent of the ≤ 5s pin-lag rule below — means that frontier's edge.
 
 **Both quantifiers are this tenant's (normative, D-164, 2026-08-03, found while building the
-read side).** `CatalogVersion` is minted by a **cross-tenant** registry, so a tenant's committed
-versions are a sparse subset of the global sequence: read globally, "every earlier version is
-itself pin-eligible" is a condition no tenant can ever satisfy — every frontier in a deployment
-sticks at the first version another tenant's publish consumed — and "every subject row that
-version projects" would make one tenant's unwarm subject hold another tenant's pin. So the
-prefix is over **this tenant's committed refs in version order**, and the subject set is **this
-tenant's subjects of that version**, which is what `pricing_pin_frontier` being keyed
-`tenant_id` alone already assumed and what nothing had said.
+read side; premise corrected 2026-08-26).** The original argument ran off a **cross-tenant**
+sequence with sparse per-tenant subsets — under it, a global reading of "every earlier version
+is itself pin-eligible" is a condition no tenant could ever satisfy (every frontier sticking at
+the first version another tenant's publish consumed) and "every subject row that version
+projects" would let one tenant's unwarm subject hold another tenant's pin. **The registry mints
+per-tenant gapless sequences** (products design slice 06 §4 — `(tenant_id, catalog_version_id)`
+from a per-tenant counter), so those pathologies are impossible by construction rather than by
+this decision. **D-164's conclusion is unchanged and still normative**: the prefix is over
+**this tenant's committed refs in version order**, and the subject set is **this tenant's
+subjects of that version** — which is what `pricing_pin_frontier` being keyed `tenant_id` alone
+already assumed, and what the id space now guarantees instead of merely permitting.
 
 **A version's subject set is closed by its first committed ref (normative, D-163).** That
 follows from batch atomicity — one batch, one version, one event (§3.6) — and it is the premise

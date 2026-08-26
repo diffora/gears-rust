@@ -262,7 +262,7 @@ governance gate inside the `PublishDoor` → version bump + history freeze + eve
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-seq-catalog-version-freeze`
 
-`SkuPublished`/downstream publish request → mechanical increment over the D-47 lanes → snapshot
+Registered downstream addressability request or the operator catalog-publish act (an entity publish never enqueues — P-D-02/06 `inst-cv-request`) → mechanical increment over the D-47 lanes → snapshot
 + checksum → `CatalogVersionPublished` fan-out → participant acks → `freezeComplete` (slice 06).
 
 #### Reference-signal decision

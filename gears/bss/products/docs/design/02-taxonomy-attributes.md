@@ -198,7 +198,8 @@ misattributed to #38 until the 2026-08-25 review).
   `UNIQUE (tenant_id, parent_id, name_normalized)`; FK children guard on delete. Deletion is
   physical **only** through `inst-tx-retire-guard` (retired + empty + unreferenced); everything
   else is state flips, audited.
-- **`products_product_category`** — `(tenant_id, product_id, category_id, role)` with
+- **`products_product_category`** — the **single source of truth** for category assignments
+  (01 §4.1 carries no inline category columns) — `(tenant_id, product_id, category_id, role)` with
   `role ∈ {primary, secondary}`; `UNIQUE (tenant_id, product_id, category_id)`; partial
   `UNIQUE (tenant_id, product_id) WHERE role = 'primary'` — exactly-one-primary is an index,
   not a convention.

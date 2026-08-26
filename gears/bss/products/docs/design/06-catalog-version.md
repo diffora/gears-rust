@@ -163,13 +163,13 @@ on; the diff surface.
 
 - [ ] `p2` - **ID**: `cpt-cf-bss-products-flow-composition-clear`
 
-1. [ ] - `p2` - The inbound composition signal (pricing's — **unregistered on their side, PRD §15**; the registry-side door is designed now so their adoption is one event handler) names the composed `bundle` SKU; the registry clears `composition_pending` as a **system save + mechanical re-publish** of the head (version N+1; exempt from the approval gate — the composition act was governed pricing-side, and the flag is system-owned, not operator-mutable; a design statement, flagged), emits `BundleCompositionCompleted`, audits with the signal reference. Prior frozen versions keep the flag as it was (C4) - `inst-cc-clear`
+1. [ ] - `p2` - The inbound composition signal (pricing's — **unregistered on their side, PRD §15**; the registry-side door is designed now so their adoption is one event handler) names the composed `bundle` SKU; the registry clears `composition_pending` as a **system save + re-publish** of the head (version N+1) — **not exempt from the gate**: it runs as a `system_signal` approval subject auto-satisfied by the **signal itself as the authorizing principal** (recorded on the `ApprovalRecord` with the signal reference; 05's "nothing publishes approver-less" holds — the approver is the governed pricing-side act, named and audited, rather than an exemption). The flag stays system-owned, never operator-mutable, emits `BundleCompositionCompleted`, audits with the signal reference. Prior frozen versions keep the flag as it was (C4) - `inst-cc-clear`
 
 ### Diff two versions (AC #20a)
 
 - [ ] `p2` - **ID**: `cpt-cf-bss-products-flow-diff`
 
-1. [ ] - `p2` - `GET …/catalog-versions/{a}/diff/{b}`: entities added/removed, per-entity published-version deltas rendering the 01 history diff, category/definition/metadata capture deltas — computed read-only from the two stored manifests, byte-stable for a given pair, no retention effect (AC #20a) - `inst-df-diff`
+1. [ ] - `p2` - `GET …/catalog-versions/{a}/diff/{b}` covers **every snapshot member**: entities added/removed + per-entity published-version deltas (rendering the 01 history diff), **and the capture half — category tree and display values, attribute definitions, recognized sets, per-entity metadata maps, the participant/producer sets** (a metadata-only or live-entity-only change between two versions must appear; the manifest's own membership is the diff's universe) — computed read-only from the two stored manifests, byte-stable for a given pair, no retention effect (AC #20a) - `inst-df-diff`
 
 ## 3. Processes / Business Logic
 
@@ -212,10 +212,13 @@ without a fourth clock.
   content is copied, never referenced). The manifest body;
   append-only; the checksum covers both halves.
 - **`products_catalog_version_counter`** — `(tenant_id)` → next id (the gapless allocator).
-- **`products_catalog_version_request`** — the queue: source, lane, `requested_at`, state
-  `(pending, coalesced-into(version), superseded)`; idempotent per source key.
+- **`products_catalog_version_request`** — the queue: `source`, `lane`, **`request_key`**
+  (UNIQUE with `source` — the idempotency and `satisfiedRequests` operand), **`operation_key`**
+  (nullable; the bulk batch identity), **`closed_at`** (the retry-safe close marker — a repeated
+  close is a no-op), `requested_at`, state `(pending, coalesced-into(version), superseded)`.
 - **`products_freeze_participant`** — the governed registered set (live);
-  **`products_freeze_ack`** — `(tenant_id, catalog_version_id, participant)` → `acked_at |
+  **`products_freeze_ack`** — `(tenant_id, catalog_version_id, participant)` → `state ∈
+  {pending, acked, released, not_frozen(forced)}` with `acked_at` / **`released_at`** /
   not_frozen(forced_at, ceremony_ref)`; together the `FreezeLedger` and the AC #44 liveness
   records (never GC'd while their version exists — slice 10 contract).
 - **Events**: `CatalogVersionPublished` (changed-entity list, `satisfiedRequests`, checksum,
