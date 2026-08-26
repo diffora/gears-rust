@@ -127,7 +127,7 @@ GC + its alarms, the restore-drill results surface.
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-flow-retention`
 
-1. [ ] - `p1` - `RetentionClock` per class — frozen versions, catalog versions, audit, outbox-delivered, bulk ledgers, **and the evidential stores this slice owns the interplay for (M4): approval records/decisions, break-glass sessions, correction overrides (audit-grade, statutory max); watermark/member tables are operational-current state (continuously replaced, no clock needed)**: expiry candidates are computed, and for a `catalogVersionId` the `RetentionGate` requires **every freeze registration `released`** (06's release door — the H1 end-of-liveness; acked-and-unreleased = live) — a candidate with a live registration is skipped with the `retention_orphan_blocked` alarm (fail-closed: skipped, never forced; C4); GC deletes are audit-plane, explicit **no broker event** (L3) - `inst-rt-gc`
+1. [ ] - `p1` - `RetentionClock` per class (the version arm reads 06's freeze-registration records, whose `released` half is **P-D-18**'s contract — a participant that never releases pins that version's storage indefinitely, which is why the release had to reach PRD §9.2) — frozen versions, catalog versions, audit, outbox-delivered, bulk ledgers, **and the evidential stores this slice owns the interplay for (M4): approval records/decisions, break-glass sessions, correction overrides (audit-grade, statutory max); watermark/member tables are operational-current state (continuously replaced, no clock needed)**: expiry candidates are computed, and for a `catalogVersionId` the `RetentionGate` requires **every freeze registration `released`** (06's release door — the H1 end-of-liveness; acked-and-unreleased = live) — a candidate with a live registration is skipped with the `retention_orphan_blocked` alarm (fail-closed: skipped, never forced; C4); GC deletes are audit-plane, explicit **no broker event** (L3) - `inst-rt-gc`
 2. [ ] - `p1` - Deletion order respects reference topology (capture/entry rows before their catalog-version row; entity versions only after every referencing manifest — M3's phantom "counter history" removed); every GC act is audited with the class, the clock, and the gate verdict - `inst-rt-order`
 3. [ ] - `p1` - Entity-version rows referenced by ANY retained `CatalogVersion` manifest are retained with it (p1 — the only rule stopping the GC from orphaning a manifest, M3) (the manifest's entity half references frozen rows — 06 H3): version-row retention derives from catalog-version retention, never shorter - `inst-rt-derive`
 
@@ -181,10 +181,10 @@ justifications); retention/drill state is config + audit, no new record tables. 
 
 ## 6. Traces to / Risks & Open items
 
-**Traces to (PRD)**: `fr-retention-erasure`, `fr-grandfathered-retention-coupling` (gate
-half), `fr-expected-failure-behavior` (the "retention process that would orphan a live
+**Traces to**: `cpt-cf-bss-products-fr-retention-erasure`, `cpt-cf-bss-products-fr-grandfathered-retention-coupling` (gate
+half), `cpt-cf-bss-products-fr-expected-failure-behavior` (the "retention process that would orphan a live
 grandfathered reference" row — `retention_orphan_blocked`, L2), AC #35, #38 (that row), #44;
-**NFR #5 `nfr-snapshot-archival-dr`** by id (mechanics); §17.1 retention rows; C2's Legal sign-off (§15 open — the design is ready
+**NFR #5 `cpt-cf-bss-products-nfr-snapshot-archival-dr`** by id (mechanics); §17.1 retention rows; C2's Legal sign-off (§15 open — the design is ready
 either way).
 
 **Risks & open items**:

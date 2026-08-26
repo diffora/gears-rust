@@ -62,7 +62,7 @@ as `draft`; its publish is the ordinary 05-gated act).
 
 | # | Constraint | Source |
 |---|-----------|--------|
-| C1 | Source may be `draft`, `published`, **`deprecated`** or `retired` (the revival path); the source is never affected. `deprecated` was omitted, and it is the state every entity occupies for the **whole retirement lead window** — including while the operator builds the successor that the retirement's `replacedBy` must name, which is the clone's most predictable use (item 37 of the 2026-08-26 review) | PRD `fr-clone` |
+| C1 | Source may be `draft`, `published`, **`deprecated`** or `retired` (the revival path); the source is never affected. `deprecated` is a **governed sub-state of `published`**, so it was inside the PRD's second term rather than missing from it — `fr-clone` and AC #34 now name it explicitly (2026-08-26 branch review, which found the row asserting a PRD defect where a reading would do, and a test written from AC #34 covering three states while the design admitted four). It is the state every entity occupies for the **whole retirement lead window** — including while the operator builds the successor that the retirement's `replacedBy` must name, which is the clone's most predictable use (item 37 of the 2026-08-26 review) | PRD `fr-clone` |
 | C2 | New `productId`/`skuId`; a new `skuCode`/`productCode` — system-suggested, operator-overridable, atomically reserved through the 01 `ReservationIndex` | PRD `fr-clone` |
 | C3 | Lifecycle and version counters reset (`draft`, `published_version = 0`, `internal_revision = 1`); pricing/plan content never copied | PRD `fr-clone` |
 | C4 | Cloned vocabulary references re-validate against the **live** registries: a de-listed/`deprecated` unit, a **`deprecated`/retired** tier (H1 — the PRD's dropped word restored, delivered by 03's new `PLAN_TIER_DEPRECATED`), a retired category, an unknown code, or a **deprecated/narrowed attribute definition** (M5) **fails or forces re-selection** — never copied silently | PRD `fr-clone`, AC #38 |
@@ -134,7 +134,7 @@ code → `DUPLICATE_SKU_CODE`.
 
 ## 6. Traces to / Risks & Open items
 
-**Traces to (PRD)**: `fr-clone`, AC #34; AC #38 (clone-against-deprecated-unit row); the 01 §6
+**Traces to**: `cpt-cf-bss-products-fr-clone`, AC #34; AC #38 (clone-against-deprecated-unit row); the 01 §6
 clone-vs-P-D-04 flag — resolved here by `inst-cn-rename`.
 
 **Risks & open items**: none open — the slice is deliberately thin; its one design-introduced

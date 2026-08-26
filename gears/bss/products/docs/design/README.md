@@ -60,17 +60,21 @@ Requirements live in [`../PRD.md`](../PRD.md); decisions in [`../DECISIONS.md`](
 - [`06-catalog-version.md`](./06-catalog-version.md) — the `CatalogVersion` machine: D-47 lanes
   with a per-tenant coalescer (interactive ≤ 5 s / bulk ≤ 5 min, gapless counter-row ids),
   `SnapshotBuilder` with stage-vs-commit re-validation (AC #40) and canonical checksum,
-  `IntentfulResolver` (browse vs posted), the `FreezeLedger` (acks, fail-closed timeout naming
-  silent participants, force-completion pinning `not_frozen`, per-version participant-set
-  snapshot), freeze-registration records as the AC #44 liveness source, grandfathering
-  invariant, `compositionPending` clearing (a `system_signal` approval subject, resolved
-  2026-08-26 — not an exemption), version-binding-at-
-  freeze diff surface (AC #20a). (§6.6, §6.13)
+  `IntentfulResolver` (browse vs posted; a force-completed version stays **refused for posted
+  use** until every forced participant freezes or releases, or the operator opts in — P-D-19),
+  the `FreezeLedger` (acks, fail-closed timeout naming silent participants, force-completion
+  pinning `not_frozen`, per-version participant-set snapshot), freeze-registration records as the
+  AC #44 liveness source with liveness ending by an explicit `catalog_version × release`
+  (P-D-18), grandfathering invariant, `compositionPending` clearing (a `system_signal` approval
+  subject over a clean head — P-D-14, not an exemption), version-binding-at-freeze diff surface
+  (AC #20a). (§6.6, §6.13)
 - [`07-reference-signal.md`](./07-reference-signal.md) — the `WatermarkDoor` (S2S, monotonic,
   atomic full-set replacement), the 3-state `ReferencePredicate` with per-producer detail (+ the
   `no_producers` fail-safe), producer registration (P-D-03; symmetric capture-store ride), the
-  bucket-ii `CorrectionDoor` (fresh-zero + 05 quorum + re-publish with `usageTypeRef`
-  re-resolution), the flag-gated break-glass correction + `TripwireCounter`. (§6.1, §6.13)
+  bucket-ii `CorrectionDoor` (fresh-zero + the `N`-governed 05 quorum with `quorumReduced`
+  recorded — P-D-13's fourth site, swept 2026-08-26 — + re-publish with `usageTypeRef`
+  re-resolution), the **third admission arm** for an unresolvable meter target (P-D-16), the
+  flag-gated break-glass correction (P-D-13's sixth site) + `TripwireCounter`. (§6.1, §6.13)
 - [`08-read-models.md`](./08-read-models.md) — the event-driven `ReadProjector` over frozen
   versions + the 06 capture store (never head rows), per-state `VisibilityFilter` at query
   build, the `StalenessStamp` on every response (degraded included), per-tenant-partition

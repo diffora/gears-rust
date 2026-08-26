@@ -151,7 +151,7 @@ currently lacks** (consumer-side addition owed there).
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-flow-accounting-codes`
 
 1. [ ] - `p1` - `taxCategory` and `glCode` each validate against their `RecognizedSet` (owner Finance; unknown fails `ACCOUNTING_CODE_UNKNOWN`); the sets follow the same governed lifecycle (elevated add, deprecate-then-remove, reference-guarded) - `inst-ac-recognized`
-2. [ ] - `p1` - Required at publish for `product`/`service` types (via `TypeProfile`, flow 1); both are bucket iii finance-material — ≥ 1 FinanceReviewer in the two-person approval (slice 05 role predicate) - `inst-ac-required`
+2. [ ] - `p1` - Required at publish for `product`/`service` types (via `TypeProfile`, flow 1); both are bucket iii finance-material — ≥ 1 FinanceReviewer in the `N`-governed approval (slice 05 role predicate). **At `N = 0` the predicate is recorded `predicateUnsatisfiable` rather than blocking (P-D-11)**: this very rule is the operand P-D-11's amendment names — `taxCategory` being required at publish for `product`/`service` types is what would otherwise have left the one-person tenant unable to publish their first such SKU **forever**, which is the block that decision exists to remove - `inst-ac-required`
 3. [ ] - `p1` - No computation: the columns are opaque codes to this gear (C4) - `inst-ac-codes-only`
 
 ## 3. Processes / Business Logic
@@ -212,8 +212,8 @@ de-listed/deprecated unit" map here.
 
 ## 6. Traces to / Risks & Open items
 
-**Traces to (PRD)**: `fr-define-sku` (typing/classification half — identity carrier is slice 01's), `fr-sku-sellable`, `fr-metering-unit-declaration`,
-`fr-metering-unit-delisting`, `fr-plantier-classification`, `fr-accounting-codes`; AC #2a,
+**Traces to**: `cpt-cf-bss-products-fr-define-sku` (typing/classification half — identity carrier is slice 01's), `cpt-cf-bss-products-fr-sku-sellable`, `cpt-cf-bss-products-fr-metering-unit-declaration`,
+`cpt-cf-bss-products-fr-metering-unit-delisting`, `cpt-cf-bss-products-fr-plantier-classification`, `cpt-cf-bss-products-fr-accounting-codes`; AC #2a,
 #7 (typing clauses; identity/link clauses = 01), #8–#11; AC #38 (unit rows); P-D-02 (override registration), P-D-05 (resolver semantics).
 
 **Risks & open items**:

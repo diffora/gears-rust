@@ -141,7 +141,7 @@ on; the diff surface.
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-flow-resolve`
 
-1. [ ] - `p1` - `IntentfulResolver` (`catalog_version × read` — the shared version-lookup component behind resolve AND diff is the single raising door of `CATALOG_VERSION_UNKNOWN`, L3) requires `intent`: absent ⇒ `INTENT_REQUIRED` (400-class, the consumer-side obligation the seam suite will assert); `browse` serves any published version at once; `posted` is refused `FREEZE_INCOMPLETE` until the `FreezeLedger` reads complete (C5) - `inst-rv-intent`
+1. [ ] - `p1` - `IntentfulResolver` (`catalog_version × read` — the shared version-lookup component behind resolve AND diff is the single raising door of `CATALOG_VERSION_UNKNOWN`, L3) requires `intent`: absent ⇒ `INTENT_REQUIRED` (400-class, the consumer-side obligation the seam suite will assert); `browse` serves any published version at once; `posted` is refused `FREEZE_INCOMPLETE` until the `FreezeLedger` reads complete (C5) — and, at `complete(forced)`, refused **`VERSION_FORCED_INCOMPLETE`** naming each `not_frozen(forced)` participant, until every forced participant has since frozen or released **or** an explicit per-version operator **auto-fallback opt-in** is recorded (**P-D-19**: `fr-freeze-recovery`'s "pinned fail-closed" default is the registry's to enforce on its own door — it cannot rest on a consumer obligation booked against a gear that does not exist). `browse` is unaffected in both cases - `inst-rv-intent`
 2. [ ] - `p1` - Re-resolution is byte-identical forever: content renders from the stored manifest + frozen entity versions; the checksum is returned and verifiable - `inst-rv-bytes`
 
 ### The freeze protocol
@@ -150,9 +150,9 @@ on; the diff surface.
 
 1. [ ] - `p1` - On `CatalogVersionPublished`, every participant in the **version's snapshotted set** owes an ack; `products_freeze_ack` records them; `freezeComplete` = all acked (AC #21). The ack door (`catalog_version × ack`) accepts a participant's ack **only from that participant's own service identity** (S2S claims — the registration check `PARTICIPANT_UNKNOWN` is membership, not authn); idempotent per `(version, participant)` - `inst-fz-ack`
 2. [ ] - `p1` - The bounded timeout (configured; its value floors 01's idempotency retention) fails **closed**: past it the version stays non-posting-safe and `freeze_overdue` alarms name the silent participants (today: all three — the PRD §15 open is visible in this gear's own telemetry from day one) - `inst-fz-timeout`
-3. [ ] - `p1` - Recovery: the fan-out **re-trigger is idempotent** (same event, same version, at-least-once safe); **force-completion** is a slice-05 two-person ceremony (`catalog_version × force_complete`; refusals ride the 05 gate's own codes — L4: no separate `FORCE_COMPLETE_QUORUM`), `N`-governed with `quorumReduced` on the record **and on `FreezeForceCompleted`** below the default of 2 (P-D-13 — no fixed floor: one would leave a solo tenant's timed-out version permanently un-resolvable, the class of block P-D-11 exists to remove), recording each missing participant as `not_frozen(forced)` — **and its freeze registration as `released(forced)` in the same transaction** (item 11 of the 2026-08-26 review: a participant recorded `not_frozen` never acked and cannot use the S2S release door, which runs under its own identity, so slice 10's `RetentionGate` requiring *every* registration `released` would hold a force-completed version un-collectable forever. A participant that froze nothing holds no live references to that version **by construction**, so the release is a statement of fact, not a courtesy) — and flipping the version to **`freezeComplete = complete(forced)`**: posted resolution now succeeds, and the response carries the **per-participant frozen state** — refusing the `not_frozen` participant's content is the **consumer's** seam obligation (slice 12; the snapshot holds only references to that content, C4, so no registry door can refuse it — M5 fix). `FreezeForceCompleted` emitted (AC #22) - `inst-fz-force`
+3. [ ] - `p1` - Recovery: the fan-out **re-trigger is idempotent** (same event, same version, at-least-once safe); **force-completion** is a slice-05 two-person ceremony (`catalog_version × force_complete`; refusals ride the 05 gate's own codes — L4: no separate `FORCE_COMPLETE_QUORUM`), `N`-governed with `quorumReduced` on the record **and on `FreezeForceCompleted`** below the default of 2 (P-D-13 — no fixed floor: one would leave a solo tenant's timed-out version permanently un-resolvable, the class of block P-D-11 exists to remove), recording each missing participant as `not_frozen(forced)` — **and its freeze registration as `released(forced)` in the same transaction** (item 11 of the 2026-08-26 review: a participant recorded `not_frozen` never acked and cannot use the S2S release door, which runs under its own identity, so slice 10's `RetentionGate` requiring *every* registration `released` would hold a force-completed version un-collectable forever. A participant that froze nothing holds no live references to that version **by construction**, so the release is a statement of fact, not a courtesy) — and flipping the version to **`freezeComplete = complete(forced)`**: the response carries the **per-participant frozen state**, and **posted resolution stays refused** (`VERSION_FORCED_INCOMPLETE`, `inst-rv-intent`) until every forced participant freezes or releases, or the operator records the per-version auto-fallback opt-in — **P-D-19**. *(This instruction read "posted resolution now succeeds" until 2026-08-26, with the refusal delegated to the consumer as a seam obligation. The argument for that — the snapshot holds only references to a participant's content, C4, so no registry door can refuse the content — is sound about the **content** and does not carry to the **version**: the resolver is a door the registry owns outright. Slice 12 booked the consumer duty as `owed` against pricing **and Billing, which has no gear**, so the requirement's stated safe default was enforced on neither side.)* Refusing the `not_frozen` participant's content remains a consumer seam obligation (slice 12) — belt-and-braces now, not the only enforcement. `FreezeForceCompleted` emitted (AC #22) - `inst-fz-force`
 4. [ ] - `p1` - Participant-set membership is a `GovernedLiveOp` (`freeze_participant × write`; material — slice 05 input (d), where 06's kinds are enumerated — M6 fix); each change emits `FreezeParticipantSetChanged` (participants must learn they were added); each version resolves `freezeComplete` against **its own snapshotted set** forever: removal after publish never retro-flips a historical version (AC #23) - `inst-fz-membership`
-5. [ ] - `p1` - **Freeze-registration records are the version-liveness source** (AC #44): per `(catalogVersionId, participant)` registration/ack rows persist as the operand slice 10's retention gate reads — never the per-SKU reference count, which carries no version dimension. **Liveness ends by an explicit release** (H1 fix of the slice-10 review): the `catalog_version × release` door (S2S, the participant's own identity) records that the participant holds no more live references to that version (its contracts expired, subscriptions closed); the ledger state becomes `released`, and version-liveness = acked-and-not-yet-released. Until participants deliver releases the gate stays conservative — correct, and now with a designed exit instead of a vacuous forever. **Honest v1 posture** (item 11 of the 2026-08-26 review): all three participants are §15-silent today, so **every** version's registrations sit `pending`, version-liveness is true for everything, and the AC #44 collection gate never fires in v1. That is the fail-safe direction — the gate over-retains, it never over-collects — but it must be read as *designed and not yet exercised*, not as a working reclamation path. Its activation is the §15 registrations, and nothing else - `inst-fz-liveness`
+5. [ ] - `p1` - **Freeze-registration records are the version-liveness source** (AC #44): per `(catalogVersionId, participant)` registration/ack rows persist as the operand slice 10's retention gate reads — never the per-SKU reference count, which carries no version dimension. **Liveness ends by an explicit release** (H1 fix of the slice-10 review; the release is now the second half of PRD §9.2's freeze-participant contract, **P-D-18** — it was a duty on three counterpart gears that §9.2 told none of them they owed): the `catalog_version × release` door (S2S, the participant's own identity) records that the participant holds no more live references to that version (its contracts expired, subscriptions closed); the ledger state becomes `released`, and version-liveness = acked-and-not-yet-released. Until participants deliver releases the gate stays conservative — correct, and now with a designed exit instead of a vacuous forever. **Honest v1 posture** (item 11 of the 2026-08-26 review): all three participants are §15-silent today, so **every** version's registrations sit `pending`, version-liveness is true for everything, and the AC #44 collection gate never fires in v1. That is the fail-safe direction — the gate over-retains, it never over-collects — but it must be read as *designed and not yet exercised*, not as a working reclamation path. Its activation is the §15 registrations, and nothing else - `inst-fz-liveness`
 
 ### Grandfathering invariant
 
@@ -185,7 +185,7 @@ on; the diff surface.
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-contract-cv-errors`
 
-`INTENT_REQUIRED`, `FREEZE_INCOMPLETE`, `STAGED_ENTITY_CHANGED` (operator publish lane),
+`INTENT_REQUIRED`, `FREEZE_INCOMPLETE`, **`VERSION_FORCED_INCOMPLETE`** (posted resolution of a force-completed version without the opt-in — P-D-19), `STAGED_ENTITY_CHANGED` (operator publish lane),
 `CATALOG_VERSION_UNKNOWN` (one door: the shared version-lookup — L3), `PARTICIPANT_UNKNOWN`
 (ack from an unregistered participant — refused, audited). Ceremony refusals ride the 05
 gate's own codes (L4).
@@ -252,23 +252,27 @@ without a fourth clock.
 
 ## 6. Traces to / Risks & Open items
 
-**Traces to (PRD)**: `fr-catalog-version-publish`, `fr-snapshot-reproducibility`,
-`fr-freeze-atomicity`, `fr-freeze-recovery`, `fr-freeze-participant-governance`,
-`fr-grandfathering-invariant`, `fr-bundle-adoption-guard` (registry half),
-`fr-catalog-version-diff`, `fr-catalog-publish-concurrency`,
-`fr-grandfathered-retention-coupling` (liveness-source half; retention gate → 10),
-`fr-revision-vs-version` (version-binding-at-freeze clause), **`fr-prepublish-lint`** (the
+**Traces to**: **§9.2 by id** — `cpt-cf-bss-products-contract-increment-request`, `cpt-cf-bss-products-contract-freeze-ack` (both halves: the acknowledgment and the `catalog_version × release`, P-D-18) and `cpt-cf-bss-products-contract-bundle-composition-signal` (the three inbound machine contracts this slice's doors terminate — claimed by id here for the first time, 2026-08-26 branch review). `cpt-cf-bss-products-fr-catalog-version-publish`, `cpt-cf-bss-products-fr-snapshot-reproducibility`,
+`cpt-cf-bss-products-fr-freeze-atomicity`, `cpt-cf-bss-products-fr-freeze-recovery`, `cpt-cf-bss-products-fr-freeze-participant-governance`,
+`cpt-cf-bss-products-fr-grandfathering-invariant`, `cpt-cf-bss-products-fr-bundle-adoption-guard` (registry half),
+`cpt-cf-bss-products-fr-catalog-version-diff`, `cpt-cf-bss-products-fr-catalog-publish-concurrency`,
+`cpt-cf-bss-products-fr-grandfathered-retention-coupling` (liveness-source half; retention gate → 10),
+`cpt-cf-bss-products-fr-revision-vs-version` (version-binding-at-freeze clause), **`cpt-cf-bss-products-fr-prepublish-lint`** (the
 `validate(lint)` operation before catalog publish — its owner: this slice runs the door, 09
 consumes the report into its `ChangeReport`, and until now no slice claimed it — item 30 of the
-2026-08-26 review); **NFR #4 `nfr-posting-safe-budget`** by id; AC #19–#25, #20a, #40, #44,
-**#45** (the lint report)
-(records half); NFR #3/#4/#5 (budgets; durability mechanics with 10), NFR #6
-(`CatalogVersion`-growth half: the capture-store economics + publishes/day target, L2).
+2026-08-26 review); AC #19–#25, #20a, #40, #44, **#45** (the lint report).
+**NFRs by id** — #3 `cpt-cf-bss-products-nfr-publication-propagation` and #4 `cpt-cf-bss-products-nfr-posting-safe-budget` (the two
+budgets this slice's lanes are measured against), #5 `cpt-cf-bss-products-nfr-snapshot-archival-dr` (durability
+mechanics, shared with 10), #6 `cpt-cf-bss-products-nfr-scale-extensibility` (`CatalogVersion`-growth half: the
+capture-store economics + publishes/day target, L2). *(The item-30 sweep — "every slice's
+Traces-to now carries the id alongside the number" — reached #4 in this block and stopped, so
+#3/#5/#6 stayed positional and lint 1 could not see this slice's claims at all; and the tail
+carried an orphaned `(records half);` fragment left by that wave. 2026-08-26 branch review.)*
 
 **Risks & open items**:
 - **The composition-clear publish is RESOLVED (2026-08-26), and it is not an exemption**: the
   2026-08-26 CodeRabbit pass forced the question, and the honest shape turned out to be an
-  approval *subject* rather than a carve-out — 05 `inst-gv-*` subject kind `system_signal`,
+  approval *subject* rather than a carve-out — 05 `inst-gv-one-shot` subject kind `system_signal` (**P-D-14**),
   whose `ApprovalRecord` is auto-satisfied with the **inbound governed signal as the authorizing
   principal**, audited like any decision, with no human approver and **no exemption from the
   gate**. `DESIGN.md`'s status line dropped it from the human-flag list in the same wave; this

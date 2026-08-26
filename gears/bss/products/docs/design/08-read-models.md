@@ -193,8 +193,13 @@ the point.
   the gateway**; the SecureORM emptiness beneath it is defense-in-depth (the probe asserts
   both layers, so a door silently absorbing auditable cross-scope attempts fails it); a shed
   response leaks neither content nor counts (C4 under simulated overload).
-- Convergence probe: publish → projection visible within budget, measured from outbox
-  acceptance; lag alarm fires past budget while serving continues stale-but-stamped.
+- Convergence probe: publish → projection visible within budget, **measured from write
+  commit** and decomposed into the two meters C5 names — never from outbox acceptance, the
+  re-basing C5's M1 fix struck for collapsing budgets NFR #3 keeps distinct (2026-08-26 branch
+  review: the M1 fix landed at the constraint and at `algo-read-nfrs` and missed the probe, so
+  the one artefact that would actually be written could not fail the case the fix exists to
+  catch — a slow outbox eating the whole convergence budget invisibly); lag alarm fires past
+  budget while serving continues stale-but-stamped.
 - Rebuild probe: checkpoint-behind-tail → loud failure → bootstrap rebuild → cutover with the
   old projection serving throughout.
 - Re-parent probe: a subtree re-files completely; no orphan paths.
@@ -202,13 +207,13 @@ the point.
 
 ## 6. Traces to / Risks & Open items
 
-**Traces to (PRD)**: `fr-cache-first-browse`; AC #32; **NFRs by id** (#1 `nfr-read-latency`,
-#2 `nfr-read-throughput`, #3 `nfr-publication-propagation`, #7 `nfr-graceful-degradation`,
-#10 `nfr-availability-audit` — positional numbers alone left `inst-cc-fr` reporting zero claims
+**Traces to**: **§9.1 by id** — `cpt-cf-bss-products-interface-read-model` (the browse/search surface this slice serves; claimed by id here for the first time, 2026-08-26 branch review). `cpt-cf-bss-products-fr-cache-first-browse`; AC #32; **NFRs by id** (#1 `cpt-cf-bss-products-nfr-read-latency`,
+#2 `cpt-cf-bss-products-nfr-read-throughput`, #3 `cpt-cf-bss-products-nfr-publication-propagation`, #7 `cpt-cf-bss-products-nfr-graceful-degradation`,
+#10 `cpt-cf-bss-products-nfr-availability-audit` — positional numbers alone left `inst-cc-fr` reporting zero claims
 for all ten NFRs, item 30 of the 2026-08-26 review) + the convergence interim (§17.1);
 **AC #39** (the registry-side obligations: durable acceptance before reported success, the
 per-consumer delivery/DLQ projection, no state mutation on delivery failure — previously cited
-by nothing); `fr-event-delivery-resilience` (the per-consumer delivery/DLQ **projection**
+by nothing); `cpt-cf-bss-products-fr-event-delivery-resilience` (the per-consumer delivery/DLQ **projection**
 clause — M5); the §5.1 p2 rows "Advanced search, filter & faceting" and the read half of
 "Catalog read models"; 04-M6 (deferred-intent projection), 02 re-parent invalidation; P-D-07
 (the stamp-floor semantics).

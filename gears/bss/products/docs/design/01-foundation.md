@@ -333,18 +333,18 @@ and the ordering key.
 
 ## 6. Traces to / Risks & Open items
 
-**Traces to (PRD)**: **NFRs by id** — #6 `nfr-scale-extensibility`, #8
-`nfr-determinism-integrity` (version immutability, taxonomy acyclicity, identity uniqueness and
+**Traces to**: **NFRs by id** — #6 `cpt-cf-bss-products-nfr-scale-extensibility`, #8
+`cpt-cf-bss-products-nfr-determinism-integrity` (version immutability, taxonomy acyclicity, identity uniqueness and
 metering-unit validity enforced fail-closed: this slice's pipeline, edge list and trigger
 whitelist are its whole mechanism, and it was referenced nowhere in the set — item 30 of the
-2026-08-26 review); `fr-identifier-contract`, `fr-create-product` (uniqueness carrier),
-`fr-define-sku` (identity carrier), `fr-revision-vs-version` (counters + history halves; the
-version-binding-at-freeze clause → slice 06), `fr-lifecycle-transitions`
-(machine core), `fr-idempotent-authoring`, `fr-registry-eventing-audit` (envelope + outbox
-half), `fr-event-delivery-resilience` (registry-side half: durable acceptance + outbox),
-`fr-parent-child-integrity` (interim containment half; final rule → slice 04),
-`fr-skucode-reservation-concurrency`, `fr-field-mutability-matrix` (enforcement frame),
-`fr-expected-failure-behavior` (taxonomy home); AC #1, #5 (name-uniqueness half), #13, #14, #27, #28 (envelope), #38
+2026-08-26 review); **§9 by id** — `cpt-cf-bss-products-interface-authoring-publish` (§9.1: this slice owns the authoring and publish doors, idempotency keys, `If-Match`, intent semantics) and `cpt-cf-bss-products-contract-registry-events` (§9.2 outbound: the broker-native envelope + outbox fan-out are this slice's). *(§9 ids were claimed by no slice's Traces-to at all until the 2026-08-26 branch review — prose like "§9 (all seven id-bearing blocks)" is not the id lint 1 keys on, so it would have reported zero claims for the whole §9 surface on its first run. Exactly the item-30 defect, left standing for §9 by the wave that widened the lint to include it.)* `cpt-cf-bss-products-fr-identifier-contract`, `cpt-cf-bss-products-fr-create-product` (uniqueness carrier),
+`cpt-cf-bss-products-fr-define-sku` (identity carrier), `cpt-cf-bss-products-fr-revision-vs-version` (counters + history halves; the
+version-binding-at-freeze clause → slice 06), `cpt-cf-bss-products-fr-lifecycle-transitions`
+(machine core), `cpt-cf-bss-products-fr-idempotent-authoring`, `cpt-cf-bss-products-fr-registry-eventing-audit` (envelope + outbox
+half), `cpt-cf-bss-products-fr-event-delivery-resilience` (registry-side half: durable acceptance + outbox),
+`cpt-cf-bss-products-fr-parent-child-integrity` (interim containment half; final rule → slice 04),
+`cpt-cf-bss-products-fr-skucode-reservation-concurrency`, `cpt-cf-bss-products-fr-field-mutability-matrix` (enforcement frame),
+`cpt-cf-bss-products-fr-expected-failure-behavior` (taxonomy home); AC #1, #5 (name-uniqueness half), #13, #14, #27, #28 (envelope), #38
 (frame), #42.
 
 **Risks & open items**:

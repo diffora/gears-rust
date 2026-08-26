@@ -124,7 +124,7 @@ contract slice 08 projects.
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-flow-assign-categories`
 
-1. [ ] - `p1` - A Product carries **exactly one primary + zero or more secondary** categories; assignment is ordinary draft content (rides `inst-fd-save-draft`); this slice registers the validators: target category exists, is not retired, duplicates between primary/secondary rejected - `inst-tx-assign`
+1. [ ] - `p1` - A Product carries **exactly one primary + zero or more secondary** categories; assignment is ordinary draft content (rides `inst-fd-save-txn`); this slice registers the validators: target category exists, is not retired, duplicates between primary/secondary rejected - `inst-tx-assign`
 2. [ ] - `p1` - At publish, the registered `→ published` validator requires the primary category present (`PRIMARY_CATEGORY_REQUIRED` — its own code per 01's one-door rule, L8 fix; the PRD's "optional at draft, required at publish") - `inst-tx-primary-at-publish`
 
 ### Manage attribute definitions (governed live entities)
@@ -256,8 +256,8 @@ no event of their own: they are entity content and ride `ProductDraftSaved`/`Sku
 
 ## 6. Traces to / Risks & Open items
 
-**Traces to (PRD)**: `fr-manage-taxonomy`, `fr-create-product` (category clauses),
-`fr-localized-attributes`, `fr-retention-erasure` (write-block clause, hook only); AC #5
+**Traces to**: `cpt-cf-bss-products-fr-manage-taxonomy`, `cpt-cf-bss-products-fr-create-product` (category clauses),
+`cpt-cf-bss-products-fr-localized-attributes`, `cpt-cf-bss-products-fr-retention-erasure` (write-block clause, hook only); AC #5
 (category part), #6, #12, #35 (write-block), #38 (taxonomy-cycle row).
 
 **Risks & open items**:

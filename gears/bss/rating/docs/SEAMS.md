@@ -182,7 +182,7 @@ platform-wide vs rating's ≥ 10M ev/day/region intake).
 | Windowed `Q` aggregation | **Rating** (single-writer); Tariffs consumes frozen `Q` | M7 |
 | Raw usage SoR (measurement) | **Usage Collector** (built v1); Rating normalizes into its own `usage_record` (mediation) | UC1 |
 | Usage → Rating transport | **Joint — unpinned**; proposed: collector phase-2 emission surface (outbox stream) | UC1, UC5 |
-| UsageType ↔ meter binding + dimension carrier | **Registry + Pricing** (pinned 2026-07-28; veto round 2026-08-25): products `fr-metering-unit-declaration` requires `usageTypeRef` on the meter and validates that it resolves at registry publish; pricing `inst-cmp-usagetype` blocks plan publish on an unbound meter or an undeclared priced dimension (priced ⊆ `metadata_fields` — the (c) check's home since the veto amendment). Subscription resolution (UC3 b) stays open with Subscriptions | UC3, M6, RG2 |
+| UsageType ↔ meter binding + dimension carrier | **Registry + Pricing** (pinned 2026-07-28; veto round 2026-08-25): products `fr-metering-unit-declaration` (**P-D-05**: the registry validates resolvability only) requires `usageTypeRef` on the meter and validates that it resolves at registry publish; pricing `inst-cmp-usagetype` blocks plan publish on an unbound meter or an undeclared priced dimension (priced ⊆ `metadata_fields` — the (c) check's home since the veto amendment). Subscription resolution (UC3 b) stays open with Subscriptions | UC3, M6, RG2 |
 | Commitment pools (drawdown/overage) | **Contracts** SoR; Tariffs evaluates step 6 | M8 |
 | Prepaid credit wallet grant | **Pricing** authors, **Billing/Rating** executes | M8 |
 | Reserved rate: self-service | **Pricing** (catalog snapshot) | M9 |
@@ -201,7 +201,7 @@ platform-wide vs rating's ≥ 10M ev/day/region intake).
 | `pricingSnapshotRef` catalog component | **Registry (products)** supplies `CatalogVersion` as **one component** — never the whole ref (composition SoR stays Tariffs, row above) | S1 |
 | `PlanTier` taxonomy & SKU value | **Registry (products)** owns the taxonomy + SKU-level value (stable tier codes, rename = display-only); **Pricing** enforces presence at plan publish | products `fr-plantier-classification` |
 | `sellable` offering-eligibility flag | **Registry (products)** authors the per-SKU flag (D-46, material-but-mutable); **Pricing** enforces it as sellability-gate predicate 6 for standalone lines (bundle-component refs exempt) | D-46 |
-| `SkuReferenceCount` liveness predicate | **Registry (products)** consumes (3-state, fail-closed); v1 registered producer set = **{Pricing}** (2026-08-25, built jointly with the products gear); Subscriptions/Contracts register at their own build | products `fr-reference-signal`, pricing PRD §15 |
+| `SkuReferenceCount` liveness predicate | **Registry (products)** consumes (3-state, fail-closed); v1 registered producer set = **{Pricing}** (2026-08-25, built jointly with the products gear — products **P-D-03**); Subscriptions/Contracts register at their own build | products `fr-reference-signal`, pricing PRD §15 |
 
 ---
 

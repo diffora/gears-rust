@@ -47,7 +47,7 @@ know what a `PlanTier` or a metering unit is.
 
 #### Functional Drivers
 
-- Financial-grade governance: two-person/SoD approvals pinned to stored revision snapshots
+- Financial-grade governance: SoD approvals at the tenant's **configured approver quorum** (P-D-11: default 2, floor 0 — "two-person" is a retained name, never a fixed count; P-D-13 enumerates where the shorthand reaches), pinned to stored revision snapshots
   (PRD §6.7); forward-only lifecycle, no unpublish (§6.5).
 - Byte-identical reproducibility: `CatalogVersion` full snapshots + checksum + freeze protocol
   (§6.6) — the anchor posted invoices and contracts resolve against.
@@ -72,8 +72,18 @@ P-D-05 `usageTypeRef` resolvability-only · P-D-06 metadata outside frozen conte
 staleness stamp is a floor · P-D-08 audit sealing is a platform capability (reserved seam) ·
 P-D-09 stage-vs-commit fail-closed per lane · P-D-10 no gear-side Legal role · P-D-11 the
 approver count is a policy value, default 2 floor 0 · P-D-12 the `SchemaPin`'s membership is a
-rule · P-D-13 the quorum shorthand's enumerated reach. Joint: D-46 (`sellable`), D-47
-(increment lanes + retirement contract) — pricing register.
+rule · P-D-13 the quorum shorthand's enumerated reach (six sites) · P-D-14 `system_signal` is
+an approval subject kind, not an exemption · P-D-15 the inbound machine contracts are
+`products-sdk` clients, not REST doors · P-D-16 the unresolvable-target correction arm ·
+P-D-17 promotion identity collision is update-as-draft · P-D-18 version liveness ends by an
+explicit release · P-D-19 a force-completed version stays refused for posted use · P-D-20 a
+publish during the retirement lead window re-announces `SkuRetired`. Joint: D-46 (`sellable`),
+D-47 (increment lanes + retirement contract) — pricing register.
+
+**P-D-14…P-D-20 are FLAGGED and await the owner** — all seven were found by the 2026-08-26
+branch review, six of them already built into the design and one (P-D-19) reversing a delivery
+the design had made. None was ever put to the owner, which is what makes them flags and not
+history.
 
 ### 1.3 Architecture Layers
 
@@ -98,14 +108,14 @@ Standard ToolKit gear, mirroring the sibling BSS gears:
 | `02-taxonomy-attributes` | categories (governed live), attribute definitions + i18n fallback, metadata map, well-known seeds | 6.2, 6.4 | 1 | 01 |
 | `03-sku-classification` | SKU typing, `sellable`, `PlanTier`, accounting codes, metering unit + `usageTypeRef` (P-D-05), de-listing | 6.3 | 1 | 01, 02 |
 | `04-lifecycle` | deprecation provenance, parent-child + cascade-retire, scheduled publish/retirement, `replacedBy`, containment (P-D-04 residue) | 6.5 | 1/2 | 01 (05, 07 at integration) |
-| `05-governance` | materiality matrix, two-person + FinanceReviewer, **stored** pinned approval snapshot, RBAC, break-glass | 6.7, 6.8 | 1/2 | 01 |
+| `05-governance` | materiality matrix, the configured approver quorum (P-D-11/P-D-13) + FinanceReviewer, **stored** pinned approval snapshot, RBAC, break-glass | 6.7, 6.8 | 1/2 | 01 |
 | `06-catalog-version` | CatalogVersion machine (P-D-02, D-47 lanes), checksum/reproducibility, freeze protocol, `compositionPending`, version diff | 6.6 | 2 | 01, 02, 03, 04, 05 |
 | `07-reference-signal` | `SkuReferenceCount` watermarks, 3-state predicate, producer registration (P-D-03), fresh-zero corrections + tripwire | 6.1 signal, 6.13 | 2 | 01, 04 |
 | `08-read-models` | cache-first browse/search, per-state visibility, `asOfCatalogVersion`, degradation, NFR budgets | 6.8, §7 | 2 | 01, 06 |
 | `09-bulk-promotion` | bulk import/export, two-phase deps, change report, environment promotion (AC #33a) | 6.9 | 2/3 | 01, 05 |
 | `10-retention-erasure` | retention classes, pseudonymization, PII write-block, retention↔grandfathering coupling | 6.11 | 3 | 01, 06 |
 | `11-clone` | clone/templating with live re-validation (p3) | 6.10 | 3 | 01–04 |
-| `12-consumer-contracts` | seam-suite spec, event schema versioning/replay/bootstrap, §9 interfaces, traceability check | 6.12, §9 | 2/3 | 01, 03, 06, 07 |
+| `12-consumer-contracts` | seam-suite spec, event schema versioning/replay/bootstrap, §9 interfaces, traceability check | 6.12, 6.7 (replay), §9 | 2/3 | 01, 03, 06, 07 |
 
 #### Dependency order
 
@@ -321,9 +331,12 @@ goldens.
 6.1 → 01 (identifiers, mutability frame) + 07 (signal, corrections); 6.2 → 02; 6.3 → 03;
 6.4 → 02; 6.5 → 01 (machine) + 04 (policy); 6.6 → 06 (incl. `fr-revision-vs-version`'s version-binding-at-freeze clause); 6.7 → 01 (idempotency, eventing) + 05
 (approvals); 6.8 → 05 (isolation) + 08 (read models); 6.9 → 09; 6.10 → 11; 6.11 → 10;
+6.7 also → 12 (`fr-event-versioning-replay`, which slice 12 claims in its own §1.4 and
+Traces-to while both sites here said 6.12 + §9 only — 2026-08-26 branch review);
 6.12 → 12; 6.13 → resident per door (enumerated per slice). Every slice carries a "Traces to"
-list; slice 12 owns the completeness check that every `p1`/`p2` FR is claimed by exactly one
-slice.
+list; slice 12 owns the completeness check that every `p1`/`p2` **requirement-bearing PRD id** —
+`fr-*`, `nfr-*`, and §9's `interface-*`/`contract-*`, the universe M5 widened it to, plus
+`usecase-*` — is claimed by exactly one slice.
 
 ## 6. Status
 
@@ -335,7 +348,7 @@ slice.
 | 04-lifecycle | **authored + agent-reviewed 2026-08-25**; fix wave applied (provenance pass-through, parent path, runner lease, `RETIREMENT_PENDING`); initiation reading CONFIRMED via §17.1 |
 | 05-governance | **authored + agent-reviewed 2026-08-25**; fix wave applied (scheduled-act consumption model, vocabulary-op materiality, transition-fires-hook invariant); quorum strictness **resolved 2026-08-26 — P-D-11** (approver count is a typed-policy value, default 2, floor 0); role-predicate question **resolved — P-D-10** (C8: predicates narrow, never replace) |
 | 06-catalog-version | **authored + agent-reviewed 2026-08-25**; fix wave applied (satisfiedRequests handshake, lifecycle re-validation arm, stored-copy captures, operation_key bulk batching, forced-complete semantics); composition-clear **resolved 2026-08-26** (`system_signal` approval subject); mechanical-retry AC #40 reading **resolved 2026-08-26 — P-D-09 amended the FR and the AC to state the lane split** |
-| 07-reference-signal | **authored 2026-08-25** |
+| 07-reference-signal | **authored 2026-08-25**; fix wave applied 2026-08-26 (F1–F8, Blocking 3, review items 19/20/21); quorum sweep + P-D-16 applied 2026-08-26 (branch review) |
 | 08-read-models | **authored 2026-08-26**; P-D-07 stamp floor **CONFIRMED 2026-08-26** (conditional on the projection existing — PRD §15 now asks whether browse needs a serving store at all) |
 | 09-bulk-promotion | **authored 2026-08-26** (coalesced-event deviation recorded as sanctioned) |
 | 10-retention-erasure | **authored 2026-08-26**; role-predicate question **resolved 2026-08-26 — P-D-10**: no gear-side Legal role, the allow-list runs the base quorum with a mandatory recorded Legal sign-off reference |
@@ -344,14 +357,18 @@ slice.
 
 **The design set is COMPLETE: all twelve slices authored** (2026-08-25/26). **Review status is
 per slice — read the table above, not this line**: the rows carrying "agent-reviewed" plus a fix
-wave are the ones this repository can evidence, and **slice 07** records no review-finding
-markers at all (slice 11 carries thirteen — H1, L1–L6, M1–M6 — and was named here in error, item
-26 of the 2026-08-26 review). The earlier aggregate here claimed all twelve were agent-reviewed and fix-waved,
+wave are the ones this repository can evidence. *(This sentence has now named the wrong slice
+twice: it first said slice 11 carried no review-finding markers when slice 11 carries thirteen —
+H1, L1–L6, M1–M6, item 26 of the 2026-08-26 review — and the correction then said the same of
+slice 07, which carries eight: F1–F8 plus a Blocking-3 fix and review items 19/20/21. A marker
+census is derivable from the slices and this sentence keeps going stale from restating it, so
+the claim is dropped rather than corrected a third time — 2026-08-26 branch review.)* The
+earlier aggregate here claimed all twelve were agent-reviewed and fix-waved,
 which the table does not support (CodeRabbit, 2026-08-26); per-slice review reports are working
 artifacts rather than repository content, so the table is the only in-repo record and the claim
 is narrowed to what it holds.
 
-**Human flags awaiting the owner: none — all six were answered on 2026-08-26**, in a single
+**Human flags awaiting the owner: seven — P-D-14…P-D-20**, opened by the 2026-08-26 branch review. The six below were answered on 2026-08-26 and stay answered; what the review found is a different class, and the distinction cost this branch a wave: **"no open questions" is not "correct"**. Six of the seven are decisions the design had already *made* and never registered — an undeclared decision is invisible to a flag count precisely because nobody asked anything. The six answered flags, in a single
 session with the product owner, one decision at a time:
 
 | # | Question | Outcome |
@@ -367,9 +384,12 @@ Two further decisions landed in the same session without having been flagged: **
 audit sealing to a platform capability (below), and the transport wave named the two inbound
 machine contracts as `products-sdk` clients resolved from `ClientHub` rather than as the REST
 doors that bind them out-of-process, registering the increment request in PRD §9.2 beside its
-sibling. *(The composition-clear gate exemption left the flag list earlier the same day — the
-2026-08-26 CodeRabbit pass forced its resolution: a `system_signal` approval subject with the
-inbound governed signal as the authorizing principal.)*
+sibling — **that second one is now P-D-15**, which it should have been from the start: this
+paragraph called it a decision that landed and then left it out of the register, so of the two
+it names, one had an id and one did not. *(The composition-clear gate exemption left the flag
+list earlier the same day — the 2026-08-26 CodeRabbit pass forced its resolution: a
+`system_signal` approval subject with the inbound governed signal as the authorizing principal,
+**now P-D-14** on the same reasoning.)*
 
 **P-D-08 (2026-08-26):** audit sealing is deferred to a platform capability — the gear ships the
 complete append-only trail over a reserved, unwritten seam, with the requirements that capability
