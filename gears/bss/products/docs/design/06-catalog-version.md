@@ -99,7 +99,7 @@ clearing; the diff; the posting-safe observability.
 
 | Name | Meaning |
 |------|---------|
-| `IncrementRequest` | A queued demand for addressability: `(source, lane ∈ {interactive, bulk}, requested_at)` — pricing's pending-ref request or an operator publish. **The contract is the `products-sdk` increment-request client, not a transport** (manifest §3.3.2/§9.1: contracts are transport-agnostic, in-process `ClientHub` composition is the default mode, `runtime.type: local \| oop` switches without code changes); §4's REST door is its out-of-process binding and its authz door |
+| `IncrementRequest` | A queued demand for addressability — **the whole contract, stated here once**: `(source, lane ∈ {interactive, bulk}, request_key, operation_key?, requested_at)`, **UNIQUE on `(source, request_key)`** (the idempotency and `satisfiedRequests` operand) with `operation_key` naming the bulk operation whose requests coalesce into one version. Pricing's pending-ref request or an operator publish. **The contract is the `products-sdk` increment-request client, not a transport** (manifest §3.3.2/§9.1: contracts are transport-agnostic, in-process `ClientHub` composition is the default mode, `runtime.type: local \| oop` switches without code changes); §4's REST door is its out-of-process binding and its authz door |
 | `SnapshotBuilder` | Collects the tenant's published set + live captures into a manifest, serializes canonically, checksums |
 | `VersionManifest` | The snapshot's content: entity-version references + captured live content (categories, definitions, category values, metadata maps) + participant-set snapshot |
 | `FreezeLedger` | Per-version ack state: participant → `acked \| pending \| not_frozen(forced)` |
@@ -112,7 +112,7 @@ pricing's addressability requests (D-47) and — once pricing registers it — t
 signal; the slice-05 gate only for **operator ceremonies** (force-completion two-person,
 participant-set governance); config (coalescing windows, freeze timeout — also the floor of
 01's idempotency retention C6). **Produced**: `CatalogVersionPublished` (with changed-entity
-list), `FreezeForceCompleted`, `BundleCompositionCompleted`; the committed version ids pricing
+list), `FreezeForceCompleted`, `SkuCompositionCleared` (**outbound** — the inbound plan-price signal keeps the name `BundleCompositionCompleted`, §1.4); the committed version ids pricing
 finalizes its pending refs against; the freeze-registration records slice 10 gates retention
 on; the diff surface.
 
@@ -163,7 +163,7 @@ on; the diff surface.
 
 - [ ] `p2` - **ID**: `cpt-cf-bss-products-flow-composition-clear`
 
-1. [ ] - `p2` - The inbound composition signal (pricing's — **unregistered on their side, PRD §15**; the registry-side door is designed now so their adoption is one event handler) names the composed `bundle` SKU; the registry clears `composition_pending` as a **system save + re-publish** of the head (version N+1) — **not exempt from the gate**: it runs as a `system_signal` approval subject auto-satisfied by the **signal itself as the authorizing principal** (recorded on the `ApprovalRecord` with the signal reference — the approver is the governed pricing-side act, named and audited, rather than an exemption). The satisfaction is **independent of the tenant's configured `N`** (05 C1, P-D-11): a `system_signal` subject neither consumes the human quorum nor is exempt from the gate, because `N` governs human approvals of **operator** acts and the governance for this one already happened pricing-side. *(This clause previously leaned on 05's "nothing publishes approver-less" interim, which P-D-11 retired when the count gained floor 0.)* The flag stays system-owned, never operator-mutable, emits `BundleCompositionCompleted`, audits with the signal reference. Prior frozen versions keep the flag as it was (C4) - `inst-cc-clear`
+1. [ ] - `p2` - The inbound composition signal (pricing's — **unregistered on their side, PRD §15**; the registry-side door is designed now so their adoption is one event handler) names the composed `bundle` SKU; the registry clears `composition_pending` as a **system save + re-publish** of the head (version N+1) — **not exempt from the gate**: it runs as a `system_signal` approval subject auto-satisfied by the **signal itself as the authorizing principal** (recorded on the `ApprovalRecord` with the signal reference — the approver is the governed pricing-side act, named and audited, rather than an exemption). The satisfaction is **independent of the tenant's configured `N`** (05 C1, P-D-11): a `system_signal` subject neither consumes the human quorum nor is exempt from the gate, because `N` governs human approvals of **operator** acts and the governance for this one already happened pricing-side. *(This clause previously leaned on 05's "nothing publishes approver-less" interim, which P-D-11 retired when the count gained floor 0.)* The flag stays system-owned, never operator-mutable, emits `SkuCompositionCleared` — **this gear's outbound event, distinct from the inbound `BundleCompositionCompleted` that drove it** (one name had carried both directions until 2026-08-26; a registry emitting the very event it consumes is a loop, not a contract) — and audits with the signal reference. Prior frozen versions keep the flag as it was (C4) - `inst-cc-clear`
 
 ### Diff two versions (AC #20a)
 
@@ -223,7 +223,7 @@ without a fourth clock.
   records (never GC'd while their version exists — slice 10 contract).
 - **Events**: `CatalogVersionPublished` (changed-entity list, `satisfiedRequests`, checksum,
   participant set), `FreezeForceCompleted`, `FreezeParticipantSetChanged`,
-  `BundleCompositionCompleted`; acks and re-triggers are audit-plane (explicit "no broker
+  `SkuCompositionCleared`; acks and re-triggers are audit-plane (explicit "no broker
   event" — the ack door is inbound).
 
 ## 5. Testing posture (slice-local)

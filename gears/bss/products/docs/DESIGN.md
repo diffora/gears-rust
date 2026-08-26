@@ -333,8 +333,13 @@ slice.
 | 11-clone | **authored 2026-08-26** (resolves the 01-flagged clone-vs-P-D-04 interaction) |
 | 12-consumer-contracts | **authored + agent-reviewed 2026-08-26**; fix wave applied (CoverageChecks incl. id-uniqueness/identity/monetization lints, status vocabulary pinned, register rows split by authorability); SchemaPin widening **resolved 2026-08-26 — P-D-12**: membership is the rule "operands the §2.2 guards read", `inst-cc-pin` lints it, nine lints total |
 
-**The design set is COMPLETE: all twelve slices authored, agent-reviewed, and fix-waved**
-(2026-08-25/26; per-slice review reports are working artifacts, not repository content).
+**The design set is COMPLETE: all twelve slices authored** (2026-08-25/26). **Review status is
+per slice — read the table above, not this line**: the rows carrying "agent-reviewed" plus a fix
+wave are the ones this repository can evidence, and slices 07 and 11 record no review-finding
+markers at all. The earlier aggregate here claimed all twelve were agent-reviewed and fix-waved,
+which the table does not support (CodeRabbit, 2026-08-26); per-slice review reports are working
+artifacts rather than repository content, so the table is the only in-repo record and the claim
+is narrowed to what it holds.
 
 **Human flags awaiting the owner: none — all six were answered on 2026-08-26**, in a single
 session with the product owner, one decision at a time:

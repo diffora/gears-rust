@@ -346,8 +346,22 @@ joint contracts, cited from here by their pricing numbers, never duplicated.
   a trail saying "approved by X" where X is the author — **indistinguishable from a bypassed
   control** to whoever reads it later. The honest mechanism for "the owner decides alone" is a
   configured zero, which is why `SELF_APPROVAL_FORBIDDEN` is untouched at every `N ≥ 1`.
+- **Amended the same day (2026-08-26), closing a hole this entry had left**: "the FinanceReviewer
+  predicate is vacuous at `N = 0`" was stated here and **not built into the mechanism**. Slice 05's
+  `inst-gv-finance-predicate` set the predicate on any finance-material touch regardless of `N`,
+  `inst-gv-quorum`'s evaluator answers "satisfied" only on distinct principals holding the required
+  roles, and 01's `inst-fd-governance-gate` raises `APPROVAL_REQUIRED` otherwise — so at `N = 0`
+  the descriptor demanded a role no principal could hold and the change was **unpublishable
+  forever**, re-blocking the one-person tenant this decision exists for (`taxCategory` is required
+  at publish for product/service types, so their first such SKU could never publish). The register
+  said *vacuous*; the mechanism said *unsatisfiable*, and the mechanism is what gets built. Now
+  normative in both: at `N = 0` the predicate is **not set** and the descriptor records
+  `predicateUnsatisfiable = finance_reviewer`, which the evaluator treats as met while the record
+  and the inbox envelope keep it visible as unmet-by-policy; at `N ≥ 1` nothing changes. Found by
+  the CodeRabbit pass on the same branch, hours after the wave landed — the exact class this
+  programme keeps meeting: a decision's prose outrunning the mechanism that has to carry it.
 - **The reduction, stated rather than wrapped**: at `N = 0` a material catalog publish proceeds
-  on one person with no second pair of eyes, and the FinanceReviewer predicate is vacuous. What
+  on one person with no second pair of eyes, and the FinanceReviewer predicate has no subject. What
   compensates is not another approver: the pinned content snapshot, the full audit row, the
   attribution, the governed-ness of the lowering itself, and the `predicateUnsatisfiable`
   marker that makes the missing control a stored fact rather than an inference from a config
@@ -369,8 +383,10 @@ joint contracts, cited from here by their pricing numbers, never duplicated.
 - **Propagated**: PRD `fr-materiality-gated-publish` (normative sentence) + AC #26 (two
   bullets) + §17.1 materiality-threshold row; design slice 05 §1.6 C1, §1.7 `ApprovalRecord`,
   `inst-gv-materiality` (the "nothing publishes approver-less" interim retired),
-  `inst-gv-queue` (envelope gains `predicateUnsatisfiable`), §6 (flag struck); `DESIGN.md`
-  slice row + status line.
+  `inst-gv-queue` (envelope gains `predicateUnsatisfiable` **and `configuredQuorum`** — its
+  `required` is the record's *effective* count, `N` for material and `min(N, 1)` for non-material,
+  never the raw configured `N`, so a card cannot show "2 required" for a record closing on one),
+  §6 (flag struck); `DESIGN.md` slice row + status line.
 
 ## P-D-12 — The `SchemaPin`'s membership is a rule, not a list
 
