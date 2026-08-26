@@ -54,7 +54,7 @@ Requirements live in [`../PRD.md`](../PRD.md); decisions in [`../DECISIONS.md`](
 - [`05-governance.md`](./05-governance.md) — `MaterialityEvaluator` (bucket-registry-driven +
   enumerated ops + affected-entity trigger; the policy's own mutation is material), the
   approval workflow with a **stored** content snapshot (never re-derived — the pricing lesson),
-  quorum by **principals** (author + ≥2 approvers; FinanceReviewer predicate), the P-D-02
+  quorum by **principals** (the tenant's configured `N`, default 2 floor 0 — P-D-11; FinanceReviewer predicate binding at every `N >= 1`; the shorthand's reach enumerated by P-D-13). *This line read "author + ≥2 approvers" until 2026-08-26 — the fixed count P-D-11 retired, in the very phrasing that decision names as the origin of the floor being three without anyone deciding it.* the P-D-02
   `OverrideCeremony`, one-shot approval consumption, the studio-inbox queue envelope
   (merge-compatible with pricing's), RBAC catalog, time-boxed read-only break-glass. (§6.7, §6.8)
 - [`06-catalog-version.md`](./06-catalog-version.md) — the `CatalogVersion` machine: D-47 lanes
@@ -93,16 +93,19 @@ Requirements live in [`../PRD.md`](../PRD.md); decisions in [`../DECISIONS.md`](
   normative `DispositionTable` (copy / reset / copy-and-re-validate per field class; pricing
   never), the revival-rename rule resolving the P-D-04 interaction (quasi-code renames, the
   storefront doesn't), PII re-screen on copy, `clonedFrom` lineage, per-child ledger. (§6.10, p3)
-- [`12-consumer-contracts.md`](./12-consumer-contracts.md) — the `SeamSuite` (SchemaPin over
-  the five joint fields, joint fixtures grown per the authorable-once-counterpart-AC-exists
-  rule), the `ObligationRegister` (every consumer duty: asserted or explicitly OWED — the
+- [`12-consumer-contracts.md`](./12-consumer-contracts.md) — the `SeamSuite` (SchemaPin over the **eight** obligation operands
+  plus `CatalogVersion` as a **surface** — membership is P-D-12's rule, not a list; joint
+  fixtures grown per the authorable-once-counterpart-AC-exists rule), the `ObligationRegister` (every consumer duty: asserted or explicitly OWED — the
   watermark fixture first), event versioning vN→vN+1 + the replay/bootstrap contract (08's
   projector as its first consumer), the SDK/§9 surface incl. the `CatalogSku`-superset shape
-  and the studio-inbox envelope assertion, and the `CoverageChecks` doc-lints (FR coverage,
-  AC #38 map, door×grant pairing, event bookkeeping, register hygiene). (§6.12, §9)
+  and the studio-inbox envelope assertion, and the **nine** `CoverageChecks` doc-lints (requirement
+  coverage, AC #38 map, door×grant pairing, event bookkeeping, register hygiene, id uniqueness,
+  identity materialization, no-monetization-marker, obligation×pin coupling). (§6.12, §9)
 
 ## Slice map (PRD §6 ↔ implementation phase)
 
-See [`../DESIGN.md` §1.3](../DESIGN.md#13-slice-map-phases-dependency-order) — the canonical
-table with phases and dependencies. The numeric prefix is implementation order, not the PRD
+See [`../DESIGN.md`'s design-set table](../DESIGN.md#design-set-ordered-by-implementation-phase)
+— the canonical table with phases and dependencies. (The old target, `#13-slice-map-phases-dependency-order`,
+never existed: DESIGN.md §1.3 is "Architecture Layers" and the slice map is a `####` block —
+item 27 of the 2026-08-26 review, the only broken anchor in the products doc tree.) The numeric prefix is implementation order, not the PRD
 subsection number.

@@ -55,7 +55,7 @@ this slice is where "the seam suite will verify it" stops being future tense.
 ### 1.4 References
 
 - [`../PRD.md`](../PRD.md) §6.12 (`fr-plan-price-seam`, `fr-monetization-traceability`), §6.7
-  (`fr-event-versioning-replay`), §9 (all six id-bearing blocks across §9.1/§9.2), AC #29, #36, #37;
+  (`fr-event-versioning-replay`), §9 (all **seven** id-bearing blocks across §9.1/§9.2 — `contract-increment-request` included, item 29 of the 2026-08-26 review), AC #29, #36, #37;
   §15 (seam-suite owner/home — proposed `api-contracts` CI, final owner unassigned; event-log
   retention ≥ the bootstrap gap)
 - [`../DECISIONS.md`](../DECISIONS.md) P-D-01 (envelope discipline the versioning rides),
@@ -103,21 +103,21 @@ composition signal, watermark delivery).
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-contract-obligations`
 
-| Obligation | Owing consumer | Source | Status |
-|------------|----------------|--------|--------|
-| Declare intent (`browse` vs `posted`) on resolution | every resolver | 06 `inst-rv-intent` | assertable now (registry-side refusal is built into the API) |
-| Refuse adoption of `deprecated` SKUs | pricing | PRD AC #36; pricing AC #82 (its trigger is the retirement path's deprecation signal) + pricing PRD §15 row | **owed** (authorable — the counterpart AC exists) |
-| Refuse adoption of `compositionPending` SKUs | pricing | PRD AC #36 | **owed — NOT yet authorable** (M3: pricing's PRD carries neither the flag nor the signal; tied to the §15 `BundleCompositionCompleted` open, per C4 it stays listed until that lands) |
-| Enforce `sellable = false` as sellability-gate predicate 6 for standalone lines | pricing | D-46 (built) | **assertable now** (M7) |
-| Re-validate on registry tier/meter divergence (`tier_divergent`/`meter_binding_divergent`) | pricing | pricing `inst-cmp-tier-drift`/`inst-cmp-usagetype` (built) | **assertable now** (M7) |
-| Usage-binding checks (unbound meter; priced dimension ⊆ `metadata_fields`; **reject/warn on a `deprecated` bound unit** — M2, the FR's sixth clause restored) | pricing | P-D-05, pricing `inst-cmp-usagetype` | **owed** (pricing side built; joint fixture) |
-| Resolve grandfathered refs against the frozen snapshot | pricing / subscriptions | 06 `inst-gf-invariant` | **owed** |
-| Re-validate on `SkuImmutableFieldCorrected` | pricing | 07 `inst-cr-republish` | **owed** |
-| Act on the surfaced binding diff `(boundVersion, resolvedVersion, diffRef)` | freeze participants | 06 `inst-sn-binding-diff` | **owed** |
-| Refuse `not_frozen(forced)` participants' content for posted use | pricing / Billing | 06 `inst-fz-force` | **owed** (Billing has no gear — §15) |
-| Produce the `SkuReferenceCount` watermark | pricing (v1), then subscriptions/contracts | P-D-03, 07 | **owed — the P-D-03 joint build** |
-| **Release** frozen versions when references end (`catalog_version × release`) | every freeze participant | 06 `inst-fz-liveness` (H1 of the 10 review) | **owed — without releases, retention never fires (conservative, alarmed)** |
-| Consume `mustMigrateBy` | subscriptions | 04 EOL lockout | **deferred with post-v1 EOL** |
+| Obligation | Owing consumer | Source | **Operand (the pinned field its guard reads — lint 9's only input)** | Status |
+|------------|----------------|--------|--------|--------|
+| Declare intent (`browse` vs `posted`) on resolution | every resolver | 06 `inst-rv-intent` | `CatalogVersion` (surface) | assertable now (registry-side refusal is built into the API) |
+| Refuse adoption of `deprecated` SKUs | pricing | PRD AC #36; pricing AC #82 **covers only its own `When` — retirement or unpublishing — so a *plain* deprecation (04 `inst-lc-deprecate`, no retirement behind it) has no pricing-side counterpart AC** (item 35 of the 2026-08-26 review); + pricing PRD §15 row | `status` + its value vocabulary | **owed — partly NOT yet authorable**: the retirement-driven arm is authorable against AC #82 today; the plain-deprecation arm needs a pricing AC that does not exist and is now the §15 ask |
+| Refuse adoption of `compositionPending` SKUs | pricing | PRD AC #36 | `compositionPending` | **owed — NOT yet authorable** (M3: pricing's PRD carries neither the flag nor the signal; tied to the §15 `BundleCompositionCompleted` open, per C4 it stays listed until that lands) |
+| Enforce `sellable = false` as sellability-gate predicate 6 for standalone lines | pricing | D-46; pricing **D-167 records predicate 6 as needing this registry gear** | `sellable` | **owed, not assertable yet** (item 35 of the 2026-08-26 review corrected M7's reading: the pricing side is designed but its operand is this gear's `sellable`, so the joint assertion cannot precede the seam it asserts) |
+| Re-validate on registry tier/meter divergence (`tier_divergent`/`meter_binding_divergent`) | pricing | pricing `inst-cmp-tier-drift`/`inst-cmp-usagetype` (built) | `PlanTier` + the metering-unit declaration | **assertable now** (M7) |
+| Usage-binding checks (unbound meter; priced dimension ⊆ `metadata_fields`; **reject/warn on a `deprecated` bound unit** — M2, the FR's sixth clause restored) | pricing | P-D-05, pricing `inst-cmp-usagetype` | the metering-unit declaration + `usageTypeRef` | **owed** (pricing side built; joint fixture) |
+| Resolve grandfathered refs against the frozen snapshot | pricing / subscriptions | 06 `inst-gf-invariant` | `CatalogVersion` (surface) | **owed** |
+| Re-validate on `SkuImmutableFieldCorrected` | pricing | 07 `inst-cr-republish` | `type` + the metering-unit declaration (the bucket-ii pair) | **owed** |
+| Act on the surfaced binding diff `(boundVersion, resolvedVersion, diffRef)` | freeze participants | 06 `inst-sn-binding-diff` | `CatalogVersion` (surface) | **owed** |
+| Refuse `not_frozen(forced)` participants' content for posted use | pricing / Billing | 06 `inst-fz-force` | `CatalogVersion` (surface) | **owed** (Billing has no gear — §15) |
+| Produce the `SkuReferenceCount` watermark | pricing (v1), then subscriptions/contracts | P-D-03, 07 | `skuId` | **owed — the P-D-03 joint build** |
+| **Release** frozen versions when references end (`catalog_version × release`) | every freeze participant | 06 `inst-fz-liveness` (H1 of the 10 review) | `CatalogVersion` (surface — the freeze-registration ledger, not a SKU field) | **owed — without releases, retention never fires (conservative, alarmed)** |
+| Consume `mustMigrateBy` | subscriptions | 04 EOL lockout | none in v1 (the field is never populated — 04 `inst-rt-eol-lockout`) | **deferred with post-v1 EOL** |
 
 Every row is either a fixture in the suite or an explicitly OWED line — the register is the
 suite's backlog, reviewed whenever a counterpart lands an AC (C4).
@@ -128,7 +128,7 @@ suite's backlog, reviewed whenever a counterpart lands an AC (C4).
 
 1. [ ] - `p1` - Every event schema is a versioned artifact in `products-sdk`; the CI compatibility test runs C2's actual direction — **an old (`vN`) consumer deserializing a `vN+1` payload** carrying the new optional fields with defaults (the reverse direction, new code reading old fixtures, is the trivial half and is also asserted) on every schema change — the 04 EOL field (`mustMigrateBy` present-but-unpopulated) is the standing example; **the 09 export-artifact schema joins the same corpus** (L3 — the discipline it cites is now exercised, not borrowed) - `inst-rc-compat`
 2. [ ] - `p1` - Dedup/ordering detection beyond the idempotency window rides `(tenant, aggregate, sequence)` (01's outbox keys) — the consumer contract states it and the suite fixtures a duplicate + an out-of-order delivery - `inst-rc-dedup`
-3. [ ] - `p1` - Bootstrap (C3): a published-scope consumer initializes from the latest `CatalogVersion` (06's resolver, `browse` intent) + the event tail from that version's instant; a checkpoint older than the retained tail fails loudly with the named remedy (re-bootstrap) — the same contract 08's projector obeys internally, so the gear's own projector is the contract's first consumer and its permanent conformance probe - `inst-rc-bootstrap` *(renamed from `inst-rp-bootstrap` — H1: it collided with 08's read-projection id, and the lint that should have caught it is #6 below)*
+3. [ ] - `p1` - Bootstrap (C3): a published-scope consumer initializes from the latest `CatalogVersion` (06's resolver, `browse` intent) + the event tail from that version's instant — **or, in a tenant with zero published versions, from the empty catalog plus the whole retained tail** (the anchorless arm, stated because 08's projection tables are called rebuildable "without loss" and this is the only case with no anchor to rebuild from — item 35 of the 2026-08-26 review); a checkpoint older than the retained tail fails loudly with the named remedy (re-bootstrap) — the same contract 08's projector obeys internally, so the gear's own projector is the contract's first consumer and its permanent conformance probe *(renamed from `inst-rp-bootstrap` — H1: it collided with 08's read-projection id, and the lint that should have caught it is #6 below)* - `inst-rc-bootstrap`
 
 ### The SDK / §9 surface
 
@@ -155,15 +155,15 @@ lint failure, not a feature).
 
 Doc-plane lints over this design set + PRD (spec-check-class, run in CI with the docs job):
 
-1. [ ] - `p1` - **Requirement coverage**: every `p1`/`p2` requirement-bearing PRD id — `fr-*`, `nfr-*`, `interface-*`, `contract-*` (M5: the universe is all six §9 blocks and §7, not FRs alone) — is claimed by exactly one slice's Traces-to. **Qualifier grammar (M6)**: a claim is `id (<qualifier>)`; qualifiers compare as normalized strings; an unqualified claim conflicts with every other claim of the id; two identical qualifiers fail. Adopting the grammar requires one sweep of the existing Traces-to lines — owed with the lint's build - `inst-cc-fr`
-2. [ ] - `p1` - **AC #38 map**: every enumerated failure row maps to exactly one error code with exactly one raising door - `inst-cc-errors`
+1. [ ] - `p1` - **Requirement coverage**: every `p1`/`p2` requirement-bearing PRD id — `fr-*`, `nfr-*`, `interface-*`, `contract-*` (M5: the universe is **all seven** id-bearing §9 blocks and §7, not FRs alone — `contract-increment-request` was added after this count was written, item 29 of the 2026-08-26 review) — is claimed by exactly one slice's Traces-to. **NFRs are claimed by id, never by position** (item 30 of the 2026-08-26 review: slices cited "NFR #1, #2, #7, #10" and this lint keys on `nfr-*` ids, so it reported zero claims for all ten; every slice's Traces-to now carries the id alongside the number). **Qualifier grammar (M6)**: a claim is `id (<qualifier>)`; qualifiers compare as normalized strings; an unqualified claim conflicts with every other claim of the id; two identical qualifiers fail. Adopting the grammar requires one sweep of the existing Traces-to lines — owed with the lint's build - `inst-cc-fr`
+2. [ ] - `p1` - **AC #38 map**: every enumerated failure row **that a registry door can refuse** maps to exactly one error code with exactly one raising door. **Two of the fifteen rows are explicitly outside the universe, named here so the lint is buildable rather than perpetually red** (item 32 of the 2026-08-26 review): the retention-orphan row is deliberately an **alarm**, not an API error (10 `inst-rt-order`), and "adopting a `compositionPending` bundle" is a **consumer duty with no registry door** (§2.2). The lint asserts the exclusion list is exactly those two — an unexplained third exclusion fails it - `inst-cc-errors`
 3. [ ] - `p1` - **Door×grant pairing**: every REST/S2S door named in any slice appears in 05's RBAC catalog - `inst-cc-rbac`
 4. [ ] - `p1` - **Event bookkeeping**: every state-changing instruction names its event or an explicit no-event; 09's coalesced summary event is **additive** (row-level domain events all emit — the H1-corrected rule) - `inst-cc-events`
 5. [ ] - `p2` - **Register hygiene**: every P-D propagation list names only documents that restate the decision, and every restating document appears (the L2-class lint) - `inst-cc-register`
-6. [ ] - `p1` - **Id uniqueness**: every `cpt-*`/`flow`/`inst-*`/actor id is declared exactly once across the design set (H1's live violator — the 08/12 `inst-rp-bootstrap` collision — was fixed in the same commit that added this lint) - `inst-cc-ids`
+6. [ ] - `p1` - **Id uniqueness**: every `cpt-*`/`flow`/`inst-*`/actor id is **declared** exactly once across the design set, where a **declaration** is the id trailing its own numbered instruction row and a **re-use** is any other mention (H1's live violator — the 08/12 `inst-rp-bootstrap` collision — was fixed in the same commit that added this lint). **The grammar is what makes it buildable** (item 32 of the 2026-08-26 review): `design/01-foundation.md` legitimately carries `inst-fd-idempotency`, `inst-fd-create-txn`, `inst-fd-etag` and `inst-fd-publish-pin` on two rows each, where the second row continues the same instruction — those rows carry the id **parenthesized** (`(cont. inst-fd-etag)`), the same device lint 1's qualifier grammar uses, so a continuation can never read as a duplicate declaration - `inst-cc-ids`
 7. [ ] - `p1` - **Identity materialization**: no table or projection other than 10's `IdentityRefMap` stores an operator identity — the lint 10's erasure guarantee names (H2: it existed only as a citation until here) - `inst-cc-identity`
 8. [ ] - `p2` - **No monetization marker** (AC #37): a registry schema surface matching the §17.2 left column fails the lint — the §3.1 prose now has its buildable artifact (M1) - `inst-cc-monetization`
-9. [ ] - `p1` - **Obligation×pin coupling** (P-D-12): every §2.2 `ObligationRegister` row whose guard reads a catalog field has that field in the `SchemaPin`, and every pinned field is either an obligation operand or carries a recorded exclusion reason. This is what makes C1's membership a rule rather than a list — the FR it derives from previously stated three obligations (`deprecated` adoption, `compositionPending` adoption, usage binding) while pinning none of their operands, and no lint could see it - `inst-cc-pin`
+9. [ ] - `p1` - **Obligation×pin coupling** (P-D-12): every §2.2 `ObligationRegister` row whose guard reads a catalog field has that field in the `SchemaPin`, and every pinned field is either an obligation operand or carries a recorded exclusion reason. **The register carries an explicit `Operand` column and the lint reads only that** (item 32 of the 2026-08-26 review — reading operands out of the rows' prose yielded ten fields against the pin's eight, and left `PlanTier` pinned with no register row naming it: `PlanTier`'s operand row is the tier-divergence obligation, now stated as such). This is what makes C1's membership a rule rather than a list — the FR it derives from previously stated three obligations (`deprecated` adoption, `compositionPending` adoption, usage binding) while pinning none of their operands, and no lint could see it - `inst-cc-pin`
 
 ## 4. Data / Storage
 
@@ -181,7 +181,7 @@ P-D-03 joint build's acceptance).
 ## 6. Traces to / Risks & Open items
 
 **Traces to (PRD)**: `fr-plan-price-seam`, `fr-event-versioning-replay`,
-`fr-monetization-traceability`; AC #29, #36, #37; §9 (all six blocks); NFR #9; the
+`fr-monetization-traceability`; AC #29, #36, #37; §9 (all **seven** id-bearing blocks); **NFR #9 `nfr-backward-compatible-evolution`** by id; the
 "CI-verified once the suite exists" phrases of `fr-deprecation`/`fr-freeze-atomicity` — this
 slice is that suite's specification.
 

@@ -38,7 +38,7 @@ joint contracts, cited from here by their pricing numbers, never duplicated.
 - **Residue owed**: manifest §7.2 amendment re-scoping the CloudEvents mandate (owner:
   Architecture / Common Core).
 - **Propagated**: PRD §2, §4.1, §5.1, `fr-registry-eventing-audit`,
-  `fr-event-versioning-replay`, §9.2, AC #28/#29; design slice 01 §4 (event fan-out).
+  `fr-event-versioning-replay`, §9.2, AC #28/#29; design slice 01 §4 (event fan-out); `DESIGN.md` §1.2 Key decisions (it summarizes all thirteen — eight of the twelve lists omitted the documents that do restate them, item 31 of the 2026-08-26 review).
 
 ## P-D-02 — CatalogVersion increments are mechanical; governance at entity publish
 
@@ -54,8 +54,8 @@ joint contracts, cited from here by their pricing numbers, never duplicated.
   D-47's "increment within 5 seconds of a downstream publish request" — a machine cannot wait
   for two humans, skipping them breaks governance, and refusing breaks the ratified SLO. Moving
   the override to the human act dissolves the contradiction without weakening either control.
-- **Propagated**: PRD §4.1/§5.1/§5.2, `fr-define-sku`, `fr-catalog-version-publish`,
-  `fr-bundle-adoption-guard`, `fr-prepublish-lint`, AC #7/#19/#25/#45; design slices 03 (`inst-cl-bundle-override`), 05, 06.
+- **Propagated**: PRD §5.1/§5.2, `fr-define-sku`, `fr-catalog-version-publish`,
+  `fr-bundle-adoption-guard`, `fr-prepublish-lint`, AC #7/#19/#25/#45; design slices 03 (`inst-cl-bundle-override`), 05, 06, 09 (`inst-bk-override`) — **§4.1 struck**: its bullets say nothing about mechanical increments or entity-publish governance (item 31 of the 2026-08-26 review); `DESIGN.md` §1.2 Key decisions (it summarizes all thirteen — eight of the twelve lists omitted the documents that do restate them, item 31 of the 2026-08-26 review).
 
 ## P-D-03 — SkuReferenceCount v1 producer set = {pricing}
 
@@ -70,7 +70,7 @@ joint contracts, cited from here by their pricing numbers, never duplicated.
   (unregistered silence pins nothing, registration never re-flips history). One-party
   commitment instead of a three-party negotiation with two docs-only gears.
 - **Propagated**: PRD §9.2, §14, `fr-reference-producer-registration`, AC #43; pricing PRD §15
-  (mirrored answered row); rating SEAMS ownership matrix; design slice 07.
+  (mirrored answered row); rating SEAMS ownership matrix; design slice 07; `DESIGN.md` §1.2 Key decisions (it summarizes all thirteen — eight of the twelve lists omitted the documents that do restate them, item 31 of the 2026-08-26 review).
 
 ## P-D-04 — Absolute product-name uniqueness (region-independent)
 
@@ -86,7 +86,7 @@ joint contracts, cited from here by their pricing numbers, never duplicated.
   false-allow risk; absolute uniqueness deletes the whole question from the create door.
   Strict→loose later is a compatible widening; loose→strict would be a breaking migration.
 - **Propagated**: PRD glossary (Region), `fr-create-product`, `fr-expected-failure-behavior`,
-  AC #5, AC #33a (the promotion fallback identity), AC #38, §16; design slices 01 (uniqueness index + `normalized(name)` pin), 02 (display-name coexistence), 04 (containment), 09 (C5 promotion identity).
+  AC #5, AC #33a (the promotion fallback identity), AC #38, §16; design slices 01 (uniqueness index + `normalized(name)` pin), 02 (display-name coexistence), 04 (containment), 09 (C5 promotion identity); `DESIGN.md` §1.2 Key decisions (it summarizes all thirteen — eight of the twelve lists omitted the documents that do restate them, item 31 of the 2026-08-26 review).
 
 ## P-D-05 — `usageTypeRef` validates resolvability only; UC3(c) lives at the pricing meter binding
 
@@ -104,7 +104,7 @@ joint contracts, cited from here by their pricing numbers, never duplicated.
   harmless, pricing one it never emits is the hazard.
 - **Propagated**: PRD `fr-metering-unit-declaration`, AC #8, §15 (answered row); rating SEAMS
   UC3 row + ownership matrix; pricing design/02 (stale "registry holds equality" premise
-  retired); design slice 03.
+  retired); design slice 03; `DESIGN.md` §1.2 Key decisions (it summarizes all thirteen — eight of the twelve lists omitted the documents that do restate them, item 31 of the 2026-08-26 review).
 - **Residue (2026-08-25, PR #14 review)**: quarantine-on-deleted-UsageType is a fail-safe, not
   an operating mode — the deletion-guard/deletion-signal negotiation with usage-collector is a
   PRD §15 open ("UsageType deletion vs published declarations").
@@ -188,6 +188,12 @@ joint contracts, cited from here by their pricing numbers, never duplicated.
   crossed three of them. The ledger built its own because posted financial facts *are* its
   subject matter; pricing took the pattern before any platform owner existed. The registry is
   where the replication stops.
+- **What activation costs, corrected 2026-08-26**: "zero-migration" holds only because the
+  audit-table trigger whitelist admits a **one-way `unsealed → sealed` UPDATE** supplying the
+  hash columns in the same statement (01 §4.4). The seam as first written put `seal_state`
+  outside the whitelist entirely *and* required `row_hash` NOT NULL on `sealed`, so an
+  asynchronous sealer could neither update an existing row nor insert one already sealed — it
+  required exactly the migration the seam exists to avoid (item 7 of the 2026-08-26 review).
 - **Consequence, recorded rather than hidden**: rows written before activation are **never
   retroactively provable** — hashing a stored row proves only that it hashes to what it now
   contains. The seam therefore buys exactly two things: zero-migration activation, and an
@@ -235,7 +241,7 @@ joint contracts, cited from here by their pricing numbers, never duplicated.
   G4-shaped constraint row, deferral stated); slice 10 §1.6 C1/C3 (S7 exclusion, S8 retention);
   PRD §15 open row (owner: Architecture / Common Core) + §16 risk row; PRD NFR
   `…-nfr-availability-audit` reads unchanged — it requires audit *completeness*, which v1
-  delivers.
+  delivers; `DESIGN.md` §1.2 Key decisions (it summarizes all thirteen — eight of the twelve lists omitted the documents that do restate them, item 31 of the 2026-08-26 review).
 
 ## P-D-09 — Stage-vs-commit fail-closed is delivered per lane; the requirement says so
 
@@ -429,3 +435,45 @@ joint contracts, cited from here by their pricing numbers, never duplicated.
   `inst-sdk-catalogsku` (`status` + vocabulary now normative pin members, previously a flagged
   widening), §3.2 **`inst-cc-pin`** (CoverageChecks #9 — the count in prose moved with it),
   §6 (flag struck); `DESIGN.md` slice row + status line.
+
+## P-D-13 — The quorum shorthand's reach is enumerated; a floor only where the principal is not the tenant's
+
+- **Date**: 2026-08-26 (answering Blocking 1 of the bad-mood review of this branch)
+- **Decision**: P-D-11 made `N` a policy value with floor 0 and the glossary made the shorthand
+  total ("wherever *two-person* appears as shorthand below, read it as this quorum"). That reach
+  is now **enumerated and dispositioned**, five sites, rather than left to the reader:
+  - **Cross-tenant break-glass elevation** (AC #30, `inst-bg-open`) is **not `N`-governed at
+    all**. Its principal is a platform owner acting across tenants; no tenant's configured `N`
+    has standing over an act whose subject is another tenant's data. Fixed floor: **two distinct
+    platform principals**, or the AC's already-stated **post-hoc-review** arm.
+  - **Freeze force-completion** (AC #22), the **uncomposed-bundle override** (AC #19,
+    `inst-cl-bundle-override`), **un-deprecation** (AC #17, `inst-lc-undeprecate`) and the
+    **slice-07 correction door** (`inst-mt-inputs`) follow `N` — and each **records the
+    reduction**: when the effective count is below the retained-name default of 2, the
+    authorizing `ApprovalRecord` and the act's event carry **`quorumReduced`**, so no audit
+    trail reads "two-person" for a one-person act.
+  - The `OverrideCeremony` keeps its **informed** property at every `N`: at `N = 0` the
+    **author** performs the acknowledgment-of-findings-by-name, recorded identically. Multiple
+    people was never what that ceremony bought; informedness was.
+- **Why not a floor on all five**: floor 2 on force-completion leaves a solo tenant with a
+  `CatalogVersion` permanently past its freeze timeout and un-resolvable — the exact class of
+  block P-D-11 exists to remove. And floor 1 on un-deprecation would contradict P-D-11's own
+  enumeration, which already makes every lifecycle transition **to `published`** material and
+  therefore `N`-governed; un-deprecation is that transition. A fixed floor is right only where
+  the acting principal is not the tenant's, which is break-glass and nothing else in v1.
+- **Why `quorumReduced` rather than a second approver**: it is the `predicateUnsatisfiable`
+  device from P-D-11, applied to the count instead of the role — the missing control becomes a
+  **stored fact** on the record instead of an inference from a config value nobody re-opens. The
+  inbox envelope already carries `configuredQuorum` alongside the effective `required`
+  (`inst-gv-queue`), so the marker costs a column and no new surface.
+- **How this was missed, recorded because the class repeats**: the sweep followed P-D-11's
+  propagation list, and the four ceremonies are not on it — they are not materiality questions,
+  which is exactly why the shorthand reached them unexamined. Commit `a282041f8`'s message
+  asserted that break-glass and force-completion "carry their own fixed two-person rules"; **no
+  document stated such a rule**. The claim was true of the intent and false of the text, and the
+  text is what gets built (the same shape as P-D-11's own `predicateUnsatisfiable` finding).
+- **Propagated**: PRD glossary **Two-person rule** row; AC #17, #19, #22, #30; design slice 05
+  §1.6 C1, §1.7 `ApprovalRecord` + `OverrideCeremony`, `inst-bg-open`, `inst-gv-override`,
+  `inst-gv-queue`, `inst-mt-inputs`, §4 `products_approval`/`products_breakglass_session`;
+  slice 03 `inst-cl-bundle-override`; slice 04 `inst-lc-undeprecate`; slice 06
+  `inst-fz-force`; `DESIGN.md` decision register summary.

@@ -68,8 +68,12 @@ read-model/write-path separation (PRD §7).
 
 P-D-01 broker-native envelope · P-D-02 mechanical increments, governance at entity publish ·
 P-D-03 `SkuReferenceCount` v1 producer = {pricing} · P-D-04 absolute name uniqueness ·
-P-D-05 `usageTypeRef` resolvability-only. Joint: D-46 (`sellable`), D-47 (increment lanes +
-retirement contract) — pricing register.
+P-D-05 `usageTypeRef` resolvability-only · P-D-06 metadata outside frozen content · P-D-07 the
+staleness stamp is a floor · P-D-08 audit sealing is a platform capability (reserved seam) ·
+P-D-09 stage-vs-commit fail-closed per lane · P-D-10 no gear-side Legal role · P-D-11 the
+approver count is a policy value, default 2 floor 0 · P-D-12 the `SchemaPin`'s membership is a
+rule · P-D-13 the quorum shorthand's enumerated reach. Joint: D-46 (`sellable`), D-47
+(increment lanes + retirement contract) — pricing register.
 
 ### 1.3 Architecture Layers
 
@@ -117,8 +121,11 @@ numeric prefix is implementation order, not the PRD subsection number.
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-principle-fail-closed`
 
-Every enumerated failure of PRD AC #38 maps to a named error code (slice 01 §3.3 taxonomy); no
-partial application; every rejection audited with reason.
+Every enumerated failure of PRD AC #38 **that a registry door can refuse** maps to a named
+error code (slice 01 §3.3 taxonomy); no partial application; every rejection audited with reason.
+Two of the fifteen AC #38 rows are outside that universe by design and enumerated in slice 12's
+lint 2 — the retention-orphan **alarm** and the `compositionPending` **consumer duty** — so the
+principle and its lint say the same thing (item 32 of the 2026-08-26 review).
 
 #### Two version counters, never conflated
 
@@ -299,7 +306,9 @@ goldens.
 
 ## 4. Decision register & joint contracts
 
-- [`DECISIONS.md`](./DECISIONS.md) — P-D-01…06.
+- [`DECISIONS.md`](./DECISIONS.md) — P-D-01…13 (both summaries said "…06" / listed five while
+  the register held twelve — item 26 of the 2026-08-26 review; P-D-13 landed with that review's
+  fix wave).
 - Joint contracts consumed here: **D-46**, **D-47** (pricing register); **UC3** binding (rating
   `SEAMS.md` §J); contested-surface ownership — rating `SEAMS.md` "Ownership matrix" (five
   products rows, 2026-08-25).
@@ -335,8 +344,9 @@ slice.
 
 **The design set is COMPLETE: all twelve slices authored** (2026-08-25/26). **Review status is
 per slice — read the table above, not this line**: the rows carrying "agent-reviewed" plus a fix
-wave are the ones this repository can evidence, and slices 07 and 11 record no review-finding
-markers at all. The earlier aggregate here claimed all twelve were agent-reviewed and fix-waved,
+wave are the ones this repository can evidence, and **slice 07** records no review-finding
+markers at all (slice 11 carries thirteen — H1, L1–L6, M1–M6 — and was named here in error, item
+26 of the 2026-08-26 review). The earlier aggregate here claimed all twelve were agent-reviewed and fix-waved,
 which the table does not support (CodeRabbit, 2026-08-26); per-slice review reports are working
 artifacts rather than repository content, so the table is the only in-repo record and the claim
 is narrowed to what it holds.

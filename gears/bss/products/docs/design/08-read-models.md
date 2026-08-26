@@ -100,8 +100,9 @@ external search infrastructure choices (implementation detail behind the project
 
 ### 1.8 Context & Dependencies
 
-**Consumed**: 01 events (publishes, discards), 04 events (deprecation/retirement flips,
-deferred intents), 02 events (`Category*`, `CategoryDisplayUpdated`,
+**Consumed**: 01 events (publishes, discards), 04 events (deprecation/retirement flips —
+**not** deferred intents: those sources emit none, and their dashboards are **polled
+projections** from 04's own table per `inst-ps-shape`, item 35 of the 2026-08-26 review), 02 events (`Category*`, `CategoryDisplayUpdated`,
 `AttributeDefinitionUpdated`), 06 (`CatalogVersionPublished` — advances the `StalenessStamp`),
 03 vocabulary events (tier labels for display). **Produced**: the browse/search API, the
 history timeline, the dashboards; the convergence and staleness metrics.
@@ -160,7 +161,11 @@ history timeline, the dashboards; the convergence and staleness metrics.
 - [ ] `p2` - **ID**: `cpt-cf-bss-products-algo-read-nfrs`
 
 p95 latency and QPS per tenant partition (NFR #1/#2) measured at the API edge; convergence
-(C5) measured outbox-acceptance → projection-visible per event class; availability split (NFR
+(C5) measured **write-commit → projection-visible** per event class, decomposed into the two
+meters C5 names (commit→durable-acceptance, 01's outbox meter; acceptance→projected, this
+slice's) — **not** outbox-acceptance → projection-visible, which is the re-basing C5's M1 fix
+explicitly struck for collapsing budgets NFR #3 keeps distinct (item 35 of the 2026-08-26
+review); availability split (NFR
 #10) — the read path's health is independent of write-path health by construction (separate
 serving store), and the probe that proves it is a read served during a simulated write-path
 outage.
@@ -169,7 +174,12 @@ outage.
 
 §3.1's projection tables — **rebuildable state, not records**: no append-only guards, no
 audit rows of their own (the audited truth lives upstream); dropped and rebuilt from the
-bootstrap path at any time without loss. This family is exempt from the **published/history
+bootstrap path at any time without loss — **with the zero-version tenant stated rather than
+assumed** (item 35 of the 2026-08-26 review): the bootstrap initializes from the latest
+`CatalogVersion` (12 `inst-rc-bootstrap`), and a tenant that has published none has no such
+anchor, so its rebuild starts from the **empty catalog plus the full event tail**, which is
+lossless precisely because there is no pre-tail content to lose. "Without loss" is therefore
+total, and the anchorless case is a distinct code path, not an edge case the sentence glosses. This family is exempt from the **published/history
 append-only guard** (L2 — softened: the idempotency store's sweep and guarded category deletes
 are other non-append surfaces; the exemption is recorded at 01 C5 too), and the exemption is
 the point.
@@ -192,8 +202,13 @@ the point.
 
 ## 6. Traces to / Risks & Open items
 
-**Traces to (PRD)**: `fr-cache-first-browse`; AC #32; NFR #1, #2, #7, #10 + the convergence
-interim (§17.1); `fr-event-delivery-resilience` (the per-consumer delivery/DLQ **projection**
+**Traces to (PRD)**: `fr-cache-first-browse`; AC #32; **NFRs by id** (#1 `nfr-read-latency`,
+#2 `nfr-read-throughput`, #3 `nfr-publication-propagation`, #7 `nfr-graceful-degradation`,
+#10 `nfr-availability-audit` — positional numbers alone left `inst-cc-fr` reporting zero claims
+for all ten NFRs, item 30 of the 2026-08-26 review) + the convergence interim (§17.1);
+**AC #39** (the registry-side obligations: durable acceptance before reported success, the
+per-consumer delivery/DLQ projection, no state mutation on delivery failure — previously cited
+by nothing); `fr-event-delivery-resilience` (the per-consumer delivery/DLQ **projection**
 clause — M5); the §5.1 p2 rows "Advanced search, filter & faceting" and the read half of
 "Catalog read models"; 04-M6 (deferred-intent projection), 02 re-parent invalidation; P-D-07
 (the stamp-floor semantics).
