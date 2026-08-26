@@ -206,15 +206,19 @@ names its pair; slice 12's coverage check asserts no door is unnamed.
 `BREAKGLASS_WRITE_FORBIDDEN`, `BREAKGLASS_EXPIRED`. `APPROVAL_REQUIRED` stays 01's (raised
 through the gate).
 
-**Problem responses (RFC 9457):** `SELF_APPROVAL_FORBIDDEN`, `BREAKGLASS_WRITE_FORBIDDEN`, `BREAKGLASS_EXPIRED`, `APPROVAL_REQUIRED` (403); `APPROVAL_SUPERSEDED` (409); `APPROVER_SCOPE_EXCEEDED`, `APPROVER_ROLE_REQUIRED` (422).
+**Problem responses (RFC 9457):** `SELF_APPROVAL_FORBIDDEN`, `BREAKGLASS_WRITE_FORBIDDEN`, `BREAKGLASS_EXPIRED`, `APPROVAL_REQUIRED`, `APPROVER_SCOPE_EXCEEDED`, `APPROVER_ROLE_REQUIRED` (403); `APPROVAL_SUPERSEDED` (409).
 
-*Statuses added 2026-08-26. The gear declared its codes with no HTTP status and no
-problem-response block in any slice, against `guidelines/DNA/README.md`'s RFC 9457 rule and
-`.cf-studio/config/rules/api-contracts.md`. The mapping follows pricing's convention — 422 for
-content the door cannot process, 409 where the current state refuses the act, 403 where the
-caller may not perform it at all, 404 for a path naming a resource this tenant has none of,
-412 for the `If-Match` precondition, 503 where retry is the remedy. Proposed per row and open
-to correction; the requirement is that every code carries one.*
+*Statuses added 2026-08-26, corrected the same day by the fix-wave review. The gear declared
+its codes with no HTTP status and no problem-response block in any slice, against
+`guidelines/DNA/README.md`'s RFC 9457 rule and `.cf-studio/config/rules/api-contracts.md`. The
+mapping follows pricing's, checked against it code by code: **422** for content the door cannot
+process, **409** where the current state refuses the act — including the ETag precondition,
+which pricing maps to 409 rather than 412 (D-141) and where an earlier pass here wrongly wrote
+412 and called that pricing's convention — **403** where the caller may not perform the act at
+all, **404** only where a path segment names a resource this tenant has none of, **400** where
+a required request field is absent outright, **503** where retry is the remedy. Proposed per
+row and open to correction; the requirement is that every code carries one.
+  Codes listed here for the response map but **declared elsewhere**: `APPROVAL_REQUIRED` (slice 01) — the status is repeated, not a second declaration, so the one-declaration rule stands.*
 
 ## 4. Data / Storage (normative shape; DDL in migrations)
 

@@ -140,7 +140,7 @@ exists by design; watermarks are state, not history)**; `SkuImmutableFieldCorrec
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-flow-correction`
 
-1. [ ] - `p1` - `CorrectionDoor` (`sku × correct`) accepts `(skuId, field ∈ {type, meter declaration pair}, new value, expected revision)`; structural identity is never correctable (01 bucket i — the door physically cannot write it). **One door, two admission gates** (F4 fix): the normal fresh-zero gate, or the break-glass admission of `inst-bc-admission` — the 01 head-row whitelist admits bucket-ii writes via this door alone, both lanes included. **Preconditions** (F5/F6 fix): the head must be **clean** (no unpublished bucket-iii/iv edits — `CORRECTION_DIRTY_HEAD`: a correction is surgical, and co-published edits would misattribute the corrected version's content) and the subject must carry **no open approval** (`CORRECTION_APPROVAL_OPEN`); the correction's own `ApprovalRecord` subject kind is `sku_correction` - `inst-cr-door`
+1. [ ] - `p1` - `CorrectionDoor` (`sku × correct`) accepts `(skuId, field ∈ {type, meter declaration pair}, new value, expected revision)`; structural identity is never correctable (01 bucket i — the door physically cannot write it). **One door, three admission gates** (F4 fix; the third added 2026-08-26 — P-D-16's arm is a gate of this door and not only of the break-glass block, and while this row said "two" a SKU with a deleted `UsageType` and `fresh > 0` was refused here and never reached the validator that admits it): the normal fresh-zero gate, the unresolvable-target gate of `inst-bc-unresolvable`, or the break-glass admission of `inst-bc-admission` — the 01 head-row whitelist admits bucket-ii writes via this door alone, both lanes included. **Preconditions** (F5/F6 fix): the head must be **clean** (no unpublished bucket-iii/iv edits — `CORRECTION_DIRTY_HEAD`: a correction is surgical, and co-published edits would misattribute the corrected version's content) and the subject must carry **no open approval** (`CORRECTION_APPROVAL_OPEN`); the correction's own `ApprovalRecord` subject kind is `sku_correction` - `inst-cr-door`
 2. [ ] - `p1` - The gate: `ReferencePredicate` MUST answer **fresh-zero**; anything else fails `CORRECTION_REFERENCED` naming the per-producer detail (a stale producer is named as the blocker, not hidden inside a boolean) - `inst-cr-freshzero`
 3. [ ] - `p1` - The correction is a governed **material** act through the 05 quorum — the tenant's configured `N`, with **`quorumReduced` on the `ApprovalRecord` and on the emitted `SkuImmutableFieldCorrected`** below the default of 2 (P-D-13, the same clause 04 `inst-lc-undeprecate` and 06 `inst-fz-force` carry); on approval it re-publishes the head as version N+1 through the 01 `PublishDoor` (the head-row guard admits the bucket-ii columns only via this door), runs the full pipeline — **the admission gate is itself a registered validator on this publish and re-runs inside the publish transaction** (F1 fix: a reference arriving between submission and approval still refuses; the door-acceptance check is a fast-fail, never the last word). **The validator re-checks the lane's own admission predicate, not always fresh-zero** (item 20 of the 2026-08-26 review): on the normal lane, fresh-zero; on the break-glass lane, `inst-bc-admission`'s predicate — every registered producer still stale/never-received, or the target still unresolvable. Naming fresh-zero for both was a contradiction with only bad readings: taken literally the validator refuses **every** break-glass re-publish, since that lane is admissible only when no producer can answer fresh-zero; skipped instead, nothing re-checks admission at commit and a correction could land after a producer recovered and reported the SKU — with `SkuCorrectionOverride` recording unavailability evidence already false at the instant it was written. Re-checking the lane's own predicate is the only reading that is both satisfiable and fail-closed, a corrected meter re-resolves `usageTypeRef` per P-D-05 — and emits `SkuImmutableFieldCorrected` - `inst-cr-republish`
 
@@ -174,15 +174,19 @@ exists by design; watermarks are state, not history)**; `SkuImmutableFieldCorrec
 `BREAKGLASS_CORRECTION_DISABLED`, `PRODUCER_SET_EMPTY_FORBIDDEN`. The correction door's quorum refusals ride the 05 gate's
 codes; structural-identity attempts ride 01's `ILLEGAL_FIELD_MUTATION`.
 
-**Problem responses (RFC 9457):** `PRODUCER_UNREGISTERED`, `BREAKGLASS_CORRECTION_DISABLED`, `PRODUCER_SET_EMPTY_FORBIDDEN` (403); `WATERMARK_REGRESSION`, `WATERMARK_CONFLICT`, `PRODUCER_RETIREMENT_WOULD_FREE`, `CORRECTION_REFERENCED`, `CORRECTION_DIRTY_HEAD`, `CORRECTION_APPROVAL_OPEN`, `CORRECTION_SIGNAL_AVAILABLE` (409); `WATERMARK_FUTURE`, `ILLEGAL_FIELD_MUTATION` (422).
+**Problem responses (RFC 9457):** `PRODUCER_UNREGISTERED`, `BREAKGLASS_CORRECTION_DISABLED` (403); `PRODUCER_SET_EMPTY_FORBIDDEN`, `WATERMARK_REGRESSION`, `WATERMARK_CONFLICT`, `PRODUCER_RETIREMENT_WOULD_FREE`, `CORRECTION_REFERENCED`, `CORRECTION_DIRTY_HEAD`, `CORRECTION_APPROVAL_OPEN`, `CORRECTION_SIGNAL_AVAILABLE` (409); `WATERMARK_FUTURE`, `ILLEGAL_FIELD_MUTATION` (422).
 
-*Statuses added 2026-08-26. The gear declared its codes with no HTTP status and no
-problem-response block in any slice, against `guidelines/DNA/README.md`'s RFC 9457 rule and
-`.cf-studio/config/rules/api-contracts.md`. The mapping follows pricing's convention — 422 for
-content the door cannot process, 409 where the current state refuses the act, 403 where the
-caller may not perform it at all, 404 for a path naming a resource this tenant has none of,
-412 for the `If-Match` precondition, 503 where retry is the remedy. Proposed per row and open
-to correction; the requirement is that every code carries one.*
+*Statuses added 2026-08-26, corrected the same day by the fix-wave review. The gear declared
+its codes with no HTTP status and no problem-response block in any slice, against
+`guidelines/DNA/README.md`'s RFC 9457 rule and `.cf-studio/config/rules/api-contracts.md`. The
+mapping follows pricing's, checked against it code by code: **422** for content the door cannot
+process, **409** where the current state refuses the act — including the ETag precondition,
+which pricing maps to 409 rather than 412 (D-141) and where an earlier pass here wrongly wrote
+412 and called that pricing's convention — **403** where the caller may not perform the act at
+all, **404** only where a path segment names a resource this tenant has none of, **400** where
+a required request field is absent outright, **503** where retry is the remedy. Proposed per
+row and open to correction; the requirement is that every code carries one.
+  Codes listed here for the response map but **declared elsewhere**: `ILLEGAL_FIELD_MUTATION` (slice 01) — the status is repeated, not a second declaration, so the one-declaration rule stands.*
 
 ## 4. Data / Storage (normative shape; DDL in migrations)
 

@@ -141,7 +141,7 @@ contract slice 08 projects.
 
 1. [ ] - `p1` - Values are entity content (C2): writes ride the entity draft-save door; this slice registers validators — definition exists and is not `deprecated` (`ATTRIBUTE_DEFINITION_UNKNOWN`/`_DEPRECATED`), value matches the declared type, `(locale, region, brand)` coordinates lie within the definition's visibility scope **and** the entity's own scope - `inst-av-validate`
 2. [ ] - `p1` - The **content-PII write block** runs here for attribute/description free text: hard prohibition, fail-closed on uncertainty, curated allow-list for legitimate person-named products; the detector policy + allow-list are slice 10's, this door only invokes them (`CONTENT_PII_BLOCKED`) - `inst-av-pii-block`
-2a. [ ] - `p1` - **The same block runs on every operator free-text `reason`** (item 24 of the 2026-08-26 review), enumerated so no door is left out: audit rows (01 §4), approval rejections and break-glass session reasons (05), correction-override and break-glass-correction reasons (07), the retirement reason carried into the `SkuRetired` broker payload (PRD §12), and bulk/promotion row reasons (09). These records are **never edited** and erasure is a map-only tombstone (10 C1), so PII typed into one of them is unreachable by erasure **forever** and, for `SkuRetired`, has already left the gear. Fail-closed at the door is therefore the only reach erasure can have over them — the same detector, the same allow-list, the same `CONTENT_PII_BLOCKED`, invoked by the owning door - `inst-av-pii-reason`
+2a. [ ] - `p1` - **The same block runs on every operator free-text `reason`** (item 24 of the 2026-08-26 review), enumerated so no door is left out: audit rows (01 §4), approval rejections and break-glass session reasons (05), correction-override and break-glass-correction reasons (07), the retirement reason carried into the `SkuRetired` broker payload (PRD §12), and bulk/promotion row reasons (09). These records are **never edited** and erasure is a map-only tombstone (10 C1), so PII typed into one of them is unreachable by erasure **forever** and, for `SkuRetired`, has already left the gear. Fail-closed at the door is therefore the only reach erasure can have over them — the same detector, the same allow-list, the same `CONTENT_PII_BLOCKED`, invoked by the owning door. **The hook is the single raiser and this slice is the single declaration** (2026-08-26): the five owning slices call `inst-av-pii-block` and do not re-declare the code in their own taxonomies, which is why 01 §3.3's one-door rule carves it out by name. A slice that adds a free-text `reason` field adds itself to the enumeration above; that is the whole registration - `inst-av-pii-reason`
 3. [ ] - `p1` - The registered `→ published` validator requires the **default-locale value at the global (brand-less) coordinate** for every localized definition the entity carries values for (rejected at publish, not at draft save); per-brand default-locale values are optional overrides — the global one is what makes the fallback chain total for **every** brand (M5 fix, 2026-08-25 review) - `inst-av-default-locale`
 4. [ ] - `p1` - Read-side resolution (consumed by slice 08): `LocaleResolver` walks `(locale, region, brand) → (locale, brand) → (default-locale, brand) → global`; default-locale resolves per brand, falling back to the tenant default — the chain is total for every brand by step 3's **global** default-locale guarantee. **Totality is anchored on the resolution path, not on the config value** (item 37 of the 2026-08-26 review): the tenant default locale is ungoverned config with no re-validation, so anchoring on it would un-total the chain for every already-published entity the moment it changed. So the final step is the **global** fallback and the tenant default is only a *preference* consulted before it; a tenant-default change is therefore non-retroactive by construction — the same posture `inst-ti-limits` states for depth limits - `inst-av-resolve`
 5. [ ] - `p1` - **Category branch (H2 fix, 2026-08-25 review)**: categories have no revisions or publishes, so their display values are **live-entity content**: written through a category live-value door (`If-Match` on the category row-version token; non-material single-approver per the §17.1 default — a display edit is not a rename of the canonical name), audited and emitted as `CategoryDisplayUpdated`; the **global default-locale value is required at the first write** of a definition for that category (the write-time analogue of step 3); a `CatalogVersion` captures current category values as of its snapshot instant — they have no frozen versions of their own - `inst-av-category-branch`
@@ -181,7 +181,7 @@ lint 3 could not see it).*
 
 `DUPLICATE_CATEGORY_NAME`, `TAXONOMY_CYCLE`, `TAXONOMY_LIMIT`, `CATEGORY_REFERENCED`,
 `CATEGORY_RETIRED` (assignment to a retired node), `ATTRIBUTE_DEFINITION_UNKNOWN`,
-`ATTRIBUTE_DEFINITION_DEPRECATED`, `DEFINITION_IN_USE`, `ATTRIBUTE_TYPE_MISMATCH` (the attribute-value write, when a value does not match its definition's declared type — named 2026-08-26),
+`ATTRIBUTE_DEFINITION_DEPRECATED`, `DEFINITION_IN_USE`, `ATTRIBUTE_TYPE_MISMATCH` (raised by `inst-av-validate`, the attribute-value write, when a value does not match its definition's declared type — named 2026-08-26),
 `ATTRIBUTE_SCOPE_VIOLATION`, `DEFAULT_LOCALE_MISSING` (publish-time), `PRIMARY_CATEGORY_REQUIRED`, `CONTENT_PII_BLOCKED` (verdict policy owned by slice 10 — L1),
 `METADATA_LIMIT`, `STALE_LIVE_OP`. Registered into the Foundation taxonomy (01 §3.3); the
 AC #38 row "taxonomy cycle" maps here; the PII write-block is **AC #35's** clause (L1 fix —
@@ -189,13 +189,16 @@ misattributed to #38 until the 2026-08-25 review).
 
 **Problem responses (RFC 9457):** `DUPLICATE_CATEGORY_NAME`, `CATEGORY_REFERENCED`, `DEFINITION_IN_USE`, `STALE_LIVE_OP` (409); `TAXONOMY_CYCLE`, `TAXONOMY_LIMIT`, `CATEGORY_RETIRED`, `ATTRIBUTE_DEFINITION_UNKNOWN`, `ATTRIBUTE_DEFINITION_DEPRECATED`, `ATTRIBUTE_TYPE_MISMATCH`, `ATTRIBUTE_SCOPE_VIOLATION`, `DEFAULT_LOCALE_MISSING`, `PRIMARY_CATEGORY_REQUIRED`, `CONTENT_PII_BLOCKED`, `METADATA_LIMIT` (422).
 
-*Statuses added 2026-08-26. The gear declared its codes with no HTTP status and no
-problem-response block in any slice, against `guidelines/DNA/README.md`'s RFC 9457 rule and
-`.cf-studio/config/rules/api-contracts.md`. The mapping follows pricing's convention — 422 for
-content the door cannot process, 409 where the current state refuses the act, 403 where the
-caller may not perform it at all, 404 for a path naming a resource this tenant has none of,
-412 for the `If-Match` precondition, 503 where retry is the remedy. Proposed per row and open
-to correction; the requirement is that every code carries one.*
+*Statuses added 2026-08-26, corrected the same day by the fix-wave review. The gear declared
+its codes with no HTTP status and no problem-response block in any slice, against
+`guidelines/DNA/README.md`'s RFC 9457 rule and `.cf-studio/config/rules/api-contracts.md`. The
+mapping follows pricing's, checked against it code by code: **422** for content the door cannot
+process, **409** where the current state refuses the act — including the ETag precondition,
+which pricing maps to 409 rather than 412 (D-141) and where an earlier pass here wrongly wrote
+412 and called that pricing's convention — **403** where the caller may not perform the act at
+all, **404** only where a path segment names a resource this tenant has none of, **400** where
+a required request field is absent outright, **503** where retry is the remedy. Proposed per
+row and open to correction; the requirement is that every code carries one.*
 
 ### 3.4 Concurrency
 

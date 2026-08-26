@@ -53,11 +53,20 @@
 //! requires "every **earlier version** to be itself pin-eligible", and
 //! `CatalogVersion` is minted **per tenant, gapless** — the registry's slice 06
 //! owns a per-tenant counter (`gears/bss/products/docs/design/06-catalog-version.md`
-//! §4). So "every earlier version" and "every earlier version this tenant has a
-//! ref for" describe the same set, and the reading is settled by the data model
-//! rather than by a choice this repo makes.
+//! §4). That fixes the *minting* axis — a tenant's versions are contiguous.
 //!
-//! *Corrected 2026-08-26.* This doc argued from a **cross-tenant** registry
+//! It does **not** collapse the two readings, and the correction that reached
+//! this file first said it did. `products` mints a version on three triggers
+//! (`inst-cv-request`): a pricing request, this gear's own bulk commits, and an
+//! operator catalog-publish act. Only the first leaves a row in
+//! `pricing_catalog_version_ref`, which is what the walk below reads — so
+//! "every earlier version" and "every earlier version *this tenant has a ref
+//! for*" still name different sets, sparse in a gapless sequence rather than in
+//! a global one.
+//!
+//! **The ambiguity is therefore still reported**, on the corrected axis.
+//!
+//! *Corrected 2026-08-26, twice.* This doc argued from a **cross-tenant** registry
 //! minting one global sequence, of which a tenant held a sparse subset — the
 //! premise that made the walk look ambiguous and made a global reading stick at
 //! the first gap. That premise was retracted across pricing's own documents in

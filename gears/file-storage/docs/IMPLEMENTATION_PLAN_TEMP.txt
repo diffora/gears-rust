@@ -15,7 +15,10 @@
 > `rg` to re-anchor before editing.
 
 Paths are relative to `gears/file-storage/file-storage/` unless noted. Verification
-commands assume the repo root as CWD. All `git commit` calls are DCO-signed (`git commit -s`)
+commands are split: `git`, `cargo` and `make` run from the **repo root**, while every
+per-step `rg` pre-state check uses gear-relative paths and must run from
+`gears/file-storage/file-storage/`. Run an `rg` check from the root and it reports "no
+matches", which this plan reads as the expected confirmation. All `git commit` calls are DCO-signed (`git commit -s`)
 on this feature branch — never on `main`.
 
 ### Severity map (what "must ship" means)

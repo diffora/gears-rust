@@ -73,7 +73,7 @@ instead.*
   for two humans, skipping them breaks governance, and refusing breaks the ratified SLO. Moving
   the override to the human act dissolves the contradiction without weakening either control.
 - **Propagated**: PRD §5.1/§5.2, `fr-define-sku`, `fr-catalog-version-publish`,
-  `fr-bundle-adoption-guard`, `fr-prepublish-lint`, AC #7/#19/#25/#45; S3 (`inst-cl-bundle-override`), 05, 06, 09 (`inst-bk-override`) — **§4.1 struck**: its bullets say nothing about mechanical increments or entity-publish governance (item 31 of the 2026-08-26 review); `DESIGN.md` §1.2 Key decisions.
+  `fr-bundle-adoption-guard`, `fr-prepublish-lint`, AC #7/#19/#25/#45; S3 (`inst-cl-bundle-override`), S5, S6, S9 (`inst-bk-override`) — **§4.1 struck**: its bullets say nothing about mechanical increments or entity-publish governance (item 31 of the 2026-08-26 review); `DESIGN.md` §1.2 Key decisions.
 
 #### P-D-03 — SkuReferenceCount v1 producer set = {pricing}
 
@@ -105,7 +105,7 @@ instead.*
   false-allow risk; absolute uniqueness deletes the whole question from the create door.
   Strict→loose later is a compatible widening; loose→strict would be a breaking migration.
 - **Propagated**: PRD glossary (Region), `fr-create-product`, `fr-expected-failure-behavior`,
-  AC #5, AC #33a (the promotion fallback identity), AC #38, §16; S1 (uniqueness index + `normalized(name)` pin), 02 (display-name coexistence), 04 (containment), 09 (C5 promotion identity); `DESIGN.md` §1.2 Key decisions.
+  AC #5, AC #33a (the promotion fallback identity), AC #38, §16; S1 (uniqueness index + `normalized(name)` pin), S2 (display-name coexistence), S4 (containment), S9 (C5 promotion identity); `DESIGN.md` §1.2 Key decisions.
 
 #### P-D-05 — `usageTypeRef` validates resolvability only; UC3(c) lives at the pricing meter binding
 
@@ -154,7 +154,7 @@ instead.*
   the write. That is the ungoverned channel's nature; a key that needs version history is an
   **Attribute**, which has governance, versioning and localization.
 - **Propagated**: S2 §2 (`inst-md-placement`) + §4.1/§5 + §6 (flag struck); slice
-  06 owes the snapshot-capture step; `DESIGN.md` slice row + status line.
+  slice 06 owes the snapshot-capture step (a debt, not a propagation target); `DESIGN.md` slice row + status line.
 - **No PRD edit owed**: the PRD glossary's "Metadata map" row is compatible as written. *(This
   sentence sat inside the `**Propagated**` field, where a propagation check reads "PRD" as a
   claimed target and then fails to find the citation — a claim of the exact opposite of what the
@@ -535,7 +535,7 @@ instead.*
   another slice's instruction is worse than no id, because it reads as swept.
 - **Propagated**: PRD glossary **Two-person rule** row; AC #17, #19, #22, #30; S5
   §1.6 C1, §1.7 `ApprovalRecord` + `OverrideCeremony`, `inst-bg-open`, `inst-gv-override`,
-  `inst-gv-queue`, `inst-mt-inputs` (the metering-unit clause that routes to the 07 door),
+  `inst-gv-queue`, `inst-mt-inputs` (the metering-unit clause that routes to slice 07's correction door (a route, not a propagation target)),
   §4 `products_approval`/`products_breakglass_session`; S3 `inst-cl-bundle-override`;
   S4 `inst-lc-undeprecate`; S6 `inst-fz-force`; **S7 C4, C5,
   `inst-cr-republish`, `inst-bc-ceremony`**; `DESIGN.md` decision register summary.
@@ -574,7 +574,10 @@ instead.*
 - **Propagated**: S5 `inst-gv-one-shot`; S6 §2 composition-clear flow and its
   `compositionPending` clearing; `design/README.md` slice-06 bullet; `DESIGN.md` §6 status block
   + decision register summary; PRD `fr-materiality-gated-publish` (the subject-kind sentence)
-  and AC #7.
+  and AC #26 (its own `And` clause). *(Corrected 2026-08-26: this said AC #7, which is "Define a
+  SKU"; the materiality AC is #26. Both targets carried the claim and neither carried the
+  sentence until now — and the register's own gate read the claim as verified, because the
+  field names `PRD` and the PRD had begun citing P-D-14 in an unrelated change-log line.)*
 
 #### P-D-15 — The two inbound machine contracts are `products-sdk` clients from `ClientHub`, not out-of-process REST doors
 

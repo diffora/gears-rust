@@ -127,7 +127,7 @@ GC + its alarms, the restore-drill results surface.
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-flow-retention`
 
-1. [ ] - `p1` - `RetentionClock` per class (the version arm reads 06's freeze-registration records, whose `released` half is **P-D-18**'s contract — a participant that never releases pins that version's storage indefinitely, which is why the release had to reach PRD §9.2) — frozen versions, catalog versions, audit, outbox-delivered, bulk ledgers, **and the evidential stores this slice owns the interplay for (M4): approval records/decisions, break-glass sessions, correction overrides (audit-grade, statutory max); watermark/member tables are operational-current state (continuously replaced, no clock needed)**: expiry candidates are computed, and for a `catalogVersionId` the `RetentionGate` requires **every freeze registration `released` or `released(forced)`** (the second is what force-completion writes for a participant that never acked and therefore cannot use the S2S release door; it releases storage and never posted-use safety) (06's release door — the H1 end-of-liveness; acked-and-unreleased = live) — a candidate with a live registration is skipped with the `retention_orphan_blocked` alarm (fail-closed: skipped, never forced; C4); GC deletes are audit-plane, explicit **no broker event** (L3) - `inst-rt-gc`
+1. [ ] - `p1` - `RetentionClock` per class (the version arm reads 06's freeze-registration records, whose `released` half is **P-D-18**'s contract — a participant that never releases pins that version's storage indefinitely, which is why the release had to reach PRD §9.2) — frozen versions, catalog versions, audit, outbox-delivered, bulk ledgers, **and the evidential stores this slice owns the interplay for (M4): approval records/decisions, break-glass sessions, correction overrides (audit-grade, statutory max); watermark/member tables are operational-current state (continuously replaced, no clock needed)**: expiry candidates are computed, and for a `catalogVersionId` the `RetentionGate` requires **every freeze registration either `released` or carrying a `released_at`** (the second is the force-completion stamp on a `not_frozen(forced)` row — a participant that never acked cannot use the S2S release door; it releases storage and never posted-use safety) (06's release door — the H1 end-of-liveness; acked-and-unreleased = live) — a candidate with a live registration is skipped with the `retention_orphan_blocked` alarm (fail-closed: skipped, never forced; C4); GC deletes are audit-plane, explicit **no broker event** (L3) - `inst-rt-gc`
 2. [ ] - `p1` - Deletion order respects reference topology (capture/entry rows before their catalog-version row; entity versions only after every referencing manifest — M3's phantom "counter history" removed); every GC act is audited with the class, the clock, and the gate verdict - `inst-rt-order`
 3. [ ] - `p1` - Entity-version rows referenced by ANY retained `CatalogVersion` manifest are retained with it (p1 — the only rule stopping the GC from orphaning a manifest, M3) (the manifest's entity half references frozen rows — 06 H3): version-row retention derives from catalog-version retention, never shorter - `inst-rt-derive`
 
@@ -159,15 +159,19 @@ GC + its alarms, the restore-drill results surface.
 02's, only the verdict policy lives here; kept out of this owned list per the one-declaration
 rule, L1.) The GC and drill raise alarms, not API errors.
 
-**Problem responses (RFC 9457):** `ERASURE_UNKNOWN_ACTOR` (404); `CONTENT_PII_BLOCKED` (422).
+**Problem responses (RFC 9457):** `ERASURE_UNKNOWN_ACTOR`, `CONTENT_PII_BLOCKED` (422).
 
-*Statuses added 2026-08-26. The gear declared its codes with no HTTP status and no
-problem-response block in any slice, against `guidelines/DNA/README.md`'s RFC 9457 rule and
-`.cf-studio/config/rules/api-contracts.md`. The mapping follows pricing's convention — 422 for
-content the door cannot process, 409 where the current state refuses the act, 403 where the
-caller may not perform it at all, 404 for a path naming a resource this tenant has none of,
-412 for the `If-Match` precondition, 503 where retry is the remedy. Proposed per row and open
-to correction; the requirement is that every code carries one.*
+*Statuses added 2026-08-26, corrected the same day by the fix-wave review. The gear declared
+its codes with no HTTP status and no problem-response block in any slice, against
+`guidelines/DNA/README.md`'s RFC 9457 rule and `.cf-studio/config/rules/api-contracts.md`. The
+mapping follows pricing's, checked against it code by code: **422** for content the door cannot
+process, **409** where the current state refuses the act — including the ETag precondition,
+which pricing maps to 409 rather than 412 (D-141) and where an earlier pass here wrongly wrote
+412 and called that pricing's convention — **403** where the caller may not perform the act at
+all, **404** only where a path segment names a resource this tenant has none of, **400** where
+a required request field is absent outright, **503** where retry is the remedy. Proposed per
+row and open to correction; the requirement is that every code carries one.
+  Codes listed here for the response map but **declared elsewhere**: `CONTENT_PII_BLOCKED` (slice 02) — the status is repeated, not a second declaration, so the one-declaration rule stands.*
 
 ## 4. Data / Storage (normative shape; DDL in migrations)
 
@@ -199,7 +203,7 @@ justifications); retention/drill state is config + audit, no new record tables. 
 **Traces to**: `cpt-cf-bss-products-fr-retention-erasure` (clocks, the erasure act and the retention gate; the content write-block is slice 02's), `cpt-cf-bss-products-fr-grandfathered-retention-coupling` (gate
 half), `cpt-cf-bss-products-fr-expected-failure-behavior` (the "retention process that would orphan a live
 grandfathered reference" row — `retention_orphan_blocked`, L2), AC #35, #38 (that row), #44;
-**NFR #5 `cpt-cf-bss-products-nfr-snapshot-archival-dr` (the restore-drill and archival mechanics; durability is slice 06's)** by id (mechanics); §17.1 retention rows; C2's Legal sign-off (§15 open — the design is ready
+**NFR #5 `cpt-cf-bss-products-nfr-snapshot-archival-dr` (the restore-drill and archival mechanics, and the cold re-resolution MUST of `PRD` §7's row; durability mechanics are shared with slice 06)**; §17.1 retention rows; C2's Legal sign-off (§15 open — the design is ready
 either way).
 
 **Risks & open items**:

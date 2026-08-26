@@ -34,7 +34,7 @@ categories, attributes/localization, and immutable `CatalogVersion` snapshots �
 sold and how it is described, classified, versioned, and published*. It owns no commercial
 concern: Plan/Price/composition are the pricing gear's, evaluation is rating's (PRD §2.1
 boundary). Requirements live in [`PRD.md`](./PRD.md) (sign-able as of 2026-08-25 — all §15
-gates closed, veto register clean); decisions in [`DECISIONS.md`](./DECISIONS.md) (P-D-NN;
+gates closed, veto register clean for P-D-01…P-D-13, with **P-D-14…P-D-20 flagged and awaiting the owner** (§6)); decisions in [`DECISIONS.md`](./DECISIONS.md) (P-D-NN;
 joint contracts D-46/D-47 live in the pricing register).
 
 The design follows the **foundation-plus-handlers** pattern proven by the pricing gear: one
@@ -49,7 +49,8 @@ know what a `PlanTier` or a metering unit is.
 
 #### Requirement coverage
 
-*Every `p1`/`p2` requirement of PRD §6 and §7, by full id, against the slice that owns it.
+*All 57 requirement ids of PRD §6 and §7 — 56 `p1`/`p2` plus `fr-clone`, which the PRD declares
+`p3` — by full id, against the slice that owns it.
 Added 2026-08-26: this section cited requirements in prose only, so every tool that walks
 these documents by the id convention read this design as citing none — and the CFS
 reference-coverage rule for `fr`/`nfr` into DESIGN is satisfied by nothing until a
@@ -64,7 +65,7 @@ requirement is ticked, at which point it fails for every id at once.*
 | `cpt-cf-bss-products-fr-breakglass-action-scope` / `cpt-cf-bss-products-fr-materiality-gated-publish` / `cpt-cf-bss-products-fr-tenant-isolation-breakglass` | **Slice 05** — Governance: materiality, the tenant-configured approver quorum, the RBAC catalog, and break-glass elevation bounded to read and audit-export. |
 | `cpt-cf-bss-products-fr-bundle-adoption-guard` / `cpt-cf-bss-products-fr-catalog-publish-concurrency` / `cpt-cf-bss-products-fr-catalog-version-diff` / `cpt-cf-bss-products-fr-catalog-version-publish` / `cpt-cf-bss-products-fr-freeze-atomicity` / `cpt-cf-bss-products-fr-freeze-participant-governance` / `cpt-cf-bss-products-fr-freeze-recovery` / `cpt-cf-bss-products-fr-grandfathered-retention-coupling` / `cpt-cf-bss-products-fr-grandfathering-invariant` / `cpt-cf-bss-products-fr-prepublish-lint` / `cpt-cf-bss-products-fr-revision-vs-version` / `cpt-cf-bss-products-fr-snapshot-reproducibility` / `cpt-cf-bss-products-nfr-posting-safe-budget` / `cpt-cf-bss-products-nfr-publication-propagation` / `cpt-cf-bss-products-nfr-scale-extensibility` / `cpt-cf-bss-products-nfr-snapshot-archival-dr` | **Slice 06** — `CatalogVersion` is demand-driven and mechanical: request intake, the counter, full snapshots with checksums, and the freeze protocol with its force-completion recovery. |
 | `cpt-cf-bss-products-fr-failsafe-tripwire` / `cpt-cf-bss-products-fr-immutable-field-correction` / `cpt-cf-bss-products-fr-reference-producer-registration` / `cpt-cf-bss-products-fr-reference-signal` | **Slice 07** — The reference signal: registered producers, per-producer watermarks, the reference predicate, and the correction door with its two break-glass admission arms. |
-| `cpt-cf-bss-products-fr-cache-first-browse` / `cpt-cf-bss-products-fr-event-delivery-resilience` / `cpt-cf-bss-products-nfr-availability-audit` / `cpt-cf-bss-products-nfr-graceful-degradation` / `cpt-cf-bss-products-nfr-publication-propagation` / `cpt-cf-bss-products-nfr-read-latency` / `cpt-cf-bss-products-nfr-read-throughput` | **Slice 08** — Read models are projections with a staleness stamp on every response, rebuildable from the frozen versions and the outbox. |
+| `cpt-cf-bss-products-fr-cache-first-browse` / `cpt-cf-bss-products-fr-event-delivery-resilience` / `cpt-cf-bss-products-nfr-availability-audit` / `cpt-cf-bss-products-nfr-graceful-degradation` / `cpt-cf-bss-products-nfr-read-latency` / `cpt-cf-bss-products-nfr-read-throughput` | **Slice 08** — Read models are projections with a staleness stamp on every response, rebuildable from the frozen versions and the outbox. |
 | `cpt-cf-bss-products-fr-bulk-import-export` | **Slice 09** — Bulk import, export and promotion run per-row through the Foundation publish door under one batch-scoped approval. |
 | `cpt-cf-bss-products-fr-expected-failure-behavior` / `cpt-cf-bss-products-fr-grandfathered-retention-coupling` / `cpt-cf-bss-products-fr-retention-erasure` / `cpt-cf-bss-products-nfr-snapshot-archival-dr` | **Slice 10** — Retention clocks per class, the identity-ref map as the single erasure operand, and the retention gate that never forces a collection. |
 | `cpt-cf-bss-products-fr-clone` | **Slice 11** — Clone copies content and never identity, resetting lifecycle and version counters and reserving new codes atomically. |
@@ -122,7 +123,7 @@ Standard ToolKit gear, mirroring the sibling BSS gears:
   OpenAPI), `api` (OperationBuilder handlers), `domain` (entities, state machine, validation
   pipeline, uniqueness/scope rules), `infra` (SecureORM repositories, migrations, outbox,
   read-model projector).
-- **Identity**: GTS **types** (never instances — §2.2), declared as `gts.cf.bss.products.product.v1~`, `gts.cf.bss.products.sku.v1~`, `gts.cf.bss.products.category.v1~`, `gts.cf.bss.products.attribute_definition.v1~`, `gts.cf.bss.products.catalog_version.v1~` and `gts.cf.bss.products.approval_record.v1~` (spelled out 2026-08-26 — the only GTS token here was the namespace glob `gts.cf.bss.products.*`, which carries no type name, no version and no trailing `~`, so `guidelines/GTS.md`'s identifier grammar had nothing to match and the §2.2 constraint had no enumerable operand); tables `products_*`; dual-engine storage
+- **Identity**: GTS **types** (never instances — §2.2), declared as `gts.cf.bss.products.product.v1~`, `gts.cf.bss.products.sku.v1~`, `gts.cf.bss.products.category.v1~`, `gts.cf.bss.products.attribute_definition.v1~`, `gts.cf.bss.products.catalog_version.v1~` and `gts.cf.bss.products.approval.v1~` (the name slice 05's RBAC catalog uses) — these six are the **domain** types exposed as API resources; the authz resource/action catalog of slice 05 §3.2 declares 21 GTS-typed resources and is enumerated there rather than duplicated here (2026-08-26) — (the only GTS token here had been the namespace glob `gts.cf.bss.products.*`, which carries no type name, no version and no trailing `~`, so `guidelines/GTS.md`'s identifier grammar had nothing to match and the §2.2 constraint had no enumerable operand); tables `products_*`; dual-engine storage
   (SQLite + Postgres), one migration per table, schema-oracle goldens from day one.
 
 #### Design set (ordered by implementation phase)
@@ -335,7 +336,7 @@ themselves — this section is the canonical index migration planning is scoped 
 listed 13 tables, named `products_plan_tier`, which no slice defines because slice 03 folds
 tiers into `products_recognized_set` under `set_kind`, and omitted about twenty real ones):
 
-- **01** — `products_audit_log`, `products_entity_version`, `products_idempotency`, `products_outbox`, `products_product`, `products_product_category`, `products_sku`
+- **01** — `products_audit_log`, `products_entity_version`, `products_idempotency`, `products_outbox`, `products_product`, `products_product_category` (defined by slice 02, written by slice 01's create door), `products_sku`
 - **02** — `products_attribute_definition`, `products_attribute_value`, `products_category`, `products_metadata`
 - **03** — `products_recognized_set`
 - **04** — `products_deferred_retirement`, `products_scheduled_transition`

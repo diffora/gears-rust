@@ -72,7 +72,7 @@ Requirements live in [`../PRD.md`](../PRD.md); decisions in [`../DECISIONS.md`](
   atomic full-set replacement), the 3-state `ReferencePredicate` with per-producer detail (+ the
   `no_producers` fail-safe), producer registration (P-D-03; symmetric capture-store ride), the
   bucket-ii `CorrectionDoor` (fresh-zero + the `N`-governed 05 quorum with `quorumReduced`
-  recorded — P-D-13's fourth site, swept 2026-08-26 — + re-publish with `usageTypeRef`
+  recorded — P-D-13's fifth site, swept 2026-08-26 — + re-publish with `usageTypeRef`
   re-resolution), the **third admission arm** for an unresolvable meter target (P-D-16), the
   flag-gated break-glass correction (P-D-13's sixth site) + `TripwireCounter`. (§6.1, §6.13)
 - [`08-read-models.md`](./08-read-models.md) — the event-driven `ReadProjector` over frozen

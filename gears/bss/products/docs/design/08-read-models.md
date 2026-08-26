@@ -158,13 +158,16 @@ history timeline, the dashboards; the convergence and staleness metrics.
 
 **Problem responses (RFC 9457):** `READ_MODEL_OVERLOADED` (503).
 
-*Statuses added 2026-08-26. The gear declared its codes with no HTTP status and no
-problem-response block in any slice, against `guidelines/DNA/README.md`'s RFC 9457 rule and
-`.cf-studio/config/rules/api-contracts.md`. The mapping follows pricing's convention — 422 for
-content the door cannot process, 409 where the current state refuses the act, 403 where the
-caller may not perform it at all, 404 for a path naming a resource this tenant has none of,
-412 for the `If-Match` precondition, 503 where retry is the remedy. Proposed per row and open
-to correction; the requirement is that every code carries one.*
+*Statuses added 2026-08-26, corrected the same day by the fix-wave review. The gear declared
+its codes with no HTTP status and no problem-response block in any slice, against
+`guidelines/DNA/README.md`'s RFC 9457 rule and `.cf-studio/config/rules/api-contracts.md`. The
+mapping follows pricing's, checked against it code by code: **422** for content the door cannot
+process, **409** where the current state refuses the act — including the ETag precondition,
+which pricing maps to 409 rather than 412 (D-141) and where an earlier pass here wrongly wrote
+412 and called that pricing's convention — **403** where the caller may not perform the act at
+all, **404** only where a path segment names a resource this tenant has none of, **400** where
+a required request field is absent outright, **503** where retry is the remedy. Proposed per
+row and open to correction; the requirement is that every code carries one.*
 
 ### 3.3 NFR measurement
 
@@ -218,7 +221,7 @@ the point.
 ## 6. Traces to / Risks & Open items
 
 **Traces to**: `cpt-cf-bss-products-usecase-catalog-browser-history` (§10 use case, claimed by id here 2026-08-26 — all seven were in lint 1's universe and none was claimed); **§9.1 by id** — `cpt-cf-bss-products-interface-read-model` (the browse/search surface this slice serves; claimed by id here for the first time, 2026-08-26 branch review). `cpt-cf-bss-products-fr-cache-first-browse`; AC #32; **NFRs by id** (#1 `cpt-cf-bss-products-nfr-read-latency`,
-#2 `cpt-cf-bss-products-nfr-read-throughput`, #3 `cpt-cf-bss-products-nfr-publication-propagation` (the projection-convergence half), #7 `cpt-cf-bss-products-nfr-graceful-degradation`,
+#2 `cpt-cf-bss-products-nfr-read-throughput`, #3 #7 `cpt-cf-bss-products-nfr-graceful-degradation`,
 #10 `cpt-cf-bss-products-nfr-availability-audit` — positional numbers alone left `inst-cc-fr` reporting zero claims
 for all ten NFRs, item 30 of the 2026-08-26 review) + the convergence interim (§17.1);
 **AC #39** (the registry-side obligations: durable acceptance before reported success, the
