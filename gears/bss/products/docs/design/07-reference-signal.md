@@ -92,7 +92,7 @@ watermark content (10 — sets carry `skuId`s only, no PII by construction).
 
 | Name | Meaning |
 |------|---------|
-| `WatermarkDoor` | The S2S ingestion endpoint: `(producer, watermark_at, complete skuId set)` |
+| `WatermarkDoor` | The watermark ingestion contract: `(producer, watermark_at, complete skuId set)`. Like 06's increment request, the contract is the **`products-sdk` client** resolved from `ClientHub` (manifest §3.3.2 — transport-agnostic, in-process default); the S2S endpoint is its out-of-process binding and its authz door |
 | `ReferencePredicate` | The 3-state evaluator over all registered producers, with per-producer detail |
 | `CorrectionDoor` | The bucket-ii write door the 01 head-row guard names: fresh-zero gate + 05 quorum + re-publish |
 | `TripwireCounter` | The rolling 30-day break-glass-correction counter behind C6 |
@@ -114,7 +114,7 @@ exists by design; watermarks are state, not history)**; `SkuImmutableFieldCorrec
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-flow-watermark`
 
-1. [ ] - `p1` - `WatermarkDoor` (`reference_signal × post`, S2S — accepted only from the producer's own service identity) receives `(producer, watermark_at, set)`; an unregistered producer is refused `PRODUCER_UNREGISTERED`, audited - `inst-ws-door`
+1. [ ] - `p1` - `WatermarkDoor` (`reference_signal × post`; the out-of-process binding is S2S and is accepted only from the producer's own service identity — the in-process binding carries the same identity through `SecurityContext`) receives `(producer, watermark_at, set)`; an unregistered producer is refused `PRODUCER_UNREGISTERED`, audited - `inst-ws-door`
 2. [ ] - `p1` - Watermarks are **monotonic per producer** (F3 fix): `watermark_at` **<** the stored one is refused `WATERMARK_REGRESSION` (an out-of-order replay must not roll liveness backwards); an **equal** `watermark_at` with an identical set hash is an idempotent no-op success; equal with a **different** set is refused `WATERMARK_CONFLICT` (the same never-silent rule as 01's idempotency conflicts) - `inst-ws-monotonic`
 3. [ ] - `p1` - The set replaces the producer's previous set **atomically** (one transaction: member rows swapped + the watermark row advanced); a reader never sees a half-replaced set - `inst-ws-atomic`
 4. [ ] - `p1` - Ingestion is audit-plane (explicit **no broker event** — watermarks arrive continuously and are queryable state, not domain history) - `inst-ws-no-event`

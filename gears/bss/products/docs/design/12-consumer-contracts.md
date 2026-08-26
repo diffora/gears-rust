@@ -75,7 +75,7 @@ composition signal, watermark delivery).
 
 | # | Constraint | Source |
 |---|-----------|--------|
-| C1 | A shared schema-version pin over the joint fields — `skuId`, `bundle` type, the meter declaration pair, `PlanTier`, `CatalogVersion` — with a CI test that **fails on divergence**; a runtime divergence fails closed (the dependent plan publish is rejected, pricing-side) | PRD `fr-plan-price-seam` |
+| C1 | A shared schema-version pin whose **membership is derived, not listed** (P-D-12): it covers exactly the operands the §2.2 `ObligationRegister`'s guards read. v1 set — `skuId`, `type`, the meter declaration pair **+ `usageTypeRef`**, `PlanTier`, `status` **with its value vocabulary**, `sellable`, `compositionPending`; `CatalogVersion` pinned as a surface, not a field; `skuCode`/`name` deliberately out (pick-list display, drift cosmetic). CI test **fails on divergence**; a runtime divergence fails closed (the dependent plan publish is rejected, pricing-side) | PRD `fr-plan-price-seam`; P-D-12 |
 | C2 | Every event carries a versioned schema ref; a `vN` consumer deserializes `vN+1` (new fields optional with defaults); CI-guarded on every schema change | PRD AC #29, NFR #9, P-D-01 |
 | C3 | Bootstrap = latest `CatalogVersion` + the event tail; a consumer checkpoint predating the available tail **fails loudly**; the event-log retention MUST cover the bootstrap gap (§15 open owns the number) | PRD `fr-event-versioning-replay` |
 | C4 | A consumer-side assertion is authorable only once the referenced counterpart AC exists — the suite grows with the counterparts, and an unauthorable assertion stays listed as OWED, never silently dropped | PRD `fr-plan-price-seam` |
@@ -134,8 +134,8 @@ suite's backlog, reviewed whenever a counterpart lands an AC (C4).
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-contract-sdk`
 
-1. [ ] - `p1` - `products-sdk` mirrors §9: the authoring/publish client (idempotency keys + `If-Match` + intent semantics are **part of the contract**, breaking = major), the read-model client, the event payload types, the error-code enum (01 §3.3 + every slice's registered codes — renames breaking) - `inst-sdk-surface`
-2. [ ] - `p1` - The catalog read shape is **`CatalogSku`-superset-compatible** (pricing's `ProductCatalogClientV1` trait consumes it — L2): `sku_id`, `sku_code`, `name`, `metering_unit`, `status`, `plan_tier` — plus `sellable`, `usage_type_ref`, `composition_pending`, `type` (the members pricing's copy lacks land consumer-side as additive). **The `status` wire vocabulary is pinned** (M4): browse serves `published|deprecated` only (draft never served, retired history-only — 08 C2); the SDK enum documents all five states with the wire subset named; pricing's opaque-string tolerance is a courtesy the pin replaces — `status` joins the `SchemaPin` as a **flagged design widening** beyond the FR's five fields - `inst-sdk-catalogsku`
+1. [ ] - `p1` - `products-sdk` mirrors §9: the authoring/publish client (idempotency keys + `If-Match` + intent semantics are **part of the contract**, breaking = major), the read-model client, **the increment-request client (`PRD` §9.2 `…-contract-increment-request`) and the watermark client (`…-contract-sku-reference-count`) — the two inbound machine contracts, typed clients resolved from `ClientHub` with the REST/S2S doors as their out-of-process bindings; the increment client's three-way error taxonomy (not wired / unreachable / unusable) is part of the contract**, the event payload types, the error-code enum (01 §3.3 + every slice's registered codes — renames breaking) - `inst-sdk-surface`
+2. [ ] - `p1` - The catalog read shape is **`CatalogSku`-superset-compatible** (pricing's `ProductCatalogClientV1` trait consumes it — L2): `sku_id`, `sku_code`, `name`, `metering_unit`, `status`, `plan_tier` — plus `sellable`, `usage_type_ref`, `composition_pending`, `type` (the members pricing's copy lacks land consumer-side as additive). **The `status` wire vocabulary is pinned** (M4): browse serves `published|deprecated` only (draft never served, retired history-only — 08 C2); the SDK enum documents all five states with the wire subset named; pricing's opaque-string tolerance is a courtesy the pin replaces — its own doc calls the field "verbatim, **not an enum**", which is the right tolerance for display and exactly the wrong one for a guard, so a renamed `deprecated` or an added blocking state would leave pricing's adoption guard **accepting rather than erroring**. `status` and its vocabulary are **normative pin members** as of P-D-12 (2026-08-26; previously a flagged design widening beyond the FR's list) - `inst-sdk-catalogsku`
 3. [ ] - `p2` - The approval-queue envelope is asserted against pricing's queue shape (the studio single-inbox contract, 05 `inst-gv-queue`) — a field-name drift fails the suite, not a UI sprint - `inst-sdk-inbox`
 
 ## 3. Processes / Business Logic
@@ -163,6 +163,7 @@ Doc-plane lints over this design set + PRD (spec-check-class, run in CI with the
 6. [ ] - `p1` - **Id uniqueness**: every `cpt-*`/`flow`/`inst-*`/actor id is declared exactly once across the design set (H1's live violator — the 08/12 `inst-rp-bootstrap` collision — was fixed in the same commit that added this lint) - `inst-cc-ids`
 7. [ ] - `p1` - **Identity materialization**: no table or projection other than 10's `IdentityRefMap` stores an operator identity — the lint 10's erasure guarantee names (H2: it existed only as a citation until here) - `inst-cc-identity`
 8. [ ] - `p2` - **No monetization marker** (AC #37): a registry schema surface matching the §17.2 left column fails the lint — the §3.1 prose now has its buildable artifact (M1) - `inst-cc-monetization`
+9. [ ] - `p1` - **Obligation×pin coupling** (P-D-12): every §2.2 `ObligationRegister` row whose guard reads a catalog field has that field in the `SchemaPin`, and every pinned field is either an obligation operand or carries a recorded exclusion reason. This is what makes C1's membership a rule rather than a list — the FR it derives from previously stated three obligations (`deprecated` adoption, `compositionPending` adoption, usage binding) while pinning none of their operands, and no lint could see it - `inst-cc-pin`
 
 ## 4. Data / Storage
 
@@ -193,7 +194,14 @@ slice is that suite's specification.
   seam.
 - **Event-log retention ≥ bootstrap gap** needs its number (§15) before the replay contract is
   more than words; named as the replay contract's single config dependency.
-- **SchemaPin widening owed a decision (L1)**: `sellable` and `compositionPending` are
-  pricing-consumed operands of this suite's own fixtures yet sit outside the FR-inherited
-  five-field pin (`status` was widened in, flagged); proposing the pair as a PRD `fr-plan-price-seam`
-  amendment is the clean path — drift on either currently escapes the pin.
+- **SchemaPin widening — RESOLVED 2026-08-26 (P-D-12)** (was: L1, owed a decision). The pin's
+  membership became a **rule** — the operands the §2.2 guards read — rather than a list, and
+  `fr-plan-price-seam` was amended to say so. Measuring the register against the FR's list found
+  **four** operands outside the pin, not the two this item named: `status`, `compositionPending`,
+  `sellable`, `usageTypeRef`, three of whose obligations that very FR states in its own sentence.
+  The list also named two items that are not comparable fields of the consumer's shape at all
+  (`bundle` type is absent from pricing's shipped `CatalogSku`; `CatalogVersion` is a surface),
+  so of five pinned items only three could ever be compared. `inst-cc-pin` now lints the
+  coupling in both directions. **Honest limit**: the seam suite itself does not exist yet (§15
+  owns its home and owner), so this widens a specification rather than a running gate — cheaper
+  before the job is built than after.

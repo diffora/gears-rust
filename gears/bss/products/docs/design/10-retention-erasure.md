@@ -62,8 +62,8 @@ and the guards that keep a GC from orphaning a live contract.
   (`fr-grandfathered-retention-coupling` — the gate half; the liveness-records half is 06's),
   §4.1 (snapshots are financial records), NFR #5; AC #35, #44; §17.1 (retention rows: statutory
   max; PII pseudonymization age)
-- [`../DECISIONS.md`](../DECISIONS.md) P-D-06 (the metadata map's **placement** — still flagged
-  for review; its PII prohibition comes from the PRD glossary / 02 C4, L4); [`./02-taxonomy-attributes.md`](./02-taxonomy-attributes.md) `inst-av-pii-block`
+- [`../DECISIONS.md`](../DECISIONS.md) P-D-06 (the metadata map's **placement** — **CONFIRMED
+  2026-08-26**; its PII prohibition comes from the PRD glossary / 02 C4, L4); [`./02-taxonomy-attributes.md`](./02-taxonomy-attributes.md) `inst-av-pii-block`
   (the hook this slice's policy plugs into); [`./06-catalog-version.md`](./06-catalog-version.md)
   `inst-fz-liveness` (the operand of the retention gate)
 
@@ -82,9 +82,9 @@ row production (every slice writes its own; this slice never edits them); break-
 
 | # | Constraint | Source |
 |---|-----------|--------|
-| C1 | Erasure = **pseudonym-map update only**: immutable financial/version/audit/event records are never edited or deleted; because they carry only refs, updating the map completes erasure | PRD `fr-retention-erasure` |
+| C1 | Erasure = **pseudonym-map update only**: immutable financial/version/audit/event records are never edited or deleted; because they carry only refs, updating the map completes erasure. **P-D-08 S7**: any future platform audit seal MUST exclude every field this path mutates — a seal over a resolvable identity would make erasure break the chain | PRD `fr-retention-erasure`; P-D-08 |
 | C2 | Content free-text is PII-prohibited at write: hard prohibition, **fail-closed on uncertainty**, curated allow-list for legitimate person-named products, Legal sign-off recorded (PRD §15) | PRD AC #35 |
-| C3 | Retention: financial/version/audit → statutory maximum (never "indefinite"); operator PII pseudonymized at erasure request or the configured max age, whichever first | PRD §17.1 |
+| C3 | Retention: financial/version/audit → statutory maximum (never "indefinite"); operator PII pseudonymized at erasure request or the configured max age, whichever first. **P-D-08 S8**: a platform audit seal and its anchors retain **≥** the rows they seal | PRD §17.1; P-D-08 |
 | C4 | Retention expiry of a `catalogVersionId` is **gated on zero live references** in the 06 freeze-registration records; a GC that would orphan a live grandfathered reference fails closed + alerts | PRD `fr-grandfathered-retention-coupling`, AC #44 |
 | C5 | Snapshots + version history: ≥ 11-nines-class replicated storage, periodic **checksum restore verification** (a restore drill that re-verifies 06 checksums, not a backup-exists check), RPO/RTO per the NFR workshop | NFR #5 |
 
@@ -121,7 +121,7 @@ GC + its alarms, the restore-drill results surface.
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-flow-pii-policy`
 
 1. [ ] - `p1` - `PiiDetector` answers 02's hook: block (fail-closed, `CONTENT_PII_BLOCKED` naming the field, never the detected value) / allow / allow-by-list; **uncertainty blocks** (C2) - `inst-pp-detect`
-2. [ ] - `p1` - The allow-list is a `GovernedLiveOp` (material; the **Legal-designated role is an IdP-configured claim named in a §17.1-style config row**, and per the 05 rule a registered kind's role predicate REPLACES the base approver set for that kind — M6) recording the justification per entry; emits `PiiAllowlistChanged` (L3); entries are per-tenant, audited, and exportable for the Legal review - `inst-pp-allowlist`
+2. [ ] - `p1` - The allow-list is a `GovernedLiveOp` under the **base approver quorum** (05 C1 — no gear-side Legal role; **P-D-10**, 2026-08-26). Legal's authority is exercised **outside** the system and enters it as a record: each entry carries a **mandatory Legal sign-off reference** (the artifact identifying the external decision) alongside its justification, and an entry offered without one is refused — which is PRD AC #35's own construction, "curated allow-list; **Legal sign-off recorded in the approval artifact**". Emits `PiiAllowlistChanged` (L3); entries are per-tenant, audited, and exportable for the Legal review. **What this deliberately does not claim:** the gear proves a Legal reference was recorded, never that Legal approved — the control is the §15 paper sign-off plus the export, and pretending otherwise would require Legal counsel to hold platform identities, which no requirement asks for - `inst-pp-allowlist`
 
 ### Run retention (the GC)
 
@@ -167,7 +167,9 @@ justifications); retention/drill state is config + audit, no new record tables. 
   snapshot's checksum is unchanged AND the rendered audit shows the tombstone (both halves in
   one probe — C1 is only proven by asserting both).
 - Detector matrix: block / allow / allow-by-list / uncertainty-blocks, each with a positive
-  control; the allow-list mutation requires the Legal-role quorum.
+  control; the allow-list mutation runs the base quorum (05 C1) **and** is refused when the
+  Legal sign-off reference is absent — asserted with its positive control, since a
+  mandatory-field rule proven only by its refusal is a rule that may never admit anything.
 - Retention gate RED: a candidate version with one live freeze-registration is skipped +
   alarmed; the same version GCs cleanly once the registration ends (the AC #44 pair).
 - Derived retention: an entity-version row referenced only by a retained catalog version

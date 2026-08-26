@@ -30,8 +30,10 @@ Requirements live in [`../PRD.md`](../PRD.md); decisions in [`../DECISIONS.md`](
 - [`01-foundation.md`](./01-foundation.md) — **shared engine**: entity model + identity
   (`skuId`, atomic `skuCode` reservation), revision vs published version, lifecycle state
   machine core, fail-closed validation pipeline (registered validators), append-only history +
-  diff, tenant isolation, idempotency/ETag, broker-native event fan-out + outbox, audit. (PRD
-  §6.1 core, §6.5 core, §6.7 idempotency/eventing, §6.13 concurrency doors)
+  diff, tenant isolation, idempotency/ETag, broker-native event fan-out + outbox, audit —
+  complete and append-only, over a **reserved, unwritten** platform-sealing seam (P-D-08: no
+  in-gear hash chain). (PRD §6.1 core, §6.5 core, §6.7 idempotency/eventing, §6.13 concurrency
+  doors)
 - [`02-taxonomy-attributes.md`](./02-taxonomy-attributes.md) — Category tree as governed live
   entities (cycle/depth/uniqueness-in-parent, per-tenant writer lock), the **governed-live-op**
   pattern (pinned operation envelope through the slice-05 gate), attribute definitions
@@ -61,7 +63,8 @@ Requirements live in [`../PRD.md`](../PRD.md); decisions in [`../DECISIONS.md`](
   `IntentfulResolver` (browse vs posted), the `FreezeLedger` (acks, fail-closed timeout naming
   silent participants, force-completion pinning `not_frozen`, per-version participant-set
   snapshot), freeze-registration records as the AC #44 liveness source, grandfathering
-  invariant, `compositionPending` clearing (system re-publish, flagged), version-binding-at-
+  invariant, `compositionPending` clearing (a `system_signal` approval subject, resolved
+  2026-08-26 — not an exemption), version-binding-at-
   freeze diff surface (AC #20a). (§6.6, §6.13)
 - [`07-reference-signal.md`](./07-reference-signal.md) — the `WatermarkDoor` (S2S, monotonic,
   atomic full-set replacement), the 3-state `ReferencePredicate` with per-producer detail (+ the
@@ -81,7 +84,8 @@ Requirements live in [`../PRD.md`](../PRD.md); decisions in [`../DECISIONS.md`](
   identities), p2 bulk lifecycle with per-SKU flip guards intact. (§6.9)
 - [`10-retention-erasure.md`](./10-retention-erasure.md) — the `IdentityRefMap` (the gear's one
   PII table; erasure = tombstone the map, immutable records untouched — one mechanism, two
-  triggers), the `PiiDetector` policy + Legal-governed allow-list behind 02's hook, retention
+  triggers), the `PiiDetector` policy + the curated allow-list behind 02's hook (base quorum
+  plus a mandatory recorded Legal sign-off reference — no gear-side Legal role, P-D-10), retention
   clocks to statutory max with the fail-closed AC #44 `RetentionGate` over 06's liveness
   records (+ derived entity-version retention), the NFR #5 restore drill re-verifying 06
   checksums byte-for-byte. (§6.11)

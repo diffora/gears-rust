@@ -255,10 +255,13 @@ no event of their own: they are entity content and ride `ProductDraftSaved`/`Sku
 (category part), #6, #12, #35 (write-block), #38 (taxonomy-cycle row).
 
 **Risks & open items**:
-- **P-D-06 to ratify**: the metadata-outside-version-content placement is design-introduced
-  (the PRD says both "ungoverned" and "captured in CatalogVersion snapshots"; this reading
-  keeps old snapshots byte-identical while letting the map move without version churn). Entered
-  in the register; flag for the slice review.
+- **P-D-06 — CONFIRMED by the product owner 2026-08-26** (was: to ratify). The
+  metadata-outside-version-content placement stands as designed: the map is design-introduced
+  reading of a PRD that says both "ungoverned" and "captured in CatalogVersion snapshots", and
+  it keeps old snapshots byte-identical while letting the map move without version churn. The
+  accepted cost, stated at confirmation: the map carries **no history between snapshots** — an
+  intermediate value overwritten before the next `CatalogVersion` survives only as the audit
+  row recording the write. A key needing version history is an **Attribute**, not metadata.
 - **Definition removal vs frozen history**: "no live entity version carries a value" requires
   scanning frozen version content — cheap at authoring rates, but the lint should surface
   candidates rather than operators discovering the guard by refusal.

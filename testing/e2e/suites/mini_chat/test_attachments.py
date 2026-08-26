@@ -1,7 +1,4 @@
-"""E2E tests for the attachment API (upload, get, delete, send-message with attachments).
-
-Run via: ~/projects/gears-rust-worktrees/scripts/run-tests.sh tests/test_attachments.py
-"""
+"""E2E tests for the attachment API (upload, get, delete, send-message with attachments)."""
 
 import io
 import pathlib

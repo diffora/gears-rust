@@ -283,6 +283,14 @@ These rows are the **only consumer-read surface** for entity content: read model
 - `products_audit_log`: append-only; `actor_ref` (pseudonymous — the identity-reference map is
   slice 10's), action, subject `(kind, id, revision)`, reason, correlation id. Every mutating
   door writes exactly one row in its transaction, including every rejection with its reason.
+  **Reserved platform-sealing seam (P-D-08)** — present from the first migration, never written
+  by this gear: `seal_state` (NOT NULL, roster `unsealed | sealed`, set at INSERT and outside
+  the trigger whitelist so it can never be updated — v1 writes only `unsealed`, which makes the
+  unproven era queryable instead of inferred from a deployment date) plus `chain_id` · `seq` ·
+  `prev_hash` · `row_hash`, all nullable. One CHECK ties them so no half-populated row can
+  exist: `unsealed` ⇒ all four NULL; `sealed` ⇒ `chain_id`/`seq`/`row_hash` NOT NULL
+  (`prev_hash` NULL stays legitimate — it is the segment head). The gear computes no hash and
+  runs no verification job; what the platform capability must satisfy is P-D-08 S1–S9.
 - `products_outbox`: event rows written in the mutation transaction; `(tenant_id, aggregate_id,
   sequence)` monotonic per aggregate; dispatcher publishes to the event-broker and marks
   delivered **only on durable broker acceptance** — "emitted" is never reported before that

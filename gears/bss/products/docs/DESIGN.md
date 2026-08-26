@@ -321,23 +321,43 @@ slice.
 | Slice | Status |
 |-------|--------|
 | 01-foundation | **authored + agent-reviewed 2026-08-25**; fix wave applied (H1 head-row model, shared guard, `normalized(name)` pin) |
-| 02-taxonomy-attributes | **authored + agent-reviewed 2026-08-25**; fix wave applied (H2 category branch, M2/M5); P-D-06 still flagged for review |
+| 02-taxonomy-attributes | **authored + agent-reviewed 2026-08-25**; fix wave applied (H2 category branch, M2/M5); P-D-06 **CONFIRMED 2026-08-26** |
 | 03-sku-classification | **authored + agent-reviewed 2026-08-25**; fix wave applied (M2 operand narrowed) |
 | 04-lifecycle | **authored + agent-reviewed 2026-08-25**; fix wave applied (provenance pass-through, parent path, runner lease, `RETIREMENT_PENDING`); initiation reading CONFIRMED via §17.1 |
-| 05-governance | **authored + agent-reviewed 2026-08-25**; fix wave applied (scheduled-act consumption model, vocabulary-op materiality, transition-fires-hook invariant); quorum-strictness note for small tenants still flagged |
-| 06-catalog-version | **authored + agent-reviewed 2026-08-25**; fix wave applied (satisfiedRequests handshake, lifecycle re-validation arm, stored-copy captures, operation_key bulk batching, forced-complete semantics); composition-clear exemption + mechanical-retry reading flagged |
+| 05-governance | **authored + agent-reviewed 2026-08-25**; fix wave applied (scheduled-act consumption model, vocabulary-op materiality, transition-fires-hook invariant); quorum strictness **resolved 2026-08-26 — P-D-11** (approver count is a typed-policy value, default 2, floor 0); role-predicate question **resolved — P-D-10** (C8: predicates narrow, never replace) |
+| 06-catalog-version | **authored + agent-reviewed 2026-08-25**; fix wave applied (satisfiedRequests handshake, lifecycle re-validation arm, stored-copy captures, operation_key bulk batching, forced-complete semantics); composition-clear **resolved 2026-08-26** (`system_signal` approval subject); mechanical-retry AC #40 reading **resolved 2026-08-26 — P-D-09 amended the FR and the AC to state the lane split** |
 | 07-reference-signal | **authored 2026-08-25** |
-| 08-read-models | **authored 2026-08-26** (stamp-binds-to-catalog-versions reading flagged) |
+| 08-read-models | **authored 2026-08-26**; P-D-07 stamp floor **CONFIRMED 2026-08-26** (conditional on the projection existing — PRD §15 now asks whether browse needs a serving store at all) |
 | 09-bulk-promotion | **authored 2026-08-26** (coalesced-event deviation recorded as sanctioned) |
-| 10-retention-erasure | **authored 2026-08-26** |
+| 10-retention-erasure | **authored 2026-08-26**; role-predicate question **resolved 2026-08-26 — P-D-10**: no gear-side Legal role, the allow-list runs the base quorum with a mandatory recorded Legal sign-off reference |
 | 11-clone | **authored 2026-08-26** (resolves the 01-flagged clone-vs-P-D-04 interaction) |
-| 12-consumer-contracts | **authored + agent-reviewed 2026-08-26**; fix wave applied (eight CoverageChecks incl. id-uniqueness/identity/monetization lints, status vocabulary pinned, register rows split by authorability) |
+| 12-consumer-contracts | **authored + agent-reviewed 2026-08-26**; fix wave applied (CoverageChecks incl. id-uniqueness/identity/monetization lints, status vocabulary pinned, register rows split by authorability); SchemaPin widening **resolved 2026-08-26 — P-D-12**: membership is the rule "operands the §2.2 guards read", `inst-cc-pin` lints it, nine lints total |
 
 **The design set is COMPLETE: all twelve slices authored, agent-reviewed, and fix-waved**
-(2026-08-25/26; per-slice reports in `~/Documents/pricing-reviews/`). Human flags awaiting the
-owner (six): P-D-06 (metadata placement) and P-D-07 (stamp floor) review, the mechanical-retry
-AC #40 reading, the role-predicate-replaces-base rule, quorum strictness for small tenants, the
-SchemaPin widening. *(The composition-clear gate exemption is no longer among them — the
+(2026-08-25/26; per-slice review reports are working artifacts, not repository content).
+
+**Human flags awaiting the owner: none — all six were answered on 2026-08-26**, in a single
+session with the product owner, one decision at a time:
+
+| # | Question | Outcome |
+|---|----------|---------|
+| 1 | Metadata-map placement | **P-D-06 confirmed** as designed — the map lives beside the entity; the accepted cost (no history between snapshots, structural: `products_metadata`'s key has no version dimension) is recorded with it |
+| 2 | Staleness-stamp semantics | **P-D-07 confirmed, conditionally** — the floor is a property of a lagging projection, so PRD §15 now carries the prior question of whether browse needs a separate serving store at all, and `fr-cache-first-browse`'s rationale was re-derived off its uncalibrated read-NFR numbers onto the availability split and structural stale-but-safe |
+| 3 | AC #40's "rejected" with no operator | **P-D-09 amended** `fr-catalog-publish-concurrency` **and** AC #40 to state the stage-vs-commit lane split, rather than leave the design reading standing against normative text that said the opposite in two places |
+| 4 | Who approves a Legal-owned change | **P-D-10: no gear-side Legal role** — the allow-list runs the base quorum and records an external Legal sign-off reference, which is what AC #35 specified all along; role predicates narrow within the base set and never replace it (05 C8), retiring the grant in `inst-mt-inputs` (d). No PRD edit owed |
+| 5 | Quorum vs a two-person company | **P-D-11**: the approver count is a typed-policy value, **default 2, floor 0** — a one-person tenant could previously publish nothing at all, while the plan-price sibling ships `submitter + 1` in its schema and an approver-less path. Fixed and not configurable: the FinanceReviewer predicate, the self-approval refusal at `N ≥ 1`, explicit configuration only, provisioning-time initial value |
+| 6 | `SchemaPin` widening | **P-D-12**: membership became the rule "the operands the §2.2 `ObligationRegister` guards read", after measuring **four** such operands outside the FR's five-item list — of which only three were comparable fields at all. `fr-plan-price-seam` amended; `inst-cc-pin` lints the coupling both ways |
+
+Two further decisions landed in the same session without having been flagged: **P-D-08** defers
+audit sealing to a platform capability (below), and the transport wave named the two inbound
+machine contracts as `products-sdk` clients resolved from `ClientHub` rather than as the REST
+doors that bind them out-of-process, registering the increment request in PRD §9.2 beside its
+sibling. *(The composition-clear gate exemption left the flag list earlier the same day — the
 2026-08-26 CodeRabbit pass forced its resolution: a `system_signal` approval subject with the
-inbound governed signal as the authorizing principal.)* Next phase: implementation planning against the phase column;
-first build acts: slice 01 + the P-D-03 watermark joint build with pricing.
+inbound governed signal as the authorizing principal.)*
+
+**P-D-08 (2026-08-26):** audit sealing is deferred to a platform capability — the gear ships the
+complete append-only trail over a reserved, unwritten seam, with the requirements that capability
+must satisfy stated as P-D-08 S1–S9 and owned by Architecture (PRD §15/§16). Next phase:
+implementation planning against the phase column; first build acts: slice 01 + the P-D-03
+watermark joint build with pricing.
