@@ -177,17 +177,22 @@ would have mis-attributed the code in the SDK enum), `EOL_DISABLED`. AC #38 rows
 "an indeterminate parent-child region-containment", "EOL retirement without an acknowledged
 migration consumer (post-v1)".
 
-**Problem responses (RFC 9457):** `SCOPE_NARROWING_BLOCKED`, `SCHEDULE_STALE_APPROVAL`, `CASCADE_CONFIRMATION_REQUIRED`, `RETIREMENT_PENDING` (409); `EOL_DISABLED`, `PARENT_NOT_PUBLISHED`, `SCOPE_NOT_CONTAINED`, `RETIREMENT_LEAD_TIME`, `REPLACED_BY_NOT_PUBLISHED` (422).
+**Problem responses (RFC 9457):** `SCOPE_NARROWING_BLOCKED`, `SCHEDULE_STALE_APPROVAL`, `RETIREMENT_PENDING` (409); `CASCADE_CONFIRMATION_REQUIRED`, `EOL_DISABLED`, `PARENT_NOT_PUBLISHED`, `SCOPE_NOT_CONTAINED`, `RETIREMENT_LEAD_TIME`, `REPLACED_BY_NOT_PUBLISHED` (422).
 
 *Statuses added 2026-08-26, corrected the same day by the fix-wave review. The gear declared
 its codes with no HTTP status and no problem-response block in any slice, against
 `guidelines/DNA/README.md`'s RFC 9457 rule and `.cf-studio/config/rules/api-contracts.md`. The
 mapping follows pricing's, checked against it code by code: **422** for content the door cannot
 process, **409** where the current state refuses the act — including the ETag precondition,
-which pricing maps to 409 rather than 412 (D-141) and where an earlier pass here wrongly wrote
+which pricing maps to 409 rather than 412 (**D-141**, 2026-08-02, whose own decision text reads
+*"A mismatch is `STALE_VERSION` (409, Foundation-owned)"* — the citation was right the first time;
+a 2026-08-26 pass re-pointed it at D-186 and was wrong to, D-186 being a later amendment scoped to
+one config route) and where an earlier pass here wrongly wrote
 412 and called that pricing's convention — **403** where the caller may not perform the act at
-all, **404** only where a path segment names a resource this tenant has none of, **400** where
-a required request field is absent outright, **503** where retry is the remedy. Proposed per
+all, **404** only where a path segment names a resource this tenant has none of, **503** where retry
+is the remedy. **The 422s here are architectural, not wire** — see 01 §3.3, which quotes the
+platform rule: no `CanonicalError` category renders 422, so each reaches the wire as a 400
+carrying its code, and no endpoint may declare a 422 in `OpenAPI`. Proposed per
 row and open to correction; the requirement is that every code carries one.
   Codes listed here for the response map but **declared elsewhere**: `PARENT_NOT_PUBLISHED` (slice 01), `SCOPE_NOT_CONTAINED` (slice 01) — the status is repeated, not a second declaration, so the one-declaration rule stands.*
 

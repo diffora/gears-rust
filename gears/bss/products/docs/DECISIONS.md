@@ -154,7 +154,7 @@ instead.*
   the write. That is the ungoverned channel's nature; a key that needs version history is an
   **Attribute**, which has governance, versioning and localization.
 - **Propagated**: S2 §2 (`inst-md-placement`) + §4.1/§5 + §6 (flag struck); slice
-  slice 06 owes the snapshot-capture step (a debt, not a propagation target); `DESIGN.md` slice row + status line.
+  S6 (the snapshot-capture step it owes, and where it cites this decision), S1 §4, S5 §3.2 and `design/README.md` (the three further documents that restate it — added 2026-08-26 after a census of the class rather than of the one site lint 5 named); `DESIGN.md` slice row + status line.
 - **No PRD edit owed**: the PRD glossary's "Metadata map" row is compatible as written. *(This
   sentence sat inside the `**Propagated**` field, where a propagation check reads "PRD" as a
   claimed target and then fails to find the citation — a claim of the exact opposite of what the
@@ -552,9 +552,15 @@ instead.*
   the authorizing principal**, audited like any other decision. There is no human approver and
   **no exemption from the gate**: the act still produces a record, still lands in the audit
   trail, and is still refused if its preconditions fail.
+- **OPEN, and the one thing this entry does not settle (2026-08-26, third review pass)**: what a
+  dirty head does. This entry says *refused*; the owning slice's `inst-cc-clear` says the clear is
+  "**deferred, never refused**" (`design/06-catalog-version.md` §2) and §3.2 raises **no** error code
+  for it by design. Both are defensible — a refusal is louder, a deferral cannot wedge a publish
+  queue — and only one can be built. `fr-materiality-gated-publish` and AC #26 deliberately assert
+  neither. **Owner picks.**
 - **The precondition that makes it safe**: the head must be **clean**. A `system_signal` publish
   carries the flag and nothing else; if the head holds unpublished bucket-iii/iv edits the
-  publish is refused rather than carrying them out under a record with no human approver. This
+  publish is refused rather than carrying them out under a record with no human approver — **this entry's reading, and the one the OPEN bullet above puts to the owner**; the owning slice defers instead. This
   is not decoration — `cc752aed4`'s own Blocking-5 note records the alternative concretely: a
   publish "whose sole content is a system-owned flag" could otherwise "carry `taxCategory` and
   `PlanTier` edits out under an `ApprovalRecord` with no human approver".
@@ -692,7 +698,7 @@ instead.*
   release is one idempotent fact per participant per version, and it rides the acknowledgment
   contract that already exists.
 - **Why it must be in §9.2 and not only in the design**: slice 10's `RetentionGate` refuses to
-  collect a version until **every** freeze registration reads `released`. That makes the release
+  collect a version until **every** freeze registration satisfies the pair — `state = released`, or `not_frozen(forced)` with `released_at` stamped by force-completion (second arm 2026-08-26: a forced participant never acked and cannot use the S2S release door; a later recovery moves `state`, so a stale stamp frees nothing). That makes the release
   a **precondition for garbage collection** — a participant that never releases pins storage
   forever. A duty with that consequence cannot live only in the registry's own design; the
   counterpart has to be told it owes it.

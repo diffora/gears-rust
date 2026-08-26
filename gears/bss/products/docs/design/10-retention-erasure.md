@@ -127,7 +127,7 @@ GC + its alarms, the restore-drill results surface.
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-flow-retention`
 
-1. [ ] - `p1` - `RetentionClock` per class (the version arm reads 06's freeze-registration records, whose `released` half is **P-D-18**'s contract — a participant that never releases pins that version's storage indefinitely, which is why the release had to reach PRD §9.2) — frozen versions, catalog versions, audit, outbox-delivered, bulk ledgers, **and the evidential stores this slice owns the interplay for (M4): approval records/decisions, break-glass sessions, correction overrides (audit-grade, statutory max); watermark/member tables are operational-current state (continuously replaced, no clock needed)**: expiry candidates are computed, and for a `catalogVersionId` the `RetentionGate` requires **every freeze registration either `released` or carrying a `released_at`** (the second is the force-completion stamp on a `not_frozen(forced)` row — a participant that never acked cannot use the S2S release door; it releases storage and never posted-use safety) (06's release door — the H1 end-of-liveness; acked-and-unreleased = live) — a candidate with a live registration is skipped with the `retention_orphan_blocked` alarm (fail-closed: skipped, never forced; C4); GC deletes are audit-plane, explicit **no broker event** (L3) - `inst-rt-gc`
+1. [ ] - `p1` - `RetentionClock` per class (the version arm reads 06's freeze-registration records, whose `released` half is **P-D-18**'s contract — a participant that never releases pins that version's storage indefinitely, which is why the release had to reach PRD §9.2) — frozen versions, catalog versions, audit, outbox-delivered, bulk ledgers, **and the evidential stores this slice owns the interplay for (M4): approval records/decisions, break-glass sessions, correction overrides (audit-grade, statutory max); watermark/member tables are operational-current state (continuously replaced, no clock needed)**: expiry candidates are computed, and for a `catalogVersionId` the `RetentionGate` requires **every freeze registration to satisfy the pair** `state = released`, **or** `state = not_frozen(forced)` **and** `released_at` stamped — never the timestamp alone (corrected 2026-08-26: an earlier repair read "`released` or carrying a `released_at`", and because nothing clears the stamp a forced participant that later recovered and acked left `state = acked` beside a live stamp, so this gate collected a version holding live grandfathered references — the very compliance event `PRD` §7 names. The pair is evaluated because a recovery moves `state` and the stale stamp then means nothing). The second arm exists because a participant that never acked cannot use the S2S release door; it releases storage and never posted-use safety) (06's release door — the H1 end-of-liveness; acked-and-unreleased = live) — a candidate with a live registration is skipped with the `retention_orphan_blocked` alarm (fail-closed: skipped, never forced; C4); GC deletes are audit-plane, explicit **no broker event** (L3) - `inst-rt-gc`
 2. [ ] - `p1` - Deletion order respects reference topology (capture/entry rows before their catalog-version row; entity versions only after every referencing manifest — M3's phantom "counter history" removed); every GC act is audited with the class, the clock, and the gate verdict - `inst-rt-order`
 3. [ ] - `p1` - Entity-version rows referenced by ANY retained `CatalogVersion` manifest are retained with it (p1 — the only rule stopping the GC from orphaning a manifest, M3) (the manifest's entity half references frozen rows — 06 H3): version-row retention derives from catalog-version retention, never shorter - `inst-rt-derive`
 
@@ -166,10 +166,15 @@ its codes with no HTTP status and no problem-response block in any slice, agains
 `guidelines/DNA/README.md`'s RFC 9457 rule and `.cf-studio/config/rules/api-contracts.md`. The
 mapping follows pricing's, checked against it code by code: **422** for content the door cannot
 process, **409** where the current state refuses the act — including the ETag precondition,
-which pricing maps to 409 rather than 412 (D-141) and where an earlier pass here wrongly wrote
+which pricing maps to 409 rather than 412 (**D-141**, 2026-08-02, whose own decision text reads
+*"A mismatch is `STALE_VERSION` (409, Foundation-owned)"* — the citation was right the first time;
+a 2026-08-26 pass re-pointed it at D-186 and was wrong to, D-186 being a later amendment scoped to
+one config route) and where an earlier pass here wrongly wrote
 412 and called that pricing's convention — **403** where the caller may not perform the act at
-all, **404** only where a path segment names a resource this tenant has none of, **400** where
-a required request field is absent outright, **503** where retry is the remedy. Proposed per
+all, **404** only where a path segment names a resource this tenant has none of, **503** where retry
+is the remedy. **The 422s here are architectural, not wire** — see 01 §3.3, which quotes the
+platform rule: no `CanonicalError` category renders 422, so each reaches the wire as a 400
+carrying its code, and no endpoint may declare a 422 in `OpenAPI`. Proposed per
 row and open to correction; the requirement is that every code carries one.
   Codes listed here for the response map but **declared elsewhere**: `CONTENT_PII_BLOCKED` (slice 02) — the status is repeated, not a second declaration, so the one-declaration rule stands.*
 

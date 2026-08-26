@@ -212,18 +212,46 @@ slice-owned codes (taxonomy cycles, unit rules, freeze, bulk rows…) are declar
 slices and the AC #38 ↔ code ↔ slice map is completed by slice 12's coverage check. Codes are
 part of the SDK contract; renames are breaking.
 
-**Problem responses (RFC 9457):** `APPROVAL_REQUIRED` (403); `DUPLICATE_NAME`, `DUPLICATE_SKU_CODE`, `IDEMPOTENCY_CONFLICT`, `ILLEGAL_TRANSITION`, `RETIREMENT_PENDING`, `STALE_REVISION` (409); `ILLEGAL_FIELD_MUTATION`, `SCOPE_NOT_CONTAINED`, `PARENT_NOT_PUBLISHED`, `INCOMPLETE_ENTITY`, `VALIDATION` (422).
+**Problem responses (RFC 9457):** `APPROVAL_REQUIRED` (403); `DUPLICATE_NAME`, `DUPLICATE_SKU_CODE`, `IDEMPOTENCY_CONFLICT`, `RETIREMENT_PENDING`, `STALE_REVISION` (409); `ILLEGAL_TRANSITION`, `ILLEGAL_FIELD_MUTATION`, `SCOPE_NOT_CONTAINED`, `PARENT_NOT_PUBLISHED`, `INCOMPLETE_ENTITY`, `VALIDATION` (422).
 
 *Statuses added 2026-08-26, corrected the same day by the fix-wave review. The gear declared
 its codes with no HTTP status and no problem-response block in any slice, against
 `guidelines/DNA/README.md`'s RFC 9457 rule and `.cf-studio/config/rules/api-contracts.md`. The
 mapping follows pricing's, checked against it code by code: **422** for content the door cannot
 process, **409** where the current state refuses the act — including the ETag precondition,
-which pricing maps to 409 rather than 412 (D-141) and where an earlier pass here wrongly wrote
+which pricing maps to 409 rather than 412 (**D-141**, 2026-08-02, whose own decision text reads
+*"A mismatch is `STALE_VERSION` (409, Foundation-owned)"* — the citation was right the first time;
+a 2026-08-26 pass re-pointed it at D-186 and was wrong to, D-186 being a later amendment scoped to
+one config route) and where an earlier pass here wrongly wrote
 412 and called that pricing's convention — **403** where the caller may not perform the act at
-all, **404** only where a path segment names a resource this tenant has none of, **400** where
-a required request field is absent outright, **503** where retry is the remedy. Proposed per
+all, **404** only where a path segment names a resource this tenant has none of, **503** where retry
+is the remedy. **The 422s here are architectural, not wire** — see 01 §3.3, which quotes the
+platform rule: no `CanonicalError` category renders 422, so each reaches the wire as a 400
+carrying its code, and no endpoint may declare a 422 in `OpenAPI`. Proposed per
 row and open to correction; the requirement is that every code carries one.*
+
+#### Status rendering — the 422s in this set are architectural, not wire (normative)
+
+The `422` annotations in every slice's problem-response block say *unprocessable content*: the
+request was understood and the registry refuses it. They are **not** a wire status. The platform's
+`CanonicalError` model has no 422 category — `libs/toolkit-canonical-errors/src/problem.rs` carries
+no 422 arm — so every architectural 422 in this design set reaches the wire as a **400 carrying its
+wire code**, and **the code string is the discriminator a consumer matches on, not the status**.
+An endpoint **MUST NOT** declare a 422 response for a **canonical** (domain) error in its `OpenAPI` registration, because no path can
+produce one. **The framework layer is the exception and is not covered by it**: a handler taking
+`toolkit::api::rest::extract::Json<T>` can still answer 422 on a schema violation, which is why the
+toolkit ships `OperationBuilder::error_422` and tells an operation to register it individually
+(`libs/toolkit/src/api/operation_builder.rs`). A schema violation is not a canonical error and
+carries no registry code. This is the sibling plan-price gear's rule verbatim, and it is quoted rather than
+paraphrased: `gears/bss/pricing/docs/design/01-foundation.md` §3.3 — *"The platform's
+`CanonicalError` model has **no 422 category** at all (`InvalidArgument`, `FailedPrecondition` and
+`OutOfRange` all render **400**), so every architectural 422 in this design set — here and in every
+slice — reaches the wire as a **400 carrying its wire code**"*. Two consequences bind the implementation, the first from the rule quoted above and the second
+from the same section's pagination rule, whose subject there is an undecodable cursor — *"a malformed request … answered 400 **with no code of its
+own**"*: a refusal is classified by what it **is**, so a retriable
+conflict on mutable state stays a **409** rather than collapsing into the 400 bucket; and a bare
+**400 with no code of its own** is reserved for a malformed request, which is why no registry code
+is mapped to 400. Stated here once, in the Foundation, rather than per occurrence.
 
 ### 3.4 Concurrency doors (PRD §6.13 residents of this slice)
 
@@ -349,7 +377,7 @@ and the ordering key.
 
 ## 6. Traces to / Risks & Open items
 
-**Traces to**: `cpt-cf-bss-products-usecase-product-sku-editor` (§10 use case, claimed by id here 2026-08-26 — all seven were in lint 1's universe and none was claimed); **NFRs by id** — #6 `cpt-cf-bss-products-nfr-scale-extensibility` (the entity-count half: the head/version split and the index shape; `CatalogVersion` growth is slice 06's), #8
+**Traces to**: `cpt-cf-bss-products-usecase-product-sku-editor` (§10 use case, claimed by id here 2026-08-26 — all seven were in lint 1's universe and none was claimed); **NFRs by id** — #3 `cpt-cf-bss-products-nfr-publication-propagation` (the whole < 3 s event-availability budget: `DESIGN.md` §1.2's NFR Allocation pairs two budgets with two mechanisms — "the < 3 s propagation and < 5 s posting-safe budgets on the slice-01 outbox + slice-06 freeze machine" — and the PRD calls this one "a component **preceding** freeze acks", so it is the outbox, the freeze machine's budget being `nfr-posting-safe-budget`. **The probe is owed**: no slice §5 measures it), `cpt-cf-bss-products-nfr-scale-extensibility` (the entity-count half: the head/version split and the index shape; `CatalogVersion` growth is slice 06's), #8
 `cpt-cf-bss-products-nfr-determinism-integrity` (version immutability, taxonomy acyclicity, identity uniqueness and
 metering-unit validity enforced fail-closed: this slice's pipeline, edge list and trigger
 whitelist are its whole mechanism, and it was referenced nowhere in the set — item 30 of the
