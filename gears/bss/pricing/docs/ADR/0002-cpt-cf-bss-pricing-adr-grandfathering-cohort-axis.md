@@ -62,7 +62,14 @@ key becomes:
 
 ```text
 (planId, currency, region, priceOverlay, phase, priceEligibility, chargeKind, cohort)
+  + on chargeKind = usage: (meter, dimensionKey)                                        -- D-196, after this ADR
 ```
+
+> **Amendment (2026-08-26).** The eight axes above are the key **as of this ADR's decision date**;
+> D-196 (2026-08-06) added the conditional usage pair `(meter, dimensionKey)` after it, making the
+> live key ten. Nothing in this ADR's `cohort` reasoning changes — the pair and `cohort` are
+> independent axes — but a reader taking the block as the current key would be two axes short.
+> The normative statement lives in `design/01-foundation.md` §4.4.
 
 * `cohort` is the **grandfathering generation discriminator**: the UTC cutover instant that created the generation. Default `cohort = none` on every non-grandfathered row; publish validation enforces `cohort ≠ none ⇔ priceEligibility = existing_grandfathered`. It is unrelated to `customerGroup` segment pricing.
 * **Every cutover creates a new generation**: the copy lands on `(… , existing_grandfathered, chargeKind, cohort = T)`; prior generations' rows and windows are untouched (still immutable, still live-resolvable). The successor stays `(… , all_subscriptions, chargeKind, none)`. A cutover whose instant equals an existing generation's `cohort` is a duplicate key — rejected at compose (`DUPLICATE_SCOPE_KEY`).

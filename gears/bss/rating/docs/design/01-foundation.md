@@ -276,7 +276,14 @@ Selection and non-overlap use the pricing canonical key **verbatim**:
 
 ```text
 (planId, currency, region, priceOverlay, phase, priceEligibility, chargeKind, cohort)
+  + on chargeKind = usage: (meter, dimensionKey)
 ```
+
+The usage pair is an axis of the key **conditionally** (pricing D-196, 2026-08-06; adopted here
+verbatim per ADR-0001, and materialized on `SelectionKey` since T-D-35 / SEAMS K6, 2026-08-25):
+taken from the evaluation line for `chargeKind = usage`, the `''` sentinel otherwise — mirroring
+pricing's `COALESCE(meter,'')` index spelling. *Verbatim adoption is what makes this key ten and
+not eight; this block was short by the pair until 2026-08-26.*
 
 - "At most one window matches" holds **only on the full key**; coexisting hybrid `chargeKind` rows and grandfathering `cohort` generations are disambiguated by the key, never fail-closed.
 - `phase` is a `phase_id` (uuid; kind names are display-only); usage rows are phase-invariant by default, phase-specific wins — the no-gap rule applies to the *resolved* set.

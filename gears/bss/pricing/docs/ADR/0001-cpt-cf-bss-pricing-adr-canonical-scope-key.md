@@ -69,7 +69,16 @@ row-uniqueness, supersession, `PriceWindow` non-overlap, and window coverage is:
 
 ```text
 (planId, currency, region, priceOverlay, phase, priceEligibility, chargeKind)   -- + cohort (ADR-0002)
+                                                                               -- + (meter, dimensionKey) on chargeKind = usage (D-196)
 ```
+
+> **Amendment (2026-08-26).** D-196 (2026-08-06) widened the key this ADR owns by the usage pair
+> `(meter, dimensionKey)`, an axis **conditionally** — present on `chargeKind = usage`, the `''`
+> sentinel otherwise, both unique indexes keying over the pair. So the live canonical key is
+> **ten** axes: the seven spelled above, `cohort` from ADR-0002, and the pair. The spelling in the
+> block is the key **as of this ADR's decision date** and is kept for that reason; the normative
+> statement lives in `design/01-foundation.md` §4.4. Rating adopts the full ten verbatim
+> (its ADR-0001, amended 2026-08-25).
 
 with axis defaults `priceOverlay = base`, `phase =` the plan's terminal `phase_id` (implicit terminal phase auto-created for non-phased plans; id-typed axis — D-19),
 `priceEligibility = all_subscriptions`, and `chargeKind` per row
