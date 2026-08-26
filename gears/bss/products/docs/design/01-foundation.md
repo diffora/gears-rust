@@ -227,7 +227,7 @@ one config route) and where an earlier pass here wrongly wrote
 all, **404** only where a path segment names a resource this tenant has none of, **503** where retry
 is the remedy. **The 422s here are architectural, not wire** — see 01 §3.3, which quotes the
 platform rule: no `CanonicalError` category renders 422, so each reaches the wire as a 400
-carrying its code, and no endpoint may declare a 422 in `OpenAPI`. Proposed per
+carrying its code, and no endpoint may declare a 422 for a **canonical** error in `OpenAPI` (the framework layer is the exception — a `Json<T>` schema violation, which carries no registry code). Proposed per
 row and open to correction; the requirement is that every code carries one.*
 
 #### Status rendering — the 422s in this set are architectural, not wire (normative)
@@ -242,7 +242,7 @@ produce one. **The framework layer is the exception and is not covered by it**: 
 `toolkit::api::rest::extract::Json<T>` can still answer 422 on a schema violation, which is why the
 toolkit ships `OperationBuilder::error_422` and tells an operation to register it individually
 (`libs/toolkit/src/api/operation_builder.rs`). A schema violation is not a canonical error and
-carries no registry code. This is the sibling plan-price gear's rule verbatim, and it is quoted rather than
+carries no registry code. The **quotation below** is the sibling plan-price gear's rule verbatim; the canonical scoping and the framework exception above are this gear's own, added 2026-08-27 because pricing states the rule unscoped and the toolkit contradicts the unscoped form, and it is quoted rather than
 paraphrased: `gears/bss/pricing/docs/design/01-foundation.md` §3.3 — *"The platform's
 `CanonicalError` model has **no 422 category** at all (`InvalidArgument`, `FailedPrecondition` and
 `OutOfRange` all render **400**), so every architectural 422 in this design set — here and in every
@@ -377,7 +377,7 @@ and the ordering key.
 
 ## 6. Traces to / Risks & Open items
 
-**Traces to**: `cpt-cf-bss-products-usecase-product-sku-editor` (§10 use case, claimed by id here 2026-08-26 — all seven were in lint 1's universe and none was claimed); **NFRs by id** — #3 `cpt-cf-bss-products-nfr-publication-propagation` (the whole < 3 s event-availability budget: `DESIGN.md` §1.2's NFR Allocation pairs two budgets with two mechanisms — "the < 3 s propagation and < 5 s posting-safe budgets on the slice-01 outbox + slice-06 freeze machine" — and the PRD calls this one "a component **preceding** freeze acks", so it is the outbox, the freeze machine's budget being `nfr-posting-safe-budget`. **The probe is owed**: no slice §5 measures it), `cpt-cf-bss-products-nfr-scale-extensibility` (the entity-count half: the head/version split and the index shape; `CatalogVersion` growth is slice 06's), #8
+**Traces to**: `cpt-cf-bss-products-usecase-product-sku-editor` (§10 use case, claimed by id here 2026-08-26 — all seven were in lint 1's universe and none was claimed); **NFRs by id** — #3 `cpt-cf-bss-products-nfr-publication-propagation` (the outbox half of the < 3 s event-availability budget: `DESIGN.md` §1.2's NFR Allocation pairs two budgets with two mechanisms — "the < 3 s propagation and < 5 s posting-safe budgets on the slice-01 outbox + slice-06 freeze machine" — and the PRD calls this one "a component **preceding** freeze acks", so it is the outbox, the freeze machine's budget being `nfr-posting-safe-budget`. **The probe is owed**: no slice §5 measures it), `cpt-cf-bss-products-nfr-scale-extensibility` (the entity-count half: the head/version split and the index shape; `CatalogVersion` growth is slice 06's), #8
 `cpt-cf-bss-products-nfr-determinism-integrity` (version immutability, taxonomy acyclicity, identity uniqueness and
 metering-unit validity enforced fail-closed: this slice's pipeline, edge list and trigger
 whitelist are its whole mechanism, and it was referenced nowhere in the set — item 30 of the

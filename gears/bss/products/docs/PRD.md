@@ -53,7 +53,7 @@ refs:
 > dimension-set cross-validation re-placed onto pricing `inst-cmp-usagetype` (priced ⊆
 > `metadata_fields` at plan publish); nothing in this PRD awaited veto **as of that round**.
 > **2026-08-26 branch review:** seven decisions — **P-D-14…P-D-20** — are registered
-> FLAGGED and await the owner. They amend this PRD's normative text in sixteen places, and
+> FLAGGED and await the owner. They amend this PRD's normative text in many places (a count is deliberately not given here: it has been restated wrongly twice), and
 > two of them reverse delivered design: P-D-19 (a force-completed version stays refused for
 > posted use) and P-D-20 (the retirement lead window imposes no publish freeze). **Industry-gap wave
 > (same day, vs Stripe/Zuora/Kill Bill):** environment promotion (rides bulk import/export,
@@ -1095,7 +1095,7 @@ until 2026-08-26 while the decision speaks for all of them.*
 
 **Direction**: required from plan-price, consumed as a `products-sdk` client resolved from `ClientHub` rather than an out-of-process REST door (**P-D-15**)
 
-**Protocol/Format**: signal that a `bundle` SKU has been composed, clearing `compositionPending` — the clearing publish runs as a `system_signal` approval subject over a clean head (**P-D-14**), never an exemption from the gate (Design owns shape).
+**Protocol/Format**: signal that a `bundle` SKU has been composed, clearing `compositionPending` — the clearing publish runs as a `system_signal` approval subject (**P-D-14**), never an exemption from the gate — what a **dirty** head does, refuse or defer, is an open owner question registered on that decision (Design owns shape).
 
 **Compatibility**: clearing produces a new published version and emits `SkuCompositionCleared` (this gear's outbound event; the inbound plan-price signal that drives it keeps the name `BundleCompositionCompleted`); MUST NOT mutate a prior frozen `CatalogVersion`.
 

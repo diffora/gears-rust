@@ -646,6 +646,12 @@ instead.*
   an open §15 item owned by that gear, exactly as P-D-05's residue records it. (Corrected
   2026-08-26: this entry read as closing the whole row, which contradicted P-D-05 on the same
   row — a local repair arm is not a deletion contract.)
+- **OPEN, registered 2026-08-27**: this arm is deliberately **not** behind
+  `BREAKGLASS_CORRECTION_DISABLED`, because a default-OFF flag would withhold the exit the decision
+  exists to provide. That leaves a governed but permanently open write path onto a published,
+  `fresh > 0` SKU's bucket-ii meter declaration. Whether it should carry a flag of its own, or a
+  tripwire counter like the break-glass lane, is the owner's call; the ceremony, the reason and the
+  `SkuCorrectionOverride` evidence row are required either way.
 - **Rejected alternative**: drop `inst-bc-unresolvable` and leave the wedged SKU to the §15
   negotiation. Rejected because the negotiation has no v1 landing and the state is reachable in
   v1 — but this is the arm to strike if the owner prefers the quarantine fail-safe §15 names.

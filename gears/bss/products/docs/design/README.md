@@ -66,7 +66,7 @@ Requirements live in [`../PRD.md`](../PRD.md); decisions in [`../DECISIONS.md`](
   pinning `not_frozen`, per-version participant-set snapshot), freeze-registration records as the
   AC #44 liveness source with liveness ending by an explicit `catalog_version × release`
   (P-D-18), grandfathering invariant, `compositionPending` clearing (a `system_signal` approval
-  subject over a clean head — P-D-14, not an exemption), version-binding-at-freeze diff surface
+  subject — P-D-14, not an exemption; its dirty-head disposition is an open owner question there), version-binding-at-freeze diff surface
   (AC #20a). (§6.6, §6.13)
 - [`07-reference-signal.md`](./07-reference-signal.md) — the `WatermarkDoor` (S2S, monotonic,
   atomic full-set replacement), the 3-state `ReferencePredicate` with per-producer detail (+ the

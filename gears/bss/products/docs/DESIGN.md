@@ -64,7 +64,7 @@ requirement is ticked, at which point it fails for every id at once.*
 | `cpt-cf-bss-products-fr-deprecation` / `cpt-cf-bss-products-fr-lifecycle-transitions` / `cpt-cf-bss-products-fr-parent-child-integrity` / `cpt-cf-bss-products-fr-retirement-eol` / `cpt-cf-bss-products-fr-undeprecation` | **Slice 04** — Lifecycle policy: the edge list, deprecation provenance, cascades, and retirement as a scheduled transition with its joint plan-price contract. |
 | `cpt-cf-bss-products-fr-breakglass-action-scope` / `cpt-cf-bss-products-fr-materiality-gated-publish` / `cpt-cf-bss-products-fr-tenant-isolation-breakglass` | **Slice 05** — Governance: materiality, the tenant-configured approver quorum, the RBAC catalog, and break-glass elevation bounded to read and audit-export. |
 | `cpt-cf-bss-products-fr-bundle-adoption-guard` / `cpt-cf-bss-products-fr-catalog-publish-concurrency` / `cpt-cf-bss-products-fr-catalog-version-diff` / `cpt-cf-bss-products-fr-catalog-version-publish` / `cpt-cf-bss-products-fr-freeze-atomicity` / `cpt-cf-bss-products-fr-freeze-participant-governance` / `cpt-cf-bss-products-fr-freeze-recovery` / `cpt-cf-bss-products-fr-grandfathered-retention-coupling` / `cpt-cf-bss-products-fr-grandfathering-invariant` / `cpt-cf-bss-products-fr-prepublish-lint` / `cpt-cf-bss-products-fr-revision-vs-version` / `cpt-cf-bss-products-fr-snapshot-reproducibility` / `cpt-cf-bss-products-nfr-posting-safe-budget` / `cpt-cf-bss-products-nfr-publication-propagation` / `cpt-cf-bss-products-nfr-scale-extensibility` / `cpt-cf-bss-products-nfr-snapshot-archival-dr` | **Slice 06** — `CatalogVersion` is demand-driven and mechanical: request intake, the counter, full snapshots with checksums, and the freeze protocol with its force-completion recovery. |
-| `cpt-cf-bss-products-fr-failsafe-tripwire` / `cpt-cf-bss-products-fr-immutable-field-correction` / `cpt-cf-bss-products-fr-reference-producer-registration` / `cpt-cf-bss-products-fr-reference-signal` | **Slice 07** — The reference signal: registered producers, per-producer watermarks, the reference predicate, and the correction door with its two break-glass admission arms. |
+| `cpt-cf-bss-products-fr-failsafe-tripwire` / `cpt-cf-bss-products-fr-immutable-field-correction` / `cpt-cf-bss-products-fr-reference-producer-registration` / `cpt-cf-bss-products-fr-reference-signal` | **Slice 07** — The reference signal: registered producers, per-producer watermarks, the reference predicate, and the correction door with its three correction-door gates — fresh-zero, break-glass behind its flag, and P-D-16's unresolvable-target arm outside it — admission arms. |
 | `cpt-cf-bss-products-fr-cache-first-browse` / `cpt-cf-bss-products-fr-event-delivery-resilience` / `cpt-cf-bss-products-nfr-availability-audit` / `cpt-cf-bss-products-nfr-graceful-degradation` / `cpt-cf-bss-products-nfr-read-latency` / `cpt-cf-bss-products-nfr-read-throughput` | **Slice 08** — Read models are projections with a staleness stamp on every response, rebuildable from the frozen versions and the outbox. |
 | `cpt-cf-bss-products-fr-bulk-import-export` | **Slice 09** — Bulk import, export and promotion run per-row through the Foundation publish door under one batch-scoped approval. |
 | `cpt-cf-bss-products-fr-expected-failure-behavior` / `cpt-cf-bss-products-fr-grandfathered-retention-coupling` / `cpt-cf-bss-products-fr-retention-erasure` / `cpt-cf-bss-products-nfr-snapshot-archival-dr` | **Slice 10** — Retention clocks per class, the identity-ref map as the single erasure operand, and the retention gate that never forces a collection. |
@@ -159,7 +159,7 @@ numeric prefix is implementation order, not the PRD subsection number.
 
 Every enumerated failure of PRD AC #38 **that a registry door can refuse** maps to a named
 error code (slice 01 §3.3 taxonomy); no partial application; every rejection audited with reason.
-Two of the fifteen AC #38 rows are outside that universe by design and enumerated in slice 12's
+Three of the fifteen AC #38 rows are outside that universe by design and enumerated in slice 12's
 lint 2 — the retention-orphan **alarm** and the `compositionPending` **consumer duty** — so the
 principle and its lint say the same thing (item 32 of the 2026-08-26 review).
 
@@ -363,8 +363,10 @@ shape: **P-D-01** (a broker-native envelope weighed against CloudEvents 1.0), **
 alternatives here rather than in an ADR. No written rule says a `DECISIONS.md` register
 substitutes for an ADR, and none says it does not. **Owner: Architecture** — either promote
 those three to ADRs under the template's naming, or record that this gear's register is its
-decision-record artifact. Until then products is the only BSS gear whose rejected-alternative
-record lives in no artifact `cfs` recognises as an ADR.
+decision-record artifact. Until then three of the seven BSS gears ship no `docs/ADR/` — `rate-provider` keeps a
+rejected-alternative record in its `DESIGN.md` instead — so the question is which convention this
+family means to hold, not whether products is unique (corrected 2026-08-27: the escalation had
+rested on a uniqueness that does not hold).
 
 **Decision register & joint contracts.**
 

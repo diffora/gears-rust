@@ -166,7 +166,7 @@ one config route) and where an earlier pass here wrongly wrote
 all, **404** only where a path segment names a resource this tenant has none of, **503** where retry
 is the remedy. **The 422s here are architectural, not wire** — see 01 §3.3, which quotes the
 platform rule: no `CanonicalError` category renders 422, so each reaches the wire as a 400
-carrying its code, and no endpoint may declare a 422 in `OpenAPI`. Proposed per
+carrying its code, and no endpoint may declare a 422 for a **canonical** error in `OpenAPI` (the framework layer is the exception — a `Json<T>` schema violation, which carries no registry code). Proposed per
 row and open to correction; the requirement is that every code carries one.*
 
 ## 4. Data / Storage (normative shape; DDL in migrations)
