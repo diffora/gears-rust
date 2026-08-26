@@ -78,7 +78,7 @@ never mutates Usage, counters, balances, or posted financials — the owners app
 
 | ADR ID | Decision Summary |
 |--------|------------------|
-| `cpt-cf-bss-rating-adr-scope-key-adoption` | Replay selects on the same adopted 8-axis key resolved from the pinned snapshot — a correction can never resolve a different row than first rating did over identical inputs. |
+| `cpt-cf-bss-rating-adr-scope-key-adoption` | Replay selects on the same adopted **ten-axis** key resolved from the pinned snapshot (T-D-01's adoption is verbatim and pricing's key has been ten since D-196 — every sibling slice row was swept on 2026-08-25 and this one was missed, item 14 of the 2026-08-26 products review) — a correction can never resolve a different row than first rating did over identical inputs. |
 | `cpt-cf-bss-pricing-adr-pricewindow-consolidation` (adopted) | `PriceWindow*` events only invalidate the non-authoritative cache; corrections never consult live window state — expired/cancelled windows are immutable pricing history and the pin is the only read ([`../../../pricing/docs/design/07-pricewindow-linkage.md`](../../../pricing/docs/design/07-pricewindow-linkage.md)). |
 
 ### 1.3 Architecture Layers

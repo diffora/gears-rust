@@ -47,12 +47,15 @@ on this feature branch — never on `main`.
 ### Global preconditions (run once, before Step 1)
 
 ```bash
+# Run these from the repository root (paths were absolute into one machine's checkout
+# until 2026-08-26 — item 38 of that day's review; a tracked file must not name a home dir).
+
 # 1. Confirm you are on the feature branch, not main
-git -C /Users/roman/work/cyberfabric-core branch --show-current   # expect: feat/file-storage-p2
+git branch --show-current   # expect: feat/file-storage-p2
 
 # 2. Fast-forward local main so future diffs are clean (audit found local main is stale)
-git -C /Users/roman/work/cyberfabric-core fetch origin
-git -C /Users/roman/work/cyberfabric-core log --oneline origin/main -1
+git fetch origin
+git log --oneline origin/main -1
 
 # 3. Baseline: the gear builds and the existing suite is green BEFORE you change anything
 cargo test -p file-storage -p file-storage-sdk 2>&1 | tail -20     # expect: all pass

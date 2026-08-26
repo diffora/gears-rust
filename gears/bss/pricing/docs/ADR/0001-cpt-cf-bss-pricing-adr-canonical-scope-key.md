@@ -36,7 +36,9 @@ decision-makers: "BSS Product Catalog team"
 >
 > The additive-extension decision below is unchanged, and this header governs every count in it:
 > **seven-column statements read as ten-column** — eight after ADR-0002, ten after D-196. The
-> normative statement of the live key is `design/01-foundation.md` §4.4.
+> normative statement of the live key is `design/01-foundation.md` **§4.1 "Canonical Scope Key
+> (normative)"** — §4.4 is "Read Model and `pricingSnapshotRef`" (item 25 of the 2026-08-26
+> products review; this file's own More Information block always said §4.1).
 
 ## Context and Problem Statement
 
@@ -85,7 +87,7 @@ row-uniqueness, supersession, `PriceWindow` non-overlap, and window coverage is:
 > sentinel otherwise, both unique indexes keying over the pair. So the live canonical key is
 > **ten** axes: the seven spelled above, `cohort` from ADR-0002, and the pair. The spelling in the
 > block is the key **as of this ADR's decision date** and is kept for that reason; the normative
-> statement lives in `design/01-foundation.md` §4.4. Rating adopts the full ten verbatim
+> statement lives in `design/01-foundation.md` **§4.1** (not §4.4 — item 25). Rating adopts the full ten verbatim
 > (its ADR-0001, amended 2026-08-25).
 
 with axis defaults `priceOverlay = base`, `phase =` the plan's terminal `phase_id` (implicit terminal phase auto-created for non-phased plans; id-typed axis — D-19),
