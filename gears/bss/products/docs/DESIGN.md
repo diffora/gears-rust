@@ -17,11 +17,13 @@
   - [3.3 API Contracts](#33-api-contracts)
   - [3.4 Interactions & Sequences](#34-interactions--sequences)
   - [3.5 Database schemas & tables](#35-database-schemas--tables)
-- [4. Decision register & joint contracts](#4-decision-register--joint-contracts)
-- [5. Traceability (PRD §6 → slice)](#5-traceability-prd-6--slice)
+- [4. Additional context](#4-additional-context)
+- [5. Traceability](#5-traceability)
 - [6. Status](#6-status)
 
 <!-- /toc -->
+
+- [ ] `p1` - **ID**: `cpt-cf-bss-products-design-main`
 
 ## 1. Architecture Overview
 
@@ -44,6 +46,29 @@ publishes through the Foundation. The Foundation carries no capability policy �
 know what a `PlanTier` or a metering unit is.
 
 ### 1.2 Architecture Drivers
+
+#### Requirement coverage
+
+*Every `p1`/`p2` requirement of PRD §6 and §7, by full id, against the slice that owns it.
+Added 2026-08-26: this section cited requirements in prose only, so every tool that walks
+these documents by the id convention read this design as citing none — and the CFS
+reference-coverage rule for `fr`/`nfr` into DESIGN is satisfied by nothing until a
+requirement is ticked, at which point it fails for every id at once.*
+
+| Requirement | Design Response |
+|-------------|-----------------|
+| `cpt-cf-bss-products-fr-create-product` / `cpt-cf-bss-products-fr-define-sku` / `cpt-cf-bss-products-fr-event-delivery-resilience` / `cpt-cf-bss-products-fr-expected-failure-behavior` / `cpt-cf-bss-products-fr-field-mutability-matrix` / `cpt-cf-bss-products-fr-idempotent-authoring` / `cpt-cf-bss-products-fr-identifier-contract` / `cpt-cf-bss-products-fr-lifecycle-transitions` / `cpt-cf-bss-products-fr-parent-child-integrity` / `cpt-cf-bss-products-fr-registry-eventing-audit` / `cpt-cf-bss-products-fr-revision-vs-version` / `cpt-cf-bss-products-fr-skucode-reservation-concurrency` / `cpt-cf-bss-products-nfr-determinism-integrity` / `cpt-cf-bss-products-nfr-scale-extensibility` | **Slice 01** — The Foundation owns identity, the head-vs-version split, the single fail-closed publish pipeline, idempotency, the outbox and the audit plane. Every slice registers its validators into that one door. |
+| `cpt-cf-bss-products-fr-create-product` / `cpt-cf-bss-products-fr-localized-attributes` / `cpt-cf-bss-products-fr-manage-taxonomy` / `cpt-cf-bss-products-fr-retention-erasure` | **Slice 02** — Taxonomy and attribute definitions are governed live entities; assignment tables carry the exactly-one-primary index, and localization resolves through a total fallback chain. |
+| `cpt-cf-bss-products-fr-accounting-codes` / `cpt-cf-bss-products-fr-define-sku` / `cpt-cf-bss-products-fr-metering-unit-declaration` / `cpt-cf-bss-products-fr-metering-unit-delisting` / `cpt-cf-bss-products-fr-plantier-classification` / `cpt-cf-bss-products-fr-sku-sellable` | **Slice 03** — Typing and classification per `TypeProfile`, with the recognized-set tables behind every closed vocabulary and the publish-time collector call made once per publish. |
+| `cpt-cf-bss-products-fr-deprecation` / `cpt-cf-bss-products-fr-lifecycle-transitions` / `cpt-cf-bss-products-fr-parent-child-integrity` / `cpt-cf-bss-products-fr-retirement-eol` / `cpt-cf-bss-products-fr-undeprecation` | **Slice 04** — Lifecycle policy: the edge list, deprecation provenance, cascades, and retirement as a scheduled transition with its joint plan-price contract. |
+| `cpt-cf-bss-products-fr-breakglass-action-scope` / `cpt-cf-bss-products-fr-materiality-gated-publish` / `cpt-cf-bss-products-fr-tenant-isolation-breakglass` | **Slice 05** — Governance: materiality, the tenant-configured approver quorum, the RBAC catalog, and break-glass elevation bounded to read and audit-export. |
+| `cpt-cf-bss-products-fr-bundle-adoption-guard` / `cpt-cf-bss-products-fr-catalog-publish-concurrency` / `cpt-cf-bss-products-fr-catalog-version-diff` / `cpt-cf-bss-products-fr-catalog-version-publish` / `cpt-cf-bss-products-fr-freeze-atomicity` / `cpt-cf-bss-products-fr-freeze-participant-governance` / `cpt-cf-bss-products-fr-freeze-recovery` / `cpt-cf-bss-products-fr-grandfathered-retention-coupling` / `cpt-cf-bss-products-fr-grandfathering-invariant` / `cpt-cf-bss-products-fr-prepublish-lint` / `cpt-cf-bss-products-fr-revision-vs-version` / `cpt-cf-bss-products-fr-snapshot-reproducibility` / `cpt-cf-bss-products-nfr-posting-safe-budget` / `cpt-cf-bss-products-nfr-publication-propagation` / `cpt-cf-bss-products-nfr-scale-extensibility` / `cpt-cf-bss-products-nfr-snapshot-archival-dr` | **Slice 06** — `CatalogVersion` is demand-driven and mechanical: request intake, the counter, full snapshots with checksums, and the freeze protocol with its force-completion recovery. |
+| `cpt-cf-bss-products-fr-failsafe-tripwire` / `cpt-cf-bss-products-fr-immutable-field-correction` / `cpt-cf-bss-products-fr-reference-producer-registration` / `cpt-cf-bss-products-fr-reference-signal` | **Slice 07** — The reference signal: registered producers, per-producer watermarks, the reference predicate, and the correction door with its two break-glass admission arms. |
+| `cpt-cf-bss-products-fr-cache-first-browse` / `cpt-cf-bss-products-fr-event-delivery-resilience` / `cpt-cf-bss-products-nfr-availability-audit` / `cpt-cf-bss-products-nfr-graceful-degradation` / `cpt-cf-bss-products-nfr-publication-propagation` / `cpt-cf-bss-products-nfr-read-latency` / `cpt-cf-bss-products-nfr-read-throughput` | **Slice 08** — Read models are projections with a staleness stamp on every response, rebuildable from the frozen versions and the outbox. |
+| `cpt-cf-bss-products-fr-bulk-import-export` | **Slice 09** — Bulk import, export and promotion run per-row through the Foundation publish door under one batch-scoped approval. |
+| `cpt-cf-bss-products-fr-expected-failure-behavior` / `cpt-cf-bss-products-fr-grandfathered-retention-coupling` / `cpt-cf-bss-products-fr-retention-erasure` / `cpt-cf-bss-products-nfr-snapshot-archival-dr` | **Slice 10** — Retention clocks per class, the identity-ref map as the single erasure operand, and the retention gate that never forces a collection. |
+| `cpt-cf-bss-products-fr-clone` | **Slice 11** — Clone copies content and never identity, resetting lifecycle and version counters and reserving new codes atomically. |
+| `cpt-cf-bss-products-fr-deprecation` / `cpt-cf-bss-products-fr-event-versioning-replay` / `cpt-cf-bss-products-fr-freeze-atomicity` / `cpt-cf-bss-products-fr-monetization-traceability` / `cpt-cf-bss-products-fr-plan-price-seam` / `cpt-cf-bss-products-nfr-backward-compatible-evolution` | **Slice 12** — The consumer surface: the SDK, the event compatibility corpus, the obligation register and the coverage checks over this design set. |
 
 #### Functional Drivers
 
@@ -81,7 +106,7 @@ publish during the retirement lead window re-announces `SkuRetired`. Joint: D-46
 D-47 (increment lanes + retirement contract) — pricing register.
 
 **P-D-14…P-D-20 are FLAGGED and await the owner** — all seven were found by the 2026-08-26
-branch review, six of them already built into the design and one (P-D-19) reversing a delivery
+branch review, **five** of them already built into the design and never registered (P-D-14…P-D-18) and **two** reversing a delivery — P-D-19 (a force-completed version stays refused for posted use) and P-D-20, which strikes a publish freeze slice 04 had already shipped (recounted 2026-08-26: this read six-and-one, and the count hid the more product-visible of the two reversals)
 the design had made. None was ever put to the owner, which is what makes them flags and not
 history.
 
@@ -97,7 +122,7 @@ Standard ToolKit gear, mirroring the sibling BSS gears:
   OpenAPI), `api` (OperationBuilder handlers), `domain` (entities, state machine, validation
   pipeline, uniqueness/scope rules), `infra` (SecureORM repositories, migrations, outbox,
   read-model projector).
-- **Identity**: GTS ids under `gts.cf.bss.products.*`; tables `products_*`; dual-engine storage
+- **Identity**: GTS **types** (never instances — §2.2), declared as `gts.cf.bss.products.product.v1~`, `gts.cf.bss.products.sku.v1~`, `gts.cf.bss.products.category.v1~`, `gts.cf.bss.products.attribute_definition.v1~`, `gts.cf.bss.products.catalog_version.v1~` and `gts.cf.bss.products.approval_record.v1~` (spelled out 2026-08-26 — the only GTS token here was the namespace glob `gts.cf.bss.products.*`, which carries no type name, no version and no trailing `~`, so `guidelines/GTS.md`'s identifier grammar had nothing to match and the §2.2 constraint had no enumerable operand); tables `products_*`; dual-engine storage
   (SQLite + Postgres), one migration per table, schema-oracle goldens from day one.
 
 #### Design set (ordered by implementation phase)
@@ -143,7 +168,7 @@ principle and its lint say the same thing (item 32 of the 2026-08-26 review).
 
 The internal revision moves on every save and backs optimistic concurrency; the published
 version moves only on publish and is the only thing a consumer or `CatalogVersion` may
-reference (PRD `fr-revision-vs-version`).
+reference (PRD `cpt-cf-bss-products-fr-revision-vs-version`).
 
 #### Forward-only lifecycle
 
@@ -190,7 +215,7 @@ visibility/legal scope, never a pricing dimension.
 
 `productId`/`skuId` server-generated and immutable; `skuCode` atomically reserved at create,
 permanently reserved from first publish, released only by draft-discard; downstream binds to
-`skuId` (PRD `fr-identifier-contract`).
+`skuId` (PRD `cpt-cf-bss-products-fr-identifier-contract`).
 
 #### Isolation before function
 
@@ -305,16 +330,28 @@ Deterministic export at a `catalogVersionId` → import (identity via codes, ids
 
 ### 3.5 Database schemas & tables
 
-`products_product`, `products_sku` (with `ReservationIndex`), `products_entity_version`
-(published history), `products_idempotency`, `products_audit_log`, `products_outbox`
-(slice 01 §4); slice-owned: `products_category`, `products_attribute_definition`/`_value`,
-`products_plan_tier`, recognized-set tables (02/03), `products_approval` + stored pinned
-snapshots (05), `products_catalog_version` + freeze-ack/participant tables (06),
-`products_reference_watermark` + producer registry (07), read-model projections (08). All
-tables tenant-scoped; DDL in one-migration-per-table chains with dual-engine schema-oracle
-goldens.
+**35 tables, by the slice that defines each** (re-censused 2026-08-26 from the slices
+themselves — this section is the canonical index migration planning is scoped off, and it had
+listed 13 tables, named `products_plan_tier`, which no slice defines because slice 03 folds
+tiers into `products_recognized_set` under `set_kind`, and omitted about twenty real ones):
 
-## 4. Decision register & joint contracts
+- **01** — `products_audit_log`, `products_entity_version`, `products_idempotency`, `products_outbox`, `products_product`, `products_product_category`, `products_sku`
+- **02** — `products_attribute_definition`, `products_attribute_value`, `products_category`, `products_metadata`
+- **03** — `products_recognized_set`
+- **04** — `products_deferred_retirement`, `products_scheduled_transition`
+- **05** — `products_approval`, `products_approval_decision`, `products_breakglass_session`
+- **06** — `products_catalog_version`, `products_catalog_version_counter`, `products_catalog_version_entry`, `products_catalog_version_request`, `products_freeze_ack`, `products_freeze_participant`
+- **07** — `products_correction_override`, `products_reference_member`, `products_reference_producer`, `products_reference_watermark`
+- **08** — `products_read_deferred_intent`, `products_read_delivery_state`, `products_read_entity`, `products_read_freeze_status`
+- **09** — `products_bulk_batch`, `products_bulk_row`
+- **10** — `products_identity_ref`, `products_pii_allowlist`
+
+All tables tenant-scoped; DDL in one-migration-per-table chains with dual-engine
+schema-oracle goldens.
+
+## 4. Additional context
+
+**Decision register & joint contracts.**
 
 - [`DECISIONS.md`](./DECISIONS.md) — P-D-01…20 (both summaries said "…06" / listed five while
   the register held twelve — item 26 of the 2026-08-26 review; P-D-13 landed with that review's
@@ -326,12 +363,14 @@ goldens.
   `BundleCompositionCompleted` (slice 06 consumes it); freeze-participant acks unregistered on
   all three participants; Contracts' "not a quote" position vs the quote-snapshot delegation.
 
-## 5. Traceability (PRD §6 → slice)
+## 5. Traceability
+
+*PRD §6 → slice.*
 
 6.1 → 01 (identifiers, mutability frame) + 07 (signal, corrections); 6.2 → 02; 6.3 → 03;
-6.4 → 02; 6.5 → 01 (machine) + 04 (policy); 6.6 → 06 (incl. `fr-revision-vs-version`'s version-binding-at-freeze clause); 6.7 → 01 (idempotency, eventing) + 05
+6.4 → 02; 6.5 → 01 (machine) + 04 (policy); 6.6 → 06 (incl. `cpt-cf-bss-products-fr-revision-vs-version`'s version-binding-at-freeze clause); 6.7 → 01 (idempotency, eventing) + 05
 (approvals); 6.8 → 05 (isolation) + 08 (read models); 6.9 → 09; 6.10 → 11; 6.11 → 10;
-6.7 also → 12 (`fr-event-versioning-replay`, which slice 12 claims in its own §1.4 and
+6.7 also → 12 (`cpt-cf-bss-products-fr-event-versioning-replay`, which slice 12 claims in its own §1.4 and
 Traces-to while both sites here said 6.12 + §9 only — 2026-08-26 branch review);
 6.12 → 12; 6.13 → resident per door (enumerated per slice). Every slice carries a "Traces to"
 list; slice 12 owns the completeness check that every `p1`/`p2` **requirement-bearing PRD id** —
@@ -345,7 +384,7 @@ list; slice 12 owns the completeness check that every `p1`/`p2` **requirement-be
 | 01-foundation | **authored + agent-reviewed 2026-08-25**; fix wave applied (H1 head-row model, shared guard, `normalized(name)` pin) |
 | 02-taxonomy-attributes | **authored + agent-reviewed 2026-08-25**; fix wave applied (H2 category branch, M2/M5); P-D-06 **CONFIRMED 2026-08-26** |
 | 03-sku-classification | **authored + agent-reviewed 2026-08-25**; fix wave applied (M2 operand narrowed) |
-| 04-lifecycle | **authored + agent-reviewed 2026-08-25**; fix wave applied (provenance pass-through, parent path, runner lease, `RETIREMENT_PENDING`); initiation reading CONFIRMED via §17.1 |
+| 04-lifecycle | **authored + agent-reviewed 2026-08-25**; fix wave applied (provenance pass-through, parent path, runner lease) — the `RETIREMENT_PENDING` publish freeze this row also credited was **struck again by P-D-20** on 2026-08-26 and is not an applied fix; the code's remaining arms are un-deprecation here and slice 01's create-door parent guard; initiation reading CONFIRMED via §17.1 |
 | 05-governance | **authored + agent-reviewed 2026-08-25**; fix wave applied (scheduled-act consumption model, vocabulary-op materiality, transition-fires-hook invariant); quorum strictness **resolved 2026-08-26 — P-D-11** (approver count is a typed-policy value, default 2, floor 0); role-predicate question **resolved — P-D-10** (C8: predicates narrow, never replace) |
 | 06-catalog-version | **authored + agent-reviewed 2026-08-25**; fix wave applied (satisfiedRequests handshake, lifecycle re-validation arm, stored-copy captures, operation_key bulk batching, forced-complete semantics); composition-clear **resolved 2026-08-26** (`system_signal` approval subject); mechanical-retry AC #40 reading **resolved 2026-08-26 — P-D-09 amended the FR and the AC to state the lane split** |
 | 07-reference-signal | **authored 2026-08-25**; fix wave applied 2026-08-26 (F1–F8, Blocking 3, review items 19/20/21); quorum sweep + P-D-16 applied 2026-08-26 (branch review) |
@@ -368,17 +407,17 @@ which the table does not support (CodeRabbit, 2026-08-26); per-slice review repo
 artifacts rather than repository content, so the table is the only in-repo record and the claim
 is narrowed to what it holds.
 
-**Human flags awaiting the owner: seven — P-D-14…P-D-20**, opened by the 2026-08-26 branch review. The six below were answered on 2026-08-26 and stay answered; what the review found is a different class, and the distinction cost this branch a wave: **"no open questions" is not "correct"**. Six of the seven are decisions the design had already *made* and never registered — an undeclared decision is invisible to a flag count precisely because nobody asked anything. The six answered flags, in a single
+**Human flags awaiting the owner: seven — P-D-14…P-D-20**, opened by the 2026-08-26 branch review. The six below were answered on 2026-08-26 and stay answered; what the review found is a different class, and the distinction cost this branch a wave: **"no open questions" is not "correct"**. Five of the seven are decisions the design had already *made* and never registered — an undeclared decision is invisible to a flag count precisely because nobody asked anything. The six answered flags, in a single
 session with the product owner, one decision at a time:
 
 | # | Question | Outcome |
 |---|----------|---------|
 | 1 | Metadata-map placement | **P-D-06 confirmed** as designed — the map lives beside the entity; the accepted cost (no history between snapshots, structural: `products_metadata`'s key has no version dimension) is recorded with it |
-| 2 | Staleness-stamp semantics | **P-D-07 confirmed, conditionally** — the floor is a property of a lagging projection, so PRD §15 now carries the prior question of whether browse needs a separate serving store at all, and `fr-cache-first-browse`'s rationale was re-derived off its uncalibrated read-NFR numbers onto the availability split and structural stale-but-safe |
-| 3 | AC #40's "rejected" with no operator | **P-D-09 amended** `fr-catalog-publish-concurrency` **and** AC #40 to state the stage-vs-commit lane split, rather than leave the design reading standing against normative text that said the opposite in two places |
+| 2 | Staleness-stamp semantics | **P-D-07 confirmed, conditionally** — the floor is a property of a lagging projection, so PRD §15 now carries the prior question of whether browse needs a separate serving store at all, and `cpt-cf-bss-products-fr-cache-first-browse`'s rationale was re-derived off its uncalibrated read-NFR numbers onto the availability split and structural stale-but-safe |
+| 3 | AC #40's "rejected" with no operator | **P-D-09 amended** `cpt-cf-bss-products-fr-catalog-publish-concurrency` **and** AC #40 to state the stage-vs-commit lane split, rather than leave the design reading standing against normative text that said the opposite in two places |
 | 4 | Who approves a Legal-owned change | **P-D-10: no gear-side Legal role** — the allow-list runs the base quorum and records an external Legal sign-off reference, which is what AC #35 specified all along; role predicates narrow within the base set and never replace it (05 C8), retiring the grant in `inst-mt-inputs` (d). No PRD edit owed |
 | 5 | Quorum vs a two-person company | **P-D-11**: the approver count is a typed-policy value, **default 2, floor 0** — a one-person tenant could previously publish nothing at all, while the plan-price sibling ships `submitter + 1` in its schema and an approver-less path. Fixed and not configurable: the FinanceReviewer predicate, the self-approval refusal at `N ≥ 1`, explicit configuration only, provisioning-time initial value |
-| 6 | `SchemaPin` widening | **P-D-12**: membership became the rule "the operands the §2.2 `ObligationRegister` guards read", after measuring **four** such operands outside the FR's five-item list — of which only three were comparable fields at all. `fr-plan-price-seam` amended; `inst-cc-pin` lints the coupling both ways |
+| 6 | `SchemaPin` widening | **P-D-12**: membership became the rule "the operands the §2.2 `ObligationRegister` guards read", after measuring **four** such operands outside the FR's five-item list — of which only three were comparable fields at all. `cpt-cf-bss-products-fr-plan-price-seam` amended; `inst-cc-pin` lints the coupling both ways |
 
 Two further decisions landed in the same session without having been flagged: **P-D-08** defers
 audit sealing to a platform capability (below), and the transport wave named the two inbound
