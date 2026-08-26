@@ -102,7 +102,7 @@ ceremony; erasure of approver identities (10).
 | Name | Meaning |
 |------|---------|
 | `MaterialityEvaluator` | Decides material / non-material for a change set: bucket-iii field touches (registered by owning slices), the PRD-enumerated ops, or affected-entity count ≥ the configured trigger |
-| `ApprovalRecord` | The stored unit: subject ref + pinned revision + **stored content snapshot** + rendered diff basis + quorum descriptor + state. The descriptor carries `required = N` and, when a mandatory predicate cannot be carried at that `N` (finance-material at `N = 0`), an explicit **`predicateUnsatisfiable`** marker — the control's absence is a stored fact, not something a later reader infers from a config value (the P-D-08 `seal_state` instinct, same reason) |
+| `ApprovalRecord` | The stored unit: subject ref + pinned revision + **stored content snapshot** + rendered diff basis + quorum descriptor + state. The descriptor carries `required` = the **effective** count — `N` for a material change, `min(N, 1)` for a non-material one (`inst-gv-materiality`), which is also what `inst-gv-queue` exposes — and, when a mandatory predicate cannot be carried at that count (finance-material at `N = 0`), an explicit **`predicateUnsatisfiable`** marker — the control's absence is a stored fact, not something a later reader infers from a config value (the P-D-08 `seal_state` instinct, same reason) |
 | `QuorumEvaluator` | Counts distinct approving principals against the descriptor (role predicates included) |
 | `OverrideCeremony` | The P-D-02 variant: approvers explicitly acknowledge named lint findings; the acknowledgment is part of the record |
 | `BreakGlassSession` | The time-boxed elevation record every elevated read hangs off |

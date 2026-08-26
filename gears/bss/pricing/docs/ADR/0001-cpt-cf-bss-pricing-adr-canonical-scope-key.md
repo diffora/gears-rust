@@ -27,8 +27,16 @@ decision-makers: "BSS Product Catalog team"
 
 > **Amended by ADR-0002 (2026-07-10)**: the key gains an eighth additive axis — `cohort`, the
 > grandfathering generation discriminator (`cpt-cf-bss-pricing-adr-grandfathering-cohort-axis`).
-> The additive-extension decision below is unchanged; seven-column statements read as
-> eight-column after the amendment.
+>
+> **Amended again by D-196 (2026-08-06; header added 2026-08-26)**: the key gains the **conditional**
+> usage pair `(meter, dimensionKey)` — present on `chargeKind = usage`, the `''` sentinel otherwise,
+> both unique indexes keying over the pair. Every usage line of one plan in one
+> `(currency, region, phase, priceEligibility, cohort)` shares `chargeKind = 'usage'`, so under the
+> eight axes alone a plan's second meter was refused `DUPLICATE_SCOPE_KEY` at authoring.
+>
+> The additive-extension decision below is unchanged, and this header governs every count in it:
+> **seven-column statements read as ten-column** — eight after ADR-0002, ten after D-196. The
+> normative statement of the live key is `design/01-foundation.md` §4.4.
 
 ## Context and Problem Statement
 
@@ -97,7 +105,7 @@ meaning and the new axes carry safe defaults for plans that do not use them.
 
 ### Consequences
 
-* Row-uniqueness enforcement (a partial `UNIQUE` index over **current** rows — published and not superseded) is on the **seven-column** key (eight with `cohort`, ADR-0002), holding at most one current row per key; **temporal `PriceWindow` non-overlap and coverage are enforced by publish-time validation (Slice 7) + the effective-dating UC (the UC enforcement partner was later absorbed into Slice 7 by ADR-0003), not by the index** (a published predecessor and its scheduled successor legally coexist). The Foundation's `ScopeKey` component constructs and defaults the key centrally (Foundation §4.1).
+* Row-uniqueness enforcement (a partial `UNIQUE` index over **current** rows — published and not superseded) is on the **seven-column** key (eight with `cohort`, ADR-0002; **ten** with the conditional usage pair `(meter, dimensionKey)`, D-196), holding at most one current row per key; **temporal `PriceWindow` non-overlap and coverage are enforced by publish-time validation (Slice 7) + the effective-dating UC (the UC enforcement partner was later absorbed into Slice 7 by ADR-0003), not by the index** (a published predecessor and its scheduled successor legally coexist). The Foundation's `ScopeKey` component constructs and defaults the key centrally (Foundation §4.1).
 * Grandfathering reconciles with the frozen-snapshot doctrine: an `existing_grandfathered` row is a **distinct, immutable** key that Tariffs live-resolves; the cutover shortens the current `all_subscriptions` window and schedules the grandfathered copy + successor as one atomic unit, so no coverage gap opens (Foundation §4.3).
 * Supersession is explicitly **scoped to one canonical key** and operates within one `priceEligibility` class and one `chargeKind`; it opens/closes a `PriceWindow` rather than overlapping it.
 * Tariffs MUST adopt the identical key for its non-overlap check; divergence would re-introduce the collisions this decision removes. Cross-team alignment with Tariffs is required.
@@ -106,9 +114,9 @@ meaning and the new axes carry safe defaults for plans that do not use them.
 
 ### Confirmation
 
-* Design review: the Foundation `ScopeKey` component, the `pricing_price` partial `UNIQUE` index (current rows), and the Slice 7 window non-overlap/coverage validation all key off the same seven columns (eight with `cohort`, ADR-0002); no invariant keys off a narrower subset.
+* Design review: the Foundation `ScopeKey` component, the `pricing_price` partial `UNIQUE` index (current rows), and the Slice 7 window non-overlap/coverage validation all key off the same seven (**ten** today, D-196) columns (eight with `cohort`, ADR-0002); no invariant keys off a narrower subset.
 * Integration test: a hybrid plan (`recurring` + `usage` + `one_time_setup`) publishes without a duplicate-scope failure; a grandfathered row and its successor hold concurrent active windows without a non-overlap violation; a per-phase schedule publishes per phase.
-* Cross-team checkpoint: Tariffs confirms it evaluates the non-overlap check on the identical seven-column key (eight with `cohort`, ADR-0002).
+* Cross-team checkpoint: Tariffs confirms it evaluates the non-overlap check on the identical seven-column key (eight with `cohort`, ADR-0002; **ten** with the conditional usage pair `(meter, dimensionKey)`, D-196) — the *identity* is the obligation, and it holds at whatever the current width is.
 
 ## Pros and Cons of the Options
 
