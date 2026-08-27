@@ -211,10 +211,19 @@ slice is that suite's specification.
   its carve-out list at `CONTENT_PII_BLOCKED` **and `AUDIT_UNAVAILABLE`** — the latter raised by
   the audit-write path when a refusal's own row cannot commit, which is no pipeline phase and
   runs *after* a phase has already decided, so no phase can own it. This slice's lint asserts one
-  raising phase per code with no such carve-out, and is red by construction on it. The same row's
+  raising phase per code with no such carve-out, and is red by construction on it. **P-D-32**
+  confirms the row is owed **both** members, not one: it names no carve-out today. The same call
+  scopes the rule to codes raised *inside* the pipeline, so the pre-pipeline authorization gate's
+  codes — 05's owed denial code, `BREAKGLASS_WRITE_FORBIDDEN` — need no carve-out either. The same row's
   "the second 503 in the gear" is short by one: 03 declares `USAGE_TYPE_UNAVAILABLE` (503) as
   well. Owner: this slice with the error-contract owner. *(Raised by the slice-01 sixth-pass
   review, 2026-08-27.)*
+- **`inst-cc-ids`' continuation enumeration is stale.** The row pins "`inst-fd-idempotency`,
+  `inst-fd-create-txn`, `inst-fd-etag` and `inst-fd-publish-pin` on two rows each", but 01 carries
+  `inst-fd-idempotency` on six rows and continues a fifth id, `inst-fd-name-unique`. If the
+  enumeration is normative the lint fails on 01; if only the parenthesization is, the sentence is a
+  stale count. Which half the lint reads is this slice's call. *(Raised by the slice-01 sixth-pass
+  second lens wave, 2026-08-27.)*
 - **The suite's final owner/home is a §15 open** (proposed `api-contracts` CI) — the design is
   home-agnostic, but an unowned CI job is an unrun one; this is the set's last
   organizational dependency.

@@ -40,6 +40,7 @@ joint contracts, cited from here by their pricing numbers, never duplicated.
 - [P-D-29 — What a replay, an envelope and a digest actually carry](#p-d-29--what-a-replay-an-envelope-and-a-digest-actually-carry)
 - [P-D-30 — Where the gate hosts, where authorization sits, whose validator, and what the door can see](#p-d-30--where-the-gate-hosts-where-authorization-sits-whose-validator-and-what-the-door-can-see)
 - [P-D-31 — The four the slice had routed outward, decided here](#p-d-31--the-four-the-slice-had-routed-outward-decided-here)
+- [P-D-32 — Six calls closing the slice-01 second lens wave](#p-d-32--six-calls-closing-the-slice-01-second-lens-wave)
 
 <!-- /toc -->
 
@@ -1204,3 +1205,28 @@ instead.*
   proof.
 - **Propagated**: `design/01-foundation.md` (§2 doors, §3.1, §4.2). *(The S3 amendment and the
   two trimmed propagation fields are edits to this register itself, not propagation out of it.)*
+
+
+#### P-D-32 — Six calls closing the slice-01 second lens wave
+
+- **Date**: 2026-08-27 (owner call, on the second three-lens pass over `design/01-foundation.md`)
+- **Context**: the second pass raised twelve questions. Three merged into items the first pass had
+  already registered, one was closed by the same pass's fix to the audit-seal predicate, and two
+  are slice 12's. The six below were decidable from constraints already in the set, and are
+  recorded here rather than inline because four of them bind another document.
+
+  | Call | Propagation |
+  |---|---|
+  | **`composition_pending` is cleared by the publish door's own head-row UPDATE** — the one carrying `published_version += 1`. §4.2 admits the flag's change only in that statement, and `inst-fd-save-txn` never touches `published_version`, so a save cannot clear it. 06's "system save + re-publish" names the ceremony, not the writing statement | 01 §4.2; 06 `inst-cc-clear` |
+  | **The `BucketRegistry` is advisory for the physical layer.** A compile-time Rust map has no read path from a migration-time trigger, so §4.2's column classes stay static DDL; generating them from the registry would break C1's "guards defined once" and the schema-oracle goldens. A test asserts the two name the same columns in the same classes | 01 §1.7, §5 |
+  | **`→ published` in a validator's registration key names the target state, not the edge.** A re-publish takes no edge, so an edge-keyed reading runs no validator at all and empties the fail-closed re-run — while also pulling the `deprecated→published` two-person ceremony onto a content re-publish that changes no state | 01 §2 (`inst-fd-publish-revalidate`) |
+  | **`ILLEGAL_TRANSITION` and `ILLEGAL_FIELD_MUTATION` move 422 → 409.** All four codes the `state` phase raises are refusals by the row's **current state**, which is §3.3's own 409 rule; splitting them left one phase straddling two status classes. Wire-visible — a 422 reaches the wire as 400 — and taken while nothing is built | 01 §3.3; 07 (status repeat) |
+  | **`ENTITY_TERMINAL` covers any head write on a `retired`/`discarded` row** — save, publish or correction. The publish door's accepted set excludes a `retired` head and `ILLEGAL_TRANSITION` cannot cover it, a re-publish being no edge | 01 §3.3 |
+  | **The "exactly one raising phase" rule ranges over codes raised *inside* the pipeline.** Authorization is a pre-pipeline gate (P-D-30), so 05's owed denial code and `BREAKGLASS_WRITE_FORBIDDEN` sit outside the rule instead of forcing a third carve-out; the carve-out list stays closed at two | 01 §3.3; 12 `inst-cc-errors` |
+
+- **Left open, registered with their owners**: 12 `inst-cc-errors` is owed **both** carve-out
+  members, not one — it names none today — and `inst-cc-ids`' enumeration of continued ids is a
+  stale count against 01. Both are slice 12's.
+- **Propagated**: `design/01-foundation.md` (§1.7, §2, §3.3, §4.2, §5, §6),
+  `design/06-catalog-version.md` (`inst-cc-clear`), `design/07-reference-signal.md` (the
+  `ILLEGAL_FIELD_MUTATION` status repeat), `design/12-consumer-contracts.md` (open items).
