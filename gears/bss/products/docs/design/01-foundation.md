@@ -393,7 +393,9 @@ Unicode NFKC → full casefold → trim + collapse internal whitespace to single
 `sku_id` (PK, uuid) · `tenant_id` · `product_id` (FK) · `sku_code` · `type`
 (`product|service|bundle`) · `lifecycle_state` · `deprecation_provenance`
 (nullable `direct|cascaded`, slice 04) · `sellable` (default `true`, pricing D-46) · `plan_tier` ·
-`tax_category_ref` · `gl_code_ref` · `metering_unit` · `usage_type_ref` ·
+`tax_category_ref` · `gl_code_ref` (**both columns are contingent** — PRD §15 carries the
+open question of whether this registry owns them at all, §2.1 saying they are owned elsewhere
+while `fr-accounting-codes` requires the registry to persist and validate them) · `metering_unit` · `usage_type_ref` ·
 `composition_pending` (bool, slice 06 semantics) · `replaced_by_sku_id` (slice 04) ·
 `internal_revision` · `published_version` · `region_scope`/`brand_scope` (⊆ parent, §2 flow) ·
 `created_by` · `cloned_from` (nullable; written only in the creating statement and immutable from then on —
@@ -508,8 +510,8 @@ read.
   facility supplies the pipeline — `enqueue` → `sequencer` (per-partition sequence numbers) →
   `processor` (this gear's publish handler) → `vacuum` — in **`leased` (at-least-once) mode** (owner's call, 2026-08-27: a broker publish is a network
   side effect and cannot honestly join a database transaction, so `transactional` would show a
-  guarantee that does not exist; the PRD already accommodates the consequence — "out-of-order/
-  duplicate delivery beyond the idempotency window" — and the envelope's idempotency key is what
+  guarantee that does not exist; the PRD already accommodates the consequence —
+  "out-of-order/duplicate delivery beyond the idempotency window" — and the envelope's idempotency key is what
   a consumer dedupes on) — plus dead letters and its own multi-backend
   migrations, so C1's "one migration per table" does not reach these tables and the schema oracle
   goldens them as imported. **Per-aggregate ordering is obtained by routing, not by a column**:
@@ -555,7 +557,9 @@ and the ordering key.
 
 ## 6. Traces to / Risks & Open items
 
-**Traces to**: `cpt-cf-bss-products-usecase-product-sku-editor` (§10 use case, claimed by id here 2026-08-26 — all seven were in lint 1's universe and none was claimed); **NFRs by id** — #3 `cpt-cf-bss-products-nfr-publication-propagation` (the outbox half of the < 3 s event-availability budget: `DESIGN.md` §1.2's NFR Allocation pairs two budgets with two mechanisms — "the < 3 s propagation and < 5 s posting-safe budgets on the slice-01 outbox + slice-06 freeze machine" — and the PRD calls this one "a component **preceding** freeze acks", so it is the outbox, the freeze machine's budget being `nfr-posting-safe-budget`. **The probe is owed**: no slice §5 measures it. **And the split is unsettled** — slice 06 claims a freeze-machine half of this same budget, `DESIGN.md` §1.2's coverage table assigns the id to **both** slices, and `PRD` calls the < 3 s budget "a component **preceding** freeze acks", which reads against a freeze-machine share. Registered in slice 06's open items; the owed probe is what would settle it), #6 `cpt-cf-bss-products-nfr-scale-extensibility` (the entity-count half: the head/version split and the index shape; `CatalogVersion` growth is slice 06's), #8
+**Traces to**: `cpt-cf-bss-products-usecase-product-sku-editor` (§10 use case, claimed by id here 2026-08-26 — all seven were in lint 1's universe and none was claimed); **NFRs by id** — #3 `cpt-cf-bss-products-nfr-publication-propagation` (the outbox half of the < 3 s event-availability budget: `DESIGN.md` §1.2's NFR Allocation pairs two budgets with two mechanisms — "the < 3 s propagation and < 5 s posting-safe budgets on the slice-01 outbox + slice-06 freeze machine" — and the PRD calls this one "a component **preceding** freeze acks", so it is the outbox, the freeze machine's budget being `nfr-posting-safe-budget`. **The probe is owed**: no slice §5 measures it. **And the split is unsettled** — slice 06 claims a freeze-machine half of this same budget, `DESIGN.md` §1.2's coverage table assigns the id to **both** slices, and `PRD` calls the < 3 s budget "a component **preceding** freeze acks", which reads against a freeze-machine share. Registered as an open question in `PRD` §15 with an owner named, 2026-08-27 — slice 06's item
+records the same split; the owed probe is what would settle it, and 08's convergence probe already
+instruments one of the two segments), #6 `cpt-cf-bss-products-nfr-scale-extensibility` (the entity-count half: the head/version split and the index shape; `CatalogVersion` growth is slice 06's), #8
 `cpt-cf-bss-products-nfr-determinism-integrity` (version immutability, taxonomy acyclicity, identity uniqueness and
 metering-unit validity enforced fail-closed: this slice's pipeline, edge list and trigger
 whitelist are the frame its registered validators run in — acyclicity is slice 02's rule set,
@@ -573,22 +577,10 @@ half), `cpt-cf-bss-products-fr-event-delivery-resilience` (registry-side half: d
 (frame), #42.
 
 **Risks & open items**:
-- **Broker schema-version pinning**: the versioned-schema-ref mechanics on the broker side need
-  one worked example with Common Core before slice 12 freezes the replay contract.
-- **`sellable` member missing in pricing's `CatalogSku`** — pricing-side gap (2026-08-25
-  review); the SDK read shape here must expose it so the fix is a consumer-side addition.
 - Interim containment check (flat subset) must be re-validated against slice 04's final rule —
   the two must not silently diverge.
   *(Its sibling `deprecation_provenance` was the mirror case and is settled: 04 writes provenance
   `direct` on the retiring parent Product, so §4.1 now carries that column.)*
-- **Is slice 08's convergence probe the owed NFR #3 probe?** This slice says "**The probe is
-  owed**: no slice §5 measures it", while 08 C5 already decomposes the budget into
-  "commit→durable-acceptance (01's outbox meter) + acceptance→projected (this slice's meter)" and
-  its convergence
-  probe measures from write commit — but asserts against 08's own budget and expressly refuses to
-  collapse the two, "the re-basing C5's M1 fix struck for collapsing budgets NFR #3 keeps
-  distinct". Whether one meter may be asserted against two thresholds, or a second probe is owed,
-  is settled nowhere; slice 06's open item records the split rather than deciding it.
 - **Which bucket is a SKU's parent link (`product_id`)?** The 2026-08-27 owner call placed `name`,
   the scope columns, `product_code` and `cloned_from`, and left this one: re-parenting a published
   SKU is either structural (bucket-i, so a mis-parented SKU is fixed only by retire-and-clone) or
@@ -599,9 +591,3 @@ half), `cpt-cf-bss-products-fr-event-delivery-resilience` (registry-side half: d
   The 2026-08-27 owner call adopted the donor's claimed/answered store whole and left this open;
   the donor treats it as a wire-visible difference (its D-174), because two byte-different requests
   that parse identically are the same act to a caller and different acts to a byte hash.
-- **Does the registry own `taxCategory`/`glCode` at all?** C3 cites PRD §2.1, and §2.1 puts "billing
-  descriptors (invoice line template / tax category / GL code)" among the things "owned elsewhere
-  and MUST NOT be re-specified here" — while `fr-accounting-codes` requires the registry to persist
-  and validate them and §4.2 carries `tax_category_ref` and `gl_code_ref`. The PRD contradicts
-  itself; only its owner can say which sentence governs, and if §2.1 wins this slice loses two
-  columns.
