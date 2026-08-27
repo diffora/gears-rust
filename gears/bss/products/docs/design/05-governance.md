@@ -276,6 +276,15 @@ row and open to correction; the requirement is that every code carries one.
 finance fields), 04 (un-deprecation, retirement confirmation, scheduled-approval pinning).
 
 **Risks & open items**:
+- **Does the discard door get its own grant, or inherit `product|sku × write`?** 01 §2 declares
+  `POST /bss-products/v1/{products|skus}/{id}/discard` under **`… × discard`**, and this slice's
+  RBAC catalog carries only `product × read|write|publish` and `sku × read|write|publish` — so
+  12 `inst-cc-rbac` ("every REST/S2S door named in any slice appears in 05's RBAC catalog") has
+  no pair to match on the very door P-D-31 added to make that lint green. `inst-gv-materiality`
+  already settles that `draft→discarded` is ungated beyond authz, so this is the grant model
+  only: minting `discard` lets a tenant withhold it, folding it into `write` does not. Owner:
+  this slice (`cpt-cf-bss-products-contract-rbac`). *(Raised by the slice-01 sixth-pass review,
+  2026-08-27.)*
 - **What code does an authorization denial carry, and what status?** Every door in 01 §2 opens by
   authorizing deny-by-default, 01 §1.5 puts RBAC grants in this slice, and no slice declares a
   denial code — while 01 §3.3 requires every code to carry a status and 01 §4.4 requires every
