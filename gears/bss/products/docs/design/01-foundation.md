@@ -60,8 +60,7 @@ field sets, contribute read-model fields, and call the Foundation publish API. G
 Give the eleven capability slices one set of doors with the invariants already paid for:
 identity that cannot be reissued, versions that cannot be rewritten, transitions that cannot be
 invented, retries that cannot duplicate, events that cannot be lost before they are
-acknowledged, and rejections that always carry an audited reason. Per P-D-02, everything
-mechanical lives here; every human gate attaches to the entity-publish act.
+acknowledged, and rejections that always carry an audited reason. Per P-D-02, every human gate attaches to the entity-publish act.
 
 ### 1.3 Actors
 
@@ -184,9 +183,9 @@ same transaction. Saves **never** touch `published_version` - `inst-fd-save-txn`
 
 1. [ ] - `p1` - `PublishDoor` accepts `(entity, expected internal revision)` — a `draft` for its first publish, or a `published`/`deprecated` **head** for version N+1 (a re-publish changes the version, never the state); stale revision fails `STALE_REVISION` — an approval is only usable against the exact revision it pinned (slice 05 stores the snapshot; the Foundation enforces the match) - `inst-fd-publish-pin`
 2. [ ] - `p1` - Re-run the **full** pipeline at publish (shape, identity, every registered validator for the `→ published` transition): an entity that stopped being publishable since approval fails closed `INCOMPLETE_ENTITY`/rule-named code, never publishes stale - `inst-fd-publish-revalidate`
-3. [ ] - `p1` - The governance gate (slice 05) runs **inside** the door, and the door therefore carries an explicit **authorization mode** (Blocking 9 fix, 2026-08-26 review): `Gate` — the ordinary interactive publish, which needs a `satisfied` record — or **`PreAuthorized(approvalId)`**, the mechanical stage of a composite act (05 `inst-gv-one-shot`: scheduled activation, a cascade leg, a bulk row, the composition clear). Under `PreAuthorized` the gate does not look for a `satisfied` record and does not consume one; it **verifies** that the named record authorized *this* subject and that its pinned revision still matches, raising `APPROVAL_REQUIRED` only when it did not. Without the mode the two readings collide and every scheduled publish fails terminally: the runner drives "the ordinary Foundation publish door" (04 `inst-sp-activate`), the gate inside it would see a `consumed` record, and 04 `inst-ar-failure` wraps that into a terminal `SCHEDULE_STALE_APPROVAL`. Re-validation stays fail-closed in both modes — the mode governs *who approved*, never *whether the entity is still publishable*. A material change without satisfied approvals fails `APPROVAL_REQUIRED`; the Foundation knows only "the gate answered yes/no + reason". An approval rejection "returns the entity to draft" (AC #26) reads: a first-publish entity stays `draft`; a published head keeps its pending edits unpublished — no state flip either way (design reading under the head-row model, **flagged**: the literal reading would need a `published→draft` edge the PRD's own forward-only rule forbids — slice-05 review L-6) - `inst-fd-governance-gate`
-4. [ ] - `p1` - On yes: `published_version += 1` (the door is this column's **only** writer); freeze the full entity content into `products_entity_version`; first publish makes `skuCode` reservation permanent (immutability enforced by the trigger whitelist from this row-state on); emit `ProductPublished`/`SkuPublished`; audit — one transaction - `inst-fd-publish-txn`
-5. [ ] - `p1` - Post-commit, slice 06 consumes the publish event **as content only** (what became publishable); an entity publish **never enqueues a CatalogVersion increment** — addressability comes from downstream requests or an operator catalog-publish act (06 `inst-cv-request`; M1 fix of the 06 review), and the Foundation itself requests nothing (P-D-02) - `inst-fd-publish-fanout`
+3. [ ] - `p1` - The governance gate (slice 05) runs **inside** the door, and the door therefore carries an explicit **authorization mode** (Blocking 9 fix, 2026-08-26 review): `Gate` — the ordinary interactive publish, which needs a `satisfied` record — or **`PreAuthorized(approvalId)`**, the mechanical stage of a composite act (05 `inst-gv-one-shot`: scheduled activation, a cascade leg, a bulk row). Under `PreAuthorized` the gate does not look for a `satisfied` record and does not consume one; it **verifies** that the named record authorized *this* subject and that its pinned revision still matches, raising `APPROVAL_REQUIRED` only when it did not. Without the mode the two readings collide and every scheduled publish fails terminally: the runner drives "the ordinary Foundation publish door" (04 `inst-sp-activate`), the gate inside it would see a `consumed` record, and 04 `inst-ar-failure` wraps that into a terminal `SCHEDULE_STALE_APPROVAL`. Re-validation stays fail-closed in both modes — the mode governs *who approved*, never *whether the entity is still publishable*. A material change without satisfied approvals fails `APPROVAL_REQUIRED`; the Foundation knows only "the gate answered yes/no + reason". An approval rejection "returns the entity to draft" (AC #26) reads: a first-publish entity stays `draft`; a published head keeps its pending edits unpublished — no state flip either way (design reading under the head-row model, **flagged**: the literal reading would need a `published→draft` edge the PRD's own forward-only rule forbids — slice-05 review L-6) - `inst-fd-governance-gate`
+4. [ ] - `p1` - On yes: `published_version += 1` (the door is this column's **only** writer); freeze the full entity content (excluding the metadata map, §4.3) into `products_entity_version`; first publish makes `skuCode` reservation permanent (immutability enforced by the trigger whitelist from this row-state on); emit `ProductPublished`/`SkuPublished`; audit — one transaction - `inst-fd-publish-txn`
+5. [ ] - `p1` - Post-commit, slice 06 consumes the publish event **as content only** (what became publishable); an entity publish **never enqueues a CatalogVersion increment** — addressability comes from downstream requests or an operator catalog-publish act (06 `inst-cv-request`; M1 fix of the 06 review), and the Foundation itself requests nothing (06 `inst-cv-request`'s trigger set names pricing, this gear's slice-09 bulk commits and the operator act — not this slice) - `inst-fd-publish-fanout`
 
 ### Transition an entity (state-machine floor)
 
@@ -249,7 +248,7 @@ one config route) and where an earlier pass here wrongly wrote
 all, **404** only where a path segment names a resource this tenant has none of. **503** where retry
 is the remedy is this gear's own addition — pricing's set carries no 503 at all, so that one
 class is not "checked against it". **The 422s here are architectural, not wire** — see the rendering note below, which quotes
-the platform rule: no `CanonicalError` category renders 422, so each reaches the wire as a 400
+the sibling plan-price gear's rule: no `CanonicalError` category renders 422, so each reaches the wire as a 400
 carrying its code, and no endpoint may declare a 422 for a **canonical** error in `OpenAPI` (the framework layer is the exception — a `Json<T>` schema violation, which carries no registry code). Proposed per
 row and open to correction; the requirement is that every code carries one.
   Codes listed here for the response map but **declared elsewhere**: `CONTENT_PII_BLOCKED`
@@ -261,14 +260,20 @@ row and open to correction; the requirement is that every code carries one.
 The `422` annotations in every slice's problem-response block say *unprocessable content*: the
 request was understood and the registry refuses it. They are **not** a wire status. The platform's
 `CanonicalError` model has no 422 category — `libs/toolkit-canonical-errors/src/problem.rs` carries
-no 422 arm — so every architectural 422 in this design set reaches the wire as a **400 carrying its
-wire code**, and **the code string is the discriminator a consumer matches on, not the status**.
-An endpoint **MUST NOT** declare a 422 response for a **canonical** (domain) error in its `OpenAPI` registration, because no path can
-produce one. **The framework layer is the exception and is not covered by it**: a handler taking
+no 422 arm — so, absent a transport override (which neither this design set nor pricing's
+declares anywhere), every architectural 422 in this design set reaches the wire as a **400
+carrying its wire code**, and **the code string is the discriminator a consumer matches on, not the status**.
+An endpoint **MUST NOT** declare a 422 response for a **canonical** (domain) error in its
+`OpenAPI` registration — **the rule stands; its grounds are flagged in §6** (2026-08-27). It read
+"because no path can produce one" until this pass, and that is false: 400 is the *default* for
+`InvalidArgument`/`FailedPrecondition`/`OutOfRange`, and `docs/arch/errors/DESIGN.md` §2.2 lets a
+single occurrence override the wire status so long as it stays in the same class — 422 is in that
+class, and the toolkit's own `extract::Json` path takes it. **The framework layer is the exception and is not covered by it**: a handler taking
 `toolkit::api::rest::extract::Json<T>` can still answer 422 on a schema violation, which is why the
 toolkit ships `OperationBuilder::error_422` and tells an operation to register it individually
-(`libs/toolkit/src/api/operation_builder.rs`). A schema violation is not a canonical error and
-carries no registry code. The **quotation below** is the sibling plan-price gear's rule verbatim; the canonical scoping and the framework exception above are this gear's own, added 2026-08-27 because pricing states the rule unscoped and the toolkit contradicts the unscoped form, and it is quoted rather than
+(`libs/toolkit/src/api/operation_builder.rs`). A schema violation carries no registry code — though it **is** a canonical error: the toolkit
+builds one (`json_rejection_to_canonical`, `libs/toolkit/src/api/rest/extract/error.rs`) and
+renders it 422 under `INVALID_ARGUMENT_TYPE`. The **quotation below** is the sibling plan-price gear's rule verbatim; the canonical scoping and the framework exception above are this gear's own, added 2026-08-27 because pricing states the rule unscoped and the toolkit contradicts the unscoped form, and it is quoted rather than
 paraphrased: `gears/bss/pricing/docs/design/01-foundation.md` §3.3 — *"The platform's
 `CanonicalError` model has **no 422 category** at all (`InvalidArgument`, `FailedPrecondition` and
 `OutOfRange` all render **400**), so every architectural 422 in this design set — here and in every
@@ -293,7 +298,8 @@ is mapped to 400. Stated here once, in the Foundation, rather than per occurrenc
 
 `product_id` (PK, uuid) · `tenant_id` · `brand_id` · `name` · `name_normalized` ·
 `product_code` (nullable) · `lifecycle_state` (`draft|published|deprecated|retired|discarded`) ·
-`internal_revision` · `published_version` · **category assignments live ONLY in slice 02's `products_product_category`** (the assignment
+`internal_revision` · `published_version` · `deprecation_provenance` (nullable
+`direct|cascaded`, slice 04) · **category assignments live ONLY in slice 02's `products_product_category`** (the assignment
 table with the exactly-one-primary partial index — a second inline representation here would
 be a divergence channel with no authority rule; the frozen version content carries the
 assignment set as a copy at publish, like every other content class) · `region_scope` /
@@ -369,7 +375,8 @@ These rows are the **only consumer-read surface** for entity content: read model
   INSERT** by this gear — always, in v1 and after activation alike — which makes the unproven
   era queryable instead of inferred from a deployment date; **the trigger whitelist admits
   exactly one UPDATE on this column group: a one-way `unsealed → sealed` transition supplying
-  `chain_id`/`seq`/`row_hash` in the same statement, under the platform sealer's own identity,
+  `chain_id`/`seq`/`prev_hash`/`row_hash` in the same statement, under the platform sealer's own
+  identity,
   never on a row already `sealed`** — without which the seam is not activatable at all, since
   P-D-08's S3 computes the seal asynchronously **over rows already immutable**, so `row_hash`
   does not exist at INSERT and the CHECK refuses an INSERT as `sealed` while an
@@ -413,7 +420,8 @@ metering-unit validity enforced fail-closed: this slice's pipeline, edge list an
 whitelist are the frame its registered validators run in — acyclicity is slice 02's rule set,
 metering-unit validity slice 03's, the posted-period snapshot clause slice 06's — and the id was
 referenced nowhere in the set until item 30 of the 2026-08-26 review); **§9 by id** — `cpt-cf-bss-products-interface-authoring-publish` (§9.1: this slice owns the authoring and publish doors, idempotency keys and `If-Match`; the id's
-intent-declaration clause is slice 06's `inst-rv-intent` door, and slice 12 carries both into the SDK contract) and `cpt-cf-bss-products-contract-registry-events` (§9.2 outbound: the broker-native envelope + outbox fan-out are this slice's). *(§9 ids were claimed by no slice's Traces-to at all until the 2026-08-26 branch review — prose like "§9 (all seven id-bearing blocks)" is not the id lint 1 keys on, so it would have reported zero claims for the whole §9 surface on its first run. Exactly the item-30 defect, left standing for §9 by the wave that widened the lint to include it.)* `cpt-cf-bss-products-fr-identifier-contract`, `cpt-cf-bss-products-fr-create-product` (uniqueness carrier),
+intent-declaration clause is slice 06's `inst-rv-intent` door, and slice 12 carries the idempotency keys, `If-Match` and intent semantics into the SDK
+contract) and `cpt-cf-bss-products-contract-registry-events` (§9.2 outbound: the broker-native envelope + outbox fan-out are this slice's). *(§9 ids were claimed by no slice's Traces-to at all until the 2026-08-26 branch review — prose like "§9 (all **seven** id-bearing blocks across §9.1/§9.2 …)" is not the id lint 1 keys on, so it would have reported zero claims for the whole §9 surface on its first run. Exactly the item-30 defect, left standing for §9 by the wave that widened the lint to include it.)* `cpt-cf-bss-products-fr-identifier-contract`, `cpt-cf-bss-products-fr-create-product` (uniqueness carrier),
 `cpt-cf-bss-products-fr-define-sku` (identity carrier), `cpt-cf-bss-products-fr-revision-vs-version` (counters + history halves; the
 version-binding-at-freeze clause → slice 06), `cpt-cf-bss-products-fr-lifecycle-transitions`
 (machine core), `cpt-cf-bss-products-fr-idempotent-authoring`, `cpt-cf-bss-products-fr-registry-eventing-audit` (envelope + outbox
@@ -451,7 +459,7 @@ half), `cpt-cf-bss-products-fr-event-delivery-resilience` (registry-side half: d
   registered slice-04 validator on the create door or a Foundation read of 04's store is unstated,
   and the two differ in who owns the coupling.
 - **What column carries outbox delivery state, and is its UPDATE inside C5's guard?** §4.4 has the
-  dispatcher "mark delivered **only on durable broker acceptance**", but the `products_outbox`
+  dispatcher mark delivered **only on durable broker acceptance**, but the `products_outbox`
   roster defines no such column and C5 exempts only the slice-08 projections and the idempotency
   sweep. Slice 10's restore scope depends on the state ("outbox-delivered"). The pattern donor
   names no column either (pricing `design/01-foundation.md`'s `pricing_outbox` row), so naming one
@@ -459,3 +467,49 @@ half), `cpt-cf-bss-products-fr-event-delivery-resilience` (registry-side half: d
 - **Why is the field-mutability frame `p2`** when the physical guard enforcing its buckets is
   unconditional and its code `ILLEGAL_FIELD_MUTATION` ships in the p1 contract surface? Raising
   the frame or lowering the guard are both owner calls; no document states the priority.
+- **`STALE_REVISION` raises at two doors inside this slice** (second-pass review, 2026-08-27) —
+  the `If-Match` precondition on every mutating verb (`inst-fd-etag`) and the publish pin
+  (`inst-fd-publish-pin`) — so §3.3's closed list of two carve-outs is short again, and unlike
+  `SCOPE_NOT_CONTAINED` no cross-slice sequencing can retire either arm. Whether the `If-Match`
+  precondition counts as one door across all mutating verbs, whether the publish pin is a
+  separate door, and whether the rule is per code or per arm are all unstated. The same shape
+  reaches `ILLEGAL_FIELD_MUTATION`, which 07 raises on structural-identity attempts.
+- **Does a publish bump `internal_revision`?** `inst-fd-transition-guard` says **every**
+  transition bumps it and that a re-publish is **not** an edge; the publish transaction
+  (`inst-fd-publish-txn`) lists its writes without a bump; and the head-row whitelist admits the
+  column "via the save door **and from every transition and correction door**" without naming the
+  `PublishDoor`. Three readings follow, and the middle one has teeth: if a re-publish does not
+  bump, `published_version` moves while the ETag token does not, so a client's stale cached
+  representation still passes its own precondition. Nothing in the tree picks one.
+- **A bucket-ii write arriving at the save door: refused, or forwarded?** `inst-fd-mutability-frame`
+  says both in one row — the Foundation "routes bucket-ii to slice 07's correction door", and
+  bucket-ii writes are "admitted **only through slice 07's correction door**". If it is a refusal
+  it has no code: `ILLEGAL_FIELD_MUTATION` is scoped to a bucket-i write, and 07 covers structural
+  identity only. Naming a code or specifying route-and-continue is new normative content.
+- **A caller-supplied id: codeless 400 or `VALIDATION`?** `inst-fd-mint-id` calls a stray id in the
+  payload "a `400`" — the only rule-level HTTP status in the file — while §3.3 reserves the bare
+  400 for a malformed request and gives the shape phase its own `VALIDATION` envelope. A stray id
+  is a shape-phase finding under §3.1's order, which argues the other way. Unclassified anywhere.
+- **Does `products_product` carry `replaced_by_sku_id`?** 04 §4 lists it among "Columns on
+  `products_sku`/`products_product` (carried by 01)", and this slice's shared guard is declared
+  for both entity tables, but only §4.2 defines the column, on SKUs. A Product pointing at a
+  replacement *SKU* is either a naming error in 04 or a real Product-level column; 04's
+  retirement-initiation flow states no Product replacement, so adding it here would invent schema.
+  *(Its sibling `deprecation_provenance` was the mirror case and is settled: 04 writes provenance
+  `direct` on the retiring parent Product, so §4.1 now carries that column.)*
+- **On what grounds does the 422 `MUST NOT` stand?** (second-pass cross-document lens, 2026-08-27).
+  Its stated reason was false and is now struck: `docs/arch/errors/DESIGN.md` §2.2 permits a
+  per-occurrence `TransportOverride` within the same status class, 422 and 400 are both 4xx, and
+  the platform's own `extract::Json` renders an `InvalidArgument` at 422. So a canonical 422 *is*
+  producible. Neither this design set nor pricing's declares an override anywhere, which is what
+  makes the rule true in practice today — but "this gear declines to use overrides" is a decision
+  no document records, and pricing states the rule unscoped. No products decision (P-D-01…P-D-20)
+  or PRD requirement mentions wire status at all.
+- **Is slice 08's convergence probe the owed NFR #3 probe?** This slice says "**The probe is
+  owed**: no slice §5 measures it", while 08 C5 already decomposes the budget into
+  "commit→durable-acceptance (01's outbox meter) + acceptance→projected (this slice's meter)" and
+  its convergence
+  probe measures from write commit — but asserts against 08's own budget and expressly refuses to
+  collapse the two, "the re-basing C5's M1 fix struck for collapsing budgets NFR #3 keeps
+  distinct". Whether one meter may be asserted against two thresholds, or a second probe is owed,
+  is settled nowhere; slice 06's open item records the split rather than deciding it.
