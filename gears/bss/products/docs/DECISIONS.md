@@ -31,7 +31,7 @@ joint contracts, cited from here by their pricing numbers, never duplicated.
 - [P-D-20 — A publish during the retirement lead window re-announces `SkuRetired`; the door stays open](#p-d-20--a-publish-during-the-retirement-lead-window-re-announces-skuretired-the-door-stays-open)
 - [P-D-21 — The local audit table holds only what emits no event; the event stream is the success-path record](#p-d-21--the-local-audit-table-holds-only-what-emits-no-event-the-event-stream-is-the-success-path-record)
 - [P-D-22 — The registry uses the toolkit's transactional outbox, not a gear-local one](#p-d-22--the-registry-uses-the-toolkits-transactional-outbox-not-a-gear-local-one)
-- [P-D-23 — The 2026-08-27 slice-01 owner round: sixteen calls on standing open items](#p-d-23--the-2026-08-27-slice-01-owner-round-sixteen-calls-on-standing-open-items)
+- [P-D-23 — The 2026-08-27 slice-01 owner round: eighteen calls on standing open items](#p-d-23--the-2026-08-27-slice-01-owner-round-eighteen-calls-on-standing-open-items)
 
 <!-- /toc -->
 
@@ -946,7 +946,7 @@ instead.*
 - **Owed**: `design/10-retention-erasure.md` §3 (the "outbox-delivered" retention class),
   `gears/bss/pricing` (its own rewrite, separate task).
 
-#### P-D-23 — The 2026-08-27 slice-01 owner round: sixteen calls on standing open items
+#### P-D-23 — The 2026-08-27 slice-01 owner round: eighteen calls on standing open items
 
 - **Date**: 2026-08-27 (product call, worked through in one sitting during the slice-01 review)
 - **Decision**: the open items slice 01 had accumulated over three review passes were decided
@@ -972,13 +972,16 @@ instead.*
   | A **slice-04 validator** reads the retire intent at the create door | 04 |
   | The 422 `MUST NOT` stands as **this gear's choice**, not as an impossibility | 02–12 (the shared note) |
   | The outbox runs **`leased`** (at-least-once); the frame is **`p1`**; `revision` rides the **payload**; slice 03's resolved-binding snapshot is **frozen into the version** | 03, 12 |
+  | A SKU's parent link `product_id` is **bucket-i** | — |
+  | `payload_hash` is over a **canonical rendering of the parsed request**, not the received bytes | — |
 
 - **Why one entry rather than sixteen**: the register's unit is a decision another document must
   follow, and these are one owner's single pass over one slice's backlog. Splitting them would
   bury the two that actually restructure a contract (`PARENT_TERMINAL` and
   `IDEMPOTENCY_KEY_IN_FLIGHT` enter the SDK's error enum) among fourteen that only settle prose.
-- **What this round did *not* settle**, left open in slice 01 §6: the bucket of a SKU's parent
-  link, whether `payload_hash` covers received bytes or a canonical rendering, and the six items
-  whose owner is not this slice.
+- **What this round did *not* settle**: the six items whose owner is not this slice, now filed in
+  `PRD` §15 with owners named. *(The last two rows above were taken later the same day, after this
+  entry was first written; the entry said they were left open and was corrected 2026-08-28 when the
+  fourth review pass caught the register trailing the slice.)*
 - **Propagated**: `design/01-foundation.md` (§1.4 roster and every rule the calls change),
   `design/03-sku-classification.md` (`inst-cd-stamp`).
