@@ -218,6 +218,12 @@ slice is that suite's specification.
   "the second 503 in the gear" is short by one: 03 declares `USAGE_TYPE_UNAVAILABLE` (503) as
   well. Owner: this slice with the error-contract owner. *(Raised by the slice-01 sixth-pass
   review, 2026-08-27.)*
+- **Does the AC #38 map carry `ENTITY_TERMINAL`'s widened scope?** **P-D-32** widened it in 01
+  §3.3 from "a save on a `retired`/`discarded` head" to **any** head write on such a row — save,
+  publish or correction. This slice's map still carries the save-only gloss, and P-D-32's
+  propagation field names this slice only for its open items. Either the gloss is a propagation
+  obligation or it is deliberately narrower. Owner: this slice with the error-contract owner.
+  *(Raised by the slice-01 third lens wave, 2026-08-27.)*
 - **`inst-cc-ids`' continuation enumeration is stale.** The row pins "`inst-fd-idempotency`,
   `inst-fd-create-txn`, `inst-fd-etag` and `inst-fd-publish-pin` on two rows each", but 01 carries
   `inst-fd-idempotency` on six rows and continues a fifth id, `inst-fd-name-unique`. If the

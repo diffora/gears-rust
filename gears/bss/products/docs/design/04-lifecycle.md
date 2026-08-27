@@ -226,8 +226,11 @@ row and open to correction; the requirement is that every code carries one.
   2026-08-26 review: on the old `(tenant_id, product_id)` PK a cancelled cascade left an
   unresolved row forever and a second cascade on the same Product collided on the PK).
 - Columns on `products_sku` (carried by 01): `replaced_by_sku_id`. On **both** entity tables:
-  `deprecation_provenance`,
-  `replaced_by_sku_id`.
+  `deprecation_provenance`.
+  *(Corrected 2026-08-27: this list had `replaced_by_sku_id` in both places at once. It is
+  `products_sku` only — the column names a SKU, `inst-rt-initiate` requires `replacedBy` to name a
+  `published` SKU, and this slice's own §4.2 pointer says so. Raised by the slice-01 third lens
+  wave, where one lens proposed adding the column to 01 §4.1 on the strength of the wrong half.)*
 - **Events**: `SkuDeprecated`/`SkuUndeprecated`/`ProductDeprecated`/`ProductUndeprecated`,
   `SkuRetired`/`ProductRetired` (at initiation, with `effectiveAt`), plus the state flip at
   `effectiveAt` riding a `SkuRetirementEffective` (design-named; consumers that only care about

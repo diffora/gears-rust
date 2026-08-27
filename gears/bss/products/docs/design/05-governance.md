@@ -276,6 +276,14 @@ row and open to correction; the requirement is that every code carries one.
 finance fields), 04 (un-deprecation, retirement confirmation, scheduled-approval pinning).
 
 **Risks & open items**:
+- **Is `BREAKGLASS_WRITE_FORBIDDEN` raised at the pre-pipeline authorization gate or inside a
+  pipeline phase?** 01 §3.3 places it at the gate and rests on that placement: **P-D-32** scopes
+  the one-phase-per-code rule to codes raised *inside* the pipeline precisely so this code and the
+  denial code this slice still owes need no third carve-out. But `inst-bg-readonly` locates it on
+  "any write attempt" under elevation and says nothing about the gate, and this slice's own code
+  contract locates `APPROVER_ROLE_REQUIRED` and `APPROVAL_SUPERSEDED` while leaving this one
+  unplaced. If it is a phase refusal, 01's "the carve-out list closes at two" does not hold. Owner:
+  this slice with the error-contract owner. *(Raised by the slice-01 third lens wave, 2026-08-27.)*
 - **Does the discard door get its own grant, or inherit `product|sku × write`?** 01 §2 declares
   `POST /bss-products/v1/{products|skus}/{id}/discard` under **`… × discard`**, and this slice's
   RBAC catalog carries only `product × read|write|publish` and `sku × read|write|publish` — so
