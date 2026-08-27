@@ -466,71 +466,78 @@ read.
 - `products_idempotency`: `(tenant_id, endpoint, client_key)` PK · `state` (`claimed | answered`)
   · `payload_hash` · `outcome_ref` · `expires_at`, with one CHECK tying them: `claimed` ⇒
   `outcome_ref` NULL, `answered` ⇒ NOT NULL (§3.2).
-- `products_audit_log`: append-only apart from the one-way seal transition below; `actor_ref` (pseudonymous — the identity-reference map is
-  slice 10's), action, subject `(kind, id, revision)` — **`id` and `revision` absent on a refusal raised before
-  the mint, which then carries the attempted natural key (`name` or `sku_code`) instead** (owner's
-  call, 2026-08-27: an audit row must never name an id that identifies nothing) — reason,
-  correlation id, `written_at` (the
-  operand `RetentionClock`'s audit class reads — 10 §3), and a nullable break-glass
-  `session_id` (present on the elevation class only; 05 audits every elevated access with it). **Under P-D-21 this
-  table holds only the acts that emit no event**, three classes: every **refusal** with its reason
-  (the cases of `fr-expected-failure-behavior` a registry door can refuse — 12 `inst-cc-errors`
-  puts three of the fifteen outside that universe so the lint is buildable); every **read under elevation** with its
-  break-glass session id (05 — elevation in v1 is audit-export only, so nothing under it commits a
-  mutation and nothing under it produces an event); and every **committed act the design declares
-  emits no broker event** (04's `PublishScheduled`/`RetirementScheduled` — "audit-plane records,
-  explicit \"no broker event\" per 01 §4.5" in that slice's own words. Slice 10's erasure act is
-  **not** in this class: it is eventless only for events *carrying identity*, and its own
-  **Produced** set lists a minimal `ActorErased(actor_ref)`). A committed mutation that *does* emit writes
-  **no** row here; its outbox event is the record. **A refusal's row is written in its own transaction,
-  which commits independently of the refused mutation, and it is a precondition of answering the
-  caller** (owner's call, 2026-08-27): if the row cannot be written, the door answers **503** and
-  does **not** report the domain refusal, because reporting it would be the one thing
-  `nfr-availability-audit`'s "100% write-path audit" forbids — a refusal the caller learns about
-  and the registry does not. The wording this replaced had every door write its row "in its
-  transaction", which is precisely the transaction a refusal rolls back. **Owed**: the 503 needs a
-  code of its own, since §3.3 requires every code to carry a status and this gear maps 503 to
-  "retry is the remedy"; naming it is the taxonomy owner's, and it is the only piece of this
-  decision not settled.
-  **Reserved platform-sealing seam (P-D-08)** — present from the first migration, never sealed
-  by this gear: `seal_state` (NOT NULL, roster `unsealed | sealed`, written **`unsealed` at
-  INSERT** by this gear — always, in v1 and after activation alike — which makes the unproven
-  era queryable instead of inferred from a deployment date; **the trigger whitelist admits
-  exactly one UPDATE on this column group: a one-way `unsealed → sealed` transition supplying
-  `chain_id`/`seq`/`prev_hash`/`row_hash` in the same statement, under the platform sealer's own
-  identity,
-  never on a row already `sealed`** — without which the seam is not activatable at all, since
-  P-D-08's S3 computes the seal asynchronously **over rows already immutable**, so `row_hash`
-  does not exist at INSERT and the CHECK refuses an INSERT as `sealed` while an
-  outside-the-whitelist column refuses the async write too, leaving exactly the migration the
-  seam exists to avoid — item 7 of the 2026-08-26 review) plus `chain_id` · `seq` ·
-  `prev_hash` · `row_hash`, all nullable. One CHECK ties them so no half-populated row can
-  exist: `unsealed` ⇒ all four NULL; `sealed` ⇒ `chain_id`/`seq`/`row_hash` NOT NULL
-  (`prev_hash` NULL stays legitimate — it is the segment head). The gear computes no hash and
-  runs no verification job; what the platform capability must satisfy is P-D-08 S1–S9.
+- **`products_audit_log`** — `actor_ref` (pseudonymous; the identity-reference map is slice 10's) ·
+  action · subject `(kind, id, revision)` · reason · correlation id · `written_at` · nullable
+  `session_id`. Two notes on the roster: `id` and `revision` are **absent on a refusal raised
+  before the mint**, which carries the attempted natural key (`name` or `sku_code`) instead — an
+  audit row must never name an id that identifies nothing; and `written_at` is the operand
+  `RetentionClock`'s audit class reads (10 §3), while `session_id` is present on the elevation
+  class only (05 audits every elevated access with it).
+
+  **What the table holds** — under **P-D-21**, only acts that emit no event, in three classes.
+  A committed mutation that *does* emit writes no row here; its outbox event is the record.
+
+  - every **refusal** with its reason — the cases of `fr-expected-failure-behavior` a registry
+    door can refuse (12 `inst-cc-errors` puts three of the fifteen outside that universe so the
+    lint is buildable);
+  - every **read under elevation** with its break-glass session id — elevation in v1 is
+    audit-export only, so nothing under it commits a mutation and nothing under it emits;
+  - every **committed act the design declares emits no broker event** — 04's
+    `PublishScheduled`/`RetirementScheduled`, "audit-plane records, explicit \"no broker event\"
+    per 01 §4.5" in that slice's own words. Slice 10's erasure act is **not** in this class: it is
+    eventless only for events *carrying identity*, and its own **Produced** set lists a minimal
+    `ActorErased(actor_ref)`.
+
+  **How a refusal's row commits** (owner's call, 2026-08-27): in its own transaction, committing
+  independently of the refused mutation, and it is a **precondition of answering the caller** — if
+  the row cannot be written the door answers **503** and does not report the domain refusal, since
+  a refusal the caller learns about and the registry does not is the one thing
+  `nfr-availability-audit`'s "100% write-path audit" forbids. The wording this replaced had every
+  door write its row "in its transaction", which is precisely the transaction a refusal rolls back.
+  **Owed**: that 503 needs a code of its own — §3.3 requires every code to carry a status — and
+  naming it is the taxonomy owner's.
+
+  **Reserved platform-sealing seam (P-D-08)** — present from the first migration, never sealed by
+  this gear: `seal_state` (NOT NULL, roster `unsealed | sealed`) · `chain_id` · `seq` ·
+  `prev_hash` · `row_hash`, the last four nullable. `seal_state` is written **`unsealed` at
+  INSERT** by this gear, always, in v1 and after activation alike, which makes the unproven era
+  queryable instead of inferred from a deployment date. One CHECK ties the group so no
+  half-populated row exists: `unsealed` ⇒ all four NULL; `sealed` ⇒ `chain_id`/`seq`/`row_hash`
+  NOT NULL (a NULL `prev_hash` stays legitimate — it is the segment head). The gear computes no
+  hash and runs no verification job; what the platform capability must satisfy is P-D-08 S1–S9.
+
+  **The one UPDATE the whitelist admits** is what makes the seam activatable at all: a one-way
+  `unsealed → sealed` transition supplying `chain_id`/`seq`/`prev_hash`/`row_hash` in the same
+  statement, under the platform sealer's own identity, never on a row already `sealed`. Without
+  it, P-D-08's S3 computes the seal asynchronously **over rows already immutable**, so `row_hash`
+  does not exist at INSERT, the CHECK refuses an INSERT as `sealed`, and an outside-the-whitelist
+  column refuses the async write too — leaving exactly the migration the seam exists to avoid.
 - **The outbox is the toolkit's, not this gear's** (**P-D-22**): the registry enqueues through
-  `toolkit_db::outbox` inside the mutation's own transaction and owns no outbox table. The
-  facility supplies the pipeline — `enqueue` → `sequencer` (per-partition sequence numbers) →
-  `processor` (this gear's publish handler) → `vacuum` — in **`leased` (at-least-once) mode** (owner's call, 2026-08-27: a broker publish is a network
-  side effect and cannot honestly join a database transaction, so `transactional` would show a
-  guarantee that does not exist; the PRD already accommodates the consequence —
-  "out-of-order/duplicate delivery beyond the idempotency window" — and the envelope's idempotency key is what
-  a consumer dedupes on) — plus dead letters and its own multi-backend
-  migrations, so C1's "one migration per table" does not reach these tables and the schema oracle
-  goldens them as imported. **Per-aggregate ordering is obtained by routing, not by a column**:
-  `partition = hash(tenant_id, aggregate_id) mod N`, so every event of one aggregate shares a
-  partition and keeps its relative order, which is what the envelope's `(tenant, aggregate)`
-  ordering key promises (`fr-registry-eventing-audit`, AC #28). **Delivery is not a state on a
-  row** — the processor hands the message to the handler and the vacuum reclaims it; "emitted" is
-  still never reported before durable broker acceptance (PRD `fr-event-delivery-resilience`,
-  registry-side half), but that is the handler's contract rather than a column to mark. Payloads:
-  broker-native envelope (P-D-01) with versioned schema ref, correlation/causation, idempotency
-  key, `actor_ref`. **Each event's payload carries the subject's `internal_revision` at the act**
-  (owner's call, 2026-08-27): P-D-21 makes the event the audit record of a successful act, and the
-  audit tuple it replaced named the revision. It rides the **payload**, not the envelope — the
-  envelope is a platform-wide contract (P-D-01, ADR-0003) owned outside this gear, while the
-  payload schema is versioned per event and its own rule makes an added optional field a minor
-  bump rather than a break.
+  `toolkit_db::outbox` inside the mutation's own transaction and owns no outbox table.
+
+  - **The pipeline** is the facility's: `enqueue` → `sequencer` (per-partition sequence numbers)
+    → `processor` (this gear's publish handler) → `vacuum`, plus dead letters. It runs in
+    **`leased` (at-least-once)** mode — owner's call, 2026-08-27: a broker publish is a network
+    side effect and cannot honestly join a database transaction, so `transactional` would show a
+    guarantee that does not exist. The PRD already accommodates the consequence
+    ("out-of-order/duplicate delivery beyond the idempotency window"), and the envelope's
+    idempotency key is what a consumer dedupes on.
+  - **Per-aggregate ordering comes from routing, not from a column**:
+    `partition = hash(tenant_id, aggregate_id) mod N`, so every event of one aggregate shares a
+    partition and keeps its relative order — which is what the envelope's `(tenant, aggregate)`
+    ordering key promises (`fr-registry-eventing-audit`, AC #28).
+  - **Delivery is not a state on a row.** The processor hands the message to the handler and the
+    vacuum reclaims it. "Emitted" is still never reported before durable broker acceptance (PRD
+    `fr-event-delivery-resilience`, registry-side half), but that is the handler's contract rather
+    than a column to mark.
+  - **The facility brings its own multi-backend migrations**, so C1's "one migration per table"
+    does not reach these tables and the schema oracle goldens them as imported.
+  - **Payloads**: broker-native envelope (P-D-01) with versioned schema ref, correlation/causation,
+    idempotency key, `actor_ref`, and the subject's `internal_revision` at the act (owner's call,
+    2026-08-27) — P-D-21 makes the event the audit record of a successful act and the tuple it
+    replaced named the revision. It rides the **payload**, not the envelope: the envelope is a
+    platform-wide contract owned outside this gear, while the payload schema is versioned per
+    event and its own rule makes an added optional field a minor bump.
 
 ### 4.5 Foundation-owned events
 
