@@ -75,6 +75,7 @@ this slice is where "the seam suite will verify it" stops being future tense.
 - the counterparts' implementations (each obligation names its owing gear)
 - the broker's transport (Common Core)
 - the §15 opens this slice can only *assert once closed* (freeze acks, composition signal, watermark delivery).
+
 ### 1.6 Constraints & Assumptions
 
 | # | Constraint | Source |

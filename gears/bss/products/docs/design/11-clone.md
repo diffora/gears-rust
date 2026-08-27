@@ -64,6 +64,7 @@ copies, what resets, and what must be re-proven against today's vocabularies.
 - bulk cloning (09's import covers mass cases)
 - pricing/plan content (never copied — PRD)
 - approval (a clone lands as `draft`; its publish is the ordinary 05-gated act).
+
 ### 1.6 Constraints & Assumptions
 
 | # | Constraint | Source |

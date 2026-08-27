@@ -75,6 +75,7 @@ aggregated but honest (counts, per-type summary, sample, lint findings).
 - row-level validation rules (each slice's registered validators — bulk runs the same pipeline per row, never a parallel one)
 - the approval ceremony (05)
 - the CatalogVersion increment itself (06 — this slice only tags its requests with the `operation_key`).
+
 ### 1.6 Constraints & Assumptions
 
 | # | Constraint | Source |
@@ -168,8 +169,9 @@ which pricing maps to 409 rather than 412 (**D-141**, 2026-08-02, whose own deci
 a 2026-08-26 pass re-pointed it at D-186 and was wrong to, D-186 being a later amendment scoped to
 one config route) and where an earlier pass here wrongly wrote
 412 and called that pricing's convention — **403** where the caller may not perform the act at
-all, **404** only where a path segment names a resource this tenant has none of, **503** where retry
-is the remedy. **The 422s here are architectural, not wire** — see 01 §3.3, which quotes the
+all, **404** only where a path segment names a resource this tenant has none of. **503** where retry
+is the remedy is this gear's own addition — pricing's set carries no 503 at all, so that one
+class is not "checked against it". **The 422s here are architectural, not wire** — see 01 §3.3, which quotes the
 platform rule: no `CanonicalError` category renders 422, so each reaches the wire as a 400
 carrying its code, and no endpoint may declare a 422 for a **canonical** error in `OpenAPI` (the framework layer is the exception — a `Json<T>` schema violation, which carries no registry code). Proposed per
 row and open to correction; the requirement is that every code carries one.*
