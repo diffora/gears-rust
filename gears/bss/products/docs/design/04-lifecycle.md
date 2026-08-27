@@ -130,7 +130,7 @@ only projects it); the deprecation mark pricing consumes — through AC #82 when
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-flow-scheduled-publish`
 
 1. [ ] - `p1` - Scheduling pins the approval at scheduling time (the slice-05 approval snapshot rides the `ScheduledTransition`); the entity stays `draft` until activation - `inst-sp-pin`
-2. [ ] - `p1` - `ActivationRunner` at `publishAt` (UTC) drives the ordinary Foundation publish door **in `PreAuthorized(approvalId)` mode** (01 `inst-fd-publish-*`, the composite-act half of 05 `inst-gv-one-shot`) — full pipeline re-validation, pinned-revision check included, and the gate verifies the initiation's consumed record rather than demanding a second `satisfied` one — an entity edited after scheduling fails `SCHEDULE_STALE_APPROVAL` (the edit already invalidated the approval per 01 `inst-fd-approval-hook`) and the transition lands `failed` with an operator alert, never a partial publish - `inst-sp-activate`
+2. [ ] - `p1` - `ActivationRunner` at `publishAt` (UTC) drives the ordinary Foundation publish door **in `PreAuthorized(approvalId)` mode**, resolving 01's idempotency key as the reserved lane **`internal:scheduled-activation`** with the transition id as `client_key` (**P-D-26** — a caller with no wire surface writes a lane name rather than an endpoint, so two internal lanes cannot collide on one key) (01 `inst-fd-publish-*`, the composite-act half of 05 `inst-gv-one-shot`) — full pipeline re-validation, pinned-revision check included, and the gate verifies the initiation's consumed record rather than demanding a second `satisfied` one — an entity edited after scheduling fails `SCHEDULE_STALE_APPROVAL` (the edit already invalidated the approval per 01 `inst-fd-approval-hook`) and the transition lands `failed` with an operator alert, never a partial publish - `inst-sp-activate`
 3. [ ] - `p2` - Activation is idempotent (keyed by the transition id); a runner crash replays to the identical outcome - `inst-sp-idempotent`
 
 ### Retire a SKU (scheduled transition + joint contract)
@@ -176,17 +176,22 @@ only projects it); the deprecation mark pricing consumes — through AC #82 when
 
 `PARENT_NOT_PUBLISHED` (named in 01, registered here), `SCOPE_NOT_CONTAINED` (final semantics),
 `SCOPE_NARROWING_BLOCKED`, `RETIREMENT_LEAD_TIME`, `REPLACED_BY_NOT_PUBLISHED`,
-`SCHEDULE_STALE_APPROVAL` (raised by the `ActivationRunner` — its own door), `CASCADE_CONFIRMATION_REQUIRED`, `RETIREMENT_PENDING` (**this slice's arm is un-deprecation only** — P-D-20 struck it from the
-publish door; the code's other arm is slice 01's create-door parent guard `inst-fd-containment`,
-declared there — corrected 2026-08-26, "un-deprecation only" was false of the shipped design and
-would have mis-attributed the code in the SDK enum), `EOL_DISABLED`. AC #38 rows mapped:
+`SCHEDULE_STALE_APPROVAL` (raised by the `ActivationRunner` — its own door), `CASCADE_CONFIRMATION_REQUIRED`, `RETIREMENT_PENDING` (**both arms are this slice's validators** — P-D-30, 2026-08-27: the
+un-deprecation edge, and **this slice's validator registered on 01's create door**, whose operand
+is the live retire intent in `products_scheduled_transition`, a table this slice owns. P-D-20
+struck the code from the publish door. An earlier note read the create-door arm as slice 01's own
+guard, which would have put the Foundation's floor in the business of reading lifecycle policy
+against §1.1; both arms therefore sit in the **registered validators** phase and the code needs
+no carve-out. **Owed: the registering instruction row in this slice**), `EOL_DISABLED`. AC #38 rows mapped:
 "publishing a SKU under a non-published parent", "a SKU scope falling outside its parent",
 "an indeterminate parent-child region-containment", "EOL retirement without an acknowledged
 migration consumer (post-v1)".
 
-**Problem responses (RFC 9457):** `SCOPE_NARROWING_BLOCKED`, `SCHEDULE_STALE_APPROVAL`, `RETIREMENT_PENDING` (409); `CASCADE_CONFIRMATION_REQUIRED`, `EOL_DISABLED`, `PARENT_NOT_PUBLISHED`, `SCOPE_NOT_CONTAINED`, `RETIREMENT_LEAD_TIME`, `REPLACED_BY_NOT_PUBLISHED` (422).
+**Problem responses (RFC 9457):** `SCOPE_NARROWING_BLOCKED`, `SCHEDULE_STALE_APPROVAL`, `RETIREMENT_PENDING`, `PARENT_NOT_PUBLISHED` (409); `CASCADE_CONFIRMATION_REQUIRED`, `EOL_DISABLED`, `SCOPE_NOT_CONTAINED`, `RETIREMENT_LEAD_TIME`, `REPLACED_BY_NOT_PUBLISHED` (422).
 
-*Statuses added 2026-08-26, corrected the same day by the fix-wave review. The gear declared
+*`PARENT_NOT_PUBLISHED` moved 422 → 409 by **P-D-24** (2026-08-27): it is a refusal by the
+parent's current state, which is the class §3.3's discriminator assigns to 409 — the same reading
+that already put `PARENT_TERMINAL` there. Statuses added 2026-08-26, corrected the same day by the fix-wave review. The gear declared
 its codes with no HTTP status and no problem-response block in any slice, against
 `guidelines/DNA/README.md`'s RFC 9457 rule and `.cf-studio/config/rules/api-contracts.md`. The
 mapping follows pricing's, checked against it code by code: **422** for content the door cannot
@@ -263,5 +268,20 @@ pricing D-47 (joint contract), P-D-04 (containment residue).
 - **Cascade + scheduled child publishes**: a `pending` scheduled publish on a child of a
   retiring Product is superseded by the cascade (auto-discard or listed) — stated here, but the
   supersession ordering deserves a probe when built.
+- **Owed: the instruction row registering the create-door live-retire-intent validator.**
+  **P-D-30 settled whose it is — this slice's**, its operand being the live retire intent in
+  `products_scheduled_transition`, which this slice owns; the contrary note reading it as 01's own
+  guard is corrected in §3.2 above. No `inst-lc-*`/`inst-rt-*`/`inst-cp-*` row registers it yet,
+  and until one does nobody builds the guard — leaving item 36's hole open: a draft SKU created
+  under a Product with a live retire intent defers that retirement indefinitely. *(Raised by the
+  slice-01 fifth-pass review, 2026-08-27.)*
+- **What announces a Product's `deprecated→retired` flip?** 01 §4.5 asserts this slice announces
+  all three floor edges, naming `SkuRetirementEffective` on `deprecated→retired`. This slice gives
+  the parent Product its own retire `ScheduledTransition` on that edge (H2 fix) and emits
+  `ProductRetired` at *initiation*, but its Events list names no Product analogue for the flip
+  itself and records no explicit "no event" for it — which §4.5's own rule and slice 12's
+  completeness check both require. Naming one would invent normative content. Owner: the lifecycle
+  owner, with the events/audit consumer set. *(Raised by the slice-01 fifth-pass review,
+  2026-08-27.)*
 - EOL (post-v1) will need: the subscriptions-lifecycle AC by number, the consumer-ack contract,
   and `SkuEolSuspended` — the schema field is already vN-compatible.

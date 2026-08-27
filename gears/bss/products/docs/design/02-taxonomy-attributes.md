@@ -229,6 +229,12 @@ row and open to correction; the requirement is that every code carries one.*
   `UNIQUE (tenant_id, parent_id, name_normalized)`; FK children guard on delete. Deletion is
   physical **only** through `inst-tx-retire-guard` (retired + empty + unreferenced); everything
   else is state flips, audited.
+*Inside a frozen entity version, this slice's two row collections — the category-assignment set and
+the attribute-value set — are rendered as **JSON arrays sorted by the collection's own identifier**
+(the category id, the attribute id), each element by 01 §4.3's field rule (**P-D-29**). 01's rule
+orders fields, not rows; without this both engines could serialize one content in two orders and
+10's restore drill compares those digests byte-for-byte.*
+
 - **`products_product_category`** — the **single source of truth** for category assignments
   (01 §4.1 carries no inline category columns) — `(tenant_id, product_id, category_id, role)` with
   `role ∈ {primary, secondary}`; `UNIQUE (tenant_id, product_id, category_id)`; partial
@@ -261,7 +267,7 @@ industry-parity widening.
 `CategoryDeleted`, `CategoryDisplayUpdated`, `AttributeDefinitionUpdated`, `MetadataUpdated` — broker-native envelope,
 ordering key `(tenant, category tree)` for taxonomy (one aggregate: the tree, matching the
 single-writer discipline) and `(tenant, entity)` for metadata. Attribute-**value** writes emit
-no event of their own: they are entity content and ride `ProductDraftSaved`/`SkuDraftSaved`
+no event of their own: they are entity content and ride `ProductHeadSaved`/`SkuHeadSaved` (**P-D-27**: a save lands on the head in every non-terminal state, not only on a draft)
 (explicit "no event" record per 01 §4.5 rule).
 
 ## 5. Testing posture (slice-local)

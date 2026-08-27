@@ -32,6 +32,14 @@ joint contracts, cited from here by their pricing numbers, never duplicated.
 - [P-D-21 — The local audit table holds only what emits no event; the event stream is the success-path record](#p-d-21--the-local-audit-table-holds-only-what-emits-no-event-the-event-stream-is-the-success-path-record)
 - [P-D-22 — The registry uses the toolkit's transactional outbox, not a gear-local one](#p-d-22--the-registry-uses-the-toolkits-transactional-outbox-not-a-gear-local-one)
 - [P-D-23 — The 2026-08-27 slice-01 owner round: eighteen calls on standing open items](#p-d-23--the-2026-08-27-slice-01-owner-round-eighteen-calls-on-standing-open-items)
+- [P-D-24 — The 2026-08-27 fifth-pass round: four calls closing slice-01 open items](#p-d-24--the-2026-08-27-fifth-pass-round-four-calls-closing-slice-01-open-items)
+- [P-D-25 — The error contract completed: DUPLICATE_CODE, ENTITY_TERMINAL, AUDIT_UNAVAILABLE, and the audit row's two columns](#p-d-25--the-error-contract-completed-duplicate_code-entity_terminal-audit_unavailable-and-the-audit-rows-two-columns)
+- [P-D-26 — Idempotency, identity and the publish bump: four transaction boundaries](#p-d-26--idempotency-identity-and-the-publish-bump-four-transaction-boundaries)
+- [P-D-27 — The event contract: HeadSaved, a common body core, the toolkit's seq, and what the third audit class covers](#p-d-27--the-event-contract-headsaved-a-common-body-core-the-toolkits-seq-and-what-the-third-audit-class-covers)
+- [P-D-28 — Four read paths the guard needed: the bucket-i writer, the BucketRegistry, the audit row's key, and one canonicalization rule](#p-d-28--four-read-paths-the-guard-needed-the-bucket-i-writer-the-bucketregistry-the-audit-rows-key-and-one-canonicalization-rule)
+- [P-D-29 — What a replay, an envelope and a digest actually carry](#p-d-29--what-a-replay-an-envelope-and-a-digest-actually-carry)
+- [P-D-30 — Where the gate hosts, where authorization sits, whose validator, and what the door can see](#p-d-30--where-the-gate-hosts-where-authorization-sits-whose-validator-and-what-the-door-can-see)
+- [P-D-31 — The four the slice had routed outward, decided here](#p-d-31--the-four-the-slice-had-routed-outward-decided-here)
 
 <!-- /toc -->
 
@@ -247,8 +255,15 @@ instead.*
     heads. A single chain per tenant is **non-compliant**: writing row *N* needs row *N−1*'s
     hash, so one chain serializes every audited mutation of that tenant inside its own mutation
     transaction (pricing learned this as D-135, after shipping D-14).
-  - **S3 — Never on the mutation path.** The audit *record* stays local and commits inside the
-    guarded mutation's transaction, as v1 already does; only the *seal* is platform-side and
+  - **S3 — Never on the mutation path.** *(Amended 2026-08-27 by P-D-31, closing the conflict
+    flagged the same day: S1–S9 are **this gear's** stated requirements on a future platform
+    capability, so the amendment is the gear's to make; Architecture / Common Core owns the
+    capability's delivery, not this sentence.)* The audit *record* stays local and commits
+    inside the guarded mutation's transaction, as v1 already does — **except a refusal's row,
+    which commits in its own transaction** (P-D-23, P-D-26), the mutation's being precisely the
+    one a refusal rolls back. **What S3 requires is unchanged in both cases**: no audit write
+    depends on a network-reachable capability, which is the property "never on the mutation path"
+    exists to protect. Only the *seal* is platform-side and
     asynchronous, computed over rows already immutable. A capability reachable only across the
     network must never be a precondition for a write — an audit store that can be unavailable
     independently of the database is fail-open by construction, which is the whole reason the
@@ -843,9 +858,13 @@ instead.*
     other two — a deliberate choice already made per act, and it lands in the same place: slice 04
     writes `PublishScheduled`/`RetirementScheduled` as "audit-plane records, explicit \"no broker
     event\" per 01 §4.5", and slice 10 records the erasure act itself "audit-plane, explicit **no
-    broker event** carrying identity". Both are committed and neither leaves an event, so the
-    event stream is not their record either. **Found by the third lens on the pass that followed
-    this entry, not by the measurement that wrote it.**
+    broker event** carrying identity". 04's two are committed and leave no event, so the event
+    stream is not their record either. **Found by the third lens on the pass that followed
+    this entry, not by the measurement that wrote it.** **Slice 10's erasure act is the
+    exception, corrected 2026-08-27**: `inst-er-event` declares that "a minimal
+    `ActorErased(actor_ref)` broker event exists as a **defensive cache-buster**", so the act is
+    eventless only for events *carrying identity* and sits outside this class — 10's GC deletes
+    (`inst-rt-gc`) stay in it. 01 §4.4 already states the membership this way.
 - **Why**: the outbox row is written inside the mutation's transaction, so for a *successful*
   write the event is exactly as durable and as transactional as the audit row was — P-D-08 S3's
   objection is to a **network call in the write path**, which the outbox pattern does not make.
@@ -883,8 +902,10 @@ instead.*
     S1–S9 depends on the table's volume, and the seam's whole value — migration-free activation
     plus an era marker in the data — is unchanged. The seam is **not** struck by this decision.
 - **Propagated**: `DECISIONS.md` P-D-08 (amended, pointer added), `design/01-foundation.md`
-  (§1.1/§1.5/§1.8 framing, every success-path flow row, §4.4's table scope, §6's three registered
-  consequences), `design/02-taxonomy-attributes.md` (`inst-tx-event`, `inst-gl-atomic`, `inst-ad-event`),
+  (§1.1/§1.5/§1.8 framing, every success-path flow row, §4.4's table scope) *(§6's "three
+  registered consequences" was listed until 2026-08-27 and trimmed by P-D-31: the 2026-08-27
+  owner round merged that backlog, §6 restates one of them, and a propagation field describes
+  what a document says rather than what was intended for it)*, `design/02-taxonomy-attributes.md` (`inst-tx-event`, `inst-gl-atomic`, `inst-ad-event`),
   `design/11-clone.md` (`inst-cn-lineage`).
 - **Owed, and deliberately not applied by the wave that recorded this** — each needs its own
   slice's judgment rather than a sweep, and none of them is a phrasing change:
@@ -935,14 +956,18 @@ instead.*
     imported rather than as gear-authored.
   - **`products_outbox` disappears from §4.4**, and with it the only table in this gear whose
     append-only posture C5 never governed.
-- **Open, and deliberately not decided here**: which processing mode the registry runs. The
-  toolkit offers `transactional` (exactly-once) and `leased` (at-least-once with lease-based
-  locking). Publishing to a broker is a network side effect, which argues for `leased`; the PRD
-  already accommodates it ("out-of-order/duplicate delivery beyond the idempotency window"), but
-  the failure behaviour differs and the choice is the owner's. Registered in slice 01 §6.
+- **Left open here, closed by P-D-23 (2026-08-27): the registry runs `leased`.** The toolkit
+  offers `transactional` (exactly-once) and `leased` (at-least-once with lease-based locking).
+  Publishing to a broker is a network side effect, which argues for `leased`. The PRD does not
+  merely tolerate the consequence: `fr-event-versioning-replay` requires that
+  "out-of-order/duplicate delivery beyond the idempotency window **MUST** be detectable via
+  `(tenant, aggregate, sequence)`" — and the `sequence` operand's home, after this decision
+  superseded the `(tenant_id, aggregate_id, sequence)` index, is open in slice 01 §6.
 - **Pricing is out of scope of this call**: rewriting `pricing_outbox` onto the toolkit is a
   separate task, recorded here only so the divergence is not read as products' error.
-- **Propagated**: `design/01-foundation.md` §1.5/§4.4/§4.5.
+- **Propagated**: `design/01-foundation.md` §1.5/§4.4. *(§4.5 was listed until 2026-08-27 and
+  trimmed by P-D-31: it names no outbox facility and restates nothing of this decision, which is
+  what `12 inst-cc-register` lints for.)*
 - **Owed**: `design/10-retention-erasure.md` §3 (the "outbox-delivered" retention class),
   `gears/bss/pricing` (its own rewrite, separate task).
 
@@ -975,13 +1000,207 @@ instead.*
   | A SKU's parent link `product_id` is **bucket-i** | — |
   | `payload_hash` is over a **canonical rendering of the parsed request**, not the received bytes | — |
 
-- **Why one entry rather than sixteen**: the register's unit is a decision another document must
+- **Why one entry rather than eighteen**: the register's unit is a decision another document must
   follow, and these are one owner's single pass over one slice's backlog. Splitting them would
   bury the two that actually restructure a contract (`PARENT_TERMINAL` and
-  `IDEMPOTENCY_KEY_IN_FLIGHT` enter the SDK's error enum) among fourteen that only settle prose.
+  `IDEMPOTENCY_KEY_IN_FLIGHT` enter the SDK's error enum) among sixteen that only settle prose.
 - **What this round did *not* settle**: the six items whose owner is not this slice, now filed in
   `PRD` §15 with owners named. *(The last two rows above were taken later the same day, after this
   entry was first written; the entry said they were left open and was corrected 2026-08-28 when the
   fourth review pass caught the register trailing the slice.)*
 - **Propagated**: `design/01-foundation.md` (§1.4 roster and every rule the calls change),
   `design/03-sku-classification.md` (`inst-cd-stamp`).
+
+#### P-D-24 — The 2026-08-27 fifth-pass round: four calls closing slice-01 open items
+
+- **Context**: the fifth review pass over `design/01-foundation.md` (three lenses, two passes)
+  left four questions whose owner is this slice. Recorded as one entry for the same reason
+  P-D-23 was: the register's unit is a decision another document must follow, and these four
+  were taken together in one sitting.
+
+  | Call | Propagation |
+  |---|---|
+  | A **`state` phase** joins the pipeline **after `shape`** — the §2 edge list, bucket routing for a published-state field write, and the parent's own lifecycle state. It raises `ILLEGAL_TRANSITION`, `ILLEGAL_FIELD_MUTATION` and `PARENT_TERMINAL`, which until now belonged to no phase while §3.3 required exactly one per code. It sits **after** `shape` because the parent's state can only be judged once the reference naming it has resolved | 12 (the door→phase amendment) |
+  | **`shape` is scoped to include reference resolvability** — an unresolvable `productId` is a defect of the payload, which is why §2 already routes it to `VALIDATION`. This keeps `VALIDATION` single-phase and closes the second-raiser question the `state` phase would otherwise have opened | — |
+  | **`PARENT_NOT_PUBLISHED` is 409**, not 422: it is a refusal by the parent's current state, which is what §3.3's own discriminator assigns to 409 — the same reading that already put `PARENT_TERMINAL` there | 04 |
+  | **`brand_id` is bucket-i** structural identity — re-branding moves the row into a different `(tenant_id, brand_id, name_normalized)` scope, the key §4.1's partial unique index enforces on; it joins `sku_code`, `product_code` and the SKU→parent link | — |
+  | **`lifecycle_state`, `deprecation_provenance` and `replaced_by_sku_id` are excluded from frozen version content.** They move on transitions, which write no version row, so freezing them would require the digest to change on a write that produces no row to digest. They are read from the head row, as §4.3 already routed them | 08, 10 (the digest's column set) |
+
+- **Why the `state` phase rather than widening `identity` or adding carve-outs**: all three codes
+  are judged from the row as it now stands rather than from the payload, which is what separates
+  them from `identity`; and widening the carve-out list from one to four would have made the
+  "exactly one raising phase" rule vacuous rather than satisfied.
+- **What this round did *not* settle**: whose arm `RETIREMENT_PENDING`'s create-door check is —
+  01 reads it as a slice-04 validator and 04 reads it as 01's own guard. Still open in slice 01 §6
+  and in 04's, with owners named.
+- **Propagated**: `design/01-foundation.md` (§1.7, §2 publish row, §3.1, §3.3, §4.1, §4.3),
+  `design/04-lifecycle.md` (§3.2 problem-response map).
+- **Restated by** (2026-08-27, all three closed): `design/12-consumer-contracts.md`
+  (`inst-cc-errors`, now phase-shaped), `design/08-read-models.md` (C6) and
+  `design/10-retention-erasure.md` (the drill).
+
+#### P-D-25 — The error contract completed: DUPLICATE_CODE, ENTITY_TERMINAL, AUDIT_UNAVAILABLE, and the audit row's two columns
+
+- **Context**: the fifth review pass left four gaps in the error contract — two refusals a door
+  can take with no code to carry them, one status with no code at all, and an audit row that
+  could not record either the code or the key it refused on. Taken together because they are one
+  contract and one consumer reads all of it: the SDK's error enum and AC #38's map.
+
+  | Call | Propagation |
+  |---|---|
+  | **`DUPLICATE_SKU_CODE` becomes `DUPLICATE_CODE`**, covering both reservations. §2 already says `productCode` reserves "under the same rules as `skuCode`", so one rule carries one code; the SKU-named form was declared before `productCode` had an index of its own. **This is a rename, and §3.3 states renames are breaking** — taken now precisely because nothing is built yet | 09, 11 |
+  | **`ENTITY_TERMINAL` (409)** — a save on a `retired`/`discarded` head. The subject's own terminal state refusing the write, exactly as `PARENT_TERMINAL` is the parent's; both sit in the `state` phase (P-D-24). Without it an ordinary operator mistake reached the trigger and answered a bare 500 | 12 (error map) |
+  | **`AUDIT_UNAVAILABLE` (503)** — the refusal's audit row could not be written, so the door cannot report the domain refusal (§4.4). Names the condition rather than the mechanism, matching 08's `READ_MODEL_OVERLOADED`, the gear's only other 503 | 12 (error map) |
+  | **`products_audit_log` gains nullable `error_code` and `attempted_key`.** §3.1 makes the code the attribution channel ("never the rule name") and AC #38 maps by it, so it is a column rather than free text; `attempted_key` carries the natural key a pre-mint refusal has in place of an id, which `DUPLICATE_NAME` and `DUPLICATE_CODE` both need | 10 (the audit class its `RetentionClock` reads) |
+
+- **Why `DUPLICATE_CODE` rather than a second, product-named code**: the alternative kept
+  `DUPLICATE_SKU_CODE` and added `DUPLICATE_PRODUCT_CODE`, which avoids a breaking rename but
+  writes the same rule twice in the enum and leaves a reader asking which applies to a clone that
+  suggests both. The owner took the rename while the contract is still unbuilt.
+- **What this entry does *not* settle**: what addresses a `products_audit_log` row, so the
+  sealing seam's one-way UPDATE can target one — still open in slice 01 §6 with P-D-08's owner.
+- **Propagated**: `design/01-foundation.md` (§2, §3.3, §4.4),
+  `design/09-bulk-promotion.md` and `design/11-clone.md` (the renamed code).
+- **Restated by** *(owed until 2026-08-27, all closed)*: `design/12-consumer-contracts.md` (`inst-cc-errors`' map gains two codes and a 503
+  class), `design/10-retention-erasure.md` (the audit roster its retention class reads).
+
+#### P-D-26 — Idempotency, identity and the publish bump: four transaction boundaries
+
+- **Context**: four fifth-pass items that all turned on the same unstated thing — which
+  transaction a write commits in, and what happens when the process holding it dies. None could
+  be built without an answer, and the donor (pricing) declares the `IDEMPOTENCY_KEY_IN_FLIGHT`
+  code but not the boundary, so "adopting the donor's model whole" inherited no answer here.
+
+  | Call | Propagation |
+  |---|---|
+  | **The `claimed` idempotency row commits in its own transaction**, ahead of the guarded operation — sharing the mutation's would make it invisible to the concurrent duplicate the row exists to refuse, and `IDEMPOTENCY_KEY_IN_FLIGHT` could never fire | — |
+  | **A refusal answers the key.** A refused request is a finished request, so the door sets `answered` with the refusal as the stored outcome and a retry replays it rather than re-running a rule whose verdict cannot change. `claimed` therefore means exactly "in flight", and the §4.4 CHECK stays true | 12 (replay semantics) |
+  | **A crashed claim is released by `in_flight_until`**, a new nullable column distinct from `expires_at`'s retention window. Retention is the answered key's; the in-flight deadline is short, and without it the only exit was `max(24h, max_freeze_timeout)` — a legitimate retry refused 409 for a day | — |
+  | **A non-wire caller writes a reserved lane name in `endpoint`** — `internal:scheduled-activation`, `internal:cascade-leg`, `internal:bulk-row` — and its own id in `client_key`. Two internal lanes cannot collide on one key, and the `internal:` prefix cannot collide with a wire endpoint | 04, 09 |
+  | **The first-appearance `actor_ref` mint commits in its own transaction, ahead of the guarded operation.** A refusal rolls the door's transaction back while the refusal's audit row commits independently and requires an `actor_ref`; a ref is a pseudonym rather than a domain record, so minting one for a principal that was then refused costs nothing | 10 |
+  | **A first publish bumps `internal_revision` once and fires no invalidation hook.** The publish door is one act, not a transition plus a publish: it owns the `draft→published` edge, so the transition guard's "every transition" does not reach it, and a hook firing against the record the same transaction consumes has no defined ordering | 05 |
+
+- **What this entry did *not* settle, both closed later the same day by P-D-29**: what the stored
+  outcome dereferences to (answer: the donor's `response_status`/`response_body`, replacing the
+  single `outcome_ref` this gear had imported), and whether the `internal_revision` on an event or
+  audit row is the value before or after the act's own bump (answer: after — as committed).
+- **Propagated**: `design/01-foundation.md` (§2 create and publish rows, §2 transition guard,
+  §3.2, §4.4).
+- **Restated by** *(owed until 2026-08-27, all closed)*: `design/04-lifecycle.md` and `design/09-bulk-promotion.md` (the lane names their
+  runners write), `design/05-governance.md` (the hook's non-firing on the door's own edge),
+  `design/10-retention-erasure.md` (the mint's transaction), `design/12-consumer-contracts.md`
+  (a replayed refusal is part of the consumer contract).
+
+#### P-D-27 — The event contract: HeadSaved, a common body core, the toolkit's seq, and what the third audit class covers
+
+- **Context**: `design/08-read-models.md`'s projector and `design/12-consumer-contracts.md`'s SDK
+  contract could not be built — §4.5 declared eight events whose bodies no document specified,
+  under a name that had been false since the H1 fix. Taken with the two remaining event-plane
+  questions from the same pass.
+
+  | Call | Propagation |
+  |---|---|
+  | **`ProductDraftSaved`/`SkuDraftSaved` become `ProductHeadSaved`/`SkuHeadSaved`.** The H1 fix made the head the authoring surface in every non-terminal state, so the old name was false for `published` and `deprecated` — two of the three. A rename, taken while nothing is built, on the same reasoning as P-D-25's | 02 |
+  | **Every one of the eight carries a common body core**: `{tenantId, entityKind, entityId, internalRevision, lifecycleState}`. `lifecycleState` is the discriminator a `*HeadSaved` consumer needs. `*Published` additionally carries **`publishedVersion`** — what 06 reads as content and 08's projector keys on. Anything beyond the core is named where the act is specified, as 04 already does for `SkuRetired` | 06, 08, 12 |
+  | **The envelope carries the toolkit outbox's `partition_id` and `seq`**, which the processor already hands the handler (`libs/toolkit-db/src/outbox/handler.rs`'s `OutboxMessage`). Since `partition = hash(tenant_id, aggregate_id) mod N`, every event of one aggregate shares a partition and `seq` is monotonic within it — which satisfies `fr-event-versioning-replay`'s "detectable via `(tenant, aggregate, sequence)`" without restoring the index P-D-22 superseded. Detectability needs monotonicity, not density; gaps left by neighbouring aggregates are harmless | 12 |
+  | **§4.4's third audit class covers *domain* acts** — one over a `Product`/`SKU` or a governed record. A door's own infrastructure writes are outside it, which is why `inst-fd-actor-ref` and `inst-fd-idem-claim` declare "no event" without also writing an audit row. Read literally the class would have put an audit row behind every ref resolution | 10 |
+
+- **Why the rename rather than a payload field alone**: a `lifecycleState` field fixes what a
+  consumer can *tell* but leaves the event's name asserting something false, and the name is what
+  a reader of the §9.2 outbound contract meets first.
+- **Propagated**: `design/01-foundation.md` (§2 save row, §4.4 payloads, §4.5),
+  `design/02-taxonomy-attributes.md` (the renamed event its attribute writes ride).
+- **Restated by** *(owed until 2026-08-27, all closed)*: `design/06-catalog-version.md` and `design/08-read-models.md` (the body core their
+  consumers read), `design/12-consumer-contracts.md` (`inst-rc-dedup` re-based on the published
+  `seq`, and the replay contract against the body core), `design/10-retention-erasure.md` (the
+  audit class's scope).
+
+#### P-D-28 — Four read paths the guard needed: the bucket-i writer, the BucketRegistry, the audit row's key, and one canonicalization rule
+
+- **Context**: four fifth-pass items that each named something the design *used* without saying
+  where it came from — a write with no admitted writer, a tag with no read path, a row with no
+  address, and a rule claimed to be shared that was defined over only one of its two subjects.
+
+  | Call | Propagation |
+  |---|---|
+  | **The save door writes bucket-i columns while `published_version = 0`**, and nothing writes them after. §4.2's whitelist named an admitting door for every other class and only a prohibition here, so the `skuCode`/`productCode` change §2 makes legal on an unpublished head had no admitted writer. No new door: `inst-fd-save-txn` already carries it | — |
+  | **`BucketRegistry` is a Foundation artifact**, named in §1.7 beside `RegisteredValidator`: a slice registers its columns' bucket tags exactly as it registers validators — code, not config — and 05 reads the same registry to judge materiality. 05 already attributed the frame here, and a physical guard of the Foundation's cannot depend on a capability slice's artifact (§1.1) | 05 |
+  | **`products_audit_log` gains `audit_id` (PK, uuid).** The sealing seam's one-way UPDATE must address a row that is *not yet* sealed, and `seq` is null until it is; the surrogate is independent of the chain's ordering, and matches the uuid-PK convention of every other §4 table | 10 |
+  | **The canonical rendering is stated over any named field set**, not only a version row's columns — "sorted lexicographically by **field** name". That is what lets §3.2 hash a parsed request under the same rendering and makes its "one such rule and not two" true; mechanically the rule was already field-shaped | 06 |
+
+- **What this entry does *not* settle**: how a **row collection** inside a frozen version (the
+  category-assignment set, the attribute-value set) is ordered for the digest — the rule orders
+  fields, not rows. Still open in slice 01 §6 with 02 and 10.
+- **Propagated**: `design/01-foundation.md` (§1.7, §4.2, §4.3, §4.4).
+- **Restated by** *(owed until 2026-08-27, all closed)*: `design/05-governance.md` (`BucketRegistry` by name where it reads the tags),
+  `design/10-retention-erasure.md` (the audit row's key), `design/06-catalog-version.md`
+  (the canonicalization rule its `inst-sn-checksum` points at).
+
+#### P-D-29 — What a replay, an envelope and a digest actually carry
+
+- **Context**: four fifth-pass items that each named a value the design relied on without saying
+  what it contained. Two of them were left open by P-D-26 earlier the same day; the other two are
+  what 10's restore drill compares byte-for-byte.
+
+  | Call | Propagation |
+  |---|---|
+  | **`outcome_ref` is replaced by the donor's two columns, `response_status` and `response_body`.** A replay must reproduce the original response *including its status*, which a bare reference to an entity cannot do — and after P-D-26 made a refusal answer the key, a refusal has no entity to reference at all. §3.2 already said the model was adopted from the donor "whole"; the single reference was the divergence, and it was the part that did not work | 12 (replay contract) |
+  | **The `internal_revision` on an envelope or audit row is the value *as committed by the act*** — N+1 where the act bumped it, the unchanged current value where it did not. The event is P-D-21's record of a *committed* act, so the number describes the state the act left behind and matches the caller's next ETag. "At the act" had admitted both readings | 12 |
+  | **The digest is SHA-256**, with a **`digest_version`** column beside it on `products_entity_version`. `sha2` is already a workspace dependency (`Cargo.toml`), and §4.3's "adding a column is a digest-version bump, not a silent change" is only checkable if the version a row was computed under is stored on that row | 10 |
+  | **A row collection inside frozen content is a JSON array sorted by the collection's own identifier** — the category id, the attribute id — each element rendered by the same field rule. P-D-28's rule orders *fields* and said nothing about *rows*, so two engines could have serialized one content in two orders | 02, 10 |
+
+- **Why the donor's two columns rather than a reference to the audit row**: under P-D-21 a
+  successful act writes no audit row at all, so that reference would have had nothing to point at
+  on exactly the path replay matters most.
+- **Propagated**: `design/01-foundation.md` (§3.2, §4.3, §4.4).
+- **Restated by** *(owed until 2026-08-27, all closed)*: `design/12-consumer-contracts.md` (the replay contract and the committed-revision
+  reading), `design/10-retention-erasure.md` (the digest's algorithm and version column its drill
+  compares), `design/02-taxonomy-attributes.md` (the ordering of its two collections).
+
+#### P-D-30 — Where the gate hosts, where authorization sits, whose validator, and what the door can see
+
+- **Context**: four fifth-pass items about *who runs what, where*. Two were scoping errors in
+  §3.1, one was a standing disagreement between 01 and 04 over the same code, and one asked the
+  Foundation to read an operand it cannot have.
+
+  | Call | Propagation |
+  |---|---|
+  | **The governance-gate phase runs on any gated act, not publish alone.** 05 words the obligation generically — "submit → quorum → publish/apply" over both entity publishes and `GovernedLiveOp`s — and 04's un-deprecation is two-person with a slice-05 gate registered on that edge. A transition door consumes the `satisfied` record exactly as the publish door does; scoping the phase to publish left that ceremony with a gate no phase hosted | 04, 05 |
+  | **Authorization is not a phase — it is a pre-pipeline gate**, run before the pipeline opens. The only order in which a denied caller neither consumes an idempotency key nor writes a claim row, and the order §2's flows already use. Its refusal code is 05's, RBAC grants being that slice's (§1.5) | 05 |
+  | **Both arms of `RETIREMENT_PENDING` are slice-04 validators** — the un-deprecation edge, and 04's validator registered on 01's create door. The operand is the live retire intent in `products_scheduled_transition`, a table 04 owns; reading it in the Foundation would put the floor in the business of lifecycle policy against §1.1. 04's contrary note is corrected. Both arms therefore sit in the **registered validators** phase and the code needs no carve-out | 04 |
+  | **The `PublishDoor` sets `composition_pending` when the publish carried the two-person uncomposed-bundle override**, not when the bundle "is uncomposed". Whether plan-price has composed it is 03's validator's judgement (`BUNDLE_OVERRIDE_REQUIRED`); what the door sees is whether *this* publish carried the override. It also removes the re-raise for free: 06's clearing re-publish is a `system_signal` subject carrying no override, so the predicate is false and the flag stays cleared | 03, 06 |
+
+- **Why the override rather than the composition itself**: §1.1's "the Foundation owns no
+  capability policy" is load-bearing, and a validator refuses rather than writing a column (§3.1) —
+  so neither side could own the write until the predicate was restated in terms the door can see.
+- **Owed by slice 04**: the instruction row registering the create-door validator. Until it
+  exists nobody builds the guard, and item 36's hole stays open.
+- **Propagated**: `design/01-foundation.md` (§1.7, §2 create row, §3.1, §4.2),
+  `design/04-lifecycle.md` (§3.2 code contract, open items),
+  `design/03-sku-classification.md` and `design/06-catalog-version.md` (the override-shaped
+  predicate, restated at `inst-cl-bundle-override` and `inst-cc-clear`).
+- **Restated by** *(owed until 2026-08-27, all closed)*: `design/05-governance.md` (the gate phase's wider scope, and the pre-pipeline
+  authorization gate its denial code answers to).
+
+#### P-D-31 — The four the slice had routed outward, decided here
+
+- **Context**: the fifth pass filed four items with owners outside this slice. Two of those
+  routings were wrong on inspection — **P-D-08's S1–S9 are this gear's own stated requirements**
+  on a future platform capability, and the wire shape of this gear's primary surface is nobody
+  else's — and the remaining two were decidable from constraints already in the set. Where an
+  answer binds another team, it binds as a **stated requirement on them**, not as a fact about
+  their artifact.
+
+  | Call | Propagation |
+  |---|---|
+  | **P-D-08 S3 is amended**: the audit record commits inside the guarded mutation's transaction **except a refusal's row, which commits in its own** (P-D-23, P-D-26) — the mutation's being the one a refusal rolls back. What S3 requires is unchanged either way: no audit write depends on a network-reachable capability, which is the property "never on the mutation path" protects. Architecture / Common Core owns the capability's *delivery*, not this sentence | — |
+  | **The head-row guard judges the row image, never the door.** A session variable exists on Postgres and not on SQLite, so a door-reading guard breaks C1 in both halves — dual-engine, and "guards defined once". Which door wrote is an **application** guarantee; the trigger enforces which column may move in which state. §4.2's per-door clauses are restated accordingly, and §3.1's claim that the physical guard enforces "one door, one effect" is corrected to name the application as the enforcer and the guard as the backstop | 07 |
+  | **The gear's primary wire surface is declared** in §2: `POST …/products`/`…/skus` → 201; `PATCH …/{id}` (If-Match required) → 200; `POST …/{id}/publish` → 200; `POST …/{id}/discard` → 200; `Idempotency-Key` on every mutating door. Paths follow the form 02/05/06/08/09/10/11 already use; the transition floor has no wire door of its own | 12 (door×grant lint), 05 (RBAC catalog) |
+  | **P-D-21's and P-D-22's propagation fields are trimmed to what the documents actually restate** — P-D-21 loses "§6's three registered consequences" (the 2026-08-27 round merged that backlog; §6 restates one), P-D-22 loses §4.5 (which names no outbox facility). A propagation field describes what a document says, not what was intended for it | — |
+
+- **Owed**: the row-image predicates that would let the trigger tighten two clauses it now admits
+  on the application's word — **04's** for `deprecation_provenance`/`replaced_by_sku_id`, and
+  **07's** for bucket-ii columns. Until those exist the guard is a backstop there rather than a
+  proof.
+- **Propagated**: `design/01-foundation.md` (§2 doors, §3.1, §4.2). *(The S3 amendment and the
+  two trimmed propagation fields are edits to this register itself, not propagation out of it.)*

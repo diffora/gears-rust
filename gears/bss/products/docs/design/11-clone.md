@@ -88,7 +88,7 @@ copies, what resets, and what must be re-proven against today's vocabularies.
 - [ ] `p3` - **ID**: `cpt-cf-bss-products-flow-clone`
 
 1. [ ] - `p3` - `POST …/{entity}/clone` (`product|sku × write`; a product-with-SKUs clone requires **both** grants — L4): source resolved in-tenant, any C1 state. **Read surface (M1/M2)**: a `retired`, `published` or `deprecated` source reads entity content from its **last frozen version** — never a head's pending edits, which would leak in-flight unapproved content — with `clonedFrom` recording exactly that version; the metadata map comes from the beside-entity store (P-D-06 — outside frozen content, survives retirement); a `draft` source reads its head. The clone materializes through the ordinary 01 create door — same validators, same codes, no parallel path — as **one transaction per entity** (create + values + metadata: the single-clone act is atomic, L2) - `inst-cn-door`
-2. [ ] - `p3` - Identity per C2: new ids minted; the suggested code is derived (`{source}-copy-N`), operator-overridable, reserved atomically — a collision is the ordinary `DUPLICATE_SKU_CODE`; a source Product with no `productCode` suggests none — the clone's stays null (L5) - `inst-cn-identity`
+2. [ ] - `p3` - Identity per C2: new ids minted; the suggested code is derived (`{source}-copy-N`), operator-overridable, reserved atomically — a collision is the ordinary `DUPLICATE_CODE`; a source Product with no `productCode` suggests none — the clone's stays null (L5) - `inst-cn-identity`
 3. [ ] - `p3` - **The rename rule (P-D-04, reframed per L3)**: **every same-brand Product clone renames** — the uniqueness index holds the source's name in every non-`discarded` state, so a clone of a draft, published, or retired Product collides alike; the suggestion is `{name}-copy-N` (matching the code suggestion), `{name}-revived` flavored for a retired source; operator-overridable. Revival is why the rule is non-negotiable, not when it applies. Display attributes copy verbatim — the quasi-code renames, the storefront doesn't - `inst-cn-rename`
 4. [ ] - `p3` - The `DispositionTable` (§3.1) is applied field-class by field-class; every re-validated reference that fails names the field and the live-registry verdict (C4) so the operator re-selects rather than guesses - `inst-cn-disposition`
 5. [ ] - `p3` - `clonedFrom = (entity id, published_version | 'draft')` is recorded on the clone (immutable thereafter — lineage, not a live link); the clone rides `ProductCreated`/`SkuCreated` (P-D-21: no audit row on a committed act) (explicit: no separate clone event — the lineage field is queryable) - `inst-cn-lineage`
@@ -126,7 +126,8 @@ Errors reuse the owning slices' codes — the per-field map (L6): unit → `UNRE
 `UNIT_DEPRECATED`; tier → `PLAN_TIER_UNKNOWN`/`PLAN_TIER_DEPRECATED`; category →
 `CATEGORY_RETIRED`; accounting → `ACCOUNTING_CODE_UNKNOWN`; definition →
 `ATTRIBUTE_DEFINITION_DEPRECATED`/`ATTRIBUTE_SCOPE_VIOLATION`; name → `DUPLICATE_NAME`;
-code → `DUPLICATE_SKU_CODE`.
+code → `DUPLICATE_CODE` (**P-D-25**: one code covers both the `skuCode` and `productCode`
+reservations).
 
 ## 5. Testing posture (slice-local)
 

@@ -29,8 +29,9 @@ Requirements live in [`../PRD.md`](../PRD.md); decisions in [`../DECISIONS.md`](
 
 - [`01-foundation.md`](./01-foundation.md) — **shared engine**: entity model + identity
   (`skuId`, atomic `skuCode` reservation), revision vs published version, lifecycle state
-  machine core, fail-closed validation pipeline (registered validators), append-only history +
-  diff, tenant isolation, idempotency/ETag, broker-native event fan-out + outbox, audit —
+  machine core, fail-closed validation pipeline (registered validators), append-only
+  history (the frozen rows slices 08 and 06 diff over; not a diff surface of its
+  own), tenant isolation, idempotency/ETag, broker-native event fan-out + outbox, audit —
   complete and append-only, over a **reserved, unwritten** platform-sealing seam (P-D-08: no
   in-gear hash chain). (PRD §6.1 core, §6.5 core, §6.7 idempotency/eventing, §6.13 concurrency
   doors)
