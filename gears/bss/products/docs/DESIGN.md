@@ -338,7 +338,8 @@ themselves — this section is the canonical index migration planning is scoped 
 listed 13 tables, named `products_plan_tier`, which no slice defines because slice 03 folds
 tiers into `products_recognized_set` under `set_kind`, and omitted about twenty real ones):
 
-- **01** — `products_audit_log`, `products_entity_version`, `products_idempotency`, `products_outbox`, `products_product`, `products_product_category` (defined by slice 02, written by slice 01's create door), `products_sku`
+- **01** — `products_audit_log`, `products_entity_version`, `products_idempotency`, `products_product`, `products_product_category` (defined by slice 02, written by slice 01's create door), `products_sku`
+  *(the outbox is the toolkit's, not a gear table — **P-D-22**)*
 - **02** — `products_attribute_definition`, `products_attribute_value`, `products_category`, `products_metadata`
 - **03** — `products_recognized_set`
 - **04** — `products_deferred_retirement`, `products_scheduled_transition`

@@ -29,7 +29,7 @@
   - [4.1 `products_product`](#41-products_product)
   - [4.2 `products_sku`](#42-products_sku)
   - [4.3 `products_entity_version` (published history)](#43-products_entity_version-published-history)
-  - [4.4 `products_idempotency`, `products_audit_log`, `products_outbox`](#44-products_idempotency-products_audit_log-products_outbox)
+  - [4.4 `products_idempotency`, `products_audit_log`, the toolkit outbox](#44-products_idempotency-products_audit_log-the-toolkit-outbox)
   - [4.5 Foundation-owned events](#45-foundation-owned-events)
 - [5. Testing posture (slice-local)](#5-testing-posture-slice-local)
 - [6. Traces to / Risks & Open items](#6-traces-to--risks--open-items)
@@ -97,7 +97,8 @@ acknowledged, and rejections that always carry an audited reason. Per P-D-02, ev
 - field-mutability enforcement frame (bucket routing)
 - idempotency
 - ETag concurrency
-- outbox + envelope discipline + per-aggregate ordering
+- the toolkit outbox's enqueue path, envelope discipline, and per-aggregate ordering by partition
+  routing (P-D-22)
 - audit of the acts that emit no event (refusals; reads under elevation; committed acts declared
   to emit no broker event — P-D-21)
 - the interim parent-child brand/region containment check (P-D-04 residue — final rule in slice 04)
@@ -173,7 +174,10 @@ success-path audit record; no audit row is written on a committed act) - `inst-f
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-flow-define-sku`
 
 1. [ ] - `p1` - Authorize; idempotency as above - `(cont. inst-fd-idempotency)`
-2. [ ] - `p1` - Parent must exist in the tenant (an unresolvable `productId` in the payload is a reference the door cannot process — `VALIDATION`, owner's call 2026-08-27), must not be `retired`/`discarded` (a refusal by the parent's current state rather than by the payload — **`PARENT_TERMINAL`**, 409, same call; the *name* is this wave's and the taxonomy owner's to veto, the split is the decision), **and not hold a live retire intent** (`RETIREMENT_PENDING` — item 36 of the 2026-08-26 review: a `deprecated` parent still admits children, so a draft SKU created after the `CascadePlan` was computed is outside the plan's auto-discard arm and defers that Product's retirement indefinitely); the SKU's brand/region scope must pass the **interim containment check**: scope sets are flat value lists, containment = subset, anything not provably a subset fails `SCOPE_NOT_CONTAINED` (conservative until slice 04 pins the final rule) - `inst-fd-containment`
+2. [ ] - `p1` - Parent must exist in the tenant (an unresolvable `productId` in the payload is a reference the door cannot process — `VALIDATION`, owner's call 2026-08-27), must not be `retired`/`discarded` (a refusal by the parent's current state rather than by the payload — **`PARENT_TERMINAL`**, 409, same call; the *name* is this wave's and the taxonomy owner's to veto, the split is the decision), **and not hold a live retire intent** (`RETIREMENT_PENDING`; **the operand is read by a slice-04
+validator registered on this door, not by the Foundation** — owner's call 2026-08-27, keeping the
+floor policy-free as §1.1 states and leaving `products_scheduled_transition` and `CascadePlan`
+wholly 04's. Item 36 of the 2026-08-26 review: a `deprecated` parent still admits children, so a draft SKU created after the `CascadePlan` was computed is outside the plan's auto-discard arm and defers that Product's retirement indefinitely); the SKU's brand/region scope must pass the **interim containment check**: scope sets are flat value lists, containment = subset, anything not provably a subset fails `SCOPE_NOT_CONTAINED` (conservative until slice 04 pins the final rule) - `inst-fd-containment`
 3. [ ] - `p1` - Reserve `skuCode` **atomically at create**: the insert itself is the reservation — the `ReservationIndex` admits exactly one non-`discarded` holder per `(tenant_id, sku_code)`; the loser of a concurrent race fails `DUPLICATE_SKU_CODE` with an audited reason (PRD AC #42) - `inst-fd-reserve-code`
 4. [ ] - `p1` - Mint `skuId`; persist as `draft` with the slice-03-owned columns present but unjudged (typing/classification rules run when slice 03 registers them); emits the `SkuCreated` outbox row in the same transaction - `(cont. inst-fd-create-txn)`
 
@@ -305,11 +309,15 @@ no 422 arm — so, absent a transport override (which neither this design set no
 declares anywhere), every architectural 422 in this design set reaches the wire as a **400
 carrying its wire code**, and **the code string is the discriminator a consumer matches on, not the status**.
 An endpoint **MUST NOT** declare a 422 response for an error **carrying a registry code** in its
-`OpenAPI` registration — **the rule stands; its grounds are flagged in §6** (2026-08-27). It read
-"because no path can produce one" until this pass, and that is false: 400 is the *default* for
+`OpenAPI` registration — **the rule stands as this gear's choice, not as an impossibility**
+(owner's call, 2026-08-27). It read "because no path can produce one" until that call, and that
+was false: 400 is the *default* for
 `InvalidArgument`/`FailedPrecondition`/`OutOfRange`, and `docs/arch/errors/DESIGN.md` §2.2 lets a
 single occurrence override the wire status so long as it stays in the same class — 422 is in that
-class, and the toolkit's own `extract::Json` path takes it. **The framework layer is the exception and is not covered by it**: a handler taking
+class, and the toolkit's own `extract::Json` path takes it. What makes the rule true here is that
+**this gear declares no transport override anywhere, and neither does pricing** — so every
+registry code has exactly one wire shape, which is the property the rule is protecting and the
+reason it is worth keeping once its false premise is gone. **The framework layer is the exception and is not covered by it**: a handler taking
 `toolkit::api::rest::extract::Json<T>` can still answer 422 on a schema violation, which is why the
 toolkit ships `OperationBuilder::error_422` and tells an operation to register it individually
 (`libs/toolkit/src/api/operation_builder.rs`). A schema violation carries no registry code — though it **is** a canonical error: the toolkit
@@ -350,8 +358,11 @@ assignment set as a copy at publish, like every other content class) · `region_
 slice 11) · timestamps.
 
 Indexes/guards: **partial UNIQUE `(tenant_id, brand_id, name_normalized) WHERE lifecycle_state
-<> 'discarded'`** (P-D-04; discard releases the name exactly as it releases codes — a
-design-introduced symmetry, flagged in §6); partial UNIQUE on `(tenant_id, product_code) WHERE
+<> 'discarded'`** (P-D-04; discard releases the name exactly as it releases codes — **confirmed by the owner
+2026-08-27**, no longer a design-introduced residue: the PRD releases codes on discard and is
+silent on the name, and holding the name would let one typo in a never-published draft burn it
+forever. The asymmetry with `retired`, which *does* hold its name, is the intended one — a
+discarded draft was never published and a retired entity was); partial UNIQUE on `(tenant_id, product_code) WHERE
 product_code IS NOT NULL AND lifecycle_state <> 'discarded'`; append-only trigger enforcing the
 shared head-row guard (§4.2), under which `product_code` is immutable once
 `published_version > 0` exactly as `sku_code` is (PRD AC #1 puts an optional `productCode` under
@@ -435,7 +446,7 @@ own scoping — governed live entities are read from their live tables): read mo
 The authoring read of the head row that `inst-fd-etag`'s precondition requires is not a consumer
 read.
 
-### 4.4 `products_idempotency`, `products_audit_log`, `products_outbox`
+### 4.4 `products_idempotency`, `products_audit_log`, the toolkit outbox
 
 - `products_idempotency`: `(tenant_id, endpoint, client_key)` PK · `state` (`claimed | answered`)
   · `payload_hash` · `outcome_ref` · `expires_at`, with one CHECK tying them: `claimed` ⇒
@@ -482,13 +493,20 @@ read.
   exist: `unsealed` ⇒ all four NULL; `sealed` ⇒ `chain_id`/`seq`/`row_hash` NOT NULL
   (`prev_hash` NULL stays legitimate — it is the segment head). The gear computes no hash and
   runs no verification job; what the platform capability must satisfy is P-D-08 S1–S9.
-- `products_outbox`: event rows written in the mutation transaction; `(tenant_id, aggregate_id,
-  sequence)` monotonic per aggregate, **enforced by a UNIQUE `(tenant_id, aggregate_id, sequence)`
-  allocated inside the mutation transaction** — the donor names the same mechanism and records
-  that it had to, the ordering having been asserted with nothing holding it; dispatcher publishes to the event-broker and marks
-  delivered **only on durable broker acceptance** — "emitted" is never reported before that
-  (PRD `fr-event-delivery-resilience`, registry-side half). Payloads: broker-native envelope
-  (P-D-01) with versioned schema ref, correlation/causation, idempotency key, `actor_ref`.
+- **The outbox is the toolkit's, not this gear's** (**P-D-22**): the registry enqueues through
+  `toolkit_db::outbox` inside the mutation's own transaction and owns no outbox table. The
+  facility supplies the pipeline — `enqueue` → `sequencer` (per-partition sequence numbers) →
+  `processor` (this gear's publish handler) → `vacuum` — plus dead letters and its own multi-backend
+  migrations, so C1's "one migration per table" does not reach these tables and the schema oracle
+  goldens them as imported. **Per-aggregate ordering is obtained by routing, not by a column**:
+  `partition = hash(tenant_id, aggregate_id) mod N`, so every event of one aggregate shares a
+  partition and keeps its relative order, which is what the envelope's `(tenant, aggregate)`
+  ordering key promises (`fr-registry-eventing-audit`, AC #28). **Delivery is not a state on a
+  row** — the processor hands the message to the handler and the vacuum reclaims it; "emitted" is
+  still never reported before durable broker acceptance (PRD `fr-event-delivery-resilience`,
+  registry-side half), but that is the handler's contract rather than a column to mark. Payloads:
+  broker-native envelope (P-D-01) with versioned schema ref, correlation/causation, idempotency
+  key, `actor_ref`.
 
 ### 4.5 Foundation-owned events
 
@@ -536,26 +554,17 @@ half), `cpt-cf-bss-products-fr-event-delivery-resilience` (registry-side half: d
 (frame), #42.
 
 **Risks & open items**:
-- **Name release on discard** is design-introduced symmetry (PRD releases *codes* on discard,
-  says nothing about the name) — cheap to revisit; flagged for the slice review.
 - **Broker schema-version pinning**: the versioned-schema-ref mechanics on the broker side need
   one worked example with Common Core before slice 12 freezes the replay contract.
 - **`sellable` member missing in pricing's `CatalogSku`** — pricing-side gap (2026-08-25
   review); the SDK read shape here must expose it so the fix is a consumer-side addition.
 - Interim containment check (flat subset) must be re-validated against slice 04's final rule —
   the two must not silently diverge.
-- **Who reads the retire intent at the create door?** `inst-fd-containment` refuses a child under
-  a parent holding a live retire intent, but §1.1 gives the Foundation **no capability policy**,
-  §1.5 puts retirement scheduling in slice 04, and no table in §4 can express an intent — the
-  operand exists only as 04's `products_scheduled_transition` and `CascadePlan`. Whether this is a
-  registered slice-04 validator on the create door or a Foundation read of 04's store is unstated,
-  and the two differ in who owns the coupling.
-- **What column carries outbox delivery state, and is its UPDATE inside C5's guard?** §4.4 has the
-  dispatcher mark delivered **only on durable broker acceptance**, but the `products_outbox`
-  roster defines no such column and C5 exempts only the slice-08 projections and the idempotency
-  sweep. Slice 10's restore scope depends on the state ("outbox-delivered"). The pattern donor
-  names no column either (pricing `design/01-foundation.md`'s `pricing_outbox` row), so naming one
-  here would be inventing schema no document states.
+- **Which processing mode does the outbox run — `transactional` or `leased`?** P-D-22 adopted the
+  toolkit facility and left this open. `transactional` is exactly-once, `leased` is at-least-once
+  with lease-based locking; publishing to a broker is a network side effect, which argues for
+  `leased`, and the PRD already accommodates duplicates ("out-of-order/duplicate delivery beyond
+  the idempotency window"). The failure behaviour differs and the choice is the owner's.
 - **Why is the field-mutability frame `p2`** when the physical guard enforcing its buckets is
   unconditional and its code `ILLEGAL_FIELD_MUTATION` ships in the p1 contract surface? Raising
   the frame or lowering the guard are both owner calls; no document states the priority.
@@ -566,14 +575,6 @@ half), `cpt-cf-bss-products-fr-event-delivery-resilience` (registry-side half: d
   retirement-initiation flow states no Product replacement, so adding it here would invent schema.
   *(Its sibling `deprecation_provenance` was the mirror case and is settled: 04 writes provenance
   `direct` on the retiring parent Product, so §4.1 now carries that column.)*
-- **On what grounds does the 422 `MUST NOT` stand?** (second-pass cross-document lens, 2026-08-27).
-  Its stated reason was false and is now struck: `docs/arch/errors/DESIGN.md` §2.2 permits a
-  per-occurrence `TransportOverride` within the same status class, 422 and 400 are both 4xx, and
-  the platform's own `extract::Json` renders an `InvalidArgument` at 422. So a canonical 422 *is*
-  producible. Neither this design set nor pricing's declares an override anywhere, which is what
-  makes the rule true in practice today — but "this gear declines to use overrides" is a decision
-  no document records, and pricing states the rule unscoped. No products decision (P-D-01…P-D-20)
-  or PRD requirement mentions wire status at all.
 - **Is slice 08's convergence probe the owed NFR #3 probe?** This slice says "**The probe is
   owed**: no slice §5 measures it", while 08 C5 already decomposes the budget into
   "commit→durable-acceptance (01's outbox meter) + acceptance→projected (this slice's meter)" and

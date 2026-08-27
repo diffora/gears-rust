@@ -30,6 +30,7 @@ joint contracts, cited from here by their pricing numbers, never duplicated.
 - [P-D-19 — A force-completed version stays refused for posted use until opt-in; the pin is the registry's own door](#p-d-19--a-force-completed-version-stays-refused-for-posted-use-until-opt-in-the-pin-is-the-registrys-own-door)
 - [P-D-20 — A publish during the retirement lead window re-announces `SkuRetired`; the door stays open](#p-d-20--a-publish-during-the-retirement-lead-window-re-announces-skuretired-the-door-stays-open)
 - [P-D-21 — The local audit table holds only what emits no event; the event stream is the success-path record](#p-d-21--the-local-audit-table-holds-only-what-emits-no-event-the-event-stream-is-the-success-path-record)
+- [P-D-22 — The registry uses the toolkit's transactional outbox, not a gear-local one](#p-d-22--the-registry-uses-the-toolkits-transactional-outbox-not-a-gear-local-one)
 
 <!-- /toc -->
 
@@ -898,3 +899,48 @@ instead.*
   - `design/05-governance.md` — its audit-row references are refusal- and elevation-side and look
     correct as they stand, but were not read one by one.
   - The event-payload amendment carrying `revision` (see Consequences).
+
+#### P-D-22 — The registry uses the toolkit's transactional outbox, not a gear-local one
+
+- **Date**: 2026-08-27 (product call, in the slice-01 review — "взять toolkit")
+- **Decision**: `products_outbox` as a gear-authored table is **struck**. The registry enqueues
+  through **`toolkit_db::outbox`** (`libs/toolkit-db/src/outbox`), which ships the whole pipeline:
+  `enqueue` inside the caller's transaction → `sequencer` assigning per-partition sequence numbers
+  → `processor` invoking the gear's handler → `vacuum` collecting delivered rows. Its tables
+  (`_body`, `_partitions`, `_incoming`, `_outgoing`, `_dead_letters`) carry a configurable prefix,
+  and it brings its own migrations.
+- **Why**: the design set copied the outbox shape from pricing, which its §1.4 names "the pattern
+  donor". Measured 2026-08-27: **pricing does not use the platform facility** — it has its own
+  `pricing_outbox` — while **mini-chat, the reference gear, imports `toolkit_db::outbox::Outbox`
+  directly**. So the gear had inherited a private re-invention from a sibling rather than the
+  platform's own component, and inherited it without the dead-letter table, the lease handling,
+  the vacuum, or the multi-backend migrations that come with it.
+- **The PRD contract is untouched, and that was checked before deciding**: `fr-registry-eventing-audit`
+  requires the *envelope* to stamp "per-aggregate ordering keys `(tenant, aggregate…)`" and AC #28
+  repeats it — a property of the message, not of a storage column. The toolkit's `enqueue` takes
+  the partition from the caller, so `partition = hash(tenant_id, aggregate_id) mod N` puts every
+  event of one aggregate in one partition and preserves their relative order, which is exactly
+  what the ordering key promises.
+- **Consequences**:
+  - **Delivery stops being a column.** The gear-local design had the dispatcher "mark delivered
+    only on durable broker acceptance" and never named a column to mark; in this model the row
+    leaves — the processor hands it to the handler and the vacuum reclaims it. Slice 10's
+    `RetentionClock` class "outbox-delivered" is therefore the **vacuum's** horizon, not a
+    retention rule this gear writes, and that slice owes the correction.
+  - **The UNIQUE `(tenant_id, aggregate_id, sequence)` this slice added earlier the same day is
+    superseded** by the toolkit's own unique index on `(partition, seq)`.
+  - **C1's "one migration per table, guards defined once" does not reach these tables** — they are
+    migrated by `outbox_migrations()`, and the schema oracle must therefore golden them as
+    imported rather than as gear-authored.
+  - **`products_outbox` disappears from §4.4**, and with it the only table in this gear whose
+    append-only posture C5 never governed.
+- **Open, and deliberately not decided here**: which processing mode the registry runs. The
+  toolkit offers `transactional` (exactly-once) and `leased` (at-least-once with lease-based
+  locking). Publishing to a broker is a network side effect, which argues for `leased`; the PRD
+  already accommodates it ("out-of-order/duplicate delivery beyond the idempotency window"), but
+  the failure behaviour differs and the choice is the owner's. Registered in slice 01 §6.
+- **Pricing is out of scope of this call**: rewriting `pricing_outbox` onto the toolkit is a
+  separate task, recorded here only so the divergence is not read as products' error.
+- **Propagated**: `design/01-foundation.md` §1.5/§4.4/§4.5.
+- **Owed**: `design/10-retention-erasure.md` §3 (the "outbox-delivered" retention class),
+  `gears/bss/pricing` (its own rewrite, separate task).
