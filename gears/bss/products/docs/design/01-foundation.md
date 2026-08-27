@@ -161,7 +161,10 @@ not consumed here**: `SkuReferenceCount` (slice 07), pricing signals (06/07).
 slice never carried it, while `created_by`, the frozen version's `actor_ref`, the audit row's and
 the envelope's all store the result. Resolving also advances `last_seen_at`, which 10's age-based
 erasure reads - `inst-fd-actor-ref`
-3. [ ] - `p1` - Mint `productId` (UUID, server-side, never caller-supplied — a stray id in the payload is a `400`); optional `productCode` reserves under the same rules as `skuCode` - `inst-fd-mint-id`
+3. [ ] - `p1` - Mint `productId` (UUID, server-side, never caller-supplied — a stray id in the payload is a shape-phase
+finding and rides `VALIDATION`, owner's call 2026-08-27: the request parsed, so the bare 400 this
+gear reserves for a malformed request does not apply, and this had been the file's only rule-level
+status with no code); optional `productCode` reserves under the same rules as `skuCode` - `inst-fd-mint-id`
 4. [ ] - `p1` - Persist as `draft`, `published_version = 0`, `internal_revision = 1`; write the `ProductCreated` outbox row in the same transaction (**P-D-21**: the event is the
 success-path audit record; no audit row is written on a committed act) - `inst-fd-create-txn`
 
@@ -170,7 +173,7 @@ success-path audit record; no audit row is written on a committed act) - `inst-f
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-flow-define-sku`
 
 1. [ ] - `p1` - Authorize; idempotency as above - `(cont. inst-fd-idempotency)`
-2. [ ] - `p1` - Parent must exist in the tenant, not be `retired`/`discarded`, **and not hold a live retire intent** (`RETIREMENT_PENDING` — item 36 of the 2026-08-26 review: a `deprecated` parent still admits children, so a draft SKU created after the `CascadePlan` was computed is outside the plan's auto-discard arm and defers that Product's retirement indefinitely); the SKU's brand/region scope must pass the **interim containment check**: scope sets are flat value lists, containment = subset, anything not provably a subset fails `SCOPE_NOT_CONTAINED` (conservative until slice 04 pins the final rule) - `inst-fd-containment`
+2. [ ] - `p1` - Parent must exist in the tenant (an unresolvable `productId` in the payload is a reference the door cannot process — `VALIDATION`, owner's call 2026-08-27), must not be `retired`/`discarded` (a refusal by the parent's current state rather than by the payload — **`PARENT_TERMINAL`**, 409, same call; the *name* is this wave's and the taxonomy owner's to veto, the split is the decision), **and not hold a live retire intent** (`RETIREMENT_PENDING` — item 36 of the 2026-08-26 review: a `deprecated` parent still admits children, so a draft SKU created after the `CascadePlan` was computed is outside the plan's auto-discard arm and defers that Product's retirement indefinitely); the SKU's brand/region scope must pass the **interim containment check**: scope sets are flat value lists, containment = subset, anything not provably a subset fails `SCOPE_NOT_CONTAINED` (conservative until slice 04 pins the final rule) - `inst-fd-containment`
 3. [ ] - `p1` - Reserve `skuCode` **atomically at create**: the insert itself is the reservation — the `ReservationIndex` admits exactly one non-`discarded` holder per `(tenant_id, sku_code)`; the loser of a concurrent race fails `DUPLICATE_SKU_CODE` with an audited reason (PRD AC #42) - `inst-fd-reserve-code`
 4. [ ] - `p1` - Mint `skuId`; persist as `draft` with the slice-03-owned columns present but unjudged (typing/classification rules run when slice 03 registers them); emits the `SkuCreated` outbox row in the same transaction - `(cont. inst-fd-create-txn)`
 
@@ -198,8 +201,11 @@ success-path audit record; no audit row is written on a committed act) - `inst-f
 verbs, and 05's crash-replay of a scheduled activation rides this store keyed by transition id - `(cont. inst-fd-idempotency)`
 1. [ ] - `p1` - `PublishDoor` accepts `(entity, expected internal revision)` — a `draft` for its first publish, or a `published`/`deprecated` **head** for version N+1 (a re-publish changes the version, never the state); stale revision fails `STALE_REVISION` — an approval is only usable against the exact revision it pinned (slice 05 stores the snapshot; the Foundation enforces the match) - `inst-fd-publish-pin`
 2. [ ] - `p1` - Re-run the **full** pipeline at publish (shape, identity, every registered validator for the `→ published` transition): an entity that stopped being publishable since approval fails closed `INCOMPLETE_ENTITY`/rule-named code, never publishes stale - `inst-fd-publish-revalidate`
-3. [ ] - `p1` - The governance gate (slice 05) runs **inside** the door, and the door therefore carries an explicit **authorization mode** (Blocking 9 fix, 2026-08-26 review): `Gate` — the ordinary interactive publish, which needs a `satisfied` record — or **`PreAuthorized(approvalId)`**, the mechanical stage of a composite act (05 `inst-gv-one-shot`: scheduled activation, a cascade leg, a bulk row). Under `PreAuthorized` the gate does not look for a `satisfied` record and does not consume one; it **verifies** that the named record authorized *this* subject and that its pinned revision still matches, raising `APPROVAL_REQUIRED` only when it did not. Without the mode the two readings collide and every scheduled publish fails terminally: the runner drives "the ordinary Foundation publish door" (04 `inst-sp-activate`), the gate inside it would see a `consumed` record, and 04 `inst-ar-failure` wraps that into a terminal `SCHEDULE_STALE_APPROVAL`. Re-validation stays fail-closed in both modes — the mode governs *who approved*, never *whether the entity is still publishable*. A material change without satisfied approvals fails `APPROVAL_REQUIRED`; the Foundation knows only "the gate answered yes/no + reason". An approval rejection "returns the entity to draft" (AC #26) reads: a first-publish entity stays `draft`; a published head keeps its pending edits unpublished — no state flip either way (design reading under the head-row model, **flagged**: the literal reading would need a `published→draft` edge the PRD's own forward-only rule forbids — slice-05 review L-6) - `inst-fd-governance-gate`
-4. [ ] - `p1` - On yes: `published_version += 1` (the door is this column's **only** writer); freeze the full entity content (excluding the metadata map, §4.3) into `products_entity_version`; first publish makes `skuCode` reservation permanent (immutability enforced by the trigger whitelist from this row-state on); emit `ProductPublished`/`SkuPublished`; mark the gate's `satisfied` `ApprovalRecord` `consumed`
+3. [ ] - `p1` - The governance gate (slice 05) runs **inside** the door, and the door therefore carries an explicit **authorization mode** (Blocking 9 fix, 2026-08-26 review): `Gate` — the ordinary interactive publish, which needs a `satisfied` record — or **`PreAuthorized(approvalId)`**, the mechanical stage of a composite act — **an internal door argument, never a wire-visible parameter: the REST and SDK publish surfaces always call in `Gate` mode** (owner's call, 2026-08-27), so the re-use the mode admits is bounded by the in-process callers below rather than by a grant (05 `inst-gv-one-shot`: scheduled activation, a cascade leg, a bulk row). Under `PreAuthorized` the gate does not look for a `satisfied` record and does not consume one; it **verifies** that the named record authorized *this* subject and that its pinned revision still matches, raising `APPROVAL_REQUIRED` only when it did not. Without the mode the two readings collide and every scheduled publish fails terminally: the runner drives "the ordinary Foundation publish door" (04 `inst-sp-activate`), the gate inside it would see a `consumed` record, and 04 `inst-ar-failure` wraps that into a terminal `SCHEDULE_STALE_APPROVAL`. Re-validation stays fail-closed in both modes — the mode governs *who approved*, never *whether the entity is still publishable*. A material change without satisfied approvals fails `APPROVAL_REQUIRED`; the Foundation knows only "the gate answered yes/no + reason". An approval rejection "returns the entity to draft" (AC #26) reads: a first-publish entity stays `draft`; a published head keeps its pending edits unpublished — no state flip either way (design reading under the head-row model, **flagged**: the literal reading would need a `published→draft` edge the PRD's own forward-only rule forbids — slice-05 review L-6) - `inst-fd-governance-gate`
+4. [ ] - `p1` - On yes: `published_version += 1` (the door is this column's **only** writer); freeze the full entity content (excluding the metadata map, §4.3) into `products_entity_version`; first publish makes `skuCode` reservation permanent (immutability enforced by the trigger whitelist from this row-state on); `internal_revision += 1` (owner's call, 2026-08-27: **every** publish bumps it, first and
+re-publish alike, so the ETag moves whenever frozen content does and a stale client's cached
+representation can no longer pass its own precondition); emit `ProductPublished`/`SkuPublished`;
+mark the gate's `satisfied` `ApprovalRecord` `consumed`
 (05 `inst-gv-one-shot` requires the flip **in the same transaction as the authorized act**;
 nothing is consumed under `PreAuthorized`) — all in one transaction - `inst-fd-publish-txn`
 5. [ ] - `p1` - Post-commit, slice 06 consumes the publish event **as content only** (what became publishable); an entity publish **never enqueues a CatalogVersion increment** — addressability comes from downstream requests or an operator catalog-publish act (06 `inst-cv-request`; M1 fix of the 06 review), and the Foundation itself requests nothing (06 `inst-cv-request`'s trigger set names pricing, this gear's slice-09 bulk commits and the operator act — not this slice) - `inst-fd-publish-fanout`
@@ -220,37 +226,55 @@ nothing is consumed under `PreAuthorized`) — all in one transaction - `inst-fd
 1. [ ] - `p1` - Ordered phases: **shape** (types/formats/required-at-this-state) → **identity** (uniqueness, reservation, containment) → **registered validators** (each slice contributes `RegisteredValidator`s keyed by kind + transition/field-set; execution order is registration order within a phase, and no rule may read another rule's verdict) → **governance gate** (publish only) - `inst-fd-pipeline-order`
 2. [ ] - `p1` - Fail-closed and atomic: any failure rejects the whole mutation with an audited reason; there is no partial application anywhere in the gear (PRD AC #38) - `inst-fd-fail-closed`
 3. [ ] - `p1` - Registration is compile-time code (a slice ships its validators with its handler); the pipeline exposes `rule_names()` for observability only — attribution in rejections rides the **error code**, never the rule name - `inst-fd-rule-registry`
-4. [ ] - `p2` - Field-mutability enforcement frame: each published-state field carries a bucket tag (i structural / ii correctable / iii material-mutable / iv descriptive — PRD `fr-field-mutability-matrix`); the Foundation refuses bucket-i writes after first publish and routes bucket-ii to slice 07's correction door; bucket iii/iv are ordinary head-row saves re-published as version N+1, their materiality judged by slice 05; bucket-ii writes are admitted **only through slice 07's correction door**, which the physical guard (§4.2) knows by name - `inst-fd-mutability-frame`
+4. [ ] - `p2` - Field-mutability enforcement frame: each published-state field carries a bucket tag (i structural / ii correctable / iii material-mutable / iv descriptive — PRD `fr-field-mutability-matrix`); the Foundation refuses bucket-i writes after first publish, and **refuses a bucket-ii write at
+the head door naming slice 07's correction door in the reason** rather than forwarding it (owner's
+call, 2026-08-27: one door, one effect — a single call must not silently pass through two
+ceremonies with different grants, and the physical guard already enforces exactly this); bucket iii/iv are ordinary head-row saves re-published as version N+1, their materiality judged by slice 05; bucket-ii writes are admitted **only through slice 07's correction door**, which the physical guard (§4.2) knows by name - `inst-fd-mutability-frame`
 
 ### 3.2 Idempotency store
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-algo-idempotency`
 
 1. [ ] - `p1` - Key scope `(tenant_id, endpoint, client_key)`; stored: payload hash + outcome reference; identical replay returns the stored outcome without touching entities, versions, or the outbox; different payload under a live key fails `IDEMPOTENCY_CONFLICT` (never a silent no-op) - `inst-fd-idem-replay`
-2. [ ] - `p1` - Retention: `max(24h, max_freeze_timeout)` read from config (C6); expiry is a background sweep; expiry never retro-invalidates an outcome - `inst-fd-idem-retention`
+1a. [ ] - `p1` - **The row is `claimed` or `answered` and nothing else, and the claim INSERT is the gate** (owner's call, 2026-08-27, adopting the donor's model whole — `gears/bss/pricing/docs/design/01-foundation.md` §4): the door inserts the key `claimed` with both response columns null **before** the guarded operation, and sets them together on completion. A duplicate arriving against a `claimed`, unanswered key is refused **`IDEMPOTENCY_KEY_IN_FLIGHT`** (409) — without this state a concurrent duplicate matches neither branch of `inst-fd-idem-replay`, because `outcome_ref` cannot exist before the operation has produced one, and a retry storm is exactly the concurrent case - `inst-fd-idem-claim`
+2. [ ] - `p1` - Retention: `max(24h, max_freeze_timeout)` read from config (C6). **Expiry is evaluated at claim time, not by a reaper** (same call, same donor): a claim against an expired key succeeds and replaces it, so correctness never waits on a sweep; a background sweep still runs, but only to reclaim space. Expiry never retro-invalidates an outcome - `inst-fd-idem-retention`
 
 ### 3.3 Error taxonomy (Foundation-owned codes)
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-contract-error-taxonomy`
 
 `DUPLICATE_NAME`, `DUPLICATE_SKU_CODE`, `STALE_REVISION`, `IDEMPOTENCY_CONFLICT`,
-`ILLEGAL_TRANSITION`, `ILLEGAL_FIELD_MUTATION` (bucket-i write), `SCOPE_NOT_CONTAINED`,
+`IDEMPOTENCY_KEY_IN_FLIGHT`,
+`ILLEGAL_TRANSITION`, `ILLEGAL_FIELD_MUTATION` (a write the head door may not take: bucket-i after first publish, or
+bucket-ii, which belongs to 07's correction door — the reason names the door; 07's
+structural-identity attempts ride this code rather than declaring their own), `SCOPE_NOT_CONTAINED`,
 `PARENT_NOT_PUBLISHED` (registered by slice 04 on the publish edge but named here so AC #38's
-map is complete), `INCOMPLETE_ENTITY`, `APPROVAL_REQUIRED` (raised through the governance
+map is complete), `PARENT_TERMINAL` (the create door's parent-state guard), `INCOMPLETE_ENTITY`, `APPROVAL_REQUIRED` (raised through the governance
 gate), `VALIDATION` (per-field envelope), `RETIREMENT_PENDING` (the create door's parent guard,
 `inst-fd-containment` — declared here 2026-08-26; slice 04 owns the un-deprecation arm of the
-same code, so this code has two raising doors, and the
-one-door rule below is stated per **arm** for it). Every code appears in exactly one raising
-**door** — a door, not a slice: validators registered into the `PublishDoor` raise through it;
+same code, so this code has two raising phases, and the
+rule below is stated per **arm** for it). **Every code appears in exactly one raising *phase* of
+the pipeline** (owner's call, 2026-08-27) — a phase, not a door and not an instruction row. The
+unit matters because a phase runs at several doors by design: the **identity** phase raises the
+uniqueness and reservation codes wherever it runs (create, save, and the publish re-run), the
+**shape** phase raises `VALIDATION`, the **precondition** check raises `STALE_REVISION` at both
+the `If-Match` verb and the publish pin, the idempotency resolver raises `IDEMPOTENCY_CONFLICT`
+at every door that resolves a key, and validators registered into the `PublishDoor` raise through
+it;
 slice-owned codes (taxonomy cycles, unit rules, freeze, bulk rows…) are declared in their
-slices and the AC #38 ↔ code ↔ slice map is completed by slice 12's coverage check. **Two
-carve-outs are named here so that rule stays checkable**: `RETIREMENT_PENDING` has two arms
-(this slice's create-door parent guard and slice 04's un-deprecation), and `CONTENT_PII_BLOCKED`
-is raised by the shared `inst-av-pii-block` hook rather than by a door at all — every door
-carrying a free-text `reason` invokes it, and slice 02 holds its single declaration. Codes are
+slices and the AC #38 ↔ code ↔ slice map is completed by slice 12's coverage check. **Under the phase
+rule the carve-out list closes at the same two it already named**, and that is the test the rule
+had to pass: `RETIREMENT_PENDING` genuinely spans two phases (this slice's identity phase at the
+create door, and slice 04's registered validator on the un-deprecation edge), and
+`CONTENT_PII_BLOCKED` is raised by the shared `inst-av-pii-block` hook, which is not a pipeline
+phase at all — every door carrying a free-text `reason` invokes it, and slice 02 holds its single
+declaration. Everything the third pass had flagged as a violation conforms without a new
+carve-out: `SCOPE_NOT_CONTAINED` stays one phase because 04 C5 is "the final form of 01's interim
+check" in that slice's own words rather than a second raiser, and `ILLEGAL_FIELD_MUTATION` stays
+one because 07's structural-identity attempts "ride 01's" code rather than declaring it. Codes are
 part of the SDK contract; renames are breaking.
 
-**Problem responses (RFC 9457):** `APPROVAL_REQUIRED` (403); `DUPLICATE_NAME`, `DUPLICATE_SKU_CODE`, `IDEMPOTENCY_CONFLICT`, `RETIREMENT_PENDING`, `STALE_REVISION` (409); `ILLEGAL_TRANSITION`, `ILLEGAL_FIELD_MUTATION`, `SCOPE_NOT_CONTAINED`, `PARENT_NOT_PUBLISHED`, `INCOMPLETE_ENTITY`, `VALIDATION`, `CONTENT_PII_BLOCKED` (422).
+**Problem responses (RFC 9457):** `APPROVAL_REQUIRED` (403); `DUPLICATE_NAME`, `DUPLICATE_SKU_CODE`, `IDEMPOTENCY_CONFLICT`, `IDEMPOTENCY_KEY_IN_FLIGHT`, `PARENT_TERMINAL`, `RETIREMENT_PENDING`, `STALE_REVISION` (409); `ILLEGAL_TRANSITION`, `ILLEGAL_FIELD_MUTATION`, `SCOPE_NOT_CONTAINED`, `PARENT_NOT_PUBLISHED`, `INCOMPLETE_ENTITY`, `VALIDATION`, `CONTENT_PII_BLOCKED` (422).
 
 *Statuses added 2026-08-26, corrected the same day by the fix-wave review. The gear declared
 its codes with no HTTP status and no problem-response block in any slice, against
@@ -333,6 +357,17 @@ shared head-row guard (§4.2), under which `product_code` is immutable once
 `published_version > 0` exactly as `sku_code` is (PRD AC #1 puts an optional `productCode` under
 the same rules as `skuCode`, and the guard named only the SKU column).
 
+**Bucket assignment for the Foundation-owned columns** (owner's call, 2026-08-27 — the PRD's
+matrix enumerated only the columns slices 02/03 own, leaving the physical guard with nothing to
+route on): `name` and `name_normalized` are **bucket-iii** — a published Product can be renamed,
+and the rename comes out as version N+1 under governance rather than forcing retire-and-clone;
+`region_scope` and `brand_scope` are **bucket-iii in both directions**, widening and narrowing
+alike, so a narrowing that would orphan a live child meets the governance gate before it meets
+`fr-parent-child-integrity`'s fail-closed check; `product_code` is **bucket-i**, following AC #1's
+"same rules as `skuCode`"; and `cloned_from` is **stricter than bucket-i** — writable only in the
+creating statement and never again, not merely never after first publish, so the lineage stays
+evidence rather than a claim.
+
 **`normalized(name)`** (the uniqueness and promotion-identity operand, P-D-04/AC #33a) is pinned:
 Unicode NFKC → full casefold → trim + collapse internal whitespace to single spaces, computed
 **application-side** so both engines store identical bytes.
@@ -345,8 +380,9 @@ Unicode NFKC → full casefold → trim + collapse internal whitespace to single
 `tax_category_ref` · `gl_code_ref` · `metering_unit` · `usage_type_ref` ·
 `composition_pending` (bool, slice 06 semantics) · `replaced_by_sku_id` (slice 04) ·
 `internal_revision` · `published_version` · `region_scope`/`brand_scope` (⊆ parent, §2 flow) ·
-`created_by` · `cloned_from` (nullable; written only at create, immutable after — a later write
-fails `ILLEGAL_FIELD_MUTATION`; slice 11) · timestamps.
+`created_by` · `cloned_from` (nullable; written only in the creating statement and immutable from then on —
+stricter than bucket-i, which bites only after first publish; a later write fails
+`ILLEGAL_FIELD_MUTATION`; slice 11) · timestamps.
 
 Column ownership: the Foundation owns identity/lifecycle/version/scope columns; every
 capability column above is **carried** here (one table, one row identity) but its write rules
@@ -360,8 +396,8 @@ publish enforced by the trigger whitelist making `sku_code` immutable once
 `products_entity_version` rows admit no UPDATE/DELETE ever. On head rows the trigger whitelist
 admits exactly: `lifecycle_state` along the §2 edge list; `published_version` only from the
 `PublishDoor`; bucket-iii/iv columns via the save door in any non-terminal state;
-`internal_revision` via the save door **and from every transition and correction door — every
-one of them bumps it** (`inst-fd-transition-guard`), so admitting it "via the save door" alone
+`internal_revision` via the save door **and from every transition, correction and publish
+door — every one of them bumps it** (`inst-fd-transition-guard`), so admitting it "via the save door" alone
 refused writes the design requires; **`deprecation_provenance` and `replaced_by_sku_id` only
 from slice 04's own doors**, and **`composition_pending` only from slice 06's clearing lane
 (`inst-cc-clear`), never the save door — 06 declares the flag system-owned and never
@@ -381,6 +417,17 @@ serialization, the byte-identity discipline that `CatalogVersion` (slice 06) wil
 **a per-row content digest written at freeze** (the slice-10 restore drill re-verifies sampled
 entity versions against it — without it, version-history corruption is invisible to every
 checksum; H2 fix) · `approval_ref` · `actor_ref` · `published_at`.
+**Engine-canonical serialization is pinned here** (owner's call, 2026-08-27 — 06 §3 had pointed
+back at "the 01 engine-canonical discipline" while this section pointed forward, so neither stated
+it, and 10's restore drill compares these digests byte-for-byte across both engines): JSON, keys
+**sorted lexicographically by column name**, UTF-8 without BOM, **absent values written `null`
+rather than omitted** so absence and the empty string cannot collide, integers and decimals as
+bare decimal strings with no locale and no trailing zeroes, timestamps RFC 3339 in UTC at
+microsecond precision, computed **application-side** exactly as `normalized(name)` is (§4.1) so
+both engines store identical bytes. The digest's input is the version's own column set, so
+**adding a column to a frozen row's content is a digest-version bump, not a silent change** — and
+what actually holds all of this is C1's golden vector, committed with the first migration.
+
 Append-only, no UPDATE path at all; diffs are computed between rows, never stored mutated.
 These rows are the **only consumer-read surface** for **Product/SKU** entity content (08 C6's
 own scoping — governed live entities are read from their live tables): read models,
@@ -390,10 +437,14 @@ read.
 
 ### 4.4 `products_idempotency`, `products_audit_log`, `products_outbox`
 
-- `products_idempotency`: `(tenant_id, endpoint, client_key)` PK · `payload_hash` ·
-  `outcome_ref` · `expires_at` (§3.2).
+- `products_idempotency`: `(tenant_id, endpoint, client_key)` PK · `state` (`claimed | answered`)
+  · `payload_hash` · `outcome_ref` · `expires_at`, with one CHECK tying them: `claimed` ⇒
+  `outcome_ref` NULL, `answered` ⇒ NOT NULL (§3.2).
 - `products_audit_log`: append-only apart from the one-way seal transition below; `actor_ref` (pseudonymous — the identity-reference map is
-  slice 10's), action, subject `(kind, id, revision)`, reason, correlation id, `written_at` (the
+  slice 10's), action, subject `(kind, id, revision)` — **`id` and `revision` absent on a refusal raised before
+  the mint, which then carries the attempted natural key (`name` or `sku_code`) instead** (owner's
+  call, 2026-08-27: an audit row must never name an id that identifies nothing) — reason,
+  correlation id, `written_at` (the
   operand `RetentionClock`'s audit class reads — 10 §3), and a nullable break-glass
   `session_id` (present on the elevation class only; 05 audits every elevated access with it). **Under P-D-21 this
   table holds only the acts that emit no event**, three classes: every **refusal** with its reason
@@ -405,9 +456,16 @@ read.
   explicit \"no broker event\" per 01 §4.5" in that slice's own words. Slice 10's erasure act is
   **not** in this class: it is eventless only for events *carrying identity*, and its own
   **Produced** set lists a minimal `ActorErased(actor_ref)`). A committed mutation that *does* emit writes
-  **no** row here; its outbox event is the record. **How a refusal's row commits is unsettled, and
-  P-D-21 makes it load-bearing** (§6): the wording this replaced had every door write its row
-  "in its transaction", which is precisely the transaction a refusal rolls back.
+  **no** row here; its outbox event is the record. **A refusal's row is written in its own transaction,
+  which commits independently of the refused mutation, and it is a precondition of answering the
+  caller** (owner's call, 2026-08-27): if the row cannot be written, the door answers **503** and
+  does **not** report the domain refusal, because reporting it would be the one thing
+  `nfr-availability-audit`'s "100% write-path audit" forbids — a refusal the caller learns about
+  and the registry does not. The wording this replaced had every door write its row "in its
+  transaction", which is precisely the transaction a refusal rolls back. **Owed**: the 503 needs a
+  code of its own, since §3.3 requires every code to carry a status and this gear maps 503 to
+  "retry is the remedy"; naming it is the taxonomy owner's, and it is the only piece of this
+  decision not settled.
   **Reserved platform-sealing seam (P-D-08)** — present from the first migration, never sealed
   by this gear: `seal_state` (NOT NULL, roster `unsealed | sealed`, written **`unsealed` at
   INSERT** by this gear — always, in v1 and after activation alike — which makes the unproven
@@ -435,7 +493,13 @@ read.
 ### 4.5 Foundation-owned events
 
 `ProductCreated`, `SkuCreated`, `ProductDraftSaved`, `SkuDraftSaved`, `ProductPublished`,
-`SkuPublished`, `ProductDiscarded`, `SkuDiscarded`. Rule for every other slice: each
+`SkuPublished`, `ProductDiscarded`, `SkuDiscarded`. **The transition floor's three remaining
+edges — `published→deprecated`, `deprecated→published`, `deprecated→retired` — carry "no event
+here": slice 04 emits `SkuDeprecated`/`SkuUndeprecated`/`SkuRetired` on them** (owner's call,
+2026-08-27; the floor stays policy-free and eventless, and 04 owns both the policy and the
+announcement). Rule for every slice, **this one included** (same call — the rule had read "every
+other slice", exempting the document that states it and leaving slice 12's completeness check a
+blind spot on the Foundation): each
 state-changing instruction names its event or records "no event" in its slice doc — the
 completeness check is slice 12's. Schema versioning (`vN`→`vN+1`) discipline and the
 replay/bootstrap path are specified in slice 12; the Foundation's obligation is the envelope
@@ -474,24 +538,12 @@ half), `cpt-cf-bss-products-fr-event-delivery-resilience` (registry-side half: d
 **Risks & open items**:
 - **Name release on discard** is design-introduced symmetry (PRD releases *codes* on discard,
   says nothing about the name) — cheap to revisit; flagged for the slice review.
-- **Clone-of-retired vs absolute name uniqueness** (P-D-04): a retired product holds its name,
-  so revival-by-clone forces a rename — **resolved by slice 11 `inst-cn-rename`** (canonical
-  name renames, display attributes copy verbatim; a name-*transfer* would be a P-D-04
-  amendment, deliberately not built).
 - **Broker schema-version pinning**: the versioned-schema-ref mechanics on the broker side need
   one worked example with Common Core before slice 12 freezes the replay contract.
 - **`sellable` member missing in pricing's `CatalogSku`** — pricing-side gap (2026-08-25
   review); the SDK read shape here must expose it so the fix is a consumer-side addition.
 - Interim containment check (flat subset) must be re-validated against slice 04's final rule —
   the two must not silently diverge.
-- **`SCOPE_NOT_CONTAINED`: one raising door or two?** (both lenses of the 2026-08-27 slice-01
-  review, independently). §3.3 states the one-door rule with a **closed** list of two carve-outs,
-  yet this slice raises the code at the create door (`inst-fd-containment`) and slice 04 raises it
-  on save and publish (`inst-pc-containment`, which 04 §1.6 calls "the final form of 01's interim
-  check"). 04's own note covers *declaration* only — "the status is repeated, not a second
-  declaration" — and says nothing about the raising **door**, which is the unit this rule is
-  stated over. Either a third carve-out is owed, or 01's create-door arm retires when 04 lands.
-  Both are product calls; neither is written anywhere.
 - **Who reads the retire intent at the create door?** `inst-fd-containment` refuses a child under
   a parent holding a live retire intent, but §1.1 gives the Foundation **no capability policy**,
   §1.5 puts retirement scheduling in slice 04, and no table in §4 can express an intent — the
@@ -507,29 +559,6 @@ half), `cpt-cf-bss-products-fr-event-delivery-resilience` (registry-side half: d
 - **Why is the field-mutability frame `p2`** when the physical guard enforcing its buckets is
   unconditional and its code `ILLEGAL_FIELD_MUTATION` ships in the p1 contract surface? Raising
   the frame or lowering the guard are both owner calls; no document states the priority.
-- **`STALE_REVISION` raises at two doors inside this slice** (second-pass review, 2026-08-27) —
-  the `If-Match` precondition on every mutating verb (`inst-fd-etag`) and the publish pin
-  (`inst-fd-publish-pin`) — so §3.3's closed list of two carve-outs is short again, and unlike
-  `SCOPE_NOT_CONTAINED` no cross-slice sequencing can retire either arm. Whether the `If-Match`
-  precondition counts as one door across all mutating verbs, whether the publish pin is a
-  separate door, and whether the rule is per code or per arm are all unstated. The same shape
-  reaches `ILLEGAL_FIELD_MUTATION`, which 07 raises on structural-identity attempts.
-- **Does a publish bump `internal_revision`?** `inst-fd-transition-guard` says **every**
-  transition bumps it and that a re-publish is **not** an edge; the publish transaction
-  (`inst-fd-publish-txn`) lists its writes without a bump; and the head-row whitelist admits the
-  column "via the save door **and from every transition and correction door**" without naming the
-  `PublishDoor`. Three readings follow, and the middle one has teeth: if a re-publish does not
-  bump, `published_version` moves while the ETag token does not, so a client's stale cached
-  representation still passes its own precondition. Nothing in the tree picks one.
-- **A bucket-ii write arriving at the save door: refused, or forwarded?** `inst-fd-mutability-frame`
-  says both in one row — the Foundation "routes bucket-ii to slice 07's correction door", and
-  bucket-ii writes are "admitted **only through slice 07's correction door**". If it is a refusal
-  it has no code: `ILLEGAL_FIELD_MUTATION` is scoped to a bucket-i write, and 07 covers structural
-  identity only. Naming a code or specifying route-and-continue is new normative content.
-- **A caller-supplied id: codeless 400 or `VALIDATION`?** `inst-fd-mint-id` calls a stray id in the
-  payload "a `400`" — the only rule-level HTTP status in the file — while §3.3 reserves the bare
-  400 for a malformed request and gives the shape phase its own `VALIDATION` envelope. A stray id
-  is a shape-phase finding under §3.1's order, which argues the other way. Unclassified anywhere.
 - **Does `products_product` carry `replaced_by_sku_id`?** 04 §4 lists it among "Columns on
   `products_sku`/`products_product` (carried by 01)", and this slice's shared guard is declared
   for both entity tables, but only §4.2 defines the column, on SKUs. A Product pointing at a
@@ -553,15 +582,6 @@ half), `cpt-cf-bss-products-fr-event-delivery-resilience` (registry-side half: d
   collapse the two, "the re-basing C5's M1 fix struck for collapsing budgets NFR #3 keeps
   distinct". Whether one meter may be asserted against two thresholds, or a second probe is owed,
   is settled nowhere; slice 06's open item records the split rather than deciding it.
-- **How does a refusal's audit row commit?** (P-D-21, 2026-08-27 — latent before it, load-bearing
-  after). §4.4's rule was "every mutating door writes exactly one row in its transaction,
-  including every rejection with its reason", and a refusal rolls that transaction back. Under
-  P-D-21 refusals are the table's **main** content, so the mechanism can no longer be left
-  implicit: an autonomous/second transaction, a door that commits the audit row and rolls back
-  only the entity writes, or something else. Each has different failure behaviour when the
-  refusal is itself caused by the database being unavailable, and no document in the tree states
-  which. **Nothing else in the gear can be relied on to cover it**: the event stream cannot, by
-  P-D-21's own reasoning.
 - **Where does slice 03's resolved-binding snapshot live now?** `inst-cd-stamp` stamps
   `(gts_id, kind, metadata_fields)` "into the audit row of the publish", and a publish is a
   committed act that under P-D-21 writes no audit row. §15's deletion negotiation and pricing's
@@ -575,63 +595,16 @@ half), `cpt-cf-bss-products-fr-event-delivery-resilience` (registry-side half: d
   and `aggregate_id` the subject id. **`revision` is in neither**, so as it stands the record
   cannot say which revision an act applied to — the one thing an audit trail over a versioned
   entity exists to say. Owed as a payload amendment, not written here.
-- **What unit does the one-door rule count — a door, a phase, or an arm?** *(all three lenses of
-  the 2026-08-27 third pass raised this independently, on three different codes; it subsumes the
-  `SCOPE_NOT_CONTAINED` and `STALE_REVISION` items above.)* §3.3 states the rule over **doors** and
-  closes the carve-out list at two, but the identity phase alone raises `DUPLICATE_NAME` and
-  `DUPLICATE_SKU_CODE` and runs at three doors (create, save, publish re-run); `VALIDATION` is the
-  shape phase's envelope and the pipeline runs "inside every mutating door"; `IDEMPOTENCY_CONFLICT`
-  is raised wherever a key resolves; and `CONTENT_PII_BLOCKED` is described three ways across the
-  set — this slice calls it doorless, 10 says "the door is 02's", 02 enumerates every door that
-  invokes the hook. None of these can be retired by cross-slice sequencing, so the answer is not a
-  count but a definition, and it decides whether slice 12's `inst-cc-errors` coverage check is
-  writable as stated. Owner: whoever owns §3.3's rule, jointly with slice 12.
-- **Which bucket do the Foundation-owned columns sit in?** The physical guard routes by bucket tag,
-  but 05's bucket registry records only slice 03's, and the PRD enumerates buckets ii and iii by
-  name while leaving i and iv as classes. Unassigned here: `name`/`name_normalized`,
-  `region_scope`/`brand_scope`, the parent link, `product_code`, and `cloned_from` — whose §4.2
-  note says "immutable after [create]" while the guard's bucket-i clause only bites "never after
-  first publish", so if it is bucket-i a rewrite before first publish is permitted and the note is
-  wrong. This decides a product-visible question — whether a published Product can be renamed —
-  so it is the owner of `fr-field-mutability-matrix`'s call, per column.
-- **What refuses a SKU create under a parent that is missing, `retired` or `discarded`?**
-  `inst-fd-containment` names a code for its third arm only (`RETIREMENT_PENDING`). 04's
-  `PARENT_NOT_PUBLISHED` cannot serve the first two — a `draft` parent is legal at create, so that
-  code would refuse legal creates — and 01's own 404 convention is scoped to a path segment, while
-  the parent id here is a payload member. Two arms of a `p1` guard terminate in no code and no
-  status. Naming one is new normative content; the taxonomy's owner must add a code, or say both
-  ride `VALIDATION`.
-- **A create-door refusal has no subject id to audit.** §4.4 requires every refusal row to carry
-  subject `(kind, id, revision)`, and P-D-21 makes refusals this table's main content — but the
-  create flow mints the id *after* the checks that refuse, so `DUPLICATE_NAME`,
-  `DUPLICATE_SKU_CODE` and `SCOPE_NOT_CONTAINED` refusals have neither id nor revision. Either the
-  mint moves ahead of validation (changing what a rejected create consumes from the id space) or
-  the audit tuple must admit an absent subject. Both are owner calls.
-- **What happens to a duplicate that arrives while the first request is still in flight?** §3.2
-  gives two outcomes, replay and `IDEMPOTENCY_CONFLICT`, and stores `payload_hash · outcome_ref ·
-  expires_at` — a shape in which `outcome_ref` cannot exist before the guarded operation produced
-  one, so a concurrent duplicate matches neither branch. The donor answers it with machinery this
-  gear declares nowhere (a claimed/answered row state, expiry evaluated at claim time rather than
-  by this slice's background sweep, and a third code for an in-flight key). Adopting it means a new
-  row state and a new code; declining it means concurrent duplicates both execute. Also unstated:
-  whether `payload_hash` covers the received bytes or a canonical rendering of the parsed request.
-- **Who may select `PreAuthorized(approvalId)`, and what bounds its re-use?** §1.5 puts the mode in
-  this slice's scope and §2 says the gate under it consumes nothing, so a caller or a re-run naming
-  the same record while the pin still matches publishes again. No document says whether the mode is
-  a wire-visible parameter or an internal-only door argument. Interacts with the
-  `internal_revision`-on-publish item above: if a re-publish does not bump, the pin never stops
-  matching.
-- **Where is "engine-canonical serialization" pinned?** §4.3 names it and 06 §3 points back here
-  ("the 01 engine-canonical discipline"), so each slice cites the other and neither states the
-  rule, while 10's restore drill compares digests byte-for-byte across both engines. §4.1 shows
-  what a pin looks like when this file makes one. Someone must fix field order, encoding and the
-  null/absent representation — plausibly this slice, since it writes the first digest.
-- **Does this slice's transition floor owe events?** §4.5's completeness rule is written as "every
-  **other** slice", exempting the one that states it, and this slice's edge list admits three edges
-  with no event in its roster. Whether the Foundation's rows must cite 04's
-  `SkuDeprecated`/`SkuUndeprecated`/`SkuRetired`, or record "no event" and leave emission to 04, is
-  stated nowhere; slice 12 owns the completeness check but not the rule's scope.
-- **Which surface serves the columns that only ever exist on the head row?** A deprecation, a
+- **Which bucket is a SKU's parent link (`product_id`)?** The 2026-08-27 owner call placed `name`,
+  the scope columns, `product_code` and `cloned_from`, and left this one: re-parenting a published
+  SKU is either structural (bucket-i, so a mis-parented SKU is fixed only by retire-and-clone) or
+  material-mutable (bucket-iii, a governed new version). Nothing in the PRD's matrix reaches it and
+  no slice re-parents a SKU today, which is why it can wait — but the physical guard has no rule
+  for the column until it is answered.
+- **Is `payload_hash` over the received bytes or a canonical rendering of the parsed request?**
+  The 2026-08-27 owner call adopted the donor's claimed/answered store whole and left this open;
+  the donor treats it as a wire-visible difference (its D-174), because two byte-different requests
+  that parse identically are the same act to a caller and different acts to a byte hash.- **Which surface serves the columns that only ever exist on the head row?** A deprecation, a
   retirement initiation and a cascade are transitions, not publishes, so `lifecycle_state`,
   `deprecation_provenance` and `replaced_by_sku_id` move on the head row with no new
   `products_entity_version` row to carry them — yet 08 must serve current state and 04 promises a
