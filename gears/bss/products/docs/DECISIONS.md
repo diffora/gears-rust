@@ -41,6 +41,7 @@ joint contracts, cited from here by their pricing numbers, never duplicated.
 - [P-D-30 — Where the gate hosts, where authorization sits, whose validator, and what the door can see](#p-d-30--where-the-gate-hosts-where-authorization-sits-whose-validator-and-what-the-door-can-see)
 - [P-D-31 — The four the slice had routed outward, decided here](#p-d-31--the-four-the-slice-had-routed-outward-decided-here)
 - [P-D-32 — Six calls closing the slice-01 second lens wave](#p-d-32--six-calls-closing-the-slice-01-second-lens-wave)
+- [P-D-33 — Eight calls from weeding slice 01's open items](#p-d-33--eight-calls-from-weeding-slice-01s-open-items)
 
 <!-- /toc -->
 
@@ -1230,3 +1231,30 @@ instead.*
 - **Propagated**: `design/01-foundation.md` (§1.7, §2, §3.3, §4.2, §5, §6),
   `design/06-catalog-version.md` (`inst-cc-clear`), `design/07-reference-signal.md` (the
   `ILLEGAL_FIELD_MUTATION` status repeat), `design/12-consumer-contracts.md` (open items).
+
+
+#### P-D-33 — Eight calls from weeding slice 01's open items
+
+- **Date**: 2026-08-27 (owner call, on weeding `design/01-foundation.md` §6 after four lens passes)
+- **Context**: four passes registered questions and only one round closed any, so §6 had grown to
+  22 items and 18% of the file against a sibling maximum of 14%. Weeding merged four thematic
+  groups (22 → 16) and found eight items already decidable from constraints the set had fixed
+  elsewhere. The eight below are those; the remaining ten need input this design set does not hold.
+
+  | Call | Propagation |
+  |---|---|
+  | **A read door is declared**: `GET /bss-products/v1/{products\|skus}/{id}` (`… × read`) returns the head with its internal revision as `ETag`. `inst-fd-etag` requires a precondition that no surface returned — 08's projections serve frozen content and expose no head revision, so an author who had not just written could obtain none | 01 §2 |
+  | **The publish door's pinned revision arrives as `If-Match`**, like every other head verb's, rather than as an unnamed door argument with no wire carrier | 01 §2 |
+  | **The freeze captures the post-act image** — including the `composition_pending` value the same UPDATE is about to write. The version row's key already carries `published_version = N+1`, so freezing the pre-UPDATE image would store content the act never produced and put the digest and 10's byte-for-byte restore drill on different bytes | 01 §2 |
+  | **`digest_version` starts at `1`**, pinned as a code constant by §5's golden vector rather than by config — the vector is already owed by that section, so no second carrier is introduced | 01 §4.3 |
+  | **The pipeline stops at the first failing phase**, collecting violations per-field *within* that phase. §4.4's audit row carries a single `error_code`, so collecting across phases would produce more codes than the row can record | 01 §3.1 |
+  | **"One phase, one status class" is a rationale, not an invariant.** P-D-32 used it to move two codes; read as a rule it would force `SCOPE_NOT_CONTAINED` to 409, contradicting §3.3's own "422 for content the door cannot process". The `identity` phase legitimately spans both | 01 §3.3 |
+  | **An absent `If-Match` rides `VALIDATION`**, not the bare 400. The request parsed, which is `inst-fd-mint-id`'s own criterion for what the malformed-request 400 does not cover | 01 §2 |
+  | **`inst-fd-save-txn` is the admitting door for every bucket-i column while `published_version = 0`** — `skuCode`/`productCode`, `brand_id` and a SKU's parent `product_id` — and **`brand_id` is a required payload field validated against the caller's brand claims**, refused `VALIDATION` when it names a brand the caller does not hold. §4.2 admitted the class with no door claiming it, and no step assigned the column at all; silent derivation breaks on a principal holding more than one brand | 01 §2, §4.1 |
+
+- **Left open**: ten items, each needing input outside this design set — the retention DELETE arm
+  (10 and the retention-duration owner), the interim trigger predicates owed by 04 and 07, the gate
+  phase's reach (05), `SCOPE_NOT_CONTAINED`'s phase and both codes' declaring slice (04), the
+  idempotency store's seven unpinned operands, the event-declaration criterion (12), and the
+  identity columns' bucket (the PRD owner who holds the matrix).
+- **Propagated**: `design/01-foundation.md` (§2, §3.1, §3.3, §4.1, §4.3, §6).
