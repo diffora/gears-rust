@@ -42,6 +42,7 @@ joint contracts, cited from here by their pricing numbers, never duplicated.
 - [P-D-31 — The four the slice had routed outward, decided here](#p-d-31--the-four-the-slice-had-routed-outward-decided-here)
 - [P-D-32 — Six calls closing the slice-01 second lens wave](#p-d-32--six-calls-closing-the-slice-01-second-lens-wave)
 - [P-D-33 — Eight calls from weeding slice 01's open items](#p-d-33--eight-calls-from-weeding-slice-01s-open-items)
+- [P-D-34 — The remaining slice-01 items, decided from the set](#p-d-34--the-remaining-slice-01-items-decided-from-the-set)
 
 <!-- /toc -->
 
@@ -1258,3 +1259,36 @@ instead.*
   idempotency store's seven unpinned operands, the event-declaration criterion (12), and the
   identity columns' bucket (the PRD owner who holds the matrix).
 - **Propagated**: `design/01-foundation.md` (§2, §3.1, §3.3, §4.1, §4.3, §6).
+
+
+#### P-D-34 — The remaining slice-01 items, decided from the set
+
+- **Date**: 2026-08-27 (owner call, after P-D-33's weeding left ten items)
+- **Context**: the ten were filed as "needing input this design set does not hold". On inspection
+  that was true of two — the envelope slot (the event-broker's contract) and the retention
+  *durations* (Legal/Finance), both already in `PRD` §15. The rest named owners — "this slice",
+  "the governance owner", "whoever took P-D-24", "the `nfr-availability-audit` owner" — who are
+  this set's own. Nine are decided here, plus five of the idempotency store's seven operands.
+
+  | Call | Propagation |
+  |---|---|
+  | **The no-hook exception reaches any transition that consumes an approval in the same transaction**, not `draft→published` alone — 05 C3's own reason (a hook firing against the record the act is consuming has no defined ordering) applies wherever P-D-30 put the gate. And **the gate phase passes trivially on an ungated act**: a head save invalidates approvals, never consumes one, so `Gate` mode imposes no approval requirement on create, save or discard | 01 §2, §3.1; 05 C3 |
+  | **A read under elevation commits its audit row in its own transaction, as a precondition of serving the read** — P-D-08 S3 is scoped to "the guarded mutation's transaction" and a read has none | 01 §4.4 |
+  | **A parsed request's named field set is the fields the request carries.** §4.3's "absent written `null`" addresses a *complete* set, so an omitted field and an explicit `null` hash differently — which is what they mean at the head door | 01 §4.3 |
+  | **The event-declaration unit is the act, not the row**: a step inside a transaction whose event another row of that transaction names inherits the declaration | 01 §4.5; 12 (completeness check) |
+  | **04's final containment rule replaces the operand inside 01's `identity` phase** rather than registering a slice-04 validator — the literal reading of C5's "the final form of 01's interim check", and the only one under which the code keeps one raising phase | 01 §3.3; 04 C5 |
+  | **`→ published` names the publish act, not the row's `lifecycle_state` afterwards** — the door accepts a `deprecated` head for N+1 and leaves it `deprecated`, so a state-after reading selects nothing there | 01 §1.7, §2 |
+  | **`AUDIT_UNAVAILABLE` is carved out of the audit class** (the class, not §3.3's phase list): its own row is the one that could not be written. Recorded out-of-band; `nfr-availability-audit`'s "100%" is scoped to domain refusals | 01 §4.4 |
+  | **`RETIREMENT_PENDING` is declared by 04** and listed in 01 for the response map only — P-D-30 gave 04 both arms, so 01 raises neither. **`SCOPE_NOT_CONTAINED` stays 01's**, with 04 carrying the reciprocal "named in 01, registered here" | 01 §3.3; 04 |
+  | **Four row-image predicates the first migration's trigger was missing**: `deprecation_provenance` only in the same statement as a `lifecycle_state` change; `replaced_by_sku_id` **write-once** (04: "Validated once, and the row is terminal at the flip"); bucket-ii only in the same statement as a `published_version` bump (07 defines its `CorrectionDoor` as ending in a re-publish); and **row identity — `tenant_id`, the PK, `created_by` — admitted in no UPDATE at all**, `cloned_from`'s treatment rather than the PRD matrix's bucket-iv catch-all, which that FR words as "other *descriptive* fields". Plus a **retention DELETE arm** predicated on `written_at` past the class's window, so 10 `inst-rt-gc` has an admitted path; the window's value stays Legal/Finance's | 01 §4.2, §4.4 |
+
+- **Five of the idempotency store's seven operands**, in §3.2: a keyless request runs unguarded (the
+  PRD scopes the guarantee to requests *with* a key); `AUDIT_UNAVAILABLE` is **not** stored as an
+  answer, being the one refusal whose verdict can change; the payload hash covers the body and not
+  the precondition; `expires_at` is stamped at the claim INSERT; and `answered` joins the
+  mutation's transaction on success, its own on a refusal.
+- **Left open**: `in_flight_until`'s value, which has no anchor until a door timeout is pinned, and
+  what the three `internal:` lanes store in the response columns — three workable shapes, none
+  following from what the set fixes.
+- **Propagated**: `design/01-foundation.md` (§1.7, §2, §3.1, §3.2, §3.3, §4.2, §4.3, §4.4, §4.5,
+  §6), `design/04-lifecycle.md` (both codes' reciprocal qualifiers).

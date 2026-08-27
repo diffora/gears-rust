@@ -177,7 +177,10 @@ precondition at all); `POST /bss-products/v1/{products|skus}/{id}/publish`
 (**`… × publish`**, **`If-Match` required** — P-D-33 makes the door's pinned revision arrive the
 same way every other head verb's does, rather than as an unnamed argument) → **200**;
 `POST /bss-products/v1/{products|skus}/{id}/discard` (**`… × discard`**, **`If-Match` required**) → **200**. Every
-mutating door accepts **`Idempotency-Key`** (§3.2), and every one of them is an ordinary `Gate`-mode
+mutating door accepts **`Idempotency-Key`** (§3.2) — *accepts*, not requires: the PRD scopes the
+guarantee to "a retried create/update/publish **with an idempotency key**", so a keyless request
+runs with no claim row and no replay, and the resolution phase is skipped rather than failing
+(**P-D-34**), and every one of them is an ordinary `Gate`-mode
 caller — `PreAuthorized` is never wire-visible (§2 publish). The transition floor has no wire door
 of its own: `draft→published` and `draft→discarded` are the publish and discard doors above, and
 its **three remaining** edges are driven by slice 04's surfaces.
@@ -264,7 +267,7 @@ malformed request does not) (per-row token, never plan-shared — the pricing D-
 1. [ ] - `p1` - `actor_ref` resolution, authorize, and idempotency as at create — the PRD names **publish** among the retried
 verbs, and 04's crash-replay of a scheduled activation (04 `inst-sp-idempotent`) rides this store keyed by transition id - `(cont. inst-fd-idempotency)`
 2. [ ] - `p1` - `PublishDoor` accepts `(entity, expected internal revision)` — the revision arriving as the door's `If-Match` (P-D-33) — a `draft` for its first publish, or a `published`/`deprecated` **head** for version N+1 (a re-publish changes the version, never the state); stale revision fails `STALE_REVISION` — an approval is only usable against the exact revision it pinned (slice 05 stores the snapshot; the Foundation enforces the match) - `inst-fd-publish-pin`
-3. [ ] - `p1` - Re-run the **full** pipeline at publish (shape, state, identity, every registered validator for `→ published` — which names the **target state, not the edge** (**P-D-32**): a re-publish takes no edge, so an edge-keyed reading would run no validator at all and empty this fail-closed re-run, while also pulling the `deprecated→published` two-person ceremony onto a content re-publish that changes no state): an entity that stopped being publishable since approval fails closed `INCOMPLETE_ENTITY`/rule-named code, never publishes stale - `inst-fd-publish-revalidate`
+3. [ ] - `p1` - Re-run the **full** pipeline at publish (shape, state, identity, every registered validator for `→ published` — which names the **target state, not the edge** (**P-D-32**), and which **P-D-34** reads as naming the *publish act* rather than the row's `lifecycle_state` afterwards — the door accepts a `deprecated` head for version N+1 and leaves it `deprecated`, so a state-after reading would select nothing there: a re-publish takes no edge, so an edge-keyed reading would run no validator at all and empty this fail-closed re-run, while also pulling the `deprecated→published` two-person ceremony onto a content re-publish that changes no state): an entity that stopped being publishable since approval fails closed `INCOMPLETE_ENTITY`/rule-named code, never publishes stale - `inst-fd-publish-revalidate`
 4. [ ] - `p1` - The governance gate (slice 05) runs **inside** the door, and the door therefore carries an explicit **authorization mode** (Blocking 9 fix, 2026-08-26 review) - `inst-fd-governance-gate`
    - [ ] - `p1` - The two modes: `Gate` — the ordinary interactive publish, which needs a
      `satisfied` record — or **`PreAuthorized(approvalId)`**, the mechanical stage of a composite
@@ -340,8 +343,11 @@ verbs, and 04's crash-replay of a scheduled activation (04 `inst-sp-idempotent`)
      `draft→discarded`, `published→deprecated`, `deprecated→published`, `deprecated→retired`;
      anything else fails `ILLEGAL_TRANSITION` - `inst-fd-transition-edges`
    - [ ] - `p1` - **Every transition bumps `internal_revision` and fires the approval-invalidation
-     hook** exactly as a save does — **except `draft→published`, which the publish door owns and
-     which bumps once with no hook** (P-D-26) — (M-2 fix, 2026-08-25 slice-05 review:
+     hook** exactly as a save does — **except any transition that consumes an approval in the same
+     transaction — `draft→published`, which the publish door owns, and every gated edge P-D-30 put
+     the gate phase on — which bumps once with no hook** (P-D-26, extended by **P-D-34** for the
+     reason 05 C3 already gives: a hook firing against the record the act is consuming has no
+     defined ordering, and P-D-30 reproduced that collision on `deprecated→published`) — (M-2 fix, 2026-08-25 slice-05 review:
      head-at-revision-N stays byte-identical to any approval snapshot pinned at N;
      transition-written columns cannot drift under a pin) - `inst-fd-transition-bump`
    - [ ] - `p1` - Policy conditions on the legal edges (two-person on un-deprecate, scheduled
@@ -388,7 +394,10 @@ verbs, and 04's crash-replay of a scheduled activation (04 `inst-sp-idempotent`)
      publish/apply" over both entity publishes and `GovernedLiveOp`s, and 04's un-deprecation is
      two-person with a slice-05 gate registered on that edge, so a transition door consumes the
      `satisfied` record exactly as the publish door does; scoping the phase to publish left that
-     ceremony with a gate no phase hosted) - `inst-fd-pipeline-gate-phase`
+     ceremony with a gate no phase hosted). The phase runs at **every** mutating door and passes
+     trivially where the act is ungated (**P-D-34**): a head save is ungated —
+     `inst-fd-approval-hook` has it *invalidate* an open approval, never consume one — so `Gate`
+     mode imposes no approval requirement on create, save or discard - `inst-fd-pipeline-gate-phase`
 2. [ ] - `p1` - Fail-closed and atomic: the phases run in the order above and the run **stops at the first
 failing phase**, collecting violations per-field *within* that phase into one rejection
 (**P-D-33**: §4.4's audit row carries a single `error_code`, so collecting across phases would
@@ -431,7 +440,10 @@ audited reason; there is no partial application anywhere in the gear (PRD AC #38
      different key order on retry is making the same request, and a byte hash would answer it
      `IDEMPOTENCY_CONFLICT` instead of replaying the outcome — breaking idempotency exactly where
      it is needed. The canonical rendering is §4.3's, so the gear pins one such rule and not
-     two - `inst-fd-idem-hash`
+     two. The hash covers the **body's** present fields and **not the precondition** (**P-D-34**):
+     `If-Match` is a header, and a client that was refused `STALE_REVISION`, re-read the head and
+     retried is making the same request — hashing the precondition in would answer that retry
+     `IDEMPOTENCY_CONFLICT` instead of running it - `inst-fd-idem-hash`
    - [ ] - `p1` - **Identical replay** returns the stored outcome without touching entities,
      versions, or the outbox; **no event** - `inst-fd-idem-replay-outcome`
    - [ ] - `p1` - **A different payload under a live key** fails `IDEMPOTENCY_CONFLICT` — never a
@@ -456,12 +468,16 @@ audited reason; there is no partial application anywhere in the gear (PRD AC #38
      writes **nothing** to the row — it does not own the key - `inst-fd-idem-claim-inflight`
    - [ ] - `p1` - **A refusal answers the key too**: a refused request is a finished request, so
      the door **that claimed the key** sets `answered` with the refusal as the stored outcome and a retry replays it, rather
-     than re-running a rule whose verdict cannot change - `inst-fd-idem-claim-refusal`
+     than re-running a rule whose verdict cannot change — **except `AUDIT_UNAVAILABLE`, which is
+     not stored** (**P-D-34**): it is the one refusal whose verdict *can* change on retry, so the
+     key stays `claimed` and `in_flight_until` releases it - `inst-fd-idem-claim-refusal`
    - [ ] - `p1` - `claimed` therefore means exactly "in flight", and the only row needing release
      is one whose door died: a claim carries an **`in_flight_until`** deadline, distinct from
      `expires_at`'s retention window, after which a fresh claim replaces
      it - `inst-fd-idem-claim-inflight-until`
-3. [ ] - `p1` - Retention: `max(24h, max_freeze_timeout)` read from config (C6). **Expiry is evaluated at claim time, not by a reaper** (same call, same donor): a claim against an expired key succeeds and replaces it, so correctness never waits on a sweep; a background sweep still runs, but only to reclaim space. Expiry never retro-invalidates an outcome. `expires_at` is the **retention** window of an *answered* key and is not what releases a crashed claim — that is `in_flight_until` (2), which is short by comparison; **no event** - `inst-fd-idem-retention`
+3. [ ] - `p1` - Retention: `max(24h, max_freeze_timeout)` read from config (C6). **Expiry is evaluated at claim time, not by a reaper** (same call, same donor): a claim against an expired key succeeds and replaces it, so correctness never waits on a sweep; a background sweep still runs, but only to reclaim space. Expiry never retro-invalidates an outcome. `expires_at` is **stamped at the claim INSERT** from C6's configured value (**P-D-34**: the column
+is non-nullable and the row is inserted `claimed`, so it cannot wait for the answer); it is the
+**retention** window of the key and is not what releases a crashed claim — that is `in_flight_until` (2), which is short by comparison; **no event** - `inst-fd-idem-retention`
 
 ### 3.3 Error taxonomy (Foundation-owned codes)
 
@@ -483,8 +499,9 @@ structural-identity attempts ride this code rather than declaring their own), `S
 edge — P-D-32; named here so AC #38's
 map is complete), `PARENT_TERMINAL` (the create door's parent-state guard), `INCOMPLETE_ENTITY`, `APPROVAL_REQUIRED` (raised through the governance
 gate), `VALIDATION` (per-field envelope), `RETIREMENT_PENDING` (the create door's parent guard,
-`inst-fd-containment` — declared here 2026-08-26; slice 04 owns **both arms** of the
-same code (P-D-30), so this code has two raising **arms** in one phase, and the
+`inst-fd-containment` — **declared by slice 04**, listed here only for the response map
+(**P-D-34**: P-D-30 gave 04 **both arms**, so this slice raises neither and cannot hold the
+declaration), so this code has two raising **arms** in one phase, and the
 rule below is stated per **arm** for it). **Every code raised *inside* the pipeline appears in exactly one raising *phase* of
 it** (owner's call, 2026-08-27; scoped to the inside by **P-D-32** — the pre-pipeline
 authorization gate is not a phase, so the denial code 05 still owes, and
@@ -518,7 +535,9 @@ refusal's own row cannot commit, which is likewise no pipeline phase — it is t
 raised *after* a phase has already decided, so no phase can own it. **12 `inst-cc-errors` names no carve-out at all, so it is owed
 both members.** Everything the third pass had flagged as a violation conforms without a new
 carve-out: `SCOPE_NOT_CONTAINED` stays one phase because 04 C5 is "the final form of 01's interim
-check" in that slice's own words rather than a second raiser, and `ILLEGAL_FIELD_MUTATION` stays
+check" in that slice's own words rather than a second raiser — and **P-D-34** reads that literally:
+04's final rule **replaces the operand inside this slice's `identity` phase**, it is not registered
+as a slice-04 validator, which is the only reading under which the code keeps one raising phase, and `ILLEGAL_FIELD_MUTATION` stays
 one because 07's structural-identity attempts "ride 01's" code rather than declaring it. Codes are
 part of the SDK contract; renames are breaking.
 
@@ -549,7 +568,7 @@ the sibling plan-price gear's rule: no `CanonicalError` category renders 422, so
 carrying its code, and no endpoint may declare a 422 for an error **carrying a registry code** in `OpenAPI` (the framework layer is the exception — a `Json<T>` schema violation, which carries no registry code). Proposed per
 row and open to correction; the requirement is that every code carries one.
   Codes listed here for the response map but **declared elsewhere**: `CONTENT_PII_BLOCKED`
-  (slice 02) — the status is repeated, not a second declaration, so the one-declaration rule
+  (slice 02) and `RETIREMENT_PENDING` (slice 04, P-D-34) — the status is repeated, not a second declaration, so the one-declaration rule
   stands.*
 
 **Status rendering — the 422s in this set are architectural, not wire (normative).**
@@ -682,9 +701,12 @@ correction and publish bumps it (`inst-fd-transition-bump`), so scoping it to th
 refused writes the design requires; **`deprecation_provenance` (both tables) and `replaced_by_sku_id` (`products_sku` only — the
 column names a SKU, and 04 `inst-rt-initiate` requires `replacedBy` to name a `published` SKU;
 04's own column list contradicts itself on this and the correction is owed there) only through
-slice 04's acts** — door
-identity being an application guarantee, the row-image predicate that would tighten this at the
-trigger is **owed by 04** (deprecation/cascade and retirement-initiation respectively — they
+slice 04's acts** — and, until 04 supplies a tighter one, under
+row-image predicates this slice pins now (**P-D-34**): `deprecation_provenance` changes **only in
+the same statement as a `lifecycle_state` change** (04's writer is the deprecation transition), and
+`replaced_by_sku_id` is **write-once** — `null` → non-null, never changed again (04
+`inst-rt-initiate`: "Validated once, and the row is terminal at the flip"). Door
+identity remains an application guarantee, and a tighter predicate is still **owed by 04** (deprecation/cascade and retirement-initiation respectively — they
 are neither save-door nor bucket-iii/iv columns, and leaving them unnamed either refused the
 writes slice 04 specifies or dropped them to bucket iv, where an ordinary operator save could
 re-stamp the provenance operand `inst-lc-provenance-reversal` reads — item 18 of the 2026-08-26
@@ -704,14 +726,20 @@ the clearing write being the **publish door's own head-row UPDATE**, the one tha
 `published_version += 1` (**P-D-32**: a save cannot clear it, because `inst-fd-save-txn` never
 touches `published_version` and this clause requires the same statement; 06's "system save +
 re-publish" names the ceremony, not the writing statement) — 06 declares the flag system-owned and never
-operator-mutable, so bucket iii/iv would be the wrong home; bucket-ii columns only through slice 07's correction act — again an application guarantee, its
-row-image predicate **owed by 07**; **`cloned_from` never, in any
+operator-mutable, so bucket iii/iv would be the wrong home; bucket-ii columns only through slice 07's correction act — and, as a row-image predicate this
+slice pins now (**P-D-34**), **only in the same statement as a `published_version` bump**, since 07
+defines its `CorrectionDoor` as "fresh-zero gate + 05 quorum + **re-publish**": the correction ends
+in a publication, so it carries the same predicate `composition_pending` already does. Door
+identity remains an application guarantee, and a tighter predicate is still **owed by 07**; **`cloned_from` never, in any
 UPDATE** — stricter than bucket-i, which bites only after first publish; **bucket-i identity columns only while `published_version = 0`, and never after
 first publish** (owner's call, 2026-08-27, P-D-28: the whitelist named a prohibition where every
 other class named an admitting door, so the write §2 makes legal on an unpublished head had no
 admitted writer; no new door — `inst-fd-save-txn` already carries the `skuCode`/`productCode`
 change); and the row's update timestamp (§4.1/§4.2 `timestamps`) on every
-admitted UPDATE, without which the guard would refuse every write it otherwise allows.
+admitted UPDATE, without which the guard would refuse every write it otherwise allows. **Row
+identity — `tenant_id`, the primary key, and `created_by` — is outside the bucket scheme entirely
+and admitted in no UPDATE at all** (**P-D-34**), `cloned_from`'s treatment rather than the PRD
+matrix's bucket-iv catch-all, which that FR words as "other **descriptive** fields".
 
 ### 4.3 `products_entity_version` (published history)
 
@@ -741,7 +769,10 @@ collection's own identifier** (the category id, the attribute id), each element 
 same field rule (owner's call, 2026-08-27, P-D-29: the field rule orders fields and said nothing
 about rows, so two engines could have serialized the same content in two orders and 10's restore
 drill compares these digests byte-for-byte). The rule is stated over **any named field set**, not only a version row's columns (owner's call,
-2026-08-27, P-D-28) — which is what lets §3.2 hash a *parsed request* under this same rendering
+2026-08-27, P-D-28). **A parsed request's named field set is the fields the request carries**
+(**P-D-34**): the "absent written `null`" rule addresses a *complete* set — a version row's columns
+— so a `PATCH` that omits a field and one that sends it `null` hash differently, which is what they
+mean at the head door — which is what lets §3.2 hash a *parsed request* under this same rendering
 and the gear pin one canonicalization rule rather than two. The digest's input is the version's
 own column set, so
 **adding a column to a frozen row's content is a digest-version bump, not a silent change** — and
@@ -824,7 +855,11 @@ read.
   a refusal the caller learns about and the registry does not is the one thing
   `nfr-availability-audit`'s "100% write-path audit" forbids. The wording this replaced had every
   door write its row "in its transaction", which is precisely the transaction a refusal rolls back.
-  That 503 is **`AUDIT_UNAVAILABLE`** (owner's call, 2026-08-27, P-D-25).
+  That 503 is **`AUDIT_UNAVAILABLE`** (owner's call, 2026-08-27, P-D-25) — and it is **the one
+  refusal the audit class carves out** (**P-D-34**; a carve-out of the *class*, not of §3.3's phase
+  list): its own row is by construction the one that could not be written, so the class would
+  otherwise carry a member it can never satisfy. It is recorded out-of-band — log and metric — and
+  `nfr-availability-audit`'s "100% write-path audit" is scoped to **domain** refusals.
 
   **How a committed eventless act's row commits**: **inside the guarded mutation's transaction** —
   P-D-08 S3 as amended by P-D-31 states the general rule and carves out only the refusal ("The
@@ -832,6 +867,12 @@ read.
   does — **except a refusal's row, which commits in its own transaction**"). So the act and its
   record stand or fall together, which is what `nfr-availability-audit`'s "100% write-path audit"
   asks for on the success path.
+
+  **How a read under elevation commits**: **in its own transaction, and a precondition of serving
+  the read** (**P-D-34**) — S3's rule is scoped to "the guarded mutation's transaction" and a read
+  has none, while an elevated read the registry did not record is exactly what break-glass auditing
+  exists to prevent. If the row cannot be written the door answers `AUDIT_UNAVAILABLE` and serves
+  nothing, as a refusal does.
 
   **Reserved platform-sealing seam (P-D-08)** — present from the first migration, never sealed by
   this gear: `seal_state` (NOT NULL, roster `unsealed | sealed`) · `chain_id` · `seq` ·
@@ -843,7 +884,10 @@ read.
   hash and runs no verification job; what the platform capability must satisfy is P-D-08 S1–S9.
 
   `products_audit_log` carries the same append-only posture as the entity tables (C5): REVOKE plus
-  a trigger whose whitelist admits no UPDATE or DELETE except the one below.
+  a trigger whose whitelist admits no UPDATE or DELETE except the one below and the retention
+  DELETE. **The retention DELETE arm** (**P-D-34**) is a row-image predicate — a row whose
+  `written_at` is older than its class's retention window — so 10 `inst-rt-gc` has an admitted
+  path; the window's *value* is Legal/Finance's (`PRD` §15) and the predicate does not wait on it.
   **The one UPDATE that whitelist admits** is what makes the seam activatable at all: a one-way
   `unsealed → sealed` transition supplying `chain_id`/`seq`/`prev_hash`/`row_hash` in the same
   statement, never on a row already `sealed` — a **row-image** predicate like every other guard
@@ -914,7 +958,9 @@ this edge** (owner's call,
 announcement). Rule for every slice, **this one included** (same call — the rule had read "every
 other slice", exempting the document that states it and leaving slice 12's completeness check a
 blind spot on the Foundation): each
-state-changing instruction names its event or records "no event" in its slice doc — the
+state-changing instruction names its event or records "no event" in its slice doc — **the unit
+being the act, not the row** (**P-D-34**): a step inside a transaction whose event another row of
+that same transaction names inherits the declaration, and only a row that is its own act owes one — the
 completeness check is slice 12's. Schema versioning (`vN`→`vN+1`) discipline and the
 replay/bootstrap path are specified in slice 12; the Foundation's obligation is the envelope
 and the ordering key.
@@ -1012,122 +1058,20 @@ rejection, the status-straddle as rationale, an absent `If-Match` riding `VALIDA
 door as the bucket-i writer, and `brand_id`'s provenance — and are cited in the rules they
 changed.*
 
-- **Does the approval-invalidation hook fire on a gated transition that consumes an approval in
-  the same transaction?** §2's transition row excepts only `draft→published` from the hook
-  ("**except `draft→published`, which the publish door owns and which bumps once with no hook**"),
-  but P-D-30 gave the gate phase to transition doors, so `deprecated→published` now consumes a
-  record *and* fires the hook in one transaction — the collision 05 **C3** names as its
-  own reason for the exception — "a hook firing against the record the act is consuming has no
-  defined ordering". Nothing extends
-  the exception, orders the hook against the consume, or makes the hook a no-op on a `satisfied`
-  record. **And a re-publish reaches neither rule:** it is by this file's own model neither a save
-  nor a transition, so no row says whether it invalidates open approvals — while 05 C3 states the
-  rule over "any frozen-content write", a class a re-publish plainly joins. **And the prior half,
-  raised by the sixth pass's second lens wave:** no row performs the
-  consume at a transition door at all — `inst-fd-publish-consume` sits inside the publish
-  transaction and is scoped to it, while §2's transition flow enumerates guard, edges, bump,
-  policy-freedom, events and terminality and never the gate. Either that row is re-scoped to the
-  gate phase or a transition-door row is owed. Owner: the governance owner with this slice.
-  **Also here:** **Does the save door run the governance-gate phase?** §1.7 binds all seven phases to "every
-  mutating door"; §2's save row runs six of them — idempotency resolution at step 1, the
-  precondition at step 2, and shape/state/identity/registered-validators at step 3 — leaving only
-  the gate unaccounted for. §3.1 scopes the gate to "any gated act" without
-  saying whether a head save is one, and `inst-fd-approval-hook` has a save *invalidate* an
-  approval rather than consume one. §2's door preamble compounds it by calling **every** mutating
-  door "an ordinary `Gate`-mode caller", where `Gate` is defined only as the publish mode "which
-  needs a `satisfied` record". Owner: this slice with the governance owner.
+*Nine more were closed on 2026-08-27 by **P-D-34**, together with five of the idempotency
+store's seven operands — the hook's reach and the gate's trivial pass, the elevation-read commit,
+a parsed request's field set, the event-declaration unit, containment's phase, the re-publish
+target state, `AUDIT_UNAVAILABLE`'s audit carve-out, `RETIREMENT_PENDING`'s declaring slice, and
+the four row-image predicates the first migration's trigger was missing — each cited in the rule
+it changed.*
 
-- **What does the first migration's trigger admit for the columns whose row-image predicate is
-  "owed" by a later slice?** §4.2 leaves `deprecation_provenance`/`replaced_by_sku_id` (owed by
-  04) and the bucket-ii columns (owed by 07) as application guarantees with no trigger predicate,
-  while C1 requires the guard in the first migration and §4.2 names both failure modes of guessing
-  — refusing the writes 04 specifies, or dropping the columns to bucket iv where an operator save
-  re-stamps the provenance operand. Owner: this slice with 04 and 07.
-  **Also here:** **What bucket does `created_by` carry?** §4.1's bucket paragraph names nine columns and not this
-  one, and the PRD's catch-all routes every unnamed published column to bucket iv — where §4.2
-  admits writes "only while `lifecycle_state` is non-terminal", so an ordinary operator save could
-  rewrite authorship. Unlike `cloned_from` it carries no stricter-than-bucket-i clause, and 11
-  only *resets* it on clone. **The same catch-all reaches row identity**: `tenant_id` and the two
-  primary keys are unnamed by that paragraph as well, so the stated rule routes them to bucket iv,
-  which §4.2 admits on any non-terminal head — C4's tenant rule binds the repository, not the
-  trigger. Either the catch-all is scoped to *descriptive* columns, leaving identity outside the
-  bucket scheme with its own never-in-any-UPDATE clause like `cloned_from`'s, or these are named
-  bucket-i. Owner: this slice, with the PRD owner who holds the matrix.
-
-  **Also here:** **No table in this slice admits a DELETE, and 10's retention GC must delete from two of them.**
-  C5 exempts only the slice-08 projections and the idempotency sweep; §4.3 says frozen rows "admit
-  no UPDATE/DELETE ever" and §4.4's audit trigger admits one UPDATE and no DELETE.
-  10 `inst-rt-gc` deletes whole audit rows and entity versions in reference-topology order. A door-aware guard is
-  already ruled out (no session variable on SQLite), so either the first migration carries a
-  row-image-predicated DELETE arm — on what predicate? — or retention runs under a privileged role
-  outside the trigger, or these classes are never deleted. Owner: this slice with 10 and the
-  retention-duration owner.
-
-- **Three operands the idempotency store leaves unpinned.** (a) `in_flight_until` has only "short
-  by comparison" — no value and no config key, where `expires_at` has both; a deadline too short
-  admits the duplicate the claim exists to refuse and one too long wedges a crashed door's key.
-  (b) §2's doors "accept" `Idempotency-Key` and the PRD makes it conditional, yet §3.1 makes
-  idempotency resolution the first phase of every mutating flow — so it is unstated whether a
-  keyless request is refused or runs unguarded. (c) `AUDIT_UNAVAILABLE` is the one refusal whose
-  verdict *can* change on retry, and "**A refusal answers the key too**" would freeze it as the
-  stored outcome forever. (d) **Does the hashed field set include the precondition?** `If-Match` is
-  a header, not a body field, and "parsed request" defines neither in nor out: excluded, a client
-  that got `STALE_REVISION`, re-read the head and retried under the same key replays the stale
-  refusal forever; included, that same retry is a different payload and gets
-  `IDEMPOTENCY_CONFLICT`. (e) **What do the three `internal:` lanes store in `response_status`/`response_body`?** Both are
-  NOT NULL once answered and exist to reproduce a *wire* response, which a lane with no wire
-  surface has none of — while 04's crash replay and 09's per-row publish both ride this store.
-  (f) **Who writes `expires_at`, and what does a `claimed` row carry in it?** The column is
-  non-nullable and defined only for the answered state, yet the row is inserted `claimed`.
-  (g) **Which transaction commits `state = answered`** is unstated and
-  cannot be one rule for both outcomes: on success the answer must join the mutation's transaction,
-  or a crash between commit and answer leaves a `claimed` key that `in_flight_until` releases and
-  the retry re-executes a committed act; on a refusal it cannot, that transaction being the one the
-  refusal rolls back. P-D-26 enumerates four boundaries and this is not among them. Owner: this
-  slice.
-- **How does a row of the elevation-read class commit?** §4.4 now states two of the three classes
-  — a refusal's row in its own transaction, a committed eventless act's inside the guarded
-  mutation's (P-D-08 S3 as amended by P-D-31). S3's wording is scoped to "the guarded mutation's
-  transaction", and a **read** under elevation has no mutation to ride, so the third class is
-  reached by neither sentence; none of the five declaring slices supplies one either. Owner: this
-  slice.
-- **How does the canonical rendering represent an absent field in a *parsed request*?** §4.3 pins
-  "absent values written `null` rather than omitted" and extends the rule to "any named field set"
-  so §3.2 can hash a parsed request under it — but a `PATCH` omitting a field and a `PATCH`
-  sending it `null` mean different things at the head door and render identically, so the second
-  replays the first's stored outcome. What a partial update's "named field set" is — the request's
-  present fields or the entity's full column set — is unstated. Owner: this slice.
-- **Do `inst-fd-idem-replay`, `inst-fd-mint-id`, `inst-fd-reserve-code`,
-  `inst-fd-publish-freeze`, `inst-fd-publish-reserve-permanent`, `inst-fd-publish-bump`,
-  `inst-fd-transition-bump`, `inst-fd-idem-claim-refusal` and `inst-fd-idem-claim-inflight-until` owe an event
-  declaration?** §4.5's rule binds "every slice, **this one included**": each state-changing
-  instruction names its event or records "no event". Their neighbours in the same subsections do;
-  these nine carry neither, and nothing defines whether a step inside a transaction whose event a
-  sibling row names is itself a state-changing instruction for 12's completeness check. Owner:
-  this slice.
-- **Which phase raises `SCOPE_NOT_CONTAINED` once 04's final rule replaces the interim check?**
-  §3.1 puts containment in the **identity** phase, and §3.3 rests the one-phase-per-code rule on
-  04 C5 being "the final form of 01's interim check" rather than a second raiser. But 04's
-  `inst-pc-containment` is a slice-04 rule on slice-04 doors — if it runs as a `RegisteredValidator`
-  the code has two raising phases and needs a carve-out this taxonomy says it does not. 04's
-  neighbouring row is explicit about registration and this one is silent, so the silence settles
-  nothing. Owner: whoever took P-D-24, with 04.
-- **Does the `AUDIT_UNAVAILABLE` refusal itself owe an audit row?** §4.4's class is now *every*
-  refusal a door raises, and this 503 is one — but its row is by construction the one that could
-  not be written, so the class has a member it can never satisfy: a failure path with no
-  terminator. §3.3's carve-out list is about *phases*, not about the audit class. Owner: this
-  slice with the `nfr-availability-audit` owner.
-- **What is the target state of a re-publish of a `deprecated` head?** P-D-32 keyed publish
-  validators on the target state rather than the edge, but the door accepts a `deprecated` head for
-  version N+1 and "a re-publish changes the version, never the state" — so that act's target state
-  is `deprecated`, while the door is specified to run the validators registered for `→ published`.
-  Neither §1.7's key nor §3.1's says how the target state of a state-preserving act is computed.
-  Owner: this slice, whose own P-D-32 introduced the key.
-- **Who holds the single declaration of `RETIREMENT_PENDING`?** §3.3 declares it ("declared here
-  2026-08-26") now that P-D-30 has moved **both** arms to slice-04 validators, and 04 declares it
-  too. §3.3's carve-out for codes listed here but declared elsewhere names exactly one member,
-  `CONTENT_PII_BLOCKED`, so the one-declaration rule is either broken or owes a second exemption
-  class — and `PARENT_NOT_PUBLISHED`'s reciprocal wording has no counterpart here. **The same shape
-  holds for `SCOPE_NOT_CONTAINED`**: 04 declares it in its own owned-code contract *and* lists it
-  as declared elsewhere, without the reciprocal qualifier `PARENT_NOT_PUBLISHED` carries. Owner:
-  the error-contract owner (P-D-25/P-D-30) with 04.
+- **Two operands the idempotency store still leaves unpinned.** (a) **`in_flight_until` has no
+  value and no config key** — only "short by comparison" against `expires_at`. A deadline too short
+  admits the duplicate the claim exists to refuse; too long wedges a crashed door's key. Deriving
+  it from a door timeout is the obvious route, and the set pins no door timeout anywhere, so the
+  number has no anchor yet. (b) **What the three `internal:` lanes store in
+  `response_status`/`response_body`** — both are NOT NULL once answered and exist to reproduce a
+  *wire* response, which a lane with no wire surface has none of, while 04's crash replay and 09's
+  per-row publish both ride this store. A synthetic status, a third CHECK arm making the columns
+  nullable for internal lanes, and an outcome discriminator are all workable; none follows from
+  what the set already fixes. Owner: this slice, with the NFR owner for (a).

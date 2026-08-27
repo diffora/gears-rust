@@ -174,9 +174,9 @@ only projects it); the deprecation mark pricing consumes — through AC #82 when
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-contract-lifecycle-errors`
 
-`PARENT_NOT_PUBLISHED` (named in 01, registered here), `SCOPE_NOT_CONTAINED` (final semantics),
+`PARENT_NOT_PUBLISHED` (named in 01, registered here), `SCOPE_NOT_CONTAINED` (**named in 01, its final semantics registered here** — P-D-34 reads C5's "the final form of 01's interim check" literally: this slice replaces the operand inside 01's `identity` phase rather than registering a validator, so the code keeps one raising phase),
 `SCOPE_NARROWING_BLOCKED`, `RETIREMENT_LEAD_TIME`, `REPLACED_BY_NOT_PUBLISHED`,
-`SCHEDULE_STALE_APPROVAL` (raised by the `ActivationRunner` — its own door), `CASCADE_CONFIRMATION_REQUIRED`, `RETIREMENT_PENDING` (**both arms are this slice's validators** — P-D-30, 2026-08-27: the
+`SCHEDULE_STALE_APPROVAL` (raised by the `ActivationRunner` — its own door), `CASCADE_CONFIRMATION_REQUIRED`, `RETIREMENT_PENDING` (**declared here**; both arms are this slice's validators — P-D-30, 2026-08-27; 01 lists it for its response map only, P-D-34: the
 un-deprecation edge, and **this slice's validator registered on 01's create door**, whose operand
 is the live retire intent in `products_scheduled_transition`, a table this slice owns. P-D-20
 struck the code from the publish door. An earlier note read the create-door arm as slice 01's own
