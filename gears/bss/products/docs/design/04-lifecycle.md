@@ -220,7 +220,8 @@ row and open to correction; the requirement is that every code carries one.
   Product, and **a cancelled cascade resolves its row** `cascade_cancelled` (item 36 of the
   2026-08-26 review: on the old `(tenant_id, product_id)` PK a cancelled cascade left an
   unresolved row forever and a second cascade on the same Product collided on the PK).
-- Columns on `products_sku`/`products_product` (carried by 01): `deprecation_provenance`,
+- Columns on `products_sku` (carried by 01): `replaced_by_sku_id`. On **both** entity tables:
+  `deprecation_provenance`,
   `replaced_by_sku_id`.
 - **Events**: `SkuDeprecated`/`SkuUndeprecated`/`ProductDeprecated`/`ProductUndeprecated`,
   `SkuRetired`/`ProductRetired` (at initiation, with `effectiveAt`), plus the state flip at

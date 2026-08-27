@@ -45,7 +45,9 @@ The Foundation is the shared engine every products-gear capability publishes thr
 `skuCode`), the two version counters (internal revision vs published version), the lifecycle
 state machine core (`draft → published ↔ deprecated → retired`, `draft → discarded`,
 forward-only), the fail-closed **registered-validator pipeline**, append-only published-version
-history with diff, per-row optimistic concurrency (`If-Match` on the internal revision),
+history (the *diff over* it is slice 08's `inst-rh-timeline`, and the catalog-version diff is
+06's — this slice owns the rows both are computed from, not a diff surface of its own; §1.1 had
+claimed it until the owner's call of 2026-08-27), per-row optimistic concurrency (`If-Match` on the internal revision),
 tenant-scoped idempotency, the broker-native event fan-out through a transactional outbox
 (P-D-01), and the append-only audit trail — which under **P-D-21** records only what emits no
 event: refusals, reads under elevation, and committed acts the design declares emit no broker
@@ -443,8 +445,13 @@ both engines store identical bytes. The digest's input is the version's own colu
 what actually holds all of this is C1's golden vector, committed with the first migration.
 
 Append-only, no UPDATE path at all; diffs are computed between rows, never stored mutated.
-These rows are the **only consumer-read surface** for **Product/SKU** entity content (08 C6's
-own scoping — governed live entities are read from their live tables): read models,
+These rows are the **only consumer-read surface** for **Product/SKU** entity *content* (08 C6's
+own scoping — governed live entities are read from their live tables). **Content is not state**
+(owner's call, 2026-08-27): `lifecycle_state`, `deprecation_provenance` and `replaced_by_sku_id`
+move on transitions, which write no version row by design — a re-publish changes the version and
+a transition changes the state, never the other way round — so those three are read from the
+**head row**, which is what 08's read model already assumes in listing "identity, state + flags"
+apart from content, and what lets 04 resolve `replacedBy` transitively at all: read models,
 `CatalogVersion`, and the SDK's consumer-facing reads project from here — never from head rows.
 The authoring read of the head row that `inst-fd-etag`'s precondition requires is not a consumer
 read.
@@ -572,11 +579,6 @@ half), `cpt-cf-bss-products-fr-event-delivery-resilience` (registry-side half: d
   review); the SDK read shape here must expose it so the fix is a consumer-side addition.
 - Interim containment check (flat subset) must be re-validated against slice 04's final rule —
   the two must not silently diverge.
-- **Does `products_product` carry `replaced_by_sku_id`?** 04 §4 lists it among "Columns on
-  `products_sku`/`products_product` (carried by 01)", and this slice's shared guard is declared
-  for both entity tables, but only §4.2 defines the column, on SKUs. A Product pointing at a
-  replacement *SKU* is either a naming error in 04 or a real Product-level column; 04's
-  retirement-initiation flow states no Product replacement, so adding it here would invent schema.
   *(Its sibling `deprecation_provenance` was the mirror case and is settled: 04 writes provenance
   `direct` on the retiring parent Product, so §4.1 now carries that column.)*
 - **Is slice 08's convergence probe the owed NFR #3 probe?** This slice says "**The probe is
@@ -596,17 +598,7 @@ half), `cpt-cf-bss-products-fr-event-delivery-resilience` (registry-side half: d
 - **Is `payload_hash` over the received bytes or a canonical rendering of the parsed request?**
   The 2026-08-27 owner call adopted the donor's claimed/answered store whole and left this open;
   the donor treats it as a wire-visible difference (its D-174), because two byte-different requests
-  that parse identically are the same act to a caller and different acts to a byte hash.- **Which surface serves the columns that only ever exist on the head row?** A deprecation, a
-  retirement initiation and a cascade are transitions, not publishes, so `lifecycle_state`,
-  `deprecation_provenance` and `replaced_by_sku_id` move on the head row with no new
-  `products_entity_version` row to carry them — yet 08 must serve current state and 04 promises a
-  transitively resolvable `replacedBy`. §4.3's frozen-only rule and those obligations cannot both
-  hold as written. Slice 01 and slice 08 owners jointly: either head rows are a legitimate read
-  source for those columns, or a transition writes a version row after all.
-- **Is the per-version diff this slice's?** §1.1 claims "history with diff", but §4.3 states only
-  the mechanism, §1.5 In has no diff entry, §2 no flow, §3 no instruction, §5 no probe — while 08
-  `inst-rh-timeline` is where the diff surface actually lives. Either §1.1 overclaims, or this
-  slice owes a door and a probe.
+  that parse identically are the same act to a caller and different acts to a byte hash.
 - **Does the registry own `taxCategory`/`glCode` at all?** C3 cites PRD §2.1, and §2.1 puts "billing
   descriptors (invoice line template / tax category / GL code)" among the things "owned elsewhere
   and MUST NOT be re-specified here" — while `fr-accounting-codes` requires the registry to persist
