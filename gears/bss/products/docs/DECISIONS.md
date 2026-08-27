@@ -74,7 +74,7 @@ instead.*
   for two humans, skipping them breaks governance, and refusing breaks the ratified SLO. Moving
   the override to the human act dissolves the contradiction without weakening either control.
 - **Propagated**: PRD §5.1/§5.2, `fr-define-sku`, `fr-catalog-version-publish`,
-  `fr-bundle-adoption-guard`, `fr-prepublish-lint`, AC #7/#19/#25/#45; S3 (`inst-cl-bundle-override`), S5, S6, S9 (`inst-bk-override`) — **§4.1 struck**: its bullets say nothing about mechanical increments or entity-publish governance (item 31 of the 2026-08-26 review); `DESIGN.md` §1.2 Key decisions.
+  `fr-bundle-adoption-guard`, `fr-prepublish-lint`, AC #7/#19/#25/#45; S1 §1.2, S3 (`inst-cl-bundle-override`), S5, S6, S9 (`inst-bk-override`) — **§4.1 struck**: its bullets say nothing about mechanical increments or entity-publish governance (item 31 of the 2026-08-26 review); `DESIGN.md` §1.2 Key decisions.
 
 #### P-D-03 — SkuReferenceCount v1 producer set = {pricing}
 
@@ -816,15 +816,19 @@ instead.*
   audit?" and then "рассчитываем на платформенный аудит")
 - **Residue flagged, and only the residue**: the decision below is the owner's, taken in
   conversation; two things in this entry are **not** and are open to veto. (1) The owner chose
-  "local row for refusals, success by events"; the **second class — reads under elevation** — was
-  added here because measurement showed the boundary the owner named ("what the event stream
-  cannot carry") includes it: a read writes no outbox row, and v1 elevation is read-only. (2) That
+  "local row for refusals, success by events"; the **second and third classes — reads under
+  elevation, and committed acts declared to emit no broker event** — were added here because
+  measurement showed the boundary the owner named ("what the event stream cannot carry") includes
+  them: a read writes no outbox row, v1 elevation is read-only, and two sibling slices already
+  route committed acts to the audit plane by design. (2) That
   **P-D-08's seam survives** is a reading of S1–S9, not something the owner said. Everything else
   is either the decision as stated or a measured consequence of it.
 - **Decision**: v1 no longer writes a `products_audit_log` row for every mutating door. **The
   event stream is the audit of record for everything that succeeds**, and the local table
-  survives only for acts the event stream structurally cannot carry. That set was measured, not
-  assumed, and it is exactly two classes:
+  survives only for acts the event stream structurally cannot carry. **The set was re-measured
+  2026-08-27 after the first measurement missed a class** — it searched the audit *write* sites and
+  not the phrase `audit-plane`/"no broker event", which is how sibling slices spell the third one.
+  Three classes:
   - **refusals.** A rejected mutation rolls back its transaction and the outbox row rolls back
     with it, so no event exists; the design set declares **no** rejection event anywhere, and
     `fr-expected-failure-behavior` names **fifteen** cases that MUST fail closed *with an audited
@@ -833,6 +837,13 @@ instead.*
     **audit-export only** (05 — "any write under elevation is refused, full stop"), so every
     audited act under elevation is a read, and 05 requires that "every elevated read leaves an
     audit row with the session id (count asserted, not sampled)".
+  - **committed acts the design declares emit no broker event.** Not a structural limit like the
+    other two — a deliberate choice already made per act, and it lands in the same place: slice 04
+    writes `PublishScheduled`/`RetirementScheduled` as "audit-plane records, explicit \"no broker
+    event\" per 01 §4.5", and slice 10 records the erasure act itself "audit-plane, explicit **no
+    broker event** carrying identity". Both are committed and neither leaves an event, so the
+    event stream is not their record either. **Found by the third lens on the pass that followed
+    this entry, not by the measurement that wrote it.**
 - **Why**: the outbox row is written inside the mutation's transaction, so for a *successful*
   write the event is exactly as durable and as transactional as the audit row was — P-D-08 S3's
   objection is to a **network call in the write path**, which the outbox pattern does not make.
