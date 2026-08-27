@@ -244,7 +244,7 @@ ceremonies with different grants, and the physical guard already enforces exactl
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-algo-idempotency`
 
-1. [ ] - `p1` - Key scope `(tenant_id, endpoint, client_key)`; stored: payload hash + outcome reference; identical replay returns the stored outcome without touching entities, versions, or the outbox; different payload under a live key fails `IDEMPOTENCY_CONFLICT` (never a silent no-op) - `inst-fd-idem-replay`
+1. [ ] - `p1` - Key scope `(tenant_id, endpoint, client_key)`; stored: payload hash + outcome reference — **the hash is over a canonical rendering of the *parsed* request, not over the received bytes** (owner's call, 2026-08-27; the donor records this as wire-visible, its D-174): a client that re-serialises its JSON with a different key order on retry is making the same request, and a byte hash would answer it `IDEMPOTENCY_CONFLICT` instead of replaying the outcome — breaking idempotency exactly where it is needed. The canonical rendering is §4.3's, so the gear pins one such rule and not two; identical replay returns the stored outcome without touching entities, versions, or the outbox; different payload under a live key fails `IDEMPOTENCY_CONFLICT` (never a silent no-op) - `inst-fd-idem-replay`
 1a. [ ] - `p1` - **The row is `claimed` or `answered` and nothing else, and the claim INSERT is the gate** (owner's call, 2026-08-27, adopting the donor's model whole — `gears/bss/pricing/docs/design/01-foundation.md` §4): the door inserts the key `claimed` with both response columns null **before** the guarded operation, and sets them together on completion. A duplicate arriving against a `claimed`, unanswered key is refused **`IDEMPOTENCY_KEY_IN_FLIGHT`** (409) — without this state a concurrent duplicate matches neither branch of `inst-fd-idem-replay`, because `outcome_ref` cannot exist before the operation has produced one, and a retry storm is exactly the concurrent case - `inst-fd-idem-claim`
 2. [ ] - `p1` - Retention: `max(24h, max_freeze_timeout)` read from config (C6). **Expiry is evaluated at claim time, not by a reaper** (same call, same donor): a claim against an expired key succeeds and replaces it, so correctness never waits on a sweep; a background sweep still runs, but only to reclaim space. Expiry never retro-invalidates an outcome - `inst-fd-idem-retention`
 
@@ -382,7 +382,10 @@ alike, so a narrowing that would orphan a live child meets the governance gate b
 `fr-parent-child-integrity`'s fail-closed check; `product_code` is **bucket-i**, following AC #1's
 "same rules as `skuCode`"; and `cloned_from` is **stricter than bucket-i** — writable only in the
 creating statement and never again, not merely never after first publish, so the lineage stays
-evidence rather than a claim.
+evidence rather than a claim. A SKU's parent link `product_id` is **bucket-i** (owner's call,
+2026-08-27, completing the set): re-parenting changes *whose* SKU it is, not how it is described,
+which puts it with identity rather than with governed content — so a mis-parented published SKU is
+corrected by retire-and-clone, and nothing in the gear re-parents one today.
 
 **`normalized(name)`** (the uniqueness and promotion-identity operand, P-D-04/AC #33a) is pinned:
 Unicode NFKC → full casefold → trim + collapse internal whitespace to single spaces, computed
@@ -557,37 +560,41 @@ and the ordering key.
 
 ## 6. Traces to / Risks & Open items
 
-**Traces to**: `cpt-cf-bss-products-usecase-product-sku-editor` (§10 use case, claimed by id here 2026-08-26 — all seven were in lint 1's universe and none was claimed); **NFRs by id** — #3 `cpt-cf-bss-products-nfr-publication-propagation` (the outbox half of the < 3 s event-availability budget: `DESIGN.md` §1.2's NFR Allocation pairs two budgets with two mechanisms — "the < 3 s propagation and < 5 s posting-safe budgets on the slice-01 outbox + slice-06 freeze machine" — and the PRD calls this one "a component **preceding** freeze acks", so it is the outbox, the freeze machine's budget being `nfr-posting-safe-budget`. **The probe is owed**: no slice §5 measures it. **And the split is unsettled** — slice 06 claims a freeze-machine half of this same budget, `DESIGN.md` §1.2's coverage table assigns the id to **both** slices, and `PRD` calls the < 3 s budget "a component **preceding** freeze acks", which reads against a freeze-machine share. Registered as an open question in `PRD` §15 with an owner named, 2026-08-27 — slice 06's item
-records the same split; the owed probe is what would settle it, and 08's convergence probe already
-instruments one of the two segments), #6 `cpt-cf-bss-products-nfr-scale-extensibility` (the entity-count half: the head/version split and the index shape; `CatalogVersion` growth is slice 06's), #8
-`cpt-cf-bss-products-nfr-determinism-integrity` (version immutability, taxonomy acyclicity, identity uniqueness and
-metering-unit validity enforced fail-closed: this slice's pipeline, edge list and trigger
-whitelist are the frame its registered validators run in — acyclicity is slice 02's rule set,
-metering-unit validity slice 03's, the posted-period snapshot clause slice 06's — and the id was
-referenced nowhere in the set until item 30 of the 2026-08-26 review); **§9 by id** — `cpt-cf-bss-products-interface-authoring-publish` (§9.1: this slice owns the authoring and publish doors, idempotency keys and `If-Match`; the id's
-intent-declaration clause is slice 06's `inst-rv-intent` door, and slice 12 carries the idempotency keys, `If-Match` and intent semantics into the SDK
-contract) and `cpt-cf-bss-products-contract-registry-events` (§9.2 outbound: the broker-native envelope + outbox fan-out are this slice's). *(§9 ids were claimed by no slice's Traces-to at all until the 2026-08-26 branch review — prose like "§9 (all **seven** id-bearing blocks across §9.1/§9.2 …)" is not the id lint 1 keys on, so it would have reported zero claims for the whole §9 surface on its first run. Exactly the item-30 defect, left standing for §9 by the wave that widened the lint to include it.)* `cpt-cf-bss-products-fr-identifier-contract`, `cpt-cf-bss-products-fr-create-product` (uniqueness carrier),
-`cpt-cf-bss-products-fr-define-sku` (identity carrier), `cpt-cf-bss-products-fr-revision-vs-version` (counters + history halves; the
-version-binding-at-freeze clause → slice 06), `cpt-cf-bss-products-fr-lifecycle-transitions`
-(machine core), `cpt-cf-bss-products-fr-idempotent-authoring`, `cpt-cf-bss-products-fr-registry-eventing-audit` (envelope + outbox
-half), `cpt-cf-bss-products-fr-event-delivery-resilience` (registry-side half: durable acceptance + outbox),
-`cpt-cf-bss-products-fr-parent-child-integrity` (interim containment half; final rule → slice 04),
-`cpt-cf-bss-products-fr-skucode-reservation-concurrency`, `cpt-cf-bss-products-fr-field-mutability-matrix` (enforcement frame),
-`cpt-cf-bss-products-fr-expected-failure-behavior` (taxonomy home); AC #1, #2 (mutability frame), #5 (name-uniqueness half), #13, #14, #27, #28 (envelope), #38
-(frame), #42.
+**Traces to**:
+- **§10 use case**: `cpt-cf-bss-products-usecase-product-sku-editor`.
+- **NFRs**: #3 `cpt-cf-bss-products-nfr-publication-propagation` (the outbox half of the < 3 s
+  budget; **the probe is owed and the 01/06 split is unsettled** — open in `PRD` §15 with an owner
+  named), #6 `cpt-cf-bss-products-nfr-scale-extensibility` (the entity-count half: the head/version
+  split and the index shape; `CatalogVersion` growth is 06's), #8
+  `cpt-cf-bss-products-nfr-determinism-integrity` (the *frame* only — the pipeline, edge list and
+  trigger whitelist its registered validators run in; acyclicity is 02's rule set, metering-unit
+  validity 03's, the posted-period snapshot clause 06's).
+- **§9 interfaces**: `cpt-cf-bss-products-interface-authoring-publish` (§9.1 — the authoring and
+  publish doors, idempotency keys, `If-Match`; the id's intent-declaration clause is 06's
+  `inst-rv-intent`, and 12 carries all three into the SDK) and
+  `cpt-cf-bss-products-contract-registry-events` (§9.2 outbound — the broker-native envelope and
+  the outbox fan-out).
+- **Whole FRs**: `cpt-cf-bss-products-fr-identifier-contract`,
+  `cpt-cf-bss-products-fr-idempotent-authoring`,
+  `cpt-cf-bss-products-fr-skucode-reservation-concurrency`,
+  `cpt-cf-bss-products-fr-lifecycle-transitions` (the machine core),
+  `cpt-cf-bss-products-fr-expected-failure-behavior` (the taxonomy's home).
+- **FRs this slice carries a named half of**: `cpt-cf-bss-products-fr-create-product` (uniqueness),
+  `cpt-cf-bss-products-fr-define-sku` (identity),
+  `cpt-cf-bss-products-fr-revision-vs-version` (the two counters and the history; version-binding
+  at freeze → 06), `cpt-cf-bss-products-fr-registry-eventing-audit` (envelope + outbox),
+  `cpt-cf-bss-products-fr-event-delivery-resilience` (registry side — durable acceptance),
+  `cpt-cf-bss-products-fr-parent-child-integrity` (the interim containment check; final rule → 04),
+  `cpt-cf-bss-products-fr-field-mutability-matrix` (the enforcement frame).
+- **ACs**: #1, #2 (mutability frame), #5 (name uniqueness), #13, #14, #27, #28 (envelope), #38
+  (frame), #42.
 
-**Risks & open items**:
-- Interim containment check (flat subset) must be re-validated against slice 04's final rule —
-  the two must not silently diverge.
-  *(Its sibling `deprecation_provenance` was the mirror case and is settled: 04 writes provenance
-  `direct` on the retiring parent Product, so §4.1 now carries that column.)*
-- **Which bucket is a SKU's parent link (`product_id`)?** The 2026-08-27 owner call placed `name`,
-  the scope columns, `product_code` and `cloned_from`, and left this one: re-parenting a published
-  SKU is either structural (bucket-i, so a mis-parented SKU is fixed only by retire-and-clone) or
-  material-mutable (bucket-iii, a governed new version). Nothing in the PRD's matrix reaches it and
-  no slice re-parents a SKU today, which is why it can wait — but the physical guard has no rule
-  for the column until it is answered.
-- **Is `payload_hash` over the received bytes or a canonical rendering of the parsed request?**
-  The 2026-08-27 owner call adopted the donor's claimed/answered store whole and left this open;
-  the donor treats it as a wire-visible difference (its D-174), because two byte-different requests
-  that parse identically are the same act to a caller and different acts to a byte hash.
+**Risks & open items**: none open, as of the 2026-08-27 owner round — the thirty items three
+review passes had accumulated were decided, merged, or filed with their owners in `PRD` §15. One
+standing **risk** remains, and it is a hazard rather than a question:
+
+- this slice's interim containment check (flat subset) and slice 04 C5,
+  which that slice calls "the final form of 01's interim check", must not silently diverge. The
+  2026-08-27 owner round leaned on exactly that relationship — it is why `SCOPE_NOT_CONTAINED`
+  counts as one raising phase rather than needing a third carve-out — so a change to either side
+  that breaks it also breaks the taxonomy rule.
