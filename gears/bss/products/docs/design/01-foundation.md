@@ -80,7 +80,7 @@ acknowledged, and rejections that always carry an audited reason. Per P-D-02, ev
 ### 1.4 References
 
 - [`../PRD.md`](../PRD.md) §2.1, §6.1, §6.5, §6.7, §6.8, §6.13, §9, §10, §15, §17.1; AC #1, #2 (frame), #5 (uniqueness), #13,
-  #14, #27, #28, #38, #42
+  #14, #26, #27, #28, #33a, #38, #42
 - [`../DECISIONS.md`](../DECISIONS.md) P-D-01 (envelope), P-D-02 (mechanical increments),
   P-D-04 (absolute name uniqueness), P-D-06 (metadata-map placement), P-D-08 (audit-sealing
   seam), P-D-21 (the audit table holds only what emits no event), P-D-22 (the outbox is the toolkit's),
@@ -362,7 +362,8 @@ verbs, and 04's crash-replay of a scheduled activation (04 `inst-sp-idempotent`)
      and **resolvability of every reference the payload carries** — an unresolvable `productId` is a
      defect of the payload, which is why it rides `VALIDATION`) → **state** (the §2 edge list,
      bucket routing for a published-state field write, `cloned_from`'s create-only rule, the parent's
-     own lifecycle state, and the **subject's own** terminal state (`ENTITY_TERMINAL` on a
+     own **terminal** state (`PARENT_TERMINAL`; the parent-*published* check is 04's registered
+     validator, a different phase), and the **subject's own** terminal state (`ENTITY_TERMINAL` on a
      `retired`/`discarded` head) —
      everything judged from the row as it now stands rather than from the payload, and therefore
      after the reference that names it has resolved; owner's call, 2026-08-27, P-D-24) →
@@ -436,9 +437,10 @@ verbs, and 04's crash-replay of a scheduled activation (04 `inst-sp-idempotent`)
      state such a duplicate matches neither branch of `inst-fd-idem-replay`, because a stored
      response cannot exist before the operation has produced one, and a retry storm is exactly the
      concurrent case. A payload *mismatch* is the branch `inst-fd-idem-replay` already answers, and
-     stays `IDEMPOTENCY_CONFLICT` in either state - `inst-fd-idem-claim-inflight`
+     stays `IDEMPOTENCY_CONFLICT` in either state. A request refused `IDEMPOTENCY_KEY_IN_FLIGHT`
+     writes **nothing** to the row — it does not own the key - `inst-fd-idem-claim-inflight`
    - [ ] - `p1` - **A refusal answers the key too**: a refused request is a finished request, so
-     the door sets `answered` with the refusal as the stored outcome and a retry replays it, rather
+     the door **that claimed the key** sets `answered` with the refusal as the stored outcome and a retry replays it, rather
      than re-running a rule whose verdict cannot change - `inst-fd-idem-claim-refusal`
    - [ ] - `p1` - `claimed` therefore means exactly "in flight", and the only row needing release
      is one whose door died: a claim carries an **`in_flight_until`** deadline, distinct from
@@ -462,7 +464,8 @@ written, §4.4 — one of the gear's **three** 503s, alongside 08's `READ_MODEL_
 `cloned_from` (stricter than bucket-i — §4.1/§4.2), or
 bucket-ii, which belongs to 07's correction door — the reason names the door; 07's
 structural-identity attempts ride this code rather than declaring their own), `SCOPE_NOT_CONTAINED`,
-`PARENT_NOT_PUBLISHED` (registered by slice 04 on the publish edge but named here so AC #38's
+`PARENT_NOT_PUBLISHED` (registered by slice 04 on the `→ published` **target state**, not the
+edge — P-D-32; named here so AC #38's
 map is complete), `PARENT_TERMINAL` (the create door's parent-state guard), `INCOMPLETE_ENTITY`, `APPROVAL_REQUIRED` (raised through the governance
 gate), `VALIDATION` (per-field envelope), `RETIREMENT_PENDING` (the create door's parent guard,
 `inst-fd-containment` — declared here 2026-08-26; slice 04 owns **both arms** of the
@@ -471,7 +474,9 @@ rule below is stated per **arm** for it). **Every code raised *inside* the pipel
 it** (owner's call, 2026-08-27; scoped to the inside by **P-D-32** — the pre-pipeline
 authorization gate is not a phase, so the denial code 05 still owes, and
 `BREAKGLASS_WRITE_FORBIDDEN` which is raised there, sit outside the rule rather than forcing a
-third carve-out) — a phase, not a door and not an instruction row. The
+third carve-out — **conditional on that placement**: `inst-bg-readonly` locates the code on "any
+write attempt" and not at the gate, and if it is a phase refusal this closure does not hold; the
+raising site is registered with 05) — a phase, not a door and not an instruction row. The
 unit matters because a phase runs at several doors by design: the **identity** phase raises the
 uniqueness, reservation and containment codes (`DUPLICATE_NAME`, `DUPLICATE_CODE`,
 `SCOPE_NOT_CONTAINED`) wherever it runs — create, save, and the publish re-run — the
@@ -492,7 +497,7 @@ rule the carve-out list closes at two**, `CONTENT_PII_BLOCKED` and `AUDIT_UNAVAI
 (2026-08-27's owner call put the operand there rather than in the Foundation's identity phase) and
 the un-deprecation edge — so under the phase rule both arms sit in the **registered validators**
 phase and the code needs no carve-out of its own. `CONTENT_PII_BLOCKED` is the first: it is raised by the shared
-`inst-av-pii-block` hook, which is not a pipeline phase at all — every door carrying a free-text `reason` invokes it, and slice 02 holds its single
+`inst-av-pii-reason` hook, which is not a pipeline phase at all — every door carrying a free-text `reason` invokes it, and slice 02 holds its single
 declaration. `AUDIT_UNAVAILABLE` is the second: it is raised by the audit-write path of §4.4 when a
 refusal's own row cannot commit, which is likewise no pipeline phase — it is the one code here
 raised *after* a phase has already decided, so no phase can own it. **12 `inst-cc-errors` names no carve-out at all, so it is owed
@@ -768,7 +773,7 @@ read.
 
   - every **refusal** with its reason — *every* refusal a registry door raises, not only the
     enumerated ones: the class is the door's, while `fr-expected-failure-behavior`'s rows are what
-    12's AC #38 lint maps, three of the fifteen sitting outside its universe so the lint is
+    12's AC #38 lint maps — three of that FR's fifteen rows sitting outside its universe so the lint is
     buildable. Scoping the audit class to that enumeration would leave `DUPLICATE_NAME`, an
     authorization denial and every `VALIDATION` rejection committing with no row;
   - every **read under elevation** with its break-glass session id — elevation in v1 is
@@ -973,8 +978,15 @@ open is below — one standing **risk**, which is a hazard rather than a questio
 
 *The sixth pass (three lenses, 2026-08-27) opened the questions below. Each is this slice's own;
 none is answered here. Its **third lens wave** added the six that follow them, and filed
-`BREAKGLASS_WRITE_FORBIDDEN`'s raising site with 05, `ENTITY_TERMINAL`'s widened gloss with 12,
-and a self-contradicting column list with 04.*
+`BREAKGLASS_WRITE_FORBIDDEN`'s raising site with 05 and `ENTITY_TERMINAL`'s widened gloss with 12.
+It also corrected a self-contradicting column list in 04, in place.*
+
+*The fourth lens wave (2026-08-27) added the five above and filed elsewhere, pointer only:* the
+**envelope slot for `partition_id`/`seq`** — the broker's own schema marks `partition`/`sequence`
+`readOnly` and rejects them on publish, so §4.4's "on the envelope" placement,
+12 `inst-rc-dedup` and **P-D-27** all rest on a slot a producer cannot write (`PRD` §15, with the event-broker owner);
+the `internal:cascade-leg` lane, which no slice's runner writes (04); and whether the
+composition-clear re-publish emits `SkuPublished` beside `SkuCompositionCleared` (06).
 
 - **Does the approval-invalidation hook fire on a gated transition that consumes an approval in
   the same transaction?** §2's transition row excepts only `draft→published` from the hook
@@ -984,7 +996,10 @@ and a self-contradicting column list with 04.*
   own reason for the exception — "a hook firing against the record the act is consuming has no
   defined ordering". Nothing extends
   the exception, orders the hook against the consume, or makes the hook a no-op on a `satisfied`
-  record. **And the prior half, raised by the sixth pass's second lens wave:** no row performs the
+  record. **And a re-publish reaches neither rule:** it is by this file's own model neither a save
+  nor a transition, so no row says whether it invalidates open approvals — while 05 C3 states the
+  rule over "any frozen-content write", a class a re-publish plainly joins. **And the prior half,
+  raised by the sixth pass's second lens wave:** no row performs the
   consume at a transition door at all — `inst-fd-publish-consume` sits inside the publish
   transaction and is scoped to it, while §2's transition flow enumerates guard, edges, bump,
   policy-freedom, events and terminality and never the gate. Either that row is re-scoped to the
@@ -1006,7 +1021,12 @@ and a self-contradicting column list with 04.*
   a header, not a body field, and "parsed request" defines neither in nor out: excluded, a client
   that got `STALE_REVISION`, re-read the head and retried under the same key replays the stale
   refusal forever; included, that same retry is a different payload and gets
-  `IDEMPOTENCY_CONFLICT`. (e) **Which transaction commits `state = answered`** is unstated and
+  `IDEMPOTENCY_CONFLICT`. (e) **What do the three `internal:` lanes store in `response_status`/`response_body`?** Both are
+  NOT NULL once answered and exist to reproduce a *wire* response, which a lane with no wire
+  surface has none of — while 04's crash replay and 09's per-row publish both ride this store.
+  (f) **Who writes `expires_at`, and what does a `claimed` row carry in it?** The column is
+  non-nullable and defined only for the answered state, yet the row is inserted `claimed`.
+  (g) **Which transaction commits `state = answered`** is unstated and
   cannot be one rule for both outcomes: on success the answer must join the mutation's transaction,
   or a crash between commit and answer leaves a `claimed` key that `in_flight_until` releases and
   the retry re-executes a committed act; on a refusal it cannot, that transaction being the one the
@@ -1045,10 +1065,11 @@ and a self-contradicting column list with 04.*
   replays the first's stored outcome. What a partial update's "named field set" is — the request's
   present fields or the entity's full column set — is unstated. Owner: this slice.
 - **Do `inst-fd-idem-replay`, `inst-fd-mint-id`, `inst-fd-reserve-code`,
-  `inst-fd-publish-freeze`, `inst-fd-publish-reserve-permanent` and `inst-fd-publish-bump` owe an event
+  `inst-fd-publish-freeze`, `inst-fd-publish-reserve-permanent`, `inst-fd-publish-bump`,
+  `inst-fd-transition-bump`, `inst-fd-idem-claim-refusal` and `inst-fd-idem-claim-inflight-until` owe an event
   declaration?** §4.5's rule binds "every slice, **this one included**": each state-changing
   instruction names its event or records "no event". Their neighbours in the same subsections do;
-  these six carry neither, and nothing defines whether a step inside a transaction whose event a
+  these nine carry neither, and nothing defines whether a step inside a transaction whose event a
   sibling row names is itself a state-changing instruction for 12's completeness check. Owner:
   this slice.
 - **Which phase raises `SCOPE_NOT_CONTAINED` once 04's final rule replaces the interim check?**
@@ -1065,9 +1086,13 @@ and a self-contradicting column list with 04.*
   content the door cannot process", a subset check being a payload judgment. Owner: the
   error-contract owner.
 - **Does the save door run the governance-gate phase?** §1.7 binds all seven phases to "every
-  mutating door"; §2's save row runs four of them. §3.1 scopes the gate to "any gated act" without
+  mutating door"; §2's save row runs six of them — idempotency resolution at step 1, the
+  precondition at step 2, and shape/state/identity/registered-validators at step 3 — leaving only
+  the gate unaccounted for. §3.1 scopes the gate to "any gated act" without
   saying whether a head save is one, and `inst-fd-approval-hook` has a save *invalidate* an
-  approval rather than consume one. Owner: this slice with the governance owner.
+  approval rather than consume one. §2's door preamble compounds it by calling **every** mutating
+  door "an ordinary `Gate`-mode caller", where `Gate` is defined only as the publish mode "which
+  needs a `satisfied` record". Owner: this slice with the governance owner.
 - **How does a wire caller supply the publish door's expected revision?** `PublishDoor` accepts
   `(entity, expected internal revision)`, but §2's REST publish door carries no `If-Match` and no
   body, and no document names a header, path or body field carrying the pin. Under `PreAuthorized`
@@ -1087,9 +1112,41 @@ and a self-contradicting column list with 04.*
   version live?** The column is non-null by construction and the "digest-version bump, not a silent
   change" rule is normative, but no initial value, roster or store for the current version is named
   anywhere in the set. Owner: this slice.
+- **No table in this slice admits a DELETE, and 10's retention GC must delete from two of them.**
+  C5 exempts only the slice-08 projections and the idempotency sweep; §4.3 says frozen rows "admit
+  no UPDATE/DELETE ever" and §4.4's audit trigger admits one UPDATE and no DELETE.
+  10 `inst-rt-gc` deletes whole audit rows and entity versions in reference-topology order. A door-aware guard is
+  already ruled out (no session variable on SQLite), so either the first migration carries a
+  row-image-predicated DELETE arm — on what predicate? — or retention runs under a privileged role
+  outside the trigger, or these classes are never deleted. Owner: this slice with 10 and the
+  retention-duration owner.
+- **Does the freeze capture the head row before the publish's own UPDATE, or the values it
+  writes?** `composition_pending` is frozen content (§4.3 excludes only three columns, and it is
+  not one of them) and is written by the very UPDATE that follows the freeze, while the version
+  row's key already carries the post-act `published_version`. Nothing states the instant. It
+  decides what 08 projects, what the digest covers and what 10's byte-for-byte restore drill
+  compares. Owner: this slice with 06 and 08.
+- **Does the `AUDIT_UNAVAILABLE` refusal itself owe an audit row?** §4.4's class is now *every*
+  refusal a door raises, and this 503 is one — but its row is by construction the one that could
+  not be written, so the class has a member it can never satisfy: a failure path with no
+  terminator. §3.3's carve-out list is about *phases*, not about the audit class. Owner: this
+  slice with the `nfr-availability-audit` owner.
+- **What is the target state of a re-publish of a `deprecated` head?** P-D-32 keyed publish
+  validators on the target state rather than the edge, but the door accepts a `deprecated` head for
+  version N+1 and "a re-publish changes the version, never the state" — so that act's target state
+  is `deprecated`, while the door is specified to run the validators registered for `→ published`.
+  Neither §1.7's key nor §3.1's says how the target state of a state-preserving act is computed.
+  Owner: this slice, whose own P-D-32 introduced the key.
+- **Is a request that parses but omits `If-Match` "malformed"?** `inst-fd-etag` says an absent
+  precondition is a malformed request, which §3.3 reserves for a bare 400 with no code; but
+  `inst-fd-mint-id`'s criterion is that a parsed request is not malformed, and a `PATCH` without
+  the header parses. Under one reading the caller gets no code to match on, and §3.3 makes the code
+  the discriminator. Owner: the error-contract owner with the interface owner.
 - **Who holds the single declaration of `RETIREMENT_PENDING`?** §3.3 declares it ("declared here
   2026-08-26") now that P-D-30 has moved **both** arms to slice-04 validators, and 04 declares it
   too. §3.3's carve-out for codes listed here but declared elsewhere names exactly one member,
   `CONTENT_PII_BLOCKED`, so the one-declaration rule is either broken or owes a second exemption
-  class — and `PARENT_NOT_PUBLISHED`'s reciprocal wording has no counterpart here. Owner: the
-  error-contract owner (P-D-25/P-D-30) with 04.
+  class — and `PARENT_NOT_PUBLISHED`'s reciprocal wording has no counterpart here. **The same shape
+  holds for `SCOPE_NOT_CONTAINED`**: 04 declares it in its own owned-code contract *and* lists it
+  as declared elsewhere, without the reciprocal qualifier `PARENT_NOT_PUBLISHED` carries. Owner:
+  the error-contract owner (P-D-25/P-D-30) with 04.

@@ -278,6 +278,14 @@ pricing D-47 (joint contract), P-D-04 (containment residue).
   and until one does nobody builds the guard — leaving item 36's hole open: a draft SKU created
   under a Product with a live retire intent defers that retirement indefinitely. *(Raised by the
   slice-01 fifth-pass review, 2026-08-27.)*
+- **Does any runner write the reserved lane `internal:cascade-leg`?** 01 §3.2 reserves three
+  `internal:` lane names and names this slice as the writer of the cascade one, keyed by "the
+  leg's" id — but a repo-wide grep finds the lane only in 01, this slice's cascade rows name no
+  lane, and its one lane use routes legs through the runner on `internal:scheduled-activation`
+  with the transition id. P-D-26 records the restatement obligation as discharged. Either the legs
+  ride the activation lane and 01 reserves a name nothing uses, or this slice owes the row that
+  writes it — and the `client_key` it is keyed by, which no table here supplies. Owner: this slice
+  with 01. *(Raised by the slice-01 fourth lens wave, 2026-08-27.)*
 - **What announces a Product's `deprecated→retired` flip?** 01 §4.5 asserts this slice announces
   all three floor edges, naming `SkuRetirementEffective` on `deprecated→retired`. This slice gives
   the parent Product its own retire `ScheduledTransition` on that edge (H2 fix) and emits

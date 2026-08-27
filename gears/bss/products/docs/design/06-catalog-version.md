@@ -296,6 +296,12 @@ Traces-to now carries the id alongside the number" — reached #4 in this block 
 carried an orphaned `(records half);` fragment left by that wave. 2026-08-26 branch review.)*
 
 **Risks & open items**:
+- **Does the composition-clear re-publish emit `SkuPublished` beside `SkuCompositionCleared`?**
+  `inst-cc-clear` routes the clear through 01's publish door, whose `inst-fd-publish-emit` fires
+  `ProductPublished`/`SkuPublished` unconditionally, and 08's projector keys on `publishedVersion`
+  from `*Published`. Neither slice says whether a consumer sees one event or two, and 12's
+  additivity rule is scoped to 09's coalesced summary. Owner: this slice with the events/audit
+  consumer owner and 08. *(Raised by the slice-01 fourth lens wave, 2026-08-27.)*
 
 - **OPEN (2026-08-27) — which budget this slice carries.** `DESIGN.md` §1.2 reads "the < 3 s
   propagation and < 5 s posting-safe budgets on the slice-01 outbox + slice-06 freeze machine". Read
