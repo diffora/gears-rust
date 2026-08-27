@@ -69,15 +69,22 @@ mislabeled content is never acceptable at any load.
 
 ### 1.5 Scope
 
-**In**: the projector (event-driven, from 01/04/06 events over frozen content), the projection
-schemas, per-state visibility, staleness signaling, scoping enforcement on the read path,
-degradation behavior, facets/filters (p2), history-timeline projection, the convergence budget
-and its measurement.
+**In**:
+- the projector (event-driven, from 01/04/06 events over frozen content)
+- the projection schemas
+- per-state visibility
+- staleness signaling
+- scoping enforcement on the read path
+- degradation behavior
+- facets/filters (p2)
+- history-timeline projection
+- the convergence budget and its measurement.
 
-**Out**: the write path and its availability (01); frozen-snapshot resolution (06's
-`IntentfulResolver` — a different surface with different guarantees); the approval queue (05);
-external search infrastructure choices (implementation detail behind the projection contract).
-
+**Out**:
+- the write path and its availability (01)
+- frozen-snapshot resolution (06's `IntentfulResolver` — a different surface with different guarantees)
+- the approval queue (05)
+- external search infrastructure choices (implementation detail behind the projection contract).
 ### 1.6 Constraints & Assumptions
 
 | # | Constraint | Source |

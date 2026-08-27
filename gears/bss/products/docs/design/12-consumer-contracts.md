@@ -63,14 +63,18 @@ this slice is where "the seam suite will verify it" stops being future tense.
 
 ### 1.5 Scope
 
-**In**: the seam-suite specification (fixtures, home, pin mechanics); the consumer-obligation
-register; event schema versioning + the replay/bootstrap contract; the SDK/§9 surfaces incl.
-the studio-inbox envelope cross-check; the completeness checks; §17.2 traceability (AC #37).
+**In**:
+- the seam-suite specification (fixtures, home, pin mechanics)
+- the consumer-obligation register
+- event schema versioning + the replay/bootstrap contract
+- the SDK/§9 surfaces incl. the studio-inbox envelope cross-check
+- the completeness checks
+- §17.2 traceability (AC #37).
 
-**Out**: the counterparts' implementations (each obligation names its owing gear); the broker's
-transport (Common Core); the §15 opens this slice can only *assert once closed* (freeze acks,
-composition signal, watermark delivery).
-
+**Out**:
+- the counterparts' implementations (each obligation names its owing gear)
+- the broker's transport (Common Core)
+- the §15 opens this slice can only *assert once closed* (freeze acks, composition signal, watermark delivery).
 ### 1.6 Constraints & Assumptions
 
 | # | Constraint | Source |

@@ -69,15 +69,19 @@ and the guards that keep a GC from orphaning a live contract.
 
 ### 1.5 Scope
 
-**In**: the identity-reference map + the erasure act; the content-PII detector policy +
-allow-list governance (Legal); retention classes + clocks + the GC; the grandfathered-retention
-gate; the durability mechanics (checksum restore verification cadence, DR posture as config +
-probes); the compliance-export surface.
+**In**:
+- the identity-reference map + the erasure act
+- the content-PII detector policy + allow-list governance (Legal)
+- retention classes + clocks + the GC
+- the grandfathered-retention gate
+- the durability mechanics (checksum restore verification cadence, DR posture as config + probes)
+- the compliance-export surface.
 
-**Out**: the write-block **hook placement** (02); the liveness records themselves (06); audit
-row production (every slice writes its own; this slice never edits them); break-glass reads
-(05).
-
+**Out**:
+- the write-block **hook placement** (02)
+- the liveness records themselves (06)
+- audit row production (every slice writes its own; this slice never edits them)
+- break-glass reads (05).
 ### 1.6 Constraints & Assumptions
 
 | # | Constraint | Source |

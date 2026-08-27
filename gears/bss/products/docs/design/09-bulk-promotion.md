@@ -62,14 +62,19 @@ aggregated but honest (counts, per-type summary, sample, lint findings).
 
 ### 1.5 Scope
 
-**In**: the import pipeline (parse → per-row validate → stage as drafts → aggregated report →
-batch approval → per-row publish), export, promotion identity resolution, bulk lifecycle ops
-(p2), batch/row idempotency, the coalesced event, the 06 `operation_key` wiring.
+**In**:
+- the import pipeline (parse → per-row validate → stage as drafts → aggregated report → batch approval → per-row publish)
+- export
+- promotion identity resolution
+- bulk lifecycle ops (p2)
+- batch/row idempotency
+- the coalesced event
+- the 06 `operation_key` wiring.
 
-**Out**: row-level validation rules (each slice's registered validators — bulk runs the same
-pipeline per row, never a parallel one); the approval ceremony (05); the CatalogVersion
-increment itself (06 — this slice only tags its requests with the `operation_key`).
-
+**Out**:
+- row-level validation rules (each slice's registered validators — bulk runs the same pipeline per row, never a parallel one)
+- the approval ceremony (05)
+- the CatalogVersion increment itself (06 — this slice only tags its requests with the `operation_key`).
 ### 1.6 Constraints & Assumptions
 
 | # | Constraint | Source |

@@ -69,14 +69,19 @@ remedies are a **provably unreferenced** re-publish or an explicitly recorded em
 
 ### 1.5 Scope
 
-**In**: the watermark door + storage + freshness; the predicate and its per-producer detail
-surface (what 04's confirmation shows); producer registration + its symmetric snapshot ride;
-the correction door; the break-glass correction; the tripwire.
+**In**:
+- the watermark door + storage + freshness
+- the predicate and its per-producer detail surface (what 04's confirmation shows)
+- producer registration + its symmetric snapshot ride
+- the correction door
+- the break-glass correction
+- the tripwire.
 
-**Out**: what producers count (their contract — Contracts' draft/quote question is recorded at
-its registration, PRD §15); retirement policy (04); the ceremony machinery (05); erasure of
-watermark content (10 — sets carry `skuId`s only, no PII by construction).
-
+**Out**:
+- what producers count (their contract — Contracts' draft/quote question is recorded at its registration, PRD §15)
+- retirement policy (04)
+- the ceremony machinery (05)
+- erasure of watermark content (10 — sets carry `skuId`s only, no PII by construction).
 ### 1.6 Constraints & Assumptions
 
 | # | Constraint | Source |

@@ -72,15 +72,21 @@ because the canonical internal name is a quasi-code (P-D-04).
 
 ### 1.5 Scope
 
-**In**: category tree + its invariants and ops; attribute definitions (typed, localized flag,
-brand/region visibility, deprecate-then-remove); attribute values + locale fallback resolution;
-well-known seeds; metadata map; the governed-live-entity mutation pattern (op envelope handed to
-slice 05); the content-PII write-block **hook** (detector policy owned by slice 10).
+**In**:
+- category tree + its invariants and ops
+- attribute definitions (typed, localized flag, brand/region visibility, deprecate-then-remove)
+- attribute values + locale fallback resolution
+- well-known seeds
+- metadata map
+- the governed-live-entity mutation pattern (op envelope handed to slice 05)
+- the content-PII write-block **hook** (detector policy owned by slice 10).
 
-**Out**: approval machinery itself (05); read-model/search projections and faceting (08);
-category read-model warming (08); erasure execution (10); `PlanTier` and recognized sets — also
-governed live entities, but owned by slice 03 which reuses this slice's pattern.
-
+**Out**:
+- approval machinery itself (05)
+- read-model/search projections and faceting (08)
+- category read-model warming (08)
+- erasure execution (10)
+- `PlanTier` and recognized sets — also governed live entities, but owned by slice 03 which reuses this slice's pattern.
 ### 1.6 Constraints & Assumptions
 
 | # | Constraint | Source |

@@ -70,15 +70,22 @@ discovered weeks later at ERP export or rating time.
 
 ### 1.5 Scope
 
-**In**: type + per-type required-field validators; `sellable`; `PlanTier` taxonomy + SKU value;
-recognized code sets + code validators; recognized unit set + metering-unit declaration +
-`usageTypeRef` resolution; unit de-listing; the uncomposed-bundle publish override registration
-(P-D-02); mutability-bucket registration for every field this slice owns.
+**In**:
+- type + per-type required-field validators
+- `sellable`
+- `PlanTier` taxonomy + SKU value
+- recognized code sets + code validators
+- recognized unit set + metering-unit declaration + `usageTypeRef` resolution
+- unit de-listing
+- the uncomposed-bundle publish override registration (P-D-02)
+- mutability-bucket registration for every field this slice owns.
 
-**Out**: bundle composition and `compositionPending` clearing (06); the fresh-zero correction
-door for bucket-ii fields (07); plan-side enforcement — predicate 6, tier presence, dimension
-subset (pricing); usage collection (collector); the approval machinery (05).
-
+**Out**:
+- bundle composition and `compositionPending` clearing (06)
+- the fresh-zero correction door for bucket-ii fields (07)
+- plan-side enforcement — predicate 6, tier presence, dimension subset (pricing)
+- usage collection (collector)
+- the approval machinery (05).
 ### 1.6 Constraints & Assumptions
 
 | # | Constraint | Source |

@@ -74,17 +74,22 @@ already-governed content within a ratified SLO and never waits on a human.
 
 ### 1.5 Scope
 
-**In**: increment lanes + coalescing + serialization + gapless ids; snapshot builder (content
-manifest, canonical serialization, checksum, P-D-06 metadata capture, participant-set
-snapshot); resolution API with declared intent; freeze protocol end-to-end (acks, timeout,
-recovery, force-completion, participant governance); grandfathering invariant + per-version
-freeze-registration records (the AC #44 liveness source slice 10 consumes); `compositionPending`
-clearing; the diff; the posting-safe observability.
+**In**:
+- increment lanes + coalescing + serialization + gapless ids
+- snapshot builder (content manifest, canonical serialization, checksum, P-D-06 metadata capture, participant-set snapshot)
+- resolution API with declared intent
+- freeze protocol end-to-end (acks, timeout, recovery, force-completion, participant governance)
+- grandfathering invariant + per-version freeze-registration records (the AC #44 liveness source slice 10 consumes)
+- `compositionPending` clearing
+- the diff
+- the posting-safe observability.
 
-**Out**: entity publish and its governance (01/05); what participants do with the fan-out
-(their gears); retention/GC execution (10 — this slice only supplies the liveness records);
-`pricingSnapshotRef` composition (rating); the pricing-side pending-ref table (pricing owns it).
-
+**Out**:
+- entity publish and its governance (01/05)
+- what participants do with the fan-out (their gears)
+- retention/GC execution (10 — this slice only supplies the liveness records)
+- `pricingSnapshotRef` composition (rating)
+- the pricing-side pending-ref table (pricing owns it).
 ### 1.6 Constraints & Assumptions
 
 | # | Constraint | Source |

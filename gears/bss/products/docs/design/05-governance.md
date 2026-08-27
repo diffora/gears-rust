@@ -77,17 +77,21 @@ roles counting as two approvers (**principals, not roles**).
 
 ### 1.5 Scope
 
-**In**: materiality evaluation (field-set driven off the bucket registry + enumerated ops +
-affected-entity count); the approval workflow (submit → quorum → publish/apply) over both
-entity publishes and `GovernedLiveOp`s; stored pinned snapshots + diff rendering; the override
-ceremony; approver constraints (distinctness, roles, scope); the pending-approvals read surface
-(the studio inbox contract); RBAC catalog; break-glass elevation + its audit.
+**In**:
+- materiality evaluation (field-set driven off the bucket registry + enumerated ops + affected-entity count)
+- the approval workflow (submit → quorum → publish/apply) over both entity publishes and `GovernedLiveOp`s
+- stored pinned snapshots + diff rendering
+- the override ceremony
+- approver constraints (distinctness, roles, scope)
+- the pending-approvals read surface (the studio inbox contract)
+- RBAC catalog
+- break-glass elevation + its audit.
 
-**Out**: the doors themselves (01/02); scheduling (04 pins approvals, this slice only
-validates them at activation through the gate); the slice-07 break-glass **correction** door —
-a distinct, feature-flag-gated WRITE mechanism that merely reuses this slice's elevation
-ceremony; erasure of approver identities (10).
-
+**Out**:
+- the doors themselves (01/02)
+- scheduling (04 pins approvals, this slice only validates them at activation through the gate)
+- the slice-07 break-glass **correction** door — a distinct, feature-flag-gated WRITE mechanism that merely reuses this slice's elevation ceremony
+- erasure of approver identities (10).
 ### 1.6 Constraints & Assumptions
 
 | # | Constraint | Source |

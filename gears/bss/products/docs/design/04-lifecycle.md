@@ -68,17 +68,23 @@ orphan published content or leak a child outside its parent's scope.
 
 ### 1.5 Scope
 
-**In**: policy validators on every lifecycle edge; deprecation provenance; un-deprecation
-rules; scheduled transitions (publish + retirement) and their activation mechanics; the
-retirement flip guard against the slice-07 predicate; `replacedBy`; parent-child publish
-ordering, scope containment (final rule), cascade-retire + deferred intent; the v1 EOL
-lockout.
+**In**:
+- policy validators on every lifecycle edge
+- deprecation provenance
+- un-deprecation rules
+- scheduled transitions (publish + retirement) and their activation mechanics
+- the retirement flip guard against the slice-07 predicate
+- `replacedBy`
+- parent-child publish ordering, scope containment (final rule), cascade-retire + deferred intent
+- the v1 EOL lockout.
 
-**Out**: the edge list itself and terminality (01); the reference predicate (07); approval
-ceremonies the edges invoke (05); grandfathered-snapshot immutability (06); live-subscription
-migration (Subscriptions); the consumer-side adoption block (pricing AC #82, retirement/unpublish arm only; verified by the
-slice-12 seam suite).
-
+**Out**:
+- the edge list itself and terminality (01)
+- the reference predicate (07)
+- approval ceremonies the edges invoke (05)
+- grandfathered-snapshot immutability (06)
+- live-subscription migration (Subscriptions)
+- the consumer-side adoption block (pricing AC #82, retirement/unpublish arm only; verified by the slice-12 seam suite).
 ### 1.6 Constraints & Assumptions
 
 | # | Constraint | Source |

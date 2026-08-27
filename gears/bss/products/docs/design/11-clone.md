@@ -53,11 +53,17 @@ copies, what resets, and what must be re-proven against today's vocabularies.
 
 ### 1.5 Scope
 
-**In**: the clone door for Product and SKU (single and product-with-SKUs), the disposition
-table, live re-validation, `clonedFrom`, the revival-rename rule. **Out**: bulk cloning (09's
-import covers mass cases); pricing/plan content (never copied — PRD); approval (a clone lands
-as `draft`; its publish is the ordinary 05-gated act).
+**In**:
+- the clone door for Product and SKU (single and product-with-SKUs)
+- the disposition table
+- live re-validation
+- `clonedFrom`
+- the revival-rename rule.
 
+**Out**:
+- bulk cloning (09's import covers mass cases)
+- pricing/plan content (never copied — PRD)
+- approval (a clone lands as `draft`; its publish is the ordinary 05-gated act).
 ### 1.6 Constraints & Assumptions
 
 | # | Constraint | Source |

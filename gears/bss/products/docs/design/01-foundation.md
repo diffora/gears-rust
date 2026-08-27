@@ -85,18 +85,30 @@ mechanical lives here; every human gate attaches to the entity-publish act.
 
 ### 1.5 Scope
 
-**In**: entity model + storage shape for `Product`/`SKU` core columns; identity + `skuCode`
-reservation; revision/version mechanics; state-machine core (edge list, terminality, physical
-floor); validation pipeline frame + the error taxonomy; idempotency; ETag concurrency; outbox +
-envelope discipline + per-aggregate ordering; audit; the interim parent-child region-containment
-check (P-D-04 residue — final rule in slice 04).
+**In**:
+- entity model + storage shape for `Product`/`SKU` core columns
+- identity + `skuCode` reservation
+- revision/version mechanics
+- state-machine core (edge list, terminality, physical floor)
+- validation pipeline frame + the error taxonomy
+- idempotency
+- ETag concurrency
+- outbox + envelope discipline + per-aggregate ordering
+- audit
+- the interim parent-child region-containment check (P-D-04 residue — final rule in slice 04).
 
-**Out** (owned by later slices, listed so absence reads as intent): category/attribute content
-rules (02); typing/classification/metering policy (03); deprecation/retirement policy,
-scheduling, cascades (04); materiality, approvals, RBAC grants, break-glass (05);
-`CatalogVersion` and freezes (06); `SkuReferenceCount` and corrections (07); read models (08);
-bulk (09); retention/erasure execution (10); clone (11); seam suite + replay/bootstrap (12).
-
+**Out** (owned by later slices, listed so absence reads as intent):
+- category/attribute content rules (02)
+- typing/classification/metering policy (03)
+- deprecation/retirement policy, scheduling, cascades (04)
+- materiality, approvals, RBAC grants, break-glass (05)
+- `CatalogVersion` and freezes (06)
+- `SkuReferenceCount` and corrections (07)
+- read models (08)
+- bulk (09)
+- retention/erasure execution (10)
+- clone (11)
+- seam suite + replay/bootstrap (12).
 ### 1.6 Constraints & Assumptions
 
 | # | Constraint | Source |
