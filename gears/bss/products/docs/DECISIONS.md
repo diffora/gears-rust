@@ -29,6 +29,7 @@ joint contracts, cited from here by their pricing numbers, never duplicated.
 - [P-D-18 — Version liveness ends by an explicit release; the release is a fifth inbound contract](#p-d-18--version-liveness-ends-by-an-explicit-release-the-release-is-a-fifth-inbound-contract)
 - [P-D-19 — A force-completed version stays refused for posted use until opt-in; the pin is the registry's own door](#p-d-19--a-force-completed-version-stays-refused-for-posted-use-until-opt-in-the-pin-is-the-registrys-own-door)
 - [P-D-20 — A publish during the retirement lead window re-announces `SkuRetired`; the door stays open](#p-d-20--a-publish-during-the-retirement-lead-window-re-announces-skuretired-the-door-stays-open)
+- [P-D-21 — The local audit table holds only what emits no event; the event stream is the success-path record](#p-d-21--the-local-audit-table-holds-only-what-emits-no-event-the-event-stream-is-the-success-path-record)
 
 <!-- /toc -->
 
@@ -196,6 +197,10 @@ instead.*
   unchanged.
 
 #### P-D-08 — Audit sealing is a platform capability: reserved seam + stated requirements
+
+- **Amended 2026-08-27 by P-D-21**: the v1 audit table it describes no longer holds a row per
+  mutating door — only refusals and reads under elevation. The reserved seam and S1–S9 stand
+  unchanged; what shrank is the table they guard.
 
 - **Date**: 2026-08-26 (product call, prompted by the audit-posture comparison against the
   ledger and pricing registers — this gear had inherited pricing's G1/G2/G5 and silently
@@ -804,3 +809,81 @@ instead.*
   exactly that. If that is the wrong trade, the fix belongs in `inst-fd-containment`, not here.
   Named in words rather than as a propagation target, because this is a statement about a
   clause that did **not** move.
+
+#### P-D-21 — The local audit table holds only what emits no event; the event stream is the success-path record
+
+- **Date**: 2026-08-27 (product call, in the slice-01 review, prompted by "мы же решили отложить
+  audit?" and then "рассчитываем на платформенный аудит")
+- **Residue flagged, and only the residue**: the decision below is the owner's, taken in
+  conversation; two things in this entry are **not** and are open to veto. (1) The owner chose
+  "local row for refusals, success by events"; the **second class — reads under elevation** — was
+  added here because measurement showed the boundary the owner named ("what the event stream
+  cannot carry") includes it: a read writes no outbox row, and v1 elevation is read-only. (2) That
+  **P-D-08's seam survives** is a reading of S1–S9, not something the owner said. Everything else
+  is either the decision as stated or a measured consequence of it.
+- **Decision**: v1 no longer writes a `products_audit_log` row for every mutating door. **The
+  event stream is the audit of record for everything that succeeds**, and the local table
+  survives only for acts the event stream structurally cannot carry. That set was measured, not
+  assumed, and it is exactly two classes:
+  - **refusals.** A rejected mutation rolls back its transaction and the outbox row rolls back
+    with it, so no event exists; the design set declares **no** rejection event anywhere, and
+    `fr-expected-failure-behavior` names **fifteen** cases that MUST fail closed *with an audited
+    reason*.
+  - **reads under elevation.** A read writes no outbox row at all. Break-glass in v1 is
+    **audit-export only** (05 — "any write under elevation is refused, full stop"), so every
+    audited act under elevation is a read, and 05 requires that "every elevated read leaves an
+    audit row with the session id (count asserted, not sampled)".
+- **Why**: the outbox row is written inside the mutation's transaction, so for a *successful*
+  write the event is exactly as durable and as transactional as the audit row was — P-D-08 S3's
+  objection is to a **network call in the write path**, which the outbox pattern does not make.
+  Erasure survives untouched: `fr-retention-erasure` already reasons over event streams in the
+  same breath as audit rows ("because events carry only pseudonymous actor references, updating
+  the reference map completes erasure without touching immutable event streams"), and slice 10 C1
+  names "audit/event records" as one class. So duplicating every successful act into a second
+  local table bought retention cost and a second erasure surface, and no control the events did
+  not already provide.
+- **Consequences, recorded rather than hidden**:
+  - **The event payload must carry what the audit row carried.** The audit row's tuple is
+    `actor_ref`, action, subject `(kind, id, revision)`, reason, correlation id. The stated
+    payload (01 §4.4) carries the envelope, a versioned schema ref, correlation/causation, the
+    idempotency key and `actor_ref`; the event type supplies the action and `aggregate_id` the
+    subject id. **`revision` is not in it** — and without it a consumer cannot say which revision
+    an act applied to, which is the whole point of an audit trail over a versioned entity. Owed
+    as a payload amendment, not assumed here.
+  - **Slice 03's resolved-binding snapshot loses its home.** `inst-cd-stamp` stamps
+    `(gts_id, kind, metadata_fields)` "into the audit row of the publish", and a publish is a
+    success. §15's deletion negotiation and pricing's `meter_binding_divergent` remediation are
+    both written to reference it. It must move to the publish event payload or to
+    `products_entity_version`; **which one is slice 03's call and is registered there, not
+    decided here.**
+  - **Retention moves onto the event store.** `fr-retention-erasure` requires audit records kept
+    "for the configured retention duration" alongside financial records. A broker does not retain
+    on that horizon, so the durable sink must be the platform audit capability — which per PRD
+    §15 **does not yet exist** and is owned by Architecture. Until it does, successful-act audit
+    is retained only as long as the event store retains it, and that is a v1 gap this decision
+    creates deliberately.
+  - **`nfr-availability-audit`'s "100% write-path audit"** is now satisfied by two records of
+    different kinds — event for the committed path, local row for the refused path. The threshold
+    holds; the mechanism named in the NFR's prose does not, and the PRD sentence needs the
+    amendment.
+  - **P-D-08's sealing seam still applies**, now to a much smaller table. Nothing in P-D-08's
+    S1–S9 depends on the table's volume, and the seam's whole value — migration-free activation
+    plus an era marker in the data — is unchanged. The seam is **not** struck by this decision.
+- **Propagated**: `DECISIONS.md` P-D-08 (amended, pointer added), `design/01-foundation.md`
+  (§1.1/§1.5/§1.8 framing, every success-path flow row, §4.4's table scope, §6's three registered
+  consequences), `design/02-taxonomy-attributes.md` (`inst-tx-event`, `inst-gl-atomic`, `inst-ad-event`),
+  `design/11-clone.md` (`inst-cn-lineage`).
+- **Owed, and deliberately not applied by the wave that recorded this** — each needs its own
+  slice's judgment rather than a sweep, and none of them is a phrasing change:
+  - `PRD` `fr-registry-eventing-audit` and `nfr-availability-audit` prose — the "100% write-path
+    audit" threshold survives, the single-mechanism sentence under it does not.
+  - `design/03-sku-classification.md` `inst-cd-stamp` — the resolved-binding snapshot's
+    new home (publish event payload, or `products_entity_version`).
+  - `design/07-reference-signal.md` `inst-pr-governed` — its trailing audit obligation covers a
+    `GovernedLiveOp` that both succeeds and refuses; which half stays local needs the row read
+    whole.
+  - `design/10-retention-erasure.md` §4 — "retention/drill state is config + audit, no new record
+    tables" puts a *successful* drill's state in a store this decision empties.
+  - `design/05-governance.md` — its audit-row references are refusal- and elevation-side and look
+    correct as they stand, but were not read one by one.
+  - The event-payload amendment carrying `revision` (see Consequences).

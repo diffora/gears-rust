@@ -47,7 +47,8 @@ state machine core (`draft → published ↔ deprecated → retired`, `draft →
 forward-only), the fail-closed **registered-validator pipeline**, append-only published-version
 history with diff, per-row optimistic concurrency (`If-Match` on the internal revision),
 tenant-scoped idempotency, the broker-native event fan-out through a transactional outbox
-(P-D-01), and the append-only audit trail.
+(P-D-01), and the append-only audit trail — which under **P-D-21** records only what emits no
+event: refusals, and reads under elevation.
 
 The Foundation deliberately owns **no capability policy**: it does not know what a `PlanTier`,
 a metering unit, a materiality threshold, or a freeze participant is. Capability slices author
@@ -77,7 +78,7 @@ acknowledged, and rejections that always carry an audited reason. Per P-D-02, ev
   #14, #27, #28, #38, #42
 - [`../DECISIONS.md`](../DECISIONS.md) P-D-01 (envelope), P-D-02 (mechanical increments),
   P-D-04 (absolute name uniqueness), P-D-06 (metadata-map placement), P-D-08 (audit-sealing
-  seam)
+  seam), P-D-21 (the audit table holds only what emits no event)
 - Pricing `design/01-foundation.md` — the pattern donor (registered validators, append-only
   triggers with column whitelists, draft/published partial unique indexes, outbox + pending
   refs); divergences are stated where they occur
@@ -96,7 +97,7 @@ acknowledged, and rejections that always carry an audited reason. Per P-D-02, ev
 - idempotency
 - ETag concurrency
 - outbox + envelope discipline + per-aggregate ordering
-- audit
+- audit of the acts that emit no event (refusals; reads under elevation — P-D-21)
 - the interim parent-child region-containment check (P-D-04 residue — final rule in slice 04).
 
 **Out** (owned by later slices, listed so absence reads as intent):
@@ -138,7 +139,7 @@ acknowledged, and rejections that always carry an audited reason. Per P-D-02, ev
 
 **Consumed**: IdP claims (tenant/brand/region/roles); event-broker SDK (publish, durable ack);
 platform config store (interim policy defaults, PRD §17.1). **Produced**: Foundation events
-(§4.5), audit rows, the SDK read/write surface the studio and sibling gears call. **Explicitly
+(§4.5) — the success-path audit record under P-D-21 — refusal/elevation audit rows, the SDK read/write surface the studio and sibling gears call. **Explicitly
 not consumed here**: `SkuReferenceCount` (slice 07), pricing signals (06/07).
 
 ## 2. Actor Flows (CDSL)
@@ -150,7 +151,8 @@ not consumed here**: `SkuReferenceCount` (slice 07), pricing signals (06/07).
 1. [ ] - `p1` - Authorize `product × write` in the caller's tenant/brand scope (deny-by-default); resolve the idempotency key `(tenant, endpoint, client key)` — a hit with identical payload replays the stored outcome, a hit with different payload fails `IDEMPOTENCY_CONFLICT` - `inst-fd-idempotency`
 2. [ ] - `p1` - Validate shape; normalize `name`; enforce **absolute** uniqueness on `(tenant_id, brand_id, name_normalized)` via the partial unique index (§4.1) — collision fails `DUPLICATE_NAME` naming the holder; P-D-04: region scope plays no part - `inst-fd-name-unique`
 3. [ ] - `p1` - Mint `productId` (UUID, server-side, never caller-supplied — a stray id in the payload is a `400`); optional `productCode` reserves under the same rules as `skuCode` - `inst-fd-mint-id`
-4. [ ] - `p1` - Persist as `draft`, `published_version = 0`, `internal_revision = 1`; write the audit row and the `ProductCreated` outbox row in the same transaction - `inst-fd-create-txn`
+4. [ ] - `p1` - Persist as `draft`, `published_version = 0`, `internal_revision = 1`; write the `ProductCreated` outbox row in the same transaction (**P-D-21**: the event is the
+success-path audit record; no audit row is written on a committed act) - `inst-fd-create-txn`
 
 ### Define a SKU
 
@@ -159,7 +161,7 @@ not consumed here**: `SkuReferenceCount` (slice 07), pricing signals (06/07).
 1. [ ] - `p1` - Authorize; idempotency as above - `(cont. inst-fd-idempotency)`
 2. [ ] - `p1` - Parent must exist in the tenant, not be `retired`/`discarded`, **and not hold a live retire intent** (`RETIREMENT_PENDING` — item 36 of the 2026-08-26 review: a `deprecated` parent still admits children, so a draft SKU created after the `CascadePlan` was computed is outside the plan's auto-discard arm and defers that Product's retirement indefinitely); the SKU's brand/region scope must pass the **interim containment check**: scope sets are flat value lists, containment = subset, anything not provably a subset fails `SCOPE_NOT_CONTAINED` (conservative until slice 04 pins the final rule) - `inst-fd-containment`
 3. [ ] - `p1` - Reserve `skuCode` **atomically at create**: the insert itself is the reservation — the `ReservationIndex` admits exactly one non-`discarded` holder per `(tenant_id, sku_code)`; the loser of a concurrent race fails `DUPLICATE_SKU_CODE` with an audited reason (PRD AC #42) - `inst-fd-reserve-code`
-4. [ ] - `p1` - Mint `skuId`; persist as `draft` with the slice-03-owned columns present but unjudged (typing/classification rules run when slice 03 registers them); audit + `SkuCreated` outbox row in the same transaction - `(cont. inst-fd-create-txn)`
+4. [ ] - `p1` - Mint `skuId`; persist as `draft` with the slice-03-owned columns present but unjudged (typing/classification rules run when slice 03 registers them); the `SkuCreated` outbox row in the same transaction - `(cont. inst-fd-create-txn)`
 
 ### Save an edit (draft or published head)
 
@@ -167,15 +169,14 @@ not consumed here**: `SkuReferenceCount` (slice 07), pricing signals (06/07).
 
 1. [ ] - `p1` - Every mutating verb on an entity head **requires `If-Match`** on the internal revision; mismatch fails `STALE_REVISION`; an absent precondition is a malformed request (per-row token, never plan-shared — the pricing D-141 lesson adopted at birth) - `inst-fd-etag`
 2. [ ] - `p1` - Run the pipeline's shape + identity phases plus every registered validator for `(kind, field set)`; violations collect per-field into one audited rejection - `inst-fd-pipeline`
-3. [ ] - `p1` - Saves land on the **head row** — the authoring surface for `draft`, `published`, and `deprecated` entities alike (H1 fix, 2026-08-25 review): a save is never a lifecycle transition, and consumers are untouched because **every consumer-facing read serves frozen `products_entity_version` content, never the head row**. A `skuCode` change is legal only while `published_version = 0` and releases the old code by the row update itself; `internal_revision += 1`; audit + the `ProductDraftSaved`/`SkuDraftSaved` outbox row in the
-same transaction. Saves **never** touch `published_version` - `inst-fd-save-txn`
+3. [ ] - `p1` - Saves land on the **head row** — the authoring surface for `draft`, `published`, and `deprecated` entities alike (H1 fix, 2026-08-25 review): a save is never a lifecycle transition, and consumers are untouched because **every consumer-facing read serves frozen `products_entity_version` content, never the head row**. A `skuCode` change is legal only while `published_version = 0` and releases the old code by the row update itself; `internal_revision += 1`; the `ProductDraftSaved`/`SkuDraftSaved` outbox row in the same transaction. Saves **never** touch `published_version` - `inst-fd-save-txn`
 4. [ ] - `p1` - A draft save on an entity holding an open approval **invalidates it** — the Foundation raises the `approval-invalidated` hook; slice 05 owns re-queue semantics - `inst-fd-approval-hook`
 
 ### Discard a never-published draft
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-flow-discard`
 
-1. [ ] - `p1` - Legal only from `draft` with `published_version = 0`; transition to `discarded` (terminal); the `ReservationIndex` (§4.2) and the `product_code` index (§4.1) both exclude `discarded` rows, so the `skuCode`/`productCode` reservation releases by the same write; audit + `SkuDiscarded`/`ProductDiscarded` event - `inst-fd-discard`
+1. [ ] - `p1` - Legal only from `draft` with `published_version = 0`; transition to `discarded` (terminal); the `ReservationIndex` (§4.2) and the `product_code` index (§4.1) both exclude `discarded` rows, so the `skuCode`/`productCode` reservation releases by the same write; the `SkuDiscarded`/`ProductDiscarded` event - `inst-fd-discard`
 
 ### Publish an entity (the mechanics half)
 
@@ -184,7 +185,7 @@ same transaction. Saves **never** touch `published_version` - `inst-fd-save-txn`
 1. [ ] - `p1` - `PublishDoor` accepts `(entity, expected internal revision)` — a `draft` for its first publish, or a `published`/`deprecated` **head** for version N+1 (a re-publish changes the version, never the state); stale revision fails `STALE_REVISION` — an approval is only usable against the exact revision it pinned (slice 05 stores the snapshot; the Foundation enforces the match) - `inst-fd-publish-pin`
 2. [ ] - `p1` - Re-run the **full** pipeline at publish (shape, identity, every registered validator for the `→ published` transition): an entity that stopped being publishable since approval fails closed `INCOMPLETE_ENTITY`/rule-named code, never publishes stale - `inst-fd-publish-revalidate`
 3. [ ] - `p1` - The governance gate (slice 05) runs **inside** the door, and the door therefore carries an explicit **authorization mode** (Blocking 9 fix, 2026-08-26 review): `Gate` — the ordinary interactive publish, which needs a `satisfied` record — or **`PreAuthorized(approvalId)`**, the mechanical stage of a composite act (05 `inst-gv-one-shot`: scheduled activation, a cascade leg, a bulk row). Under `PreAuthorized` the gate does not look for a `satisfied` record and does not consume one; it **verifies** that the named record authorized *this* subject and that its pinned revision still matches, raising `APPROVAL_REQUIRED` only when it did not. Without the mode the two readings collide and every scheduled publish fails terminally: the runner drives "the ordinary Foundation publish door" (04 `inst-sp-activate`), the gate inside it would see a `consumed` record, and 04 `inst-ar-failure` wraps that into a terminal `SCHEDULE_STALE_APPROVAL`. Re-validation stays fail-closed in both modes — the mode governs *who approved*, never *whether the entity is still publishable*. A material change without satisfied approvals fails `APPROVAL_REQUIRED`; the Foundation knows only "the gate answered yes/no + reason". An approval rejection "returns the entity to draft" (AC #26) reads: a first-publish entity stays `draft`; a published head keeps its pending edits unpublished — no state flip either way (design reading under the head-row model, **flagged**: the literal reading would need a `published→draft` edge the PRD's own forward-only rule forbids — slice-05 review L-6) - `inst-fd-governance-gate`
-4. [ ] - `p1` - On yes: `published_version += 1` (the door is this column's **only** writer); freeze the full entity content (excluding the metadata map, §4.3) into `products_entity_version`; first publish makes `skuCode` reservation permanent (immutability enforced by the trigger whitelist from this row-state on); emit `ProductPublished`/`SkuPublished`; audit — one transaction - `inst-fd-publish-txn`
+4. [ ] - `p1` - On yes: `published_version += 1` (the door is this column's **only** writer); freeze the full entity content (excluding the metadata map, §4.3) into `products_entity_version`; first publish makes `skuCode` reservation permanent (immutability enforced by the trigger whitelist from this row-state on); emit `ProductPublished`/`SkuPublished` — one transaction - `inst-fd-publish-txn`
 5. [ ] - `p1` - Post-commit, slice 06 consumes the publish event **as content only** (what became publishable); an entity publish **never enqueues a CatalogVersion increment** — addressability comes from downstream requests or an operator catalog-publish act (06 `inst-cv-request`; M1 fix of the 06 review), and the Foundation itself requests nothing (06 `inst-cv-request`'s trigger set names pricing, this gear's slice-09 bulk commits and the operator act — not this slice) - `inst-fd-publish-fanout`
 
 ### Transition an entity (state-machine floor)
@@ -368,8 +369,14 @@ These rows are the **only consumer-read surface** for entity content: read model
 - `products_idempotency`: `(tenant_id, endpoint, client_key)` PK · `payload_hash` ·
   `outcome_ref` · `expires_at` (§3.2).
 - `products_audit_log`: append-only apart from the one-way seal transition below; `actor_ref` (pseudonymous — the identity-reference map is
-  slice 10's), action, subject `(kind, id, revision)`, reason, correlation id. Every mutating
-  door writes exactly one row in its transaction, including every rejection with its reason.
+  slice 10's), action, subject `(kind, id, revision)`, reason, correlation id. **Under P-D-21 this
+  table holds only the acts that emit no event**: every **refusal** with its reason
+  (`fr-expected-failure-behavior`'s fifteen named cases), and every **read under elevation** with
+  its break-glass session id (05 — elevation in v1 is audit-export only, so nothing under it
+  commits a mutation and nothing under it produces an event). A committed mutation writes **no**
+  row here; its outbox event is the record. **How a refusal's row commits is unsettled, and
+  P-D-21 makes it load-bearing** (§6): the wording this replaced had every door write its row
+  "in its transaction", which is precisely the transaction a refusal rolls back.
   **Reserved platform-sealing seam (P-D-08)** — present from the first migration, never sealed
   by this gear: `seal_state` (NOT NULL, roster `unsealed | sealed`, written **`unsealed` at
   INSERT** by this gear — always, in v1 and after activation alike — which makes the unproven
@@ -513,3 +520,25 @@ half), `cpt-cf-bss-products-fr-event-delivery-resilience` (registry-side half: d
   collapse the two, "the re-basing C5's M1 fix struck for collapsing budgets NFR #3 keeps
   distinct". Whether one meter may be asserted against two thresholds, or a second probe is owed,
   is settled nowhere; slice 06's open item records the split rather than deciding it.
+- **How does a refusal's audit row commit?** (P-D-21, 2026-08-27 — latent before it, load-bearing
+  after). §4.4's rule was "every mutating door writes exactly one row in its transaction,
+  including every rejection with its reason", and a refusal rolls that transaction back. Under
+  P-D-21 refusals are the table's **main** content, so the mechanism can no longer be left
+  implicit: an autonomous/second transaction, a door that commits the audit row and rolls back
+  only the entity writes, or something else. Each has different failure behaviour when the
+  refusal is itself caused by the database being unavailable, and no document in the tree states
+  which. **Nothing else in the gear can be relied on to cover it**: the event stream cannot, by
+  P-D-21's own reasoning.
+- **Where does slice 03's resolved-binding snapshot live now?** `inst-cd-stamp` stamps
+  `(gts_id, kind, metadata_fields)` "into the audit row of the publish", and a publish is a
+  committed act that under P-D-21 writes no audit row. §15's deletion negotiation and pricing's
+  `meter_binding_divergent` remediation are both written to reference it. The publish event
+  payload and `products_entity_version` are both plausible homes; the choice is slice 03's and is
+  registered here only because P-D-21 was recorded from this slice.
+- **The event payload owes the `revision`.** P-D-21 makes the event the success-path audit record,
+  and the audit tuple it replaces is `actor_ref`, action, subject `(kind, id, revision)`, reason,
+  correlation id. §4.4's stated payload carries the envelope, a versioned schema ref,
+  correlation/causation, the idempotency key and `actor_ref`; the event type supplies the action
+  and `aggregate_id` the subject id. **`revision` is in neither**, so as it stands the record
+  cannot say which revision an act applied to — the one thing an audit trail over a versioned
+  entity exists to say. Owed as a payload amendment, not written here.

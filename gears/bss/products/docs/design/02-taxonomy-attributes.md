@@ -125,7 +125,7 @@ contract slice 08 projects.
 2. [ ] - `p1` - On apply, re-validate against the **live** tree (the gate pinned the op, not the world): name uniqueness within the parent on `(tenant_id, parent_id, normalized(name))` — re-checked on rename **and** re-parent; violation fails `DUPLICATE_CATEGORY_NAME` - `inst-tx-name-in-parent`
 3. [ ] - `p1` - `TaxonomyWalk` inside the write transaction, under the per-tenant taxonomy writer lock (§3.4): a re-parent whose new ancestor chain contains the node itself fails `TAXONOMY_CYCLE`; a create/re-parent exceeding configured max depth or max children fails `TAXONOMY_LIMIT` naming the limit - `inst-tx-walk`
 4. [ ] - `p1` - Retire/delete **MUST** be refused while any **non-terminal** Product (`draft`/`published`/`deprecated` — the PRD's operand is "active", and `retired` *and* `discarded` are both terminal) references the category (primary or secondary) or any active child exists. **The guard reads the referencing Product's lifecycle state, never the presence of a `products_product_category` row** (item 17 of the 2026-08-26 review: discard releases the code and name reservations but leaves the category link, so on the old "non-`retired`" operand one discarded draft blocked the category permanently) — `CATEGORY_REFERENCED`, with a sample of holders named; retire marks the node closed to new assignment, delete is admitted only on a retired, empty, unreferenced node - `inst-tx-retire-guard`
-5. [ ] - `p1` - Each applied op writes audit + emits its event (`CategoryCreated`/`CategoryRenamed`/`CategoryReparented`/`CategoryRetired`/`CategoryDeleted`) in the same transaction; the op envelope id rides the event for approval traceability - `inst-tx-event`
+5. [ ] - `p1` - Each applied op writes emits its event (`CategoryCreated`/`CategoryRenamed`/`CategoryReparented`/`CategoryRetired`/`CategoryDeleted`) in the same transaction (**P-D-21**: the event is the success-path audit record); the op envelope id rides the event for approval traceability - `inst-tx-event`
 
 ### Assign categories to a Product
 
@@ -140,7 +140,7 @@ contract slice 08 projects.
 
 1. [ ] - `p1` - A definition = `(key, value type, localized?, brand/region visibility scope, state)`; create and **material** changes (type change, visibility narrowing, deprecation) ride `GovernedLiveOp` through the slice-05 gate; display-label edits are non-material single-approver ops per the §17.1 interim materiality default - `inst-ad-governed`
 2. [ ] - `p1` - Changes **MUST** be backward-compatible: a type change on a definition with live values is refused (`DEFINITION_IN_USE`) — the path is deprecate-then-remove: `deprecated` blocks new values, removal is admitted once no **non-terminal head** (published/deprecated Product or SKU, active category) carries a value — frozen versions are **self-contained copies**: they stay renderable after removal, and they neither block it nor are touched by it (operand narrowed to the PRD's live-reference condition — M2 fix, 2026-08-25 review) - `inst-ad-deprecate-then-remove`
-3. [ ] - `p1` - Every applied change emits `AttributeDefinitionUpdated` + audit - `inst-ad-event`
+3. [ ] - `p1` - Every applied change emits `AttributeDefinitionUpdated` (P-D-21: the event is the success-path audit record) - `inst-ad-event`
 
 ### Author localized attribute values
 
@@ -171,7 +171,7 @@ lint 3 could not see it).*
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-algo-governed-live`
 
 1. [ ] - `p1` - A `GovernedLiveOp` pins the **operation** (kind + target + payload + the target's expected current state), not an entity revision; slice 05 approves the envelope; the apply step re-validates the expected state against the live row and fails `STALE_LIVE_OP` if the world moved (the live-entity analogue of the Foundation's pinned-revision publish) - `inst-gl-envelope`
-2. [ ] - `p1` - Apply is atomic: mutation + audit + event in one transaction; there is no partially-applied taxonomy op - `inst-gl-atomic`
+2. [ ] - `p1` - Apply is atomic: mutation + event in one transaction (P-D-21); there is no partially-applied taxonomy op - `inst-gl-atomic`
 3. [ ] - `p1` - The pattern is exported: slice 03 reuses it verbatim for `PlanTier` and the recognized code/unit sets - `inst-gl-export`
 
 ### 3.2 Taxonomy integrity mechanics
