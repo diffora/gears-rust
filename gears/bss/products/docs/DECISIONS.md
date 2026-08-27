@@ -498,7 +498,7 @@ instead.*
     right only where the acting principal is not the tenant's, and this principal **is** the
     tenant's. It is a separate lane from `inst-bg-open` — both slices say so explicitly
     (05 C5, 07 C5: it is **not** a §6.8 `BreakGlassSession`) — and a separate admission gate
-    from the ordinary correction door (`inst-cr-door`: "one door, two admission gates"), so it
+    from the ordinary correction door (`inst-cr-door`: "one door, three admission gates (two when P-D-13 was written; P-D-16 added the third on 2026-08-26)"), so it
     inherits neither disposition and had to be dispositioned on its own. What makes the lane
     safe at `N = 0` is not a quorum floor but the three controls it already carries — the
     feature flag OFF by default, the mandatory reason with the `SkuCorrectionOverride` evidence
@@ -649,8 +649,7 @@ instead.*
 - **OPEN, registered 2026-08-27**: this arm is deliberately **not** behind
   `BREAKGLASS_CORRECTION_DISABLED`, because a default-OFF flag would withhold the exit the decision
   exists to provide. That leaves a governed but permanently open write path onto a published,
-  `fresh > 0` SKU's bucket-ii meter declaration. Whether it should carry a flag of its own, or a
-  tripwire counter like the break-glass lane, is the owner's call; the ceremony, the reason and the
+  `fresh > 0` SKU's bucket-ii meter declaration. Whether it should carry a flag of its own (the arm already increments the same `TripwireCounter` the break-glass lane uses — `inst-bc-unresolvable`) is the owner's call; the ceremony, the reason and the
   `SkuCorrectionOverride` evidence row are required either way.
 - **Rejected alternative**: drop `inst-bc-unresolvable` and leave the wedged SKU to the §15
   negotiation. Rejected because the negotiation has no v1 landing and the state is reachable in

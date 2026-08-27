@@ -280,7 +280,7 @@ without a fourth clock.
 `validate(lint)` operation before catalog publish — its owner: this slice runs the door, 09
 consumes the report into its `ChangeReport`, and until now no slice claimed it — item 30 of the
 2026-08-26 review); AC #19–#25, #20a, #40, #44, **#45** (the lint report).
-**NFRs by id** — #3 `cpt-cf-bss-products-nfr-publication-propagation` (the freeze-machine half of the < 3 s budget; the outbox half is slice 01's) and #4 `cpt-cf-bss-products-nfr-posting-safe-budget` (the two
+**NFRs by id** — #3 `cpt-cf-bss-products-nfr-publication-propagation` (the freeze-machine half of the < 3 s budget; the outbox half is slice 01's — **note the unsettled split**: slice 01 reads `DESIGN.md` §1.2 as pairing the < 3 s budget with the outbox and the < 5 s posting-safe budget with this slice, which would leave this claim empty. Registered in this slice's open items) and #4 `cpt-cf-bss-products-nfr-posting-safe-budget` (the two
 budgets this slice's lanes are measured against), #5 `cpt-cf-bss-products-nfr-snapshot-archival-dr` (durability
 mechanics, shared with 10), #6 `cpt-cf-bss-products-nfr-scale-extensibility` (`CatalogVersion`-growth half: the
 capture-store economics + publishes/day target, L2). *(The item-30 sweep — "every slice's
@@ -289,6 +289,14 @@ Traces-to now carries the id alongside the number" — reached #4 in this block 
 carried an orphaned `(records half);` fragment left by that wave. 2026-08-26 branch review.)*
 
 **Risks & open items**:
+
+- **OPEN (2026-08-27) — which budget this slice carries.** `DESIGN.md` §1.2 reads "the < 3 s
+  propagation and < 5 s posting-safe budgets on the slice-01 outbox + slice-06 freeze machine". Read
+  distributively it gives the < 3 s budget to the outbox alone and this slice only
+  `nfr-posting-safe-budget`; read jointly it splits both across both, which is how the sibling
+  clause in the same sentence ("slice 06/10 storage posture") is claimed. The set has been written
+  both ways in the last two days. **No slice §5 measures the < 3 s budget either way**, which is the
+  owed probe and the thing that would settle it.
 - **The composition-clear publish is RESOLVED (2026-08-26), and it is not an exemption**: the
   2026-08-26 CodeRabbit pass forced the question, and the honest shape turned out to be an
   approval *subject* rather than a carve-out — 05 `inst-gv-one-shot` subject kind `system_signal` (**P-D-14**),

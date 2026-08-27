@@ -49,21 +49,21 @@ Tariffs use so that selection is unique without banning hybrid / grandfathered /
 
 1. Keep the 4-axis key with post-selection `priceEligibility` filters.
 2. Define a Tariffs-local key.
-3. Adopt the pricing canonical key verbatim verbatim (chosen).
+3. Adopt the pricing canonical key verbatim (chosen).
 
 ## Decision Outcome
 
 Chosen option: **Adopt the pricing canonical scope key verbatim — ten axes since pricing D-196
 (2026-08-06; eight at this ADR's decision date)** —
 `(planId, currency, region, priceOverlay, phase, priceEligibility, chargeKind, cohort)` plus the
-usage pair `(meter, dimensionKey)` (the absent-axis token pricing renders — the literal `none` (`ScopeKey`'s absent-axis constant), not `''`, which is only pricing's index-expression spelling; ADR-0001 §Consequences requires the two keys byte-identical in the shared fixture set on non-usage rows) — for both
+usage pair `(meter, dimensionKey)` (`none` on non-usage rows) — for both
 selection and the non-overlap invariant. `phase` is a `phase_id` (uuid). Within
 `existing_grandfathered`, the generation is selected by the `cohort` of the subscription's **pinned
 price id** in `pricingSnapshotRef`, never by `activatedAt` alone. Eligibility classes order
 `existing_grandfathered > new_subscriptions_only > all_subscriptions`.
 
 > **Amendment (2026-08-25).** Pricing D-196 (2026-08-06) widened the canonical key it owns to
-> **ten axes**: the usage pair `(meter, dimensionKey)` joined as normative axes (the absent-axis token pricing renders — the literal `none` (`ScopeKey`'s absent-axis constant), not `''`, which is only pricing's index-expression spelling; ADR-0001 §Consequences requires the two keys byte-identical in the shared fixture set on
+> **ten axes**: the usage pair `(meter, dimensionKey)` joined as normative axes (`none` on
 > non-usage rows; the pricing store holds one price row per usage line, both unique indexes key
 > over the pair). This ADR's adoption is *verbatim*, so the adopted key is the full ten; the
 > 8-axis spelling above is the key as of the decision date. The slice-02 `SelectionKey`

@@ -85,7 +85,7 @@ watermark content (10 — sets carry `skuId`s only, no PII by construction).
 | C2 | Freshness threshold: configured, interim 15 min; staler ⇒ conservatively referenced + `stale` alert; never-received ⇒ conservative + a **distinct** flag | PRD §17.1, AC #3 |
 | C3 | Only **registered** producers factor in; unregistered silence pins nothing; onboarding never retro-flips history | PRD `fr-reference-producer-registration` |
 | C4 | A correction touches bucket-ii fields only (`type`, the meter declaration pair) — never structural identity; it is a governed **`N`-governed** re-publish (version N+1, "two-person" per the PRD glossary shorthand = the tenant's configured quorum), `SkuImmutableFieldCorrected` — with **`quorumReduced` recorded on the `sku_correction` `ApprovalRecord` and on `SkuImmutableFieldCorrected`** whenever the effective count is below the default of 2 (P-D-13; this slice was the one of that decision's four `N`-governed ceremonies the 2026-08-26 sweep missed, because the register named slice 05's `inst-mt-inputs` as the door) | PRD `fr-immutable-field-correction` |
-| C5 | The correction door admits on one of **three** gates: the ordinary fresh-zero gate, and two exceptional ones — (a) the break-glass arm, **behind the feature flag `BREAKGLASS_CORRECTION_DISABLED`, OFF by default**, while the signal is **entirely unavailable**; and (b) P-D-16's unresolvable-target arm, **not** behind that flag (a default-OFF flag would withhold the only exit that decision exists to provide; the residual risk is an open owner question registered on P-D-16), while the subject's declared `usageTypeRef` no longer resolves, **regardless of the reference predicate** (P-D-16, swept into this row 2026-08-26: the arm was added to `inst-bc-admission` and this constraint kept the single-arm "only", which is the version an implementer reading the constraints table would have built), with the `N`-governed quorum + mandatory reason + `SkuCorrectionOverride` recording the unavailability — and it is NOT a §6.8 `BreakGlassSession` (05 C5 boundary: ceremony shape only), so it inherits neither `inst-bg-open`'s fixed platform floor nor the ordinary door's disposition: it is **P-D-13's sixth enumerated site**, following `N` with `quorumReduced` recorded, safe at `N = 0` by the flag + reason + evidence + tripwire rather than by a floor | PRD `fr-immutable-field-correction` |
+| C5 | The correction door admits on one of **three** gates: the ordinary fresh-zero gate, and two exceptional ones — (a) the break-glass arm, **behind a feature flag that is OFF by default, meaning the arm is unavailable until an operator enables it** (the flag is named after the refusal code `BREAKGLASS_CORRECTION_DISABLED`, which reads backwards for an *enable* flag — §5's probe says "flag OFF ⇒ disabled" and the code is the 403 raised when it is; **naming it properly is an open item below**), while the signal is **entirely unavailable**; and (b) P-D-16's unresolvable-target arm, **not** behind that flag (a default-OFF flag would withhold the only exit that decision exists to provide; the residual risk is an open owner question registered on P-D-16), while the subject's declared `usageTypeRef` no longer resolves, **regardless of the reference predicate** (P-D-16, swept into this row 2026-08-26: the arm was added to `inst-bc-admission` and this constraint kept the single-arm "only", which is the version an implementer reading the constraints table would have built), with the `N`-governed quorum + mandatory reason + `SkuCorrectionOverride` recording the unavailability on arm (a) and *unresolvable-target* on arm (b), per `inst-bc-unresolvable` and P-D-16 — and it is NOT a §6.8 `BreakGlassSession` (05 C5 boundary: ceremony shape only), so it does **not** inherit `inst-bg-open`'s fixed platform floor. It keeps the ordinary correction door's ceremony — `inst-cr-republish`, **P-D-13's fifth enumerated site** (the sixth is `inst-bc-ceremony`, which P-D-13 names; this cell had said "sixth", and P-D-13's propagation list never mentions `inst-bc-unresolvable`), following `N` with `quorumReduced` recorded, safe at `N = 0` by reason + evidence + tripwire rather than by a floor — plus, on arm (a) only, the flag | PRD `fr-immutable-field-correction` |
 | C6 | Tripwire: > 5 break-glass corrections / 30 days (configured) ⇒ escalation alert + signal delivery reclassified a release blocker | PRD `fr-failsafe-tripwire` |
 
 ### 1.7 Naming & Design-Introduced Names
@@ -132,7 +132,7 @@ exists by design; watermarks are state, not history)**; `SkuImmutableFieldCorrec
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-flow-producer-registration`
 
 1. [ ] - `p1` - Membership ops are `GovernedLiveOp`s (`reference_producer × write`; material — 05 input (d) enumerates this slice's kinds); v1 seeds {pricing} per tenant (P-D-03); **retiring the LAST registered producer is refused** (`PRODUCER_SET_EMPTY_FORBIDDEN` — F8 fix: the set changes members but never empties in v1, so the `no_producers` verdict is defensive-unreachable, kept as a fail-safe and flagged as a design-introduced extension of the PRD's 3-state taxonomy); each change emits `ReferenceProducerSetChanged` + audit - `inst-pr-governed`
-1a. [ ] - `p1` - **Retirement can only tighten, never free — the converse of `inst-pr-onboarding`** (item 21 of the 2026-08-26 review; rewritten whole on 2026-08-27 after the branch review found the row carrying two incompatible dispositions and a mechanism with no reader). The fresh-zero predicate is an AND over the **registered** set, so removing a producer frees SKUs two ways, and both are refusals: its **current watermark reports them non-zero**, so its departure drops the only non-zero vote; or it is **stale or never-received**, so its silence is what pins the set and removing it un-pins everything. A never-received producer is the widest case of the second kind, not an instance of the first — `inst-pr-onboarding` makes every newly registered producer never-received, and until it posts, the predicate holds the whole tenant conservatively referenced. So: **retirement is refused `PRODUCER_RETIREMENT_WOULD_FREE` whenever removing the producer would move any SKU from referenced to fresh-zero**, and the refusal **names those SKUs**. Only a producer that is **fresh and reports zero for every SKU** retires through the ordinary door, because it frees nothing by construction. The remedy for a refusal is to clear the named SKUs first, each through its own existing door, after which the retirement is ordinary. The break-glass lane admits a refused retirement on the ceremony's own justification and records one `SkuCorrectionOverride`-shaped evidence row **per SKU it frees** — there is deliberately no copy of the retiring producer's watermark into `products_reference_member`, because `PRD` §6.3 says an unregistered producer's absence **MUST NOT** pin every SKU immutable, and a retired producer is unregistered - `inst-pr-retirement`
+1a. [ ] - `p1` - **Retirement of a silent producer is refused** (item 21 of the 2026-08-26 review; the row's earlier title, "can only tighten, never free", promised more than the body delivers — **a *fresh* producer's retirement can still free a SKU, and that case is registered in §6's open items, not disposed of here**). Retiring a producer **narrows the AND-quantifier the fresh-zero predicate runs over**, so with two producers, retiring the *stale* one makes the predicate answer fresh-zero over the remaining fresh one — and a correction that `CORRECTION_REFERENCED` had blocked walks through the **normal** door: no feature flag, no `SkuCorrectionOverride`, no `TripwireCounter` increment. Only the last-producer case was guarded. So: retiring a producer whose watermark is **stale or never-received** is refused **`PRODUCER_RETIREMENT_WOULD_FREE`** unless the retiring principal supplies the break-glass ceremony's own justification — the retirement is admissible, its *silence* is not. **The exception's lane is unsettled too**: the break-glass lane in this slice is the single-SKU correction door (`inst-cr-door`, `sku × correct`), which is not a retirement door — sub-question 4 of §6's open item, which the stale case needs answered as much as the fresh one - `inst-pr-retirement`
 2. [ ] - `p1` - The producer set is **snapshotted symmetrically with the freeze-participant set** (PRD): it rides the 06 capture store per `CatalogVersion`, and onboarding a producer never retro-flips a historical mutability/retirement decision — past verdicts were computed against the then-registered set and stand - `inst-pr-snapshot`
 3. [ ] - `p1` - A registering producer's first watermark starts as `never-received` (conservative) until it posts — onboarding can only tighten, never free - `inst-pr-onboarding`
 
@@ -200,7 +200,8 @@ row and open to correction; the requirement is that every code carries one.
 (the reserved field where Contracts' draft/quote-counting answer lands at its registration —
 PRD §15); seeded per tenant with {pricing} at bootstrap (P-D-03); the operand of `inst-rp-eval`
 and the source of the 06 capture-store ride. `products_correction_override` — the break-glass
-evidence rows (SKU, field, per-producer unavailability snapshot, ceremony ref, instant) feeding
+evidence rows (SKU, field, **the arm's evidence** — a per-producer unavailability snapshot on arm (a),
+`unresolvable-target` on arm (b) per P-D-16 and `inst-bc-unresolvable` — ceremony ref, instant) feeding
 the `TripwireCounter` (a windowed count over this table — no separate counter state to drift);
 events per §1.8. All tenant-scoped, append-only where evidential.
 
@@ -226,6 +227,44 @@ events per §1.8. All tenant-scoped, append-only where evidential.
 #41, #43; P-D-03, P-D-05 (correction re-resolution), P-D-13 (the quorum reach reaches both correction lanes), P-D-16 (the unresolvable-target admission arm).
 
 **Risks & open items**:
+
+- **OPEN (2026-08-27) — the break-glass arm's feature flag has no name of its own.** It is referred
+  to by the refusal code `BREAKGLASS_CORRECTION_DISABLED`, so "the flag is OFF" and "the arm is
+  disabled" are the same words for opposite polarities, and §5's probe and C5 have read it both
+  ways. A flag needs a name and a stated polarity; the code stays the 403.
+
+- **OPEN (2026-08-27, third full-review pass) — a fresh producer's retirement can still free a SKU,
+  and three attempts to write the rule have each introduced a contradiction. Registered rather than
+  drafted a fourth time.** `inst-pr-retirement` guards the case its own sentence names: a **stale or
+  never-received** producer, whose *silence* is what pins the set. It does **not** dispose of a
+  **fresh** producer that is the only one reporting SKU `X`: removing it drops the only non-zero vote
+  and `X` goes fresh-zero, opening the bucket-ii correction door on it through the normal lane. Four
+  sub-questions the owner has to settle together, because each answer constrains the next:
+  1. **Which test binds.** "Refused whenever removal would move any SKU to fresh-zero" is a property
+     of the current constellation and lets a retirement through when a *second* producer is stale —
+     the SKU only falls later, when that one posts. "Refused whenever the retiring producer's current
+     watermark is non-empty" is a property of the producer alone and has no such delay, at the cost
+     of refusing retirements that free nothing.
+  2. **What preserves what is removed — and this half is already settled by the PRD.** A retired
+     producer is unregistered, and **AC #43** (`PRD.md`) reads: *"only **registered** producers'
+     signals or silence MUST factor in; an unregistered producer's absence MUST NOT pin SKUs
+     conservatively-referenced"*. The first clause is the binding one: a retired producer's signals
+     must not factor into the predicate at all, so **keeping its watermark alive in the predicate is
+     not available** — which is what the mechanism struck from this rule tried to do. §6.13 carries the same
+     clause in its own words (`fr-reference-producer-registration`), so the FR and the AC agree.
+     So the choice is narrower than it looked: either
+     the freed SKUs are cleared one by one **before** the retirement, or a new evidential record kind
+     is defined for them.
+  3. **Which record, and what it does to the tripwire.** `SkuCorrectionOverride` rows feed the
+     `TripwireCounter`, and C6 trips the `signal_delivery_release_blocker` above five in thirty days.
+     One governed retirement freeing six SKUs would block the release; the never-received case names
+     the whole catalogue. So the retirement evidence needs either its own record kind or its own
+     window.
+  4. **Which lane.** The break-glass lane in this slice is the *correction* lane — single-SKU,
+     `sku × correct`, gated by `inst-cr-door`. It is not a retirement door: retirement is `reference_producer × write`, a different
+     resource and action.
+  **Until this is settled the guarded case is guarded and the fresh case is not**, which is the
+  honest state and is why it is written here rather than papered over in the rule.
 - **The pricing watermark is a joint build** (P-D-03): the producer-side query ("complete live
   plan→SKU reference set") and its cadence are pricing's to design; this slice's door and the
   §15 mirror are ready — the joint fixture belongs to slice 12's seam suite.

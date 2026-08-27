@@ -185,7 +185,7 @@ This satisfies the PRD §6.1 requirement that the owner be named before the Adju
 - [ ] `p1` - **ID**: `cpt-cf-bss-rating-component-evaluation-core-fnd`
 
 - **`EvaluationPipeline`** — composes the registered step evaluators in the fixed §17.1 order; short-circuits fail-closed on any step error.
-- **`ScopeKeyAdapter`** — materializes the adopted ten-axis key from context + snapshot (§4.1; the usage pair from the line being priced, the absent-axis token pricing renders — the literal `none` (`ScopeKey`'s absent-axis constant), not `''`, which is only pricing's index-expression spelling; ADR-0001 §Consequences requires the two keys byte-identical in the shared fixture set otherwise — T-D-35): full-key window selection, eligibility class order, cohort-by-pinned-price-id.
+- **`ScopeKeyAdapter`** — materializes the adopted ten-axis key from context + snapshot (§4.1; the usage pair from the line being priced, the rendered absent-axis token `none` otherwise — T-D-35): full-key window selection, eligibility class order, cohort-by-pinned-price-id.
 - **`SnapshotComposer`** — verifies the pricing pre-stamp + Subscriptions binding, appends the eval-time segments, seals the ref (§4.3).
 - **`DeterminismGuard`** — derives the usage/correction idempotency keys, enforces partition-key serialization for re-resolve, and stamps the frozen-input digest into metadata so replay divergence is detectable (§4.2).
 - **`EmissionGuard`** — non-negative clamp/credit, full-precision emission, rounding-policy id record, obligation envelope (§4.4).
