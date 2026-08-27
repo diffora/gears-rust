@@ -79,7 +79,8 @@ acknowledged, and rejections that always carry an audited reason. Per P-D-02, ev
   #14, #27, #28, #38, #42
 - [`../DECISIONS.md`](../DECISIONS.md) P-D-01 (envelope), P-D-02 (mechanical increments),
   P-D-04 (absolute name uniqueness), P-D-06 (metadata-map placement), P-D-08 (audit-sealing
-  seam), P-D-21 (the audit table holds only what emits no event)
+  seam), P-D-21 (the audit table holds only what emits no event), P-D-22 (the outbox is the toolkit's),
+  P-D-23 (the 2026-08-27 owner round — sixteen calls, recorded inline in the rules they change)
 - Pricing `design/01-foundation.md` — the pattern donor (registered validators, append-only
   triggers with column whitelists, draft/published partial unique indexes, outbox + pending
   refs); divergences are stated where they occur
@@ -230,7 +231,9 @@ nothing is consumed under `PreAuthorized`) — all in one transaction - `inst-fd
 1. [ ] - `p1` - Ordered phases: **shape** (types/formats/required-at-this-state) → **identity** (uniqueness, reservation, containment) → **registered validators** (each slice contributes `RegisteredValidator`s keyed by kind + transition/field-set; execution order is registration order within a phase, and no rule may read another rule's verdict) → **governance gate** (publish only) - `inst-fd-pipeline-order`
 2. [ ] - `p1` - Fail-closed and atomic: any failure rejects the whole mutation with an audited reason; there is no partial application anywhere in the gear (PRD AC #38) - `inst-fd-fail-closed`
 3. [ ] - `p1` - Registration is compile-time code (a slice ships its validators with its handler); the pipeline exposes `rule_names()` for observability only — attribution in rejections rides the **error code**, never the rule name - `inst-fd-rule-registry`
-4. [ ] - `p2` - Field-mutability enforcement frame: each published-state field carries a bucket tag (i structural / ii correctable / iii material-mutable / iv descriptive — PRD `fr-field-mutability-matrix`); the Foundation refuses bucket-i writes after first publish, and **refuses a bucket-ii write at
+4. [ ] - `p1` - Field-mutability enforcement frame (raised from `p2` by the owner 2026-08-27: the
+physical guard routes by these tags and `ILLEGAL_FIELD_MUTATION` ships in the p1 contract, so the
+classification cannot be later than the things that read it): each published-state field carries a bucket tag (i structural / ii correctable / iii material-mutable / iv descriptive — PRD `fr-field-mutability-matrix`); the Foundation refuses bucket-i writes after first publish, and **refuses a bucket-ii write at
 the head door naming slice 07's correction door in the reason** rather than forwarding it (owner's
 call, 2026-08-27: one door, one effect — a single call must not silently pass through two
 ceremonies with different grants, and the physical guard already enforces exactly this); bucket iii/iv are ordinary head-row saves re-published as version N+1, their materiality judged by slice 05; bucket-ii writes are admitted **only through slice 07's correction door**, which the physical guard (§4.2) knows by name - `inst-fd-mutability-frame`
@@ -496,7 +499,11 @@ read.
 - **The outbox is the toolkit's, not this gear's** (**P-D-22**): the registry enqueues through
   `toolkit_db::outbox` inside the mutation's own transaction and owns no outbox table. The
   facility supplies the pipeline — `enqueue` → `sequencer` (per-partition sequence numbers) →
-  `processor` (this gear's publish handler) → `vacuum` — plus dead letters and its own multi-backend
+  `processor` (this gear's publish handler) → `vacuum` — in **`leased` (at-least-once) mode** (owner's call, 2026-08-27: a broker publish is a network
+  side effect and cannot honestly join a database transaction, so `transactional` would show a
+  guarantee that does not exist; the PRD already accommodates the consequence — "out-of-order/
+  duplicate delivery beyond the idempotency window" — and the envelope's idempotency key is what
+  a consumer dedupes on) — plus dead letters and its own multi-backend
   migrations, so C1's "one migration per table" does not reach these tables and the schema oracle
   goldens them as imported. **Per-aggregate ordering is obtained by routing, not by a column**:
   `partition = hash(tenant_id, aggregate_id) mod N`, so every event of one aggregate shares a
@@ -506,7 +513,12 @@ read.
   still never reported before durable broker acceptance (PRD `fr-event-delivery-resilience`,
   registry-side half), but that is the handler's contract rather than a column to mark. Payloads:
   broker-native envelope (P-D-01) with versioned schema ref, correlation/causation, idempotency
-  key, `actor_ref`.
+  key, `actor_ref`. **Each event's payload carries the subject's `internal_revision` at the act**
+  (owner's call, 2026-08-27): P-D-21 makes the event the audit record of a successful act, and the
+  audit tuple it replaced named the revision. It rides the **payload**, not the envelope — the
+  envelope is a platform-wide contract (P-D-01, ADR-0003) owned outside this gear, while the
+  payload schema is versioned per event and its own rule makes an added optional field a minor
+  bump rather than a break.
 
 ### 4.5 Foundation-owned events
 
@@ -560,14 +572,6 @@ half), `cpt-cf-bss-products-fr-event-delivery-resilience` (registry-side half: d
   review); the SDK read shape here must expose it so the fix is a consumer-side addition.
 - Interim containment check (flat subset) must be re-validated against slice 04's final rule —
   the two must not silently diverge.
-- **Which processing mode does the outbox run — `transactional` or `leased`?** P-D-22 adopted the
-  toolkit facility and left this open. `transactional` is exactly-once, `leased` is at-least-once
-  with lease-based locking; publishing to a broker is a network side effect, which argues for
-  `leased`, and the PRD already accommodates duplicates ("out-of-order/duplicate delivery beyond
-  the idempotency window"). The failure behaviour differs and the choice is the owner's.
-- **Why is the field-mutability frame `p2`** when the physical guard enforcing its buckets is
-  unconditional and its code `ILLEGAL_FIELD_MUTATION` ships in the p1 contract surface? Raising
-  the frame or lowering the guard are both owner calls; no document states the priority.
 - **Does `products_product` carry `replaced_by_sku_id`?** 04 §4 lists it among "Columns on
   `products_sku`/`products_product` (carried by 01)", and this slice's shared guard is declared
   for both entity tables, but only §4.2 defines the column, on SKUs. A Product pointing at a
@@ -583,19 +587,6 @@ half), `cpt-cf-bss-products-fr-event-delivery-resilience` (registry-side half: d
   collapse the two, "the re-basing C5's M1 fix struck for collapsing budgets NFR #3 keeps
   distinct". Whether one meter may be asserted against two thresholds, or a second probe is owed,
   is settled nowhere; slice 06's open item records the split rather than deciding it.
-- **Where does slice 03's resolved-binding snapshot live now?** `inst-cd-stamp` stamps
-  `(gts_id, kind, metadata_fields)` "into the audit row of the publish", and a publish is a
-  committed act that under P-D-21 writes no audit row. §15's deletion negotiation and pricing's
-  `meter_binding_divergent` remediation are both written to reference it. The publish event
-  payload and `products_entity_version` are both plausible homes; the choice is slice 03's and is
-  registered here only because P-D-21 was recorded from this slice.
-- **The event payload owes the `revision`.** P-D-21 makes the event the success-path audit record,
-  and the audit tuple it replaces is `actor_ref`, action, subject `(kind, id, revision)`, reason,
-  correlation id. §4.4's stated payload carries the envelope, a versioned schema ref,
-  correlation/causation, the idempotency key and `actor_ref`; the event type supplies the action
-  and `aggregate_id` the subject id. **`revision` is in neither**, so as it stands the record
-  cannot say which revision an act applied to — the one thing an audit trail over a versioned
-  entity exists to say. Owed as a payload amendment, not written here.
 - **Which bucket is a SKU's parent link (`product_id`)?** The 2026-08-27 owner call placed `name`,
   the scope columns, `product_code` and `cloned_from`, and left this one: re-parenting a published
   SKU is either structural (bucket-i, so a mis-parented SKU is fixed only by retire-and-clone) or
