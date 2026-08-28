@@ -181,7 +181,7 @@ exists by design; watermarks are state, not history)**; `SkuImmutableFieldCorrec
 codes; structural-identity attempts ride 01's `ILLEGAL_FIELD_MUTATION`.
 
 **Problem responses (RFC 9457):** `PRODUCER_UNREGISTERED`, `BREAKGLASS_CORRECTION_DISABLED` (403); `PRODUCER_SET_EMPTY_FORBIDDEN`, `WATERMARK_REGRESSION`, `WATERMARK_CONFLICT`, `PRODUCER_RETIREMENT_WOULD_FREE`, `CORRECTION_REFERENCED`, `CORRECTION_DIRTY_HEAD`, `CORRECTION_APPROVAL_OPEN`, `CORRECTION_SIGNAL_AVAILABLE` (409); `ILLEGAL_FIELD_MUTATION` (409 — moved from 422 by **P-D-32**, with its declaration in 01);
-`WATERMARK_FUTURE` (422).
+`WATERMARK_FUTURE` (422 architectural — each reaches the wire as 400; see the note below).
 
 *Statuses added, corrected the same day by the fix-wave review. The gear declared
 its codes with no HTTP status and no problem-response block in any slice, against
@@ -284,8 +284,8 @@ events per §1.8. All tenant-scoped, append-only where evidential.
   reserves the field.
 - **This slice's free-text `reason` doors do not invoke the content-PII write block.** 02
   `inst-av-pii-reason` states the obligation and enumerates the doors that owe it, naming this
-  slice's two — the correction-override and break-glass-correction reasons, and records that slices 04, 05, 07 and 09 "name neither the hook nor the code, so
-  the obligation is stated here and wired nowhere but 01". 02's consequence for these doors is that
+  slice's two — the correction-override and break-glass-correction reasons, and records that this slice
+  carries the citation only as an owed open item, 01 and 04 having wired theirs at the door. 02's consequence for these doors is that
   personal data typed into the field is **unreachable by erasure forever** (the broker leg is 02's
   claim about `SkuRetired` alone, which is 04's door). Owed: cite `inst-av-pii-block` /
   `CONTENT_PII_BLOCKED` on both. Owner: this slice. *(Found as a four-slice class by the slice-04

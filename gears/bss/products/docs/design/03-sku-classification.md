@@ -183,7 +183,7 @@ currently lacks** (consumer-side addition owed there).
 rows "unrecognized metering unit without elevation" and "authoring/cloning against a
 de-listed/deprecated unit" map here.
 
-**Problem responses (RFC 9457):** `UNIT_DELIST_BLOCKED`, `PLAN_TIER_RETIRE_BLOCKED` (409); `SKU_TYPE_UNKNOWN`, `ACCOUNTING_CODE_REQUIRED`, `ACCOUNTING_CODE_UNKNOWN`, `METER_DECLARATION_INCOMPLETE`, `UNRECOGNIZED_UNIT`, `UNIT_DEPRECATED`, `USAGE_TYPE_UNRESOLVED`, `PLAN_TIER_UNKNOWN`, `PLAN_TIER_DEPRECATED`, `BUNDLE_OVERRIDE_REQUIRED`, `BULK_OVERRIDE_UNACKNOWLEDGED` (422); `USAGE_TYPE_UNAVAILABLE` (503).
+**Problem responses (RFC 9457):** `UNIT_DELIST_BLOCKED`, `PLAN_TIER_RETIRE_BLOCKED` (409); `SKU_TYPE_UNKNOWN`, `ACCOUNTING_CODE_REQUIRED`, `ACCOUNTING_CODE_UNKNOWN`, `METER_DECLARATION_INCOMPLETE`, `UNRECOGNIZED_UNIT`, `UNIT_DEPRECATED`, `USAGE_TYPE_UNRESOLVED`, `PLAN_TIER_UNKNOWN`, `PLAN_TIER_DEPRECATED`, `BUNDLE_OVERRIDE_REQUIRED`, `BULK_OVERRIDE_UNACKNOWLEDGED` (422 architectural — each reaches the wire as 400; see the note below); `USAGE_TYPE_UNAVAILABLE` (503).
 
 *Statuses added, corrected the same day by the fix-wave review. The gear declared
 its codes with no HTTP status and no problem-response block in any slice, against

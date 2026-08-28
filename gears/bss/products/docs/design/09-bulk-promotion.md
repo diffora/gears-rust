@@ -156,7 +156,7 @@ builds the SDK error enum from every slice's registered codes — item 33 of the
 Row-level failures otherwise reuse the owning slices' codes verbatim inside the ledger — bulk
 introduces no parallel taxonomy.
 
-**Problem responses (RFC 9457):** `PROMOTION_IDENTITY_CONFLICT`, `PROMOTION_DIRTY_HEAD` (409); `BULK_DEPENDENCY_FAILED`, `BULK_OVERRIDE_UNACKNOWLEDGED`, `BULK_LIMIT` (422).
+**Problem responses (RFC 9457):** `PROMOTION_IDENTITY_CONFLICT`, `PROMOTION_DIRTY_HEAD` (409); `BULK_DEPENDENCY_FAILED`, `BULK_OVERRIDE_UNACKNOWLEDGED`, `BULK_LIMIT` (422 architectural — each reaches the wire as 400; see the note below).
 
 *Statuses added, corrected the same day by the fix-wave review. The gear declared
 its codes with no HTTP status and no problem-response block in any slice, against
@@ -222,8 +222,8 @@ via 05).
   second Product, which C5's four-way classification exists to prevent. Owner: this slice. *(Filed from 01 §6 by the slice-01 eighth lens pass — the pointer claimed it was registered here and it was not.)*
 - **This slice's free-text `reason` doors do not invoke the content-PII write block.** 02
   `inst-av-pii-reason` states the obligation and enumerates the doors that owe it, naming this
-  slice's bulk/promotion row reasons, and records that slices 04, 05, 07 and 09 "name neither the hook nor the code, so
-  the obligation is stated here and wired nowhere but 01". 02's consequence for these doors is that
+  slice's bulk/promotion row reasons, and records that this slice
+  carries the citation only as an owed open item, 01 and 04 having wired theirs at the door. 02's consequence for these doors is that
   personal data typed into the field is **unreachable by erasure forever** (the broker leg is 02's
   claim about `SkuRetired` alone, which is 04's door). Owed: cite `inst-av-pii-block` /
   `CONTENT_PII_BLOCKED` on that door. Owner: this slice. *(Found as a four-slice class by the slice-04

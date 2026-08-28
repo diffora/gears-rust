@@ -173,7 +173,7 @@ for a refused act is normal and is exactly what `last_seen_at` should record); *
 02's, only the verdict policy lives here; kept out of this owned list per the one-declaration
 rule, L1.) The GC and drill raise alarms, not API errors.
 
-**Problem responses (RFC 9457):** `ERASURE_UNKNOWN_ACTOR`, `CONTENT_PII_BLOCKED` (422).
+**Problem responses (RFC 9457):** `ERASURE_UNKNOWN_ACTOR`, `CONTENT_PII_BLOCKED` (422 architectural — each reaches the wire as 400; see the note below).
 
 *Statuses added, corrected the same day by the fix-wave review. The gear declared
 its codes with no HTTP status and no problem-response block in any slice, against

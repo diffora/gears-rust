@@ -65,7 +65,7 @@ because the canonical internal name is a quasi-code (P-D-04).
 
 - [`../PRD.md`](../PRD.md) §6.2 (`fr-manage-taxonomy`, the category half of `fr-create-product`),
   §6.4 (`fr-localized-attributes`), §6.11 (the content-PII write block this slice hosts);
-  AC #5 (category part), #6, #12, #35 (write-block clause)
+  AC #5 (category part), #6, #12, #35 (write-block clause), #38 (taxonomy-cycle row)
 - [`./01-foundation.md`](./01-foundation.md) — the pipeline this slice registers into
 - [`../DECISIONS.md`](../DECISIONS.md) P-D-04 (display names repeat), P-D-06 (metadata map
   placement — introduced by this slice)
@@ -94,7 +94,7 @@ because the canonical internal name is a quasi-code (P-D-04).
 |---|-----------|--------|
 | C1 | Categories and attribute definitions are **live entities**: no draft state, no published version — in-place mutation under the slice-05 gate for material ops | PRD `fr-manage-taxonomy` |
 | C2 | **Product/SKU** attribute values are entity content: they ride the owning entity's internal revision, freeze into its published versions, and never mutate a frozen version. **Category** values are live-entity content — categories have no revisions (H2 fix; see `inst-av-category-branch`) | PRD `fr-revision-vs-version` |
-| C3 | Taxonomy limits (max depth, max children/node) are configured policies with interim defaults (PRD §17.1 extensibility limits) | PRD §7 `nfr-scale-extensibility` |
+| C3 | Taxonomy limits (max depth, max children/node) are configured policies whose values PRD §7 `nfr-scale-extensibility` defers to the NFR workshop; §17.1 carries no interim default for them (§6) | PRD §7 `nfr-scale-extensibility` |
 | C4 | The metadata map is ungoverned, size-bounded, non-localized, search-excluded, PII-prohibited | PRD glossary + `fr-localized-attributes` |
 | C5 | No binary assets; `imageUri` and friends carry reference URIs only | PRD §5.2 |
 
@@ -103,7 +103,7 @@ because the canonical internal name is a quasi-code (P-D-04).
 | Name | Meaning |
 |------|---------|
 | `GovernedLiveOp` | The pinned operation envelope for live-entity mutations: `(op kind, target, payload, expected target state)` — what slice 05 approves and what the apply step executes atomically |
-| `TaxonomyWalk` | The in-transaction ancestor walk validating acyclicity + depth on create/re-parent |
+| `TaxonomyWalk` | The in-transaction ancestor walk validating acyclicity + depth + children-per-node on create/re-parent |
 | `LocaleResolver` | The fallback-chain evaluator `(locale, region, brand) → (locale, brand) → (default-locale, brand) → global` |
 | `WellKnownSeed` | The migration-seeded attribute-definition set (see §4.2) |
 
@@ -121,7 +121,7 @@ contract slice 08 projects.
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-flow-manage-taxonomy`
 
-1. [ ] - `p1` - Authorize `category × write`; wrap the request as a `GovernedLiveOp`; **every taxonomy op is material** (PRD `fr-materiality-gated-publish` enumerates category create/rename/re-parent/retire/delete), so the op queues through the slice-05 two-person gate before anything mutates - `inst-tx-governed-op`
+1. [ ] - `p1` - Authorize `category × write`; wrap the request as a `GovernedLiveOp`; **every one of these five taxonomy ops is material** (PRD `fr-materiality-gated-publish` enumerates category create/rename/re-parent/retire/delete), so the op queues through the slice-05 two-person gate before anything mutates - `inst-tx-governed-op`
 2. [ ] - `p1` - On apply, re-validate against the **live** tree (the gate pinned the op, not the world): name uniqueness within the parent on `(tenant_id, parent_id, normalized(name))` — re-checked on rename **and** re-parent; violation fails `DUPLICATE_CATEGORY_NAME` - `inst-tx-name-in-parent`
 3. [ ] - `p1` - `TaxonomyWalk` inside the write transaction, under the per-tenant taxonomy writer lock (§3.4): a re-parent whose new ancestor chain contains the node itself fails `TAXONOMY_CYCLE`; a create/re-parent exceeding configured max depth or max children fails `TAXONOMY_LIMIT` naming the limit - `inst-tx-walk`
 4. [ ] - `p1` - Retire/delete **MUST** be refused while any **non-terminal** Product (`draft`/`published`/`deprecated` — the PRD's operand is "active", and `retired` *and* `discarded` are both terminal) references the category (primary or secondary) or any active child exists. **The guard reads the referencing Product's lifecycle state, never the presence of a `products_product_category` row** (item 17 of the review: discard releases the code and name reservations but leaves the category link, so on the old "non-`retired`" operand one discarded draft blocked the category permanently) — `CATEGORY_REFERENCED`, with a sample of holders named; retire marks the node closed to new assignment, delete is admitted only on a retired, empty, unreferenced node - `inst-tx-retire-guard`
@@ -131,27 +131,27 @@ contract slice 08 projects.
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-flow-assign-categories`
 
-1. [ ] - `p1` - A Product carries **exactly one primary + zero or more secondary** categories; assignment is ordinary draft content (rides `inst-fd-save-txn`); this slice registers the validators: target category exists, is not retired, duplicates between primary/secondary rejected - `inst-tx-assign`
-2. [ ] - `p1` - At publish, the registered `→ published` validator requires the primary category present (`PRIMARY_CATEGORY_REQUIRED` — its own code per 01's one-door rule, L8 fix; the PRD's "optional at draft, required at publish") - `inst-tx-primary-at-publish`
+1. [ ] - `p1` - A Product carries **at most one primary + zero or more secondary** categories (the primary becomes required at publish); assignment is ordinary draft content (rides `inst-fd-save-txn`); this slice registers the validators: target category exists, is not retired (`CATEGORY_RETIRED`), duplicates between primary/secondary rejected - `inst-tx-assign`
+2. [ ] - `p1` - At publish, the registered `→ published` validator requires the primary category present (`PRIMARY_CATEGORY_REQUIRED` — its own code, declared by this slice per 01 §3.3's code → declaring-slice rule (**P-D-36**), L8 fix; the PRD's "optional at draft, required at publish") - `inst-tx-primary-at-publish`
 
 ### Manage attribute definitions (governed live entities)
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-flow-attribute-definitions`
 
-1. [ ] - `p1` - A definition = `(key, value type, localized?, brand/region visibility scope, state)`; create and **material** changes (type change, visibility narrowing, deprecation) ride `GovernedLiveOp` through the slice-05 gate; display-label edits are non-material single-approver ops per the §17.1 interim materiality default - `inst-ad-governed`
-2. [ ] - `p1` - Changes **MUST** be backward-compatible: a type change on a definition with live values is refused (`DEFINITION_IN_USE`) — the path is deprecate-then-remove: `deprecated` blocks new values, removal is admitted once no **non-terminal head** (published/deprecated Product or SKU, active category) carries a value — frozen versions are **self-contained copies**: they stay renderable after removal, and they neither block it nor are touched by it (operand narrowed to the PRD's live-reference condition — M2 fix) - `inst-ad-deprecate-then-remove`
+1. [ ] - `p1` - A definition = `(key, value type, localized?, brand/region visibility scope, state)`; create and **material** changes (type change, visibility narrowing, deprecation) ride `GovernedLiveOp` through the slice-05 gate under grant **`attribute_definition × write`** (05's catalog); display-label edits are non-material ops, whose effective count is `min(N, 1)` per the §17.1 interim materiality default - `inst-ad-governed`
+2. [ ] - `p1` - Changes **MUST** be backward-compatible: a type change on a definition with live values is refused (`DEFINITION_IN_USE`) — the path is deprecate-then-remove: `deprecated` blocks new values, removal is never admitted for a seeded definition (§4.2), and otherwise is admitted once no **non-terminal head** (`draft`/`published`/`deprecated` Product or SKU, active category) carries a value — frozen versions are **self-contained copies**: they stay renderable after removal, and they neither block it nor are touched by it (operand narrowed to the PRD's live-reference condition — M2 fix) - `inst-ad-deprecate-then-remove`
 3. [ ] - `p1` - Every applied change emits `AttributeDefinitionUpdated` (P-D-21: the event is the success-path audit record) - `inst-ad-event`
 
 ### Author localized attribute values
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-flow-attribute-values`
 
-1. [ ] - `p1` - Values are entity content (C2): writes ride the entity draft-save door; this slice registers validators — definition exists and is not `deprecated` (`ATTRIBUTE_DEFINITION_UNKNOWN`/`_DEPRECATED`), value matches the declared type, `(locale, region, brand)` coordinates lie within the definition's visibility scope **and** the entity's own scope - `inst-av-validate`
+1. [ ] - `p1` - Values are entity content (C2): writes ride the entity draft-save door; this slice registers validators — definition exists and is not `deprecated` (`ATTRIBUTE_DEFINITION_UNKNOWN`/`_DEPRECATED`), value matches the declared type, `(locale, region, brand)` coordinates lie within the definition's visibility scope **and** the entity's own scope (`ATTRIBUTE_SCOPE_VIOLATION`) - `inst-av-validate`
 2. [ ] - `p1` - The **content-PII write block** runs here for attribute/description free text: hard prohibition, fail-closed on uncertainty, curated allow-list for legitimate person-named products; the detector policy + allow-list are slice 10's, this door only invokes them (`CONTENT_PII_BLOCKED`) - `inst-av-pii-block`
-3. [ ] - `p1` - **The same block runs on every operator free-text `reason`** (item 24 of the review), enumerated so no door is left out: audit rows (01 §4), approval rejections and break-glass session reasons (05), correction-override and break-glass-correction reasons (07), the retirement reason carried into the `SkuRetired` broker payload (owned by slice 04 `inst-rt-initiate`; PRD §12 only restates it), and bulk/promotion row reasons (09). These records are **never edited** and erasure is a map-only tombstone (10 C1), so PII typed into one of them is unreachable by erasure **forever** and, for `SkuRetired`, has already left the gear. Fail-closed at the door is therefore the only reach erasure can have over them — the same detector, the same allow-list, the same `CONTENT_PII_BLOCKED`, invoked by the owning door. **The hook is the single raiser and this slice is the single declaration**, which is why 01 §3.3's one-door rule carves the code out by name. **What is still owed** (third review pass, same day): of the doors enumerated above only slice 01 cites `inst-av-pii-block`; slices 04, 05, 07 and 09 name neither the hook nor the code, so the obligation is stated here and wired nowhere but 01 — and the retirement reason's owner is slice 04 (`inst-rt-initiate`), not "PRD §12", which is where the enumeration sends a reader. A slice that adds a free-text `reason` field adds itself to the enumeration above; that is the whole registration - `inst-av-pii-reason`
+3. [ ] - `p1` - **The same block runs on every operator free-text `reason`** (item 24 of the review), enumerated so no door is left out: audit rows (01 §4), approval rejections and break-glass session reasons (05), correction-override and break-glass-correction reasons (07), the retirement reason carried into the `SkuRetired` broker payload (owned by slice 04 `inst-rt-initiate`; PRD §12 only restates it), and bulk/promotion row reasons (09). These records are **never edited** and erasure is a map-only tombstone (10 C1), so PII typed into one of them is unreachable by erasure **forever** and, for `SkuRetired`, has already left the gear. Fail-closed at the door is therefore the only reach erasure can have over them — the same detector, the same allow-list, the same `CONTENT_PII_BLOCKED`, invoked by the owning door. **The hook is the single raiser and this slice is the single declaration**, which is what 01 §3.3 records — a code raised outside the pipeline needs no special status and gets none. **What is still owed** (third review pass, same day): of the doors enumerated above only slice 01 cites `inst-av-pii-block`; 01 and 04 (`inst-rt-initiate`) cite the hook and the code at the door; 05, 07 and 09 carry the citation as an owed open item against their own doors. A slice that adds a free-text `reason` field adds itself to the enumeration above; that is the whole registration - `inst-av-pii-reason`
 4. [ ] - `p1` - The registered `→ published` validator requires the **default-locale value at the global (brand-less) coordinate** for every localized definition the entity carries values for (rejected at publish, not at draft save); per-brand default-locale values are optional overrides — the global one is what makes the fallback chain total for **every** brand (M5 fix) - `inst-av-default-locale`
 5. [ ] - `p1` - Read-side resolution (consumed by slice 08): `LocaleResolver` walks `(locale, region, brand) → (locale, brand) → (default-locale, brand) → global`; default-locale resolves per brand, falling back to the tenant default — the chain is total for every brand by step 4's **global** default-locale guarantee. **Totality is anchored on the resolution path, not on the config value** (item 37 of the review): the tenant default locale is ungoverned config with no re-validation, so anchoring on it would un-total the chain for every already-published entity the moment it changed. So the final step is the **global** fallback and the tenant default is only a *preference* consulted before it; a tenant-default change is therefore non-retroactive by construction — the same posture `inst-ti-limits` states for depth limits - `inst-av-resolve`
-6. [ ] - `p1` - **Category branch (H2 fix)**: categories have no revisions or publishes, so their display values are **live-entity content**: written through a category live-value door (`If-Match` on the category row-version token; non-material single-approver per the §17.1 default — a display edit is not a rename of the canonical name), audited and emitted as `CategoryDisplayUpdated`; the **global default-locale value is required at the first write** of a definition for that category (the write-time analogue of step 4); a `CatalogVersion` captures current category values as of its snapshot instant — they have no frozen versions of their own - `inst-av-category-branch`
+6. [ ] - `p1` - **Category branch (H2 fix)**: categories have no revisions or publishes, so their display values are **live-entity content**: written through a category live-value door (`If-Match` on the category row-version token; non-material, effective count `min(N, 1)` per the §17.1 default — a display edit is not a rename of the canonical name), emitting `CategoryDisplayUpdated` in the same transaction (**P-D-21**: the event is the success-path audit record); the **global default-locale value is required at the first write** of a definition for that category (the write-time analogue of step 4); a `CatalogVersion` captures current category values as of its snapshot instant — they have no frozen versions of their own - `inst-av-category-branch`
 
 ### Write the metadata map
 
@@ -161,8 +161,8 @@ contract slice 08 projects.
 catalog — named here; the flow had named neither a path nor a pair, so slice 12's
 lint 3 could not see it).*
 
-1. [ ] - `p2` - Per-entity string→string map; size-bounded (configured caps on key count, key and value byte length — `METADATA_LIMIT`); non-localized; PII-prohibited (the same `inst-av-pii-block` hook, no carve-out); excluded from read-model search by construction (08 never projects it) - `inst-md-write`
-2. [ ] - `p2` - **Placement (P-D-06)**: the map lives **beside** the entity, outside the frozen published-version content — mutable in place on any non-terminal entity without a version bump, audited + `MetadataUpdated`-evented per write; a `CatalogVersion` captures the map **as of its own snapshot instant**, and that copy is frozen with the snapshot (old snapshots never move — byte-identity holds) - `inst-md-placement`
+1. [ ] - `p2` - Per-entity string→string map; size-bounded (configured caps on key count, key and value byte length — `METADATA_LIMIT`); non-localized; PII-prohibited (the same `inst-av-pii-block` hook, no carve-out); excluded from read-model search by construction (08 never projects it into any searchable field; it is retrievable on 08's single-entity read only) - `inst-md-write`
+2. [ ] - `p2` - **Placement (P-D-06)**: the map lives **beside** the entity, outside the frozen published-version content — mutable in place on any non-terminal entity without a version bump, emitting `MetadataUpdated` in the same transaction (**P-D-21**: the event is the success-path audit record); a `CatalogVersion` captures the map **as of its own snapshot instant**, and that copy is frozen with the snapshot (old snapshots never move — byte-identity holds) - `inst-md-placement`
 
 ## 3. Processes / Business Logic
 
@@ -179,7 +179,7 @@ lint 3 could not see it).*
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-algo-taxonomy-integrity`
 
 1. [ ] - `p1` - Acyclicity is validated by `TaxonomyWalk` (ancestor chain of the new parent must not contain the node) executed inside the write transaction; correctness rests on §3.4's single-writer discipline, not on the walk alone — two concurrent re-parents could otherwise each pass and jointly close a cycle - `inst-ti-acyclic`
-2. [ ] - `p1` - Uniqueness-in-parent is also an index (`UNIQUE (tenant_id, parent_id, name_normalized)` over non-deleted rows), so the read-then-write race is decided by the store exactly as the Foundation's `ReservationIndex` decides `skuCode` - `inst-ti-unique-index`
+2. [ ] - `p1` - Uniqueness-in-parent is also an index (`UNIQUE (tenant_id, parent_id, name_normalized)`, §4.1), so the read-then-write race is decided by the store exactly as the Foundation's `ReservationIndex` decides `skuCode` - `inst-ti-unique-index`
 3. [ ] - `p2` - Depth/children limits are validated on the mutation path only — a later limit **decrease** never invalidates existing structure (config change is not retroactive; the lint reports over-limit subtrees informationally) - `inst-ti-limits`
 
 ### 3.3 Error taxonomy (slice-owned codes)
@@ -189,12 +189,12 @@ lint 3 could not see it).*
 `DUPLICATE_CATEGORY_NAME`, `TAXONOMY_CYCLE`, `TAXONOMY_LIMIT`, `CATEGORY_REFERENCED`,
 `CATEGORY_RETIRED` (assignment to a retired node), `ATTRIBUTE_DEFINITION_UNKNOWN`,
 `ATTRIBUTE_DEFINITION_DEPRECATED`, `DEFINITION_IN_USE`, `ATTRIBUTE_TYPE_MISMATCH` (raised by `inst-av-validate`, the attribute-value write, when a value does not match its definition's declared type — named),
-`ATTRIBUTE_SCOPE_VIOLATION`, `DEFAULT_LOCALE_MISSING` (publish-time), `PRIMARY_CATEGORY_REQUIRED`, `CONTENT_PII_BLOCKED` (verdict policy owned by slice 10 — L1),
+`ATTRIBUTE_SCOPE_VIOLATION`, `DEFAULT_LOCALE_MISSING` (publish-time for Product/SKU; at the first category display-value write per `inst-av-category-branch`), `PRIMARY_CATEGORY_REQUIRED`, `CONTENT_PII_BLOCKED` (verdict policy owned by slice 10 — L1),
 `METADATA_LIMIT`, `STALE_LIVE_OP`. Registered into the Foundation taxonomy (01 §3.3); the
 AC #38 row "taxonomy cycle" maps here; the PII write-block is **AC #35's** clause (L1 fix —
 misattributed to #38 until the review).
 
-**Problem responses (RFC 9457):** `DUPLICATE_CATEGORY_NAME`, `CATEGORY_REFERENCED`, `DEFINITION_IN_USE`, `STALE_LIVE_OP` (409); `TAXONOMY_CYCLE`, `TAXONOMY_LIMIT`, `CATEGORY_RETIRED`, `ATTRIBUTE_DEFINITION_UNKNOWN`, `ATTRIBUTE_DEFINITION_DEPRECATED`, `ATTRIBUTE_TYPE_MISMATCH`, `ATTRIBUTE_SCOPE_VIOLATION`, `DEFAULT_LOCALE_MISSING`, `PRIMARY_CATEGORY_REQUIRED`, `CONTENT_PII_BLOCKED`, `METADATA_LIMIT` (422).
+**Problem responses (RFC 9457):** `DUPLICATE_CATEGORY_NAME`, `CATEGORY_REFERENCED`, `DEFINITION_IN_USE`, `STALE_LIVE_OP` (409); `TAXONOMY_CYCLE`, `TAXONOMY_LIMIT`, `CATEGORY_RETIRED`, `ATTRIBUTE_DEFINITION_UNKNOWN`, `ATTRIBUTE_DEFINITION_DEPRECATED`, `ATTRIBUTE_TYPE_MISMATCH`, `ATTRIBUTE_SCOPE_VIOLATION`, `DEFAULT_LOCALE_MISSING`, `PRIMARY_CATEGORY_REQUIRED`, `CONTENT_PII_BLOCKED`, `METADATA_LIMIT` (422 architectural — each reaches the wire as 400; see the note below).
 
 *Statuses added, corrected the same day by the fix-wave review. The gear declared
 its codes with no HTTP status and no problem-response block in any slice, against
@@ -238,8 +238,9 @@ orders fields, not rows; without this both engines could serialize one content i
 - **`products_product_category`** — the **single source of truth** for category assignments
   (01 §4.1 carries no inline category columns) — `(tenant_id, product_id, category_id, role)` with
   `role ∈ {primary, secondary}`; `UNIQUE (tenant_id, product_id, category_id)`; partial
-  `UNIQUE (tenant_id, product_id) WHERE role = 'primary'` — exactly-one-primary is an index,
-  not a convention.
+  `UNIQUE (tenant_id, product_id) WHERE role = 'primary'` — at-most-one-primary is an index, not a
+  convention; the *required* half is the publish validator of `inst-tx-primary-at-publish`, a draft
+  carrying none being legal (AC #5's "optional at draft").
 - **`products_attribute_definition`** — `definition_id` (PK) · `tenant_id` · `key` (unique per
   tenant) · `value_type` · `localized` (bool) · visibility scope (brand/region sets) · `state`
   (`active|deprecated`) · `seeded_by` (nullable — well-known marker) · timestamps.
@@ -265,15 +266,15 @@ is deprecatable but not deletable): `displayName` (localized, per Product/SKU/Ca
 `CategoryCreated` / `CategoryRenamed` / `CategoryReparented` / `CategoryRetired` /
 `CategoryDeleted`, `CategoryDisplayUpdated`, `AttributeDefinitionUpdated`, `MetadataUpdated` — broker-native envelope,
 ordering key `(tenant, category tree)` for taxonomy (one aggregate: the tree, matching the
-single-writer discipline) and `(tenant, entity)` for metadata. Attribute-**value** writes emit
-no event of their own: they are entity content and ride `ProductHeadSaved`/`SkuHeadSaved` (**P-D-27**: a save lands on the head in every non-terminal state, not only on a draft)
+single-writer discipline) and `(tenant, entity)` for metadata. **Product/SKU** attribute-value writes emit
+no event of their own (category display values emit `CategoryDisplayUpdated`, above): they are entity content and ride `ProductHeadSaved`/`SkuHeadSaved` (**P-D-27**: a save lands on the head in every non-terminal state, not only on a draft)
 (explicit "no event" record per 01 §4.5 rule).
 
 ## 5. Testing posture (slice-local)
 
 - Cycle probe: two concurrent re-parents that would jointly close a cycle — one must fail; the
   writer lock is the mechanism under test, not the walk.
-- Exactly-one-primary and uniqueness-in-parent probed on the index (concurrent inserts), with
+- At-most-one-primary and uniqueness-in-parent probed on the index (concurrent inserts), with
   positive controls.
 - Locale fallback: a resolution matrix fixture covering every chain step incl. brand-default
   and tenant-default fallbacks, plus the M5 case — a brand-B reader against a value present
@@ -292,7 +293,7 @@ no event of their own: they are entity content and ride `ProductHeadSaved`/`SkuH
 
 **Traces to**: `cpt-cf-bss-products-fr-manage-taxonomy`, `cpt-cf-bss-products-fr-create-product` (category clauses),
 `cpt-cf-bss-products-fr-localized-attributes`, `cpt-cf-bss-products-fr-retention-erasure` (write-block clause, hook only); AC #5
-(category part), #6, #12, #35 (write-block), #38 (taxonomy-cycle row).
+(category part), #6, #12, #35 (write-block), #38 (taxonomy-cycle row); **NFR #6** `cpt-cf-bss-products-nfr-scale-extensibility` (the extensibility-limits half: max taxonomy depth, max children/node).
 
 **Risks & open items**:
 - **P-D-06 — CONFIRMED by the product owner 2026-08-** (was: to ratify). The
@@ -308,7 +309,106 @@ no event of their own: they are entity content and ride `ProductHeadSaved`/`SkuH
   presentational — the lint should surface removable definitions rather than operators
   discovering the guard by refusal.
 - **Category re-parent vs read models**: a re-parent re-files every descendant's browse path;
-  slice 08 owes the invalidation contract (noted for its design).
+  08 `inst-rp-reparent` owns the invalidation contract — closed.
 - The PII detector's false-positive posture (fail-closed on uncertainty) will generate operator
   friction; the allow-list governance loop (slice 10 + Legal sign-off, PRD AC #35) must exist
   before GA, not after the first blocked legitimate product name.
+- **What is a category's `If-Match` token, and what does a mismatch raise?** `inst-av-category-branch`
+  puts the live-value door behind "`If-Match` on the category row-version token", while C2 says
+  categories have no revisions and §4.1's `products_category` roster carries no version column. 01's
+  `inst-fd-etag` is scoped to an entity head's `internal_revision`; §3.3 declares no mismatch code
+  for this door, `STALE_REVISION` being 01's and `STALE_LIVE_OP` the `GovernedLiveOp` envelope's.
+  Owner: this slice with 01. *(All three lenses raised it independently.)*
+- **The taxonomy and metadata limits have no interim default anywhere.** C3 pointed at `PRD` §17.1
+  (corrected this pass — that table has no such row), and `nfr-scale-extensibility` defers the values
+  to the NFR workshop. Four rules read them: `inst-tx-walk`, `inst-ti-limits`, `inst-md-write`, and
+  08's bounded subtree recompute. Owner: the §17.1 policy owner — a taxonomy-limits row and a
+  metadata-caps row. *(Two lenses raised it independently.)*
+- **What is the `global` coordinate's key?** `inst-av-default-locale` requires "the default-locale
+  value at the global (brand-less) coordinate", while the same rule argues totality must **not**
+  anchor on the tenant default because that config can change under published entities. If the row
+  is keyed on the default locale it is anchored on exactly that value; if `global` means
+  `(locale NULL, region NULL, brand NULL)` — which §4.1's `(locale?, region?, brand?)` admits — then
+  the phrase names the wrong coordinate. Owner: this slice. *(Two lenses raised it independently.)*
+- **The coordinate model admits combinations the resolver never visits.** Eight presence
+  combinations are storable and the chain walks four steps: a value at `(locale, region, brand
+  absent)` is unreachable to any branded reader, and a value with no locale is matched by no step.
+  Separately "default-locale resolves per brand" presumes a per-brand default locale, while the only
+  store named is the tenant default. Owner: this slice — the admitted coordinate roster per
+  `localized` flag, the refusal outside it, and where a brand-scoped default lives. *(Raised by the slice-02 first lens pass.)*
+- **Does a brand-less global value survive the scope check on a brand-scoped entity?**
+  `inst-av-validate` requires coordinates within the entity's own scope; under the gear's stated
+  containment reading an unrestricted coordinate under a restricted entity is **not** contained — so
+  the write the publish validator demands is the write the save validator refuses. P-D-39's
+  propagation named 01 and 04 only, and §4.1 gives the definition's visibility scope neither
+  nullability nor an empty-set meaning. Owner: this slice with 05, whose `inst-gv-scope` reads the
+  same rule. *(Raised by the slice-02 first lens pass.)*
+- **Both uniqueness guarantees are UNIQUE over nullable columns.** `(tenant_id, parent_id,
+  name_normalized)` over a nullable `parent_id` does not constrain **root** categories, and the
+  attribute-value coordinate tuple does not constrain the **global** coordinate — the one
+  `inst-av-default-locale` makes mandatory — because both engines treat NULLs as distinct. The
+  gear's answer elsewhere is a NOT NULL column with a stated absence value (P-D-39). Owner: this
+  slice with the schema owner — sentinels, `NULLS NOT DISTINCT`, or extra partial indexes. *(Raised by the slice-02 first lens pass.)*
+- **The frozen-content sort key is not total for attribute values.** §4.1's ordering note sorts by
+  "the attribute id", while row identity is the full coordinate tuple — so the key orders groups,
+  not rows, and two engines can serialize one content two ways, which is the failure the note exists
+  to prevent. Amending it is a register change: **P-D-29** states the same rule in the same words.
+  Owner: P-D-29's owner. *(Raised by the slice-02 first lens pass.)*
+- **What does a category rename or delete do to entity versions already frozen against it?** The
+  frozen assignment set holds category **ids**, not copies, so a delete leaves an id resolving to
+  nothing and a rename silently changes what an old version renders. The sibling case is answered
+  explicitly for attribute definitions ("frozen versions are self-contained copies"); for categories
+  it is not. Owner: this slice with 06 and 08 — copy the name into the frozen set, or tombstone
+  category rows. *(Raised by the slice-02 first lens pass.)*
+- **What happens to attribute values on terminal heads when their definition is removed?** The
+  removal operand is the non-terminal head, so a `retired`/`discarded` head or a `retired` category
+  may still hold live `products_attribute_value` rows whose `definition_id` the removal deletes —
+  and for categories the table **is** the live state, with no freeze copy. Owner: this slice —
+  cascade, orphan, or widen the operand. *(Raised by the slice-02 first lens pass.)*
+- **Is definition removal a material op, and is it a physical DELETE or a third state?** Removal is
+  absent from the material-op enumeration, and `products_attribute_definition`'s state roster is
+  `active|deprecated` with no removed value and — unlike `products_category` — no statement that
+  deletion is physical. Owner: this slice. *(Raised by the slice-02 first lens pass.)*
+- **Where does a definition's display label live?** Label edits are a named non-material op, and
+  §4.1's definition roster carries no label column, while the attribute-value table's `entity_kind`
+  does not admit a definition as a value-bearing entity — so the op has no target. 03 solves the
+  sibling case with a `display_label?` column on its own table. Owner: this slice. *(Raised by the slice-02 first lens pass.)*
+- **Two concurrent metadata writes both pass their precondition.** Metadata writes ride the entity
+  row's `If-Match` and, by P-D-06, bump no version — so the token never moves, both writers pass and
+  the second silently overwrites the first, on a map that keeps no history between snapshots. Owner:
+  this slice — does the metadata PATCH bump `internal_revision` (and what does that do to P-D-06's
+  "no version bump"), or carry its own per-map token? *(Raised by the slice-02 first lens pass.)*
+- **Which aggregate orders `CategoryDisplayUpdated` and `AttributeDefinitionUpdated`?** §4.3 gives
+  ordering keys for taxonomy ops and for metadata, and neither of these two falls under either.
+  It is not a free choice: display writes do not take the taxonomy writer lock, so putting them on
+  the tree key claims a serialization the door does not provide, while a per-category key leaves a
+  rename and a display edit on one category mutually unordered. Owner: this slice with 12.
+  *(Two lenses raised it independently.)*
+- **Three doors name no REST path, and one names no grant pair.** The taxonomy-op door and the
+  category live-value door both go unnamed, against this slice's own precedent — the metadata door
+  carries its path and pair explicitly because without them 12's lint could not see it. The pair is
+  a real choice, not an omission: 05 minted a separate `metadata × write` precisely because that map
+  is mutable on a published entity, and the category display value has the same property. Owner:
+  this slice with 05. *(Two lenses raised it independently.)*
+- **Four refusals in this slice have no code.** "target category exists" and "duplicates between
+  primary/secondary" in `inst-tx-assign`, the seeded-definition removal refusal, and the
+  type-change-on-live-values arm all lack one, and none appears in AC #38's enumeration, so no lint
+  will report them. Owner: this slice with the error-contract owner — slice-owned codes, 01's
+  `VALIDATION`, or a 404 path-segment case. *(Two lenses raised it independently.)*
+- **Are `CATEGORY_RETIRED` and `ATTRIBUTE_DEFINITION_DEPRECATED` 422 or 409?** Both are the target's
+  *current state* refusing the act — the shape §3.3's own convention puts at 409, and where the
+  sibling `DEFINITION_IN_USE` already sits. The note calls the mapping "Proposed per row and open to correction". Owner: the API-contract owner. *(Raised by the slice-02 first lens pass.)*
+- **Does the type-change operand mean the same thing as the removal operand?** One row states two:
+  the undefined "live values" for the type change and the defined "non-terminal head" for removal.
+  The stated reasoning for the removal operand — frozen versions are self-contained copies — applies
+  equally to a type change, but the file never says the operand was narrowed. Owner: this slice.
+  *(Raised by the slice-02 first lens pass.)*
+- **Does slice 09 have an operator free-text `reason` at all?** This slice's PII enumeration names
+  "bulk/promotion row reasons (09)", while 09's only two `reason`s are a system-produced failure
+  reason and a fixed literal — and 09's own owed item quotes this enumeration as its evidence, so
+  nothing independent establishes the door. Slice 10 has an interest: its "only table in the gear where PII may live" guarantee rests on this enumeration being complete. Owner: 09's owner with this slice. *(Raised by the slice-02 first lens pass.)*
+- **Who writes the well-known seeds for a tenant created after the migration?** §4.2 says "Seeded by migration, per tenant bootstrap" — two different code paths, and a migration cannot create rows
+  for tenants that do not yet exist. The rows are load-bearing: the publish validator refuses every
+  localized definition whose default-locale value is absent, and AC #12 requires the seeds. 03
+  carries the identical phrasing with no writer either. Owner: this slice with 01.
+  *(Two lenses raised it independently.)*

@@ -330,8 +330,8 @@ finance fields), 04 (un-deprecation, retirement confirmation, scheduled-approval
   04's and pin nothing stated in 01. Owner: this slice with 04. *(Filed from 01 §6 by the slice-01 eighth lens pass — the pointer claimed it was registered here and it was not.)*
 - **This slice's free-text `reason` doors do not invoke the content-PII write block.** 02
   `inst-av-pii-reason` states the obligation and enumerates the doors that owe it, naming this
-  slice's two — `inst-gv-reject`'s rejection reason and `inst-bg-open`'s elevation reason, and records that slices 04, 05, 07 and 09 "name neither the hook nor the code, so
-  the obligation is stated here and wired nowhere but 01". 02's consequence for these doors is that
+  slice's two — `inst-gv-reject`'s rejection reason and `inst-bg-open`'s elevation reason, and records that this slice
+  carries the citation only as an owed open item, 01 and 04 having wired theirs at the door. 02's consequence for these doors is that
   personal data typed into the field is **unreachable by erasure forever** (the broker leg is 02's
   claim about `SkuRetired` alone, which is 04's door). Owed: cite `inst-av-pii-block` /
   `CONTENT_PII_BLOCKED` on both. Owner: this slice. *(Found as a four-slice class by the slice-04
