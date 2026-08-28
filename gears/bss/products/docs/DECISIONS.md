@@ -49,6 +49,7 @@ joint contracts, cited from here by their pricing numbers, never duplicated.
 - [P-D-38 — A refusal stores nothing and releases the key](#p-d-38--a-refusal-stores-nothing-and-releases-the-key)
 - [P-D-39 — The scope columns, and what the empty set means](#p-d-39--the-scope-columns-and-what-the-empty-set-means)
 - [P-D-40 — The entity-version retention DELETE, under a referential predicate](#p-d-40--the-entity-version-retention-delete-under-a-referential-predicate)
+- [P-D-41 — The two doors that write bucket-ii](#p-d-41--the-two-doors-that-write-bucket-ii)
 
 <!-- /toc -->
 
@@ -1538,3 +1539,32 @@ instead.*
   row — buys a column that can drift from the thing it counts.
 - **Propagated**: `design/01-foundation.md` (§4.2, §4.3, §6), `design/06-catalog-version.md` (the
   manifest's index), `design/10-retention-erasure.md` (`inst-rt-gc`). Amends **P-D-31**.
+
+
+#### P-D-41 — The two doors that write bucket-ii
+
+- **Date**: 2026-08-28 (owner call)
+- **Context**: §4.2 admits bucket-ii writes while `published_version = 0` and, after first publish,
+  only in the same statement as a `published_version` bump. Neither side named a door. Below first
+  publish the class was admitted with no writer at all — the same hole **P-D-28** had closed for
+  bucket-i, whose own test is that an admitted class needs a named admitting door. Above it, 07's
+  `CorrectionDoor` **already accepts** `(skuId, field, new value, expected revision)` and delegates
+  its re-publish to 01's `PublishDoor`, whose signature `(entity, expected internal revision)` has
+  no slot for the value — so the only statement permitted to write it could not receive it, while
+  07's own "clean head" gate forbids staging it as an ordinary edit first.
+
+  | Call | Propagation |
+  |---|---|
+  | **Below first publish, `inst-fd-save-txn` is the admitting door**, on the same terms as bucket-i. 03 `inst-mt-bucket` already says the draft plane "edits freely"; this names the door that lets it | 01 §2 `inst-fd-save-txn`, §4.2; 03 `inst-mt-bucket` |
+  | **After first publish, `PublishDoor` gains an optional third argument** — the corrected bucket-ii field and value — supplied only by 07's `CorrectionDoor`, and written by the door's own head-row UPDATE beside the `published_version` bump | 01 §2 `inst-fd-publish-pin`, new `inst-fd-publish-correction`; 07 `inst-cr-republish` |
+  | **This is the mechanism `composition_pending` already uses**, not a new one: the publish door already writes a value into that UPDATE that did not arrive as a head edit, and the freeze is already the **post-act image** "including the `composition_pending` value the same UPDATE is about to write" — so the corrected value is what freezes into version N+1, which is what a correction must do. §4.2's predicate is unchanged | 01 §2 freeze step, §4.2 |
+
+- **The argument against, stated**: 01's door signature widens, and three slices drive that door.
+  The argument is **optional and additive**, so 06's composition-clear and 09's per-row publishes
+  pass nothing and are untouched — only 07 passes it. The residue is that a door whose job is
+  otherwise "publish what the head says" now takes a field value. The alternative — 07 issuing its
+  own head-row UPDATE — was rejected because publish mechanics (freeze, version row, event, bump)
+  would then be spelled in two places and could diverge silently.
+- **Propagated**: `design/01-foundation.md` (§2 publish rows and `inst-fd-save-txn`, §4.2, §6),
+  `design/03-sku-classification.md` (`inst-mt-bucket`), `design/07-reference-signal.md`
+  (the re-publish step).

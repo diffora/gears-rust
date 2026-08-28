@@ -92,7 +92,7 @@ acknowledged, and rejections that always carry an audited reason. Per P-D-02, ev
   (four read paths the guard needed), P-D-29 (what a replay, an envelope and a digest carry),
   P-D-30 (gate host, authorization, whose validator), P-D-31 (the four routed outward, decided
   here), P-D-32 (the second lens wave's six calls), P-D-33 (eight calls from weeding the open items),
-  P-D-34 (the remaining items, decided from the set), P-D-35 (the five the set already forced), P-D-36 (the phase unit withdrawn), P-D-37 (one code per row, all violations in the answer), P-D-38 (a refusal stores nothing), P-D-39 (scope columns and the empty set), P-D-40 (the version table's one admitted DELETE)
+  P-D-34 (the remaining items, decided from the set), P-D-35 (the five the set already forced), P-D-36 (the phase unit withdrawn), P-D-37 (one code per row, all violations in the answer), P-D-38 (a refusal stores nothing), P-D-39 (scope columns and the empty set), P-D-40 (the version table's one admitted DELETE), P-D-41 (the two bucket-ii doors)
 - Pricing `design/01-foundation.md` — the pattern donor (registered validators, append-only
   triggers with column whitelists, draft/published partial unique indexes, pending refs — **not
   the outbox**, which P-D-22 moved to `toolkit_db::outbox` after measuring that pricing runs a
@@ -266,7 +266,7 @@ header since P-D-33 (`inst-fd-publish-pin`) — **requires `If-Match`** on the i
 request parsed, so `inst-fd-mint-id`'s criterion applies and the bare 400 this gear reserves for a
 malformed request does not) (per-row token, never plan-shared — the pricing D-141 lesson adopted at birth) - `inst-fd-etag`
 3. [ ] - `p1` - Run the pipeline's shape + state + identity phases plus every registered validator for `(kind, field set)`; violations collect per-field into one audited rejection - `inst-fd-pipeline`
-4. [ ] - `p1` - Saves land on the **head row** — the authoring surface for `draft`, `published`, and `deprecated` entities alike (H1 fix, 2026-08-25 review): a save is never a lifecycle transition, and consumers are untouched because **every consumer-facing read of Product/SKU entity content serves frozen `products_entity_version` content, never the head row**. A **bucket-i** change — `skuCode`/`productCode`, `brand_id`, and a SKU's parent `product_id` (P-D-33: §4.2 admits the class on an unpublished head and this is its only admitting door) — is legal only while `published_version = 0` and releases the old code by the row update itself; `internal_revision += 1`; the `ProductHeadSaved`/`SkuHeadSaved` outbox row in the same transaction. Saves **never** touch `published_version` - `inst-fd-save-txn`
+4. [ ] - `p1` - Saves land on the **head row** — the authoring surface for `draft`, `published`, and `deprecated` entities alike (H1 fix, 2026-08-25 review): a save is never a lifecycle transition, and consumers are untouched because **every consumer-facing read of Product/SKU entity content serves frozen `products_entity_version` content, never the head row**. A **bucket-i** change — `skuCode`/`productCode`, `brand_id`, and a SKU's parent `product_id` (P-D-33: §4.2 admits the class on an unpublished head and this is its only admitting door) — is legal only while `published_version = 0` and releases the old code by the row update itself; **a bucket-ii change is admitted here on the same terms** (**P-D-41**: §4.2 admits the class while `published_version = 0`, 03 `inst-mt-bucket` says the draft plane edits freely, and P-D-28's test — an admitted class needs a named admitting door — had left this one unnamed; after first publish it is 07's correction act alone); `internal_revision += 1`; the `ProductHeadSaved`/`SkuHeadSaved` outbox row in the same transaction. Saves **never** touch `published_version` - `inst-fd-save-txn`
 5. [ ] - `p1` - A save on a `draft`, `published` or `deprecated` head holding an open approval **invalidates it** — the Foundation raises the `approval-invalidated` hook (an in-process hook, **no broker event**); slice 05 owns re-queue semantics - `inst-fd-approval-hook`
 
 ### Discard a never-published draft
@@ -282,7 +282,7 @@ malformed request does not) (per-row token, never plan-shared — the pricing D-
 
 1. [ ] - `p1` - `actor_ref` resolution, authorize, and idempotency as at create — the PRD names **publish** among the retried
 verbs, and 04's crash-replay of a scheduled activation (04 `inst-sp-idempotent`) rides this store keyed by transition id - `(cont. inst-fd-idempotency)`
-2. [ ] - `p1` - `PublishDoor` accepts `(entity, expected internal revision)` — the revision arriving as the door's `If-Match` (P-D-33) — a `draft` for its first publish, or a `published`/`deprecated` **head** for version N+1 (a re-publish changes the version, never the state); stale revision fails `STALE_REVISION` — an approval is only usable against the exact revision it pinned (slice 05 stores the snapshot; the Foundation enforces the match) - `inst-fd-publish-pin`
+2. [ ] - `p1` - `PublishDoor` accepts `(entity, expected internal revision, optional corrected bucket-ii field and value)` — the revision arriving as the door's `If-Match` (P-D-33), and the third argument supplied **only** by 07's `CorrectionDoor`, which already accepts it (**P-D-41**: §4.2 admits a bucket-ii write only in the same statement as a `published_version` bump, which is this door's own head-row UPDATE, and 07 delegates its re-publish here — so without the argument the value 07 holds has no carrier into the statement that may write it. Additive: 06's composition-clear and 09's per-row publishes pass nothing and are untouched) — a `draft` for its first publish, or a `published`/`deprecated` **head** for version N+1 (a re-publish changes the version, never the state); stale revision fails `STALE_REVISION` — an approval is only usable against the exact revision it pinned (slice 05 stores the snapshot; the Foundation enforces the match) - `inst-fd-publish-pin`
 3. [ ] - `p1` - Re-run the **full** pipeline at publish (shape, state, identity, every registered validator for `→ published` — which names the **target state, not the edge** (**P-D-32**), and which **P-D-34** reads as naming the *publish act* rather than the row's `lifecycle_state` afterwards — the door accepts a `deprecated` head for version N+1 and leaves it `deprecated`, so a state-after reading would select nothing there: a re-publish takes no edge, so an edge-keyed reading would run no validator at all and empty this fail-closed re-run, while also pulling the `deprecated→published` two-person ceremony onto a content re-publish that changes no state): an entity that stopped being publishable since approval fails closed `INCOMPLETE_ENTITY`/rule-named code, never publishes stale - `inst-fd-publish-revalidate`
 4. [ ] - `p1` - The governance gate (slice 05) runs **inside** the door, and the door therefore carries an explicit **authorization mode** (Blocking 9 fix, 2026-08-26 review) - `inst-fd-governance-gate`
    - [ ] - `p1` - The two modes: `Gate` — the ordinary interactive publish, which needs a
@@ -336,6 +336,10 @@ verbs, and 04's crash-replay of a scheduled activation (04 `inst-sp-idempotent`)
    - [ ] - `p1` - First publish makes the `skuCode`/`productCode` reservation **permanent** — immutability
      enforced by the trigger whitelist from this row-state
      on - `inst-fd-publish-reserve-permanent`
+   - [ ] - `p1` - A **corrected bucket-ii value**, when the door was given one, is written by that
+     same head-row UPDATE — the mechanism `composition_pending` already uses, and the reason the
+     freeze above is the **post-act image**: the corrected value is what version N+1 must carry
+     (**P-D-41**) - `inst-fd-publish-correction`
    - [ ] - `p1` - `internal_revision += 1`, carried by the **same head-row UPDATE** as the freeze step above
      rather than as a second statement — **once**: the publish door is one act rather than a
      transition plus a publish, so the transition guard's "every transition" does not reach the
@@ -801,7 +805,7 @@ the clearing write being the **publish door's own head-row UPDATE**, the one tha
 `published_version += 1` (**P-D-32**: a save cannot clear it, because `inst-fd-save-txn` never
 touches `published_version` and this clause requires the same statement; 06's "system save +
 re-publish" names the ceremony, not the writing statement) — 06 declares the flag system-owned and never
-operator-mutable, so bucket iii/iv would be the wrong home; bucket-ii columns **only while `published_version = 0` and `lifecycle_state` is non-terminal** (03 `inst-mt-bucket`: the draft plane
+operator-mutable, so bucket iii/iv would be the wrong home; bucket-ii columns **only while `published_version = 0` and `lifecycle_state` is non-terminal**, through `inst-fd-save-txn` (**P-D-41** names the door) (03 `inst-mt-bucket`: the draft plane
 edits freely, and P-D-28's reason for bucket i applies verbatim — the whitelist named a prohibition
 where the write a sibling makes legal on an unpublished head had no admitted writer), and after
 first publish only through slice 07's correction act — and, as a row-image predicate this
@@ -1123,7 +1127,7 @@ and the ordering key.
   (frame), #42.
 
 **Risks & open items**: eleven review passes (the numbering restarted once, at the sixth) and
-eighteen owner rounds (P-D-23 through P-D-40) have run over this slice. What survives is one standing **risk**, two open questions, and a set of
+nineteen owner rounds (P-D-23 through P-D-41) have run over this slice. What survives is one standing **risk**, one open question, and a set of
 pointers to items filed with owners outside this document.
 
 **Risk** — a hazard rather than a question:
@@ -1180,7 +1184,7 @@ pointers to items filed with owners outside this document.
   `composition_pending` no-re-raise clause may rest on **P-D-14**, which is still **FLAGGED** for
   its owner and whose propagation field does not name this document.
 
-**Open here** — two items. **P-D-33** (eight calls) and **P-D-34** (nine calls plus five of the
+**Open here** — one item. **P-D-33** (eight calls) and **P-D-34** (nine calls plus five of the
 idempotency store's seven operands) closed what the passes before them had raised, each cited in
 the rule it changed. The two lens passes since found that the rules those rounds wrote carry seams
 of their own; everything below is this slice's to settle.
@@ -1203,12 +1207,3 @@ of their own; everything below is this slice's to settle.
   one client key share `(tenant, endpoint, client_key)` and an identical body hash — both empty —
   so the second replays the first's 200 and never runs, the path id being in neither the body nor,
   since P-D-34, the hash. Owner: this slice, with the NFR owner for (a).
-- **How a corrected bucket-ii value reaches the head row.** §4.2 now admits bucket-ii writes while
-  `published_version = 0` and `lifecycle_state` is non-terminal and, after first publish, only in the same statement as a
-  `published_version` bump — but `PublishDoor` takes `(entity, expected internal revision)` and its
-  head-row UPDATE enumerates no bucket-ii column, and 07 requires a **clean** head before its
-  correction. Either the door gains a field-value argument, or a second admitting predicate carries
-  the correction's write. **And below first publish the class now has no named door either**: the
-  clause imports P-D-28's own test — an admitted class needs a named admitting door — while §2
-  names one only for bucket-i. With 03, whose `inst-mt-bucket` asserts the draft plane, and 07,
-  whose ceremony the published half is.

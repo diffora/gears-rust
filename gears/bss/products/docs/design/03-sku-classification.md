@@ -135,7 +135,7 @@ currently lacks** (consumer-side addition owed there).
 1. [ ] - `p1` - A `MeterDeclaration` is atomic: `unit` and `usageTypeRef` together or not at all (`METER_DECLARATION_INCOMPLETE`); exactly one unit (C2) - `inst-mt-atomic-pair`
 2. [ ] - `p1` - The unit **MUST** be in the recognized-unit set and `active`: unknown fails `UNRECOGNIZED_UNIT` (the path to a new unit is `RecognizedSet` elevated approval, never inline); a `deprecated` unit fails new declarations (`UNIT_DEPRECATED`) — including a draft whose unit was deprecated before its first publish (PRD: treated as a new declaration and rejected) - `inst-mt-recognized`
 3. [ ] - `p1` - At publish, `UsageTypeResolver` **MUST** resolve `usageTypeRef` in the collector's platform-global catalog (P-D-05 — resolvability only, no lifecycle check, no dimension check): unresolvable fails `USAGE_TYPE_UNRESOLVED`; **collector unavailable fails closed** with the distinct retryable `USAGE_TYPE_UNAVAILABLE` — a publish never proceeds on an unverified binding - `inst-mt-resolve`
-4. [ ] - `p2` - The declaration is bucket ii: immutable after publish, correctable only through slice 07's fresh-zero door; the draft plane edits freely - `inst-mt-bucket`
+4. [ ] - `p2` - The declaration is bucket ii: immutable after publish, correctable only through slice 07's fresh-zero door; the draft plane edits freely **through 01 `inst-fd-save-txn`** (01 **P-D-41** names it) - `inst-mt-bucket`
 
 ### Govern the recognized-unit set
 
