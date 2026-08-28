@@ -419,3 +419,13 @@ struck. 2026-08-26 branch review.)*
   and records its NFR #3 probe as owed, while 08 also names the meter as 01's. The posting-safe
   composite is declared derivable from three meters when one is declared nowhere. Owner: this slice
   with 01 and 08. *(Raised by the slice-06 first lens pass, 2026-08-28.)*
+- **`freezeComplete` and `freeze_state` are one concept with two names and two shapes.** `PRD` §3
+  defines `freezeComplete` as "A per-`CatalogVersion` **flag**" and §6.6 makes it a **MUST expose**
+  obligation per `catalogVersionId`; §4 of this slice stores `freeze_state ∈ {open, complete,
+  complete(forced)}`; and **P-D-19** writes `freezeComplete = complete(forced)`, which is coherent
+  only under the state reading. The 2026-08-28 pass made this slice internally consistent by
+  keeping `freezeComplete` as `inst-fz-ack`'s predicate and pointing the state assignments at the
+  §4 column — which surfaced the divergence rather than settling it. Owed: whether the exposed
+  flag is derived from the column (and what the resolution API returns at `complete(forced)`), and
+  whether P-D-19's phrasing is amended. Owner: this slice with the PRD owner.
+  *(Found by the `--radius` sweep of the slice-06 pass's own edit, 2026-08-28.)*
