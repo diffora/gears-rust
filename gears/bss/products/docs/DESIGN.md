@@ -332,6 +332,11 @@ Deterministic export at a `catalogVersionId` → import (identity via codes, ids
 
 ### 3.5 Database schemas & tables
 
+**Column-naming convention, read by a gate** (**P-D-45**): any column holding an **operator
+identity** is named `*_actor_ref`. Slice 12's lint 7 asserts that exactly one table declares such
+a column — 10's `products_identity_ref`, the single erasure point. The convention is a review
+discipline, not a proof: a column named otherwise passes the lint silently.
+
 **35 tables, by the slice that defines each** (re-censused from the slices
 themselves — this section is the canonical index migration planning is scoped off, and it had
 listed 13 tables, named `products_plan_tier`, which no slice defines because slice 03 folds

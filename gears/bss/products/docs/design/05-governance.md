@@ -191,23 +191,58 @@ inbox merges with pricing's.
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-contract-rbac`
 
-GTS-typed resources × actions, deny-by-default: `product × read|write|publish`,
-`sku × read|write|publish`, `category × read|write`, `attribute_definition × write`,
-`recognized_set × write`, `plan_tier × write`, `approval × submit|read|decide`,
-`scheduled_transition × write|cancel|read` (no slice names these pairs on a door — registered in §6; the
-governed cancel is a `GovernedLiveOp` subject kind on `ApprovalRecord`), `catalog_version × read|publish|request|ack|release|force_complete` (the `release` action is **P-D-18**'s door) (06's doors: S2S
-request/ack/release via service-identity claims, operator force-complete; 06 §6 records that no door consumes `publish`),
-`freeze_participant × write` (06), **`metadata × write`** (02's metadata-map door — added: the door existed with no pair, and P-D-06 makes the map mutable in place on a
-**published** entity with no version bump, so inheriting `sku × write` would let anyone who can
-author drafts mutate content a `CatalogVersion` captures), **`materiality_policy × write`** (the C4/P-D-11 object —
-field set + trigger + `N`; separate from every config grant so the threshold's own holder cannot
-weaken it, item 36 of the review), `compliance × export` (10's DSAR surface — never
-folded into `audit × export`),
-`reference_signal × post` + `reference_producer × write` + `sku × correct` (07's doors),
-`erasure × execute` + `pii_allowlist × write` (10's doors),
-`bulk × execute` (09 import) + `bulk_lifecycle × execute` (09's mass-retire lane — its own grant), `breakglass × elevate`, `audit × read|export` (M-4 fix). Role bundles mirror the
-PRD actors (ProductManager, CatalogAdmin, FinanceReviewer, Auditor, PlatformOwner); grants are
-tenant-scoped claims from the IdP — the registry never mutates tenant topology. Every door
+GTS-typed resources × actions, deny-by-default. **The `Doors` column is what lint 3 reads**
+(**P-D-45**), for the reason P-D-43 gave lint 9's `Operand`: the pairs and the doors were both
+prose, and the join between them existed in no artifact.
+
+| Resource × action | Door(s) | Slice |
+|---|---|---|
+| `product × read`, `sku × read` | `GET /bss-products/v1/{products\|skus}/{id}`, `GET /bss-products/v1/{products\|skus}/{id}/versions` | 01, 08 |
+| `product × write`, `sku × write` | `POST /bss-products/v1/products`, `POST /bss-products/v1/skus`, `PATCH /bss-products/v1/{products\|skus}/{id}`, `POST /bss-products/v1/{products\|skus}/{id}/clone`, `POST /bss-products/v1/{products\|skus}/{id}/discard` | 01, 11 |
+| `product × publish`, `sku × publish` | `POST /bss-products/v1/{products\|skus}/{id}/publish` | 01 |
+| `metadata × write` | `PATCH /bss-products/v1/{products\|skus}/{id}/metadata` | 02 |
+| `compliance × export` | `GET /bss-products/v1/compliance/identity-export` | 10 |
+| `erasure × execute` | `POST /bss-products/v1/erasure-requests` | 10 |
+| `bulk × execute` | `POST /bss-products/v1/bulk/imports` | 09 |
+| `bulk_lifecycle × execute` | `POST /bss-products/v1/bulk/lifecycle` | 09 |
+| `catalog_version × request` | `POST /bss-products/v1/catalog-version-requests` | 06 |
+| `catalog_version × ack`, `× release` | **S2S, no route declared** — service-identity claims; `release` is **P-D-18**'s door | 06 |
+| `catalog_version × read`, `× force_complete` | **no route declared** — operator surfaces named in prose only | 06 |
+| `catalog_version × publish` | **none** — 06 §6 records that no door consumes it | 06 |
+| `category × read\|write` | **no route declared** — 02's live-value door, named in prose | 02 |
+| `attribute_definition × write` | **no route declared** | 02 |
+| `recognized_set × write`, `plan_tier × write` | **no route declared** | 03 |
+| `approval × submit\|read\|decide` | **no route declared** | 05 |
+| `materiality_policy × write` | **no route declared** | 05 |
+| `breakglass × elevate` | **no route declared** | 05 |
+| `scheduled_transition × write\|cancel\|read` | **none** — no slice names these pairs on a door (§6) | 04 |
+| `freeze_participant × write` | **no route declared** | 06 |
+| `reference_signal × post`, `reference_producer × write`, `sku × correct` | **no route declared** — 07's watermark, producer and correction doors, named in prose | 07 |
+| `pii_allowlist × write` | **no route declared** | 10 |
+| `audit × read\|export` | **no route declared** (M-4 fix) | 05 |
+
+**What the column measures, and what it does not** (**P-D-45**): the set declares **fourteen**
+routes as `` `METHOD /bss-products/v1/…` `` code spans — one machine-readable form — while doors
+elsewhere are named in prose ("the fresh-zero door", "the watermark door", "the correction door").
+Lint 3's population is therefore **the declared routes**, and every one of the fourteen appears
+above. The **eight** grants that carry a route are the measurable half; the rest name no route and
+are marked so rather than left blank, because a blank cell reads as an oversight. **That most
+grants have no declared route is registered in §6 as its own gap** — it is not a lint-3 failure
+under the stated direction (door ⇒ grant), and inventing routes to fill the column would have been
+exactly the normative content a review may not author.
+
+Why individual pairs exist: `metadata × write` is 02's map door — the door existed with no pair, and
+P-D-06 makes the map mutable in place on a **published** entity with no version bump, so inheriting
+`sku × write` would let anyone who can author drafts mutate content a `CatalogVersion` captures.
+`materiality_policy × write` is the C4/P-D-11 object (field set + trigger + `N`), separate from
+every config grant so the threshold's own holder cannot weaken it. `compliance × export` is 10's
+DSAR surface, never folded into `audit × export`. `bulk_lifecycle × execute` is 09's mass-retire
+lane and carries its own grant. The governed cancel is a `GovernedLiveOp` subject kind on
+`ApprovalRecord`.
+
+Role bundles mirror the PRD actors (ProductManager, CatalogAdmin, FinanceReviewer, Auditor,
+PlatformOwner); grants are tenant-scoped claims from the IdP — the registry never mutates tenant
+topology. Every door
 names its pair; slice 12's coverage check asserts no door is unnamed.
 
 ### 3.3 Error taxonomy (slice-owned codes)
@@ -283,6 +318,7 @@ row and open to correction; the requirement is that every code carries one.
 finance fields), 04 (un-deprecation, retirement confirmation, scheduled-approval pinning), 06 (force-completion, participant-set membership, the `system_signal` composition clear), 07 (`sku_correction`, reference-producer registration), 09 (`bulk_batch`), 10 (`pii_allowlist × write`).
 
 **Risks & open items**:
+- **Sixteen of the twenty-four grants carry no declared route.** P-D-45's `Doors` column made this countable for the first time: the set declares fourteen routes as code spans, and only **eight** grant rows name one. The rest — `category`, `attribute_definition`, `recognized_set`, `plan_tier`, `approval`, `materiality_policy`, `breakglass`, `freeze_participant`, `pii_allowlist`, `audit`, 07's three, and `catalog_version`'s read/ack/release/force_complete — are spent by doors named only in prose, or by no door at all. Two are already known absences (`scheduled_transition`, `catalog_version × publish`); the other fourteen are unmeasured, and an authorization surface nobody can enumerate is one nobody can review. Whether the fix is declaring the routes or admitting the grants are unspent is not a review's call. Owner: this slice with each door's owner. *(Raised by the P-D-45 round.)*
 - **Is `BREAKGLASS_WRITE_FORBIDDEN` raised at the pre-pipeline authorization gate or inside a
   pipeline phase?** **Closed by P-D-36**: the phase unit is withdrawn, so where the
   code is *raised* no longer carries a taxonomy consequence and no carve-out depends on it. What
@@ -292,8 +328,8 @@ finance fields), 04 (un-deprecation, retirement confirmation, scheduled-approval
 - **Does the discard door get its own grant, or inherit `product|sku × write`?** 01 §2 declares
   `POST /bss-products/v1/{products|skus}/{id}/discard` under **`… × discard`**, and this slice's
   RBAC catalog carries only `product × read|write|publish` and `sku × read|write|publish` — so
-  12 `inst-cc-rbac` ("every REST/S2S door named in any slice appears in 05's RBAC catalog") has
-  no pair to match on the very door P-D-31 added to make that lint green. `inst-gv-materiality`
+  12 `inst-cc-rbac`, which since **P-D-45** requires every declared route to appear in the `Doors`
+  column above, has no pair to match on the very door P-D-31 added to make that lint green. `inst-gv-materiality`
   already settles that `draft→discarded` is ungated beyond authz, so this is the grant model
   only: minting `discard` lets a tenant withhold it, folding it into `write` does not. Owner:
   this slice (`cpt-cf-bss-products-contract-rbac`). *(Raised by the slice-01 sixth-pass review.)*

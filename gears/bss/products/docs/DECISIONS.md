@@ -1578,6 +1578,45 @@ instead.*
   (the re-publish step).
 
 
+#### P-D-45 — The last four lint grammars, and an event register that cannot be harvested
+
+- **Date**: 2026-08-28 (owner call — the third slice-12 blocker round)
+- **Context**: lints 3, 4, 7 and 8 were prose predicates over prose. Each is settled below, and one
+  of them produced the sharpest measurement of the whole programme.
+- **Decision**, four arms:
+  1. **Lint 3 reads a `Doors` column** added to 05 §3.2, which becomes a table. The population is
+     the **fourteen declared routes** — `` `METHOD /bss-products/v1/…` `` code spans, one
+     machine-readable form. Doors named only in prose are outside it.
+  2. **Lint 4 reads an authored `EventRegister`**, never a harvest.
+  3. **Lint 7 reads column names**: an operator identity lives in a `*_actor_ref` column, the
+     convention 10's `products_identity_ref` already follows, recorded in `DESIGN.md` §3.5.
+  4. **Lint 8 needed a definition, not an artifact**: "registry schema surface" is the table and
+     column declarations of the slices' §4 sections. The six §17.2 words are already a literal
+     list, so the lint is executable as it stands.
+- **The measurement behind arm 2, recorded because it is the evidence and not an opinion**: five
+  harvest passes over one unchanged tree returned five different answers. Counting events by name
+  gave **31**; a numbered-row pattern attributed 25 of them and a sub-bullet pattern 22, each
+  finding rows the other missed; a literal `Emit \`X\`` pattern gave **24** and surfaced a
+  **32nd** event no name census had seen (`PiiAllowlistChanged`); a widened suffix census gave
+  **35**, two of them the donor gear's (`PlanPublished`, `BundleCompositionCompleted`) and two real
+  ones dropped by a name-length filter (`SkuCreated`, `SkuRetired`). The emitting-instruction
+  attribution disagreed in **28 of 31** rows. An emitting instruction is not recoverable from
+  prose, so the register is written by each rule's owner and the lint reads only the table.
+- **Two lints ship with their weakness stated rather than hidden**: lint 7's naming convention is
+  enforced by the same reading it replaced — a column named otherwise passes silently, green over
+  the defect it exists to catch. Lint 8 sees only §4, so a monetization marker arriving as an SDK
+  field or event payload is invisible to it. Both were argued and accepted; the alternatives
+  (an `identity:` field on all 34 tables; a surface spanning undeclared SDK shapes) cost more than
+  they buy today.
+- **Two gaps this round made countable for the first time**: sixteen of twenty-four grants carry no
+  declared route (05 §6), and the `EventRegister` is declared and empty (12 §6). Both are
+  registered, neither is invented shut.
+- **Propagated**: `design/05-governance.md` (§3.2 as a table with `Doors`; §6's grant gap);
+  `design/12-consumer-contracts.md` (lints 3, 4, 7, 8; §6's register item); `DESIGN.md` (§3.5's
+  column convention).
+- **Owed**: the `EventRegister`'s rows, per slice — the only thing now standing between the nine
+  lints and a CI job that runs them.
+
 #### P-D-44 — The AC #38 map, and the artifacts that turned out to already exist
 
 - **Date**: 2026-08-28 (owner call — the second slice-12 blocker round)
