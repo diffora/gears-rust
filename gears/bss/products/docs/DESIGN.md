@@ -33,7 +33,7 @@ The **products** gear is the BSS catalog **registry**: the System of Record for 
 categories, attributes/localization, and immutable `CatalogVersion` snapshots — *what can be
 sold and how it is described, classified, versioned, and published*. It owns no commercial
 concern: Plan/Price/composition are the pricing gear's, evaluation is rating's (PRD §2.1
-boundary). Requirements live in [`PRD.md`](./PRD.md) (sign-able as of 2026-08-25 — all §15
+boundary). Requirements live in [`PRD.md`](./PRD.md) (sign-able — all §15
 gates closed, veto register clean for P-D-01…P-D-13, with **P-D-14…P-D-20 flagged and awaiting the owner** (§6)); decisions in [`DECISIONS.md`](./DECISIONS.md) (P-D-NN;
 joint contracts D-46/D-47 live in the pricing register).
 
@@ -51,7 +51,7 @@ know what a `PlanTier` or a metering unit is.
 
 *All 57 requirement ids of PRD §6 and §7 — 56 `p1`/`p2` plus `fr-clone`, which the PRD declares
 `p3` — by full id, against the slice that owns it.
-Added 2026-08-26: this section cited requirements in prose only, so every tool that walks
+Added: this section cited requirements in prose only, so every tool that walks
 these documents by the id convention read this design as citing none — and the CFS
 reference-coverage rule for `fr`/`nfr` into DESIGN is satisfied by nothing until a
 requirement is ticked, at which point it fails for every id at once.*
@@ -106,8 +106,7 @@ explicit release · P-D-19 a force-completed version stays refused for posted us
 publish during the retirement lead window re-announces `SkuRetired`. Joint: D-46 (`sellable`),
 D-47 (increment lanes + retirement contract) — pricing register.
 
-**P-D-14…P-D-20 are FLAGGED and await the owner** — all seven were found by the 2026-08-26
-branch review, **five** of them already built into the design and never registered (P-D-14…P-D-18) and **two** reversing a delivery — P-D-19 (a force-completed version stays refused for posted use) and P-D-20, which strikes a publish freeze slice 04 had already shipped (recounted 2026-08-26: this read six-and-one, and the count hid the more product-visible of the two reversals)
+**P-D-14…P-D-20 are FLAGGED and await the owner** — all seven were found by the branch review, **five** of them already built into the design and never registered (P-D-14…P-D-18) and **two** reversing a delivery — P-D-19 (a force-completed version stays refused for posted use) and P-D-20, which strikes a publish freeze slice 04 had already shipped (recounted: this read six-and-one, and the count hid the more product-visible of the two reversals)
 the design had made. None was ever put to the owner, which is what makes them flags and not
 history.
 
@@ -123,7 +122,7 @@ Standard ToolKit gear, mirroring the sibling BSS gears:
   OpenAPI), `api` (OperationBuilder handlers), `domain` (entities, state machine, validation
   pipeline, uniqueness/scope rules), `infra` (SecureORM repositories, migrations, outbox,
   read-model projector).
-- **Identity**: GTS **types** (never instances — §2.2), declared as `gts.cf.bss.products.product.v1~`, `gts.cf.bss.products.sku.v1~`, `gts.cf.bss.products.category.v1~`, `gts.cf.bss.products.attribute_definition.v1~`, `gts.cf.bss.products.catalog_version.v1~` and `gts.cf.bss.products.approval.v1~` (the name slice 05's RBAC catalog uses) — these six are the **domain** types exposed as API resources; the authz resource/action catalog of slice 05 §3.2 declares 21 GTS-typed resources and is enumerated there rather than duplicated here (2026-08-26) — (the only GTS token here had been the namespace glob `gts.cf.bss.products.*`, which carries no type name, no version and no trailing `~`, so `guidelines/GTS.md`'s identifier grammar had nothing to match and the §2.2 constraint had no enumerable operand); tables `products_*`; dual-engine storage
+- **Identity**: GTS **types** (never instances — §2.2), declared as `gts.cf.bss.products.product.v1~`, `gts.cf.bss.products.sku.v1~`, `gts.cf.bss.products.category.v1~`, `gts.cf.bss.products.attribute_definition.v1~`, `gts.cf.bss.products.catalog_version.v1~` and `gts.cf.bss.products.approval.v1~` (the name slice 05's RBAC catalog uses) — these six are the **domain** types exposed as API resources; the authz resource/action catalog of slice 05 §3.2 declares 21 GTS-typed resources and is enumerated there rather than duplicated here  — (the only GTS token here had been the namespace glob `gts.cf.bss.products.*`, which carries no type name, no version and no trailing `~`, so `guidelines/GTS.md`'s identifier grammar had nothing to match and the §2.2 constraint had no enumerable operand); tables `products_*`; dual-engine storage
   (SQLite + Postgres), one migration per table, schema-oracle goldens from day one.
 
 #### Design set (ordered by implementation phase)
@@ -163,7 +162,7 @@ Three of the fifteen AC #38 rows are outside that universe by design and enumera
 lint 2 — the retention-orphan **alarm**, the `compositionPending` **consumer duty** and AC #38's
 **post-v1 EOL row**, whose only candidate code refuses the feature rather than the named
 condition — so the
-principle and its lint say the same thing (item 32 of the 2026-08-26 review).
+principle and its lint say the same thing (item 32 of the review).
 
 #### Two version counters, never conflated
 
@@ -333,7 +332,7 @@ Deterministic export at a `catalogVersionId` → import (identity via codes, ids
 
 ### 3.5 Database schemas & tables
 
-**35 tables, by the slice that defines each** (re-censused 2026-08-26 from the slices
+**35 tables, by the slice that defines each** (re-censused from the slices
 themselves — this section is the canonical index migration planning is scoped off, and it had
 listed 13 tables, named `products_plan_tier`, which no slice defines because slice 03 folds
 tiers into `products_recognized_set` under `set_kind`, and omitted about twenty real ones):
@@ -355,7 +354,7 @@ schema-oracle goldens.
 
 ## 4. Additional context
 
-**On ADRs — an open convention question, raised 2026-08-26.** This gear has no `ADR/`
+**On ADRs — an open convention question, raised.** This gear has no `ADR/`
 directory. Pricing carries three, rating two, subscriptions three, and their `DESIGN.md`
 files reference those ADR ids. `docs/spec-templates/README.md` reserves an ADR for a
 decision where "there was a meaningful discussion/debate and the rationale needs to be
@@ -368,17 +367,17 @@ substitutes for an ADR, and none says it does not. **Owner: Architecture** — e
 those three to ADRs under the template's naming, or record that this gear's register is its
 decision-record artifact. Until then three of the seven BSS gears ship no `docs/ADR/` — `rate-provider` keeps a
 rejected-alternative record in its `DESIGN.md` instead — so the question is which convention this
-family means to hold, not whether products is unique (corrected 2026-08-27: the escalation had
+family means to hold, not whether products is unique (corrected: the escalation had
 rested on a uniqueness that does not hold).
 
 **Decision register & joint contracts.**
 
 - [`DECISIONS.md`](./DECISIONS.md) — P-D-01…20 (both summaries said "…06" / listed five while
-  the register held twelve — item 26 of the 2026-08-26 review; P-D-13 landed with that review's
+  the register held twelve — item 26 of the review; P-D-13 landed with that review's
   fix wave).
 - Joint contracts consumed here: **D-46**, **D-47** (pricing register); **UC3** binding (rating
   `SEAMS.md` §J); contested-surface ownership — rating `SEAMS.md` "Ownership matrix" (five
-  products rows, 2026-08-25).
+  products rows).
 - Cross-gear obligations still open against counterparts (PRD §15): pricing owes
   `BundleCompositionCompleted` (slice 06 consumes it); freeze-participant acks unregistered on
   all three participants; Contracts' "not a quote" position vs the quote-snapshot delegation.
@@ -391,7 +390,7 @@ rested on a uniqueness that does not hold).
 6.4 → 02; 6.5 → 01 (machine) + 04 (policy); 6.6 → 06 (incl. `cpt-cf-bss-products-fr-revision-vs-version`'s version-binding-at-freeze clause); 6.7 → 01 (idempotency, eventing) + 05
 (approvals); 6.8 → 05 (isolation) + 08 (read models); 6.9 → 09; 6.10 → 11; 6.11 → 10;
 6.7 also → 12 (`cpt-cf-bss-products-fr-event-versioning-replay`, which slice 12 claims in its own §1.4 and
-Traces-to while both sites here said 6.12 + §9 only — 2026-08-26 branch review);
+Traces-to while both sites here said 6.12 + §9 only — branch review);
 6.12 → 12; 6.13 → resident per door (enumerated per slice). Every slice carries a "Traces to"
 list; slice 12 owns the completeness check that every `p1`/`p2` **requirement-bearing PRD id** —
 `fr-*`, `nfr-*`, and §9's `interface-*`/`contract-*`, the universe M5 widened it to, plus
@@ -405,33 +404,33 @@ it reports all fourteen.
 
 | Slice | Status |
 |-------|--------|
-| 01-foundation | **authored + agent-reviewed 2026-08-25**; fix wave applied (H1 head-row model, shared guard, `normalized(name)` pin) |
-| 02-taxonomy-attributes | **authored + agent-reviewed 2026-08-25**; fix wave applied (H2 category branch, M2/M5); P-D-06 **CONFIRMED 2026-08-26** |
-| 03-sku-classification | **authored + agent-reviewed 2026-08-25**; fix wave applied (M2 operand narrowed) |
-| 04-lifecycle | **authored + agent-reviewed 2026-08-25**; fix wave applied (provenance pass-through, parent path, runner lease) — the `RETIREMENT_PENDING` publish freeze this row also credited was **struck again by P-D-20** on 2026-08-26 and is not an applied fix; the code's remaining arms are un-deprecation here and slice 01's create-door parent guard; initiation reading CONFIRMED via §17.1 |
-| 05-governance | **authored + agent-reviewed 2026-08-25**; fix wave applied (scheduled-act consumption model, vocabulary-op materiality, transition-fires-hook invariant); quorum strictness **resolved 2026-08-26 — P-D-11** (approver count is a typed-policy value, default 2, floor 0); role-predicate question **resolved — P-D-10** (C8: predicates narrow, never replace) |
-| 06-catalog-version | **authored + agent-reviewed 2026-08-25**; fix wave applied (satisfiedRequests handshake, lifecycle re-validation arm, stored-copy captures, operation_key bulk batching, forced-complete semantics); composition-clear **resolved 2026-08-26** (`system_signal` approval subject); mechanical-retry AC #40 reading **resolved 2026-08-26 — P-D-09 amended the FR and the AC to state the lane split** |
-| 07-reference-signal | **authored 2026-08-25**; fix wave applied 2026-08-26 (F1–F8, Blocking 3, review items 19/20/21); quorum sweep + P-D-16 applied 2026-08-26 (branch review) |
-| 08-read-models | **authored 2026-08-26**; P-D-07 stamp floor **CONFIRMED 2026-08-26** (conditional on the projection existing — PRD §15 now asks whether browse needs a serving store at all) |
-| 09-bulk-promotion | **authored 2026-08-26** (coalesced-event deviation recorded as sanctioned) |
-| 10-retention-erasure | **authored 2026-08-26**; role-predicate question **resolved 2026-08-26 — P-D-10**: no gear-side Legal role, the allow-list runs the base quorum with a mandatory recorded Legal sign-off reference |
-| 11-clone | **authored 2026-08-26** (resolves the 01-flagged clone-vs-P-D-04 interaction) |
-| 12-consumer-contracts | **authored + agent-reviewed 2026-08-26**; fix wave applied (CoverageChecks incl. id-uniqueness/identity/monetization lints, status vocabulary pinned, register rows split by authorability); SchemaPin widening **resolved 2026-08-26 — P-D-12**: membership is the rule "operands the §2.2 guards read", `inst-cc-pin` lints it, nine lints total |
+| 01-foundation | **authored + agent-reviewed**; fix wave applied (H1 head-row model, shared guard, `normalized(name)` pin) |
+| 02-taxonomy-attributes | **authored + agent-reviewed**; fix wave applied (H2 category branch, M2/M5); P-D-06 **CONFIRMED** |
+| 03-sku-classification | **authored + agent-reviewed**; fix wave applied (M2 operand narrowed) |
+| 04-lifecycle | **authored + agent-reviewed**; fix wave applied (provenance pass-through, parent path, runner lease) — the `RETIREMENT_PENDING` publish freeze this row also credited was **struck again by P-D-20** and is not an applied fix; the code's remaining arms are un-deprecation here and slice 01's create-door parent guard; initiation reading CONFIRMED via §17.1 |
+| 05-governance | **authored + agent-reviewed**; fix wave applied (scheduled-act consumption model, vocabulary-op materiality, transition-fires-hook invariant); quorum strictness **resolved — P-D-11** (approver count is a typed-policy value, default 2, floor 0); role-predicate question **resolved — P-D-10** (C8: predicates narrow, never replace) |
+| 06-catalog-version | **authored + agent-reviewed**; fix wave applied (satisfiedRequests handshake, lifecycle re-validation arm, stored-copy captures, operation_key bulk batching, forced-complete semantics); composition-clear **resolved** (`system_signal` approval subject); mechanical-retry AC #40 reading **resolved — P-D-09 amended the FR and the AC to state the lane split** |
+| 07-reference-signal | **authored**; fix wave applied (F1–F8, Blocking 3, review items 19/20/21); quorum sweep + P-D-16 applied (branch review) |
+| 08-read-models | **authored**; P-D-07 stamp floor **CONFIRMED** (conditional on the projection existing — PRD §15 now asks whether browse needs a serving store at all) |
+| 09-bulk-promotion | **authored** (coalesced-event deviation recorded as sanctioned) |
+| 10-retention-erasure | **authored**; role-predicate question **resolved — P-D-10**: no gear-side Legal role, the allow-list runs the base quorum with a mandatory recorded Legal sign-off reference |
+| 11-clone | **authored** (resolves the 01-flagged clone-vs-P-D-04 interaction) |
+| 12-consumer-contracts | **authored + agent-reviewed**; fix wave applied (CoverageChecks incl. id-uniqueness/identity/monetization lints, status vocabulary pinned, register rows split by authorability); SchemaPin widening **resolved — P-D-12**: membership is the rule "operands the §2.2 guards read", `inst-cc-pin` lints it, nine lints total |
 
-**The design set is COMPLETE: all twelve slices authored** (2026-08-25/26). **Review status is
+**The design set is COMPLETE: all twelve slices authored**. **Review status is
 per slice — read the table above, not this line**: the rows carrying "agent-reviewed" plus a fix
 wave are the ones this repository can evidence. *(This sentence has now named the wrong slice
 twice: it first said slice 11 carried no review-finding markers when slice 11 carries thirteen —
-H1, L1–L6, M1–M6, item 26 of the 2026-08-26 review — and the correction then said the same of
+H1, L1–L6, M1–M6, item 26 of the review — and the correction then said the same of
 slice 07, which carries eight: F1–F8 plus a Blocking-3 fix and review items 19/20/21. A marker
 census is derivable from the slices and this sentence keeps going stale from restating it, so
-the claim is dropped rather than corrected a third time — 2026-08-26 branch review.)* The
+the claim is dropped rather than corrected a third time — branch review.)* The
 earlier aggregate here claimed all twelve were agent-reviewed and fix-waved,
-which the table does not support (CodeRabbit, 2026-08-26); per-slice review reports are working
+which the table does not support (CodeRabbit); per-slice review reports are working
 artifacts rather than repository content, so the table is the only in-repo record and the claim
 is narrowed to what it holds.
 
-**Human flags awaiting the owner: seven — P-D-14…P-D-20**, opened by the 2026-08-26 branch review. The six below were answered on 2026-08-26 and stay answered; what the review found is a different class, and the distinction cost this branch a wave: **"no open questions" is not "correct"**. Five of the seven are decisions the design had already *made* and never registered — an undeclared decision is invisible to a flag count precisely because nobody asked anything. The six answered flags, in a single
+**Human flags awaiting the owner: seven — P-D-14…P-D-20**, opened by the branch review. The six below were answered on and stay answered; what the review found is a different class, and the distinction cost this branch a wave: **"no open questions" is not "correct"**. Five of the seven are decisions the design had already *made* and never registered — an undeclared decision is invisible to a flag count precisely because nobody asked anything. The six answered flags, in a single
 session with the product owner, one decision at a time:
 
 | # | Question | Outcome |
@@ -450,11 +449,11 @@ doors that bind them out-of-process, registering the increment request in PRD §
 sibling — **that second one is now P-D-15**, which it should have been from the start: this
 paragraph called it a decision that landed and then left it out of the register, so of the two
 it names, one had an id and one did not. *(The composition-clear gate exemption left the flag
-list earlier the same day — the 2026-08-26 CodeRabbit pass forced its resolution: a
+list earlier the same day — the CodeRabbit pass forced its resolution: a
 `system_signal` approval subject with the inbound governed signal as the authorizing principal,
 **now P-D-14** on the same reasoning.)*
 
-**P-D-08 (2026-08-26):** audit sealing is deferred to a platform capability — the gear ships the
+**P-D-08 :** audit sealing is deferred to a platform capability — the gear ships the
 complete append-only trail over a reserved, unwritten seam, with the requirements that capability
 must satisfy stated as P-D-08 S1–S9 and owned by Architecture (PRD §15/§16). Next phase:
 implementation planning against the phase column; first build acts: slice 01 + the P-D-03
