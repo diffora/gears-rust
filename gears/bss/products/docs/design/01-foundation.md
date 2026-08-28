@@ -92,7 +92,7 @@ acknowledged, and rejections that always carry an audited reason. Per P-D-02, ev
   (four read paths the guard needed), P-D-29 (what a replay, an envelope and a digest carry),
   P-D-30 (gate host, authorization, whose validator), P-D-31 (the four routed outward, decided
   here), P-D-32 (the second lens wave's six calls), P-D-33 (eight calls from weeding the open items),
-  P-D-34 (the remaining items, decided from the set), P-D-35 (the five the set already forced), P-D-36 (the phase unit withdrawn)
+  P-D-34 (the remaining items, decided from the set), P-D-35 (the five the set already forced), P-D-36 (the phase unit withdrawn), P-D-37 (one code per row, all violations in the answer)
 - Pricing `design/01-foundation.md` — the pattern donor (registered validators, append-only
   triggers with column whitelists, draft/published partial unique indexes, pending refs — **not
   the outbox**, which P-D-22 moved to `toolkit_db::outbox` after measuring that pricing runs a
@@ -413,7 +413,14 @@ verbs, and 04's crash-replay of a scheduled activation (04 `inst-sp-idempotent`)
 2. [ ] - `p1` - Fail-closed and atomic: the phases run in the order above and the run **stops at the first
 failing phase**, collecting violations per-field *within* that phase into one rejection
 (**P-D-33**: §4.4's audit row carries a single `error_code`, so collecting across phases would
-produce more codes than the row can record). Any failure rejects the whole mutation with an
+produce more codes than the row can record). **The rejection the caller receives carries every
+violation that phase collected; the audit row records one code** (**P-D-37** — the donor's split,
+measured: `gears/bss/pricing` renders a whole `ValidationReport` into one refusal, and audits no
+validation refusal at all, while this gear audits every one of them under `nfr-availability-audit`
+and so needs a single code per row). Where a phase can collect more than one **code**, the row
+records the first by the precedence §3.3 states for that phase. Only the `state` phase can:
+`shape` raises one code with many per-field entries, and `identity` is decided under the write and
+can return only one (§3.4). Any failure rejects the whole mutation with an
 audited reason; there is no partial application anywhere in the gear (PRD AC #38) - `inst-fd-fail-closed`
 3. [ ] - `p1` - Registration is compile-time code (a slice ships its validators with its handler); the pipeline exposes `rule_names()` for observability only — attribution in rejections rides the **error code**, never the rule name - `inst-fd-rule-registry`
 4. [ ] - `p1` - Field-mutability enforcement frame (raised from `p2` by the owner 2026-08-27: the physical guard routes by these tags and `ILLEGAL_FIELD_MUTATION` ships in the p1 contract, so the classification cannot be later than the things that read it) - `inst-fd-mutability-frame`
@@ -555,7 +562,12 @@ uniqueness, reservation and containment codes (`DUPLICATE_NAME`, `DUPLICATE_CODE
 **state** phase raises `ILLEGAL_TRANSITION` (the edge list), `ILLEGAL_FIELD_MUTATION` (bucket
 routing, and `cloned_from`'s never-in-any-UPDATE rule of §4.1/§4.2, which bites while
 `published_version = 0` where bucket-i does not), `PARENT_TERMINAL` (the parent's own state) and `ENTITY_TERMINAL` (the subject's own)
-wherever it runs, the
+wherever it runs — and one act can satisfy more than one of them, a save on a `retired` head that
+also moves a bucket-i column satisfying `ENTITY_TERMINAL` and `ILLEGAL_FIELD_MUTATION` alike, so
+**the audit row records them in this precedence** (**P-D-37**): `ENTITY_TERMINAL` →
+`PARENT_TERMINAL` → `ILLEGAL_TRANSITION` → `ILLEGAL_FIELD_MUTATION`, running from the refusal that
+admits no write to the row at all down to the one that refuses a single column. The caller's
+rejection carries all of them regardless; the precedence governs the one code the row stores — the
 **shape** phase raises `VALIDATION`, the **precondition** check raises `STALE_REVISION` at both
 the `If-Match` verb and the publish pin, idempotency resolution raises `IDEMPOTENCY_CONFLICT` and
 `IDEMPOTENCY_KEY_IN_FLIGHT` at every door that resolves a key, and the **registered validators** phase raises `INCOMPLETE_ENTITY` and the
@@ -650,7 +662,11 @@ once, in the Foundation, rather than per occurrence.
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-algo-concurrency`
 
-1. [ ] - `p1` - `skuCode`/`productCode` race: decided by the `ReservationIndex` (§4.2) and §4.1's `product_code` partial unique index under the insert **or the admitted bucket-i UPDATE** (§4.2), not by a read (two concurrent creates, or a create against a concurrent bucket-i change: exactly one admitted) - `inst-fd-code-race`
+1. [ ] - `p1` - `skuCode`/`productCode` race: decided by the `ReservationIndex` (§4.2) and §4.1's `product_code` partial unique index under the insert **or the admitted bucket-i UPDATE** (§4.2), not by a read (two concurrent creates, or a create against a concurrent bucket-i change: exactly one admitted). **Because the index is the arbiter, a write violating two of them returns
+one violation** — whichever constraint the engine checked first — so the `identity` phase cannot
+collect a second code, and §3.1's per-field collection is a property of the **read-decided** phases
+(**P-D-37**, measured against the donor, which folds every unique violation into a single error
+without distinguishing which index fired) - `inst-fd-code-race`
 2. [ ] - `p1` - Name race: decided by §4.1's partial unique index under the insert **or the admitted rename** (`name` is bucket-iii, §4.1), not by the step-3 read (two concurrent creates of one normalized name, or a create against a concurrent rename: exactly one admitted; the loser fails `DUPLICATE_NAME`) - `(cont. inst-fd-name-unique)`
 3. [ ] - `p1` - Draft race: decided by `If-Match` (two editors: second fails `STALE_REVISION`) - `(cont. inst-fd-etag)`
 4. [ ] - `p1` - Publish-vs-edit race: the door's pinned-revision check makes "approve rev N, publish rev N+1" impossible by construction - `(cont. inst-fd-publish-pin)`
@@ -1071,7 +1087,7 @@ and the ordering key.
   (frame), #42.
 
 **Risks & open items**: eleven review passes (the numbering restarted once, at the sixth) and
-fourteen owner rounds (P-D-23 through P-D-36) have run over this slice. What survives is one standing **risk**, six open questions, and a set of
+fifteen owner rounds (P-D-23 through P-D-37) have run over this slice. What survives is one standing **risk**, five open questions, and a set of
 pointers to items filed with owners outside this document.
 
 **Risk** — a hazard rather than a question:
@@ -1128,7 +1144,7 @@ pointers to items filed with owners outside this document.
   `composition_pending` no-re-raise clause may rest on **P-D-14**, which is still **FLAGGED** for
   its owner and whose propagation field does not name this document.
 
-**Open here** — six items. **P-D-33** (eight calls) and **P-D-34** (nine calls plus five of the
+**Open here** — five items. **P-D-33** (eight calls) and **P-D-34** (nine calls plus five of the
 idempotency store's seven operands) closed what the passes before them had raised, each cited in
 the rule it changed. The two lens passes since found that the rules those rounds wrote carry seams
 of their own; everything below is this slice's to settle.
@@ -1158,17 +1174,6 @@ of their own; everything below is this slice's to settle.
   refused `STALE_REVISION`, which re-read the head and retried, "is making the same request" and
   must therefore **run**. If the carve-out is keyed on whether a verdict can change on retry, its
   membership has to be re-derived over the whole taxonomy rather than asserted at one code.
-- **One `error_code` against several codes in one phase.** The run stops at the first failing
-  phase, "collecting violations per-field *within* that phase", because §4.4's audit row carries a
-  single `error_code` (**P-D-33**) — but the `identity` phase raises three codes and the `state`
-  phase four, so a create carrying both a colliding `name` and a colliding `productCode`
-  reproduces *inside* one phase the outcome that reasoning says the row cannot record. Either the
-  run stops at the first violation within a phase, or the column becomes a set, or a precedence
-  over a phase's codes is pinned. The same item has a write-side half: the `identity` phase sits
-  fifth of seven, but §3.4 says its verdicts are decided by the index **under the write**, not by a
-  read — so the verdict arrives after the governance gate has already run, and an implementer who
-  builds the phase as a pre-write read reintroduces the race §3.4 forbids. With 12, whose AC #38
-  map reads that column.
 - **How a corrected bucket-ii value reaches the head row.** §4.2 now admits bucket-ii writes while
   `published_version = 0` and `lifecycle_state` is non-terminal and, after first publish, only in the same statement as a
   `published_version` bump — but `PublishDoor` takes `(entity, expected internal revision)` and its

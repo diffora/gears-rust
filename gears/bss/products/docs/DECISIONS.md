@@ -45,6 +45,7 @@ joint contracts, cited from here by their pricing numbers, never duplicated.
 - [P-D-34 — The remaining slice-01 items, decided from the set](#p-d-34--the-remaining-slice-01-items-decided-from-the-set)
 - [P-D-35 — The five slice-01 items the set already forced](#p-d-35--the-five-slice-01-items-the-set-already-forced)
 - [P-D-36 — The phase unit is withdrawn; a code's unit is its declaring slice](#p-d-36--the-phase-unit-is-withdrawn-a-codes-unit-is-its-declaring-slice)
+- [P-D-37 — One code per audit row, every violation in the answer](#p-d-37--one-code-per-audit-row-every-violation-in-the-answer)
 
 <!-- /toc -->
 
@@ -1247,6 +1248,10 @@ instead.*
   `ILLEGAL_FIELD_MUTATION` status repeat), `design/12-consumer-contracts.md` (open items).
 
 
+- **Amended 2026-08-28 by P-D-37**: the stop-at-first-phase call below stands. What it did not
+  say is what happens when one phase collects more than one *code* — the caller's rejection now
+  carries them all and the row records one, by a precedence §3.3 pins for the only phase that can.
+
 #### P-D-33 — Eight calls from weeding slice 01's open items
 
 - **Date**: 2026-08-27 (owner call, on weeding `design/01-foundation.md` §6 after four lens passes)
@@ -1381,6 +1386,9 @@ instead.*
 - **What it closes besides its own question**: 12's "`inst-cc-errors` admits one phase carve-out
   and the taxonomy now has two"; 05's "is `BREAKGLASS_WRITE_FORBIDDEN` a phase refusal?"; 01 §6's
   mirror owed to 12; and the phase clause in 01 §6's standing containment risk.
+- **Settled since, by P-D-37 (2026-08-28)**: the within-phase half. Stop-at-first-*phase* stands
+  as P-D-33 wrote it. The paragraph below reads more broadly than it should have — what was open
+  was never the phase boundary but the code overflow inside one phase.
 - **Deliberately not decided here**: whether the run still stops at the first failing phase. The
   donor appends and never short-circuits, but it renders a *report* into a response, while this
   gear's `products_audit_log` carries a single `error_code` column — the constraint that produced
@@ -1388,3 +1396,35 @@ instead.*
 - **Propagated**: `design/01-foundation.md` (§3.3, §4.4, §6), `design/04-lifecycle.md` (§3.2's
   code block), `design/05-governance.md` (§6), `design/12-consumer-contracts.md`
   (`inst-cc-errors`, §6).
+
+
+#### P-D-37 — One code per audit row, every violation in the answer
+
+- **Date**: 2026-08-28 (owner call)
+- **Context**: `inst-fd-fail-closed` stops the run at the first failing phase and collects
+  violations per-field *within* it, and **P-D-33**'s stated reason is that §4.4's audit row carries
+  a single `error_code`, so collecting *across* phases would overflow it. The seventh pass observed
+  that the same overflow can happen *inside* one phase, since the `identity` phase names three
+  codes and the `state` phase four.
+
+  **Measured before deciding, and the question turned out to be narrower than stated.** The
+  `identity` phase is decided by the index **under the write** (§3.4), and an insert violating two
+  unique constraints returns one violation — whichever the engine checked first; the donor's
+  storage layer folds every `is_unique_violation()` (Postgres `23505` and its SQLite equivalent)
+  into a single error without distinguishing the index. So the pass's own example — a create
+  colliding on both `name` and `productCode` — physically yields one code, not two. `shape` raises
+  a single code with many per-field entries. **Only the `state` phase can genuinely collect two**,
+  and it does: a save on a `retired` head that also moves a bucket-i column satisfies
+  `ENTITY_TERMINAL` and `ILLEGAL_FIELD_MUTATION` alike.
+
+  | Call | Propagation |
+  |---|---|
+  | **The caller's rejection carries every violation the failing phase collected; the audit row records one code.** This is the donor's split, and the reason the two differ here is structural: `gears/bss/pricing` renders a whole `ValidationReport` into one refusal and has no `error_code` in its audit record at all, because it does not audit validation refusals — this gear audits every one of them under `nfr-availability-audit`, and a row needs one code | 01 §3.1 `inst-fd-fail-closed`; 12 (the response envelope) |
+  | **Precedence over the `state` phase's four codes**: `ENTITY_TERMINAL` → `PARENT_TERMINAL` → `ILLEGAL_TRANSITION` → `ILLEGAL_FIELD_MUTATION`, running from the refusal that admits no write to the row at all down to the one that refuses a single column. Derived, not picked: it is the same ordering that makes terminality the physical floor — if the subject is terminal nothing else about the write matters | 01 §3.3; 12 (AC #38 map reads the stored code) |
+  | **The `identity` phase cannot collect a second code**, being decided under the write, and §3.1's per-field collection is therefore a property of the **read-decided** phases. Stated rather than left implicit, so the promise the rule makes is one the phase can keep | 01 §3.1, §3.4 |
+
+- **Not changed**: the column stays a single nullable `error_code`; AC #38 still maps by it; the
+  reserved sealing seam still hashes the row as it stands. That is what made the precedence the
+  cheaper arm than widening the column, which has three readers.
+- **Propagated**: `design/01-foundation.md` (§3.1, §3.3, §3.4, §6). Amends **P-D-33** (which said
+  nothing about the within-phase case) and narrows **P-D-36**'s "deliberately not decided" note.
