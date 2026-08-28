@@ -44,7 +44,7 @@ vocabularies this slice governs (PlanTier taxonomy, recognized units, recognized
 
 ### 1.2 Purpose
 
-Downstream binds without re-validation (PRD §1.3) exactly when classification is enforced at
+Downstream binds without re-validation (PRD §1.2) exactly when classification is enforced at
 authoring: an unpostable SKU (missing code), an unrateable meter (unrecognized unit, dangling
 `usageTypeRef`), or an unclassifiable plan (unknown tier) must be impossible to publish — not
 discovered weeks later at ERP export or rating time.
@@ -104,7 +104,7 @@ discovered weeks later at ERP export or rating time.
 |------|---------|
 | `TypeProfile` | The per-type required-field set the define/publish validators run (`product`/`service`: accounting codes required at publish; `bundle`: exempt from codes, subject to the override gate) |
 | `MeterDeclaration` | The value object `(unit, usageTypeRef)` — always both or neither |
-| `RecognizedSet` | The generic governed vocabulary (units; tax categories; GL codes) with `active|deprecated` states and reference-guarded removal |
+| `RecognizedSet` | The generic governed vocabulary (units; tax categories; GL codes; the PlanTier taxonomy) with `active|deprecated` states and reference-guarded removal |
 | `UsageTypeResolver` | The publish-time port to the usage-collector's `get_usage_type` (P-D-05) |
 
 ### 1.8 Context & Dependencies
@@ -114,8 +114,9 @@ of bucket-iii fields; elevated approval for new units; the bundle override); usa
 (`get_usage_type`). **Produced**: `PlanTierUpdated`, `RecognizedUnitUpdated`,
 `RecognizedCodeUpdated` events; the classification validators registered on SKU save/publish;
 the SDK read shape fields (`type`, `sellable`, `plan_tier`, `metering_unit`, `usage_type_ref`,
-`tax_category_ref`, `gl_code_ref`) — including **`sellable`, the member pricing's `CatalogSku`
-currently lacks** (consumer-side addition owed there).
+`tax_category_ref`, `gl_code_ref`) — including **`sellable`, `usage_type_ref` and `type` — this slice's three of the four members
+pricing's `CatalogSku` currently lacks** (12 `inst-sdk-catalogsku` holds the roster; consumer-side
+additions owed there).
 
 ## 2. Actor Flows (CDSL)
 
@@ -123,10 +124,10 @@ currently lacks** (consumer-side addition owed there).
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-flow-classify-sku`
 
-1. [ ] - `p1` - `TypeProfile` validators register on SKU save and publish: `type` present and in the closed set; per-type required fields at publish — `product`/`service` require both accounting codes (`ACCOUNTING_CODE_REQUIRED` naming the missing one), `bundle` requires neither (composition is pricing's; a bundle is commercially incomplete by design) - `inst-cl-type-profile`
+1. [ ] - `p1` - `TypeProfile` validators register on SKU save and publish: `type` present and in the closed set (`SKU_TYPE_UNKNOWN`); per-type required fields at publish — `product`/`service` require both accounting codes (`ACCOUNTING_CODE_REQUIRED` naming the missing one), `bundle` requires neither (composition is pricing's; a bundle is commercially incomplete by design) - `inst-cl-type-profile`
 2. [ ] - `p1` - Promotional/$0/"Free" offerings are ordinary SKUs — no separate entity, no special validator path (PRD `fr-define-sku`) - `inst-cl-no-promo-entity`
 3. [ ] - `p1` - `sellable` defaults `true`; flipping it is a bucket-iii edit — a head-row save re-published as version N+1 (01's head-row model) under slice-05 materiality; the SDK read shape exposes it per `CatalogVersion` so pricing's predicate 6 has its operand - `inst-cl-sellable`
-4. [ ] - `p1` - **Uncomposed-bundle publish override (P-D-02)**: publishing a `bundle` that plan-price has not composed requires the explicit two-person override at THIS entity publish — and **P-D-30** makes that override the operand 01's `PublishDoor` reads to set `composition_pending`, the door being unable to judge composition itself — `N`-governed with `quorumReduced` recorded, the author performing the acknowledgment at `N = 0` (P-D-13) — this slice registers the gate condition, slice 05 executes the override ceremony (lint findings presented to approvers). **The condition is registered on the publish, not on the lane**: every lane that publishes a `bundle` carries it, bulk included (09 `inst-bk-override`), and the published SKU enters flagged `compositionPending = true` (cleared by slice 06's inbound signal) - `inst-cl-bundle-override`
+4. [ ] - `p1` - **Uncomposed-bundle publish override (P-D-02)**: publishing a `bundle` that plan-price has not composed requires the explicit two-person override at THIS entity publish — and **P-D-30** makes that override the operand 01's `PublishDoor` reads to set `composition_pending`, the door being unable to judge composition itself — `N`-governed with `quorumReduced` recorded, the author performing the acknowledgment at `N = 0` (P-D-13) — this slice registers the gate condition (an unacknowledged publish refused `BUNDLE_OVERRIDE_REQUIRED`), slice 05 executes the override ceremony (lint findings presented to approvers). **The condition is registered on the publish, not on the lane**: every lane that publishes a `bundle` carries it, bulk included (09 `inst-bk-override`), and the published SKU enters flagged `compositionPending = true` (cleared by slice 06's inbound signal) - `inst-cl-bundle-override`
 
 ### Declare a metering unit
 
@@ -135,14 +136,14 @@ currently lacks** (consumer-side addition owed there).
 1. [ ] - `p1` - A `MeterDeclaration` is atomic: `unit` and `usageTypeRef` together or not at all (`METER_DECLARATION_INCOMPLETE`); exactly one unit (C2) - `inst-mt-atomic-pair`
 2. [ ] - `p1` - The unit **MUST** be in the recognized-unit set and `active`: unknown fails `UNRECOGNIZED_UNIT` (the path to a new unit is `RecognizedSet` elevated approval, never inline); a `deprecated` unit fails new declarations (`UNIT_DEPRECATED`) — including a draft whose unit was deprecated before its first publish (PRD: treated as a new declaration and rejected) - `inst-mt-recognized`
 3. [ ] - `p1` - At publish, `UsageTypeResolver` **MUST** resolve `usageTypeRef` in the collector's platform-global catalog (P-D-05 — resolvability only, no lifecycle check, no dimension check): unresolvable fails `USAGE_TYPE_UNRESOLVED`; **collector unavailable fails closed** with the distinct retryable `USAGE_TYPE_UNAVAILABLE` — a publish never proceeds on an unverified binding - `inst-mt-resolve`
-4. [ ] - `p2` - The declaration is bucket ii: immutable after publish, correctable only through slice 07's fresh-zero door; the draft plane edits freely **through 01 `inst-fd-save-txn`** (01 **P-D-41** names it) - `inst-mt-bucket`
+4. [ ] - `p2` - The declaration is bucket ii: immutable after publish, correctable only through slice 07's `CorrectionDoor` (`inst-cr-door` — one door, three admission gates, one of them added for exactly this field); the draft plane edits freely **through 01 `inst-fd-save-txn`** (01 **P-D-41** names it) - `inst-mt-bucket`
 
 ### Govern the recognized-unit set
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-flow-unit-set`
 
-1. [ ] - `p1` - The set is a `RecognizedSet` (governed live entity via `GovernedLiveOp`): seeded per PRD §17.1 (`vCPU-hours`, `GB-storage`, `GB-egress`, `request-count`); adding a unit = **elevated approval** (slice-05 gate, FinanceReviewer not required — owner is Product + Rating per §15) - `inst-us-governed`
-2. [ ] - `p1` - De-listing: removal refused while ≥ 1 **published** SKU declares the unit (`UNIT_DELIST_BLOCKED`, holders sampled); the admitted path is `deprecated` (no new declarations, existing publishes unaffected) then removal once unreferenced — where "referenced" means **non-terminal published heads** (published/deprecated SKUs); frozen version content is self-contained and never blocks removal (operand narrowed with slice 02's — M2 fix) - `inst-us-delist`
+1. [ ] - `p1` - The set is a `RecognizedSet` (governed live entity via `GovernedLiveOp`): seeded per PRD §17.1 (`vCPU-hours`, `GB-storage`, `GB-egress`, `request-count`); adding a unit = **elevated approval** (slice-05 gate, FinanceReviewer not required — owner is Product + Rating per PRD §15) - `inst-us-governed`
+2. [ ] - `p1` - De-listing: removal refused while a non-terminal published head (a `published`/`deprecated` SKU) declares the unit (`UNIT_DELIST_BLOCKED`, holders sampled); the admitted path is `deprecated` (no new declarations, existing publishes unaffected) then removal once unreferenced — where "referenced" means **non-terminal published heads** (published/deprecated SKUs); frozen version content is self-contained and never blocks removal (operand narrowed with slice 02's — M2 fix) - `inst-us-delist`
 3. [ ] - `p1` - Unit semantics are immutable (C3): there is no rename/redefine op at all on this set — the absence of the door is the enforcement; a correction is a new unit + deprecation, and the audit trail ties them via the `GovernedLiveOp` payload - `inst-us-immutable`
 4. [ ] - `p1` - De-listing/deprecation never mutates any frozen snapshot (append-only posture, 01 C5) - `inst-us-snapshots`
 
@@ -150,15 +151,15 @@ currently lacks** (consumer-side addition owed there).
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-flow-plantier`
 
-1. [ ] - `p1` - The taxonomy is a `RecognizedSet` variant with a display label: identity = the **stable tier code**; rename touches the label only (display-only by construction — the code column has no update path); seeded with the neutral value (`standard`, §17.1) - `inst-pt-stable-code`
-2. [ ] - `p1` - Taxonomy ops (add/rename/retire) are governed (`GovernedLiveOp`, two-person) and emit `PlanTierUpdated`; retiring a value is refused while any `published` SKU carries it (`PLAN_TIER_RETIRE_BLOCKED`) — deprecate-then-retire, same shape as units - `inst-pt-governed`
-3. [ ] - `p1` - The SKU-level value validates against the taxonomy at save: unknown fails `PLAN_TIER_UNKNOWN`, a **`deprecated` tier blocks NEW assignment** (`PLAN_TIER_DEPRECATED` — parity with `UNIT_DEPRECATED`; existing published carriers unaffected — added by the slice-11 review H1); it is bucket iii (material-mutable, finance-material per PRD — FinanceReviewer in the approval); presence enforcement at **plan** publish is pricing's, not re-checked here - `inst-pt-assign`
+1. [ ] - `p1` - The taxonomy is a `RecognizedSet` variant with a display label: identity = the **stable tier code**; rename touches the label only (display-only by construction — the code column has no update path); seeded with a neutral value (PRD §17.1 offers `standard`/`none` — §6) - `inst-pt-stable-code`
+2. [ ] - `p1` - Taxonomy ops (add/rename/retire) are governed (`GovernedLiveOp`, elevated approval — the same shape the other sets take) and emit `PlanTierUpdated`; retiring a value is refused while a non-terminal published head (a `published`/`deprecated` SKU) carries it (`PLAN_TIER_RETIRE_BLOCKED`) — deprecate-then-retire, same shape as units - `inst-pt-governed`
+3. [ ] - `p1` - The SKU-level value validates against the taxonomy at save **and at publish**: including a draft whose tier was deprecated before its first publish (treated as a new assignment and rejected); unknown fails `PLAN_TIER_UNKNOWN`, a **`deprecated` tier blocks NEW assignment** (`PLAN_TIER_DEPRECATED` — parity with `UNIT_DEPRECATED`; existing published carriers unaffected — added by the slice-11 review H1); it is bucket iii (material-mutable, finance-material per PRD — FinanceReviewer in the approval); presence enforcement at **plan** publish is pricing's, not re-checked here - `inst-pt-assign`
 
 ### Set accounting codes
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-flow-accounting-codes`
 
-1. [ ] - `p1` - `taxCategory` and `glCode` each validate against their `RecognizedSet` (owner Finance; unknown fails `ACCOUNTING_CODE_UNKNOWN`); the sets follow the same governed lifecycle (elevated add, deprecate-then-remove, reference-guarded) - `inst-ac-recognized`
+1. [ ] - `p1` - `taxCategory` and `glCode` each validate against their `RecognizedSet` (owner Finance; unknown fails `ACCOUNTING_CODE_UNKNOWN`); the sets follow the same governed lifecycle (elevated add; a `deprecated` code blocks new assignment; removal refused while a non-terminal published head carries it — the two refusals' codes are owed, §6) - `inst-ac-recognized`
 2. [ ] - `p1` - Required at publish for `product`/`service` types (via `TypeProfile`, flow 1); both are bucket iii finance-material — ≥ 1 FinanceReviewer in the `N`-governed approval (slice 05 role predicate). **At `N = 0` the predicate is recorded `predicateUnsatisfiable` rather than blocking (P-D-11)**: this very rule is the operand P-D-11's amendment names — `taxCategory` being required at publish for `product`/`service` types is what would otherwise have left the one-person tenant unable to publish their first such SKU **forever**, which is the block that decision exists to remove - `inst-ac-required`
 3. [ ] - `p1` - No computation: the columns are opaque codes to this gear (C4) - `inst-ac-codes-only`
 
@@ -168,8 +169,8 @@ currently lacks** (consumer-side addition owed there).
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-algo-recognized-set`
 
-1. [ ] - `p1` - One generic shape: `(tenant_id, set_kind, member_code, display_label?, state ∈ {active, deprecated}, seeded_by?)`; mutations ride `GovernedLiveOp` (02 §3.1); membership checks are the classification validators' single lookup - `inst-rs-shape`
-2. [ ] - `p1` - Removal operand is uniform: **non-terminal published heads** — a member is removable when no live head references it; frozen versions are self-contained copies, neither blocking removal nor touched by it (M2 fix); the pre-publish lint (P-D-02: informational) surfaces `deprecated`-member usage so operators see debt before refusal teaches them - `inst-rs-removal-operand`
+1. [ ] - `p1` - One generic shape: `(tenant_id, set_kind, member_code, display_label?, state ∈ {active, deprecated}, seeded_by?)`; mutations ride `GovernedLiveOp` (02 §3.1), and every admitted mutation emits the set's event in the same transaction (§4); membership checks are the classification validators' single lookup - `inst-rs-shape`
+2. [ ] - `p1` - Removal operand is uniform: **non-terminal published heads** — a member is removable when no non-terminal published head references it; frozen versions are self-contained copies, neither blocking removal nor touched by it (M2 fix); the pre-publish lint (P-D-02: informational) surfaces `deprecated`-member usage so operators see debt before refusal teaches them - `inst-rs-removal-operand`
 3. [ ] - `p2` - Seeded members (`seeded_by` set) are deprecatable but not removable — the platform baseline survives tenant edits, mirroring slice 02's `WellKnownSeed` rule - `inst-rs-seeded`
 
 ### 3.2 Error taxonomy (slice-owned codes)
@@ -207,13 +208,13 @@ row and open to correction; the requirement is that every code carries one.
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-algo-collector-dependency`
 
-1. [ ] - `p1` - `UsageTypeResolver` is the gear's only synchronous cross-gear call inside a publish pipeline; it runs **once per publish** (not per validator), with a short timeout and no retry inside the transaction — on timeout the publish fails `USAGE_TYPE_UNAVAILABLE` and the operator retries the publish (idempotent by 01 §3.2). **On the scheduled lane there is no operator, so the code is explicitly retryable there too** (item 37 of the review): 04 `inst-ar-failure` makes anything but `STALE_REVISION`/`APPROVAL_REQUIRED` terminal, which burned a pinned approval on a transient collector blip. `USAGE_TYPE_UNAVAILABLE` therefore joins the runner's **`deferred`** set, not its `failed` set — re-evaluated on the runner's own cadence, bounded by the transition's own attempt budget before it lands `failed` - `inst-cd-once`
-2. [ ] - `p2` - The resolved `(gts_id, kind, metadata_fields)` snapshot is frozen into the entity's `products_entity_version` row (owner's call, 2026-08-27; it was stamped into the publish's audit row until **P-D-21** removed audit rows from committed acts, and the publish event is not a home either — **P-D-22**'s vacuum reclaims the outbox row and a broker is not an archive, while §15's deletion-negotiation and pricing's `meter_binding_divergent` remediation both need to ask what the binding resolved to long after the fact) — the record of *what the binding resolved to* at approval time (**P-D-23**) - `inst-cd-stamp`
+1. [ ] - `p1` - `UsageTypeResolver` is the gear's only synchronous cross-gear call inside a publish pipeline; it runs **once per publish per distinct `usageTypeRef`** (not per validator) — the correction lane's publish resolving both the stored ref and the corrected one, with a short timeout and no retry inside the registered-validators phase, which runs before the publish transaction opens (01 `inst-fd-pipeline-phases`) — on timeout the publish fails `USAGE_TYPE_UNAVAILABLE` and the operator retries the publish (idempotent by 01 §3.2). **On the scheduled lane there is no operator, so the code is explicitly retryable there too** (item 37 of the review): 04 `inst-ar-failure` wraps the publish door's `STALE_REVISION`/`APPROVAL_REQUIRED` into `SCHEDULE_STALE_APPROVAL` and makes `failed` terminal, which burned a pinned approval on a transient collector blip. `USAGE_TYPE_UNAVAILABLE` therefore joins the runner's **`deferred`** set, not its `failed` set — re-evaluated on the runner's own cadence, bounded by the transition's own attempt budget before it lands `failed` - `inst-cd-once`
+2. [ ] - `p2` - The resolved `(gts_id, kind, metadata_fields)` snapshot is frozen into the entity's `products_entity_version` row (owner's call, 2026-08-27; it was stamped into the publish's audit row until **P-D-21** removed audit rows from committed acts, and the publish event is not a home either — **P-D-22**'s vacuum reclaims the outbox row and a broker is not an archive, while PRD §15's deletion-negotiation and pricing's `meter_binding_divergent` remediation both need to ask what the binding resolved to long after the fact) — the record of *what the binding resolved to* at publish time (**P-D-23**) - `inst-cd-stamp`
 
 ## 4. Data / Storage (normative shape; DDL in migrations)
 
 - **Columns on `products_sku`** (carried by 01 §4.2, rules owned here): `type`, `sellable`,
-  `plan_tier` (FK by code into the tier set), `tax_category_ref`, `gl_code_ref`,
+  `plan_tier` (a code validated by `inst-pt-assign`, like its three siblings; whether it is a real constraint is §6), `tax_category_ref`, `gl_code_ref` (**both contingent** — `PRD` §15 carries the open question of whether this registry owns them at all, 01 §4.2; §6),
   `metering_unit`, `usage_type_ref` — with a CHECK that `metering_unit` and `usage_type_ref`
   are both null or both non-null (`inst-mt-atomic-pair`'s physical floor).
 - **`products_recognized_set`** — the generic table of §3.1: PK `(tenant_id, set_kind,
@@ -255,3 +256,62 @@ row and open to correction; the requirement is that every code carries one.
   its evidence, but the negotiation with the collector is still open.
 - **`sellable` member missing in pricing's `CatalogSku`** — owed consumer-side; our SDK shape
   carries it from day one so the fix stays additive.
+- **`tax_category_ref` and `gl_code_ref` may not belong to this registry at all.** 01 §4.2 marks both
+  columns **contingent** and `PRD` §15 carries the question — §2.1 says they are owned elsewhere while
+  `fr-accounting-codes` requires the registry to persist and validate them. This slice owns the
+  validators, the two `set_kind` values, `inst-ac-required` and a publish-blocking requirement, all of
+  which the answer may delete. Owner: the PRD owner. *(Two lenses raised it independently.)*
+- **Where does the resolved-binding snapshot live, and is it inside the digest?** `inst-cd-stamp`
+  freezes `(gts_id, kind, metadata_fields)` into `products_entity_version`, and §4 declares no column
+  on that table — nor does 01, whose roster is closed. If it joins the digested content then 01's own
+  rule makes it a `digest_version` bump off `1` and re-pins §5's golden vector; beside the content,
+  like `approval_ref`, it does not. Separately, the resolve happens in the registered-validators phase
+  and the freeze inside the transaction, with no carrier named across that boundary. P-D-21 handed the
+  choice here explicitly. Owner: this slice with 01. *(Two lenses raised it independently.)*
+- **Is `plan_tier` a real database FK?** The column was described as an FK by code into the tier set
+  against a three-column PK `(tenant_id, set_kind, member_code)`; a single code column cannot
+  reference it without `set_kind` supplied as a literal, and a real constraint would refuse a removal
+  that this slice's own operand admits (a `draft` head still referencing it), raising a raw violation
+  instead of `PLAN_TIER_RETIRE_BLOCKED`. This pass struck the FK claim. Owner: this slice with the
+  schema owner. *(Raised by the slice-03 first lens pass.)*
+- **Is a `RecognizedSet` member removal a physical DELETE or a third state?** The state roster is
+  `active|deprecated` with no removed value, the table is append-only with a whitelist admitting only
+  `state` and `display_label`, and the removal op is never said to be a DELETE — so the act is
+  unimplementable as written. Owner: this slice with the schema owner. *(Raised by the slice-03 first lens pass.)*
+- **The two Finance-set refusals have no codes.** This pass gave the code sets both lifecycle arms in
+  their siblings' words; the deprecated-blocks-assignment and removal-blocked refusals still need
+  codes minted, and §3.2's roster carries none. Owner: the error-contract owner. *(Raised by the slice-03 first lens pass.)*
+- **At which publishes does the recognized-and-active unit check run, and what tells a new declaration
+  from a carried-forward one?** The draft clause forces the check at publish over the stored value; the
+  de-listing clause says existing publishes are unaffected. A bucket-iii re-publish re-runs every
+  registered validator fail-closed, so as written, deprecating a unit freezes every SKU declaring it
+  against any further publish. No store holds a new-versus-carried-forward marker. Owner: this slice with 01.
+  *(Raised by the slice-03 first lens pass.)*
+- **Which door writes `products_recognized_set`, at what path and under what grant?** The only stated
+  write mechanism is `GovernedLiveOp`, and this slice names no route; 05 already mints
+  `recognized_set × write` and `plan_tier × write` with no door to attach them to, while 09's bulk lane
+  is currently the only *named* writer of the table. Owner: this slice with 05 — one door for all four
+  `set_kind` values, or one per set. *(Raised by the slice-03 first lens pass.)*
+- **Who writes the seed members for a tenant created after the migration, and are the Finance sets
+  seeded at all?** No writer is named for the unit seeds, the tier seed or the code sets, and the rows
+  are load-bearing: `inst-mt-recognized` refuses every declaration outside the set, so a tenant
+  provisioned after the migration could declare no meter. 02 registers the identical question and
+  names this slice in it. Owner: this slice with 01. *(Raised by the slice-03 first lens pass.)*
+- **Which seed value does the PlanTier taxonomy get?** `PRD` §17.1 offers `standard`/`none` and this
+  slice quoted half of it; the seeded `member_code` is a live contract value — the pin compares the
+  string and pricing's `tier_divergent` guard reads it. Owner: the Product owner named on that row.
+  *(Raised by the slice-03 first lens pass.)*
+- **What is the resolver's timeout, and what is its unavailable-path on the bulk lane and on an
+  unwired deployment?** Two lanes are dispositioned and the bulk lane is not: 09 consumes the batch
+  approval once at the commit flip, so a collector blip mid-commit fails rows under an approval already
+  spent. No number is given for "a short timeout" and §17.1 carries no row; and "not wired" is not
+  separated from "unreachable", which 06 makes explicit for its own inbound client. Owner: this slice
+  with 09 and the §17.1 owner. *(Raised by the slice-03 first lens pass.)*
+- **Which code does an absent `type` carry?** If `type` is required at create, the shape phase raises
+  `VALIDATION` and the run stops there, so `SKU_TYPE_UNKNOWN`'s "absent" arm is unreachable and AC #38's
+  map gets two different readings. No document says whether `type` is in the shape phase's
+  required-at-this-state set. Owner: this slice with the error-contract owner. *(Raised by the slice-03 first lens pass.)*
+- **The override ceremony reads findings from a report no slice builds.** `inst-cl-bundle-override`
+  registers the gate condition whose ceremony 05 performs by acknowledging lint findings **by name**,
+  and 06 §6 records that no instruction, store, RBAC pair, error code or probe in that slice delivers
+  the report. Owner: the design-set owner with 06. *(Raised by the slice-03 first lens pass.)*
