@@ -94,7 +94,7 @@ orphan published content or leak a child outside its parent's scope.
 | C2 | Retirement lead time ≥ 30 days (interim §17.1 policy); all scheduling in UTC | PRD §4.1 |
 | C3 | **v1 = plain retirement + grandfathering only**; EOL-with-`mustMigrateBy` is defined-but-deferred, disabled until the subscriptions-lifecycle AC exists and is referenced by number | PRD `fr-retirement-eol` |
 | C4 | The registry never flips a SKU to `retired` while the `SkuReferenceCount` predicate reads referenced (fresh > 0 or stale/never-received) — D-47 joint contract | PRD `fr-retirement-eol` |
-| C5 | Scope containment: flat region/brand value sets, containment = subset, not-provably-subset ⇒ fail-closed (`SCOPE_NOT_CONTAINED`) — the final form of 01's interim check | P-D-04 |
+| C5 | Scope containment: flat region/brand value sets, containment = subset, not-provably-subset ⇒ fail-closed (`SCOPE_NOT_CONTAINED`) — the final form of 01's interim check. **Containment is over restrictions** (01 **P-D-39**): the empty set means *unrestricted*, so an unrestricted parent contains every child and an unrestricted child is contained only by an unrestricted parent | P-D-04; 01 P-D-39 |
 
 ### 1.7 Naming & Design-Introduced Names
 
@@ -157,7 +157,7 @@ only projects it); the deprecation mark pricing consumes — through AC #82 when
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-flow-parent-child`
 
 1. [ ] - `p1` - A SKU publish under a non-`published` parent fails `PARENT_NOT_PUBLISHED` (the validator registered on the SKU `→ published` edge; the code was named in 01 §3.3 for AC #38 completeness) - `inst-pc-ordering`
-2. [ ] - `p1` - **Containment (C5, final rule)**: a SKU's brand/region scope must be a subset of its parent's — flat value-set subset, evaluated on save and re-evaluated on publish; anything not provably a subset fails `SCOPE_NOT_CONTAINED` - `inst-pc-containment`
+2. [ ] - `p1` - **Containment (C5, final rule)**: a SKU's brand/region scope must be a subset of its parent's — flat value-set subset, evaluated on save and re-evaluated on publish; anything not provably a subset fails `SCOPE_NOT_CONTAINED`; the empty set is *unrestricted*, so an unrestricted parent contains every child and an unrestricted child needs an unrestricted parent (01 **P-D-39**, C5) - `inst-pc-containment`
 3. [ ] - `p1` - A **scope-narrowing Product publish** fails closed (`SCOPE_NARROWING_BLOCKED` — L1 fix) while any **non-terminal** child (`draft`/`published`/`deprecated`) would fall outside the narrowed scope — the validator names the falling-out children; widening is always admissible. **Non-terminal, not "non-`retired`"** (item 17 of the 2026-08-26 review): `discarded` is terminal at the physical layer (01 `inst-fd-terminal`) and is the routine output of the cascade's auto-discard arm, so the old operand let one discarded draft block that Product's narrowing permanently - `inst-pc-narrowing`
 
 ## 3. Processes / Business Logic

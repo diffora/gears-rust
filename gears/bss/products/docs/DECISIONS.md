@@ -47,6 +47,7 @@ joint contracts, cited from here by their pricing numbers, never duplicated.
 - [P-D-36 — The phase unit is withdrawn; a code's unit is its declaring slice](#p-d-36--the-phase-unit-is-withdrawn-a-codes-unit-is-its-declaring-slice)
 - [P-D-37 — One code per audit row, every violation in the answer](#p-d-37--one-code-per-audit-row-every-violation-in-the-answer)
 - [P-D-38 — A refusal stores nothing and releases the key](#p-d-38--a-refusal-stores-nothing-and-releases-the-key)
+- [P-D-39 — The scope columns, and what the empty set means](#p-d-39--the-scope-columns-and-what-the-empty-set-means)
 
 <!-- /toc -->
 
@@ -1470,3 +1471,33 @@ instead.*
 - **Propagated**: `design/01-foundation.md` (§3.2, §4.4, §6), `design/12-consumer-contracts.md`
   (the replay note). Amends **P-D-26** (whose "a refusal answers the key" arm is withdrawn) and
   narrows **P-D-34**'s claim-write boundary.
+
+
+#### P-D-39 — The scope columns, and what the empty set means
+
+- **Date**: 2026-08-28 (owner call)
+- **Context**: `inst-fd-containment-scope` and 04 C5 both read a Product's `region_scope`/
+  `brand_scope`, and **no door wrote them**. §4.1 listed the pair with neither default nor
+  nullability, the create flow never reached them, and the PRD puts brand/region scope on the
+  Product create surface (§4.1's operator flow, "Create/select a Product (name, category,
+  description, brand/region scope)") without pinning requiredness or the empty-set reading. Under
+  the fail-closed wording — "anything not provably a subset" — a Product whose scope was never set
+  refuses **every** child SKU that names one, since nothing non-empty is a subset of the empty set.
+  The literal set mathematics gives exactly the opposite of the business meaning: an unscoped
+  Product sells everywhere, not nowhere.
+
+  | Call | Propagation |
+  |---|---|
+  | **Both columns are `NOT NULL` with the empty set as default, and the empty set means *unrestricted*.** One spelling of absence, one meaning for it — the alternative, a nullable column where `NULL` means unrestricted and `[]` means nothing, gives absence two spellings with different meanings, which this corpus has been bitten by before | 01 §4.1, §4.2 |
+  | **The create door writes them**, as an optional payload value set — `inst-fd-scope-write`. Unlike `brand_id` (P-D-33) they are **not** validated against the caller's claims: they say where the Product may be sold, not who owns it | 01 §2 |
+  | **Containment is defined over restrictions, not over raw sets**: an unrestricted parent contains every child; an unrestricted child is contained only by an unrestricted parent; between two non-empty sets it is ordinary subset. A SKU whose payload omits either set **takes the parent's**, so an inherited scope is contained by construction | 01 §2 `inst-fd-containment-scope`; 04 C5 and `inst-pc-containment` |
+
+- **The argument against, stated**: the subset rule gains two boundary cases instead of staying
+  pure set mathematics, and they have to be carried in two places — 01's interim check and 04's
+  final one. §6's standing risk already names that pair as a thing that must not silently diverge,
+  and both sides are amended in the same commit for exactly that reason.
+- **Not changed**: both columns stay **bucket-iii in both directions**, so widening and narrowing
+  alike are material and meet the governance gate; `PRD` §545's "a SKU's brand/region scope MUST be
+  contained within its parent's" holds unchanged under the restriction reading.
+- **Propagated**: `design/01-foundation.md` (§2 create flow and containment row, §4.1, §4.2, §6),
+  `design/04-lifecycle.md` (C5, `inst-pc-containment`).

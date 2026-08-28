@@ -92,7 +92,7 @@ acknowledged, and rejections that always carry an audited reason. Per P-D-02, ev
   (four read paths the guard needed), P-D-29 (what a replay, an envelope and a digest carry),
   P-D-30 (gate host, authorization, whose validator), P-D-31 (the four routed outward, decided
   here), P-D-32 (the second lens wave's six calls), P-D-33 (eight calls from weeding the open items),
-  P-D-34 (the remaining items, decided from the set), P-D-35 (the five the set already forced), P-D-36 (the phase unit withdrawn), P-D-37 (one code per row, all violations in the answer), P-D-38 (a refusal stores nothing)
+  P-D-34 (the remaining items, decided from the set), P-D-35 (the five the set already forced), P-D-36 (the phase unit withdrawn), P-D-37 (one code per row, all violations in the answer), P-D-38 (a refusal stores nothing), P-D-39 (scope columns and the empty set)
 - Pricing `design/01-foundation.md` — the pattern donor (registered validators, append-only
   triggers with column whitelists, draft/published partial unique indexes, pending refs — **not
   the outbox**, which P-D-22 moved to `toolkit_db::outbox` after measuring that pricing runs a
@@ -219,7 +219,8 @@ refs through it") and this slice never carried it, while `created_by`, the froze
 finding and rides `VALIDATION`, owner's call 2026-08-27: the request parsed, so the bare 400 this
 gear reserves for a malformed request does not apply, and this had been the file's only rule-level
 status with no code); optional `productCode` reserves under the same rules as `skuCode` - `inst-fd-mint-id`
-5. [ ] - `p1` - Persist as `draft`, `published_version = 0`, `internal_revision = 1`; write the `ProductCreated` outbox row in the same transaction (**P-D-21**: the event is the
+5. [ ] - `p1` - `region_scope`/`brand_scope` are **optional payload value sets** written by this door, **absent meaning the empty set and the empty set meaning unrestricted** (**P-D-39**; PRD §4.1's operator flow already puts brand/region scope on this surface, and nothing wrote it). Unlike `brand_id` they are **not** validated against the caller's claims: they say where the Product may be sold, not who owns it - `inst-fd-scope-write`
+6. [ ] - `p1` - Persist as `draft`, `published_version = 0`, `internal_revision = 1`; write the `ProductCreated` outbox row in the same transaction (**P-D-21**: the event is the
 success-path audit record; no audit row is written on a committed act) - `inst-fd-create-txn`
 
 ### Define a SKU
@@ -245,8 +246,13 @@ success-path audit record; no audit row is written on a committed act) - `inst-f
      indefinitely - `inst-fd-containment-retire-intent`
    - [ ] - `p1` - **The SKU's brand/region scope must pass the interim containment check**: scope
      sets are flat value lists, containment = subset, anything not provably a subset fails
-     `SCOPE_NOT_CONTAINED` (conservative until slice 04 pins the final
-     rule) - `inst-fd-containment-scope`
+     `SCOPE_NOT_CONTAINED` (conservative until slice 04 pins the final rule). **Containment is
+     defined over restrictions, not over raw sets** (**P-D-39**), which the empty-set reading
+     forces: an **unrestricted parent contains every child**, and an **unrestricted child is
+     contained only by an unrestricted parent** — a child that sells everywhere cannot sit under a
+     parent that sells in three regions. Between two non-empty sets it is ordinary subset. **A SKU
+     whose payload omits either set takes the parent's**, so an inherited scope is contained by
+     construction - `inst-fd-containment-scope`
 3. [ ] - `p1` - Reserve `skuCode` **atomically at create**: the insert itself is the reservation — the `ReservationIndex` admits exactly one non-`discarded` holder per `(tenant_id, sku_code)`; the loser of a concurrent race fails `DUPLICATE_CODE` with an audited reason (PRD AC #42) — **one code covers both reservations**, `skuCode` and `productCode` alike (owner's call, 2026-08-27, P-D-25: `productCode` reserves "under the same rules", so one rule carries one code; the SKU-named form it replaces was declared before `productCode` had an index) - `inst-fd-reserve-code`
 4. [ ] - `p1` - Mint `skuId`; persist as `draft` with the slice-03-owned columns present but unjudged (typing/classification rules run when slice 03 registers them); emits the `SkuCreated` outbox row in the same transaction - `(cont. inst-fd-create-txn)`
 
@@ -691,7 +697,10 @@ without distinguishing which index fired) - `inst-fd-code-race`
 table with the exactly-one-primary partial index — a second inline representation here would
 be a divergence channel with no authority rule; the frozen version content carries the
 assignment set as a copy at publish, like every other content class) · `region_scope` /
-`brand_scope` · `created_by` (pseudonymous ref) · `cloned_from` (create-only, immutable —
+`brand_scope` (flat value sets, **NOT NULL, default the empty set**, where **the empty set means
+*unrestricted*** rather than *nothing* — **P-D-39**: the column then has one spelling of absence
+and one meaning for it, and a Product created without naming its markets sells everywhere rather
+than refusing every child that names one) · `created_by` (pseudonymous ref) · `cloned_from` (create-only, immutable —
 slice 11) · timestamps.
 
 Indexes/guards: **partial UNIQUE `(tenant_id, brand_id, name_normalized) WHERE lifecycle_state
@@ -738,7 +747,7 @@ Unicode NFKC → full casefold → trim + collapse internal whitespace to single
 open question of whether this registry owns them at all, §2.1 saying they are owned elsewhere
 while `fr-accounting-codes` requires the registry to persist and validate them) · `metering_unit` · `usage_type_ref` ·
 `composition_pending` (bool, **NOT NULL, default `false`** — **P-D-35**: the create flow writes it nowhere and the publish door on a `bundle` is its only raiser, so the default is the unraised state; slice 06 semantics) · `replaced_by_sku_id` (slice 04) ·
-`internal_revision` · `published_version` · `region_scope`/`brand_scope` (⊆ parent, §2 flow) ·
+`internal_revision` · `published_version` · `region_scope`/`brand_scope` (same shape and default as §4.1's, **contained in the parent's** per §2's flow; **the create door copies the parent's when the payload omits them** — P-D-39) ·
 `created_by` · `cloned_from` (nullable; written only in the creating statement and immutable from then on —
 stricter than bucket-i, which bites only after first publish; a later write fails
 `ILLEGAL_FIELD_MUTATION`; slice 11) · timestamps.
@@ -1096,7 +1105,7 @@ and the ordering key.
   (frame), #42.
 
 **Risks & open items**: eleven review passes (the numbering restarted once, at the sixth) and
-sixteen owner rounds (P-D-23 through P-D-38) have run over this slice. What survives is one standing **risk**, four open questions, and a set of
+seventeen owner rounds (P-D-23 through P-D-39) have run over this slice. What survives is one standing **risk**, three open questions, and a set of
 pointers to items filed with owners outside this document.
 
 **Risk** — a hazard rather than a question:
@@ -1153,7 +1162,7 @@ pointers to items filed with owners outside this document.
   `composition_pending` no-re-raise clause may rest on **P-D-14**, which is still **FLAGGED** for
   its owner and whose propagation field does not name this document.
 
-**Open here** — four items. **P-D-33** (eight calls) and **P-D-34** (nine calls plus five of the
+**Open here** — three items. **P-D-33** (eight calls) and **P-D-34** (nine calls plus five of the
 idempotency store's seven operands) closed what the passes before them had raised, each cited in
 the rule it changed. The two lens passes since found that the rules those rounds wrote carry seams
 of their own; everything below is this slice's to settle.
@@ -1185,11 +1194,6 @@ of their own; everything below is this slice's to settle.
   clause imports P-D-28's own test — an admitted class needs a named admitting door — while §2
   names one only for bucket-i. With 03, whose `inst-mt-bucket` asserts the draft plane, and 07,
   whose ceremony the published half is.
-- **Nothing writes a Product's `region_scope`/`brand_scope`, which the containment check reads.**
-  The create flow enumerates what it validates and persists and never reaches them; §4.1 lists both
-  with neither default nor nullability; the PRD puts scope on the create surface without pinning
-  requiredness or the empty-set reading. Under the fail-closed wording a Product whose scope was
-  never set refuses every child SKU that carries one. With 04, which owns the final rule.
 - **`products_entity_version` admits no DELETE, and 10's retention GC must delete its rows.** The
   table admits no UPDATE/DELETE ever, while 10 orders entity-version deletion after every
   referencing manifest. P-D-34's repair one table over does not transfer: a version row's
