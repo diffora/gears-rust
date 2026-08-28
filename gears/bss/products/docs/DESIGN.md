@@ -395,7 +395,11 @@ Traces-to while both sites here said 6.12 + §9 only — 2026-08-26 branch revie
 6.12 → 12; 6.13 → resident per door (enumerated per slice). Every slice carries a "Traces to"
 list; slice 12 owns the completeness check that every `p1`/`p2` **requirement-bearing PRD id** —
 `fr-*`, `nfr-*`, and §9's `interface-*`/`contract-*`, the universe M5 widened it to, plus
-`usecase-*` — is claimed by exactly one slice.
+`usecase-*` — is claimed by exactly one **owner per clause**: one slice for a whole
+requirement, or one slice per scope-qualified clause where a requirement is deliberately split
+(fourteen such pairs today). Slice 12 §3.2 states the qualifier grammar; the older "exactly one
+**slice**" reading is what `spec-check`'s `P2/fr-multiply-claimed` still implements, which is why
+it reports all fourteen.
 
 ## 6. Status
 
