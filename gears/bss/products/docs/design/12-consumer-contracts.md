@@ -314,3 +314,12 @@ slice is that suite's specification.
   already excluded by the opening clause ("that a registry door can refuse"); the third is
   excluded for a reason that clause does not express. The "exactly three" assertion is checkable
   only once one filter defines the universe. Owner: the error-contract owner.
+- **Does the id-declaration rule admit gear-qualified donor ids?** Lint 6 says every `inst-*` id is
+  declared exactly once "across the design set", and says nothing about the donor gear's ids. This
+  set cites them routinely — `inst-ap-scope`, `inst-cmp-tier-drift`, `inst-cmp-usagetype` are all
+  pricing's, cited here and in 05 with a `pricing` qualifier or by sentence context. `spec-check`'s
+  `P3/inst-dangling` reads all three as undeclared, which is **three of the gate's seven live
+  findings**. The parallel is exact with the AC-citation rule this slice already states ("a citation
+  qualified by its gear resolves against that gear or is out of scope") — but that grammar is
+  scoped to `AC #N`, and extending it to `inst-*` is this slice's call, not the tool's. Owner: this
+  slice. *(Found by the slice-05 first lens pass.)*

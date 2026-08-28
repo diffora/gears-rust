@@ -263,3 +263,8 @@ clause — M5); the §5.1 p2 rows "Advanced search, filter & faceting" and the r
   active-locale set per tenant needs a config home — implementation note.
 - Search-engine choice (LIKE/FTS vs external) is deliberately behind the projection contract;
   the NFR #2 load test decides, not this document.
+- **The "422s are architectural" note has no subject in this slice.** §3's problem-response block
+  declares no 422 at all, yet the slice carries the shared paragraph explaining that architectural
+  422s reach the wire as a 400 — which then reads as covering the codes the block *does* declare.
+  Measured across the set: this slice and 05 were the only two carrying the note with no 422; 05's
+  was struck. Owner: this slice. *(Found by the slice-05 first lens pass.)*

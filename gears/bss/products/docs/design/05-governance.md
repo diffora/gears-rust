@@ -53,10 +53,10 @@ roles counting as two approvers (**principals, not roles**).
 | Actor | Role in this slice |
 |-------|--------------------|
 | `cpt-cf-bss-products-actor-product-manager` | Submits changes; never approves own work |
-| `cpt-cf-bss-products-actor-catalog-admin` | Approver; break-glass initiator (with second approver or post-hoc review) |
+| `cpt-cf-bss-products-actor-catalog-admin` | Approver |
 | `cpt-cf-bss-products-actor-finance-reviewer` | The mandatory second lens on finance-material fields; approval-queue consumer |
 | `cpt-cf-bss-products-actor-auditor` | Reads the immutable approval/audit/break-glass trails |
-| `cpt-cf-bss-products-actor-platform-owner` | Break-glass subject: cross-tenant read/audit-export only (v1) |
+| `cpt-cf-bss-products-actor-platform-owner` | Break-glass **initiator and acting principal** — two distinct platform principals, or post-hoc review (`inst-bg-open`); cross-tenant read/audit-export only (v1) |
 
 ### 1.4 References
 
@@ -69,8 +69,9 @@ roles counting as two approvers (**principals, not roles**).
   `quorumReduced` on the reducible ceremonies)
 - Pricing `design/05-governance.md` — the pattern donor (G2 principal distinctness, approver
   scope, policy-mutation-is-material); divergence: this gear's quorum **defaults** to `N = 2`
-  approvers against pricing's structural submitter + one — one configuration value wide, not a
-  different mechanism (P-D-11)
+  approvers against pricing's structural submitter + one — pricing's count is **structural** rather than
+  configured — two columns under `chk_pricing_approval_distinct_principals`, plus an approver-less
+  `AutoPublishable` path — so the two gears differ by default **and** by mechanism (P-D-11)
 - [`./01-foundation.md`](./01-foundation.md) `inst-fd-governance-gate`,
   `inst-fd-approval-hook`; [`./02-taxonomy-attributes.md`](./02-taxonomy-attributes.md)
   `GovernedLiveOp`
@@ -99,18 +100,18 @@ roles counting as two approvers (**principals, not roles**).
 |---|-----------|--------|
 | C1 | Quorum for a material change: the tenant's configured **`N` distinct approvers, each distinct from the author**, each holding CatalogAdmin or FinanceReviewer — `N` a typed-policy value, **default 2, floor 0** (P-D-11). Not configurable: finance-material fields (`taxCategory`, `glCode`, `PlanTier`) require ≥ 1 FinanceReviewer **among** the approvers (the predicate governs who, not how many) and the record states the predicate as **unsatisfiable at `N = 0` only** — where there are no approvers to hold the role, so the descriptor stays satisfiable rather than blocking on a role no principal could hold. **At every `N >= 1` the predicate binds and a tenant that has designated no FinanceReviewer simply has an unapprovable change, which is correct** (`inst-gv-finance-predicate` is the normative arm; this row previously read "when the configured `N` cannot carry it", which an implementer could read as *the available approvers cannot satisfy it* and build into a finance-review fail-open at `N = 2` — Blocking 2 of the review); self-approval refused at every `N ≥ 1`; `N` reachable only by explicit configuration, absent ⇒ default; initial `N` from tenant provisioning, later changes material under the then-current quorum (C4) | PRD `fr-materiality-gated-publish`; P-D-11 |
 | C2 | Distinctness is by **principal**, never by role: one human holding both roles is one approver | pricing G2, adopted |
-| C3 | An approval pins the internal revision AND stores the submitted content snapshot; **any frozen-content write — save OR lifecycle transition — bumps `internal_revision` and fires the invalidation hook**, **except `draft→published`, which the publish door owns: it bumps once and fires no hook** (**P-D-26** — the same transaction consumes the approval, and a hook firing against the record the act is consuming has no defined ordering) (M-2 fix: head-at-revision-N is therefore byte-identical to the snapshot at revision N; transition-written columns cannot drift under a pinned approval), superseding open approvals and re-queuing with the diff re-presented | PRD `fr-materiality-gated-publish` |
+| C3 | An approval pins the internal revision AND stores the submitted content snapshot; **any frozen-content write — save OR lifecycle transition — bumps `internal_revision` and fires the invalidation hook**, **except any transition that consumes an approval in the same transaction — `draft→published`, which the publish door owns, and every gated edge P-D-30 put the gate phase on — which bumps once and fires no hook** (**P-D-26**, extended by **P-D-34** — the same transaction consumes the approval, and a hook firing against the record the act is consuming has no defined ordering) (M-2 fix: head-at-revision-N is therefore byte-identical to the snapshot at revision N; transition-written columns cannot drift under a pinned approval), superseding open approvals and re-queuing with the diff re-presented | PRD `fr-materiality-gated-publish` |
 | C4 | Materiality is a typed, configurable policy with the §17.1 interim default enforceable at launch; **the policy's own mutation is material** (the two-person rule's foundation must not be single-person-editable — the pricing D-10 lesson, adopted) | PRD §17.1 |
-| C5 | Break-glass (§6.8) is **read + audit-export only** in v1; any write under elevation is refused, full stop. **Canonical boundary (M-3):** slice 07's flag-gated correction write does **not** run under a `BreakGlassSession` — a §6.8 session never authorizes a write; 07 reuses only the elevation *ceremony shape* (two-person + mandatory reason + recording) as its own distinct mechanism | PRD `fr-breakglass-action-scope` |
+| C5 | Break-glass (§6.8) is **read + audit-export only** in v1; any write under elevation is refused, full stop. **Canonical boundary (M-3):** slice 07's flag-gated correction write does **not** run under a `BreakGlassSession` — a §6.8 session never authorizes a write; 07 reuses only the elevation *ceremony shape* (the `N`-governed quorum with `quorumReduced` recorded + mandatory reason + recording — P-D-13's sixth site) as its own distinct mechanism | PRD `fr-breakglass-action-scope` |
 | C6 | Deny-by-default: no grant, no access; grants are GTS-typed resource×action pairs checked at every door | PRD `fr-tenant-isolation-breakglass` |
-| C7 | Audit **sealing** is a platform capability, not this gear's: pricing's G4/D-14 in-gear hash chain is deliberately **not** adopted. v1 writes the complete append-only trail (01 §4.4) over a **reserved, unwritten** sealing seam; the requirements the platform capability must satisfy are P-D-08 S1–S9, carried as a PRD §15 open owned by Architecture. Until activation, audit immutability is the trigger whitelist — plus `REVOKE` on Postgres, which SQLite has no equivalent for (01 **P-D-35**) — and nothing cryptographic — completeness ships, tamper-evidence does not | P-D-08 |
+| C7 | Audit **sealing** is a platform capability, not this gear's: pricing's G4/D-14 in-gear hash chain is deliberately **not** adopted. v1 writes the append-only trail 01 §4.4 scopes to refusals, reads under elevation, and committed acts declared to emit no broker event (**P-D-21**) — the event stream being the record for everything that succeeds over a **reserved, unwritten** sealing seam; the requirements the platform capability must satisfy are P-D-08 S1–S9, carried as a PRD §15 open owned by Architecture. Until activation, audit immutability is the trigger whitelist — plus `REVOKE` on Postgres, which SQLite has no equivalent for (01 **P-D-35**) — and nothing cryptographic — completeness ships, tamper-evidence does not | P-D-08 |
 | C8 | Role predicates **narrow within** the C1 base set; they never replace it, and v1 registers **no** extension point that could (P-D-10). `inst-gv-finance-predicate` is the only one and it is additive — C1 already demands CatalogAdmin-or-FinanceReviewer, the predicate demands that one of the two *be* a FinanceReviewer. A predicate that replaced the base set would be a bypass surface: register a kind whose predicate admits anyone and a material change passes on one signature. Any future replacing predicate therefore owes two guards — the numeric quorum still binds, and registering or changing a kind's predicate is itself material (as C4 already makes the materiality policy's own mutation) | P-D-10 |
 
 ### 1.7 Naming & Design-Introduced Names
 
 | Name | Meaning |
 |------|---------|
-| `MaterialityEvaluator` | Decides material / non-material for a change set: bucket-iii field touches (registered by owning slices), the PRD-enumerated ops, or affected-entity count ≥ the configured trigger |
+| `MaterialityEvaluator` | Decides material / non-material for a change set: bucket-iii field touches (registered by owning slices), the PRD-enumerated ops, affected-entity count ≥ the configured trigger, or a `GovernedLiveOp` kind registered material by its owning slice (§3.1(d)) |
 | `ApprovalRecord` | The stored unit: subject ref + pinned revision + **stored content snapshot** + rendered diff basis + quorum descriptor + state. The descriptor also carries **`quorumReduced`** when the effective count is below the retained-name default of 2 (P-D-13) — the count's counterpart to `predicateUnsatisfiable`, so a one-person act is never read off an audit trail that says "two-person". The descriptor carries `required` = the **effective** count — `N` for a material change, `min(N, 1)` for a non-material one (`inst-gv-materiality`), which is also what `inst-gv-queue` exposes — and, when a mandatory predicate cannot be carried at that count (finance-material at `N = 0`), an explicit **`predicateUnsatisfiable`** marker — the control's absence is a stored fact, not something a later reader infers from a config value (the P-D-08 `seal_state` instinct, same reason) |
 | `QuorumEvaluator` | Counts distinct approving principals against the descriptor (role predicates included) |
 | `OverrideCeremony` | The P-D-02 variant: approvers explicitly acknowledge named lint findings; the acknowledgment is part of the record. At `N = 0` the **author** performs it (P-D-13) — informedness, not head-count, is what the ceremony buys, so it is never skipped for want of an approver |
@@ -130,7 +131,7 @@ inbox merges with pricing's.
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-flow-submit`
 
-1. [ ] - `p1` - Submission runs `MaterialityEvaluator` over the change set (head-row pending edits vs last published version; for a `GovernedLiveOp`, the op payload): **material** ⇒ quorum descriptor per C1 (`required = N`); **non-material** ⇒ `min(N, 1)` — so a tenant at `N = 0` publishes approver-less by policy and the record says exactly that, which is the point of P-D-11 and replaces the earlier "nothing publishes approver-less" interim; first publish and every lifecycle transition **to `published`/`deprecated`/`retired`** are material at their **initiating human act** — the mechanical stages of an approved scheduled act (the `effectiveAt` flip, cascade legs) do not re-enter the gate (H-2, see `inst-gv-one-shot`); a bucket-iv-only re-publish is the non-material case (a re-publish is not a transition, 01's head-row model), and `draft→discarded` is ungated beyond authz (M-1) - `inst-gv-materiality`
+1. [ ] - `p1` - Submission runs `MaterialityEvaluator` over the change set (head-row pending edits vs last published version; for a `GovernedLiveOp`, the op payload): **material** ⇒ quorum descriptor per C1 (`required = N`); **non-material** ⇒ `min(N, 1)` — so a tenant at `N = 0` publishes approver-less by policy and the record says exactly that, which is the point of P-D-11 and replaces the earlier "nothing publishes approver-less" interim; first publish and every lifecycle transition **to `published`/`deprecated`/`retired`** are material at their **initiating human act** — the mechanical stages of an approved scheduled act (the `effectiveAt` flip, cascade legs) re-enter the gate only in 01's `PreAuthorized(approvalId)` mode, consuming nothing further (H-2, see `inst-gv-one-shot`); a bucket-iv-only re-publish is the non-material case (a re-publish is not a transition, 01's head-row model), and `draft→discarded` is ungated beyond authz (M-1) - `inst-gv-materiality`
 2. [ ] - `p1` - The `ApprovalRecord` **stores the submitted content snapshot** at submission time — the diff shown to approvers is rendered from the STORED snapshot against the last published version, never re-derived from the live head (the pricing pinned-content defect, designed out) - `inst-gv-stored-snapshot`
 3. [ ] - `p1` - Finance-material field touches (`taxCategory`, `glCode`, `PlanTier` — the bucket registry marks them) set the FinanceReviewer predicate on the quorum descriptor **when `N ≥ 1`**. At **`N = 0`** the predicate has no subject — there are no approvers to hold the role — so it is **not set**; instead the descriptor records `predicateUnsatisfiable = finance_reviewer` and stays satisfiable. Without this arm the descriptor would demand a role no principal could hold and `inst-fd-governance-gate` would raise `APPROVAL_REQUIRED` forever, re-blocking exactly the tenant P-D-11 unblocked: `taxCategory` is required at publish for product/service types, so a one-person tenant's first such SKU would be unpublishable (the hole CodeRabbit found in the P-D-11 wave). `N ≥ 1` is unaffected — a lone approver on a finance-material change must be a FinanceReviewer, and a tenant that has designated none simply has an unapprovable change, which is correct - `inst-gv-finance-predicate`
 4. [ ] - `p1` - A frozen-content write on the subject after submission (save or transition — C3) fires 01's `inst-fd-approval-hook`: the record flips `superseded`, and **re-submission is an explicit human act** (the submitter or any write-granted principal; never automatic — auto-resubmit would pin content nobody re-read, L-3) with the new diff re-presented — approvers never decide on stale content - `inst-gv-supersede`
@@ -139,17 +140,26 @@ inbox merges with pricing's.
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-flow-decide`
 
-1. [ ] - `p1` - `approval × decide` grant required; the author's own decision is refused `SELF_APPROVAL_FORBIDDEN` — by principal, not role (C2) - `inst-gv-self`
-2. [ ] - `p1` - The approver's brand/region claims MUST cover the subject's scope; an out-of-scope decision is refused `APPROVER_SCOPE_EXCEEDED` and audited like any scope violation (the pricing `inst-ap-scope` analogue) - `inst-gv-scope`
-3. [ ] - `p1` - Each decision appends a `products_approval_decision` row (approver principal, verdict, mandatory reason on reject, instant); `QuorumEvaluator` answers "satisfied" only when the descriptor is met by **distinct principals** with the required roles — a predicate recorded `predicateUnsatisfiable` (no subject at the configured `N`) counts as met **for the evaluator** while remaining visible as unmet-by-policy in the record and the inbox envelope; that is the only way it may be discharged, and it is never how a predicate is discharged at `N ≥ 1` - `inst-gv-quorum`
-4. [ ] - `p1` - A rejection finalizes the record `rejected` with the reason; the subject stays as it was (AC #26 reading per 01: a first-publish draft stays draft, a published head keeps its pending edits unpublished); `ApprovalDecided` emitted either way - `inst-gv-reject`
+1. [ ] - `p1` - `approval × decide` grant required; at every `N ≥ 1` (C1) the author's own decision is refused `SELF_APPROVAL_FORBIDDEN` — by principal, not role (C2) - `inst-gv-self`
+2. [ ] - `p1` - The approver's brand/region claims MUST cover the subject's scope, read with 01 **P-D-39**'s two
+  boundaries (the scope columns are `NOT NULL` and the **empty set means unrestricted**): an
+  unrestricted claim set covers every subject, an unrestricted subject scope is covered only by an
+  unrestricted claim set, and between two non-empty sets it is ordinary subset; an out-of-scope decision is refused `APPROVER_SCOPE_EXCEEDED` and audited like any scope violation (the pricing `inst-ap-scope` analogue) - `inst-gv-scope`
+3. [ ] - `p1` - Each decision appends a `products_approval_decision` row (approver principal, verdict, mandatory reason on reject, instant); a decision arriving on a record already `superseded` is refused **`APPROVAL_SUPERSEDED`** (§3.3); `QuorumEvaluator` answers "satisfied" only when the descriptor is met by **distinct principals** with the required roles — a predicate recorded `predicateUnsatisfiable` (no subject at the configured `N`) counts as met **for the evaluator** while remaining visible as unmet-by-policy in the record and the inbox envelope; that is the only way it may be discharged, and it is never how a predicate is discharged at `N ≥ 1` - `inst-gv-quorum`
+4. [ ] - `p1` - A rejection finalizes the record `rejected` with the reason; the subject stays as it was (01 §6 files AC #26's literal "returns the entity to `draft`" as an open question against the head-row model — `PRD` §15, unanswered; this slice's reading is that a first-publish draft stays draft and a published head keeps its pending edits unpublished); `ApprovalDecided` emitted either way - `inst-gv-reject`
 5. [ ] - `p1` - **`OverrideCeremony`** (P-D-02): when the subject carries named override conditions (an uncomposed `bundle` at its entity publish — 03 `inst-cl-bundle-override`), each approver explicitly acknowledges the lint findings by name; the acknowledgments are stored on the record and in audit — an informed override, never a blind one. **At `N = 0` the author performs the acknowledgment** and the record carries `quorumReduced` (P-D-13): the ceremony's product is an informed decision, so it survives an empty quorum instead of vanishing with it. The record is also the ceremony's only home — a lane that publishes an override subject without one is a design defect, not an exemption (see 09 `inst-bk-override`) - `inst-gv-override`
 
 ### Publish / apply against the gate
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-flow-gate`
 
-1. [ ] - `p1` - **The Foundation's gate phase runs on any gated act, not on publish alone** (**P-D-30**) — which is what hosts this slice's gate on 04's un-deprecation edge: a transition door consumes the `satisfied` record exactly as the publish door does, and `inst-gv-one-shot`'s same-transaction flip binds identically there. Separately, **authorization is a pre-pipeline gate rather than a phase** (same call), run before 01's pipeline opens so a denied caller neither consumes an idempotency key nor writes a claim row; the denial's code and status are this slice's to declare, and remain open below. The Foundation gate (01 `inst-fd-governance-gate`) asks this slice: a satisfied, non-superseded `ApprovalRecord` whose pinned revision equals the door's expected revision ⇒ yes; anything else ⇒ `APPROVAL_REQUIRED` (or `STALE_REVISION` upstream). The gate never re-evaluates materiality at publish — the verdict was fixed at submission (a policy change between submit and publish neither re-judges nor voids a pending approval; the pricing evaluated-once rule, adopted) - `inst-gv-gate`
+1. [ ] - `p1` - **The Foundation's gate phase runs on any gated act, not on publish alone** (**P-D-30**) — which is what hosts this slice's gate on 04's un-deprecation edge: a transition door consumes the `satisfied` record exactly as the publish door does, and `inst-gv-one-shot`'s same-transaction flip binds identically there. Separately, **authorization is a pre-pipeline gate rather than a phase** (same call), run before 01's pipeline opens so a denied caller neither consumes an idempotency key nor writes a claim row; the denial's code and status are this slice's to declare, and remain open below. The Foundation gate (01 `inst-fd-governance-gate`) asks this slice: an `ApprovalRecord` in state `satisfied` (`superseded` being a value of the same column, §4) whose pinned revision equals the door's expected revision ⇒ yes; a stage entering in 01's `PreAuthorized(approvalId)` mode naming a **`consumed`** record that
+  authorized this subject at this pinned revision ⇒ yes, consuming nothing further (`inst-gv-one-shot`);
+  a record whose decisions numerically meet `required` while the role predicate is unmet ⇒
+  **`APPROVER_ROLE_REQUIRED`** (§3.3); anything else ⇒ `APPROVAL_REQUIRED` (or `STALE_REVISION`
+  upstream). On **yes** the verdict returns the authorizing record's id **and whether it carried the
+  uncomposed-bundle override acknowledgment** — 01 `inst-fd-gate-verdict`'s `composition_pending`
+  operand. The gate never re-evaluates materiality at publish — the verdict was fixed at submission (a policy change between submit and publish neither re-judges nor voids a pending approval; the pricing evaluated-once rule, adopted) - `inst-gv-gate`
 2. [ ] - `p1` - `GovernedLiveOp` apply asks the same question with the op envelope as subject; the expected-target-state check (`STALE_LIVE_OP`) is 02's, the quorum answer is this slice's - `inst-gv-liveop-gate`
 3. [ ] - `p1` - **System-signal subjects**: a publish whose sole content is a system-owned flag cleared by an inbound governed signal (today: 06's `compositionPending` clearing) uses subject kind `system_signal` (**P-D-14**) — the `ApprovalRecord` is auto-satisfied with the **signal reference as the authorizing principal**, audited like any decision; no human approver, and no exemption from this gate. The head must be **clean**: a `system_signal` publish carries the flag and nothing else, and is not carried out rather than carrying unpublished bucket-iii/iv edits out under a record with no human approver. *Whether that means a refusal or a deferral is an open owner question registered with P-D-14: this row states the guarantee, slice 06 `inst-cc-clear` says "deferred, never refused", and P-D-14 said refused.* `N` has no standing over it — the principal is not a tenant principal — so `N = 0` neither weakens nor strengthens it. Consuming a satisfied approval is one-shot: the publish/apply marks it `consumed` **in the same transaction as the authorized act** — a failed attempt consumes nothing (M-5: the `ActivationRunner`'s replay after a crash rides the Foundation idempotency store keyed by transition id, so a post-commit crash replays the stored outcome instead of re-consuming). One approval never authorizes two **human acts** — but a **scheduled act is one composite act** (H-2 fix, the P-D-02 extension): the retirement approval authorizes initiation *and* the `effectiveAt` flip, a cascade approval authorizes the whole `CascadePlan` including its per-child legs, and a **bulk batch is one composite act** (09: consumed by the `approved → committing` flip, per-row publishes pinned to the ledger); the approval is consumed at the initiation transaction, and the later mechanical stages execute the already-approved act without re-entering this gate. **Mechanically that is 01's `PreAuthorized(approvalId)` door mode** (Blocking 9 fix): the stage names the consumed record, the gate verifies it authorized this subject at this pinned revision instead of demanding a `satisfied` one, and consumes nothing further. Stating only "without re-entering this gate" left slice 04's "drives the ordinary Foundation publish door" reading a `consumed` record and failing every scheduled publish terminally. The runner still re-validates fail-closed — staleness supersedes, it never re-approves - `inst-gv-one-shot`
 
@@ -157,7 +167,7 @@ inbox merges with pricing's.
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-flow-queue`
 
-1. [ ] - `p1` - `GET /bss-products/v1/approvals?state=pending` returns the common inbox envelope — `{subjectRef, subjectKind, state, submitter, submittedAt, quorum: {required, satisfied, financeRequired, predicateUnsatisfiable, quorumReduced, configuredQuorum}}` (`required` is **the `ApprovalRecord`'s effective count** — `N` for a material change, `min(N, 1)` for a non-material one per `inst-gv-materiality` — never the raw configured `N`, so a card cannot show "2 required" for a record that closes on one; `configuredQuorum` carries the raw `N` when a surface needs it. Heterogeneous quorums therefore render per card and parity with pricing's queue is a configuration rather than a schema question — P-D-11) + the per-kind diff payload — deliberately merge-compatible with pricing's queue so the studio renders one inbox with per-kind cards (the PRD-era UI requirement recorded at design time) - `inst-gv-queue`
+1. [ ] - `p1` - `GET /bss-products/v1/approvals?state=pending` (`approval × read`) → **200** returns the common inbox envelope — `{subjectRef, subjectKind, state, submitter, submittedAt, quorum: {required, satisfied, financeRequired, predicateUnsatisfiable, quorumReduced, configuredQuorum}}` (`required` is **the `ApprovalRecord`'s effective count** — `N` for a material change, `min(N, 1)` for a non-material one per `inst-gv-materiality` — never the raw configured `N`, so a card cannot show "2 required" for a record that closes on one; `configuredQuorum` carries the raw `N` when a surface needs it. Heterogeneous quorums therefore render per card and parity with pricing's queue is a configuration rather than a schema question — P-D-11) + the per-kind diff payload — deliberately merge-compatible with pricing's queue so the studio renders one inbox with per-kind cards (the PRD-era UI requirement recorded at design time) - `inst-gv-queue`
 
 ### Break-glass elevation (read/audit-export only)
 
@@ -173,7 +183,7 @@ inbox merges with pricing's.
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-algo-materiality`
 
-1. [ ] - `p1` - Inputs: (a) the **`BucketRegistry`** — a **Foundation** artifact named in 01 §1.7 beside `RegisteredValidator` (**P-D-28**: a slice registers its columns' bucket tags exactly as it registers validators, code not config; the Foundation's head-door guard and this slice's materiality judgement read the same registry) — bucket-iii fields registered by their slices (03: `PlanTier`, `taxCategory`, `glCode`, `sellable`; 01: frame) make any touch material; the FR-enumerated **metering-unit** field is bucket ii — it reaches publish only through the slice-07 correction door (itself `N`-governed with the reduction recorded — P-D-13), so the evaluator never sees it as an ordinary touch (L-1); (b) the PRD-enumerated ops — lifecycle transitions **to `published`/`deprecated`/`retired`** (the FR's exact enumeration — `draft→discarded` is outside it and stays ungated beyond its own authz, M-1), category create/rename/re-parent/retire/delete, material attribute-definition changes; (c) the affected-entity count ≥ the configured trigger (interim 10) for batch acts (09); (d) **`GovernedLiveOp` kinds registered material by their owning slice** (H-1 fix): 02's taxonomy ops (= the enumeration), 03's recognized-set add/deprecate/remove and `PlanTier` taxonomy ops, 04's `ScheduledTransition` **cancel** ops (the governed retirement abort — `inst-lc-undeprecate`; without this line the evaluator judged it non-material and `inst-gv-materiality` would set `required = min(N, 1)`, one approver at the default, for the only act that unwinds a cascade), 06's freeze-participant membership ops, 07's reference-producer registration ops, 10's PII-allow-list ops. **A registered kind's approver role predicate NARROWS within the C1 base set and never replaces it; v1 registers no extension point that could** (C8, P-D-10 — this clause previously granted a replacing predicate, with 10's Legal-designated role as its only intended user, flagged as a design reading of AC #35's "Legal sign-off"; the product call retired both, since AC #35 asks for a *recorded* sign-off and not a role) — the PRD/slice-03 phrase "elevated approval" **means exactly this material quorum**, with the FinanceReviewer predicate on the Finance-owned code sets and not on the Product+Rating-owned unit set - `inst-mt-inputs`
+1. [ ] - `p1` - Inputs: (a) the **`BucketRegistry`** — a **Foundation** artifact named in 01 §1.7 beside `RegisteredValidator` (**P-D-28**: a slice registers its columns' bucket tags exactly as it registers validators, code not config; the Foundation's head-door guard and this slice's materiality judgement read the same registry) — bucket-iii fields registered by their slices (03: `PlanTier`, `taxCategory`, `glCode`, `sellable`; 01: frame) make any touch material; the FR-enumerated **metering-unit** field is bucket ii — it reaches publish through the save door while `published_version = 0` (01 `inst-fd-save-txn`, **P-D-41**), and after first publish only through the slice-07 correction door (itself `N`-governed with the reduction recorded — P-D-13), so the evaluator never sees it as an ordinary touch (L-1); (b) the PRD-enumerated ops — lifecycle transitions **to `published`/`deprecated`/`retired`** (the FR's exact enumeration — `draft→discarded` is outside it and stays ungated beyond its own authz, M-1), category create/rename/re-parent/retire/delete, material attribute-definition changes; (c) the affected-entity count ≥ the configured trigger (interim 10) for batch acts (09); (d) **`GovernedLiveOp` kinds registered material by their owning slice** (H-1 fix): 02's taxonomy ops (= the enumeration), 03's recognized-set add/deprecate/remove and `PlanTier` taxonomy ops, 04's `ScheduledTransition` **cancel** ops (the governed retirement abort — `inst-lc-undeprecate`; without this line the evaluator judged it non-material and `inst-gv-materiality` would set `required = min(N, 1)`, one approver at the default, for the only act that unwinds a cascade), 06's freeze-participant membership ops, 07's reference-producer registration ops, 10's PII-allow-list ops. **A registered kind's approver role predicate NARROWS within the C1 base set and never replaces it; v1 registers no extension point that could** (C8, P-D-10 — this clause previously granted a replacing predicate, with 10's Legal-designated role as its only intended user, flagged as a design reading of AC #35's "Legal sign-off"; the product call retired both, since AC #35 asks for a *recorded* sign-off and not a role) — the PRD/slice-03 phrase "elevated approval" **means exactly this material quorum**, with the FinanceReviewer predicate on the Finance-owned code sets and not on the Product+Rating-owned unit set - `inst-mt-inputs`
 2. [ ] - `p1` - The policy object — **field set + trigger + the approver count `N`** (item 36 of the review: `N` was omitted, though C1 and P-D-11 both require every later change to it to be material under the then-current quorum, which only holds if it is part of the governed object) — is a `GovernedLiveOp` subject whose **own mutation is always material** (C4), on its **own** resource pair `materiality_policy × write`, never a config-admin's general grant: pricing builds a separate resource precisely so the holder of a config grant cannot weaken the threshold that governs it - `inst-mt-policy-material`
 3. [ ] - `p2` - Evaluated once at submission against the policy in force at the submission instant (never the reader's clock — the pricing D-194 lesson, adopted) - `inst-mt-once`
 
@@ -184,9 +194,9 @@ inbox merges with pricing's.
 GTS-typed resources × actions, deny-by-default: `product × read|write|publish`,
 `sku × read|write|publish`, `category × read|write`, `attribute_definition × write`,
 `recognized_set × write`, `plan_tier × write`, `approval × submit|read|decide`,
-`scheduled_transition × write|cancel|read` (04's doors + the 08 dashboard projection — M4; the
+`scheduled_transition × write|cancel|read` (no slice names these pairs on a door — registered in §6; the
 governed cancel is a `GovernedLiveOp` subject kind on `ApprovalRecord`), `catalog_version × read|publish|request|ack|release|force_complete` (the `release` action is **P-D-18**'s door) (06's doors: S2S
-request/ack/release via service-identity claims, operator publish/force-complete),
+request/ack/release via service-identity claims, operator force-complete; 06 §6 records that no door consumes `publish`),
 `freeze_participant × write` (06), **`metadata × write`** (02's metadata-map door — added: the door existed with no pair, and P-D-06 makes the map mutable in place on a
 **published** entity with no version bump, so inheriting `sku × write` would let anyone who can
 author drafts mutate content a `CatalogVersion` captures), **`materiality_policy × write`** (the C4/P-D-11 object —
@@ -224,26 +234,24 @@ one config route) and where an earlier pass here wrongly wrote
 412 and called that pricing's convention — **403** where the caller may not perform the act at
 all, **404** only where a path segment names a resource this tenant has none of. **503** where retry
 is the remedy is this gear's own addition — pricing's set carries no 503 at all, so that one
-class is not "checked against it". **The 422s here are architectural, not wire** — see 01 §3.3, which quotes the sibling
-plan-price gear's rule (the `MUST NOT` being this gear's own choice, 01 §3.3): no `CanonicalError` category renders 422, so each reaches the wire as a 400
-carrying its code, and no endpoint may declare a 422 for an error **carrying a registry code** in `OpenAPI` (the framework layer is the exception — a `Json<T>` schema violation, which carries no registry code). Proposed per
+class is not "checked against it". Proposed per
 row and open to correction; the requirement is that every code carries one.
   Codes listed here for the response map but **declared elsewhere**: `APPROVAL_REQUIRED` (slice 01) — the status is repeated, not a second declaration, so the one-declaration rule stands.*
 
 ## 4. Data / Storage (normative shape; DDL in migrations)
 
-- **`products_approval`** — `approval_id` (PK) · `tenant_id` · subject `(kind, ref)` · pinned
+- **`products_approval`** — `approval_id` (PK) · `tenant_id` · subject `(kind, ref)` — `kind ∈ {entity_publish, governed_live_op, system_signal (P-D-14), sku_correction (07), bulk_batch (09)}` · pinned
   `internal_revision` · **`content_snapshot`** (stored at submission — never re-derived) ·
-  `diff_basis` (the published version id diffed against) · `quorum_descriptor` (**stored at submission, never re-derived** — `predicateUnsatisfiable`
-  and `configuredQuorum` were required by §3.1 and §4's evaluator and named in neither shape, and
+  `diff_basis` (the published version id diffed against) · `quorum_descriptor` (**stored at submission, never re-derived** — (`predicateUnsatisfiable`
+  and `configuredQuorum` were required by §2's `inst-gv-finance-predicate`, `inst-gv-quorum` and `inst-gv-queue`, and named in neither shape, and
   deriving `configuredQuorum` from current policy would change a **pending** record when the
   tenant edits `N`) — `configuredQuorum` (the `N` in force at submission), required count,
-  finance predicate, override conditions, **`quorum_reduced`** — P-D-13) · `state ∈ {pending, satisfied, consumed, rejected,
+  finance predicate, **`predicateUnsatisfiable`**, override conditions, **`quorumReduced`** — P-D-13) · `state ∈ {pending, satisfied, consumed, rejected,
   superseded}` · `submitter` (pseudonymous) · timestamps. Partial `UNIQUE (tenant_id,
   subject_kind, subject_ref) WHERE state IN ('pending','satisfied')` — one open approval per
   subject; a new submission explicitly supersedes the open one (L-4). Append-only after
   finalization.
-- **`products_approval_decision`** — `(approval_id, approver_principal)` UNIQUE · verdict ·
+- **`products_approval_decision`** — `(approval_id, approver_principal)` UNIQUE — the principal **as `actor_ref`**, pseudonymous — · verdict ·
   reason · override acknowledgments · instant. The UNIQUE is C2's physical floor: one principal,
   one decision.
 - **`products_breakglass_session`** — session id · principal (**as `actor_ref`** — pseudonymous like every actor-bearing store, M5 of the slice-10 review) · target tenant · reason ·
@@ -264,7 +272,7 @@ row and open to correction; the requirement is that every code carries one.
 - One-shot consumption: two publishes off one satisfied approval — second fails.
 - Break-glass: write attempt under elevation refused; access after expiry refused; every
   elevated read leaves an audit row with the session id (count asserted, not sampled).
-- Materiality: bucket-iii touch ⇒ material; bucket-iv-only re-publish ⇒ single approver;
+- Materiality: bucket-iii touch ⇒ material; bucket-iv-only re-publish ⇒ `min(N, 1)` approvers;
   policy-object mutation ⇒ material regardless of direction.
 
 ## 6. Traces to / Risks & Open items
@@ -272,7 +280,7 @@ row and open to correction; the requirement is that every code carries one.
 **Traces to**: `cpt-cf-bss-products-usecase-approval-publish` (§10 use case, claimed by id here — all seven were in lint 1's universe and none was claimed); `cpt-cf-bss-products-fr-materiality-gated-publish`, `cpt-cf-bss-products-fr-tenant-isolation-breakglass`,
 `cpt-cf-bss-products-fr-breakglass-action-scope`; AC #26, #30, #31; §17.1 (interim default, enforced); P-D-02
 (ceremony); consumed by 01 (`inst-fd-governance-gate`), 02 (`GovernedLiveOp`), 03 (override,
-finance fields), 04 (un-deprecation, retirement confirmation, scheduled-approval pinning).
+finance fields), 04 (un-deprecation, retirement confirmation, scheduled-approval pinning), 06 (force-completion, participant-set membership, the `system_signal` composition clear), 07 (`sku_correction`, reference-producer registration), 09 (`bulk_batch`), 10 (`pii_allowlist × write`).
 
 **Risks & open items**:
 - **Is `BREAKGLASS_WRITE_FORBIDDEN` raised at the pre-pipeline authorization gate or inside a
@@ -317,18 +325,87 @@ finance fields), 04 (un-deprecation, retirement confirmation, scheduled-approval
 - **Does the authoring head read need an action of its own in the RBAC catalog?** 01 §2's `GET` is
   an authoring read, and 01 §4.3 says that read "is not a consumer read", while this slice's
   catalog lists only `read|write|publish` per kind. Owner: this slice. *(Filed from 01 §6 by the slice-01 eighth lens pass — the pointer claimed it was registered here and it was not.)*
-- **C3's no-hook exception is still worded `draft→published` only.** C3 reads "except
-  `draft→published`, which the publish door owns"; **P-D-34** widened the exception to any
-  transition consuming an approval in the same transaction. As written, the invalidation hook fires
-  on `deprecated→published` — the gated edge P-D-30 put the gate phase on — against 01 §2, which
-  says it must not. Owed: the restatement. *(Filed from 01 §6 by the slice-01 eighth lens pass — the pointer claimed it was registered here and it was not.)*
 - **What does `Gate` mode require of a gated transition?** 01 `inst-fd-gate-mode-gate` is worded for
   a publish and pins "the door's expected revision", while the transition doors are this slice's and
   04's and pin nothing stated in 01. Owner: this slice with 04. *(Filed from 01 §6 by the slice-01 eighth lens pass — the pointer claimed it was registered here and it was not.)*
-- **This slice's free-text `reason` door does not invoke the content-PII write block.** 02
-  `inst-av-pii-block` states the obligation and enumerates the doors that owe it, and names this
-  slice among those that "name neither the hook nor the code, so the obligation is stated here and
-  wired nowhere but 01". 02's own words for the consequence: personal data typed into a free-text
-  reason is broadcast on the broker and is then unreachable by erasure forever. Owed: name the door
-  that carries the field and cite `inst-av-pii-block`/`CONTENT_PII_BLOCKED` on it. Owner: this
-  slice. *(Found as a four-slice class by the slice-04 first lens pass; 04's own arm is fixed.)*
+- **This slice's free-text `reason` doors do not invoke the content-PII write block.** 02
+  `inst-av-pii-reason` states the obligation and enumerates the doors that owe it, naming this
+  slice's two — `inst-gv-reject`'s rejection reason and `inst-bg-open`'s elevation reason, and records that slices 04, 05, 07 and 09 "name neither the hook nor the code, so
+  the obligation is stated here and wired nowhere but 01". 02's consequence for these doors is that
+  personal data typed into the field is **unreachable by erasure forever** (the broker leg is 02's
+  claim about `SkuRetired` alone, which is 04's door). Owed: cite `inst-av-pii-block` /
+  `CONTENT_PII_BLOCKED` on both. Owner: this slice. *(Found as a four-slice class by the slice-04
+  first lens pass; 04's arm is fixed. The first filing of this item named the wrong instruction, one
+  door, and an over-wide consequence — corrected by the slice-05 pass.)*
+- **Is a break-glass two-person approval an `ApprovalRecord`, and what holds its fixed floor?**
+  `inst-bg-open` requires "two distinct platform principals, outside the tenant's configured `N`
+  entirely", while §1.7 defines `required` only as `N` or `min(N, 1)` — no writer can produce a
+  fixed 2 — §4's row is `tenant_id`-scoped, and `inst-gv-scope` would refuse a platform approver on
+  another tenant's subject. §4 stores `approval path (two_person ref | post_hoc obligation state)`,
+  a ref to an unnamed thing. Owner: this slice with the platform-identity owner — the store, the
+  descriptor writer, and whether the tenant-scoped approval rules apply at all.
+  *(Two lenses raised it independently.)*
+- **Where is the `N = 0` override acknowledgment stored?** `inst-gv-override` has the author perform
+  it and says acknowledgments are "stored on the record and in audit"; the only column for them is
+  on `products_approval_decision`, whose row demands an approver principal and a verdict the author
+  does not have, and `products_approval` has no acknowledgment column. Owner: this slice's storage
+  owner. *(Two lenses raised it independently.)*
+- **Which transaction writes `state = satisfied`?** Every other value has a named writer — submit
+  flips `superseded`, a rejection finalizes `rejected`, the publish/apply marks `consumed`. This one
+  has only an evaluator, and nothing says whether a record at `required = 0` is born satisfied. If
+  satisfaction is evaluated at gate time instead, the `satisfied` branch of §4's partial unique is
+  dead. Owner: this slice. *(Raised by the slice-05 first lens pass.)*
+- **What door carries submit, decide and break-glass elevation?** The catalog mints
+  `approval × submit|read|decide` and `breakglass × elevate`, and the only route this slice declares
+  is the inbox `GET`. 01 §1.5 closes its own set at five wire doors. `DESIGN.md` books approvals
+  here and says endpoint tables live per slice. Owner: this slice with the contract owner — routes,
+  verbs, grants and statuses. *(Raised by the slice-05 first lens pass.)*
+- **What do the entity-shaped columns hold for the non-entity subject kinds?** §4 fixes pinned
+  `internal_revision`, `content_snapshot` and `diff_basis` on every record, while at least three
+  subject kinds are not entities — a `GovernedLiveOp` envelope, a `system_signal`, a `bulk_batch`.
+  A live op has no internal revision, no published version to diff against, and no scope for
+  `inst-gv-scope` to cover; and the auto-satisfied `system_signal` record's "signal reference as the
+  authorizing principal" has no column, the decision key being `(approval_id, approver_principal)`.
+  Owner: this slice with 12, which pins the envelope's `subjectKind`. *(Raised by the slice-05 first lens pass.)*
+- **Which slice mints a grant pair when the owning slice names none?** The roster carries
+  `scheduled_transition × write|cancel|read` and `product|sku × discard` for doors that name no
+  pair, while §3.2 asserts "Every door names its pair" and 12's lint only runs door→catalog, so a
+  catalog entry with no door is invisible to it in both directions. Owner: the governance owner with
+  04, 08 and 12 — is the catalog the mint, or must a slice name its pair first?
+  *(Two lenses raised it independently.)*
+- **Is `APPROVER_ROLE_REQUIRED` 403 or 409?** The gate now raises it (this pass), but §3.3's own
+  convention puts **409** where the current state refuses the act and **403** where the caller may
+  not act at all — and by its stated raise site the caller may publish and it is the record's state
+  that refuses, which is where the sibling `APPROVAL_SUPERSEDED` sits at 409. Owner: the governance
+  owner with the taxonomy owner. *(Raised by the slice-05 first lens pass.)*
+- **Does `quorumReduced` fire on every non-material change at the default `N = 2`?** §1.7 sets the
+  marker "when the effective count is below the retained-name default of 2", and a bucket-iv-only
+  re-publish at `N = 2` has an effective count of 1 — so the marker would ride the majority of
+  records. P-D-13 frames it as a marker for the *reducible ceremonies*. Nothing distinguishes
+  "reduced by configuration" from "reduced by non-materiality". Owner: this slice with the audit
+  consumer. *(Raised by the slice-05 first lens pass.)*
+- **Does C1's base role set bind the single approver of a non-material change?** C1 scopes its
+  CatalogAdmin/FinanceReviewer floor to material changes; a non-material change gets `min(N, 1)` and
+  the descriptor carries no base role set. Nothing says whether any holder of `approval × decide`
+  may close one. Owner: this slice. *(Raised by the slice-05 first lens pass.)*
+- **What does an elevation change about the authorization decision?** C6 is deny-by-default over
+  tenant-scoped IdP claims and 01 C4 puts all repository access through SecureORM tenant scoping;
+  no rule anywhere says how a live `BreakGlassSession` widens either the grant check or the query
+  scoping. Owner: this slice with the ToolKit/SecureORM owner — the operand a door reads, and where
+  in the pre-pipeline gate it is read. *(Raised by the slice-05 first lens pass.)*
+- **Who produces `BreakGlassExpired`, and what happens to an act in flight at expiry?** The only
+  producer named is a refused call, so a session nobody calls again never emits it and a session
+  called ten times after expiry emits ten; no sweeper is named in any slice, and nothing says
+  whether a read begun inside the window may finish. Owner: this slice with the ops owner. *(Raised by the slice-05 first lens pass.)*
+- **What is the `post_hoc` obligation's state set, and who discharges it?** §4 stores the state and
+  `inst-bg-open` raises the review obligation as an alert; no door, event or flow writes a
+  discharge, and no values are enumerated — §6 books only an owner and an SLA. Owner: this slice.
+  *(Raised by the slice-05 first lens pass.)*
+- **The break-glass window's two normative facts live only in `PRD` §17.1.** That row carries a
+  4-hour interim **and** "no renewal without a new session", crediting this slice's own review with
+  raising it; `inst-bg-open` states neither, and renewal is neither forbidden nor admitted here.
+  Owner: the governance owner with the §17.1 owner. *(Raised by the slice-05 first lens pass.)*
+- **Does AC #26's third bullet still bind after P-D-11 rewrote the first two?** It carries both a
+  pre-P-D-11 count ("v1 uses a single two-person step") and the `draft` return the head-row model
+  cannot honour; P-D-11's propagation names two bullets of AC #26 and not this one. Owner: the PRD
+  owner with the governance owner, in the register. *(Raised by the slice-05 first lens pass.)*
