@@ -197,8 +197,8 @@ one config route) and where an earlier pass here wrongly wrote
 412 and called that pricing's convention — **403** where the caller may not perform the act at
 all, **404** only where a path segment names a resource this tenant has none of. **503** where retry
 is the remedy is this gear's own addition — pricing's set carries no 503 at all, so that one
-class is not "checked against it". **The 422s here are architectural, not wire** — see 01 §3.3, which quotes the
-platform rule: no `CanonicalError` category renders 422, so each reaches the wire as a 400
+class is not "checked against it". **The 422s here are architectural, not wire** — see 01 §3.3, which quotes the sibling
+plan-price gear's rule (the `MUST NOT` being this gear's own choice, 01 §3.3): no `CanonicalError` category renders 422, so each reaches the wire as a 400
 carrying its code, and no endpoint may declare a 422 for an error **carrying a registry code** in `OpenAPI` (the framework layer is the exception — a `Json<T>` schema violation, which carries no registry code). Proposed per
 row and open to correction; the requirement is that every code carries one.
   Codes listed here for the response map but **declared elsewhere**: `BULK_OVERRIDE_UNACKNOWLEDGED` (slice 09) — the status is repeated, not a second declaration, so the one-declaration rule stands.*

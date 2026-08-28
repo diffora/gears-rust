@@ -1154,7 +1154,9 @@ instead.*
 
 - **What this entry does *not* settle**: how a **row collection** inside a frozen version (the
   category-assignment set, the attribute-value set) is ordered for the digest — the rule orders
-  fields, not rows. Still open in slice 01 §6 with 02 and 10.
+  fields, not rows. **P-D-29** later settled the two collections named here (a JSON array sorted
+  by the collection's own identifier); the manifest's entry and capture rows remain open, in
+  slice 06 §6 (measured 2026-08-28: no item for this stood in 01 §6).
 - **Propagated**: `design/01-foundation.md` (§1.7, §4.2, §4.3, §4.4).
 - **Restated by** *(owed until 2026-08-27, all closed)*: `design/05-governance.md` (`BucketRegistry` by name where it reads the tags),
   `design/10-retention-erasure.md` (the audit row's key), `design/06-catalog-version.md`
