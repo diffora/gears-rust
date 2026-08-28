@@ -63,8 +63,8 @@ discovered weeks later at ERP export or rating time.
 - [`../PRD.md`](../PRD.md) §6.3 (all six FRs); AC #2a, #7–#11; AC #38 (unit rows)
 - [`../DECISIONS.md`](../DECISIONS.md) P-D-02 (bundle override at entity publish), P-D-05
   (`usageTypeRef` resolvability only)
-- Pricing D-46 (`sellable` → sellability-gate predicate 6) and `inst-cmp-usagetype`
-  (the UC3(c) dimension check's home) — pricing register/design
+- Pricing D-46 (`sellable` → sellability-gate predicate 6) and its meter-binding rule
+  (the UC3(c) dimension check's home; the donor id struck per **P-D-43**) — pricing register/design
 - [`./02-taxonomy-attributes.md`](./02-taxonomy-attributes.md) §3.1 — the `GovernedLiveOp`
   pattern this slice reuses
 
