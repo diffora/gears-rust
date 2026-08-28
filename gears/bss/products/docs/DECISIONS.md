@@ -979,7 +979,8 @@ instead.*
 - **Propagated**: `design/01-foundation.md` §1.5/§4.4. *(§4.5 was listed until 2026-08-27 and
   trimmed by P-D-31: it names no outbox facility and restates nothing of this decision, which is
   what `12 inst-cc-register` lints for.)*
-- **Owed**: `design/10-retention-erasure.md` §3 (the "outbox-delivered" retention class),
+- **Owed**: `design/10-retention-erasure.md` §3 (the "outbox-delivered" retention class —
+  **discharged 2026-08-28** by the slice-10 first lens pass, which found the class still standing),
   `gears/bss/pricing` (its own rewrite, separate task).
 
 #### P-D-23 — The 2026-08-27 slice-01 owner round: eighteen calls on standing open items
