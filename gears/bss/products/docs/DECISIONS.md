@@ -1578,6 +1578,51 @@ instead.*
   (the re-publish step).
 
 
+#### P-D-46 — Four write-path blockers, three of them settled by opening the donor
+
+- **Date**: 2026-08-28 (owner call — the build-blocker round)
+- **Context**: after the slice-12 rounds, eight items across the set still said something could not
+  be built. Four are write-path questions — who writes what, where — and one of them held the
+  **first migration**. Three were settled by measurement rather than by choosing between readings.
+- **Decision**, four arms:
+  1. **The `REVOKE` arm is withdrawn.** The trigger whitelist becomes the whole append-only guard on
+     **both** engines. **P-D-35** had made `REVOKE` a Postgres-only arm; 01 §6 then measured that a
+     blanket `REVOKE UPDATE, DELETE` from the writing role forbids every write the gear legitimately
+     makes — head rows on save, the audit sealing UPDATE, the retention DELETE and §4.3's DELETE.
+  2. **`inst-fd-save-txn` writes the entity's content rows** in the slices' own tables, in the same
+     transaction. No third registration point: the door writes, the owning slice registers the
+     validators, which is the mechanism already in place.
+  3. **The retirement `reason` splits into two columns** — `retirement_reason` (the operator's,
+     written once at `inst-rt-initiate`) and `outcome_reason` (the runner's, written on
+     `applied|failed|deferred`).
+  4. **`closed_at` is struck.** The bulk batch closes on the timer.
+- **Measured at the donor, not argued** — three of the four:
+  - Arm 1: `gears/bss/pricing` issues **no `REVOKE` anywhere**, deliberately, and says so in both
+    engine tiers' tests: *"it names a deployment role the migration does not own and SQLite has no
+    GRANT at all. The trigger is the portable half, and it is the half that has to work."* 01
+    already names pricing "the pattern donor" **for append-only triggers with column whitelists** —
+    the very pattern this arm duplicated. Quotation byte-verified against
+    `pricing/tests/postgres_approval.rs`.
+  - Arm 2: no registration mechanism for content writers exists in the donor's source at all, which
+    priced the alternative — new machinery for two consumers, with a call-order decision attached.
+  - Arm 4: pricing **D-47** states the contract as "**bulk** … coalesces into one version, hard max delay **5
+    min**". Five minutes is the declared latency bound, not a fallback, so "every bulk batch
+    waits the full five minutes" is conformance rather than the defect 06 read it as. An early-close
+    signal would amend an inbound two-gear machine contract for an optimisation nobody requested.
+- **The cost of arm 1, stated because it was argued**: the trigger defends against an application
+  bug; `REVOKE` defended against someone at a psql prompt. That second ring is given up on the
+  engine that holds production financial records. It is given up knowingly, on the donor's reasoning
+  and because the arm as written was unimplementable in the first migration.
+- **Arm 3's counter-argument, and why it lost**: a column per writer multiplies as authors are
+  added, and `reason` + `reason_source` scales better. It lost because the protection would then be
+  an application rule rather than the schema — the same "convention instead of a guarantee" this set
+  had already recorded as lint 7's weakness one round earlier.
+- **Propagated**: `design/01-foundation.md` (C5, §4.4's audit posture, `inst-fd-save-txn`);
+  `design/04-lifecycle.md` (§4's transition table); `design/05-governance.md` (C7);
+  `design/06-catalog-version.md` (§4's request table); `PRD.md` (§15 and §16's interim control).
+- **Owed**: nothing. Four of the set's eight remaining build-blockers close here; the other four are
+  03's `RecognizedSet` removal, 06's P-D-19 opt-in, 11's accounting code, and 01's `PRD` §15 pointer.
+
 #### P-D-45 — The last four lint grammars, and an event register that cannot be harvested
 
 - **Date**: 2026-08-28 (owner call — the third slice-12 blocker round)

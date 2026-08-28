@@ -173,9 +173,10 @@ which is why its gaps are omissions rather than contradictions:
   in side tables whose only stated writers are the save door and the metadata door — both of which
   bump `internal_revision` (defeating C3's `= 1`), emit their own events (defeating
   `inst-cn-lineage`'s "no new events") and spend a grant this door does not name. 01's create flow
-  writes the entity row and its outbox row and nothing else, and 01 §6 registers the general question
-  ("How is entity content that lives in other slices' tables assembled and written?") as its own
-  open item — so this slice's atomicity claim rests on it. Owner: 01's door owner with 02's, plus 05
+  writes the entity row and its outbox row and nothing else. **P-D-46** answered the general question
+  for the **save** door — `inst-fd-save-txn` now writes content in its own transaction — but the clone
+  lands through the **create** door, which that arm did not reach, so this slice's atomicity claim
+  still has no writer; 01 §6 carries the narrowed question. Owner: 01's door owner with 02's, plus 05
   for the grant. *(Raised by the slice-11 first lens pass.)*
 - **Does the clone door need `metadata × write` beside `product|sku × write`?** 05 split that grant
   because the map is mutable in place on a **published** entity; the clone writes a new draft's map,

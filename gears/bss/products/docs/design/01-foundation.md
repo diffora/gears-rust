@@ -92,7 +92,7 @@ acknowledged, and rejections that always carry an audited reason. Per P-D-02, ev
   (four read paths the guard needed), P-D-29 (what a replay, an envelope and a digest carry),
   P-D-30 (gate host, authorization, whose validator), P-D-31 (the four routed outward, decided
   here), P-D-32 (the second lens wave's six calls), P-D-33 (eight calls from weeding the open items),
-  P-D-34 (the remaining items, decided from the set), P-D-35 (the five the set already forced), P-D-36 (the phase unit withdrawn), P-D-37 (one code per row, all violations in the answer), P-D-38 (a refusal stores nothing), P-D-39 (scope columns and the empty set), P-D-40 (the version table's one admitted DELETE), P-D-41 (the two bucket-ii doors), P-D-42 (the store's last three operands), P-D-43 (the checking layer's four grammars), P-D-44 (the AC #38 map), P-D-45 (the last four lint grammars)
+  P-D-34 (the remaining items, decided from the set), P-D-35 (the five the set already forced), P-D-36 (the phase unit withdrawn), P-D-37 (one code per row, all violations in the answer), P-D-38 (a refusal stores nothing), P-D-39 (scope columns and the empty set), P-D-40 (the version table's one admitted DELETE), P-D-41 (the two bucket-ii doors), P-D-42 (the store's last three operands), P-D-43 (the checking layer's four grammars), P-D-44 (the AC #38 map), P-D-45 (the last four lint grammars), P-D-46 (four write-path blockers)
 - Pricing `design/01-foundation.md` — the pattern donor (registered validators, append-only
   triggers with column whitelists, draft/published partial unique indexes, pending refs — **not
   the outbox**, which P-D-22 moved to `toolkit_db::outbox` after measuring that pricing runs a
@@ -152,7 +152,7 @@ acknowledged, and rejections that always carry an audited reason. Per P-D-02, ev
 | C2 | Broker-native envelope; no CloudEvents field anywhere in the payload path | P-D-01 |
 | C3 | No money, no price, no charge computation in this gear | PRD §2.1 |
 | C4 | Every table carries `tenant_id`; all repository access through SecureORM tenant scoping | PRD §6.8; ToolKit |
-| C5 | Append-only posture: head rows, history rows and `products_audit_log` are physically guarded (the trigger whitelist on **both** engines, plus `REVOKE` on Postgres — **P-D-35**: SQLite has no `GRANT`/`REVOKE`, so the whitelist is the whole guard there, the same way **P-D-31** kept the guard row-image rather than door-reading), not just conventionally. Exempt by design: the slice-08 projection family (rebuildable state, not records) and expiring operational stores (idempotency sweep) | PRD `fr-revision-vs-version`; `fr-registry-eventing-audit` (the audit-log arm) |
+| C5 | Append-only posture: head rows, history rows and `products_audit_log` are physically guarded (the trigger whitelist on **both** engines, and **P-D-46**: it is the *whole* guard on both — the `REVOKE` arm **P-D-35** had made Postgres-only is withdrawn, the donor gear declining it in both engine tiers for a reason that holds here verbatim — "it names a deployment role the migration does not own" (`gears/bss/pricing/pricing/tests/postgres_approval.rs`, and the SQLite twin); the same way **P-D-31** kept the guard row-image rather than door-reading), not just conventionally. Exempt by design: the slice-08 projection family (rebuildable state, not records) and expiring operational stores (idempotency sweep) | PRD `fr-revision-vs-version`; `fr-registry-eventing-audit` (the audit-log arm) |
 | C6 | Idempotency-key retention ≥ 24h **and** ≥ the maximum freeze timeout (slice 06 exports the number; the store reads it as config) | PRD AC #27 |
 
 ### 1.7 Naming & Design-Introduced Names
@@ -268,7 +268,7 @@ header since P-D-33 (`inst-fd-publish-pin`) — **requires `If-Match`** on the i
 request parsed, so `inst-fd-mint-id`'s criterion applies and the bare 400 this gear reserves for a
 malformed request does not) (per-row token, never plan-shared — the pricing D-141 lesson adopted at birth) - `inst-fd-etag`
 3. [ ] - `p1` - Run the pipeline's shape + state + identity phases plus every registered validator for `(kind, field set)`; violations collect per-field into one audited rejection - `inst-fd-pipeline`
-4. [ ] - `p1` - Saves land on the **head row** — the authoring surface for `draft`, `published`, and `deprecated` entities alike (H1 fix): a save is never a lifecycle transition, and consumers are untouched because **every consumer-facing read of Product/SKU entity content serves frozen `products_entity_version` content, never the head row**. A **bucket-i** change — `skuCode`/`productCode`, `brand_id`, and a SKU's parent `product_id` (P-D-33: §4.2 admits the class on an unpublished head and this is its only admitting door) — is legal only while `published_version = 0` and releases the old code by the row update itself; **a bucket-ii change is admitted here on the same terms** (**P-D-41**: §4.2 admits the class while `published_version = 0`, 03 `inst-mt-bucket` says the draft plane edits freely, and P-D-28's test — an admitted class needs a named admitting door — had left this one unnamed; after first publish it is 07's correction act alone); `internal_revision += 1`; the `ProductHeadSaved`/`SkuHeadSaved` outbox row in the same transaction. Saves **never** touch `published_version` - `inst-fd-save-txn`
+4. [ ] - `p1` - Saves land on the **head row** — the authoring surface for `draft`, `published`, and `deprecated` entities alike (H1 fix): a save is never a lifecycle transition, and consumers are untouched because **every consumer-facing read of Product/SKU entity content serves frozen `products_entity_version` content, never the head row**. A **bucket-i** change — `skuCode`/`productCode`, `brand_id`, and a SKU's parent `product_id` (P-D-33: §4.2 admits the class on an unpublished head and this is its only admitting door) — is legal only while `published_version = 0` and releases the old code by the row update itself; **a bucket-ii change is admitted here on the same terms** (**P-D-41**: §4.2 admits the class while `published_version = 0`, 03 `inst-mt-bucket` says the draft plane edits freely, and P-D-28's test — an admitted class needs a named admitting door — had left this one unnamed; after first publish it is 07's correction act alone); `internal_revision += 1`; **the entity's content rows in the slices' own tables — 02's category assignments and attribute values, 03's metering declaration — written by this door in this transaction** (**P-D-46**: 02 already places its write here, and until now the row enumerated only three writes, which left the `PublishDoor`, the freeze digest and §5's golden vector with no defined input set; the door writes, the owning slice registers the validators, and no third registration point is introduced); the `ProductHeadSaved`/`SkuHeadSaved` outbox row in the same transaction. Saves **never** touch `published_version` - `inst-fd-save-txn`
 5. [ ] - `p1` - A save on a `draft`, `published` or `deprecated` head holding an open approval **invalidates it** — the Foundation raises the `approval-invalidated` hook (an in-process hook, **no broker event**); slice 05 owns re-queue semantics - `inst-fd-approval-hook`
 
 ### Discard a never-published draft
@@ -1002,8 +1002,7 @@ read.
   NOT NULL (a NULL `prev_hash` stays legitimate — it is the segment head). The gear computes no
   hash and runs no verification job; what the platform capability must satisfy is P-D-08 S1–S9.
 
-  `products_audit_log` carries the same append-only posture as the entity tables (C5): `REVOKE` on Postgres
-  (**P-D-35**) plus a trigger whose whitelist admits no UPDATE or DELETE except the one below and the retention
+  `products_audit_log` carries the same append-only posture as the entity tables (C5): a trigger whose whitelist admits no UPDATE or DELETE except the one below and the retention
   DELETE. **The retention DELETE arm** (**P-D-34**) is a row-image predicate — a row whose
   `written_at` is older than its class's retention window — so 10 `inst-rt-gc` has an admitted
   path; the window's *value* is Legal/Finance's (`PRD` §15) and the predicate does not wait on it.
@@ -1227,43 +1226,31 @@ those rounds:
    written into `inst-fd-mint-id` in the create flow only, while §4.2 makes the save door the sole
    admitting door for that bucket-i column while `published_version = 0`. *(Owner: this slice with
    05, who own the grants.)*
-6. **What does `REVOKE` revoke, and from which role?** Every table it is claimed over has admitted
-   writes by the gear's own role — head rows on every save, the audit table's sealing UPDATE and
-   retention DELETE, and §4.3's one DELETE. A blanket `REVOKE UPDATE, DELETE` from the writing role
-   forbids all of them. P-D-35 says only that it is a Postgres-only arm. **The first migration
-   cannot be written until this is answered.** *(Owner: this slice with whoever owns the deployment
-   role model.)*
-7. **How is entity content that lives in other slices' tables assembled and written?** §4.3 has the
-   freeze carry the category-assignment and attribute-value sets, and §4.1 says those live only in
-   02's tables, while 02 puts the write on `inst-fd-save-txn` — which names the head row,
-   `internal_revision` and the outbox row and nothing else. The Foundation names exactly two
-   registration points and neither carries content. Without a third, the `PublishDoor`, the digest
-   and §5's golden vector have no defined input set. *(Owner: this slice.)*
-8. **What happens when the SQLite busy timeout expires?** §3.2 gives it no value, no exhaustion
+6. **What happens when the SQLite busy timeout expires?** §3.2 gives it no value, no exhaustion
    behaviour, no code and no status, and says two rows later that no door timeout exists anywhere in
    the set to derive one from. An unterminated retry on the dual-engine tier is the default an
    implementer builds. *(Owner: this slice.)*
-9. **What does a head door do with a published-state column carrying no bucket tag?** §1.7's
+7. **What does a head door do with a published-state column carrying no bucket tag?** §1.7's
    `BucketRegistry` is a compile-time map, so a lookup miss is a real runtime case; §5's agreement
    test compares only columns both artifacts name, so a column missing from both is invisible to it.
    The document states the fail-closed posture for the pipeline and never applies it to the routing
    miss. *(Owner: this slice.)*
-10. **Do the mutating doors return the new `ETag`?** P-D-33's stated premise for adding the
+8. **Do the mutating doors return the new `ETag`?** P-D-33's stated premise for adding the
     authoring `GET` is that an author who *had* just written holds a precondition, yet no door in §2
     is stated to return one. Leaving it makes a second `GET` mandatory between consecutive edits and
     leaves 04's and 09's in-process callers deriving the revision some other way. *(Owner: this
     slice.)*
-11. **What is the `internal:` lane's stored response body?** §4.4 has it store "a synthetic `200`
+9. **What is the `internal:` lane's stored response body?** §4.4 has it store "a synthetic `200`
     and its own outcome record as the body" (P-D-42); `response_body` is NOT NULL on an `answered`
     row, and 05 `inst-gv-one-shot` has the `ActivationRunner` read it back after a crash. No
     document defines that record's shape for any of the three lanes. *(Owner: this slice with 04
     and 09.)*
-12. **When is §4.3's DELETE guard installed?** Its predicate reads `products_catalog_version_entry`,
+10. **When is §4.3's DELETE guard installed?** Its predicate reads `products_catalog_version_entry`,
     which `DESIGN.md`'s census assigns to slice 06, while C1 requires one migration per table with
     guards defined once — so a trigger in this slice's first migration references a table 06 has not
     created. §5 already presumes the guard exists from the start. *(A P-D-40 consequence. Owner:
     whoever owns the migration chain.)*
-13. **What refuses a request when `actor_ref` resolution itself fails?** §2 runs it in its own
+11. **What refuses a request when `actor_ref` resolution itself fails?** §2 runs it in its own
     transaction before any phase that can refuse, and the refusal's own audit row requires an
     `actor_ref` — so an unavailable `products_identity_ref` blocks both the act and its refusal
     record, the shape the gear terminated for the audit write with `AUDIT_UNAVAILABLE` (503). No
@@ -1279,3 +1266,11 @@ whether 12 therefore owes an open-item reciprocity lint — is itself open, for 
 with 12, as is what "the taxonomy" denotes when a count is stated against it (§3.3's enumeration,
 the response map, and AC #38's rows are three different sets, and `inst-cc-errors` will be built
 against a number).
+
+12. **Does the create door write content too?** **P-D-46** made `inst-fd-save-txn` the content
+   writer, which settles the freeze input set for anything that has been saved. The create flow
+   still writes the entity row and its outbox row and nothing else — so an entity whose content
+   arrives *at creation*, which is exactly 11's clone, has no admitted writer and cannot satisfy
+   11's `internal_revision = 1` if it must save afterwards. Either the create door writes content
+   on the same terms, or the clone is defined as create-then-save and 11's C3 changes. Owner:
+   this slice with 11's. *(Raised by the P-D-46 round — the arm's own edge.)*

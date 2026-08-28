@@ -133,7 +133,7 @@ on; the diff surface.
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-flow-increment`
 
 1. [ ] - `p1` - An `IncrementRequest` arrives through the **`products-sdk` increment-request client** (**P-D-15**) — a typed contract the consumer resolves from `ClientHub`, never an implementation package (manifest §3.4.1); the default deployment binds it **in-process**, and `POST /bss-products/v1/catalog-version-requests` (S2S; `catalog_version × request`) is the same contract's out-of-process binding and the authz door both bindings pass. The transport is not the performance axis — the lane SLO below is p95 ≤ 60 s, against which a round trip is noise — it is the **error axis**: an in-process binding cannot fail with a network error, which is why the client's error taxonomy separates "not wired" from "unreachable" from "unusable answer" the way pricing's own `ProductCatalogClientV1` already does for the opposite direction. The request carries `{source, lane, request_key, operation_key?}` — **`requested_at` is stamped by the door at ingress**, never accepted from the caller (stated: §1.7's entity requires it and §2's lane SLO (`inst-cv-slo`) measures from it, while this list omitted it, so an SDK built from the flow would have left it unset), and the request carries — idempotent per `(source, request_key)`; a **bulk** request names its `operation_key` so the whole operation coalesces into ONE version (M3 fix). The trigger set (M1 fix): registered downstream addressability requests (pricing; **and this gear's own slice-09 bulk commits — a registered internal requester** whose ledger completion sends the `close` marker on its `(source, operation_key)`), and the operator **catalog-publish act** — an entity publish NEVER enqueues an increment (the PRD §6.6 preamble is substance, not a 5-second technicality; a retirement's `effectiveAt` flip likewise does not enqueue — the next demand-driven version reflects it, L5 intended) - `inst-cv-request`
-2. [ ] - `p1` - The **coalescer** (one worker per tenant — C3 serialization) drains the queue: interactive requests coalesce within ≤ 5 s of the earliest pending; a **keyed bulk batch stays open** until its operation closes (completion signal or the **5-minute hard max** from its earliest request) and lands as ONE version — interactive versions may publish in between without shredding it (M3 fix: D-47's "bulk coalesces into one version" holds per `operation_key`, not per quiet window) - `inst-cv-coalesce`
+2. [ ] - `p1` - The **coalescer** (one worker per tenant — C3 serialization) drains the queue: interactive requests coalesce within ≤ 5 s of the earliest pending; a **keyed bulk batch stays open** until its operation closes (completion signal or the **5-minute hard max** from its earliest request) and lands as ONE version — interactive versions may publish in between without shredding it (M3 fix: D-47's "**bulk** … coalesces into one version" holds per `operation_key`, not per quiet window) - `inst-cv-coalesce`
 3. [ ] - `p1` - The increment transaction: allocate the next `catalog_version_id` from the per-tenant counter row (gapless by construction — the counter update and the version insert share the transaction), build the manifest (flow below), commit, emit `CatalogVersionPublished` carrying the changed-entity list vs the previous version **and `satisfiedRequests` — the `(source, request_key)` set this version committed** (H1 fix: pricing's finalizer maps its pending refs by its own request keys; a pure-pricing batch has an empty changed-entity list but never an empty `satisfiedRequests`). **No approval is consulted** (C2) - `inst-cv-commit`
 4. [ ] - `p1` - SLO instrumentation: `requested_at → published_at` p95 ≤ 60 s / max 5 min; a pending request past the lane deadline raises `catalog_version_overdue` (the registry-side mirror of pricing's `commit_overdue`) - `inst-cv-slo`
 
@@ -253,8 +253,7 @@ without a fourth clock.
   (UNIQUE with `(tenant_id, source)` — the idempotency and `satisfiedRequests` operand; the tenant
   column is what C3's per-tenant coalescer selects on, and without it one `source` serving many
   tenants collides across them), **`operation_key`**
-  (nullable; the bulk batch identity), **`closed_at`** (the retry-safe close marker — a repeated
-  close is a no-op), `requested_at`, state `(pending, coalesced-into(version), superseded)`.
+  (nullable; the bulk batch identity — **P-D-46** struck `closed_at`, D-47's five-minute hard max being the declared bound rather than a fallback), `requested_at`, state `(pending, coalesced-into(version), superseded)`.
 - **`products_freeze_participant`** — the governed registered set (live);
   **`products_freeze_ack`** — `(tenant_id, catalog_version_id, participant)` → `state ∈
   {pending, acked, released, not_frozen(forced)}` — four values, one column — with `acked_at` /
@@ -365,11 +364,6 @@ struck. Branch review.)*
   subquery also scans capture rows that reference no entity version, and the index at §4 was added
   for the entity half only. Owner: this slice, with whoever re-aims P-D-40 if the answer is two
   tables. *(Raised by the slice-06 first lens pass.)*
-- **What door writes `closed_at`, the bulk close marker?** `inst-cv-coalesce` keeps a keyed batch
-  open "until its operation closes", and the increment-request contract's only stated payload
-  (`PRD` §11) carries no close operation — so as specified the marker is never written and every
-  bulk batch waits the full 5-minute hard max. Deciding it amends an inbound machine contract.
-  Owner: this slice jointly with pricing, D-47 being the joint contract. *(Raised by the slice-06 first lens pass.)*
 - **Who writes the request state `superseded`, and what leaves it?** No instruction in §2 or §3
   writes that value; `inst-sn-revalidate` says a failed mechanical run "re-coalesces and retries
   fresh, the request never lost", which the PRD echoes as "A request is never dropped". The value

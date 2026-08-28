@@ -216,7 +216,10 @@ row and open to correction; the requirement is that every code carries one.
 - **`products_scheduled_transition`** — `transition_id` (PK) · `tenant_id` · `entity_kind` /
   `entity_id` · `kind ∈ {publish, retire}` · `at` (UTC) · `approval_ref` (the pinned slice-05
   snapshot) · `state ∈ {pending, running, applied, failed, deferred, superseded}` · `claimed_at` (nullable, UTC) ·
-  `attempt` (integer, NOT NULL, default 0) · `reason` ·
+  `attempt` (integer, NOT NULL, default 0) · `retirement_reason` (nullable — the **operator's** text,
+  written once at `inst-rt-initiate` and read by the lead-window re-announcement) · `outcome_reason`
+  (nullable — the **runner's** outcome text, written on `applied|failed|deferred`; **P-D-46** split the
+  single `reason`, one column having let a deferral's failure text overwrite the operator's) ·
   timestamps. Partial `UNIQUE (tenant_id, entity_kind, entity_id, kind) WHERE state IN
   ('pending','running','deferred')` — one live intent per entity per kind; a re-schedule
   supersedes explicitly.
@@ -317,12 +320,6 @@ pricing D-47 (joint contract), P-D-04 (containment residue).
   per-transition attempt budget"; neither carries a value, a default or a config home, and PRD
   §17.1's interim-defaults table has no row for either. 03 relies on the same budget. Owner: the
   §17.1 policy owner. *(All three lenses raised it independently.)*
-- **Where is the retirement `reason` stored?** `inst-rt-initiate` puts it in the `SkuRetired`
-  payload; the only `reason` in §4 is the runner's outcome text, written on `applied|failed|
-  deferred`. As it stands the operator's text has no read path for the lead-window re-announcement,
-  and an implementer reusing the one column has the runner's failure text overwrite it on the first
-  deferral. Owner: this slice — a second column, or a statement that one carries both and how.
-  *(Raised by the slice-04 first lens pass.)*
 - **The lead-window re-announcement of `SkuRetired` has no emitting door.** `inst-rt-initiate`
   requires a publish that moves the version to re-emit with the new `fromVersion`; 01's publish door
   emits `ProductPublished`/`SkuPublished` and nothing else, and P-D-20's subject is that door. 12
