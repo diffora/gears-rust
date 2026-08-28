@@ -137,11 +137,11 @@ suite's backlog, reviewed whenever a counterpart lands an AC (C4).
 3. [ ] - `p1` - **Replay reads the body core** every Foundation event carries — `{tenantId, entityKind, entityId, internalRevision, lifecycleState}`, with `publishedVersion` additionally on `*Published` (**P-D-27**) — and `internalRevision` is the value **as committed by the act** (**P-D-29**), so a consumer correlating an event to an ETag compares it directly rather than adjusting by one. `lifecycleState` is the discriminator on `ProductHeadSaved`/`SkuHeadSaved`, which cover a save on a `draft`, `published` or `deprecated` head alike - `inst-rc-body`
 4. [ ] - `p1` - Bootstrap (C3): a published-scope consumer initializes from the latest `CatalogVersion` (06's resolver, `browse` intent) + the event tail from that version's instant — **or, in a tenant with zero published versions, from the empty catalog plus the whole retained tail** (the anchorless arm, stated because 08's projection tables are called rebuildable "without loss" and this is the only case with no anchor to rebuild from — item 35 of the 2026-08-26 review); a checkpoint older than the retained tail fails loudly with the named remedy (re-bootstrap) — the same contract 08's projector obeys internally, so the gear's own projector is the contract's first consumer and its permanent conformance probe *(renamed from `inst-rp-bootstrap` — H1: it collided with 08's read-projection id, and the lint that should have caught it is #6 below)* - `inst-rc-bootstrap`
 
-*Replay of a refusal (**P-D-26**): a refused request is a finished request — the door answers its
-idempotency key with the refusal as the stored response (`response_status`/`response_body`,
-**P-D-29**), so a retry on the same key replays that refusal rather than re-running a rule whose
-verdict cannot change. A consumer must therefore expect an idempotent replay to reproduce a 4xx as
-faithfully as a success, and `IDEMPOTENCY_KEY_IN_FLIGHT` (409) to mean the first attempt is still
+*Refusals are never replayed (**P-D-38**, 2026-08-28, superseding P-D-26's arm): a refusal stores
+nothing and releases the key, so a retry on the same key **runs** rather than replaying. A consumer
+can therefore retry a refused request on the same key and get a fresh verdict — which is what a
+client refused `STALE_REVISION` needs after re-reading the head — and an idempotent replay only
+ever reproduces a **success**. `IDEMPOTENCY_KEY_IN_FLIGHT` (409) still means the first attempt is
 running.*
 
 ### The SDK / §9 surface

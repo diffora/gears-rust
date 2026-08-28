@@ -46,6 +46,7 @@ joint contracts, cited from here by their pricing numbers, never duplicated.
 - [P-D-35 — The five slice-01 items the set already forced](#p-d-35--the-five-slice-01-items-the-set-already-forced)
 - [P-D-36 — The phase unit is withdrawn; a code's unit is its declaring slice](#p-d-36--the-phase-unit-is-withdrawn-a-codes-unit-is-its-declaring-slice)
 - [P-D-37 — One code per audit row, every violation in the answer](#p-d-37--one-code-per-audit-row-every-violation-in-the-answer)
+- [P-D-38 — A refusal stores nothing and releases the key](#p-d-38--a-refusal-stores-nothing-and-releases-the-key)
 
 <!-- /toc -->
 
@@ -1076,6 +1077,9 @@ instead.*
 - **Restated by** *(owed until 2026-08-27, all closed)*: `design/12-consumer-contracts.md` (`inst-cc-errors`' map gains two codes and a 503
   class), `design/10-retention-erasure.md` (the audit roster its retention class reads).
 
+- **Amended 2026-08-28 by P-D-38**: the "a refusal answers the key" call below is withdrawn. A
+  refusal stores nothing and releases the key; a retry runs. The other three boundaries stand.
+
 #### P-D-26 — Idempotency, identity and the publish bump: four transaction boundaries
 
 - **Context**: four fifth-pass items that all turned on the same unstated thing — which
@@ -1428,3 +1432,41 @@ instead.*
   cheaper arm than widening the column, which has three readers.
 - **Propagated**: `design/01-foundation.md` (§3.1, §3.3, §3.4, §6). Amends **P-D-33** (which said
   nothing about the within-phase case) and narrows **P-D-36**'s "deliberately not decided" note.
+
+
+#### P-D-38 — A refusal stores nothing and releases the key
+
+- **Date**: 2026-08-28 (owner call)
+- **Context**: `inst-fd-idem-claim-refusal` stored a refusal on the idempotency key and replayed it
+  "rather than re-running a rule whose verdict cannot change", carving out `AUDIT_UNAVAILABLE` as
+  the one refusal whose verdict *can* change. `inst-fd-idem-hash` keeps the precondition out of the
+  payload hash for the opposite reason: a client refused `STALE_REVISION` that re-read the head and
+  retried "is making the same request" and must therefore **run**. The two rules of one section
+  prescribed opposite things about the same retry.
+
+  **Measured on both sides.** The donor settles it directly: `gears/bss/pricing`'s `idempotent.rs`
+  runs claim and answer inside the mutation's transaction precisely so that "a failure anywhere
+  rolls the claim back with the mutation" — it stores no refusal at all and needs no exception. And
+  the alternative was measured rather than assumed: keyed on "the verdict can change on retry", the
+  carve-out selects **ten of the taxonomy's fifteen codes** — `APPROVAL_REQUIRED`,
+  `PARENT_NOT_PUBLISHED`, `RETIREMENT_PENDING`, `SCOPE_NOT_CONTAINED`, `INCOMPLETE_ENTITY`,
+  `ILLEGAL_TRANSITION`, both `DUPLICATE_*`, `STALE_REVISION` and `AUDIT_UNAVAILABLE`. Only the two
+  payload-determined codes (`VALIDATION`, `CONTENT_PII_BLOCKED`) and the two irreversible ones
+  (`ENTITY_TERMINAL`, `PARENT_TERMINAL`) would stay. The exception would have become the rule.
+
+  | Call | Propagation |
+  |---|---|
+  | **A refusal stores nothing and releases the key.** The answer write joins the mutation's transaction and rolls back with it; the door then deletes the claim row in its own transaction, so the key is free immediately and a retry runs. A key exists to prevent a duplicate *side effect*, and a refusal has none — the mutation rolled back — so storing one protects nothing while freezing a transient verdict for `expires_at`'s window, up to a day | 01 §3.2, §4.4; 12 (the consumer note) |
+  | **The carve-out is withdrawn**, `AUDIT_UNAVAILABLE` having needed one only because refusals were stored | 01 §3.2 |
+  | **`in_flight_until` now covers exactly one case — a door that died**, which is what `inst-fd-idem-claim-inflight-until` always said `claimed` means. The `AUDIT_UNAVAILABLE` collision §6 carried is gone: that 503 is retryable immediately | 01 §3.2, §6 |
+
+- **The argument against, stated**: a retried refusal now writes one audit row per attempt instead
+  of one per key. That is what already happens to every refused request carrying no key, and
+  `nfr-availability-audit` asks for 100% of refusals rather than for their deduplication.
+- **What it does not settle**: `in_flight_until`'s *value* still has no anchor, the set pinning no
+  door timeout — §6's item (a), now narrowed to crash recovery alone. And what the three
+  `internal:` lanes store in the response columns — item (b) — narrows without closing: the columns
+  now only ever reproduce a **success**, and a lane with no wire surface still has none.
+- **Propagated**: `design/01-foundation.md` (§3.2, §4.4, §6), `design/12-consumer-contracts.md`
+  (the replay note). Amends **P-D-26** (whose "a refusal answers the key" arm is withdrawn) and
+  narrows **P-D-34**'s claim-write boundary.

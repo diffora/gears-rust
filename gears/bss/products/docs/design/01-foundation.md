@@ -92,7 +92,7 @@ acknowledged, and rejections that always carry an audited reason. Per P-D-02, ev
   (four read paths the guard needed), P-D-29 (what a replay, an envelope and a digest carry),
   P-D-30 (gate host, authorization, whose validator), P-D-31 (the four routed outward, decided
   here), P-D-32 (the second lens wave's six calls), P-D-33 (eight calls from weeding the open items),
-  P-D-34 (the remaining items, decided from the set), P-D-35 (the five the set already forced), P-D-36 (the phase unit withdrawn), P-D-37 (one code per row, all violations in the answer)
+  P-D-34 (the remaining items, decided from the set), P-D-35 (the five the set already forced), P-D-36 (the phase unit withdrawn), P-D-37 (one code per row, all violations in the answer), P-D-38 (a refusal stores nothing)
 - Pricing `design/01-foundation.md` — the pattern donor (registered validators, append-only
   triggers with column whitelists, draft/published partial unique indexes, pending refs — **not
   the outbox**, which P-D-22 moved to `toolkit_db::outbox` after measuring that pricing runs a
@@ -473,10 +473,11 @@ audited reason; there is no partial application anywhere in the gear (PRD AC #38
      compares against it) and both response columns null **before** the
      guarded operation, and sets `state = answered` with **`response_status` and `response_body`**
      together — and `in_flight_until` back to NULL, without which the `answered` arm of §4.4's CHECK
-     refuses the write — on completion. **That write joins the mutation's transaction on success
-     and commits in its own on a refusal** (**P-D-34**): outside it, a crash between the mutation's
+     refuses the write — on completion. **That write joins the mutation's transaction**
+     (**P-D-34**, narrowed by **P-D-38**): outside it, a crash between the mutation's
      commit and the answer would leave a `claimed` key that `in_flight_until` releases, and the
-     retry would re-execute a committed act (owner's call, 2026-08-27, P-D-29: the donor's two columns, adopted
+     retry would re-execute a committed act — and on a refusal the same transaction rolls back, so
+     no answer is written and `inst-fd-idem-claim-refusal` releases the key instead (owner's call, 2026-08-27, P-D-29: the donor's two columns, adopted
      after all — this gear had imported a single `outcome_ref` instead, and a replay must reproduce
      the original response *including its status*, which a bare reference to an entity cannot do
      and which a refusal has no entity to reference at all); **no
@@ -491,11 +492,19 @@ audited reason; there is no partial application anywhere in the gear (PRD AC #38
      concurrent case. A payload *mismatch* is the branch `inst-fd-idem-replay` already answers, and
      stays `IDEMPOTENCY_CONFLICT` in either state. A request refused `IDEMPOTENCY_KEY_IN_FLIGHT`
      writes **nothing** to the row — it does not own the key - `inst-fd-idem-claim-inflight`
-   - [ ] - `p1` - **A refusal answers the key too**: a refused request is a finished request, so
-     the door **that claimed the key** sets `answered` with the refusal as the stored outcome and a retry replays it, rather
-     than re-running a rule whose verdict cannot change — **except `AUDIT_UNAVAILABLE`, which is
-     not stored** (**P-D-34**): it is the one refusal whose verdict *can* change on retry, so the
-     key stays `claimed` and `in_flight_until` releases it - `inst-fd-idem-claim-refusal`
+   - [ ] - `p1` - **A refusal stores nothing and releases the key** (owner's call, 2026-08-28,
+     **P-D-38**, adopting the donor's posture after measuring it — `gears/bss/pricing`'s
+     `idempotent.rs` runs claim and answer inside the mutation's transaction so that "a failure
+     anywhere rolls the claim back with the mutation", and it stores no refusal at all). The answer
+     write joins the mutation's transaction and rolls back with it, so a refused request leaves no
+     stored outcome; the door then **deletes the claim row in its own transaction**, freeing the
+     key immediately, and a retry **runs**. An idempotency key exists to prevent a duplicate
+     *side effect*, and a refusal has none — the mutation rolled back — so storing one protects
+     nothing while freezing a transient verdict for `expires_at`'s window, up to a day. **There is
+     no carve-out**: `AUDIT_UNAVAILABLE` needed one only because refusals were stored. Measured
+     against the alternative: keyed on "the verdict can change on retry", the exception selects
+     **ten of the taxonomy's fifteen codes** — every one an operator or a sibling act can clear —
+     and the exception becomes the rule - `inst-fd-idem-claim-refusal`
    - [ ] - `p1` - `claimed` therefore means exactly "in flight", and the only row needing release
      is one whose door died: a claim carries an **`in_flight_until`** deadline, distinct from
      `expires_at`'s retention window, after which a fresh claim replaces
@@ -860,8 +869,8 @@ read.
   · `payload_hash` · nullable `response_status` · nullable `response_body` · nullable `in_flight_until` ·
   `expires_at`, with one CHECK tying them: `claimed` ⇒ both response columns NULL and
   `in_flight_until` NOT NULL, `answered` ⇒ both response columns NOT NULL and `in_flight_until`
-  NULL (§3.2). The response columns carry a refusal's answer as readily as a success's — a refused
-  request is answered (P-D-26), and the replay is self-contained (P-D-29).
+  NULL (§3.2). The response columns carry a **success's** answer only (**P-D-38**: a refusal stores
+  nothing and releases the key), and the replay is self-contained (P-D-29).
 - **`products_audit_log`** — `audit_id` (PK, uuid — owner's call, 2026-08-27, P-D-28: the
   sealing seam's one-way UPDATE has to address a row that is not yet sealed, and `seq` is null
   until it is; the surrogate is independent of the chain's ordering) · `tenant_id` · `actor_ref` (pseudonymous; the identity-reference map is slice 10's) ·
@@ -1087,7 +1096,7 @@ and the ordering key.
   (frame), #42.
 
 **Risks & open items**: eleven review passes (the numbering restarted once, at the sixth) and
-fifteen owner rounds (P-D-23 through P-D-37) have run over this slice. What survives is one standing **risk**, five open questions, and a set of
+sixteen owner rounds (P-D-23 through P-D-38) have run over this slice. What survives is one standing **risk**, four open questions, and a set of
 pointers to items filed with owners outside this document.
 
 **Risk** — a hazard rather than a question:
@@ -1144,7 +1153,7 @@ pointers to items filed with owners outside this document.
   `composition_pending` no-re-raise clause may rest on **P-D-14**, which is still **FLAGGED** for
   its owner and whose propagation field does not name this document.
 
-**Open here** — five items. **P-D-33** (eight calls) and **P-D-34** (nine calls plus five of the
+**Open here** — four items. **P-D-33** (eight calls) and **P-D-34** (nine calls plus five of the
 idempotency store's seven operands) closed what the passes before them had raised, each cited in
 the rule it changed. The two lens passes since found that the rules those rounds wrote carry seams
 of their own; everything below is this slice's to settle.
@@ -1153,11 +1162,10 @@ of their own; everything below is this slice's to settle.
   value and no config key** — only "short by comparison" against `expires_at`. A deadline too short
   admits the duplicate the claim exists to refuse; too long wedges a crashed door's key. Deriving
   it from a door timeout is the obvious route, and the set pins no door timeout anywhere, so the
-  number has no anchor yet — and the same deadline decides a collision the store does not resolve:
-  `inst-fd-idem-claim-refusal` leaves the key `claimed` on `AUDIT_UNAVAILABLE` because that verdict
-  can change on retry, while `inst-fd-idem-claim-inflight` refuses exactly that matching-payload
-  retry `IDEMPOTENCY_KEY_IN_FLIGHT` until the deadline expires, so the one 503 whose remedy §3.3
-  states is retry is unretryable for an unbounded window. (b) **What the three `internal:` lanes
+  number has no anchor yet. **P-D-38 narrowed what it has to cover**: refusals now release the key,
+  so the deadline governs exactly one case — a door that died — which is what
+  `inst-fd-idem-claim-inflight-until` always said it meant. The `AUDIT_UNAVAILABLE` collision this
+  item used to carry is gone with it: that 503 is retryable immediately. (b) **What the three `internal:` lanes
   store in `response_status`/`response_body`** — both are NOT NULL once answered and exist to
   reproduce a *wire* response, which a lane with no wire surface has none of, while 04's crash
   replay and 09's per-row publish both ride this store. A synthetic status, a third CHECK arm
@@ -1168,12 +1176,6 @@ of their own; everything below is this slice's to settle.
   one client key share `(tenant, endpoint, client_key)` and an identical body hash — both empty —
   so the second replays the first's 200 and never runs, the path id being in neither the body nor,
   since P-D-34, the hash. Owner: this slice, with the NFR owner for (a).
-- **Does a stored refusal replay, or re-run?** `inst-fd-idem-claim-refusal` stores a refusal and
-  replays it "rather than re-running a rule whose verdict cannot change", carving out one member;
-  `inst-fd-idem-hash`'s reason for keeping the precondition out of the hash is that a client
-  refused `STALE_REVISION`, which re-read the head and retried, "is making the same request" and
-  must therefore **run**. If the carve-out is keyed on whether a verdict can change on retry, its
-  membership has to be re-derived over the whole taxonomy rather than asserted at one code.
 - **How a corrected bucket-ii value reaches the head row.** §4.2 now admits bucket-ii writes while
   `published_version = 0` and `lifecycle_state` is non-terminal and, after first publish, only in the same statement as a
   `published_version` bump — but `PublishDoor` takes `(entity, expected internal revision)` and its
