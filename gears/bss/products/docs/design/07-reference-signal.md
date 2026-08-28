@@ -282,3 +282,10 @@ events per §1.8. All tenant-scoped, append-only where evidential.
 - **Contracts' draft/quote question** (PRD §15) is answered at its registration, not before;
   the registration op is where that declaration is recorded — named here so the op's payload
   reserves the field.
+- **This slice's free-text `reason` door does not invoke the content-PII write block.** 02
+  `inst-av-pii-block` states the obligation and enumerates the doors that owe it, and names this
+  slice among those that "name neither the hook nor the code, so the obligation is stated here and
+  wired nowhere but 01". 02's own words for the consequence: personal data typed into a free-text
+  reason is broadcast on the broker and is then unreachable by erasure forever. Owed: name the door
+  that carries the field and cite `inst-av-pii-block`/`CONTENT_PII_BLOCKED` on it. Owner: this
+  slice. *(Found as a four-slice class by the slice-04 first lens pass; 04's own arm is fixed.)*

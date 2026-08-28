@@ -1067,7 +1067,7 @@ until while the decision speaks for all of them.*
 
 **Protocol/Format**: per-producer watermark ("as of `T`, complete live-reference set is {…}"); freshness on the watermark; registered producers only (Design owns shape).
 
-**Compatibility**: absence under a fresh watermark ⇒ zero; boolean OR across producers; stale/never-received ⇒ conservatively referenced + alert. Producer-set decision recorded in §15 , mirrored in the pricing PRD.
+**Compatibility**: absence under a fresh watermark ⇒ zero; boolean OR across producers; stale/never-received ⇒ conservatively referenced + alert. Producer-set decision recorded in §15, mirrored in the pricing PRD.
 
 #### `CatalogVersion` increment request (inbound)
 

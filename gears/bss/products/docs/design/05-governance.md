@@ -325,3 +325,10 @@ finance fields), 04 (un-deprecation, retirement confirmation, scheduled-approval
 - **What does `Gate` mode require of a gated transition?** 01 `inst-fd-gate-mode-gate` is worded for
   a publish and pins "the door's expected revision", while the transition doors are this slice's and
   04's and pin nothing stated in 01. Owner: this slice with 04. *(Filed from 01 §6 by the slice-01 eighth lens pass — the pointer claimed it was registered here and it was not.)*
+- **This slice's free-text `reason` door does not invoke the content-PII write block.** 02
+  `inst-av-pii-block` states the obligation and enumerates the doors that owe it, and names this
+  slice among those that "name neither the hook nor the code, so the obligation is stated here and
+  wired nowhere but 01". 02's own words for the consequence: personal data typed into a free-text
+  reason is broadcast on the broker and is then unreachable by erasure forever. Owed: name the door
+  that carries the field and cite `inst-av-pii-block`/`CONTENT_PII_BLOCKED` on it. Owner: this
+  slice. *(Found as a four-slice class by the slice-04 first lens pass; 04's own arm is fixed.)*

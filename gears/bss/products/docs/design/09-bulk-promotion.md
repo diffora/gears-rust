@@ -220,3 +220,10 @@ via 05).
   slice's C5 fallback promotion identity where `productCode` is absent — and `product_code` is
   nullable, so a rename between promotions makes the target resolve *unknown identity* and create a
   second Product, which C5's four-way classification exists to prevent. Owner: this slice. *(Filed from 01 §6 by the slice-01 eighth lens pass — the pointer claimed it was registered here and it was not.)*
+- **This slice's free-text `reason` door does not invoke the content-PII write block.** 02
+  `inst-av-pii-block` states the obligation and enumerates the doors that owe it, and names this
+  slice among those that "name neither the hook nor the code, so the obligation is stated here and
+  wired nowhere but 01". 02's own words for the consequence: personal data typed into a free-text
+  reason is broadcast on the broker and is then unreachable by erasure forever. Owed: name the door
+  that carries the field and cite `inst-av-pii-block`/`CONTENT_PII_BLOCKED` on it. Owner: this
+  slice. *(Found as a four-slice class by the slice-04 first lens pass; 04's own arm is fixed.)*
