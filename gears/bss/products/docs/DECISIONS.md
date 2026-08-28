@@ -50,6 +50,7 @@ joint contracts, cited from here by their pricing numbers, never duplicated.
 - [P-D-39 — The scope columns, and what the empty set means](#p-d-39--the-scope-columns-and-what-the-empty-set-means)
 - [P-D-40 — The entity-version retention DELETE, under a referential predicate](#p-d-40--the-entity-version-retention-delete-under-a-referential-predicate)
 - [P-D-41 — The two doors that write bucket-ii](#p-d-41--the-two-doors-that-write-bucket-ii)
+- [P-D-42 — The idempotency store's last three operands](#p-d-42--the-idempotency-stores-last-three-operands)
 
 <!-- /toc -->
 
@@ -1081,7 +1082,11 @@ instead.*
   class), `design/10-retention-erasure.md` (the audit roster its retention class reads).
 
 - **Amended 2026-08-28 by P-D-38**: the "a refusal answers the key" call below is withdrawn. A
-  refusal stores nothing and releases the key; a retry runs. The other three boundaries stand.
+  refusal stores nothing and releases the key; a retry runs.
+- **Amended 2026-08-28 by P-D-42**: the "claim commits in its own transaction" call is withdrawn
+  too, its stated reason having been measured and found not to hold — the gate is the insert, not
+  a read, so a duplicate is stopped by the index conflict rather than by seeing the row. Two of
+  this entry's four boundaries stand.
 
 #### P-D-26 — Idempotency, identity and the publish bump: four transaction boundaries
 
@@ -1568,3 +1573,36 @@ instead.*
 - **Propagated**: `design/01-foundation.md` (§2 publish rows and `inst-fd-save-txn`, §4.2, §6),
   `design/03-sku-classification.md` (`inst-mt-bucket`), `design/07-reference-signal.md`
   (the re-publish step).
+
+
+#### P-D-42 — The idempotency store's last three operands
+
+- **Date**: 2026-08-28 (owner call — the last of slice 01's own open items)
+- **Context**: three operands the store named and never pinned: `in_flight_until`'s value, what the
+  three `internal:` lanes write into the response columns, and what `endpoint` holds for a wire
+  caller. The first had been filed as needing input this set does not hold, because no door timeout
+  exists anywhere to derive a deadline from.
+
+  **It turned out not to need one.** `in_flight_until` exists only because the claim committed in
+  its own transaction, and that arrangement rests on **P-D-26**'s stated reason — that a claim
+  inside the mutation's transaction would be "invisible to the concurrent duplicate this row exists
+  to refuse". Measured against the donor, that reason does not hold: `gears/bss/pricing`'s
+  `idempotency_repo` states in as many words that **"the gate is the insert, not a lookup"**, and a
+  losing duplicate's own INSERT conflicts with the winner's *uncommitted* row and waits — then
+  either finds the committed answer and replays it, or finds nothing left to conflict with, the
+  winner having rolled back, and claims the key itself. Visibility is never the mechanism; the
+  unique index is.
+
+  | Call | Propagation |
+  |---|---|
+  | **The claim joins the mutation's transaction**, superseding P-D-26's arm. On SQLite the loser is answered `SQLITE_BUSY` rather than blocking, so the door carries a busy timeout and retries — the guarantee is identical, two are never admitted, and only the waiting differs | 01 §3.2 `inst-fd-idem-claim-txn` |
+  | **`in_flight_until` is removed**, column and deadline alike. An unanswered claim was rolled back with its mutation, so nothing committed survives to expire and no row is ever left needing release. P-D-38's explicit delete-on-refusal becomes automatic for the same reason | 01 §3.2, §4.4 |
+  | **An `internal:` lane stores a synthetic `200` and its own outcome record as the body.** One CHECK, one shape, no nullable-for-internal arm, and absence keeps a single meaning in these columns | 01 §4.4 |
+  | **A wire caller's `endpoint` is the concrete resource path**, not the route template. Under the template two publishes of different entities under one client key share the whole key and an identical empty body hash, and the second replays the first's 200 without running — the path id being in neither the body nor, since P-D-34, the hash | 01 §3.2 `inst-fd-idem-key-scope` |
+
+- **The arguments against, stated**: a synthetic status that never reached a wire is stored as
+  though it had, and only an internal replay ever reads it; and the two lanes now name their
+  subject in different components of the key — the wire lane in `endpoint`, the internal lanes in
+  `client_key` — which §3.2 says once rather than leaving to be discovered.
+- **Propagated**: `design/01-foundation.md` (§3.2, §4.4, §6). Amends **P-D-26** a second time (two
+  of its four boundaries now stand) and simplifies **P-D-38**'s release step.
