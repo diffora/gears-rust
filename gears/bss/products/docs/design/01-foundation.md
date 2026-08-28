@@ -92,7 +92,7 @@ acknowledged, and rejections that always carry an audited reason. Per P-D-02, ev
   (four read paths the guard needed), P-D-29 (what a replay, an envelope and a digest carry),
   P-D-30 (gate host, authorization, whose validator), P-D-31 (the four routed outward, decided
   here), P-D-32 (the second lens wave's six calls), P-D-33 (eight calls from weeding the open items),
-  P-D-34 (the remaining items, decided from the set)
+  P-D-34 (the remaining items, decided from the set), P-D-35 (the five the set already forced)
 - Pricing `design/01-foundation.md` — the pattern donor (registered validators, append-only
   triggers with column whitelists, draft/published partial unique indexes, pending refs — **not
   the outbox**, which P-D-22 moved to `toolkit_db::outbox` after measuring that pricing runs a
@@ -150,7 +150,7 @@ acknowledged, and rejections that always carry an audited reason. Per P-D-02, ev
 | C2 | Broker-native envelope; no CloudEvents field anywhere in the payload path | P-D-01 |
 | C3 | No money, no price, no charge computation in this gear | PRD §2.1 |
 | C4 | Every table carries `tenant_id`; all repository access through SecureORM tenant scoping | PRD §6.8; ToolKit |
-| C5 | Append-only posture: head rows, history rows and `products_audit_log` are physically guarded (REVOKE + trigger whitelist), not just conventionally. Exempt by design: the slice-08 projection family (rebuildable state, not records) and expiring operational stores (idempotency sweep) | PRD `fr-revision-vs-version`; `fr-registry-eventing-audit` (the audit-log arm) |
+| C5 | Append-only posture: head rows, history rows and `products_audit_log` are physically guarded (the trigger whitelist on **both** engines, plus `REVOKE` on Postgres — **P-D-35**: SQLite has no `GRANT`/`REVOKE`, so the whitelist is the whole guard there, the same way **P-D-31** kept the guard row-image rather than door-reading), not just conventionally. Exempt by design: the slice-08 projection family (rebuildable state, not records) and expiring operational stores (idempotency sweep) | PRD `fr-revision-vs-version`; `fr-registry-eventing-audit` (the audit-log arm) |
 | C6 | Idempotency-key retention ≥ 24h **and** ≥ the maximum freeze timeout (slice 06 exports the number; the store reads it as config) | PRD AC #27 |
 
 ### 1.7 Naming & Design-Introduced Names
@@ -519,7 +519,9 @@ map is complete), `PARENT_TERMINAL` (the parent's own state, wherever the `state
 gate), `VALIDATION` (per-field envelope), `RETIREMENT_PENDING` (the create door's parent guard,
 `inst-fd-containment-retire-intent` — **declared by slice 04**, listed here only for the response map
 (**P-D-34**: P-D-30 gave 04 **both arms**, so this slice raises neither and cannot hold the
-declaration), so this code has two raising **arms** in one phase, and the
+declaration — a call about this code, not a general test. **P-D-35** fixes the general rule: *the
+slice that names a code for its response map holds the declaration unless the register moves it*,
+which is why `PARENT_NOT_PUBLISHED` stays this slice's and `RETIREMENT_PENDING` does not), so this code has two raising **arms** in one phase, and the
 rule below is stated per **arm** for it). **Every code raised *inside* the pipeline appears in exactly one raising *phase* of
 it** (owner's call, 2026-08-27; scoped to the inside by **P-D-32** — the pre-pipeline
 authorization gate is not a phase, so the denial code 05 still owes, and
@@ -626,7 +628,10 @@ absent `If-Match` to `VALIDATION`, §2** —
 what it **is**, so a retriable
 conflict on mutable state stays a **409** rather than collapsing into the 400 bucket; and a bare
 **400 with no code of its own** is reserved for a malformed request, which is why no registry code
-is mapped to 400. Stated here once, in the Foundation, rather than per occurrence.
+is mapped to 400. **A 404 is bare on the same reading** (**P-D-35**): a path segment is judged
+before the pipeline opens, so no phase raises it, the governing `api-contracts.md` pins no code
+for it, and giving it one would require a raising phase this taxonomy cannot supply. Stated here
+once, in the Foundation, rather than per occurrence.
 
 ### 3.4 Concurrency doors (PRD §6.13 residents of this slice)
 
@@ -694,7 +699,7 @@ Unicode NFKC → full casefold → trim + collapse internal whitespace to single
 `tax_category_ref` · `gl_code_ref` (**both columns are contingent** — PRD §15 carries the
 open question of whether this registry owns them at all, §2.1 saying they are owned elsewhere
 while `fr-accounting-codes` requires the registry to persist and validate them) · `metering_unit` · `usage_type_ref` ·
-`composition_pending` (bool, slice 06 semantics) · `replaced_by_sku_id` (slice 04) ·
+`composition_pending` (bool, **NOT NULL, default `false`** — **P-D-35**: the create flow writes it nowhere and the publish door on a `bundle` is its only raiser, so the default is the unraised state; slice 06 semantics) · `replaced_by_sku_id` (slice 04) ·
 `internal_revision` · `published_version` · `region_scope`/`brand_scope` (⊆ parent, §2 flow) ·
 `created_by` · `cloned_from` (nullable; written only in the creating statement and immutable from then on —
 stricter than bucket-i, which bites only after first publish; a later write fails
@@ -769,12 +774,16 @@ matrix's bucket-iv catch-all, which that FR words as "other **descriptive** fiel
 ### 4.3 `products_entity_version` (published history)
 
 `(tenant_id, entity_kind, entity_id, published_version)` UNIQUE · frozen full content **excluding the metadata map, and excluding `lifecycle_state`,
-`deprecation_provenance` and `replaced_by_sku_id`** (**P-D-24**, owner's call, 2026-08-27: those three move on
+`deprecation_provenance`, `replaced_by_sku_id` and `internal_revision`** (**P-D-24**, owner's call,
+2026-08-27, extended by **P-D-35**: those four move on
 transitions, which write no version row, so freezing them would need the digest to change on a
-write that produces no row to digest — they are read from the head row, below) (slice 02's `products_metadata`; P-D-06 — the map lives beside the entity,
+write that produces no row to digest — they are read from the head row, below. `internal_revision`
+meets the same criterion, `inst-fd-transition-bump` bumping it on **every** transition, and was
+left out of the original enumeration) (slice 02's `products_metadata`; P-D-06 — the map lives beside the entity,
 captured only by `CatalogVersion` snapshots) — the publish-time entity, engine-canonical
 serialization, the byte-identity discipline that `CatalogVersion` (slice 06) will reuse ·
-**a per-row content digest written at freeze** — **SHA-256** over the canonical rendering below,
+**a per-row content digest written at freeze** — **`content_digest`** (**P-D-35** names it; §5's
+golden vector and 10's restore drill both address it), **SHA-256** over the canonical rendering below,
 with a **`digest_version`** column beside it, **starting at `1`** and pinned as a code constant by §5's golden vector rather than by config (**P-D-33**) (owner's call, 2026-08-27, P-D-29: `sha2` is already
 a workspace dependency, and the "digest-version bump, not a silent change" rule below is only
 checkable if the version a row was computed under is stored on the row) (the slice-10 restore drill re-verifies sampled
@@ -907,8 +916,8 @@ read.
   NOT NULL (a NULL `prev_hash` stays legitimate — it is the segment head). The gear computes no
   hash and runs no verification job; what the platform capability must satisfy is P-D-08 S1–S9.
 
-  `products_audit_log` carries the same append-only posture as the entity tables (C5): REVOKE plus
-  a trigger whose whitelist admits no UPDATE or DELETE except the one below and the retention
+  `products_audit_log` carries the same append-only posture as the entity tables (C5): `REVOKE` on Postgres
+  (**P-D-35**) plus a trigger whose whitelist admits no UPDATE or DELETE except the one below and the retention
   DELETE. **The retention DELETE arm** (**P-D-34**) is a row-image predicate — a row whose
   `written_at` is older than its class's retention window — so 10 `inst-rt-gc` has an admitted
   path; the window's *value* is Legal/Finance's (`PRD` §15) and the predicate does not wait on it.
@@ -1049,7 +1058,7 @@ and the ordering key.
   (frame), #42.
 
 **Risks & open items**: eleven review passes (the numbering restarted once, at the sixth) and
-twelve owner rounds (P-D-23 through P-D-34) have run over this slice. What survives is one standing **risk**, eight open questions, and a set of
+thirteen owner rounds (P-D-23 through P-D-35) have run over this slice. What survives is one standing **risk**, seven open questions, and a set of
 pointers to items filed with owners outside this document.
 
 **Risk** — a hazard rather than a question:
@@ -1107,7 +1116,7 @@ pointers to items filed with owners outside this document.
   `composition_pending` no-re-raise clause may rest on **P-D-14**, which is still **FLAGGED** for
   its owner and whose propagation field does not name this document.
 
-**Open here** — twelve items. **P-D-33** (eight calls) and **P-D-34** (nine calls plus five of the
+**Open here** — seven items. **P-D-33** (eight calls) and **P-D-34** (nine calls plus five of the
 idempotency store's seven operands) closed what the passes before them had raised, each cited in
 the rule it changed. The two lens passes since found that the rules those rounds wrote carry seams
 of their own; everything below is this slice's to settle.
@@ -1158,16 +1167,6 @@ of their own; everything below is this slice's to settle.
   read — so the verdict arrives after the governance gate has already run, and an implementer who
   builds the phase as a pre-write read reintroduces the race §3.4 forbids. With 12, whose AC #38
   map reads that column.
-- **Which columns meet §4.3's exclusion criterion.** The criterion is a column that moves on a transition which writes no
-  version row, and three columns are excluded by name (**P-D-24**). `internal_revision`
-  meets it too — `inst-fd-transition-bump` bumps it on *every* transition — and the list does not
-  name it, so the digest's input is fixed by an enumeration and a criterion that disagree. The
-  **digest column itself is also unnamed** — every other column in that roster is named, and both
-  §5's golden vector and 10's restore drill address it.
-- **`composition_pending` has no stated default.** §4.2 lists it `(bool, slice 06 semantics)` with
-  neither a default nor a nullability marker, beside `sellable (default true)`; the create flow
-  writes it nowhere and the only writer named is the publish door on a bundle, while 11 **Reset**s
-  it (as `compositionPending`) without saying to what. With 06, which owns the flag's semantics.
 - **How a corrected bucket-ii value reaches the head row.** §4.2 now admits bucket-ii writes while
   `published_version = 0` and `lifecycle_state` is non-terminal and, after first publish, only in the same statement as a
   `published_version` bump — but `PublishDoor` takes `(entity, expected internal revision)` and its
@@ -1189,18 +1188,3 @@ of their own; everything below is this slice's to settle.
   another table, so no predicate a trigger can evaluate is stated. Either the table gains a
   whitelist DELETE arm under some row-image predicate, or the GC deletes outside the trigger. With
   10, whose collection path it is.
-- **C5's `REVOKE` arm has no meaning on the SQLite half of C1's dual-engine store.** SQLite has no
-  `GRANT`/`REVOKE`, so one migration cannot carry that arm on both engines; the file reasons
-  explicitly about the same asymmetry twice for session variables and not here. Either the arm is
-  declared Postgres-only — with the trigger whitelist as the whole SQLite guard, and the
-  schema-oracle goldens differing by that statement — or "guards defined once" admits an
-  engine-conditional arm.
-- **Does a 404 carry a registry code, or is it bare like the 400?** Four `{id}`-addressed doors can
-  be called with an id that resolves to nothing, no code in §3.3 maps to 404, and the shape phase's
-  resolvability clause is scoped to references the *payload* carries, not a path segment. With the
-  API-contract owner named in §3.3.
-- **The declaration criterion in §3.3 reads wider than the set follows.** `RETIREMENT_PENDING`'s
-  entry states a general test — this slice "raises neither and cannot hold the declaration"
-  (**P-D-34**) — which `PARENT_NOT_PUBLISHED` also satisfies, yet this slice declares it and 04
-  lists it as declared here. Either the criterion is narrower than its wording, or one of the two
-  codes is mis-declared under the one-declaration rule.

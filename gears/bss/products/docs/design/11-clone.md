@@ -115,7 +115,7 @@ copies, what resets, and what must be re-proven against today's vocabularies.
 | Metering declaration (`unit`, `usageTypeRef`) | **Copy + re-validate** (deprecated/de-listed unit ⇒ fail per AC #38; `usageTypeRef` re-resolves per P-D-05) |
 | Accounting codes | **Copy + re-validate** against the live sets |
 | `sellable` | **Copy** (bucket-iii value, judged again at publish) |
-| Lifecycle, versions, approvals, `compositionPending`, `replacedBy`, deprecation provenance | **Reset** (C3 — state never copies) |
+| Lifecycle, versions, approvals, `compositionPending`, `replacedBy`, deprecation provenance | **Reset** (C3 — state never copies; `compositionPending` to its `false` default, 01 P-D-35) |
 | Pricing/plan anything | **Never** (not carried here at all — the boundary) |
 
 ## 4. Data / Storage

@@ -43,6 +43,7 @@ joint contracts, cited from here by their pricing numbers, never duplicated.
 - [P-D-32 — Six calls closing the slice-01 second lens wave](#p-d-32--six-calls-closing-the-slice-01-second-lens-wave)
 - [P-D-33 — Eight calls from weeding slice 01's open items](#p-d-33--eight-calls-from-weeding-slice-01s-open-items)
 - [P-D-34 — The remaining slice-01 items, decided from the set](#p-d-34--the-remaining-slice-01-items-decided-from-the-set)
+- [P-D-35 — The five slice-01 items the set already forced](#p-d-35--the-five-slice-01-items-the-set-already-forced)
 
 <!-- /toc -->
 
@@ -1292,3 +1293,37 @@ instead.*
   following from what the set fixes.
 - **Propagated**: `design/01-foundation.md` (§1.7, §2, §3.1, §3.2, §3.3, §4.2, §4.3, §4.4, §4.5,
   §6), `design/04-lifecycle.md` (both codes' reciprocal qualifiers).
+
+
+#### P-D-35 — The five slice-01 items the set already forced
+
+- **Date**: 2026-08-28 (owner call, after the sixth and seventh lens passes)
+- **Context**: the seventh pass left twelve open items in `design/01-foundation.md` §6. Five of
+  them were not open in the sense the other seven are: for each, this set already held a rule, a
+  precedent or a reciprocal claim that made one answer the only consistent one, and the item was
+  open only because nobody had said so out loud. Those five are decided here. The remaining seven
+  are genuine forks — each reopens something if answered the other way — and stay in §6 with their
+  owners named.
+
+  | Call | Propagation |
+  |---|---|
+  | **`internal_revision` joins §4.3's frozen-content exclusions**, and the digest column is named **`content_digest`**. The exclusion criterion is a column that moves on a transition writing no version row; `inst-fd-transition-bump` bumps `internal_revision` on **every** transition, so it met the criterion and was simply missing from the enumeration. Without the name, §5's golden vector and 10's restore drill both address a column the schema never declares | 01 §4.3, §5; 10 `inst-rd-drill` |
+  | **`composition_pending` is `NOT NULL` with default `false`.** The create flow writes it nowhere and the publish door on a `bundle` is its only raiser, so the default is the unraised state — the one value under which 11's **Reset** has a meaning and the first migration does not need a nullable third reading | 01 §4.2; 11 (the clone Reset row); 06 (semantics owner) |
+  | **`REVOKE` is a Postgres-only arm; the trigger whitelist is the whole guard on SQLite.** SQLite has no `GRANT`/`REVOKE`, so one migration cannot carry that arm on both engines, and C1 requires both dual-engine and "guards defined once". This is **P-D-31**'s reasoning applied a second time: where a mechanism exists on one engine only, the guard is the row-image trigger and the rest is an application or deployment guarantee. The schema-oracle goldens differ by exactly this statement, and the difference is now stated rather than discovered | 01 §1.6 C5, §4.4; 05 C7 |
+  | **A 404 is bare, carrying no registry code** — the reading §3.3 already applies to the bare 400. A path segment is judged before the pipeline opens, so no phase raises it; the governing `.cf-studio/config/rules/api-contracts.md` pins no code for it; and giving it one would require a raising phase this taxonomy cannot supply without reopening the one-phase rule | 01 §3.3; 12 (AC #38 map unchanged — nothing is added to it) |
+  | **The declaration rule: the slice that names a code for its response map holds the declaration unless the register moves it.** P-D-34's "raises neither and cannot hold the declaration" was a call about `RETIREMENT_PENDING`, not a general test — read generally it also selects `PARENT_NOT_PUBLISHED`, which 01 declares and 04 twice records as declared in 01. Narrowing the wording leaves both codes exactly where the set already puts them | 01 §3.3; 04 (its two reciprocal lines already agree) |
+
+- **Left open**: the other seven §6 items, none of which the set forces — what the "exactly one
+  raising phase" rule ranges over (raised independently by all three lenses); the idempotency
+  store's three unpinned operands (`in_flight_until`'s value, what the `internal:` lanes store in
+  the response columns, and whether `endpoint` is a route template or a concrete path); whether a
+  stored refusal replays or re-runs; one `error_code` against several codes in one phase, and the
+  same item's write-side half; which door writes bucket-ii on either side of first publish; the
+  scope columns no door writes; and `products_entity_version`'s missing DELETE arm against 10's
+  retention GC.
+- **Owed elsewhere**: `PRD` §15/§16 still word the interim audit control as "`REVOKE` + trigger
+  whitelist" without the engine split — precision, not a contradiction, and the PRD owner's to
+  take.
+- **Propagated**: `design/01-foundation.md` (§1.4, §1.6 C5, §3.3, §4.2, §4.3, §4.4, §6),
+  `design/05-governance.md` (C7), `design/10-retention-erasure.md` (`inst-rd-drill`),
+  `design/11-clone.md` (the clone-disposition table).
