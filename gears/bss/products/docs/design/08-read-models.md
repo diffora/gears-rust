@@ -54,14 +54,15 @@ mislabeled content is never acceptable at any load.
 | `cpt-cf-bss-products-actor-presentation` | The browse/search consumer; cache warming |
 | `cpt-cf-bss-products-actor-marketplace` | Listing reads over published SKUs |
 | `cpt-cf-bss-products-actor-auditor` | Version-history timeline reads (served from 01's frozen rows, projected here) |
-| `cpt-cf-bss-products-actor-catalog-admin` | Deferred-intent and freeze-status dashboards |
+| `cpt-cf-bss-products-actor-catalog-admin` | Deferred-intent, freeze-status and delivery/DLQ dashboards |
 
 ### 1.4 References
 
 - [`../PRD.md`](../PRD.md) §6.8 (`fr-cache-first-browse`), §5.1 (advanced search p2), §7
-  (NFR #1/#2/#7/#10 + convergence); AC #32; glossary (Read model)
+  (NFR #1/#2/#7/#10 + convergence); AC #30, AC #32, AC #39; glossary (Read model)
 - [`./01-foundation.md`](./01-foundation.md) §4.3 — frozen versions as the **only**
-  consumer-read surface (the projector's sole entity-content source)
+  consumer-read surface for **Product/SKU** entity *content* (governed live entities are read from
+  their live tables — C6)
 - [`./06-catalog-version.md`](./06-catalog-version.md) — `CatalogVersionPublished` (the
   staleness anchor), the capture store (category/definition content)
 - [`./04-lifecycle.md`](./04-lifecycle.md) M6 — 04 owns the deferred-intent query surface;
@@ -70,7 +71,7 @@ mislabeled content is never acceptable at any load.
 ### 1.5 Scope
 
 **In**:
-- the projector (event-driven, from 01/04/06 events over frozen content)
+- the projector (event-driven, from 01/02/03/04/06 events over frozen content)
 - the projection schemas
 - per-state visibility
 - staleness signaling
@@ -95,13 +96,13 @@ mislabeled content is never acceptable at any load.
 | C3 | Every read response carries `asOfCatalogVersion` — the one staleness signal, in degraded mode too (no silently-stale response) | PRD `fr-cache-first-browse`, NFR #7 |
 | C4 | Stale reads are safe: never unpublished, never cross-scope, at any load; shedding/queuing over leaking | NFR #7 |
 | C5 | Convergence: projection reflects a write within p99 < 2 s **of write commit** — the PRD's thrice-stated clock (M1 fix: the earlier re-basing to outbox acceptance collapsed budgets NFR #3 keeps distinct); decomposed as commit→durable-acceptance (01's outbox meter) + acceptance→projected (this slice's meter) | PRD §17.1, NFR #3 |
-| C6 | **Product/SKU** entity content projects **only** from frozen `products_entity_version` rows — never from head rows (01's rule; what makes stale-but-safe structural). The frozen set **excludes** `lifecycle_state`, `deprecation_provenance` and `replaced_by_sku_id` (**P-D-24**) — those move on transitions that write no version row, so this slice reads them from the head row, which is what this slice's own row listing — "identity, state + flags" — already assumed. The events it projects from carry 01's common body core, `*Published` additionally carrying **`publishedVersion`** (**P-D-27**), which is the projector's key. **Governed live entities** (categories + display values, definitions, recognized sets/tier labels) are read from their **live tables** (H3 fix: they have no frozen versions and no draft state to leak — their mutations are governed-and-applied, so a live read is already-published content; the per-CV captures are 06's snapshot concern, not this projector's source) | 01 §4.3, H3 |
+| C6 | **Product/SKU** entity content projects **only** from frozen `products_entity_version` rows — never from head rows (01's rule; what makes stale-but-safe structural). The frozen set **excludes** `lifecycle_state`, `deprecation_provenance`, `replaced_by_sku_id` and `internal_revision` (**P-D-24**, extended by **P-D-35**) — those move on transitions that write no version row, so this slice reads them from the head row, which is what this slice's own row listing — "identity, state + flags" — already assumed. The events it projects from carry 01's common body core, `*Published` additionally carrying **`publishedVersion`** (**P-D-27**), which is the projector's key. **Governed live entities** (categories + display values, definitions, recognized sets/tier labels) are read from their **live tables** (H3 fix: they have no frozen versions and no draft state to leak — their mutations are governed-and-applied, so a live read is already-published content; the per-CV captures are 06's snapshot concern, not this projector's source) | 01 §4.3, H3 |
 
 ### 1.7 Naming & Design-Introduced Names
 
 | Name | Meaning |
 |------|---------|
-| `ReadProjector` | The single event-driven consumer building all projections (per-tenant ordered by the outbox `(tenant, aggregate)` keys) |
+| `ReadProjector` | The single event-driven consumer building all **event-driven** projections (the polled dashboard family of `inst-ps-dashboards` is not its subject) (per-tenant ordered by the outbox `(tenant, aggregate)` keys) |
 | `BrowseProjection` | The denormalized per-tenant serving rows: entity content + display attributes (resolved per `LocaleResolver`) + category paths + state + flags |
 | `StalenessStamp` | The per-tenant high-water mark `(asOfCatalogVersion, projectedAt)` every response carries |
 | `VisibilityFilter` | The per-state contract applied at query build time — not post-filtering |
@@ -110,7 +111,7 @@ mislabeled content is never acceptable at any load.
 
 **Consumed**: 01 events (publishes, discards), 04 events (deprecation/retirement flips —
 **not** deferred intents: those sources emit none, and their dashboards are **polled
-projections** from 04's own table per `inst-ps-shape`, item 35 of the review), 02 events (`Category*`, `CategoryDisplayUpdated`,
+projections** from 04's own table per `inst-ps-dashboards`, item 35 of the review), 02 events (`Category*`, `CategoryDisplayUpdated`,
 `AttributeDefinitionUpdated`), 06 (`CatalogVersionPublished` — advances the `StalenessStamp`),
 03 vocabulary events (tier labels for display). **Produced**: the browse/search API, the
 history timeline, the dashboards; the convergence and staleness metrics.
@@ -121,22 +122,22 @@ history timeline, the dashboards; the convergence and staleness metrics.
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-flow-browse`
 
-1. [ ] - `p1` - `GET /bss-products/v1/browse…` (`product|sku × read`): tenant/brand/region scope is resolved from claims and applied **inside the query** (`VisibilityFilter` + scope predicates at query build — post-filtering is forbidden because a shed row must never have been fetched) - `inst-rb-query`
+1. [ ] - `p1` - `GET /bss-products/v1/browse…` (`product|sku × read`, plus `category × read` for the category/facet half): tenant/brand/region scope is resolved from claims and applied **inside the query** (`VisibilityFilter` + scope predicates at query build — post-filtering is forbidden because a shed row must never have been fetched) - `inst-rb-query`
 2. [ ] - `p1` - Per-state contract (C2): `deprecated` rows carry the machine-readable flag and an `excludeDeprecated` filter; `retired` appears only through the explicit history surface - `inst-rb-visibility`
-3. [ ] - `p1` - Every response carries the `StalenessStamp` (C3) — including error and degraded responses that carry any content at all - `inst-rb-stamp`
+3. [ ] - `p1` - Every response carries the `StalenessStamp` (C3) — including error and degraded responses - `inst-rb-stamp`
 4. [ ] - `p2` - Facets (category tree, type, tier label, sellable, unit) build from the same projection; filterable under **every** assigned category (primary + secondary — the 02 contract) - `inst-rb-facets`
 
 ### Read the version-history timeline
 
 - [ ] `p2` - **ID**: `cpt-cf-bss-products-flow-history`
 
-1. [ ] - `p2` - `GET …/{entity}/versions` (`audit × read` for cross-entity trails; `product|sku × read` for the own-entity timeline): projected from 01's frozen rows — version list, per-version diff (computed between frozen rows), approval refs, actor pseudonyms; `retired` entities are reachable here (the C2 carve-out) - `inst-rh-timeline`
+1. [ ] - `p2` - `GET /bss-products/v1/{products|skus}/{id}/versions` (`audit × read` for cross-entity trails; `product|sku × read` for the own-entity timeline): projected from 01's frozen rows — version list, per-version diff (computed between frozen rows), approval refs, actor pseudonyms; `retired` entities are reachable here (the C2 carve-out) - `inst-rh-timeline`
 
 ### Project (the write→read pipeline)
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-flow-project`
 
-1. [ ] - `p1` - `ReadProjector` consumes the broker per `(tenant, aggregate)` ordering; each event is projected idempotently (the sequence is a **consumer checkpoint per aggregate**, not a row version — L1); Product/SKU content is fetched from frozen versions by the ids the event carries, live-entity content from its live tables (C6), never from heads - `inst-rp-consume`
+1. [ ] - `p1` - `ReadProjector` consumes the broker per `(tenant, aggregate)` ordering; each event is projected idempotently (the sequence is a **consumer checkpoint per aggregate**, not a row version — L1); Product/SKU content is fetched from frozen versions by the ids the event carries, live-entity content from its live tables, and `lifecycle_state`, `deprecation_provenance`, `replaced_by_sku_id` from the head row (C6); no other Product/SKU content is read from heads - `inst-rp-consume`
 2. [ ] - `p1` - **The stamp is a floor (P-D-07)**: every catalog version ≤ the stamp is fully reflected, and later entity events may **add, change, or remove** content relative to the stamped version (H1 fix — the earlier "strictly additive" premise was false: a retirement flip removes without an increment); `projectedAt` is the fine-grained coordinate; a tenant with zero catalog versions stamps `asOfCatalogVersion = null` + `projectedAt` (M6). The stamp **advances only after the event's own changed-entity list is projected from frozen rows in the same step** (H2 fix: the stamp never claims a version whose content it is missing, regardless of cross-aggregate arrival order) - `inst-rp-stamp`
 3. [ ] - `p1` - A projector checkpoint that predates the available event tail **fails loudly** and rebuilds from the bootstrap path (latest `CatalogVersion` + tail — the slice-12 replay contract); the rebuild serves the old projection until cutover (read availability through rebuilds) - `inst-rp-bootstrap`
 4. [ ] - `p2` - A category **re-parent** re-files every descendant's browse path: the projector recomputes the affected subtree from the event (the 02 risk, owned here); the subtree recompute is bounded by the taxonomy depth/children limits - `inst-rp-reparent`
@@ -145,7 +146,7 @@ history timeline, the dashboards; the convergence and staleness metrics.
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-flow-degrade`
 
-1. [ ] - `p1` - Above the throughput ceiling: shed or queue with `429`/`503` + `Retry-After` — never serve from the write path, never widen scope, never drop the stamp (C3/C4); shedding is per tenant partition so one tenant's burst cannot starve another - `inst-dg-shed`
+1. [ ] - `p1` - Above the throughput ceiling: shed or queue with `503` (`READ_MODEL_OVERLOADED`, §3.2) + `Retry-After` — never serve from the write path, never widen scope, never drop the stamp (C3/C4); shedding is per tenant partition so one tenant's burst cannot starve another - `inst-dg-shed`
 2. [ ] - `p1` - Under projector lag past the convergence budget: keep serving (stale-but-labeled), raise `read_model_lag` naming the tenant and the lag; the stamp makes the staleness machine-readable to every caller - `inst-dg-lag`
 
 ## 3. Processes / Business Logic
@@ -154,13 +155,13 @@ history timeline, the dashboards; the convergence and staleness metrics.
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-algo-projection`
 
-1. [ ] - `p1` - `products_read_entity` — per-tenant denormalized rows: identity, state + flags (`deprecated`, `compositionPending`, `sellable`), **brand/region scope columns** (the operands `VisibilityFilter`'s scope predicates filter on — M2), type/tier/unit display fields, resolved display attributes per locale coordinate (materialized for the tenant's active locales), category paths, `published_version`. Partitioned/indexed per `(tenant_id, …)` — the NFR #1/#2 unit is the tenant partition - `inst-ps-shape`
-2. [ ] - `p1` - `products_read_deferred_intent`, `products_read_freeze_status`, `products_read_delivery_state` — the operator dashboards. These are **polled projections from their owning surfaces** (04's deferred table, 06's `FreezeLedger`, the broker's per-consumer delivery/DLQ state — the `fr-event-delivery-resilience` projection clause, M5), NOT broker consumers: their sources deliberately emit no events (H4 fix — the earlier "refreshed by the same projector" claimed sources that don't exist) - `inst-ps-dashboards`
+1. [ ] - `p1` - `products_read_entity` — per-tenant denormalized rows: identity, state + flags (`deprecated`, `compositionPending`, `sellable`), `deprecation_provenance` and `replaced_by_sku_id` (the head-read fields of C6), **brand/region scope columns** (the operands the query-build scope predicates of `inst-rb-query` filter on — M2; the empty set means **unrestricted** (**P-D-39**), so a predicate matches a row whose set is empty or contains the claim), type/tier/unit display fields, resolved display attributes per locale coordinate (materialized for the tenant's active locales), category paths, `published_version`. Partitioned/indexed per `(tenant_id, …)` — the NFR #1/#2 unit is the tenant partition - `inst-ps-shape`
+2. [ ] - `p1` - `products_read_deferred_intent`, `products_read_freeze_status`, `products_read_delivery_state` — the operator dashboards. These are **polled projections from their owning surfaces** (04's deferred table, 06's `FreezeLedger`, the broker's per-consumer delivery/DLQ state — the `fr-event-delivery-resilience` projection clause, M5), NOT broker consumers: their **state changes** emit no events — 04's deferred table and the broker's delivery/DLQ state emit none at all, and 06's acks and re-triggers are audit-plane (H4 fix — the earlier "refreshed by the same projector" claimed sources that don't exist) - `inst-ps-dashboards`
 3. [ ] - `p2` - **Join mechanics (L1)**: a browse row joins ≥ 3 aggregates; the join is *convergent* — every join-relevant event recomputes the affected rows from projection-local state, and a row whose join target has not yet projected is **parked (withheld from browse) and re-attempted**, the parking bounded by the convergence monitoring (never a placeholder render). The metadata map is **excluded from search by construction** (C: never projected into any searchable field; PRD glossary) — it is retrievable on the single-entity read only - `inst-ps-metadata`
 
 ### 3.2 Error taxonomy (slice-owned codes)
 
-- [ ] `p2` - **ID**: `cpt-cf-bss-products-contract-read-errors`
+- [ ] `p1` - **ID**: `cpt-cf-bss-products-contract-read-errors`
 
 `READ_MODEL_OVERLOADED` (shed; carries `Retry-After`) — raised by the **single per-tenant-partition limiter component in front of every read endpoint** (browse, history, facets, dashboards): one door (L4). Everything else on this surface is standard not-found/validation via 01's envelope — reads introduce no new failure semantics.
 
@@ -178,14 +179,12 @@ one config route) and where an earlier pass here wrongly wrote
 412 and called that pricing's convention — **403** where the caller may not perform the act at
 all, **404** only where a path segment names a resource this tenant has none of. **503** where retry
 is the remedy is this gear's own addition — pricing's set carries no 503 at all, so that one
-class is not "checked against it". **The 422s here are architectural, not wire** — see 01 §3.3, which quotes the sibling
-plan-price gear's rule (the `MUST NOT` being this gear's own choice, 01 §3.3): no `CanonicalError` category renders 422, so each reaches the wire as a 400
-carrying its code, and no endpoint may declare a 422 for an error **carrying a registry code** in `OpenAPI` (the framework layer is the exception — a `Json<T>` schema violation, which carries no registry code). Proposed per
+class is not "checked against it". Proposed per
 row and open to correction; the requirement is that every code carries one.*
 
 ### 3.3 NFR measurement
 
-- [ ] `p2` - **ID**: `cpt-cf-bss-products-algo-read-nfrs`
+- [ ] `p1` - **ID**: `cpt-cf-bss-products-algo-read-nfrs`
 
 p95 latency and QPS per tenant partition (NFR #1/#2) measured at the API edge; convergence
 (C5) measured **write-commit → projection-visible** per event class, decomposed into the two
@@ -198,9 +197,10 @@ outage.
 
 ## 4. Data / Storage (normative shape; DDL in migrations)
 
-§3.1's projection tables — **rebuildable state, not records**: no append-only guards, no
-audit rows of their own (the audited truth lives upstream); dropped and rebuilt from the
-bootstrap path at any time without loss — **with the zero-version tenant stated rather than
+§3.1's event-fed projection table (`products_read_entity`) — **rebuildable state, not records**: no append-only guards, no
+audit rows of their own (the audited truth lives upstream); rebuilt from the
+bootstrap path at any time without loss, into a new projection cut over per `inst-rp-bootstrap`
+— never dropped in place — **with the zero-version tenant stated rather than
 assumed** (item 35 of the review): the bootstrap initializes from the latest
 `CatalogVersion` (12 `inst-rc-bootstrap`), and a tenant that has published none has no such
 anchor, so its rebuild starts from the **empty catalog plus the full event tail**, which is
@@ -226,10 +226,16 @@ the point.
   the one artefact that would actually be written could not fail the case the fix exists to
   catch — a slow outbox eating the whole convergence budget invisibly); lag alarm fires past
   budget while serving continues stale-but-stamped.
+- Availability probe: a browse read served during a simulated write-path outage (NFR #10's split;
+  the §3.3 probe).
+- Metadata probe: the metadata map is absent from every searchable field and returned only on the
+  single-entity read (`inst-ps-metadata`).
+- Dashboard probe: the three dashboard tables refresh by poll with the broker consumer stopped
+  (`inst-ps-dashboards`).
 - Rebuild probe: checkpoint-behind-tail → loud failure → bootstrap rebuild → cutover with the
   old projection serving throughout.
 - Re-parent probe: a subtree re-files completely; no orphan paths.
-- Stamp probe: every response shape (success, empty, degraded) carries `asOfCatalogVersion`.
+- Stamp probe: every response shape (success, empty, error, degraded) carries the full `StalenessStamp` (`asOfCatalogVersion`, `projectedAt`), including the zero-version tenant of M6 (`asOfCatalogVersion = null` + `projectedAt`).
 
 ## 6. Traces to / Risks & Open items
 
@@ -263,8 +269,65 @@ clause — M5); the §5.1 p2 rows "Advanced search, filter & faceting" and the r
   active-locale set per tenant needs a config home — implementation note.
 - Search-engine choice (LIKE/FTS vs external) is deliberately behind the projection contract;
   the NFR #2 load test decides, not this document.
-- **The "422s are architectural" note has no subject in this slice.** §3's problem-response block
-  declares no 422 at all, yet the slice carries the shared paragraph explaining that architectural
-  422s reach the wire as a 400 — which then reads as covering the codes the block *does* declare.
-  Measured across the set: this slice and 05 were the only two carrying the note with no 422; 05's
-  was struck. Owner: this slice. *(Found by the slice-05 first lens pass.)*
+- **Open above this slice: who measures the < 3 s propagation budget, and against which meter?**
+  `PRD` §15 names this slice with 01 and 06 — §5's convergence probe instruments the
+  commit→durable-acceptance segment and asserts it against this slice's own budget; whether one
+  meter may be asserted against two thresholds, or a second probe is owed, is the Program Lead's.
+  Both siblings register it and this slice did not. *(Two lenses raised it independently.)*
+- **The `commit → durable-acceptance` meter C5 attributes to slice 01 is declared by no slice.**
+  01 declares no observability surface and records its NFR #3 probe as owed; 06 §6 registers the
+  same gap and names this slice. Without it the p99 < 2 s show-stopper budget has no measurement
+  point for its first segment. Owner: the Program Lead with 01 and 06. *(Raised by the slice-08 first lens pass.)*
+- **Is the history timeline a materialized projection or a request-time read?** §1.5 puts it In
+  scope and §4 calls the projection tables rebuildable state, while §3.1 declares no history table
+  and `inst-rh-timeline` describes a computation over 01's frozen rows. If it runs at request time
+  it meets C1's "browse/search never touches write-path tables at request time" head-on, and nothing
+  says whether frozen rows count as write-path for that purpose. Owner: this slice with 01.
+  *(Two lenses raised it independently.)*
+- **What tells the projector a Product has been retired?** C2 requires `retired` out of default
+  browse and `inst-rp-stamp` rests its floor semantics on the flip, while 04's Events list names a
+  SKU-only `SkuRetirementEffective` and 04 §6 registers that it has no Product analogue and no
+  explicit "no event". As it stands a retired Product stays browsable forever. Owner: the lifecycle
+  owner with the events consumer set — this slice is the surface that fails. *(Raised by the slice-08 first lens pass.)*
+- **What happens to live events during a bootstrap rebuild, and what checkpoint does cutover
+  install?** `inst-rp-bootstrap` says the rebuild serves the old projection until cutover and 12's
+  replay contract defines only the starting point; neither states the concurrency model
+  (shadow-then-swap vs live-tail-follow), the cutover checkpoint, or whether the `StalenessStamp` is
+  rebuilt with the rows. Owner: this slice with 12. *(Raised by the slice-08 first lens pass.)*
+- **What does the projector do when a `*Published` event's frozen row has been collected?** Version
+  rows are retained only while a manifest references them, and under the anchorless rebuild arm no
+  manifest exists — so every frozen row is collectable while the events naming them are still in the
+  retained tail. Owner: this slice with 10 and 12 — skip, fail the rebuild, or bound event-log
+  retention by version-row retention. *(Raised by the slice-08 first lens pass.)*
+- **Who runs the polled dashboards, at what cadence, behind which door?** `inst-ps-dashboards` names
+  three tables and their sources and no component, no interval, no route and no staleness bound,
+  while §3.2 fronts them with the limiter and 04 states it owns the deferred-intent query surface.
+  05 already records `scheduled_transition × write|cancel|read` as pairs no slice names on a door.
+  Owner: this slice with 04, 06 and 05. *(Raised by the slice-08 first lens pass.)*
+- **Where does the single-entity metadata read come from?** `inst-ps-metadata` makes the map
+  retrievable "on the single-entity read only" and 02 books that read against this slice; §2 declares
+  no such flow, the row shape carries no metadata field, and `MetadataUpdated` is absent from §1.8's
+  Consumed list. Owner: this slice with 02. *(Raised by the slice-08 first lens pass.)*
+- **A parked browse row has no bound and no exit.** A row whose join target has not projected is
+  withheld and re-attempted, "bounded by the convergence monitoring" — but the only lag rule is keyed
+  to the projector, so a caught-up projector holding a row whose target was dead-lettered trips no
+  alarm and withholds it indefinitely. Nothing defines the projector's poison-message posture.
+  Owner: this slice with the events consumer owner. *(Raised by the slice-08 first lens pass.)*
+- **When does `projectedAt` advance, and do polled surfaces carry the stamp?** The advance rule
+  covers the version half only, and for a zero-version tenant `projectedAt` is the sole freshness
+  signal with no rule writing it. Separately §3.2 makes the dashboards read endpoints, so C3's
+  every-response rule reaches `products_read_delivery_state`, whose content bears no relation to a
+  catalog version. Owner: this slice with P-D-07's owner. *(Raised by the slice-08 first lens pass.)*
+- **Is `retired` retrievable in the p1 cut?** C2 and `inst-rb-query` state it at `p1` through "the
+  explicit history surface", and that surface is the `p2` timeline flow. Owner: this slice with the
+  PRD owner, the FR's priority being the PRD's. *(Raised by the slice-08 first lens pass.)*
+- **Under which aggregate key are 02's two display events ordered?** The projector's idempotence
+  rests on a per-`(tenant, aggregate)` checkpoint, and 02 §6 registers that `CategoryDisplayUpdated`
+  and `AttributeDefinitionUpdated` fall under neither of its two stated ordering keys. Without one
+  a rename and a display edit on the same category can land in either order. Owner: 02 with 12 —
+  this slice is the only consumer of both. *(Raised by the slice-08 first lens pass.)*
+- **Does the composition-clear re-publish reach this projector?** The browse row carries
+  `compositionPending` and the projector keys on `*Published`; 06 §6 registers that neither slice
+  says whether the clear emits `SkuPublished` beside `SkuCompositionCleared`. If only the latter
+  fires, every composed bundle stays flagged in browse. Owner: as 06 states it, with this slice.
+  *(Raised by the slice-08 first lens pass.)*
