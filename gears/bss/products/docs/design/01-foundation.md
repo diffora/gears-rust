@@ -92,12 +92,12 @@ acknowledged, and rejections that always carry an audited reason. Per P-D-02, ev
   (four read paths the guard needed), P-D-29 (what a replay, an envelope and a digest carry),
   P-D-30 (gate host, authorization, whose validator), P-D-31 (the four routed outward, decided
   here), P-D-32 (the second lens wave's six calls), P-D-33 (eight calls from weeding the open items),
-  P-D-34 (the remaining items, decided from the set), P-D-35 (the five the set already forced), P-D-36 (the phase unit withdrawn), P-D-37 (one code per row, all violations in the answer), P-D-38 (a refusal stores nothing), P-D-39 (scope columns and the empty set), P-D-40 (the version table's one admitted DELETE), P-D-41 (the two bucket-ii doors), P-D-42 (the store's last three operands), P-D-43 (the checking layer's four grammars), P-D-44 (the AC #38 map), P-D-45 (the last four lint grammars), P-D-46 (four write-path blockers)
+  P-D-34 (the remaining items, decided from the set), P-D-35 (the five the set already forced), P-D-36 (the phase unit withdrawn), P-D-37 (one code per row, all violations in the answer), P-D-38 (a refusal stores nothing), P-D-39 (scope columns and the empty set), P-D-40 (the version table's one admitted DELETE), P-D-41 (the two bucket-ii doors), P-D-42 (the store's last three operands), P-D-43 (the checking layer's four grammars), P-D-44 (the AC #38 map), P-D-45 (the last four lint grammars), P-D-46 (four write-path blockers), P-D-47 (the last four blockers: a tombstone state, a withdrawn opt-in, two codes, the broker's producer)
 - Pricing `design/01-foundation.md` — the pattern donor (registered validators, append-only
   triggers with column whitelists, draft/published partial unique indexes, pending refs — **not
   the outbox**, which P-D-22 moved to `toolkit_db::outbox` after measuring that pricing runs a
   private `pricing_outbox` of its own); divergences are stated where they occur
-- `gears/system/event-broker/docs/DESIGN.md` + its ADR-0003 — the envelope this gear emits
+- `gears/system/event-broker/docs/DESIGN.md` + its ADR-0002 (partition selection), ADR-0003 (the envelope this gear emits) and ADR-0004 (producer modes); `gears/system/event-broker/event-broker-sdk` — the outbox-backed producer this gear publishes through (**P-D-47**)
 
 ### 1.5 Scope
 
@@ -113,8 +113,8 @@ acknowledged, and rejections that always carry an audited reason. Per P-D-02, ev
 - field-mutability enforcement frame (bucket routing)
 - idempotency
 - ETag concurrency
-- the toolkit outbox's enqueue path, envelope discipline, and per-aggregate ordering by partition
-  routing (P-D-22)
+- the toolkit outbox's enqueue path (P-D-22), the broker SDK's producer on top of it, envelope
+  discipline, and per-tenant ordering by the broker's partition selection (P-D-47)
 - audit of the acts that emit no event (refusals; reads under elevation; committed acts declared
   to emit no broker event — P-D-21)
 - the interim parent-child brand/region containment check (P-D-04 residue — final rule in slice 04)
@@ -1019,19 +1019,33 @@ read.
   `toolkit_db::outbox` inside the mutation's own transaction and owns no outbox table.
 
   - **The pipeline** is the facility's: `enqueue` → `sequencer` (per-partition sequence numbers)
-    → `processor` (this gear's publish handler) → `vacuum`, plus dead letters. It runs in
+    → `processor` → `vacuum`, plus dead letters — and the processor is the **broker SDK's** outbox
+    producer (`gears/system/event-broker/event-broker-sdk`: a `DbProducer` bound to a
+    `toolkit_db::outbox` queue, in managed **monotonic** mode), not a handler of this gear's
+    (**P-D-47**). It runs in
     **`leased` (at-least-once)** mode — owner's call, 2026-08-27: a broker publish is a network
     side effect and cannot honestly join a database transaction, so `transactional` would show a
     guarantee that does not exist. The PRD does not merely tolerate the consequence:
     `fr-event-versioning-replay` requires that "out-of-order/duplicate delivery beyond the
     idempotency window **MUST** be detectable via `(tenant, aggregate, sequence)`". The envelope's
-    idempotency key is what a consumer dedupes on **within** the window; the home of the
-    `sequence` operand beyond it, after P-D-22 superseded this slice's own
-    `(tenant_id, aggregate_id, sequence)` index, is the toolkit outbox's `seq`, carried on the envelope beside `partition_id` (P-D-27 — the **Payloads** bullet below).
-  - **Per-aggregate ordering comes from routing, not from a column**:
-    `partition = hash(tenant_id, aggregate_id) mod N`, so every event of one aggregate shares a
-    partition and keeps its relative order — which is what the envelope's `(tenant, aggregate)`
-    ordering key promises (`fr-registry-eventing-audit`, AC #28).
+    idempotency key is the event **`id`** — minted once by the SDK at enqueue and stored in the
+    outbox row, so every delivery attempt of one event carries the same value — and it is what a
+    consumer dedupes on **within** the window; the `sequence` operand beyond it, after P-D-22
+    superseded this slice's own `(tenant_id, aggregate_id, sequence)` index, is the **broker's**
+    read-side `sequence`, server-assigned per `(topic, partition)` (**P-D-47**, re-taking the slot
+    P-D-27 had named — the **Payloads** bullet below). The toolkit outbox's `seq` still orders the
+    pipeline: the SDK sends it as the producer chain's `meta.sequence`, which the broker validates
+    for ingest-side dedup and strips on read.
+  - **Ordering comes from the broker's partition selection, not from a column** (**P-D-47**): the
+    gear sets no `partition_key`, so the broker's ADR-0002 default applies — MurmurHash3-32 over
+    `tenant_id`, modulo `topic.partitions`, computed by the SDK for outbox routing and re-computed
+    authoritatively at ingest — and every event of one tenant lands on one partition in publish
+    order. That is stronger than the `(tenant, aggregate)` ordering key the envelope promises
+    (`fr-registry-eventing-audit`, AC #28), and it removes the two operands this bullet could never
+    pin: the hash and `N` are the broker's, and `topic.partitions` is fixed at topic creation. The
+    price is stated: one partition per tenant is a per-tenant throughput ceiling the bulk lane (09)
+    meets first; if it binds, `partition_key = tenant_id:aggregate_id` restores per-aggregate order
+    at the cost of cross-aggregate order, and that is an amendment to P-D-47, not a tuning knob.
   - **Delivery is not a state on a row.** The processor hands the message to the handler and the
     vacuum reclaims it. "Emitted" is still never reported before durable broker acceptance (PRD
     `fr-event-delivery-resilience`, registry-side half), but that is the handler's contract rather
@@ -1039,19 +1053,20 @@ read.
   - **The facility brings its own multi-backend migrations**, so C1's "one migration per table"
     does not reach these tables and the schema oracle goldens them as imported.
   - **Payloads**: broker-native envelope (P-D-01) with versioned schema ref, correlation/causation,
-    idempotency key and `actor_ref`; in the **payload** body core (§4.5), the subject's
+    idempotency key (the event `id`, **P-D-47**) and `actor_ref`; in the **payload** body core (§4.5), the subject's
     `internal_revision` **as committed by the act** — N+1 where the act bumped it, the
     unchanged current value where it did not, so the number always describes the state the act left
     behind and matches the caller's next ETag (owner's call, 2026-08-27, P-D-29; "at the act" had
-    admitted both readings); and, **on the envelope**, the toolkit outbox's **`partition_id` and `seq`**, which the processor already
-    hands the handler (`libs/toolkit-db/src/outbox/handler.rs`'s `OutboxMessage`). Because
-    `partition = hash(tenant_id, aggregate_id) mod N`, every event of one aggregate shares a
-    partition and `seq` is monotonic within it, which is what `fr-event-versioning-replay`'s
-    "detectable via `(tenant, aggregate, sequence)`" asks for — detectability needs monotonicity,
-    not density, so the gaps left by neighbouring aggregates in the same partition are harmless
-    (owner's call, 2026-08-27, P-D-27; this is what replaced the `(tenant_id, aggregate_id,
-    sequence)` index P-D-22 superseded) — P-D-21 makes the event the audit record of a successful act and the tuple it
-    replaced named the revision. The `internal_revision` rides the **payload** body core (§4.5), not the envelope — `partition_id` and `seq` ride the envelope, as 12 `inst-rc-dedup` states. The envelope is a
+    admitted both readings); and, **on the envelope**, nothing of the outbox's: the slot P-D-27 named for the toolkit's
+    `partition_id` and `seq` does not exist — the broker's schema marks `partition`, `sequence` and
+    `sequence_time` `readOnly` and rejects them on publish — so **P-D-47** re-takes that row. The
+    `(tenant, aggregate, sequence)` operand `fr-event-versioning-replay` asks for is the broker's
+    own read-side `sequence`: with the tenant on one partition it is monotonic across every event
+    the tenant emits, and detectability needs monotonicity, not density, so the gaps left by other
+    aggregates in the same partition are harmless (P-D-27's argument for the toolkit's `seq`,
+    carried to the field that exists; the `(tenant_id, aggregate_id, sequence)` index P-D-22
+    superseded stays superseded) — P-D-21 makes the event the audit record of a successful act and the tuple it
+    replaced named the revision. The `internal_revision` rides the **payload** body core (§4.5), not the envelope — the envelope's ordering operand is the broker's `sequence`, as 12 `inst-rc-dedup` states. The envelope is a
     platform-wide contract owned outside this gear, while the payload schema is versioned per
     event and its own rule makes an added optional field a minor bump.
 
@@ -1185,21 +1200,19 @@ pointers to items filed with owners outside this document.
   continuation enumeration in `inst-cc-ids`; and **P-D-34's act unit** — `inst-cc-events` still
   lints per instruction *row*, so `inst-fd-publish-freeze`, `inst-fd-publish-correction` and `inst-fd-publish-bump`, which
   inherit `inst-fd-publish-emit`'s declaration under the act unit, are red by construction.
-- **`PRD` §15**: the transport contract behind §4.4's ordering claim (the partition count `N` and
-  the hash); AC #26's literal "returns the entity to `draft`" against the head-row model; and —
-  the heaviest — the **envelope slot for `partition_id`/`seq`**, since the broker's own schema
-  marks `partition`, `sequence` and `sequence_time` `readOnly` and rejects them on publish, so
-  §4.4's "on the envelope" placement, 12 `inst-rc-dedup` and **P-D-27** all rest on a slot a
-  producer cannot write; and the envelope's **idempotency key**, which §4.4 names as an envelope
-  operand and sources from nothing — it cannot be the request's `Idempotency-Key`, which §2 makes
-  optional, so within-window consumer dedup has no operand at all.
+- **`PRD` §15**: AC #26's literal "returns the entity to `draft`" against the head-row model. *(The
+  three heavier items this pointer carried are closed by **P-D-47**, which put the gear on the
+  broker SDK's producer: the envelope slot for `partition_id`/`seq`, which the broker's schema
+  refuses; the envelope's idempotency key, which had no source and is now the event `id`; and the
+  transport contract's two unpinnable operands, the hash and `N`, which are the broker's own under
+  its ADR-0002.)*
 - **`DECISIONS.md`**: whether §4.2's `composition_pending` no-re-raise clause may rest on
   **P-D-14**, which is still **FLAGGED** for its owner and whose propagation field does not name
   this document.
 
-**Open here** — **thirteen**, all raised by the eighth lens pass over the state the
-P-D-35…42 rounds left. They are new rather than residual, and four of them are consequences of
-those rounds:
+**Open here** — **thirteen**: eleven raised by the eighth lens pass over the state the
+P-D-35…42 rounds left, and one each by the P-D-46 and P-D-47 rounds. They are new rather than
+residual, and four of the eleven are consequences of those rounds:
 
 1. **Is `IDEMPOTENCY_KEY_IN_FLIGHT` reachable after P-D-42?** §3.2 refuses a duplicate that matches
    a `claimed`, unanswered key, while the same section says "the gate is the insert, not a lookup"
@@ -1274,3 +1287,10 @@ against a number).
    11's `internal_revision = 1` if it must save afterwards. Either the create door writes content
    on the same terms, or the clone is defined as create-then-save and 11's C3 changes. Owner:
    this slice with 11's. *(Raised by the P-D-46 round — the arm's own edge.)*
+
+13. **Which GTS type does the envelope's `subject_type` name for a Product or a SKU?** **P-D-47**
+   put publishing on the broker SDK, whose event requires a `subject_type` — the GTS type of the
+   entity the event is about, a compile-time constant of the typed event — while `PRD` §15 records
+   that SKUs and Products themselves are never GTS instances. A subject *type* is not an instance,
+   but no document declares one for either entity kind. *(Owner: this slice with 12 and the PRD
+   owner. Raised by the P-D-47 round.)*

@@ -139,7 +139,7 @@ contract slice 08 projects.
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-flow-attribute-definitions`
 
 1. [ ] - `p1` - A definition = `(key, value type, localized?, brand/region visibility scope, state)`; create and **material** changes (type change, visibility narrowing, deprecation) ride `GovernedLiveOp` through the slice-05 gate under grant **`attribute_definition × write`** (05's catalog); display-label edits are non-material ops, whose effective count is `min(N, 1)` per the §17.1 interim materiality default - `inst-ad-governed`
-2. [ ] - `p1` - Changes **MUST** be backward-compatible: a type change on a definition with live values is refused (`DEFINITION_IN_USE`) — the path is deprecate-then-remove: `deprecated` blocks new values, removal is never admitted for a seeded definition (§4.2), and otherwise is admitted once no **non-terminal head** (`draft`/`published`/`deprecated` Product or SKU, active category) carries a value — frozen versions are **self-contained copies**: they stay renderable after removal, and they neither block it nor are touched by it (operand narrowed to the PRD's live-reference condition — M2 fix) - `inst-ad-deprecate-then-remove`
+2. [ ] - `p1` - Changes **MUST** be backward-compatible: a type change on a definition with live values is refused (`DEFINITION_IN_USE`) — the path is deprecate-then-remove: `deprecated` blocks new values, removal is never admitted for a seeded definition (§4.2), and otherwise is admitted once no **non-terminal head** (`draft`/`published`/`deprecated` Product or SKU, active category) carries a value — **and a removal is the definition's `removed` state, never a DELETE** (**P-D-47**, the rule 03 §3.1 states for every `RecognizedSet`): the row survives as a tombstone outside the set, so a value on a terminal head keeps resolving and no `products_attribute_value` row is ever orphaned — frozen versions are **self-contained copies**: they stay renderable after removal, and they neither block it nor are touched by it (operand narrowed to the PRD's live-reference condition — M2 fix) - `inst-ad-deprecate-then-remove`
 3. [ ] - `p1` - Every applied change emits `AttributeDefinitionUpdated` (P-D-21: the event is the success-path audit record) - `inst-ad-event`
 
 ### Author localized attribute values
@@ -243,7 +243,7 @@ orders fields, not rows; without this both engines could serialize one content i
   carrying none being legal (AC #5's "optional at draft").
 - **`products_attribute_definition`** — `definition_id` (PK) · `tenant_id` · `key` (unique per
   tenant) · `value_type` · `localized` (bool) · visibility scope (brand/region sets) · `state`
-  (`active|deprecated`) · `seeded_by` (nullable — well-known marker) · timestamps.
+  (`active|deprecated|removed` — a removal is a state flip to the tombstone, never a DELETE, **P-D-47**) · `seeded_by` (nullable — well-known marker) · timestamps.
 - **`products_attribute_value`** — owned entity coordinates `(tenant_id, entity_kind,
   entity_id)` + `definition_id` + locale coordinates `(locale?, region?, brand?)` + `value`;
   `UNIQUE` over the full coordinate tuple. For Product/SKU rows: at publish the values are **copied into the frozen
@@ -360,15 +360,10 @@ no event of their own (category display values emit `CategoryDisplayUpdated`, ab
   explicitly for attribute definitions ("frozen versions are self-contained copies"); for categories
   it is not. Owner: this slice with 06 and 08 — copy the name into the frozen set, or tombstone
   category rows. *(Raised by the slice-02 first lens pass.)*
-- **What happens to attribute values on terminal heads when their definition is removed?** The
-  removal operand is the non-terminal head, so a `retired`/`discarded` head or a `retired` category
-  may still hold live `products_attribute_value` rows whose `definition_id` the removal deletes —
-  and for categories the table **is** the live state, with no freeze copy. Owner: this slice —
-  cascade, orphan, or widen the operand. *(Raised by the slice-02 first lens pass.)*
-- **Is definition removal a material op, and is it a physical DELETE or a third state?** Removal is
-  absent from the material-op enumeration, and `products_attribute_definition`'s state roster is
-  `active|deprecated` with no removed value and — unlike `products_category` — no statement that
-  deletion is physical. Owner: this slice. *(Raised by the slice-02 first lens pass.)*
+- **Is definition removal a material op?** Removal is absent from `inst-ad-governed`'s material-op
+  enumeration while deprecation, the step before it, is in it. *(The other half of this item —
+  physical DELETE or a third state — is closed by **P-D-47**: a removal is the `removed` state, §4.1.)*
+  Owner: this slice. *(Raised by the slice-02 first lens pass.)*
 - **Where does a definition's display label live?** Label edits are a named non-material op, and
   §4.1's definition roster carries no label column, while the attribute-value table's `entity_kind`
   does not admit a definition as a value-bearing entity — so the op has no target. 03 solves the

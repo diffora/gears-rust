@@ -106,8 +106,8 @@ explicit release · P-D-19 a force-completed version stays refused for posted us
 publish during the retirement lead window re-announces `SkuRetired`. Joint: D-46 (`sellable`),
 D-47 (increment lanes + retirement contract) — pricing register.
 
-**P-D-14…P-D-20 are FLAGGED and await the owner** — all seven were found by the branch review, **five** of them already built into the design and never registered (P-D-14…P-D-18) and **two** reversing a delivery — P-D-19 (a force-completed version stays refused for posted use) and P-D-20, which strikes a publish freeze slice 04 had already shipped (recounted: this read six-and-one, and the count hid the more product-visible of the two reversals)
-the design had made. None was ever put to the owner, which is what makes them flags and not
+**P-D-14…P-D-18 and P-D-20 are FLAGGED and await the owner; P-D-19 was put to the owner and confirmed as amended (P-D-47)** — all seven were found by the branch review, **five** of them already built into the design and never registered (P-D-14…P-D-18) and **two** reversing a delivery — P-D-19 (a force-completed version stays refused for posted use) and P-D-20, which strikes a publish freeze slice 04 had already shipped (recounted: this read six-and-one, and the count hid the more product-visible of the two reversals)
+the design had made. Six have not been put to the owner, which is what makes them flags and not
 history.
 
 ### 1.3 Architecture Layers

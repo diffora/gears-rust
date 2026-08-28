@@ -51,6 +51,11 @@ joint contracts, cited from here by their pricing numbers, never duplicated.
 - [P-D-40 — The entity-version retention DELETE, under a referential predicate](#p-d-40--the-entity-version-retention-delete-under-a-referential-predicate)
 - [P-D-41 — The two doors that write bucket-ii](#p-d-41--the-two-doors-that-write-bucket-ii)
 - [P-D-42 — The idempotency store's last three operands](#p-d-42--the-idempotency-stores-last-three-operands)
+- [P-D-43 — The checking layer's four grammars: a lint reads tokens, not prose](#p-d-43--the-checking-layers-four-grammars-a-lint-reads-tokens-not-prose)
+- [P-D-44 — The AC #38 map, and the artifacts that turned out to already exist](#p-d-44--the-ac-38-map-and-the-artifacts-that-turned-out-to-already-exist)
+- [P-D-45 — The last four lint grammars, and an event register that cannot be harvested](#p-d-45--the-last-four-lint-grammars-and-an-event-register-that-cannot-be-harvested)
+- [P-D-46 — Four write-path blockers, three of them settled by opening the donor](#p-d-46--four-write-path-blockers-three-of-them-settled-by-opening-the-donor)
+- [P-D-47 — The last four build-blockers: a tombstone state, a withdrawn opt-in, two codes, and the broker's own producer](#p-d-47--the-last-four-build-blockers-a-tombstone-state-a-withdrawn-opt-in-two-codes-and-the-brokers-own-producer)
 
 <!-- /toc -->
 
@@ -750,8 +755,10 @@ instead.*
 #### P-D-19 — A force-completed version stays refused for posted use until opt-in; the pin is the registry's own door
 
 - **Date**: 2026-08-26 (recorded by the branch review)
-- **Status**: **FLAGGED for the owner** — it moves an enforcement point back from an unbuilt
-  consumer to the registry, and it makes a forced version unpostable by default.
+- **Status**: **CONFIRMED as amended by P-D-47** — the registry-side pin stands; the per-version
+  auto-fallback opt-in, this entry's second disjunct, is withdrawn from v1 and stays the PRD's
+  off-by-default later enhancement. *(Was FLAGGED for the owner: it moves an enforcement point back
+  from an unbuilt consumer to the registry, and it makes a forced version unpostable by default.)*
 - **Decision**: for a `CatalogVersion` at `freezeComplete = complete(forced)`, the registry's
   `IntentfulResolver` **refuses `posted` resolution** (`VERSION_FORCED_INCOMPLETE`, naming each
   `not_frozen(forced)` participant) until either every forced participant has since frozen or
@@ -1577,6 +1584,87 @@ instead.*
   `design/03-sku-classification.md` (`inst-mt-bucket`), `design/07-reference-signal.md`
   (the re-publish step).
 
+
+#### P-D-47 — The last four build-blockers: a tombstone state, a withdrawn opt-in, two codes, and the broker's own producer
+
+- **Date**: 2026-08-28 (owner call — the second build-blocker round)
+- **Context**: after P-D-46, four items across the set still said something could not be built:
+  03's `RecognizedSet` removal, 06's P-D-19 opt-in, 11's accounting-code refusal, and the heaviest
+  items behind 01 §6's `PRD` §15 pointer. Each was measured before it was put to the owner — three
+  at the donor or the platform, one in this set's own git history — and all four recommendations
+  were taken as put.
+- **Decision**, four arms:
+  1. **A `RecognizedSet` removal is a third state, never a DELETE.** The roster becomes
+     `active|deprecated|removed`; the set is its `active` and `deprecated` rows and a `removed` row
+     is a tombstone outside it, so a de-listed member fails `UNRECOGNIZED_UNIT` and the trigger
+     whitelist stays as it was — `state` and `display_label`, no DELETE arm. Transitions:
+     `active → deprecated → removed`, with `removed → active` (and `deprecated → active`) re-listing
+     the same identity through the same `GovernedLiveOp`. Seeded members are still not removable.
+     **The same arm closes 02's twin question** for `products_attribute_definition`: its roster gains
+     `removed`, and a value on a terminal head keeps resolving because nothing is ever deleted.
+  2. **P-D-19 is confirmed as amended: the per-version auto-fallback opt-in is withdrawn from v1.**
+     The resolver's refusal at `complete(forced)` has one exit — every forced participant freezes or
+     releases through its own door. A participant that never returns leaves the governed set
+     (`inst-fz-membership`) and the next increment snapshots the reduced set; the forced version
+     itself stays refused, which is the pinned default. The opt-in goes back to being what the PRD
+     called it before P-D-19: an off-by-default later enhancement, with no column, door or ceremony
+     in v1. P-D-19's status line records the amendment; its title keeps its historical wording.
+  3. **Two codes are minted for the Finance sets**: `ACCOUNTING_CODE_DEPRECATED` (422 architectural —
+     a `deprecated` code blocking new assignment) and `ACCOUNTING_CODE_DELIST_BLOCKED` (409 — removal
+     refused while a non-terminal published head carries the code), one code per refusal for
+     `taxCategory` and `glCode` alike, as `ACCOUNTING_CODE_UNKNOWN` already is. They are exactly as
+     contingent as the two columns (`PRD` §15's ownership question) and go with them if it goes.
+  4. **The gear publishes through the platform's `event-broker-sdk` outbox producer, and the
+     envelope carries nothing of the toolkit outbox's.** `partition_id`/`seq` leave the envelope —
+     the slot P-D-27 named is `readOnly` on the broker's schema and rejected on publish. The
+     `(tenant, aggregate, sequence)` operand is the broker's read-side `sequence`; the gear sets no
+     `partition_key`, so ADR-0002's default puts every event of one tenant on one partition in
+     publish order; the toolkit's `seq` rides the producer chain's `meta.sequence` in managed
+     monotonic mode, write-only, for ingest-side dedup. The envelope's idempotency key is the event
+     `id`, which the SDK mints once at enqueue and every delivery attempt repeats. P-D-27's third
+     row is re-taken; its other three stand. P-D-22 is refined, not reversed: the outbox is still
+     the toolkit's, and its processor is now the SDK's producer rather than a handler of this gear's.
+- **Measured, not argued**:
+  - Arm 1 at the donor: `gears/bss/pricing`'s `TaxonomyState` is `Active | Retired`, and
+    `pricing/src/infra/storage/repo/taxonomy_repo.rs` states why a value is never deleted — *"a
+    value a published row names has to keep existing, because the row keeps naming it"* — and that
+    *"a `PUT` re-adding an existing retired value re-activates it"*. Both byte-verified.
+  - Arm 2 in this set's own history: `PRD.md` at `692c57989` (2026-08-24, before P-D-19 existed)
+    read *"the default is **pinned fail-closed** for that participant's content (auto-fallback is an
+    off-by-default later enhancement)"*. P-D-19, recorded two days later, made that enhancement the
+    second disjunct of a v1 refusal predicate — the one disjunct no table, door or ceremony carried.
+    No other gear has a per-version operator opt-in that relaxes a fail-closed pin.
+  - Arm 3 at the donor: `TAXONOMY_VALUE_IN_USE` (409) is one code across every taxonomy class
+    pricing governs, which is the shape arm 3 takes.
+  - Arm 4 at the platform, the donor being silent (pricing runs a private `pricing_outbox` and
+    takes no dependency on the SDK): `gears/system/event-broker/event-broker-sdk/README.md` —
+    *"Outbox producers use toolkit-db `OutboxMessage.seq` as the durable local sequence and Event
+    Broker cursors as the authoritative accepted sequence"*; `src/producer/outbox.rs` builds
+    `meta.sequence` from that `seq` and re-uses the stored event `id` on every attempt;
+    `src/producer/event_factory.rs` mints the `id` (`Uuid::now_v7()`) when the event is prepared.
+    ADR-0002: the partition is MurmurHash3-32 over `partition_key`, else `tenant_id`, computed by
+    the SDK for outbox routing and re-computed authoritatively at ingest.
+- **The costs, stated**:
+  - Arm 1: the PRD's word is "full removal", which a literal reader takes for a DELETE; the design
+    now says in three places that it is a state.
+  - Arm 2: a wedged version cannot be rescued in place — the only exit is a set-wide governance act
+    and a new version. That is C3's roll-forward posture applied to the abnormal path, and P-D-19's
+    own cost line had argued the other way.
+  - Arm 4: one partition per tenant is a per-tenant throughput ceiling the bulk lane meets first;
+    the named amendment path is `partition_key = tenant_id:aggregate_id`, which buys per-aggregate
+    order back at the cost of cross-aggregate order. The publish path becomes the SDK's code, with a
+    broker-issued producer registration this set had not priced. One residue is registered rather
+    than decided: the `subject_type` the envelope requires (01 §6).
+- **Propagated**: `design/01-foundation.md` (§1.4, §1.8, §4.4's outbox bullets, §6);
+  `design/02-taxonomy-attributes.md` (`inst-ad-deprecate-then-remove`, §4.1, §6);
+  `design/03-sku-classification.md` (§1.7, `inst-mt-recognized`, `inst-us-delist`,
+  `inst-pt-governed`, `inst-ac-recognized`, §3.1, §3.2, §4, §5); `design/06-catalog-version.md`
+  (C5, `inst-rv-intent`, `inst-fz-force`, §3.2, §5); `design/11-clone.md` (§3.1, §4);
+  `design/12-consumer-contracts.md` (`inst-rc-dedup`, the §4.1 row-11 note); `design/README.md`;
+  `PRD.md` (`fr-freeze-recovery`, AC #22, the branch-review note, three §15 rows); `DESIGN.md`
+  (the flagged-decision status line).
+- **Owed**: nothing. The set's build-blocker count is zero; what remains open is registered as
+  questions, none of which says something cannot be built.
 
 #### P-D-46 — Four write-path blockers, three of them settled by opening the donor
 

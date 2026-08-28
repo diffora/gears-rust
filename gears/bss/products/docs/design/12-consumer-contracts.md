@@ -135,7 +135,7 @@ suite's backlog, reviewed whenever a counterpart lands an AC (C4).
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-flow-replay`
 
 1. [ ] - `p1` - Every event schema is a versioned artifact in `products-sdk`; the CI compatibility test runs C2's actual direction — **an old (`vN`) consumer deserializing a `vN+1` payload** carrying the new optional fields with defaults (the reverse direction, new code reading old fixtures, is the trivial half and is also asserted) on every schema change — the 04 EOL field (`mustMigrateBy` present-but-unpopulated) is the standing example; **the 09 export-artifact schema joins the same corpus** (L3 — the discipline it cites is now exercised, not borrowed) - `inst-rc-compat`
-2. [ ] - `p1` - Dedup/ordering detection beyond the idempotency window rides `(tenant, aggregate, sequence)`, where **`sequence` is the toolkit outbox's `seq`, published on the envelope beside `partition_id` (P-D-27)** — `partition = hash(tenant_id, aggregate_id) mod N`, so every event of one aggregate shares a partition and `seq` is monotonic within it; detection needs monotonicity, not density, so the gaps left by neighbouring aggregates in the same partition are expected and must not be read as loss. The consumer contract states it and the suite fixtures a duplicate + an out-of-order delivery - `inst-rc-dedup`
+2. [ ] - `p1` - Dedup/ordering detection beyond the idempotency window rides `(tenant, aggregate, sequence)`, where **`sequence` is the broker's server-assigned read-side `sequence` per `(topic, partition)` (P-D-47, re-taking P-D-27's slot, which the broker's schema refuses)** — the gear sets no `partition_key`, so the broker's ADR-0002 default puts every event of one tenant on one partition, and `sequence` is monotonic across them; detection needs monotonicity, not density, so the gaps left by neighbouring aggregates in the same partition are expected and must not be read as loss. Within the window the dedup key is the event **`id`**, which the SDK mints once at enqueue and every delivery attempt repeats. The consumer contract states both and the suite fixtures a duplicate + an out-of-order delivery - `inst-rc-dedup`
 3. [ ] - `p1` - **Replay reads the body core** every Foundation event carries — `{tenantId, entityKind, entityId, internalRevision, lifecycleState}`, with `publishedVersion` additionally on `*Published` (**P-D-27**) — and `internalRevision` is the value **as committed by the act** (**P-D-29**), so a consumer correlating an event to an ETag compares it directly rather than adjusting by one. `lifecycleState` is the discriminator on `ProductHeadSaved`/`SkuHeadSaved`, which cover a save on a `draft`, `published` or `deprecated` head alike - `inst-rc-body`
 4. [ ] - `p1` - Bootstrap (C3): a published-scope consumer initializes from the latest `CatalogVersion` (06's resolver, `browse` intent) + the event tail from that version's instant — **or, in a tenant with zero published versions, from the empty catalog plus the whole retained tail** (the anchorless arm, stated because 08's projection tables are called rebuildable "without loss" and this is the only case with no anchor to rebuild from — item 35 of the review); a checkpoint older than the retained tail fails loudly with the named remedy (re-bootstrap) — the same contract 08's projector obeys internally, so the gear's own projector is the contract's first consumer and its permanent conformance probe *(renamed from `inst-rp-bootstrap` — H1: it collided with 08's read-projection id, and the lint that should have caught it is #6 below)* - `inst-rc-bootstrap`
 
@@ -227,11 +227,11 @@ door and carry a code, and **three** are outside the universe for the reasons li
 
 Three notes the map carries rather than hides:
 
-- **Row 11's code rests on an open question in 03** — "Is a `RecognizedSet` member removal a
-  physical DELETE or a third state?". `inst-mt-recognized` refuses a unit not "in the
-  recognized-unit set and `active`" with `UNRECOGNIZED_UNIT`, which answers a de-listed unit **only
-  if de-listing removes the member**. Under a third-state reading the unit is still in the set and
-  this row has no code. Whoever closes 03's question owes this cell a re-read.
+- **Row 11's code holds under P-D-47, which closed the 03 question it rested on** — whether a
+  `RecognizedSet` removal is a physical DELETE or a third state. It is a third state, and 03 §3.1
+  defines the set as its `active` and `deprecated` rows, so a de-listed unit is outside the set and
+  `inst-mt-recognized` refuses it `UNRECOGNIZED_UNIT` on either engine. The cell was re-read against
+  that definition, as the earlier form of this note required.
 - **Rows 4 and 11 share a code, and rows 9 and 10 do not.** Lint 2 requires one code **per row**,
   not one row per code, so a shared code passes; it is recorded here so a reader does not take the
   repetition for an editing slip.

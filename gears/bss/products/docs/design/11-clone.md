@@ -113,7 +113,7 @@ copies, what resets, and what must be re-proven against today's vocabularies.
 | Category assignments | **Copy + re-validate** (retired category ⇒ re-select) |
 | `PlanTier` | **Copy + re-validate** (`deprecated`/retired tier ⇒ re-select — `PLAN_TIER_DEPRECATED`/`PLAN_TIER_UNKNOWN`, H1) |
 | Metering declaration (`unit`, `usageTypeRef`) | **Copy + re-validate** (deprecated/de-listed unit ⇒ fail per AC #38; `usageTypeRef` re-resolution stays 03 `inst-mt-resolve`'s, at publish) |
-| Accounting codes | **Copy + re-validate** against the live sets |
+| Accounting codes | **Copy + re-validate** against the live sets — a `deprecated` code ⇒ re-select (`ACCOUNTING_CODE_DEPRECATED`), a `removed` or unknown one likewise (`ACCOUNTING_CODE_UNKNOWN`); **P-D-47** |
 | `sellable` | **Copy** (bucket-iii value, judged again at publish) |
 | Lifecycle, versions, approvals, `compositionPending`, `replacedBy`, deprecation provenance | **Reset** (C3 — state never copies; `compositionPending` to its `false` default, 01 P-D-35) |
 | `tenant_id` | **Copy** — the source is resolved in-tenant (`inst-cn-door`) |
@@ -128,7 +128,7 @@ One column (`cloned_from`, nullable — now in 01's §4.1/§4.2 rosters, create-
 fails `ILLEGAL_FIELD_MUTATION` (M3)) on both entity tables; no new tables; no new events.
 Errors reuse the owning slices' codes — the per-field map (L6): unit → `UNRECOGNIZED_UNIT`/
 `UNIT_DEPRECATED`; tier → `PLAN_TIER_UNKNOWN`/`PLAN_TIER_DEPRECATED`; category →
-`CATEGORY_RETIRED`; accounting → `ACCOUNTING_CODE_UNKNOWN`; definition →
+`CATEGORY_RETIRED`; accounting → `ACCOUNTING_CODE_UNKNOWN`/`ACCOUNTING_CODE_DEPRECATED` (**P-D-47** minted the second); definition →
 `ATTRIBUTE_DEFINITION_UNKNOWN`/`ATTRIBUTE_DEFINITION_DEPRECATED`/`ATTRIBUTE_SCOPE_VIOLATION`; name → `DUPLICATE_NAME`;
 code → `DUPLICATE_CODE` (**P-D-25**: one code covers both the `skuCode` and `productCode`
 reservations).
@@ -151,7 +151,7 @@ reservations).
 **Traces to**: `cpt-cf-bss-products-fr-clone`, AC #34; AC #38 (clone-against-deprecated-unit row); the clone-vs-P-D-04
 interaction — resolved here by `inst-cn-rename`.
 
-**Risks & open items** — fifteen, all raised by the first lens pass; the slice is deliberately thin,
+**Risks & open items** — fourteen, all raised by the first lens pass; the slice is deliberately thin,
 which is why its gaps are omissions rather than contradictions:
 - **Does "forces re-selection" refuse, or land a clone with the field cleared?** C4 says a stale
   reference "fails **or** forces re-selection", and every class in §4's map ends in a refusal code —
@@ -195,9 +195,6 @@ which is why its gaps are omissions rather than contradictions:
   admitted, and `ENTITY_TERMINAL` cannot be reused as-is because the clone writes nothing to the
   source while a `retired` source is explicitly allowed. Owner: the taxonomy owner with this slice.
   *(Raised by the slice-11 first lens pass.)*
-- **Which code refuses a copied but now-`deprecated` accounting code?** C4 requires the arm; 03 §6
-  records that the two Finance-set refusal codes are owed. Until they are minted this field class is
-  unimplementable. Owner: 03's owner with Finance. *(Raised by the slice-11 first lens pass.)*
 - **Which surface answers the reverse lineage lookup — what was cloned from a given entity?** The absence of a clone event is justified by
   the lineage field being "queryable", and the field appears in no read model and no SDK shape; a
   clone is a draft, which the browse projection cannot see at all. Owner: 08's and 12's owners —

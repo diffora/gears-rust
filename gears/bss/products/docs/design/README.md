@@ -62,7 +62,7 @@ Requirements live in [`../PRD.md`](../PRD.md); decisions in [`../DECISIONS.md`](
   with a per-tenant coalescer (interactive ≤ 5 s / bulk ≤ 5 min, gapless counter-row ids),
   `SnapshotBuilder` with stage-vs-commit re-validation (AC #40) and canonical checksum,
   `IntentfulResolver` (browse vs posted; a force-completed version stays **refused for posted
-  use** until every forced participant freezes or releases, or the operator opts in — P-D-19),
+  use** until every forced participant freezes or releases — P-D-19, its opt-in withdrawn from v1 by P-D-47),
   the `FreezeLedger` (acks, fail-closed timeout naming silent participants, force-completion
   pinning `not_frozen`, per-version participant-set snapshot), freeze-registration records as the
   AC #44 liveness source with liveness ending by an explicit `catalog_version × release`
