@@ -21,6 +21,7 @@
   - [3.1 Monetization traceability (AC #37)](#31-monetization-traceability-ac-37)
   - [3.2 The completeness checks (`CoverageChecks`)](#32-the-completeness-checks-coveragechecks)
 - [4. Data / Storage](#4-data--storage)
+  - [4.1 The AC #38 row → code map](#41-the-ac-38-row--code-map)
 - [5. Testing posture (slice-local)](#5-testing-posture-slice-local)
 - [6. Traces to / Risks & Open items](#6-traces-to--risks--open-items)
 
@@ -189,8 +190,55 @@ Doc-plane lints over this design set + PRD (spec-check-class. **Gated by nothing
 
 ## 4. Data / Storage
 
-None owned — this slice's artifacts are the SDK crate, the fixture crate, the `SchemaPin`
-file, and the lints. That absence is by design.
+None owned as tables — this slice's artifacts are the SDK crate, the fixture crates, the
+`SchemaPin` file, the AC #38 map below, and the lints. That absence of storage is by design.
+
+**The named artifacts** (**P-D-44**):
+
+| Artifact | Where |
+|---|---|
+| SDK crate | `products-sdk` (`cf-gears-bss-products-sdk`), per `DESIGN.md` |
+| Fixture corpus | **`cf-gears-bss-fixtures`** at `gears/bss/fixtures/bss-fixtures/` — it already exists and the donor gear already depends on it; its own description names it "the only fixture crate a gear may take as a production dependency" |
+| Fixture harness | **`cf-gears-bss-fixtures-conformance`** — runners and evaluator traits, a **dev-dependency only**, as pricing takes it |
+| `SchemaPin` | **`gears/bss/products/products-sdk/schema-pin.toml`**, versioned with the SDK as §3.2 requires; TOML so a gate reads it without parsing prose |
+
+### 4.1 The AC #38 row → code map
+
+Lint 2's input set. The PRD enumerates **fifteen** rows; **twelve** are refusable by a registry
+door and carry a code, and **three** are outside the universe for the reasons lint 2 states.
+
+| # | AC #38 row | Code | Declaring slice |
+|---|---|---|---|
+| 1 | stale-revision write | `STALE_REVISION` | 01 |
+| 2 | duplicate idempotency key with different body | `IDEMPOTENCY_CONFLICT` | 01 |
+| 3 | taxonomy cycle | `TAXONOMY_CYCLE` | 02 |
+| 4 | unrecognized metering unit without elevation | `UNRECOGNIZED_UNIT` | 03 |
+| 5 | publish of an incomplete entity | `INCOMPLETE_ENTITY` | 01 |
+| 6 | immutable-field change without a valid correction path | `ILLEGAL_FIELD_MUTATION` | 01 |
+| 7 | reissue of a reserved `skuCode` and concurrent collision | `DUPLICATE_CODE` | 01 |
+| 8 | EOL without an acknowledged migration consumer (post-v1) | **excluded** | — |
+| 9 | publishing a SKU under a non-`published` parent | `PARENT_NOT_PUBLISHED` | 04 |
+| 10 | a SKU scope falling outside its parent | `SCOPE_NOT_CONTAINED` | 04 |
+| 11 | authoring/cloning against a **de-listed** unit | `UNRECOGNIZED_UNIT` | 03 |
+| 12 | authoring/cloning against a **deprecated** unit | `UNIT_DEPRECATED` | 03 |
+| 13 | a bulk row whose in-batch dependency failed | `BULK_DEPENDENCY_FAILED` | 09 |
+| 14 | adopting a `compositionPending` bundle | **excluded** | — |
+| 15 | retention orphaning a live grandfathered reference | **excluded** | — |
+
+Three notes the map carries rather than hides:
+
+- **Row 11's code rests on an open question in 03** — "Is a `RecognizedSet` member removal a
+  physical DELETE or a third state?". `inst-mt-recognized` refuses a unit not "in the
+  recognized-unit set and `active`" with `UNRECOGNIZED_UNIT`, which answers a de-listed unit **only
+  if de-listing removes the member**. Under a third-state reading the unit is still in the set and
+  this row has no code. Whoever closes 03's question owes this cell a re-read.
+- **Rows 4 and 11 share a code, and rows 9 and 10 do not.** Lint 2 requires one code **per row**,
+  not one row per code, so a shared code passes; it is recorded here so a reader does not take the
+  repetition for an editing slip.
+- **The row count held at fifteen across P-D-44 while its membership changed** — the old
+  "indeterminate parent-child region-containment" row was withdrawn as unreachable and the
+  "de-listed/deprecated" row split in two. Any future citation of "fifteen rows" should be checked
+  against this table rather than against the number.
 
 ## 5. Testing posture (slice-local)
 
@@ -254,15 +302,6 @@ slice is that suite's specification.
   "every REST/S2S door named in any slice", "every state-changing instruction", "no table or projection other than
   10's `IdentityRefMap` stores an operator identity" — with no marker any slice carries. Owner: this slice,
   per lint, as the `Operand` column was created for lint 9.
-- **The AC #38 row→code map exists in no artifact.** The code→slice half is settled in 01; the
-  fifteen-row→code half lives only as prose scattered across slices, while §4 of this slice says
-  "None owned" and 01 assigns the completion here. Lint 2's input set cannot be constructed until
-  something holds the map. Owner: this slice with the error-contract owner.
-- **The fixture crate and the `SchemaPin` file are unnamed.** The SDK crate is named in
-  `DESIGN.md`; the fixture crate appears only as "a shared fixture crate" and exists in no
-  `Cargo.toml`, and the pin has no path, format or owning crate. §5's meta-probe (mutate a pinned
-  field one-sided) cannot be written against either. Owner: this slice with whoever `PRD` §15
-  assigns the suite's home.
 - **Does the pin run as one CI job or once per gear?** §2.1 says "one CI job over a shared fixture
   crate"; §5's probe says "both CIs must fail"; and one job cannot be the other side's CI, with
   both gears in one repository. Separately, `.github/workflows/api_contracts.yml` already exists

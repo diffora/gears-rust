@@ -1578,6 +1578,46 @@ instead.*
   (the re-publish step).
 
 
+#### P-D-44 — The AC #38 map, and the artifacts that turned out to already exist
+
+- **Date**: 2026-08-28 (owner call — the second slice-12 blocker round)
+- **Context**: lint 2's input set existed in no artifact. The code → declaring-slice half was
+  settled by **P-D-35**; the row → code half lived as prose scattered across five slices, three of
+  which claimed rows without listing codes. Assembling it forced three rows that do not reduce.
+- **Decision**, four arms:
+  1. **The post-v1 EOL row stays outside lint 2's universe.** `EOL_DISABLED` refuses *the feature
+     being off in v1*, not "EOL without an acknowledged migration consumer" — a different condition,
+     and lint 2 requires the code to answer the named one. `design/04-lifecycle.md`'s claim to have
+     mapped the row is corrected.
+  2. **The "indeterminate parent-child region-containment" row is withdrawn as unreachable.**
+     **P-D-39** made both scope columns `NOT NULL` with the empty set meaning unrestricted, so every
+     pair of scopes is comparable and no input produces indeterminacy. The row predates that
+     decision, from the region-algebra gate that was answered a different way.
+  3. **The "de-listed/deprecated unit" row splits in two.** The two conditions have different
+     operands — recognition versus lifecycle — and the set already declares and raises a distinct
+     code for each. One code would make one condition answer under a name that misdescribes it,
+     which is arm 1's own objection.
+  4. **The artifacts are named**: the `SchemaPin` is `products-sdk/schema-pin.toml`, TOML so a gate
+     reads it without parsing prose. The fixture crate needed no naming — **it already exists**.
+- **Measured, not chosen**: `cf-gears-bss-fixtures` ("the BSS joint golden conformance fixture
+  corpus… the only fixture crate a gear may take as a production dependency") and
+  `cf-gears-bss-fixtures-conformance` (runners and traits, dev-dependency only) are built, sit at
+  `gears/bss/fixtures/`, and the donor gear already depends on both. Slice 12 wrote "a shared
+  fixture crate" while it stood two directories away. Half of that open item closed by reading the
+  tree rather than by deciding anything.
+- **The count is the trap this entry wants on record**: the enumeration held at **fifteen** rows
+  across arms 2 and 3 — one withdrawn, one split — while its membership changed. Every citation of
+  "fifteen" was re-checked against the table and all still hold, but the number would not have
+  revealed a mistake in either direction.
+- **Carried, not closed**: row 11's code rests on `design/03-sku-classification.md`'s open question
+  whether a `RecognizedSet` removal is a physical DELETE or a third state. Under the third-state
+  reading the row has no code. The map states the dependency in the cell's own note.
+- **Propagated**: `design/12-consumer-contracts.md` (§4.1, the map and the artifact table);
+  `design/04-lifecycle.md` (the corrected rows-mapped claim); `PRD.md` (the enumeration, in both
+  §6's FR and §12's AC #38).
+- **Owed**: the five lints still without a harvest grammar (2 now has its input set, so 3, 4, 7, 8),
+  and the CI job that runs any of them — both open in `design/12-consumer-contracts.md` §6.
+
 #### P-D-43 — The checking layer's four grammars: a lint reads tokens, not prose
 
 - **Date**: 2026-08-28 (owner call — the first of the slice-12 blocker rounds)

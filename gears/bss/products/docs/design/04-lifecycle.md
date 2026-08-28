@@ -183,9 +183,11 @@ struck the code from the publish door. An earlier note read the create-door arm 
 guard, which would have put the Foundation's floor in the business of reading lifecycle policy
 against §1.1; both arms are therefore this slice's, and this slice declares the code
 (**P-D-36** withdrew the phase unit; the declaring slice is the unit). **Owed: the registering instruction row in this slice**), `EOL_DISABLED`. AC #38 rows mapped:
-"publishing a SKU under a non-published parent", "a SKU scope falling outside its parent",
-"an indeterminate parent-child region-containment", "EOL retirement without an acknowledged
-migration consumer (post-v1)".
+"publishing a SKU under a non-published parent" and "a SKU scope falling outside its parent"
+(**P-D-44**: the indeterminate-containment row is **withdrawn** — P-D-39 made the scope columns
+`NOT NULL` with the empty set meaning unrestricted, so containment is total and no input yields
+indeterminacy; and the post-v1 EOL row stays **outside** lint 2's universe, `EOL_DISABLED`
+refusing the feature rather than the named condition. The map is 12 §4.1).
 
 **Problem responses (RFC 9457):** `SCOPE_NARROWING_BLOCKED`, `SCHEDULE_STALE_APPROVAL`, `RETIREMENT_PENDING`, `PARENT_NOT_PUBLISHED` (409); `CASCADE_CONFIRMATION_REQUIRED`, `EOL_DISABLED`, `SCOPE_NOT_CONTAINED`, `RETIREMENT_LEAD_TIME`, `REPLACED_BY_NOT_PUBLISHED` (422 architectural; 400 on the wire — see the note below).
 
