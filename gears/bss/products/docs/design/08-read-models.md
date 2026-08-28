@@ -110,7 +110,7 @@ mislabeled content is never acceptable at any load.
 
 **Consumed**: 01 events (publishes, discards), 04 events (deprecation/retirement flips —
 **not** deferred intents: those sources emit none, and their dashboards are **polled
-projections** from 04's own table per `inst-ps-shape`, item 35 of the 2026-08-26 review), 02 events (`Category*`, `CategoryDisplayUpdated`,
+projections** from 04's own table per `inst-ps-shape`, item 35 of the review), 02 events (`Category*`, `CategoryDisplayUpdated`,
 `AttributeDefinitionUpdated`), 06 (`CatalogVersionPublished` — advances the `StalenessStamp`),
 03 vocabulary events (tier labels for display). **Produced**: the browse/search API, the
 history timeline, the dashboards; the convergence and staleness metrics.
@@ -166,14 +166,14 @@ history timeline, the dashboards; the convergence and staleness metrics.
 
 **Problem responses (RFC 9457):** `READ_MODEL_OVERLOADED` (503).
 
-*Statuses added 2026-08-26, corrected the same day by the fix-wave review. The gear declared
+*Statuses added, corrected the same day by the fix-wave review. The gear declared
 its codes with no HTTP status and no problem-response block in any slice, against
 `guidelines/DNA/README.md`'s RFC 9457 rule and `.cf-studio/config/rules/api-contracts.md`. The
 mapping follows pricing's, checked against it code by code: **422** for content the door cannot
 process, **409** where the current state refuses the act — including the ETag precondition,
-which pricing maps to 409 rather than 412 (**D-141**, 2026-08-02, whose own decision text reads
+which pricing maps to 409 rather than 412 (**D-141**, whose own decision text reads
 *"A mismatch is `STALE_VERSION` (409, Foundation-owned)"* — the citation was right the first time;
-a 2026-08-26 pass re-pointed it at D-186 and was wrong to, D-186 being a later amendment scoped to
+a pass re-pointed it at D-186 and was wrong to, D-186 being a later amendment scoped to
 one config route) and where an earlier pass here wrongly wrote
 412 and called that pricing's convention — **403** where the caller may not perform the act at
 all, **404** only where a path segment names a resource this tenant has none of. **503** where retry
@@ -191,8 +191,7 @@ p95 latency and QPS per tenant partition (NFR #1/#2) measured at the API edge; c
 (C5) measured **write-commit → projection-visible** per event class, decomposed into the two
 meters C5 names (commit→durable-acceptance, 01's outbox meter; acceptance→projected, this
 slice's) — **not** outbox-acceptance → projection-visible, which is the re-basing C5's M1 fix
-explicitly struck for collapsing budgets NFR #3 keeps distinct (item 35 of the 2026-08-26
-review); availability split (NFR
+explicitly struck for collapsing budgets NFR #3 keeps distinct (item 35 of the review); availability split (NFR
 #10) — the read path's health is independent of write-path health by construction (separate
 serving store), and the probe that proves it is a read served during a simulated write-path
 outage.
@@ -202,7 +201,7 @@ outage.
 §3.1's projection tables — **rebuildable state, not records**: no append-only guards, no
 audit rows of their own (the audited truth lives upstream); dropped and rebuilt from the
 bootstrap path at any time without loss — **with the zero-version tenant stated rather than
-assumed** (item 35 of the 2026-08-26 review): the bootstrap initializes from the latest
+assumed** (item 35 of the review): the bootstrap initializes from the latest
 `CatalogVersion` (12 `inst-rc-bootstrap`), and a tenant that has published none has no such
 anchor, so its rebuild starts from the **empty catalog plus the full event tail**, which is
 lossless precisely because there is no pre-tail content to lose. "Without loss" is therefore
@@ -222,7 +221,7 @@ the point.
   response leaks neither content nor counts (C4 under simulated overload).
 - Convergence probe: publish → projection visible within budget, **measured from write
   commit** and decomposed into the two meters C5 names — never from outbox acceptance, the
-  re-basing C5's M1 fix struck for collapsing budgets NFR #3 keeps distinct (2026-08-26 branch
+  re-basing C5's M1 fix struck for collapsing budgets NFR #3 keeps distinct (branch
   review: the M1 fix landed at the constraint and at `algo-read-nfrs` and missed the probe, so
   the one artefact that would actually be written could not fail the case the fix exists to
   catch — a slow outbox eating the whole convergence budget invisibly); lag alarm fires past
@@ -234,10 +233,10 @@ the point.
 
 ## 6. Traces to / Risks & Open items
 
-**Traces to**: `cpt-cf-bss-products-usecase-catalog-browser-history` (§10 use case, claimed by id here 2026-08-26 — all seven were in lint 1's universe and none was claimed); **§9.1 by id** — `cpt-cf-bss-products-interface-read-model` (the browse/search surface this slice serves; claimed by id here for the first time, 2026-08-26 branch review). `cpt-cf-bss-products-fr-cache-first-browse`; AC #32; **NFRs by id** (#1 `cpt-cf-bss-products-nfr-read-latency`,
+**Traces to**: `cpt-cf-bss-products-usecase-catalog-browser-history` (§10 use case, claimed by id here — all seven were in lint 1's universe and none was claimed); **§9.1 by id** — `cpt-cf-bss-products-interface-read-model` (the browse/search surface this slice serves; claimed by id here for the first time). `cpt-cf-bss-products-fr-cache-first-browse`; AC #32; **NFRs by id** (#1 `cpt-cf-bss-products-nfr-read-latency`,
 **#2** `cpt-cf-bss-products-nfr-read-throughput`, **#7** `cpt-cf-bss-products-nfr-graceful-degradation`,
 #10 `cpt-cf-bss-products-nfr-availability-audit` — positional numbers alone left `inst-cc-fr` reporting zero claims
-for all ten NFRs, item 30 of the 2026-08-26 review) + the convergence interim (§17.1);
+for all ten NFRs, item 30 of the review) + the convergence interim (§17.1);
 **AC #39** (the registry-side obligations: durable acceptance before reported success, the
 per-consumer delivery/DLQ projection, no state mutation on delivery failure — previously cited
 by nothing); `cpt-cf-bss-products-fr-event-delivery-resilience` (the per-consumer delivery/DLQ **projection**
@@ -246,13 +245,12 @@ clause — M5); the §5.1 p2 rows "Advanced search, filter & faceting" and the r
 (the stamp-floor semantics).
 
 **Risks & open items**:
-- **P-D-07 (floor + gated advance) — CONFIRMED by the product owner 2026-08-26, conditionally**
+- **P-D-07 (floor + gated advance) — CONFIRMED by the product owner 2026-08-, conditionally**
   (was: flagged). The original "strictly additive" premise was refuted by this slice's own
   review (H1) and replaced, not patched. The confirmation is conditional on there **being** a
   projection: the floor is a property of a serving store that lags, so it has no subject
   without one.
-- **Open above this slice: does browse need a separate serving store at all?** Raised
-  2026-08-26 and now a PRD §15 question for the NFR workshop. `fr-cache-first-browse`'s
+- **Open above this slice: does browse need a separate serving store at all?** Raised in review and now a PRD §15 question for the NFR workshop. `fr-cache-first-browse`'s
   rationale rested on two uncalibrated numbers — NFR #1's 10K SKUs/tenant is a scale a direct
   multi-way query plausibly serves, and NFR #2's ≥ 2,000 read QPS/tenant partition is not a
   portal number. The FR's rationale has been re-derived onto the two properties that survive

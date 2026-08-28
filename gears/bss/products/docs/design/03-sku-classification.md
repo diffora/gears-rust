@@ -142,7 +142,7 @@ currently lacks** (consumer-side addition owed there).
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-flow-unit-set`
 
 1. [ ] - `p1` - The set is a `RecognizedSet` (governed live entity via `GovernedLiveOp`): seeded per PRD §17.1 (`vCPU-hours`, `GB-storage`, `GB-egress`, `request-count`); adding a unit = **elevated approval** (slice-05 gate, FinanceReviewer not required — owner is Product + Rating per §15) - `inst-us-governed`
-2. [ ] - `p1` - De-listing: removal refused while ≥ 1 **published** SKU declares the unit (`UNIT_DELIST_BLOCKED`, holders sampled); the admitted path is `deprecated` (no new declarations, existing publishes unaffected) then removal once unreferenced — where "referenced" means **non-terminal published heads** (published/deprecated SKUs); frozen version content is self-contained and never blocks removal (operand narrowed with slice 02's — M2 fix, 2026-08-25 review) - `inst-us-delist`
+2. [ ] - `p1` - De-listing: removal refused while ≥ 1 **published** SKU declares the unit (`UNIT_DELIST_BLOCKED`, holders sampled); the admitted path is `deprecated` (no new declarations, existing publishes unaffected) then removal once unreferenced — where "referenced" means **non-terminal published heads** (published/deprecated SKUs); frozen version content is self-contained and never blocks removal (operand narrowed with slice 02's — M2 fix) - `inst-us-delist`
 3. [ ] - `p1` - Unit semantics are immutable (C3): there is no rename/redefine op at all on this set — the absence of the door is the enforcement; a correction is a new unit + deprecation, and the audit trail ties them via the `GovernedLiveOp` payload - `inst-us-immutable`
 4. [ ] - `p1` - De-listing/deprecation never mutates any frozen snapshot (append-only posture, 01 C5) - `inst-us-snapshots`
 
@@ -176,23 +176,23 @@ currently lacks** (consumer-side addition owed there).
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-contract-classification-errors`
 
-`SKU_TYPE_UNKNOWN` (raised by `inst-cl-type-profile` when `type` is absent or outside the closed set — named 2026-08-26; the rule described the check and named no code), `ACCOUNTING_CODE_REQUIRED`, `ACCOUNTING_CODE_UNKNOWN`,
+`SKU_TYPE_UNKNOWN` (raised by `inst-cl-type-profile` when `type` is absent or outside the closed set — named; the rule described the check and named no code), `ACCOUNTING_CODE_REQUIRED`, `ACCOUNTING_CODE_UNKNOWN`,
 `METER_DECLARATION_INCOMPLETE`, `UNRECOGNIZED_UNIT`, `UNIT_DEPRECATED`, `USAGE_TYPE_UNRESOLVED`,
 `USAGE_TYPE_UNAVAILABLE` (retryable, fail-closed), `UNIT_DELIST_BLOCKED`, `PLAN_TIER_UNKNOWN`, `PLAN_TIER_DEPRECATED`,
-`PLAN_TIER_RETIRE_BLOCKED`, `BUNDLE_OVERRIDE_REQUIRED` (the interactive refusal of `inst-cl-bundle-override`, the P-D-02 gate's API behaviour — named 2026-08-26; the bulk analogue already had `BULK_OVERRIDE_UNACKNOWLEDGED`). Registered into 01 §3.3; the AC #38
+`PLAN_TIER_RETIRE_BLOCKED`, `BUNDLE_OVERRIDE_REQUIRED` (the interactive refusal of `inst-cl-bundle-override`, the P-D-02 gate's API behaviour — named; the bulk analogue already had `BULK_OVERRIDE_UNACKNOWLEDGED`). Registered into 01 §3.3; the AC #38
 rows "unrecognized metering unit without elevation" and "authoring/cloning against a
 de-listed/deprecated unit" map here.
 
 **Problem responses (RFC 9457):** `UNIT_DELIST_BLOCKED`, `PLAN_TIER_RETIRE_BLOCKED` (409); `SKU_TYPE_UNKNOWN`, `ACCOUNTING_CODE_REQUIRED`, `ACCOUNTING_CODE_UNKNOWN`, `METER_DECLARATION_INCOMPLETE`, `UNRECOGNIZED_UNIT`, `UNIT_DEPRECATED`, `USAGE_TYPE_UNRESOLVED`, `PLAN_TIER_UNKNOWN`, `PLAN_TIER_DEPRECATED`, `BUNDLE_OVERRIDE_REQUIRED`, `BULK_OVERRIDE_UNACKNOWLEDGED` (422); `USAGE_TYPE_UNAVAILABLE` (503).
 
-*Statuses added 2026-08-26, corrected the same day by the fix-wave review. The gear declared
+*Statuses added, corrected the same day by the fix-wave review. The gear declared
 its codes with no HTTP status and no problem-response block in any slice, against
 `guidelines/DNA/README.md`'s RFC 9457 rule and `.cf-studio/config/rules/api-contracts.md`. The
 mapping follows pricing's, checked against it code by code: **422** for content the door cannot
 process, **409** where the current state refuses the act — including the ETag precondition,
-which pricing maps to 409 rather than 412 (**D-141**, 2026-08-02, whose own decision text reads
+which pricing maps to 409 rather than 412 (**D-141**, whose own decision text reads
 *"A mismatch is `STALE_VERSION` (409, Foundation-owned)"* — the citation was right the first time;
-a 2026-08-26 pass re-pointed it at D-186 and was wrong to, D-186 being a later amendment scoped to
+a pass re-pointed it at D-186 and was wrong to, D-186 being a later amendment scoped to
 one config route) and where an earlier pass here wrongly wrote
 412 and called that pricing's convention — **403** where the caller may not perform the act at
 all, **404** only where a path segment names a resource this tenant has none of. **503** where retry
@@ -207,7 +207,7 @@ row and open to correction; the requirement is that every code carries one.
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-algo-collector-dependency`
 
-1. [ ] - `p1` - `UsageTypeResolver` is the gear's only synchronous cross-gear call inside a publish pipeline; it runs **once per publish** (not per validator), with a short timeout and no retry inside the transaction — on timeout the publish fails `USAGE_TYPE_UNAVAILABLE` and the operator retries the publish (idempotent by 01 §3.2). **On the scheduled lane there is no operator, so the code is explicitly retryable there too** (item 37 of the 2026-08-26 review): 04 `inst-ar-failure` makes anything but `STALE_REVISION`/`APPROVAL_REQUIRED` terminal, which burned a pinned approval on a transient collector blip. `USAGE_TYPE_UNAVAILABLE` therefore joins the runner's **`deferred`** set, not its `failed` set — re-evaluated on the runner's own cadence, bounded by the transition's own attempt budget before it lands `failed` - `inst-cd-once`
+1. [ ] - `p1` - `UsageTypeResolver` is the gear's only synchronous cross-gear call inside a publish pipeline; it runs **once per publish** (not per validator), with a short timeout and no retry inside the transaction — on timeout the publish fails `USAGE_TYPE_UNAVAILABLE` and the operator retries the publish (idempotent by 01 §3.2). **On the scheduled lane there is no operator, so the code is explicitly retryable there too** (item 37 of the review): 04 `inst-ar-failure` makes anything but `STALE_REVISION`/`APPROVAL_REQUIRED` terminal, which burned a pinned approval on a transient collector blip. `USAGE_TYPE_UNAVAILABLE` therefore joins the runner's **`deferred`** set, not its `failed` set — re-evaluated on the runner's own cadence, bounded by the transition's own attempt budget before it lands `failed` - `inst-cd-once`
 2. [ ] - `p2` - The resolved `(gts_id, kind, metadata_fields)` snapshot is frozen into the entity's `products_entity_version` row (owner's call, 2026-08-27; it was stamped into the publish's audit row until **P-D-21** removed audit rows from committed acts, and the publish event is not a home either — **P-D-22**'s vacuum reclaims the outbox row and a broker is not an archive, while §15's deletion-negotiation and pricing's `meter_binding_divergent` remediation both need to ask what the binding resolved to long after the fact) — the record of *what the binding resolved to* at approval time (**P-D-23**) - `inst-cd-stamp`
 
 ## 4. Data / Storage (normative shape; DDL in migrations)

@@ -55,7 +55,7 @@ Requirements live in [`../PRD.md`](../PRD.md); decisions in [`../DECISIONS.md`](
 - [`05-governance.md`](./05-governance.md) — `MaterialityEvaluator` (bucket-registry-driven +
   enumerated ops + affected-entity trigger; the policy's own mutation is material), the
   approval workflow with a **stored** content snapshot (never re-derived — the pricing lesson),
-  quorum by **principals** (the tenant's configured `N`, default 2 floor 0 — P-D-11; FinanceReviewer predicate binding at every `N >= 1`; the shorthand's reach enumerated by P-D-13). *This line read "author + ≥2 approvers" until 2026-08-26 — the fixed count P-D-11 retired, in the very phrasing that decision names as the origin of the floor being three without anyone deciding it.* The list continues: the P-D-02
+  quorum by **principals** (the tenant's configured `N`, default 2 floor 0 — P-D-11; FinanceReviewer predicate binding at every `N >= 1`; the shorthand's reach enumerated by P-D-13). *This line read "author + ≥2 approvers" until — the fixed count P-D-11 retired, in the very phrasing that decision names as the origin of the floor being three without anyone deciding it.* The list continues: the P-D-02
   `OverrideCeremony`, one-shot approval consumption, the studio-inbox queue envelope
   (merge-compatible with pricing's), RBAC catalog, time-boxed read-only break-glass. (§6.7, §6.8)
 - [`06-catalog-version.md`](./06-catalog-version.md) — the `CatalogVersion` machine: D-47 lanes
@@ -73,7 +73,7 @@ Requirements live in [`../PRD.md`](../PRD.md); decisions in [`../DECISIONS.md`](
   atomic full-set replacement), the 3-state `ReferencePredicate` with per-producer detail (+ the
   `no_producers` fail-safe), producer registration (P-D-03; symmetric capture-store ride), the
   bucket-ii `CorrectionDoor` (fresh-zero + the `N`-governed 05 quorum with `quorumReduced`
-  recorded — P-D-13's fifth site, swept 2026-08-26 — + re-publish with `usageTypeRef`
+  recorded — P-D-13's fifth site, swept — + re-publish with `usageTypeRef`
   re-resolution), the **third admission arm** for an unresolvable meter target (P-D-16), the
   flag-gated break-glass correction (P-D-13's sixth site) + `TripwireCounter`. (§6.1, §6.13)
 - [`08-read-models.md`](./08-read-models.md) — the event-driven `ReadProjector` over frozen
@@ -112,5 +112,5 @@ Requirements live in [`../PRD.md`](../PRD.md); decisions in [`../DECISIONS.md`](
 See [`../DESIGN.md`'s design-set table](../DESIGN.md#design-set-ordered-by-implementation-phase)
 — the canonical table with phases and dependencies. (The old target, `#13-slice-map-phases-dependency-order`,
 never existed: DESIGN.md §1.3 is "Architecture Layers" and the slice map is a `####` block —
-item 27 of the 2026-08-26 review, the only broken anchor in the products doc tree.) The numeric prefix is implementation order, not the PRD
+item 27 of the review, the only broken anchor in the products doc tree.) The numeric prefix is implementation order, not the PRD
 subsection number.
