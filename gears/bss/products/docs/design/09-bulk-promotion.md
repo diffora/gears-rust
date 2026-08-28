@@ -173,7 +173,7 @@ all, **404** only where a path segment names a resource this tenant has none of.
 is the remedy is this gear's own addition — pricing's set carries no 503 at all, so that one
 class is not "checked against it". **The 422s here are architectural, not wire** — see 01 §3.3, which quotes the
 platform rule: no `CanonicalError` category renders 422, so each reaches the wire as a 400
-carrying its code, and no endpoint may declare a 422 for a **canonical** error in `OpenAPI` (the framework layer is the exception — a `Json<T>` schema violation, which carries no registry code). Proposed per
+carrying its code, and no endpoint may declare a 422 for an error **carrying a registry code** in `OpenAPI` (the framework layer is the exception — a `Json<T>` schema violation, which carries no registry code). Proposed per
 row and open to correction; the requirement is that every code carries one.*
 
 ## 4. Data / Storage (normative shape; DDL in migrations)
@@ -216,3 +216,8 @@ via 05).
   `inst-pm-resolve`'s classification, worth its own probe when built.
 - **Export format versioning** (schema evolution of the artifact) rides slice 12's vN→vN+1
   discipline; named here so the exporter carries a format version from day one.
+- **A renamed Product carrying no `productCode` is promoted as a create, not an update.**
+  `normalized(name)` is both bucket-iii in 01 §4.1 (a published Product is renameable) and this
+  slice's C5 fallback promotion identity where `productCode` is absent — and `product_code` is
+  nullable, so a rename between promotions makes the target resolve *unknown identity* and create a
+  second Product, which C5's four-way classification exists to prevent. Owner: this slice. *(Filed from 01 §6 by the slice-01 eighth lens pass, 2026-08-28 — the pointer claimed it was registered here and it was not.)*

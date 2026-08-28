@@ -205,7 +205,7 @@ all, **404** only where a path segment names a resource this tenant has none of.
 is the remedy is this gear's own addition — pricing's set carries no 503 at all, so that one
 class is not "checked against it". **The 422s here are architectural, not wire** — see 01 §3.3, which quotes the
 platform rule: no `CanonicalError` category renders 422, so each reaches the wire as a 400
-carrying its code, and no endpoint may declare a 422 for a **canonical** error in `OpenAPI` (the framework layer is the exception — a `Json<T>` schema violation, which carries no registry code). Proposed per
+carrying its code, and no endpoint may declare a 422 for an error **carrying a registry code** in `OpenAPI` (the framework layer is the exception — a `Json<T>` schema violation, which carries no registry code). Proposed per
 row and open to correction; the requirement is that every code carries one.
   Codes listed here for the response map but **declared elsewhere**: `PARENT_NOT_PUBLISHED` (slice 01), `SCOPE_NOT_CONTAINED` (slice 01) — the status is repeated, not a second declaration, so the one-declaration rule stands.*
 
@@ -296,3 +296,18 @@ pricing D-47 (joint contract), P-D-04 (containment residue).
   2026-08-27.)*
 - EOL (post-v1) will need: the subscriptions-lifecycle AC by number, the consumer-ack contract,
   and `SkuEolSuspended` — the schema field is already vN-compatible.
+- **`inst-pc-ordering` is edge-keyed where P-D-32 names the target state.** The row registers the
+  `PARENT_NOT_PUBLISHED` validator on the SKU `→ published` **edge**; **P-D-32** keys it to the
+  *target state*. An edge-keyed reading runs no validator on a re-publish, which is exactly the
+  fail-closed re-run P-D-32 exists to keep and which 01 §2's publish re-run relies on. Owed: the
+  restatement. *(Filed from 01 §6 by the slice-01 eighth lens pass, 2026-08-28 — the pointer claimed it was registered here and it was not.)*
+- **Does the create-door retire-intent validator also register on the save door?** 01
+  `inst-fd-save-txn` is the only door that may change a SKU's `product_id`, so a draft SKU can be
+  re-parented under a retire-pending Product by a door neither arm covers — the hazard
+  `inst-fd-containment-retire-intent` itself describes. Owner: this slice. *(Filed from 01 §6 by the slice-01 eighth lens pass, 2026-08-28 — the pointer claimed it was registered here and it was not.)*
+- **Can `replaced_by_sku_id` ever be cleared?** 01 §4.2 pins it **write-once** on this slice's own
+  words, "Validated once, and the row is terminal at the flip" — but this slice also admits aborting
+  a retirement (a governed cancel of the `ScheduledTransition`, then un-deprecate). A SKU that was
+  retirement-initiated, cancelled and un-deprecated is `published` again and permanently names a
+  successor no admitted write can clear, which the read surface then resolves transitively. Owner:
+  this slice, who already owes the tighter predicate 01 pins on its behalf. *(Filed from design 01 §6 by the slice-01 eighth lens pass, 2026-08-28.)*

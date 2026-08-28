@@ -197,7 +197,7 @@ all, **404** only where a path segment names a resource this tenant has none of.
 is the remedy is this gear's own addition — pricing's set carries no 503 at all, so that one
 class is not "checked against it". **The 422s here are architectural, not wire** — see 01 §3.3, which quotes the
 platform rule: no `CanonicalError` category renders 422, so each reaches the wire as a 400
-carrying its code, and no endpoint may declare a 422 for a **canonical** error in `OpenAPI` (the framework layer is the exception — a `Json<T>` schema violation, which carries no registry code). Proposed per
+carrying its code, and no endpoint may declare a 422 for an error **carrying a registry code** in `OpenAPI` (the framework layer is the exception — a `Json<T>` schema violation, which carries no registry code). Proposed per
 row and open to correction; the requirement is that every code carries one.
   Codes listed here for the response map but **declared elsewhere**: `ILLEGAL_FIELD_MUTATION` (slice 01) — the status is repeated, not a second declaration, so the one-declaration rule stands.*
 

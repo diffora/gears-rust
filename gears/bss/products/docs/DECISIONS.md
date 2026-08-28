@@ -1067,7 +1067,7 @@ instead.*
   |---|---|
   | **`DUPLICATE_SKU_CODE` becomes `DUPLICATE_CODE`**, covering both reservations. §2 already says `productCode` reserves "under the same rules as `skuCode`", so one rule carries one code; the SKU-named form was declared before `productCode` had an index of its own. **This is a rename, and §3.3 states renames are breaking** — taken now precisely because nothing is built yet | 09, 11 |
   | **`ENTITY_TERMINAL` (409)** — a save on a `retired`/`discarded` head. The subject's own terminal state refusing the write, exactly as `PARENT_TERMINAL` is the parent's; both sit in the `state` phase (P-D-24). Without it an ordinary operator mistake reached the trigger and answered a bare 500 | 12 (error map) |
-  | **`AUDIT_UNAVAILABLE` (503)** — the refusal's audit row could not be written, so the door cannot report the domain refusal (§4.4). Names the condition rather than the mechanism, matching 08's `READ_MODEL_OVERLOADED`, the gear's only other 503 | 12 (error map) |
+  | **`AUDIT_UNAVAILABLE` (503)** — the refusal's audit row could not be written, so the door cannot report the domain refusal (§4.4). Names the condition rather than the mechanism, matching 08's `READ_MODEL_OVERLOADED` and 03's `USAGE_TYPE_UNAVAILABLE`, the gear's two other 503s | 12 (error map) |
   | **`products_audit_log` gains nullable `error_code` and `attempted_key`.** §3.1 makes the code the attribution channel ("never the rule name") and AC #38 maps by it, so it is a column rather than free text; `attempted_key` carries the natural key a pre-mint refusal has in place of an id, which `DUPLICATE_NAME` and `DUPLICATE_CODE` both need | 10 (the audit class its `RetentionClock` reads) |
 
 - **Why `DUPLICATE_CODE` rather than a second, product-named code**: the alternative kept
@@ -1492,7 +1492,7 @@ instead.*
 - **Context**: `inst-fd-containment-scope` and 04 C5 both read a Product's `region_scope`/
   `brand_scope`, and **no door wrote them**. §4.1 listed the pair with neither default nor
   nullability, the create flow never reached them, and the PRD puts brand/region scope on the
-  Product create surface (§4.1's operator flow, "Create/select a Product (name, category,
+  Product create surface (§10's operator flow, "Create/select a Product (name, category,
   description, brand/region scope)") without pinning requiredness or the empty-set reading. Under
   the fail-closed wording — "anything not provably a subset" — a Product whose scope was never set
   refuses **every** child SKU that names one, since nothing non-empty is a subset of the empty set.
@@ -1585,7 +1585,7 @@ instead.*
 
   **It turned out not to need one.** `in_flight_until` exists only because the claim committed in
   its own transaction, and that arrangement rests on **P-D-26**'s stated reason — that a claim
-  inside the mutation's transaction would be "invisible to the concurrent duplicate this row exists
+  inside the mutation's transaction would be "invisible to the concurrent duplicate the row exists
   to refuse". Measured against the donor, that reason does not hold: `gears/bss/pricing`'s
   `idempotency_repo` states in as many words that **"the gate is the insert, not a lookup"**, and a
   losing duplicate's own INSERT conflicts with the winner's *uncommitted* row and waits — then

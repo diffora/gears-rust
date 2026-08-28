@@ -242,3 +242,14 @@ slice is that suite's specification.
   coupling in both directions. **Honest limit**: the seam suite itself does not exist yet (§15
   owns its home and owner), so this widens a specification rather than a running gate — cheaper
   before the job is built than after.
+- **`inst-cc-events` lints per instruction row, against P-D-34's act unit.** **P-D-34** makes the
+  event-declaration unit the *act*: a step inside a transaction whose event another row of that
+  transaction names inherits the declaration. This row still lints per instruction *row*, so 01's
+  `inst-fd-publish-freeze`, `inst-fd-publish-correction` and `inst-fd-publish-bump` — which inherit
+  `inst-fd-publish-emit`'s declaration — are red by construction on a correct document. Owner: this
+  slice. *(Filed from 01 §6 by the slice-01 eighth lens pass, 2026-08-28 — the pointer claimed it was registered here and it was not.)*
+- **Does this slice owe an open-item reciprocity lint?** Design 01 §6 files questions to sibling
+  documents as "pointer only — registered where its owner will look". On 2026-08-28 that claim was
+  measured and was false for four of the six named documents. The lint set here checks ids, codes,
+  events and doors, never open-item reciprocity, so nothing catches a pointer whose item was never
+  filed. Owner: the design-set owner with this slice. *(Filed from design 01 §6 by the slice-01 eighth lens pass, 2026-08-28.)*

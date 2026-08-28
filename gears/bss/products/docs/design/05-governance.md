@@ -227,7 +227,7 @@ all, **404** only where a path segment names a resource this tenant has none of.
 is the remedy is this gear's own addition — pricing's set carries no 503 at all, so that one
 class is not "checked against it". **The 422s here are architectural, not wire** — see 01 §3.3, which quotes the
 platform rule: no `CanonicalError` category renders 422, so each reaches the wire as a 400
-carrying its code, and no endpoint may declare a 422 for a **canonical** error in `OpenAPI` (the framework layer is the exception — a `Json<T>` schema violation, which carries no registry code). Proposed per
+carrying its code, and no endpoint may declare a 422 for an error **carrying a registry code** in `OpenAPI` (the framework layer is the exception — a `Json<T>` schema violation, which carries no registry code). Proposed per
 row and open to correction; the requirement is that every code carries one.
   Codes listed here for the response map but **declared elsewhere**: `APPROVAL_REQUIRED` (slice 01) — the status is repeated, not a second declaration, so the one-declaration rule stands.*
 
@@ -316,3 +316,14 @@ finance fields), 04 (un-deprecation, retirement confirmation, scheduled-approval
   operational, not structural; noted for the ops runbook.
 - Approval retention/erasure interplay (approver principals are pseudonymous refs) is slice
   10's; this slice only guarantees the refs are pseudonymous from birth.
+- **Does the authoring head read need an action of its own in the RBAC catalog?** 01 §2's `GET` is
+  an authoring read, and 01 §4.3 says that read "is not a consumer read", while this slice's
+  catalog lists only `read|write|publish` per kind. Owner: this slice. *(Filed from 01 §6 by the slice-01 eighth lens pass, 2026-08-28 — the pointer claimed it was registered here and it was not.)*
+- **C3's no-hook exception is still worded `draft→published` only.** C3 reads "except
+  `draft→published`, which the publish door owns"; **P-D-34** widened the exception to any
+  transition consuming an approval in the same transaction. As written, the invalidation hook fires
+  on `deprecated→published` — the gated edge P-D-30 put the gate phase on — against 01 §2, which
+  says it must not. Owed: the restatement. *(Filed from 01 §6 by the slice-01 eighth lens pass, 2026-08-28 — the pointer claimed it was registered here and it was not.)*
+- **What does `Gate` mode require of a gated transition?** 01 `inst-fd-gate-mode-gate` is worded for
+  a publish and pins "the door's expected revision", while the transition doors are this slice's and
+  04's and pin nothing stated in 01. Owner: this slice with 04. *(Filed from 01 §6 by the slice-01 eighth lens pass, 2026-08-28 — the pointer claimed it was registered here and it was not.)*
