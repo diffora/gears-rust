@@ -241,7 +241,10 @@ without a fourth clock.
   canonical copy** of category values / metadata maps / recognized sets / freeze-participant set
   / reference-producer set (07's symmetric-snapshot ride) as-of the snapshot (H3 fix: live
   content is copied, never referenced). The manifest body;
-  append-only; the checksum covers both halves.
+  append-only; the checksum covers both halves. **Indexed additionally on
+  `(tenant_id, entity_kind, entity_id, published_version)`** — not for a read of this slice's own,
+  but because 01's `products_entity_version` retention DELETE is admitted only when no entry
+  references the row (01 **P-D-40**), and the PK above leads with `catalog_version_id`.
 - **`products_catalog_version_counter`** — `(tenant_id)` → next id (the gapless allocator).
 - **`products_catalog_version_request`** — the queue: `source`, `lane`, **`request_key`**
   (UNIQUE with `source` — the idempotency and `satisfiedRequests` operand), **`operation_key`**

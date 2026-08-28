@@ -48,6 +48,7 @@ joint contracts, cited from here by their pricing numbers, never duplicated.
 - [P-D-37 — One code per audit row, every violation in the answer](#p-d-37--one-code-per-audit-row-every-violation-in-the-answer)
 - [P-D-38 — A refusal stores nothing and releases the key](#p-d-38--a-refusal-stores-nothing-and-releases-the-key)
 - [P-D-39 — The scope columns, and what the empty set means](#p-d-39--the-scope-columns-and-what-the-empty-set-means)
+- [P-D-40 — The entity-version retention DELETE, under a referential predicate](#p-d-40--the-entity-version-retention-delete-under-a-referential-predicate)
 
 <!-- /toc -->
 
@@ -1199,6 +1200,12 @@ instead.*
 - **Restated by** *(owed until 2026-08-27, all closed)*: `design/05-governance.md` (the gate phase's wider scope, and the pre-pipeline
   authorization gate its denial code answers to).
 
+- **Amended 2026-08-28 by P-D-40**: "the guard judges the row image" is widened to "the guard
+  judges the **data**". The objection recorded below is to a guard reading the *door* through a
+  session variable that exists on Postgres and not SQLite; a predicate that reads another table
+  judges data and both engines evaluate it. `products_entity_version`'s retention DELETE is
+  admitted under exactly such a referential predicate.
+
 #### P-D-31 — The four the slice had routed outward, decided here
 
 - **Context**: the fifth pass filed four items with owners outside this slice. Two of those
@@ -1501,3 +1508,33 @@ instead.*
   contained within its parent's" holds unchanged under the restriction reading.
 - **Propagated**: `design/01-foundation.md` (§2 create flow and containment row, §4.1, §4.2, §6),
   `design/04-lifecycle.md` (C5, `inst-pc-containment`).
+
+
+#### P-D-40 — The entity-version retention DELETE, under a referential predicate
+
+- **Date**: 2026-08-28 (owner call)
+- **Context**: §4.3 admitted no UPDATE or DELETE on `products_entity_version` ever, while 10
+  `inst-rt-gc` must collect those rows — "entity versions only after every referencing manifest".
+  **P-D-34**'s repair one table over does not transfer: `products_audit_log`'s DELETE arm is a
+  row-image predicate (`written_at` older than its class window), and a version row's
+  collectability is not a property of the row at all but of what still points at it. So the GC had
+  no admitted path and 10's ordering was a procedural promise with nothing enforcing it.
+
+  | Call | Propagation |
+  |---|---|
+  | **One DELETE is admitted, under a referential predicate**: a `products_entity_version` row may be deleted only when **no `products_catalog_version_entry` references it**. UPDATE stays refused in every form | 01 §4.2 (shared guard), §4.3; 10 `inst-rt-gc` |
+  | **A guard may read another table.** This is the first predicate here that does, and it is compatible with **P-D-31**, whose objection was to a guard reading the *door* through a session variable that exists on one engine only. A subquery judges data, and both engines evaluate it — so "the guard judges the row image" is widened to "the guard judges the **data**" | 01 §4.2; P-D-31 (amended) |
+  | **06's manifest carries an index on `(tenant_id, entity_kind, entity_id, published_version)`** — not for a read of its own, but because the manifest's key leads with `catalog_version_id` and is useless for this lookup | 06 `products_catalog_version_entry` |
+
+- **What this buys beyond an admitted path**: 10's deletion order stops being a promise. Under the
+  predicate a GC *cannot* delete a referenced version row, whichever order it walks — strictly more
+  than the audit table's window predicate buys, which still trusts the GC to compute the window.
+  It also subsumes the freeze-registration arm transitively: a live registration holds the catalog
+  version, which holds its manifest entries, which hold these rows, so **P-D-18**'s "a participant
+  that never releases pins that version's storage" needs no second predicate here.
+- **The argument against, stated**: a per-row index lookup on every collected version, and an index
+  on a table that grows as catalog versions × entities. Both are the price of the guarantee, and
+  the alternative that keeps predicates row-image — a denormalized reference counter on the version
+  row — buys a column that can drift from the thing it counts.
+- **Propagated**: `design/01-foundation.md` (§4.2, §4.3, §6), `design/06-catalog-version.md` (the
+  manifest's index), `design/10-retention-erasure.md` (`inst-rt-gc`). Amends **P-D-31**.

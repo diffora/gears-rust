@@ -92,7 +92,7 @@ acknowledged, and rejections that always carry an audited reason. Per P-D-02, ev
   (four read paths the guard needed), P-D-29 (what a replay, an envelope and a digest carry),
   P-D-30 (gate host, authorization, whose validator), P-D-31 (the four routed outward, decided
   here), P-D-32 (the second lens wave's six calls), P-D-33 (eight calls from weeding the open items),
-  P-D-34 (the remaining items, decided from the set), P-D-35 (the five the set already forced), P-D-36 (the phase unit withdrawn), P-D-37 (one code per row, all violations in the answer), P-D-38 (a refusal stores nothing), P-D-39 (scope columns and the empty set)
+  P-D-34 (the remaining items, decided from the set), P-D-35 (the five the set already forced), P-D-36 (the phase unit withdrawn), P-D-37 (one code per row, all violations in the answer), P-D-38 (a refusal stores nothing), P-D-39 (scope columns and the empty set), P-D-40 (the version table's one admitted DELETE)
 - Pricing `design/01-foundation.md` — the pattern donor (registered validators, append-only
   triggers with column whitelists, draft/published partial unique indexes, pending refs — **not
   the outbox**, which P-D-22 moved to `toolkit_db::outbox` after measuring that pricing runs a
@@ -761,7 +761,8 @@ publish enforced by the trigger whitelist making `sku_code` immutable once
 `published_version > 0`.
 
 **Shared head-row guard (both entity tables; H1/M1 fix, 2026-08-25 review):** frozen
-`products_entity_version` rows admit no UPDATE/DELETE ever. **The guard judges the row image, never the door** (owner's call, 2026-08-27, P-D-31: a session
+`products_entity_version` rows admit **no UPDATE ever and exactly one DELETE** — the retention
+arm below. **The guard judges the data, never the door** (owner's call, 2026-08-27, P-D-31: a session
 variable exists on Postgres and not on SQLite, so a door-reading guard breaks C1 in both halves —
 dual-engine and "guards defined once". Which *door* performed a write is an **application**
 guarantee; what the trigger enforces is which column may change in which state. §3.1's "one door,
@@ -859,7 +860,20 @@ and the gear pin one canonicalization rule rather than two. The digest's input i
 what actually holds all of this is a **canonical-serialization golden vector** committed with the
 first migration — a different artifact from C1's schema-oracle dumps, and owed by §5.
 
-Append-only, no UPDATE path at all; diffs are computed between rows, never stored mutated.
+Append-only, no UPDATE path at all; diffs are computed between rows, never stored mutated. **One
+DELETE is admitted, under a referential predicate** (owner's call, 2026-08-28, **P-D-40**): a row
+may be deleted only when **no `products_catalog_version_entry` references it** — 10 `inst-rt-gc`
+otherwise has no admitted path, and P-D-34's repair one table over does not transfer, a version
+row's collectability being a property of what still points at it rather than of the row image.
+This is the first predicate here that reads another table, and it is compatible with **P-D-31**,
+whose objection was to a guard reading the *door* through a session variable that exists on one
+engine only: a subquery judges **data** and both engines evaluate it. It also makes 10's stated
+deletion order — "entity versions only after every referencing manifest" — **physically
+unbreakable** rather than procedurally promised, which is strictly more than the audit table's
+window predicate buys, and it subsumes the freeze-registration arm transitively: a live
+registration holds the catalog version, which holds its manifest entries, which hold these rows.
+It costs 06 an index on `(tenant_id, entity_kind, entity_id, published_version)`, the manifest's
+own key leading with `catalog_version_id` and being useless for this lookup.
 These rows are the **only consumer-read surface** for **Product/SKU** entity *content* (08 C6's
 own scoping — governed live entities are read from their live tables). **Content is not state**
 (owner's call, 2026-08-27): `lifecycle_state`, `deprecation_provenance` and `replaced_by_sku_id`
@@ -1053,6 +1067,10 @@ and the ordering key.
   races — the `ReservationIndex` **and the `product_code` index**, the name index, the `If-Match`
   draft race, publish-vs-edit — and the claim-INSERT
   race of `inst-fd-idem-claim` all get real concurrency probes, not read-then-assert.
+- The referential DELETE arm gets its own probe (**P-D-40**): deleting a `products_entity_version`
+  row that a `products_catalog_version_entry` still references must be **refused by the guard**,
+  not merely skipped by the GC — a probe that passes when the GC is bypassed entirely, since that
+  is the case the predicate exists for.
 - The trigger whitelist gets a `CorruptRow`-style probe per guarded column class (poison
   columns are the missing guards).
 - A test asserting the `BucketRegistry`'s tag map and §4.2's trigger column classes name the same
@@ -1105,7 +1123,7 @@ and the ordering key.
   (frame), #42.
 
 **Risks & open items**: eleven review passes (the numbering restarted once, at the sixth) and
-seventeen owner rounds (P-D-23 through P-D-39) have run over this slice. What survives is one standing **risk**, three open questions, and a set of
+eighteen owner rounds (P-D-23 through P-D-40) have run over this slice. What survives is one standing **risk**, two open questions, and a set of
 pointers to items filed with owners outside this document.
 
 **Risk** — a hazard rather than a question:
@@ -1162,7 +1180,7 @@ pointers to items filed with owners outside this document.
   `composition_pending` no-re-raise clause may rest on **P-D-14**, which is still **FLAGGED** for
   its owner and whose propagation field does not name this document.
 
-**Open here** — three items. **P-D-33** (eight calls) and **P-D-34** (nine calls plus five of the
+**Open here** — two items. **P-D-33** (eight calls) and **P-D-34** (nine calls plus five of the
 idempotency store's seven operands) closed what the passes before them had raised, each cited in
 the rule it changed. The two lens passes since found that the rules those rounds wrote carry seams
 of their own; everything below is this slice's to settle.
@@ -1194,10 +1212,3 @@ of their own; everything below is this slice's to settle.
   clause imports P-D-28's own test — an admitted class needs a named admitting door — while §2
   names one only for bucket-i. With 03, whose `inst-mt-bucket` asserts the draft plane, and 07,
   whose ceremony the published half is.
-- **`products_entity_version` admits no DELETE, and 10's retention GC must delete its rows.** The
-  table admits no UPDATE/DELETE ever, while 10 orders entity-version deletion after every
-  referencing manifest. P-D-34's repair one table over does not transfer: a version row's
-  collectability is not a row image, since the `RetentionGate` reads 06's freeze registrations in
-  another table, so no predicate a trigger can evaluate is stated. Either the table gains a
-  whitelist DELETE arm under some row-image predicate, or the GC deletes outside the trigger. With
-  10, whose collection path it is.
