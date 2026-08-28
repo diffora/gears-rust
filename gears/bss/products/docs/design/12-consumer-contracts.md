@@ -293,10 +293,18 @@ slice is that suite's specification.
   measured and was false for four of the six named documents. The lint set here checks ids, codes,
   events and doors, never open-item reciprocity, so nothing catches a pointer whose item was never
   filed. Owner: the design-set owner with this slice. *(Filed from design 01 §6 by the slice-01 eighth lens pass.)*
-- **The `CoverageChecks` are gated by nothing.** §3.2 says so itself: the `Spec Invariants` job
-  that ran `make spec-check` was deleted, and `.github/workflows/docs.yml` holds one job, `Check
-  Markdown Links`. Measured at HEAD: no `spec-check` target exists in the root `Makefile` or any
-  workflow. Restoring the job is owed and was registered nowhere until now. Owner: this slice.
+- **The `CoverageChecks` are gated by nothing, and there is nothing to restore.** This item
+  previously read "restoring the job is owed", which was false in its premise and is corrected
+  here. The `Spec Invariants` job was not lost: commit `21a149fda` removed it deliberately
+  along with `tools/spec-check`, the workspace member and `make spec-check`, and stated the
+  cost in as many words — "the design documents go back to being validated by nothing
+  automatically… That property is knowingly given up; the mitigation is that a forgotten or
+  permanently-red gate provides no real protection either." The in-repo tool no longer exists,
+  so enforcing these nine lints is **building** something, not restoring it, and that is repo
+  tooling work rather than anything this design set can decide. What this slice owes is only
+  the honest statement that its checks are declared and unenforced — which §3.2 makes.
+  Owner: whoever owns repo tooling, if and when the cost recorded in `21a149fda` is
+  reconsidered. *(Premise corrected after the P-D-45 round.)*
 - **~~Five of the nine lints have no harvest grammar.~~ Closed by P-D-45.** Lint 3 reads 05 §3.2's
   `Doors` column, lint 4 an authored `EventRegister`, lint 7 the `*_actor_ref` column-naming
   convention, and lint 8 needed only a definition of "registry schema surface" (the §4
