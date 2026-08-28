@@ -174,15 +174,15 @@ only projects it); the deprecation mark pricing consumes — through AC #82 when
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-contract-lifecycle-errors`
 
-`PARENT_NOT_PUBLISHED` (named in 01, registered here), `SCOPE_NOT_CONTAINED` (**named in 01, its final semantics registered here** — P-D-34 reads C5's "the final form of 01's interim check" literally: this slice replaces the operand inside 01's `identity` phase rather than registering a validator, so the code keeps one raising phase),
+`PARENT_NOT_PUBLISHED` (named in 01, registered here), `SCOPE_NOT_CONTAINED` (**named in 01, its final semantics registered here** — P-D-34 reads C5's "the final form of 01's interim check" literally: this slice replaces the operand inside 01's `identity` phase rather than registering a validator, so the code stays declared in 01 — **P-D-36** withdrew the phase unit and the declaring slice is now the unit),
 `SCOPE_NARROWING_BLOCKED`, `RETIREMENT_LEAD_TIME`, `REPLACED_BY_NOT_PUBLISHED`,
 `SCHEDULE_STALE_APPROVAL` (raised by the `ActivationRunner` — its own door), `CASCADE_CONFIRMATION_REQUIRED`, `RETIREMENT_PENDING` (**declared here**; both arms are this slice's validators — P-D-30, 2026-08-27; 01 lists it for its response map only, P-D-34: the
 un-deprecation edge, and **this slice's validator registered on 01's create door**, whose operand
 is the live retire intent in `products_scheduled_transition`, a table this slice owns. P-D-20
 struck the code from the publish door. An earlier note read the create-door arm as slice 01's own
 guard, which would have put the Foundation's floor in the business of reading lifecycle policy
-against §1.1; both arms therefore sit in the **registered validators** phase and the code needs
-no carve-out. **Owed: the registering instruction row in this slice**), `EOL_DISABLED`. AC #38 rows mapped:
+against §1.1; both arms are therefore this slice's, and this slice declares the code
+(**P-D-36** withdrew the phase unit; the declaring slice is the unit). **Owed: the registering instruction row in this slice**), `EOL_DISABLED`. AC #38 rows mapped:
 "publishing a SKU under a non-published parent", "a SKU scope falling outside its parent",
 "an indeterminate parent-child region-containment", "EOL retirement without an acknowledged
 migration consumer (post-v1)".

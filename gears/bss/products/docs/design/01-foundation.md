@@ -92,7 +92,7 @@ acknowledged, and rejections that always carry an audited reason. Per P-D-02, ev
   (four read paths the guard needed), P-D-29 (what a replay, an envelope and a digest carry),
   P-D-30 (gate host, authorization, whose validator), P-D-31 (the four routed outward, decided
   here), P-D-32 (the second lens wave's six calls), P-D-33 (eight calls from weeding the open items),
-  P-D-34 (the remaining items, decided from the set), P-D-35 (the five the set already forced)
+  P-D-34 (the remaining items, decided from the set), P-D-35 (the five the set already forced), P-D-36 (the phase unit withdrawn)
 - Pricing `design/01-foundation.md` — the pattern donor (registered validators, append-only
   triggers with column whitelists, draft/published partial unique indexes, pending refs — **not
   the outbox**, which P-D-22 moved to `toolkit_db::outbox` after measuring that pricing runs a
@@ -521,15 +521,35 @@ gate), `VALIDATION` (per-field envelope), `RETIREMENT_PENDING` (the create door'
 (**P-D-34**: P-D-30 gave 04 **both arms**, so this slice raises neither and cannot hold the
 declaration — a call about this code, not a general test. **P-D-35** fixes the general rule: *the
 slice that names a code for its response map holds the declaration unless the register moves it*,
-which is why `PARENT_NOT_PUBLISHED` stays this slice's and `RETIREMENT_PENDING` does not), so this code has two raising **arms** in one phase, and the
-rule below is stated per **arm** for it). **Every code raised *inside* the pipeline appears in exactly one raising *phase* of
-it** (owner's call, 2026-08-27; scoped to the inside by **P-D-32** — the pre-pipeline
-authorization gate is not a phase, so the denial code 05 still owes, and
-`BREAKGLASS_WRITE_FORBIDDEN` which is raised there, sit outside the rule rather than forcing a
-third carve-out — **conditional on that placement**: `inst-bg-readonly` locates the code on "any
-write attempt" and not at the gate, and if it is a phase refusal this closure does not hold; the
-raising site is registered with 05) — a phase, not a door and not an instruction row. The
-unit matters because a phase runs at several doors by design: the **identity** phase raises the
+which is why `PARENT_NOT_PUBLISHED` stays this slice's and `RETIREMENT_PENDING` does not), so this code has two raising **arms**, and both are 04's).
+
+**A code belongs to the rule that raises it, and the rule belongs to a slice** (owner's call,
+2026-08-28, **P-D-36**). §3.1's seven phases stay as the **execution order** — what runs before
+what, and therefore which refusal a caller meets first — and stop being a taxonomy: no code is
+required to belong to exactly one of them, and there is no carve-out list, because there is no
+longer a rule to carve anything out of. This is the donor's shape, adopted after measuring it:
+`gears/bss/pricing`'s shared `ValidationPipeline` registers rules and collects a report, its codes
+are `const`s on the rules that raise them, and it carries no notion of a validation stage at all —
+`phase` in that gear names a plan phase and nothing else. The phase-shaped attribution this section
+used to carry was this set's own invention, and the contradictions it produced — a `VALIDATION`
+that had to come from two stages at once, a carve-out list that closed at two or at zero depending
+on which sentence you read — were properties of the invention rather than of the gear.
+
+**The AC #38 map therefore keys on code → declaring slice.** Which slice declares a code is fixed
+by **P-D-35** — the slice that names it for its response map holds the declaration unless the
+register moves it — and 12 `inst-cc-errors` lints that pair. The slice unit buys what the phase
+unit was introduced to buy and the door unit could not: **P-D-24** abandoned the door unit because
+one code is raised at many doors, and a code has exactly one declaring slice by construction.
+
+Codes raised outside the pipeline need no special status under this model and get none.
+`CONTENT_PII_BLOCKED` is raised by 02's `inst-av-pii-block` hook, which every door carrying a
+free-text `reason` invokes (02 `inst-av-pii-reason` enumerates them) and which slice 02 declares.
+`AUDIT_UNAVAILABLE` is raised by §4.4's audit-write path when a refusal's own row cannot commit —
+the one code here raised *after* a decision has been reached — and this slice declares it. 05's
+owed authorization-denial code and `BREAKGLASS_WRITE_FORBIDDEN` are 05's. That is the whole of what
+has to be said about any of them, and it is what replaces three passes of carve-out arithmetic.
+
+**Where each check runs is still stated, because the order decides which refusal comes first**: the **identity** phase raises the
 uniqueness, reservation and containment codes (`DUPLICATE_NAME`, `DUPLICATE_CODE`,
 `SCOPE_NOT_CONTAINED`) wherever it runs — create, save, and the publish re-run — the
 **state** phase raises `ILLEGAL_TRANSITION` (the edge list), `ILLEGAL_FIELD_MUTATION` (bucket
@@ -542,24 +562,17 @@ the `If-Match` verb and the publish pin, idempotency resolution raises `IDEMPOTE
 rule-named codes wherever it runs, including the publish re-run, and the **governance gate**
 phase raises `APPROVAL_REQUIRED` at every gated act, publish or transition alike;
 slice-owned codes (taxonomy cycles, unit rules, freeze, bulk rows…) are declared in their
-slices and the AC #38 ↔ code ↔ slice map is completed by slice 12's coverage check — whose
-`inst-cc-errors` was amended to the phase unit on 2026-08-27 (P-D-24, propagated), so the lint is
-no longer red by construction on a code that one phase raises at several doors. **Under the phase
-rule the carve-out list closes at two**, `CONTENT_PII_BLOCKED` and `AUDIT_UNAVAILABLE`. `RETIREMENT_PENDING` is raised by
-**slice-04 validators at two doors** — the create door
+slices, and slice 12's coverage check completes the AC #38 ↔ code ↔ slice map.
+`RETIREMENT_PENDING` is raised by **slice-04 validators at two doors** — the create door
 (2026-08-27's owner call put the operand there rather than in the Foundation's identity phase) and
-the un-deprecation edge — so under the phase rule both arms sit in the **registered validators**
-phase and the code needs no carve-out of its own. `CONTENT_PII_BLOCKED` is the first: it is raised by the shared
-`inst-av-pii-block` hook, which is not a pipeline phase at all — every door carrying a free-text `reason` invokes it (02 `inst-av-pii-reason` enumerates them), and slice 02 holds its single
-declaration. `AUDIT_UNAVAILABLE` is the second: it is raised by the audit-write path of §4.4 when a
-refusal's own row — or an elevated read's — cannot commit, which is likewise no pipeline phase — it is the one code here
-raised *after* a phase has already decided, so no phase can own it. **12 `inst-cc-errors` names no carve-out at all, so it is owed
-both members.** Everything the third pass had flagged as a violation conforms without a new
-carve-out: `SCOPE_NOT_CONTAINED` stays one phase because 04 C5 is "the final form of 01's interim
-check" in that slice's own words rather than a second raiser — and **P-D-34** reads that literally:
-04's final rule **replaces the operand inside this slice's `identity` phase**, it is not registered
-as a slice-04 validator, which is the only reading under which the code keeps one raising phase, and `ILLEGAL_FIELD_MUTATION` stays
-one because 07's structural-identity attempts "ride 01's" code rather than declaring it. Codes are
+the un-deprecation edge — and 04 declares it.
+
+Two declarations follow from the slice unit rather than from a phase count. `SCOPE_NOT_CONTAINED`
+stays declared here because 04 C5 is "the final form of 01's interim check" in that slice's own
+words rather than a second raiser, which **P-D-34** reads literally: 04's final rule **replaces the
+operand inside this slice's `identity` phase** and is not registered as a slice-04 validator. And
+`ILLEGAL_FIELD_MUTATION` stays declared here because 07's structural-identity attempts "ride 01's"
+code rather than declaring their own. Codes are
 part of the SDK contract; renames are breaking.
 
 **Problem responses (RFC 9457):** `APPROVAL_REQUIRED` (403); `DUPLICATE_NAME`, `DUPLICATE_CODE`, `IDEMPOTENCY_CONFLICT`, `IDEMPOTENCY_KEY_IN_FLIGHT`, `PARENT_TERMINAL`, `PARENT_NOT_PUBLISHED`, `RETIREMENT_PENDING`, `STALE_REVISION`, `ENTITY_TERMINAL`, `ILLEGAL_TRANSITION`, `ILLEGAL_FIELD_MUTATION` (409); `AUDIT_UNAVAILABLE` (503); `SCOPE_NOT_CONTAINED`, `INCOMPLETE_ENTITY`, `VALIDATION`, `CONTENT_PII_BLOCKED` (422).
@@ -630,7 +643,7 @@ conflict on mutable state stays a **409** rather than collapsing into the 400 bu
 **400 with no code of its own** is reserved for a malformed request, which is why no registry code
 is mapped to 400. **A 404 is bare on the same reading** (**P-D-35**): a path segment is judged
 before the pipeline opens, so no phase raises it, the governing `api-contracts.md` pins no code
-for it, and giving it one would require a raising phase this taxonomy cannot supply. Stated here
+for it, and no rule raises it at all — a path segment is resolved before any rule runs. Stated here
 once, in the Foundation, rather than per occurrence.
 
 ### 3.4 Concurrency doors (PRD §6.13 residents of this slice)
@@ -889,8 +902,8 @@ read.
   `nfr-availability-audit`'s "100% write-path audit" forbids. The wording this replaced had every
   door write its row "in its transaction", which is precisely the transaction a refusal rolls back.
   That 503 is **`AUDIT_UNAVAILABLE`** (owner's call, 2026-08-27, P-D-25) — and it is **the one
-  refusal the audit class carves out** (**P-D-34**; a carve-out of the *class*, not of §3.3's phase
-  list): its own row is by construction the one that could not be written, so the class would
+  refusal the audit class carves out** (**P-D-34**; a carve-out of the audit *class*, unrelated to §3.3's
+  code taxonomy): its own row is by construction the one that could not be written, so the class would
   otherwise carry a member it can never satisfy. It is recorded out-of-band — log and metric — and
   `nfr-availability-audit`'s "100% write-path audit" is scoped to **domain** refusals.
 
@@ -1058,16 +1071,16 @@ and the ordering key.
   (frame), #42.
 
 **Risks & open items**: eleven review passes (the numbering restarted once, at the sixth) and
-thirteen owner rounds (P-D-23 through P-D-35) have run over this slice. What survives is one standing **risk**, seven open questions, and a set of
+fourteen owner rounds (P-D-23 through P-D-36) have run over this slice. What survives is one standing **risk**, six open questions, and a set of
 pointers to items filed with owners outside this document.
 
 **Risk** — a hazard rather than a question:
 
 - this slice's interim containment check (flat subset) and slice 04 C5,
   which that slice calls "the final form of 01's interim check", must not silently diverge. The
-  2026-08-27 owner round leaned on exactly that relationship — it is why `SCOPE_NOT_CONTAINED`
-  counts as one raising phase rather than needing a third carve-out — so a change to either side
-  that breaks it also breaks the taxonomy rule.
+  2026-08-27 owner round leaned on exactly that relationship — it is why `SCOPE_NOT_CONTAINED` is
+  declared here and not by 04 — so a change to either side that breaks it also moves the
+  declaration.
 
 **Filed elsewhere, pointer only** — each registered where its owner will look:
 
@@ -1080,8 +1093,7 @@ pointers to items filed with owners outside this document.
   `product_id`, so a draft SKU can be re-parented under a retire-pending Product by a door neither
   arm covers — the hazard `inst-fd-containment-retire-intent` itself describes.
 - **05**: the `product|sku × discard` grant §2's discard door names, absent from the RBAC catalog;
-  `BREAKGLASS_WRITE_FORBIDDEN`'s raising site, on which §3.3's "carve-out list closes at two"
-  is conditional; whether the authoring head read (§2's `GET`) needs an action of its own in the
+  whether the authoring head read (§2's `GET`) needs an action of its own in the
   catalog, which lists only `read|write|publish` per kind while §4.3 says that read "is not a
   consumer read"; C3's no-hook exception, still worded `draft→published` only where **P-D-34**
   widened it to any transition consuming an approval in the same transaction; and what `Gate` mode
@@ -1093,8 +1105,8 @@ pointers to items filed with owners outside this document.
 - **09**: `normalized(name)` is both bucket-iii (a published Product is renameable, §4.1) and 09's
   fallback promotion identity where `productCode` is absent — and `product_code` is nullable, so a
   renamed Product with none is **created again** by the next promotion rather than updated.
-- **12**: both phase carve-out members, `CONTENT_PII_BLOCKED` and `AUDIT_UNAVAILABLE`, owed a
-  mirror in `inst-cc-errors`, which names neither; `ENTITY_TERMINAL`'s widened gloss; the stale
+- **12**: `inst-cc-errors` moves from the phase unit to the declaring-slice unit (**P-D-36**),
+  which retires the carve-out mirror it was owed rather than paying it; `ENTITY_TERMINAL`'s widened gloss; the stale
   continuation enumeration in `inst-cc-ids`; and **P-D-34's act unit** — `inst-cc-events` still
   lints per instruction *row*, so `inst-fd-publish-freeze` and `inst-fd-publish-bump`, which
   inherit `inst-fd-publish-emit`'s declaration under the act unit, are red by construction.
@@ -1116,21 +1128,11 @@ pointers to items filed with owners outside this document.
   `composition_pending` no-re-raise clause may rest on **P-D-14**, which is still **FLAGGED** for
   its owner and whose propagation field does not name this document.
 
-**Open here** — seven items. **P-D-33** (eight calls) and **P-D-34** (nine calls plus five of the
+**Open here** — six items. **P-D-33** (eight calls) and **P-D-34** (nine calls plus five of the
 idempotency store's seven operands) closed what the passes before them had raised, each cited in
 the rule it changed. The two lens passes since found that the rules those rounds wrote carry seams
 of their own; everything below is this slice's to settle.
 
-- **What the "exactly one raising phase" rule ranges over** — raised independently by all three
-  lenses, and the widest of these. An **absent** `If-Match` rides `VALIDATION` (§2, **P-D-33**),
-  but header presence can only be judged in the **precondition** phase, which §3.3 gives exactly
-  one code, while `VALIDATION` is the **shape** phase's — and §2's brand-claim refusal rides
-  `VALIDATION` from neither phase's stated remit. The same rule's carve-out list "closes at two"
-  while both members are stated to be raised outside every phase, exactly as **P-D-32** reasons the
-  authorization-gate codes are; read that way the list closes at **zero** and the mirror owed to 12
-  `inst-cc-errors` has no members to carry. Either the shape phase's remit widens to header
-  presence and claim validation, or `VALIDATION` gains a second raising phase and the rule reopens.
-  Owner: this slice, with 12's lint owner.
 - **Two operands the idempotency store still leaves unpinned.** (a) **`in_flight_until` has no
   value and no config key** — only "short by comparison" against `expires_at`. A deadline too short
   admits the duplicate the claim exists to refuse; too long wedges a crashed door's key. Deriving

@@ -44,6 +44,7 @@ joint contracts, cited from here by their pricing numbers, never duplicated.
 - [P-D-33 — Eight calls from weeding slice 01's open items](#p-d-33--eight-calls-from-weeding-slice-01s-open-items)
 - [P-D-34 — The remaining slice-01 items, decided from the set](#p-d-34--the-remaining-slice-01-items-decided-from-the-set)
 - [P-D-35 — The five slice-01 items the set already forced](#p-d-35--the-five-slice-01-items-the-set-already-forced)
+- [P-D-36 — The phase unit is withdrawn; a code's unit is its declaring slice](#p-d-36--the-phase-unit-is-withdrawn-a-codes-unit-is-its-declaring-slice)
 
 <!-- /toc -->
 
@@ -1017,6 +1018,12 @@ instead.*
 
 #### P-D-24 — The 2026-08-27 fifth-pass round: four calls closing slice-01 open items
 
+- **Amended 2026-08-28 by P-D-36**: the door→phase amendment below is withdrawn. A code's unit is
+  its **declaring slice**, not a pipeline phase; §3.1's seven phases remain the execution order.
+  The reason this entry gave for abandoning the *door* unit stands and is why the slice unit was
+  chosen. Every other call here — the `state` phase itself, `shape`'s scoping, the status move and
+  the frozen-content exclusions — is about execution order or status and is untouched.
+
 - **Context**: the fifth review pass over `design/01-foundation.md` (three lenses, two passes)
   left four questions whose owner is this slice. Recorded as one entry for the same reason
   P-D-23 was: the register's unit is a decision another document must follow, and these four
@@ -1212,6 +1219,11 @@ instead.*
 
 #### P-D-32 — Six calls closing the slice-01 second lens wave
 
+- **Amended 2026-08-28 by P-D-36**: the call scoping the "exactly one raising phase" rule to codes
+  raised *inside* the pipeline is withdrawn with the rule itself. Its other five calls stand,
+  including the target-state registration key, which is about *when* a validator runs rather than
+  about code attribution.
+
 - **Date**: 2026-08-27 (owner call, on the second three-lens pass over `design/01-foundation.md`)
 - **Context**: the second pass raised twelve questions. Three merged into items the first pass had
   already registered, one was closed by the same pass's fix to the audit-seal predicate, and two
@@ -1327,3 +1339,52 @@ instead.*
 - **Propagated**: `design/01-foundation.md` (§1.4, §1.6 C5, §3.3, §4.2, §4.3, §4.4, §6),
   `design/05-governance.md` (C7), `design/10-retention-erasure.md` (`inst-rd-drill`),
   `design/11-clone.md` (the clone-disposition table).
+
+
+#### P-D-36 — The phase unit is withdrawn; a code's unit is its declaring slice
+
+- **Date**: 2026-08-28 (owner call, taken against the donor's code rather than against this set)
+- **Context**: §3.3 required every code raised inside the pipeline to belong to exactly one of
+  §3.1's seven phases, with a carve-out list for the ones that could not. All three lenses of the
+  seventh pass raised the same contradiction independently: an absent `If-Match` rides
+  `VALIDATION`, but header presence can only be judged in the `precondition` phase while
+  `VALIDATION` is `shape`'s — and the carve-out list "closes at two" while both of its members are
+  stated to be raised outside every phase, exactly as **P-D-32** reasons the authorization-gate
+  codes are, on which reading it closes at zero.
+
+  **The question was settled by measurement, not by picking an arm.** `gears/bss/pricing` is the
+  gear whose validation pipeline this set copied, and it is built as well as designed. Its shared
+  `ValidationPipeline<S>` registers rules and returns a `ValidationReport`; its rules "append and
+  never short-circuit"; its codes are `const`s on the rules that raise them; everything that is not
+  a rule — `StaleVersion`, `NotFound`, `ConcurrentMutation`, `LifecycleForbidden` — is an early
+  `Err` at the point of detection. **It carries no notion of a validation stage at all**, and
+  `phase` in that gear names a plan phase. The phrase "one raising phase" occurs nowhere in the
+  repository outside this set's own four files. The phase taxonomy was this set's invention, and
+  the contradiction was a property of the invention.
+
+  | Call | Propagation |
+  |---|---|
+  | **The "exactly one raising phase" rule is withdrawn.** A code belongs to the rule that raises it, and the rule belongs to a slice. §3.1's seven phases remain the **execution order** — what runs before what, and therefore which refusal a caller meets first — and stop being a taxonomy | 01 §3.3; 12 `inst-cc-errors` |
+  | **The AC #38 map keys on code → declaring slice.** The declaring slice is **P-D-35**'s rule. This buys what the phase unit was introduced to buy and the door unit could not: **P-D-24** abandoned the door unit because one code is raised at many doors, and a code has exactly one declaring slice by construction | 12 `inst-cc-errors` |
+  | **There is no carve-out list**, because there is no longer a rule to carve out of. `CONTENT_PII_BLOCKED` (02), `AUDIT_UNAVAILABLE` (01), 05's owed denial code and `BREAKGLASS_WRITE_FORBIDDEN` (05) are codes their own slices declare, and nothing further is owed about them | 01 §3.3; 12; 05 |
+
+- **What this supersedes**: the phase-unit half of **P-D-24** (the door→phase amendment) and the
+  scoping half of **P-D-32** ("the rule ranges over codes raised inside the pipeline"). Both were
+  correct repairs of a rule that should not have existed; their other calls stand untouched — the
+  `state` phase, the code status moves, and the target-state registration key are unaffected,
+  because they are about execution order and status, not about attribution. **P-D-30**'s and
+  **P-D-34**'s rows likewise carry phase-worded justifications — "both arms sit in the registered
+  validators phase and the code needs no carve-out", "the only reading under which the code keeps
+  one raising phase" — whose *calls* are untouched: both arms of `RETIREMENT_PENDING` are still
+  04's, and 04's final rule still replaces the operand inside 01's `identity` phase. Only the
+  reason given has lapsed.
+- **What it closes besides its own question**: 12's "`inst-cc-errors` admits one phase carve-out
+  and the taxonomy now has two"; 05's "is `BREAKGLASS_WRITE_FORBIDDEN` a phase refusal?"; 01 §6's
+  mirror owed to 12; and the phase clause in 01 §6's standing containment risk.
+- **Deliberately not decided here**: whether the run still stops at the first failing phase. The
+  donor appends and never short-circuits, but it renders a *report* into a response, while this
+  gear's `products_audit_log` carries a single `error_code` column — the constraint that produced
+  the stop-at-first rule. That is 01 §6's own open item and is unaffected by this call.
+- **Propagated**: `design/01-foundation.md` (§3.3, §4.4, §6), `design/04-lifecycle.md` (§3.2's
+  code block), `design/05-governance.md` (§6), `design/12-consumer-contracts.md`
+  (`inst-cc-errors`, §6).
