@@ -242,7 +242,7 @@ formalizes the cross-gear surface.
 
 ### 3.7 Database Schemas and Tables
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-rating-storage-none-gov`
+- [ ] `p1` - **ID**: `cpt-cf-bss-rating-datastore-none-gov`
 
 **None owned.** Approval state, the `approval_policy` resource, and the hash-chained
 `pricing_audit_log` are the pricing gear's (D-14; the SEAMS ownership matrix row "Audit trail /

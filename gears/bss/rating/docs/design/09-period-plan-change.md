@@ -242,7 +242,7 @@ mints its own correction path.
 
 ### 3.7 Database Schemas and Tables
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-rating-storage-none-ppc`
+- [ ] `p1` - **ID**: `cpt-cf-bss-rating-datastore-none-ppc`
 
 **None owned.** Consistent with 01 §3.7: obligations and slice outcomes are emitted values
 persisted by Rating; whether and how a floor/cap was executed is Billing's state; period

@@ -241,7 +241,7 @@ under a `hard` cap the same condition fails closed instead ([`../PRD.md`](../PRD
 
 ### 3.7 Database Schemas and Tables
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-rating-storage-none-ovl`
+- [ ] `p1` - **ID**: `cpt-cf-bss-rating-datastore-none-ovl`
 
 **None owned.** `PriceOverlay` definitions and precedence live in the pricing gear; contract
 overlays live in Contracts; the applied set lives in the sealed snapshot segment and outcome

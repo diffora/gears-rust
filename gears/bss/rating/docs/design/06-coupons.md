@@ -246,7 +246,7 @@ the §15 clawback open belongs to.
 
 ### 3.7 Database Schemas and Tables
 
-- [ ] `p2` - **ID**: `cpt-cf-bss-rating-storage-none-cpn`
+- [ ] `p2` - **ID**: `cpt-cf-bss-rating-datastore-none-cpn`
 
 **None owned.** Coupon entities, campaigns, and redemption state live in Promotions; the applied
 result persists only inside the rated outcome (segment + lineage) owned by Rating; there is no

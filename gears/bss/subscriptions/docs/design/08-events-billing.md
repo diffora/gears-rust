@@ -183,7 +183,7 @@ cuts one recurring `BillableItem` **per billable component**, idempotent per
 
 ### 3.7 Database Schemas and Tables
 
-- [ ] `p2` - **ID**: `cpt-cf-bss-subscriptions-storage-events-evt`
+- [ ] `p2` - **ID**: `cpt-cf-bss-subscriptions-datastore-events-evt`
 
 Uses the Foundation `event_outbox` (committed with the transition); the recurring idempotency key
 **`(subscriptionId, billing period, lineKey)`** is a unique index on the recurring handoff record

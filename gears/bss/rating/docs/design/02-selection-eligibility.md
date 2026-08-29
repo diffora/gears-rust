@@ -240,7 +240,7 @@ the fallback flag so fixtures can assert which path priced the line.
 
 ### 3.7 Database Schemas and Tables
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-rating-storage-none-sel`
+- [ ] `p1` - **ID**: `cpt-cf-bss-rating-datastore-none-sel`
 
 **None owned.** Selection reads pinned read-model pages through the Foundation's
 non-authoritative resolved-window cache (01 §3.7); cache loss degrades latency, never

@@ -168,7 +168,8 @@ core.
 
 ### 3.2 Component Model
 
-- [ ] `p2` - **ID**: `cpt-cf-bss-rating-component-unit-synthesis`
+Declared by [`../DESIGN.md`](../DESIGN.md) §3.2's component model as `cpt-cf-bss-rating-component-unit-synthesis`.
+This slice details it; the component model is where it is defined.
 
 - **`UnitSynthesizer`** — builds `EvaluationUnitSpec`s from usage arrival (slice 12/13), window close, the period tick, and cascade triggers.
 - **`PeriodTick`** — the coordinated period-driven synthesizer, **fact-driven since T-D-33**: triggered by the subscriptions period-fact set, never a boundary clock; emits period-driven units idempotently per `(subscription, AnchorPeriod)` (§4.2).
@@ -228,7 +229,7 @@ feed back as cascade triggers).
 
 ### 3.7 Database Schemas and Tables
 
-- [ ] `p2` - **ID**: `cpt-cf-bss-rating-storage-synthesis-syn`
+- [ ] `p2` - **ID**: `cpt-cf-bss-rating-datastore-synthesis-syn`
 
 **Owned (partitioned by the pinned `orderingTenantId`, UTC):**
 

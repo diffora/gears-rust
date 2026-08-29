@@ -159,7 +159,8 @@ id; rounding and floor/cap execution are Billing's (core slice [`01`](./01-found
 
 ### 3.2 Component Model
 
-- [ ] `p2` - **ID**: `cpt-cf-bss-rating-component-rated-output`
+Declared by [`../DESIGN.md`](../DESIGN.md) §3.2's component model as `cpt-cf-bss-rating-component-rated-output`.
+This slice details it; the component model is where it is defined.
 
 - **`OutcomeMapper`** — maps a `ResolvedPriceOutcome` to `RatedCharge`(s) / `Adjustment`(s) per the §4.1 table; obligations become envelope ride-alongs, never charges.
 - **`RatedOutputStore`** — persists outcomes + sealed ref + the `prior-rated-version` chain (§4.2).
@@ -216,7 +217,7 @@ Upstream: slice [`14`](./14-unit-synthesis-period-tick.md) (delivers core outcom
 
 ### 3.7 Database Schemas and Tables
 
-- [ ] `p2` - **ID**: `cpt-cf-bss-rating-storage-rated-output-rob`
+- [ ] `p2` - **ID**: `cpt-cf-bss-rating-datastore-rated-output-rob`
 
 **Owned (partitioned by the pinned `orderingTenantId`, UTC):**
 

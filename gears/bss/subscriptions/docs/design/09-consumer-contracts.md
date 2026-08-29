@@ -181,7 +181,7 @@ This slice composes them into the external surface; no new sequence beyond assem
 
 ### 3.7 Database Schemas and Tables
 
-- [ ] `p2` - **ID**: `cpt-cf-bss-subscriptions-storage-boundary-con`
+- [ ] `p2` - **ID**: `cpt-cf-bss-subscriptions-datastore-boundary-con`
 
 No owned store; the boundary reads the projected read models + the outbox owned by the Foundation +
 capability slices. Concrete projection DDL is Design.

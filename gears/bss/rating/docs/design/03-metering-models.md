@@ -275,7 +275,7 @@ plan → the explicitly **published** default/catch-all line if defined, else fa
 
 ### 3.7 Database Schemas and Tables
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-rating-storage-none-mm`
+- [ ] `p1` - **ID**: `cpt-cf-bss-rating-datastore-none-mm`
 
 **None owned.** `Q` and usage dedup live in Rating; model parameters, dimension declarations,
 and composite formulas live in the pinned catalog snapshot; nothing model-side persists in

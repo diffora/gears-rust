@@ -275,7 +275,7 @@ and the rev-share pass-through recorded in §4.2.
 
 ### 3.7 Database Schemas and Tables
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-rating-storage-none-cc`
+- [ ] `p1` - **ID**: `cpt-cf-bss-rating-datastore-none-cc`
 
 **None owned.** This slice adds no store to the Foundation doctrine (01 §3.7); it contributes
 only the invalidation triggers for the non-authoritative cache (`PriceWindow*` ×4,

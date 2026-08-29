@@ -236,7 +236,7 @@ wrappers).
 
 ### 3.7 Database Schemas and Tables
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-rating-storage-none-cmt`
+- [ ] `p1` - **ID**: `cpt-cf-bss-rating-datastore-none-cmt`
 
 **None owned.** No table, no cache: pool balances and true-up clauses are Contracts'; the
 reservation entitlement inventory is OSS/Contracts'; reserved-rate attributes are the pricing

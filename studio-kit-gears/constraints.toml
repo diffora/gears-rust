@@ -1232,6 +1232,20 @@ headings = []
 
 [artifacts.DESIGN_SLICE.identifiers.seq.references]
 
+[artifacts.DESIGN_SLICE.identifiers.datastore]
+kind = "datastore"
+name = "Datastore"
+description = "A persistence surface the slice owns, or an explicit statement that it owns none."
+template = "cpt-{system}-datastore-{slug}"
+examples = ["cpt-cf-bss-rating-datastore-none-fnd"]
+required = false
+task = true
+priority = true
+to_code = false
+headings = []
+
+[artifacts.DESIGN_SLICE.identifiers.datastore.references]
+
 [artifacts.DESIGN_SLICE.identifiers.db]
 kind = "db"
 name = "Database"

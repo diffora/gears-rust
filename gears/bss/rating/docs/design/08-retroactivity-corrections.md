@@ -244,7 +244,7 @@ replay coupons and FX — and slice 07's invoice-period close re-rate enters her
 
 ### 3.7 Database Schemas and Tables
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-rating-storage-none-rtr`
+- [ ] `p1` - **ID**: `cpt-cf-bss-rating-datastore-none-rtr`
 
 **None owned.** Prior rated versions, `Q`, and dedup state live in Rating; snapshot retention is the
 pricing gear's W2 obligation; pool balances live in Contracts; `periodState` in Billing. The bitemporal

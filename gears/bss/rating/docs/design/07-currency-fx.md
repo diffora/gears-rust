@@ -238,7 +238,7 @@ slice's recorded policy identity. [`11-consumer-contracts.md`](./11-consumer-con
 
 ### 3.7 Database Schemas and Tables
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-rating-storage-none-fx`
+- [ ] `p1` - **ID**: `cpt-cf-bss-rating-datastore-none-fx`
 
 **None owned.** FX tables and lock policies live in Finance; the recorded `fxTableVersion` /
 locked-rate id and the FX-lock segment ride the emitted outcome (Rating persistence). The only local

@@ -161,7 +161,8 @@ never uses a live/mutable anchor.
 
 ### 3.2 Component Model
 
-- [ ] `p2` - **ID**: `cpt-cf-bss-rating-component-q-store`
+Declared by [`../DESIGN.md`](../DESIGN.md) §3.2's component model as `cpt-cf-bss-rating-component-q-store`.
+This slice details it; the component model is where it is defined.
 
 - **`QMaterializer`** — the single-writer counter path: increments (new usage) or recomputes (correction) `Q` for a key from the `UsageRecord` set; bumps `qVersion` on any change.
 - **`WindowResolver`** — computes the `WindowCoordinate` for a `UsageRecord` from event time under the frozen anchor (`AnchorCalendar` math reused from core slice [`09`](./09-period-plan-change.md)).
@@ -218,7 +219,7 @@ _No direct external transport — this slice consumes slice 12's output in-proce
 
 ### 3.7 Database Schemas and Tables
 
-- [ ] `p2` - **ID**: `cpt-cf-bss-rating-storage-q-qst`
+- [ ] `p2` - **ID**: `cpt-cf-bss-rating-datastore-q-qst`
 
 **Owned (partitioned by the pinned `orderingTenantId`, UTC):**
 

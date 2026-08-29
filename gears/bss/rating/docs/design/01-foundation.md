@@ -246,7 +246,7 @@ per-line flow (retroactivity, period obligations); 10 registers publish validato
 
 ### 3.7 Database Schemas and Tables
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-rating-storage-none-fnd`
+- [ ] `p1` - **ID**: `cpt-cf-bss-rating-datastore-none-fnd`
 
 **None owned.** The Foundation holds no authoritative table. The only local state is a
 **non-authoritative resolved-window cache** (pinned read-model pages keyed by snapshot ref;
