@@ -24,22 +24,15 @@ pub enum RepoError {
     /// mistake: this is never the right refusal for a request-borne value,
     /// which is the domain layer's problem, and using it for one would be a
     /// 500 plus a false operator alarm.
+    ///
+    /// Unrelated to the design set's `CorruptRow`-style guard-refusal
+    /// probes (`design/01-foundation.md`'s "the guard judges the data,
+    /// never the door" section, `design/03-sku-classification.md`): those
+    /// probes prove a DB trigger refuses a poisoned **write**. This variant
+    /// reports the opposite direction — a **read** of a row the trigger
+    /// never prevented from being written, most plausibly a row the
+    /// database wrote around the application layer. The shared name is
+    /// coincidental, not a shared mechanism.
     #[error("products repo: corrupt stored value: {0}")]
     CorruptRow(String),
-
-    /// The named subject does not exist **or lies outside the caller's
-    /// scope**.
-    ///
-    /// Deliberately the same answer either way. A repository that answered
-    /// "forbidden" for a row belonging to another tenant would confirm that
-    /// the row exists, which is the existence leak the SQL-level scoping is
-    /// there to close: the catalog is commercially sensitive, so absence is
-    /// what a foreign scope sees.
-    #[error("products repo: {subject} {id} not found")]
-    NotFound {
-        /// The kind of thing that was looked for (`product`, `sku`).
-        subject: String,
-        /// The reference the caller supplied.
-        id: String,
-    },
 }

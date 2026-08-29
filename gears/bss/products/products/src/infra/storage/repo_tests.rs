@@ -168,6 +168,8 @@ async fn a_sku_inserted_through_the_repository_reads_back_with_every_field_intac
     assert_eq!(found.internal_revision, 1);
     assert_eq!(found.published_version, 0);
     assert_eq!(found.region_scope, "eu");
+    assert_eq!(found.brand_scope, "");
+    assert_eq!(found.created_by, "principal:author-1");
     assert_eq!(found.created_at, at(9));
     assert_eq!(found.updated_at, at(9));
 }
@@ -223,6 +225,95 @@ async fn a_row_belonging_to_another_tenant_is_not_visible_through_a_foreign_scop
         None,
         "a foreign scope must see exactly what an absent row looks like"
     );
+}
+
+/// The `SKU` twin of
+/// `a_row_belonging_to_another_tenant_is_not_visible_through_a_foreign_scope`.
+///
+/// `find_sku`'s own `.secure().scope_with(scope)` call is untested without
+/// this case, which is exactly the boundary the Product case's doc argues
+/// cannot live as a comment on another test.
+#[tokio::test]
+async fn a_sku_belonging_to_another_tenant_is_not_visible_through_a_foreign_scope() {
+    let provider = harness().await;
+    let conn = provider.conn().expect("scoped connection");
+    let owner_scope = AccessScope::for_tenant(TENANT);
+    let foreign_scope = AccessScope::for_tenant(OTHER_TENANT);
+
+    insert_product(&conn, &owner_scope, new_product(PRODUCT, TENANT))
+        .await
+        .expect("insert product");
+    insert_sku(&conn, &owner_scope, new_sku(SKU, TENANT, PRODUCT))
+        .await
+        .expect("insert sku");
+
+    assert_eq!(
+        find_sku(&conn, &foreign_scope, TENANT, SKU)
+            .await
+            .expect("scoped read must not error"),
+        None,
+        "a foreign scope must see exactly what an absent row looks like"
+    );
+}
+
+/// A second Product colliding on `(tenant_id, brand_id, name_normalized)`
+/// is refused as [`RepoError::Db`] — the documented behaviour
+/// [`insert_product`]'s own doc promises for `uq_products_product_name`,
+/// asserted here rather than left to the doc comment alone.
+#[tokio::test]
+async fn a_duplicate_product_name_within_a_tenant_and_brand_is_refused_as_a_db_error() {
+    let provider = harness().await;
+    let conn = provider.conn().expect("scoped connection");
+    let scope = AccessScope::for_tenant(TENANT);
+
+    insert_product(&conn, &scope, new_product(PRODUCT, TENANT))
+        .await
+        .expect("insert first product");
+
+    let second_id = Uuid::from_u128(0xf0_02);
+    let err = insert_product(&conn, &scope, new_product(second_id, TENANT))
+        .await
+        .expect_err("a duplicate name_normalized must be refused");
+    assert!(matches!(err, RepoError::Db(_)));
+}
+
+/// A second SKU colliding on `(tenant_id, sku_code)` is refused as
+/// [`RepoError::Db`] — the documented behaviour [`insert_sku`]'s own doc
+/// promises for `uq_products_sku_code`.
+#[tokio::test]
+async fn a_duplicate_sku_code_within_a_tenant_is_refused_as_a_db_error() {
+    let provider = harness().await;
+    let conn = provider.conn().expect("scoped connection");
+    let scope = AccessScope::for_tenant(TENANT);
+
+    insert_product(&conn, &scope, new_product(PRODUCT, TENANT))
+        .await
+        .expect("insert parent product");
+    insert_sku(&conn, &scope, new_sku(SKU, TENANT, PRODUCT))
+        .await
+        .expect("insert first sku");
+
+    let second_id = Uuid::from_u128(0x5c_02);
+    let err = insert_sku(&conn, &scope, new_sku(second_id, TENANT, PRODUCT))
+        .await
+        .expect_err("a duplicate sku_code must be refused");
+    assert!(matches!(err, RepoError::Db(_)));
+}
+
+/// A SKU inserted against a `product_id` with no matching Product row is
+/// refused as [`RepoError::Db`] — the documented `fk_products_sku_product`
+/// path [`insert_sku`]'s own doc promises.
+#[tokio::test]
+async fn a_sku_referencing_a_nonexistent_product_is_refused_as_a_db_error() {
+    let provider = harness().await;
+    let conn = provider.conn().expect("scoped connection");
+    let scope = AccessScope::for_tenant(TENANT);
+
+    let orphan_product_id = Uuid::from_u128(0xf0_99);
+    let err = insert_sku(&conn, &scope, new_sku(SKU, TENANT, orphan_product_id))
+        .await
+        .expect_err("a sku with no parent product must be refused");
+    assert!(matches!(err, RepoError::Db(_)));
 }
 
 /// An unparseable `lifecycle_state` on a hand-built [`product::Model`] is

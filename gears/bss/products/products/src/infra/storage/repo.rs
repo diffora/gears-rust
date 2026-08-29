@@ -211,8 +211,11 @@ pub async fn insert_product(
 /// Read one Product by id, within `tenant_id`'s scope.
 ///
 /// Answers `Ok(None)` both when no such row exists and when a row exists but
-/// outside `scope` — see [`RepoError::NotFound`]'s doc for why those two
-/// cases are one answer here as well.
+/// lies outside `scope`. Deliberately the same answer either way: a
+/// repository that answered "forbidden" for a row belonging to another
+/// tenant would confirm that the row exists, which is the existence leak the
+/// SQL-level scoping is there to close — the catalog is commercially
+/// sensitive, so absence is what a foreign scope sees.
 ///
 /// # Errors
 /// [`RepoError::Db`] on a storage failure; [`RepoError::CorruptRow`] when the
@@ -308,7 +311,7 @@ pub async fn insert_sku(
 /// Read one SKU by id, within `tenant_id`'s scope.
 ///
 /// Answers `Ok(None)` both when no such row exists and when a row exists but
-/// outside `scope`, for [`find_product`]'s reason.
+/// lies outside `scope`, for [`find_product`]'s reason.
 ///
 /// # Errors
 /// [`RepoError::Db`] on a storage failure; [`RepoError::CorruptRow`] when the
