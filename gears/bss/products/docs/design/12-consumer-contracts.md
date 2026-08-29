@@ -307,8 +307,11 @@ slice is that suite's specification.
   register, and 05 records the cross-check as future work — while C4 forbids exactly that ("an
   unauthorable assertion stays listed as OWED, never silently dropped"). Owner: this slice with 05.
 - **Should `P-D-01`, `P-D-03` and `P-D-05` name this slice?** This slice restates all three in its
-  constraint rows and register, and their propagation fields do not name it, while every other
-  decision it cites does. Whether a constraint-row citation counts as a restatement for lint 5 is
+  constraint rows and register, and their propagation fields do not name it — and so do eight more
+  (`P-D-24`, `P-D-25`, `P-D-26`, `P-D-27`, `P-D-29`, `P-D-34`, `P-D-35`, `P-D-43`): eleven of the
+  twenty-three decisions this slice cites are absent from their own `Propagated` lists. The gap is
+  set-wide rather than this slice's — **62 of the 179 (slice, decision) citation pairs** in the set
+  sit outside the cited decision's list. Whether a constraint-row citation counts as a restatement for lint 5 is
   unstated; the fix lands in the register, not here. Owner: the register's owner.
 - **Is `inst-cc-errors`' exclusion list one filter or two?** Two of the three exclusions are
   already excluded by the opening clause ("that a registry door can refuse"); the third is
