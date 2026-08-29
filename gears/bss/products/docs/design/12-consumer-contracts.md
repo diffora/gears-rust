@@ -348,6 +348,17 @@ slice is that suite's specification.
   — the rule P-D-43's own entry forces, since its arm 4 quotes the literal field name in its body —
   silently drops the primary field for all seven. Owner: the register's owner.
   *(Raised by the P-D-43…49 propagation audit.)*
+- **No lint verifies that a free-text `reason` door registers the PII block.** 02
+  `inst-av-pii-reason` enumerates the doors that owe `inst-av-pii-block`, and says the enumeration
+  *is* the registration — a slice that adds such a field "adds itself to the
+  enumeration above; that is the whole registration". Nothing checks it. The nine lints here cover
+  ids, codes, events, doors, operands and register hygiene — none covers PII-hook coverage, so a
+  slice that adds a reason field and forgets the hook is caught by reading or not at all, and 02's
+  own stated consequence is that personal data typed into such a field is unreachable by erasure
+  forever. The class is not hypothetical: **P-D-50** had to wire five doors across 05 and 07 that
+  had carried the debt as an open item instead. Owner: this slice with 02. *(Raised by CodeRabbit
+  on PR #14, 2026-08-27; its first half — the unwired doors — was closed by P-D-50, this half was
+  not.)*
 - **Does `inst-cc-errors` still lint against the phase unit?** **P-D-36** moved the declaring unit
   from the phase to the declaring slice, which retires the carve-out mirror this row was owed
   rather than paying it. This slice cites P-D-36 nowhere. Owner: this slice. *(Filed from 01 §6 by

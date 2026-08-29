@@ -747,6 +747,12 @@ listed in the TOC for the same gate.*
 - **Status**: **CONFIRMED (P-D-48), with the v1 registered freeze-participant set narrowed to
   {plan-price}** — the duty is booked on one counterpart that exists, not three. *(Was FLAGGED: it
   closes an open §15 row and adds a duty on three counterpart gears.)*
+- **Amended 2026-08-28 by P-D-49**: the pair below stands; its **domain** does not. The
+  retention gate ranges over the version's **`participant_set_snapshot`** (06 §4), not over
+  whatever registration rows happen to exist — a snapshot member with **no registration row holds
+  the version**, because the fan-out has not reached it yet, while an **empty snapshot** (a tenant
+  with no participant registered at publish) has nobody who ever owed an ack and is collectable.
+  Quantifying over the registrations instead let an empty ledger satisfy the gate vacuously.
 - **Decision**: version liveness is **acked-and-not-yet-released**. A freeze participant that
   holds no more live references to a `CatalogVersion` records that through a
   **`catalog_version × release`** door (S2S, the participant's own identity), and the release is
@@ -1770,9 +1776,12 @@ listed in the TOC for the same gate.*
   - Arm 4: one more admitted write in the append-only whitelist, on a column whose whole point was
     that it never changed.
 - **Propagated**: `design/01-foundation.md` (§3.2's expiry and in-flight rows, §4.2's whitelist, §6);
-  `design/04-lifecycle.md` (§6); `design/06-catalog-version.md` (§6);
-  `design/10-retention-erasure.md` (`inst-rt-gc`, §4's identity map, §6);
-  `design/11-clone.md` (C4, §3.1, §6).
+  `design/04-lifecycle.md` (§6); `design/06-catalog-version.md` (§6, and — added 2026-08-29 —
+  `inst-fz-liveness`'s liveness formula); `design/10-retention-erasure.md` (`inst-rt-gc`, §4's
+  identity map, §6); `design/11-clone.md` (C4, §3.1, §6); and — added 2026-08-29, the arm-2 domain
+  correction having reached only `inst-rt-gc` until then — `DECISIONS.md` **P-D-18** (the entry
+  that defines version liveness) and `PRD.md` (`fr-grandfathered-retention-coupling`, §9.2's
+  protocol line, AC #44's `And` clause, §15's closed liveness-source row).
 - **Owed**: nothing.
 
 #### P-D-48 — The six flagged decisions, put to the owner: two amended, one completed, three confirmed as recorded
