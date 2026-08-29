@@ -175,7 +175,7 @@ audit trail every other slice's mutations flow through; the preview grant.
 
 - **Struck 2026-08-16 by [D-330](../DECISIONS.md).** Historical import is **out of scope**: this
   gear serves the prices it authored, and a subscriber whose price predates the catalog is
-  re-papered onto a plan the catalog publishes. The flow `cpt-cf-bss-pricing-flow-backdating` and
+  re-papered onto a plan the catalog publishes. The flow cpt-cf-bss-pricing-flow-backdating and
   its seven steps — inst-bd-api, inst-bd-noeffect, inst-bd-pipeline, inst-bd-store,
   inst-bd-twoperson, inst-bd-audit, inst-bd-return — leave the design set, and everything built
   for them goes with them: the `BackdateGrant` and the `historical_import` resource label with its
@@ -719,12 +719,12 @@ normative per the AuthZ catalog.
 ### ~~Backdating Governance~~ — struck by D-330
 
 - **Struck 2026-08-16 by [D-330](../DECISIONS.md).** The DoD
-  `cpt-cf-bss-pricing-dod-backdating` and the flow it implemented
-  (`cpt-cf-bss-pricing-flow-backdating`, §2) both leave the design set: historical import is out
+  cpt-cf-bss-pricing-dod-backdating and the flow it implemented
+  (cpt-cf-bss-pricing-flow-backdating, §2) both leave the design set: historical import is out
   of scope. Nothing it required is owed — no grant, no reason, no row-shape subset, no
   always-material import unit (D-13), no disjoint store (D-76), no temporal bound (D-81) and no
   field-complete tiered reference row (D-87). Its PRD requirement,
-  `cpt-cf-bss-pricing-fr-historical-import-governance`, is struck in the same wave and is
+  cpt-cf-bss-pricing-fr-historical-import-governance, is struck in the same wave and is
   therefore claimed by no slice, which is what a struck requirement looks like here rather than an
   unclaimed one.
 
