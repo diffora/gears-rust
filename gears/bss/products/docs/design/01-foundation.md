@@ -1193,8 +1193,8 @@ and the ordering key.
   (frame), #42.
 
 **Risks & open items**: eleven review passes (the numbering restarted once, at the sixth) and
-the owner rounds P-D-23 through P-D-48 have run over this slice. What survives is one standing **risk**, thirteen open questions, and a set of
-pointers to items filed with owners outside this document.
+the owner rounds P-D-23 through P-D-48 have run over this slice. What survives is one standing **risk** and thirteen open
+questions; this slice's outbound questions live at their owners.
 
 **Risk** — a hazard rather than a question:
 
@@ -1203,42 +1203,10 @@ pointers to items filed with owners outside this document.
   declared here and not by 04 — so a change to either side that breaks it also moves the
   declaration.
 
-**Filed elsewhere, pointer only** — each registered where its owner will look:
-
-- **04**: the instruction row registering the create-door live-retire-intent validator (P-D-30
-  settled it is that slice's); and the `internal:cascade-leg` lane, which no runner writes. *(`inst-pc-ordering`'s
-  edge-keyed wording for `PARENT_NOT_PUBLISHED` is no longer among them: it now keys to the target
-  state, as **P-D-32** names.)* And whether 04's create-door retire-intent validator
-  also registers on the **save** door: `inst-fd-save-txn` is the only door that may change a SKU's
-  `product_id`, so a draft SKU can be re-parented under a retire-pending Product by a door neither
-  arm covers — the hazard `inst-fd-containment-retire-intent` itself describes.
-- **05**: the `product|sku × discard` grant §2's discard door names, absent from the RBAC catalog;
-  whether the authoring head read (§2's `GET`) needs an action of its own in the
-  catalog, which lists only `read|write|publish` per kind while §4.3 says that read "is not a
-  consumer read"; C3's no-hook exception, still worded `draft→published` only where **P-D-34**
-  widened it to any transition consuming an approval in the same transaction; and what `Gate` mode
-  requires of a gated **transition** — `inst-fd-gate-mode-gate` is worded for a publish and pins
-  "the door's expected revision", while the transition doors are 04/05's and pin nothing stated
-  here.
-- **06**: whether the composition-clear re-publish emits `SkuPublished` beside
-  `SkuCompositionCleared`.
-- **09**: `normalized(name)` is both bucket-iii (a published Product is renameable, §4.1) and 09's
-  fallback promotion identity where `productCode` is absent — and `product_code` is nullable, so a
-  renamed Product with none is **created again** by the next promotion rather than updated.
-- **12**: `inst-cc-errors` moves from the phase unit to the declaring-slice unit (**P-D-36**),
-  which retires the carve-out mirror it was owed rather than paying it; `ENTITY_TERMINAL`'s widened gloss; the stale
-  continuation enumeration in `inst-cc-ids`; and **P-D-34's act unit** — `inst-cc-events` still
-  lints per instruction *row*, so `inst-fd-publish-freeze`, `inst-fd-publish-correction` and `inst-fd-publish-bump`, which
-  inherit `inst-fd-publish-emit`'s declaration under the act unit, are red by construction.
-- **`PRD` §15**: AC #26's literal "returns the entity to `draft`" against the head-row model. *(The
-  three heavier items this pointer carried are closed by **P-D-47**, which put the gear on the
-  broker SDK's producer: the envelope slot for `partition_id`/`seq`, which the broker's schema
-  refuses; the envelope's idempotency key, which had no source and is now the event `id`; and the
-  transport contract's two unpinnable operands, the hash and `N`, which are the broker's own under
-  its ADR-0002.)*
-- **`DECISIONS.md`**: whether §4.2's `composition_pending` no-re-raise clause may rest on
-  **P-D-14**, confirmed by **P-D-48** but whose propagation field still does not name
-  this document.
+**Filed elsewhere** — this slice's outbound questions live at their owners and are **not**
+restated here, so nothing in this document can drift from them: `design/04-lifecycle.md`,
+`design/05-governance.md`, `design/06-catalog-version.md`, `design/09-bulk-promotion.md`,
+`design/12-consumer-contracts.md`, `PRD` §15, and the register.
 
 **Open here** — **thirteen**: eleven raised by the eighth lens pass over the state the
 P-D-35…42 rounds left, and one each by the P-D-46 and P-D-47 rounds. They are new rather than
@@ -1299,12 +1267,13 @@ residual, and four of the eleven are consequences of those rounds:
     record, the shape the gear terminated for the audit write with `AUDIT_UNAVAILABLE` (503). No
     code, status or behaviour is stated for this one. *(Owner: this slice.)*
 
-**And a finding about this section itself.** The bullets above under "Filed elsewhere, pointer
-only" claimed each item was "registered where its owner will look". For 04, 05, 09 and 12 that was
-false — the pointer was written and the item was never filed — and `PRD` §15 carried no idempotency
-row at all. The eighth pass filed them, and the two items that were *fixes* rather than filings
-(the nine slices' status note, the register's 503 count) are struck above because they are now
-applied. **A pointer is a claim like any other**: whether a §6 pointer must be verified — and
+**And a finding about this section itself.** Until the P-D-43…49 propagation audit these outbound
+questions were restated here as bullets claiming each was "registered where its owner will look".
+The claim was measured twice. The eighth pass found it false for 04, 05, 09 and 12 and filed the
+headline item of each; the audit found that repair itself incomplete — 05's C3 no-hook exception,
+three of 12's four sub-items, and the register pointer, which had no filing mechanism at all, had
+still never been filed. All five are filed at their owners now and the restatements are gone.
+**A pointer is a claim like any other**: whether a §6 pointer must be verified — and
 whether 12 therefore owes an open-item reciprocity lint — is itself open, for the design-set owner
 with 12, as is what "the taxonomy" denotes when a count is stated against it (§3.3's enumeration,
 the response map, and AC #38's rows are three different sets, and `inst-cc-errors` will be built

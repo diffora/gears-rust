@@ -271,11 +271,15 @@ slice is that suite's specification.
   `inst-fd-publish-freeze`, `inst-fd-publish-correction` and `inst-fd-publish-bump` — which inherit
   `inst-fd-publish-emit`'s declaration — are red by construction on a correct document. Owner: this
   slice. *(Filed from 01 §6 by the slice-01 eighth lens pass — the pointer claimed it was registered here and it was not.)*
-- **Does this slice owe an open-item reciprocity lint?** Design 01 §6 files questions to sibling
-  documents as "pointer only — each registered where its owner will look". That claim was
-  measured and was false for four of the six named documents. The lint set here checks ids, codes,
-  events and doors, never open-item reciprocity, so nothing catches a pointer whose item was never
-  filed. Owner: the design-set owner with this slice. *(Filed from design 01 §6 by the slice-01 eighth lens pass.)*
+- **Does this slice owe an open-item reciprocity lint?** Design 01 §6 used to restate its outbound
+  questions as bullets claiming each was "registered where its owner will look". That claim was
+  measured twice and was false both times — the eighth pass found four of six named documents
+  unfiled and filed the headline item of each; the P-D-43…49 propagation audit found five
+  sub-items its repair had missed. 01 no longer restates them, which removes the drift but not the
+  gap: the lint set here checks ids, codes, events and doors, never open-item reciprocity, so
+  nothing catches a question filed nowhere. Owner: the design-set owner with this slice.
+  *(Filed from design 01 §6 by the slice-01 eighth lens pass; re-measured by the P-D-43…49
+  propagation audit.)*
 - **The `CoverageChecks` are gated by nothing, and there is nothing to restore.** This item
   previously read "restoring the job is owed", which was false in its premise and is corrected
   here. The `Spec Invariants` job was not lost: commit `21a149fda` removed it deliberately
@@ -344,3 +348,21 @@ slice is that suite's specification.
   — the rule P-D-43's own entry forces, since its arm 4 quotes the literal field name in its body —
   silently drops the primary field for all seven. Owner: the register's owner.
   *(Raised by the P-D-43…49 propagation audit.)*
+- **Does `inst-cc-errors` still lint against the phase unit?** **P-D-36** moved the declaring unit
+  from the phase to the declaring slice, which retires the carve-out mirror this row was owed
+  rather than paying it. This slice cites P-D-36 nowhere. Owner: this slice. *(Filed from 01 §6 by
+  the P-D-43…49 propagation audit — the pointer claimed it was registered here and it was not.)*
+- **`ENTITY_TERMINAL`'s gloss widened and the AC #38 map was not re-read.** **P-D-32** widened it
+  from a save on a `retired`/`discarded` head (**P-D-25**) to any head write — save, publish or
+  correction. The map's rows were written against the narrower reading. Owner: this slice.
+  *(Filed from 01 §6 by the P-D-43…49 propagation audit — the pointer claimed it was registered
+  here and it was not.)*
+- **Is `inst-cc-ids`' continuation enumeration stale?** Lint 6 names the ids 01 legitimately
+  carries on more than one row and how many rows each takes. That enumeration is a count against
+  another document, and nothing re-reads it when 01 changes. Owner: this slice. *(Filed from 01 §6
+  by the P-D-43…49 propagation audit — the pointer claimed it was registered here and it was not.)*
+- **May 01 §4.2's `composition_pending` no-re-raise clause rest on P-D-14?** **P-D-48** confirmed
+  the clause, but P-D-14's propagation field names 05, 06, `design/README.md`, `DESIGN.md` and the
+  PRD — not `design/01-foundation.md`. Under lint 5's own grammar a document restates a decision
+  exactly when it cites the id, so either the field gains 01 or the clause rests on something else.
+  Owner: the register's owner. *(Filed from 01 §6 by the P-D-43…49 propagation audit.)*

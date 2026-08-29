@@ -433,3 +433,10 @@ finance fields), 04 (un-deprecation, retirement confirmation, scheduled-approval
   pre-P-D-11 count ("v1 uses a single two-person step") and the `draft` return the head-row model
   cannot honour; P-D-11's propagation names two bullets of AC #26 and not this one. Owner: the PRD
   owner with the governance owner, in the register. *(Raised by the slice-05 first lens pass.)*
+- **Is C3's no-hook exception still worded for `draft→published` alone?** C3 fires 01's
+  `inst-fd-approval-hook` on any frozen-content write, while the exception it carries is written
+  for a `draft→published` publish; **P-D-34** widened the unit to any transition that consumes an
+  approval in the same transaction, and this slice cites P-D-34 nowhere. Either the exception
+  widens with it or the narrower wording is deliberate and says so. Owner: this slice.
+  *(Filed from 01 §6 by the P-D-43…49 propagation audit — the eighth pass's own repair note
+  claimed this was filed and it was not.)*
