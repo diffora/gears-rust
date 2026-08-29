@@ -1962,9 +1962,18 @@ instead.*
   added, and `reason` + `reason_source` scales better. It lost because the protection would then be
   an application rule rather than the schema — the same "convention instead of a guarantee" this set
   had already recorded as lint 7's weakness one round earlier.
+- **Arm 4 re-examined and confirmed (2026-08-29, owner's call)**: the cf semantic review found
+  the timer call decided here but never carried into the operative rules — three of them still
+  described the struck early-close signal, and after the first two were corrected `design/06`
+  contradicted itself between its own rule 1 and rule 2. The owner was offered the alternative
+  (restore the close marker as a sanctioned amendment of the inbound two-gear contract) and
+  declined it. **The batch closes on the timer; there is no early-close signal.** The three rules
+  now say so.
 - **Propagated**: `design/01-foundation.md` (C5, §4.4's audit posture, `inst-fd-save-txn`);
   `design/04-lifecycle.md` (§4's transition table); `design/05-governance.md` (C7);
-  `design/06-catalog-version.md` (§4's request table); `PRD.md` (§15 and §16's interim control).
+  `design/06-catalog-version.md` (§4's request table, and — added 2026-08-29 — `inst-cv-request`
+  and `inst-cv-coalesce`); `design/09-bulk-promotion.md` (§1.5's scope statement and
+  `inst-bk-commit`, never named until 2026-08-29); `PRD.md` (§15 and §16's interim control).
 - **Owed**: nothing. Four of the set's eight remaining build-blockers close here; the other four are
   03's `RecognizedSet` removal, 06's P-D-19 opt-in, 11's accounting code, and 01's `PRD` §15 pointer.
 
