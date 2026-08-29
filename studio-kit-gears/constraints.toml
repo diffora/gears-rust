@@ -1071,3 +1071,304 @@ pattern = "Traceability"
 description = "Links to future PRD and DESIGN."
 required = true
 multiple = false
+
+[artifacts.DESIGN_SLICE]
+name = "Design slice constraints (gears)"
+description = "A BSS multi-slice design document: one implementation slice of a gear's design set"
+toc = false
+
+[artifacts.DESIGN_SLICE.identifiers]
+[artifacts.DESIGN_SLICE.identifiers.flow]
+kind = "flow"
+name = "Actor Flow"
+description = "An end-to-end interaction that starts with an actor."
+template = "cpt-{system}-flow-{slug}"
+examples = ["cpt-cf-bss-products-flow-example"]
+required = false
+task = true
+priority = true
+to_code = false
+headings = []
+
+[artifacts.DESIGN_SLICE.identifiers.flow.references]
+
+[artifacts.DESIGN_SLICE.identifiers.algo]
+kind = "algo"
+name = "Process"
+description = "An internal procedure called by flows or by other processes."
+template = "cpt-{system}-algo-{slug}"
+examples = ["cpt-cf-bss-products-algo-example"]
+required = false
+task = true
+priority = true
+to_code = false
+headings = []
+
+[artifacts.DESIGN_SLICE.identifiers.algo.references]
+
+[artifacts.DESIGN_SLICE.identifiers.normative]
+kind = "normative"
+name = "Normative Rule"
+description = "A normative statement a slice pins for its implementers."
+template = "cpt-{system}-normative-{slug}"
+examples = ["cpt-cf-bss-products-normative-example"]
+required = false
+task = true
+priority = true
+to_code = false
+headings = []
+
+[artifacts.DESIGN_SLICE.identifiers.normative.references]
+
+[artifacts.DESIGN_SLICE.identifiers.dod]
+kind = "dod"
+name = "Definition of Done"
+description = "An implementation obligation derived from a flow or a process."
+template = "cpt-{system}-dod-{slug}"
+examples = ["cpt-cf-bss-products-dod-example"]
+required = false
+task = true
+priority = true
+to_code = false
+headings = []
+
+[artifacts.DESIGN_SLICE.identifiers.dod.references]
+
+[artifacts.DESIGN_SLICE.identifiers.principle]
+kind = "principle"
+name = "Design Principle"
+description = "A standing rule the slice's decisions are measured against."
+template = "cpt-{system}-principle-{slug}"
+examples = ["cpt-cf-bss-products-principle-example"]
+required = false
+task = true
+priority = true
+to_code = false
+headings = []
+
+[artifacts.DESIGN_SLICE.identifiers.principle.references]
+
+[artifacts.DESIGN_SLICE.identifiers.constraint]
+kind = "constraint"
+name = "Design Constraint"
+description = "A bound the slice accepts from its context."
+template = "cpt-{system}-constraint-{slug}"
+examples = ["cpt-cf-bss-products-constraint-example"]
+required = false
+task = true
+priority = true
+to_code = false
+headings = []
+
+[artifacts.DESIGN_SLICE.identifiers.constraint.references]
+
+[artifacts.DESIGN_SLICE.identifiers.component]
+kind = "component"
+name = "Component"
+description = "A named unit of the gear's internal structure."
+template = "cpt-{system}-component-{slug}"
+examples = ["cpt-cf-bss-products-component-example"]
+required = false
+task = true
+priority = true
+to_code = false
+headings = []
+
+[artifacts.DESIGN_SLICE.identifiers.component.references]
+
+[artifacts.DESIGN_SLICE.identifiers.interface]
+kind = "interface"
+name = "Interface"
+description = "A surface exposed to a consumer or a sibling gear."
+template = "cpt-{system}-interface-{slug}"
+examples = ["cpt-cf-bss-products-interface-example"]
+required = false
+task = true
+priority = true
+to_code = false
+headings = []
+
+[artifacts.DESIGN_SLICE.identifiers.interface.references]
+
+[artifacts.DESIGN_SLICE.identifiers.contract]
+kind = "contract"
+name = "Contract"
+description = "A surface or taxonomy a consumer or a sibling gear binds to."
+template = "cpt-{system}-contract-{slug}"
+examples = ["cpt-cf-bss-products-contract-example"]
+required = false
+task = true
+priority = true
+to_code = false
+headings = []
+
+[artifacts.DESIGN_SLICE.identifiers.contract.references]
+
+[artifacts.DESIGN_SLICE.identifiers.state]
+kind = "state"
+name = "State Machine"
+description = "An entity lifecycle expressed as states and transitions."
+template = "cpt-{system}-state-{slug}"
+examples = ["cpt-cf-bss-products-state-example"]
+required = false
+task = true
+priority = true
+to_code = false
+headings = []
+
+[artifacts.DESIGN_SLICE.identifiers.state.references]
+
+[artifacts.DESIGN_SLICE.identifiers.seq]
+kind = "seq"
+name = "Sequence"
+description = "An ordered interaction across components or gears."
+template = "cpt-{system}-seq-{slug}"
+examples = ["cpt-cf-bss-products-seq-example"]
+required = false
+task = true
+priority = true
+to_code = false
+headings = []
+
+[artifacts.DESIGN_SLICE.identifiers.seq.references]
+
+[artifacts.DESIGN_SLICE.identifiers.db]
+kind = "db"
+name = "Database"
+description = "A database-level concern the slice pins."
+template = "cpt-{system}-db-{slug}"
+examples = ["cpt-cf-bss-products-db-example"]
+required = false
+task = true
+priority = true
+to_code = false
+headings = []
+
+[artifacts.DESIGN_SLICE.identifiers.db.references]
+
+[artifacts.DESIGN_SLICE.identifiers.schema]
+kind = "schema"
+name = "Schema"
+description = "A schema the slice pins."
+template = "cpt-{system}-schema-{slug}"
+examples = ["cpt-cf-bss-products-schema-example"]
+required = false
+task = true
+priority = true
+to_code = false
+headings = []
+
+[artifacts.DESIGN_SLICE.identifiers.schema.references]
+
+[artifacts.DESIGN_SLICE.identifiers.entity]
+kind = "entity"
+name = "Entity"
+description = "A domain entity the slice introduces."
+template = "cpt-{system}-entity-{slug}"
+examples = ["cpt-cf-bss-products-entity-example"]
+required = false
+task = true
+priority = true
+to_code = false
+headings = []
+
+[artifacts.DESIGN_SLICE.identifiers.entity.references]
+
+[artifacts.DESIGN_SLICE.identifiers.domain]
+kind = "domain"
+name = "Domain Model"
+description = "The slice's model of its own domain."
+template = "cpt-{system}-domain-{slug}"
+examples = ["cpt-cf-bss-pricing-domain-model-fnd"]
+required = false
+task = true
+priority = true
+to_code = false
+headings = []
+
+[artifacts.DESIGN_SLICE.identifiers.domain.references]
+
+[artifacts.DESIGN_SLICE.identifiers.domain-model]
+kind = "domain-model"
+name = "Domain Model"
+description = "The slice's model of its own domain."
+template = "cpt-{system}-domain-model-{slug}"
+examples = ["cpt-cf-bss-products-domain-model-example"]
+required = false
+task = true
+priority = true
+to_code = false
+headings = []
+
+[artifacts.DESIGN_SLICE.identifiers.domain-model.references]
+
+[artifacts.DESIGN_SLICE.identifiers.design]
+kind = "design"
+name = "Design Note"
+description = "A design statement the slice records."
+template = "cpt-{system}-design-{slug}"
+examples = ["cpt-cf-bss-products-design-example"]
+required = false
+task = true
+priority = true
+to_code = false
+headings = []
+
+[artifacts.DESIGN_SLICE.identifiers.design.references]
+
+[artifacts.DESIGN_SLICE.identifiers.deployment]
+kind = "deployment"
+name = "Deployment"
+description = "A deployment-shaped concern the slice pins."
+template = "cpt-{system}-deployment-{slug}"
+examples = ["cpt-cf-bss-products-deployment-example"]
+required = false
+task = true
+priority = true
+to_code = false
+headings = []
+
+[artifacts.DESIGN_SLICE.identifiers.deployment.references]
+
+[artifacts.DESIGN_SLICE.identifiers.tech]
+kind = "tech"
+name = "Technology"
+description = "A technology choice the slice records."
+template = "cpt-{system}-tech-{slug}"
+examples = ["cpt-cf-bss-products-tech-example"]
+required = false
+task = true
+priority = true
+to_code = false
+headings = []
+
+[artifacts.DESIGN_SLICE.identifiers.tech.references]
+
+[artifacts.DESIGN_SLICE.identifiers.tech-stack]
+kind = "tech-stack"
+name = "Technology Stack"
+description = "The stack a slice's component runs on."
+template = "cpt-{system}-tech-stack-{slug}"
+examples = ["cpt-cf-bss-products-tech-stack-example"]
+required = false
+task = true
+priority = true
+to_code = false
+headings = []
+
+[artifacts.DESIGN_SLICE.identifiers.tech-stack.references]
+
+[artifacts.DESIGN_SLICE.identifiers.topology]
+kind = "topology"
+name = "Topology"
+description = "A deployment or runtime topology the slice pins."
+template = "cpt-{system}-topology-{slug}"
+examples = ["cpt-cf-bss-products-topology-example"]
+required = false
+task = true
+priority = true
+to_code = false
+headings = []
+
+[artifacts.DESIGN_SLICE.identifiers.topology.references]
+
