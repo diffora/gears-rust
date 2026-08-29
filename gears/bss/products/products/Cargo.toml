@@ -18,7 +18,13 @@ async-trait = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
-uuid = { workspace = true }
+# `v4` on top of the workspace's `serde`/`v5`: minting an `actor_ref` needs a
+# random uuid, and a v5 derived from the principal would make the pseudonym
+# recomputable by anyone holding the principal id — the opposite of what the
+# identity-ref map is for. Declared here rather than inherited: it compiles
+# today only because `toolkit-db` happens to enable `v4` and Cargo unifies
+# features across the graph, which is a dependency this crate never stated.
+uuid = { workspace = true, features = ["v4"] }
 # `NewProduct`/`NewSku`'s and `ProductRecord`/`SkuRecord`'s `created_at` /
 # `updated_at`, carried as `DateTime<Utc>` at the repository boundary rather
 # than the `sea-orm`-internal alias the entities use.
