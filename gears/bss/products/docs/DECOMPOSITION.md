@@ -215,7 +215,10 @@ authored downstream of this document, in the order §3 establishes.
   - `products_idempotency`
   - `products_audit_log`
   - `products_product_category` — the table is defined by `02-taxonomy-attributes` and written by
-    this feature's create door
+    this feature's **save** door, in the same transaction as the head-row update (**P-D-46**).
+    Whether the create door should write content on the same terms is slice 01's open item 11 and
+    is unresolved; `DESIGN.md` §3.5 annotates this table as written by the create door, which is
+    the reading open item 11 exists to settle
   - The event outbox is the toolkit's (`toolkit_db::outbox`), not a gear table
 
 ### 2.2 [Taxonomy & Attributes](features/taxonomy-attributes.md) - HIGH
