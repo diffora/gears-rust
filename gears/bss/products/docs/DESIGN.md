@@ -420,7 +420,7 @@ it reports all fourteen.
 | 09-bulk-promotion | **authored** (coalesced-event deviation recorded as sanctioned) |
 | 10-retention-erasure | **authored**; role-predicate question **resolved — P-D-10**: no gear-side Legal role, the allow-list runs the base quorum with a mandatory recorded Legal sign-off reference |
 | 11-clone | **authored** (resolves the 01-flagged clone-vs-P-D-04 interaction) |
-| 12-consumer-contracts | **authored + agent-reviewed**; fix wave applied (CoverageChecks incl. id-uniqueness/identity/monetization lints, status vocabulary pinned, register rows split by authorability); SchemaPin widening **resolved — P-D-12**: membership is the rule "operands the §2.2 guards read", `inst-cc-pin` lints it, nine lints total |
+| 12-consumer-contracts | **authored + agent-reviewed**; fix wave applied (CoverageChecks incl. id-uniqueness/identity/monetization lints, status vocabulary pinned, register rows split by authorability); SchemaPin widening **resolved — P-D-12**: membership is the rule that the pin covers the operands the §2.2 `ObligationRegister`'s guards are enforced on, `inst-cc-pin` lints it, nine lints total |
 
 **The design set is COMPLETE: all twelve slices authored**. **Review status is
 per slice — read the table above, not this line**: the rows carrying "agent-reviewed" plus a fix
@@ -445,7 +445,7 @@ session with the product owner, one decision at a time:
 | 3 | AC #40's "rejected" with no operator | **P-D-09 amended** `cpt-cf-bss-products-fr-catalog-publish-concurrency` **and** AC #40 to state the stage-vs-commit lane split, rather than leave the design reading standing against normative text that said the opposite in two places |
 | 4 | Who approves a Legal-owned change | **P-D-10: no gear-side Legal role** — the allow-list runs the base quorum and records an external Legal sign-off reference, which is what AC #35 specified all along; role predicates narrow within the base set and never replace it (05 C8), retiring the grant in `inst-mt-inputs` (d). No PRD edit owed |
 | 5 | Quorum vs a two-person company | **P-D-11**: the approver count is a typed-policy value, **default 2, floor 0** — a one-person tenant could previously publish nothing at all, while the plan-price sibling ships `submitter + 1` in its schema and an approver-less path. Fixed and not configurable: the FinanceReviewer predicate, the self-approval refusal at `N ≥ 1`, explicit configuration only, provisioning-time initial value |
-| 6 | `SchemaPin` widening | **P-D-12**: membership became the rule "the operands the §2.2 `ObligationRegister` guards read", after measuring **four** such operands outside the FR's five-item list — of which only three were comparable fields at all. `cpt-cf-bss-products-fr-plan-price-seam` amended; `inst-cc-pin` lints the coupling both ways |
+| 6 | `SchemaPin` widening | **P-D-12**: membership became a rule rather than a list — the pin covers the operands the §2.2 `ObligationRegister`'s guards are enforced on — after measuring **four** such operands outside the FR's five-item list — of which only three were comparable fields at all. `cpt-cf-bss-products-fr-plan-price-seam` amended; `inst-cc-pin` lints the coupling both ways |
 
 Two further decisions landed in the same session without having been flagged: **P-D-08** defers
 audit sealing to a platform capability (below), and the transport wave named the two inbound

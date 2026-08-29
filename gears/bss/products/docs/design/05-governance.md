@@ -339,18 +339,6 @@ finance fields), 04 (un-deprecation, retirement confirmation, scheduled-approval
   refusal to be audited with its reason. So the first step of every registry door terminates in a
   refusal with no code for a consumer to match on. Owner: the governance owner with the taxonomy
   owner. *(Raised by the slice-01 fifth-pass review.)*
-- **Quorum strictness — RESOLVED (P-D-11)** (was: flagged). The count became a
-  typed-policy value with default 2 and **floor 0**, after the measurement that settled it: the
-  old fixed `≥ 2` left a two-person tenant unable to publish any material change and a
-  one-person tenant unable to publish **anything** (first publish and every lifecycle
-  transition are material, a non-material change still needed one approver, and C2 forbids
-  self-approval), while the sibling plan-price gear ships `submitter + 1` in its schema
-  (`pricing_approval` carries `submitter_principal`/`approver_principal` as two columns under
-  `chk_pricing_approval_distinct_principals`) **and** an approver-less path
-  (`PublishAuthorization::AutoPublishable`) for below-threshold non-first publishes. What did
-  **not** become configurable: the FinanceReviewer predicate, the self-approval refusal at
-  `N ≥ 1`, the explicit-configuration requirement, and the provisioning-time origin of the
-  initial value.
 - **The studio inbox envelope** is design-introduced (deliberately merge-compatible with
   pricing's queue); pricing's queue shape should be cross-checked when slice 12 pins the SDK —
   a field-name drift here costs a UI adapter later.

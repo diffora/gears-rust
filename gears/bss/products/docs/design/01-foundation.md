@@ -565,7 +565,7 @@ written, §4.4 — one of the gear's **three** 503s, alongside 08's `READ_MODEL_
 bucket-ii after first publish, which belongs to 07's correction door — the reason names the door; 07's
 structural-identity attempts ride this code rather than declaring their own), `SCOPE_NOT_CONTAINED`,
 `PARENT_NOT_PUBLISHED` (registered by slice 04 on the `→ published` **target state** under
-**P-D-32** — 04 `inst-pc-ordering` still words it as the edge and owes the restatement; named here so AC #38's
+**P-D-32**, which 04 `inst-pc-ordering` now words as the target state; named here so AC #38's
 map is complete), `PARENT_TERMINAL` (the parent's own state, wherever the `state` phase runs), `INCOMPLETE_ENTITY`, `APPROVAL_REQUIRED` (raised through the governance
 gate), `VALIDATION` (per-field envelope), `RETIREMENT_PENDING` (the create door's parent guard,
 `inst-fd-containment-retire-intent` — **declared by slice 04**, listed here only for the response map
@@ -1181,10 +1181,9 @@ pointers to items filed with owners outside this document.
 **Filed elsewhere, pointer only** — each registered where its owner will look:
 
 - **04**: the instruction row registering the create-door live-retire-intent validator (P-D-30
-  settled it is that slice's); the `internal:cascade-leg` lane, which no runner writes; and
-  `inst-pc-ordering`'s **edge**-keyed wording for `PARENT_NOT_PUBLISHED` against **P-D-32**, which
-  names the *target state* — an edge-keyed reading runs no validator on a re-publish, which is the
-  fail-closed re-run P-D-32 exists to keep. And whether 04's create-door retire-intent validator
+  settled it is that slice's); and the `internal:cascade-leg` lane, which no runner writes. *(`inst-pc-ordering`'s
+  edge-keyed wording for `PARENT_NOT_PUBLISHED` is no longer among them: it now keys to the target
+  state, as **P-D-32** names.)* And whether 04's create-door retire-intent validator
   also registers on the **save** door: `inst-fd-save-txn` is the only door that may change a SKU's
   `product_id`, so a draft SKU can be re-parented under a retire-pending Product by a door neither
   arm covers — the hazard `inst-fd-containment-retire-intent` itself describes.
@@ -1235,12 +1234,12 @@ residual, and four of the eleven are consequences of those rounds:
    only the `state` phase can, but the registered-validators phase hosts every slice's rules and
    the run stops at the first failing *phase*, and the `identity` phase hosts containment beside
    uniqueness — a create can satisfy `SCOPE_NOT_CONTAINED` and `DUPLICATE_CODE` at once. §3.3
-   states a precedence for the four `state` codes only. *(Two lenses, two counterexamples.)*
+   states a precedence for the four `state` codes only. *(Two lenses, two counterexamples. Owner: this slice with the error-contract owner.)*
 4. **Which phase judges an absent `If-Match`?** §2 says it rides `VALIDATION`; §3.1 puts `If-Match`
    in the **precondition** phase and `VALIDATION` in **shape**, two phases later, while §3.1 also
    stops the run at the first failing phase. P-D-36 removed the taxonomy obstacle to either
    answer without naming one. *(Lens split: one filed it as a defect with a fix, one as a question;
-   the register does not settle it.)*
+   the register does not settle it. Owner: this slice.)*
 5. **Is the save door's `brand_id` write validated against the caller's brand claims?** The check is
    written into `inst-fd-mint-id` in the create flow only, while §4.2 makes the save door the sole
    admitting door for that bucket-i column while `published_version = 0`. *(Owner: this slice with
@@ -1269,7 +1268,13 @@ residual, and four of the eleven are consequences of those rounds:
     guards defined once — so a trigger in this slice's first migration references a table 06 has not
     created. §5 already presumes the guard exists from the start. *(A P-D-40 consequence. Owner:
     whoever owns the migration chain.)*
-11. **What refuses a request when `actor_ref` resolution itself fails?** §2 runs it in its own
+11. **How is `clonedFrom` physically stored?** 11 `inst-cn-lineage` records a pair
+   `(entity id, published_version | 'draft')` while §4.1 and §4.2 provision one nullable column with
+   no type — so the version half has no home, and the choice (two columns, a composite, an encoded
+   text form) is load-bearing for the dual-engine rule and the append-only column whitelist.
+   *(Owner: this slice, which owns the column. Filed from 11 §6, where two lenses raised it.)*
+
+12. **What refuses a request when `actor_ref` resolution itself fails?** §2 runs it in its own
     transaction before any phase that can refuse, and the refusal's own audit row requires an
     `actor_ref` — so an unavailable `products_identity_ref` blocks both the act and its refusal
     record, the shape the gear terminated for the audit write with `AUDIT_UNAVAILABLE` (503). No
@@ -1286,7 +1291,7 @@ with 12, as is what "the taxonomy" denotes when a count is stated against it (§
 the response map, and AC #38's rows are three different sets, and `inst-cc-errors` will be built
 against a number).
 
-12. **Does the create door write content too?** **P-D-46** made `inst-fd-save-txn` the content
+13. **Does the create door write content too?** **P-D-46** made `inst-fd-save-txn` the content
    writer, which settles the freeze input set for anything that has been saved. The create flow
    still writes the entity row and its outbox row and nothing else — so an entity whose content
    arrives *at creation*, which is exactly 11's clone, has no admitted writer and cannot satisfy
@@ -1294,7 +1299,7 @@ against a number).
    on the same terms, or the clone is defined as create-then-save and 11's C3 changes. Owner:
    this slice with 11's. *(Raised by the P-D-46 round — the arm's own edge.)*
 
-13. **Which GTS type does the envelope's `subject_type` name for a Product or a SKU?** **P-D-47**
+14. **Which GTS type does the envelope's `subject_type` name for a Product or a SKU?** **P-D-47**
    put publishing on the broker SDK, whose event requires a `subject_type` — the GTS type of the
    entity the event is about, a compile-time constant of the typed event — while `PRD` §15 records
    that SKUs and Products themselves are never GTS instances. A subject *type* is not an instance,

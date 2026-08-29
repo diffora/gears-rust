@@ -156,7 +156,7 @@ only projects it); the deprecation mark pricing consumes — through pricing AC 
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-flow-parent-child`
 
-1. [ ] - `p1` - A SKU publish under a non-`published` parent fails `PARENT_NOT_PUBLISHED` (the validator registered on the SKU `→ published` edge; the code was named in 01 §3.3 for AC #38 completeness) - `inst-pc-ordering`
+1. [ ] - `p1` - A SKU publish under a non-`published` parent fails `PARENT_NOT_PUBLISHED` (the validator registered on the SKU's `→ published` **target state**, not on the edge — **P-D-32**, so a re-publish re-runs it fail-closed, which is the re-run 01 §2's publish path relies on; the code was named in 01 §3.3 for AC #38 completeness) - `inst-pc-ordering`
 2. [ ] - `p1` - **Containment (C5, final rule)**: a SKU's brand/region scope must be a subset of its parent's — flat value-set subset, evaluated on save and re-evaluated on publish; anything not provably a subset fails `SCOPE_NOT_CONTAINED`; the empty set is *unrestricted*, so an unrestricted parent contains every child and an unrestricted child needs an unrestricted parent (01 **P-D-39**, C5) - `inst-pc-containment`
 3. [ ] - `p1` - A **scope-narrowing Product publish** fails closed (`SCOPE_NARROWING_BLOCKED` — L1 fix) while any **non-terminal** child (`draft`/`published`/`deprecated`) would fall outside the narrowed scope — the validator names the falling-out children; widening is always admissible. **Non-terminal, not "non-`retired`"** (item 17 of the review): `discarded` is terminal at the physical layer (01 `inst-fd-terminal`) and is the routine output of the cascade's auto-discard arm, so the old operand let one discarded draft block that Product's narrowing permanently - `inst-pc-narrowing`
 
@@ -270,9 +270,6 @@ row and open to correction; the requirement is that every code carries one.
 pricing D-47 (joint contract), P-D-04 (containment residue).
 
 **Risks & open items**:
-- **`SkuRetired` at initiation — CONFIRMED by the slice review**: PRD §17.1 defines
-  the lead as "≥ 30 days between **event** and effective hide", which mandates emission at
-  initiation. Flag closed.
 - **Deferred flips can hold indefinitely** while a producer watermark stays stale — correct
   (C4) but operationally invisible without slice 08's surfacing + the `retirement_held` alert;
   the §15 fail-safe tripwire (slice 07) bounds the corrections debt, nothing yet bounds held
@@ -304,11 +301,6 @@ pricing D-47 (joint contract), P-D-04 (containment residue).
   owner, with the events/audit consumer set. *(Raised by the slice-01 fifth-pass review.)*
 - EOL (post-v1) will need: the subscriptions-lifecycle AC by number, the consumer-ack contract,
   and `SkuEolSuspended` — the schema field is already vN-compatible.
-- **`inst-pc-ordering` is edge-keyed where P-D-32 names the target state.** The row registers the
-  `PARENT_NOT_PUBLISHED` validator on the SKU `→ published` **edge**; **P-D-32** keys it to the
-  *target state*. An edge-keyed reading runs no validator on a re-publish, which is exactly the
-  fail-closed re-run P-D-32 exists to keep and which 01 §2's publish re-run relies on. Owed: the
-  restatement. *(Filed from 01 §6 by the slice-01 eighth lens pass — the pointer claimed it was registered here and it was not.)*
 - **Does the create-door retire-intent validator also register on the save door?** 01
   `inst-fd-save-txn` is the only door that may change a SKU's `product_id`, so a draft SKU can be
   re-parented under a retire-pending Product by a door neither arm covers — the hazard

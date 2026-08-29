@@ -318,12 +318,6 @@ struck. Branch review.)*
   clause in the same sentence ("slice 06/10 storage posture") is claimed. The set has been written
   both ways in the last two days. **No slice §5 measures the < 3 s budget either way**, which is the
   owed probe and the thing that would settle it.
-- **The composition-clear publish is RESOLVED, and it is not an exemption**: the CodeRabbit pass forced the question, and the honest shape turned out to be an
-  approval *subject* rather than a carve-out — 05 `inst-gv-one-shot` subject kind `system_signal` (**P-D-14**),
-  whose `ApprovalRecord` is auto-satisfied with the **inbound governed signal as the authorizing
-  principal**, audited like any decision, with no human approver and **no exemption from the
-  gate**. `DESIGN.md`'s status line dropped it from the human-flag list in the same wave; this
-  bullet had been left behind saying the opposite.
 - **The v1 freeze participant, pricing, is §15-silent** (**P-D-48** narrowed the registered set to
   it; Contracts and Billing register at their own build time): the protocol ships registry-complete
   with `freeze_overdue` naming it from day one; until pricing's ack lands, every version is

@@ -296,13 +296,6 @@ no event of their own (category display values emit `CategoryDisplayUpdated`, ab
 (category part), #6, #12, #35 (write-block), #38 (taxonomy-cycle row); **NFR #6** `cpt-cf-bss-products-nfr-scale-extensibility` (the extensibility-limits half: max taxonomy depth, max children/node).
 
 **Risks & open items**:
-- **P-D-06 — CONFIRMED by the product owner 2026-08-** (was: to ratify). The
-  metadata-outside-version-content placement stands as designed: the map is design-introduced
-  reading of a PRD that says both "ungoverned" and "captured in CatalogVersion snapshots", and
-  it keeps old snapshots byte-identical while letting the map move without version churn. The
-  accepted cost, stated at confirmation: the map carries **no history between snapshots** — an
-  intermediate value overwritten before the next `CatalogVersion` survives only as the audit
-  row recording the write. A key needing version history is an **Attribute**, not metadata.
 - **Definition removal candidates**: the guard reads **non-terminal heads** only (M2 —
   no frozen-content scan is involved, and the earlier wording of this item described exactly the
   scan M2 removed), so it is an index-scale check; the open item that survives is

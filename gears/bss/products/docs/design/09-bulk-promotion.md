@@ -74,7 +74,7 @@ aggregated but honest (counts, per-type summary, sample, lint findings).
 **Out**:
 - row-level validation rules (each slice's registered validators — bulk runs the same pipeline per row, never a parallel one)
 - the approval ceremony (05)
-- the CatalogVersion increment itself (06 — this slice tags its requests with the `operation_key` and closes the operation at ledger completion (`inst-bk-commit`)).
+- the CatalogVersion increment itself (06 — this slice tags its requests with the `operation_key`; the bulk window closes on D-47's five-minute hard max, not on any close operation this slice issues — **P-D-46** struck `closed_at` for that reason).
 
 ### 1.6 Constraints & Assumptions
 
@@ -275,9 +275,6 @@ via 05).
   findings; 06 §6 records that no instruction, store, RBAC pair, error code or probe in that slice
   delivers the report and names this slice as co-owner of the gap. Owner: the design-set owner with
   06 and this slice. *(Two lenses raised it independently.)*
-- **What writes the `close` marker?** `inst-bk-commit` states it as settled; the increment-request
-  contract's stated payload carries no close operation, and 06 §6 registers it as an amendment to an
-  inbound machine contract owed jointly with pricing. Owner: 06's owner with pricing. *(Raised by the slice-09 first lens pass.)*
 - **What makes the export byte-deterministic?** C4 promises byte-for-byte determinism for a given
   version; 06 §6 records that the manifest it renders from has no named sort key for its row
   collections, and `inst-bk-export` states no canonical serialization for the artifact itself. Owner:

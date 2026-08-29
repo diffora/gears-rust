@@ -251,11 +251,6 @@ clause — M5); the §5.1 p2 rows "Advanced search, filter & faceting" and the r
 (the stamp-floor semantics).
 
 **Risks & open items**:
-- **P-D-07 (floor + gated advance) — CONFIRMED by the product owner 2026-08-, conditionally**
-  (was: flagged). The original "strictly additive" premise was refuted by this slice's own
-  review (H1) and replaced, not patched. The confirmation is conditional on there **being** a
-  projection: the floor is a property of a serving store that lags, so it has no subject
-  without one.
 - **Open above this slice: does browse need a separate serving store at all?** Raised in review and now a PRD §15 question for the NFR workshop. `fr-cache-first-browse`'s
   rationale rested on two uncalibrated numbers — NFR #1's 10K SKUs/tenant is a scale a direct
   multi-way query plausibly serves, and NFR #2's ≥ 2,000 read QPS/tenant partition is not a

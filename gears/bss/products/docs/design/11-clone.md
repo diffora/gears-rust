@@ -159,11 +159,8 @@ which is why its gaps are omissions rather than contradictions:
   failures, which is only possible if the act collects rather than failing on the first. Owner: the
   PRD owner with this slice — one outcome vocabulary, stated once in C4 and mirrored in §3.1.
   *(All three lenses raised it independently.)*
-- **How is `clonedFrom` physically stored?** The rule records a pair `(entity id,
-  published_version | 'draft')` and both rosters provision one nullable column with no type — so the
-  version half has no home, and the choice (two columns, a composite, an encoded text form) is
-  load-bearing for the dual-engine rule and the append-only column whitelist. Owner: 01's storage
-  owner. *(Two lenses raised it independently.)*
+- **How is `clonedFrom` physically stored?** — filed in 01 §6, whose storage owner owns the column;
+  a pointer only.
 - **What is the clone door's request body?** Three rules require operator input — an overridable
   code, an overridable name, a replacement parent — and a fourth ("forces re-selection") may require
   re-selected values. No slice declares a clone payload, and whether those arrive in the clone
@@ -187,9 +184,8 @@ which is why its gaps are omissions rather than contradictions:
   in every non-`discarded` state — so a second revival of one lineage produces a suggestion the
   registry must refuse, and concurrent clones computing `N` by a read race each other. Owner: this
   slice. *(Raised by the slice-11 first lens pass.)*
-- **Is `{source}-copy-N` a legal `skuCode`?** The PRD requires the code to be "short, fixed-format",
-  and no document pins the format — so neither adjective has an operand, and a clone of a clone
-  compounds the suffix. Owner: the PRD owner, or 01's `inst-fd-mint-id`. *(Raised by the slice-11 first lens pass.)*
+- **Is `{source}-copy-N` a legal `skuCode`?** — filed in `PRD` §15 with the PRD owner, the format
+  being the PRD's to pin; a pointer only.
 - **What does the door answer for a `discarded` source?** C1 admits four states and `discarded` is the
   fifth, reachable and addressable; nothing says whether it is a 404-class miss, a state refusal or
   admitted, and `ENTITY_TERMINAL` cannot be reused as-is because the clone writes nothing to the
