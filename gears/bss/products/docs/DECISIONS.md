@@ -858,8 +858,9 @@ instead.*
 
 #### P-D-21 — The local audit table holds only what emits no event; the event stream is the success-path record
 
-- **Date**: 2026-08-27 (product call, in the slice-01 review, prompted by "мы же решили отложить
-  audit?" and then "рассчитываем на платформенный аудит")
+- **Date**: 2026-08-27 (product call, in the slice-01 review, prompted by "didn't we decide to
+  defer audit?" and then "we are counting on the platform audit" — the owner spoke Russian; both
+  quotations are translated)
 - **Residue flagged, and only the residue**: the decision below is the owner's, taken in
   conversation; two things in this entry are **not** and are open to veto. (1) The owner chose
   "local row for refusals, success by events"; the **second and third classes — reads under
@@ -953,7 +954,8 @@ instead.*
 
 #### P-D-22 — The registry uses the toolkit's transactional outbox, not a gear-local one
 
-- **Date**: 2026-08-27 (product call, in the slice-01 review — "взять toolkit")
+- **Date**: 2026-08-27 (product call, in the slice-01 review — "take the toolkit"; the owner
+  spoke Russian and the quotation is translated)
 - **Decision**: `products_outbox` as a gear-authored table is **struck**. The registry enqueues
   through **`toolkit_db::outbox`** (`libs/toolkit-db/src/outbox`), which ships the whole pipeline:
   `enqueue` inside the caller's transaction → `sequencer` assigning per-partition sequence numbers
