@@ -34,7 +34,7 @@ categories, attributes/localization, and immutable `CatalogVersion` snapshots �
 sold and how it is described, classified, versioned, and published*. It owns no commercial
 concern: Plan/Price/composition are the pricing gear's, evaluation is rating's (PRD §2.1
 boundary). Requirements live in [`PRD.md`](./PRD.md) (sign-able — all §15
-gates closed, veto register clean for P-D-01…P-D-13, with **P-D-14…P-D-20 flagged and awaiting the owner** (§6)); decisions in [`DECISIONS.md`](./DECISIONS.md) (P-D-NN;
+gates closed, veto register clean for P-D-01…P-D-13, with **P-D-14…P-D-20 all put to the owner and confirmed** (§6 — P-D-47, P-D-48)); decisions in [`DECISIONS.md`](./DECISIONS.md) (P-D-NN;
 joint contracts D-46/D-47 live in the pricing register).
 
 The design follows the **foundation-plus-handlers** pattern proven by the pricing gear: one
@@ -106,9 +106,9 @@ explicit release · P-D-19 a force-completed version stays refused for posted us
 publish during the retirement lead window re-announces `SkuRetired`. Joint: D-46 (`sellable`),
 D-47 (increment lanes + retirement contract) — pricing register.
 
-**P-D-14…P-D-18 and P-D-20 are FLAGGED and await the owner; P-D-19 was put to the owner and confirmed as amended (P-D-47)** — all seven were found by the branch review, **five** of them already built into the design and never registered (P-D-14…P-D-18) and **two** reversing a delivery — P-D-19 (a force-completed version stays refused for posted use) and P-D-20, which strikes a publish freeze slice 04 had already shipped (recounted: this read six-and-one, and the count hid the more product-visible of the two reversals)
-the design had made. Six have not been put to the owner, which is what makes them flags and not
-history.
+**All seven of P-D-14…P-D-20 have now been put to the owner and confirmed — P-D-19 as amended (P-D-47), the other six in P-D-48, with P-D-14 and P-D-18 amended and P-D-20 completed** — all seven were found by the branch review, **five** of them already built into the design and never registered (P-D-14…P-D-18) and **two** reversing a delivery — P-D-19 (a force-completed version stays refused for posted use) and P-D-20, which strikes a publish freeze slice 04 had already shipped (recounted: this read six-and-one, and the count hid the more product-visible of the two reversals)
+the design had made. None remains a flag: each entry's status line records the owner's call and what
+it amended.
 
 ### 1.3 Architecture Layers
 
@@ -385,7 +385,7 @@ rested on a uniqueness that does not hold).
   products rows).
 - Cross-gear obligations still open against counterparts (PRD §15): pricing owes
   `BundleCompositionCompleted` (slice 06 consumes it); freeze-participant acks unregistered on
-  all three participants; Contracts' "not a quote" position vs the quote-snapshot delegation.
+  the v1 participant, pricing (P-D-48 narrowed the set to it); Contracts' "not a quote" position vs the quote-snapshot delegation.
 
 ## 5. Traceability
 
@@ -435,7 +435,7 @@ which the table does not support (CodeRabbit); per-slice review reports are work
 artifacts rather than repository content, so the table is the only in-repo record and the claim
 is narrowed to what it holds.
 
-**Human flags awaiting the owner: seven — P-D-14…P-D-20**, opened by the branch review. The six below were answered on and stay answered; what the review found is a different class, and the distinction cost this branch a wave: **"no open questions" is not "correct"**. Five of the seven are decisions the design had already *made* and never registered — an undeclared decision is invisible to a flag count precisely because nobody asked anything. The six answered flags, in a single
+**Human flags awaiting the owner: none** — the seven P-D-14…P-D-20 opened by the branch review have all been put to the owner (P-D-19 as amended, P-D-47; the other six in P-D-48). The six below were answered on and stay answered; what the review found is a different class, and the distinction cost this branch a wave: **"no open questions" is not "correct"**. Five of the seven are decisions the design had already *made* and never registered — an undeclared decision is invisible to a flag count precisely because nobody asked anything. The six answered flags, in a single
 session with the product owner, one decision at a time:
 
 | # | Question | Outcome |

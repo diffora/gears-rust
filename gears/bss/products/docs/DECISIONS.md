@@ -56,6 +56,7 @@ joint contracts, cited from here by their pricing numbers, never duplicated.
 - [P-D-45 — The last four lint grammars, and an event register that cannot be harvested](#p-d-45--the-last-four-lint-grammars-and-an-event-register-that-cannot-be-harvested)
 - [P-D-46 — Four write-path blockers, three of them settled by opening the donor](#p-d-46--four-write-path-blockers-three-of-them-settled-by-opening-the-donor)
 - [P-D-47 — The last four build-blockers: a tombstone state, a withdrawn opt-in, two codes, and the broker's own producer](#p-d-47--the-last-four-build-blockers-a-tombstone-state-a-withdrawn-opt-in-two-codes-and-the-brokers-own-producer)
+- [P-D-48 — The six flagged decisions, put to the owner: two amended, one completed, three confirmed as recorded](#p-d-48--the-six-flagged-decisions-put-to-the-owner-two-amended-one-completed-three-confirmed-as-recorded)
 
 <!-- /toc -->
 
@@ -582,23 +583,24 @@ instead.*
 
 - **Date**: 2026-08-26 (recorded 2026-08-26 by the branch review — **decided in prose on this
   branch and never registered**, which is the defect this entry closes)
-- **Status**: **FLAGGED for the owner.** The design is built on it; nothing here changes
-  behaviour. It is registered so the owner can veto a publish path that has no human approver.
+- **Status**: **CONFIRMED as amended by P-D-48** — the subject kind stands; on a dirty head the
+  clear is **deferred, never refused**, the owning slice's reading, which this entry had stated the
+  other way. *(Was FLAGGED: the design is built on it; it was registered so the owner could veto a
+  publish path that has no human approver.)*
 - **Decision**: a publish whose **sole** content is a system-owned flag cleared by an inbound
   governed signal — in v1 exactly one: 06's `compositionPending` clearing — uses `ApprovalRecord`
   subject kind **`system_signal`**. The record is auto-satisfied with the **signal reference as
   the authorizing principal**, audited like any other decision. There is no human approver and
   **no exemption from the gate**: the act still produces a record, still lands in the audit
   trail, and is still refused if its preconditions fail.
-- **OPEN, and the one thing this entry does not settle (2026-08-26, third review pass)**: what a
-  dirty head does. This entry says *refused*; the owning slice's `inst-cc-clear` says the clear is
-  "**deferred, never refused**" (`design/06-catalog-version.md` §2) and §3.2 raises **no** error code
-  for it by design. Both are defensible — a refusal is louder, a deferral cannot wedge a publish
-  queue — and only one can be built. `fr-materiality-gated-publish` and AC #26 deliberately assert
-  neither. **Owner picks.**
+- **Settled by the owner (P-D-48)**: on a dirty head the clear is **deferred, never refused** —
+  the owning slice's reading (`design/06-catalog-version.md` `inst-cc-clear`), which §3.2 already
+  carried by raising no error code: the caller is an inbound signal, not a request, so there is
+  nobody to answer a refusal to, and a deferral cannot wedge a publish queue. This entry's
+  *refused* reading is withdrawn; `fr-materiality-gated-publish`, AC #26 and 05 now say deferred.
 - **The precondition that makes it safe**: the head must be **clean**. A `system_signal` publish
   carries the flag and nothing else; if the head holds unpublished bucket-iii/iv edits the
-  publish is refused rather than carrying them out under a record with no human approver — **this entry's reading, and the one the OPEN bullet above puts to the owner**; the owning slice defers instead. This
+  publish is **deferred** rather than carrying them out under a record with no human approver — held until the head is clean, never refused (the owner's call, P-D-48). This
   is not decoration — `cc752aed4`'s own Blocking-5 note records the alternative concretely: a
   publish "whose sole content is a system-owned flag" could otherwise "carry `taxCategory` and
   `PlanTier` edits out under an `ApprovalRecord` with no human approver".
@@ -628,8 +630,8 @@ instead.*
 - **Date**: 2026-08-26 (the transport wave — **named in `DESIGN.md` as a decision that "landed
   without having been flagged" and then never entered this register**; that asymmetry is what
   this entry closes)
-- **Status**: **FLAGGED for the owner.** It is a shape counterpart gears build against, so it is
-  the one entry here a neighbouring team can be broken by.
+- **Status**: **CONFIRMED as recorded (P-D-48)**. *(Was FLAGGED: it is a shape counterpart gears
+  build against, so it is the one entry here a neighbouring team can be broken by.)*
 - **Decision**: **every** inbound machine contract of PRD §9.2 is consumed as a **`products-sdk`
   client resolved from `ClientHub`**, in-process, rather than as a REST door that binds the
   counterpart out-of-process. §9.2 declares four — the `CatalogVersion` **increment request**,
@@ -658,7 +660,8 @@ instead.*
 
 - **Date**: 2026-08-26 (recorded by the branch review; the arm was authored into slice 07 as
   item 19 of that day's earlier review and stood against two `MUST`s until this entry)
-- **Status**: **FLAGGED for the owner** — it amends a normative FR and an AC.
+- **Status**: **CONFIRMED (P-D-48), its open half closed — the arm carries no flag of its own.**
+  *(Was FLAGGED: it amends a normative FR and an AC.)*
 - **Decision**: `fr-immutable-field-correction` and AC #4 are **amended** to carry a third
   admission arm. Besides (a) fresh-zero and (b) break-glass while the signal is entirely
   unavailable, the correction door admits a **meter-declaration** correction when the subject's
@@ -684,11 +687,14 @@ instead.*
   an open §15 item owned by that gear, exactly as P-D-05's residue records it. (Corrected
   2026-08-26: this entry read as closing the whole row, which contradicted P-D-05 on the same
   row — a local repair arm is not a deletion contract.)
-- **OPEN, registered 2026-08-27**: this arm is deliberately **not** behind
+- **Settled by the owner (P-D-48): no flag of its own.** This arm is deliberately **not** behind
   `BREAKGLASS_CORRECTION_DISABLED`, because a default-OFF flag would withhold the exit the decision
-  exists to provide. That leaves a governed but permanently open write path onto a published,
-  `fresh > 0` SKU's bucket-ii meter declaration. Whether it should carry a flag of its own (the arm already increments the same `TripwireCounter` the break-glass lane uses — `inst-bc-unresolvable`) is the owner's call; the ceremony, the reason and the
-  `SkuCorrectionOverride` evidence row are required either way.
+  exists to provide — and it carries no flag of its own for the same reason: its admission
+  predicate is a resolver fact (not-found), not operator discretion, and the arm already increments
+  the same `TripwireCounter` the break-glass lane uses (`inst-bc-unresolvable`). What remains is a
+  governed but permanently open write path onto a published, `fresh > 0` SKU's bucket-ii meter
+  declaration; the ceremony, the reason and the `SkuCorrectionOverride` evidence row are required on
+  every use.
 - **Rejected alternative**: drop `inst-bc-unresolvable` and leave the wedged SKU to the §15
   negotiation. Rejected because the negotiation has no v1 landing and the state is reachable in
   v1 — but this is the arm to strike if the owner prefers the quarantine fail-safe §15 names.
@@ -700,7 +706,8 @@ instead.*
 
 - **Date**: 2026-08-26 (recorded by the branch review; slice 09 was amended to this reading as
   item 15 of that day's earlier review, against three unamended PRD statements)
-- **Status**: **FLAGGED for the owner** — it amends an FR, an AC and a §10 use case.
+- **Status**: **CONFIRMED as recorded (P-D-48)**. *(Was FLAGGED: it amends an FR, an AC and a §10
+  use case.)*
 - **Decision**: `fr-bulk-import-export`, AC #33a and `usecase-environment-promotion` are
   **amended** to carry slice 09's exhaustive four-way classification: unknown identity ⇒
   **create**; identity bound to **matching** content ⇒ **no-op**; identity bound to **different**
@@ -727,8 +734,9 @@ instead.*
 
 - **Date**: 2026-08-26 (recorded by the branch review; built into slices 06/10/12 as the
   slice-10 review's H1 fix, while the PRD question that authorises it was still open)
-- **Status**: **FLAGGED for the owner** — it closes an open §15 row and adds a duty on three
-  counterpart gears.
+- **Status**: **CONFIRMED (P-D-48), with the v1 registered freeze-participant set narrowed to
+  {plan-price}** — the duty is booked on one counterpart that exists, not three. *(Was FLAGGED: it
+  closes an open §15 row and adds a duty on three counterpart gears.)*
 - **Decision**: version liveness is **acked-and-not-yet-released**. A freeze participant that
   holds no more live references to a `CatalogVersion` records that through a
   **`catalog_version × release`** door (S2S, the participant's own identity), and the release is
@@ -791,8 +799,9 @@ instead.*
 
 - **Date**: 2026-08-26 (recorded by the branch review; slice 04 introduced the publish freeze as
   item 16 of that day's earlier review)
-- **Status**: **FLAGGED for the owner** — it strikes a design-introduced normative refusal and
-  adds a re-emission rule in its place.
+- **Status**: **CONFIRMED (P-D-48), and completed** — the re-emission rule now has its door, 01's
+  `inst-fd-publish-reannounce`. *(Was FLAGGED: it strikes a design-introduced normative refusal and
+  adds a re-emission rule in its place.)*
 - **Decision**: `RETIREMENT_PENDING` is **struck** from the `PublishDoor`. A live retire intent
   does **not** close the head to publishes; new adoption is blocked from initiation, as
   `fr-retirement-eol` requires, and the entity stays publishable. `fromVersion` remains pinned at
@@ -1584,6 +1593,83 @@ instead.*
   `design/03-sku-classification.md` (`inst-mt-bucket`), `design/07-reference-signal.md`
   (the re-publish step).
 
+
+#### P-D-48 — The six flagged decisions, put to the owner: two amended, one completed, three confirmed as recorded
+
+- **Date**: 2026-08-28 (owner call — the flagged-decision round)
+- **Context**: P-D-14…P-D-20 were registered FLAGGED by the branch review on 2026-08-26 and never
+  put to the owner; P-D-47 had confirmed P-D-19 as amended after measuring its premise against the
+  PRD's pre-decision text. The other six were measured the same way — every claim that the PRD, the donor or the
+  platform already said something was opened at its source, with the PRD read at `eb68b8515` — and put to the owner in one round. All six recommendations were taken as put.
+- **Decision**, six calls:
+  1. **P-D-14 confirmed as amended: on a dirty head the composition clear is deferred, never
+     refused.** The owning slice's reading (06 `inst-cc-clear`) wins over the entry's *refused*:
+     the caller is an inbound signal, not a request, so there is nobody to answer a refusal to; 06
+     §3.2 raises no code for it by design; a deferral cannot wedge a publish queue. The signal is
+     durable and idempotent, the flag stays set, `composition_clear_held` names the head, and the
+     clear re-evaluates when the head next goes clean. 05, the PRD and AC #26 stop being neutral.
+  2. **P-D-15 confirmed as recorded**: every §9.2 inbound machine contract is a `products-sdk`
+     client resolved from `ClientHub`.
+  3. **P-D-16 confirmed, and its open half closed: the unresolvable-target arm carries no flag of
+     its own.** Its admission predicate is a resolver fact (not-found), not operator discretion; the
+     arm already increments the break-glass `TripwireCounter`; a default-OFF flag would reinstate
+     the wedge the arm exists to exit.
+  4. **P-D-17 confirmed as recorded**: a same-identity promotion row with different content is
+     update-as-draft.
+  5. **P-D-18 confirmed, with the v1 registered freeze-participant set = {plan-price (pricing
+     gear)}** — the P-D-03 pattern for the sibling signal: the ack and release clients are built
+     jointly with this gear, and Contracts and Billing register at their own build time. No v1 duty
+     is booked on a gear that does not exist; the registry-side half of `PRD` §15's row on the
+     silent ack counterparts closes, and 12 §6's question whether the obligations are booked on
+     gears that exist closes with it. Whether pricing's design accepts the ack and the release is
+     the cross-gear half and stays open.
+  6. **P-D-20 confirmed, and completed with the door it lacked**: the lead-window re-announcement
+     of `SkuRetired`/`ProductRetired` is enqueued by 01's publish door in the publish's own
+     transaction — a new row, `inst-fd-publish-reannounce`, beside `inst-fd-publish-emit`. The
+     event, its payload and the retirement identity are 04's (`inst-rt-initiate`); the enqueue is
+     the door's. 04 §6 had recorded that the re-emitter had no door.
+- **Measured, not argued**:
+  - Call 1: 06 §3.2 raises no error code for the clear because its caller is an inbound signal,
+    not a request; 04's flip guard defers the same way; the producer's side of the signal is
+    unregistered (`PRD` §15), so a refusal code would be a wire fact for a contract pricing has not
+    adopted.
+  - Call 2: `docs/ARCHITECTURE_MANIFEST.md` — *"in-process gears register local adapters in
+    `ClientHub`"*; `docs/arch/toolkit-contract-binding/DESIGN.md` allows a remote-capable contract
+    to be satisfied locally; and pricing already takes a `ProductCatalogClientV1` from the
+    `ClientHub` (`gears/bss/pricing/pricing/src/module.rs`), consuming this gear in-process in the
+    other direction.
+  - Call 3: the amended FR says *MAY* under the same ceremony and names no flag; the donor has no
+    break-glass lane at all, so there is no precedent either way.
+  - Call 4: the parity citation (Stripe test/live, Zuora Deployment Manager) predates the decision
+    — it is in the PRD at `eb68b8515`; the donor's bulk import edits an existing draft under its
+    version and conflicts only on a concurrent edit (`BULK_ROW_CONFLICT`), so update is the donor's
+    shape and conflict is reserved for a version mismatch.
+  - Call 5: the PRD named three participants (the `freezeComplete` glossary row and §9.2's
+    `Direction` line); Billing has no gear, Contracts' PRD never cites `CatalogVersion`, and
+    pricing's design set contains no mention of producing an ack or a release. P-D-03 had already
+    narrowed the sibling producer set to {plan-price} on the same facts.
+  - Call 6: the pre-decision PRD named only adoption-block and browsable as initiation effects, so
+    P-D-20's premise holds; 04 §6 recorded the missing door; 01's publish door already carries
+    lane rows under the act unit (P-D-34). The donor is silent — pricing retires without a lead
+    window, and D-146's *terminal for revisioning* is post-flip.
+- **The costs, stated**:
+  - Call 1: a deferred clear can wait indefinitely on a head that never goes clean; the alert is the
+    only signal — and a refusal would not have cleaned the head either.
+  - Call 5: with pricing silent, every version stays posting-unsafe until its ack lands — already
+    the set's stated v1 posture, now on one participant instead of three. The §15 row's owner is
+    Architecture with the participants; this is a product call on the registry's own governed set,
+    taken as P-D-03 was.
+  - Call 6: an event declared by 04 is enqueued by a 01 door. The alternative — 04 reacting to
+    `SkuPublished` after commit — is a second transaction, at-least-once, with no ordering
+    guarantee against the publish event it answers.
+- **Propagated**: `design/01-foundation.md` (§1.4, the publish door's `inst-fd-publish-reannounce`
+  row, §4.5, §6); `design/04-lifecycle.md` (`inst-rt-initiate`, §4 events, §5);
+  `design/05-governance.md` (`inst-gv-one-shot`); `design/06-catalog-version.md` (`inst-cc-clear`,
+  `inst-fz-timeout`, `inst-fz-liveness`, §6); `design/12-consumer-contracts.md` (`ObligationRegister`,
+  §6); `PRD.md` (the branch-review note, `fr-materiality-gated-publish`, the `freezeComplete` glossary
+  row, §9.2's freeze-ack and composition-signal blocks, AC #26, the §15 row); `DESIGN.md` (the
+  status line, the cross-gear bullet, the flags paragraph).
+- **Owed**: nothing. No decision in this register is flagged.
 
 #### P-D-47 — The last four build-blockers: a tombstone state, a withdrawn opt-in, two codes, and the broker's own producer
 

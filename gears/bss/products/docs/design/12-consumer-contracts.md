@@ -120,8 +120,8 @@ fixture, a pinned schema, or a lint. A promise that cannot be asserted is re-lab
 | Resolve grandfathered refs against the frozen snapshot | pricing / subscriptions | 06 `inst-gf-invariant` | `CatalogVersion` (surface) | **owed** |
 | Re-validate on `SkuImmutableFieldCorrected` | pricing | 07 `inst-cr-republish` | `type` + the metering-unit declaration (07 C4's bucket-ii set) | **owed** |
 | Act on the surfaced binding diff `(boundVersion, resolvedVersion, diffRef)` | freeze participants | 06 `inst-sn-binding-diff` | `CatalogVersion` (surface) | **owed** |
-| Refuse `not_frozen(forced)` participants' content for posted use | pricing / Billing | 06 `inst-fz-force` | `CatalogVersion` (surface) | **owed**, and **no longer the only enforcement** — P-D-19 put the fail-closed default back on the registry's own resolver (`VERSION_FORCED_INCOMPLETE`), because this row was booked against pricing *and Billing, which has no gear*, so a stated safe default was enforced on neither side |
-| Release a `CatalogVersion` when the last live reference is gone (`catalog_version × release`) | every freeze participant — v1 = pricing / Contracts / Billing | 06 `inst-fz-liveness`, 10 `inst-rt-gc` | `CatalogVersion` (surface) | **owed** — P-D-18; one idempotent release per `(participant, version)`, and GC waits for all of them (this row absorbed a duplicate booking of the same door ); snapshot GC is gated on it, so a participant that never releases pins storage indefinitely. First obligation on this list whose *absence* costs storage rather than correctness |
+| Refuse `not_frozen(forced)` participants' content for posted use | pricing (the v1 participant set — P-D-48) | 06 `inst-fz-force` | `CatalogVersion` (surface) | **owed**, and **no longer the only enforcement** — P-D-19 put the fail-closed default back on the registry's own resolver (`VERSION_FORCED_INCOMPLETE`), because this row was booked against pricing *and Billing, which has no gear*, so a stated safe default was enforced on neither side |
+| Release a `CatalogVersion` when the last live reference is gone (`catalog_version × release`) | every freeze participant — **v1 = pricing** (P-D-48); Contracts and Billing when they register | 06 `inst-fz-liveness`, 10 `inst-rt-gc` | `CatalogVersion` (surface) | **owed** — P-D-18; one idempotent release per `(participant, version)`, and GC waits for all of them (this row absorbed a duplicate booking of the same door ); snapshot GC is gated on it, so a participant that never releases pins storage indefinitely. First obligation on this list whose *absence* costs storage rather than correctness |
 | Take the latest `fromVersion` on a re-announced `SkuRetired`, keyed `(skuId, effectiveAt)` | pricing / subscriptions | 04 `inst-rt-initiate` | `SkuRetired` payload | **owed** — P-D-20; `SkuRetired` is no longer at-most-once per entity, since a publish during the lead window re-announces it |
 | Produce the `SkuReferenceCount` watermark | pricing (v1), then subscriptions/contracts | P-D-03, 07 | `skuId` | **owed — the P-D-03 joint build** |
 | Consume `mustMigrateBy` | subscriptions | 04 EOL lockout | none in v1 (the field is never populated — 04 `inst-rt-eol-lockout`) | **deferred with post-v1 EOL** |
@@ -332,10 +332,6 @@ slice is that suite's specification.
   constraint rows and register, and their propagation fields do not name it, while every other
   decision it cites does. Whether a constraint-row citation counts as a restatement for lint 5 is
   unstated; the fix lands in the register, not here. Owner: the register's owner.
-- **Are the freeze-participant obligations booked on gears that exist?** The release duty is booked
-  on "pricing / Contracts / Billing", and GC waits for all of them, while this slice elsewhere
-  names booking a duty on a gear-less consumer as the failure that forced P-D-19. Owner: the
-  registry owner with P-D-18's.
 - **Is `inst-cc-errors`' exclusion list one filter or two?** Two of the three exclusions are
   already excluded by the opening clause ("that a registry door can refuse"); the third is
   excluded for a reason that clause does not express. The "exactly three" assertion is checkable

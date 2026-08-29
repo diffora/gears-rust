@@ -92,7 +92,7 @@ acknowledged, and rejections that always carry an audited reason. Per P-D-02, ev
   (four read paths the guard needed), P-D-29 (what a replay, an envelope and a digest carry),
   P-D-30 (gate host, authorization, whose validator), P-D-31 (the four routed outward, decided
   here), P-D-32 (the second lens wave's six calls), P-D-33 (eight calls from weeding the open items),
-  P-D-34 (the remaining items, decided from the set), P-D-35 (the five the set already forced), P-D-36 (the phase unit withdrawn), P-D-37 (one code per row, all violations in the answer), P-D-38 (a refusal stores nothing), P-D-39 (scope columns and the empty set), P-D-40 (the version table's one admitted DELETE), P-D-41 (the two bucket-ii doors), P-D-42 (the store's last three operands), P-D-43 (the checking layer's four grammars), P-D-44 (the AC #38 map), P-D-45 (the last four lint grammars), P-D-46 (four write-path blockers), P-D-47 (the last four blockers: a tombstone state, a withdrawn opt-in, two codes, the broker's producer)
+  P-D-20 (the retirement lead window imposes no publish freeze), P-D-34 (the remaining items, decided from the set), P-D-35 (the five the set already forced), P-D-36 (the phase unit withdrawn), P-D-37 (one code per row, all violations in the answer), P-D-38 (a refusal stores nothing), P-D-39 (scope columns and the empty set), P-D-40 (the version table's one admitted DELETE), P-D-41 (the two bucket-ii doors), P-D-42 (the store's last three operands), P-D-43 (the checking layer's four grammars), P-D-44 (the AC #38 map), P-D-45 (the last four lint grammars), P-D-46 (four write-path blockers), P-D-47 (the last four blockers: a tombstone state, a withdrawn opt-in, two codes, the broker's producer), P-D-48 (the six flagged decisions put to the owner; this slice gains the re-announcement row)
 - Pricing `design/01-foundation.md` — the pattern donor (registered validators, append-only
   triggers with column whitelists, draft/published partial unique indexes, pending refs — **not
   the outbox**, which P-D-22 moved to `toolkit_db::outbox` after measuring that pricing runs a
@@ -351,6 +351,12 @@ verbs, and 04's crash-replay of a scheduled activation (04 `inst-sp-idempotent`)
      frozen content does and a stale client's cached representation can no longer pass its own
      precondition - `inst-fd-publish-bump`
    - [ ] - `p1` - Emit `ProductPublished`/`SkuPublished` - `inst-fd-publish-emit`
+   - [ ] - `p1` - **Re-announce a retirement in flight** (**P-D-48**, the door P-D-20 lacked): where
+     the entity holds a live retire intent — a pending retirement `ScheduledTransition`, 04
+     `inst-rt-initiate` — the same transaction also enqueues `SkuRetired`/`ProductRetired` with the
+     new `fromVersion`, the same `effectiveAt` and the same retirement identity. The event, its
+     payload and that identity are 04's; the enqueue is this door's, and the row names the event it
+     enqueues, so nothing is inherited or owed under P-D-34's act unit - `inst-fd-publish-reannounce`
    - [ ] - `p1` - Mark the gate's `satisfied` `ApprovalRecord` `consumed` (05
      `inst-gv-one-shot` requires the flip **in the same transaction as the authorized act**; nothing is consumed under
      `PreAuthorized`); **no event of its own** - `inst-fd-publish-consume`
@@ -1086,7 +1092,7 @@ here", and 04 announces them: `SkuDeprecated`/`ProductDeprecated` and
 `SkuUndeprecated`/`ProductUndeprecated` on the first two, and — **on the SKU side only** —
 `SkuRetirementEffective` on `deprecated→retired`, for which 04's Events roster names no Product
 analogue and records no "no event" either (registered in 04's own open items) — `SkuRetired`/`ProductRetired` are emitted by 04 at *initiation*, not on
-this edge** (owner's call,
+this edge, and re-announced by this slice's publish door during the lead window (`inst-fd-publish-reannounce`, **P-D-48**)** (owner's call,
 2026-08-27; the floor stays policy-free and eventless, and 04 owns both the policy and the
 announcement). Rule for every slice, **this one included** (same call — the rule had read "every
 other slice", exempting the document that states it and leaving slice 12's completeness check a
@@ -1162,7 +1168,7 @@ and the ordering key.
   (frame), #42.
 
 **Risks & open items**: eleven review passes (the numbering restarted once, at the sixth) and
-twenty owner rounds (P-D-23 through P-D-42) have run over this slice. What survives is one standing **risk**, thirteen open questions, and a set of
+the owner rounds P-D-23 through P-D-48 have run over this slice. What survives is one standing **risk**, thirteen open questions, and a set of
 pointers to items filed with owners outside this document.
 
 **Risk** — a hazard rather than a question:
@@ -1207,7 +1213,7 @@ pointers to items filed with owners outside this document.
   transport contract's two unpinnable operands, the hash and `N`, which are the broker's own under
   its ADR-0002.)*
 - **`DECISIONS.md`**: whether §4.2's `composition_pending` no-re-raise clause may rest on
-  **P-D-14**, which is still **FLAGGED** for its owner and whose propagation field does not name
+  **P-D-14**, confirmed by **P-D-48** but whose propagation field still does not name
   this document.
 
 **Open here** — **thirteen**: eleven raised by the eighth lens pass over the state the
