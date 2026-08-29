@@ -54,6 +54,24 @@ impl CreateEntityCandidate {
 /// exists to lose.
 pub struct NameShapeRule;
 
+impl NameShapeRule {
+    /// The wire code this rule raises.
+    ///
+    /// A literal, and it has to be: deriving it by calling
+    /// `DomainError::Validation(ValidationReport::new()).code()` is what this
+    /// wanted to be, but that value owns a `String` and a value with a
+    /// destructor cannot be dropped in a `const` initializer (`E0493`).
+    /// `code()` being a `const fn` is not enough on its own.
+    ///
+    /// So the anti-drift guarantee is a test's rather than the compiler's:
+    /// `the_rules_code_constant_cannot_drift_from_domain_errors_own` asserts
+    /// this constant against `DomainError::code()`'s own answer, so a rename
+    /// on either side reddens. The rule still reads its own constant rather
+    /// than a bare literal at the raise site, which is the other half of why
+    /// this exists.
+    pub const CODE: &'static str = "VALIDATION";
+}
+
 impl ValidationRule<CreateEntityCandidate> for NameShapeRule {
     fn name(&self) -> &'static str {
         "inst-fd-name-unique"
@@ -66,7 +84,7 @@ impl ValidationRule<CreateEntityCandidate> for NameShapeRule {
     fn evaluate(&self, subject: &CreateEntityCandidate, report: &mut ValidationReport) {
         if subject.name_normalized().is_empty() {
             report.violate(
-                "VALIDATION",
+                Self::CODE,
                 "name",
                 "a name must contain at least one non-whitespace character after normalization",
             );

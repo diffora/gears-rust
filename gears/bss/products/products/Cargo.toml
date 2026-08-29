@@ -37,8 +37,9 @@ chrono = { workspace = true }
 # second, wrong answer to the uniqueness operand.
 unicode-normalization = { workspace = true }
 
-# `db` enables the `DatabaseCapability` trait; this increment mounts no REST
-# surface, so no `rest` feature is taken yet.
+# `toolkit` itself carries no `rest` Cargo feature — the REST API layer is not
+# feature-gated, so declaring `rest` in `#[toolkit::gear(capabilities = [...])]`
+# needs no feature bump here, matching the sibling pricing gear's manifest.
 toolkit = { workspace = true, features = ["db"] }
 toolkit-db = { workspace = true, features = ["pg", "sqlite"] }
 # `#[derive(Scopable)]` on the storage entities: the SecureORM tenant binding
@@ -51,11 +52,42 @@ sea-orm-migration = { workspace = true }
 # `#[domain_model]` marker on the domain types (enforced by dylint DE0309).
 toolkit-macros = { workspace = true }
 
-[dev-dependencies]
-# The config tests assert the serde contract itself — defaults fill in, unknown
-# keys are denied — which is format-independent, so JSON stands in for whatever
-# the platform parses at boot.
+# REST surface: the axum router `api::rest::router` mounts under the gear's
+# reserved `/bss-products/v1` prefix.
+axum = { workspace = true }
+# `#[toolkit_macros::api_dto(...)]`'s expansion needs the crate as a direct
+# dependency wherever REST DTOs land; taken now, alongside `axum`, because the
+# `rest` capability is declared in this slice even though no DTO exists yet.
+utoipa = { workspace = true }
+# Required as a direct dep by the `#[resource_error(...)]` macro expansion
+# Phase 4's error mapping will use, matching the sibling pricing gear's
+# manifest comment.
+toolkit-canonical-errors = { workspace = true }
+# Holds the per-process runtime populated in `init()`.
+arc-swap = { workspace = true }
+
+# Declared in `#[toolkit::gear(deps = [authz_resolver])]`: the PEP the
+# authoring surfaces will gate through starting Phase 4. The gear
+# implementation is referenced through the macro expansion only; the SDK crate
+# is the contract `init()` resolves from `ClientHub`.
+authz-resolver = { workspace = true }
+authz-resolver-sdk = { workspace = true }
+# `AuthzPermissionV1` + `gts_instance!` for the GTS permission catalog
+# (`crate::gts::permissions`).
+toolkit-gts = { workspace = true }
+# `gts_instance!`'s expansion references the `gts` crate directly.
+gts = { workspace = true }
+# `crate::authz::authz_label_type_schemas` returns the stub type-schemas as
+# `serde_json::Value`, matching the sibling pricing gear's equivalent — needed
+# as a normal (not dev-only) dependency because that function is production
+# code, not a test.
 serde_json = { workspace = true }
+
+[dev-dependencies]
+# `ServiceExt::oneshot` drives one request through the composed router in
+# `gear.rs`'s mount test, so the prefix reservation is asserted at the
+# HTTP level rather than by constructing a `Router` and trusting it.
+tower = { workspace = true }
 # `#[tokio::test]` for the repository suite, which exercises the async
 # `DBRunner` calls against the executed `SQLite` mirror.
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

@@ -16,10 +16,16 @@
 //! than paid down later.
 
 #[doc(hidden)]
+pub mod api;
+#[doc(hidden)]
+pub mod authz;
+#[doc(hidden)]
 pub mod config;
 #[doc(hidden)]
 pub mod domain;
 #[doc(hidden)]
 pub mod gear;
+#[doc(hidden)]
+pub mod gts;
 #[doc(hidden)]
 pub mod infra;
