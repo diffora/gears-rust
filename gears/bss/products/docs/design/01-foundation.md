@@ -199,7 +199,9 @@ its **three remaining** edges are driven by slice 04's surfaces.
 
 ### Create a Product
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-flow-create-product`
+Declared by [`../features/foundation.md`](../features/foundation.md) §2 as `cpt-cf-bss-products-flow-create-product`.
+The steps below are this slice's and are the normative ones; the FEATURE carries the
+actor, the scenarios and the boundary.
 
 1. [ ] - `p1` - Resolve the acting principal to its `actor_ref` through slice 10's
 `products_identity_ref` — 10 `inst-im-map` states the obligation from its side ("01's doors mint
@@ -227,7 +229,9 @@ success-path audit record; no audit row is written on a committed act) - `inst-f
 
 ### Define a SKU
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-flow-define-sku`
+Declared by [`../features/foundation.md`](../features/foundation.md) §2 as `cpt-cf-bss-products-flow-define-sku`.
+The steps below are this slice's and are the normative ones; the FEATURE carries the
+actor, the scenarios and the boundary.
 
 1. [ ] - `p1` - `actor_ref` resolution, authorize, and idempotency as at create - `(cont. inst-fd-idempotency)`
 2. [ ] - `p1` - The create door's parent and scope guards, in the phases §3.1 assigns them - `inst-fd-containment`
@@ -260,7 +264,9 @@ success-path audit record; no audit row is written on a committed act) - `inst-f
 
 ### Save an edit (draft, published or deprecated head)
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-flow-save-draft`
+Declared by [`../features/foundation.md`](../features/foundation.md) §2 as `cpt-cf-bss-products-flow-save-draft`.
+The steps below are this slice's and are the normative ones; the FEATURE carries the
+actor, the scenarios and the boundary.
 
 1. [ ] - `p1` - `actor_ref` resolution, authorize, and idempotency as at create - `(cont. inst-fd-idempotency)`
 2. [ ] - `p1` - Every mutating verb on an entity head — **the publish door included**, whose pin is that same
@@ -273,14 +279,18 @@ malformed request does not) (per-row token, never plan-shared — the pricing D-
 
 ### Discard a never-published draft
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-flow-discard`
+Declared by [`../features/foundation.md`](../features/foundation.md) §2 as `cpt-cf-bss-products-flow-discard`.
+The steps below are this slice's and are the normative ones; the FEATURE carries the
+actor, the scenarios and the boundary.
 
 1. [ ] - `p1` - `actor_ref` resolution, authorize, and idempotency as at create - `(cont. inst-fd-idempotency)`
 2. [ ] - `p1` - Legal only from `draft` with `published_version = 0`; transition to `discarded` (terminal); the `ReservationIndex` (§4.2) and the `product_code` index (§4.1) both exclude `discarded` rows, so the `skuCode`/`productCode` reservation releases by the same write; emits the `SkuDiscarded`/`ProductDiscarded` event - `inst-fd-discard`
 
 ### Publish an entity (the mechanics half)
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-flow-publish`
+Declared by [`../features/foundation.md`](../features/foundation.md) §2 as `cpt-cf-bss-products-flow-publish`.
+The steps below are this slice's and are the normative ones; the FEATURE carries the
+actor, the scenarios and the boundary.
 
 1. [ ] - `p1` - `actor_ref` resolution, authorize, and idempotency as at create — the PRD names **publish** among the retried
 verbs, and 04's crash-replay of a scheduled activation (04 `inst-sp-idempotent`) rides this store keyed by transition id - `(cont. inst-fd-idempotency)`
@@ -364,7 +374,9 @@ verbs, and 04's crash-replay of a scheduled activation (04 `inst-sp-idempotent`)
 
 ### Transition an entity (state-machine floor)
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-flow-transition`
+Declared by [`../features/foundation.md`](../features/foundation.md) §2 as `cpt-cf-bss-products-flow-transition`.
+The steps below are this slice's and are the normative ones; the FEATURE carries the
+actor, the scenarios and the boundary.
 
 1. [ ] - `p1` - `actor_ref` resolution, authorize, and idempotency as at create - `(cont. inst-fd-idempotency)`
 2. [ ] - `p1` - The transition guard, which reaches **`lifecycle_state` changes only** — a save is not a transition, and a re-publish is not an edge (H1 fix: the head row is the authoring surface in every non-terminal state) - `inst-fd-transition-guard`
@@ -392,7 +404,9 @@ verbs, and 04's crash-replay of a scheduled activation (04 `inst-sp-idempotent`)
 
 ### 3.1 Validation pipeline
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-algo-pipeline`
+Declared by [`../features/foundation.md`](../features/foundation.md) §3 as `cpt-cf-bss-products-algo-pipeline`.
+The steps below are this slice's and are the normative ones; the FEATURE carries the
+actor, the scenarios and the boundary.
 
 1. [ ] - `p1` - Pipeline order — one pre-pipeline gate, then **seven** ordered phases - `inst-fd-pipeline-order`
    - [ ] - `p1` - **Authorization is not a phase**: it is a **pre-pipeline gate**, run before the
@@ -460,7 +474,9 @@ audited reason; there is no partial application anywhere in the gear (PRD AC #38
 
 ### 3.2 Idempotency store
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-algo-idempotency`
+Declared by [`../features/foundation.md`](../features/foundation.md) §3 as `cpt-cf-bss-products-algo-idempotency`.
+The steps below are this slice's and are the normative ones; the FEATURE carries the
+actor, the scenarios and the boundary.
 
 1. [ ] - `p1` - The idempotency record and what a replay reproduces - `inst-fd-idem-replay`
    - [ ] - `p1` - **Key scope `(tenant_id, endpoint, client_key)`**, where a wire caller's
@@ -709,7 +725,9 @@ once, in the Foundation, rather than per occurrence.
 
 ### 3.4 Concurrency doors (PRD §6.13 residents of this slice)
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-algo-concurrency`
+Declared by [`../features/foundation.md`](../features/foundation.md) §3 as `cpt-cf-bss-products-algo-concurrency`.
+The steps below are this slice's and are the normative ones; the FEATURE carries the
+actor, the scenarios and the boundary.
 
 1. [ ] - `p1` - `skuCode`/`productCode` race: decided by the `ReservationIndex` (§4.2) and §4.1's `product_code` partial unique index under the insert **or the admitted bucket-i UPDATE** (§4.2), not by a read (two concurrent creates, or a create against a concurrent bucket-i change: exactly one admitted). **Because the index is the arbiter, a write violating two of them returns
 one violation** — whichever constraint the engine checked first — so the `identity` phase cannot
