@@ -116,7 +116,7 @@ statuses below.
 
 | ADR ID | Decision Summary |
 |--------|------------------|
-| `cpt-cf-bss-pricing-adr-canonical-scope-key` | The single scope key for row-uniqueness, supersession, `PriceWindow` non-overlap, and coverage is `(planId, currency, region, priceOverlay, phase, priceEligibility, chargeKind, cohort)` — the manifest's `(plan, currency, region, priceOverlay)` key extended **additively**, so a hybrid plan's components and a grandfathered row + its successor are **distinct keys** that can hold concurrent active windows without violating non-overlap. |
+| `cpt-cf-bss-pricing-adr-canonical-scope-key` | The single scope key for row-uniqueness, supersession, `PriceWindow` non-overlap, and coverage is `(planId, currency, region, priceOverlay, phase, priceEligibility, chargeKind, cohort)` + on `chargeKind = usage`: `(meter, dimensionKey)` (the pair conditional, D-196) — the manifest's `(plan, currency, region, priceOverlay)` key extended **additively**, so a hybrid plan's components and a grandfathered row + its successor are **distinct keys** that can hold concurrent active windows without violating non-overlap. |
 | `cpt-cf-bss-pricing-adr-grandfathering-cohort-axis` | Multi-generation grandfathering: the additive `cohort` axis (the cutover instant; `none` on non-grandfathered rows) makes every cutover a **new** coexisting generation; within the grandfathered class Tariffs selects the row by the cohort of the subscription's pinned price id (`pricingSnapshotRef`). |
 | `cpt-cf-bss-pricing-adr-pricewindow-consolidation` | The `PriceWindow` machinery (store, state machine, UTC activation job, `PriceWindow*` event production — frozen manifest names) is **owned by this gear** (Slice 7); the legacy effective-dating UC is absorbed as scenario source, and the cutover's multi-window unit is one local ACID transaction. |
 
@@ -260,7 +260,7 @@ no overlay, and performs no FX. All mathematical formulas belong to Tariffs.
 - [ ] `p1` - **ID**: `cpt-cf-bss-pricing-constraint-canonical-scope-key`
 
 The single scope key for row-uniqueness, supersession, `PriceWindow` non-overlap, and window
-coverage is `(planId, currency, region, priceOverlay, phase, priceEligibility, chargeKind, cohort)`.
+coverage is `(planId, currency, region, priceOverlay, phase, priceEligibility, chargeKind, cohort)` + on `chargeKind = usage`: `(meter, dimensionKey)` — the pair an axis of the key **conditionally** (D-196).
 Rows authored here always carry `priceOverlay = base`; defaults `phase =` the plan's terminal `phase_id` (id-typed axis; implicit terminal phase auto-created for non-phased plans — D-19),
 `priceEligibility = all_subscriptions`, `cohort = none` (`cohort` ≠ `none` only on
 `existing_grandfathered` generations — each cutover creates a new one). Normative:

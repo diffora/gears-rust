@@ -75,7 +75,7 @@ stale) on read-model outage.
 | `cpt-cf-bss-pricing-fr-plan-versioning` | A price/tier change versions the `Plan` and writes **new** immutable `pricing_price` rows; prior rows are retained as history; bound subscriptions continue on their frozen snapshot until renewal or migration. |
 | `cpt-cf-bss-pricing-fr-supersession` | Supersession is versioning scoped to **one canonical scope key**: a new immutable row plus opening/closing the corresponding `PriceWindow` (never an in-place mutate, never an overlap), within one `priceEligibility` class and one `chargeKind`. |
 | `cpt-cf-bss-pricing-fr-pricing-snapshot` | Publish stamps the catalog-side identifiers sufficient for the manifest `pricingSnapshotRef` (resolved price ids + evaluation-policy version + the **pending** version ref, finalized to the committed `CatalogVersion` on `CatalogVersionPublished`); posted periods never re-query mutable rows; the catalog-side view MUST NOT diverge from the Tariffs composition SoR. |
-| `cpt-cf-bss-pricing-fr-consumer-readmodel-resolution` | The projected read model is **monotonic per `CatalogVersion`** (a version is **pin-eligible** only once `CatalogVersionPublished` has fired, **every** subject row it projects is warm-complete — D-101 — **and every earlier version is itself pin-eligible** — D-114: pin-eligibility is a prefix-closed frontier). **Both quantifiers range over this tenant's refs (D-164, §4.4):** `CatalogVersion` is a cross-tenant sequence, so a tenant's committed versions are a sparse subset of it, and read globally neither "every subject row" nor "every earlier version" is a set this tenant can ever satisfy. Consumers resolve exact published values with no draft read and no default substitution; a rating run pins one pin-eligible version and the pin never lags the newest pin-eligible version by > 5s. |
+| `cpt-cf-bss-pricing-fr-consumer-readmodel-resolution` | The projected read model is **monotonic per `CatalogVersion`** (a version is **pin-eligible** only once `CatalogVersionPublished` has fired, **every** subject row it projects is warm-complete — D-101 — **and every earlier version is itself pin-eligible** — D-114: pin-eligibility is a prefix-closed frontier). **Both quantifiers range over this tenant's refs (D-164, §4.4):** `CatalogVersion` is a **per-tenant** monotonic gapless sequence (products design slice 06, 2026-08-25 — this row's original "cross-tenant sequence / sparse subset" premise is corrected; D-164's quantifiers survive verbatim, since per-tenant monotonicity is strictly stronger within a tenant), and read globally neither "every subject row" nor "every earlier version" is a set this tenant can ever satisfy. Consumers resolve exact published values with no draft read and no default substitution; a rating run pins one pin-eligible version and the pin never lags the newest pin-eligible version by > 5s. |
 | `cpt-cf-bss-pricing-fr-catalogversion-increment` | On every `PlanPublished` the Foundation requests addressability; the registry is the **sole** incrementer and MAY batch approved publishes; `PlanPublished` carries a **pending** ref and the snapshot pins the committed version on `CatalogVersionPublished`. |
 | `cpt-cf-bss-pricing-fr-publish-fanout-atomicity` | Post-commit read-model warming retries to the 5s SLO or marks the publish degraded (`PlanPublishDegraded`); no state exposes a rateable-but-incomplete plan; the pre-commit batching delay is governed by the max batching-delay SLO, not by degraded handling. **That separation is only measurable because the ref row records when this gear learned the version had committed (`commit_observed_at` — D-166, §3.7/§4.4):** from `requested_at` alone the 5s clock measures the batching delay, and every publish behaving exactly as D-47 budgets is marked degraded. |
 | `cpt-cf-bss-pricing-fr-event-contract` | A **frozen event-name set** (`PlanCreated`, `PlanUpdated`, `PlanPublished`, `PlanRetired`, and conditionally `PlanMigrationScheduled`, `PlanPublishDegraded`, `BundleUpdated`, `PriceCreated`, `PriceUpdated`, plus the manifest `PriceWindowScheduled`/`Activated`/`Expired`/`Cancelled` — produced by this gear since the window consolidation, D-03 — and **`PriceOverlayPublished`, the fourteenth name (D-248, 2026-08-07)**, whose aggregate is the **overlay id** rather than a plan: an overlay is tenant-scoped and may target no plan at all, so there is no plan stream to order it within. The set is frozen in two places that must agree — this row and `chk_pricing_outbox_event_name` — so a name joins both or neither) emitted from a transactional outbox, ordered per `(tenantId, aggregateId)`, at-least-once, carrying correlation/idempotency keys. |
@@ -97,7 +97,7 @@ stale) on read-model outage.
 
 | ADR ID | Decision Summary |
 |--------|------------------|
-| `cpt-cf-bss-pricing-adr-canonical-scope-key` | The single scope key is `(planId, currency, region, priceOverlay, phase, priceEligibility, chargeKind, cohort)` — the manifest key extended additively so hybrid components and a grandfathered row + its successor are distinct keys with concurrent active windows. |
+| `cpt-cf-bss-pricing-adr-canonical-scope-key` | The single scope key is `(planId, currency, region, priceOverlay, phase, priceEligibility, chargeKind, cohort)` + on `chargeKind = usage`: `(meter, dimensionKey)` (the pair conditional, D-196) — the manifest key extended additively so hybrid components, a grandfathered row + its successor, and two usage lines of one market are distinct keys with concurrent active windows. **§4.1 "Canonical Scope Key (normative)"** is the normative statement — not §4.4, which is "Read Model and `pricingSnapshotRef`" (item 25 of the 2026-08-26 products review; the same wrong pointer stood in ADR-0001 twice and ADR-0002 once). |
 | `cpt-cf-bss-pricing-adr-grandfathering-cohort-axis` | Multi-generation grandfathering: the additive `cohort` axis (= the cutover instant; `none` on non-grandfathered rows) makes every cutover a **new** generation on its own key; within the grandfathered class Tariffs selects by the cohort of the subscription's pinned price id. |
 | `cpt-cf-bss-pricing-adr-pricewindow-consolidation` | The `PriceWindow` machinery is gear-owned (Slice 7): store, state machine, activation job, `PriceWindow*` production; multi-window units are local ACID transactions. |
 
@@ -961,14 +961,17 @@ pin-eligible** (D-114) — pin-eligibility is a **monotonic frontier**, and "the
 version" — the referent of the ≤ 5s pin-lag rule below — means that frontier's edge.
 
 **Both quantifiers are this tenant's (normative, D-164, 2026-08-03, found while building the
-read side).** `CatalogVersion` is minted by a **cross-tenant** registry, so a tenant's committed
-versions are a sparse subset of the global sequence: read globally, "every earlier version is
-itself pin-eligible" is a condition no tenant can ever satisfy — every frontier in a deployment
-sticks at the first version another tenant's publish consumed — and "every subject row that
-version projects" would make one tenant's unwarm subject hold another tenant's pin. So the
-prefix is over **this tenant's committed refs in version order**, and the subject set is **this
-tenant's subjects of that version**, which is what `pricing_pin_frontier` being keyed
-`tenant_id` alone already assumed and what nothing had said.
+read side; premise corrected 2026-08-26).** The original argument ran off a **cross-tenant**
+sequence with sparse per-tenant subsets — under it, a global reading of "every earlier version
+is itself pin-eligible" is a condition no tenant could ever satisfy (every frontier sticking at
+the first version another tenant's publish consumed) and "every subject row that version
+projects" would let one tenant's unwarm subject hold another tenant's pin. **The registry mints
+per-tenant gapless sequences** (products design slice 06 §4 — `(tenant_id, catalog_version_id)`
+from a per-tenant counter), so those pathologies are impossible by construction rather than by
+this decision. **D-164's conclusion is unchanged and still normative**: the prefix is over
+**this tenant's committed refs in version order**, and the subject set is **this tenant's
+subjects of that version** — which is what `pricing_pin_frontier` being keyed `tenant_id` alone
+already assumed, and what the id space now guarantees instead of merely permitting.
 
 **A version's subject set is closed by its first committed ref (normative, D-163).** That
 follows from batch atomicity — one batch, one version, one event (§3.6) — and it is the premise

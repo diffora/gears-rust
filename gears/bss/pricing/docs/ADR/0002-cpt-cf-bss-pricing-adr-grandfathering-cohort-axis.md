@@ -62,18 +62,27 @@ key becomes:
 
 ```text
 (planId, currency, region, priceOverlay, phase, priceEligibility, chargeKind, cohort)
+  + on chargeKind = usage: (meter, dimensionKey)                                        -- D-196, after this ADR
 ```
+
+> **Amendment (2026-08-26).** The eight axes above are the key **as of this ADR's decision date**;
+> D-196 (2026-08-06) added the conditional usage pair `(meter, dimensionKey)` after it, making the
+> live key ten. Nothing in this ADR's `cohort` reasoning changes — the pair and `cohort` are
+> independent axes — but a reader taking the block as the current key would be two axes short.
+> The normative statement lives in `design/01-foundation.md` **§4.1 "Canonical Scope Key
+> (normative)"** (not §4.4, which is "Read Model and `pricingSnapshotRef`" — item 25 of the
+> 2026-08-26 products review).
 
 * `cohort` is the **grandfathering generation discriminator**: the UTC cutover instant that created the generation. Default `cohort = none` on every non-grandfathered row; publish validation enforces `cohort ≠ none ⇔ priceEligibility = existing_grandfathered`. It is unrelated to `customerGroup` segment pricing.
 * **Every cutover creates a new generation**: the copy lands on `(… , existing_grandfathered, chargeKind, cohort = T)`; prior generations' rows and windows are untouched (still immutable, still live-resolvable). The successor stays `(… , all_subscriptions, chargeKind, none)`. A cutover whose instant equals an existing generation's `cohort` is a duplicate key — rejected at compose (`DUPLICATE_SCOPE_KEY`).
 * **Selection among generations is by subscription binding, not by class specificity**: most-specific-wins (W3) orders eligibility *classes* only; within `existing_grandfathered`, Tariffs resolves the row whose `cohort` equals the cohort of the subscription's **pinned price id** (`pricingSnapshotRef` already pins resolved price ids — no new binding store). New subscriptions never bind grandfathered rows (unchanged). At a generation's `grandfatherUntil` expiry, that cohort's subscriptions re-bind at next renewal to the current eligible row (unchanged mechanics, now per generation).
 * **Bootstrap — a pin carrying `cohort = none` (amended 2026-08-01, D-126):** the rule above closes only from the *second* cutover onward. A subscription that predates a key's **first** cutover is pinned to a non-grandfathered row, whose `cohort` is `none` by construction (`cohort ≠ none ⇔ existing_grandfathered`), so it matched no generation at all — while the class filter (`activatedAt` before cutover) had already excluded the `all_subscriptions` successor, leaving the exact population this ADR exists to protect resolving nothing and failing closed at the changeover. Therefore: **when the pinned price id's `cohort` is `none`, the bound generation is the one whose `cohort` equals the pinned row's window `effectiveTo`** — by construction of the cutover (which shortens the predecessor window *to* the cutover instant) that is the generation created by the cutover that closed the pinned row, and the input is already pinned and projected, so no new store appears. **If no generation carries that instant**, the pinned row was closed by a supersession rather than a cutover: the `existing_grandfathered` class contributes **no** candidate and resolution continues down the class order to the `all_subscriptions` row — the correct "superseded, not grandfathered" outcome, and the clause that keeps an empty class from failing closed. From the first renewal after the cutover the subscription is re-pinned to its generation and the primary rule applies unchanged. Tariffs adopts this alongside the class-then-cohort selection.
-* Uniqueness, supersession scoping, window non-overlap, and coverage all key off the **eight-column** key; each generation carries its own window and its own `grandfatherUntil`.
+* Uniqueness, supersession scoping, window non-overlap, and coverage all key off the **eight-column** key (**ten** since D-196 added the conditional usage pair — the obligation is that all four key off the *same* columns, which holds at either width); each generation carries its own window and its own `grandfatherUntil`.
 
 ### Consequences
 
 * The D-02 impossibility dissolves: sequential cutovers produce coexisting generations (`$100` cohort, `$120` cohort, current `$140`), each a distinct key with concurrent active windows and no non-overlap violation.
-* Tariffs MUST adopt the eight-column key for its non-overlap check and the **binding-based within-class selection** (class matching first, then `cohort` from the pinned price id) — cross-team contract update (PRD §9.2).
+* Tariffs MUST adopt the canonical key for its non-overlap check — eight columns as of this ADR, **ten** since D-196 and the **binding-based within-class selection** (class matching first, then `cohort` from the pinned price id) — cross-team contract update (PRD §9.2).
 * Subscriptions is unchanged except that re-bind at `grandfatherUntil` expiry is per generation (its binding/dedup mechanics already operate per subscription).
 * The partial `UNIQUE` index (current rows), the Foundation `ScopeKey` component, supersession ("within one `priceEligibility` class, one `cohort`, one `chargeKind`"), Slice 7 coverage/gap checks, mass-repricing exclusions, and clone's "grandfathered rows are not cloned" all extend mechanically to the new axis.
 * Unbounded generations are a plan-size concern: the generation count per key participates in the plan/tier size caps (provisional NFR, PRD §14) — a soft cap with a publish warning, not a hard product limit.
@@ -81,10 +90,10 @@ key becomes:
 
 ### Confirmation
 
-* Design review: `ScopeKey`, the partial `UNIQUE` index, Slice 7 validation, and the Tariffs non-overlap check all key off the same **eight** columns; `cohort ≠ none ⇔ existing_grandfathered` is publish-enforced.
+* Design review: `ScopeKey`, the partial `UNIQUE` index, Slice 7 validation, and the Tariffs non-overlap check all key off the same columns — **eight** as of this ADR, **ten** since D-196; `cohort ≠ none ⇔ existing_grandfathered` is publish-enforced.
 * Integration test: two sequential cutovers on one remaining-axes identity yield three concurrently-active rows (two generations + successor); each cohort's subscription resolves its own generation's price; expiry of generation 1's `grandfatherUntil` re-binds only that cohort.
 * Integration test (**bootstrap, D-126**): at the **first** cutover, a subscription still pinned to the predecessor (`cohort = none`) resolves the new generation — matched by the pinned row's window `effectiveTo` — and not the `all_subscriptions` successor; a subscription whose pinned row's window was closed by a **supersession** resolves the `all_subscriptions` row through the class order rather than failing closed.
-* Cross-team checkpoint: Tariffs confirms class-then-cohort resolution and the eight-column non-overlap key; Subscriptions confirms per-generation re-bind.
+* Cross-team checkpoint: Tariffs confirms class-then-cohort resolution and the canonical non-overlap key (eight columns then, ten since D-196); Subscriptions confirms per-generation re-bind.
 
 ## Pros and Cons of the Options
 

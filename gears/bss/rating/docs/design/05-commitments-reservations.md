@@ -76,7 +76,7 @@ matrix). The slice owns two seams: **M8** (pool ≠ prepaid credit grant, §4.4)
 
 | ADR ID | Decision Summary |
 |--------|------------------|
-| `cpt-cf-bss-rating-adr-scope-key-adoption` | The rates step 6 composes over — base row, overlay stack, and the self-service `reservedRate` attribute riding the selected usage row — all resolve on the adopted 8-axis key; this slice adds no selection axis. |
+| `cpt-cf-bss-rating-adr-scope-key-adoption` | The rates step 6 composes over — base row, overlay stack, and the self-service `reservedRate` attribute riding the selected usage row — all resolve on the adopted ten-axis key; this slice adds no selection axis. |
 
 No slice-local ADR: step-6 semantics are PRD-normative (§6.6, §17.1) under **T-D-05** / **T-D-08**.
 
