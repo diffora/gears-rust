@@ -173,12 +173,10 @@ its codes with no HTTP status and no problem-response block in any slice, agains
 mapping follows pricing's, checked against it code by code: **422** for content the door cannot
 process, **409** where the current state refuses the act — including the ETag precondition,
 which pricing maps to 409 rather than 412 (**D-141**, whose own decision text reads
-*"A mismatch is `STALE_VERSION` (409, Foundation-owned)"* — the citation was right the first time;
-a pass re-pointed it at D-186 and was wrong to, D-186 being a later amendment scoped to
-one config route) and where an earlier pass here wrongly wrote
-412 and called that pricing's convention — **403** where the caller may not perform the act at
-all, **404** only where a path segment names a resource this tenant has none of. **503** where retry
-is the remedy is this gear's own addition — pricing's set carries no 503 at all, so that one
+*"A mismatch is `STALE_VERSION` (409, Foundation-owned)"*) — **403** where the caller may not
+perform the act at all, **404** only where a path segment names a resource this tenant has none
+of. **503** where retry is the remedy is this gear's own addition — pricing's set carries no 503
+at all, so that one
 class is not "checked against it". Proposed per
 row and open to correction; the requirement is that every code carries one.*
 

@@ -181,12 +181,10 @@ its codes with no HTTP status and no problem-response block in any slice, agains
 mapping follows pricing's, checked against it code by code: **422** for content the door cannot
 process, **409** where the current state refuses the act — including the ETag precondition,
 which pricing maps to 409 rather than 412 (**D-141**, whose own decision text reads
-*"A mismatch is `STALE_VERSION` (409, Foundation-owned)"* — the citation was right the first time;
-a pass re-pointed it at D-186 and was wrong to, D-186 being a later amendment scoped to
-one config route) and where an earlier pass here wrongly wrote
-412 and called that pricing's convention — **403** where the caller may not perform the act at
-all, **404** only where a path segment names a resource this tenant has none of. **503** where retry
-is the remedy is this gear's own addition — pricing's set carries no 503 at all, so that one
+*"A mismatch is `STALE_VERSION` (409, Foundation-owned)"*) — **403** where the caller may not
+perform the act at all, **404** only where a path segment names a resource this tenant has none
+of. **503** where retry is the remedy is this gear's own addition — pricing's set carries no 503
+at all, so that one
 class is not "checked against it". **The 422s here are architectural, not wire** — see 01 §3.3, which quotes the sibling
 plan-price gear's rule (the `MUST NOT` being this gear's own choice, 01 §3.3): no `CanonicalError` category renders 422, so each reaches the wire as a 400
 carrying its code, and no endpoint may declare a 422 for an error **carrying a registry code** in `OpenAPI` (the framework layer is the exception — a `Json<T>` schema violation, which carries no registry code). Proposed per

@@ -58,18 +58,77 @@ requirement is ticked, at which point it fails for every id at once.*
 
 | Requirement | Design Response |
 |-------------|-----------------|
-| `cpt-cf-bss-products-fr-create-product` / `cpt-cf-bss-products-fr-define-sku` / `cpt-cf-bss-products-fr-event-delivery-resilience` / `cpt-cf-bss-products-fr-expected-failure-behavior` / `cpt-cf-bss-products-fr-field-mutability-matrix` / `cpt-cf-bss-products-fr-idempotent-authoring` / `cpt-cf-bss-products-fr-identifier-contract` / `cpt-cf-bss-products-fr-lifecycle-transitions` / `cpt-cf-bss-products-fr-parent-child-integrity` / `cpt-cf-bss-products-fr-registry-eventing-audit` / `cpt-cf-bss-products-fr-revision-vs-version` / `cpt-cf-bss-products-fr-skucode-reservation-concurrency` / `cpt-cf-bss-products-nfr-determinism-integrity` / `cpt-cf-bss-products-nfr-publication-propagation` / `cpt-cf-bss-products-nfr-scale-extensibility` | **Slice 01** — The Foundation owns identity, the head-vs-version split, the single fail-closed publish pipeline, idempotency, the outbox and the audit plane. Every slice registers its validators into that one door. **Split**: `fr-revision-vs-version`'s version-binding-at-freeze clause is **slice 06**'s (§5 and 01 §6 both state it this way). |
-| `cpt-cf-bss-products-fr-create-product` / `cpt-cf-bss-products-fr-localized-attributes` / `cpt-cf-bss-products-fr-manage-taxonomy` / `cpt-cf-bss-products-fr-retention-erasure` | **Slice 02** — Taxonomy and attribute definitions are governed live entities; assignment tables carry the exactly-one-primary index, and localization resolves through a total fallback chain. |
-| `cpt-cf-bss-products-fr-accounting-codes` / `cpt-cf-bss-products-fr-define-sku` / `cpt-cf-bss-products-fr-metering-unit-declaration` / `cpt-cf-bss-products-fr-metering-unit-delisting` / `cpt-cf-bss-products-fr-plantier-classification` / `cpt-cf-bss-products-fr-sku-sellable` | **Slice 03** — Typing and classification per `TypeProfile`, with the recognized-set tables behind every closed vocabulary and the publish-time collector call made once per publish. |
-| `cpt-cf-bss-products-fr-deprecation` / `cpt-cf-bss-products-fr-lifecycle-transitions` / `cpt-cf-bss-products-fr-parent-child-integrity` / `cpt-cf-bss-products-fr-retirement-eol` / `cpt-cf-bss-products-fr-undeprecation` | **Slice 04** — Lifecycle policy: the edge list, deprecation provenance, cascades, and retirement as a scheduled transition with its joint plan-price contract. |
-| `cpt-cf-bss-products-fr-breakglass-action-scope` / `cpt-cf-bss-products-fr-materiality-gated-publish` / `cpt-cf-bss-products-fr-tenant-isolation-breakglass` | **Slice 05** — Governance: materiality, the tenant-configured approver quorum, the RBAC catalog, and break-glass elevation bounded to read and audit-export. |
-| `cpt-cf-bss-products-fr-bundle-adoption-guard` / `cpt-cf-bss-products-fr-catalog-publish-concurrency` / `cpt-cf-bss-products-fr-catalog-version-diff` / `cpt-cf-bss-products-fr-catalog-version-publish` / `cpt-cf-bss-products-fr-freeze-atomicity` / `cpt-cf-bss-products-fr-freeze-participant-governance` / `cpt-cf-bss-products-fr-freeze-recovery` / `cpt-cf-bss-products-fr-grandfathered-retention-coupling` / `cpt-cf-bss-products-fr-grandfathering-invariant` / `cpt-cf-bss-products-fr-prepublish-lint` / `cpt-cf-bss-products-fr-revision-vs-version` / `cpt-cf-bss-products-fr-snapshot-reproducibility` / `cpt-cf-bss-products-nfr-posting-safe-budget` / `cpt-cf-bss-products-nfr-publication-propagation` / `cpt-cf-bss-products-nfr-scale-extensibility` / `cpt-cf-bss-products-nfr-snapshot-archival-dr` | **Slice 06** — `CatalogVersion` is demand-driven and mechanical: request intake, the counter, full snapshots with checksums, and the freeze protocol with its force-completion recovery. |
-| `cpt-cf-bss-products-fr-failsafe-tripwire` / `cpt-cf-bss-products-fr-immutable-field-correction` / `cpt-cf-bss-products-fr-reference-producer-registration` / `cpt-cf-bss-products-fr-reference-signal` | **Slice 07** — The reference signal: registered producers, per-producer watermarks, the reference predicate, and the correction door with its three gates — fresh-zero, break-glass behind its flag, and P-D-16's unresolvable-target arm outside it. |
-| `cpt-cf-bss-products-fr-cache-first-browse` / `cpt-cf-bss-products-fr-event-delivery-resilience` / `cpt-cf-bss-products-nfr-availability-audit` / `cpt-cf-bss-products-nfr-graceful-degradation` / `cpt-cf-bss-products-nfr-read-latency` / `cpt-cf-bss-products-nfr-read-throughput` | **Slice 08** — Read models are projections with a staleness stamp on every response, rebuildable from the frozen versions and the outbox. |
+| `cpt-cf-bss-products-fr-create-product` | **Slice 01** — The Foundation owns identity, the head-vs-version split, the single fail-closed publish pipeline, idempotency, the outbox and the audit plane. Every slice registers its validators into that one door. **Split**: `fr-revision-vs-version`'s version-binding-at-freeze clause is **slice 06**'s (§5 and 01 §6 both state it this way). |
+| `cpt-cf-bss-products-fr-define-sku` | **Slice 01** — The Foundation owns identity, the head-vs-version split, the single fail-closed publish pipeline, idempotency, the outbox and the audit plane. Every slice registers its validators into that one door. **Split**: `fr-revision-vs-version`'s version-binding-at-freeze clause is **slice 06**'s (§5 and 01 §6 both state it this way). |
+| `cpt-cf-bss-products-fr-event-delivery-resilience` | **Slice 01** — The Foundation owns identity, the head-vs-version split, the single fail-closed publish pipeline, idempotency, the outbox and the audit plane. Every slice registers its validators into that one door. **Split**: `fr-revision-vs-version`'s version-binding-at-freeze clause is **slice 06**'s (§5 and 01 §6 both state it this way). |
+| `cpt-cf-bss-products-fr-expected-failure-behavior` | **Slice 01** — The Foundation owns identity, the head-vs-version split, the single fail-closed publish pipeline, idempotency, the outbox and the audit plane. Every slice registers its validators into that one door. **Split**: `fr-revision-vs-version`'s version-binding-at-freeze clause is **slice 06**'s (§5 and 01 §6 both state it this way). |
+| `cpt-cf-bss-products-fr-field-mutability-matrix` | **Slice 01** — The Foundation owns identity, the head-vs-version split, the single fail-closed publish pipeline, idempotency, the outbox and the audit plane. Every slice registers its validators into that one door. **Split**: `fr-revision-vs-version`'s version-binding-at-freeze clause is **slice 06**'s (§5 and 01 §6 both state it this way). |
+| `cpt-cf-bss-products-fr-idempotent-authoring` | **Slice 01** — The Foundation owns identity, the head-vs-version split, the single fail-closed publish pipeline, idempotency, the outbox and the audit plane. Every slice registers its validators into that one door. **Split**: `fr-revision-vs-version`'s version-binding-at-freeze clause is **slice 06**'s (§5 and 01 §6 both state it this way). |
+| `cpt-cf-bss-products-fr-identifier-contract` | **Slice 01** — The Foundation owns identity, the head-vs-version split, the single fail-closed publish pipeline, idempotency, the outbox and the audit plane. Every slice registers its validators into that one door. **Split**: `fr-revision-vs-version`'s version-binding-at-freeze clause is **slice 06**'s (§5 and 01 §6 both state it this way). |
+| `cpt-cf-bss-products-fr-lifecycle-transitions` | **Slice 01** — The Foundation owns identity, the head-vs-version split, the single fail-closed publish pipeline, idempotency, the outbox and the audit plane. Every slice registers its validators into that one door. **Split**: `fr-revision-vs-version`'s version-binding-at-freeze clause is **slice 06**'s (§5 and 01 §6 both state it this way). |
+| `cpt-cf-bss-products-fr-parent-child-integrity` | **Slice 01** — The Foundation owns identity, the head-vs-version split, the single fail-closed publish pipeline, idempotency, the outbox and the audit plane. Every slice registers its validators into that one door. **Split**: `fr-revision-vs-version`'s version-binding-at-freeze clause is **slice 06**'s (§5 and 01 §6 both state it this way). |
+| `cpt-cf-bss-products-fr-registry-eventing-audit` | **Slice 01** — The Foundation owns identity, the head-vs-version split, the single fail-closed publish pipeline, idempotency, the outbox and the audit plane. Every slice registers its validators into that one door. **Split**: `fr-revision-vs-version`'s version-binding-at-freeze clause is **slice 06**'s (§5 and 01 §6 both state it this way). |
+| `cpt-cf-bss-products-fr-revision-vs-version` | **Slice 01** — The Foundation owns identity, the head-vs-version split, the single fail-closed publish pipeline, idempotency, the outbox and the audit plane. Every slice registers its validators into that one door. **Split**: `fr-revision-vs-version`'s version-binding-at-freeze clause is **slice 06**'s (§5 and 01 §6 both state it this way). |
+| `cpt-cf-bss-products-fr-skucode-reservation-concurrency` | **Slice 01** — The Foundation owns identity, the head-vs-version split, the single fail-closed publish pipeline, idempotency, the outbox and the audit plane. Every slice registers its validators into that one door. **Split**: `fr-revision-vs-version`'s version-binding-at-freeze clause is **slice 06**'s (§5 and 01 §6 both state it this way). |
+| `cpt-cf-bss-products-nfr-determinism-integrity` | **Slice 01** — The Foundation owns identity, the head-vs-version split, the single fail-closed publish pipeline, idempotency, the outbox and the audit plane. Every slice registers its validators into that one door. **Split**: `fr-revision-vs-version`'s version-binding-at-freeze clause is **slice 06**'s (§5 and 01 §6 both state it this way). |
+| `cpt-cf-bss-products-nfr-publication-propagation` | **Slice 01** — The Foundation owns identity, the head-vs-version split, the single fail-closed publish pipeline, idempotency, the outbox and the audit plane. Every slice registers its validators into that one door. **Split**: `fr-revision-vs-version`'s version-binding-at-freeze clause is **slice 06**'s (§5 and 01 §6 both state it this way). |
+| `cpt-cf-bss-products-nfr-scale-extensibility` | **Slice 01** — The Foundation owns identity, the head-vs-version split, the single fail-closed publish pipeline, idempotency, the outbox and the audit plane. Every slice registers its validators into that one door. **Split**: `fr-revision-vs-version`'s version-binding-at-freeze clause is **slice 06**'s (§5 and 01 §6 both state it this way). |
+| `cpt-cf-bss-products-fr-create-product` | **Slice 02** — Taxonomy and attribute definitions are governed live entities; assignment tables carry the exactly-one-primary index, and localization resolves through a total fallback chain. |
+| `cpt-cf-bss-products-fr-localized-attributes` | **Slice 02** — Taxonomy and attribute definitions are governed live entities; assignment tables carry the exactly-one-primary index, and localization resolves through a total fallback chain. |
+| `cpt-cf-bss-products-fr-manage-taxonomy` | **Slice 02** — Taxonomy and attribute definitions are governed live entities; assignment tables carry the exactly-one-primary index, and localization resolves through a total fallback chain. |
+| `cpt-cf-bss-products-fr-retention-erasure` | **Slice 02** — Taxonomy and attribute definitions are governed live entities; assignment tables carry the exactly-one-primary index, and localization resolves through a total fallback chain. |
+| `cpt-cf-bss-products-fr-accounting-codes` | **Slice 03** — Typing and classification per `TypeProfile`, with the recognized-set tables behind every closed vocabulary and the publish-time collector call made once per publish. |
+| `cpt-cf-bss-products-fr-define-sku` | **Slice 03** — Typing and classification per `TypeProfile`, with the recognized-set tables behind every closed vocabulary and the publish-time collector call made once per publish. |
+| `cpt-cf-bss-products-fr-metering-unit-declaration` | **Slice 03** — Typing and classification per `TypeProfile`, with the recognized-set tables behind every closed vocabulary and the publish-time collector call made once per publish. |
+| `cpt-cf-bss-products-fr-metering-unit-delisting` | **Slice 03** — Typing and classification per `TypeProfile`, with the recognized-set tables behind every closed vocabulary and the publish-time collector call made once per publish. |
+| `cpt-cf-bss-products-fr-plantier-classification` | **Slice 03** — Typing and classification per `TypeProfile`, with the recognized-set tables behind every closed vocabulary and the publish-time collector call made once per publish. |
+| `cpt-cf-bss-products-fr-sku-sellable` | **Slice 03** — Typing and classification per `TypeProfile`, with the recognized-set tables behind every closed vocabulary and the publish-time collector call made once per publish. |
+| `cpt-cf-bss-products-fr-deprecation` | **Slice 04** — Lifecycle policy: the edge list, deprecation provenance, cascades, and retirement as a scheduled transition with its joint plan-price contract. |
+| `cpt-cf-bss-products-fr-lifecycle-transitions` | **Slice 04** — Lifecycle policy: the edge list, deprecation provenance, cascades, and retirement as a scheduled transition with its joint plan-price contract. |
+| `cpt-cf-bss-products-fr-parent-child-integrity` | **Slice 04** — Lifecycle policy: the edge list, deprecation provenance, cascades, and retirement as a scheduled transition with its joint plan-price contract. |
+| `cpt-cf-bss-products-fr-retirement-eol` | **Slice 04** — Lifecycle policy: the edge list, deprecation provenance, cascades, and retirement as a scheduled transition with its joint plan-price contract. |
+| `cpt-cf-bss-products-fr-undeprecation` | **Slice 04** — Lifecycle policy: the edge list, deprecation provenance, cascades, and retirement as a scheduled transition with its joint plan-price contract. |
+| `cpt-cf-bss-products-fr-breakglass-action-scope` | **Slice 05** — Governance: materiality, the tenant-configured approver quorum, the RBAC catalog, and break-glass elevation bounded to read and audit-export. |
+| `cpt-cf-bss-products-fr-materiality-gated-publish` | **Slice 05** — Governance: materiality, the tenant-configured approver quorum, the RBAC catalog, and break-glass elevation bounded to read and audit-export. |
+| `cpt-cf-bss-products-fr-tenant-isolation-breakglass` | **Slice 05** — Governance: materiality, the tenant-configured approver quorum, the RBAC catalog, and break-glass elevation bounded to read and audit-export. |
+| `cpt-cf-bss-products-fr-bundle-adoption-guard` | **Slice 06** — `CatalogVersion` is demand-driven and mechanical: request intake, the counter, full snapshots with checksums, and the freeze protocol with its force-completion recovery. |
+| `cpt-cf-bss-products-fr-catalog-publish-concurrency` | **Slice 06** — `CatalogVersion` is demand-driven and mechanical: request intake, the counter, full snapshots with checksums, and the freeze protocol with its force-completion recovery. |
+| `cpt-cf-bss-products-fr-catalog-version-diff` | **Slice 06** — `CatalogVersion` is demand-driven and mechanical: request intake, the counter, full snapshots with checksums, and the freeze protocol with its force-completion recovery. |
+| `cpt-cf-bss-products-fr-catalog-version-publish` | **Slice 06** — `CatalogVersion` is demand-driven and mechanical: request intake, the counter, full snapshots with checksums, and the freeze protocol with its force-completion recovery. |
+| `cpt-cf-bss-products-fr-freeze-atomicity` | **Slice 06** — `CatalogVersion` is demand-driven and mechanical: request intake, the counter, full snapshots with checksums, and the freeze protocol with its force-completion recovery. |
+| `cpt-cf-bss-products-fr-freeze-participant-governance` | **Slice 06** — `CatalogVersion` is demand-driven and mechanical: request intake, the counter, full snapshots with checksums, and the freeze protocol with its force-completion recovery. |
+| `cpt-cf-bss-products-fr-freeze-recovery` | **Slice 06** — `CatalogVersion` is demand-driven and mechanical: request intake, the counter, full snapshots with checksums, and the freeze protocol with its force-completion recovery. |
+| `cpt-cf-bss-products-fr-grandfathered-retention-coupling` | **Slice 06** — `CatalogVersion` is demand-driven and mechanical: request intake, the counter, full snapshots with checksums, and the freeze protocol with its force-completion recovery. |
+| `cpt-cf-bss-products-fr-grandfathering-invariant` | **Slice 06** — `CatalogVersion` is demand-driven and mechanical: request intake, the counter, full snapshots with checksums, and the freeze protocol with its force-completion recovery. |
+| `cpt-cf-bss-products-fr-prepublish-lint` | **Slice 06** — `CatalogVersion` is demand-driven and mechanical: request intake, the counter, full snapshots with checksums, and the freeze protocol with its force-completion recovery. |
+| `cpt-cf-bss-products-fr-revision-vs-version` | **Slice 06** — `CatalogVersion` is demand-driven and mechanical: request intake, the counter, full snapshots with checksums, and the freeze protocol with its force-completion recovery. |
+| `cpt-cf-bss-products-fr-snapshot-reproducibility` | **Slice 06** — `CatalogVersion` is demand-driven and mechanical: request intake, the counter, full snapshots with checksums, and the freeze protocol with its force-completion recovery. |
+| `cpt-cf-bss-products-nfr-posting-safe-budget` | **Slice 06** — `CatalogVersion` is demand-driven and mechanical: request intake, the counter, full snapshots with checksums, and the freeze protocol with its force-completion recovery. |
+| `cpt-cf-bss-products-nfr-publication-propagation` | **Slice 06** — `CatalogVersion` is demand-driven and mechanical: request intake, the counter, full snapshots with checksums, and the freeze protocol with its force-completion recovery. |
+| `cpt-cf-bss-products-nfr-scale-extensibility` | **Slice 06** — `CatalogVersion` is demand-driven and mechanical: request intake, the counter, full snapshots with checksums, and the freeze protocol with its force-completion recovery. |
+| `cpt-cf-bss-products-nfr-snapshot-archival-dr` | **Slice 06** — `CatalogVersion` is demand-driven and mechanical: request intake, the counter, full snapshots with checksums, and the freeze protocol with its force-completion recovery. |
+| `cpt-cf-bss-products-fr-failsafe-tripwire` | **Slice 07** — The reference signal: registered producers, per-producer watermarks, the reference predicate, and the correction door with its three gates — fresh-zero, break-glass behind its flag, and P-D-16's unresolvable-target arm outside it. |
+| `cpt-cf-bss-products-fr-immutable-field-correction` | **Slice 07** — The reference signal: registered producers, per-producer watermarks, the reference predicate, and the correction door with its three gates — fresh-zero, break-glass behind its flag, and P-D-16's unresolvable-target arm outside it. |
+| `cpt-cf-bss-products-fr-reference-producer-registration` | **Slice 07** — The reference signal: registered producers, per-producer watermarks, the reference predicate, and the correction door with its three gates — fresh-zero, break-glass behind its flag, and P-D-16's unresolvable-target arm outside it. |
+| `cpt-cf-bss-products-fr-reference-signal` | **Slice 07** — The reference signal: registered producers, per-producer watermarks, the reference predicate, and the correction door with its three gates — fresh-zero, break-glass behind its flag, and P-D-16's unresolvable-target arm outside it. |
+| `cpt-cf-bss-products-fr-cache-first-browse` | **Slice 08** — Read models are projections with a staleness stamp on every response, rebuildable from the frozen versions and the outbox. |
+| `cpt-cf-bss-products-fr-event-delivery-resilience` | **Slice 08** — Read models are projections with a staleness stamp on every response, rebuildable from the frozen versions and the outbox. |
+| `cpt-cf-bss-products-nfr-availability-audit` | **Slice 08** — Read models are projections with a staleness stamp on every response, rebuildable from the frozen versions and the outbox. |
+| `cpt-cf-bss-products-nfr-graceful-degradation` | **Slice 08** — Read models are projections with a staleness stamp on every response, rebuildable from the frozen versions and the outbox. |
+| `cpt-cf-bss-products-nfr-read-latency` | **Slice 08** — Read models are projections with a staleness stamp on every response, rebuildable from the frozen versions and the outbox. |
+| `cpt-cf-bss-products-nfr-read-throughput` | **Slice 08** — Read models are projections with a staleness stamp on every response, rebuildable from the frozen versions and the outbox. |
 | `cpt-cf-bss-products-fr-bulk-import-export` | **Slice 09** — Bulk import, export and promotion run per-row through the Foundation publish door under one batch-scoped approval. |
-| `cpt-cf-bss-products-fr-expected-failure-behavior` / `cpt-cf-bss-products-fr-grandfathered-retention-coupling` / `cpt-cf-bss-products-fr-retention-erasure` / `cpt-cf-bss-products-nfr-snapshot-archival-dr` | **Slice 10** — Retention clocks per class, the identity-ref map as the single erasure operand, and the retention gate that never forces a collection. |
+| `cpt-cf-bss-products-fr-expected-failure-behavior` | **Slice 10** — Retention clocks per class, the identity-ref map as the single erasure operand, and the retention gate that never forces a collection. |
+| `cpt-cf-bss-products-fr-grandfathered-retention-coupling` | **Slice 10** — Retention clocks per class, the identity-ref map as the single erasure operand, and the retention gate that never forces a collection. |
+| `cpt-cf-bss-products-fr-retention-erasure` | **Slice 10** — Retention clocks per class, the identity-ref map as the single erasure operand, and the retention gate that never forces a collection. |
+| `cpt-cf-bss-products-nfr-snapshot-archival-dr` | **Slice 10** — Retention clocks per class, the identity-ref map as the single erasure operand, and the retention gate that never forces a collection. |
 | `cpt-cf-bss-products-fr-clone` | **Slice 11** — Clone copies content and never identity, resetting lifecycle and version counters and reserving new codes atomically. |
-| `cpt-cf-bss-products-fr-deprecation` / `cpt-cf-bss-products-fr-event-versioning-replay` / `cpt-cf-bss-products-fr-freeze-atomicity` / `cpt-cf-bss-products-fr-monetization-traceability` / `cpt-cf-bss-products-fr-plan-price-seam` / `cpt-cf-bss-products-nfr-backward-compatible-evolution` | **Slice 12** — The consumer surface: the SDK, the event compatibility corpus, the obligation register and the coverage checks over this design set. |
+| `cpt-cf-bss-products-fr-deprecation` | **Slice 12** — The consumer surface: the SDK, the event compatibility corpus, the obligation register and the coverage checks over this design set. |
+| `cpt-cf-bss-products-fr-event-versioning-replay` | **Slice 12** — The consumer surface: the SDK, the event compatibility corpus, the obligation register and the coverage checks over this design set. |
+| `cpt-cf-bss-products-fr-freeze-atomicity` | **Slice 12** — The consumer surface: the SDK, the event compatibility corpus, the obligation register and the coverage checks over this design set. |
+| `cpt-cf-bss-products-fr-monetization-traceability` | **Slice 12** — The consumer surface: the SDK, the event compatibility corpus, the obligation register and the coverage checks over this design set. |
+| `cpt-cf-bss-products-fr-plan-price-seam` | **Slice 12** — The consumer surface: the SDK, the event compatibility corpus, the obligation register and the coverage checks over this design set. |
+| `cpt-cf-bss-products-nfr-backward-compatible-evolution` | **Slice 12** — The consumer surface: the SDK, the event compatibility corpus, the obligation register and the coverage checks over this design set. |
 
 #### Functional Drivers
 
@@ -109,6 +168,9 @@ D-47 (increment lanes + retirement contract) — pricing register.
 **All seven of P-D-14…P-D-20 have now been put to the owner and confirmed — P-D-19 as amended (P-D-47), the other six in P-D-48, with P-D-14 and P-D-18 amended and P-D-20 completed** — all seven were found by the branch review, **five** of them already built into the design and never registered (P-D-14…P-D-18) and **two** reversing a delivery — P-D-19 (a force-completed version stays refused for posted use) and P-D-20, which strikes a publish freeze slice 04 had already shipped (recounted: this read six-and-one, and the count hid the more product-visible of the two reversals)
 the design had made. None remains a flag: each entry's status line records the owner's call and what
 it amended.
+
+This block summarizes **P-D-01**…**P-D-20** only; the decisions registered after them are carried
+in [`DECISIONS.md`](./DECISIONS.md), whose table of contents is the current list.
 
 ### 1.3 Architecture Layers
 
@@ -227,6 +289,12 @@ Every table carries `tenant_id`; every path is tenant-scoped through SecureORM; 
 deny-by-default + audited; break-glass is read/audit-export only in v1; PDP-gated grants per
 endpoint (slice 05).
 
+**Authentication is the platform's, not this gear's.** Callers are authenticated by the platform
+identity provider — the actor [`design/01-foundation.md`](./design/01-foundation.md) §1.3 names
+`cpt-cf-bss-products-actor-oss-ams-idp` and §1.8 lists as a consumed dependency — and this gear
+consumes only the resulting principal and tenant claims, through `SecurityContext`. The gear
+specifies no authentication mechanism of its own.
+
 #### GTS: types, never instances
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-constraint-gts-types-not-instances`
@@ -260,6 +328,48 @@ Canonical column-level shape: [`design/01-foundation.md` §4](./design/01-founda
 capability columns are carried on the core tables but owned by their slices' validators.
 
 ### 3.2 Component Model
+
+Foundation-plus-handlers, as §1.1 and §1.3 state it: one shared engine, ten capability handlers
+that register into it and publish through it, and the slice-12 consumer surface over
+`products-sdk`. Every node and edge below is named in the prose of this section, §1.1, §1.3 and
+§3.4; nothing is added here.
+
+```mermaid
+graph TB
+    subgraph FND["Registry Foundation - slice 01"]
+        WD["Write doors"]
+        VP["ValidationPipeline"]
+        PDOOR["PublishDoor"]
+        RES["Reservation index"]
+        IDEM["Idempotency store"]
+        OBX["Outbox dispatcher"]
+        AUD["Audit writer"]
+        WD --> VP
+        VP --> PDOOR
+        PDOOR --> OBX
+    end
+
+    subgraph CAP["Capability handlers - one per slice 02-11"]
+        C02["02 taxonomy / attributes"]
+        C03["03 classification"]
+        C04["04 lifecycle policy"]
+        C05["05 governance gate"]
+        C06["06 CatalogVersion machine"]
+        C07["07 reference-signal consumer"]
+        C08["08 read models"]
+        C09["09 bulk / promotion"]
+        C10["10 retention"]
+        C11["11 clone"]
+    end
+
+    CC["Consumer contracts - slice 12:<br/>SDK read surface, registry-to-plan-price seam suite,<br/>event schema versioning / replay / bootstrap"]
+    SDK["products-sdk:<br/>client traits, read DTOs,<br/>error taxonomy, event payload types"]
+
+    CAP -->|"register validators and read-model fields"| FND
+    CAP -->|"publish through"| PDOOR
+    C05 -.->|"governance gate runs inside"| PDOOR
+    CC -->|"owns the read surface"| SDK
+```
 
 #### Registry Foundation
 
@@ -337,7 +447,7 @@ identity** is named `*_actor_ref`. Slice 12's lint 7 asserts that exactly one ta
 a column — 10's `products_identity_ref`, the single erasure point. The convention is a review
 discipline, not a proof: a column named otherwise passes the lint silently.
 
-**35 tables, by the slice that defines each** (re-censused from the slices
+**34 tables, by the slice that defines each** (re-censused from the slices
 themselves — this section is the canonical index migration planning is scoped off, and it had
 listed 13 tables, named `products_plan_tier`, which no slice defines because slice 03 folds
 tiers into `products_recognized_set` under `set_kind`, and omitted about twenty real ones):
@@ -377,7 +487,8 @@ rested on a uniqueness that does not hold).
 
 **Decision register & joint contracts.**
 
-- [`DECISIONS.md`](./DECISIONS.md) — P-D-01…20 (both summaries said "…06" / listed five while
+- [`DECISIONS.md`](./DECISIONS.md) — the decision register; its own table of contents is the
+  current extent (both summaries said "…06" / listed five while
   the register held twelve — item 26 of the review; P-D-13 landed with that review's
   fix wave).
 - Joint contracts consumed here: **D-46**, **D-47** (pricing register); **UC3** binding (rating
