@@ -115,10 +115,10 @@ export, the GC + its alarms, the restore-drill results surface.
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-flow-erasure`
 
-1. [ ] - `p1` - `POST /bss-products/v1/erasure-requests` (`erasure × execute`): resolves the operator identity to its `actor_ref`s and **overwrites the map entries with tombstones** (pseudonym retained, identity gone) — one transaction, audited with a reason; no immutable record is touched (C1), and every historical read through the map now renders the tombstone - `inst-er-erase`
+1. [ ] - `p1` - `POST /bss-products/v1/erasure-requests` (`erasure × execute`): resolves the operator identity to its `actor_ref`s and **overwrites the map entries with tombstones** (pseudonym retained, identity gone) — one transaction, audited with a reason; no immutable record is touched (C1), and every historical read through the map now renders the tombstone; **erasure completes within one tenant** (**P-D-50**) - `inst-er-erase`
 2. [ ] - `p1` - The act itself is recorded pseudonymously too (the eraser's own ref) — audit-plane, explicit **no broker event** carrying identity; a minimal `ActorErased(actor_ref)` broker event exists as a **defensive cache-buster**: no projection in the set materializes identities (renders join the map — M1 corrected: 08 holds pseudonyms only, and materializing an identity into any projection is a slice-12 lint failure), so the event's consumer set is legitimately empty today - `inst-er-event`
 3. [ ] - `p1` - Age-based pseudonymization: the same tombstone act (emitting the same `ActorErased` — L3) runs automatically at the configured max age — **the age of the principal's last activity in the tenant** (`last_seen_at`, advanced by every door that **stamps** the principal's `actor_ref` onto a record — see `inst-im-map`; age-since-first-appearance would tombstone an active employee mid-employment — M2) — erasure-on-request and erasure-on-age are one mechanism, two triggers - `inst-er-age`
-4. [ ] - `p1` - **The compliance export (H3 fix)**: `GET /bss-products/v1/compliance/identity-export` (`compliance × export` — its own grant, never `audit × export`, honoring §4's exclusion): DSAR-shaped, per named principal, returning the principal's map entries + the audit-row references that carry their refs; every access individually audited. **Erasure reach (L5)**: map rows are per-tenant with one active ref per principal; a DSAR erasure enumerates the principal's rows across tenants under the platform DSAR grant, each tenant's tombstone audited in-tenant (a design statement, flagged) - `inst-er-export`
+4. [ ] - `p1` - **The compliance export (H3 fix)**: `GET /bss-products/v1/compliance/identity-export` (`compliance × export` — its own grant, never `audit × export`, honoring §4's exclusion): DSAR-shaped, per named principal, returning the principal's map entries + the audit-row references that carry their refs; every access individually audited. **Erasure reach (L5)** (**P-D-50**): map rows are per-tenant with one active ref per principal, and erasure is **per-tenant in v1** — a DSAR erasure enumerates and tombstones the principal's rows **in the requesting tenant only**, audited in-tenant; a principal appearing in several tenants needs one request per tenant. No platform-plane DSAR grant is minted: that alternative creates a write path outside tenant elevation, which `constraint-tenant-isolation` and 05 C5 both forbid, and the gear does not build one on an assumption about what Legal requires. **Should Legal rule per-tenant erasure incomplete, the platform grant becomes mandatory and is a post-v1 change** rather than a gap in this rule - `inst-er-export`
 
 ### Enforce the content-PII prohibition
 
@@ -230,16 +230,6 @@ either way).
 
 **Risks & open items**:
 
-- **OPEN (PR #14 review) — the cross-tenant DSAR reach has no grant and conflicts
-  with the isolation constraint.** `inst-er-export`'s L5 clause has a DSAR erasure enumerate the
-  principal's rows **across tenants** "under the platform DSAR grant". No such grant exists in
-  05's RBAC catalog, which asserts every door names its pair; and a tombstone is a write, while
-  05 C5 says "any write under elevation is refused, full stop" and `DESIGN.md`'s
-  `constraint-tenant-isolation` limits v1 break-glass to read/audit-export. Two ways out and
-  they are not equivalent: define a platform-plane `compliance × erase` grant outside the
-  tenant elevation path, or make v1 erasure per-tenant and state that a principal spanning
-  tenants needs one request per tenant. **Owner: Architecture + Legal.** Until it is decided,
-  `inst-er-erase`'s "erasure completes" claim holds only within one tenant.
 - **Detector quality is a product risk, not a design one**: fail-closed-on-uncertainty
   guarantees safety and guarantees friction; the allow-list loop must exist before GA (the 02
   risk restated as this slice's operational owner), and the §15 Legal sign-off covers the

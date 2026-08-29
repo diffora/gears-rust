@@ -144,7 +144,7 @@ export artifacts.
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-algo-batch`
 
 1. [ ] - `p1` - `products_bulk_batch` + `products_bulk_row` (the `RowLedger`): batch state machine per §1.7; rows immutable after their terminal state (append-only evidence); the ledger is the idempotency store for row keys (distinct from 01's endpoint store — row keys are batch-scoped) - `inst-bm-tables`
-2. [ ] - `p1` - A batch is **resumable**: a crash mid-commit resumes from the ledger (per-row publishes idempotent by row key). **Abandon (M2)**: created-draft rows discard through the ordinary 01 door; **update-as-draft rows revert** via the ordinary save door with the last frozen version's content as payload (revision++, audit reason `batch-abandoned` — no new door, and the head returns to its published content); pending live-entity ops are simply dropped (never applied) - `inst-bm-resume`
+2. [ ] - `p1` - A batch is **resumable**: a crash mid-commit resumes from the ledger (per-row publishes idempotent by row key). **Abandon (M2)**: created-draft rows discard through the ordinary 01 door; **update-as-draft rows revert** via the ordinary save door with the last frozen version's content as payload (revision++, audit reason `batch-abandoned` — no new door, and the head returns to its published content); pending live-entity ops are simply dropped (never applied). **This slice writes no operator free-text `reason`** (**P-D-50**): `batch-abandoned` is a literal constant, the batch ceremony's reason lives on 05's `ApprovalRecord` and the mass-retire reason on 04's `inst-rt-initiate`, so 02's `inst-av-pii-reason` no longer enumerates this slice - `inst-bm-resume`
 3. [ ] - `p1` - Size bounds: configured max rows/batch and max concurrent batches per tenant (`BULK_LIMIT`); the 10K-SKU onboarding case is the sizing fixture - `inst-bm-limits`
 
 ### 3.2 Error taxonomy (slice-owned codes)
@@ -225,15 +225,6 @@ via 05).
   slice's C5 fallback promotion identity where `productCode` is absent — and `product_code` is
   nullable, so a rename between promotions makes the target resolve *unknown identity* and create a
   second Product, which C5's four-way classification exists to prevent. Owner: this slice. *(Filed from 01 §6 by the slice-01 eighth lens pass — the pointer claimed it was registered here and it was not.)*
-- **This slice's free-text `reason` doors do not invoke the content-PII write block.** 02
-  `inst-av-pii-reason` states the obligation and enumerates the doors that owe it, naming this
-  slice's bulk/promotion row reasons, and records that this slice
-  carries the citation only as an owed open item, 01 and 04 having wired theirs at the door. 02's consequence for these doors is that
-  personal data typed into the field is **unreachable by erasure forever** (the broker leg is 02's
-  claim about `SkuRetired` alone, which is 04's door). Owed: cite `inst-av-pii-block` /
-  `CONTENT_PII_BLOCKED` on that door. Owner: this slice. *(Found as a four-slice class by the slice-04
-  first lens pass; 04's arm is fixed. The first filing of this item named the wrong instruction, one
-  door, and an over-wide consequence — corrected by the slice-05 pass.)*
 - **The batch state machine has no rejection edge and no abandon state.** `reported` has one stated
   exit while the approval it waits on can be `rejected`; nothing states what enters `failed` (every
   row failure is explicitly row-local, "siblings never block"); and `inst-bm-resume`'s abandon path

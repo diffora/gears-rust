@@ -92,7 +92,7 @@ acknowledged, and rejections that always carry an audited reason. Per P-D-02, ev
   (four read paths the guard needed), P-D-29 (what a replay, an envelope and a digest carry),
   P-D-30 (gate host, authorization, whose validator), P-D-31 (the four routed outward, decided
   here), P-D-32 (the second lens wave's six calls), P-D-33 (eight calls from weeding the open items),
-  P-D-20 (the retirement lead window imposes no publish freeze), P-D-34 (the remaining items, decided from the set), P-D-35 (the five the set already forced), P-D-36 (the phase unit withdrawn), P-D-37 (one code per row, all violations in the answer), P-D-38 (a refusal stores nothing), P-D-39 (scope columns and the empty set), P-D-40 (the version table's one admitted DELETE), P-D-41 (the two bucket-ii doors), P-D-42 (the store's last three operands), P-D-43 (the checking layer's four grammars), P-D-44 (the AC #38 map), P-D-45 (the last four lint grammars), P-D-46 (four write-path blockers), P-D-47 (the last four blockers: a tombstone state, a withdrawn opt-in, two codes, the broker's producer), P-D-48 (the six flagged decisions put to the owner; this slice gains the re-announcement row), P-D-49 (six live contradictions; here the takeover CAS and the successor column's second admitted write)
+  P-D-20 (the retirement lead window imposes no publish freeze), P-D-34 (the remaining items, decided from the set), P-D-35 (the five the set already forced), P-D-36 (the phase unit withdrawn), P-D-37 (one code per row, all violations in the answer), P-D-38 (a refusal stores nothing), P-D-39 (scope columns and the empty set), P-D-40 (the version table's one admitted DELETE), P-D-41 (the two bucket-ii doors), P-D-42 (the store's last three operands), P-D-43 (the checking layer's four grammars), P-D-44 (the AC #38 map), P-D-45 (the last four lint grammars), P-D-46 (four write-path blockers), P-D-47 (the last four blockers: a tombstone state, a withdrawn opt-in, two codes, the broker's producer), P-D-48 (the six flagged decisions put to the owner; this slice gains the re-announcement row), P-D-49 (six live contradictions; here the takeover CAS and the successor column's second admitted write), P-D-50 (the pre-implementation round; here the `BucketRegistry` miss is fail-closed and §5's agreement test gains its third assertion)
 - Pricing `design/01-foundation.md` — the pattern donor (registered validators, append-only
   triggers with column whitelists, draft/published partial unique indexes, pending refs — **not
   the outbox**, which P-D-22 moved to `toolkit_db::outbox` after measuring that pricing runs a
@@ -162,7 +162,7 @@ acknowledged, and rejections that always carry an audited reason. Per P-D-02, ev
 | `RegistryEntity` | The trait both `Product` and `SKU` implement toward the pipeline: kind, id, tenant, lifecycle state, internal revision, published version |
 | `ValidationPipeline` | The ordered, fail-closed run of idempotency resolution → precondition → shape → state → identity → registered validators → governance gate (any gated act, §3.1), executed inside every mutating door |
 | `RegisteredValidator` | A slice-contributed rule keyed by `(entity kind, transition, target state, or field set)` (the target-state variant added by **P-D-32**, which the publish re-run needs); registration is code, not config |
-| `BucketRegistry` | The Foundation-owned map from a published-state column to its bucket tag (i–iv), which the head **door** reads — in the application layer — to route a write (§3.1). A slice registers its own columns' tags exactly as it registers validators — code, not config. **The registry is advisory for the physical layer** (**P-D-32**): a compile-time Rust map has no read path from a migration-time trigger, so §4.2's column classes stay static DDL — generating them would break C1's "guards defined once" and the schema-oracle goldens — and §5 carries the test that asserts the two agree. 05 reads the same registry to judge materiality (owner's call, 2026-08-27, P-D-28: 05 already attributes the frame here, and a physical guard of the Foundation's cannot depend on a capability slice's artifact) |
+| `BucketRegistry` | The Foundation-owned map from a published-state column to its bucket tag (i–iv), which the head **door** reads — in the application layer — to route a write (§3.1). A slice registers its own columns' tags exactly as it registers validators — code, not config. **The registry is advisory for the physical layer** (**P-D-32**): a compile-time Rust map has no read path from a migration-time trigger, so §4.2's column classes stay static DDL — generating them would break C1's "guards defined once" and the schema-oracle goldens — and §5 carries the test that asserts the two agree. 05 reads the same registry to judge materiality (owner's call, 2026-08-27, P-D-28: 05 already attributes the frame here, and a physical guard of the Foundation's cannot depend on a capability slice's artifact). **A lookup miss is fail-closed** (**P-D-50**): the registry is compile-time, so a published-state column carrying no tag means it was added without registering one, and the head door refuses the write under the pipeline's own posture rather than routing to a default bucket |
 | `PublishDoor` | The single Foundation API that turns an approved draft into a published version (bump, snapshot, events) — the only writer of `published_version` |
 | `ReservationIndex` | The partial unique index realizing `skuCode` reservation (see §4.2) |
 | `identity-reference map` | The pseudonym → operator identity table audit/events point at; its erasure semantics are slice 10's |
@@ -1151,7 +1151,9 @@ and the ordering key.
   `composition_pending`, `cloned_from`, the update timestamp), **together with the row-identity
   columns `tenant_id`, the primary key and `created_by`**, carry no bucket tag and are outside the
   comparison (P-D-32 — the registry is advisory for the physical layer, so
-  nothing but this test keeps the two from drifting).
+  nothing but this test keeps the two from drifting). **A third assertion (P-D-50): no
+  published-state column is named by *neither* artifact** — the case the first two are blind to by
+  construction, and exactly the column the door's fail-closed miss would refuse at runtime.
 - A canonical-serialization golden vector for `products_entity_version` content and its digest
   (§4.3), asserted byte-identical on both engines, pinning the `digest_version` constant (`1`) it
   was computed under.
@@ -1193,7 +1195,7 @@ and the ordering key.
   (frame), #42.
 
 **Risks & open items**: eleven review passes (the numbering restarted once, at the sixth) and
-the owner rounds P-D-23 through P-D-48 have run over this slice. What survives is one standing **risk** and thirteen open
+the owner rounds P-D-23 through P-D-48 have run over this slice. What survives is one standing **risk** and twelve open
 questions; this slice's outbound questions live at their owners.
 
 **Risk** — a hazard rather than a question:
@@ -1208,7 +1210,7 @@ restated here, so nothing in this document can drift from them: `design/04-lifec
 `design/05-governance.md`, `design/06-catalog-version.md`, `design/09-bulk-promotion.md`,
 `design/12-consumer-contracts.md`, `PRD` §15, and the register.
 
-**Open here** — **thirteen**: eleven raised by the eighth lens pass over the state the
+**Open here** — **twelve**: ten raised by the eighth lens pass over the state the
 P-D-35…42 rounds left, and one each by the P-D-46 and P-D-47 rounds. They are new rather than
 residual, and four of the eleven are consequences of those rounds:
 
@@ -1235,33 +1237,28 @@ residual, and four of the eleven are consequences of those rounds:
    behaviour, no code and no status, and says two rows later that no door timeout exists anywhere in
    the set to derive one from. An unterminated retry on the dual-engine tier is the default an
    implementer builds. *(Owner: this slice.)*
-6. **What does a head door do with a published-state column carrying no bucket tag?** §1.7's
-   `BucketRegistry` is a compile-time map, so a lookup miss is a real runtime case; §5's agreement
-   test compares only columns both artifacts name, so a column missing from both is invisible to it.
-   The document states the fail-closed posture for the pipeline and never applies it to the routing
-   miss. *(Owner: this slice.)*
-7. **Do the mutating doors return the new `ETag`?** P-D-33's stated premise for adding the
+6. **Do the mutating doors return the new `ETag`?** P-D-33's stated premise for adding the
     authoring `GET` is that an author who *had* just written holds a precondition, yet no door in §2
     is stated to return one. Leaving it makes a second `GET` mandatory between consecutive edits and
     leaves 04's and 09's in-process callers deriving the revision some other way. *(Owner: this
     slice.)*
-8. **What is the `internal:` lane's stored response body?** §4.4 has it store "a synthetic `200`
+7. **What is the `internal:` lane's stored response body?** §4.4 has it store "a synthetic `200`
     and its own outcome record as the body" (P-D-42); `response_body` is NOT NULL on an `answered`
     row, and 05 `inst-gv-one-shot` has the `ActivationRunner` read it back after a crash. No
     document defines that record's shape for any of the three lanes. *(Owner: this slice with 04
     and 09.)*
-9. **When is §4.3's DELETE guard installed?** Its predicate reads `products_catalog_version_entry`,
+8. **When is §4.3's DELETE guard installed?** Its predicate reads `products_catalog_version_entry`,
     which `DESIGN.md`'s census assigns to slice 06, while C1 requires one migration per table with
     guards defined once — so a trigger in this slice's first migration references a table 06 has not
     created. §5 already presumes the guard exists from the start. *(A P-D-40 consequence. Owner:
     whoever owns the migration chain.)*
-10. **How is `clonedFrom` physically stored?** 11 `inst-cn-lineage` records a pair
+9. **How is `clonedFrom` physically stored?** 11 `inst-cn-lineage` records a pair
    `(entity id, published_version | 'draft')` while §4.1 and §4.2 provision one nullable column with
    no type — so the version half has no home, and the choice (two columns, a composite, an encoded
    text form) is load-bearing for the dual-engine rule and the append-only column whitelist.
    *(Owner: this slice, which owns the column. Filed from 11 §6, where two lenses raised it.)*
 
-11. **What refuses a request when `actor_ref` resolution itself fails?** §2 runs it in its own
+10. **What refuses a request when `actor_ref` resolution itself fails?** §2 runs it in its own
     transaction before any phase that can refuse, and the refusal's own audit row requires an
     `actor_ref` — so an unavailable `products_identity_ref` blocks both the act and its refusal
     record, the shape the gear terminated for the audit write with `AUDIT_UNAVAILABLE` (503). No
@@ -1279,7 +1276,7 @@ with 12, as is what "the taxonomy" denotes when a count is stated against it (§
 the response map, and AC #38's rows are three different sets, and `inst-cc-errors` will be built
 against a number).
 
-12. **Does the create door write content too?** **P-D-46** made `inst-fd-save-txn` the content
+11. **Does the create door write content too?** **P-D-46** made `inst-fd-save-txn` the content
    writer, which settles the freeze input set for anything that has been saved. The create flow
    still writes the entity row and its outbox row and nothing else — so an entity whose content
    arrives *at creation*, which is exactly 11's clone, has no admitted writer and cannot satisfy
@@ -1287,7 +1284,7 @@ against a number).
    on the same terms, or the clone is defined as create-then-save and 11's C3 changes. Owner:
    this slice with 11's. *(Raised by the P-D-46 round — the arm's own edge.)*
 
-13. **Which GTS type does the envelope's `subject_type` name for a Product or a SKU?** **P-D-47**
+12. **Which GTS type does the envelope's `subject_type` name for a Product or a SKU?** **P-D-47**
    put publishing on the broker SDK, whose event requires a `subject_type` — the GTS type of the
    entity the event is about, a compile-time constant of the typed event — while `PRD` §15 records
    that SKUs and Products themselves are never GTS instances. A subject *type* is not an instance,

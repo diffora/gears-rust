@@ -253,7 +253,13 @@ without a fourth clock.
   (UNIQUE with `(tenant_id, source)` — the idempotency and `satisfiedRequests` operand; the tenant
   column is what C3's per-tenant coalescer selects on, and without it one `source` serving many
   tenants collides across them), **`operation_key`**
-  (nullable; the bulk batch identity — **P-D-46** struck `closed_at`, D-47's five-minute hard max being the declared bound rather than a fallback), `requested_at`, state `(pending, coalesced-into(version), superseded)`.
+  (nullable; the bulk batch identity — **P-D-46** struck `closed_at`, D-47's five-minute hard max being the declared bound rather than a fallback), `requested_at`, state
+  `(pending, coalesced, superseded)` and **`satisfied_by_version_id`** (nullable FK to
+  `products_catalog_version` — **P-D-50**: the satisfying version gets a column instead of
+  parameterizing a state value, exactly as the `FreezeLedger`'s `not_frozen(forced_at,
+  ceremony_ref)` is spelled out in columns below. Without it a replayed `CatalogVersionPublished`
+  cannot have its `satisfiedRequests` rebuilt and pricing's stuck pending refs cannot be
+  reconciled).
 - **`products_freeze_participant`** — the governed registered set (live);
   **`products_freeze_ack`** — `(tenant_id, catalog_version_id, participant)` → `state ∈
   {pending, acked, released, not_frozen(forced)}` — four values, one column — with `acked_at` /
@@ -392,12 +398,6 @@ struck. Branch review.)*
   `freeze_state`'s roster has no staged value for such a row to occupy — and an insert at stage
   would burn an id on every `STAGED_ENTITY_CHANGED` refusal, against the gapless guarantee C1 and
   `inst-cvc-serial` both assert. Owner: this slice. *(Raised by the slice-06 first lens pass.)*
-- **The version that satisfied a request lives only inside a state name.** `coalesced-into(version)`
-  parameterizes a state value with no column to hold it, unlike the ledger's
-  `not_frozen(forced_at, ceremony_ref)`, which §4 spells out as columns. After commit there is no
-  queryable link from a version to the requests it satisfied, so a replayed `CatalogVersionPublished`
-  cannot have its `satisfiedRequests` rebuilt and pricing's stuck pending refs cannot be reconciled.
-  Owner: this slice. *(Raised by the slice-06 first lens pass.)*
 - **The `commit → durable-acceptance` meter is declared by no slice.** §3.3 decomposes NFR #4's
   program SLO into three meters and attributes this one to 01; 01 declares no observability surface
   and records its NFR #3 probe as owed, while 08 also names the meter as 01's. The posting-safe

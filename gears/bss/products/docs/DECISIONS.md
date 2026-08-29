@@ -58,6 +58,7 @@ joint contracts, cited from here by their pricing numbers, never duplicated.
 - [P-D-47 — The last four build-blockers: a tombstone state, a withdrawn opt-in, two codes, and the broker's own producer](#p-d-47--the-last-four-build-blockers-a-tombstone-state-a-withdrawn-opt-in-two-codes-and-the-brokers-own-producer)
 - [P-D-48 — The six flagged decisions, put to the owner: two amended, one completed, three confirmed as recorded](#p-d-48--the-six-flagged-decisions-put-to-the-owner-two-amended-one-completed-three-confirmed-as-recorded)
 - [P-D-49 — Six live contradictions: the takeover race, the vacuous GC gate, one clone vocabulary, a clearable successor, a principal column, and an entity-kind column](#p-d-49--six-live-contradictions-the-takeover-race-the-vacuous-gc-gate-one-clone-vocabulary-a-clearable-successor-a-principal-column-and-an-entity-kind-column)
+- [P-D-50 — Seven taken ahead of the build: two columns, a minted code, a grant deliberately not minted, and three cells that denied a route the set declares](#p-d-50--seven-taken-ahead-of-the-build-two-columns-a-minted-code-a-grant-deliberately-not-minted-and-three-cells-that-denied-a-route-the-set-declares)
 
 <!-- /toc -->
 
@@ -1594,6 +1595,116 @@ instead.*
   `design/03-sku-classification.md` (`inst-mt-bucket`), `design/07-reference-signal.md`
   (the re-publish step).
 
+
+#### P-D-50 — Seven taken ahead of the build: two columns, a minted code, a grant deliberately not minted, and three cells that denied a route the set declares
+
+- **Date**: 2026-08-29 (owner call — the pre-implementation round)
+- **Context**: the review programme was stopped by the owner on a measurement rather than a
+  feeling. Across the set's twenty-four documented commits a lens pass adds **~13** open items and
+  an owner round retires **~3**, so "no open items" is not a reachable exit; and the set has
+  carried **zero** "cannot be built" statements in any slice since **P-D-47**, so the reachable
+  exit — a buildable set — was passed ten commits earlier. What was asked for instead was one round
+  over the questions that are cheap to answer in prose and expensive to discover in code: schema,
+  authorization surface, error contract, cross-gear obligation, state machine. The lint layer, the
+  register's own hygiene and every wording question were **deliberately excluded from the
+  selection** — the in-repo gate was retired knowingly in `21a149fda`, so a defect in a lint
+  grammar costs nothing today, while a missing column costs a migration.
+- **Decision**, seven arms:
+  1. **DSAR erasure is per-tenant in v1, and no platform-plane grant is minted.** A DSAR erasure
+     enumerates and tombstones the principal's rows **in the requesting tenant only**; a principal
+     appearing in several tenants needs one request per tenant. The alternative — a platform-plane
+     `compliance × erase` grant — would create a write path outside tenant elevation, which
+     `constraint-tenant-isolation` and 05 C5 (`any write under elevation is refused, full stop`)
+     both forbid, and the gear will not build one on an assumption about what Legal requires.
+     **The contingency is recorded rather than hidden**: should Legal rule per-tenant erasure
+     incomplete, the platform grant becomes mandatory and is a post-v1 change, not a gap in the
+     rule. This is the one arm whose recommendation was the engineering-cheapest and not
+     necessarily the legally safest, and it was taken knowing that.
+  2. **`products_category` gains `mutation_seq`, and `STALE_CATEGORY_TOKEN` is minted.**
+     `inst-av-category-branch` put the live-value door behind an `If-Match` on a "category
+     row-version token" that no column provided, and no code was declared for the mismatch. The
+     row now carries a `mutation_seq` and the door refuses a mismatch `STALE_CATEGORY_TOKEN` (409),
+     this slice's own — `STALE_REVISION` is 01's entity-head code and `STALE_LIVE_OP` the
+     `GovernedLiveOp` envelope's, and neither is this door's precondition. **C2 is amended** so the
+     counter is not read as a revision: categories still have no revisions and no versions, and
+     nothing freezes, snapshots or treats `mutation_seq` as version content.
+  3. **The satisfying version gets a column, and `coalesced-into(version)` becomes `coalesced`.**
+     `products_catalog_version_request` gains `satisfied_by_version_id`. A state value cannot
+     carry a parameter no column holds: after commit there was no queryable link from a version to
+     the requests it satisfied, so a replayed `CatalogVersionPublished` could not have its
+     `satisfiedRequests` rebuilt and pricing's stuck pending refs could not be reconciled.
+  4. **The content-PII write block is wired at five doors, and 09 leaves the enumeration.** 05's
+     `inst-gv-reject` and `inst-bg-open`, and 07's `inst-cr-door`, `inst-bc-ceremony` and
+     `inst-pr-retirement`, now pass their free-text reason through 02's `inst-av-pii-block` before
+     the row is written, a hit failing `CONTENT_PII_BLOCKED` — the form 01 already used at its
+     audit-row door. Both slices list the code in their response map as declared elsewhere.
+     **09 is struck from `inst-av-pii-reason`'s enumeration**: it has no free-text `reason` door of
+     its own — its batch reason lives on 05's `ApprovalRecord`, its mass-retire reason on 04's
+     `inst-rt-initiate`, both already enumerated, and its only other stored reason is the literal
+     `batch-abandoned` constant. The four-slice class was a three-slice class.
+  5. **The metadata PATCH is a per-key merge, a `null` value removes a key, and a write to a
+     terminal entity is refused `ENTITY_TERMINAL`.** `inst-md-write` capped key count without
+     stating remove semantics, so a map standing at the cap had no exit. The refusal code stays
+     01's and is raised here: **P-D-06** puts the map outside the head's *version content*, which
+     governs what a snapshot freezes and not what the terminal guard refuses, and **P-D-32**
+     already widened `ENTITY_TERMINAL` to any head write on a `retired`/`discarded` row.
+  6. **A `BucketRegistry` lookup miss is fail-closed, and §5's agreement test gains a third
+     assertion.** The registry is a compile-time map, so a miss is a real runtime case: a
+     published-state column carrying no tag means it was added without registering one, and the
+     head door refuses the write under the pipeline's own posture rather than routing to a default
+     bucket. The agreement test compared only columns *both* artifacts name; it now also asserts
+     that no published-state column is named by **neither**, which is the exact column the door's
+     miss would refuse.
+  7. **A `Doors` cell is per action, and the three contradicted cells take their routes.** Where a
+     row holds several actions and a declared route spends one, the cell names the route and the
+     action, and says which actions still have none — a bare route in a multi-action row would
+     otherwise read as if the whole row were doored. `approval × read` takes 05's own pending-queue
+     door, `category × read` takes 08's browse door, `catalog_version × read` takes 09's export
+     door.
+- **Measured, not argued**, arm by arm where a measurement decided it:
+  - Arm 2 at the donor: `pricing_price_window` hit exactly this problem and answered it with a
+    column — "D-191's `If-Match` needs something to compare an entity tag against", in
+    `gears/bss/pricing/pricing/src/infra/storage/migrations/m20260821_000039_create_pricing_price_window.rs`
+    — while `pricing_price` already carried `row_version`. The donor's counter counts **acts, not row
+    writes**, and its migration records why that is load-bearing: an approval subject is built from
+    an act identity, and a retry after a refusal must render the same subject or the approval loop
+    has no exit. The category door spends a `GovernedLiveOp`, so the same hazard is live here and
+    the column inherits the act semantics.
+  - Arm 3 inside this set: 06 §4 already spells the `FreezeLedger`'s `not_frozen(forced_at,
+    ceremony_ref)` out as columns. One parameterized state in the slice had columns and the other
+    did not; the precedent chose the arm.
+  - Arm 4 at the donor, which argued **against** the rule and lost on a stated reason: pricing has
+    no content-PII write block at all. All seventeen `pii` occurrences in its source are
+    field-level — pricing's audit-PII rule (its **D-61**: the audit log stores a pseudonymous
+    principal id, never a display name or an email; the donor's instruction id is not cited here,
+    **P-D-43** having struck those from this set). `CONTENT_PII_BLOCKED` on free text is this set's invention. It is
+    kept because slice 10 carries a DSAR erasure obligation pricing does not, and 02's stated
+    consequence for an unwired door is that personal data typed into it is unreachable by erasure
+    forever. Half-wired was the worst available state: it read as enforced and was not.
+  - Arm 7 by census: the set declares seventeen routes as code spans; the `Doors` column held
+    fourteen, and the three outside it named exactly the three grants whose cells read "no route
+    declared".
+- **Consequence, recorded rather than hidden**: **lint 3 is now green** — all seventeen declared
+  routes appear in the `Doors` column. That is a property of the artifact, not of a gate: no job
+  runs the lints, and 12 §6 still records that lint 3's population exists in two spellings, which
+  this arm does not fix.
+- **Not decided here**: the two duplicate open items the sweep left for an ownership call — the
+  `commit → durable-acceptance` meter filed identically in 06 and 08 and declared by neither, and
+  whether 02 owns the free-text class it enumerates. Both are cheap in code and were excluded on
+  that ground.
+- **Propagated**: `design/01-foundation.md` (§1.7's `BucketRegistry` row, §5's agreement test, §6 —
+  item 6 struck and the list renumbered to twelve); `design/02-taxonomy-attributes.md` (C2, §3.3's
+  two code lists, `inst-av-category-branch`, `inst-tc-etag`, `inst-md-write`, `inst-md-placement`,
+  `inst-av-pii-reason`, §4.1's `products_category`, §6 — two items struck);
+  `design/05-governance.md` (§3.2's column convention and three cells, §4's code declaration and
+  response map, `inst-gv-reject`, `inst-bg-open`, §6 — the PII item struck and the grant-gap item
+  re-measured); `design/06-catalog-version.md` (§4's request table, §6 — item struck);
+  `design/07-reference-signal.md` (`inst-cr-door`, `inst-bc-ceremony`, `inst-pr-retirement`, the
+  response map, §6 — item struck); `design/09-bulk-promotion.md` (§6 — item struck, the slice
+  owing nothing); `design/10-retention-erasure.md` (`inst-er-export`'s L5 clause, `inst-er-erase`,
+  §6 — item struck); `PRD.md` (§15's cross-tenant DSAR row, struck and answered).
+- **Owed**: nothing in this set. Arm 1's contingency sits with Legal and is not a design debt; arm
+  2's column and arm 3's column are implementation work, which is what the round exists to unblock.
 
 #### P-D-49 — Six live contradictions: the takeover race, the vacuous GC gate, one clone vocabulary, a clearable successor, a principal column, and an entity-kind column
 

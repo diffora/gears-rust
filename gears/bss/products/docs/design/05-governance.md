@@ -146,7 +146,7 @@ inbox merges with pricing's.
   unrestricted claim set covers every subject, an unrestricted subject scope is covered only by an
   unrestricted claim set, and between two non-empty sets it is ordinary subset; an out-of-scope decision is refused `APPROVER_SCOPE_EXCEEDED` and audited like any scope violation (the analogue of pricing's approver-scope rule; the donor id struck per **P-D-43**) - `inst-gv-scope`
 3. [ ] - `p1` - Each decision appends a `products_approval_decision` row (approver principal, verdict, mandatory reason on reject, instant); a decision arriving on a record already `superseded` is refused **`APPROVAL_SUPERSEDED`** (§3.3); `QuorumEvaluator` answers "satisfied" only when the descriptor is met by **distinct principals** with the required roles — a predicate recorded `predicateUnsatisfiable` (no subject at the configured `N`) counts as met **for the evaluator** while remaining visible as unmet-by-policy in the record and the inbox envelope; that is the only way it may be discharged, and it is never how a predicate is discharged at `N ≥ 1` - `inst-gv-quorum`
-4. [ ] - `p1` - A rejection finalizes the record `rejected` with the reason; the subject stays as it was (01 §6 files AC #26's literal "returns the entity to `draft`" as an open question against the head-row model — `PRD` §15, unanswered; this slice's reading is that a first-publish draft stays draft and a published head keeps its pending edits unpublished); `ApprovalDecided` emitted either way - `inst-gv-reject`
+4. [ ] - `p1` - A rejection finalizes the record `rejected` with the reason; the subject stays as it was (01 §6 files AC #26's literal "returns the entity to `draft`" as an open question against the head-row model — `PRD` §15, unanswered; this slice's reading is that a first-publish draft stays draft and a published head keeps its pending edits unpublished); `ApprovalDecided` emitted either way; the reason passes 02's `inst-av-pii-block` before the row is written, a hit failing `CONTENT_PII_BLOCKED` (**P-D-50**; 02 `inst-av-pii-reason` enumerates this door) - `inst-gv-reject`
 5. [ ] - `p1` - **`OverrideCeremony`** (P-D-02): when the subject carries named override conditions (an uncomposed `bundle` at its entity publish — 03 `inst-cl-bundle-override`), each approver explicitly acknowledges the lint findings by name; the acknowledgments are stored on the record and in audit — an informed override, never a blind one. **At `N = 0` the author performs the acknowledgment** and the record carries `quorumReduced` (P-D-13): the ceremony's product is an informed decision, so it survives an empty quorum instead of vanishing with it. The record is also the ceremony's only home — a lane that publishes an override subject without one is a design defect, not an exemption (see 09 `inst-bk-override`) - `inst-gv-override`
 
 ### Publish / apply against the gate
@@ -173,7 +173,7 @@ inbox merges with pricing's.
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-flow-breakglass`
 
-1. [ ] - `p1` - Elevation opens a `BreakGlassSession`: mandatory reason, time-boxed window (configured), scope named (which tenant); itself **two-person-approved or post-hoc-reviewed** — and this "two-person" is a **fixed floor of two distinct platform principals, outside the tenant's configured `N` entirely** (P-D-13: the acting principal is a platform owner and the subject is another tenant's data, so no tenant configuration has standing over it; the post-hoc-review arm is the escape the floor needs, so the floor blocks nobody) — (both paths recorded; the post-hoc path raises the review obligation as an alert, not a silent log line); `BreakGlassElevated` emitted + a distinct alert channel - `inst-bg-open`
+1. [ ] - `p1` - Elevation opens a `BreakGlassSession`: mandatory reason, time-boxed window (configured), scope named (which tenant); itself **two-person-approved or post-hoc-reviewed** — and this "two-person" is a **fixed floor of two distinct platform principals, outside the tenant's configured `N` entirely** (P-D-13: the acting principal is a platform owner and the subject is another tenant's data, so no tenant configuration has standing over it; the post-hoc-review arm is the escape the floor needs, so the floor blocks nobody) — (both paths recorded; the post-hoc path raises the review obligation as an alert, not a silent log line); `BreakGlassElevated` emitted + a distinct alert channel; the reason passes 02's `inst-av-pii-block` before the row is written, a hit failing `CONTENT_PII_BLOCKED` (**P-D-50**; 02 `inst-av-pii-reason` enumerates this door) - `inst-bg-open`
 2. [ ] - `p1` - Under elevation: cross-tenant **read and audit-export only**; every access is individually audited with the session id, reason, and correlation id; any write attempt is refused `BREAKGLASS_WRITE_FORBIDDEN` — no exception in v1 (C5) - `inst-bg-readonly`
 3. [ ] - `p1` - Expiry is hard: past the window every elevated call fails `BREAKGLASS_EXPIRED`; `BreakGlassExpired` emitted; standing cross-tenant access is not grantable in the catalog at all — the grant model has no such shape - `inst-bg-expiry`
 
@@ -193,7 +193,10 @@ inbox merges with pricing's.
 
 GTS-typed resources × actions, deny-by-default. **The `Doors` column is what lint 3 reads**
 (**P-D-45**), for the reason P-D-43 gave lint 9's `Operand`: the pairs and the doors were both
-prose, and the join between them existed in no artifact.
+prose, and the join between them existed in no artifact. **A cell is per action** (**P-D-50**):
+where a row holds several actions and a declared route spends only one, the cell names the route
+and the action it spends, and says which of the row's actions still have none — a bare route in a
+multi-action row would otherwise read as if the whole row were doored.
 
 | Resource × action | Door(s) | Slice |
 |---|---|---|
@@ -207,12 +210,12 @@ prose, and the join between them existed in no artifact.
 | `bulk_lifecycle × execute` | `POST /bss-products/v1/bulk/lifecycle` | 09 |
 | `catalog_version × request` | `POST /bss-products/v1/catalog-version-requests` | 06 |
 | `catalog_version × ack`, `× release` | **S2S, no route declared** — service-identity claims; `release` is **P-D-18**'s door | 06 |
-| `catalog_version × read`, `× force_complete` | **no route declared** — operator surfaces named in prose only | 06 |
+| `catalog_version × read`, `× force_complete` | `GET /bss-products/v1/bulk/exports?catalogVersionId=` (09's export door) spends **`× read`** (**P-D-50**); **`× force_complete` has no route declared** — an operator surface named in prose only | 06 |
 | `catalog_version × publish` | **none** — 06 §6 records that no door consumes it | 06 |
-| `category × read\|write` | **no route declared** — 02's live-value door, named in prose | 02 |
+| `category × read\|write` | `GET /bss-products/v1/browse…` (08's browse door, which names `category × read` explicitly) spends **`× read`** (**P-D-50**); **`× write` has no route declared** — 02's live-value door, named in prose | 02 |
 | `attribute_definition × write` | **no route declared** | 02 |
 | `recognized_set × write`, `plan_tier × write` | **no route declared** | 03 |
-| `approval × submit\|read\|decide` | **no route declared** | 05 |
+| `approval × submit\|read\|decide` | `GET /bss-products/v1/approvals?state=pending` (this slice's own pending-queue door) spends **`× read`** (**P-D-50**); **`× submit` and `× decide` have no route declared** | 05 |
 | `materiality_policy × write` | **no route declared** | 05 |
 | `breakglass × elevate` | **no route declared** | 05 |
 | `scheduled_transition × write\|cancel\|read` | **none** — no slice names these pairs on a door (§6) | 04 |
@@ -256,7 +259,7 @@ names its pair; slice 12's coverage check asserts no door is unnamed.
 carve-out is owed for either (**P-D-36** withdrew the phase unit: a code belongs to the rule that
 raises it, and the rule to a slice). `APPROVAL_REQUIRED` stays 01's (raised through the gate).
 
-**Problem responses (RFC 9457):** `SELF_APPROVAL_FORBIDDEN`, `BREAKGLASS_WRITE_FORBIDDEN`, `BREAKGLASS_EXPIRED`, `APPROVAL_REQUIRED`, `APPROVER_SCOPE_EXCEEDED`, `APPROVER_ROLE_REQUIRED` (403); `APPROVAL_SUPERSEDED` (409).
+**Problem responses (RFC 9457):** `SELF_APPROVAL_FORBIDDEN`, `BREAKGLASS_WRITE_FORBIDDEN`, `BREAKGLASS_EXPIRED`, `APPROVAL_REQUIRED`, `APPROVER_SCOPE_EXCEEDED`, `APPROVER_ROLE_REQUIRED` (403); `APPROVAL_SUPERSEDED` (409); `CONTENT_PII_BLOCKED` (422 architectural, declared by 02 — **P-D-50**).
 
 *Statuses added, corrected the same day by the fix-wave review. The gear declared
 its codes with no HTTP status and no problem-response block in any slice, against
@@ -272,7 +275,7 @@ all, **404** only where a path segment names a resource this tenant has none of.
 is the remedy is this gear's own addition — pricing's set carries no 503 at all, so that one
 class is not "checked against it". Proposed per
 row and open to correction; the requirement is that every code carries one.
-  Codes listed here for the response map but **declared elsewhere**: `APPROVAL_REQUIRED` (slice 01) — the status is repeated, not a second declaration, so the one-declaration rule stands.*
+  Codes listed here for the response map but **declared elsewhere**: `APPROVAL_REQUIRED` (slice 01) and `CONTENT_PII_BLOCKED` (slice 02, **P-D-50**) — the status is repeated, not a second declaration, so the one-declaration rule stands.*
 
 ## 4. Data / Storage (normative shape; DDL in migrations)
 
@@ -319,7 +322,7 @@ row and open to correction; the requirement is that every code carries one.
 finance fields), 04 (un-deprecation, retirement confirmation, scheduled-approval pinning), 06 (force-completion, participant-set membership, the `system_signal` composition clear), 07 (`sku_correction`, reference-producer registration), 09 (`bulk_batch`), 10 (`pii_allowlist × write`).
 
 **Risks & open items**:
-- **Fourteen of the twenty-three grant rows carry no route in the `Doors` column.** P-D-45's `Doors` column made this countable for the first time: nine rows name a route and the column holds fourteen distinct routes. The rows without one cover `catalog_version` (ack/release, read/force_complete and publish — three rows), `category`, `attribute_definition`, `recognized_set`+`plan_tier` (one row), `approval`, `materiality_policy`, `breakglass`, `scheduled_transition`, `freeze_participant`, 07's three (one row), `pii_allowlist` and `audit`. Two are already known absences (`scheduled_transition`, `catalog_version × publish`). **Three more cells are contradicted by the set's own declarations**: seventeen routes are declared as code spans set-wide, and the three sitting outside this column — `GET /bss-products/v1/approvals?state=pending` on this file's own pending-queue door (`cpt-cf-bss-products-flow-queue`), `GET /bss-products/v1/browse…` (08) and `GET /bss-products/v1/bulk/exports?catalogVersionId=` (09) — name `approval × read`, `category × read` and `catalog_version × read`, whose rows each read "no route declared". Every one of the three spends a single action of a multi-action row, so whether the cell gains the route or that route is not the grant's door is the owner's call — and lint 3, which requires every declared route to appear here, is red until it is taken. The remaining nine are unmeasured, and an authorization surface nobody can enumerate is one nobody can review. Whether the fix is declaring the routes or admitting the grants are unspent is not a review's call. Owner: this slice with each door's owner. *(Raised by the P-D-45 round; the counts and the three contradictions re-measured by the P-D-43…49 propagation audit.)*
+- **Eleven of the twenty-three grant rows carry no route in the `Doors` column.** P-D-45's `Doors` column made this countable for the first time, and **P-D-50** then took the three contradictions the propagation audit found — `approval × read`, `category × read` and `catalog_version × read` each had a route declared elsewhere in the set while their own cell read "no route declared". Twelve rows now name a route and the column holds all **seventeen** routes the set declares as code spans, so lint 3 is green. The eleven rows without one are `catalog_version`'s ack/release and publish, `category × write`, `attribute_definition`, `recognized_set`+`plan_tier` (one row), `approval × submit|decide`, `materiality_policy`, `breakglass`, `scheduled_transition`, `freeze_participant`, 07's three (one row), `pii_allowlist` and `audit` — plus `catalog_version × force_complete`, whose row is doored on `× read` alone. Two are already known absences (`scheduled_transition`, `catalog_version × publish`); the remaining nine are unmeasured, and an authorization surface nobody can enumerate is one nobody can review. Whether the fix is declaring the routes or admitting the grants are unspent is not a review's call. Owner: this slice with each door's owner. *(Raised by the P-D-45 round; re-measured by the P-D-43…49 propagation audit; the three contradictions closed by **P-D-50**.)*
 - **Does the discard door get its own grant, or inherit `product|sku × write`?** 01 §2 declares
   `POST /bss-products/v1/{products|skus}/{id}/discard` under **`… × discard`**, and this slice's
   RBAC catalog carries only `product × read|write|publish` and `sku × read|write|publish` — so
@@ -347,15 +350,6 @@ finance fields), 04 (un-deprecation, retirement confirmation, scheduled-approval
 - **What does `Gate` mode require of a gated transition?** 01 `inst-fd-gate-mode-gate` is worded for
   a publish and pins "the door's expected revision", while the transition doors are this slice's and
   04's and pin nothing stated in 01. Owner: this slice with 04. *(Filed from 01 §6 by the slice-01 eighth lens pass — the pointer claimed it was registered here and it was not.)*
-- **This slice's free-text `reason` doors do not invoke the content-PII write block.** 02
-  `inst-av-pii-reason` states the obligation and enumerates the doors that owe it, naming this
-  slice's two — `inst-gv-reject`'s rejection reason and `inst-bg-open`'s elevation reason, and records that this slice
-  carries the citation only as an owed open item, 01 and 04 having wired theirs at the door. 02's consequence for these doors is that
-  personal data typed into the field is **unreachable by erasure forever** (the broker leg is 02's
-  claim about `SkuRetired` alone, which is 04's door). Owed: cite `inst-av-pii-block` /
-  `CONTENT_PII_BLOCKED` on both. Owner: this slice. *(Found as a four-slice class by the slice-04
-  first lens pass; 04's arm is fixed. The first filing of this item named the wrong instruction, one
-  door, and an over-wide consequence — corrected by the slice-05 pass.)*
 - **Is a break-glass two-person approval an `ApprovalRecord`, and what holds its fixed floor?**
   `inst-bg-open` requires "two distinct platform principals, outside the tenant's configured `N`
   entirely", while §1.7 defines `required` only as `N` or `min(N, 1)` — no writer can produce a
