@@ -19,6 +19,10 @@ serde = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 uuid = { workspace = true }
+# `NewProduct`/`NewSku`'s and `ProductRecord`/`SkuRecord`'s `created_at` /
+# `updated_at`, carried as `DateTime<Utc>` at the repository boundary rather
+# than the `sea-orm`-internal alias the entities use.
+chrono = { workspace = true }
 
 # `normalized(name)` is pinned to NFKC then full casefold then whitespace
 # collapse, and is computed application-side precisely so both engines store
@@ -46,3 +50,6 @@ toolkit-macros = { workspace = true }
 # keys are denied — which is format-independent, so JSON stands in for whatever
 # the platform parses at boot.
 serde_json = { workspace = true }
+# `#[tokio::test]` for the repository suite, which exercises the async
+# `DBRunner` calls against the executed `SQLite` mirror.
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
