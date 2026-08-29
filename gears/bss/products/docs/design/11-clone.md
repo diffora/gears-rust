@@ -46,8 +46,10 @@ copies, what resets, and what must be re-proven against today's vocabularies.
 
 ### 1.4 References
 
-- [`../PRD.md`](../PRD.md) §6.10 (`fr-clone`), AC #34, AC #38 ("authoring/cloning against a
-  de-listed/deprecated unit"); [`../DECISIONS.md`](../DECISIONS.md) P-D-04 (name uniqueness — the
+- [`../PRD.md`](../PRD.md) §6.10 (`fr-clone`), AC #34, AC #38 (the two rows
+  **P-D-44** split: "authoring/cloning against a **de-listed** unit" and
+  "authoring/cloning against a **deprecated** unit");
+  [`../DECISIONS.md`](../DECISIONS.md) P-D-04 (name uniqueness — the
   revival-rename interaction); slices 01 (identity/doors), 02 (attributes,
   categories, the metadata map, the PII hook), 03 (vocabularies), 04 (deprecation, `replacedBy`).
 
