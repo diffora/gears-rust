@@ -1,0 +1,48 @@
+[package]
+name = "cf-gears-bss-products"
+edition.workspace = true
+license.workspace = true
+description = "BSS Product & SKU Registry gear: the catalog authoring and publish engine"
+
+[lib]
+name = "bss_products"
+
+[lints]
+workspace = true
+
+[dependencies]
+bss-products-sdk = { workspace = true }
+
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true }
+
+# `normalized(name)` is pinned to NFKC then full casefold then whitespace
+# collapse, and is computed application-side precisely so both engines store
+# identical bytes. `char::to_lowercase` is not full casefold and NFKC has no
+# std equivalent, so the normalization cannot be hand-rolled without becoming a
+# second, wrong answer to the uniqueness operand.
+unicode-normalization = { workspace = true }
+
+# `db` enables the `DatabaseCapability` trait; this increment mounts no REST
+# surface, so no `rest` feature is taken yet.
+toolkit = { workspace = true, features = ["db"] }
+toolkit-db = { workspace = true, features = ["pg", "sqlite"] }
+# `#[derive(Scopable)]` on the storage entities: the SecureORM tenant binding
+# every Foundation table carries.
+toolkit-db-macros = { workspace = true }
+# The entity models and the raw-SQL `Statement` the migrations execute; both
+# drivers, matching `toolkit-db`.
+sea-orm = { workspace = true, features = ["sqlx-postgres", "sqlx-sqlite"] }
+sea-orm-migration = { workspace = true }
+# `#[domain_model]` marker on the domain types (enforced by dylint DE0309).
+toolkit-macros = { workspace = true }
+
+[dev-dependencies]
+# The config tests assert the serde contract itself — defaults fill in, unknown
+# keys are denied — which is format-independent, so JSON stands in for whatever
+# the platform parses at boot.
+serde_json = { workspace = true }

@@ -1,0 +1,23 @@
+[package]
+name = "cf-gears-bss-products-sdk"
+edition.workspace = true
+license.workspace = true
+description = "BSS Product & SKU Registry SDK: infrastructure-free contract for ClientHub consumers"
+
+[lib]
+name = "bss_products_sdk"
+
+[lints]
+workspace = true
+
+[dependencies]
+async-trait = { workspace = true }
+# Every trait surface returns `CanonicalError`, per the errors ADR: the gear's
+# single `From<DomainError> for CanonicalError` ladder is the authoritative
+# classification and the ports carry no second one. The sibling
+# `bss-pricing-sdk` takes the same posture.
+toolkit-canonical-errors = { workspace = true }
+# A registry Product or SKU id, which every consumer binds to and which is a
+# UUID everywhere it appears. The contract carries the type rather than a
+# `String` so a caller cannot pass a code where an id belongs.
+uuid = { workspace = true }

@@ -150,6 +150,8 @@ members = [
     "gears/bss/ledger/ledger-sdk",
     "gears/bss/pricing/pricing",
     "gears/bss/pricing/pricing-sdk",
+    "gears/bss/products/products",
+    "gears/bss/products/products-sdk",
     "gears/bss/rate-provider/rate-provider-sdk",
     "gears/bss/rate-provider/rate-provider",
     "gears/bss/rate-provider/plugins/ecb-plugin",
@@ -373,6 +375,15 @@ bss-ledger-sdk = { package = "cf-gears-bss-ledger-sdk", version = "0.1.3", path 
 # must gain one in the same change or that gate turns red — which is the intended
 # coupling, not a latent trap.
 bss-pricing-sdk = { package = "cf-gears-bss-pricing-sdk", path = "gears/bss/pricing/pricing-sdk" }
+# The products registry SDK. Same posture as pricing-sdk above: no `version`,
+# because neither crate is a release artifact and the gear that consumes it is
+# not published either.
+bss-products-sdk = { package = "cf-gears-bss-products-sdk", path = "gears/bss/products/products-sdk" }
+# NFKC for the products registry's `normalized(name)`, the operand of its
+# uniqueness index. Already in the tree transitively; taken as a direct
+# dependency because the normalization must be identical on both engines and
+# std offers neither NFKC nor full casefold.
+unicode-normalization = "0.1"
 bss-rate-provider-sdk = { package = "cf-gears-bss-rate-provider-sdk", version = "0.1.3", path = "gears/bss/rate-provider/rate-provider-sdk" }
 coord = { package = "cf-gears-bss-coord", path = "gears/bss/libs/coord" }
 # The joint golden conformance fixture corpus. `bss-fixtures` carries no charge
