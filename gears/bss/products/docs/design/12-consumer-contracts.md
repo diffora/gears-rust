@@ -101,7 +101,7 @@ fixture, a pinned schema, or a lint. A promise that cannot be asserted is re-lab
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-flow-seam-suite`
 
-1. [ ] - `p1` - Home: one CI job over a shared fixture crate (the §15 "proposed: `api-contracts` CI" — final owner still a §15 open; the suite is designed to run in either home unchanged); it consumes both gears' SDKs and the `SchemaPin`, and **fails on any divergence** in the C1 fields (C1) - `inst-ss-home`
+1. [ ] - `p1` - Home: one CI job over **`cf-gears-bss-fixtures`** (**P-D-44**, path in §4.1's artifact table; the §15 "proposed: `api-contracts` CI" — final owner still a §15 open; the suite is designed to run in either home unchanged); it consumes both gears' SDKs and the `SchemaPin`, and **fails on any divergence** in the C1 fields (C1) - `inst-ss-home`
 2. [ ] - `p1` - The `SchemaPin` is a committed artifact versioned with the SDK: registry-side changes to a pinned field bump it through the ordinary review of BOTH gears (a one-sided bump fails the other side's CI — that asymmetry is the enforcement) - `inst-ss-pin`
 3. [ ] - `p1` - Joint fixtures (grown per C4): the P-D-03 **watermark fixture** (pricing produces, registry's predicate answers — the retirement joint contract end-to-end); the **adoption-block fixture** (pricing AC #82 on **its own `When` — retirement or unpublishing**; the `SkuDeprecated` emitted by a *plain* deprecation has no counterpart AC, so by C4 that arm of the fixture is **not authorable yet** and the register carries the ask — branch review); the **usage-binding fixture** (pricing's meter-binding rule against a registry declaration, incl. the deprecated-bound-unit reject/warn arm — M2); the **grandfathered-resolution fixture** (a frozen snapshot resolves byte-identically after registry churn); the **correction fixture** (`SkuImmutableFieldCorrected` ⇒ pricing re-validates) - `inst-ss-fixtures`
 
@@ -288,8 +288,8 @@ slice is that suite's specification.
   the honest statement that its checks are declared and unenforced — which §3.2 makes.
   Owner: whoever owns repo tooling, if and when the cost recorded in `21a149fda` is
   reconsidered. *(Premise corrected after the P-D-45 round.)*
-- **Does the pin run as one CI job or once per gear?** §2.1 says "one CI job over a shared fixture
-  crate"; §5's probe says "both CIs must fail"; and one job cannot be the other side's CI, with
+- **Does the pin run as one CI job or once per gear?** §2.1 says "one CI job over
+  `cf-gears-bss-fixtures`"; §5's probe says "both CIs must fail"; and one job cannot be the other side's CI, with
   both gears in one repository. Separately, `.github/workflows/api_contracts.yml` already exists
   under the proposed name with an unrelated purpose and triggers that never include a fixture
   crate. Owner: the `PRD` §15 owner.
@@ -317,3 +317,30 @@ slice is that suite's specification.
   already excluded by the opening clause ("that a registry door can refuse"); the third is
   excluded for a reason that clause does not express. The "exactly three" assertion is checkable
   only once one filter defines the universe. Owner: the error-contract owner.
+- **Lint 3's population is not in one machine-readable form.** **P-D-45** arm 1 defines it as
+  `` `METHOD /bss-products/v1/…` `` code spans, "one machine-readable form". At HEAD all seven
+  pipe-bearing routes exist in **two** textual forms: `{products\|skus}` inside 05 §3.2's table,
+  where a markdown cell must escape the pipe, and `{products|skus}` everywhere else — 01, 02, 08,
+  11, and 05's own §6. A lint matching the spans literally pairs none of the seven across that
+  boundary: it would read all fourteen `Doors` entries as undeclared and all seven outside
+  declarations as un-doored. The table cannot drop the escape without breaking the cell, so the
+  normalization belongs in the lint's grammar, and no document states it. Owner: this slice with
+  05. *(Raised by the P-D-43…49 propagation audit.)*
+- **Lint 9's `Operand` grammar does not describe the cells it reads.** **P-D-43** arm 3 fixes the
+  cell as "one token per pin member, comma-separated, each either a catalog field name or one of
+  three non-field markers". At HEAD three of the thirteen §2.2 cells fit that grammar
+  (`compositionPending`, `sellable`, `skuId`). Six lead with a backticked non-field token — five
+  `` `CatalogVersion` (surface) `` and one `` `SkuRetired` payload `` — formally indistinguishable
+  from a catalog field name, so a token-reading lint looks for `CatalogVersion` in the `SchemaPin`
+  and fails; three more join their operands with `+` rather than a comma. Arm 3's "prose beside the
+  tokens is ignored" may be meant to cover the leading token, but a backticked identifier is not
+  prose under any form the grammar states. Owner: this slice.
+  *(Raised by the P-D-43…49 propagation audit.)*
+- **Seven register entries carry two `Propagated` fields, and lint 5 says there is one.** Lint 5's
+  grammar (**P-D-43** arm 4) reads "the register carries **one** propagation field, spelled
+  `- **Propagated**`". P-D-24 through P-D-30 each carry a base field plus a second dated
+  *(owed until …, all closed)* field — 56 fields across 49 entries. Either the grammar admits the
+  dated-amendment form or those seven merge; until it is settled, a reader taking the **last** field
+  — the rule P-D-43's own entry forces, since its arm 4 quotes the literal field name in its body —
+  silently drops the primary field for all seven. Owner: the register's owner.
+  *(Raised by the P-D-43…49 propagation audit.)*

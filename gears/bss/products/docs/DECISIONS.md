@@ -1887,9 +1887,12 @@ instead.*
   field or event payload is invisible to it. Both were argued and accepted; the alternatives
   (an `identity:` field on all 34 tables; a surface spanning undeclared SDK shapes) cost more than
   they buy today.
-- **Two gaps this round made countable for the first time**: sixteen of twenty-four grants carry no
-  declared route (05 §6), and the `EventRegister` is declared and empty (12 §6). Both are
-  registered, neither is invented shut.
+- **Two gaps this round made countable for the first time**: fourteen of the twenty-three grant
+  rows carry no route in the `Doors` column (05 §6), and the `EventRegister` is declared and empty
+  (12 §6). Both are registered, neither is invented shut. *(This entry recorded the first gap as
+  "sixteen of twenty-four" until 2026-08-29; the audit of this round's own propagation re-measured
+  the table the round built — 23 grant rows, 9 of them routed — and found the figure wrong in the
+  same commit that created the table, `5977aec64`.)*
 - **Propagated**: `design/05-governance.md` (§3.2 as a table with `Doors`; §6's grant gap);
   `design/12-consumer-contracts.md` (lints 3, 4, 7, 8; §6's register item); `DESIGN.md` (§3.5's
   column convention).

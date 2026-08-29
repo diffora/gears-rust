@@ -203,8 +203,10 @@ which is why its gaps are omissions rather than contradictions:
   PRD disagrees with itself and no document maps roles to grants. Owner: the PRD owner with 05.
   *(Raised by the slice-11 first lens pass.)*
 - **May a slice restate a decision whose propagation field does not name it?** This slice's central
-  rule leans on P-D-04, whose surface names S1, S2, S4 and S9 and not S11; the same holds for P-D-05
-  and P-D-06, while P-D-21, P-D-25 and P-D-35 name this file explicitly. The register's own standard
+  rule leans on P-D-04, whose surface names `design/01-foundation.md`,
+  `design/02-taxonomy-attributes.md`, `design/04-lifecycle.md` and `design/09-bulk-promotion.md` —
+  not this file; the same holds for P-D-05 and P-D-06, while P-D-21, P-D-25 and P-D-35 name this
+  file explicitly. The register's own standard
   is that a propagation field describes what a document says — which makes these register omissions
   rather than defects here, but nothing states whether the citing side owes an entry. Owner: the
   register's owner. *(Raised by the slice-11 first lens pass.)*
