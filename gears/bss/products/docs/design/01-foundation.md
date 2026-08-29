@@ -92,7 +92,7 @@ acknowledged, and rejections that always carry an audited reason. Per P-D-02, ev
   (four read paths the guard needed), P-D-29 (what a replay, an envelope and a digest carry),
   P-D-30 (gate host, authorization, whose validator), P-D-31 (the four routed outward, decided
   here), P-D-32 (the second lens wave's six calls), P-D-33 (eight calls from weeding the open items),
-  P-D-20 (the retirement lead window imposes no publish freeze), P-D-34 (the remaining items, decided from the set), P-D-35 (the five the set already forced), P-D-36 (the phase unit withdrawn), P-D-37 (one code per row, all violations in the answer), P-D-38 (a refusal stores nothing), P-D-39 (scope columns and the empty set), P-D-40 (the version table's one admitted DELETE), P-D-41 (the two bucket-ii doors), P-D-42 (the store's last three operands), P-D-43 (the checking layer's four grammars), P-D-44 (the AC #38 map), P-D-45 (the last four lint grammars), P-D-46 (four write-path blockers), P-D-47 (the last four blockers: a tombstone state, a withdrawn opt-in, two codes, the broker's producer), P-D-48 (the six flagged decisions put to the owner; this slice gains the re-announcement row)
+  P-D-20 (the retirement lead window imposes no publish freeze), P-D-34 (the remaining items, decided from the set), P-D-35 (the five the set already forced), P-D-36 (the phase unit withdrawn), P-D-37 (one code per row, all violations in the answer), P-D-38 (a refusal stores nothing), P-D-39 (scope columns and the empty set), P-D-40 (the version table's one admitted DELETE), P-D-41 (the two bucket-ii doors), P-D-42 (the store's last three operands), P-D-43 (the checking layer's four grammars), P-D-44 (the AC #38 map), P-D-45 (the last four lint grammars), P-D-46 (four write-path blockers), P-D-47 (the last four blockers: a tombstone state, a withdrawn opt-in, two codes, the broker's producer), P-D-48 (the six flagged decisions put to the owner; this slice gains the re-announcement row), P-D-49 (six live contradictions; here the takeover CAS and the successor column's second admitted write)
 - Pricing `design/01-foundation.md` — the pattern donor (registered validators, append-only
   triggers with column whitelists, draft/published partial unique indexes, pending refs — **not
   the outbox**, which P-D-22 moved to `toolkit_db::outbox` after measuring that pricing runs a
@@ -522,7 +522,14 @@ audited reason; there is no partial application anywhere in the gear (PRD AC #38
      response cannot exist before the operation has produced one, and a retry storm is exactly the
      concurrent case. A payload *mismatch* is the branch `inst-fd-idem-replay` already answers, and
      stays `IDEMPOTENCY_CONFLICT` in either state. A request refused `IDEMPOTENCY_KEY_IN_FLIGHT`
-     writes **nothing** to the row — it does not own the key - `inst-fd-idem-claim-inflight`
+     writes **nothing** to the row — it does not own the key. **Two paths reach this refusal and they
+     are not equally likely** (**P-D-49**, stated as the donor states it): *meeting an unanswered
+     fresh claim* is **unreachable** under `inst-fd-idem-claim-txn`'s one-transaction contract — the
+     holder has not committed, so the duplicate is still blocked on the index and, when released,
+     meets either the committed answer or nothing left to conflict with — so reaching it that way
+     means the contract was violated, and refusing is how that becomes visible instead of becoming a
+     fabricated reply; *losing the expired-key takeover race* (item 3 below) is **reachable in
+     production with no contract violation by anyone**, and is what keeps the code live - `inst-fd-idem-claim-inflight`
    - [ ] - `p1` - **A refusal stores nothing and releases the key** (owner's call, 2026-08-28,
      **P-D-38**, adopting the donor's posture after measuring it — `gears/bss/pricing`'s
      `idempotent.rs` runs claim and answer inside the mutation's transaction so that "a failure
@@ -542,7 +549,7 @@ audited reason; there is no partial application anywhere in the gear (PRD AC #38
      (**P-D-42**) — the operand this slice could not pin, because no door timeout exists anywhere
      in the set to derive it from, turns out not to be needed at
      all - `inst-fd-idem-claim-inflight-until`
-3. [ ] - `p1` - Retention: `max(24h, max_freeze_timeout)` read from config (C6). **Expiry is evaluated at claim time, not by a reaper** (same call, same donor): a claim against an expired key succeeds and replaces it, so correctness never waits on a sweep; a background sweep still runs, but only to reclaim space. Expiry never retro-invalidates an outcome. `expires_at` is **stamped at the claim INSERT** from C6's configured value (**P-D-34**: the column
+3. [ ] - `p1` - Retention: `max(24h, max_freeze_timeout)` read from config (C6). **Expiry is evaluated at claim time, not by a reaper** (same call, same donor): a claim against an expired key succeeds and replaces it — **as a compare-and-swap on the held row's own claim stamp** (**P-D-49**, the donor's `take_over`): nothing holds an expired row between one transaction's conflict check and its takeover UPDATE, so two duplicates on one expired key both clear the check and both read the same expired row, and without the predicate both would be told they claimed it and the guarded mutation would run **twice** under one key. The UPDATE therefore carries `WHERE <the stamp the reader saw>`; exactly one matches, and the loser is refused `IDEMPOTENCY_KEY_IN_FLIGHT` having executed nothing — it may even carry a different payload from the winner, and is still refused in-flight rather than for the mismatch, since this transaction never compared the two. So correctness never waits on a sweep; a background sweep still runs, but only to reclaim space. Expiry never retro-invalidates an outcome. `expires_at` is **stamped at the claim INSERT** from C6's configured value (**P-D-34**: the column
 is non-nullable and the row is inserted `claimed`, so it cannot wait for the answer); it is the
 **retention** window of the key. Nothing releases a crashed claim, because since **P-D-42** a
 crashed claim does not commit: it rolls back with the mutation it shares a transaction with;
@@ -808,8 +815,13 @@ SKU) only through
 slice 04's acts** — and, until 04 supplies a tighter one, under
 row-image predicates this slice pins now (**P-D-34**): `deprecation_provenance` changes **only in
 the same statement as a `lifecycle_state` change** (04's writer is the deprecation transition), and
-`replaced_by_sku_id` is **write-once** — `null` → non-null, never changed again (04
-`inst-rt-replacedby`: "Validated once, and the row is terminal at the flip …"). Door
+`replaced_by_sku_id` is **write-once per retirement, not per row** (**P-D-49**): `null` → non-null
+at retirement initiation, and non-null → `null` in the same statement as the **governed cancel** of
+that retirement's `ScheduledTransition` (04 `inst-lc-undeprecate`) — never any other change. Without
+the second arm a SKU that was retirement-initiated, cancelled and un-deprecated stayed `published`
+while permanently naming a successor no admitted write could clear, which the read surface then
+resolved transitively (04 `inst-rt-replacedby`: "Validated once, and the row is terminal at the
+flip …" — terminal at the flip, which a cancelled retirement never reaches). Door
 identity remains an application guarantee, and a tighter predicate is still **owed by 04** (deprecation/cascade and retirement-initiation respectively — they
 are neither save-door nor bucket-iii/iv columns, and leaving them unnamed either refused the
 writes slice 04 specifies or dropped them to bucket iv, where an ordinary operator save could
@@ -849,43 +861,56 @@ matrix's bucket-iv catch-all, which that FR words as "other **descriptive** fiel
 
 ### 4.3 `products_entity_version` (published history)
 
-`(tenant_id, entity_kind, entity_id, published_version)` UNIQUE · frozen full content **excluding the metadata map, and excluding `lifecycle_state`,
-`deprecation_provenance`, `replaced_by_sku_id` and `internal_revision`** (**P-D-24**, owner's call,
-2026-08-27, extended by **P-D-35**: those four move on
-transitions, which write no version row, so freezing them would need the digest to change on a
+**Key** — `(tenant_id, entity_kind, entity_id, published_version)` UNIQUE.
+
+**What a row freezes** — the publish-time entity: frozen full content **excluding the metadata map,
+and excluding `lifecycle_state`, `deprecation_provenance`, `replaced_by_sku_id` and
+`internal_revision`** (**P-D-24**, owner's call, 2026-08-27, extended by **P-D-35**: those four move
+on transitions, which write no version row, so freezing them would need the digest to change on a
 write that produces no row to digest — they are read from the head row, below. `internal_revision`
-meets the same criterion, `inst-fd-transition-bump` bumping it on **every** transition, and was
-left out of the original enumeration) (slice 02's `products_metadata`; P-D-06 — the map lives beside the entity,
-captured only by `CatalogVersion` snapshots) — the publish-time entity, engine-canonical
-serialization, the byte-identity discipline that `CatalogVersion` (slice 06) will reuse ·
-**a per-row content digest written at freeze** — **`content_digest`** (**P-D-35** names it; §5's
-golden vector and 10's restore drill both address it), **SHA-256** over the canonical rendering below,
-with a **`digest_version`** column beside it, **starting at `1`** and pinned as a code constant by §5's golden vector rather than by config (**P-D-33**) (owner's call, 2026-08-27, P-D-29: `sha2` is already
-a workspace dependency, and the "digest-version bump, not a silent change" rule below is only
-checkable if the version a row was computed under is stored on the row) (the slice-10 restore drill re-verifies sampled
-entity versions against it — without it, version-history corruption is invisible to every
-checksum; H2 fix) · `approval_ref` · `actor_ref` · `published_at`.
-**Engine-canonical serialization is pinned here** (owner's call, 2026-08-27 — 06 §2's `inst-sn-checksum` had pointed
-back at "the 01 engine-canonical discipline" while this section pointed forward, so neither stated
-it, and 10's restore drill re-verifies these digests byte-for-byte against a restored copy; the
-cross-engine comparison is §5's golden vector): JSON, keys
-**sorted lexicographically by field name**, UTF-8 without BOM, **absent values written `null`
-rather than omitted** so absence and the empty string cannot collide, integers and decimals as
-bare decimal strings with no locale and no trailing zeroes, timestamps RFC 3339 in UTC at
-microsecond precision, computed **application-side** exactly as `normalized(name)` is (§4.1) so
-both engines store identical bytes. **A row collection inside the content** — the
-category-assignment set, the attribute-value set — is rendered as a **JSON array sorted by the
-collection's own identifier** (the category id, the attribute id), each element rendered by the
-same field rule (owner's call, 2026-08-27, P-D-29: the field rule orders fields and said nothing
-about rows, so two engines could have serialized the same content in two orders and 10's restore
-drill compares these digests byte-for-byte). The rule is stated over **any named field set**, not only a version row's columns (owner's call,
-2026-08-27, P-D-28). **A parsed request's named field set is the fields the request carries**
-(**P-D-34**): the "absent written `null`" rule addresses a *complete* set — a version row's columns
-— so a `PATCH` that omits a field and one that sends it `null` hash differently, which is what they
-mean at the head door — which is what lets §3.2 hash a *parsed request* under this same rendering
-and the gear pin one canonicalization rule rather than two. The digest's input is the version's **frozen content** columns as scoped above, so
-**adding a column to a frozen row's content is a digest-version bump, not a silent change** — and
-what actually holds all of this is a **canonical-serialization golden vector** committed with the
+meets the same criterion, `inst-fd-transition-bump` bumping it on **every** transition, and was left
+out of the original enumeration). The map is slice 02's `products_metadata` (**P-D-06** — it lives
+beside the entity, captured only by `CatalogVersion` snapshots). Engine-canonical serialization here
+is the byte-identity discipline that `CatalogVersion` (slice 06) will reuse.
+
+**Columns** — **a per-row content digest written at freeze**, **`content_digest`** (**P-D-35** names
+it; §5's golden vector and 10's restore drill both address it), **SHA-256** over the canonical
+rendering below · a **`digest_version`** column beside it, **starting at `1`** and pinned as a code
+constant by §5's golden vector rather than by config (**P-D-33**) — owner's call, 2026-08-27,
+P-D-29: `sha2` is already a workspace dependency, and the "digest-version bump, not a silent change"
+rule below is only checkable if the version a row was computed under is stored on the row; the
+slice-10 restore drill re-verifies sampled entity versions against it, and without it
+version-history corruption is invisible to every checksum (H2 fix) · `approval_ref` · `actor_ref` ·
+`published_at`.
+
+**Engine-canonical serialization is pinned here** (owner's call, 2026-08-27 — 06 §2's
+`inst-sn-checksum` had pointed back at "the 01 engine-canonical discipline" while this section
+pointed forward, so neither stated it, and 10's restore drill re-verifies these digests byte-for-byte
+against a restored copy; the cross-engine comparison is §5's golden vector):
+
+- JSON, keys **sorted lexicographically by field name**, UTF-8 without BOM;
+- **absent values written `null` rather than omitted**, so absence and the empty string cannot collide;
+- integers and decimals as bare decimal strings, no locale and no trailing zeroes;
+- timestamps RFC 3339 in UTC at microsecond precision;
+- computed **application-side** exactly as `normalized(name)` is (§4.1), so both engines store
+  identical bytes.
+
+**A row collection inside the content** — the category-assignment set, the attribute-value set — is
+rendered as a **JSON array sorted by the collection's own identifier** (the category id, the
+attribute id), each element rendered by the same field rule (owner's call, 2026-08-27, P-D-29: the
+field rule orders fields and said nothing about rows, so two engines could have serialized the same
+content in two orders and 10's restore drill compares these digests byte-for-byte).
+
+**How far the rule reaches** — it is stated over **any named field set**, not only a version row's
+columns (owner's call, 2026-08-27, P-D-28). **A parsed request's named field set is the fields the
+request carries** (**P-D-34**): the "absent written `null`" rule addresses a *complete* set — a
+version row's columns — so a `PATCH` that omits a field and one that sends it `null` hash
+differently, which is what they mean at the head door, and which is what lets §3.2 hash a *parsed
+request* under this same rendering so the gear pins one canonicalization rule rather than two.
+
+**The digest's input, and what actually holds it** — the version's **frozen content** columns as
+scoped above, so **adding a column to a frozen row's content is a digest-version bump, not a silent
+change**. What holds all of this is a **canonical-serialization golden vector** committed with the
 first migration — a different artifact from C1's schema-oracle dumps, and owed by §5.
 
 Append-only, no UPDATE path at all; diffs are computed between rows, never stored mutated. **One
@@ -1219,62 +1244,56 @@ pointers to items filed with owners outside this document.
 P-D-35…42 rounds left, and one each by the P-D-46 and P-D-47 rounds. They are new rather than
 residual, and four of the eleven are consequences of those rounds:
 
-1. **Is `IDEMPOTENCY_KEY_IN_FLIGHT` reachable after P-D-42?** §3.2 refuses a duplicate that matches
-   a `claimed`, unanswered key, while the same section says "the gate is the insert, not a lookup"
-   and that a claim commits only with its answer — so no committed row is ever `claimed` and no
-   transaction can observe the state. The code still stands in §3.3, in §2's create flow, in the
-   409 block and in §4.4's CHECK. Withdrawing it is an SDK-breaking change P-D-42 did not record.
-   *(Raised independently by two lenses. Owner: this slice with 12.)*
-2. **Which slice declares `PARENT_NOT_PUBLISHED`?** P-D-36's unit (the raising rule) puts it with
+1. **Which slice declares `PARENT_NOT_PUBLISHED`?** P-D-36's unit (the raising rule) puts it with
    04, whose validator raises it; P-D-35's unit (the response map) keeps it here.
    `RETIREMENT_PENDING` sits in the identical position and resolves the other way, the only stated
    distinguisher being "unless the register moves it". 12 `inst-cc-errors` lints the pair and gets
    two answers. *(Owner: the owner of P-D-35/P-D-36.)*
-3. **Which code does the audit row store when a phase other than `state` collects two?** §3.1 says
+2. **Which code does the audit row store when a phase other than `state` collects two?** §3.1 says
    only the `state` phase can, but the registered-validators phase hosts every slice's rules and
    the run stops at the first failing *phase*, and the `identity` phase hosts containment beside
    uniqueness — a create can satisfy `SCOPE_NOT_CONTAINED` and `DUPLICATE_CODE` at once. §3.3
    states a precedence for the four `state` codes only. *(Two lenses, two counterexamples. Owner: this slice with the error-contract owner.)*
-4. **Which phase judges an absent `If-Match`?** §2 says it rides `VALIDATION`; §3.1 puts `If-Match`
+3. **Which phase judges an absent `If-Match`?** §2 says it rides `VALIDATION`; §3.1 puts `If-Match`
    in the **precondition** phase and `VALIDATION` in **shape**, two phases later, while §3.1 also
    stops the run at the first failing phase. P-D-36 removed the taxonomy obstacle to either
    answer without naming one. *(Lens split: one filed it as a defect with a fix, one as a question;
    the register does not settle it. Owner: this slice.)*
-5. **Is the save door's `brand_id` write validated against the caller's brand claims?** The check is
+4. **Is the save door's `brand_id` write validated against the caller's brand claims?** The check is
    written into `inst-fd-mint-id` in the create flow only, while §4.2 makes the save door the sole
    admitting door for that bucket-i column while `published_version = 0`. *(Owner: this slice with
    05, who own the grants.)*
-6. **What happens when the SQLite busy timeout expires?** §3.2 gives it no value, no exhaustion
+5. **What happens when the SQLite busy timeout expires?** §3.2 gives it no value, no exhaustion
    behaviour, no code and no status, and says two rows later that no door timeout exists anywhere in
    the set to derive one from. An unterminated retry on the dual-engine tier is the default an
    implementer builds. *(Owner: this slice.)*
-7. **What does a head door do with a published-state column carrying no bucket tag?** §1.7's
+6. **What does a head door do with a published-state column carrying no bucket tag?** §1.7's
    `BucketRegistry` is a compile-time map, so a lookup miss is a real runtime case; §5's agreement
    test compares only columns both artifacts name, so a column missing from both is invisible to it.
    The document states the fail-closed posture for the pipeline and never applies it to the routing
    miss. *(Owner: this slice.)*
-8. **Do the mutating doors return the new `ETag`?** P-D-33's stated premise for adding the
+7. **Do the mutating doors return the new `ETag`?** P-D-33's stated premise for adding the
     authoring `GET` is that an author who *had* just written holds a precondition, yet no door in §2
     is stated to return one. Leaving it makes a second `GET` mandatory between consecutive edits and
     leaves 04's and 09's in-process callers deriving the revision some other way. *(Owner: this
     slice.)*
-9. **What is the `internal:` lane's stored response body?** §4.4 has it store "a synthetic `200`
+8. **What is the `internal:` lane's stored response body?** §4.4 has it store "a synthetic `200`
     and its own outcome record as the body" (P-D-42); `response_body` is NOT NULL on an `answered`
     row, and 05 `inst-gv-one-shot` has the `ActivationRunner` read it back after a crash. No
     document defines that record's shape for any of the three lanes. *(Owner: this slice with 04
     and 09.)*
-10. **When is §4.3's DELETE guard installed?** Its predicate reads `products_catalog_version_entry`,
+9. **When is §4.3's DELETE guard installed?** Its predicate reads `products_catalog_version_entry`,
     which `DESIGN.md`'s census assigns to slice 06, while C1 requires one migration per table with
     guards defined once — so a trigger in this slice's first migration references a table 06 has not
     created. §5 already presumes the guard exists from the start. *(A P-D-40 consequence. Owner:
     whoever owns the migration chain.)*
-11. **How is `clonedFrom` physically stored?** 11 `inst-cn-lineage` records a pair
+10. **How is `clonedFrom` physically stored?** 11 `inst-cn-lineage` records a pair
    `(entity id, published_version | 'draft')` while §4.1 and §4.2 provision one nullable column with
    no type — so the version half has no home, and the choice (two columns, a composite, an encoded
    text form) is load-bearing for the dual-engine rule and the append-only column whitelist.
    *(Owner: this slice, which owns the column. Filed from 11 §6, where two lenses raised it.)*
 
-12. **What refuses a request when `actor_ref` resolution itself fails?** §2 runs it in its own
+11. **What refuses a request when `actor_ref` resolution itself fails?** §2 runs it in its own
     transaction before any phase that can refuse, and the refusal's own audit row requires an
     `actor_ref` — so an unavailable `products_identity_ref` blocks both the act and its refusal
     record, the shape the gear terminated for the audit write with `AUDIT_UNAVAILABLE` (503). No
@@ -1291,7 +1310,7 @@ with 12, as is what "the taxonomy" denotes when a count is stated against it (§
 the response map, and AC #38's rows are three different sets, and `inst-cc-errors` will be built
 against a number).
 
-13. **Does the create door write content too?** **P-D-46** made `inst-fd-save-txn` the content
+12. **Does the create door write content too?** **P-D-46** made `inst-fd-save-txn` the content
    writer, which settles the freeze input set for anything that has been saved. The create flow
    still writes the entity row and its outbox row and nothing else — so an entity whose content
    arrives *at creation*, which is exactly 11's clone, has no admitted writer and cannot satisfy
@@ -1299,7 +1318,7 @@ against a number).
    on the same terms, or the clone is defined as create-then-save and 11's C3 changes. Owner:
    this slice with 11's. *(Raised by the P-D-46 round — the arm's own edge.)*
 
-14. **Which GTS type does the envelope's `subject_type` name for a Product or a SKU?** **P-D-47**
+13. **Which GTS type does the envelope's `subject_type` name for a Product or a SKU?** **P-D-47**
    put publishing on the broker SDK, whose event requires a `subject_type` — the GTS type of the
    entity the event is about, a compile-time constant of the typed event — while `PRD` §15 records
    that SKUs and Products themselves are never GTS instances. A subject *type* is not an instance,

@@ -340,7 +340,10 @@ struck. Branch review.)*
   creation point is consumption of `CatalogVersionPublished`, which is emitted after the increment
   transaction commits; `freeze_state` is a "derived cache of the ledger". In that window `posted`
   resolution of an entirely unfrozen version succeeds — the fail-closed default C5 and AC #21
-  require, open by construction, and no §5 probe looks at it. Owner: this slice. *(Raised by the slice-06 first lens pass.)*
+  require, open by construction, and no §5 probe looks at it. *(The operand exists: **P-D-49** gave
+  slice 10's retention gate this version's `participant_set_snapshot` for the same vacuity, and
+  `freezeComplete` can range over it too — but that is this slice's rule to change, not 10's.)*
+  Owner: this slice. *(Raised by the slice-06 first lens pass.)*
 - **`participant_set_snapshot` is stored twice and only one copy is inside the checksum.** §4 puts
   it on the `products_catalog_version` row; `inst-sn-collect` puts it in the capture store, whose
   bullet says "the checksum covers both halves". Which is authoritative — and therefore whether the

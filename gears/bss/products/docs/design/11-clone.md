@@ -72,7 +72,7 @@ copies, what resets, and what must be re-proven against today's vocabularies.
 | C1 | Source may be `draft`, `published`, **`deprecated`** or `retired` (the revival path); the source is never affected. `deprecated` is a **governed sub-state of `published`**, so it was inside the PRD's second term rather than missing from it — `fr-clone` and AC #34 now name it explicitly (branch review, which found the row asserting a PRD defect where a reading would do, and a test written from AC #34 covering three states while the design admitted four). It is the state every entity occupies for the **whole retirement lead window** — including while the operator builds the successor that the retirement's `replacedBy` may name, which is the clone's most predictable use (item 37 of the review) | PRD `fr-clone` |
 | C2 | New `productId`/`skuId`; a new `skuCode`/`productCode` — system-suggested, operator-overridable, atomically reserved through 01's `ReservationIndex` (`skuCode`, §4.2) and §4.1's `product_code` partial unique index | PRD `fr-clone` |
 | C3 | Lifecycle and version counters reset (`draft`, `published_version = 0`, `internal_revision = 1`); pricing/plan content never copied | PRD `fr-clone` |
-| C4 | Cloned vocabulary references re-validate against the **live** registries: a de-listed/`deprecated` unit, a **`deprecated`/retired** tier (H1 — the PRD's dropped word restored, delivered by 03's new `PLAN_TIER_DEPRECATED`), a retired category, an unknown code, or a **deprecated/narrowed attribute definition** (M5) **fails or forces re-selection** — never copied silently | PRD `fr-clone`, AC #38 |
+| C4 | Cloned vocabulary references re-validate against the **live** registries: a de-listed/`deprecated` unit, a **`deprecated`/retired** tier (H1 — the PRD's dropped word restored, delivered by 03's new `PLAN_TIER_DEPRECATED`), a retired category, an unknown code, or a **deprecated/narrowed attribute definition** (M5) **fails, and the refusal names every field class that failed** — never copied silently. **One outcome vocabulary** (**P-D-49**): the act refuses and collects, rather than refusing on the first class, which is the only reading under which §5's single fixture can yield three named failures; the PRD's "forces re-selection" is the operator's next act on that answer, not a second outcome on the wire. This is the donor's shape — its validation rules "append and never short-circuit" and its report carries the whole list | PRD `fr-clone`, AC #38 |
 
 ### 1.7 Naming & Design-Introduced Names
 
@@ -100,27 +100,30 @@ copies, what resets, and what must be re-proven against today's vocabularies.
 
 - [ ] `p3` - **ID**: `cpt-cf-bss-products-algo-disposition`
 
-| Field class | Disposition |
-|-------------|-------------|
-| System identity (`productId`/`skuId`) | **Reset** (minted) |
-| Codes (`skuCode`/`productCode`) | **Reset** (suggested, reserved — a source Product with no `productCode` suggests none, `inst-cn-identity`) |
-| Canonical name | **Copy + rename** per `inst-cn-rename` (every same-brand product clone) |
-| `brand_id` | **Copy** — a clone never retargets brand; a cross-brand copy is a create, not a clone (M4; also what keeps the rename rule's collision premise sound) |
-| `created_by` | **Reset** to the cloning actor's ref — a copied ref would misattribute authorship in audit projections (M4) |
-| Structure (type, scope) | **Copy** (scope re-checked by the ordinary containment validator) |
-| Parent link | **Copy** for a lone-SKU clone — requiring a parent that is neither `retired` nor `discarded` and holds no live retire intent, per the create door (`PARENT_TERMINAL`/`RETIREMENT_PENDING`), so a lone clone of a retired parent's SKU must name a new parent (M6, the C1 carve-out disclosed); **remap to the new parent** in a product-with-SKUs clone |
-| Display/localized attributes + metadata map | **Copy + re-validate** (M5): a `deprecated` definition ⇒ re-select (`ATTRIBUTE_DEFINITION_DEPRECATED`), visibility-scope drift ⇒ re-select (`ATTRIBUTE_SCOPE_VIOLATION`), PII re-screened by 02's hook — a once-allowed value re-passes the current policy (`CONTENT_PII_BLOCKED`) |
-| Category assignments | **Copy + re-validate** (retired category ⇒ re-select) |
-| `PlanTier` | **Copy + re-validate** (`deprecated`/retired tier ⇒ re-select — `PLAN_TIER_DEPRECATED`/`PLAN_TIER_UNKNOWN`, H1) |
-| Metering declaration (`unit`, `usageTypeRef`) | **Copy + re-validate** (deprecated/de-listed unit ⇒ fail per AC #38; `usageTypeRef` re-resolution stays 03 `inst-mt-resolve`'s, at publish) |
-| Accounting codes | **Copy + re-validate** against the live sets — a `deprecated` code ⇒ re-select (`ACCOUNTING_CODE_DEPRECATED`), a `removed` or unknown one likewise (`ACCOUNTING_CODE_UNKNOWN`); **P-D-47** |
-| `sellable` | **Copy** (bucket-iii value, judged again at publish) |
-| Lifecycle, versions, approvals, `compositionPending`, `replacedBy`, deprecation provenance | **Reset** (C3 — state never copies; `compositionPending` to its `false` default, 01 P-D-35) |
-| `tenant_id` | **Copy** — the source is resolved in-tenant (`inst-cn-door`) |
-| `name_normalized` | **Derived** from the renamed name, application-side (01 §4.1) |
-| `cloned_from` | **Reset** — written to the *immediate* source per `inst-cn-lineage`, never copied from the source (01 makes it writable only in the creating statement, so a copied value is unrepairable) |
-| `timestamps` | **Reset** by the create door |
-| Pricing/plan anything | **Never** (not carried here at all — the boundary) |
+*Every re-validation row below refuses on failure and the refusal collects across rows (C4); a
+clone either lands whole or lands not at all.*
+
+| Field class | Applies to | Disposition |
+|-------------|-----------|-------------|
+| System identity (`productId`/`skuId`) | both | **Reset** (minted) |
+| Codes (`skuCode`/`productCode`) | both — each its own kind's code | **Reset** (suggested, reserved — a source Product with no `productCode` suggests none, `inst-cn-identity`) |
+| Canonical name | **Product** | **Copy + rename** per `inst-cn-rename` (every same-brand product clone) |
+| `brand_id` | both | **Copy** — a clone never retargets brand; a cross-brand copy is a create, not a clone (M4; also what keeps the rename rule's collision premise sound) |
+| `created_by` | both | **Reset** to the cloning actor's ref — a copied ref would misattribute authorship in audit projections (M4) |
+| Structure (type, scope) | both — `type` is SKU-only | **Copy** (scope re-checked by the ordinary containment validator) |
+| Parent link | **SKU** | **Copy** for a lone-SKU clone — requiring a parent that is neither `retired` nor `discarded` and holds no live retire intent, per the create door (`PARENT_TERMINAL`/`RETIREMENT_PENDING`), so a lone clone of a retired parent's SKU must name a new parent (M6, the C1 carve-out disclosed); **remap to the new parent** in a product-with-SKUs clone |
+| Display/localized attributes + metadata map | both | **Copy + re-validate** (M5): a `deprecated` definition ⇒ re-select (`ATTRIBUTE_DEFINITION_DEPRECATED`), visibility-scope drift ⇒ re-select (`ATTRIBUTE_SCOPE_VIOLATION`), PII re-screened by 02's hook — a once-allowed value re-passes the current policy (`CONTENT_PII_BLOCKED`) |
+| Category assignments | **Product** | **Copy + re-validate** (retired category ⇒ re-select) |
+| `PlanTier` | **SKU** | **Copy + re-validate** (`deprecated`/retired tier ⇒ re-select — `PLAN_TIER_DEPRECATED`/`PLAN_TIER_UNKNOWN`, H1) |
+| Metering declaration (`unit`, `usageTypeRef`) | **SKU** | **Copy + re-validate** (deprecated/de-listed unit ⇒ fail per AC #38; `usageTypeRef` re-resolution stays 03 `inst-mt-resolve`'s, at publish) |
+| Accounting codes | **SKU** | **Copy + re-validate** against the live sets — a `deprecated` code ⇒ re-select (`ACCOUNTING_CODE_DEPRECATED`), a `removed` or unknown one likewise (`ACCOUNTING_CODE_UNKNOWN`); **P-D-47** |
+| `sellable` | **SKU** | **Copy** (bucket-iii value, judged again at publish) |
+| Lifecycle, versions, approvals, `compositionPending`, `replacedBy`, deprecation provenance | both — `compositionPending`/`replacedBy` SKU-only | **Reset** (C3 — state never copies; `compositionPending` to its `false` default, 01 P-D-35) |
+| `tenant_id` | both | **Copy** — the source is resolved in-tenant (`inst-cn-door`) |
+| `name_normalized` | **Product** | **Derived** from the renamed name, application-side (01 §4.1) |
+| `cloned_from` | both | **Reset** — written to the *immediate* source per `inst-cn-lineage`, never copied from the source (01 makes it writable only in the creating statement, so a copied value is unrepairable) |
+| `timestamps` | both | **Reset** by the create door |
+| Pricing/plan anything | both | **Never** (not carried here at all — the boundary) |
 
 ## 4. Data / Storage
 
@@ -153,12 +156,6 @@ interaction — resolved here by `inst-cn-rename`.
 
 **Risks & open items** — fourteen, all raised by the first lens pass; the slice is deliberately thin,
 which is why its gaps are omissions rather than contradictions:
-- **Does "forces re-selection" refuse, or land a clone with the field cleared?** C4 says a stale
-  reference "fails **or** forces re-selection", and every class in §4's map ends in a refusal code —
-  which makes the two the same wire event — while §5 asks one fixture to yield *three* named
-  failures, which is only possible if the act collects rather than failing on the first. Owner: the
-  PRD owner with this slice — one outcome vocabulary, stated once in C4 and mirrored in §3.1.
-  *(All three lenses raised it independently.)*
 - **How is `clonedFrom` physically stored?** — filed in 01 §6, whose storage owner owns the column;
   a pointer only.
 - **What is the clone door's request body?** Three rules require operator input — an overridable
@@ -199,9 +196,6 @@ which is why its gaps are omissions rather than contradictions:
   events, so the ledger is response-only and a crash between children leaves an unreported half-clone
   with no resumption path — 09, whose shape this cites, has both a table and a resume rule. Owner:
   this slice with 09's storage owner. *(Raised by the slice-11 first lens pass.)*
-- **Does §3.1 apply per entity kind?** The matrix is one table for both Products and SKUs and marks
-  no row entity-specific, while the rename rule it delegates to is Product-only and §4.2 gives
-  `products_sku` no name column. Owner: this slice. *(Raised by the slice-11 first lens pass.)*
 - **Which role holds the clone grant?** §1.3 gives it to the product manager and the PRD's own §11
   console gives clone to an Operator/Platform owner, while the door spends the authoring pair. The
   PRD disagrees with itself and no document maps roles to grants. Owner: the PRD owner with 05.

@@ -57,6 +57,7 @@ joint contracts, cited from here by their pricing numbers, never duplicated.
 - [P-D-46 — Four write-path blockers, three of them settled by opening the donor](#p-d-46--four-write-path-blockers-three-of-them-settled-by-opening-the-donor)
 - [P-D-47 — The last four build-blockers: a tombstone state, a withdrawn opt-in, two codes, and the broker's own producer](#p-d-47--the-last-four-build-blockers-a-tombstone-state-a-withdrawn-opt-in-two-codes-and-the-brokers-own-producer)
 - [P-D-48 — The six flagged decisions, put to the owner: two amended, one completed, three confirmed as recorded](#p-d-48--the-six-flagged-decisions-put-to-the-owner-two-amended-one-completed-three-confirmed-as-recorded)
+- [P-D-49 — Six live contradictions: the takeover race, the vacuous GC gate, one clone vocabulary, a clearable successor, a principal column, and an entity-kind column](#p-d-49--six-live-contradictions-the-takeover-race-the-vacuous-gc-gate-one-clone-vocabulary-a-clearable-successor-a-principal-column-and-an-entity-kind-column)
 
 <!-- /toc -->
 
@@ -1593,6 +1594,65 @@ instead.*
   `design/03-sku-classification.md` (`inst-mt-bucket`), `design/07-reference-signal.md`
   (the re-publish step).
 
+
+#### P-D-49 — Six live contradictions: the takeover race, the vacuous GC gate, one clone vocabulary, a clearable successor, a principal column, and an entity-kind column
+
+- **Date**: 2026-08-29 (owner call — the contradiction round)
+- **Context**: the 211 open items were measured by what would settle each. 74 are risks with no
+  question and ~125 need an owner call; the six below are the subset where the set **currently says
+  two things that cannot both be built**, so answering them repairs a document rather than filling a
+  gap. Every premise was opened at its source before the round, and one of mine did not survive that
+  check — see the correction under arm 1.
+- **Decision**, six arms:
+  1. **The expired-key takeover is a compare-and-swap**, and `IDEMPOTENCY_KEY_IN_FLIGHT` has two
+     documented paths. Nothing holds an expired row between a transaction's conflict check and its
+     takeover UPDATE, so two duplicates on one expired key both clear the check, both read the same
+     expired row, and — without a predicate on the row's own claim stamp — **both execute the
+     guarded mutation under one key**. The UPDATE now carries that predicate; the loser is refused
+     in-flight and executes nothing. The fresh-claim path stays unreachable and is recorded as such:
+     reaching it means the one-transaction contract was violated, and refusing is how that becomes
+     visible. **P-D-42's transaction contract and P-D-38's posture are untouched.**
+  2. **Slice 10's `RetentionGate` ranges over the version's `participant_set_snapshot`**, not over
+     the ledger rows that happen to exist. A snapshot member with no registration holds the version;
+     an empty snapshot — nobody ever owed an ack — is collectable. The universal quantification let
+     an empty ledger satisfy the gate vacuously and collect a version nobody had frozen, against C4.
+  3. **The clone has one outcome vocabulary: it refuses, and the refusal collects.** "Forces
+     re-selection" is the operator's next act on that answer, not a second wire outcome — the only
+     reading under which §5's one fixture yields three named failures.
+  4. **`replaced_by_sku_id` is write-once per retirement, not per row**: the governed cancel of a
+     retirement's `ScheduledTransition` clears it in the same statement. Without that arm a
+     cancelled, un-deprecated SKU stayed `published` naming a successor no admitted write could clear.
+  5. **The identity map gains `principal_ref`** (pseudonymous, NOT NULL, indexed), because three
+     rules read the map by principal and the key admitted no such read. A tombstone destroys the
+     payload and leaves the pseudonym, which is what the slice already means by "pseudonym retained".
+  6. **The clone disposition matrix gains an `Applies to` column.** One table served both entity
+     kinds while the rename rule it delegates to is Product-only and `products_sku` carries no name
+     column at all, so its "Canonical name" row was unbuildable for half its subjects. Every value
+     in the new column is a fact 01 §4.1/§4.2 already states.
+- **A premise of mine that did not survive its own check, recorded because the round was put to the
+  owner on it.** Arm 1 was first brought as "restore the claim's own transaction, because the donor
+  is built the other way". Opening `gears/bss/pricing/pricing/src/infra/storage/repo/idempotency_repo.rs`
+  showed the opposite: the donor holds claim and answer in **one** transaction exactly as this gear
+  does after P-D-42, and its own module doc says the fresh-claim refusal is *"Unreachable under the
+  one-transaction contract"*. What keeps the code live there is the takeover race — *"Reachable in
+  production, with no contract violation by anyone"* — and *"no tightening of the transaction
+  contract closes it"*. So the recommendation was withdrawn and re-put; the arm that landed is
+  cheaper, reverses nothing, and closes a **double-execution** defect the first framing would have
+  left standing. Both quotations byte-verified.
+- **The costs, stated**:
+  - Arm 2: a tenant with no registered participant has an empty snapshot, so its versions are
+    collectable with no ack at all — correct by the rule above, and worth knowing before the first
+    participant registers.
+  - Arm 5: the principal↔ref linkage survives erasure by construction. That is what makes a repeat
+    DSAR answerable, and it is a posture Legal may wish to rule on — the `PRD` §15 rows on the
+    allow-list and the cross-tenant DSAR reach are the place.
+  - Arm 4: one more admitted write in the append-only whitelist, on a column whose whole point was
+    that it never changed.
+- **Propagated**: `design/01-foundation.md` (§3.2's expiry and in-flight rows, §4.2's whitelist, §6);
+  `design/04-lifecycle.md` (§6); `design/06-catalog-version.md` (§6);
+  `design/10-retention-erasure.md` (`inst-rt-gc`, §4's identity map, §6);
+  `design/11-clone.md` (C4, §3.1, §6).
+- **Owed**: nothing.
 
 #### P-D-48 — The six flagged decisions, put to the owner: two amended, one completed, three confirmed as recorded
 
