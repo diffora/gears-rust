@@ -287,9 +287,6 @@ events per §1.8. All tenant-scoped, append-only where evidential.
 - **Watermark set size**: full-set replacement at 10K SKUs × cadence is fine as rows, but the
   door should accept a compressed set representation from day one (wire-level; no semantic
   change) — implementation note.
-- **Contracts' draft/quote question** (PRD §15) is answered at its registration, not before;
-  the registration op is where that declaration is recorded — named here so the op's payload
-  reserves the field.
 - **This slice's free-text `reason` doors do not invoke the content-PII write block.** 02
   `inst-av-pii-reason` states the obligation and enumerates the doors that owe it, naming this
   slice's three — the correction-override reason, the break-glass-correction reason, and the

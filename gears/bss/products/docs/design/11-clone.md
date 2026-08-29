@@ -158,8 +158,6 @@ interaction — resolved here by `inst-cn-rename`.
 
 **Risks & open items** — fourteen, all raised by the first lens pass; the slice is deliberately thin,
 which is why its gaps are omissions rather than contradictions:
-- **How is `clonedFrom` physically stored?** — filed in 01 §6, whose storage owner owns the column;
-  a pointer only.
 - **What is the clone door's request body?** Three rules require operator input — an overridable
   code, an overridable name, a replacement parent — and a fourth ("forces re-selection") may require
   re-selected values. No slice declares a clone payload, and whether those arrive in the clone
@@ -183,8 +181,6 @@ which is why its gaps are omissions rather than contradictions:
   in every non-`discarded` state — so a second revival of one lineage produces a suggestion the
   registry must refuse, and concurrent clones computing `N` by a read race each other. Owner: this
   slice. *(Raised by the slice-11 first lens pass.)*
-- **Is `{source}-copy-N` a legal `skuCode`?** — filed in `PRD` §15 with the PRD owner, the format
-  being the PRD's to pin; a pointer only.
 - **What does the door answer for a `discarded` source?** C1 admits four states and `discarded` is the
   fifth, reachable and addressable; nothing says whether it is a 404-class miss, a state refusal or
   admitted, and `ENTITY_TERMINAL` cannot be reused as-is because the clone writes nothing to the
@@ -219,3 +215,7 @@ The thinness itself is not a risk: its one design-introduced
 rule (revival rename) resolves a flagged interaction rather than creating one. If product later
 wants name **transfer** on revival (retire frees the name to its clone), that is a P-D-04
 amendment, not a clone feature — named so nobody builds it here.
+
+**Filed elsewhere** — two of this slice's questions live at their owners and are **not** restated
+here: `clonedFrom`'s physical storage in `design/01-foundation.md` §6, and whether
+`{source}-copy-N` is a legal `skuCode` in `PRD` §15.

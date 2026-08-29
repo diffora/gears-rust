@@ -252,8 +252,9 @@ names its pair; slice 12's coverage check asserts no door is unnamed.
 `SELF_APPROVAL_FORBIDDEN`, `APPROVER_SCOPE_EXCEEDED`, `APPROVER_ROLE_REQUIRED` (raised by the
 **gate** when the descriptor is numerically met but the role predicate is not — L-2),
 `APPROVAL_SUPERSEDED` (raised at **decide** on a superseded record — L-2),
-`BREAKGLASS_WRITE_FORBIDDEN`, `BREAKGLASS_EXPIRED`. `APPROVAL_REQUIRED` stays 01's (raised
-through the gate).
+`BREAKGLASS_WRITE_FORBIDDEN`, `BREAKGLASS_EXPIRED` — both this slice's own, and no phase
+carve-out is owed for either (**P-D-36** withdrew the phase unit: a code belongs to the rule that
+raises it, and the rule to a slice). `APPROVAL_REQUIRED` stays 01's (raised through the gate).
 
 **Problem responses (RFC 9457):** `SELF_APPROVAL_FORBIDDEN`, `BREAKGLASS_WRITE_FORBIDDEN`, `BREAKGLASS_EXPIRED`, `APPROVAL_REQUIRED`, `APPROVER_SCOPE_EXCEEDED`, `APPROVER_ROLE_REQUIRED` (403); `APPROVAL_SUPERSEDED` (409).
 
@@ -319,12 +320,6 @@ finance fields), 04 (un-deprecation, retirement confirmation, scheduled-approval
 
 **Risks & open items**:
 - **Fourteen of the twenty-three grant rows carry no route in the `Doors` column.** P-D-45's `Doors` column made this countable for the first time: nine rows name a route and the column holds fourteen distinct routes. The rows without one cover `catalog_version` (ack/release, read/force_complete and publish — three rows), `category`, `attribute_definition`, `recognized_set`+`plan_tier` (one row), `approval`, `materiality_policy`, `breakglass`, `scheduled_transition`, `freeze_participant`, 07's three (one row), `pii_allowlist` and `audit`. Two are already known absences (`scheduled_transition`, `catalog_version × publish`). **Three more cells are contradicted by the set's own declarations**: seventeen routes are declared as code spans set-wide, and the three sitting outside this column — `GET /bss-products/v1/approvals?state=pending` on this file's own pending-queue door (`cpt-cf-bss-products-flow-queue`), `GET /bss-products/v1/browse…` (08) and `GET /bss-products/v1/bulk/exports?catalogVersionId=` (09) — name `approval × read`, `category × read` and `catalog_version × read`, whose rows each read "no route declared". Every one of the three spends a single action of a multi-action row, so whether the cell gains the route or that route is not the grant's door is the owner's call — and lint 3, which requires every declared route to appear here, is red until it is taken. The remaining nine are unmeasured, and an authorization surface nobody can enumerate is one nobody can review. Whether the fix is declaring the routes or admitting the grants are unspent is not a review's call. Owner: this slice with each door's owner. *(Raised by the P-D-45 round; the counts and the three contradictions re-measured by the P-D-43…49 propagation audit.)*
-- **Is `BREAKGLASS_WRITE_FORBIDDEN` raised at the pre-pipeline authorization gate or inside a
-  pipeline phase?** **Closed by P-D-36**: the phase unit is withdrawn, so where the
-  code is *raised* no longer carries a taxonomy consequence and no carve-out depends on it. What
-  remains is ordinary and already settled — this slice declares `BREAKGLASS_WRITE_FORBIDDEN`, as it
-  declares `APPROVER_ROLE_REQUIRED` and `APPROVAL_SUPERSEDED`. *(Raised by the slice-01 third lens
-  wave.)*
 - **Does the discard door get its own grant, or inherit `product|sku × write`?** 01 §2 declares
   `POST /bss-products/v1/{products|skus}/{id}/discard` under **`… × discard`**, and this slice's
   RBAC catalog carries only `product × read|write|publish` and `sku × read|write|publish` — so
