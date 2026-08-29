@@ -9,6 +9,8 @@ joint contracts, cited from here by their pricing numbers, never duplicated.
 
 <!-- toc -->
 
+- [Decision register](#decision-register)
+- [Entries](#entries)
 - [P-D-01 — Broker-native event envelope (not CloudEvents 1.0)](#p-d-01--broker-native-event-envelope-not-cloudevents-10)
 - [P-D-02 — CatalogVersion increments are mechanical; governance at entity publish](#p-d-02--catalogversion-increments-are-mechanical-governance-at-entity-publish)
 - [P-D-03 — SkuReferenceCount v1 producer set = {pricing}](#p-d-03--skureferencecount-v1-producer-set--pricing)
@@ -71,6 +73,12 @@ only as `#### <id> …`; promoting them to `###` to satisfy MD001's heading-incr
 CodeRabbit's suggestion of 2026-08-26 — would make this register parse as zero decisions, which
 is a regression this gear has already paid for once. This intermediate heading satisfies MD001
 instead.*
+
+*Consequence for the TOC gate, measured 2026-08-29: `cfs validate-toc` indexes to `--max-level 3`
+by default, so at the default it cannot see these `####` headings and reports all fifty anchors as
+dangling. They are not — an anchor is derived from a heading's text, not its level. **This file
+validates with `cfs validate-toc --max-level 4`**, which returns exit 0. The two headings above are
+listed in the TOC for the same gate.*
 
 #### P-D-01 — Broker-native event envelope (not CloudEvents 1.0)
 
