@@ -61,25 +61,17 @@ use std::sync::Arc;
 
 use core::fmt::Write as _;
 
-use async_trait::async_trait;
-use authz_resolver_sdk::constraints::{Constraint, InPredicate, Predicate};
-use authz_resolver_sdk::models::{
-    EvaluationRequest, EvaluationResponse, EvaluationResponseContext,
-};
-use authz_resolver_sdk::{AuthZResolverClient, AuthZResolverError, PolicyEnforcer};
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use axum::response::IntoResponse as _;
 use chrono::{TimeZone, Utc};
-use sea_orm::{ConnectionTrait, Database, DbBackend, FromQueryResult, Statement};
+use sea_orm::{ConnectionTrait, Database};
 use sea_orm_migration::MigratorTrait;
 use serde_json::json;
 use toolkit::api::OpenApiRegistryImpl;
 use toolkit_db::outbox::{Outbox, OutboxHandle, Partitions, outbox_migrations_with_prefix};
 use toolkit_db::{ConnectOpts, DBProvider, DbError, connect_db};
-use toolkit_gts::gts_id;
-use toolkit_security::{SecurityContext, pep_properties};
 use tower::ServiceExt as _;
 use uuid::Uuid;
 
@@ -96,6 +88,11 @@ use crate::domain::governance::{
 use crate::infra::events;
 use crate::infra::storage::migrations::Migrator;
 use crate::infra::storage::repo::{self, NewProduct};
+use crate::test_support::{
+    audit_action, audit_error_code, authed_ctx, drop_table, enqueued_event_count,
+    enqueued_event_envelope, flat_in_enforcer, id_matches, idempotency_rows_for, raw_i64,
+    raw_string_opt, table_columns,
+};
 
 const TENANT: Uuid = Uuid::from_u128(0xd0_01);
 const BRAND: Uuid = Uuid::from_u128(0xd0_02);
@@ -204,107 +201,6 @@ async fn harness() -> TestHarness {
     }
 }
 
-/// Run `sql` (a `SELECT ... AS v FROM ...`) on its own auxiliary connection
-/// into `dsn` and return the single integer column it names `v`. See this
-/// module's doc for why this goes around `DBRunner` rather than through it.
-async fn raw_i64(dsn: &str, sql: &str) -> i64 {
-    #[derive(Debug, FromQueryResult)]
-    struct Row {
-        v: i64,
-    }
-
-    let conn = Database::connect(dsn)
-        .await
-        .expect("open an auxiliary connection for test introspection");
-    let row = Row::find_by_statement(Statement::from_string(DbBackend::Sqlite, sql.to_owned()))
-        .one(&conn)
-        .await
-        .expect("the introspection query runs")
-        .expect("an aggregate SELECT always returns exactly one row");
-    conn.close().await.ok();
-    row.v
-}
-
-/// [`raw_i64`]'s twin for a single, possibly-`NULL`, text column named `v`.
-async fn raw_string_opt(dsn: &str, sql: &str) -> Option<String> {
-    #[derive(Debug, FromQueryResult)]
-    struct Row {
-        v: Option<String>,
-    }
-
-    let conn = Database::connect(dsn)
-        .await
-        .expect("open an auxiliary connection for test introspection");
-    let row = Row::find_by_statement(Statement::from_string(DbBackend::Sqlite, sql.to_owned()))
-        .one(&conn)
-        .await
-        .expect("the introspection query runs")
-        .expect("the row this test just wrote must exist");
-    conn.close().await.ok();
-    row.v
-}
-
-/// Drop `table` via its own auxiliary connection — the `AUDIT_UNAVAILABLE`
-/// seam's only lever: making the refusal audit row's own insert fail without
-/// touching anything the mutation transaction itself reads or writes. See
-/// this module's doc, "The create-door harness", for why this goes around
-/// `DBRunner` rather than through it, and
-/// `an_unwritable_refusal_audit_answers_audit_unavailable_not_the_domain_refusal`
-/// for the one place it is used.
-async fn drop_table(dsn: &str, table: &str) {
-    let conn = Database::connect(dsn)
-        .await
-        .expect("open an auxiliary connection to drop a table");
-    conn.execute_unprepared(&format!("DROP TABLE {table};"))
-        .await
-        .expect("drop the table this seam needs gone");
-    conn.close().await.ok();
-}
-
-/// Degraded flat-`In` PDP fake, `crate::authz::authz_tests::FlatInResolver`'s
-/// twin: permits and emits a single flat `In([allowed])` constraint over
-/// `OWNER_TENANT_ID`, ignoring the request. Duplicated rather than imported —
-/// `authz_tests` is a private `#[cfg(test)]` sibling module, not a reusable
-/// test-support crate.
-struct FlatInResolver {
-    allowed: Uuid,
-}
-
-#[async_trait]
-impl AuthZResolverClient for FlatInResolver {
-    async fn evaluate(
-        &self,
-        _req: EvaluationRequest,
-    ) -> Result<EvaluationResponse, AuthZResolverError> {
-        Ok(EvaluationResponse {
-            decision: true,
-            context: EvaluationResponseContext {
-                constraints: vec![Constraint {
-                    predicates: vec![Predicate::In(InPredicate::new(
-                        pep_properties::OWNER_TENANT_ID,
-                        vec![self.allowed],
-                    ))],
-                }],
-                deny_reason: None,
-            },
-        })
-    }
-}
-
-fn flat_in_enforcer(allowed: Uuid) -> PolicyEnforcer {
-    PolicyEnforcer::new(Arc::new(FlatInResolver { allowed }))
-}
-
-fn authed_ctx(tenant: Uuid) -> SecurityContext {
-    SecurityContext::builder()
-        .subject_id(Uuid::now_v7())
-        .subject_tenant_id(tenant)
-        .subject_type(gts_id!("cf.core.security.subject_user.v1~"))
-        .token_scopes(vec!["*".to_owned()])
-        .build()
-        .expect("authed SecurityContext must build")
-}
-
 fn new_product(product_id: Uuid, tenant_id: Uuid) -> NewProduct {
     NewProduct {
         product_id,
@@ -378,18 +274,6 @@ async fn post_create_product_with_key(
     key: &str,
 ) -> axum::http::Response<Body> {
     post_create_product_with_headers(app, tenant, body, &[("Idempotency-Key", key)]).await
-}
-
-/// How many `products_idempotency` rows exist for `client_key`, in whatever
-/// state — the count every case below asserts the claim, or its absence, on.
-async fn idempotency_rows_for(dsn: &str, client_key: &str) -> i64 {
-    raw_i64(
-        dsn,
-        &format!(
-            "SELECT COUNT(*) AS v FROM products_idempotency WHERE client_key = '{client_key}'"
-        ),
-    )
-    .await
 }
 
 /// The digest this door would take of `body` — computed the way the door
@@ -2840,24 +2724,6 @@ const EXCLUDED_FROM_FROZEN_CONTENT: [&str; 4] = [
     "updated_at",
 ];
 
-/// Every column of `table`, read out of the **executed** `SQLite` schema.
-///
-/// `pragma_table_info` rather than a hand-written list, and rather than the
-/// migration's own source text: the property the case below needs is that
-/// the roster matches the table the chain actually created, which is the
-/// only artifact that can disagree with the roster at run time.
-/// `group_concat` collapses the pragma's rows into the single named column
-/// [`raw_string_opt`] reads, so no second row-shape helper is needed here.
-async fn table_columns(dsn: &str, table: &str) -> Vec<String> {
-    let joined = raw_string_opt(
-        dsn,
-        &format!("SELECT group_concat(name, ',') AS v FROM pragma_table_info('{table}')"),
-    )
-    .await
-    .expect("the migration chain created this table, so the pragma answers a non-empty list");
-    joined.split(',').map(ToOwned::to_owned).collect()
-}
-
 /// **[`super::PRODUCT_CONTENT_ROSTER`] is `products_product`'s own columns
 /// minus [`EXCLUDED_FROM_FROZEN_CONTENT`]** — §4.3's rule, measured against
 /// the schema the migration chain executed.
@@ -2987,25 +2853,6 @@ async fn enqueued_event_body(dsn: &str, payload_type: &str) -> serde_json::Value
     // fields live under `data`. Unwrapped here rather than at each call site
     // so a test that asks for "the body" keeps reading the body.
     envelope["data"].clone()
-}
-
-/// The **envelope** of the newest enqueued row carrying `payload_type` —
-/// [`enqueued_event_body`]'s outer object, for the cases that assert on the
-/// envelope's own four fields rather than on §4.5's body core. Three of those
-/// four are P-D-01 obligations; `eventId` is not — see
-/// `infra::events::EventEnvelope::event_id`.
-async fn enqueued_event_envelope(dsn: &str, payload_type: &str) -> serde_json::Value {
-    let body_table = format!("{}_body", events::OUTBOX_TABLE_PREFIX);
-    let payload = raw_string_opt(
-        dsn,
-        &format!(
-            "SELECT CAST(payload AS TEXT) AS v FROM {body_table} \
-             WHERE payload_type = '{payload_type}' ORDER BY id DESC LIMIT 1"
-        ),
-    )
-    .await
-    .expect("the enqueued row carries a payload");
-    serde_json::from_str(&payload).expect("the door enqueues a JSON envelope")
 }
 
 /// **`ProductPublished` carries `publishedVersion`, and it is the version the
@@ -3582,16 +3429,6 @@ async fn save_at(
         &[("If-Match", &if_match(revision))],
     )
     .await
-}
-
-/// The `products_audit_log.action` token of the single row a case wrote.
-async fn audit_action(dsn: &str) -> Option<String> {
-    raw_string_opt(dsn, "SELECT action AS v FROM products_audit_log").await
-}
-
-/// The `products_audit_log.error_code` of the single row a case wrote.
-async fn audit_error_code(dsn: &str) -> Option<String> {
-    raw_string_opt(dsn, "SELECT error_code AS v FROM products_audit_log").await
 }
 
 /// **A bucket-iii save on a `draft` head is admitted and moves
@@ -4266,15 +4103,6 @@ async fn refusal_error_code(dsn: &str) -> Option<String> {
         "SELECT error_code AS v FROM products_audit_log WHERE error_code IS NOT NULL LIMIT 1",
     )
     .await
-}
-
-/// A `WHERE` fragment matching `column` against `id` whichever way the
-/// driver stored it — `skus_tests::id_matches`' own reason: the `SQLite`
-/// mirror declares the column `text` but `sqlx` binds a `Uuid` as a blob,
-/// so the plain spelling matches nothing, silently.
-fn id_matches(column: &str, id: Uuid) -> String {
-    let hex = id.simple().to_string().to_uppercase();
-    format!("({column} = '{id}' OR hex({column}) = '{hex}')")
 }
 
 /// Narrow a Product's `region_scope` **out of band**, around every door.
@@ -4961,21 +4789,6 @@ async fn an_unregistered_payload_type_is_refused_and_enqueues_nothing() {
     );
 }
 
-/// How many outbox rows carry `payload_type`.
-///
-/// Counted on `_body` rather than `_incoming` for the reason
-/// [`exactly_one_outbox_row_is_enqueued_and_no_content_row_is_written`]
-/// states at length: `_incoming` is a staging table the running sequencer
-/// drains, so a count taken after the response has raced the pipeline.
-async fn enqueued_event_count(dsn: &str, payload_type: &str) -> i64 {
-    let body_table = format!("{}_body", events::OUTBOX_TABLE_PREFIX);
-    raw_i64(
-        dsn,
-        &format!("SELECT COUNT(*) AS v FROM {body_table} WHERE payload_type = '{payload_type}'"),
-    )
-    .await
-}
-
 /// **A save enqueues exactly one `ProductHeadSaved` row, and its body carries
 /// the revision the act committed and the state the head is actually in.**
 ///
@@ -5137,9 +4950,30 @@ async fn a_created_events_envelope_carries_the_four_obligations_from_the_door() 
     // BLOB, and casting those bytes to text yields invalid UTF-8 rather than
     // the hyphenated form. Both sides are normalised to bare upper-case hex so
     // the comparison is about the value and not about either rendering.
+    // Scoped, and the scope is *proved*: an unqualified `LIMIT 1` over this
+    // table reads a row by position, so it would keep passing if the door
+    // minted a second ref for someone else and the wrong one happened to sort
+    // first. The acting principal's own id is not knowable here — `authed_ctx`
+    // mints a fresh subject per call — so the tenant is the scope, and the
+    // count assertion is what makes reading one row from it exact.
+    assert_eq!(
+        raw_i64(
+            &harness.dsn,
+            &format!(
+                "SELECT COUNT(*) AS v FROM products_identity_ref WHERE {}",
+                id_matches("tenant_id", TENANT)
+            ),
+        )
+        .await,
+        1,
+        "this create must have minted exactly one identity ref for this tenant"
+    );
     let minted = raw_string_opt(
         &harness.dsn,
-        "SELECT hex(actor_ref) AS v FROM products_identity_ref LIMIT 1",
+        &format!(
+            "SELECT hex(actor_ref) AS v FROM products_identity_ref WHERE {}",
+            id_matches("tenant_id", TENANT)
+        ),
     )
     .await
     .expect("the create resolved an actor ref through the identity map");

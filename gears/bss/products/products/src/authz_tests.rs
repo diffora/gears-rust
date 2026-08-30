@@ -14,7 +14,6 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use authz_resolver_sdk::constraints::{Constraint, InPredicate, Predicate};
 use authz_resolver_sdk::models::{
     EvaluationRequest, EvaluationResponse, EvaluationResponseContext,
 };
@@ -24,6 +23,7 @@ use toolkit_security::{SecurityContext, pep_properties};
 use uuid::Uuid;
 
 use super::{AuthzError, access_scope, actions, authz_label_type_schemas, labels, resource_types};
+use crate::test_support::flat_in_enforcer;
 
 #[test]
 fn labels_all_is_product_and_sku() {
@@ -90,44 +90,6 @@ fn action_names_are_pairwise_distinct() {
     let names = [actions::READ, actions::WRITE, actions::PUBLISH];
     let distinct: std::collections::BTreeSet<&str> = names.iter().copied().collect();
     assert_eq!(distinct.len(), names.len(), "two action consts collide");
-}
-
-/// Degraded flat-`In` PDP fake: permits and emits a single flat
-/// `In([allowed])` constraint over `OWNER_TENANT_ID` — the shape the
-/// production PDP returns for a PEP that advertises no tenant-subtree
-/// capability (this gear, [`PolicyEnforcer::new`] with no
-/// `with_capabilities`). The request is ignored: the fake models a subject
-/// authorized only for the single `allowed` tenant.
-struct FlatInResolver {
-    allowed: Uuid,
-}
-
-#[async_trait]
-impl AuthZResolverClient for FlatInResolver {
-    async fn evaluate(
-        &self,
-        _req: EvaluationRequest,
-    ) -> Result<EvaluationResponse, AuthZResolverError> {
-        Ok(EvaluationResponse {
-            decision: true,
-            context: EvaluationResponseContext {
-                constraints: vec![Constraint {
-                    predicates: vec![Predicate::In(InPredicate::new(
-                        pep_properties::OWNER_TENANT_ID,
-                        vec![self.allowed],
-                    ))],
-                }],
-                deny_reason: None,
-            },
-        })
-    }
-}
-
-/// A degraded-mode enforcer (no `with_capabilities`) over a subject authorized
-/// for `allowed` only — mirrors the gear's production PEP wiring
-/// (`crate::gear::BssProductsGear::init`).
-fn flat_in_enforcer(allowed: Uuid) -> PolicyEnforcer {
-    PolicyEnforcer::new(Arc::new(FlatInResolver { allowed }))
 }
 
 fn ctx_for(tenant: Uuid) -> SecurityContext {

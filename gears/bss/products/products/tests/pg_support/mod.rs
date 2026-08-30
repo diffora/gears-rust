@@ -267,6 +267,16 @@ async fn resolve_server() -> (u16, Option<ContainerAsync<Postgres>>) {
     }
     // A sibling binary won the race and started it under our name. It may still
     // be booting, so wait rather than read a port it has not published yet.
+    //
+    // **This is the second `await_answer` on one compound path, and it is not a
+    // duplicate.** Reaching here from `Verdict::Live` means the first call
+    // spent its whole budget on a container that was then `rm -f`'d as a
+    // corpse; this call waits on a *different* container, the sibling's, which
+    // did not exist when the first one gave up. Collapsing them would make the
+    // harness read a port belonging to the thing it had just removed. The cost
+    // is a second `BOOT_BUDGET` on the rarest path — Live, then silent for the
+    // full budget, then out-raced — and that is the price of not destroying a
+    // sibling's container.
     let port = await_answer(HARNESS_CONTAINER)
         .await
         .expect("the sibling's container must come up and publish a port");

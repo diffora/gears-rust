@@ -199,7 +199,18 @@ async fn the_row_identity_columns_are_immutable_on_both_head_tables() {
     let conn = pg.raw().await;
     seed(&conn, "draft", 0).await;
 
-    for column in ["created_by = 'principal:b'", "created_at = now()"] {
+    // `clock_timestamp()`, not `now()`. `now()` is `transaction_timestamp()`,
+    // constant for a whole transaction, so it equals the value `seed` wrote
+    // whenever seed and probe share one — the guard's
+    // `NEW.created_at IS DISTINCT FROM OLD.created_at` would then be false,
+    // the clause would not fire, and this case would fail for a reason that
+    // has nothing to do with the guard. It passes today only because the two
+    // land in separate implicit transactions. `clock_timestamp()` advances
+    // within a transaction and is immune to that coupling.
+    for column in [
+        "created_by = 'principal:b'",
+        "created_at = clock_timestamp()",
+    ] {
         let product = refusal(
             &conn,
             &format!(

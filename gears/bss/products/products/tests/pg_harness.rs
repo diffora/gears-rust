@@ -72,10 +72,18 @@ fn a_running_runs_database_is_left_alone_and_a_finished_ones_is_not() {
         return;
     }
 
-    let mut stand_in = Command::new("sleep")
-        .arg("30")
-        .spawn()
-        .expect("spawn a stand-in for a concurrent run");
+    // A host that cannot spawn `sleep` cannot supply the "other run still
+    // going" half either, so it takes the same fail-safe assertion as the
+    // unanswerable-liveness case above rather than failing the suite for an
+    // absent utility. `sleep` is POSIX, so this is a guard against an unusual
+    // host, not an expected path.
+    let Ok(mut stand_in) = Command::new("sleep").arg("30").spawn() else {
+        assert!(
+            !prunable(&format!("t_{}_0", std::process::id())),
+            "no stand-in can be spawned here, so nothing may be dropped"
+        );
+        return;
+    };
     let name = format!("t_{}_0", stand_in.id());
 
     let while_running = prunable(&name);

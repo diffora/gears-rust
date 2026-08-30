@@ -1,8 +1,11 @@
 //! The event envelope's own guards (`design/01-foundation.md` §4.5, P-D-01,
 //! P-D-47).
 //!
-//! The two `partition_for` cases stay inline in `events.rs` beside the
-//! formula they judge; what lives here is everything about the **envelope** —
+//! The two `partition_for` cases live here too, as of review wave D. They had
+//! been inline in `events.rs`, which made that module the only one in the crate
+//! carrying **both** a `#[path]` sibling test file and an `mod tests` block —
+//! a second place a reader had to know to look. Beyond them, what lives here
+//! is everything about the **envelope** —
 //! the schema-reference roster, the envelope's own four fields (three of
 //! which are P-D-01 obligations — see the case that asserts them), and the
 //! shape a consumer reads.
@@ -11,11 +14,11 @@ use serde_json::Value;
 use uuid::Uuid;
 
 use super::{
-    EntityKind, EventBodyCore, EventEnvelope, PRODUCT_CREATED_PAYLOAD_TYPE,
+    EntityKind, EventBodyCore, EventEnvelope, PARTITIONS, PRODUCT_CREATED_PAYLOAD_TYPE,
     PRODUCT_DISCARDED_PAYLOAD_TYPE, PRODUCT_HEAD_SAVED_PAYLOAD_TYPE,
     PRODUCT_PUBLISHED_PAYLOAD_TYPE, PublishedEventBody, SCHEMA_REFS, SKU_CREATED_PAYLOAD_TYPE,
     SKU_DISCARDED_PAYLOAD_TYPE, SKU_HEAD_SAVED_PAYLOAD_TYPE, SKU_PUBLISHED_PAYLOAD_TYPE,
-    schema_ref_for,
+    partition_for, schema_ref_for,
 };
 
 /// §4.5's roster, written out here rather than read from the code under test.
@@ -327,4 +330,37 @@ fn the_relocated_tokens_resolve_from_the_events_module() {
             "{token} must carry a schema reference from this module"
         );
     }
+}
+
+/// `partition_for` must never answer outside `[0, PARTITIONS)` — an
+/// out-of-range answer would make `Outbox::enqueue`'s own
+/// `resolve_partition` fail every call with `PartitionOutOfRange`,
+/// turning every create into a `500` regardless of anything the door
+/// itself does right.
+#[test]
+fn partition_for_answers_within_the_configured_partition_count() {
+    for _ in 0..64 {
+        let tenant_id = Uuid::new_v4();
+        let aggregate_id = Uuid::new_v4();
+        let partition = partition_for(tenant_id, aggregate_id);
+        assert!(
+            partition < u32::from(PARTITIONS),
+            "partition {partition} must be < PARTITIONS ({PARTITIONS})"
+        );
+    }
+}
+
+/// The same `(tenant_id, aggregate_id)` pair must always land on the
+/// same partition — this is the entire property P-D-22 asks the formula
+/// for: every event of one aggregate keeps its relative order because
+/// they all land in one partition.
+#[test]
+fn partition_for_is_deterministic_for_the_same_pair() {
+    let tenant_id = Uuid::new_v4();
+    let aggregate_id = Uuid::new_v4();
+    assert_eq!(
+        partition_for(tenant_id, aggregate_id),
+        partition_for(tenant_id, aggregate_id),
+        "the same (tenant_id, aggregate_id) pair must hash to the same partition every time"
+    );
 }

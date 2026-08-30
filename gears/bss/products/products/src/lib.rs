@@ -29,3 +29,8 @@ pub mod gear;
 pub mod gts;
 #[doc(hidden)]
 pub mod infra;
+
+/// What more than one test module needs, written once. See its own doc for
+/// why a test-support module earns its place in this crate in particular.
+#[cfg(test)]
+mod test_support;
