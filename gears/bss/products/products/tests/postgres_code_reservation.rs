@@ -1,4 +1,11 @@
-//! The `product_code` reservation's serialization point, on real Postgres.
+//! The code reservations' serialization points, on real Postgres — the
+//! `product_code` index and its `sku_code` twin.
+//!
+//! Both halves live here because the plan counts them as one item ("the
+//! reservation index on **both** code columns") and because the two doors have
+//! a history of diverging when their cases were split: Phase 6 sliced them
+//! apart and they parted ways six times. Whatever one door's loser is told,
+//! the case for the other is on the same screen.
 //!
 //! # Why this cannot be a `SQLite` suite
 //!
@@ -82,6 +89,8 @@
 //!
 //! Ignored by default; it needs Docker. Run with
 //! `cargo test -p cf-gears-bss-products --test postgres_code_reservation -- --ignored`.
+//!
+//! @cpt-dod:cpt-cf-bss-products-dod-concurrency:p1
 
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
@@ -91,7 +100,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bss_products::infra::storage::RepoError;
-use bss_products::infra::storage::repo::{self, NewProduct};
+use bss_products::infra::storage::repo::{self, NewProduct, NewSku};
 use chrono::{DateTime, TimeZone, Utc};
 use pg_support::Pg;
 use tokio::sync::Notify;
@@ -102,9 +111,15 @@ const TENANT: Uuid = Uuid::from_u128(0x7e_42);
 const BRAND: Uuid = Uuid::from_u128(0xb2_a0);
 const WINNER: Uuid = Uuid::from_u128(0x_1111);
 const LOSER: Uuid = Uuid::from_u128(0x_2222);
+const PARENT: Uuid = Uuid::from_u128(0x_3333);
+const SKU_WINNER: Uuid = Uuid::from_u128(0x_4444);
+const SKU_LOSER: Uuid = Uuid::from_u128(0x_5555);
 
 /// The contested reservation. One value, both racers.
 const CODE: &str = "FIBRE-500";
+
+/// The SKU half's contested reservation, on `uq_products_sku_code`.
+const SKU_CODE: &str = "FIBRE-500-STD";
 
 /// Long enough that a loaded machine is not a failure, short enough that a
 /// genuine deadlock is not a hung suite.
@@ -262,6 +277,167 @@ async fn surviving_holders(conn: &sea_orm::DatabaseConnection) -> Vec<String> {
             "SELECT product_id::text AS id
                FROM bss.products_product
               WHERE product_code = '{CODE}' AND lifecycle_state <> 'discarded'
+              ORDER BY id"
+        ),
+    ))
+    .await
+    .expect("read the surviving holders")
+    .iter()
+    .map(|row| row.try_get::<String>("", "id").expect("read the id"))
+    .collect()
+}
+
+/// A SKU carrying the contested code under the one parent.
+///
+/// Unlike its Product twin the two contenders need differ in nothing but their
+/// own id: `products_sku` carries **one** partial unique index, so `sku_code`
+/// is the only thing either row can collide on and there is no second index to
+/// confuse the failure with.
+fn sku_contender(sku_id: Uuid) -> NewSku {
+    NewSku {
+        sku_id,
+        tenant_id: TENANT,
+        product_id: PARENT,
+        sku_code: SKU_CODE.to_owned(),
+        region_scope: "eu".to_owned(),
+        brand_scope: String::new(),
+        created_by: "principal:author-1".to_owned(),
+        created_at: at(9),
+    }
+}
+
+/// Commit the parent every SKU below hangs from, before any racing starts.
+///
+/// Committed rather than raced: a parent inserted inside one of the racing
+/// transactions would make the *other* racer's foreign key the thing that
+/// blocked, and the probe would be measuring the wrong lock.
+async fn seed_parent(pg: &Pg) {
+    let db = pg.db().await;
+    let (_db, out) = db
+        .in_transaction::<(), RepoError, _>(move |txn| {
+            Box::pin(async move {
+                // Deliberately **code-less**: a parent holding the contested
+                // `CODE` would put an irrelevant reservation in the same
+                // database and leave a reader wondering which index this test
+                // is about.
+                let parent = NewProduct {
+                    product_code: None,
+                    ..contender(PARENT, "Parent", "parent")
+                };
+                repo::insert_product(txn, &scope(), parent)
+                    .await
+                    .map(|_| ())
+            })
+        })
+        .await;
+    out.expect("the parent Product must commit before the SKUs race for a code");
+}
+
+/// **The SKU half of the same reservation invariant.**
+///
+/// The Product and SKU doors were built by parallel slices and diverged six
+/// times in Phase 6. `uq_products_sku_code` is a second physical index with its
+/// own name, its own predicate and its own driver text, so a probe on the
+/// Product side proves nothing about it: the classifier reads a **substring**,
+/// and `uq_products_sku_code` contains neither `product_code` nor
+/// `name_normalized`. This is the case that says what the SKU door's loser is
+/// actually told.
+#[tokio::test]
+#[ignore = "requires Docker (testcontainers)"]
+async fn two_creates_of_one_sku_code_contend_on_the_reservation_index_and_one_is_refused() {
+    let pg = Pg::applied().await;
+    seed_parent(&pg).await;
+
+    let observer = pg.raw().await;
+    let written = Arc::new(Notify::new());
+    let release = Arc::new(Notify::new());
+
+    let winner = {
+        let db = pg.db().await;
+        let (written, release) = (Arc::clone(&written), Arc::clone(&release));
+        tokio::spawn(async move {
+            let (_db, out) = db
+                .in_transaction::<(), RepoError, _>(move |txn| {
+                    Box::pin(async move {
+                        repo::insert_sku(txn, &scope(), sku_contender(SKU_WINNER)).await?;
+                        written.notify_one();
+                        release.notified().await;
+                        Ok(())
+                    })
+                })
+                .await;
+            out
+        })
+    };
+
+    written.notified().await;
+
+    let loser = {
+        let db = pg.db().await;
+        tokio::spawn(async move {
+            let (_db, out) = db
+                .in_transaction::<(), RepoError, _>(move |txn| {
+                    Box::pin(async move {
+                        repo::insert_sku(txn, &scope(), sku_contender(SKU_LOSER))
+                            .await
+                            .map(|_| ())
+                    })
+                })
+                .await;
+            out
+        })
+    };
+
+    pg_support::wait_until_a_backend_blocks(&observer).await;
+    release.notify_one();
+
+    tokio::time::timeout(RACE_TIMEOUT, winner)
+        .await
+        .expect("the winner must finish once released")
+        .expect("its task must not panic")
+        .expect("the winner is uncontended and must commit");
+
+    let refusal = tokio::time::timeout(RACE_TIMEOUT, loser)
+        .await
+        .expect("the loser must be released by the winner's commit")
+        .expect("its task must not panic")
+        .expect_err("the code was reserved under it");
+
+    let refusal = refusal.into_domain(|infra| RepoError::Db(format!("race transaction: {infra}")));
+    let rendered = refusal.to_string().to_ascii_lowercase();
+
+    assert!(
+        rendered.contains("unique constraint") || rendered.contains("duplicate key"),
+        "the classifier's unique-violation gate would not open on this text: {rendered}"
+    );
+    // The SKU door tells its own index apart by `sku_code`, the way the Product
+    // door does by `product_code`. Postgres names the constraint, so the
+    // substring is present through `uq_products_sku_code`.
+    assert!(
+        rendered.contains("sku_code"),
+        "the SKU door reads DUPLICATE_CODE off this substring and it is absent: {rendered}"
+    );
+
+    let conn = pg.raw().await;
+    let holders = surviving_sku_holders(&conn).await;
+    assert_eq!(
+        holders,
+        vec![SKU_WINNER.to_string()],
+        "the SKU reservation admitted other than exactly one winner"
+    );
+}
+
+/// The `sku_id`s holding [`SKU_CODE`] under `uq_products_sku_code`'s own
+/// predicate.
+async fn surviving_sku_holders(conn: &sea_orm::DatabaseConnection) -> Vec<String> {
+    use sea_orm::{ConnectionTrait, Statement};
+
+    conn.query_all_raw(Statement::from_string(
+        sea_orm::DatabaseBackend::Postgres,
+        format!(
+            "SELECT sku_id::text AS id
+               FROM bss.products_sku
+              WHERE sku_code = '{SKU_CODE}' AND lifecycle_state <> 'discarded'
               ORDER BY id"
         ),
     ))

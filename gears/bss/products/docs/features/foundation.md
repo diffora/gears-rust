@@ -728,7 +728,7 @@ phase on a keyless request rather than failing it (P-D-34).
 
 ### Concurrency probes on the races
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-concurrency`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-concurrency`
 
 The system **MUST** decide each contested resource under the write rather than by a read-then-act
 check, and the implementation **MUST** carry real concurrency probes — not read-then-assert — for
