@@ -198,6 +198,10 @@ actor, the scenarios and the boundary.
 
 ### 3.3 Error taxonomy (slice-owned codes)
 
+Declared by [`../features/taxonomy-attributes.md`](../features/taxonomy-attributes.md) §3 as `cpt-cf-bss-products-algo-error-taxonomy`.
+The code roster below is this slice's and is the normative one; the FEATURE carries the
+registration obligation and the boundary.
+
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-contract-taxonomy-errors`
 
 `DUPLICATE_CATEGORY_NAME`, `TAXONOMY_CYCLE`, `TAXONOMY_LIMIT`, `CATEGORY_REFERENCED`,

@@ -53,6 +53,8 @@
   - [Metadata outside version content](#metadata-outside-version-content)
 - [6. Acceptance Criteria](#6-acceptance-criteria)
 - [7. Known unknowns](#7-known-unknowns)
+  - [The two seams, in full](#the-two-seams-in-full)
+  - [Raised here rather than carried](#raised-here-rather-than-carried)
 
 <!-- /toc -->
 
@@ -83,6 +85,44 @@ This feature owns **no approval machinery** — it hands `05-governance` an oper
 spends what that feature approves. It owns **no PII detector** — it places the write-block hook
 and invokes the policy `10-retention-erasure` owns.
 
+**Requirements** — carried from [`../DECOMPOSITION.md`](../DECOMPOSITION.md) §2.2 with its scoping
+notes intact:
+
+- Whole: `cpt-cf-bss-products-fr-manage-taxonomy`,
+  `cpt-cf-bss-products-fr-localized-attributes`
+- Scoped: `cpt-cf-bss-products-fr-create-product` (the category and attribute content rules; the
+  uniqueness clause is `01-foundation`'s),
+  `cpt-cf-bss-products-fr-retention-erasure` (the write-block hook placement only; the detector
+  policy and the erasure act are `10-retention-erasure`'s)
+- Non-functional: `cpt-cf-bss-products-nfr-scale-extensibility` (the extensibility-limits half —
+  max taxonomy depth and max children per node; the third limit that NFR names,
+  `max attributes/entity`, is claimed by no slice at all and so by no feature either)
+- Surfaces: `cpt-cf-bss-products-usecase-product-sku-editor`,
+  `cpt-cf-bss-products-contract-registry-events`
+
+**Principles**: `cpt-cf-bss-products-principle-registered-validators`.
+
+**Component**: `cpt-cf-bss-products-component-capability-handlers`.
+
+**Sequence**: none of its own — this feature contributes validators and content to
+`cpt-cf-bss-products-seq-authoring-publish`.
+
+**Not applicable or delegated**, stated so a reader can tell considered-and-excluded from
+forgotten: **authentication** and **observability** — logging points, metrics, traces, the
+correlation id and the health contribution — are `01-foundation`'s, as is outbox delivery and
+retry; **read performance**, caching, pagination and faceting are `08-read-models`'; **retention
+and reporting** are `10-retention-erasure`'s. This feature states no latency target: its write
+paths are human-paced and single-writer by construction, and the one guard that scans
+(`dod-retire-delete-guard`'s reference check) is bounded by the tenant's own catalog — its sample
+size and the index it reads are unstated and owed. **Operator-facing error message wording** is
+not specified here; the sixteen codes are the contract and the rendering is the API layer's.
+
+**Out of scope**, mirroring [`../DECOMPOSITION.md`](../DECOMPOSITION.md) §2.2: the approval
+machinery itself (`05-governance`); read-model and search projections, faceting and category
+read-model warming (`08-read-models`); erasure execution (`10-retention-erasure`); and `PlanTier`
+and the recognized sets, which are governed live entities too but belong to
+`03-sku-classification`, which reuses this feature's pattern rather than extending it.
+
 ### 1.3 Actors
 
 | Actor | Role in this feature |
@@ -95,8 +135,12 @@ and invokes the policy `10-retention-erasure` owns.
 
 - [`../DECOMPOSITION.md`](../DECOMPOSITION.md) §2.2 — the entry this feature realizes
 - [`../design/02-taxonomy-attributes.md`](../design/02-taxonomy-attributes.md) — the design slice.
-  **This document is the declaration site of the five `flow-` ids and the three `algo-` ids**, and
-  the slice's §2 and §3 point here for them; there is one definition site per id. **The slice's
+  **This FEATURE is the declaration site of the five `flow-` ids and the four `algo-` ids**, and
+  the slice's §2 and §3 point here for them; there is one definition site per id. Three of the
+  four `algo-` ids moved here from the slice; the fourth,
+  `cpt-cf-bss-products-algo-error-taxonomy`, is **minted here** because §3.3's code roster was the
+  one process section carrying no id a FEATURE may define, and `design/02` §3.3 now points at it
+  as its three siblings do. **The slice's
   step lists remain the normative ones and are not copied here**: re-spelling the 26 instruction
   steps it owns would fork the set's own instruction register and leave two texts where only one
   can be true. §2 and §3 below therefore carry the actor, the scenarios and the boundary of each
@@ -106,13 +150,20 @@ and invokes the policy `10-retention-erasure` owns.
     `inst-ad-deprecate-then-remove` rather than as rows, so neither can be reused per row. §4's
     `inst-ce-*` and `inst-de-*` ids are that rendering and nothing more; they add no rule the
     slice does not already state.
-  - **The error taxonomy's `contract-` id is deliberately not cited as a token.** A FEATURE
-    artifact may define only `flow`, `algo`, `state`, `dod` and `featstatus` ids, and that id's
-    only definition site is a design slice, which `artifacts.toml` excludes from autodetection —
-    so `cfs` resolves it nowhere and a citation would be a dangling reference rather than a
-    trace. Fourteen `contract-` ids in this set are in that position, re-measured against
-    `design/` on 2026-08-31: nineteen distinct ids exist there, five of which also resolve in the
-    PRD or the DECOMPOSITION.
+  - **§5 restates `design/02` §4.1's table rosters, and that is a second exception owed a
+    reason.** The no-copy rule above is about *instruction steps*; a Definition of Done has to
+    name the columns, indexes and guards it obliges, or it obliges nothing testable. The cost is
+    real and was paid once already: the first draft dropped §4.1's `(locale?, region?, brand?)`
+    optionality markers — the exact annotation open items 6, 7 and 8 turn on — and the review
+    caught it. Where §5 and §4.1 differ on a column-level fact, **§4.1 governs**.
+  - **`contract-` ids are cited but not defined here.** A FEATURE artifact may **define** only
+    `flow`, `algo`, `state`, `dod` and `featstatus` ids, so this document defines none of the
+    nineteen `contract-` ids the design slices declare. They remain freely **citable**:
+    `artifacts.toml` registers `DESIGN_SLICE` with `pattern = "design/*.md"` and
+    `traceability = "FULL"`, so `cfs where-defined` resolves every one of them to its slice.
+    (`features/foundation.md` §1.4 states the opposite — that the slices are excluded from
+    autodetection and the ids resolve nowhere. That was true before the slices were registered
+    and is false at this commit; the sentence is owed a correction in that document.)
   - **Four `inst-*` ids this slice cites are owned elsewhere** and are referenced, never claimed:
     `inst-fd-save-txn` (`01-foundation`), `inst-rs-removal-operand` (`03-sku-classification`),
     `inst-rt-initiate` (`04-lifecycle`), `inst-gv-scope` (`05-governance`).
@@ -125,6 +176,10 @@ and invokes the policy `10-retention-erasure` owns.
   P-D-39, P-D-47, P-D-50
 - [`./foundation.md`](./foundation.md) — the doors, the validation pipeline and the outbox this
   feature registers into
+- **Dependencies**: `cpt-cf-bss-products-feature-foundation` is the only build-time dependency.
+  `05-governance` and `10-retention-erasure` are **integration** dependencies: their design slices
+  exist, their FEATURE artifacts and code do not, and open items 3 and 4 in §7 state what that
+  costs.
 
 ## 2. Actor Flows (CDSL)
 
@@ -217,9 +272,11 @@ category columns.
 
 **Boundary**: the removal operand is the **non-terminal head**. Frozen entity versions are
 self-contained copies: they stay renderable after a removal, and they neither block one nor are
-touched by one. This is deliberately **not** uniform with `03-sku-classification`'s
-`inst-rs-removal-operand`, whose operand is non-terminal *published* heads; that slice's §6
-registers the divergence.
+touched by one. This is **not** uniform with `03-sku-classification`'s `inst-rs-removal-operand`,
+whose operand is non-terminal *published* heads. **The divergence is open, not decided**: slice
+03 §6 registers it as "Do 02 and 03 admit a `draft` head as a blocking reference, or not?" with
+*Owner: this slice with 02, jointly* — and this feature is that second owner. It is open item 5
+in §7, and it is the operand `dod-definition-lifecycle`'s two-way probe is armed against.
 
 ### Author localized attribute values
 
@@ -299,6 +356,12 @@ The step lists live in [`../design/02-taxonomy-attributes.md`](../design/02-taxo
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-algo-governed-live`
 
+**Input**: the acting principal, the operation kind, the target's identity, the payload, and the
+target row's expected current state
+
+**Output**: either an atomically applied mutation with its event, or a refusal — `STALE_LIVE_OP`
+when the expected state no longer matches the live row, or the gate's own refusal
+
 A `GovernedLiveOp` pins the **operation** — kind, target, payload and the target's expected
 current state — rather than an entity revision, because a live entity has no revision to pin.
 `05-governance` approves the envelope; the apply step re-validates the expected state against the
@@ -312,6 +375,12 @@ contract of this feature rather than an internal detail.
 ### Taxonomy integrity mechanics
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-algo-taxonomy-integrity`
+
+**Input**: the node, its proposed parent, the live tree, and the configured depth and
+children-per-node limits (open item 2: those limits have no value yet)
+
+**Output**: admission, or `TAXONOMY_CYCLE`, `TAXONOMY_LIMIT` naming the limit, or
+`DUPLICATE_CATEGORY_NAME` from the index
 
 Acyclicity is validated by a `TaxonomyWalk` over the new parent's ancestor chain, executed inside
 the write transaction. Uniqueness-in-parent is carried by a unique index rather than a read-then-
@@ -327,6 +396,13 @@ over-limit subtrees are reported informationally rather than repaired.
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-algo-taxonomy-concurrency`
 
+**Input**: the tenant, the door being entered, and the precondition token that door carries —
+the entity row's `If-Match` for Product and SKU content, `products_category.mutation_seq` for the
+category live-value door
+
+**Output**: serialized entry, or a precondition refusal — `STALE_REVISION` (Foundation's) or
+`STALE_CATEGORY_TOKEN` (this feature's)
+
 Taxonomy mutations serialize **per tenant** behind a taxonomy writer lock — an advisory lock on
 Postgres, the write transaction on SQLite. Taxonomy ops are rare and human-paced, and
 single-writer discipline is what makes the walk's verdict trustworthy.
@@ -338,6 +414,8 @@ row's `If-Match`. The category live-value door is the exception and carries its 
 on the approved retry, which a counter advanced by non-operator writes would break.
 
 ### Error taxonomy
+
+- [ ] `p1` - **ID**: `cpt-cf-bss-products-algo-error-taxonomy`
 
 This feature declares sixteen codes and registers them into the Foundation's taxonomy:
 `DUPLICATE_CATEGORY_NAME`, `TAXONOMY_CYCLE`, `TAXONOMY_LIMIT`, `CATEGORY_REFERENCED`,
@@ -372,7 +450,7 @@ two rows below are the template's id-bearing rendering of the slice's `inst-tx-r
 
 **Transitions**:
 1. [ ] - `p1` - **FROM** `active` **TO** `retired` **WHEN** an approved `GovernedLiveOp` applies and no non-terminal Product references the node and no active child exists; the node is thereafter closed to new assignment - `inst-ce-edge-retire`
-2. [ ] - `p1` - **NO EDGE** out of `retired` other than physical deletion, which is admitted only on a retired, childless, unreferenced node and is the single physical row removal this feature performs - `inst-ce-terminal`
+2. [ ] - `p1` - **FROM** `retired` **TO** *(row deleted)* **WHEN** the node is retired, childless and unreferenced; this is the single physical row removal this feature performs, and there is **NO EDGE** back to `active` from either state - `inst-ce-terminal`
 
 **Declared absence**: the slice declares no `retired → active` edge, while the attribute-definition
 machine below declares its `removed → active` and `deprecated → active` re-listings explicitly.
@@ -397,9 +475,10 @@ The four rows below are the template's id-bearing rendering of the slice's
 
 ## 5. Definitions of Done
 
-Twenty-four, against the donor feature's nineteen. The count is stated rather than smoothed: this
-feature carries five tables, sixteen codes, eight events and two doors of its own, where
-`01-foundation` carried four tables and one door family. Each entry below is separately testable.
+Twenty-four, against the donor feature's nineteen — both counts re-measured by `grep` on the two
+files rather than recalled. The gloss that stood here compared table and door counts and had both
+operands wrong in the donor's favour; it is dropped rather than repaired, since the DoD counts
+need no justification beyond being reproducible.
 
 ### Category table and its guards
 
@@ -464,8 +543,10 @@ The system **MUST** create `products_attribute_definition` with `definition_id`,
 
 The system **MUST** create `products_attribute_value` keyed by the owned entity's coordinates
 `(tenant_id, entity_kind, entity_id)` plus `definition_id` plus the locale coordinates
-`(locale, region, brand)` and the value, with a `UNIQUE` constraint over the full coordinate
-tuple. For Product and SKU rows the table **MUST** hold the current head state only, history
+`(locale?, region?, brand?)` — the optionality markers are `design/02` §4.1's and are load-bearing,
+being the exact subject of open items 6 and 7 — and the value, with a `UNIQUE` constraint over the
+full coordinate tuple. **That constraint does not today constrain the mandatory global coordinate**
+(open item 7): both engines treat NULLs as distinct. For Product and SKU rows the table **MUST** hold the current head state only, history
 living in the frozen version rows. For category rows the table **MUST** be the live state itself,
 with no freeze-copy.
 
@@ -748,8 +829,7 @@ them into the Foundation's taxonomy, each carrying the RFC 9457 problem-response
 slice assigns it. No code carrying a registry code may reach the wire as a 422; the architectural
 422s **MUST** render as 400 carrying their code.
 
-**Implements**: `cpt-cf-bss-products-algo-governed-live`,
-`cpt-cf-bss-products-algo-taxonomy-integrity`
+**Implements**: `cpt-cf-bss-products-algo-error-taxonomy`
 
 **Constraints**: `cpt-cf-bss-products-constraint-tenant-isolation`
 
@@ -772,6 +852,10 @@ as an explicit no-event declaration.
 `cpt-cf-bss-products-flow-attribute-definitions`, `cpt-cf-bss-products-flow-metadata`
 
 **Constraints**: `cpt-cf-bss-products-constraint-broker-native-events`
+
+**Contract**: `cpt-cf-bss-products-contract-registry-events` — the envelope these eight ride. The
+op-envelope id §2 says the taxonomy events carry for approval traceability is a field **beyond**
+that contract's base and is declared nowhere; open item 16's door work owes it.
 
 **Touches**:
 - Entities: `CategoryCreated`, `CategoryRenamed`, `CategoryReparented`, `CategoryRetired`,
@@ -821,7 +905,19 @@ mutate the map after a snapshot and prove the old snapshot's checksum does not m
       on rename **and** on re-parent
 - [ ] A create or re-parent past the configured depth or children limit is refused
       `TAXONOMY_LIMIT` naming the limit; lowering the limit afterwards leaves existing structure
-      valid
+      valid. **This criterion runs against a test-fixture limit value, which is distinct from the
+      production default open item 2 leaves unset** — with no value configured nothing is
+      exceedable and the criterion cannot execute
+- [ ] `name_normalized` is byte-identical across SQLite and Postgres for a case-varied,
+      whitespace-varied, NFKC-decomposable category name, and the schema-oracle golden has a
+      perturbation case proving it can fail
+- [ ] A category display-value write demands the global default-locale value at the first write
+      for that definition, and succeeds once it is present
+- [ ] Clean operator free text is **admitted** at every door the PII hook guards, and a curated
+      allow-list entry for a legitimately person-named product is admitted
+- [ ] `GovernedLiveOp` is consumed by `03-sku-classification` without redefinition
+- [ ] The writer-lock probe runs on the Postgres tier, which is named, and is not `#[ignore]`d
+      without one
 - [ ] A retire is refused `CATEGORY_REFERENCED` while a non-terminal Product references the node,
       and **succeeds** while only a discarded draft holds a link
 - [ ] A delete is admitted only on a retired, childless, unreferenced node
@@ -862,31 +958,87 @@ mutate the map after a snapshot and prove the old snapshot's checksum does not m
 - [ ] Each of the sixteen codes is raised by exactly one rule and carries its declared problem
       status
 - [ ] Every refusal enumerated in §2 has a paired positive control proving the door admits the
-      corresponding legal act
+      corresponding legal act. **The controls are owed per code, not in bulk** — the review of
+      2026-08-31 found eight of the sixteen carrying one: `TAXONOMY_CYCLE`, `TAXONOMY_LIMIT`,
+      `STALE_LIVE_OP`, `CATEGORY_RETIRED`, `DEFINITION_IN_USE`, `STALE_CATEGORY_TOKEN`,
+      `METADATA_LIMIT` and `DEFAULT_LOCALE_MISSING` had none, and a blanket criterion is ticked by
+      inspection rather than by a test
 - [ ] An applied `GovernedLiveOp` against a moved world is refused `STALE_LIVE_OP`, and no partial
       taxonomy mutation is observable
 - [ ] No `#[ignore]`d test exists without a CI tier that runs it
 
 ## 7. Known unknowns
 
-Four items bind implementation and are restated here so they reach the implementer rather than
-only the design reader. The rest stay at their owners.
+[`../design/02-taxonomy-attributes.md`](../design/02-taxonomy-attributes.md) §6 carries
+**23 open items**, and **18 of them are owned by "this slice" — which is this feature**. The
+first version of this section carried four and said the rest stayed with their owners; that was
+false, and the three-lens review of 2026-08-31 measured it so. Every item below blocks a named
+Definition of Done in §5, and the DoD it blocks is stated so an implementer meets the question
+before the code rather than after.
 
-- **Open item 1** — whether a retired category may be re-listed. The slice declares no
-  `retired → active` edge while the attribute-definition machine declares its re-listings
-  explicitly, so the asymmetry is undecided rather than deliberate as far as the text shows.
-  Until it resolves, §4 declares no such edge. *Owner: this feature.*
-- **Open item 2** — the **values** of the taxonomy depth and children-per-node limits. PRD §7
-  `nfr-scale-extensibility` defers them to the NFR workshop and §17.1 carries no interim default,
-  so `TAXONOMY_LIMIT` has a rule and no number. The door must be built configurable and the
-  configuration left unset. *Owner: the PRD owner.*
-- **Open item 3** — the `GovernedLiveOp` envelope is consumed by `05-governance`, which does not
-  exist. Until it does, this feature can define, submit and re-validate an envelope but cannot be
-  end-to-end tested through an approval. *Owner: this feature with 05.*
-- **Open item 4** — the PII detector and its allow-list belong to `10-retention-erasure`, which
-  does not exist. This feature places the hook and declares the code; the verdict policy behind it
-  is absent, so the hook is testable only against a stub. *Owner: `10-retention-erasure`.*
+**None of these is answered here.** A FEATURE artifact records what its design set leaves open;
+it does not decide it.
 
-The remaining risks and open items are stated in
-[`../design/02-taxonomy-attributes.md`](../design/02-taxonomy-attributes.md) §6 and are not
-duplicated here.
+| # | The question | Blocks | Owner |
+|---|---|---|---|
+| 1 | **Does a brand-less global value survive the scope check on a brand-scoped entity?** Under the gear's stated containment reading an unrestricted coordinate under a restricted entity is *not* contained — so the write `dod-default-locale` demands is the write `dod-value-validators` refuses, and a brand-scoped entity can never publish | `dod-value-validators`, `dod-default-locale` | this feature with 05 |
+| 2 | **The taxonomy *and metadata* limits have no interim default anywhere.** `nfr-scale-extensibility` defers the values to the NFR workshop and PRD §17.1 carries neither a taxonomy-limits row nor a metadata-caps row. Both `TAXONOMY_LIMIT` and `METADATA_LIMIT` are rules with no number | `dod-taxonomy-walk`, `dod-metadata-door` | the §17.1 policy owner |
+| 3 | *(seam — see below)* | `dod-governed-live-op` | this feature with 05 |
+| 4 | *(seam — see below)* | `dod-pii-write-block` | `10-retention-erasure` |
+| 5 | **Do 02 and 03 admit a `draft` head as a blocking reference?** This feature's removal operand is the non-terminal head, `03-sku-classification`'s is the non-terminal *published* head. Slice 03 §6 registers the divergence as unanswered and jointly owned | `dod-definition-lifecycle` | this feature with 03 |
+| 6 | **The coordinate model admits combinations the resolver never visits, and the per-brand default locale has no store.** The chain's third step needs one; the only store named is the tenant default | `dod-locale-resolver` | this feature |
+| 7 | **Both uniqueness guarantees are `UNIQUE` over nullable columns.** `(tenant_id, parent_id, name_normalized)` does not constrain **root** categories, and the attribute-value tuple does not constrain the **global** coordinate — the one row `dod-default-locale` makes mandatory. The gear's answer elsewhere is NOT NULL with a stated absence value (P-D-39) | `dod-category-table`, `dod-attribute-value-table`, `dod-name-in-parent` | this feature with the schema owner |
+| 8 | **What is the `global` coordinate's key?** If it is keyed on the default locale it is anchored on the config value the §2 boundary argues against; if it means all three coordinates absent, "a default-locale value at the global coordinate" names a coordinate that carries no locale | `dod-default-locale`, `dod-locale-resolver` | this feature |
+| 9 | **The frozen-content sort key is not total for attribute values.** Sorting by the attribute id orders groups, not rows, so two engines can serialize one content two ways — the failure the rule exists to prevent. Amending it is a register change: P-D-29 and `01-foundation` §4.3 state it in the same words | `dod-version-content-rendering` | P-D-29's owner |
+| 10 | **Is definition removal a material op?** Removal is absent from the material-op enumeration while deprecation, the step before it, is in it. So §4's `inst-de-edge-remove` carries no approval condition while the re-listing edge does — the destructive edge is cheaper than the restorative one | `dod-definition-lifecycle`, `cpt-cf-bss-products-state-attribute-definition` | this feature |
+| 11 | **Does the type-change operand mean the same as the removal operand?** One rule states two: undefined "live values" for the type change, the defined non-terminal head for removal | `dod-definition-lifecycle` | this feature |
+| 12 | **Does the PRD carry a live-reference condition for attribute definitions?** The non-terminal-head operand was credited to the PRD and that attribution is struck; it is either inherited from 03 or design-introduced and owed a PRD amendment | `dod-definition-lifecycle` | the PRD owner with this feature |
+| 13 | **Where does a definition's display label live?** Label edits are a named non-material op and the definition roster carries no label column, so the op has no target | `dod-attribute-definition-table` | this feature |
+| 14 | **Two concurrent metadata writes both pass their precondition.** Metadata rides the entity row's `If-Match` and by P-D-06 bumps no version, so the token never moves and the second write silently overwrites the first, on a map with no history between snapshots | `dod-metadata-door` | this feature |
+| 15 | **Which aggregate orders `CategoryDisplayUpdated` and `AttributeDefinitionUpdated`?** Neither falls under the taxonomy-tree key or the metadata key. It is not a free choice: display writes do not take the taxonomy writer lock, so the tree key would claim a serialization the door does not provide | `dod-taxonomy-events` | this feature with 12 |
+| 16 | **Three doors name no REST path and one names no grant pair** — the taxonomy-op door, the attribute-definition door and the category live-value door. Only the metadata door carries both | `dod-category-live-value-door`, `dod-definition-lifecycle`, `cpt-cf-bss-products-flow-manage-taxonomy` | this feature with 05 |
+| 17 | **Four refusals in this feature have no code**: the unresolvable category, the primary/secondary duplicate, the seeded-definition removal, and the removal refused on a non-terminal head carrying a value. So "sixteen codes" is a floor, not a census | `dod-assignment-validators`, `dod-definition-lifecycle`, `dod-taxonomy-errors` | this feature with the error-contract owner |
+| 18 | **Are `CATEGORY_RETIRED` and `ATTRIBUTE_DEFINITION_DEPRECATED` 422 or 409?** Both are the target's current state refusing the act, the shape the convention puts at 409 | the API-contract owner | the API-contract owner |
+| 19 | **Which of the value validators run at the category live-value door?** They are registered on the entity draft-save door, and the category branch writes through a different one — so a category value against a `deprecated` definition is admitted today, while the removal guard counts an active category as a value-carrying head | `dod-category-live-value-door`, `dod-value-validators` | this feature with 01 |
+| 20 | **What `entity_kind` values does each table admit, and does a definition scope to entity kinds?** The set enumerates them nowhere, while the attribute-value table demonstrably admits `category` and the only named metadata door admits `{products\|skus}` | `dod-attribute-value-table`, `dod-metadata-table` | this feature |
+| 21 | **What happens to `products_product_category` rows when a category is physically deleted?** "Unreferenced" reads the Product's lifecycle state, never the link row, so discarded and retired Products still hold rows in the table called the single source of truth; no referential action is stated | `dod-category-assignment-table`, `dod-retire-delete-guard` | this feature with the schema owner |
+| 22 | **What does a category rename or delete do to entity versions already frozen against it?** The frozen assignment set holds category **ids**, not copies, so a delete leaves an id resolving to nothing and a rename silently changes what an old version renders. The sibling case is answered explicitly for attribute definitions and not for categories | `dod-version-content-rendering`, `dod-retire-delete-guard` | this feature with 06 and 08 |
+| 23 | **Who writes the well-known seeds for a tenant created after the migration?** "Seeded by migration, per tenant bootstrap" names two code paths, and a migration cannot create rows for tenants that do not yet exist | `dod-well-known-seeds` | this feature with 01 |
+| 24 | **Does slice 09 have an operator free-text `reason` at all?** The PII enumeration names one and 09's own owed item quotes this enumeration as its evidence, so nothing independent establishes the door | `dod-pii-write-block` | 09's owner with this feature |
+
+### The two seams, in full
+
+- **Open item 3** — the `GovernedLiveOp` envelope is consumed by `05-governance`. That slice's
+  **design exists** (`design/05-governance.md`, whose `inst-gv-scope` §1.4 cites); what does not
+  exist is its FEATURE artifact and its code. So this feature can define, submit and re-validate
+  an envelope, and **no test can drive one through an approval** — an in-test approval double is
+  therefore an obligation on `dod-governed-live-op`, without which every apply-path DoD and
+  acceptance criteria 1 and 31 go green on a gate that approves nothing.
+  *Owner: this feature with 05.*
+- **Open item 4** — the PII detector and its allow-list belong to `10-retention-erasure`, whose
+  **design also exists** (`design/10-retention-erasure.md`). Its FEATURE and its code do not, so
+  the hook is testable only against a stub — and a stub that refuses every string satisfies both
+  `dod-pii-write-block` and acceptance criterion 22. A clean-text positive control is therefore
+  part of the criterion, not an extra. *Owner: `10-retention-erasure`.*
+
+### Raised here rather than carried
+
+- **`dod-pii-write-block` cannot be ticked by this feature alone.** Its enumeration reaches six
+  doors owned by `01-foundation`, `04-lifecycle`, `05-governance` and `07-reference-signal`. The
+  hook and this feature's own two call sites are its testable core; the enumeration is a register
+  those features tick. This contradicts §5's "each entry below is separately testable" and the
+  contradiction is stated rather than smoothed.
+- **The sixteen codes carry no precedence.** Several co-occur on one save —
+  `ATTRIBUTE_DEFINITION_DEPRECATED` with `ATTRIBUTE_TYPE_MISMATCH`, `CATEGORY_RETIRED` with
+  `PRIMARY_CATEGORY_REQUIRED` — and a caller writing two violations at once has no stated answer
+  for which it meets. `01-foundation` §3 states precedence for its `state` phase and registers
+  the residue; this feature states none.
+- **§1.1 promises "audited" and no DoD delivers it.** The acts this feature owns that emit no
+  event — a refused `GovernedLiveOp`, a blocked PII write, a refused retire — are covered by
+  `01-foundation`'s audit-trail DoD only if that DoD's operand reaches doors this feature adds,
+  which is unstated. *Owner: this feature with 01.*
+- **The `retired → active` category edge is undeclared** while the attribute-definition machine
+  declares both of its re-listings. The review's implementability lens judged the machine **total
+  without it** — `retired` has a defined exit through physical deletion and nothing gets stuck —
+  so this is recorded as an asymmetry worth an owner's glance, **not** as an item that binds
+  implementation.

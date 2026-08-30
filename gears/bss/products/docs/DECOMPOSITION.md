@@ -272,12 +272,16 @@ authored downstream of this document, in the order §3 establishes.
 - **Design Constraints Covered**:
 
   - [ ] `p1` - `cpt-cf-bss-products-constraint-tenant-isolation`
+  - [ ] `p1` - `cpt-cf-bss-products-constraint-immutable-identity`
+  - [ ] `p1` - `cpt-cf-bss-products-constraint-broker-native-events`
 
 - **Domain Model Entities**:
   - Category
   - AttributeDefinition
   - AttributeValue
   - MetadataMap
+  - GovernedLiveOp
+  - WellKnownSeed
 
 - **Design Components**:
 
@@ -293,6 +297,7 @@ authored downstream of this document, in the order §3 establishes.
 
 - **Data**:
   - `products_category`
+  - `products_product_category`
   - `products_attribute_definition`
   - `products_attribute_value`
   - `products_metadata`
