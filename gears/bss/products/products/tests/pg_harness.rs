@@ -96,3 +96,44 @@ fn a_running_runs_database_is_left_alone_and_a_finished_ones_is_not() {
     // And this run's own, which need no special case: this process is running.
     assert!(!prunable(&format!("t_{}_0", std::process::id())));
 }
+
+/// **A name the daemon knows nothing about is not a corpse.**
+///
+/// This is the guard on the fix for a fail-open in the destructive direction.
+/// `container_verdict` used to be a `bool`, so "the daemon could not be asked"
+/// and "the container is not running" were one answer — and the only caller of
+/// that answer issues `docker rm -f`. One transient `docker inspect` failure
+/// therefore removed a healthy, shared container out from under every sibling
+/// test process.
+///
+/// Asserting on an **absent** name is what makes this runnable with no Docker
+/// and no container: `docker inspect` exits non-zero for a name it does not
+/// know, exactly as it does when the daemon is unreachable, and a host with no
+/// `docker` binary at all takes the same path. All three land on `None`, and
+/// `None` is the value that removes nothing.
+///
+/// The case that must NOT hold is the interesting one: if this ever answers
+/// `Some(Verdict::Corpse)`, the harness has gone back to force-removing on a
+/// question it could not answer.
+#[test]
+fn a_container_the_daemon_cannot_speak_for_is_never_judged_a_corpse() {
+    let unknown = format!("bss-products-pg-harness-absent-{}", std::process::id());
+    assert_eq!(
+        pg_support::container_verdict(&unknown),
+        None,
+        "an unanswerable question must stay unanswered, never resolve to a corpse"
+    );
+
+    // And the live case, so this is not a test that would pass with
+    // `container_verdict` hard-wired to `None`: this harness's own container is
+    // running whenever the Postgres tier has been used on this host. Skipped
+    // rather than asserted when it is absent, because a developer who has never
+    // run the tier is not a failure.
+    if let Some(verdict) = pg_support::container_verdict(pg_support::HARNESS_CONTAINER) {
+        assert_eq!(
+            verdict,
+            pg_support::Verdict::Live,
+            "the harness container exists and is not live; the tier's own runs left a corpse"
+        );
+    }
+}

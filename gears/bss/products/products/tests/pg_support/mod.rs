@@ -234,18 +234,30 @@ async fn resolve_server() -> (u16, Option<ContainerAsync<Postgres>>) {
     {
         return (port, None);
     }
-    // Something under our name is not answering *yet*. Two cases, and conflating
-    // them is what turns one lost race into a cascade: a container a killed run
-    // left half-started, and a sibling's container still booting Postgres. Ask
-    // the daemon which, rather than inferring it from the silence.
-    if container_is_running(HARNESS_CONTAINER)
-        && let Some(port) = await_answer(HARNESS_CONTAINER).await
-    {
-        return (port, None);
+    // Something under our name is not answering *yet*. **Three** cases, not two,
+    // and conflating any of them is what turns one lost race into a cascade: a
+    // container a killed run left behind, a sibling's container still coming up,
+    // and a daemon that could not be asked at all. Ask which, rather than
+    // inferring it from the silence.
+    match container_verdict(HARNESS_CONTAINER) {
+        // Up, or on its way up. Wait for it rather than fight it.
+        Some(Verdict::Live) => {
+            if let Some(port) = await_answer(HARNESS_CONTAINER).await {
+                return (port, None);
+            }
+            // Live for the whole budget and never answered: a corpse after all.
+            let _ = docker(&["rm", "-f", HARNESS_CONTAINER]);
+        }
+        // Gone, or dead beyond recovery. Clearing the name is safe - the name is
+        // this harness's own.
+        Some(Verdict::Corpse) => {
+            let _ = docker(&["rm", "-f", HARNESS_CONTAINER]);
+        }
+        // **The daemon could not be asked. Destroy nothing.** Falling through to
+        // `start_named` is the safe move: its name-conflict path waits for
+        // whoever holds the name instead of removing them.
+        None => {}
     }
-    // Not running, or running and never came up inside the budget: a corpse.
-    // Removing it by name is safe - the name is this harness's own.
-    let _ = docker(&["rm", "-f", HARNESS_CONTAINER]);
     if let Some(container) = start_named().await {
         let port = container
             .get_host_port_ipv4(5432)
@@ -270,12 +282,38 @@ async fn resolve_server() -> (u16, Option<ContainerAsync<Postgres>>) {
 /// initialising a cluster while a dozen sibling processes watch.
 const BOOT_BUDGET: std::time::Duration = std::time::Duration::from_secs(90);
 
-/// Is a container with this name in the daemon's `running` state?
+/// What the daemon says about a container under this name.
 ///
-/// The question "is it answering" cannot tell a booting container from a dead
-/// one; this can, and it is the whole reason the force-remove is conditional.
-fn container_is_running(name: &str) -> bool {
-    docker(&["inspect", "-f", "{{.State.Running}}", name]).is_some_and(|out| out.trim() == "true")
+/// **`None` means the question could not be asked** — no `docker` on the path,
+/// a socket that refused, a daemon under load — and it is a distinct value from
+/// [`Verdict::Corpse`] for exactly the reason [`process_is_running`] returns an
+/// `Option`: the module doc promises that every failure mode of a liveness
+/// question lands on *keep*, and the only caller of this function destroys
+/// things. An earlier revision returned a bare `bool` and merged the two, so a
+/// single transient `docker inspect` failure force-removed a healthy container
+/// out from under every sibling process — the precise "reds that said nothing
+/// about any schema" cascade this file exists to eliminate.
+///
+/// `created` and `restarting` are **not** corpses. A container holds its name in
+/// `created` for the moments between `docker create` and `docker start`, so a
+/// sibling entering [`resolve_server`] in that window would otherwise read the
+/// winner's brand-new container as dead and remove it.
+pub fn container_verdict(name: &str) -> Option<Verdict> {
+    let status = docker(&["inspect", "-f", "{{.State.Status}}", name])?;
+    Some(match status.trim() {
+        "running" | "created" | "restarting" => Verdict::Live,
+        _ => Verdict::Corpse,
+    })
+}
+
+/// The daemon's answer about the harness container, once the "could not ask"
+/// case has been lifted into the surrounding `Option`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Verdict {
+    /// Running, or on its way there. Wait for it; never remove it.
+    Live,
+    /// Absent, exited, dead or removing. The name may be cleared.
+    Corpse,
 }
 
 /// Wait for the named container to publish a port and answer on it, up to
@@ -288,7 +326,8 @@ async fn await_answer(name: &str) -> Option<u16> {
         {
             return Some(port);
         }
-        if std::time::Instant::now() >= deadline || !container_is_running(name) {
+        if std::time::Instant::now() >= deadline || container_verdict(name) == Some(Verdict::Corpse)
+        {
             return None;
         }
         tokio::time::sleep(std::time::Duration::from_millis(250)).await;
@@ -322,8 +361,11 @@ async fn start_named() -> Option<ContainerAsync<Postgres>> {
             Err(e) => e.to_string(),
         };
         // Somebody else got the name. Wait for theirs to come up rather than
-        // fight for it; only when it never does do we go round again.
-        if container_is_running(HARNESS_CONTAINER)
+        // fight for it; only when it never does do we go round again. A daemon
+        // that cannot be asked is treated as "somebody is coming up", which is
+        // the non-destructive reading and the one the retry loop can recover
+        // from.
+        if container_verdict(HARNESS_CONTAINER) != Some(Verdict::Corpse)
             && await_answer(HARNESS_CONTAINER).await.is_some()
         {
             return None;
@@ -497,6 +539,45 @@ async fn prune_stale_databases(port: u16) {
     }
 }
 
+/// Create this test's database, clearing a same-named leftover first.
+///
+/// # Why the drop is not redundant
+///
+/// [`next_database`] mints `t_<pid>_<n>` and the counter starts at `0` in every
+/// process, so the first database of every run is deterministically
+/// `t_<pid>_0`. Nothing drops databases at process exit, and [`prunable`]
+/// deliberately gives this run's own pid no special case — so when the OS
+/// recycles a pid (routine under `cargo nextest`, which spends one pid per
+/// test, and on macOS where the pid space wraps at 99998), the prune reads a
+/// dead predecessor's `t_<pid>_0` as *this* live process's and keeps it. The
+/// `CREATE` then fails with `database already exists` and the run dies naming
+/// the harness rather than a guard.
+///
+/// The drop is provably safe and is not a widening of [`prunable`]'s rule: this
+/// name is one this process minted and has not yet created in this run, and no
+/// *live* process can be sharing this pid. `IF EXISTS` so the ordinary case —
+/// no leftover — costs one statement and no error.
+async fn create_fresh_database(port: u16, database: &str) {
+    let admin = Database::connect(small_pool(&url(port, "postgres", false)))
+        .await
+        .expect("connect to the maintenance database");
+    admin
+        .execute_raw(Statement::from_string(
+            sea_orm::DatabaseBackend::Postgres,
+            format!("DROP DATABASE IF EXISTS {database}"),
+        ))
+        .await
+        .unwrap_or_else(|e| panic!("clear a recycled-pid leftover {database}: {e}"));
+    admin
+        .execute_raw(Statement::from_string(
+            sea_orm::DatabaseBackend::Postgres,
+            format!("CREATE DATABASE {database}"),
+        ))
+        .await
+        .unwrap_or_else(|e| panic!("create database {database}: {e}"));
+    drop(admin);
+}
+
 /// One test's own database on the shared server, carrying the applied chain.
 #[derive(Clone, Debug)]
 pub struct Pg {
@@ -515,17 +596,7 @@ impl Pg {
         let port = server_port();
         let database = next_database();
 
-        let admin = Database::connect(small_pool(&url(port, "postgres", false)))
-            .await
-            .expect("connect to the maintenance database");
-        admin
-            .execute_raw(Statement::from_string(
-                sea_orm::DatabaseBackend::Postgres,
-                format!("CREATE DATABASE {database}"),
-            ))
-            .await
-            .unwrap_or_else(|e| panic!("create database {database}: {e}"));
-        drop(admin);
+        create_fresh_database(port, &database).await;
 
         let this = Self { port, database };
         let db = this.db().await;
@@ -541,17 +612,7 @@ impl Pg {
     pub async fn empty() -> Self {
         let port = server_port();
         let database = next_database();
-        let admin = Database::connect(small_pool(&url(port, "postgres", false)))
-            .await
-            .expect("connect to the maintenance database");
-        admin
-            .execute_raw(Statement::from_string(
-                sea_orm::DatabaseBackend::Postgres,
-                format!("CREATE DATABASE {database}"),
-            ))
-            .await
-            .unwrap_or_else(|e| panic!("create database {database}: {e}"));
-        drop(admin);
+        create_fresh_database(port, &database).await;
         Self { port, database }
     }
 
