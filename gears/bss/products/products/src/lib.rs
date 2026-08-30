@@ -12,8 +12,21 @@
 //! Foundation owns publish; capability features own capability policy and
 //! register their rules into the pipeline.
 //!
-//! No crate-level lint allowances: the workspace bar is met as written rather
-//! than paid down later.
+//! No crate-level allowance of the **workspace** bar: pedantic + restriction is
+//! met as written rather than paid down later. The one allowance below is a
+//! `rustdoc` lint, and it is a measurement rather than a concession — see its
+//! own comment.
+
+// Every module in this crate is `#[doc(hidden)]`, so a module doc that links an
+// item private to it is not "public documentation" in the sense this lint
+// means: no consumer can reach either end. The crate links private items from
+// its `pub mod` docs deliberately and ~99 times, and `--document-private-items`
+// does **not** silence the lint (109 warnings either way, measured
+// 2026-08-30), so without this allowance `cargo doc` cannot be a gate command
+// — and until it was one, 16 genuinely unresolved intra-doc links stood in this
+// gear with no gate able to see them. `clippy` compiles doc comments but does
+// not resolve their links.
+#![allow(rustdoc::private_intra_doc_links)]
 
 #[doc(hidden)]
 pub mod api;
