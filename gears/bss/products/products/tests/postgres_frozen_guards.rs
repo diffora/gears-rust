@@ -50,9 +50,19 @@ const CHAIN: &str = "00000000-0000-0000-0000-0000000000c1";
 ///
 /// **Transcribed from the table, not from the trigger.** A list derived from the
 /// guard's own conjuncts could only prove the guard equals itself; this one is
-/// the column roster the table declares, minus the four seal columns the
-/// transition is *supposed* to move. A fourteenth content column added later and
-/// forgotten in the allow-list shows up here as an admitted write.
+/// the column roster the table declares, minus the **five** the sealing
+/// transition is *supposed* to move: `seal_state`, `chain_id`, `seq`,
+/// `row_hash` and `prev_hash`. The arithmetic is 18 declared minus 13 pinned
+/// here; an earlier revision of this sentence said four and left `prev_hash`
+/// unnamed, which made the count look like it balanced when it did not.
+///
+/// `prev_hash` is excluded for the same reason as the other four and needs no
+/// separate guard: the trigger admits exactly **one** update per row
+/// (`OLD.seal_state = 'unsealed' AND NEW.seal_state = 'sealed'`), so a sealed
+/// row admits no second update in which the column could be moved again.
+///
+/// A fourteenth content column added later and forgotten in the allow-list
+/// shows up here as an admitted write.
 const CONTENT_COLUMNS: &[(&str, &str)] = &[
     // The primary key is pinned by the same clause as the rest, and is
     // tamperable in the same statement: the `WHERE` still finds the row by its

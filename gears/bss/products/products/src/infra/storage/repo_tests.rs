@@ -1566,9 +1566,11 @@ async fn a_claim_against_an_answered_row_returns_the_stored_response_and_does_no
 /// A claim against an expired row takes it over: the row's `expires_at`
 /// moves to the new deadline and the caller is told it claimed the key.
 ///
-/// Expiry is evaluated at claim time, not by a reaper (P-D-49): the very
-/// first request past the deadline is what reclaims the key, with no sweep
-/// having run.
+/// Expiry is evaluated at claim time, not by a reaper
+/// (`design/01-foundation.md` §3.2, item 3): the very first request past the
+/// deadline is what reclaims the key, with no sweep having run. P-D-49 is the
+/// decision behind the *compare-and-swap* that makes the takeover safe under
+/// contention, which is the sibling case below, not this one.
 #[tokio::test]
 async fn a_claim_against_an_expired_row_takes_it_over_and_reports_claimed() {
     let provider = harness().await;
@@ -1631,7 +1633,9 @@ async fn a_claim_against_an_expired_row_takes_it_over_and_reports_claimed() {
 /// mismatch stays `IDEMPOTENCY_CONFLICT` in either state": the loser "may
 /// even carry a different payload from the winner, and is still refused
 /// in-flight rather than for the mismatch, since this transaction never
-/// compared the two" (P-D-49). It read the expired holder's row, not the
+/// compared the two" (`design/01-foundation.md` §3.2, which cites P-D-49 for
+/// the compare-and-swap the sentence rests on; the sentence itself is not in
+/// P-D-49's own entry). It read the expired holder's row, not the
 /// winner's, so the outcome is `TakeoverRaceLost` — the variant that carries
 /// no digest, precisely so no caller can compute a verdict from a hash this
 /// transaction never saw.

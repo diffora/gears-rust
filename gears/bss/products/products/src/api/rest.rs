@@ -436,11 +436,13 @@ pub(crate) async fn audit_refusal_of_action_and_report(
         action: action.to_owned(),
         subject_kind: ctx.subject_kind.to_owned(),
         reason: Some(format!("{}: refused at {action}", ctx.error_code)),
-        // Reserved and unwritable: this gear has no request-scoped
-        // correlation id to carry, so every audit row it writes leaves the
-        // column NULL. `repo::AuditCommon::correlation_id`'s own doc records
-        // what was searched for, why nothing was found, and what adopting one
-        // is owed; this is deliberate, not a forgotten field.
+        // Reserved and unwritable, and no longer for want of a value: the
+        // gear does read a request-scoped correlation id
+        // (`infra::events::correlation_id`), but it is 32 hex characters and
+        // this column is `uuid`, so it cannot be written without a migration.
+        // `repo::AuditCommon::correlation_id`'s own doc carries the two
+        // shapes that migration could take and why the choice is owed. This
+        // is deliberate, not a forgotten field.
         correlation_id: None,
         written_at: Utc::now(),
     };

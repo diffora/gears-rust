@@ -3,7 +3,8 @@
 //!
 //! The two `partition_for` cases stay inline in `events.rs` beside the
 //! formula they judge; what lives here is everything about the **envelope** —
-//! the schema-reference roster, the four obligations P-D-01 names, and the
+//! the schema-reference roster, the envelope's own four fields (three of
+//! which are P-D-01 obligations — see the case that asserts them), and the
 //! shape a consumer reads.
 
 use serde_json::Value;
@@ -114,13 +115,23 @@ fn every_schema_reference_is_semver_and_names_its_own_event() {
     }
 }
 
-/// **The four obligations P-D-01 names are on the wire**, under the names a
-/// consumer reads them by.
+/// **The envelope's four fields are on the wire**, under the names a consumer
+/// reads them by.
 ///
-/// This is the whole of `dod-outbox-eventing`'s envelope clause, asserted on
-/// the rendering rather than on the struct: a field renamed by a stray
-/// `#[serde(rename)]`, or dropped by a `skip_serializing_if` that fires when
-/// it should not, is invisible to a test that reads the Rust value.
+/// Not, as an earlier revision of this doc said, "the four obligations P-D-01
+/// names". P-D-01 names **five**, and the mapping is not one-to-one:
+/// `schemaRef`, `correlationId` and `actorRef` are its obligations;
+/// `eventId` is **not** — that is the interim envelope's own handle, and
+/// P-D-47's idempotency key will be the SDK's id (see `EventEnvelope::event_id`);
+/// and P-D-01's ordering key is asserted **nowhere here**, because it is not an
+/// envelope field at all — it is the partition, judged by `events.rs`'s own
+/// inline cases and, for the guarantee a consumer actually gets, owned by the
+/// broker under P-D-47 (§4.4). The `vN`->`vN+1` obligation is slice 12's.
+///
+/// This is `dod-outbox-eventing`'s envelope clause asserted on the rendering
+/// rather than on the struct: a field renamed by a stray `#[serde(rename)]`,
+/// or dropped by a `skip_serializing_if` that fires when it should not, is
+/// invisible to a test that reads the Rust value.
 #[test]
 fn the_envelope_carries_the_four_obligations_and_the_body_beneath_them() {
     let core = core();
@@ -128,7 +139,7 @@ fn the_envelope_carries_the_four_obligations_and_the_body_beneath_them() {
 
     assert_eq!(
         json["eventId"], "00000000-0000-0000-0000-00000000e0e0",
-        "P-D-47's idempotency key is the event's own id"
+        "the interim envelope carries its own event id"
     );
     assert_eq!(json["schemaRef"], "bss-products.ProductCreated.v1.0.0");
     assert_eq!(json["correlationId"], "4bf92f3577b34da6a3ce929d0e0e4736");
@@ -290,8 +301,15 @@ fn a_payload_type_outside_the_roster_has_no_schema_reference() {
     assert!(schema_ref_for(PRODUCT_HEAD_SAVED_PAYLOAD_TYPE).is_some());
 }
 
-/// The four tokens that spent two phases in the door files resolve here, from
-/// the module their seven siblings live in.
+/// The four tokens the door files used to name resolve here, from the module
+/// that now owns all eight.
+///
+/// **Two** of them actually moved — `ProductHeadSaved` from `products.rs` and
+/// `SkuHeadSaved` from `skus.rs`, the only two `*_PAYLOAD_TYPE` consts those
+/// files ever declared. The other two in this loop were born in `events.rs`
+/// and are here as controls, so the case does not read as evidence about a
+/// move that never happened. An earlier revision of this doc called all four
+/// relocated and put "seven siblings" beside them; both counts were wrong.
 ///
 /// This is the guard on the move itself: a token left behind in a door would
 /// still compile there and would reach `schema_ref_for` as an unregistered

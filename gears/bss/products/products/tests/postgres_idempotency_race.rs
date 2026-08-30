@@ -12,8 +12,13 @@
 //! point. Both cases were written expecting the second caller to block on the
 //! row it was updating; the blocked statement was read out of
 //! `pg_stat_activity` in both, and in both it is the `ON CONFLICT` **insert**.
-//! The takeover case's own doc has the consequence, which is that
-//! `IdempotencyClaim::TakeoverRaceLost` is not what a live race produces here.
+//! The takeover case's own doc has the consequence — and states it
+//! **conditionally**, which this summary must not flatten: which refusal the
+//! loser gets depends on where the engine serialized it, so the case names
+//! *both* admissible shapes and its `match` has an arm for each.
+//! `IdempotencyClaim::TakeoverRaceLost` is not what *this* interleaving
+//! produced; it is not excluded from a live race in general, and asserting a
+//! single shape here is what the case deliberately declines to do.
 //!
 //! # What `SQLite` could not do here, in the suite's own words
 //!
@@ -57,10 +62,16 @@ const CLIENT_KEY: &str = "client-key-1";
 
 /// The winner's payload digest, and the loser's — **deliberately different**.
 ///
-/// P-D-49 turns on this: the takeover's loser "may even carry a different
-/// payload from the winner, and is still refused in-flight rather than for the
-/// mismatch, since this transaction never compared the two". Two equal hashes
-/// would make the takeover case pass without ever exercising that rule.
+/// `design/01-foundation.md` §3.2 turns on this: the takeover's loser "may
+/// even carry a different payload from the winner, and is still refused
+/// in-flight rather than for the mismatch, since this transaction never
+/// compared the two". That sentence is the design's, at §3.2's retention
+/// clause, and the design cites **P-D-49** for the compare-and-swap it rests
+/// on — P-D-49's own entry says the loser "is refused in-flight and executes
+/// nothing" and does not contain this sentence. Quote the doc that wrote it.
+///
+/// Two equal hashes would make the takeover case pass without ever exercising
+/// the rule.
 const HASH_A: &[u8] = b"hash-a-0123456789abcdef0123456789";
 const HASH_B: &[u8] = b"hash-b-0123456789abcdef0123456789";
 

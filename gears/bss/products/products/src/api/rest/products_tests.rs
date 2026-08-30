@@ -147,8 +147,9 @@ fn unique_sqlite_path(label: &str) -> std::path::PathBuf {
 /// Build a fresh file-backed `SQLite` mirror, migrated with both this
 /// gear's own Foundation tables and the toolkit outbox's own tables under
 /// [`events::OUTBOX_TABLE_PREFIX`] — the same prefix `gear.rs` builds its
-/// own running pipeline with (see `api/rest.rs`'s own doc on the wiring gap
-/// this leaves there) — with [`events::QUEUE_NAME`] registered and the
+/// own running pipeline with (see `api/rest.rs`'s own doc, which now records
+/// where that wiring **is**; the gap it used to describe was closed) — with
+/// [`events::QUEUE_NAME`] registered and the
 /// **same** [`events::PendingBrokerProducer`] the running gear declares.
 ///
 /// The handler is not an incidental choice. An earlier version of this
@@ -2989,8 +2990,10 @@ async fn enqueued_event_body(dsn: &str, payload_type: &str) -> serde_json::Value
 }
 
 /// The **envelope** of the newest enqueued row carrying `payload_type` —
-/// [`enqueued_event_body`]'s outer object, for the cases that assert on
-/// P-D-01's four obligations rather than on §4.5's body core.
+/// [`enqueued_event_body`]'s outer object, for the cases that assert on the
+/// envelope's own four fields rather than on §4.5's body core. Three of those
+/// four are P-D-01 obligations; `eventId` is not — see
+/// `infra::events::EventEnvelope::event_id`.
 async fn enqueued_event_envelope(dsn: &str, payload_type: &str) -> serde_json::Value {
     let body_table = format!("{}_body", events::OUTBOX_TABLE_PREFIX);
     let payload = raw_string_opt(
@@ -5091,8 +5094,9 @@ async fn a_save_enqueues_one_product_head_saved_carrying_the_committed_revision_
 /// **The envelope P-D-01 requires comes out of the door**, not merely out of
 /// the struct that models it.
 ///
-/// `events_tests` proves `EventEnvelope` renders the four obligations; that is
-/// a statement about a type. This is the statement about the *door*: a create
+/// `events_tests` proves `EventEnvelope` renders its four fields, three of
+/// them P-D-01 obligations; that is a statement about a type. This is the
+/// statement about the *door*: a create
 /// that built its body correctly and enqueued it unwrapped would leave that
 /// unit test green and this one red.
 ///
@@ -5123,7 +5127,7 @@ async fn a_created_events_envelope_carries_the_four_obligations_from_the_door() 
     );
     let event_id = envelope["eventId"]
         .as_str()
-        .expect("P-D-47's idempotency key must be on the envelope");
+        .expect("the interim envelope must carry its own event id");
     assert!(
         Uuid::parse_str(event_id).is_ok(),
         "the event id must be a UUID, not a placeholder: {event_id}"

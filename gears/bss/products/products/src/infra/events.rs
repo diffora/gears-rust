@@ -33,10 +33,22 @@
 //! second copy
 //!
 //! P-D-22 fixes `partition = hash(tenant_id, aggregate_id) mod N`: every
-//! event of one aggregate lands in one partition, which is what keeps their
-//! relative order — the ordering key `fr-registry-eventing-audit`'s AC #28
-//! asks for. [`partition_for`] is the one function that computes it; a door
-//! calls it, never re-derives it. The hash itself is the same idiom
+//! event of one aggregate lands in one partition of **this gear's own
+//! toolkit outbox**. [`partition_for`] is the one function that computes it;
+//! a door calls it, never re-derives it.
+//!
+//! **It is not the ordering AC #28 gets.** §4.4 is explicit under **P-D-47**:
+//! *"Ordering comes from the broker's partition selection, not from a
+//! column"* — the gear sets no `partition_key`, so the broker's ADR-0002
+//! default applies (`MurmurHash3-32` over `tenant_id`, modulo
+//! `topic.partitions`, re-computed authoritatively at ingest), and the
+//! consumer-visible operand beyond the idempotency window is the **broker's**
+//! read-side `sequence`, server-assigned per `(topic, partition)`. What the
+//! partition below orders is the local pipeline: the toolkit outbox's `seq`,
+//! which the SDK sends on as the producer chain's `meta.sequence`. So this
+//! formula is a *pipeline* invariant that P-D-47 supersedes for the guarantee
+//! a consumer actually reads, and §4.4 records the broker's ordering as
+//! **stronger** than the `(tenant, aggregate)` key the envelope promises. The hash itself is the same idiom
 //! `gears/mini-chat`'s own `InfraOutboxEnqueuer::compute_partition` uses for
 //! its single-operand case (`tenant_id.as_u128() % num_partitions`) —
 //! extended here to **two** operands, since P-D-22's key is the pair, not
@@ -82,8 +94,9 @@ pub(crate) const OUTBOX_TABLE_PREFIX: &str = "bss_products_outbox";
 pub(crate) const QUEUE_NAME: &str = "bss_products_events";
 
 /// The fixed partition count P-D-22's modulus divides by. Chosen once, here,
-/// so [`partition_for`] and the queue's own registration (owed to `gear.rs`,
-/// see this module's doc) never disagree on `N` — a registration with a
+/// so [`partition_for`] and the queue's own registration in `gear.rs` — which
+/// reads this very constant (`Gear::init`) — never disagree on `N`; a
+/// registration with a
 /// different count fails closed with `OutboxError::PartitionCountMismatch`
 /// rather than silently reassigning aggregates to different partitions.
 pub(crate) const PARTITIONS: u16 = 8;
@@ -265,10 +278,24 @@ pub(crate) enum EntityKind {
 }
 
 impl EntityKind {
-    /// The wire spelling `entityKind` carries. Lower-case, matching
-    /// `LifecycleState::as_str()`'s own convention on this payload's sibling
-    /// field — §4.5 does not pin a casing, so this is a documented choice
-    /// slice 12's consumer contract may yet override, not a spec citation.
+    /// The wire spelling `entityKind` carries.
+    ///
+    /// **The same two bytes the SDK already publishes**, and that is the fact
+    /// to hold on to: `bss_products_sdk::models::EntityKind::as_str` renders
+    /// `"product"`/`"sku"` too, and its own doc calls that *"the stable wire
+    /// spelling, which is also the value the `entity_kind` column and the
+    /// event body core carry"*. Two definitions, one value. An earlier
+    /// revision of this doc called the value provisional while the SDK's
+    /// called it stable; the SDK's is the one a consumer reads, so **stable**
+    /// is the reading, and §4.5's silence on casing is not a licence for this
+    /// copy to drift from it.
+    ///
+    /// Why a second definition at all: this enum is `pub(crate)` and the SDK's
+    /// is the published contract. Collapsing them is a real simplification and
+    /// it is **owed**, not declined — it belongs with slice 12's consumer
+    /// contract, which is where the SDK type's own audience is decided. Until
+    /// then the guard is `events_tests`, which asserts the rendered value
+    /// rather than this function.
     #[must_use]
     pub(crate) const fn as_str(self) -> &'static str {
         match self {
@@ -353,22 +380,40 @@ pub(crate) enum EventsError {
 ///
 /// # Why the obligations sit here and not on the broker's own envelope
 ///
-/// P-D-01 fixes four semantic obligations and calls them **envelope-agnostic**:
-/// versioned schema references, correlation/causation, per-aggregate ordering
-/// keys, and pseudonymous actors. Measured against the platform as it stands,
-/// the broker's `Event` (`gears/system/event-broker/event-broker-sdk`,
-/// `models::Event`) carries `id`, `type_id`, `topic`, `tenant_id`, `source`,
-/// `subject`, `subject_type`, `partition_key`, `occurred_at`, `trace_parent`
-/// and `data` — and **no field for a causation id, and none for an actor**.
-/// So three of the four have no broker slot to be written into, and the
-/// obligations are discharged here, in the payload this gear controls, which
+/// P-D-01 fixes **five** semantic obligations and calls them
+/// **envelope-agnostic**: versioned (semver) schema references, `vN`->`vN+1`
+/// consumer compatibility, correlation/causation, per-aggregate ordering keys
+/// `(tenant, aggregate)`, and pseudonymous actors. The fifth of those is not
+/// this slice's: §4.5 puts the schema-versioning discipline and the
+/// replay/bootstrap path in **slice 12**, and leaves the Foundation the
+/// envelope itself. An earlier revision of this paragraph said "four" and
+/// dropped the compatibility clause outright, which is why it is spelled out
+/// here.
+///
+/// Measured against the platform as it stands, the broker's `Event`
+/// (`gears/system/event-broker/event-broker-sdk`, `models::Event`) carries
+/// `id`, `type_id`, `topic`, `tenant_id`, `source`, `subject`,
+/// `subject_type`, `partition_key`, `occurred_at`, `trace_parent` and `data`
+/// — and **no field for a causation id, and none for an actor**. Counted
+/// honestly, that is **two values with no broker slot**, not three
+/// obligations: a schema reference maps onto `type_id`, an ordering key onto
+/// `partition_key`, and a correlation id onto `trace_parent`. The two that
+/// do not map are discharged here, in the payload this gear controls, which
 /// is exactly what "envelope-agnostic" licenses.
 ///
-/// When P-D-47's producer lands it will lift what maps: [`Self::event_id`]
-/// into the broker's `id`, [`Self::schema_ref`] into its `type_id`,
-/// [`Self::correlation_id`] into its `trace_parent`. [`Self::actor_ref`] and
-/// [`Self::causation_id`] stay in the body, because there is nowhere else for
-/// them to go.
+/// # This envelope is an interim shape, not one whose fields lift
+///
+/// It is tempting to read the struct below as a draft of what the producer
+/// will hand the broker. It is not. `producer::outbox::ProducerOutboxEnvelope`
+/// owns **both** ends already: it declares its own field set, stamps its own
+/// fixed payload-type token (`PRODUCER_OUTBOX_PAYLOAD_TYPE`, a versioned MIME
+/// string) and carries its own `broker_partition`, which the SDK computes from
+/// the broker's rule and not from [`partition_for`]. When P-D-47's producer is
+/// bound to [`QUEUE_NAME`] it will neither deserialize the rows this module
+/// writes nor agree with the partition they were routed on. So the honest
+/// reading is that the SDK **replaces** this envelope rather than lifting
+/// fields out of it, and the rows written before that point are this gear's
+/// own record, not a consumer's.
 ///
 /// # `data` is a nested object, not a flattening
 ///
@@ -379,12 +424,23 @@ pub(crate) enum EventsError {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct EventEnvelope<'body, B: Serialize> {
-    /// The event's own identity, and **P-D-47's idempotency key**: a consumer
-    /// that sees this id twice has seen one event twice.
+    /// The event's own identity **on this interim envelope**, minted per
+    /// enqueue: a consumer that sees this id twice has seen one enqueue twice.
     ///
-    /// Minted per enqueue rather than derived from the act, because the same
-    /// act may legitimately emit more than one event and a derived id would
-    /// make them indistinguishable.
+    /// **Not P-D-47's idempotency key, and it cannot become one.** That key is
+    /// the id on the broker's `Event`, and the SDK mints it itself:
+    /// `producer::event_factory` sets `id: Uuid::now_v7()` unconditionally,
+    /// while `ProducerOutbox::enqueue` takes a `TypedEvent` and no id — there
+    /// is no parameter through which a value minted here could reach it. So
+    /// when the producer lands there will be **two** ids per event, and the
+    /// consumer-visible one will be the SDK's, not this. Read this field as
+    /// what it is: the interim envelope's own handle, useful for correlating
+    /// an outbox row with the act that wrote it, and superseded the moment
+    /// P-D-47's producer is bound.
+    ///
+    /// Minted rather than derived from the act, because the same act may
+    /// legitimately emit more than one event and a derived id would make them
+    /// indistinguishable.
     pub event_id: Uuid,
     /// The versioned schema reference for [`Self::data`]'s shape
     /// ([`SCHEMA_REFS`]).
@@ -472,8 +528,8 @@ pub(crate) fn correlation_id() -> Option<String> {
 /// P-D-22's partition formula, the one place it is computed.
 ///
 /// `N` is fixed at [`PARTITIONS`]; a door never passes its own count, which
-/// is what keeps this the single source `gear.rs`'s eventual queue
-/// registration (see this module's doc) must be kept equal to.
+/// is what keeps this the single source `gear.rs`'s queue registration — made,
+/// not eventual — is kept equal to.
 #[must_use]
 pub(crate) fn partition_for(tenant_id: Uuid, aggregate_id: Uuid) -> u32 {
     let combined = tenant_id.as_u128() ^ aggregate_id.as_u128().rotate_left(64);

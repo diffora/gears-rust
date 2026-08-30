@@ -824,10 +824,18 @@ fn payload_digest(request: &CreateSkuRequest) -> Vec<u8> {
 /// **The closure is safe to re-run.** Its first statement is the claim, and
 /// the claim rolls back with everything after it (P-D-38), so a retried
 /// attempt starts against exactly the state the first one started against:
-/// no key held, no entity row, no outbox row. Nothing in it is derived from
-/// the attempt — `now` and `expires_at` were stamped before the first — so
-/// the values written are attempt-independent. The body is `FnMut`, so the
-/// inputs are cloned per attempt rather than moved in once.
+/// no key held, no entity row, no outbox row. Its **inputs** are
+/// attempt-independent — `now` and `expires_at` were stamped before the
+/// first. The body is `FnMut`, so the inputs are cloned per attempt rather
+/// than moved in once.
+///
+/// **One written value is not attempt-independent**, and saying otherwise was
+/// wrong: `infra::events` mints the envelope's `event_id` per enqueue
+/// (`Uuid::new_v4()`), so a retried attempt writes a different one. That is
+/// deliberate and harmless in this shape — the attempt only re-runs because
+/// the prior one rolled back, so the prior id was never committed and reached
+/// no consumer. It would stop being harmless if an id were ever minted
+/// *outside* the transaction and carried in.
 async fn insert_sku_with_event(
     state: &ApiState,
     scope: AccessScope,
@@ -846,9 +854,11 @@ async fn insert_sku_with_event(
             move |tx| {
                 // `FnMut`: every attempt gets its own copies, so a retried
                 // attempt never finds an input the previous one consumed.
-                // Nothing here is derived from the attempt — the claim's
-                // `now`/`expires_at` were stamped before the first one — so
-                // the second attempt writes exactly what the first tried to.
+                // The inputs are attempt-independent — the claim's
+                // `now`/`expires_at` were stamped before the first one. The
+                // envelope's `event_id` is not: it is minted per enqueue, so
+                // a retried attempt writes a different one. Harmless here —
+                // the rolled-back attempt's id was never committed.
                 let outbox = Arc::clone(&outbox);
                 let scope = scope.clone();
                 let new = new.clone();
@@ -2266,9 +2276,10 @@ fn head_act_contention_db_err(error: &HeadActError) -> Option<&DbErr> {
 /// borrow of the door's state simply does not typecheck there. [`Clone`] for
 /// the same helper's other reason: the body is `FnMut` and may be re-entered
 /// on a retryable contention failure, so every attempt takes its own copy and
-/// none can consume what the next one needs. Every value is
+/// none can consume what the next one needs. Every value *carried here* is
 /// attempt-independent — `now` was stamped before the first attempt, and the
-/// claim's window with it.
+/// claim's window with it. The envelope id the act eventually enqueues is not
+/// one of them; see [`insert_sku_with_event`] for why that is harmless.
 #[derive(Clone)]
 struct HeadActInputs {
     /// The compiled scope every read and write of the act runs under.
@@ -3025,8 +3036,11 @@ async fn run_discard(
 /// deliberately collide on; `DBProvider::transaction` has no contention
 /// retry, so that collision would surface as a bare `500` instead of the
 /// replay or the `409` the store promises. The body is safe to re-run: the
-/// claim rolls back with everything after it, and nothing it writes is
-/// derived from the attempt, `now` having been stamped before the first.
+/// claim rolls back with everything after it, and its inputs are
+/// attempt-independent, `now` having been stamped before the first; the
+/// envelope's `event_id`, minted per enqueue, is the one value that differs
+/// per attempt, and it is harmless for the reason
+/// [`insert_sku_with_event`] states.
 ///
 /// # The retry needs the driver's error, not its text
 ///

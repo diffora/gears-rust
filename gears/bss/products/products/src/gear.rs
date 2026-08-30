@@ -41,12 +41,21 @@
 //! [`ProductsRuntime`] beside the enforcer; `DatabaseCapability::migrations`
 //! appends the facility's own migrations
 //! (`toolkit_db::outbox::outbox_migrations_with_prefix`) rather than declaring
-//! any outbox table in this gear's own migration chain. No queue is
-//! registered yet — there is no door with a handler to register one for —
-//! so the pipeline starts with an empty queue set; a door slice adds
-//! `.queue(name, partitions).transactional(handler)` to the builder chain in
-//! [`Gear::init`] as it lands, per P-D-23 (`leased`, not `transactional`, is
-//! the mode owed once a handler exists).
+//! any outbox table in this gear's own migration chain. [`Gear::init`]
+//! registers **one** queue — `infra::events::QUEUE_NAME`, over
+//! `infra::events::PARTITIONS`, in `leased` mode with
+//! `infra::events::PendingBrokerProducer` as its processor — and it must,
+//! because `enqueue` refuses an unregistered queue with
+//! `OutboxError::QueueNotRegistered` and every create door enqueues inside
+//! its own transaction. The reason the processor is a holding one is stated
+//! at the registration itself: **P-D-47** puts the real processor, the broker
+//! SDK's `DbProducer`, in `dod-outbox-eventing`, so rows accumulate
+//! undelivered rather than being discarded.
+//!
+//! An earlier revision of this paragraph said no queue was registered yet and
+//! named `.transactional(handler)` as the call a later slice would add. Both
+//! halves were false by the time the file below was written: the queue is
+//! registered, and in `leased` mode.
 //!
 //! @cpt-cf-bss-products-component-registry-foundation
 

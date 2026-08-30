@@ -763,17 +763,30 @@ pub struct AuditCommon {
     /// an `x-request-id` or `x-correlation-id` header (the one place the
     /// platform reads those is `toolkit-http`'s retry layer, for its own log
     /// line, and it does not publish them to a handler); and the only
-    /// request-scoped identifier the platform propagates is the W3C trace
-    /// id, which `toolkit-http`'s `otel` module records onto the span but
-    /// offers no read-back for, and which is not a `UUID` in any case.
+    /// request-scoped identifier the platform propagates is the W3C trace id.
     ///
-    /// So the column stays `NULL` until the gear adopts one. **Owed:** a
-    /// request-scoped correlation id, resolved once per request and carried
-    /// on `ApiState`'s per-request inputs the way the actor ref already is,
-    /// after which every audit writer sets this field and the audit trail
-    /// becomes joinable to a request. Minting one per audit row here would
-    /// be worse than `NULL`: it would fill the column with values that
-    /// correlate nothing while reading, to an operator, as though they did.
+    /// **A read-back now exists, and this paragraph used to deny it.**
+    /// `infra::events::correlation_id` reads that trace id off the ambient
+    /// span and the event envelope carries it; the earlier claim that the
+    /// `otel` module "offers no read-back" was falsified by this gear's own
+    /// eventing commit. What survives is the *other* half of the old
+    /// sentence, and it is the real blocker: the value is 32 hex characters
+    /// and this column is `uuid` on Postgres.
+    ///
+    /// So the column stays `NULL`, and closing it is a **migration, not a
+    /// fill**. Two shapes, and the choice is owed rather than settled here:
+    /// widen the column to `text` and store the id in the spelling that keeps
+    /// it grep-equal to the access log and the error envelope (see
+    /// `infra::events::correlation_id` on why that spelling is load-bearing),
+    /// or parse the 128 bits into a `Uuid` and accept the hyphenated
+    /// rendering. **Owed:** that decision, the migration behind it, and the
+    /// carrying of the value onto `ApiState`'s per-request inputs the way the
+    /// actor ref already is, after which every audit writer sets this field.
+    ///
+    /// Minting one per audit row would still be worse than `NULL`: it would
+    /// fill the column with values that correlate nothing while reading, to
+    /// an operator, as though they did. That judgement is unchanged, and it
+    /// is the one `infra::events::EventEnvelope::correlation_id` cites back.
     pub correlation_id: Option<Uuid>,
     /// The commit instant; the operand `10-retention-erasure`'s
     /// `RetentionClock` reads. Taken as a parameter rather than read from

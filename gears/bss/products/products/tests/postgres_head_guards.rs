@@ -18,9 +18,15 @@
 //! mirror, inoperative on the engine production runs — and how the name index's
 //! classifier arm was found resting on an untested disjunct.
 //!
-//! A count is not the check. Ten triggers and ten `IF` blocks agree on a number
-//! and say nothing about whether the tenth block tests what the tenth trigger
-//! tests. Only executing them does.
+//! A count is not the check. Matching trigger counts against `IF`-block counts
+//! agrees on a number and says nothing about whether the tenth block tests what
+//! the tenth trigger tests. Only executing them does.
+//!
+//! And the number is not even one number: `products_sku` carries **ten** `IF`
+//! blocks, `products_product` **nine** — the tenth is `composition_pending`,
+//! which is a SKU-only column (§4.2: `bundle` is a value of the SKU-only
+//! `type`), so the twin has nothing to match it. A doc that quoted a single
+//! "ten and ten" for both tables was describing one of them.
 //!
 //! # Why every write here goes past the repository
 //!

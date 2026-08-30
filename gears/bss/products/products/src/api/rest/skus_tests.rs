@@ -2353,8 +2353,10 @@ async fn enqueued_event_body(dsn: &str, payload_type: &str) -> serde_json::Value
 }
 
 /// The **envelope** of the newest enqueued row carrying `payload_type` —
-/// [`enqueued_event_body`]'s outer object, for the case that asserts on
-/// P-D-01's four obligations rather than on §4.5's body core.
+/// [`enqueued_event_body`]'s outer object, for the case that asserts on the
+/// envelope's own four fields rather than on §4.5's body core. Three of those
+/// four are P-D-01 obligations; `eventId` is not — see
+/// `infra::events::EventEnvelope::event_id`.
 async fn enqueued_event_envelope(dsn: &str, payload_type: &str) -> serde_json::Value {
     let body_table = format!("{}_body", events::OUTBOX_TABLE_PREFIX);
     let payload = raw_string_opt(
@@ -4287,7 +4289,7 @@ async fn a_created_events_envelope_carries_the_four_obligations_from_the_door() 
     );
     let event_id = envelope["eventId"]
         .as_str()
-        .expect("P-D-47's idempotency key must be on the envelope");
+        .expect("the interim envelope must carry its own event id");
     assert!(
         Uuid::parse_str(event_id).is_ok(),
         "the event id must be a UUID, not a placeholder: {event_id}"
