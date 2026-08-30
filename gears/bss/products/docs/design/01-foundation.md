@@ -1099,8 +1099,12 @@ column refuses the async write too — leaving exactly the migration the seam ex
   than a column to mark.
 - **The facility brings its own multi-backend migrations**, so C1's "one migration per table"
   does not reach these tables and the schema oracle goldens them as imported.
-- **Payloads**: broker-native envelope (P-D-01) with versioned schema ref, correlation/causation,
-  idempotency key (the event `id`, **P-D-47**) and `actor_ref`; in the **payload** body core (§4.5), the subject's
+- **Payloads**: broker-native envelope (P-D-01), and **each obligation lands where the transport
+  has a slot for it** (**P-D-51**) — the versioned schema ref as the broker's `type_id`, the
+  correlation id as its `trace_parent`, the ordering key as its partition selection; and **in the
+  payload**, the two the broker's `Event` has no field for at all: the **causation id** and
+  `actor_ref`. The idempotency key is the event `id`, which the SDK mints (**P-D-47**). Also in the
+  **payload** body core (§4.5), the subject's
   `internal_revision` **as committed by the act** — N+1 where the act bumped it, the
   unchanged current value where it did not, so the number always describes the state the act left
   behind and matches the caller's next ETag (owner's call, 2026-08-27, P-D-29; "at the act" had
@@ -1300,9 +1304,12 @@ against a number).
    on the same terms, or the clone is defined as create-then-save and 11's C3 changes. Owner:
    this slice with 11's. *(Raised by the P-D-46 round — the arm's own edge.)*
 
-12. **Which GTS type does the envelope's `subject_type` name for a Product or a SKU?** **P-D-47**
-   put publishing on the broker SDK, whose event requires a `subject_type` — the GTS type of the
-   entity the event is about, a compile-time constant of the typed event — while `PRD` §15 records
-   that SKUs and Products themselves are never GTS instances. A subject *type* is not an instance,
-   but no document declares one for either entity kind. *(Owner: this slice with 12 and the PRD
-   owner. Raised by the P-D-47 round.)*
+12. ~~**Which GTS type does the envelope's `subject_type` name for a Product or a SKU?**~~
+   **Answered by P-D-51** (owner call, 2026-08-30):
+   `gts.cf.core.events.subject.v1~cf.bss.products.product.v1` and `…sku.v1`. The namespace is the
+   platform's — every other subject type in this workspace is a
+   `gts.cf.core.events.subject.v1~` id — and the name is this set's own declared domain type, so
+   the two are traceable to each other. `PRD` §15's rule that SKUs and Products are never GTS
+   *instances* is untouched: a subject type is a type. **What remains owed is not the question but
+   its other half**: the event types must be registered at the broker carrying these values in
+   their `allowed_subject_types`, and that registration is not this gear's to make.

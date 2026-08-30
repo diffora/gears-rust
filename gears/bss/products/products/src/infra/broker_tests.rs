@@ -602,3 +602,165 @@ async fn every_event_reaches_the_broker_under_its_own_type_id() {
         );
     }
 }
+
+/// **The outbox half of the publication-propagation budget, measured rather
+/// than asserted.**
+///
+/// `dod-outbox-eventing` says *"The outbox half of the sub-3-second
+/// publication-propagation budget belongs here. The probe for it is owed and
+/// the 01/06 split of that budget is open at the PRD owner; no measurement in
+/// this document establishes it."* This is the measurement. It deliberately
+/// **asserts no budget**, because the number the budget splits into is the
+/// owner's to set and a threshold invented here would be a guard against
+/// nothing.
+///
+/// # What it does and does not measure
+///
+/// It times the gear's own path: the instant before `events::enqueue` returns
+/// its transaction to the instant the event is readable at the broker. Both
+/// ends are in-process — `MockBroker` accepts with no network, no disk beyond
+/// the local `SQLite` outbox, and no ingest work — so the number is a **floor**
+/// on the outbox half and not a prediction of production. What it does bound is
+/// the part this gear owns: enqueue, the sequencer, the leased processor's
+/// pickup, and the SDK's publish call. Anything a real broker adds is on the
+/// other side of that boundary and belongs to whoever owns the `01/06` split.
+///
+/// The one thing it **does** assert is arrival, because a timing measurement
+/// over an event that never arrived is not a measurement at all.
+#[tokio::test]
+async fn the_outbox_half_of_the_propagation_budget_is_measured() {
+    use std::sync::Arc;
+    use std::time::Instant;
+
+    use event_broker_sdk::EventBrokerApi;
+    use event_broker_sdk::mock::MockBroker;
+    use toolkit_db::outbox::Partitions;
+    use toolkit_db::{ConnectOpts, connect_db};
+
+    use crate::infra::broker::bind_producer;
+    use crate::infra::events;
+
+    struct TempDb(std::path::PathBuf);
+    impl Drop for TempDb {
+        fn drop(&mut self) {
+            for suffix in ["", "-wal", "-shm"] {
+                let mut p = self.0.clone().into_os_string();
+                p.push(suffix);
+                std::fs::remove_file(std::path::PathBuf::from(p)).ok();
+            }
+        }
+    }
+
+    let broker = Arc::new(MockBroker::new());
+    let control = broker.handle();
+    control
+        .register_topic(TRANSCRIBED_TOPIC, u32::from(events::PARTITIONS))
+        .await;
+    for (_, type_id, subject_type) in THE_EIGHT {
+        control
+            .register_event_type(
+                TRANSCRIBED_TOPIC,
+                type_id,
+                serde_json::json!({}),
+                &[subject_type],
+            )
+            .await;
+    }
+    let hub = toolkit::client_hub::ClientHub::new();
+    hub.register::<dyn EventBrokerApi>(broker);
+
+    let temp = TempDb(
+        std::env::temp_dir().join(format!("bss-products-budget-{}.sqlite3", Uuid::new_v4())),
+    );
+    let dsn = format!("sqlite://{}?mode=rwc", temp.0.display());
+    let db = connect_db(
+        &dsn,
+        ConnectOpts {
+            max_conns: Some(1),
+            min_conns: Some(1),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("connect the file-backed sqlite mirror");
+    toolkit_db::migration_runner::run_migrations_for_testing(
+        &db,
+        toolkit_db::outbox::outbox_migrations_with_prefix(events::OUTBOX_TABLE_PREFIX)
+            .expect("a fixed identifier"),
+    )
+    .await
+    .expect("run the outbox facility's migrator");
+    toolkit_db::migration_runner::run_migrations_for_testing(
+        &db,
+        event_broker_sdk::producer_registration_migrations(),
+    )
+    .await
+    .expect("run the producer registration migrator");
+
+    let (sink, _handle) = bind_producer(
+        &hub,
+        db.clone(),
+        events::OUTBOX_TABLE_PREFIX,
+        Partitions::of(events::PARTITIONS),
+    )
+    .await
+    .expect("the producer must bind")
+    .expect("a ClientHub carrying an EventBrokerApi must not answer None");
+
+    let provider = toolkit_db::DBProvider::<toolkit_db::DbError>::new(db);
+    let conn = provider.conn().expect("checkout a connection");
+    let entity_id = Uuid::now_v7();
+    let core = events::EventBodyCore {
+        tenant_id: TENANT,
+        entity_kind: "product",
+        entity_id,
+        internal_revision: 1,
+        lifecycle_state: "draft",
+    };
+
+    let started = Instant::now();
+    events::enqueue(
+        &sink,
+        &conn,
+        entity_id,
+        events::PRODUCT_CREATED_PAYLOAD_TYPE,
+        &core,
+        ACTOR,
+    )
+    .await
+    .expect("the enqueue must be accepted");
+
+    // Polled at 1ms so the poll interval does not dominate the number the way a
+    // 25ms one would; the ceiling is generous because this asserts arrival, not
+    // a budget.
+    let mut elapsed = None;
+    for _ in 0..30_000_u32 {
+        let mut arrived = false;
+        for partition in 0..u32::from(events::PARTITIONS) {
+            if !control
+                .stored(TRANSCRIBED_TOPIC, partition)
+                .await
+                .is_empty()
+            {
+                arrived = true;
+                break;
+            }
+        }
+        if arrived {
+            elapsed = Some(started.elapsed());
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+    }
+
+    let elapsed = elapsed.expect(
+        "the event must reach the broker; a propagation measurement over an event that never \
+         arrived measures nothing",
+    );
+    println!(
+        "bss-products outbox-half propagation floor: {:.1} ms (enqueue -> readable at an \
+         in-process broker; no network, no ingest work). The sub-3-second budget's 01/06 split \
+         is the PRD owner's and is not asserted here.",
+        elapsed.as_secs_f64() * 1000.0
+    );
+}

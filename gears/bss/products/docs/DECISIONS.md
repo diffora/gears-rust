@@ -61,6 +61,7 @@ joint contracts, cited from here by their pricing numbers, never duplicated.
 - [P-D-48 — The six flagged decisions, put to the owner: two amended, one completed, three confirmed as recorded](#p-d-48--the-six-flagged-decisions-put-to-the-owner-two-amended-one-completed-three-confirmed-as-recorded)
 - [P-D-49 — Six live contradictions: the takeover race, the vacuous GC gate, one clone vocabulary, a clearable successor, a principal column, and an entity-kind column](#p-d-49--six-live-contradictions-the-takeover-race-the-vacuous-gc-gate-one-clone-vocabulary-a-clearable-successor-a-principal-column-and-an-entity-kind-column)
 - [P-D-50 — Seven taken ahead of the build: two columns, a minted code, a grant deliberately not minted, and three cells that denied a route the set declares](#p-d-50--seven-taken-ahead-of-the-build-two-columns-a-minted-code-a-grant-deliberately-not-minted-and-three-cells-that-denied-a-route-the-set-declares)
+- [P-D-51 — Where an envelope obligation lands when the transport has no slot, and the two subject types §6 asked for](#p-d-51--where-an-envelope-obligation-lands-when-the-transport-has-no-slot-and-the-two-subject-types-6-asked-for)
 
 <!-- /toc -->
 
@@ -1615,6 +1616,63 @@ listed in the TOC for the same gate.*
   `design/03-sku-classification.md` (`inst-mt-bucket`), `design/07-reference-signal.md`
   (the re-publish step).
 
+
+#### P-D-51 — Where an envelope obligation lands when the transport has no slot, and the two subject types §6 asked for
+
+- **Date**: 2026-08-30 (owner call — raised by the three-lens review of the broker producer)
+- **Context**: P-D-47 put publishing on the broker SDK, and building it made two of the set's own
+  statements unbuildable as written. Both were found by an independent reviewer, not by the author,
+  and both had been shipped without being registered.
+- **Decision**, two arms:
+  1. **An envelope obligation binds to the envelope where the transport has a slot for it and to
+     the payload where it does not**, and each obligation's landing place is now stated rather than
+     implied. **P-D-01's own word is the authority**: it calls the five obligations
+     *"envelope-agnostic"*, and §4.4 and `dod-outbox-eventing` are its restatements — so where the
+     restatement says "envelope" and the transport has no field, the restatement moves, not the
+     decision. Measured against `event-broker-sdk`'s `models::Event`, which carries `id`,
+     `type_id`, `topic`, `tenant_id`, `source`, `subject`, `subject_type`, `partition_key`,
+     `occurred_at`, `trace_parent` and `data`:
+
+     | Obligation | Lands | Why |
+     |---|---|---|
+     | versioned schema reference | envelope, as `type_id` | the SDK's `TypedEvent::TYPE_ID` is that id |
+     | correlation | envelope, as `trace_parent` | a slot exists, and the value is the W3C `traceparent` |
+     | **causation** | **payload** | `Event` has no causation field |
+     | per-aggregate ordering key | envelope, as the broker's partition selection | P-D-47: the gear sets no `partition_key`, so ADR-0002's default applies |
+     | **pseudonymous actor** | **payload** | `Event` has no actor field |
+     | `vN`→`vN+1` compatibility | neither — a discipline over schema versions | §4.5 defers it to slice 12 |
+
+     The idempotency key stays the event `id`, which the SDK mints (P-D-47); the gear's interim
+     envelope carries an id of its own that reaches no consumer.
+  2. **`subject_type` is `gts.cf.core.events.subject.v1~cf.bss.products.product.v1` for a Product
+     and `…sku.v1` for a SKU**, closing `design/01-foundation.md` §6 item 12. The **namespace** is
+     the platform's — every other subject type in this workspace is a
+     `gts.cf.core.events.subject.v1~` id — and the **name** is this set's own declared domain type
+     (`DESIGN.md`: `gts.cf.bss.products.product.v1~`, `…sku.v1~`), so the broker-side id and the
+     domain type are traceable to each other by inspection.
+- **Measured, not argued**:
+  - Arm 1 at the platform: `event-broker-sdk/src/models.rs`'s `Event` has neither field, and
+    `producer/outbox.rs`'s `ProducerOutboxEnvelope` — which the SDK owns end to end — has neither
+    either. There is no third place to put them short of amending a shared platform type.
+  - Arm 2 at the platform: subject types in use are all
+    `gts.cf.core.events.subject.v1~<name>`, and the mock's `assert_gts` checks only the `gts.`
+    prefix and a `~`, so nothing but the registration itself constrains the name. The value is
+    validated at ingest against the `allowed_subject_types` list registered **with the event
+    type**, which is why it is one half of an agreement rather than a fact.
+- **The costs, stated**:
+  - Arm 1 amends a DoD to match what was built, which is the move that makes a DoD stop being a
+    contract. The safeguard taken is that the amendment **enumerates where each obligation lands
+    and why**, so the clause is more checkable after the change than before, not less. What is
+    given up is the single-sentence form.
+  - Arm 2 answers a question §6 assigned to *three* owners — this slice, slice 12 and the PRD
+    owner. The two ids are broker-side resources, so whoever administers the broker may hold a
+    naming convention neither party has seen; the answer is recorded as a derivation with its
+    reasoning so it can be overridden by measurement rather than re-derived.
+- **Propagated**: `design/01-foundation.md` (§4.4's Payloads bullet, §6 item 12);
+  `features/foundation.md` (`dod-outbox-eventing`'s envelope clause).
+- **Owed**: the event-type registrations at the broker under arm 2's ids and the eight
+  `event_type.v1~` ids `infra::broker` derives — one half of an agreement whose other half this
+  gear does not own.
 
 #### P-D-50 — Seven taken ahead of the build: two columns, a minted code, a grant deliberately not minted, and three cells that denied a route the set declares
 

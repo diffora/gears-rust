@@ -755,15 +755,31 @@ This feature owns **eight** events: `ProductCreated`, `SkuCreated`, `ProductHead
 **MUST** carry the same body core — `{tenantId, entityKind, entityId, internalRevision,
 lifecycleState}` — with the two publish events additionally carrying `publishedVersion`. The
 envelope **MUST** carry correlation and causation ids, a versioned schema reference, and the
-acting principal's `actor_ref`.
+acting principal's `actor_ref` — **each on the envelope where the transport has a slot for it and
+in the payload where it does not** (**P-D-51**, on P-D-01's own "envelope-agnostic" wording).
+Against the broker-native envelope that means: the schema reference is the event's `type_id`, the
+correlation id its `trace_parent`, the ordering key its partition selection; and the **causation
+id** and **`actor_ref`** ride the payload, the broker's `Event` having no field for either. A value
+that moves onto the envelope once the transport grows a slot does not break this clause; a value
+dropped does.
 
 **Events carry the pseudonymous `actor_ref` only, never a direct operator identity.** Any column
 holding an operator identity is named `*_actor_ref`, and only `products_identity_ref` declares one
 (P-D-45).
 
-The outbox half of the sub-3-second publication-propagation budget belongs here. **The probe for
-it is owed and the 01/06 split of that budget is open at the PRD owner**; no measurement in this
-document establishes it.
+The outbox half of the sub-3-second publication-propagation budget belongs here. **The probe
+exists and reports a number; the 01/06 split of that budget is still open at the PRD owner.**
+
+`infra::broker`'s `the_outbox_half_of_the_propagation_budget_is_measured` times the path this gear
+owns — enqueue, the sequencer, the leased processor's pickup, the SDK's publish call — from the
+enqueue to the event being readable at the broker, and **asserts no budget**, because the number a
+budget splits into is the owner's to set and a threshold invented in a test would guard nothing.
+On the author's machine on 2026-08-30 it reported **single-digit milliseconds** against an
+in-process `MockBroker`. That figure is a **floor**, not a prediction: it carries no network, no
+disk beyond the local `SQLite` outbox and no ingest work. What it establishes is that this half is
+three orders of magnitude below the whole budget under zero-latency transport, so the split's
+difficulty is on the broker side rather than here — which is the input the split needs and which
+no measurement previously supplied.
 
 **Implements**: `cpt-cf-bss-products-flow-create-product`,
 `cpt-cf-bss-products-flow-define-sku`, `cpt-cf-bss-products-flow-save-draft`,
