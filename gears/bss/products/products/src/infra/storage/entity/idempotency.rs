@@ -20,7 +20,7 @@
 //! that two duplicates racing to take over the same expired row cannot both
 //! succeed. See the migration's own module doc for the full argument.
 //!
-//! @cpt-cf-bss-products-dod-idempotency-store
+//! @cpt-dod:cpt-cf-bss-products-dod-idempotency-store:p1
 
 use sea_orm::entity::prelude::*;
 use serde_json::Value as JsonValue;

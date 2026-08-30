@@ -10,7 +10,7 @@
 //!
 //! @cpt-cf-bss-products-fr-identifier-contract
 //! @cpt-cf-bss-products-fr-define-sku
-//! @cpt-cf-bss-products-dod-entity-tables
+//! @cpt-dod:cpt-cf-bss-products-dod-entity-tables:p1
 
 use sea_orm::entity::prelude::*;
 use toolkit_db_macros::Scopable;

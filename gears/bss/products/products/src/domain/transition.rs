@@ -3,7 +3,7 @@
 //! the row (`design/01-foundation.md` §2, `inst-fd-transition-guard` and its
 //! sub-instructions, plus `inst-fd-terminal`).
 //!
-//! @cpt-cf-bss-products-dod-transition-guard
+//! @cpt-dod:cpt-cf-bss-products-dod-transition-guard:p1
 //!
 //! # Three refusals, and they do not reach the same acts
 //!

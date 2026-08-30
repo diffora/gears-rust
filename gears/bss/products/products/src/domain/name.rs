@@ -24,7 +24,7 @@ use unicode_normalization::UnicodeNormalization;
 /// Normalize a name for the uniqueness index.
 ///
 /// @cpt-cf-bss-products-fr-create-product
-/// @cpt-cf-bss-products-dod-name-uniqueness
+/// @cpt-dod:cpt-cf-bss-products-dod-name-uniqueness:p1
 ///
 /// The result is what `name_normalized` stores; the operator-facing `name`
 /// keeps whatever was authored.

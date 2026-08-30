@@ -12,7 +12,7 @@
 //! carries no append-only guard — `last_seen_at` and the tombstone columns
 //! are mutable by design.
 //!
-//! @cpt-cf-bss-products-dod-actor-ref
+//! @cpt-dod:cpt-cf-bss-products-dod-actor-ref:p1
 
 use sea_orm::entity::prelude::*;
 use toolkit_db_macros::Scopable;

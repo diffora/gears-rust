@@ -86,7 +86,7 @@
 //! primary key are preserved on both sides, and the unique index is partial
 //! on both.
 //!
-//! @cpt-cf-bss-products-dod-actor-ref
+//! @cpt-dod:cpt-cf-bss-products-dod-actor-ref:p1
 
 use sea_orm_migration::prelude::*;
 

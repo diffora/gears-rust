@@ -101,7 +101,7 @@
 //! becomes `text` for `expires_at`; and the `bss.` qualification is dropped.
 //! Both `CHECK`s and the primary key are preserved on both sides.
 //!
-//! @cpt-cf-bss-products-dod-idempotency-store
+//! @cpt-dod:cpt-cf-bss-products-dod-idempotency-store:p1
 
 use sea_orm_migration::prelude::*;
 

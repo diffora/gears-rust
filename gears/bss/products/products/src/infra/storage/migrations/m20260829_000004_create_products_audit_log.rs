@@ -128,7 +128,7 @@
 //! `timestamptz` becomes `text`, and the `bss.` qualification is dropped.
 //! Every `CHECK` and index is preserved on both sides.
 //!
-//! @cpt-cf-bss-products-dod-audit-table
+//! @cpt-dod:cpt-cf-bss-products-dod-audit-table:p1
 
 use sea_orm_migration::prelude::*;
 

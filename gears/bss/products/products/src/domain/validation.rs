@@ -163,7 +163,7 @@ pub trait ValidationRule<S>: Send + Sync {
 /// The pipeline: an ordered set of rules over one subject type.
 ///
 /// @cpt-cf-bss-products-algo-pipeline
-/// @cpt-cf-bss-products-dod-validation-pipeline
+/// @cpt-dod:cpt-cf-bss-products-dod-validation-pipeline:p1
 /// @cpt-cf-bss-products-principle-registered-validators
 /// @cpt-cf-bss-products-principle-fail-closed
 ///

@@ -16,7 +16,7 @@ use crate::domain::validation::ValidationReport;
 /// A registry operation rejection.
 ///
 /// @cpt-cf-bss-products-fr-expected-failure-behavior
-/// @cpt-cf-bss-products-dod-error-taxonomy
+/// @cpt-dod:cpt-cf-bss-products-dod-error-taxonomy:p1
 ///
 /// Fail-closed is what the taxonomy encodes: no variant means "proceeded with a
 /// default". An absent required field is a refusal, never a substitution.

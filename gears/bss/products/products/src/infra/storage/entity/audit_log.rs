@@ -12,7 +12,7 @@
 //! transition, is enforced by the table's trigger, not by this entity: this
 //! entity carries no write rule for it at all.
 //!
-//! @cpt-cf-bss-products-dod-audit-table
+//! @cpt-dod:cpt-cf-bss-products-dod-audit-table:p1
 
 use sea_orm::entity::prelude::*;
 use toolkit_db_macros::Scopable;

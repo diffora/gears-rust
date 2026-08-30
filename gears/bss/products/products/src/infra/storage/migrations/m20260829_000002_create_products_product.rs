@@ -153,9 +153,9 @@
 //! its own null-safe form.
 //!
 //! @cpt-cf-bss-products-fr-create-product
-//! @cpt-cf-bss-products-dod-entity-tables
-//! @cpt-cf-bss-products-dod-name-uniqueness
-//! @cpt-cf-bss-products-dod-append-only-guard
+//! @cpt-dod:cpt-cf-bss-products-dod-entity-tables:p1
+//! @cpt-dod:cpt-cf-bss-products-dod-name-uniqueness:p1
+//! @cpt-dod:cpt-cf-bss-products-dod-append-only-guard:p1
 
 use sea_orm_migration::prelude::*;
 

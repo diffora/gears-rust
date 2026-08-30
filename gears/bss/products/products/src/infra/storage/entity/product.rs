@@ -11,7 +11,7 @@
 //!
 //! @cpt-cf-bss-products-fr-identifier-contract
 //! @cpt-cf-bss-products-nfr-scale-extensibility
-//! @cpt-cf-bss-products-dod-entity-tables
+//! @cpt-dod:cpt-cf-bss-products-dod-entity-tables:p1
 
 use sea_orm::entity::prelude::*;
 use toolkit_db_macros::Scopable;

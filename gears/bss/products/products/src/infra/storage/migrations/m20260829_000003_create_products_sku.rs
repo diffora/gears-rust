@@ -144,9 +144,9 @@
 //! trigger per column class, exactly as the sibling table does.
 //!
 //! @cpt-cf-bss-products-fr-skucode-reservation-concurrency
-//! @cpt-cf-bss-products-dod-entity-tables
-//! @cpt-cf-bss-products-dod-code-reservation
-//! @cpt-cf-bss-products-dod-append-only-guard
+//! @cpt-dod:cpt-cf-bss-products-dod-entity-tables:p1
+//! @cpt-dod:cpt-cf-bss-products-dod-code-reservation:p1
+//! @cpt-dod:cpt-cf-bss-products-dod-append-only-guard:p1
 
 use sea_orm_migration::prelude::*;
 

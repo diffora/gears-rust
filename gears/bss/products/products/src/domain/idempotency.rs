@@ -111,7 +111,7 @@
 //! must have expired before the new primitive may answer a claim, or a
 //! caller's own retry meets a digest it cannot match.
 //!
-//! @cpt-cf-bss-products-dod-idempotency-store
+//! @cpt-dod:cpt-cf-bss-products-dod-idempotency-store:p1
 
 use serde_json::Value as JsonValue;
 
