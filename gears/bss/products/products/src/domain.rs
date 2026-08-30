@@ -2,6 +2,7 @@
 //! it, with no knowledge of transport or storage.
 
 pub mod concurrency;
+pub mod containment;
 pub mod error;
 pub mod name;
 pub mod rules;

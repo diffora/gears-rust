@@ -22,14 +22,30 @@
 //! what the normative catalog table currently grants the door, so that is what
 //! this module declares.
 //!
-//! **Wiring is owed and not done here.** [`authz_label_type_schemas`] is
-//! declared but not yet registered anywhere: the sibling pricing gear calls
-//! its equivalent from `Gear::init` so the platform's RBAC role-definition
+//! **Registering [`authz_label_type_schemas`] is still owed**, separately from
+//! the gate this module now provides: the sibling pricing gear calls its
+//! equivalent from `Gear::init` so the platform's RBAC role-definition
 //! validator can resolve a rule's `target_type` against these labels. This
 //! gear's `init` (`crate::gear::BssProductsGear::init`) does not call this
-//! function yet; wiring it in is owed to a Phase 4 slice, alongside the
-//! authoring doors that will gate through [`labels`] and [`actions`] via the
-//! `PolicyEnforcer` the gear already builds.
+//! function yet; wiring it in is owed to the slice that adds the first
+//! authoring door.
+//!
+//! [`access_scope`] is the shared PEP gate every future authoring door calls
+//! before touching a repository: it wraps
+//! `authz_resolver_sdk::PolicyEnforcer::access_scope_with` the way the
+//! sibling ledger gear's `access_scope` does (`gears/bss/ledger/ledger/src/authz.rs`,
+//! the smaller of the two donor shapes; pricing's own copy at
+//! `gears/bss/pricing/pricing/src/authz.rs` confirms the shape is house
+//! style, not one gear's quirk). No door calls it yet — there are no doors in
+//! this slice — but the function is exercised directly by
+//! `authz_tests.rs` against a fake `AuthZResolverClient`, the same technique
+//! the ledger gear's own test suite uses, so the permit/deny path is proven
+//! without a live resolver.
+
+use authz_resolver_sdk::PolicyEnforcer;
+use authz_resolver_sdk::pep::{AccessRequest, ResourceType};
+use toolkit_security::{AccessScope, SecurityContext, pep_properties};
+use uuid::Uuid;
 
 /// Authz `resource_type` label strings (the PDP-visible glob targets).
 ///
@@ -68,6 +84,129 @@ pub mod actions {
     pub const PUBLISH: &str = "publish";
 }
 
+/// Properties the PEP may compile from PDP constraints for registry rows.
+/// Every `product`/`sku` row is tenant-owned: `owner_tenant_id` is the tenant
+/// column the secure-ORM filter binds to, `id` the row PK (single-row gates).
+/// Mirrors the ledger gear's `SUPPORTED_PROPERTIES` — no subtree/group
+/// property, matching a PEP built via [`authz_resolver_sdk::PolicyEnforcer::new`]
+/// with no advertised capabilities.
+pub const SUPPORTED_PROPERTIES: &[&str] =
+    &[pep_properties::OWNER_TENANT_ID, pep_properties::RESOURCE_ID];
+
+/// PEP resource-type descriptors, one per authz label ([`labels::ALL`]).
+///
+/// [`ResourceType`] pairs a label with the resource properties the PEP is
+/// allowed to compile from PDP constraints; every authoring door passes one
+/// of these, never a bare label string, to [`access_scope`].
+pub mod resource_types {
+    use super::{ResourceType, SUPPORTED_PROPERTIES, labels};
+
+    /// Products — `read`, `write`, `publish`.
+    pub const PRODUCT: ResourceType =
+        ResourceType::from_static(labels::PRODUCT, SUPPORTED_PROPERTIES);
+    /// SKUs — `read`, `write`, `publish`.
+    pub const SKU: ResourceType = ResourceType::from_static(labels::SKU, SUPPORTED_PROPERTIES);
+}
+
+/// Error from the registry's PEP gate.
+///
+/// Deliberately **not** folded into [`crate::domain::error::DomainError`]:
+/// neither of that enum's authorization-adjacent variants is the right home.
+/// `ScopeNotContained` names a business rule over restriction containment
+/// (P-D-39, a child scope proven against its parent's), and `ApprovalRequired`
+/// names governance's approval-record presence (P-D-23) — both are domain
+/// judgements a door reaches *after* it is authorized. A PDP deny or an
+/// unreachable PDP happens *before* the domain is consulted at all, so it
+/// answers with its own two-way split (403 vs 503), the same way the ledger
+/// gear's `AuthzError` does, rather than borrowing a `DomainError` code that
+/// would misdescribe why the door refused.
+#[derive(Debug, thiserror::Error)]
+pub enum AuthzError {
+    /// The PDP explicitly denied access, or returned constraints this PEP
+    /// could not compile (`authz_resolver_sdk::EnforcerError::Denied` and
+    /// `CompileFailed` both land here — an uncompilable *allow* is refused
+    /// exactly like an explicit deny, never treated as an unconstrained one).
+    #[error("permission denied: {0}")]
+    Denied(String),
+    /// The PDP evaluation call itself failed — the resolver is unreachable or
+    /// erroring, not exercising a business judgement
+    /// (`authz_resolver_sdk::EnforcerError::EvaluationFailed`).
+    #[error("authz unavailable: {0}")]
+    Unavailable(String),
+}
+
+/// Shared PEP gate: asks the PDP whether `(resource_type, action)` is
+/// permitted for `ctx`, returning the caller's compiled `AccessScope`.
+/// `resource_id` pins a single-row op (`None` for collections).
+///
+/// `owner_tenant_id` is an optional `OWNER_TENANT_ID` resource-property hint
+/// describing the *resource's* owning tenant:
+/// - **Reads** pass `None` — the PDP derives the scope from the subject +
+///   role, never from a caller-supplied tenant; the returned scope is the SQL
+///   filter.
+/// - **Writes** pass `Some(target_tenant)` — the tenant the row is written
+///   to. This is NOT self-validating at the PDP: a degraded flat-`In`
+///   decision does not re-check `owner_tenant_id`, so this fn asserts
+///   `target_tenant` is a member of the compiled scope and denies a
+///   cross-tenant target.
+///
+/// `require_constraints` should be `true` on every authorizing door path —
+/// reads (so the scope is a real SQL filter and an unconstrained *allow*
+/// fail-closes instead of leaking every tenant) and writes (so the
+/// target-membership assertion above has a constraint to test).
+///
+/// # Errors
+///
+/// [`AuthzError::Denied`] when the PDP denies or returns uncompilable
+/// constraints; [`AuthzError::Unavailable`] when the PDP is unreachable.
+pub async fn access_scope(
+    enforcer: &PolicyEnforcer,
+    ctx: &SecurityContext,
+    resource: &ResourceType,
+    action: &str,
+    owner_tenant_id: Option<Uuid>,
+    resource_id: Option<Uuid>,
+    require_constraints: bool,
+) -> Result<AccessScope, AuthzError> {
+    let mut request = AccessRequest::new().require_constraints(require_constraints);
+    if let Some(tenant) = owner_tenant_id {
+        request = request.resource_property(pep_properties::OWNER_TENANT_ID, tenant);
+    }
+    if let Some(rid) = resource_id {
+        request = request.resource_property(pep_properties::RESOURCE_ID, rid);
+    }
+
+    let scope = enforcer
+        .access_scope_with(ctx, resource, action, resource_id, &request)
+        .await
+        .map_err(|e| match e {
+            authz_resolver_sdk::EnforcerError::Denied { .. }
+            | authz_resolver_sdk::EnforcerError::CompileFailed(_) => {
+                AuthzError::Denied(e.to_string())
+            }
+            authz_resolver_sdk::EnforcerError::EvaluationFailed(_) => {
+                AuthzError::Unavailable(e.to_string())
+            }
+        })?;
+
+    // Write paths anchor to a target tenant and pass `require_constraints =
+    // true`: a degraded flat-`In` PDP decision does NOT re-validate
+    // `owner_tenant_id`, so assert the target is a member of the compiled
+    // scope here — a target outside the caller's authorized tenants is a
+    // cross-tenant write and is denied. Reads pass `owner_tenant_id = None`
+    // and use the scope as the SQL filter, so this membership check is
+    // write-only.
+    if let Some(target) = owner_tenant_id
+        && require_constraints
+        && !scope.contains_uuid(pep_properties::OWNER_TENANT_ID, target)
+    {
+        return Err(AuthzError::Denied(format!(
+            "subject not authorized to write resources owned by tenant {target}"
+        )));
+    }
+    Ok(scope)
+}
+
 fn authz_type_schema_json(gts_id: &str, title: &str) -> serde_json::Value {
     serde_json::json!({
         "$id": format!("gts://{gts_id}"),
@@ -99,54 +238,5 @@ pub fn authz_label_type_schemas() -> Vec<serde_json::Value> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::{actions, authz_label_type_schemas, labels};
-
-    /// `labels::ALL` names exactly the two labels this module declares, in
-    /// the order the stub-schema registration and the drift test in
-    /// `crate::gts::permissions` both read it in.
-    #[test]
-    fn labels_all_is_product_and_sku() {
-        assert_eq!(labels::ALL, [labels::PRODUCT, labels::SKU]);
-    }
-
-    /// One stub schema per label, each addressed at the label's own `$id` and
-    /// shaped as a bare JSON-Schema object — the shape the platform RBAC
-    /// role-definition validator resolves a `target_type` against.
-    #[test]
-    fn authz_label_type_schemas_covers_every_label_exactly_once() {
-        let schemas = authz_label_type_schemas();
-        assert_eq!(schemas.len(), labels::ALL.len());
-
-        let ids: std::collections::BTreeSet<String> = schemas
-            .iter()
-            .map(|schema| {
-                schema["$id"]
-                    .as_str()
-                    .expect("each stub schema carries a $id")
-                    .to_owned()
-            })
-            .collect();
-        let expected: std::collections::BTreeSet<String> = labels::ALL
-            .iter()
-            .map(|label| format!("gts://{label}"))
-            .collect();
-        assert_eq!(ids, expected);
-
-        for schema in &schemas {
-            assert_eq!(schema["type"], "object");
-        }
-    }
-
-    /// The three action names are distinct — a copy-paste that left two
-    /// consts holding the same string would let two permissions in the
-    /// catalog collide on `(resource_type, action)` without either the
-    /// catalog's id-distinctness test or its resource-type drift test
-    /// noticing, since neither reads the action names against each other.
-    #[test]
-    fn action_names_are_pairwise_distinct() {
-        let names = [actions::READ, actions::WRITE, actions::PUBLISH];
-        let distinct: std::collections::BTreeSet<&str> = names.iter().copied().collect();
-        assert_eq!(distinct.len(), names.len(), "two action consts collide");
-    }
-}
+#[path = "authz_tests.rs"]
+mod authz_tests;

@@ -7,23 +7,46 @@
 //! knows, from boot, that `/bss-products/v1` belongs to this gear and to no
 //! other.
 //!
-//! **The router this slice mounts is empty.** The authoring doors —
-//! `POST /bss-products/v1/products` and `POST /bss-products/v1/skus` — arrive
-//! in Phase 4 with the repositories and the DTOs they need, as their own
-//! definitions of done. What lands here first is the reservation: a gear that
-//! declared `rest` but mounted nothing at all would leave its prefix
-//! unclaimed, so an unconfigured boot would either fall through to another
-//! gear's router or answer whatever the merge order happens to produce. Both
-//! are worse than the one thing an empty, correctly nested router guarantees —
-//! a caller under `/bss-products/v1` gets a `404`, from this gear, until this
-//! gear has something to answer with.
+//! **This slice (Phase 4, Slice C) mounts the read door**:
+//! `GET /bss-products/v1/products/{id}` and `GET /bss-products/v1/skus/{id}`
+//! (`crate::api::rest::products`, `crate::api::rest::skus`). It is deliberately
+//! the first door in the phase: an author who has not just written a row has
+//! no `ETag` to send back as `If-Match`, so every mutating door this phase
+//! still owes — the create doors first, then save/publish/discard — depends
+//! on this one existing already. Before this slice the router this gear
+//! mounted was empty; a gear that declared `rest` but mounted nothing at all
+//! would leave its prefix unclaimed, so an unconfigured boot would either
+//! fall through to another gear's router or answer whatever the merge order
+//! happens to produce, which is why the runtime-absent branch below still
+//! nests an empty router rather than erroring — an unconfigured boot still
+//! answers `404` from this gear, not a fall-through.
 //!
 //! The `authz_resolver` dependency and the `PolicyEnforcer` it builds in
-//! [`Gear::init`] are wired now, ahead of the routes that will gate through
+//! [`Gear::init`] were wired ahead of the routes that would gate through
 //! them, for the same reason the sibling pricing gear wires its own PEP at
 //! init: authorization is security-critical, so a missing
 //! `AuthZResolverClient` must fail the boot rather than be discovered the
-//! first time a Phase 4 handler reaches for an enforcer that was never built.
+//! first time a handler reaches for an enforcer that was never built. This
+//! slice is the first to read it, cloning it once per boot into its own
+//! `Extension` layer in `RestApiCapability::register_rest`.
+//!
+//! **The transactional outbox is wired the same way, and deliberately not the
+//! way the sibling gears wired theirs.** `DECISIONS.md` P-D-22 struck
+//! `products_outbox` as a gear-authored table: pricing's own `pricing_outbox`
+//! is a private re-invention of a platform facility, measured against
+//! mini-chat, the one gear that imports `toolkit_db::outbox::Outbox` directly.
+//! This gear follows mini-chat's donor shape, not pricing's. [`Gear::init`]
+//! builds the pipeline with the outbox's own table prefix
+//! ([`OUTBOX_TABLE_PREFIX`]) and stores the running handle in
+//! [`ProductsRuntime`] beside the enforcer; `DatabaseCapability::migrations`
+//! appends the facility's own migrations
+//! (`toolkit_db::outbox::outbox_migrations_with_prefix`) rather than declaring
+//! any outbox table in this gear's own migration chain. No queue is
+//! registered yet — there is no door with a handler to register one for —
+//! so the pipeline starts with an empty queue set; a door slice adds
+//! `.queue(name, partitions).transactional(handler)` to the builder chain in
+//! [`Gear::init`] as it lands, per P-D-23 (`leased`, not `transactional`, is
+//! the mode owed once a handler exists).
 //!
 //! @cpt-cf-bss-products-component-registry-foundation
 
@@ -39,6 +62,20 @@ use toolkit::{Gear, GearCtx};
 
 use crate::config::ProductsConfig;
 
+/// Table-family prefix for this gear's `toolkit_db::outbox` instance
+/// (P-D-22: "its tables ... carry a configurable prefix"). Names the gear
+/// rather than reusing the facility's own default (`toolkit_outbox`), so this
+/// gear's `_body`/`_partitions`/`_incoming`/`_outgoing`/`_dead_letters` tables
+/// are identifiable on sight in a database another gear's default-prefixed
+/// outbox might also live in, and never collide with it.
+///
+/// MUST match between this constant's use in [`Gear::init`]
+/// (`Outbox::builder(..).table_prefix(..)`) and
+/// `DatabaseCapability::migrations`'s `outbox_migrations_with_prefix(..)`
+/// call below — a mismatch would point the running pipeline at tables this
+/// chain never created.
+use crate::infra::events::OUTBOX_TABLE_PREFIX;
+
 /// Per-process state built by [`Gear::init`] and read by
 /// [`RestApiCapability::register_rest`].
 ///
@@ -51,12 +88,31 @@ pub(crate) struct ProductsRuntime {
     /// client. `Arc`-held so a future per-request `Extension` clones the
     /// value, not the enforcer, exactly as the sibling pricing gear does.
     ///
-    /// Unread until Phase 4's authoring doors gate through it: `register_rest`
-    /// only checks whether the runtime is present in this slice, it does not
-    /// yet read what it holds. The `allow` is discharged the day a handler
-    /// extracts this field.
-    #[allow(dead_code)]
+    /// Read from `register_rest` since this slice's read door: `(*rt.enforcer)
+    /// .clone()` is layered onto the merged router as its own `Extension`, the
+    /// same way the sibling ledger gear's per-request PEP is wired.
     pub enforcer: Arc<authz_resolver_sdk::PolicyEnforcer>,
+
+    /// The transactional-outbox pipeline (P-D-22), built in `init()` from
+    /// `toolkit_db::outbox::Outbox::builder`. Held as the full
+    /// [`toolkit_db::outbox::OutboxHandle`], not just the inner `Arc<Outbox>`
+    /// it wraps: dropping the handle drops its `TaskSet`, which cancels the
+    /// pipeline's background tasks (sequencer, processors, vacuum) on drop —
+    /// so the handle must outlive the process, not just the field access.
+    ///
+    /// Read by [`RestApiCapability::register_rest`], which clones the inner
+    /// `Arc<Outbox>` onto `api::rest::ApiState` so a door can enqueue inside
+    /// its own transaction.
+    pub outbox: toolkit_db::outbox::OutboxHandle,
+
+    /// The database provider `api::rest::ApiState` clones into the read
+    /// door's per-request state. Kept on the runtime rather than built fresh
+    /// in `register_rest` because `ctx.db_required()` is `init()`'s to call —
+    /// the same acquisition point the outbox handle above is built from —
+    /// and a repeated call from `register_rest` would be a second,
+    /// unnecessary place this gear's boot could fail on a missing `db`
+    /// capability.
+    pub db: toolkit_db::DBProvider<toolkit_db::DbError>,
 }
 
 /// The products gear.
@@ -78,7 +134,24 @@ impl Default for BssProductsGear {
 impl toolkit::contracts::DatabaseCapability for BssProductsGear {
     fn migrations(&self) -> Vec<Box<dyn sea_orm_migration::MigrationTrait>> {
         use sea_orm_migration::MigratorTrait;
-        crate::infra::storage::migrations::Migrator::migrations()
+        let mut migrations = crate::infra::storage::migrations::Migrator::migrations();
+
+        // The outbox's own tables are migrated by the facility, not by this
+        // chain (P-D-22's consequences: "C1's 'one migration per table,
+        // guards defined once' does not reach these tables — they are
+        // migrated by `outbox_migrations()`, and the schema oracle must
+        // therefore golden them as imported rather than as gear-authored").
+        // Appended, never declared: no `CreateProductsOutbox`-shaped
+        // migration exists anywhere in `crate::infra::storage::migrations`.
+        #[allow(clippy::expect_used)]
+        let outbox_migrations =
+            toolkit_db::outbox::outbox_migrations_with_prefix(OUTBOX_TABLE_PREFIX).expect(
+                "OUTBOX_TABLE_PREFIX is a fixed compile-time identifier, validated once here \
+                 rather than at every call site: alphabetic-first, alnum/underscore only, and \
+                 well under the facility's length limit",
+            );
+        migrations.extend(outbox_migrations);
+        migrations
     }
 }
 
@@ -107,8 +180,41 @@ impl Gear for BssProductsGear {
             )?;
         let enforcer = Arc::new(authz_resolver_sdk::PolicyEnforcer::new(authz_client));
 
-        self.runtime
-            .store(Some(Arc::new(ProductsRuntime { enforcer })));
+        // Transactional outbox (P-D-22). The registry enqueues through the
+        // platform's own `toolkit_db::outbox` pipeline rather than a
+        // gear-authored `products_outbox` table — see this module's doc for
+        // why. The gear's own database is required for the outbox exactly as
+        // it is for the Foundation tables, so a missing configuration fails
+        // the boot the same way the missing `AuthZResolverClient` above does.
+        let db_provider = ctx
+            .db_required()
+            .context("bss-products: database not configured for the outbox pipeline")?;
+        let outbox_db = db_provider.db();
+        // The queue is declared here because `enqueue` refuses an
+        // unregistered one (`OutboxError::QueueNotRegistered`), and the
+        // create door enqueues inside its own transaction. Its processor is
+        // a holding one: P-D-47 puts the real processor — the broker SDK's
+        // `DbProducer` — in Phase 8's `dod-outbox-eventing`, so until then
+        // rows accumulate undelivered rather than being discarded. See
+        // `crate::infra::events::PendingBrokerProducer` for why it must not
+        // answer `Ok`.
+        let outbox = toolkit_db::outbox::Outbox::builder(outbox_db)
+            .table_prefix(OUTBOX_TABLE_PREFIX)
+            .context("bss-products: invalid outbox table prefix")?
+            .queue(
+                crate::infra::events::QUEUE_NAME,
+                toolkit_db::outbox::Partitions::of(crate::infra::events::PARTITIONS),
+            )
+            .leased(crate::infra::events::PendingBrokerProducer)
+            .start()
+            .await
+            .context("bss-products: outbox pipeline failed to start")?;
+
+        self.runtime.store(Some(Arc::new(ProductsRuntime {
+            enforcer,
+            outbox,
+            db: db_provider,
+        })));
 
         Ok(())
     }
@@ -119,9 +225,9 @@ impl RestApiCapability for BssProductsGear {
         &self,
         _ctx: &GearCtx,
         router: Router,
-        _openapi: &dyn OpenApiRegistry,
+        openapi: &dyn OpenApiRegistry,
     ) -> anyhow::Result<Router> {
-        let Some(_rt) = self.runtime.load_full() else {
+        let Some(rt) = self.runtime.load_full() else {
             // Unconfigured boot: claim the prefix anyway, so a probe under
             // `/bss-products/v1` gets a `404` from this gear rather than
             // falling through to whatever else the host router matches.
@@ -137,11 +243,30 @@ impl RestApiCapability for BssProductsGear {
             );
             return Ok(crate::api::rest::router(router));
         };
-        // Phase 4 fills this branch with the authoring doors, reading `_rt`
-        // for the enforcer and whatever per-request state the repositories
-        // need. Until then there are no routes to mount, so it nests the
-        // same empty router as the branch above.
-        Ok(crate::api::rest::router(router))
+        // Phase 4 Slice C: the read door. `products::router`/`skus::router`
+        // each register their own absolute path
+        // (`/bss-products/v1/{products|skus}/{id}`), so they are `.merge()`d
+        // onto the host router directly rather than nested under the
+        // reserved prefix by `api::rest::router` — the same shape the
+        // sibling ledger gear's own door modules use. The `PolicyEnforcer` is
+        // layered once here as its own `Extension`, cloned from the `Arc` the
+        // runtime holds (RMS layers the value, not the `Arc`;
+        // `PolicyEnforcer: Clone`), rather than carried on `ApiState`, so
+        // every door added in this and later slices reaches it the same way.
+        let api_state = Arc::new(crate::api::rest::ApiState {
+            db: rt.db.clone(),
+            outbox: Arc::clone(rt.outbox.outbox()),
+        });
+        Ok(router
+            .merge(crate::api::rest::products::router(
+                Arc::clone(&api_state),
+                openapi,
+            ))
+            .merge(crate::api::rest::skus::router(
+                Arc::clone(&api_state),
+                openapi,
+            ))
+            .layer(axum::Extension((*rt.enforcer).clone())))
     }
 }
 
