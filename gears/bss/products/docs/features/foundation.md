@@ -118,9 +118,9 @@ notes intact:
 - [`../DECOMPOSITION.md`](../DECOMPOSITION.md) §2.1 — the entry this feature realizes
 - [`../design/01-foundation.md`](../design/01-foundation.md) — the design slice. **Its §2 and §3
   are the normative step lists and are not copied here.** This document reuses the six `flow-`
-  ids and the three `algo-` ids that slice declares, and points at them; re-spelling its 69
-  `inst-fd-` steps would fork the set's own instruction register and leave two texts where only
-  one can be true. §2 and §3 below therefore carry the actor, the scenarios and the boundary of
+  ids and the three `algo-` ids that slice declares, and points at them; re-spelling the 69
+  instruction steps that slice declares would fork the set's own instruction register and leave
+  two texts where only one can be true. §2 and §3 below therefore carry the actor, the scenarios and the boundary of
   each flow, and the steps stay at their single source.
   - **The one exception is §4.** A state machine's transitions are a template-required
     id-bearing list, and the slice expresses the same content as two instructions

@@ -1269,8 +1269,12 @@ listed in the TOC for the same gate.*
   on the application's word — **04's** for `deprecation_provenance`/`replaced_by_sku_id`, and
   **07's** for bucket-ii columns. Until those exist the guard is a backstop there rather than a
   proof.
-- **Propagated**: `design/01-foundation.md` (§2 doors, §3.1, §4.2). *(The `design/03-sku-classification.md` amendment and the
-  two trimmed propagation fields are edits to this register itself, not propagation out of it.)*
+- **Propagated**: `design/01-foundation.md` (§2 doors, §3.1, §4.2).
+- **Not propagation, recorded so the field above is not read as understating itself**: the third
+  row's slice-03 amendment and the two trimmed propagation fields are edits to **this register**,
+  not documents this decision reaches. They sat inside the `Propagated` field until 2026-08-30,
+  where a path token inside a disclaimer read as a target that never cites the decision — which
+  is exactly what a propagation field is checked for.
 
 
 #### P-D-32 — Six calls closing the slice-01 second lens wave
