@@ -666,7 +666,7 @@ OPENAPI_BUILD_FEATURE_ARGS := $(if $(GEAR),$(GEAR_OPENAPI_FEATURE_ARGS),$(OPENAP
 
 # -------- Tests --------
 
-.PHONY: test test-no-macros test-macros test-sqlite test-pg test-mysql test-db test-users-info-pg test-usage-collector-pg test-cluster-pg test-rg-pg test-pricing-pg test-coord-pg test-fixtures-narrow test-fips
+.PHONY: test test-no-macros test-macros test-sqlite test-pg test-mysql test-db test-users-info-pg test-usage-collector-pg test-cluster-pg test-rg-pg test-pricing-pg test-coord-pg test-products-pg test-fixtures-narrow test-fips
 
 # Run all tests, or a single gear when GEAR=<gear> is set.
 # When GEAR= is set, cargo gears ls packages finds matching crates + their
@@ -788,6 +788,30 @@ test-pricing-pg: install-tools
 ## same reason: the gate is `#[ignore]` rather than a feature.
 test-coord-pg: install-tools
 	cargo nextest run -p cf-gears-bss-coord --run-ignored ignored-only -E 'binary(/^postgres_/)'
+
+## Run bss-products' Postgres tier (Docker required; testcontainers).
+##
+## Same `--run-ignored ignored-only` shape and the same reason as the two above:
+## the gate is `#[ignore]` rather than a feature. This gear's tier was added on
+## 2026-08-30 and, until this target existed, repeated the donor's own 2026-08-11
+## failure exactly — 23 tests across six `postgres_*` binaries that compiled on
+## every run and executed on none, while the DoD they discharge
+## (`cpt-cf-bss-products-dod-concurrency`) had already been ticked on their
+## strength. Two review lenses found it independently.
+##
+## What lives here and nowhere else: every proof about two writers racing for one
+## reservation index, one head row or one idempotency key, and the **Postgres
+## half of every trigger in the gear**. Both engine arms are written from the
+## same design clauses but in different shapes — SQLite gets one trigger per
+## clause, Postgres one `plpgsql` function with sequential `IF` blocks — so the
+## in-crate SQLite suite cannot fail for anything the Postgres arm gets wrong.
+## That asymmetry is what let a `json`-column publish defect ship in Phase 6.
+##
+## `--no-fail-fast` for the donor's reason: a tier whose whole purpose is to be
+## the one place a Postgres-only defect surfaces must report every failure it
+## found, not the first.
+test-products-pg: install-tools
+	cargo nextest run -p cf-gears-bss-products --run-ignored ignored-only -E 'binary(/^postgres_/)' --no-fail-fast
 
 ## Compile and run `bss-fixtures` on the surface a **gear** actually takes.
 ##
