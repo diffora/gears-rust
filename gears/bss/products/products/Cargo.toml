@@ -121,3 +121,13 @@ tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync"] }
 # writers genuinely in flight at once — `sqlite::memory:` is private to its
 # connection, so a second writer queues on the pool instead of contending.
 testcontainers-modules = { workspace = true }
+# The positive control on `infra::events::correlation_id`. The function reads
+# a layer it does not install, so without these two the only thing the suite
+# could observe is its `None` branch — which is what let the correlation
+# obligation go unmeasured until now. `opentelemetry_sdk` supplies a real
+# `SdkTracerProvider` (no exporter needed: the default sampler still mints a
+# valid trace id) and `tracing-subscriber` the registry the layer attaches to.
+# Both taken from `gears/system/account-management/plugins/keycloak-idp-plugin`,
+# whose traceparent test builds the same three pieces the same way.
+tracing-subscriber = { workspace = true, features = ["registry"] }
+opentelemetry_sdk = { workspace = true, features = ["trace"] }

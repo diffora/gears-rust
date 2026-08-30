@@ -224,6 +224,59 @@ fn a_publish_events_version_stays_flat_inside_the_body() {
     assert_eq!(json["schemaRef"], "bss-products.ProductPublished.v1.0.0");
 }
 
+/// **`correlation_id` reads a real trace id back off the ambient span.**
+///
+/// The one positive control this obligation has. Measured across the crate:
+/// three assertions read the field **absent** (one here, one in each door
+/// suite) and two read it present — but both of those are reading back a value
+/// [`rendered`] supplied by hand, not one this function produced. So a `correlation_id` that
+/// answered `None` unconditionally (the wrong span-extension trait, a
+/// subscriber layer never consulted, the `TraceId::INVALID` comparison
+/// inverted) would leave the whole suite green while P-D-01's correlation
+/// obligation shipped inert on all eight events.
+///
+/// The layer is installed here rather than assumed: see `correlation_id`'s own
+/// doc for the three host conditions under which the production answer is a
+/// permanent `None`. `set_default` is thread-local and leaves the process-wide
+/// default untouched, so this case cannot disturb one running beside it.
+#[test]
+fn correlation_id_reads_the_trace_id_of_the_ambient_span() {
+    use opentelemetry::trace::TracerProvider as _;
+    use opentelemetry_sdk::trace::SdkTracerProvider;
+    use tracing_opentelemetry::OpenTelemetryLayer;
+    use tracing_subscriber::layer::SubscriberExt as _;
+    use tracing_subscriber::util::SubscriberInitExt as _;
+
+    let provider = SdkTracerProvider::builder().build();
+    let tracer = provider.tracer("bss-products-events-tests");
+    let _guard = tracing_subscriber::registry()
+        .with(OpenTelemetryLayer::new(tracer))
+        .set_default();
+
+    let span = tracing::info_span!("a-traced-request");
+    let _enter = span.enter();
+
+    let id = super::correlation_id().expect(
+        "a span entered under an OpenTelemetry layer must carry a trace id; a None here is the \
+         inert-correlation defect this case exists to catch",
+    );
+
+    assert_eq!(
+        id.len(),
+        32,
+        "the W3C trace id is 32 hex characters, and it is that rendering which keeps this value \
+         grep-equal to the access log and the error envelope: got {id}"
+    );
+    assert!(
+        id.chars().all(|c| c.is_ascii_hexdigit()),
+        "a trace id rendered with hyphens joins to nothing by string equality: got {id}"
+    );
+    assert_ne!(
+        id, "00000000000000000000000000000000",
+        "the all-zero id is TraceId::INVALID rendered, which the guard must have refused"
+    );
+}
+
 /// An unregistered payload type resolves to `None`, which is what makes
 /// `enqueue_body` refuse it.
 ///

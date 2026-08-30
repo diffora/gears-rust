@@ -4873,6 +4873,91 @@ async fn a_blank_name_beside_a_bucket_i_column_stops_at_the_shape_phase() {
     );
 }
 
+/// **An event whose payload type carries no schema reference is refused, and
+/// nothing reaches the outbox.**
+///
+/// `EventsError::UnregisteredSchema` was, until this case, a guard whose
+/// removal reddened nothing: replace `enqueue_body`'s `ok_or_else` with
+/// `.unwrap_or("")` and every other test in the crate stays green, while every
+/// event the gear emits announces an empty schema reference — the one failure
+/// `schema_ref_for`'s own doc says a schema reference exists to prevent.
+///
+/// Two halves, and the first is what makes the second mean anything: a count
+/// of zero taken on a harness that cannot write is not evidence. A registered
+/// event is enqueued first and read back, and only then is the unregistered
+/// token attempted — same outbox, same runner, same core.
+///
+/// It lives in this file rather than beside `events.rs` because the second
+/// assertion needs a real migrated outbox to count rows in, and this suite's
+/// harness is the only one in the crate that has one.
+#[tokio::test]
+async fn an_unregistered_payload_type_is_refused_and_enqueues_nothing() {
+    /// Close to a real token on purpose: a lookup written with `starts_with`
+    /// would admit this one and the case would prove nothing.
+    const UNREGISTERED: &str = "ProductCreatedV2";
+
+    let harness = harness().await;
+    // One checkout for both calls: the harness pins `max_conns: 1`, and the
+    // row counts below read their own auxiliary connection into the same file
+    // rather than this one.
+    let conn = harness
+        .db
+        .conn()
+        .expect("checkout the pinned production connection");
+    let product_id = Uuid::now_v7();
+    let core = events::EventBodyCore {
+        tenant_id: TENANT,
+        entity_kind: events::EntityKind::Product.as_str(),
+        entity_id: product_id,
+        internal_revision: 1,
+        lifecycle_state: "draft",
+    };
+
+    events::enqueue(
+        &harness.outbox,
+        &conn,
+        product_id,
+        events::PRODUCT_CREATED_PAYLOAD_TYPE,
+        &core,
+        Uuid::now_v7(),
+    )
+    .await
+    .expect("a registered payload type must enqueue");
+    assert_eq!(
+        enqueued_event_count(&harness.dsn, events::PRODUCT_CREATED_PAYLOAD_TYPE).await,
+        1,
+        "this case's own premise: the harness can write an outbox body row at all"
+    );
+
+    let refused = events::enqueue(
+        &harness.outbox,
+        &conn,
+        product_id,
+        UNREGISTERED,
+        &core,
+        Uuid::now_v7(),
+    )
+    .await
+    .expect_err("a payload type outside the roster must never be enqueued");
+
+    assert!(
+        matches!(&refused, events::EventsError::UnregisteredSchema(token) if token == UNREGISTERED),
+        "the refusal must be the schema guard naming its own token, not a serialization or \
+         storage failure that would happen to be red here too: {refused}"
+    );
+    assert_eq!(
+        enqueued_event_count(&harness.dsn, UNREGISTERED).await,
+        0,
+        "a refused event must leave no body row behind: the schema reference is resolved before \
+         anything is written precisely so the act rolls back instead"
+    );
+    assert_eq!(
+        enqueued_event_count(&harness.dsn, events::PRODUCT_CREATED_PAYLOAD_TYPE).await,
+        1,
+        "and the refusal must not have disturbed the row the control wrote"
+    );
+}
+
 /// How many outbox rows carry `payload_type`.
 ///
 /// Counted on `_body` rather than `_incoming` for the reason

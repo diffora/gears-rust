@@ -435,6 +435,29 @@ pub(crate) struct EventEnvelope<'body, B: Serialize> {
 /// **grep-equal** to the one in the access log, the `OTel` span and the error
 /// envelope; a `Uuid` rendering of the same 128 bits would carry hyphens and
 /// join to none of them by string equality.
+///
+/// # What has to be true of the host for this to answer anything
+///
+/// This reads a layer it does not install. Three conditions of the *host*
+/// binary, none of them this gear's to satisfy, each of which makes every
+/// answer here a permanent `None`:
+///
+/// - `toolkit::telemetry::init_tracing` — the only builder of the
+///   `OpenTelemetryLayer` in this workspace (`libs/toolkit/src/telemetry/
+///   init.rs:184`) — is `#[cfg(feature = "otel")]`, so it is absent from the
+///   API of a `toolkit` built without it. That feature is in `toolkit`'s own
+///   `default` set (`libs/toolkit/Cargo.toml:28`), so this bites only a host
+///   that opts out with `default-features = false`;
+/// - it returns `Err` outright when `opentelemetry.tracing.enabled` is false;
+/// - it otherwise builds an OTLP exporter from the resolved endpoint, and a
+///   failure there is an `Err` too.
+///
+/// In each case the host's subscriber carries no `OpenTelemetry` layer,
+/// `Span::current()` has no `OTel` context to hand back, and this function
+/// answers `None` for every request for the life of the process — the events
+/// still emit, and their `correlationId` is absent rather than wrong. The
+/// in-crate positive control installs the layer itself precisely so that a
+/// `None` caused by *this* function, rather than by the host, is a red test.
 #[must_use]
 pub(crate) fn correlation_id() -> Option<String> {
     use tracing_opentelemetry::OpenTelemetrySpanExt as _;

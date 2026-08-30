@@ -1,7 +1,7 @@
 //! The head row's serialization point, on real Postgres: two writers meeting
-//! on one `products_product` row.
+//! on one `products_product` — or one `products_sku` — row.
 //!
-//! # The two contested resources this suite covers
+//! # The two contested resources this suite covers, on both twins
 //!
 //! `dod-concurrency` names six. Two of them are this row:
 //!
@@ -16,6 +16,30 @@
 //! against the snapshot the loser started from. Splitting them would let one
 //! be repaired and the other left, which is exactly how the Product and SKU
 //! doors drifted apart six times in Phase 6.
+//!
+//! # Why each case is run on both head tables
+//!
+//! `dod-concurrency` names six **resources**, not twelve, so a narrow reading
+//! under which the Product half discharges each was available. It is declined
+//! here, and the reason is a measurement rather than a preference: the two
+//! doors are **not** twins at the statement under test.
+//! `products_sku`'s head-row trigger carries a tenth `IF` block —
+//! `composition_pending` is admitted only in the same statement as a
+//! `published_version` bump — for which `products_product` has no twin at all,
+//! and [`repo::publish_sku_head`] writes that column *inside* the very
+//! `UPDATE` whose filter the contended re-evaluation re-runs. Under the narrow
+//! reading no probe in this suite ever contends that clause.
+//!
+//! The strongest argument the other way, recorded rather than argued down:
+//! `dod-concurrency` spells out *"the reservation index **on both code
+//! columns**"* and spells out no such thing for either head race, so its
+//! silence here may well be deliberate. It is answered on the evidence above
+//! and on nothing else — had the two triggers been actual twins, the narrow
+//! reading would have carried.
+//!
+//! So each case below appears twice, and the pair is kept in one file for the
+//! reason stated above: a repair aimed at one half must be visible from the
+//! other.
 //!
 //! # Why `SQLite` cannot host either
 //!
@@ -56,7 +80,8 @@ use std::time::Duration;
 
 use bss_products::infra::storage::RepoError;
 use bss_products::infra::storage::repo::{
-    self, HeadWrite, NewEntityVersion, NewProduct, ProductHeadSave, SavedName, VersionedEntityKind,
+    self, HeadWrite, NewEntityVersion, NewProduct, NewSku, ProductHeadSave, SavedName, SkuHeadSave,
+    VersionedEntityKind,
 };
 use chrono::{DateTime, TimeZone, Utc};
 use pg_support::Pg;
@@ -67,6 +92,8 @@ use uuid::Uuid;
 const TENANT: Uuid = Uuid::from_u128(0x7e_42);
 const BRAND: Uuid = Uuid::from_u128(0xb2_a0);
 const SUBJECT: Uuid = Uuid::from_u128(0x_5b_1e);
+/// The SKU the two SKU cases race for, a child of [`SUBJECT`].
+const SKU: Uuid = Uuid::from_u128(0x_5b_2e);
 const ACTOR: Uuid = Uuid::from_u128(0x_ac70);
 
 /// The revision both racers present. The head carries it at the instant each
@@ -100,6 +127,22 @@ fn rename(to: &str, normalized: &str) -> ProductHeadSave {
             normalized: normalized.to_owned(),
         }),
         region_scope: None,
+        brand_scope: None,
+    }
+}
+
+/// A save of the region scope alone: the SKU twin of [`rename`].
+///
+/// **Bucket iii for [`rename`]'s reason, and one more.** `sku_code` and
+/// `product_id` — this table's bucket i — are admitted only while
+/// `published_version = 0`, which the publish race below moves; a bucket-i
+/// save would therefore give the loser's filter a second reason to miss and
+/// the assertion could not say which one fired.
+fn rescope(to: &str) -> SkuHeadSave {
+    SkuHeadSave {
+        sku_code: None,
+        product_id: None,
+        region_scope: Some(to.to_owned()),
         brand_scope: None,
     }
 }
@@ -155,22 +198,98 @@ fn frozen(version: i64) -> NewEntityVersion {
     }
 }
 
-/// The head's `internal_revision` as the database now holds it.
-async fn head_revision(conn: &sea_orm::DatabaseConnection) -> i64 {
+/// Commit one `draft` SKU at [`CONTESTED_REVISION`], under the parent Product
+/// its foreign key requires.
+///
+/// [`seed_draft`] first, in its own transaction: `fk_products_sku_product`
+/// refuses a child whose parent is not committed, and seeding both on one
+/// transaction would make a failure of either read as a failure of the other.
+async fn seed_sku_draft(pg: &Pg) {
+    seed_draft(pg).await;
+    let db = pg.db().await;
+    let (_db, out) = db
+        .in_transaction::<(), RepoError, _>(move |txn| {
+            Box::pin(async move {
+                repo::insert_sku(
+                    txn,
+                    &scope(),
+                    NewSku {
+                        sku_id: SKU,
+                        tenant_id: TENANT,
+                        product_id: SUBJECT,
+                        sku_code: "FIBRE-500-STD".to_owned(),
+                        region_scope: "eu".to_owned(),
+                        brand_scope: String::new(),
+                        created_by: "principal:author-1".to_owned(),
+                        created_at: at(9),
+                    },
+                )
+                .await
+                .map(|_| ())
+            })
+        })
+        .await;
+    out.expect("the draft SKU must commit before anything races for it");
+}
+
+/// [`frozen`] for the SKU half: the same row under this table's own
+/// `entity_kind`, which is the discriminator the head-row guard's
+/// `EXISTS` sub-select filters on.
+fn frozen_sku(version: i64) -> NewEntityVersion {
+    NewEntityVersion {
+        tenant_id: TENANT,
+        entity_kind: VersionedEntityKind::Sku,
+        entity_id: SKU,
+        published_version: version,
+        content: r#"{"skuCode":"FIBRE-500-STD","regionScope":"eu"}"#.to_owned(),
+        content_digest: (1..=32_u8).collect(),
+        digest_version: 1,
+        approval_ref: None,
+        actor_ref: ACTOR,
+        published_at: at(10),
+    }
+}
+
+/// One scalar column of one head row, on whichever of the two tables owns it.
+///
+/// A reader per column per table is precisely how a twin pair drifts: each
+/// half would carry its own copy of this SQL and a schema move would correct
+/// the copy whose test happened to fail. Both halves read through this one.
+async fn head_column<T: sea_orm::TryGetable>(
+    conn: &sea_orm::DatabaseConnection,
+    table: &str,
+    key: &str,
+    id: Uuid,
+    column: &str,
+) -> T {
     use sea_orm::{ConnectionTrait, Statement};
 
     conn.query_one_raw(Statement::from_string(
         sea_orm::DatabaseBackend::Postgres,
-        format!(
-            "SELECT internal_revision AS v FROM bss.products_product \
-             WHERE product_id = '{SUBJECT}'"
-        ),
+        format!("SELECT {column} AS v FROM bss.{table} WHERE {key} = '{id}'"),
     ))
     .await
     .expect("read the head")
     .expect("the head is there")
-    .try_get::<i64>("", "v")
-    .expect("read the revision")
+    .try_get::<T>("", "v")
+    .expect("read the column")
+}
+
+/// The Product head's `internal_revision` as the database now holds it.
+async fn head_revision(conn: &sea_orm::DatabaseConnection) -> i64 {
+    head_column(
+        conn,
+        "products_product",
+        "product_id",
+        SUBJECT,
+        "internal_revision",
+    )
+    .await
+}
+
+/// The SKU head's `internal_revision` as the database now holds it.
+async fn sku_head_revision(conn: &sea_orm::DatabaseConnection) -> i64 {
+    head_column(conn, "products_sku", "sku_id", SKU, "internal_revision").await
 }
 
 /// **Two saves presenting one `If-Match`: exactly one lands.**
@@ -393,33 +512,270 @@ async fn a_publish_and_an_edit_presenting_one_if_match_serialize_and_the_edit_is
     );
 }
 
-async fn surviving_name(conn: &sea_orm::DatabaseConnection) -> String {
-    use sea_orm::{ConnectionTrait, Statement};
+/// **Two SKU saves presenting one `If-Match`: exactly one lands.**
+///
+/// [`two_saves_presenting_one_if_match_serialize_and_the_loser_is_refused`]'s
+/// twin. It is not a paste: `save_sku_head` is a separate function over a
+/// separate table with its own trigger, so the shared invariant is shared only
+/// as long as a probe holds both halves to it.
+#[tokio::test]
+#[ignore = "requires Docker (testcontainers)"]
+async fn two_sku_saves_presenting_one_if_match_serialize_and_the_loser_is_refused() {
+    let pg = Pg::applied().await;
+    seed_sku_draft(&pg).await;
 
-    conn.query_one_raw(Statement::from_string(
-        sea_orm::DatabaseBackend::Postgres,
-        format!("SELECT name AS v FROM bss.products_product WHERE product_id = '{SUBJECT}'"),
-    ))
-    .await
-    .expect("read the head")
-    .expect("the head is there")
-    .try_get::<String>("", "v")
-    .expect("read the name")
+    let observer = pg.raw().await;
+    let written = Arc::new(Notify::new());
+    let release = Arc::new(Notify::new());
+
+    let winner = {
+        let db = pg.db().await;
+        let (written, release) = (Arc::clone(&written), Arc::clone(&release));
+        tokio::spawn(async move {
+            let (_db, out) = db
+                .in_transaction::<HeadWrite, RepoError, _>(move |txn| {
+                    Box::pin(async move {
+                        let outcome = repo::save_sku_head(
+                            txn,
+                            &scope(),
+                            TENANT,
+                            SKU,
+                            CONTESTED_REVISION,
+                            &rescope("eu,apac"),
+                            at(11),
+                        )
+                        .await?;
+                        written.notify_one();
+                        release.notified().await;
+                        Ok(outcome)
+                    })
+                })
+                .await;
+            out
+        })
+    };
+
+    written.notified().await;
+
+    let loser = {
+        let db = pg.db().await;
+        tokio::spawn(async move {
+            let (_db, out) = db
+                .in_transaction::<HeadWrite, RepoError, _>(move |txn| {
+                    Box::pin(async move {
+                        repo::save_sku_head(
+                            txn,
+                            &scope(),
+                            TENANT,
+                            SKU,
+                            CONTESTED_REVISION,
+                            &rescope("latam"),
+                            at(11),
+                        )
+                        .await
+                    })
+                })
+                .await;
+            out
+        })
+    };
+
+    pg_support::wait_until_a_backend_blocks(&observer).await;
+    release.notify_one();
+
+    let winner_outcome = tokio::time::timeout(RACE_TIMEOUT, winner)
+        .await
+        .expect("the winner must finish once released")
+        .expect("its task must not panic")
+        .expect("the winner is uncontended and must commit");
+    assert_eq!(
+        winner_outcome,
+        HeadWrite::Applied,
+        "the uncontended writer's own save must land"
+    );
+
+    let loser_outcome = tokio::time::timeout(RACE_TIMEOUT, loser)
+        .await
+        .expect("the loser must be released by the winner's commit")
+        .expect("its task must not panic")
+        .expect("a lost race is not an error at this layer, it is an unmatched write");
+    assert_eq!(
+        loser_outcome,
+        HeadWrite::Unmatched,
+        "the loser's filter must miss after the winner's commit, which the door renders \
+         STALE_REVISION"
+    );
+
+    let conn = pg.raw().await;
+    assert_eq!(
+        sku_head_revision(&conn).await,
+        CONTESTED_REVISION + 1,
+        "two attempts under one If-Match must move the head by exactly one revision"
+    );
+    assert_eq!(
+        surviving_region_scope(&conn).await,
+        "eu,apac",
+        "the loser must not have written its own scope under an unmatched filter"
+    );
 }
 
-async fn published_version(conn: &sea_orm::DatabaseConnection) -> i64 {
-    use sea_orm::{ConnectionTrait, Statement};
+/// **A SKU publish and an edit presenting one `If-Match`: the publish lands,
+/// the edit is refused, and `composition_pending` moves with it.**
+///
+/// The twin of
+/// [`a_publish_and_an_edit_presenting_one_if_match_serialize_and_the_edit_is_refused`],
+/// and the case the narrow reading of `dod-concurrency` would have left out
+/// entirely (see this module's doc). The publisher passes
+/// `composition_pending = true`, so the contended `UPDATE` carries the tenth
+/// trigger clause's operand: the flag is admitted **only** in the same
+/// statement as a `published_version` bump, and here that statement is the one
+/// whose filter Postgres re-evaluates after the loser unblocks. A guard that
+/// re-checked the flag against the post-commit row rather than against the
+/// statement's own `published_version` would refuse the publish here and pass
+/// every uncontended probe in the suite.
+#[tokio::test]
+#[ignore = "requires Docker (testcontainers)"]
+async fn a_sku_publish_and_an_edit_presenting_one_if_match_serialize_and_the_edit_is_refused() {
+    let pg = Pg::applied().await;
+    seed_sku_draft(&pg).await;
 
-    conn.query_one_raw(Statement::from_string(
-        sea_orm::DatabaseBackend::Postgres,
-        format!(
-            "SELECT published_version AS v FROM bss.products_product \
-             WHERE product_id = '{SUBJECT}'"
-        ),
-    ))
+    let observer = pg.raw().await;
+    let written = Arc::new(Notify::new());
+    let release = Arc::new(Notify::new());
+
+    let publisher = {
+        let db = pg.db().await;
+        let (written, release) = (Arc::clone(&written), Arc::clone(&release));
+        tokio::spawn(async move {
+            let (_db, out) = db
+                .in_transaction::<HeadWrite, RepoError, _>(move |txn| {
+                    Box::pin(async move {
+                        // Freeze first, bump second, exactly as the Product
+                        // half does: the guard admits the bump only where the
+                        // matching frozen row is already visible to it.
+                        repo::insert_entity_version(txn, &scope(), frozen_sku(1)).await?;
+                        let outcome = repo::publish_sku_head(
+                            txn,
+                            &scope(),
+                            TENANT,
+                            SKU,
+                            CONTESTED_REVISION,
+                            true,
+                            at(11),
+                        )
+                        .await?;
+                        written.notify_one();
+                        release.notified().await;
+                        Ok(outcome)
+                    })
+                })
+                .await;
+            out
+        })
+    };
+
+    written.notified().await;
+
+    let editor = {
+        let db = pg.db().await;
+        tokio::spawn(async move {
+            let (_db, out) = db
+                .in_transaction::<HeadWrite, RepoError, _>(move |txn| {
+                    Box::pin(async move {
+                        repo::save_sku_head(
+                            txn,
+                            &scope(),
+                            TENANT,
+                            SKU,
+                            CONTESTED_REVISION,
+                            &rescope("latam"),
+                            at(11),
+                        )
+                        .await
+                    })
+                })
+                .await;
+            out
+        })
+    };
+
+    pg_support::wait_until_a_backend_blocks(&observer).await;
+    release.notify_one();
+
+    let publish_outcome = tokio::time::timeout(RACE_TIMEOUT, publisher)
+        .await
+        .expect("the publisher must finish once released")
+        .expect("its task must not panic")
+        .expect("the publish is uncontended and must commit");
+    assert_eq!(
+        publish_outcome,
+        HeadWrite::Applied,
+        "the publish must land, flag and all"
+    );
+
+    let edited = tokio::time::timeout(RACE_TIMEOUT, editor)
+        .await
+        .expect("the edit must be released by the publish's commit")
+        .expect("its task must not panic")
+        .expect("a lost race is an unmatched write, not an error");
+    assert_eq!(
+        edited,
+        HeadWrite::Unmatched,
+        "an edit may not land against a revision the publish already consumed"
+    );
+
+    let conn = pg.raw().await;
+    assert_eq!(
+        sku_head_revision(&conn).await,
+        CONTESTED_REVISION + 1,
+        "the publish moved the head once and the edit moved it not at all"
+    );
+    assert_eq!(
+        surviving_region_scope(&conn).await,
+        "eu",
+        "the edit's scope must not be on a row it never matched"
+    );
+    assert_eq!(
+        sku_published_version(&conn).await,
+        1,
+        "the publish's own column must carry the version it froze"
+    );
+    assert!(
+        sku_composition_pending(&conn).await,
+        "the tenth clause's column must carry what the contended statement wrote"
+    );
+}
+
+/// The Product name that survived the race.
+async fn surviving_name(conn: &sea_orm::DatabaseConnection) -> String {
+    head_column(conn, "products_product", "product_id", SUBJECT, "name").await
+}
+
+/// The SKU `region_scope` that survived the race: [`surviving_name`]'s twin,
+/// reading the bucket-iii column [`rescope`] moves.
+async fn surviving_region_scope(conn: &sea_orm::DatabaseConnection) -> String {
+    head_column(conn, "products_sku", "sku_id", SKU, "region_scope").await
+}
+
+/// The Product head's `published_version`.
+async fn published_version(conn: &sea_orm::DatabaseConnection) -> i64 {
+    head_column(
+        conn,
+        "products_product",
+        "product_id",
+        SUBJECT,
+        "published_version",
+    )
     .await
-    .expect("read the head")
-    .expect("the head is there")
-    .try_get::<i64>("", "v")
-    .expect("read the published version")
+}
+
+/// The SKU head's `published_version`.
+async fn sku_published_version(conn: &sea_orm::DatabaseConnection) -> i64 {
+    head_column(conn, "products_sku", "sku_id", SKU, "published_version").await
+}
+
+/// The SKU head's `composition_pending` — the column the tenth trigger clause
+/// guards, and the one this table has that its twin does not.
+async fn sku_composition_pending(conn: &sea_orm::DatabaseConnection) -> bool {
+    head_column(conn, "products_sku", "sku_id", SKU, "composition_pending").await
 }
