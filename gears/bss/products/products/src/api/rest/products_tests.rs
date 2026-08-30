@@ -3509,3 +3509,1474 @@ async fn the_state_phase_outranks_the_gate_on_the_publish_door() {
          was never asked"
     );
 }
+
+/// `PATCH /bss-products/v1/products/{id}` with `body` and `headers` — the
+/// save door's request shape.
+///
+/// A separate helper from [`post_head_act`] rather than a sixth parameter on
+/// it: a save is the only door of the three that carries a request body, and
+/// folding a body into the bodiless helper would let a later case send one to
+/// `publish` without the compiler minding.
+async fn patch_product(
+    app: Router,
+    tenant: Uuid,
+    product_id: Uuid,
+    body: &serde_json::Value,
+    headers: &[(&str, &str)],
+) -> axum::http::Response<Body> {
+    let mut request = Request::builder()
+        .method("PATCH")
+        .uri(format!("/bss-products/v1/products/{product_id}"))
+        .header(axum::http::header::CONTENT_TYPE, "application/json")
+        .extension(authed_ctx(tenant));
+    for (name, value) in headers {
+        request = request.header(*name, *value);
+    }
+    app.oneshot(
+        request
+            .body(Body::from(body.to_string()))
+            .expect("build the save request"),
+    )
+    .await
+    .expect("the router answers")
+}
+
+/// [`patch_product`] carrying only an `If-Match` built from `revision` — the
+/// shape most cases below send.
+async fn save_at(
+    harness: &TestHarness,
+    product_id: Uuid,
+    revision: i64,
+    body: &serde_json::Value,
+) -> axum::http::Response<Body> {
+    patch_product(
+        app_for(harness, TENANT),
+        TENANT,
+        product_id,
+        body,
+        &[("If-Match", &if_match(revision))],
+    )
+    .await
+}
+
+/// The `products_audit_log.action` token of the single row a case wrote.
+async fn audit_action(dsn: &str) -> Option<String> {
+    raw_string_opt(dsn, "SELECT action AS v FROM products_audit_log").await
+}
+
+/// The `products_audit_log.error_code` of the single row a case wrote.
+async fn audit_error_code(dsn: &str) -> Option<String> {
+    raw_string_opt(dsn, "SELECT error_code AS v FROM products_audit_log").await
+}
+
+/// **A bucket-iii save on a `draft` head is admitted and moves
+/// `internal_revision` by exactly one.**
+///
+/// `name` and `name_normalized` are one bucket-iii field in §4.1 — the second
+/// is *"the same field's index operand"* — so both are asserted: a door that
+/// wrote the display name alone would leave `uq_products_product_name` keyed
+/// to a name the row no longer carries, and the next author would collide
+/// with a name nobody holds.
+///
+/// "By exactly one" is the assertion the head-row guard makes load-bearing:
+/// it refuses any `UPDATE` whose `internal_revision` is not `OLD + 1`, so a
+/// save split across two statements would move it twice and the `ETag` this
+/// door just handed back would skip a value it never returned.
+#[tokio::test]
+async fn a_bucket_iii_save_on_a_draft_is_admitted_and_bumps_the_revision_once() {
+    let harness = harness().await;
+    let product_id = Uuid::now_v7();
+    seed_draft(&harness, product_id).await;
+
+    let response = save_at(&harness, product_id, 1, &json!({ "name": "Fibre 900" })).await;
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "a bucket-iii save on a non-terminal head is an ordinary admitted write"
+    );
+
+    let head = head_of(&harness, product_id).await;
+    assert_eq!(head.name, "Fibre 900", "the routed column was written");
+    assert_eq!(
+        head.name_normalized, "fibre 900",
+        "the index operand moved with the field it is derived from"
+    );
+    assert_eq!(
+        head.internal_revision, 2,
+        "one admitted UPDATE moves the revision by exactly one"
+    );
+    assert_eq!(head.published_version, 0, "a save moves no version counter");
+    assert_eq!(
+        head.lifecycle_state.as_str(),
+        "draft",
+        "a save takes no edge"
+    );
+    assert_eq!(
+        version_rows(&harness.dsn).await,
+        0,
+        "a save writes no products_entity_version row"
+    );
+}
+
+/// **A bucket-iii save on a `published` head is admitted too, writes no
+/// version row and does not move `published_version`.**
+///
+/// §4.1 is explicit that a published Product *can* be renamed and that the
+/// rename comes out as version N+1 under governance rather than forcing
+/// retire-and-clone. The two negative assertions are what separate this door
+/// from the publish door: the head is the authoring surface in every
+/// non-terminal state (`inst-fd-transition-guard`), and the version row is
+/// the publish act's alone. A save that froze a row here would key it at a
+/// `published_version` the head never took.
+#[tokio::test]
+async fn a_bucket_iii_save_on_a_published_head_writes_no_version_row() {
+    let harness = harness().await;
+    let product_id = Uuid::now_v7();
+    seed_draft(&harness, product_id).await;
+
+    let published = post_head_act(
+        app_for(&harness, TENANT),
+        TENANT,
+        product_id,
+        "publish",
+        &[("If-Match", &if_match(1))],
+    )
+    .await;
+    assert_eq!(
+        published.status(),
+        StatusCode::OK,
+        "this case's own premise: the draft publishes"
+    );
+    assert_eq!(
+        version_rows(&harness.dsn).await,
+        1,
+        "this case's own premise: the publish froze exactly one version"
+    );
+
+    let response = save_at(&harness, product_id, 2, &json!({ "name": "Fibre 900" })).await;
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "a published Product can be renamed (section 4.1)"
+    );
+
+    let head = head_of(&harness, product_id).await;
+    assert_eq!(head.name, "Fibre 900");
+    assert_eq!(
+        head.internal_revision, 3,
+        "the save bumped the revision the publish left at 2"
+    );
+    assert_eq!(
+        head.published_version, 1,
+        "a save does not move published_version"
+    );
+    assert_eq!(
+        head.lifecycle_state.as_str(),
+        "published",
+        "a save takes no edge, so the state the publish set stands"
+    );
+    assert_eq!(
+        version_rows(&harness.dsn).await,
+        1,
+        "still the publish's one row: a save freezes nothing"
+    );
+}
+
+/// **A bucket-i save before first publish is admitted; after first publish
+/// the same field is `ILLEGAL_FIELD_MUTATION`.**
+///
+/// One case for both halves on purpose: the refusal alone passes against a
+/// door that refuses every bucket-i write, and the admission alone passes
+/// against one that admits every bucket-i write. Only the pair pins
+/// `inst-fd-bucket-i-refusal`'s actual rule, which is keyed to
+/// `published_version`.
+///
+/// The assertion is the **problem body's own code**, not the status: §3.3
+/// renders `ILLEGAL_FIELD_MUTATION`, `STALE_REVISION` and `ENTITY_TERMINAL`
+/// all as `409`, so a status-only assertion here would pass against three
+/// different refusals.
+#[tokio::test]
+async fn a_bucket_i_save_is_admitted_before_first_publish_and_refused_after_it() {
+    let harness = harness().await;
+    let product_id = Uuid::now_v7();
+    seed_draft(&harness, product_id).await;
+
+    let admitted = save_at(
+        &harness,
+        product_id,
+        1,
+        &json!({ "product_code": "FIBRE-900" }),
+    )
+    .await;
+    assert_eq!(
+        admitted.status(),
+        StatusCode::OK,
+        "published_version is 0, so identity is still writable"
+    );
+    assert_eq!(
+        head_of(&harness, product_id).await.product_code.as_deref(),
+        Some("FIBRE-900"),
+        "the bucket-i column was written"
+    );
+
+    let published = post_head_act(
+        app_for(&harness, TENANT),
+        TENANT,
+        product_id,
+        "publish",
+        &[("If-Match", &if_match(2))],
+    )
+    .await;
+    assert_eq!(
+        published.status(),
+        StatusCode::OK,
+        "this case's own premise: the draft publishes"
+    );
+
+    let refused = save_at(
+        &harness,
+        product_id,
+        3,
+        &json!({ "product_code": "FIBRE-000" }),
+    )
+    .await;
+    assert_eq!(refused.status(), StatusCode::CONFLICT);
+    let view = json_body(refused).await;
+    assert_eq!(
+        view["context"]["reason"],
+        json!("ILLEGAL_FIELD_MUTATION"),
+        "a bucket-i write after first publish is refused by its own rule, not by a stale \
+         precondition or a terminal state"
+    );
+
+    let head = head_of(&harness, product_id).await;
+    assert_eq!(
+        head.product_code.as_deref(),
+        Some("FIBRE-900"),
+        "the refused save wrote nothing"
+    );
+    assert_eq!(
+        head.internal_revision, 3,
+        "and moved no counter, so the caller's ETag still stands"
+    );
+    assert_eq!(
+        audit_error_code(&harness.dsn).await.as_deref(),
+        Some("ILLEGAL_FIELD_MUTATION"),
+        "the refusal wrote its own audit row"
+    );
+    assert_eq!(
+        audit_action(&harness.dsn).await.as_deref(),
+        Some("save"),
+        "recorded under this act's own token, not the publish door's"
+    );
+}
+
+/// **A field no registry row names is refused by the fail-closed miss, and a
+/// good field beside it still saves.**
+///
+/// P-D-50: *"a published-state column carrying no tag means it was added
+/// without registering one, and the head door refuses the write under the
+/// pipeline's own posture rather than routing to a default bucket"*.
+/// `deprecation_provenance` is exactly that shape — a column §4.3 names and
+/// `products_product` does not carry at this commit — so it resolves to no
+/// row and `crate::domain::bucket::classify` refuses it.
+///
+/// The positive control is the point of the second half: a door that refused
+/// every field would pass the first assertion alone.
+#[tokio::test]
+async fn an_unregistered_field_is_refused_by_the_fail_closed_miss() {
+    let harness = harness().await;
+    let product_id = Uuid::now_v7();
+    seed_draft(&harness, product_id).await;
+
+    let refused = save_at(
+        &harness,
+        product_id,
+        1,
+        &json!({ "deprecation_provenance": "operator" }),
+    )
+    .await;
+    assert_eq!(refused.status(), StatusCode::CONFLICT);
+    assert_eq!(
+        json_body(refused).await["context"]["reason"],
+        json!("ILLEGAL_FIELD_MUTATION"),
+        "a miss is a refusal, never a default bucket"
+    );
+    assert_eq!(
+        head_of(&harness, product_id).await.internal_revision,
+        1,
+        "the refused save wrote nothing at all"
+    );
+
+    let admitted = save_at(&harness, product_id, 1, &json!({ "name": "Fibre 900" })).await;
+    assert_eq!(
+        admitted.status(),
+        StatusCode::OK,
+        "the positive control: this door does not refuse everything"
+    );
+}
+
+/// **A save whose fourth field is refused applies none of the first three.**
+///
+/// Routing runs over the **whole** request before any column is written, so a
+/// `PATCH` naming one admitted field and one refused one is refused whole. A
+/// door that routed and wrote field by field would leave the head carrying
+/// half a request the caller was told had failed — a worse outcome than the
+/// refusal, and one no status assertion catches.
+#[tokio::test]
+async fn a_save_with_one_refused_field_applies_none_of_the_others() {
+    let harness = harness().await;
+    let product_id = Uuid::now_v7();
+    seed_draft(&harness, product_id).await;
+
+    let published = post_head_act(
+        app_for(&harness, TENANT),
+        TENANT,
+        product_id,
+        "publish",
+        &[("If-Match", &if_match(1))],
+    )
+    .await;
+    assert_eq!(published.status(), StatusCode::OK);
+
+    let refused = save_at(
+        &harness,
+        product_id,
+        2,
+        &json!({ "name": "Fibre 900", "product_code": "FIBRE-000" }),
+    )
+    .await;
+    assert_eq!(refused.status(), StatusCode::CONFLICT);
+    assert_eq!(
+        json_body(refused).await["context"]["reason"],
+        json!("ILLEGAL_FIELD_MUTATION")
+    );
+
+    let head = head_of(&harness, product_id).await;
+    assert_eq!(
+        head.name, "Fibre 500",
+        "the admitted field in the same request was not applied either"
+    );
+    assert_eq!(
+        head.product_code.as_deref(),
+        Some("FIBRE-500"),
+        "nor, obviously, the refused one"
+    );
+    assert_eq!(head.internal_revision, 2, "and no counter moved");
+}
+
+/// **A stale `If-Match` is `STALE_REVISION` and writes nothing**, with its
+/// own audit row under this act's token.
+#[tokio::test]
+async fn a_save_with_a_stale_if_match_is_refused_and_writes_nothing() {
+    let harness = harness().await;
+    let product_id = Uuid::now_v7();
+    seed_draft(&harness, product_id).await;
+
+    let response = save_at(&harness, product_id, 7, &json!({ "name": "Fibre 900" })).await;
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    assert_eq!(
+        json_body(response).await["context"]["reason"],
+        json!("STALE_REVISION"),
+        "the body's code is what tells this refusal from the two other 409s"
+    );
+
+    let head = head_of(&harness, product_id).await;
+    assert_eq!(head.name, "Fibre 500", "nothing was written");
+    assert_eq!(head.internal_revision, 1, "and no counter moved");
+    assert_eq!(
+        audit_error_code(&harness.dsn).await.as_deref(),
+        Some("STALE_REVISION")
+    );
+    assert_eq!(
+        audit_action(&harness.dsn).await.as_deref(),
+        Some("save"),
+        "the second of the two refusals this file pins the action token on"
+    );
+}
+
+/// **A save with no `If-Match` at all is refused `VALIDATION`.**
+///
+/// `VALIDATION` rather than `STALE_REVISION`: the caller pinned nothing, so
+/// there is nothing to be stale. `preconditions::if_match`'s own doc gives
+/// the wording, and the save door is the verb it was written for.
+#[tokio::test]
+async fn a_save_without_if_match_is_refused_validation() {
+    let harness = harness().await;
+    let product_id = Uuid::now_v7();
+    seed_draft(&harness, product_id).await;
+
+    let response = patch_product(
+        app_for(&harness, TENANT),
+        TENANT,
+        product_id,
+        &json!({ "name": "Fibre 900" }),
+        &[],
+    )
+    .await;
+    assert_eq!(
+        response.status(),
+        StatusCode::BAD_REQUEST,
+        "an absent precondition rides VALIDATION, which renders 400"
+    );
+    assert_eq!(
+        head_of(&harness, product_id).await.name,
+        "Fibre 500",
+        "nothing was written"
+    );
+    assert_eq!(
+        audit_error_code(&harness.dsn).await.as_deref(),
+        Some("VALIDATION"),
+        "every refusal audits, this one included"
+    );
+}
+
+/// **A save on a terminal head is `ENTITY_TERMINAL`** — the rule that reaches
+/// every head write and not only a transition (`inst-fd-terminal`, P-D-25
+/// widened by P-D-32).
+///
+/// The terminal head is produced by this gear's own discard door rather than
+/// written by hand, so the case also proves the doors compose.
+#[tokio::test]
+async fn a_save_on_a_terminal_head_is_refused_entity_terminal() {
+    let harness = harness().await;
+    let product_id = Uuid::now_v7();
+    seed_draft(&harness, product_id).await;
+
+    let discarded = post_head_act(
+        app_for(&harness, TENANT),
+        TENANT,
+        product_id,
+        "discard",
+        &[("If-Match", &if_match(1))],
+    )
+    .await;
+    assert_eq!(
+        discarded.status(),
+        StatusCode::OK,
+        "this case's own premise: the draft discards cleanly"
+    );
+
+    let response = save_at(&harness, product_id, 2, &json!({ "name": "Fibre 900" })).await;
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    assert_eq!(
+        json_body(response).await["context"]["reason"],
+        json!("ENTITY_TERMINAL"),
+        "no head write is admitted on a discarded entity"
+    );
+    assert_eq!(
+        head_of(&harness, product_id).await.name,
+        "Fibre 500",
+        "and the terminal row is unchanged"
+    );
+}
+
+/// **A replayed save under the same key returns the stored answer and does
+/// not save twice.**
+///
+/// The case the store exists for, on this door: a client whose save committed
+/// and whose response was lost retries under the key it still holds and with
+/// the `If-Match` it still holds — a precondition that is stale **by
+/// construction**, since the act it never learned about moved the revision. A
+/// door that judged the precondition before the claim would refuse this retry
+/// `STALE_REVISION` and never reach the stored answer.
+///
+/// "Does not save twice" is asserted on the revision rather than on the
+/// status: a door that re-ran the mutation and happened to answer `200` would
+/// pass a status-only assertion while bumping the revision a second time.
+#[tokio::test]
+async fn a_replayed_save_serves_the_stored_answer_and_does_not_save_twice() {
+    let harness = harness().await;
+    let product_id = Uuid::now_v7();
+    seed_draft(&harness, product_id).await;
+
+    let body = json!({ "name": "Fibre 900" });
+    let headers = [
+        ("If-Match", if_match(1)),
+        ("Idempotency-Key", "save-key-1".to_owned()),
+    ];
+    let sent: Vec<(&str, &str)> = headers
+        .iter()
+        .map(|(name, value)| (*name, value.as_str()))
+        .collect();
+
+    let first = patch_product(app_for(&harness, TENANT), TENANT, product_id, &body, &sent).await;
+    assert_eq!(first.status(), StatusCode::OK);
+    let original = json_body(first).await;
+
+    let retry = patch_product(app_for(&harness, TENANT), TENANT, product_id, &body, &sent).await;
+    assert_eq!(
+        retry.status(),
+        StatusCode::OK,
+        "the retry replays the stored answer rather than being refused for its now-stale \
+         precondition"
+    );
+    assert_eq!(
+        json_body(retry).await,
+        original,
+        "byte for byte the first answer, not a re-render"
+    );
+
+    assert_eq!(
+        head_of(&harness, product_id).await.internal_revision,
+        2,
+        "one save, one bump: the replay executed nothing"
+    );
+    assert_eq!(
+        idempotency_rows_for(&harness.dsn, "save-key-1").await,
+        1,
+        "one claim, answered in the mutation's own transaction"
+    );
+}
+
+/// **A save naming no field at all is refused `VALIDATION`.**
+///
+/// A bare `internal_revision` bump is a write with no content that still
+/// invalidates every `ETag` a client holds, so it is refused at the door
+/// rather than admitted as a no-op. `VALIDATION` because the request body is
+/// what is wrong, and the caller can fix it.
+#[tokio::test]
+async fn a_save_naming_no_field_is_refused_validation() {
+    let harness = harness().await;
+    let product_id = Uuid::now_v7();
+    seed_draft(&harness, product_id).await;
+
+    let response = save_at(&harness, product_id, 1, &json!({})).await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(
+        head_of(&harness, product_id).await.internal_revision,
+        1,
+        "no bump for a request that named nothing"
+    );
+}
+
+/// **A save storing a scope column with an empty token is refused
+/// `VALIDATION`, and a well-formed list beside it saves.**
+///
+/// The refusal is load-bearing beyond this row. `skus::recheck_parent_
+/// containment` parses the **parent Product's** stored `region_scope` on
+/// every child publish and answers a `500` where it does not parse, so a
+/// Product save that stored `"eu,,us"` would turn one caller's `200` into an
+/// operator alarm on a different entity's door. Both create doors refuse the
+/// same shape --
+/// [`a_create_naming_a_scope_with_an_empty_token_is_refused_validation`] is
+/// the Product one's own case, and it is cited here rather than asserted in
+/// passing because this comment claimed it before it was true: `create_sku`
+/// parsed its scope inputs from the day it shipped and `create_product` did
+/// not. This door is the other way a stored scope can change.
+#[tokio::test]
+async fn a_save_storing_a_scope_with_an_empty_token_is_refused_validation() {
+    let harness = harness().await;
+    let product_id = Uuid::now_v7();
+    seed_draft(&harness, product_id).await;
+
+    let refused = save_at(
+        &harness,
+        product_id,
+        1,
+        &json!({ "region_scope": "eu,,us" }),
+    )
+    .await;
+    assert_eq!(
+        refused.status(),
+        StatusCode::BAD_REQUEST,
+        "an empty token between separators is refused rather than silently filtered"
+    );
+    let head = head_of(&harness, product_id).await;
+    assert_eq!(head.region_scope, "eu", "nothing was written");
+    assert_eq!(head.internal_revision, 1, "and no counter moved");
+
+    let admitted = save_at(&harness, product_id, 1, &json!({ "region_scope": "eu,us" })).await;
+    assert_eq!(
+        admitted.status(),
+        StatusCode::OK,
+        "the positive control: a well-formed list is an ordinary bucket-iii save"
+    );
+    assert_eq!(
+        head_of(&harness, product_id).await.region_scope,
+        "eu,us",
+        "and it is stored as the caller spelled it"
+    );
+}
+
+/// Build a router carrying **both** entity kinds' doors, composed the way
+/// `gear.rs` composes them — `products::router` merged with `skus::router`
+/// over one `ApiState`.
+///
+/// Every other case in this file uses [`app_for`], which mounts the Product
+/// doors alone; the containment cases below cannot. The property they test
+/// is a cross-entity one — a Product save judged against the SKUs living
+/// under it — and its trigger is three ordinary requests across the two
+/// doors. Seeding the child through the repository instead would prove the
+/// check runs against a row this file wrote, not against a child a caller
+/// could actually create, and the create door is exactly what decides which
+/// scope a child stores.
+fn both_doors_app_for(harness: &TestHarness, tenant: Uuid) -> Router {
+    let state = api_state(harness);
+    let openapi = OpenApiRegistryImpl::new();
+    router(Arc::clone(&state), &openapi)
+        .merge(crate::api::rest::skus::router(state, &openapi))
+        .layer(axum::Extension(flat_in_enforcer(tenant)))
+}
+
+/// `POST /bss-products/v1/products` through the real door, answering the
+/// minted id. The one request the containment cases start from.
+async fn create_product_scoped(harness: &TestHarness, region_scope: &str) -> Uuid {
+    let response = post_create_product(
+        both_doors_app_for(harness, TENANT),
+        TENANT,
+        &json!({
+            "brand_id": BRAND,
+            "name": "Fibre 900",
+            "region_scope": region_scope,
+        }),
+    )
+    .await;
+    assert_eq!(
+        response.status(),
+        StatusCode::CREATED,
+        "the case's own premise: the parent it narrows was created"
+    );
+    let view = json_body(response).await;
+    view["product_id"]
+        .as_str()
+        .and_then(|id| Uuid::parse_str(id).ok())
+        .expect("the create view names the minted id")
+}
+
+/// `POST /bss-products/v1/skus` through the real door, answering the minted
+/// id and the `ETag` a publish or discard sends back as `If-Match`.
+async fn create_sku_scoped(
+    harness: &TestHarness,
+    parent_id: Uuid,
+    sku_code: &str,
+    region_scope: &str,
+) -> (Uuid, String) {
+    let response = both_doors_app_for(harness, TENANT)
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/bss-products/v1/skus")
+                .header(axum::http::header::CONTENT_TYPE, "application/json")
+                .extension(authed_ctx(TENANT))
+                .body(Body::from(
+                    json!({
+                        "product_id": parent_id,
+                        "sku_code": sku_code,
+                        "region_scope": region_scope,
+                    })
+                    .to_string(),
+                ))
+                .expect("build the SKU create request"),
+        )
+        .await
+        .expect("the router answers");
+    assert_eq!(
+        response.status(),
+        StatusCode::CREATED,
+        "the case's own premise: the child is contained at create and admitted"
+    );
+    let etag = response
+        .headers()
+        .get(axum::http::header::ETAG)
+        .expect("a create answers an ETag")
+        .to_str()
+        .expect("the ETag is ASCII")
+        .to_owned();
+    let view = json_body(response).await;
+    let sku_id = view["sku_id"]
+        .as_str()
+        .and_then(|id| Uuid::parse_str(id).ok())
+        .expect("the create view names the minted id");
+    (sku_id, etag)
+}
+
+/// `POST /bss-products/v1/skus/{id}/{act}` with `If-Match`, asserted
+/// admitted — the setup step, never the property under test.
+async fn sku_head_act(harness: &TestHarness, sku_id: Uuid, act: &str, if_match: &str) {
+    let response = both_doors_app_for(harness, TENANT)
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/bss-products/v1/skus/{sku_id}/{act}"))
+                .header(axum::http::header::IF_MATCH, if_match)
+                .extension(authed_ctx(TENANT))
+                .body(Body::empty())
+                .expect("build the SKU head-act request"),
+        )
+        .await
+        .expect("the router answers");
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "the case's own premise: the child reached the state it acts from"
+    );
+}
+
+/// [`save_at`] over the router carrying both entity kinds' doors.
+async fn save_at_both_doors(
+    harness: &TestHarness,
+    product_id: Uuid,
+    revision: i64,
+    body: &serde_json::Value,
+) -> axum::http::Response<Body> {
+    patch_product(
+        both_doors_app_for(harness, TENANT),
+        TENANT,
+        product_id,
+        body,
+        &[("If-Match", &if_match(revision))],
+    )
+    .await
+}
+
+/// The `error_code` of the one **refusal** row in the audit log.
+///
+/// Narrowed to `error_code IS NOT NULL` where [`audit_error_code`] is not:
+/// the containment cases drive several admitted acts before the refusal they
+/// assert, and each of those writes its own audit row.
+async fn refusal_error_code(dsn: &str) -> Option<String> {
+    raw_string_opt(
+        dsn,
+        "SELECT error_code AS v FROM products_audit_log WHERE error_code IS NOT NULL LIMIT 1",
+    )
+    .await
+}
+
+/// A `WHERE` fragment matching `column` against `id` whichever way the
+/// driver stored it — `skus_tests::id_matches`' own reason: the `SQLite`
+/// mirror declares the column `text` but `sqlx` binds a `Uuid` as a blob,
+/// so the plain spelling matches nothing, silently.
+fn id_matches(column: &str, id: Uuid) -> String {
+    let hex = id.simple().to_string().to_uppercase();
+    format!("({column} = '{id}' OR hex({column}) = '{hex}')")
+}
+
+/// Narrow a Product's `region_scope` **out of band**, around every door.
+///
+/// Used by exactly one case, and only to manufacture a state no door will
+/// produce once the containment check exists: a live child already outside
+/// its parent. See that case's own doc for why the state has to be reached
+/// this way.
+async fn narrow_region_out_of_band(dsn: &str, product_id: Uuid, region: &str) {
+    let conn = Database::connect(dsn)
+        .await
+        .expect("open an auxiliary connection to narrow the parent");
+    let result = conn
+        .execute_unprepared(&format!(
+            "UPDATE products_product SET region_scope = '{region}', \
+             internal_revision = internal_revision + 1 WHERE {}",
+            id_matches("product_id", product_id)
+        ))
+        .await
+        .expect("the head-row guard admits a bucket-iii write on a non-terminal head");
+    assert_eq!(
+        result.rows_affected(),
+        1,
+        "the parent this case narrows must exist, or its premise never held"
+    );
+    conn.close().await.ok();
+}
+
+/// **A `PATCH` narrowing a Product's scope out from under a `published`
+/// child is refused `SCOPE_NOT_CONTAINED`, and writes nothing.**
+///
+/// §4.1: `region_scope` and `brand_scope` are bucket iii *"in both
+/// directions, widening and narrowing alike, so a narrowing that would
+/// orphan a live child meets `fr-parent-child-integrity`'s fail-closed check
+/// in the registered-validators phase, ahead of the governance gate"*.
+///
+/// **Three ordinary requests, no out-of-band write**, which is the whole
+/// point: nothing in the sequence is a misuse. The create door admits the
+/// child because it is contained *at create*; the head-row guard and
+/// [`super::bucket::classify`] admit the narrowing because bucket iii is
+/// mutable in both directions. Without this check the third request answers
+/// `200` and leaves a `published` SKU scoped `us` under a parent scoped
+/// `eu` — and the **child** pays: its next save or re-publish is refused
+/// `SCOPE_NOT_CONTAINED` on a request that changed nothing about it.
+///
+/// **The code is the assertion, not the status.** `SCOPE_NOT_CONTAINED`,
+/// `VALIDATION` and `ILLEGAL_FIELD_MUTATION` all render wire `400` here, so
+/// a status assertion would pass against a door refusing for an unrelated
+/// reason — and would have passed against the defect had the narrowing been
+/// refused as, say, a malformed scope.
+#[tokio::test]
+async fn a_narrowing_that_would_orphan_a_published_child_is_refused_scope_not_contained() {
+    let harness = harness().await;
+    let product_id = create_product_scoped(&harness, "eu,us").await;
+    let (sku_id, etag) = create_sku_scoped(&harness, product_id, "SKU-500", "us").await;
+    sku_head_act(&harness, sku_id, "publish", &etag).await;
+
+    let before = head_of(&harness, product_id).await;
+    let refused = save_at_both_doors(
+        &harness,
+        product_id,
+        before.internal_revision,
+        &json!({ "region_scope": "eu" }),
+    )
+    .await;
+
+    assert_eq!(
+        refused.status(),
+        StatusCode::BAD_REQUEST,
+        "SCOPE_NOT_CONTAINED is one of the taxonomy's architectural 422s, rendered wire 400"
+    );
+    let view = json_body(refused).await;
+    assert_eq!(
+        view["context"]["violations"][0]["type"],
+        json!("SCOPE_NOT_CONTAINED"),
+        "the refusal names containment; the code, not the status, is what tells this refusal \
+         from every other 400 this door can raise"
+    );
+
+    let after = head_of(&harness, product_id).await;
+    assert_eq!(
+        after.region_scope, "eu,us",
+        "the parent's scope is unchanged: the refusal is raised before the head-row UPDATE, on \
+         the same transaction, so nothing lands"
+    );
+    assert_eq!(
+        after.internal_revision, before.internal_revision,
+        "and no counter moved, which is what would have invalidated every ETag a client holds"
+    );
+    assert_eq!(
+        refusal_error_code(&harness.dsn).await.as_deref(),
+        Some("SCOPE_NOT_CONTAINED"),
+        "the refusal is audited under the code it raised"
+    );
+}
+
+/// **The positive control: the same narrowing is admitted when the child
+/// stays contained.**
+///
+/// Identical to the case above in every respect but one — the child is
+/// scoped `eu` rather than `us`, so the parent's move to `eu` leaves it
+/// inside. Without this beside it, a door that refused *every* narrowing
+/// would pass the refusal case, and §4.1 asks for bucket-iii mutability in
+/// both directions, not for a scope column frozen the moment a child exists.
+#[tokio::test]
+async fn the_same_narrowing_is_admitted_when_the_published_child_stays_contained() {
+    let harness = harness().await;
+    let product_id = create_product_scoped(&harness, "eu,us").await;
+    let (sku_id, etag) = create_sku_scoped(&harness, product_id, "SKU-500", "eu").await;
+    sku_head_act(&harness, sku_id, "publish", &etag).await;
+
+    let before = head_of(&harness, product_id).await;
+    let admitted = save_at_both_doors(
+        &harness,
+        product_id,
+        before.internal_revision,
+        &json!({ "region_scope": "eu" }),
+    )
+    .await;
+
+    assert_eq!(
+        admitted.status(),
+        StatusCode::OK,
+        "a narrowing that orphans nothing is an ordinary bucket-iii save"
+    );
+    let after = head_of(&harness, product_id).await;
+    assert_eq!(after.region_scope, "eu", "and it is stored");
+    assert_eq!(
+        after.internal_revision,
+        before.internal_revision + 1,
+        "moving the revision by exactly one, as any admitted save does"
+    );
+}
+
+/// **A `discarded` child cannot be orphaned, so a narrowing past it is
+/// admitted.**
+///
+/// The exclusion is deliberate and lives in
+/// [`repo::find_non_terminal_skus_of_product`]'s own statement: a terminal
+/// child is out of use — no door will write to it again, the head-write
+/// guard sees to that — so refusing its parent's save on its account would
+/// make a tidy retirement permanently load-bearing. The child here is
+/// scoped `us` and would fail the check outright were it live, which is what
+/// makes this a test of the exclusion rather than of nothing.
+#[tokio::test]
+async fn a_narrowing_past_a_discarded_child_alone_is_admitted() {
+    let harness = harness().await;
+    let product_id = create_product_scoped(&harness, "eu,us").await;
+    let (sku_id, etag) = create_sku_scoped(&harness, product_id, "SKU-500", "us").await;
+    sku_head_act(&harness, sku_id, "discard", &etag).await;
+
+    let before = head_of(&harness, product_id).await;
+    let admitted = save_at_both_doors(
+        &harness,
+        product_id,
+        before.internal_revision,
+        &json!({ "region_scope": "eu" }),
+    )
+    .await;
+
+    assert_eq!(
+        admitted.status(),
+        StatusCode::OK,
+        "the only child is discarded, so there is no live child to orphan"
+    );
+    assert_eq!(
+        head_of(&harness, product_id).await.region_scope,
+        "eu",
+        "and the narrowing is stored"
+    );
+}
+
+/// **A widening is admitted, with a live child under the parent.**
+///
+/// §4.1 makes the column bucket iii *"in both directions"*, and only one of
+/// those directions can orphan anything. A guard that ran the check and
+/// judged it the wrong way round — or that refused any scope save at all
+/// while a child exists — passes every case above and fails this one.
+#[tokio::test]
+async fn a_widening_save_is_admitted_with_a_live_child_under_the_parent() {
+    let harness = harness().await;
+    let product_id = create_product_scoped(&harness, "eu").await;
+    let (sku_id, etag) = create_sku_scoped(&harness, product_id, "SKU-500", "eu").await;
+    sku_head_act(&harness, sku_id, "publish", &etag).await;
+
+    let before = head_of(&harness, product_id).await;
+    let admitted = save_at_both_doors(
+        &harness,
+        product_id,
+        before.internal_revision,
+        &json!({ "region_scope": "eu,us" }),
+    )
+    .await;
+
+    assert_eq!(
+        admitted.status(),
+        StatusCode::OK,
+        "widening cannot put a contained child outside its parent"
+    );
+    assert_eq!(
+        head_of(&harness, product_id).await.region_scope,
+        "eu,us",
+        "and the widening is stored as the caller spelled it"
+    );
+}
+
+/// **A save touching neither scope column runs no child scan, and succeeds
+/// against a child that would fail one.**
+///
+/// This is what proves the guard is *conditional* rather than a blanket
+/// refusal: the parent here is already narrower than its live child, so a
+/// door that scanned the children on every save would refuse an unrelated
+/// `name` change — a refusal the caller neither caused nor can act on.
+///
+/// The offending state is reached **out of band**, by
+/// [`narrow_region_out_of_band`], and that is unavoidable rather than a
+/// shortcut: with the check in place no door will produce it, which is the
+/// whole of what the case above asserts. What can still produce it is a
+/// narrowing committed before this check existed — rows a deployment will
+/// carry — so the state is real, and a blanket scan would strand every one
+/// of those Products against every future save of any column.
+#[tokio::test]
+async fn a_save_touching_no_scope_column_runs_no_child_scan() {
+    let harness = harness().await;
+    let product_id = create_product_scoped(&harness, "eu,us").await;
+    let (sku_id, etag) = create_sku_scoped(&harness, product_id, "SKU-500", "us").await;
+    sku_head_act(&harness, sku_id, "publish", &etag).await;
+    narrow_region_out_of_band(&harness.dsn, product_id, "eu").await;
+
+    let before = head_of(&harness, product_id).await;
+    assert_eq!(
+        before.region_scope, "eu",
+        "the case's own premise: the live child is scoped `us` and is already outside its parent"
+    );
+
+    let admitted = save_at_both_doors(
+        &harness,
+        product_id,
+        before.internal_revision,
+        &json!({ "name": "Fibre 900 Plus" }),
+    )
+    .await;
+
+    assert_eq!(
+        admitted.status(),
+        StatusCode::OK,
+        "a save naming neither scope column cannot orphan anything, so no child is read"
+    );
+    let after = head_of(&harness, product_id).await;
+    assert_eq!(
+        after.name, "Fibre 900 Plus",
+        "the routed column was written"
+    );
+    assert_eq!(
+        after.region_scope, "eu",
+        "and the scope this save never named is untouched"
+    );
+}
+
+/// **A save stores `name` trimmed, exactly as the create door stores it.**
+///
+/// `create_product` computes `raw_name.trim().to_owned()` and stores that, so
+/// a door that stored the caller's padding would make one operator-facing
+/// column depend on which door wrote it — `Fibre` from a `POST`, `  Fibre  `
+/// from a `PATCH`. Uniqueness would not notice: `name::normalize` trims and
+/// collapses whatever it is handed, which is exactly why a status assertion
+/// or a collision assertion cannot see this. The stored value, read back off
+/// the head, is the only thing that can.
+///
+/// The divergence would also outlive the request: the read door serves the
+/// stored value and the next publish freezes it verbatim into
+/// `products_entity_version` content, so it would land in a `content_digest`.
+#[tokio::test]
+async fn a_save_stores_the_name_trimmed_as_the_create_door_does() {
+    let harness = harness().await;
+    let product_id = Uuid::now_v7();
+    seed_draft(&harness, product_id).await;
+
+    let response = save_at(&harness, product_id, 1, &json!({ "name": "  Fibre  " })).await;
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "a padded name is an ordinary bucket-iii save, not a refusal"
+    );
+
+    let head = head_of(&harness, product_id).await;
+    assert_eq!(
+        head.name, "Fibre",
+        "the stored value is trimmed, so it does not depend on which door wrote it"
+    );
+    assert_eq!(
+        head.name_normalized,
+        crate::domain::name::normalize("Fibre"),
+        "and the index operand is derived from the value the row actually carries"
+    );
+}
+
+/// **A create naming a scope column with an empty token is refused
+/// `VALIDATION`, and a body wrong in two places reports both.**
+///
+/// `create_sku` has parsed its scope inputs since it shipped; this door did
+/// not, and no `CHECK` stands in for it — `m20260829_000002` declares
+/// `region_scope text NOT NULL DEFAULT ''` with no predicate. A `201` here
+/// is what arms
+/// [`a_poisoned_parent_scope_cannot_be_planted_through_the_create_door`]
+/// below.
+///
+/// The second body is the collection assertion (P-D-37): a blank `name` and
+/// an unparseable `brand_scope` in one request report as two violations, not
+/// as whichever the door happened to judge first.
+#[tokio::test]
+async fn a_create_naming_a_scope_with_an_empty_token_is_refused_validation() {
+    let harness = harness().await;
+
+    let refused = post_create_product(
+        app_for(&harness, TENANT),
+        TENANT,
+        &json!({ "brand_id": BRAND, "name": "Fibre 900", "region_scope": "eu,,us" }),
+    )
+    .await;
+    assert_eq!(
+        refused.status(),
+        StatusCode::BAD_REQUEST,
+        "an empty token between separators is refused rather than stored verbatim"
+    );
+    let view = json_body(refused).await;
+    assert_eq!(
+        view["context"]["violations"][0]["type"],
+        json!("VALIDATION"),
+        "the code is the discriminator, not the status"
+    );
+    assert_eq!(
+        view["context"]["violations"][0]["subject"],
+        json!("region_scope"),
+        "and it names the column the caller can fix"
+    );
+    assert_eq!(
+        raw_i64(&harness.dsn, "SELECT COUNT(*) AS v FROM products_product").await,
+        0,
+        "the refused create left no row behind"
+    );
+
+    let both_wrong = post_create_product(
+        app_for(&harness, TENANT),
+        TENANT,
+        &json!({ "brand_id": BRAND, "name": "   ", "brand_scope": ",acme" }),
+    )
+    .await;
+    assert_eq!(both_wrong.status(), StatusCode::BAD_REQUEST);
+    let view = json_body(both_wrong).await;
+    assert_eq!(
+        view["context"]["violations"].as_array().map(Vec::len),
+        Some(2),
+        "a body wrong in two places reports both violations, not the first (P-D-37)"
+    );
+
+    let admitted = post_create_product(
+        app_for(&harness, TENANT),
+        TENANT,
+        &json!({ "brand_id": BRAND, "name": "Fibre 900", "region_scope": "eu,us" }),
+    )
+    .await;
+    assert_eq!(
+        admitted.status(),
+        StatusCode::CREATED,
+        "the positive control: a well-formed list is an ordinary create"
+    );
+}
+
+/// `POST /bss-products/v1/products` over the both-doors router, answering the
+/// minted id — [`create_product_scoped`] with the name as a parameter, which
+/// the case below needs because it creates two parents in one tenant and
+/// brand and `uq_products_product_name` admits only one of any name.
+async fn create_named_product(harness: &TestHarness, name: &str, region_scope: &str) -> Uuid {
+    let response = post_create_product(
+        both_doors_app_for(harness, TENANT),
+        TENANT,
+        &json!({ "brand_id": BRAND, "name": name, "region_scope": region_scope }),
+    )
+    .await;
+    assert_eq!(
+        response.status(),
+        StatusCode::CREATED,
+        "the case's own premise: the parent it acts on was created"
+    );
+    json_body(response).await["product_id"]
+        .as_str()
+        .and_then(|id| Uuid::parse_str(id).ok())
+        .expect("the create view names the minted id")
+}
+
+/// **The two-request detonation is closed at the door that plants the
+/// charge.**
+///
+/// The failure this closes needs no misuse at all. Before the fix:
+///
+/// 1. `POST /products {"region_scope": "eu,,us"}` answered `201` and stored
+///    the value verbatim.
+/// 2. `POST /skus {"product_id": P}` answered `500` — *"parent Product's
+///    stored `region_scope` contains an empty token"* — because both
+///    `create_sku` and `skus::recheck_parent_containment` parse the parent's
+///    **stored** scope and treat a failure as gear-borne corruption.
+///
+/// So a caller planted a poison value with a success and detonated it on a
+/// **different entity's** door, as a `5xx` plus a false operator alarm: the
+/// provenance inversion `RepoError::CorruptRow`'s own doc rules out.
+///
+/// The case measures both halves. First it establishes that the detonation is
+/// real, by writing the poison **out of band** — the only way to reach that
+/// state now — and reading the child door's `500` back. Then it drives the
+/// sequence as a caller would and asserts step 1 never yields the `201` the
+/// charge needs, and that an ordinary parent still takes an ordinary child.
+/// Without the first half the case would pass against a door whose `500` had
+/// simply been renumbered.
+#[tokio::test]
+async fn a_poisoned_parent_scope_cannot_be_planted_through_the_create_door() {
+    let harness = harness().await;
+
+    // -- The detonation, established against a parent no door produced. --
+    let armed = create_named_product(&harness, "Fibre 900", "eu,us").await;
+    narrow_region_out_of_band(&harness.dsn, armed, "eu,,us").await;
+    let detonated = both_doors_app_for(&harness, TENANT)
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/bss-products/v1/skus")
+                .header(axum::http::header::CONTENT_TYPE, "application/json")
+                .extension(authed_ctx(TENANT))
+                .body(Body::from(
+                    json!({ "product_id": armed, "sku_code": "SKU-1" }).to_string(),
+                ))
+                .expect("build the SKU create request"),
+        )
+        .await
+        .expect("the router answers");
+    assert_eq!(
+        detonated.status(),
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "an unparseable *stored* parent scope is gear-borne corruption and answers 5xx: that is \
+         the alarm the create door must not let a caller arm"
+    );
+
+    // -- The plant, refused. --
+    let planted = post_create_product(
+        both_doors_app_for(&harness, TENANT),
+        TENANT,
+        &json!({ "brand_id": BRAND, "name": "Fibre 950", "region_scope": "eu,,us" }),
+    )
+    .await;
+    assert_ne!(
+        planted.status(),
+        StatusCode::CREATED,
+        "step 1 of the sequence is refused, so no caller can reach step 2's 500"
+    );
+
+    // -- The positive control: an ordinary parent still takes an ordinary
+    // child, so the refusal above is the scope token and not the door. --
+    let parent = create_named_product(&harness, "Fibre 950", "eu,us").await;
+    let admitted = both_doors_app_for(&harness, TENANT)
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/bss-products/v1/skus")
+                .header(axum::http::header::CONTENT_TYPE, "application/json")
+                .extension(authed_ctx(TENANT))
+                .body(Body::from(
+                    json!({ "product_id": parent, "sku_code": "SKU-2" }).to_string(),
+                ))
+                .expect("build the SKU create request"),
+        )
+        .await
+        .expect("the router answers");
+    assert_eq!(
+        admitted.status(),
+        StatusCode::CREATED,
+        "the positive control: a parent whose stored scope parses takes a child"
+    );
+}
+
+/// **A save that moves only `brand_id` and loses the name index's race names
+/// the value that collided.**
+///
+/// `uq_products_product_name` keys on `(tenant_id, brand_id, name_normalized)`
+/// and `brand_id` is bucket i — writable before first publish — so a brand
+/// move can collide on the *name* index while the request names no name.
+/// Reading `save.name` alone answers *"...already holds the name "* with an
+/// empty value, naming nothing the caller could look for. The name the row
+/// would carry is what collided, so the message names it.
+///
+/// The message is the assertion here rather than the code: the code was
+/// already right, and a case asserting only `DUPLICATE_NAME` passes against
+/// the defect.
+#[tokio::test]
+async fn a_brand_only_save_that_collides_on_the_name_index_names_the_name() {
+    let harness = harness().await;
+    let other_brand = Uuid::now_v7();
+
+    let holder = post_create_product(
+        app_for(&harness, TENANT),
+        TENANT,
+        &json!({ "brand_id": other_brand, "name": "Fibre 500" }),
+    )
+    .await;
+    assert_eq!(
+        holder.status(),
+        StatusCode::CREATED,
+        "this case's own premise: the name is held in the brand the mover moves to"
+    );
+
+    let product_id = Uuid::now_v7();
+    seed_draft(&harness, product_id).await;
+    let mover = head_of(&harness, product_id).await;
+    assert_eq!(
+        mover.name, "Fibre 500",
+        "this case's premise: the two rows carry the same name in different brands"
+    );
+
+    let refused = save_at(
+        &harness,
+        product_id,
+        mover.internal_revision,
+        &json!({ "brand_id": other_brand }),
+    )
+    .await;
+    assert_eq!(refused.status(), StatusCode::CONFLICT);
+    let view = json_body(refused).await;
+    assert_eq!(
+        view["context"]["reason"],
+        json!("DUPLICATE_NAME"),
+        "a brand move that collides on the name index is that index's refusal"
+    );
+    assert!(
+        view["detail"]
+            .as_str()
+            .is_some_and(|detail| detail.contains("Fibre 500")),
+        "and the message names the value that collided, not an empty string: {:?}",
+        view["detail"]
+    );
+}
+
+/// **A save whose `name` is blank is refused `VALIDATION` even when it also
+/// names a bucket-i column on a published head.**
+///
+/// §3.1's `inst-fd-fail-closed`: *"the phases run in the order above and the
+/// run stops at the first failing phase"*, and `Phase::ordered()` puts
+/// `Shape` ahead of `State`. Both operands the shape rules read — `name` and
+/// `brand_id` — are present the moment the payload parses, so nothing in this
+/// phase depends on the routing's output and the run has no reason to reach
+/// the bucket rule at all.
+///
+/// **The code is the assertion, not the status**: `VALIDATION` renders `400`
+/// and `ILLEGAL_FIELD_MUTATION` renders `409`, but the pair below is chosen
+/// precisely so that a door running the phases in the wrong order still
+/// refuses — with the wrong code, naming a rule the caller did not reach.
+#[tokio::test]
+async fn a_blank_name_beside_a_bucket_i_column_stops_at_the_shape_phase() {
+    let harness = harness().await;
+    let product_id = Uuid::now_v7();
+    seed_draft(&harness, product_id).await;
+
+    let published = post_head_act(
+        app_for(&harness, TENANT),
+        TENANT,
+        product_id,
+        "publish",
+        &[("If-Match", &if_match(1))],
+    )
+    .await;
+    assert_eq!(
+        published.status(),
+        StatusCode::OK,
+        "this case's own premise: the draft publishes, so bucket i is now closed"
+    );
+
+    let refused = save_at(
+        &harness,
+        product_id,
+        head_of(&harness, product_id).await.internal_revision,
+        &json!({ "name": "   ", "brand_id": Uuid::now_v7() }),
+    )
+    .await;
+    assert_eq!(
+        refused.status(),
+        StatusCode::BAD_REQUEST,
+        "the shape phase fails first, and its refusal is the architectural 422 rendered 400"
+    );
+    let view = json_body(refused).await;
+    assert_eq!(
+        view["context"]["violations"][0]["type"],
+        json!("VALIDATION"),
+        "the run stops at the first failing phase, which is `shape` and not `state`"
+    );
+
+    let head = head_of(&harness, product_id).await;
+    assert_eq!(head.name, "Fibre 500", "the refused save wrote nothing");
+    assert_eq!(
+        head.brand_id, BRAND,
+        "and the bucket-i column it also named is untouched"
+    );
+}
+
+/// How many outbox rows carry `payload_type`.
+///
+/// Counted on `_body` rather than `_incoming` for the reason
+/// [`exactly_one_outbox_row_is_enqueued_and_no_content_row_is_written`]
+/// states at length: `_incoming` is a staging table the running sequencer
+/// drains, so a count taken after the response has raced the pipeline.
+async fn enqueued_event_count(dsn: &str, payload_type: &str) -> i64 {
+    let body_table = format!("{}_body", events::OUTBOX_TABLE_PREFIX);
+    raw_i64(
+        dsn,
+        &format!("SELECT COUNT(*) AS v FROM {body_table} WHERE payload_type = '{payload_type}'"),
+    )
+    .await
+}
+
+/// **A save enqueues exactly one `ProductHeadSaved` row, and its body carries
+/// the revision the act committed and the state the head is actually in.**
+///
+/// `design/01-foundation.md`'s `inst-fd-save-txn` makes the outbox row a
+/// clause of the save itself, *"in the same transaction"*, and §4.5 puts
+/// `ProductHeadSaved` in the roster of eight Foundation events. Nothing else
+/// in this suite reads the outbox after a save: with the enqueue deleted
+/// every other save case stays green, because they all assert the row the
+/// `UPDATE` wrote and none of them assert the announcement a consumer
+/// subscribes to.
+///
+/// Three things are pinned here that a weaker case would miss:
+///
+/// - The **literal** `"ProductHeadSaved"`. The token is the string a consumer
+///   subscribes on, so a rename is a broken subscription rather than a
+///   refactor, and a test written against the constant would rename with it
+///   in silence.
+/// - `internalRevision` **after** the bump. The pre-act value is `1` and the
+///   committed value is `2`, so a door announcing the record it read before
+///   the write fails here; it is also compared against the head read back,
+///   which is what P-D-29's *"the value as committed by the act"* means.
+/// - `lifecycleState` read off the head rather than assumed. §4.5 calls it
+///   *"the discriminator a consumer of `*HeadSaved` needs, since a save lands
+///   on a `draft`, `published` or `deprecated` head alike"*, so the case
+///   saves **twice**: once on a `draft` head and once on the same head after
+///   it has published. A hard-coded `"draft"` passes the first and fails the
+///   second, and the count moving `1 -> 2` is what says each save announces
+///   once rather than the publish's row being miscounted as a save's.
+#[tokio::test]
+async fn a_save_enqueues_one_product_head_saved_carrying_the_committed_revision_and_state() {
+    let harness = harness().await;
+    let product_id = Uuid::now_v7();
+    seed_draft(&harness, product_id).await;
+
+    let first = save_at(&harness, product_id, 1, &json!({ "name": "Fibre 900" })).await;
+    assert_eq!(
+        first.status(),
+        StatusCode::OK,
+        "this case's own premise: the bucket-iii save on a draft is admitted"
+    );
+
+    assert_eq!(
+        enqueued_event_count(&harness.dsn, "ProductHeadSaved").await,
+        1,
+        "one admitted save enqueues exactly one ProductHeadSaved row, no more and no fewer"
+    );
+
+    let head = head_of(&harness, product_id).await;
+    let body = enqueued_event_body(&harness.dsn, "ProductHeadSaved").await;
+    assert_eq!(body["entityKind"], json!("product"));
+    assert_eq!(body["entityId"], json!(product_id.to_string()));
+    assert_eq!(body["tenantId"], json!(TENANT.to_string()));
+    assert_eq!(
+        body["internalRevision"],
+        json!(head.internal_revision),
+        "the event announces the revision as committed by the act, read back off the head"
+    );
+    assert_eq!(
+        body["internalRevision"],
+        json!(2),
+        "and that is the post-bump 2, not the 1 the head carried when the door began"
+    );
+    assert_eq!(
+        body["lifecycleState"],
+        json!("draft"),
+        "a save takes no edge, so the state is the one the head was already in"
+    );
+
+    let published = post_head_act(
+        app_for(&harness, TENANT),
+        TENANT,
+        product_id,
+        "publish",
+        &[("If-Match", &if_match(2))],
+    )
+    .await;
+    assert_eq!(
+        published.status(),
+        StatusCode::OK,
+        "this case's own premise: the draft publishes"
+    );
+
+    let second = save_at(&harness, product_id, 3, &json!({ "name": "Fibre 901" })).await;
+    assert_eq!(
+        second.status(),
+        StatusCode::OK,
+        "section 4.1 admits a bucket-iii save on a published head"
+    );
+
+    assert_eq!(
+        enqueued_event_count(&harness.dsn, "ProductHeadSaved").await,
+        2,
+        "the second save announced once too, and the publish's own row is not one of these"
+    );
+    assert_eq!(
+        enqueued_event_count(&harness.dsn, "ProductPublished").await,
+        1,
+        "the control on the filter: the publish's row is there under its own token"
+    );
+
+    let head = head_of(&harness, product_id).await;
+    let body = enqueued_event_body(&harness.dsn, "ProductHeadSaved").await;
+    assert_eq!(
+        body["internalRevision"],
+        json!(head.internal_revision),
+        "the newest row is the second save's, and it announces its own committed revision"
+    );
+    assert_eq!(body["internalRevision"], json!(4));
+    assert_eq!(
+        body["lifecycleState"],
+        json!("published"),
+        "the discriminator is read off the head, so a save on a published head says so"
+    );
+}

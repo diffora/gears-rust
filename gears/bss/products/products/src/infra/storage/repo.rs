@@ -69,8 +69,8 @@
 //! provider-holding struct gets added when, and only when, a caller needs one
 //! with no transaction open — no caller does yet.
 //!
-//! @cpt-cf-bss-products-dod-audit-trail
-//! @cpt-cf-bss-products-dod-idempotency-store
+//! @cpt-dod:cpt-cf-bss-products-dod-audit-trail:p1
+//! @cpt-dod:cpt-cf-bss-products-dod-idempotency-store:p1
 
 use chrono::{DateTime, Utc};
 use sea_orm::ActiveValue::Set;
@@ -430,6 +430,61 @@ pub async fn find_sku(
         .map_err(|e| driver_failure(format!("read sku {sku_id}"), e))?;
 
     row.map(into_sku_record).transpose()
+}
+
+/// Read every **non-terminal** SKU under one Product, within `tenant_id`'s
+/// scope — the parent-child containment check's operand
+/// (`fr-parent-child-integrity`, `design/01-foundation.md` §4.1).
+///
+/// # Why terminal children are excluded in the statement, not by the caller
+///
+/// `retired` and `discarded` children are out of use: a narrowing of the
+/// parent cannot orphan a row nothing can transact against, and no door will
+/// ever ask them to be contained again — the head-write guard refuses every
+/// write to a terminal head, so the state they were left in is the state
+/// they keep. Filtering them here rather than in the caller keeps the rule's
+/// operand a property of the read: a second caller cannot forget the
+/// exclusion and turn a tidy retirement into a refusal on an unrelated save.
+/// [`TERMINAL_HEAD_STATES`] is the same roster both save statements pin, so
+/// the two cannot drift.
+///
+/// # `runner` MUST already be the caller's own transaction
+///
+/// This function opens none, exactly as [`find_product`] and [`find_sku`] do
+/// not. Its one caller is the save door's containment phase, which runs
+/// inside the mutation transaction (P-D-42 puts the idempotency claim there
+/// and every later phase with it), so the children this reads are the
+/// children the `UPDATE` a few statements later commits against.
+///
+/// Ordered by `sku_code`, so a parent with several offending children is
+/// refused naming the same one on every run rather than whichever the
+/// driver happened to return first.
+///
+/// # Errors
+/// [`RepoError::Driver`] on a storage failure; [`RepoError::CorruptRow`] when
+/// a stored `lifecycle_state` is outside the enumeration [`LifecycleState`]
+/// parses.
+pub async fn find_non_terminal_skus_of_product(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    product_id: Uuid,
+) -> Result<Vec<SkuRecord>, RepoError> {
+    let rows = sku::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(sku::Column::TenantId.eq(tenant_id))
+                .add(sku::Column::ProductId.eq(product_id))
+                .add(sku::Column::LifecycleState.is_not_in(TERMINAL_HEAD_STATES)),
+        )
+        .order_by(sku::Column::SkuCode, sea_orm::Order::Asc)
+        .all(runner)
+        .await
+        .map_err(|e| driver_failure(format!("read the SKUs of product {product_id}"), e))?;
+
+    rows.into_iter().map(into_sku_record).collect()
 }
 
 /// Read a stored `products_sku` row into this repository's vocabulary.
@@ -1904,6 +1959,362 @@ pub async fn discard_sku_head(
         .exec(runner)
         .await
         .map_err(|e| driver_failure(format!("discard sku {sku_id}"), e))?;
+
+    if result.rows_affected == 0 {
+        return Ok(HeadWrite::Unmatched);
+    }
+    Ok(HeadWrite::Applied)
+}
+
+/// The two head states no head write is admitted on at all
+/// (`inst-fd-terminal`, **P-D-25** widened by **P-D-32**).
+///
+/// Both save statements below carry it in their own `WHERE` clause. The door
+/// asks `transition::check_head_write` first and answers `ENTITY_TERMINAL`
+/// from the row it read; this copy is the one that decides, because a
+/// neighbouring transition can retire the head between that read and this
+/// write and only the statement judges the image the write lands on. Exactly
+/// the argument [`discard_product_head`] makes for its own filter.
+const TERMINAL_HEAD_STATES: [&str; 2] = [
+    LifecycleState::Retired.as_str(),
+    LifecycleState::Discarded.as_str(),
+];
+
+/// A `name` save, with the normalization that has to travel with it.
+///
+/// One field rather than two, and that is the whole reason the type exists:
+/// `name` and `name_normalized` are one bucket-iii field in §4.1 — the second
+/// being *"the same field's index operand"*, the operand
+/// `uq_products_product_name` enforces on — so a statement that moved one
+/// without the other would leave the uniqueness index keyed to a name the row
+/// no longer carries, and nothing downstream would notice until the next
+/// author collided with a name nobody holds. Two `Option` fields would have
+/// admitted exactly that pair of states; this one admits neither.
+///
+/// The normalization itself is `crate::domain::name::normalize`'s and is
+/// computed by the door, for the reason [`insert_entity_version`] states about
+/// its own digest: this module renders nothing it stores.
+#[derive(Clone, Debug)]
+pub struct SavedName {
+    /// The operator-facing name, as authored.
+    pub value: String,
+    /// `crate::domain::name::normalize(value)`, as the door computed it.
+    pub normalized: String,
+}
+
+/// A save of a nullable text column: the caller either named a value or asked
+/// for the column to be cleared.
+///
+/// An enum rather than the `Option<Option<String>>` the two states would
+/// otherwise need, which is both a denied lint and — more to the point —
+/// a shape whose two `None`s a reader has to hold apart by position. Only
+/// `products_product.product_code` is nullable among the columns either save
+/// statement writes, so this is its type and no other's.
+#[derive(Clone, Debug)]
+pub enum NullableText {
+    /// Write this value.
+    Set(String),
+    /// Write `NULL`, releasing whatever reservation the old value held —
+    /// `uq_products_product_code` is partial on `product_code IS NOT NULL`,
+    /// so a cleared code leaves the index by this write and by no other.
+    Clear,
+}
+
+/// The columns one Product save writes, each `None` where the request did not
+/// carry the field.
+///
+/// Every member is a **bucket-i or bucket-iii** column of §4.1 and nothing
+/// else: the mechanical columns this statement moves — `internal_revision`
+/// and `updated_at` — are the statement's own and are not caller inputs, and
+/// row identity is admitted in no `UPDATE` at all (**P-D-34**), so neither
+/// class has a field here to be set from. Which bucket each column is in, and
+/// what the door may do with it, is `crate::domain::bucket`'s answer and not
+/// this module's; what is here is the set of columns a routed save can reach.
+#[derive(Clone, Debug, Default)]
+pub struct ProductHeadSave {
+    /// Bucket i (§4.1): the brand the row belongs to.
+    pub brand_id: Option<Uuid>,
+    /// Bucket i: the external mapping code, clearable.
+    pub product_code: Option<NullableText>,
+    /// Bucket iii: the name and its index operand, inseparable
+    /// ([`SavedName`]).
+    pub name: Option<SavedName>,
+    /// Bucket iii, in both directions.
+    pub region_scope: Option<String>,
+    /// Bucket iii, in both directions.
+    pub brand_scope: Option<String>,
+}
+
+impl ProductHeadSave {
+    /// Whether this save carries a **bucket-i** column, and therefore whether
+    /// [`save_product_head`]'s filter must also pin `published_version = 0`.
+    ///
+    /// Derived from the fields rather than passed in beside them: a `bool`
+    /// argument saying which buckets a value carries is a second answer to a
+    /// question the value itself already answers, and the two could disagree.
+    const fn touches_structural(&self) -> bool {
+        self.brand_id.is_some() || self.product_code.is_some()
+    }
+
+    /// Whether the save names no column at all.
+    ///
+    /// The door refuses an empty save before reaching this module; the check
+    /// is here so that a later caller cannot turn an empty payload into a
+    /// bare `internal_revision` bump — a write with no content that would
+    /// still invalidate every `ETag` a client holds.
+    const fn is_empty(&self) -> bool {
+        self.brand_id.is_none()
+            && self.product_code.is_none()
+            && self.name.is_none()
+            && self.region_scope.is_none()
+            && self.brand_scope.is_none()
+    }
+}
+
+/// [`ProductHeadSave`]'s SKU twin. Two differences, both the schema's: there
+/// is no `name` — `products_sku` has no such column, which is why a `name`
+/// field arriving for a SKU is a registry miss rather than a routed save —
+/// and `product_id` is the **parent link** and bucket-i (§4.1, the owner's
+/// call of 2026-08-27), where on the Product the identically named column is
+/// the primary key and is admitted in no `UPDATE` at all.
+#[derive(Clone, Debug, Default)]
+pub struct SkuHeadSave {
+    /// Bucket i: the code `uq_products_sku_code` reserves.
+    pub sku_code: Option<String>,
+    /// Bucket i: the parent link.
+    pub product_id: Option<Uuid>,
+    /// Bucket iii, in both directions.
+    pub region_scope: Option<String>,
+    /// Bucket iii, in both directions.
+    pub brand_scope: Option<String>,
+}
+
+impl SkuHeadSave {
+    /// See [`ProductHeadSave::touches_structural`].
+    const fn touches_structural(&self) -> bool {
+        self.sku_code.is_some() || self.product_id.is_some()
+    }
+
+    /// See [`ProductHeadSave::is_empty`].
+    const fn is_empty(&self) -> bool {
+        self.sku_code.is_none()
+            && self.product_id.is_none()
+            && self.region_scope.is_none()
+            && self.brand_scope.is_none()
+    }
+}
+
+/// The failure a save carrying no column at all is answered with.
+///
+/// [`RepoError::Db`] — this gear's internal channel — and **not** a
+/// [`DomainError`]: the door refuses an empty payload `VALIDATION` naming the
+/// body, so a caller cannot reach this message, and a request that did reach
+/// it would be reporting the gear's own defect rather than the caller's. The
+/// backstop exists so that "no statement in this module bumps
+/// `internal_revision` without writing a content column" holds against
+/// callers this module has not met yet — a bare bump is a write with no
+/// content that still invalidates every `ETag` a client holds.
+fn empty_save() -> RepoError {
+    RepoError::Db(
+        "a save must name at least one column: a bare internal_revision bump is not a save"
+            .to_owned(),
+    )
+}
+
+/// Save a Product head: **one** `UPDATE` carrying the routed columns, the
+/// revision bump and `updated_at` (`inst-fd-transition-bump`,
+/// `cpt-cf-bss-products-dod-save-door`).
+///
+/// # Exactly one statement, and no version row
+///
+/// The head-row guard bumps nothing itself — it *refuses* any `UPDATE` whose
+/// `internal_revision` is not `OLD + 1`, on every admitted `UPDATE` without
+/// exception — so a save split across two statements would move the revision
+/// twice for one act and the `ETag` a client holds would skip a value the
+/// door never returned. That is [`publish_product_head`]'s argument, and it
+/// reaches a save for the same reason.
+///
+/// A save writes **no** `products_entity_version` row and moves
+/// `published_version` not at all: the head is the authoring surface in every
+/// non-terminal state (`inst-fd-transition-guard`), and the version row is
+/// the publish act's. There is therefore no freeze to precede this statement
+/// and no ordering constraint of the kind [`publish_product_head`] carries.
+///
+/// # The legality is in the `WHERE` clause
+///
+/// Two conditions ride the filter beside the pinned revision, and the
+/// database is the copy that decides:
+///
+/// - **Non-terminal**, always ([`TERMINAL_HEAD_STATES`]).
+/// - **`published_version = 0`**, and only where the save carries a
+///   **bucket-i** column ([`ProductHeadSave::touches_structural`]). §4.1
+///   admits identity writes before first publish and refuses them after
+///   (`inst-fd-bucket-i-refusal`); §4.1 admits a bucket-iii write on any
+///   non-terminal head, published or not — a published Product **can** be
+///   renamed. Pinning `published_version = 0` unconditionally would refuse
+///   exactly that rename, and pinning it never would leave the identity rule
+///   to the door's own read, which a concurrent publish can invalidate
+///   between the read and this write.
+///
+/// The physical trigger states both rules a third time
+/// (`trg_products_product_bucket_i`, `trg_products_product_bucket_iii`), and
+/// the difference matters: the trigger *raises*, so a save that reached it
+/// would be an operator-facing 500. This filter answers
+/// [`HeadWrite::Unmatched`] instead, which the door turns into the governed
+/// refusal that names the caller's own field.
+///
+/// # Errors
+/// [`RepoError::Db`] where `save` names no column at all — the gear's own
+/// internal channel and not a [`DomainError`], for the reason the backstop
+/// [`empty_save`] states — and on a scope refusal that raised no driver
+/// error. [`RepoError::Driver`] on a storage failure, which for this
+/// statement includes **either unique index's** collision
+/// (`uq_products_product_name` on a renamed row, `uq_products_product_code`
+/// on a re-coded one); the door reads which from the driver's own text, as
+/// the create door does. A stale revision, a terminal head, or a bucket-i
+/// write after first publish is **not** an error; it is
+/// [`HeadWrite::Unmatched`].
+pub async fn save_product_head(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    product_id: Uuid,
+    expected_internal_revision: i64,
+    save: &ProductHeadSave,
+    now: DateTime<Utc>,
+) -> Result<HeadWrite, RepoError> {
+    if save.is_empty() {
+        return Err(empty_save());
+    }
+
+    let mut statement = product::Entity::update_many()
+        .secure()
+        .scope_with(scope)
+        .col_expr(
+            product::Column::InternalRevision,
+            Expr::col(product::Column::InternalRevision).add(Expr::val(1_i64)),
+        )
+        .col_expr(product::Column::UpdatedAt, Expr::value(now));
+
+    if let Some(brand_id) = save.brand_id {
+        statement = statement.col_expr(product::Column::BrandId, Expr::value(brand_id));
+    }
+    if let Some(code) = save.product_code.as_ref() {
+        let value = match code {
+            NullableText::Set(code) => Expr::value(code.clone()),
+            NullableText::Clear => Expr::value(Option::<String>::None),
+        };
+        statement = statement.col_expr(product::Column::ProductCode, value);
+    }
+    if let Some(name) = save.name.as_ref() {
+        statement = statement
+            .col_expr(product::Column::Name, Expr::value(name.value.clone()))
+            .col_expr(
+                product::Column::NameNormalized,
+                Expr::value(name.normalized.clone()),
+            );
+    }
+    if let Some(region_scope) = save.region_scope.as_ref() {
+        statement = statement.col_expr(
+            product::Column::RegionScope,
+            Expr::value(region_scope.clone()),
+        );
+    }
+    if let Some(brand_scope) = save.brand_scope.as_ref() {
+        statement = statement.col_expr(
+            product::Column::BrandScope,
+            Expr::value(brand_scope.clone()),
+        );
+    }
+
+    let mut filter = Condition::all()
+        .add(product::Column::TenantId.eq(tenant_id))
+        .add(product::Column::ProductId.eq(product_id))
+        .add(product::Column::InternalRevision.eq(expected_internal_revision))
+        .add(product::Column::LifecycleState.is_not_in(TERMINAL_HEAD_STATES));
+    if save.touches_structural() {
+        filter = filter.add(product::Column::PublishedVersion.eq(0_i64));
+    }
+
+    let result = statement
+        .filter(filter)
+        .exec(runner)
+        .await
+        .map_err(|e| driver_failure(format!("save product {product_id}"), e))?;
+
+    // Zero rows is an answer, not a no-op: the head no longer carries the
+    // pinned revision, it has gone terminal, it has been published under a
+    // bucket-i save, or it is another tenant's. Reporting it as success would
+    // answer `200` and an `ETag` for a revision the row never took.
+    if result.rows_affected == 0 {
+        return Ok(HeadWrite::Unmatched);
+    }
+    Ok(HeadWrite::Applied)
+}
+
+/// Save a SKU head, on [`save_product_head`]'s terms exactly — one statement,
+/// no version row, the same two conditions in the filter, and the same
+/// reading of `Unmatched`.
+///
+/// The one difference is the column set ([`SkuHeadSave`]): no `name`, and
+/// `product_id` as the bucket-i parent link rather than as row identity.
+/// A re-parenting save is therefore admitted before first publish and refused
+/// after it by the same `published_version = 0` clause the code rides, which
+/// is what the owner's call of 2026-08-27 asks for — *"re-parenting changes
+/// whose SKU it is, not how it is described"*.
+///
+/// # Errors
+/// As [`save_product_head`], with one unique index rather than two:
+/// `uq_products_sku_code` is the only one `products_sku` carries.
+pub async fn save_sku_head(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    sku_id: Uuid,
+    expected_internal_revision: i64,
+    save: &SkuHeadSave,
+    now: DateTime<Utc>,
+) -> Result<HeadWrite, RepoError> {
+    if save.is_empty() {
+        return Err(empty_save());
+    }
+
+    let mut statement = sku::Entity::update_many()
+        .secure()
+        .scope_with(scope)
+        .col_expr(
+            sku::Column::InternalRevision,
+            Expr::col(sku::Column::InternalRevision).add(Expr::val(1_i64)),
+        )
+        .col_expr(sku::Column::UpdatedAt, Expr::value(now));
+
+    if let Some(sku_code) = save.sku_code.as_ref() {
+        statement = statement.col_expr(sku::Column::SkuCode, Expr::value(sku_code.clone()));
+    }
+    if let Some(product_id) = save.product_id {
+        statement = statement.col_expr(sku::Column::ProductId, Expr::value(product_id));
+    }
+    if let Some(region_scope) = save.region_scope.as_ref() {
+        statement = statement.col_expr(sku::Column::RegionScope, Expr::value(region_scope.clone()));
+    }
+    if let Some(brand_scope) = save.brand_scope.as_ref() {
+        statement = statement.col_expr(sku::Column::BrandScope, Expr::value(brand_scope.clone()));
+    }
+
+    let mut filter = Condition::all()
+        .add(sku::Column::TenantId.eq(tenant_id))
+        .add(sku::Column::SkuId.eq(sku_id))
+        .add(sku::Column::InternalRevision.eq(expected_internal_revision))
+        .add(sku::Column::LifecycleState.is_not_in(TERMINAL_HEAD_STATES));
+    if save.touches_structural() {
+        filter = filter.add(sku::Column::PublishedVersion.eq(0_i64));
+    }
+
+    let result = statement
+        .filter(filter)
+        .exec(runner)
+        .await
+        .map_err(|e| driver_failure(format!("save sku {sku_id}"), e))?;
 
     if result.rows_affected == 0 {
         return Ok(HeadWrite::Unmatched);

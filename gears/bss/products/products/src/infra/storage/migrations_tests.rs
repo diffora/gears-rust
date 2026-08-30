@@ -57,13 +57,30 @@
 //! against one another, reading the `SQLite` halves back out of
 //! `sqlite_master` and the Postgres halves out of the migration sources.
 //!
+//! After it, `bucket_agreement_tests`: §5's agreement test between the
+//! `BucketRegistry` (`domain::bucket`) and §4.2's trigger column classes. The
+//! registry is **advisory for the physical layer** (P-D-32), so nothing but
+//! this module holds the two statements of the bucket rule equal. Three
+//! assertions: the same columns in the same classes per entity, with iii and
+//! iv combined because the whitelist admits them together; bucket-ii empty on
+//! both sides, which is what §4.2's interim row-image predicate has to say
+//! about today's columns and is re-pointed when 07 supplies a tighter one;
+//! and P-D-50's third, that no published-state column is named by *neither*
+//! artifact — the case the first two are blind to by construction, and
+//! exactly the column the door's fail-closed miss would refuse at runtime.
+//! Both sides are read rather than restated: the executed triggers and the
+//! executed column list out of the engine, the Postgres clauses out of the
+//! migration source.
+//!
 //! **Only the `SQLite` mirror is executed.** The whole suite runs in-memory on
 //! `SQLite`, so no test in this file executes a Postgres statement; the
 //! `PL/pgSQL` halves of every guard asserted here were compared to their
 //! `SQLite` counterparts clause for clause **by reading** — except the
-//! lifecycle edge list, which `lifecycle_roster_tests` now compares
+//! lifecycle edge list and the bucket column classes, which
+//! `lifecycle_roster_tests` and `bucket_agreement_tests` now compare
 //! mechanically, from the Postgres source text since there is no executed
-//! Postgres artifact to read.
+//! Postgres artifact to read — which makes those halves **source agreement,
+//! not engine behaviour**.
 #![allow(clippy::expect_used)]
 
 use sea_orm_migration::MigratorTrait;
@@ -3693,6 +3710,470 @@ mod lifecycle_roster_tests {
                 rosters.first(),
                 rosters.last(),
                 "{table}: the two engines admit different lifecycle_state rosters"
+            );
+        }
+    }
+}
+
+/// §5's agreement test: the `BucketRegistry` and §4.2's trigger column classes
+/// name the same columns in the same classes.
+///
+/// **P-D-32 makes this the only thing holding the two together.** The registry
+/// is *advisory for the physical layer* — a compile-time Rust map has no read
+/// path from a migration-time trigger — so the trigger's column classes stay
+/// static DDL and the two statements of one rule can drift silently. Every
+/// other test in this file judges one artifact; this module judges the pair.
+///
+/// **iii and iv are asserted as one combined class**, because the whitelist
+/// admits them together: the `trg_*_bucket_iii` trigger and its `PL/pgSQL`
+/// twin carry a single predicate for both, so the physical side cannot tell
+/// them apart and this test must not pretend it can. Splitting them here
+/// would be inventing a distinction the artifact under test does not make.
+///
+/// **The mechanical and row-identity columns are outside the comparison**, by
+/// §5's own words: `lifecycle_state`, `published_version`,
+/// `internal_revision`, `composition_pending` and the update timestamp — and,
+/// when their slices land, `deprecation_provenance`, `replaced_by_sku_id` and
+/// `cloned_from` — together with `tenant_id`, the primary key and
+/// `created_by`. They carry no bucket tag, so a bucket comparison has nothing
+/// to say about them. The third assertion below is what keeps that exemption
+/// from becoming a hole.
+///
+/// # Neither side is hand-copied
+///
+/// A third list of column names written out here would be a third artifact,
+/// and would drift exactly as the two under test can. So both sides are read:
+///
+/// - the **executed** `SQLite` triggers and the executed column list, out of
+///   `sqlite_master` and `pragma_table_info` after the chain boots — the
+///   artifact the engine actually holds;
+/// - the Postgres clauses out of the migration **source** through
+///   `include_str!`, because no test in this crate executes a Postgres
+///   statement. What that half proves is **source agreement, not engine
+///   behaviour**: it catches a `PL/pgSQL` clause that stopped naming what its
+///   `SQLite` mirror names, and it cannot catch a Postgres engine that
+///   disagrees with its own text.
+///
+/// The clause is located by its **raise message** rather than by a line
+/// number or a column name, since the message is the one part of a clause
+/// that names the bucket it enforces.
+mod bucket_agreement_tests {
+    use std::collections::BTreeSet;
+
+    use bss_products_sdk::models::EntityKind;
+    use sea_orm::ConnectionTrait;
+    use sea_orm_migration::MigratorTrait;
+
+    use super::Migrator;
+    use crate::domain::bucket::{self, FieldBucket};
+
+    /// The two migration sources, as text. `include_str!` resolves relative to
+    /// the file holding the macro, which is this one — `src/infra/storage/`.
+    const PRODUCT_SOURCE: &str =
+        include_str!("migrations/m20260829_000002_create_products_product.rs");
+    const SKU_SOURCE: &str = include_str!("migrations/m20260829_000003_create_products_sku.rs");
+
+    /// The null-safe comparison each engine spells a guarded column change
+    /// with. This is the whole dialect difference between the two renderings
+    /// of one clause.
+    const PG_COMPARISON: &str = "IS DISTINCT FROM";
+    /// `SQLite`'s form of the same comparison.
+    const SQLITE_COMPARISON: &str = "IS NOT";
+
+    /// The raise messages that name a bucket, and therefore locate its clause.
+    const BUCKET_I_RAISE: &str = "bucket-i columns are admitted";
+    /// The combined iii/iv clause's message. There is no `bucket-iv` message
+    /// anywhere, which is the point: one clause, one raise, two tags.
+    const BUCKET_III_RAISE: &str = "bucket-iii columns are admitted";
+    /// The message a bucket-ii clause **would** carry. Spelled with the word
+    /// `columns` so it cannot match `bucket-iii columns`, of which
+    /// `bucket-ii` is a prefix.
+    const BUCKET_II_RAISE: &str = "bucket-ii columns";
+
+    /// Each head table, with the entity kind the registry keys by and the
+    /// migration source its Postgres half lives in.
+    const TABLES: [(EntityKind, &str, &str); 2] = [
+        (EntityKind::Product, "products_product", PRODUCT_SOURCE),
+        (EntityKind::Sku, "products_sku", SKU_SOURCE),
+    ];
+
+    /// Boots the whole chain on a fresh in-memory `SQLite` database.
+    ///
+    /// One connection, pinned, for the reason every harness in this file pins
+    /// one: a default `sqlite::memory:` pool hands each checked-out
+    /// connection its own empty database. A raw `SeaORM` connection rather
+    /// than the `SecureORM` provider the guard suites use, because
+    /// `sqlite_master` is not a tenant-scoped table and `DbConn` exposes no
+    /// raw-SQL path.
+    async fn booted() -> sea_orm::DatabaseConnection {
+        let mut opts = sea_orm::ConnectOptions::new("sqlite::memory:");
+        opts.max_connections(1).min_connections(1);
+        let db = sea_orm::Database::connect(opts)
+            .await
+            .expect("connect in-memory sqlite");
+        Migrator::up(&db, None).await.expect("boot the chain");
+        db
+    }
+
+    /// Every value of a one-column query aliased `v`, against the executed
+    /// database.
+    async fn read_column(db: &sea_orm::DatabaseConnection, query: String) -> Vec<String> {
+        let rows = db
+            .query_all_raw(sea_orm::Statement::from_string(
+                sea_orm::DatabaseBackend::Sqlite,
+                query,
+            ))
+            .await
+            .expect("query the executed sqlite schema");
+        rows.iter()
+            .map(|row| row.try_get("", "v").expect("the queried value"))
+            .collect()
+    }
+
+    /// The executed text of every trigger the engine holds for `table`.
+    async fn executed_trigger_texts(db: &sea_orm::DatabaseConnection, table: &str) -> Vec<String> {
+        read_column(
+            db,
+            format!(
+                "SELECT sql AS v FROM sqlite_master WHERE type = 'trigger' AND tbl_name = '{table}'"
+            ),
+        )
+        .await
+    }
+
+    /// The name of every trigger the engine holds for `table`.
+    async fn executed_trigger_names(db: &sea_orm::DatabaseConnection, table: &str) -> Vec<String> {
+        read_column(
+            db,
+            format!(
+                "SELECT name AS v FROM sqlite_master WHERE type = 'trigger' AND tbl_name = '{table}'"
+            ),
+        )
+        .await
+    }
+
+    /// The executed column list of `table`, read from the engine's own
+    /// introspection rather than from the `CREATE TABLE` text this repository
+    /// holds.
+    async fn executed_columns(db: &sea_orm::DatabaseConnection, table: &str) -> BTreeSet<String> {
+        read_column(
+            db,
+            format!("SELECT name AS v FROM pragma_table_info('{table}')"),
+        )
+        .await
+        .into_iter()
+        .collect()
+    }
+
+    /// The executed text of the one trigger whose abort message carries
+    /// `raise_marker`.
+    ///
+    /// Located by message, not by name: a renamed trigger still enforces its
+    /// bucket, and a trigger that stopped naming its bucket is a finding this
+    /// helper turns into a failure rather than hiding behind an empty set.
+    fn trigger_raising(texts: &[String], raise_marker: &str) -> String {
+        let mut matched = texts.iter().filter(|text| text.contains(raise_marker));
+        let found = matched
+            .next()
+            .expect("the executed schema carries a trigger for this bucket")
+            .clone();
+        assert!(
+            matched.next().is_none(),
+            "two executed triggers raise the same bucket message, so neither is the whitelist"
+        );
+        found
+    }
+
+    /// The Postgres statement list of a migration source, sliced out by its
+    /// two `const` headers, so no sentence of module-doc prose and no `DOWN`
+    /// statement can be read as a clause.
+    fn pg_section(source: &str) -> &str {
+        let start = source
+            .find("const PG_UP_STATEMENTS")
+            .expect("every migration declares its Postgres UP list");
+        let end = source
+            .find("const PG_DOWN_STATEMENTS")
+            .expect("every migration declares its Postgres DOWN list");
+        &source[start..end]
+    }
+
+    /// The `PL/pgSQL` clause that ends in `raise_marker`: the text from the
+    /// `IF ` that opens it to the message that names its bucket.
+    fn pg_clause<'source>(source: &'source str, raise_marker: &str) -> &'source str {
+        let section = pg_section(source);
+        let at = section
+            .find(raise_marker)
+            .expect("the PL/pgSQL body carries a clause for this bucket");
+        let head = &section[..at];
+        let start = head
+            .rfind("IF ")
+            .expect("a raise inside a PL/pgSQL body is opened by an IF");
+        &head[start..]
+    }
+
+    /// Every column `sql` guards as `NEW.x <comparison> OLD.x`.
+    ///
+    /// The pair form is what makes this a column **class** read rather than a
+    /// word count: the state operands a clause also carries are spelled
+    /// `OLD.published_version = 0` and `OLD.lifecycle_state IN (...)`, neither
+    /// of which names `NEW` at all, so neither can be mistaken for a guarded
+    /// column. The trailing boundary check is what keeps
+    /// `NEW.name IS NOT OLD.name_normalized` from being read as a guard on
+    /// `name`.
+    fn compared_columns(sql: &str, comparison: &str) -> BTreeSet<String> {
+        const NEW: &str = "NEW.";
+        let mut found = BTreeSet::new();
+        let mut rest = sql;
+        while let Some(at) = rest.find(NEW) {
+            let after = &rest[at + NEW.len()..];
+            rest = after;
+            let end = after.find(is_not_ident).unwrap_or(after.len());
+            let column = &after[..end];
+            if column.is_empty() {
+                continue;
+            }
+            let expected = format!(" {comparison} OLD.{column}");
+            if let Some(tail) = after[end..].strip_prefix(&expected)
+                && (tail.is_empty() || tail.starts_with(is_not_ident))
+            {
+                found.insert(column.to_owned());
+            }
+        }
+        found
+    }
+
+    /// Every column `sql` names at all, on either side of an update.
+    ///
+    /// Deliberately looser than [`compared_columns`]: the third assertion asks
+    /// only whether the whitelist has *heard of* a column, so a mention under
+    /// any predicate counts.
+    fn mentioned_columns(sql: &str) -> BTreeSet<String> {
+        let mut found = BTreeSet::new();
+        for prefix in ["NEW.", "OLD."] {
+            let mut rest = sql;
+            while let Some(at) = rest.find(prefix) {
+                let after = &rest[at + prefix.len()..];
+                rest = after;
+                let end = after.find(is_not_ident).unwrap_or(after.len());
+                if end > 0 {
+                    found.insert(after[..end].to_owned());
+                }
+            }
+        }
+        found
+    }
+
+    /// Whether `c` ends a `SQL` identifier.
+    fn is_not_ident(c: char) -> bool {
+        !c.is_ascii_alphanumeric() && c != '_'
+    }
+
+    /// The registry's columns for a set of tags, as the physical side spells
+    /// them.
+    ///
+    /// Takes a **set** of tags rather than one because §5's combined iii/iv
+    /// class is the operand, not a convenience.
+    fn registry_bucket(kind: EntityKind, wanted: &[FieldBucket]) -> BTreeSet<String> {
+        bucket::columns(kind)
+            .iter()
+            .filter(|tag| {
+                tag.class
+                    .bucket()
+                    .is_some_and(|tagged| wanted.contains(&tagged))
+            })
+            .map(|tag| tag.column.to_owned())
+            .collect()
+    }
+
+    /// Every column the registry names for `kind`, whatever class it puts it
+    /// in.
+    fn registry_columns(kind: EntityKind) -> BTreeSet<String> {
+        bucket::columns(kind)
+            .iter()
+            .map(|tag| tag.column.to_owned())
+            .collect()
+    }
+
+    /// A set, as a message an operator can read. `use_debug` is denied here
+    /// and a set printed through `Debug` would be the only thing a failure
+    /// showed.
+    fn listed(columns: &BTreeSet<String>) -> String {
+        if columns.is_empty() {
+            return "(none)".to_owned();
+        }
+        columns
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+
+    /// **Assertion 1.** Bucket-i, and bucket-iii/iv as one combined class,
+    /// name the same columns in the registry as in the whitelist, per entity.
+    ///
+    /// What it catches: a column re-tagged in the registry without its trigger
+    /// clause moving, a column added to a clause without a registry row, and
+    /// either of those in reverse. Both of those are P-D-32's drift, and until
+    /// this test nothing measured it — `bucket_tests` compares the registry
+    /// against the **entity model**, which knows a table's columns and nothing
+    /// about which class each is guarded in.
+    ///
+    /// The registry sides are asserted non-empty first, because two empty sets
+    /// are equal and a comparison that both artifacts stopped populating would
+    /// otherwise pass loudest of all.
+    #[tokio::test]
+    async fn the_registry_and_the_whitelist_name_the_same_columns_in_the_same_classes() {
+        let db = booted().await;
+        for (kind, table, source) in TABLES {
+            let texts = executed_trigger_texts(&db, table).await;
+
+            let structural_registry = registry_bucket(kind, &[FieldBucket::Structural]);
+            let material_registry = registry_bucket(
+                kind,
+                &[FieldBucket::MaterialMutable, FieldBucket::Descriptive],
+            );
+            assert!(
+                !structural_registry.is_empty(),
+                "{table}: the registry tags no bucket-i column, so the comparison below is vacuous"
+            );
+            assert!(
+                !material_registry.is_empty(),
+                "{table}: the registry tags no bucket-iii/iv column, so the comparison below is vacuous"
+            );
+
+            let structural_executed =
+                compared_columns(&trigger_raising(&texts, BUCKET_I_RAISE), SQLITE_COMPARISON);
+            let material_executed = compared_columns(
+                &trigger_raising(&texts, BUCKET_III_RAISE),
+                SQLITE_COMPARISON,
+            );
+            let structural_source =
+                compared_columns(pg_clause(source, BUCKET_I_RAISE), PG_COMPARISON);
+            let material_source =
+                compared_columns(pg_clause(source, BUCKET_III_RAISE), PG_COMPARISON);
+
+            assert_eq!(
+                structural_executed,
+                structural_registry,
+                "{table}: the executed SQLite bucket-i clause guards [{}], the registry tags [{}]",
+                listed(&structural_executed),
+                listed(&structural_registry)
+            );
+            assert_eq!(
+                material_executed,
+                material_registry,
+                "{table}: the executed SQLite bucket-iii/iv clause guards [{}], the registry tags [{}]",
+                listed(&material_executed),
+                listed(&material_registry)
+            );
+            assert_eq!(
+                structural_source,
+                structural_registry,
+                "{table}: the PL/pgSQL bucket-i clause guards [{}], the registry tags [{}]",
+                listed(&structural_source),
+                listed(&structural_registry)
+            );
+            assert_eq!(
+                material_source,
+                material_registry,
+                "{table}: the PL/pgSQL bucket-iii/iv clause guards [{}], the registry tags [{}]",
+                listed(&material_source),
+                listed(&material_registry)
+            );
+        }
+    }
+
+    /// **Assertion 2.** Bucket-ii has no members, in either artifact.
+    ///
+    /// §4.2's interim row-image predicate for the class is *"only while
+    /// `published_version = 0` and `lifecycle_state` is non-terminal"*,
+    /// through `inst-fd-save-txn` (P-D-41), and after first publish *"only in
+    /// the same statement as a `published_version` bump"* (P-D-34), with a
+    /// **tighter predicate still owed by slice 07**. No Foundation column
+    /// carries the tag today, so what that predicate has to say about this
+    /// gear's columns is exactly nothing — and the honest assertion is that
+    /// **both** sides say nothing, not that the arm is skipped.
+    ///
+    /// Asserted rather than skipped because the two ways this could go wrong
+    /// are opposite and both silent: a column tagged bucket-ii in the registry
+    /// with no clause to enforce it (a bucket the door routes by and the
+    /// database does not know), or a bucket-ii clause installed with no
+    /// registry row (a refusal the door cannot predict). When 07 supplies the
+    /// tighter predicate this test is **re-pointed at it** — the emptiness
+    /// arms below become a membership comparison in the shape of assertion 1,
+    /// against 07's clause rather than against nothing.
+    #[tokio::test]
+    async fn bucket_ii_has_no_members_in_either_artifact() {
+        let db = booted().await;
+        for (kind, table, source) in TABLES {
+            let correctable = registry_bucket(kind, &[FieldBucket::Correctable]);
+            assert!(
+                correctable.is_empty(),
+                "{table}: the registry tags [{}] bucket-ii, and no trigger clause enforces the class",
+                listed(&correctable)
+            );
+
+            assert!(
+                !pg_section(source).contains(BUCKET_II_RAISE),
+                "{table}: the PL/pgSQL body carries a bucket-ii clause the registry tags no column for"
+            );
+            for text in executed_trigger_texts(&db, table).await {
+                assert!(
+                    !text.contains(BUCKET_II_RAISE),
+                    "{table}: an executed trigger carries a bucket-ii clause the registry tags no column for"
+                );
+            }
+            let named = format!("trg_{table}_bucket_ii");
+            for name in executed_trigger_names(&db, table).await {
+                assert_ne!(
+                    name, named,
+                    "{table}: a bucket-ii trigger is installed and the registry tags no column for it"
+                );
+            }
+        }
+    }
+
+    /// **Assertion 3 (P-D-50).** No published-state column is named by
+    /// *neither* artifact.
+    ///
+    /// This is the case the first two are blind to **by construction**: a
+    /// column absent from the registry *and* absent from every trigger clause
+    /// is in no bucket set on either side, so every set comparison above holds
+    /// trivially while the column sits on the table unclassified. At runtime
+    /// that column is exactly what the registry's fail-closed miss refuses —
+    /// `classify` answers `ILLEGAL_FIELD_MUTATION` rather than routing it to a
+    /// default bucket, which turns an unnoticed schema addition into a refused
+    /// save. This test is what turns it into a red build instead.
+    ///
+    /// The population is the **executed** column list, so a column added to
+    /// the table is in the population the moment the migration runs, whether
+    /// or not anyone remembered the registry. Being named by *either* artifact
+    /// is enough: `updated_at` is mechanical and no clause guards it, and the
+    /// registry names it; the immutable set is named by both.
+    #[tokio::test]
+    async fn no_published_state_column_is_named_by_neither_artifact() {
+        let db = booted().await;
+        for (kind, table, _) in TABLES {
+            let population = executed_columns(&db, table).await;
+            assert!(
+                !population.is_empty(),
+                "{table}: no executed columns were read, so this assertion measures nothing"
+            );
+
+            let mut whitelisted = BTreeSet::new();
+            for text in executed_trigger_texts(&db, table).await {
+                whitelisted.extend(mentioned_columns(&text));
+            }
+            let registered = registry_columns(kind);
+
+            let unclassified: BTreeSet<String> = population
+                .into_iter()
+                .filter(|column| !registered.contains(column) && !whitelisted.contains(column))
+                .collect();
+            assert!(
+                unclassified.is_empty(),
+                "{table}: [{}] sit on the table and are named by neither the BucketRegistry nor the trigger whitelist, so the save door would refuse them under P-D-50's fail-closed miss",
+                listed(&unclassified)
             );
         }
     }

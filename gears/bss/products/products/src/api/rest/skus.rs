@@ -170,13 +170,45 @@
 //! the single head-row `UPDATE`. What remains owed there is the instruction's
 //! `bundle` narrowing, which needs slice 03's `type` column.
 //!
-//! @cpt-cf-bss-products-dod-read-door
-//! @cpt-cf-bss-products-dod-create-doors
-//! @cpt-cf-bss-products-dod-code-reservation
-//! @cpt-cf-bss-products-dod-containment
-//! @cpt-cf-bss-products-dod-idempotency-store
+//!
+//! # The save door
+//!
+//! `PATCH /bss-products/v1/skus/{id}` (`cpt-cf-bss-products-dod-save-door`)
+//! is `products::save_product`'s twin and was written against it: the same
+//! spine ([`open_act`], the claim, `transaction_with_retry`,
+//! [`answer_head_act`]), the same phase order, the same bucket arms, the same
+//! refusal codes and the same audit token. [`run_save`] carries the
+//! reasoning; only the differences are here.
+//!
+//! **The column set is the schema's.** Bucket i is `sku_code` **and
+//! `product_id`** — the parent link, which §4.1 files with identity on the
+//! owner's call of 2026-08-27 — where on the Product the identically named
+//! column is the primary key and is admitted in no `UPDATE` at all. Bucket
+//! iii is the two scope columns. There is **no `name`**: `products_sku` has
+//! no such column, so a `name` field arriving here is a registry miss and is
+//! refused by the fail-closed rule rather than routed to the Product's tag.
+//!
+//! **The one phase the Product door has no analogue for** is the containment
+//! re-check: §3.3 puts `SCOPE_NOT_CONTAINED` in the identity phase *"wherever
+//! it runs — create, **save**, and the publish re-run"*, and a save is the
+//! one door that can widen a child out of its parent's scope. It is
+//! [`recheck_parent_containment`] — the publish door's own function, over the
+//! image the save *would* store. A Product has no parent, so the asymmetry is
+//! the schema's, exactly as it is at the publish doors.
+//!
+//! **What the `DoD` still owes** is the Product door's list unchanged: the
+//! content rows of **slice 02** and the metering declaration of **slice 03**,
+//! whose tables do not exist at this commit, so `dod-save-door` reads as
+//! **partial** rather than met. [`save_sku_gated`]'s own doc names each.
+//!
+//! @cpt-dod:cpt-cf-bss-products-dod-read-door:p1
+//! @cpt-dod:cpt-cf-bss-products-dod-create-doors:p1
+//! @cpt-dod:cpt-cf-bss-products-dod-code-reservation:p1
+//! @cpt-dod:cpt-cf-bss-products-dod-containment:p1
+//! @cpt-dod:cpt-cf-bss-products-dod-idempotency-store:p1
 //! @cpt-cf-bss-products-dod-publish-door
-//! @cpt-cf-bss-products-dod-transition-guard
+//! @cpt-dod:cpt-cf-bss-products-dod-transition-guard:p1
+//! @cpt-cf-bss-products-dod-save-door
 
 use std::sync::Arc;
 
@@ -205,6 +237,7 @@ use crate::api::rest::{
     authz_error_to_canonical, claim_idempotency, contention_db_err, idempotency_key,
     record_idempotency_answer, replay_response, repo_error_to_canonical, require_authenticated,
 };
+use crate::domain::bucket;
 use crate::domain::canonical;
 use crate::domain::concurrency::InternalRevision;
 use crate::domain::containment::{
@@ -411,6 +444,48 @@ fn register_head_act_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Ro
         .error_503(openapi)
         .register(router, openapi);
 
+    let router = OperationBuilder::patch("/bss-products/v1/skus/{id}")
+        .operation_id("bss_products.save_sku")
+        .summary("Save a SKU head")
+        .description(
+            "Writes the named fields onto the SKU head in one guarded UPDATE, bumps \
+             `internal_revision` by one and enqueues `SkuHeadSaved`, and writes no version row \
+             and moves no `published_version`, the head being the authoring surface in every \
+             non-terminal state. Every field the body names is routed by its field-mutability \
+             bucket before any of them is written, so a request naming one refused field applies \
+             none of the others. Identity fields (`sku_code`, `product_id`) are admitted only \
+             before first publish and refused `ILLEGAL_FIELD_MUTATION` after it; `region_scope` \
+             and `brand_scope` are admitted on any non-terminal head, published or not. Every \
+             save is then re-checked against the parent Product as it now stands, whatever fields \
+             it names: the scope the save would leave must still be contained in the parent's \
+             (`SCOPE_NOT_CONTAINED`), and a `retired` or `discarded` parent refuses the save \
+             (`PARENT_TERMINAL`), so a save naming only `sku_code` can be refused on its parent's \
+             account. A field no bucket registry row names is refused `ILLEGAL_FIELD_MUTATION` \
+             rather than routed to a default. Gates on `sku x write` and requires `If-Match`: \
+             absent is `VALIDATION`, stale is `STALE_REVISION`. A `retired` or `discarded` head \
+             is refused `ENTITY_TERMINAL`. Accepts an optional `Idempotency-Key`, whose digest is \
+             taken over this body.",
+        )
+        .tag(TAG)
+        .authenticated()
+        .no_license_required()
+        .path_param("id", "The SKU to save.")
+        .json_request::<SaveSkuRequest>(openapi, "The fields to write.")
+        .handler(save_sku)
+        .json_response_with_schema::<SkuView>(
+            openapi,
+            StatusCode::OK,
+            "The saved SKU head, at its new revision.",
+        )
+        .error_400(openapi)
+        .error_401(openapi)
+        .error_403(openapi)
+        .error_404(openapi)
+        .error_409(openapi)
+        .error_500(openapi)
+        .error_503(openapi)
+        .register(router, openapi);
+
     OperationBuilder::post("/bss-products/v1/skus/{id}/discard")
         .operation_id("bss_products.discard_sku")
         .summary("Discard a never-published draft SKU")
@@ -566,9 +641,18 @@ fn describe_resolved_scope(scope: &ResolvedScope) -> String {
     }
 }
 
-/// Translate a [`ScopeContainment::NotContained`] verdict into the door's
-/// `SCOPE_NOT_CONTAINED` [`DomainError`] (`dod-containment`, P-D-39), for
-/// [`create_sku`] to hand to `crate::api::rest::audit_refusal_and_report`.
+/// Translate a [`ScopeContainment::NotContained`] verdict into the gear's
+/// one `SCOPE_NOT_CONTAINED` [`DomainError`] (`dod-containment`, P-D-39),
+/// for [`create_sku`] to hand to
+/// `crate::api::rest::audit_refusal_and_report`.
+///
+/// **Every door that can raise the code renders it here**: this one,
+/// [`recheck_parent_containment`] on the SKU save and publish re-runs, and
+/// [`crate::api::rest::products::check_children_stay_contained`] on the
+/// Product save — where the same verdict is reached from the parent's end.
+/// One function rather than a copy per door, so the entity kinds cannot word
+/// or code the same verdict two ways.
+///
 /// The containment rule itself already ran, in
 /// [`crate::domain::containment::ScopePair::check_containment`]; this
 /// function only names, in the message, which dimension failed and what the
@@ -585,7 +669,7 @@ fn describe_resolved_scope(scope: &ResolvedScope) -> String {
 /// not itself an audited refusal — nothing was actually refused — so it
 /// answers a plain `CanonicalError`, not a `DomainError` for the caller to
 /// audit.
-fn scope_not_contained_domain_err(
+pub(super) fn scope_not_contained_domain_err(
     failure: ScopeContainment,
 ) -> Result<DomainError, CanonicalError> {
     match failure {
@@ -879,12 +963,41 @@ pub(crate) struct PayloadScopes {
 /// [`ResolvedScope::parse`]'s own rule. A stored column that fails is a
 /// storage invariant violation rather than any caller's fault, and both
 /// callers answer it as an internal failure.
-fn parent_scope_pair(parent: &repo::ProductRecord) -> Result<ScopePair, &'static str> {
+pub(super) fn parent_scope_pair(parent: &repo::ProductRecord) -> Result<ScopePair, &'static str> {
     Ok(ScopePair {
         region: ResolvedScope::parse(&parent.region_scope)
             .map_err(|EmptyScopeToken| "region_scope")?,
         brand: ResolvedScope::parse(&parent.brand_scope)
             .map_err(|EmptyScopeToken| "brand_scope")?,
+    })
+}
+
+/// [`parent_scope_pair`]'s child-side twin: a stored SKU's two scope columns
+/// parsed into the [`ScopePair`] the containment rule reads as the **child**
+/// operand.
+///
+/// **One parse site, two callers**, on [`parent_scope_pair`]'s own terms:
+/// [`recheck_parent_containment`] here, and
+/// [`crate::api::rest::products::check_children_stay_contained`] on the
+/// Product door, which asks the same containment question from the other
+/// end — a parent narrowing under its live children rather than a child
+/// moving out from under its parent. Written once so the two doors cannot
+/// read a stored child differently, and so neither can drift into
+/// re-resolving the child against the parent: the operand is the row's own
+/// stored pair, materialized at create time by [`ScopePair::resolve_child`],
+/// and re-resolving it would re-widen it to whatever the parent now carries
+/// and turn every narrowing into a silent pass.
+///
+/// # Errors
+///
+/// The name of the first column that does not parse. Both callers answer it
+/// internally: a stored column that fails is a storage invariant violation,
+/// not any caller's fault.
+pub(super) fn sku_scope_pair(sku: &SkuRecord) -> Result<ScopePair, &'static str> {
+    Ok(ScopePair {
+        region: ResolvedScope::parse(&sku.region_scope)
+            .map_err(|EmptyScopeToken| "region_scope")?,
+        brand: ResolvedScope::parse(&sku.brand_scope).map_err(|EmptyScopeToken| "brand_scope")?,
     })
 }
 
@@ -1509,8 +1622,8 @@ struct ActContext {
     /// The pseudonymous ref this act and its refusals are attributed to.
     actor_ref: Uuid,
     /// The `products_audit_log.action` token **every** refusal of this act is
-    /// recorded under: [`PUBLISH_AUDIT_ACTION`] or
-    /// [`DISCARD_AUDIT_ACTION`]. It travels in the context rather than being
+    /// recorded under: [`PUBLISH_AUDIT_ACTION`], [`DISCARD_AUDIT_ACTION`] or
+    /// [`SAVE_AUDIT_ACTION`]. It travels in the context rather than being
     /// passed to each refusal helper because a door raises refusals from a
     /// dozen branches and a per-call argument is a per-call chance to write
     /// the wrong one; the door names it once, when it opens.
@@ -1548,11 +1661,11 @@ struct ActContext {
 /// audited `403 PERMISSION_DENIED` in place of a bare, unaudited `404`.
 ///
 /// `audit_action` is a **separate** argument and deliberately not derived
-/// from it: the two vocabularies coincide for a publish and diverge for a
-/// discard, which gates on `write` and must still be *recorded* as
-/// `discard`. Deriving one from the other would file every discard refusal
-/// under `write`, which is the same class of lie this door has just stopped
-/// telling by leaving `create` behind.
+/// from it: the two vocabularies coincide for a publish and diverge for both
+/// of the acts that gate on `write` — a discard, which must still be
+/// *recorded* as `discard`, and a save, recorded as `save`. Deriving one from
+/// the other would file both under `write`, which is the same class of lie
+/// this door has just stopped telling by leaving `create` behind.
 ///
 /// # Errors
 ///
@@ -2363,13 +2476,27 @@ async fn classify_unmatched(
 /// its operand. The same argument [`publish_revalidation_pipeline`]'s doc
 /// makes for State not being registered.
 ///
-/// # There is no Product-door analogue, and that is measured
+/// # The Product door asks the same question from the other end
 ///
-/// A Product has no parent. `products_product` carries `region_scope` and
-/// `brand_scope` as its **own** bucket-iii columns and no `product_id`
-/// pointing anywhere, so containment has no second operand on that side and
-/// `crate::api::rest::products::run_publish` correctly asks nothing. The
-/// asymmetry is the schema's, not an omission.
+/// A Product has no parent to be contained **in**: `products_product`
+/// carries `region_scope` and `brand_scope` as its **own** bucket-iii
+/// columns and no `product_id` pointing upwards, so *this* function — a
+/// child re-checking itself against its parent — has no analogue there, and
+/// `crate::api::rest::products::run_publish` correctly asks nothing of the
+/// kind.
+///
+/// That is a different obligation from the one §4.1 states. A Product has
+/// **children**, and they must stay contained in **it**: *"a narrowing that
+/// would orphan a live child meets `fr-parent-child-integrity`'s
+/// fail-closed check in the registered-validators phase, ahead of the
+/// governance gate"*. That obligation is discharged, on the Product save
+/// door, by
+/// [`crate::api::rest::products::check_children_stay_contained`], which
+/// reads the Product's non-terminal children and judges each stored child
+/// pair against the pair the save **would** leave. It reaches this module
+/// for both halves of the verdict — [`sku_scope_pair`] and
+/// [`scope_not_contained_domain_err`] — so the two directions cannot word
+/// one refusal two ways.
 ///
 /// # Errors
 ///
@@ -2424,23 +2551,27 @@ async fn recheck_parent_containment(
     // back to whatever the parent now carries — turning the very narrowing
     // this function exists to catch into a silent pass.
     //
-    // Both columns parsed a few lines earlier, in
+    // An `Err` takes the internal channel rather than a caller-facing
+    // refusal, and each of the two callers reaches that answer by its own
+    // route.
+    //
+    // On the publish re-run both columns parsed a few lines earlier, in
     // [`SkuScopeColumnsStillParse`], which refuses `INCOMPLETE_ENTITY`
     // first; an `Err` here therefore means the row changed under the
-    // transaction, and it takes the internal channel rather than answering
-    // that refusal a second time in a different phase.
-    let child_scope = ScopePair {
-        region: ResolvedScope::parse(&head.region_scope).map_err(|EmptyScopeToken| {
-            head_act_internal(
-                "bss-products: the SKU's stored region_scope contains an empty token".to_owned(),
-            )
-        })?,
-        brand: ResolvedScope::parse(&head.brand_scope).map_err(|EmptyScopeToken| {
-            head_act_internal(
-                "bss-products: the SKU's stored brand_scope contains an empty token".to_owned(),
-            )
-        })?,
-    };
+    // transaction, and answering that refusal a second time in a different
+    // phase would file it under the wrong one.
+    //
+    // On the save that pipeline never runs ([`run_save`] does not call it).
+    // The operand there is [`post_save_image`], whose scope columns are
+    // either the head's own stored pair or a value [`parse_sku_value`] has
+    // already refused an empty token in at the shape phase — so an `Err` is
+    // again a stored row that no longer parses, which is this gear's
+    // invariant and not this request's fault.
+    let child_scope = sku_scope_pair(head).map_err(|column| {
+        head_act_internal(format!(
+            "bss-products: the SKU's stored {column} contains an empty token"
+        ))
+    })?;
 
     if let Err(failure) = parent_scope.check_containment(&child_scope) {
         // The identical translation `create_sku` uses, so the two doors
@@ -3056,11 +3187,16 @@ fn classify_unmatched_head_write(
 /// present but unusable is `VALIDATION`, audited like every other refusal by
 /// whichever door called this.
 ///
-/// The digest is [`bodiless_payload_digest`] — a constant — and the two
-/// operands that tell one act from another are already in the key: the
-/// entity id through `endpoint`'s concrete path (**P-D-42**) and the
-/// caller's own key beside it. The `If-Match` revision is deliberately **not**
-/// an operand, and that constant's own doc gives `inst-fd-idem-hash`'s
+/// The `digest` is the **act's own**, and it is a parameter rather than a
+/// call this function makes for itself. A publish and a discard pass
+/// [`bodiless_payload_digest`] — a constant, the two operands that tell one
+/// such act from another being already in the key: the entity id through
+/// `endpoint`'s concrete path (**P-D-42**) and the caller's own key beside
+/// it. A **save** carries a request body and passes
+/// [`save_payload_digest`], because two different saves of one head under
+/// one client key must be an `IDEMPOTENCY_CONFLICT` and not a replay of
+/// each other. The `If-Match` revision is deliberately **not** an operand of
+/// either, and [`bodiless_payload_digest`]'s doc gives `inst-fd-idem-hash`'s
 /// wording for why.
 ///
 /// # Errors
@@ -3071,6 +3207,7 @@ fn build_claim(
     state: &ApiState,
     headers: &HeaderMap,
     endpoint: String,
+    digest: Vec<u8>,
     now: DateTime<Utc>,
 ) -> Result<Option<IdempotencyClaimInput>, DomainError> {
     let client_key = idempotency_key(headers)?;
@@ -3078,7 +3215,7 @@ fn build_claim(
         IdempotencyClaimInput::new(
             endpoint,
             key,
-            bodiless_payload_digest(),
+            digest,
             now,
             state.idempotency_retention_hours,
         )
@@ -3173,7 +3310,13 @@ async fn publish_sku_gated(
     )
     .await?;
 
-    let claim = match build_claim(state, headers, publish_endpoint(sku_id), now) {
+    let claim = match build_claim(
+        state,
+        headers,
+        publish_endpoint(sku_id),
+        bodiless_payload_digest(),
+        now,
+    ) {
         Ok(claim) => claim,
         Err(refusal) => {
             return Err(audit_act_refusal(state, &act, minted(sku_id, None), refusal).await);
@@ -3325,7 +3468,13 @@ async fn discard_sku_gated(
     )
     .await?;
 
-    let claim = match build_claim(state, headers, discard_endpoint(sku_id), now) {
+    let claim = match build_claim(
+        state,
+        headers,
+        discard_endpoint(sku_id),
+        bodiless_payload_digest(),
+        now,
+    ) {
         Ok(claim) => claim,
         Err(refusal) => {
             return Err(audit_act_refusal(state, &act, minted(sku_id, None), refusal).await);
@@ -3352,6 +3501,866 @@ async fn discard_sku_gated(
     };
 
     let outcome = discard_in_one_transaction(state, &inputs, gate).await;
+    answer_head_act(state, &act, sku_id, head.internal_revision, outcome).await
+}
+
+/// The `products_audit_log.action` token every **save** refusal on this door
+/// is recorded under. `products::SAVE_AUDIT_ACTION` is the Product door's
+/// identical constant, and the two must stay equal: an operator filtering the
+/// trail by `action = 'save'` is asking one question of both entity kinds.
+const SAVE_AUDIT_ACTION: &str = "save";
+
+/// `SkuHeadSaved`'s `payload_type` token (§4.5's roster of eight).
+///
+/// It belongs beside its siblings in `crate::infra::events`, and is here for
+/// the reason `products::PRODUCT_HEAD_SAVED_PAYLOAD_TYPE` states: that module
+/// is outside this slice's target paths. The two tokens are one decision and
+/// move together.
+const SKU_HEAD_SAVED_PAYLOAD_TYPE: &str = "SkuHeadSaved";
+
+/// The concrete resource path a save claims its idempotency key under
+/// (**P-D-42**), on [`publish_endpoint`]'s terms — the same string [`router`]
+/// registers the `PATCH` at, with `{id}` resolved. A save needs no act suffix
+/// to tell it from a read: the method already does.
+fn save_endpoint(sku_id: Uuid) -> String {
+    format!("/bss-products/v1/skus/{sku_id}")
+}
+
+/// `PATCH /bss-products/v1/skus/{id}` request body: **the named field set,
+/// and nothing around it** — `products::SaveProductRequest`'s twin, and one
+/// decision with it.
+///
+/// The map shape is not a stylistic echo. Five `Option` fields could tell an
+/// omitted field from a sent one but not either from a field this door does
+/// not know: `#[toolkit_macros::api_dto(request)]` adds no
+/// `#[serde(deny_unknown_fields)]`, so an unrecognized key on a typed `DTO`
+/// is silently dropped — and P-D-50's fail-closed rule, which exists to
+/// refuse a published-state column carrying no bucket tag, would then have
+/// nothing to fire on. The Product door's own `DTO` doc carries the argument
+/// in full.
+#[derive(Debug, Clone)]
+#[toolkit_macros::api_dto(request)]
+pub struct SaveSkuRequest {
+    /// Every field the request named, keyed as the caller spelled it.
+    ///
+    /// `#[serde(flatten)]`, so the wire shape is the flat object a `PATCH`
+    /// caller expects. A [`BTreeMap`](std::collections::BTreeMap) so the
+    /// iteration order is the field names' own: the idempotency digest is
+    /// taken over this object, and a key-order-dependent digest would hash
+    /// one request two ways between processes.
+    #[serde(flatten)]
+    pub fields: std::collections::BTreeMap<String, JsonValue>,
+}
+
+/// The digest of one parsed save request (**P-D-34**), on
+/// `products::save_payload_digest`'s terms exactly: the field set itself,
+/// through `crate::domain::idempotency::payload_digest`, with nothing of the
+/// transport in it and structurally no `If-Match`, this function never being
+/// handed the headers.
+fn save_payload_digest(request: &SaveSkuRequest) -> Vec<u8> {
+    idempotency::payload_digest(&JsonValue::Object(
+        request
+            .fields
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect(),
+    ))
+}
+
+/// A field the SKU save door **accepts on the wire**, and the column it
+/// names — `products::ProductSaveField`'s twin, and a second registry beside
+/// `crate::domain::bucket`'s for that type's stated reason: that one answers
+/// *what class is this column in*, this one *may a caller author it at all*.
+///
+/// Two differences from the Product's set, both the schema's. There is **no
+/// `name`** — `products_sku` has no such column, so a `name` field on this
+/// door is a registry miss and is refused by the fail-closed rule rather than
+/// routed to the Product's tag. And `product_id` is here as the **parent
+/// link**, bucket-i by the owner's call of 2026-08-27 (*"re-parenting changes
+/// whose SKU it is, not how it is described"*), where the identically named
+/// column on `products_product` is the primary key and is admitted in no
+/// `UPDATE` at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SkuSaveField {
+    /// Bucket i: the code `uq_products_sku_code` reserves.
+    SkuCode,
+    /// Bucket i: the parent link.
+    ProductId,
+    /// Bucket iii, in both directions.
+    RegionScope,
+    /// Bucket iii, in both directions.
+    BrandScope,
+}
+
+impl SkuSaveField {
+    /// The wire field this is, or `None` where the caller named something
+    /// this door does not author — a refusal ([`unroutable_sku_field`]),
+    /// never a silent drop.
+    fn from_wire(field: &str) -> Option<Self> {
+        match field {
+            "sku_code" => Some(Self::SkuCode),
+            "product_id" => Some(Self::ProductId),
+            "region_scope" => Some(Self::RegionScope),
+            "brand_scope" => Some(Self::BrandScope),
+            _ => None,
+        }
+    }
+
+    /// The physical column, as `products_sku` spells it and as
+    /// `crate::domain::bucket`'s registry keys on it.
+    const fn column(self) -> &'static str {
+        match self {
+            Self::SkuCode => "sku_code",
+            Self::ProductId => "product_id",
+            Self::RegionScope => "region_scope",
+            Self::BrandScope => "brand_scope",
+        }
+    }
+}
+
+/// One save field's parsed value — the `Shape` phase's output, before the
+/// `State` phase has said whether the column may be written at all.
+///
+/// Two passes rather than one because
+/// `crate::domain::validation::Phase::ordered()` puts `Shape` **before**
+/// `State`: a body carrying both a malformed value and an unroutable field is
+/// a `VALIDATION`, not an `ILLEGAL_FIELD_MUTATION`.
+enum SkuSaveValue {
+    /// A parsed, non-blank `sku_code`.
+    SkuCode(String),
+    /// A parsed `product_id`.
+    ProductId(Uuid),
+    /// A `region_scope` that parses under [`ResolvedScope::parse`].
+    RegionScope(String),
+    /// A `brand_scope` that parses under [`ResolvedScope::parse`].
+    BrandScope(String),
+}
+
+/// The `Shape` phase's output — `products::ProductSaveFields`'s twin, and a
+/// named alias for that type's stated reason.
+type SkuSaveFields = (Vec<(SkuSaveField, SkuSaveValue)>, Vec<String>);
+
+/// Build the `VALIDATION` refusal one or more shape violations ride.
+fn sku_shape_refusal(violations: Vec<(String, String)>) -> DomainError {
+    let mut report = ValidationReport::new();
+    for (subject, detail) in violations {
+        report.violate("VALIDATION", &subject, &detail);
+    }
+    DomainError::Validation(report)
+}
+
+/// Read a save field's `JSON` value as a string, or name the shape violation.
+fn expect_sku_string(field: &str, value: &JsonValue) -> Result<String, (String, String)> {
+    value.as_str().map(str::to_owned).ok_or_else(|| {
+        (
+            field.to_owned(),
+            format!("{field} must be a JSON string on this door"),
+        )
+    })
+}
+
+/// Parse one recognized save field's value (`Phase::Shape`).
+///
+/// The two scope fields are parsed through [`ResolvedScope::parse`] and not
+/// merely read as strings, which is the create door's own rule
+/// (`scope_input_from_payload`): a value carrying an empty token — `","`,
+/// `"eu,,us"` — is refused rather than silently filtered, so the stored
+/// column cannot hold one. The parsed value is discarded and the raw string
+/// stored, because the column holds the caller's own spelling; what the parse
+/// buys is the refusal.
+///
+/// `sku_code` is the one field stored **trimmed** rather than as spelled, and
+/// that is `create_sku`'s own rule reaching the only other door that writes
+/// the column. `uq_products_sku_code` is a byte-comparing partial unique
+/// index over `(tenant_id, sku_code)`, so a save storing `" SKU-1 "` would not
+/// collide with a live `"SKU-1"` and two rows would hold what an operator
+/// reads as one code -- one of them a value no create door could produce.
+/// Trimming here is what keeps `fr-skucode-reservation-concurrency`'s
+/// reservation the same reservation at both doors. The blank-after-trim
+/// refusal stays above it: a code that is all whitespace is not a code.
+fn parse_sku_value(
+    field: SkuSaveField,
+    value: &JsonValue,
+) -> Result<SkuSaveValue, (String, String)> {
+    let wire = field.column();
+    match field {
+        SkuSaveField::SkuCode => {
+            let raw = expect_sku_string(wire, value)?;
+            let trimmed = raw.trim();
+            if trimmed.is_empty() {
+                return Err((
+                    wire.to_owned(),
+                    "sku_code must contain at least one non-whitespace character".to_owned(),
+                ));
+            }
+            Ok(SkuSaveValue::SkuCode(trimmed.to_owned()))
+        }
+        SkuSaveField::ProductId => {
+            let raw = expect_sku_string(wire, value)?;
+            Uuid::parse_str(&raw)
+                .map(SkuSaveValue::ProductId)
+                .map_err(|_| (wire.to_owned(), "product_id must be a UUID".to_owned()))
+        }
+        SkuSaveField::RegionScope | SkuSaveField::BrandScope => {
+            let raw = expect_sku_string(wire, value)?;
+            if ResolvedScope::parse(&raw).is_err() {
+                return Err((
+                    wire.to_owned(),
+                    format!("{wire} contains an empty value between separators"),
+                ));
+            }
+            Ok(match field {
+                SkuSaveField::RegionScope => SkuSaveValue::RegionScope(raw),
+                _ => SkuSaveValue::BrandScope(raw),
+            })
+        }
+    }
+}
+
+/// The `Phase::Shape` pass over the whole request: every recognized field
+/// parsed, every unrecognized name collected for the `State` phase.
+///
+/// Both halves are collected before either is answered, so a body with two
+/// malformed values reports both (P-D-37: the caller receives every
+/// violation, the audit row records one code).
+///
+/// # Errors
+///
+/// [`DomainError::Validation`] naming each malformed field.
+fn parse_sku_save(request: &SaveSkuRequest) -> Result<SkuSaveFields, DomainError> {
+    let mut parsed = Vec::new();
+    let mut unrecognized = Vec::new();
+    let mut violations = Vec::new();
+    for (field, value) in &request.fields {
+        match SkuSaveField::from_wire(field) {
+            Some(known) => match parse_sku_value(known, value) {
+                Ok(parsed_value) => parsed.push((known, parsed_value)),
+                Err(violation) => violations.push(violation),
+            },
+            None => unrecognized.push(field.clone()),
+        }
+    }
+    if violations.is_empty() {
+        Ok((parsed, unrecognized))
+    } else {
+        Err(sku_shape_refusal(violations))
+    }
+}
+
+/// The refusal a field name this door does not author is answered with —
+/// `products::unroutable_product_field`'s twin, asking the registry for the
+/// same two readings: **no row** is P-D-50's fail-closed miss, carrying
+/// `bucket::classify`'s own message; **a row this door does not accept from a
+/// caller** is the mechanical and row-identity set, `cloned_from`'s
+/// `CreateOnly` when slice 11 lands it, and any column whose value the gear
+/// derives.
+fn unroutable_sku_field(field: &str) -> DomainError {
+    match bucket::classify(EntityKind::Sku, field) {
+        Err(miss) => miss,
+        Ok(_) => DomainError::IllegalFieldMutation(format!(
+            "SKU column {field} is not authored through this door: it is written by the gear \
+             itself or derived from another field, and no save may name it"
+        )),
+    }
+}
+
+/// Route one parsed field through `crate::domain::bucket` and fold it into
+/// `save` — the `Phase::State` half, and `products::route_product_field`'s
+/// twin arm for arm.
+///
+/// # Errors
+///
+/// [`HeadActError::Refused`] for every bucket refusal, and
+/// [`HeadActError::Db`] — the gear's internal channel, a `500` — for
+/// [`bucket::FieldClass::Outside`], which is **structurally unreachable**:
+/// [`SkuSaveField::from_wire`] admits four wire names and every one of their
+/// columns is bucket-tagged, so a value reaching that arm means this door's
+/// own field table and the registry disagree. The provenance is the gear's
+/// rather than the caller's, which is what decides the channel.
+fn route_sku_field(
+    head: &SkuRecord,
+    field: SkuSaveField,
+    value: SkuSaveValue,
+    save: &mut repo::SkuHeadSave,
+) -> Result<(), HeadActError> {
+    let column = field.column();
+    let class = bucket::classify(EntityKind::Sku, column).map_err(HeadActError::Refused)?;
+    let published = head.published_version > 0;
+    match class {
+        bucket::FieldClass::Bucket(bucket::FieldBucket::Structural) if published => {
+            return Err(HeadActError::Refused(sku_structural_after_publish(column)));
+        }
+        bucket::FieldClass::Bucket(bucket::FieldBucket::Correctable) if published => {
+            return Err(HeadActError::Refused(sku_correctable_after_publish(column)));
+        }
+        bucket::FieldClass::CreateOnly => {
+            return Err(HeadActError::Refused(DomainError::IllegalFieldMutation(
+                format!(
+                    "SKU {column} is create-only: it is writable in the creating statement and \
+                     in no update at all, so the lineage stays evidence rather than a claim"
+                ),
+            )));
+        }
+        bucket::FieldClass::Outside(reason) => {
+            return Err(head_act_internal(format!(
+                "bss-products: the save door's wire field {column} resolves to a column outside \
+                 the bucket scheme ({reason:?}); the door's own field table and the registry \
+                 disagree"
+            )));
+        }
+        bucket::FieldClass::Bucket(_) => {}
+    }
+
+    match value {
+        SkuSaveValue::SkuCode(code) => save.sku_code = Some(code),
+        SkuSaveValue::ProductId(product_id) => save.product_id = Some(product_id),
+        SkuSaveValue::RegionScope(scope) => save.region_scope = Some(scope),
+        SkuSaveValue::BrandScope(scope) => save.brand_scope = Some(scope),
+    }
+    Ok(())
+}
+
+/// The refusal a bucket-ii write after first publish is answered with
+/// (`inst-fd-bucket-ii-refusal`) — `products::correctable_after_publish`'s
+/// twin, differing only in the entity it names.
+///
+/// **It names slice 07's correction door and does not forward to it**: the
+/// instruction is explicit that the head door refuses rather than forwards —
+/// one door, one effect — so a caller is told where the act belongs rather
+/// than having this door quietly perform a differently-governed act on its
+/// behalf. **No column carries bucket ii today** (§4.1 assigns none), so the
+/// arm is unreachable at this commit; it is built because the door routes by
+/// tag, and an arm that appeared only when its first column landed would be a
+/// second change to this door on the day slice 07 arrives.
+fn sku_correctable_after_publish(field: &str) -> DomainError {
+    let tag = bucket::FieldBucket::Correctable.tag();
+    DomainError::IllegalFieldMutation(format!(
+        "SKU {field} is a bucket-{tag} correctable column: after first publish it is writable \
+         only through the correction door (POST .../corrections, slice 07), which this door \
+         names rather than forwards to"
+    ))
+}
+
+/// The refusal a bucket-i write after first publish is answered with
+/// (`inst-fd-bucket-i-refusal`) — `products::structural_after_publish`'s
+/// twin, differing only in the entity it names, and taking the numeral from
+/// [`bucket::FieldBucket::tag`] for the reason that function's doc gives.
+fn sku_structural_after_publish(field: &str) -> DomainError {
+    let tag = bucket::FieldBucket::Structural.tag();
+    DomainError::IllegalFieldMutation(format!(
+        "SKU {field} is a bucket-{tag} identity column: it is writable only before first \
+         publish, and a mis-set identity on a published entity is corrected by retire-and-clone \
+         rather than by a write"
+    ))
+}
+
+/// Route **every** field the request carries, and only then hand back the
+/// columns to write (`Phase::State`) — `products::route_product_save`'s twin.
+///
+/// The whole-request discipline is the point: a `PATCH` half-applied because
+/// its fourth field was refused would leave the head carrying part of a
+/// request the caller was told had failed. Nothing here writes.
+///
+/// # Errors
+///
+/// See [`route_sku_field`] and [`unroutable_sku_field`].
+fn route_sku_save(
+    head: &SkuRecord,
+    parsed: Vec<(SkuSaveField, SkuSaveValue)>,
+    unrecognized: &[String],
+) -> Result<repo::SkuHeadSave, HeadActError> {
+    if let Some(field) = unrecognized.first() {
+        return Err(HeadActError::Refused(unroutable_sku_field(field)));
+    }
+    let mut save = repo::SkuHeadSave::default();
+    for (field, value) in parsed {
+        route_sku_field(head, field, value, &mut save)?;
+    }
+    Ok(save)
+}
+
+/// The head as this save would leave it — the operand the identity phase
+/// judges.
+///
+/// Built rather than re-read because the row this describes has not been
+/// written yet: the containment re-check below has to judge the scope the
+/// save **would** store, not the one it is replacing. It is deliberately not
+/// the operand of the door's *answer*: that is re-read off the committed row
+/// ([`run_save`]), so the client is told what the database holds rather than
+/// what this door believes it wrote.
+fn post_save_image(head: &SkuRecord, save: &repo::SkuHeadSave, now: DateTime<Utc>) -> SkuRecord {
+    let mut image = head.clone();
+    if let Some(sku_code) = save.sku_code.clone() {
+        image.sku_code = sku_code;
+    }
+    if let Some(product_id) = save.product_id {
+        image.product_id = product_id;
+    }
+    if let Some(region_scope) = save.region_scope.clone() {
+        image.region_scope = region_scope;
+    }
+    if let Some(brand_scope) = save.brand_scope.clone() {
+        image.brand_scope = brand_scope;
+    }
+    image.internal_revision = head.internal_revision + 1;
+    image.updated_at = now;
+    image
+}
+
+/// Which refusal a zero-row **save** write was, re-read under the act's own
+/// transaction — `products::classify_unmatched_save`'s twin.
+///
+/// [`repo::save_sku_head`]'s filter carries four conditions, so `Unmatched`
+/// has four readings, read here in the order the caller can act on: a moved
+/// revision first, then terminality, then a bucket-i write the row was
+/// published under. The last arm is the read-then-write race the filter
+/// exists to close.
+async fn classify_unmatched_save(
+    runner: &impl toolkit_db::secure::DBRunner,
+    inputs: &HeadActInputs,
+    structural: bool,
+) -> HeadActError {
+    match repo::find_sku(runner, &inputs.scope, inputs.tenant_id, inputs.sku_id).await {
+        Ok(Some(head)) if head.internal_revision != inputs.expected => {
+            HeadActError::Refused(DomainError::StaleRevision {
+                expected: inputs.expected,
+                found: head.internal_revision,
+            })
+        }
+        Ok(Some(head)) if head.lifecycle_state.is_terminal() => {
+            HeadActError::Refused(DomainError::EntityTerminal(format!(
+                "no head write is admitted on a {} entity",
+                head.lifecycle_state.as_str()
+            )))
+        }
+        Ok(Some(head)) if structural && head.published_version > 0 => {
+            HeadActError::Refused(sku_structural_after_publish("identity column"))
+        }
+        Ok(Some(head)) => head_act_internal(format!(
+            "save matched no row for sku {} at revision {}, yet the head is {} at revision {}",
+            head.sku_id,
+            inputs.expected,
+            head.lifecycle_state.as_str(),
+            head.internal_revision
+        )),
+        Ok(None) => HeadActError::Vanished,
+        Err(error) => HeadActError::from_repo(&error),
+    }
+}
+
+/// Turn a save's storage failure into the refusal it actually was, where the
+/// driver's own text names `uq_products_sku_code`.
+///
+/// §3.3 puts `DUPLICATE_CODE` in the identity phase *"wherever it runs —
+/// create, save, and the publish re-run"*, so a re-code onto a held `skuCode`
+/// is the same governed refusal here as at create rather than a `500`.
+/// [`classify_sku_insert_conflict`] is the create door's own reader of that
+/// text, reused unchanged — including its stated cost, that this is a
+/// substring match over driver text and not a typed database answer. It
+/// answers a `bool` rather than the Product door's two-armed enum because
+/// `products_sku` carries exactly one unique index.
+fn sku_save_conflict(error: &RepoError) -> HeadActError {
+    if classify_sku_insert_conflict(&error.to_string()) {
+        return HeadActError::Refused(DomainError::DuplicateCode(
+            "another live SKU in this tenant already holds this skuCode".to_owned(),
+        ));
+    }
+    HeadActError::from_repo(error)
+}
+
+/// The save act itself, every phase on the mutation's own transaction and in
+/// `crate::domain::validation::Phase::ordered()`'s order
+/// (`cpt-cf-bss-products-dod-save-door`) — `products::run_save`'s twin,
+/// phase for phase, plus the one phase a child has and a parentless entity
+/// does not.
+///
+/// # The order, and the one place it differs from [`run_publish`]
+///
+/// `Idempotency`, `Precondition`, `Shape`, `State` (terminality, then bucket
+/// routing), `Identity` (containment against the parent as it now stands),
+/// `RegisteredValidators`, `GovernanceGate`.
+///
+/// [`run_publish`] and [`run_discard`] ask **terminality before the
+/// precondition**; `Phase::ordered()` puts `Precondition` second and `State`
+/// fourth, and terminality is a `State` rule. The two orders answer
+/// differently in exactly one case — a stale `If-Match` against a head a
+/// neighbour has since retired, which this door calls `STALE_REVISION` and
+/// the publish door calls `ENTITY_TERMINAL` — and `STALE_REVISION` is the
+/// answer the caller can act on. **The publish and discard doors are owed the
+/// same swap**, on both entity kinds; it is not made here because those doors
+/// are not this slice's subject. `products::run_save` carries the identical
+/// note.
+///
+/// # The containment re-check, and the Product save's mirror of it
+///
+/// §3.3 puts `SCOPE_NOT_CONTAINED` in the identity phase *"wherever it runs —
+/// create, **save**, and the publish re-run"*, and §4.1 puts
+/// `region_scope`/`brand_scope` in bucket iii *"in both directions, widening
+/// and narrowing alike"*. A save is therefore the one door that can widen a
+/// child out of its parent's scope, and [`recheck_parent_containment`] — the
+/// publish door's own function, reused rather than restated so the two
+/// cannot word the same verdict differently — is asked over
+/// [`post_save_image`], the scope this save **would** store.
+///
+/// `products::run_save` asks the mirror of it, not nothing. A Product has no
+/// parent, so it re-checks *itself* against nobody; but §4.1's clause is
+/// about its **children**, and a Product save that narrows either scope
+/// column can orphan them. `products::check_children_stay_contained` is that
+/// half, and it reads this module's [`sku_scope_pair`] and
+/// [`scope_not_contained_domain_err`] rather than restating either. The
+/// asymmetry is only in the direction of the read: one door loads one
+/// parent, the other loads the live children.
+///
+/// # One head-row `UPDATE`, no version row, no edge, and the hook fires
+///
+/// The head is the authoring surface in every non-terminal state
+/// (`inst-fd-transition-guard`), so a save writes no
+/// `products_entity_version` row and does not move `published_version`. It
+/// takes no edge, so [`transition::guard`] is not asked. And the
+/// approval-invalidation hook **fires**, on `ApprovalInvalidation::Fire`
+/// passed directly rather than read off [`transition::invalidation_for`]:
+/// that function answers `Skip` for the `NotATransition` arm a save would
+/// land on, and it answers it for a **re-publish**, whose exception is *"a
+/// transition that consumes an approval in the same transaction"*. A save
+/// consumes none, so the exception's reason does not reach it —
+/// `transition::invalidation_for`'s own doc says so in as many words, and a
+/// later reader who unified the two call sites would silently drop the
+/// invalidation this `DoD` requires.
+///
+/// # Owed: the `state` phase short-circuits where §3.3 collects
+///
+/// §3.3 uses **a save** as its worked example -- *"a save on a `retired` head
+/// that also moves a bucket-i column satisfying `ENTITY_TERMINAL` and
+/// `ILLEGAL_FIELD_MUTATION` alike ... the caller's rejection carries all of
+/// them regardless; the precedence governs the one code the row stores"* --
+/// and §3.1 names `state` as the only phase that may raise more than one
+/// code. This door does not: terminality `?`-returns before the routing runs,
+/// so a save satisfying both answers `ENTITY_TERMINAL` alone.
+///
+/// **It is left owed rather than built, and the reason is a measurement of
+/// the wire type, not a judgement about effort.** Both codes are 409s and a
+/// 409 is `toolkit_canonical_errors`' `Aborted`, whose whole context is one
+/// `reason: String` (`AbortedV1`, and `with_reason` is the single builder
+/// step that reaches it). There is no second slot for a second code, so
+/// "carries all of them" cannot be expressed on this response at all without
+/// either changing a shared platform type or demoting the joint refusal to
+/// the `Validation` envelope -- which is the only multi-code shape the gear
+/// has and which would answer 400 where §3.3 requires 409. Overloading
+/// `detail` with the second code would not serve it either: a consumer
+/// matches `reason`, exactly as `infra::error_mapping`'s `denied` doc argues
+/// for `APPROVAL_REQUIRED`.
+///
+/// So the clause needs a carrier decided by the taxonomy's owner -- a
+/// multi-code refusal shape, or §3.3's clause narrowed to the audit row's
+/// precedence alone -- and this door adopts it when there is one. The audit
+/// row is already correct under either reading: `ENTITY_TERMINAL` is the
+/// highest-precedence code of the pair and it is what the row records today.
+///
+/// # Errors
+///
+/// As [`run_publish`], with `ILLEGAL_FIELD_MUTATION` and `DUPLICATE_CODE`
+/// added and `APPROVAL_REQUIRED` reachable only through a host
+/// [`save_sku_gated`] is handed.
+async fn run_save(
+    runner: &(impl toolkit_db::secure::DBRunner + Sync),
+    inputs: &HeadActInputs,
+    request: &SaveSkuRequest,
+    gate: &(dyn GovernanceGate + Send + Sync),
+    outbox: &toolkit_db::outbox::Outbox,
+) -> Result<MutationOutcome, HeadActError> {
+    // -- Phase 1, idempotency: the claim, and the replay that ends the act
+    // before any other phase is judged. --
+    if let Some(replay) = claim_for_head_act(runner, inputs).await? {
+        return Ok(replay);
+    }
+
+    let head = repo::find_sku(runner, &inputs.scope, inputs.tenant_id, inputs.sku_id)
+        .await
+        .map_err(|e| HeadActError::from_repo(&e))?
+        .ok_or(HeadActError::Vanished)?;
+
+    // -- Phase 2, the precondition. `repo::save_sku_head` carries the same
+    // comparison in its own filter and that copy decides whether the write
+    // lands; this one decides whether the rest of the pipeline runs. --
+    if head.internal_revision != inputs.expected {
+        return Err(HeadActError::Refused(DomainError::StaleRevision {
+            expected: inputs.expected,
+            found: head.internal_revision,
+        }));
+    }
+
+    // -- Phase 3, shape: the JSON types and the two scope parses, every
+    // violation collected. --
+    let (parsed, unrecognized) = parse_sku_save(request).map_err(HeadActError::Refused)?;
+
+    // -- Phase 4, state: terminality — which reaches every head write and not
+    // only a transition (`inst-fd-terminal`, P-D-25 widened by P-D-32) — then
+    // bucket routing over the whole request before any column is written. --
+    transition::check_head_write(head.lifecycle_state).map_err(HeadActError::Refused)?;
+    let save = route_sku_save(&head, parsed, &unrecognized)?;
+
+    // -- Phase 5, identity: containment against the parent as it now stands,
+    // judged over the image this save would leave. --
+    let image = post_save_image(&head, &save, inputs.now);
+    recheck_parent_containment(runner, inputs, &image).await?;
+
+    // -- Phase 7, the governance gate, in `Gate` mode: asked at every
+    // mutating door and passing trivially where the act is ungated
+    // (`inst-fd-pipeline-gate-phase`). The two `Err` routes are
+    // `run_publish`'s and carry its reasoning. --
+    let verdict = gate
+        .evaluate(
+            EntityRef {
+                tenant_id: inputs.tenant_id,
+                entity_kind: EntityKind::Sku,
+                entity_id: inputs.sku_id,
+            },
+            InternalRevision::new(inputs.expected),
+            GateMode::Gate,
+        )
+        .map_err(|e| {
+            HeadActError::Db(DbError::Sea(DbErr::Custom(format!(
+                "bss-products: the governance gate host failed: {e}"
+            ))))
+        })?;
+    // Collapsed into the control flow and dropped, as at the discard door: a
+    // save freezes no version row, so the `approval_ref` the verdict may name
+    // has no column to reach.
+    verdict
+        .into_authorization()
+        .map_err(HeadActError::Refused)?;
+
+    // -- Exactly one head-row `UPDATE`: the routed columns, the revision bump
+    // and `updated_at` together, because the guard bumps `internal_revision`
+    // on every admitted `UPDATE` without exception. --
+    let structural = save.sku_code.is_some() || save.product_id.is_some();
+    let written = repo::save_sku_head(
+        runner,
+        &inputs.scope,
+        inputs.tenant_id,
+        inputs.sku_id,
+        inputs.expected,
+        &save,
+        inputs.now,
+    )
+    .await
+    .map_err(|e| sku_save_conflict(&e))?;
+    if written == repo::HeadWrite::Unmatched {
+        return Err(classify_unmatched_save(runner, inputs, structural).await);
+    }
+
+    // -- The approval-invalidation hook, which a save **fires**: see this
+    // function's own doc for why the answer is not read off
+    // `transition::invalidation_for`. --
+    fire_invalidation_hook(inputs, ApprovalInvalidation::Fire)?;
+
+    // The committed row, re-read rather than reconstructed. The publish and
+    // discard acts hand `announce_and_answer` an image they computed, which
+    // they can because each moves a short, fixed column set; a save moves
+    // whichever columns the request named, and a door that told the client
+    // its own arithmetic would report a `200` describing a row that might
+    // differ from the one it committed. `products::announce_and_answer` does
+    // this re-read for every head act, and its doc carries the argument.
+    let committed = repo::find_sku(runner, &inputs.scope, inputs.tenant_id, inputs.sku_id)
+        .await
+        .map_err(|e| HeadActError::from_repo(&e))?
+        .ok_or(HeadActError::Vanished)?;
+
+    announce_and_answer(
+        runner,
+        outbox,
+        inputs,
+        &committed,
+        (SKU_HEAD_SAVED_PAYLOAD_TYPE, None),
+    )
+    .await
+}
+
+/// Run [`run_save`] on one retried transaction —
+/// [`publish_in_one_transaction`]'s save twin, on its terms exactly. The
+/// request travels as an owned clone for [`HeadActInputs`]'s stated reason.
+///
+/// # Errors
+///
+/// See [`run_save`].
+async fn save_in_one_transaction(
+    state: &ApiState,
+    inputs: &HeadActInputs,
+    request: SaveSkuRequest,
+    gate: &Arc<dyn GovernanceGate + Send + Sync>,
+) -> Result<MutationOutcome, HeadActError> {
+    let outbox = Arc::clone(&state.outbox);
+    let gate = Arc::clone(gate);
+    let inputs = inputs.clone();
+    state
+        .db
+        .db()
+        .transaction_with_retry::<MutationOutcome, HeadActError, _, _>(
+            TxConfig::default(),
+            head_act_contention_db_err,
+            move |tx| {
+                let outbox = Arc::clone(&outbox);
+                let gate = Arc::clone(&gate);
+                let inputs = inputs.clone();
+                let request = request.clone();
+                Box::pin(
+                    async move { run_save(tx, &inputs, &request, gate.as_ref(), &outbox).await },
+                )
+            },
+        )
+        .await
+}
+
+/// `PATCH /skus/{id}`: the save door.
+///
+/// The thin `axum` shell over [`save_sku_gated`]. The only thing decided here
+/// is the governance host, and it is decided the way [`publish_sku`] and
+/// [`discard_sku`] decide it: the [`NoMaterialityPolicyGate`] literal, so no
+/// wire input chooses one.
+///
+/// # Errors
+///
+/// See [`save_sku_gated`].
+async fn save_sku(
+    Extension(state): Extension<Arc<ApiState>>,
+    Extension(enforcer): Extension<authz_resolver_sdk::PolicyEnforcer>,
+    extension_ctx: Option<Extension<SecurityContext>>,
+    headers: HeaderMap,
+    Path(sku_id): Path<Uuid>,
+    Json(request): Json<SaveSkuRequest>,
+) -> Result<Response, CanonicalError> {
+    let ctx = require_authenticated(extension_ctx)?;
+    save_sku_gated(
+        &state,
+        &enforcer,
+        &ctx,
+        &headers,
+        sku_id,
+        request,
+        &(Arc::new(NoMaterialityPolicyGate) as Arc<dyn GovernanceGate + Send + Sync>),
+    )
+    .await
+}
+
+/// The save door, with its governance host as an explicit argument —
+/// [`discard_sku_gated`]'s twin, and a parameter for that function's stated
+/// reason: the gate phase runs here (`inst-fd-pipeline-gate-phase`) and the
+/// gear's only host never refuses under [`GateMode::Gate`], so the refusal
+/// arm is unreachable through [`save_sku`] and a phase nothing can exercise
+/// is one a reader cannot tell from a phase that is absent.
+///
+/// The **mode** is not a parameter, on [`run_discard`]'s measured asymmetry:
+/// the explicit-mode requirement is `dod-publish-door`'s, and no slice
+/// schedules or cascades a save.
+///
+/// The door's own steps are [`publish_sku_gated`]'s: the `sku x write` grant
+/// ([`open_act`]), the key ([`build_claim`], here with the **body's** digest
+/// rather than the bodiless constant), the `If-Match`, the head read, then
+/// [`run_save`] on one transaction and [`answer_head_act`].
+///
+/// # What this door does not build, and which slice owns each
+///
+/// `cpt-cf-bss-products-dod-save-door` covers a **content-row half this slice
+/// cannot build**, and the `DoD` therefore reads as *partial* rather than
+/// met. None of it is silently omitted:
+///
+/// - **Category assignments** — `products_product_category` is **slice 02**'s
+///   table and does not exist at this commit, so there is no row for this
+///   transaction to write and no field for this door to route.
+/// - **Attribute values** — `products_attribute_value`, likewise **slice
+///   02**'s.
+/// - **The metering declaration** — **slice 03**'s, which owns both the
+///   column set and the rules over it.
+///
+/// Each joins **this** transaction when it lands, beside the single head-row
+/// `UPDATE` rather than after it: a content row written on a runner of its
+/// own would survive a rolled-back save.
+///
+/// **Bucket ii and bucket iv have no columns** (`crate::domain::bucket`'s
+/// module doc: §4.1 assigns none), so both arms are built and neither is
+/// reachable today.
+///
+/// # Errors
+///
+/// Every refusal this door raises, each audited on its own transaction
+/// through [`audit_act_refusal`]; the bare `404` a miss answers; the `500` a
+/// storage or gate-host failure raises.
+async fn save_sku_gated(
+    state: &ApiState,
+    enforcer: &authz_resolver_sdk::PolicyEnforcer,
+    ctx: &SecurityContext,
+    headers: &HeaderMap,
+    sku_id: Uuid,
+    request: SaveSkuRequest,
+    gate: &Arc<dyn GovernanceGate + Send + Sync>,
+) -> Result<Response, CanonicalError> {
+    let now = Utc::now();
+    let act = open_act(
+        state,
+        enforcer,
+        ctx,
+        sku_id,
+        crate::authz::actions::WRITE,
+        SAVE_AUDIT_ACTION,
+        now,
+    )
+    .await?;
+
+    let claim = match build_claim(
+        state,
+        headers,
+        save_endpoint(sku_id),
+        save_payload_digest(&request),
+        now,
+    ) {
+        Ok(claim) => claim,
+        Err(refusal) => {
+            return Err(audit_act_refusal(state, &act, minted(sku_id, None), refusal).await);
+        }
+    };
+    let expected = match preconditions::if_match(headers) {
+        Ok(expected) => expected,
+        Err(refusal) => {
+            return Err(audit_act_refusal(state, &act, minted(sku_id, None), refusal).await);
+        }
+    };
+
+    let head = load_head(state, &act, sku_id).await?;
+
+    // A save naming no field at all is refused here rather than inside the
+    // act: it is a property of the request alone, needs no row to judge, and
+    // admitting it would be a bare `internal_revision` bump — a write with no
+    // content that still invalidates every `ETag` a client holds.
+    if request.fields.is_empty() {
+        let mut report = ValidationReport::new();
+        report.violate(
+            "VALIDATION",
+            "body",
+            "a save must name at least one field: an empty body would bump the revision and \
+             write nothing",
+        );
+        return Err(audit_act_refusal(
+            state,
+            &act,
+            minted(sku_id, None),
+            DomainError::Validation(report),
+        )
+        .await);
+    }
+
+    let inputs = HeadActInputs {
+        scope: act.scope.clone(),
+        tenant_id: act.tenant_id,
+        sku_id,
+        actor_ref: act.actor_ref,
+        // The caller's own `If-Match`, for the reason `publish_sku_gated`
+        // states at its own copy of this field.
+        expected: expected.get(),
+        now,
+        claim,
+    };
+
+    let outcome = save_in_one_transaction(state, &inputs, request, gate).await;
     answer_head_act(state, &act, sku_id, head.internal_revision, outcome).await
 }
 

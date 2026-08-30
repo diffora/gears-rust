@@ -55,11 +55,13 @@ use uuid::Uuid;
 
 use super::{
     AuditCommon, HeadWrite, IdempotencyAnswer, IdempotencyClaim, NewEntityVersion, NewProduct,
-    NewSku, RefusalSubject, RepoError, VersionedEntityKind, answer_idempotency_key,
-    claim_idempotency_key, discard_product_head, discard_sku_head, find_product, find_sku,
+    NewSku, NullableText, ProductHeadSave, RefusalSubject, RepoError, SavedName, SkuHeadSave,
+    VersionedEntityKind, answer_idempotency_key, claim_idempotency_key, discard_product_head,
+    discard_sku_head, find_non_terminal_skus_of_product, find_product, find_sku,
     insert_entity_version, insert_product, insert_sku, into_product_record, into_sku_record,
-    publish_product_head, publish_sku_head, resolve_actor_ref, take_over_expired_idempotency_claim,
-    write_elevated_read_audit, write_eventless_act_audit, write_refusal_audit,
+    publish_product_head, publish_sku_head, resolve_actor_ref, save_product_head, save_sku_head,
+    take_over_expired_idempotency_claim, write_elevated_read_audit, write_eventless_act_audit,
+    write_refusal_audit,
 };
 use crate::domain::error::DomainError;
 use crate::infra::storage::entity::{
@@ -291,6 +293,62 @@ async fn a_sku_belonging_to_another_tenant_is_not_visible_through_a_foreign_scop
             .expect("scoped read must not error"),
         None,
         "a foreign scope must see exactly what an absent row looks like"
+    );
+}
+
+/// [`find_non_terminal_skus_of_product`] returns a Product's live children
+/// and excludes its terminal ones.
+///
+/// The exclusion is the half worth a test of its own: it is what keeps a
+/// parent's scope narrowing from being refused on account of a `discarded`
+/// child nothing can transact against, and it lives in the statement rather
+/// than in the caller, so no door-level case would notice if the filter were
+/// dropped — every child in a door test is live.
+///
+/// Two live children rather than one, because the read is documented to
+/// order by `sku_code`: a caller refusing on the first offender needs the
+/// same offender on every run.
+#[tokio::test]
+async fn the_child_read_returns_live_skus_and_excludes_terminal_ones() {
+    let provider = harness().await;
+    let conn = provider.conn().expect("scoped connection");
+    let scope = AccessScope::for_tenant(TENANT);
+
+    insert_product(&conn, &scope, new_product(PRODUCT, TENANT))
+        .await
+        .expect("insert product");
+
+    let second = Uuid::from_u128(0x5c_02);
+    let doomed = Uuid::from_u128(0x5c_03);
+    let mut live_b = new_sku(SKU, TENANT, PRODUCT);
+    live_b.sku_code = "FIBRE-500-B".to_owned();
+    let mut live_a = new_sku(second, TENANT, PRODUCT);
+    live_a.sku_code = "FIBRE-500-A".to_owned();
+    let mut terminal = new_sku(doomed, TENANT, PRODUCT);
+    terminal.sku_code = "FIBRE-500-Z".to_owned();
+    for new in [live_b, live_a, terminal] {
+        insert_sku(&conn, &scope, new).await.expect("insert sku");
+    }
+
+    assert_eq!(
+        discard_sku_head(&conn, &scope, TENANT, doomed, 1, at(10))
+            .await
+            .expect("the discard statement runs"),
+        HeadWrite::Applied,
+        "the third child is put into a terminal state through the repository's own door"
+    );
+
+    let children = find_non_terminal_skus_of_product(&conn, &scope, TENANT, PRODUCT)
+        .await
+        .expect("read the children");
+
+    assert_eq!(
+        children
+            .iter()
+            .map(|child| child.sku_code.as_str())
+            .collect::<Vec<_>>(),
+        vec!["FIBRE-500-A", "FIBRE-500-B"],
+        "both live children come back, ordered by sku_code, and the discarded one does not"
     );
 }
 
@@ -2721,5 +2779,612 @@ async fn a_real_driver_failure_is_preserved_as_the_variant_the_driver_raised() {
     assert!(
         !is_retryable_contention(DbBackend::Sqlite, &db_err),
         "a guard refusal is not contention: the variant is right, the message is not"
+    );
+}
+
+/// A bucket-iii save writes its columns, bumps the revision once and moves
+/// nothing else; the same statement with a **stale** expected revision
+/// matches no row and writes nothing.
+///
+/// The two halves are one case because either alone is passed by a defect the
+/// other catches: a statement with no revision filter at all would pass the
+/// first, and one whose `col_expr` set never reached the row would pass the
+/// second. `HeadWrite::Unmatched` rather than an error is the contract the
+/// door reads — it re-reads the head to say *which* refusal it was, and an
+/// `Err` would deny it that.
+#[tokio::test]
+async fn a_bucket_iii_product_save_applies_and_a_stale_one_matches_no_row() {
+    let provider = harness().await;
+    let conn = provider.conn().expect("scoped connection");
+    let scope = AccessScope::for_tenant(TENANT);
+
+    insert_product(&conn, &scope, new_product(PRODUCT, TENANT))
+        .await
+        .expect("insert product");
+
+    let save = ProductHeadSave {
+        name: Some(SavedName {
+            value: "Fibre 900".to_owned(),
+            normalized: "fibre 900".to_owned(),
+        }),
+        region_scope: Some("eu".to_owned()),
+        ..ProductHeadSave::default()
+    };
+    let outcome = save_product_head(&conn, &scope, TENANT, PRODUCT, 1, &save, at(10))
+        .await
+        .expect("save the draft head");
+    assert_eq!(outcome, HeadWrite::Applied);
+
+    let head = find_product(&conn, &scope, TENANT, PRODUCT)
+        .await
+        .expect("read product")
+        .expect("the row exists");
+    assert_eq!(head.name, "Fibre 900");
+    assert_eq!(
+        head.name_normalized, "fibre 900",
+        "the index operand moves with the field it is derived from"
+    );
+    assert_eq!(head.region_scope, "eu");
+    assert_eq!(head.internal_revision, 2, "exactly one revision bump");
+    assert_eq!(head.published_version, 0, "a save publishes nothing");
+    assert_eq!(head.updated_at, at(10));
+    assert_eq!(
+        head.brand_scope,
+        String::new(),
+        "a column the save did not name is untouched"
+    );
+
+    // The head now carries revision 2; a caller still pinning 1 is stale.
+    let stale = save_product_head(&conn, &scope, TENANT, PRODUCT, 1, &save, at(11))
+        .await
+        .expect("a stale save is an answer, not an error");
+    assert_eq!(stale, HeadWrite::Unmatched);
+    let head = find_product(&conn, &scope, TENANT, PRODUCT)
+        .await
+        .expect("read product")
+        .expect("the row exists");
+    assert_eq!(
+        (head.internal_revision, head.updated_at),
+        (2, at(10)),
+        "the unmatched statement wrote nothing at all"
+    );
+}
+
+/// A bucket-i save is admitted while `published_version = 0` and matches no
+/// row once the head has published — the filter's own
+/// `published_version = 0` clause, which rides only where the save names an
+/// identity column.
+///
+/// The bucket-iii save at the end is the control that keeps this from passing
+/// against a statement that simply refuses every save on a published head:
+/// §4.1 admits a bucket-iii write on any non-terminal head, published or not.
+#[tokio::test]
+async fn a_bucket_i_product_save_stops_matching_once_the_head_has_published() {
+    let provider = harness().await;
+    let conn = provider.conn().expect("scoped connection");
+    let scope = AccessScope::for_tenant(TENANT);
+
+    insert_product(&conn, &scope, new_product(PRODUCT, TENANT))
+        .await
+        .expect("insert product");
+
+    let recode = ProductHeadSave {
+        product_code: Some(NullableText::Set("FIBRE-900".to_owned())),
+        ..ProductHeadSave::default()
+    };
+    assert_eq!(
+        save_product_head(&conn, &scope, TENANT, PRODUCT, 1, &recode, at(10))
+            .await
+            .expect("save the draft head"),
+        HeadWrite::Applied,
+        "identity is writable before first publish"
+    );
+
+    freeze(&conn, &scope, VersionedEntityKind::Product, PRODUCT, 1).await;
+    publish_product_head(&conn, &scope, TENANT, PRODUCT, 2, at(11))
+        .await
+        .expect("publish the head");
+
+    assert_eq!(
+        save_product_head(&conn, &scope, TENANT, PRODUCT, 3, &recode, at(12))
+            .await
+            .expect("a bucket-i save on a published head is an answer, not an error"),
+        HeadWrite::Unmatched,
+        "the published_version = 0 clause rides the filter where the save names identity"
+    );
+
+    let rename = ProductHeadSave {
+        name: Some(SavedName {
+            value: "Fibre 900".to_owned(),
+            normalized: "fibre 900".to_owned(),
+        }),
+        ..ProductHeadSave::default()
+    };
+    assert_eq!(
+        save_product_head(&conn, &scope, TENANT, PRODUCT, 3, &rename, at(13))
+            .await
+            .expect("save the published head"),
+        HeadWrite::Applied,
+        "the control: a published Product can still be renamed, so the clause is keyed to the \
+         bucket and not to the head"
+    );
+}
+
+/// A SKU save applies, bumps once, and matches no row on a stale revision —
+/// [`a_bucket_iii_product_save_applies_and_a_stale_one_matches_no_row`]'s
+/// twin over the column set `products_sku` actually has.
+#[tokio::test]
+async fn a_sku_save_applies_and_a_stale_one_matches_no_row() {
+    let provider = harness().await;
+    let conn = provider.conn().expect("scoped connection");
+    let scope = AccessScope::for_tenant(TENANT);
+
+    insert_product(&conn, &scope, new_product(PRODUCT, TENANT))
+        .await
+        .expect("insert product");
+    insert_sku(&conn, &scope, new_sku(SKU, TENANT, PRODUCT))
+        .await
+        .expect("insert sku");
+
+    let save = SkuHeadSave {
+        sku_code: Some("FIBRE-900-STD".to_owned()),
+        brand_scope: Some("acme".to_owned()),
+        ..SkuHeadSave::default()
+    };
+    assert_eq!(
+        save_sku_head(&conn, &scope, TENANT, SKU, 1, &save, at(10))
+            .await
+            .expect("save the draft head"),
+        HeadWrite::Applied
+    );
+
+    let head = find_sku(&conn, &scope, TENANT, SKU)
+        .await
+        .expect("read sku")
+        .expect("the row exists");
+    assert_eq!(head.sku_code, "FIBRE-900-STD");
+    assert_eq!(head.brand_scope, "acme");
+    assert_eq!(
+        head.region_scope, "eu",
+        "a column the save did not name is untouched"
+    );
+    assert_eq!(head.internal_revision, 2, "exactly one revision bump");
+    assert_eq!(head.published_version, 0);
+    assert_eq!(head.updated_at, at(10));
+
+    assert_eq!(
+        save_sku_head(&conn, &scope, TENANT, SKU, 1, &save, at(11))
+            .await
+            .expect("a stale save is an answer, not an error"),
+        HeadWrite::Unmatched
+    );
+    assert_eq!(
+        find_sku(&conn, &scope, TENANT, SKU)
+            .await
+            .expect("read sku")
+            .expect("the row exists")
+            .updated_at,
+        at(10),
+        "the unmatched statement wrote nothing at all"
+    );
+}
+
+/// A save naming no column at all is a failure rather than a bare revision
+/// bump.
+///
+/// The door refuses an empty payload `VALIDATION` before reaching this, so
+/// this is the backstop against a caller this module has not met: a write
+/// with no content that still invalidates every `ETag` a client holds.
+#[tokio::test]
+async fn a_save_naming_no_column_is_refused_rather_than_bumping_the_revision() {
+    let provider = harness().await;
+    let conn = provider.conn().expect("scoped connection");
+    let scope = AccessScope::for_tenant(TENANT);
+
+    insert_product(&conn, &scope, new_product(PRODUCT, TENANT))
+        .await
+        .expect("insert product");
+
+    let empty = ProductHeadSave::default();
+    let failure = save_product_head(&conn, &scope, TENANT, PRODUCT, 1, &empty, at(10))
+        .await
+        .expect_err("an empty save is refused");
+    assert!(
+        matches!(failure, RepoError::Db(ref detail) if detail.contains("at least one column")),
+        "the internal channel, not a DomainError: a request that reached this would be \
+         reporting the gear's own defect, and it was {failure}"
+    );
+    assert_eq!(
+        find_product(&conn, &scope, TENANT, PRODUCT)
+            .await
+            .expect("read product")
+            .expect("the row exists")
+            .internal_revision,
+        1,
+        "no statement ran"
+    );
+}
+
+// ── The save statements' own `WHERE` clauses ──────────────────────────────
+
+/// Walk a `draft` Product head to `retired` along the three admitted edges,
+/// bumping `internal_revision` on every step and moving `published_version`
+/// not at all.
+///
+/// Written here rather than through a repository function for
+/// [`deprecate`]'s reason: no door of this slice retires a head, and these
+/// cases need the *state*, not the path. It cannot write `retired` in one
+/// statement — `trg_products_product_lifecycle_edge` admits only
+/// `draft -> published`, `published -> deprecated` and
+/// `deprecated -> retired` — and it cannot skip the bump, which
+/// `trg_products_product_internal_revision` requires on every admitted
+/// update without exception. Leaving `published_version` at `0` is
+/// deliberate: it is what makes the case below measure the **terminal**
+/// clause and not the `published_version = 0` one.
+async fn retire_product(
+    runner: &impl toolkit_db::secure::DBRunner,
+    scope: &AccessScope,
+    product_id: Uuid,
+    revision_after_insert: i64,
+) {
+    for (step, state) in ["published", "deprecated", "retired"].iter().enumerate() {
+        let next =
+            revision_after_insert + i64::try_from(step).expect("three steps fit in an i64") + 1;
+        let moved = product::Entity::update_many()
+            .secure()
+            .scope_with(scope)
+            .col_expr(product::Column::LifecycleState, Expr::value(*state))
+            .col_expr(product::Column::InternalRevision, Expr::value(next))
+            .col_expr(product::Column::UpdatedAt, Expr::value(at(11)))
+            .filter(
+                Condition::all()
+                    .add(product::Column::TenantId.eq(TENANT))
+                    .add(product::Column::ProductId.eq(product_id)),
+            )
+            .exec(runner)
+            .await
+            .unwrap_or_else(|e| panic!("the guard admits the edge into `{state}`: {e}"));
+        assert_eq!(moved.rows_affected, 1, "this helper's own premise");
+    }
+}
+
+/// [`retire_product`]'s SKU twin, over the same three edges.
+async fn retire_sku(
+    runner: &impl toolkit_db::secure::DBRunner,
+    scope: &AccessScope,
+    sku_id: Uuid,
+    revision_after_insert: i64,
+) {
+    for (step, state) in ["published", "deprecated", "retired"].iter().enumerate() {
+        let next =
+            revision_after_insert + i64::try_from(step).expect("three steps fit in an i64") + 1;
+        let moved = sku::Entity::update_many()
+            .secure()
+            .scope_with(scope)
+            .col_expr(sku::Column::LifecycleState, Expr::value(*state))
+            .col_expr(sku::Column::InternalRevision, Expr::value(next))
+            .col_expr(sku::Column::UpdatedAt, Expr::value(at(11)))
+            .filter(
+                Condition::all()
+                    .add(sku::Column::TenantId.eq(TENANT))
+                    .add(sku::Column::SkuId.eq(sku_id)),
+            )
+            .exec(runner)
+            .await
+            .unwrap_or_else(|e| panic!("the guard admits the edge into `{state}`: {e}"));
+        assert_eq!(moved.rows_affected, 1, "this helper's own premise");
+    }
+}
+
+/// A save against a `retired` Product head matches no row —
+/// [`super::TERMINAL_HEAD_STATES`] in the statement's own filter.
+///
+/// **This is the clause no door-level case can reach.** The save door asks
+/// `transition::check_head_write` first and answers `ENTITY_TERMINAL` from
+/// the record it read, so through the router the statement is never even
+/// issued against a terminal head. The filter's own copy is the one that
+/// decides in the case its doc names: a neighbour retiring the head between
+/// the door's read and this write. Only the repository layer can put the
+/// statement in that position.
+///
+/// What the clause's absence would produce is **not** a silent overwrite but
+/// something worse to an operator: `trg_products_product_bucket_iii` raises
+/// on a bucket-iii write to a terminal head, so the statement would reach the
+/// trigger and come back as a driver failure and a 500. The assertion is
+/// therefore `HeadWrite::Unmatched` specifically, not merely "the row did not
+/// change" — the governed refusal the door turns into a caller-facing answer.
+///
+/// The admitted save at the top is the positive control: without it the case
+/// passes against a filter that matches nothing at all.
+#[tokio::test]
+async fn a_product_save_against_a_retired_head_matches_no_row() {
+    let provider = harness().await;
+    let conn = provider.conn().expect("scoped connection");
+    let scope = AccessScope::for_tenant(TENANT);
+
+    insert_product(&conn, &scope, new_product(PRODUCT, TENANT))
+        .await
+        .expect("insert product");
+
+    let rename = |value: &str| ProductHeadSave {
+        name: Some(SavedName {
+            value: value.to_owned(),
+            normalized: value.to_lowercase(),
+        }),
+        ..ProductHeadSave::default()
+    };
+
+    assert_eq!(
+        save_product_head(
+            &conn,
+            &scope,
+            TENANT,
+            PRODUCT,
+            1,
+            &rename("Fibre 900"),
+            at(10)
+        )
+        .await
+        .expect("save the draft head"),
+        HeadWrite::Applied,
+        "the positive control: the identical save on a non-terminal head applies"
+    );
+
+    retire_product(&conn, &scope, PRODUCT, 2).await;
+    let retired = find_product(&conn, &scope, TENANT, PRODUCT)
+        .await
+        .expect("read product")
+        .expect("the row exists");
+    assert_eq!(
+        retired.lifecycle_state,
+        bss_products_sdk::models::LifecycleState::Retired,
+        "this case's own premise: the head is terminal"
+    );
+    assert_eq!(
+        retired.published_version, 0,
+        "and it got there without ever bumping published_version, so the other clause of \
+         this filter is not the one under test"
+    );
+
+    assert_eq!(
+        save_product_head(
+            &conn,
+            &scope,
+            TENANT,
+            PRODUCT,
+            5,
+            &rename("Fibre 901"),
+            at(12)
+        )
+        .await
+        .expect("a terminal save is an answer, not a driver failure"),
+        HeadWrite::Unmatched,
+        "the terminal clause rides every save's filter, whatever bucket it names"
+    );
+    let head = find_product(&conn, &scope, TENANT, PRODUCT)
+        .await
+        .expect("read product")
+        .expect("the row exists");
+    assert_eq!(
+        (head.name.as_str(), head.internal_revision),
+        ("Fibre 900", 5),
+        "the unmatched statement wrote nothing at all"
+    );
+}
+
+/// [`a_product_save_against_a_retired_head_matches_no_row`]'s SKU twin, and
+/// it is a separate case rather than a loop because the clause is written out
+/// twice — once in each save statement — so one of the two could lose it
+/// while the other kept it.
+///
+/// The save deliberately writes a **different** scope from the one the head
+/// carries. `trg_products_sku_bucket_iii` fires on
+/// `NEW.region_scope IS NOT OLD.region_scope`, so a save re-writing the value
+/// already there raises nothing at all: with this clause gone that request
+/// would be admitted on a retired head as a bare `internal_revision` bump,
+/// caught by no trigger and visible to no other case in this file. The
+/// clause is the only thing standing between that request and the row.
+#[tokio::test]
+async fn a_sku_save_against_a_retired_head_matches_no_row() {
+    let provider = harness().await;
+    let conn = provider.conn().expect("scoped connection");
+    let scope = AccessScope::for_tenant(TENANT);
+
+    insert_product(&conn, &scope, new_product(PRODUCT, TENANT))
+        .await
+        .expect("insert product");
+    insert_sku(&conn, &scope, new_sku(SKU, TENANT, PRODUCT))
+        .await
+        .expect("insert sku");
+
+    let rescope = |value: &str| SkuHeadSave {
+        region_scope: Some(value.to_owned()),
+        ..SkuHeadSave::default()
+    };
+
+    assert_eq!(
+        save_sku_head(&conn, &scope, TENANT, SKU, 1, &rescope("apac"), at(10))
+            .await
+            .expect("save the draft head"),
+        HeadWrite::Applied,
+        "the positive control: the identical save on a non-terminal head applies"
+    );
+
+    retire_sku(&conn, &scope, SKU, 2).await;
+    let retired = find_sku(&conn, &scope, TENANT, SKU)
+        .await
+        .expect("read sku")
+        .expect("the row exists");
+    assert_eq!(
+        retired.lifecycle_state,
+        bss_products_sdk::models::LifecycleState::Retired,
+        "this case's own premise: the head is terminal"
+    );
+    assert_eq!(retired.published_version, 0);
+
+    assert_eq!(
+        save_sku_head(&conn, &scope, TENANT, SKU, 5, &rescope("eu"), at(12))
+            .await
+            .expect("a terminal save is an answer, not a driver failure"),
+        HeadWrite::Unmatched,
+        "the terminal clause rides the SKU save's filter too"
+    );
+    assert_eq!(
+        find_sku(&conn, &scope, TENANT, SKU)
+            .await
+            .expect("read sku")
+            .expect("the row exists")
+            .region_scope,
+        "apac",
+        "the unmatched statement wrote nothing at all"
+    );
+}
+
+/// A bucket-i SKU save is admitted while `published_version = 0` and matches
+/// no row once the head has published —
+/// [`a_bucket_i_product_save_stops_matching_once_the_head_has_published`]'s
+/// twin, which the SKU side did not have.
+///
+/// The two statements carry the clause separately, so the Product case says
+/// nothing about this one. The column exercised is `sku_code`, the identity
+/// field `uq_products_sku_code` reserves; the bucket-iii save at the end is
+/// the control that keeps the case from passing against a statement that
+/// simply refuses every save on a published head, which §4.1 does not.
+#[tokio::test]
+async fn a_bucket_i_sku_save_stops_matching_once_the_head_has_published() {
+    let provider = harness().await;
+    let conn = provider.conn().expect("scoped connection");
+    let scope = AccessScope::for_tenant(TENANT);
+
+    insert_product(&conn, &scope, new_product(PRODUCT, TENANT))
+        .await
+        .expect("insert product");
+    insert_sku(&conn, &scope, new_sku(SKU, TENANT, PRODUCT))
+        .await
+        .expect("insert sku");
+
+    let recode = SkuHeadSave {
+        sku_code: Some("FIBRE-900-STD".to_owned()),
+        ..SkuHeadSave::default()
+    };
+    assert_eq!(
+        save_sku_head(&conn, &scope, TENANT, SKU, 1, &recode, at(10))
+            .await
+            .expect("save the draft head"),
+        HeadWrite::Applied,
+        "identity is writable before first publish"
+    );
+
+    freeze(&conn, &scope, VersionedEntityKind::Sku, SKU, 1).await;
+    publish_sku_head(&conn, &scope, TENANT, SKU, 2, false, at(11))
+        .await
+        .expect("publish the head");
+    assert_eq!(
+        find_sku(&conn, &scope, TENANT, SKU)
+            .await
+            .expect("read sku")
+            .expect("the row exists")
+            .published_version,
+        1,
+        "this case's own premise: the head has published"
+    );
+
+    assert_eq!(
+        save_sku_head(&conn, &scope, TENANT, SKU, 3, &recode, at(12))
+            .await
+            .expect("a bucket-i save on a published head is an answer, not an error"),
+        HeadWrite::Unmatched,
+        "the published_version = 0 clause rides the filter where the save names identity"
+    );
+
+    let rescope = SkuHeadSave {
+        region_scope: Some("apac".to_owned()),
+        ..SkuHeadSave::default()
+    };
+    assert_eq!(
+        save_sku_head(&conn, &scope, TENANT, SKU, 3, &rescope, at(13))
+            .await
+            .expect("save the published head"),
+        HeadWrite::Applied,
+        "the control: a published SKU can still be re-scoped, so the clause is keyed to the \
+         bucket and not to the head's state"
+    );
+}
+
+/// Clearing `product_code` writes `NULL` **and releases the reservation**
+/// `uq_products_product_code` was holding.
+///
+/// [`NullableText::Clear`] exists for exactly this: the index is partial on
+/// `product_code IS NOT NULL`, so a cleared code leaves the index by this
+/// write and by no other. The stored `NULL` alone is the half that proves
+/// little — a write that stored an empty string, or one whose `Expr` bound
+/// the literal string `"NULL"`, would be visible, but a `NULL` that somehow
+/// failed to leave the index would read back identically. So the case takes
+/// the released code with a **second Product**, which can only succeed if the
+/// index no longer holds it.
+///
+/// The refused insert before the clear is the positive control on the
+/// reservation itself: without it, a second insert succeeding afterwards
+/// would be consistent with the index never having held the code at all.
+#[tokio::test]
+async fn clearing_a_product_code_writes_null_and_frees_the_code_for_another_product() {
+    let provider = harness().await;
+    let conn = provider.conn().expect("scoped connection");
+    let scope = AccessScope::for_tenant(TENANT);
+
+    insert_product(&conn, &scope, new_product(PRODUCT, TENANT))
+        .await
+        .expect("insert product");
+
+    // A distinct name: `uq_products_product_name` would otherwise refuse this
+    // row for a reason that has nothing to do with the code under test.
+    let contender = Uuid::from_u128(0xf0_02);
+    let second = || NewProduct {
+        product_id: contender,
+        name: "Fibre 700".to_owned(),
+        name_normalized: "fibre 700".to_owned(),
+        ..new_product(contender, TENANT)
+    };
+
+    let refused = insert_product(&conn, &scope, second())
+        .await
+        .expect_err("the control: while the first Product holds FIBRE-500 the code is taken");
+    assert!(
+        matches!(refused, RepoError::Driver { .. }),
+        "a held reservation surfaces as the driver's own collision, and it was {refused:?}"
+    );
+
+    let clear = ProductHeadSave {
+        product_code: Some(NullableText::Clear),
+        ..ProductHeadSave::default()
+    };
+    assert_eq!(
+        save_product_head(&conn, &scope, TENANT, PRODUCT, 1, &clear, at(10))
+            .await
+            .expect("clear the code on a draft head"),
+        HeadWrite::Applied
+    );
+    let head = find_product(&conn, &scope, TENANT, PRODUCT)
+        .await
+        .expect("read product")
+        .expect("the row exists");
+    assert_eq!(
+        head.product_code, None,
+        "the clear wrote a real NULL, not an empty string and not the text NULL"
+    );
+    assert_eq!(head.internal_revision, 2, "one revision bump, as any save");
+
+    insert_product(&conn, &scope, second())
+        .await
+        .expect("the freed code is takeable, which is the whole point of Clear");
+    assert_eq!(
+        find_product(&conn, &scope, TENANT, contender)
+            .await
+            .expect("read the second product")
+            .expect("the row exists")
+            .product_code
+            .as_deref(),
+        Some("FIBRE-500"),
+        "and the second Product holds it"
     );
 }
