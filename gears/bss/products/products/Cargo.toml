@@ -98,5 +98,16 @@ serde_json = { workspace = true }
 # HTTP level rather than by constructing a `Router` and trusting it.
 tower = { workspace = true }
 # `#[tokio::test]` for the repository suite, which exercises the async
-# `DBRunner` calls against the executed `SQLite` mirror.
-tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+# `DBRunner` calls against the executed `SQLite` mirror. `sync` on top of the
+# in-crate suite's needs: the Postgres race probe parks one transaction on a
+# `tokio::sync::Notify` while the other contends, which is what makes the race
+# an observed sequence rather than a coin toss.
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync"] }
+# The Postgres testcontainers harness (`tests/pg_support/`), adopted from the
+# sibling pricing gear rather than invented. Tests reach `testcontainers` items
+# through the `testcontainers_modules::testcontainers` re-export, so the bare
+# `testcontainers` crate is not a direct dep. It carries what the `SQLite`
+# mirror cannot: the chain executed on the engine production runs, and two
+# writers genuinely in flight at once — `sqlite::memory:` is private to its
+# connection, so a second writer queues on the pool instead of contending.
+testcontainers-modules = { workspace = true }
