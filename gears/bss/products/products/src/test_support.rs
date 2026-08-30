@@ -43,7 +43,15 @@ use uuid::Uuid;
 use crate::infra::events;
 
 /// Degraded flat-`In` PDP fake: permits and emits a single flat
-/// `In([allowed])` constraint over `OWNER_TENANT_ID`, ignoring the request.
+/// `In([allowed])` constraint over `OWNER_TENANT_ID` — **the shape the
+/// production PDP returns for a PEP that advertises no tenant-subtree
+/// capability** (this gear: [`PolicyEnforcer::new`] with no
+/// `with_capabilities`). The request is ignored: the fake models a subject
+/// authorized only for the single `allowed` tenant.
+///
+/// That first clause is what makes this a measurement rather than a
+/// convenience, and review wave D's extraction dropped it — the wave verified
+/// the *bodies* were byte-identical and did not compare the docs.
 struct FlatInResolver {
     allowed: Uuid,
 }
@@ -204,12 +212,44 @@ pub fn id_matches(column: &str, id: Uuid) -> String {
     format!("({column} = '{id}' OR hex({column}) = '{hex}')")
 }
 
+/// One column of **the** audit row, and a proof that there is exactly one.
+///
+/// Both readers below carried the precondition "where exactly one was written"
+/// in their docs and nothing enforced it: an unqualified `SELECT` over the
+/// table hands `raw_string_opt`'s `.one()` an arbitrary row, so a case that
+/// wrote a second audit row would read whichever sorted first and keep passing.
+/// That is the same defect review wave D fixed for the `hex(actor_ref)` read —
+/// and the class sweep that wave declared clean did not catch these, because
+/// the detector was keyed to `LIMIT 1` without a `WHERE` and these carry no
+/// `LIMIT` at all.
+async fn the_one_audit_row(dsn: &str, column: &str) -> Option<String> {
+    let rows = raw_i64(dsn, "SELECT COUNT(*) AS v FROM products_audit_log").await;
+    assert_eq!(
+        rows, 1,
+        "these readers name **the** audit row; {rows} were written, so the value read would be \
+         whichever the engine returned first"
+    );
+    raw_string_opt(
+        dsn,
+        &format!("SELECT {column} AS v FROM products_audit_log"),
+    )
+    .await
+}
+
 /// The `action` of the audit row, where exactly one was written.
 pub async fn audit_action(dsn: &str) -> Option<String> {
-    raw_string_opt(dsn, "SELECT action AS v FROM products_audit_log").await
+    the_one_audit_row(dsn, "action").await
 }
 
 /// The `error_code` of the audit row, where exactly one was written.
 pub async fn audit_error_code(dsn: &str) -> Option<String> {
-    raw_string_opt(dsn, "SELECT error_code AS v FROM products_audit_log").await
+    the_one_audit_row(dsn, "error_code").await
 }
+
+// **Owed, and measured rather than guessed**: 24 sites in the door suites still
+// spell `SELECT error_code AS v FROM products_audit_log` inline against 6 that
+// call the reader above, and 4 against 4 for `action`. Two spellings of one read
+// is the drift surface this module exists to remove — but the swap is not
+// mechanical, because the reader now asserts the table holds exactly one row and
+// some of those sites may legitimately have written more. Each has to be looked
+// at, which is why they are recorded here rather than converted blind.

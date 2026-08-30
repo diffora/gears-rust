@@ -276,7 +276,11 @@ const CREATE_ENDPOINT: &str = "/bss-products/v1/skus";
 
 /// The SKU entity's resource marker for this door's 403/404 answers. Its own
 /// type, distinct from `infra::error_mapping`'s private `SkuResource`, for
-/// `infra::error_mapping::ProductResource`'s own doc's reason.
+/// `products::ProductResource`'s own doc's reason. **That** one, not
+/// `infra::error_mapping`'s: there are two types of the name, and only the
+/// door's own explains why a door declares a marker the error module already
+/// has. Review wave C corrected this citation's *module* and left it pointing
+/// at the type that does not carry the reason.
 #[resource_error(gts_id!("cf.bss.products.sku.v1~"))]
 struct SkuResource;
 
@@ -843,7 +847,7 @@ async fn insert_sku_with_event(
     claim: Option<IdempotencyClaimInput>,
     actor_ref: Uuid,
 ) -> Result<CreateOutcome, DbError> {
-    let outbox = state.outbox.clone();
+    let outbox = state.sink.clone();
     let tenant_id = new.tenant_id;
     state
         .db
@@ -3076,7 +3080,7 @@ async fn publish_in_one_transaction(
     gate: &Arc<dyn GovernanceGate + Send + Sync>,
     mode: GateMode,
 ) -> Result<MutationOutcome, HeadActError> {
-    let outbox = state.outbox.clone();
+    let outbox = state.sink.clone();
     let gate = Arc::clone(gate);
     let inputs = inputs.clone();
     state
@@ -3113,7 +3117,7 @@ async fn discard_in_one_transaction(
     inputs: &HeadActInputs,
     gate: &Arc<dyn GovernanceGate + Send + Sync>,
 ) -> Result<MutationOutcome, HeadActError> {
-    let outbox = state.outbox.clone();
+    let outbox = state.sink.clone();
     let gate = Arc::clone(gate);
     let inputs = inputs.clone();
     state
@@ -4215,7 +4219,7 @@ async fn save_in_one_transaction(
     request: SaveSkuRequest,
     gate: &Arc<dyn GovernanceGate + Send + Sync>,
 ) -> Result<MutationOutcome, HeadActError> {
-    let outbox = state.outbox.clone();
+    let outbox = state.sink.clone();
     let gate = Arc::clone(gate);
     let inputs = inputs.clone();
     state

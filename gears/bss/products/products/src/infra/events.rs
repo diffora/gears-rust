@@ -68,9 +68,13 @@
 //! [`OUTBOX_TABLE_PREFIX`], [`QUEUE_NAME`] and [`PARTITIONS`], so the three
 //! have one definition site between them.
 //!
-//! **What is still owed here is delivery, not wiring**: the queue's processor
-//! is [`PendingBrokerProducer`], which holds every message rather than
-//! publishing it. See that type's own doc, and P-D-47.
+//! **Whether delivery happens is decided at boot, not here.** `gear.rs` binds
+//! the broker SDK's producer as this queue's processor when the `ClientHub`
+//! carries an `EventBrokerApi` (**P-D-47**), and [`PendingBrokerProducer`] —
+//! which holds every message rather than publishing it — when it does not.
+//! `crate::infra::broker` owns that fork and records why the second arm exists
+//! at all. This module writes the interim envelope the second arm carries; the
+//! first carries the SDK's, built from `broker`'s typed events.
 
 use serde::Serialize;
 use toolkit_db::outbox::{Outbox, OutboxError};
@@ -150,8 +154,8 @@ impl toolkit_db::outbox::LeasedMessageHandler for PendingBrokerProducer {
         tracing::debug!(
             queue = QUEUE_NAME,
             payload_type = %msg.payload_type,
-            "bss-products: outbox delivery is owed to Phase 8's broker producer (P-D-47); \
-             holding the message in the queue"
+            "bss-products: no EventBrokerApi was present at boot, so P-D-47's SDK producer \
+             was not bound; holding the message in the queue"
         );
         toolkit_db::outbox::MessageResult::Retry
     }
@@ -391,6 +395,17 @@ pub(crate) enum EventsError {
     /// `publishedVersion` §4.5 does not put on it.
     #[error("{0} carries no publishedVersion and must be enqueued through enqueue")]
     NotAPublishEvent(String),
+    /// The broker arm has no [`crate::infra::broker`] typed event for this
+    /// payload type.
+    ///
+    /// Distinct from [`Self::UnregisteredSchema`], which is the interim arm's
+    /// roster miss: the two arms resolve a token through two different rosters
+    /// — `SCHEMA_REFS` there, a `match` over the eight typed events here — and
+    /// naming both misses the same thing would send a reader to the wrong one.
+    /// A ninth event registered in `SCHEMA_REFS` but not wired here reaches
+    /// this variant, and a no-broker deployment would have emitted it.
+    #[error("no typed event is declared for payload type {0} on the broker arm")]
+    NoTypedEvent(String),
     /// The broker SDK refused the enqueue.
     ///
     /// Reached only on [`crate::infra::broker::EventSink::Broker`]. The door
@@ -668,7 +683,13 @@ pub(crate) async fn enqueue(
                         .enqueue(runner, broker::SkuDiscarded { core: body })
                         .await
                 }
-                other => return Err(EventsError::UnregisteredSchema(other.to_owned())),
+                // Not `UnregisteredSchema`: that variant's own doc says
+                // `schema_ref_for` did not recognise the token, and on this arm
+                // `schema_ref_for` was never called. The condition here is "no
+                // `TypedEvent` is declared for this token", which is a different
+                // repair — the two rosters are equal today and a ninth event
+                // would have to be added to both.
+                other => return Err(EventsError::NoTypedEvent(other.to_owned())),
             }
             .map(|_| ())
             .map_err(EventsError::Broker)
@@ -700,14 +721,19 @@ pub(crate) async fn enqueue_published(
     published_version: i64,
     actor_ref: Uuid,
 ) -> Result<(), EventsError> {
+    // Hoisted above the match, like [`enqueue`]'s twin guard. It used to sit
+    // inside the `Interim` arm while the `Broker` arm relied on its own
+    // fallthrough — two copies of one rule, so a ninth publish event added to
+    // the broker's match and forgotten in this list would have been accepted on
+    // one arm and refused on the other.
+    if !matches!(
+        payload_type,
+        PRODUCT_PUBLISHED_PAYLOAD_TYPE | SKU_PUBLISHED_PAYLOAD_TYPE
+    ) {
+        return Err(EventsError::NotAPublishEvent(payload_type.to_owned()));
+    }
     match sink {
         EventSink::Interim(outbox) => {
-            if !matches!(
-                payload_type,
-                PRODUCT_PUBLISHED_PAYLOAD_TYPE | SKU_PUBLISHED_PAYLOAD_TYPE
-            ) {
-                return Err(EventsError::NotAPublishEvent(payload_type.to_owned()));
-            }
             let body = PublishedEventBody {
                 core,
                 published_version,
@@ -748,6 +774,9 @@ pub(crate) async fn enqueue_published(
                         )
                         .await
                 }
+                // Unreachable while the hoisted guard above owns the
+                // condition; kept so the `match` stays total if the roster of
+                // publish events ever grows past that guard's list.
                 other => return Err(EventsError::NotAPublishEvent(other.to_owned())),
             }
             .map(|_| ())

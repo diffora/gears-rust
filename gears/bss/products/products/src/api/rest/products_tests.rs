@@ -156,7 +156,14 @@ fn unique_sqlite_path(label: &str) -> std::path::PathBuf {
 /// hands it to the vacuum. The enqueue assertion below then read zero rows
 /// for a create that had enqueued one. Registering the production handler
 /// both fixes the count and makes these tests exercise the configuration
-/// the gear actually boots with rather than a friendlier one.
+/// the gear boots with **on its no-broker arm** rather than a friendlier one.
+///
+/// That qualifier is not decoration. Since the producer landed, `Gear::init`
+/// registers this queue with `PendingBrokerProducer` only when the `ClientHub`
+/// carries no `EventBrokerApi`; with one, the processor is the SDK's producer
+/// and the sink is `EventSink::Broker`. So every event assertion in this suite
+/// measures one of two arms, and the other is exercised only by
+/// `infra::broker::broker_tests`' `MockBroker` case — never through a door.
 async fn harness() -> TestHarness {
     let path = unique_sqlite_path("db");
     // `?mode=rwc` is what creates the file. Without it sqlx opens an
@@ -1638,7 +1645,7 @@ async fn the_stored_answer_is_the_status_and_body_the_door_returned() {
 fn api_state(harness: &TestHarness) -> Arc<ApiState> {
     Arc::new(ApiState {
         db: harness.db.clone(),
-        outbox: crate::infra::broker::EventSink::Interim(Arc::clone(&harness.outbox)),
+        sink: crate::infra::broker::EventSink::Interim(Arc::clone(&harness.outbox)),
         idempotency_retention_hours: ProductsConfig::default().idempotency_retention_hours,
     })
 }
@@ -4701,6 +4708,80 @@ async fn a_blank_name_beside_a_bucket_i_column_stops_at_the_shape_phase() {
     assert_eq!(
         head.brand_id, BRAND,
         "and the bucket-i column it also named is untouched"
+    );
+}
+
+/// **The two entry points refuse each other's tokens, and neither writes.**
+///
+/// `enqueue` accepting a `*Published` token emitted a body with no
+/// `publishedVersion` — a shape §4.5 calls incomplete — and nothing noticed
+/// until the SDK's typed events forced the distinction. The two guards that
+/// close it were, until this case, guards whose removal reddened nothing:
+/// exactly what review wave B landed the case below for, two commits earlier,
+/// in this same file.
+///
+/// Both directions, because they are separate guards on separate functions.
+#[tokio::test]
+async fn the_two_enqueue_entry_points_refuse_each_others_tokens() {
+    let harness = harness().await;
+    let sink = crate::infra::broker::EventSink::Interim(Arc::clone(&harness.outbox));
+    let conn = harness
+        .db
+        .conn()
+        .expect("checkout the pinned production connection");
+    let product_id = Uuid::now_v7();
+    let core = events::EventBodyCore {
+        tenant_id: TENANT,
+        entity_kind: events::EntityKind::Product.as_str(),
+        entity_id: product_id,
+        internal_revision: 1,
+        lifecycle_state: "draft",
+    };
+
+    let refused = events::enqueue(
+        &sink,
+        &conn,
+        product_id,
+        events::PRODUCT_PUBLISHED_PAYLOAD_TYPE,
+        &core,
+        Uuid::now_v7(),
+    )
+    .await
+    .expect_err("a publish token has a publishedVersion this entry point cannot carry");
+    assert!(
+        matches!(&refused, events::EventsError::PublishNeedsVersion(t)
+                 if t == events::PRODUCT_PUBLISHED_PAYLOAD_TYPE),
+        "the refusal must name the token and the reason, not a schema lookup: {refused}"
+    );
+
+    let refused = events::enqueue_published(
+        &sink,
+        &conn,
+        product_id,
+        events::PRODUCT_CREATED_PAYLOAD_TYPE,
+        &core,
+        7,
+        Uuid::now_v7(),
+    )
+    .await
+    .expect_err(
+        "a core-only token must not be given a publishedVersion the design does not put on it",
+    );
+    assert!(
+        matches!(&refused, events::EventsError::NotAPublishEvent(t)
+                 if t == events::PRODUCT_CREATED_PAYLOAD_TYPE),
+        "and the twin guard must name its own condition: {refused}"
+    );
+
+    let body_table = format!("{}_body", events::OUTBOX_TABLE_PREFIX);
+    assert_eq!(
+        raw_i64(
+            &harness.dsn,
+            &format!("SELECT COUNT(*) AS v FROM {body_table}")
+        )
+        .await,
+        0,
+        "neither refusal may leave a row behind: both guards run before anything is written"
     );
 }
 

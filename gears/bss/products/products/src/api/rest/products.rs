@@ -128,11 +128,12 @@
 //!
 //! `ProductCreated`'s envelope is built by `crate::infra::events`, not here —
 //! see that module's doc for the body core and the partition formula
-//! (P-D-22). The running [`toolkit_db::outbox::Outbox`] instance [`ApiState`]
-//! carries is built and registered by `gear.rs`'s `Gear::init`; there is no
-//! wiring gap left, and the earlier revision of this sentence that named one
-//! outlived it. What remains owed is **delivery** — the queue's processor is
-//! a holding one until P-D-47's producer lands.
+//! (P-D-22), and `crate::infra::broker` for the SDK envelope the producer arm
+//! carries instead. Which of the two a given boot uses is
+//! [`crate::infra::broker::EventSink`]'s to say; this door only enqueues
+//! through it. Two earlier revisions of this sentence each described a state
+//! the code had already left — a wiring gap, then an unlanded producer — which
+//! is why it now names the type rather than the state.
 //!
 //! # Idempotency: what this door claims, and where
 //!
@@ -969,7 +970,7 @@ async fn insert_product_with_event(
     claim: Option<IdempotencyClaimInput>,
     actor_ref: Uuid,
 ) -> Result<CreateOutcome, DbError> {
-    let outbox = state.outbox.clone();
+    let outbox = state.sink.clone();
     let tenant_id = new.tenant_id;
     state
         .db
@@ -2517,7 +2518,7 @@ async fn publish_in_one_transaction(
     gate: &Arc<dyn GovernanceGate + Send + Sync>,
     mode: GateMode,
 ) -> Result<HeadActOutcome, HeadActError> {
-    let outbox = state.outbox.clone();
+    let outbox = state.sink.clone();
     let gate = Arc::clone(gate);
     let inputs = opened.act_inputs();
     state
@@ -2572,7 +2573,7 @@ async fn discard_in_one_transaction(
     opened: &OpenedHeadDoor,
     gate: &Arc<dyn GovernanceGate + Send + Sync>,
 ) -> Result<HeadActOutcome, HeadActError> {
-    let outbox = state.outbox.clone();
+    let outbox = state.sink.clone();
     let gate = Arc::clone(gate);
     let inputs = opened.act_inputs();
     state
@@ -4376,7 +4377,7 @@ async fn save_in_one_transaction(
     request: SaveProductRequest,
     gate: &Arc<dyn GovernanceGate + Send + Sync>,
 ) -> Result<HeadActOutcome, HeadActError> {
-    let outbox = state.outbox.clone();
+    let outbox = state.sink.clone();
     let gate = Arc::clone(gate);
     let inputs = opened.act_inputs();
     state

@@ -52,12 +52,34 @@ pub struct ProductsConfig {
     /// [`Self::resolved_idempotency_retention_hours`] is what anything
     /// stamping an expiry must use.
     pub idempotency_retention_hours: u32,
+
+    /// Whether a boot without a reachable event-broker is a **failure**.
+    ///
+    /// `Gear::init` binds the broker SDK's producer when `ClientHub` carries an
+    /// `EventBrokerApi` and falls back to a holding processor when it does not,
+    /// so a deployment with no broker still boots and accumulates its events
+    /// undelivered. That fallback is deliberate (P-D-47's letter says otherwise;
+    /// see `infra::broker`'s module doc) and it has one dangerous property: it
+    /// is **indistinguishable from a broker the gear failed to reach**, and the
+    /// only signal is one `warn!` line.
+    ///
+    /// This is the operator's switch for that. `true` turns the fallback into a
+    /// boot failure, so a deployment that is supposed to publish cannot
+    /// silently stop publishing.
+    ///
+    /// **Default `false`, and that default is a measurement rather than a
+    /// preference**: as of 2026-08-30 no gear in this workspace registers a
+    /// `dyn EventBrokerApi` in any `ClientHub`, so defaulting to `true` would
+    /// make this gear un-bootable everywhere today. The default is expected to
+    /// invert the moment a provider exists.
+    pub require_broker: bool,
 }
 
 impl Default for ProductsConfig {
     fn default() -> Self {
         Self {
             idempotency_retention_hours: IDEMPOTENCY_RETENTION_FLOOR_HOURS,
+            require_broker: false,
         }
     }
 }

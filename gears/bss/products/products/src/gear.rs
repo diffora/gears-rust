@@ -43,14 +43,19 @@
 //! (`toolkit_db::outbox::outbox_migrations_with_prefix`) rather than declaring
 //! any outbox table in this gear's own migration chain. [`Gear::init`]
 //! registers **one** queue — `infra::events::QUEUE_NAME`, over
-//! `infra::events::PARTITIONS`, in `leased` mode with
-//! `infra::events::PendingBrokerProducer` as its processor — and it must,
-//! because `enqueue` refuses an unregistered queue with
-//! `OutboxError::QueueNotRegistered` and every create door enqueues inside
-//! its own transaction. The reason the processor is a holding one is stated
-//! at the registration itself: **P-D-47** puts the real processor, the broker
-//! SDK's `DbProducer`, in `dod-outbox-eventing`, so rows accumulate
-//! undelivered rather than being discarded.
+//! `infra::events::PARTITIONS` — and it must, because `enqueue` refuses an
+//! unregistered queue with `OutboxError::QueueNotRegistered` and every create
+//! door enqueues inside its own transaction.
+//!
+//! **Its processor is decided by a fork.** With an `EventBrokerApi` in the
+//! `ClientHub`, the queue is registered by the broker SDK's own
+//! `ProducerOutboxQueue` and its processor publishes (**P-D-47**); without one,
+//! `init` registers it in `leased` mode with `infra::events::PendingBrokerProducer`,
+//! which holds every message so rows accumulate undelivered rather than being
+//! discarded. The queue **name** is `QUEUE_NAME` on both arms deliberately —
+//! an earlier revision gave the producer arm the table prefix instead, which
+//! stranded every row an interim boot had accumulated. `ProductsConfig::require_broker`
+//! turns the second arm into a boot failure for a deployment that must publish.
 //!
 //! An earlier revision of this paragraph said no queue was registered yet and
 //! named `.transactional(handler)` as the call a later slice would add. Both
@@ -201,13 +206,15 @@ impl toolkit::contracts::DatabaseCapability for BssProductsGear {
             );
         migrations.extend(outbox_migrations);
 
-        // The producer's own registration tables, appended for the same reason
-        // and on the same terms: the SDK owns them, this chain does not declare
-        // them, and the README requires them run *before* a `DbProducer` is
+        // The producer's own registration table, appended for the same reason
+        // and on the same terms: the SDK owns it, this chain does not declare
+        // it, and the README requires it run *before* a `DbProducer` is
         // constructed. Appended unconditionally rather than only where a broker
         // is configured — a migration set that varies with runtime wiring gives
-        // two deployments two different schemas, and the cost here is two
-        // tables a no-broker deployment never writes.
+        // two deployments two different schemas, and the cost here is **one**
+        // table a no-broker deployment never writes
+        // (`producer_registration_migrations` returns a single migration whose
+        // `up` creates `event_broker_producer_registrations`).
         migrations.extend(event_broker_sdk::producer_registration_migrations());
         migrations
     }
@@ -295,30 +302,34 @@ impl Gear for BssProductsGear {
         .context("bss-products: the event-broker producer could not be bound")?;
 
         let (sink, pipeline) = if let Some((sink, handle)) = bound {
-            {
-                tracing::info!(
-                    queue = OUTBOX_TABLE_PREFIX,
-                    topic = crate::infra::broker::TOPIC,
-                    "bss-products: publishing through the event-broker SDK producer"
-                );
-                (sink, OutboxLifetime::Broker(Box::new(handle)))
-            }
+            tracing::info!(
+                queue = OUTBOX_TABLE_PREFIX,
+                topic = crate::infra::broker::TOPIC,
+                "bss-products: publishing through the event-broker SDK producer"
+            );
+            (sink, OutboxLifetime::Broker(Box::new(handle)))
         } else {
-            {
-                tracing::warn!(
-                    "bss-products: no EventBrokerApi in the ClientHub; events accumulate                      undelivered on the interim queue and no delivery is ever reported"
-                );
-                let handle = toolkit_db::outbox::Outbox::builder(outbox_db)
-                    .table_prefix(OUTBOX_TABLE_PREFIX)
-                    .context("bss-products: invalid outbox table prefix")?
-                    .queue(crate::infra::events::QUEUE_NAME, partitions)
-                    .leased(crate::infra::events::PendingBrokerProducer)
-                    .start()
-                    .await
-                    .context("bss-products: outbox pipeline failed to start")?;
-                let sink = crate::infra::broker::EventSink::Interim(Arc::clone(handle.outbox()));
-                (sink, OutboxLifetime::Interim(handle))
-            }
+            anyhow::ensure!(
+                !cfg.require_broker,
+                "bss-products: require_broker is set and no EventBrokerApi is registered in the \
+                 ClientHub; refusing to boot into the holding processor, which would accumulate \
+                 every catalog event undelivered"
+            );
+            tracing::warn!(
+                "bss-products: no EventBrokerApi in the ClientHub; events \
+                     accumulate undelivered on the interim queue and no delivery \
+                     is ever reported"
+            );
+            let handle = toolkit_db::outbox::Outbox::builder(outbox_db)
+                .table_prefix(OUTBOX_TABLE_PREFIX)
+                .context("bss-products: invalid outbox table prefix")?
+                .queue(crate::infra::events::QUEUE_NAME, partitions)
+                .leased(crate::infra::events::PendingBrokerProducer)
+                .start()
+                .await
+                .context("bss-products: outbox pipeline failed to start")?;
+            let sink = crate::infra::broker::EventSink::Interim(Arc::clone(handle.outbox()));
+            (sink, OutboxLifetime::Interim(handle))
         };
 
         self.runtime.store(Some(Arc::new(ProductsRuntime {
@@ -368,7 +379,7 @@ impl RestApiCapability for BssProductsGear {
         // every door added in this and later slices reaches it the same way.
         let api_state = Arc::new(crate::api::rest::ApiState {
             db: rt.db.clone(),
-            outbox: rt.sink.clone(),
+            sink: rt.sink.clone(),
             idempotency_retention_hours: rt.idempotency_retention_hours,
         });
         Ok(router

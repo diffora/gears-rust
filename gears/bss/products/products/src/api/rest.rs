@@ -47,8 +47,8 @@
 //!
 //! # The outbox wiring, and where it lives
 //!
-//! [`ApiState`] carries `outbox`, the running
-//! [`toolkit_db::outbox::Outbox`] the create doors enqueue their events
+//! [`ApiState`] carries `sink`, the [`crate::infra::broker::EventSink`] the
+//! create doors enqueue their events
 //! through (P-D-22, `crate::infra::events`). Both edges are made in
 //! `gear.rs`: `Gear::init` declares
 //! [`crate::infra::events::QUEUE_NAME`] with
@@ -57,16 +57,21 @@
 //!
 //! A queue cannot be declared without a handler — `.transactional(..)` or
 //! `.leased(..)` is mandatory, and `enqueue` refuses an unregistered queue
-//! with `OutboxError::QueueNotRegistered`. The handler registered today is
-//! [`crate::infra::events::PendingBrokerProducer`], which holds messages
-//! rather than delivering them: P-D-47 makes the real processor the broker
-//! SDK's `DbProducer`, and the plan puts that in Phase 8's
-//! `dod-outbox-eventing`.
+//! with `OutboxError::QueueNotRegistered`. **Which handler is registered is a
+//! boot-time fork**, and the field above holds the answer: with an
+//! `EventBrokerApi` in the `ClientHub`, the processor is the broker SDK's own
+//! producer (P-D-47) and this field is
+//! [`crate::infra::broker::EventSink::Broker`]; without one it is
+//! [`crate::infra::events::PendingBrokerProducer`], which holds messages rather
+//! than delivering them, and the field is `EventSink::Interim`. See
+//! `crate::infra::broker`'s module doc for the fork, its deviation from
+//! P-D-47's letter, and the measurement that **no gear in this workspace
+//! registers that client yet**, so today every deployment takes the second arm.
 //!
-//! An earlier draft of this doc described both edges as owed to a future
-//! slice, because the slice that wrote it could not touch `gear.rs`. They
-//! have since been made, and the description outlived them — which is why
-//! this section now names where the wiring is rather than where it is not.
+//! Two earlier drafts of this paragraph outlived their subject — one said both
+//! edges were owed to a future slice, the next said delivery was still owed
+//! after the producer had landed. Neither is a safe shape to restate; name the
+//! fork and point at the type that holds it.
 //!
 //! # The idempotency phase, and why its parts sit here
 //!
@@ -199,7 +204,7 @@ pub(crate) struct ApiState {
     /// doc, "The outbox wiring, and where it lives".
     /// Either the SDK producer's queue (P-D-47) or the interim one, decided
     /// once at `Gear::init` — see [`crate::infra::broker::EventSink`].
-    pub(crate) outbox: crate::infra::broker::EventSink,
+    pub(crate) sink: crate::infra::broker::EventSink,
     /// The operator's own `idempotency_retention_hours`
     /// ([`crate::config::ProductsConfig`]), resolved once in `gear.rs`'s `init` from
     /// `ctx.config_or_default()` and carried here for the same reason the

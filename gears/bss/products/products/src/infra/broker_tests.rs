@@ -27,51 +27,65 @@ fn core(kind: &str) -> CatalogEventCore {
     }
 }
 
-/// One row per event: its `TYPE_ID`, its `SUBJECT_TYPE`, and the §4.5 token the
-/// id must name.
+/// The topic all eight publish onto, **transcribed**.
+///
+/// The constant under test is `super::TOPIC`; this is the literal it must equal.
+/// An earlier revision of this file asserted `topic == TOPIC` — a constant
+/// against itself — so changing `TOPIC` by one character left every case green
+/// while the gear pointed at a topic no broker-side registration carries. These
+/// three literals are the half of the agreement a test can freeze.
+const TRANSCRIBED_TOPIC: &str = "gts.cf.core.events.topic.v1~cf.bss.products.catalog.v1";
+/// [`TRANSCRIBED_TOPIC`]'s reason, for the Product subject type.
+const TRANSCRIBED_PRODUCT_SUBJECT: &str =
+    "gts.cf.core.events.subject.v1~cf.bss.products.product.v1";
+/// [`TRANSCRIBED_TOPIC`]'s reason, for the SKU subject type.
+const TRANSCRIBED_SKU_SUBJECT: &str = "gts.cf.core.events.subject.v1~cf.bss.products.sku.v1";
+
+/// One row per event: the `events` payload-type token a door passes, the
+/// `TYPE_ID` it must map to, and the `SUBJECT_TYPE` that id must carry.
 ///
 /// Transcribed rather than read off the types, for `events_tests`' reason: a
 /// list built from the code under test could only prove the code equals itself.
 const THE_EIGHT: &[(&str, &str, &str)] = &[
     (
+        "ProductCreated",
         "gts.cf.core.events.event_type.v1~cf.bss.products.product_created.v1",
-        PRODUCT_SUBJECT_TYPE,
-        "product_created",
+        TRANSCRIBED_PRODUCT_SUBJECT,
     ),
     (
+        "SkuCreated",
         "gts.cf.core.events.event_type.v1~cf.bss.products.sku_created.v1",
-        SKU_SUBJECT_TYPE,
-        "sku_created",
+        TRANSCRIBED_SKU_SUBJECT,
     ),
     (
+        "ProductHeadSaved",
         "gts.cf.core.events.event_type.v1~cf.bss.products.product_head_saved.v1",
-        PRODUCT_SUBJECT_TYPE,
-        "product_head_saved",
+        TRANSCRIBED_PRODUCT_SUBJECT,
     ),
     (
+        "SkuHeadSaved",
         "gts.cf.core.events.event_type.v1~cf.bss.products.sku_head_saved.v1",
-        SKU_SUBJECT_TYPE,
-        "sku_head_saved",
+        TRANSCRIBED_SKU_SUBJECT,
     ),
     (
+        "ProductPublished",
         "gts.cf.core.events.event_type.v1~cf.bss.products.product_published.v1",
-        PRODUCT_SUBJECT_TYPE,
-        "product_published",
+        TRANSCRIBED_PRODUCT_SUBJECT,
     ),
     (
+        "SkuPublished",
         "gts.cf.core.events.event_type.v1~cf.bss.products.sku_published.v1",
-        SKU_SUBJECT_TYPE,
-        "sku_published",
+        TRANSCRIBED_SKU_SUBJECT,
     ),
     (
+        "ProductDiscarded",
         "gts.cf.core.events.event_type.v1~cf.bss.products.product_discarded.v1",
-        PRODUCT_SUBJECT_TYPE,
-        "product_discarded",
+        TRANSCRIBED_PRODUCT_SUBJECT,
     ),
     (
+        "SkuDiscarded",
         "gts.cf.core.events.event_type.v1~cf.bss.products.sku_discarded.v1",
-        SKU_SUBJECT_TYPE,
-        "sku_discarded",
+        TRANSCRIBED_SKU_SUBJECT,
     ),
 ];
 
@@ -124,34 +138,41 @@ fn declared() -> Vec<(&'static str, &'static str, &'static str)> {
 /// **Each of the eight declares the id this module's doc derived for it, and
 /// each id names its own event.**
 ///
-/// The ids are half of an agreement whose other half is a broker-side event-type
-/// registration this gear does not own, so a rename here is a broken
-/// subscription rather than a refactor — which is exactly why the expected
-/// values are written out rather than read from the constants.
+/// The ids are half of an agreement whose other half is a broker-side
+/// event-type registration this gear does not own, so a rename here is a broken
+/// subscription rather than a refactor — which is why every expected value in
+/// [`THE_EIGHT`] is a **literal**, including the subject types. An earlier
+/// revision compared `X::SUBJECT_TYPE` against the constant the macro had
+/// assigned it, which is the code proving it equals itself.
 #[test]
 fn each_event_declares_its_derived_type_id_and_subject_type() {
     let declared = declared();
     assert_eq!(declared.len(), THE_EIGHT.len(), "eight events, eight rows");
 
-    for ((type_id, subject_type, _), (want_type, want_subject, token)) in
+    for ((type_id, subject_type, _), (token, want_type, want_subject)) in
         declared.iter().zip(THE_EIGHT)
     {
         assert_eq!(type_id, want_type, "{token}'s type id moved");
         assert_eq!(subject_type, want_subject, "{token}'s subject type moved");
         assert!(
-            type_id.ends_with(&format!("{token}.v1")),
-            "{type_id} does not name its own event {token}"
+            type_id.starts_with("gts.cf.core.events.event_type.v1~"),
+            "{type_id} must name an event **type**; `event.v1~` is the record namespace"
         );
     }
 }
 
-/// **All eight publish onto one topic, and it is the one this module names.**
+/// **All eight publish onto one topic, and it is the transcribed one.**
 ///
 /// P-D-27's ordering key is `(tenant, aggregate)`, not
 /// `(tenant, aggregate, entity_kind)`: a topic per entity kind would change
 /// what a consumer subscribes to and nothing about the ordering.
 #[test]
 fn all_eight_share_one_topic() {
+    assert_eq!(
+        TOPIC, TRANSCRIBED_TOPIC,
+        "the topic this gear publishes onto is broker-side state; a silent rename here is a \
+         subscription nobody is serving"
+    );
     for (type_id, _, topic) in declared() {
         assert_eq!(topic, TOPIC, "{type_id} publishes onto a second topic");
     }
@@ -159,6 +180,11 @@ fn all_eight_share_one_topic() {
         ProductCreated::SOURCE,
         SOURCE,
         "the source is the gear's own registered name"
+    );
+    assert_eq!(
+        (PRODUCT_SUBJECT_TYPE, SKU_SUBJECT_TYPE),
+        (TRANSCRIBED_PRODUCT_SUBJECT, TRANSCRIBED_SKU_SUBJECT),
+        "both subject types are broker-side state too, and are frozen here for the same reason"
     );
 }
 
@@ -370,23 +396,24 @@ fn trace_parent_is_a_w3c_traceparent_and_not_the_bare_trace_id() {
     );
 }
 
-/// **The producer path actually publishes, and the broker accepts what this
-/// gear declares.**
+/// **Every one of the eight reaches the broker under the id this gear maps it
+/// to.**
 ///
-/// Everything above judges constants and renderings; this is the only case that
-/// *executes* [`super::bind_producer`], and it is here for the reason the
-/// Postgres tier's own history records: a path no test runs is a path that
-/// compiles and does nothing. It is also the first real check on the three
-/// derived GTS ids — the mock refuses an event type its topic does not carry
-/// and a `subject_type` outside the registration's allow-list, so a derivation
-/// that disagreed with the registration below fails here rather than in
-/// production.
+/// The only case that *executes* [`super::bind_producer`] and the eight-row
+/// token-to-type dispatch in `infra::events`. That dispatch is a hand-written
+/// string switch: `SKU_HEAD_SAVED_PAYLOAD_TYPE => broker::ProductHeadSaved`
+/// compiles, and before this case seven of the eight rows — and **both**
+/// `enqueue_published` rows — were executed by nothing at all. The commit that
+/// introduced them claimed the typed events made the mapping a compile-time
+/// concern; at the seam the doors actually call, it is a runtime string switch,
+/// and this is what measures it.
 ///
-/// What it pins beyond "a row arrived": the `type_id` is the **type** id, the
-/// subject is the entity, and the partition input is the **entity's** tenant,
-/// which is what P-D-47's per-tenant ordering rests on.
+/// It is also the check on the three derived GTS ids that an earlier revision
+/// only appeared to be: the mock's registration is built from
+/// [`THE_EIGHT`]'s **transcribed literals**, not from the constants under test,
+/// so a topic or subject type renamed in `broker.rs` fails here.
 #[tokio::test]
-async fn the_producer_publishes_a_typed_event_the_broker_accepts() {
+async fn every_event_reaches_the_broker_under_its_own_type_id() {
     use std::sync::Arc;
 
     use event_broker_sdk::EventBrokerApi;
@@ -397,21 +424,38 @@ async fn the_producer_publishes_a_typed_event_the_broker_accepts() {
     use crate::infra::broker::{EventSink, bind_producer};
     use crate::infra::events;
 
-    const PREFIX: &str = "bss_products_outbox";
-    const PARTITIONS: u16 = 8;
+    // A guard rather than a trailing `remove_file`: the cleanup has to survive a
+    // panic, and every assertion below is one. `-wal`/`-shm` go with it, which a
+    // single-file removal never took.
+    struct TempDb(std::path::PathBuf);
+    impl Drop for TempDb {
+        fn drop(&mut self) {
+            for suffix in ["", "-wal", "-shm"] {
+                let mut p = self.0.clone().into_os_string();
+                p.push(suffix);
+                std::fs::remove_file(std::path::PathBuf::from(p)).ok();
+            }
+        }
+    }
 
-    // The broker, carrying exactly the topic and event type this gear derives.
+    // The broker, carrying the topic and **all eight** event types — registered
+    // from the transcribed literals, so this is an agreement between two
+    // independent transcriptions rather than the gear agreeing with itself.
     let broker = Arc::new(MockBroker::new());
     let control = broker.handle();
-    control.register_topic(TOPIC, u32::from(PARTITIONS)).await;
     control
-        .register_event_type(
-            TOPIC,
-            ProductCreated::TYPE_ID,
-            serde_json::json!({}),
-            &[PRODUCT_SUBJECT_TYPE],
-        )
+        .register_topic(TRANSCRIBED_TOPIC, u32::from(events::PARTITIONS))
         .await;
+    for (_, type_id, subject_type) in THE_EIGHT {
+        control
+            .register_event_type(
+                TRANSCRIBED_TOPIC,
+                type_id,
+                serde_json::json!({}),
+                &[subject_type],
+            )
+            .await;
+    }
 
     let hub = toolkit::client_hub::ClientHub::new();
     hub.register::<dyn EventBrokerApi>(broker);
@@ -419,8 +463,10 @@ async fn the_producer_publishes_a_typed_event_the_broker_accepts() {
     // A database with the outbox facility's tables and the producer's own
     // registration tables — the two `Gear::init` appends, and nothing else:
     // this path never touches a Foundation table.
-    let path = std::env::temp_dir().join(format!("bss-products-broker-{}.sqlite3", Uuid::new_v4()));
-    let dsn = format!("sqlite://{}?mode=rwc", path.display());
+    let temp = TempDb(
+        std::env::temp_dir().join(format!("bss-products-broker-{}.sqlite3", Uuid::new_v4())),
+    );
+    let dsn = format!("sqlite://{}?mode=rwc", temp.0.display());
     let db = connect_db(
         &dsn,
         ConnectOpts {
@@ -433,7 +479,8 @@ async fn the_producer_publishes_a_typed_event_the_broker_accepts() {
     .expect("connect the file-backed sqlite mirror");
     toolkit_db::migration_runner::run_migrations_for_testing(
         &db,
-        toolkit_db::outbox::outbox_migrations_with_prefix(PREFIX).expect("a fixed identifier"),
+        toolkit_db::outbox::outbox_migrations_with_prefix(events::OUTBOX_TABLE_PREFIX)
+            .expect("a fixed identifier"),
     )
     .await
     .expect("run the outbox facility's migrator");
@@ -444,36 +491,49 @@ async fn the_producer_publishes_a_typed_event_the_broker_accepts() {
     .await
     .expect("run the producer registration migrator");
 
-    let bound = bind_producer(&hub, db.clone(), PREFIX, Partitions::of(PARTITIONS))
-        .await
-        .expect("the producer must bind against a broker that carries our ids")
-        .expect("a ClientHub carrying an EventBrokerApi must not answer None");
-    let (sink, _handle) = bound;
+    let (sink, _handle) = bind_producer(
+        &hub,
+        db.clone(),
+        events::OUTBOX_TABLE_PREFIX,
+        Partitions::of(events::PARTITIONS),
+    )
+    .await
+    .expect("the producer must bind against a broker that carries all eight ids")
+    .expect("a ClientHub carrying an EventBrokerApi must not answer None");
     assert!(
         matches!(sink, EventSink::Broker(_)),
         "a reachable broker must select the SDK producer, never the interim queue"
     );
 
-    let entity_id = Uuid::now_v7();
-    let core = events::EventBodyCore {
-        tenant_id: TENANT,
-        entity_kind: "product",
-        entity_id,
-        internal_revision: 1,
-        lifecycle_state: "draft",
-    };
     let provider = toolkit_db::DBProvider::<toolkit_db::DbError>::new(db);
     let conn = provider.conn().expect("checkout a connection");
-    events::enqueue(
-        &sink,
-        &conn,
-        entity_id,
-        events::PRODUCT_CREATED_PAYLOAD_TYPE,
-        &core,
-        ACTOR,
-    )
-    .await
-    .expect("the producer must accept a registered payload type");
+
+    let mut expected: Vec<(Uuid, &str)> = Vec::new();
+    for (token, type_id, _) in THE_EIGHT {
+        let entity_id = Uuid::now_v7();
+        let kind = if token.starts_with("Sku") {
+            "sku"
+        } else {
+            "product"
+        };
+        let core = events::EventBodyCore {
+            tenant_id: TENANT,
+            entity_kind: kind,
+            entity_id,
+            internal_revision: 1,
+            lifecycle_state: "draft",
+        };
+        if token.ends_with("Published") {
+            events::enqueue_published(&sink, &conn, entity_id, token, &core, 7, ACTOR)
+                .await
+                .unwrap_or_else(|e| panic!("{token} must enqueue through enqueue_published: {e}"));
+        } else {
+            events::enqueue(&sink, &conn, entity_id, token, &core, ACTOR)
+                .await
+                .unwrap_or_else(|e| panic!("{token} must enqueue through enqueue: {e}"));
+        }
+        expected.push((entity_id, type_id));
+    }
 
     // The leased processor delivers asynchronously, so the read-back polls
     // rather than assuming. A bounded wait, and a failure here is "nothing was
@@ -481,14 +541,11 @@ async fn the_producer_publishes_a_typed_event_the_broker_accepts() {
     // magnitude above the in-process mock's cost.
     let mut delivered = Vec::new();
     for _ in 0..200_u32 {
-        for partition in 0..u32::from(PARTITIONS) {
-            let stored = control.stored(TOPIC, partition).await;
-            if !stored.is_empty() {
-                delivered = stored;
-                break;
-            }
+        delivered.clear();
+        for partition in 0..u32::from(events::PARTITIONS) {
+            delivered.extend(control.stored(TRANSCRIBED_TOPIC, partition).await);
         }
-        if !delivered.is_empty() {
+        if delivered.len() >= THE_EIGHT.len() {
             break;
         }
         tokio::time::sleep(std::time::Duration::from_millis(25)).await;
@@ -496,47 +553,52 @@ async fn the_producer_publishes_a_typed_event_the_broker_accepts() {
 
     assert_eq!(
         delivered.len(),
-        1,
-        "exactly one event must have reached the broker"
-    );
-    let event = &delivered[0].event;
-    assert_eq!(
-        event.type_id,
-        ProductCreated::TYPE_ID,
-        "the broker must have accepted the event **type** id this gear declares"
-    );
-    assert_eq!(event.topic, TOPIC);
-    assert_eq!(event.source, SOURCE);
-    assert_eq!(
-        event.subject,
-        entity_id.to_string(),
-        "the subject is the entity the event is about"
-    );
-    assert_eq!(
-        event.subject_type, PRODUCT_SUBJECT_TYPE,
-        "and it passed the registration's own allowed_subject_types check"
-    );
-    assert_eq!(
-        event.tenant_id, TENANT,
-        "the partition input is the entity's tenant, not the producer's service identity"
-    );
-    assert!(
-        event.partition_key.is_none(),
-        "P-D-47: the gear sets no partition_key, so ADR-0002's default applies"
+        THE_EIGHT.len(),
+        "all eight must have reached the broker; a token mapped to the wrong type would be \\
+         refused at ingest and never arrive"
     );
 
-    let data = event.data.as_ref().expect("the payload rides the event");
-    assert_eq!(data["entityKind"], "product");
-    assert_eq!(data["internalRevision"], 1);
-    assert_eq!(
-        data["actorRef"],
-        ACTOR.to_string(),
-        "P-D-01's actor obligation stays in the payload, the broker Event having no field for one"
-    );
-    assert!(
-        data.get("eventId").is_none() && data.get("schemaRef").is_none(),
-        "the id is the SDK's and the schema reference is the type id; neither is in the payload"
-    );
-
-    std::fs::remove_file(&path).ok();
+    // Each event is found by the entity id its enqueue minted, so a dispatch
+    // row wired to the wrong type shows up as a type-id mismatch on **that**
+    // token rather than as a count that happens to add up.
+    for (entity_id, want_type_id) in expected {
+        let subject = entity_id.to_string();
+        let got = delivered
+            .iter()
+            .map(|stored| &stored.event)
+            .find(|event| event.subject == subject)
+            .unwrap_or_else(|| panic!("no event arrived for subject {subject}"));
+        assert_eq!(
+            got.type_id, want_type_id,
+            "the token that minted subject {subject} was dispatched to the wrong typed event"
+        );
+        assert_eq!(got.topic, TRANSCRIBED_TOPIC);
+        assert_eq!(got.source, SOURCE);
+        assert_eq!(
+            got.tenant_id, TENANT,
+            "the partition input is the entity's tenant, not the producer's service identity"
+        );
+        assert!(
+            got.partition_key.is_none(),
+            "P-D-47: the gear sets no partition_key, so ADR-0002's default applies"
+        );
+        let data = got.data.as_ref().expect("the payload rides the event");
+        assert_eq!(
+            data["actorRef"],
+            ACTOR.to_string(),
+            "P-D-01's actor obligation stays in the payload, the broker Event having no field \\
+             for one"
+        );
+        assert!(
+            data.get("eventId").is_none() && data.get("schemaRef").is_none(),
+            "the id is the SDK's and the schema reference is the type id; neither is in the \\
+             payload"
+        );
+        let is_publish = want_type_id.contains("_published.");
+        assert_eq!(
+            data.get("publishedVersion").is_some(),
+            is_publish,
+            "only the two publish events carry a publishedVersion ({want_type_id})"
+        );
+    }
 }

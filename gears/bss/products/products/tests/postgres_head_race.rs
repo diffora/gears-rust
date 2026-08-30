@@ -21,14 +21,28 @@
 //!
 //! `dod-concurrency` names six **resources**, not twelve, so a narrow reading
 //! under which the Product half discharges each was available. It is declined
-//! here, and the reason is a measurement rather than a preference: the two
-//! doors are **not** twins at the statement under test.
-//! `products_sku`'s head-row trigger carries a tenth `IF` block —
-//! `composition_pending` is admitted only in the same statement as a
-//! `published_version` bump — for which `products_product` has no twin at all,
-//! and [`repo::publish_sku_head`] writes that column *inside* the very
-//! `UPDATE` whose filter the contended re-evaluation re-runs. Under the narrow
-//! reading no probe in this suite ever contends that clause.
+//! here, and the ground it is declined on is **not** the one first recorded.
+//!
+//! **The retracted argument, kept because it was load-bearing and wrong.** The
+//! first version of this paragraph said `products_sku`'s tenth trigger clause —
+//! `composition_pending`, admitted only alongside a `published_version` bump,
+//! for which `products_product` has no twin — is contended by the publish case
+//! below, and that no probe would reach it under the narrow reading. The second
+//! half is true. The first is not, and could not be: the trigger is
+//! `BEFORE UPDATE … FOR EACH ROW`, every head write filters on
+//! `internal_revision`, and the *loser* of a contended pair therefore matches
+//! zero rows and fires no row-level trigger at all. The publisher below is the
+//! **winner** — it writes uncontended, before any second backend exists — so
+//! its trigger evaluation is byte-for-byte an uncontended publish's. **The
+//! tenth clause cannot be contended by two writers on this schema**, by either
+//! reading, and `postgres_head_guards` is where it is judged.
+//!
+//! **The argument that survives** is plainer and is enough: `save_sku_head` and
+//! `publish_sku_head` are separate functions over a separate table with their
+//! own filters, and this gear's Product and SKU doors have already drifted
+//! apart six times. A probe that runs on one twin measures one twin. That is a
+//! twin-drift argument, not a coverage-of-a-unique-clause argument, and it is
+//! what these two cases actually deliver.
 //!
 //! The strongest argument the other way, recorded rather than argued down:
 //! `dod-concurrency` spells out *"the reservation index **on both code
@@ -43,7 +57,7 @@
 //!
 //! # The duplication here is measured and accepted, not overlooked
 //!
-//! Four cases, 96 to 108 lines each, and the save pair is **0.88** similar line
+//! Four cases, 98 to 110 lines each, and the save pair is **0.88** similar line
 //! for line. Adding the `SKU` half doubled a choreography this file already
 //! carried twice, which is the very shape review wave D went and removed from
 //! the door suites — so the asymmetry is deliberate and the reason is recorded
@@ -366,7 +380,18 @@ async fn two_saves_presenting_one_if_match_serialize_and_the_loser_is_refused() 
         })
     };
 
-    written.notified().await;
+    // Budgeted like every other wait in this file, and for a reason the others
+    // do not have: `notify_one` fires *inside* the winner's closure, after its
+    // repository call succeeds. A winner whose write is refused — a tightened
+    // trigger, a seeding regression, a foreign key — short-circuits before the
+    // notify, and an unbudgeted wait here hangs the run with no failing test
+    // name instead of reporting the refusal.
+    tokio::time::timeout(RACE_TIMEOUT, written.notified())
+        .await
+        .expect(
+            "the winner must reach its parking point; not reaching it means its own write \
+                 was refused, which is a defect and not a slow machine",
+        );
 
     let loser = {
         let db = pg.db().await;
@@ -480,7 +505,18 @@ async fn a_publish_and_an_edit_presenting_one_if_match_serialize_and_the_edit_is
         })
     };
 
-    written.notified().await;
+    // Budgeted like every other wait in this file, and for a reason the others
+    // do not have: `notify_one` fires *inside* the winner's closure, after its
+    // repository call succeeds. A winner whose write is refused — a tightened
+    // trigger, a seeding regression, a foreign key — short-circuits before the
+    // notify, and an unbudgeted wait here hangs the run with no failing test
+    // name instead of reporting the refusal.
+    tokio::time::timeout(RACE_TIMEOUT, written.notified())
+        .await
+        .expect(
+            "the winner must reach its parking point; not reaching it means its own write \
+                 was refused, which is a defect and not a slow machine",
+        );
 
     let editor = {
         let db = pg.db().await;
@@ -587,7 +623,18 @@ async fn two_sku_saves_presenting_one_if_match_serialize_and_the_loser_is_refuse
         })
     };
 
-    written.notified().await;
+    // Budgeted like every other wait in this file, and for a reason the others
+    // do not have: `notify_one` fires *inside* the winner's closure, after its
+    // repository call succeeds. A winner whose write is refused — a tightened
+    // trigger, a seeding regression, a foreign key — short-circuits before the
+    // notify, and an unbudgeted wait here hangs the run with no failing test
+    // name instead of reporting the refusal.
+    tokio::time::timeout(RACE_TIMEOUT, written.notified())
+        .await
+        .expect(
+            "the winner must reach its parking point; not reaching it means its own write \
+                 was refused, which is a defect and not a slow machine",
+        );
 
     let loser = {
         let db = pg.db().await;
@@ -656,15 +703,17 @@ async fn two_sku_saves_presenting_one_if_match_serialize_and_the_loser_is_refuse
 ///
 /// The twin of
 /// [`a_publish_and_an_edit_presenting_one_if_match_serialize_and_the_edit_is_refused`],
-/// and the case the narrow reading of `dod-concurrency` would have left out
-/// entirely (see this module's doc). The publisher passes
-/// `composition_pending = true`, so the contended `UPDATE` carries the tenth
-/// trigger clause's operand: the flag is admitted **only** in the same
-/// statement as a `published_version` bump, and here that statement is the one
-/// whose filter Postgres re-evaluates after the loser unblocks. A guard that
-/// re-checked the flag against the post-commit row rather than against the
-/// statement's own `published_version` would refuse the publish here and pass
-/// every uncontended probe in the suite.
+/// on the table whose door is a different function.
+///
+/// **What this measures**: an edit cannot land against a revision a *`SKU`*
+/// publish already consumed. The publisher additionally passes
+/// `composition_pending = true`, so the flag's final value is asserted — but
+/// that write is the **winner's**, and a winner is uncontended by construction.
+/// An earlier revision of this doc claimed the contended re-evaluation carried
+/// the tenth trigger clause's operand; it cannot. Postgres re-evaluates the
+/// *blocked* statement's filter, which is the editor's `save_sku_head`, and a
+/// loser matches zero rows so no row-level trigger fires on it at all. See this
+/// module's doc for the retraction and for the argument that does hold.
 #[tokio::test]
 #[ignore = "requires Docker (testcontainers)"]
 async fn a_sku_publish_and_an_edit_presenting_one_if_match_serialize_and_the_edit_is_refused() {
@@ -706,7 +755,18 @@ async fn a_sku_publish_and_an_edit_presenting_one_if_match_serialize_and_the_edi
         })
     };
 
-    written.notified().await;
+    // Budgeted like every other wait in this file, and for a reason the others
+    // do not have: `notify_one` fires *inside* the winner's closure, after its
+    // repository call succeeds. A winner whose write is refused — a tightened
+    // trigger, a seeding regression, a foreign key — short-circuits before the
+    // notify, and an unbudgeted wait here hangs the run with no failing test
+    // name instead of reporting the refusal.
+    tokio::time::timeout(RACE_TIMEOUT, written.notified())
+        .await
+        .expect(
+            "the winner must reach its parking point; not reaching it means its own write \
+                 was refused, which is a defect and not a slow machine",
+        );
 
     let editor = {
         let db = pg.db().await;

@@ -127,8 +127,9 @@ fn every_schema_reference_is_semver_and_names_its_own_event() {
 /// `eventId` is **not** — that is the interim envelope's own handle, and
 /// P-D-47's idempotency key will be the SDK's id (see `EventEnvelope::event_id`);
 /// and P-D-01's ordering key is asserted **nowhere here**, because it is not an
-/// envelope field at all — it is the partition, judged by `events.rs`'s own
-/// inline cases and, for the guarantee a consumer actually gets, owned by the
+/// envelope field at all — it is the partition, judged by the two
+/// `partition_for` cases at the foot of this file and, for the guarantee a
+/// consumer actually gets, owned by the
 /// broker under P-D-47 (§4.4). The `vN`->`vN+1` obligation is slice 12's.
 ///
 /// This is `dod-outbox-eventing`'s envelope clause asserted on the rendering
@@ -350,7 +351,42 @@ fn partition_for_answers_within_the_configured_partition_count() {
     }
 }
 
-/// The same `(tenant_id, aggregate_id)` pair must always land on the
+/// **The formula's output is pinned, not merely its determinism.**
+///
+/// An earlier revision asserted `partition_for(t, a) == partition_for(t, a)` —
+/// a pure function called twice with the same arguments — and called that "the
+/// entire property P-D-22 asks the formula for". It is not: that assertion
+/// cannot fail for any implementation that does not read the clock. Drop the
+/// `.rotate_left(64)`, swap `^` for `+`, or reorder the operands, and it stays
+/// green while **every aggregate in a running deployment moves partition**,
+/// which is the ordering guarantee P-D-22 exists to give and what
+/// [`PARTITIONS`]' own doc calls "silently reassigning aggregates to different
+/// partitions".
+///
+/// So the expected values are a golden vector: transcribed once, from the
+/// formula as it stands at `PARTITIONS = 8`, and never recomputed from the
+/// function. A formula change reddens here, which is the point; if the change
+/// is deliberate the vector is re-transcribed **and** the deployment needs a
+/// migration story, because live aggregates change partition.
+#[test]
+fn partition_for_is_pinned_to_a_golden_vector() {
+    const GOLDEN: &[(u128, u128, u32)] = &[
+        (0x7e42, 0x1111, 2),
+        (0x1, 0x2, 1),
+        (0xdead_beef, 0xcafe_babe, 7),
+    ];
+    assert_eq!(PARTITIONS, 8, "the vector below was taken at N = 8");
+    for (tenant, aggregate, want) in GOLDEN {
+        let got = partition_for(Uuid::from_u128(*tenant), Uuid::from_u128(*aggregate));
+        assert_eq!(
+            got, *want,
+            "partition_for({tenant:#x}, {aggregate:#x}) moved from {want} to {got}; every \
+             aggregate of that tenant would change partition on deploy"
+        );
+    }
+}
+
+/// The same `(tenant_id, aggregate_id)` pair must always land on the/// The same `(tenant_id, aggregate_id)` pair must always land on the
 /// same partition — this is the entire property P-D-22 asks the formula
 /// for: every event of one aggregate keeps its relative order because
 /// they all land in one partition.

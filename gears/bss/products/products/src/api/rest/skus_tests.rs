@@ -1288,7 +1288,7 @@ impl crate::domain::governance::GovernanceGate for RefusingGate {
 fn api_state(harness: &TestHarness) -> ApiState {
     ApiState {
         db: harness.db.clone(),
-        outbox: crate::infra::broker::EventSink::Interim(Arc::clone(&harness.outbox)),
+        sink: crate::infra::broker::EventSink::Interim(Arc::clone(&harness.outbox)),
         idempotency_retention_hours: ProductsConfig::default().idempotency_retention_hours,
     }
 }

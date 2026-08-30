@@ -10,6 +10,25 @@
 //! call and safe by construction: the holding processor answers `Retry` and
 //! never reports a delivery.
 //!
+//! # Nothing registers `EventBrokerApi` yet, so this arm is inert today
+//!
+//! Measured 2026-08-30 over the whole workspace: the **only**
+//! `register::<dyn EventBrokerApi>` anywhere is in this module's own test. The
+//! `event-broker` gear's `init` registers no client, and the platform's
+//! convention is that a provider registers itself in its own `init`
+//! (`authz-resolver`'s does). The runtime's `run_init_phase()` also completes
+//! before `run_proxy_wiring_phase()`, so `#[toolkit::consumes]` proxy wiring
+//! cannot fill this slot either — it fires after every `init` has returned.
+//!
+//! **So every real deployment takes the interim arm today**, and the producer
+//! below is exercised only by `broker_tests`. Two consequences worth stating
+//! rather than discovering: this gear declares no `deps` edge to the broker
+//! gear (it cannot — the dependency is optional), so when a provider does
+//! appear the init order is the topological sort's tie-break rather than a
+//! declared edge; and until then "no broker configured" and "the broker gear
+//! booted after us" are the same observation. `ProductsConfig::require_broker`
+//! exists so an operator can make the second one fatal.
+//!
 //! # Where the three GTS ids come from
 //!
 //! `TypedEvent` demands `TYPE_ID`, `TOPIC` and `SUBJECT_TYPE` as compile-time
@@ -63,6 +82,29 @@
 //! and the correlation id, which rides `trace_parent`. What stays in the
 //! payload is what P-D-01 obliges and the broker's `Event` has no field for: a
 //! causation id and the pseudonymous `actor_ref`.
+//!
+//! # That last part is a third deviation, and it is recorded here
+//!
+//! P-D-01 calls its obligations envelope-agnostic, but two other documents
+//! **place** them, and both put these two on the envelope rather than in the
+//! payload. `design/01-foundation.md` §4.4's **Payloads** bullet reads
+//! *"broker-native envelope (P-D-01) with versioned schema ref,
+//! correlation/causation, idempotency key (the event `id`, P-D-47) and
+//! `actor_ref`; **in the payload** body core (§4.5) …"* — it draws the line
+//! explicitly and leaves `actor_ref` on the envelope side of it. And
+//! `dod-outbox-eventing` reads *"The **envelope** MUST carry correlation and
+//! causation ids, a versioned schema reference, and the acting principal's
+//! `actor_ref`."* The interim [`crate::infra::events::EventEnvelope`] obeys
+//! both; this arm cannot, because the broker's `Event` has no slot for either
+//! value and the SDK owns that struct.
+//!
+//! So **as built, the broker arm does not satisfy the `DoD`'s envelope clause as
+//! written**, and that is a third deviation rather than a reading of P-D-01.
+//! The other two — the `ClientHub` fork and the derived GTS ids — were put to
+//! the owner; this one was not, and it is registered here so the `DoD` is not
+//! ticked against a clause the code cannot meet. Reconciling it means moving
+//! either §4.4's placement or the `DoD`'s wording, the third option — a slot on
+//! the broker's `Event` — not being this gear's to add.
 
 use std::borrow::Cow;
 use std::sync::Arc;
@@ -86,7 +128,7 @@ pub(crate) const PRODUCT_SUBJECT_TYPE: &str =
 /// The subject type for an event about a SKU.
 pub(crate) const SKU_SUBJECT_TYPE: &str = "gts.cf.core.events.subject.v1~cf.bss.products.sku.v1";
 
-/// §4.5's five fields, owned.
+/// §4.5's five body-core fields plus P-D-01's two payload-borne obligations, owned.
 ///
 /// Owned rather than borrowed because [`TypedEvent`] requires
 /// `DeserializeOwned`: a consumer deserializes this, and a `&'static str` has
@@ -167,12 +209,17 @@ macro_rules! catalog_event {
                 Some(self.core.tenant_id)
             }
 
-            /// Deliberately **not** overridden beyond the default `None`
-            /// ([`partition_key`](TypedEvent::partition_key) is inherited).
-            /// P-D-47: *"the gear sets no `partition_key`, so ADR-0002's default
-            /// puts every event of one tenant on one partition in publish
-            /// order"*. Setting one here is the named amendment path, not a
-            /// tuning knob.
+            /// The request's W3C `traceparent`, where there is one
+            /// ([`crate::infra::events::traceparent`]) — P-D-47 maps the
+            /// correlation obligation onto this field.
+            ///
+            /// **`partition_key` is not overridden at all**, and that absence
+            /// is load-bearing: P-D-47 says *"the gear sets no `partition_key`,
+            /// so ADR-0002's default puts every event of one tenant on one
+            /// partition in publish order"*. Setting one is the named amendment
+            /// path, not a tuning knob. The argument used to be written here,
+            /// on `trace_parent`, where rustdoc rendered it as this function
+            /// doing nothing.
             fn trace_parent(&self) -> Option<Cow<'_, str>> {
                 crate::infra::events::traceparent().map(Cow::Owned)
             }
@@ -330,6 +377,30 @@ pub(crate) enum EventSink {
     Interim(Arc<toolkit_db::outbox::Outbox>),
 }
 
+/// Prepare each of the eight event types by name, so a registration missing any
+/// one of them fails the boot rather than a door's transaction.
+///
+/// `DbProducer::prepare_all` resolves the declared *patterns* and errors only on
+/// an empty match, which is a different claim. This asks the eight questions the
+/// gear actually needs answered.
+///
+/// # Errors
+/// `EventBrokerError::SchemaNotPrepared` (or the SDK's own lookup error) naming
+/// the first of the eight the broker does not carry.
+async fn prepare_every_event_type(
+    producer: &event_broker_sdk::DbProducer,
+) -> Result<(), event_broker_sdk::EventBrokerError> {
+    producer.prepare::<ProductCreated>().await?;
+    producer.prepare::<SkuCreated>().await?;
+    producer.prepare::<ProductHeadSaved>().await?;
+    producer.prepare::<SkuHeadSaved>().await?;
+    producer.prepare::<ProductPublished>().await?;
+    producer.prepare::<SkuPublished>().await?;
+    producer.prepare::<ProductDiscarded>().await?;
+    producer.prepare::<SkuDiscarded>().await?;
+    Ok(())
+}
+
 /// Build the SDK producer and bind its queue, or answer `None` when the
 /// platform has no broker to talk to.
 ///
@@ -349,8 +420,17 @@ pub(crate) async fn bind_producer(
     table_prefix: &str,
     partitions: toolkit_db::outbox::Partitions,
 ) -> anyhow::Result<Option<(EventSink, ProducerOutboxHandle)>> {
-    let Ok(broker) = hub.get::<dyn event_broker_sdk::EventBrokerApi>() else {
-        return Ok(None);
+    let broker = match hub.get::<dyn event_broker_sdk::EventBrokerApi>() {
+        Ok(broker) => broker,
+        // The configured-out case, and the only silent one.
+        Err(toolkit::client_hub::ClientHubError::NotFound { .. }) => return Ok(None),
+        // A registration that is there but wrong is an operator's mistake, not a
+        // deployment without a broker. Collapsing the two — which a
+        // `let ... else` does — is the degradation this function's doc forbids.
+        Err(other) => {
+            return Err(anyhow::Error::new(other)
+                .context("bss-products: the ClientHub holds an unusable EventBrokerApi"));
+        }
     };
 
     let producer = event_broker_sdk::DbProducer::builder()
@@ -360,7 +440,16 @@ pub(crate) async fn bind_producer(
         .identity(
             event_broker_sdk::ProducerIdentity::new()
                 .source(SOURCE)
-                .client_agent(concat!("bss-products/", env!("CARGO_PKG_VERSION"))),
+                // **No version here.** `ProducerRegistration::validate_matches`
+                // compares the stored `client_agent` against the supplied one and
+                // returns `InvalidProducerOptions` on any difference — before
+                // `on_missing`/`on_unknown` are consulted, so neither policy is an
+                // escape. A version in this string would make an ordinary
+                // `version = "0.1.0"` in the manifest an unbootable gear against
+                // an existing registration row, recoverable only by hand-editing
+                // the SDK's table. The crate is at `0.0.0` today, so the version
+                // carries no diagnostic value either.
+                .client_agent(SOURCE),
         )
         // **Monotonic, not chained** (P-D-47: "managed monotonic mode"). The
         // toolkit outbox's `seq` is the durable local sequence the chain's
@@ -377,9 +466,27 @@ pub(crate) async fn bind_producer(
         .prepare_all()
         .await?;
 
+    // **`prepare_all` is not "all eight".** Its schema cache errors only when the
+    // declared patterns match **zero** event types
+    // (`producer/schema_cache.rs`: `if selected.is_empty()`), so a broker
+    // carrying one of this gear's eight lets the boot succeed and log
+    // "publishing through the event-broker SDK producer" — and the other seven
+    // then fail at `outbox_envelope`'s `validate_prepared`, inside a door's own
+    // transaction, on a live request. That is the "half-configured broker" case
+    // this module's doc says is loud at bind time; it was not, until here.
+    prepare_every_event_type(&producer).await?;
+
     // The queue name is the table prefix's own, so the producer's queue and
     // this gear's tables are named from one constant.
-    let queue = producer.outbox_queue(table_prefix, partitions)?;
+    // **`QUEUE_NAME`, not the table prefix.** `outbox_queue`'s first argument is
+    // the *queue name*, and passing the prefix here gave the two arms two
+    // different queue names over one table family — so rows an interim boot had
+    // accumulated under `QUEUE_NAME` had no processor once a broker appeared,
+    // and stopped moving. They are not lost (`Dialect::vacuum_cleanup` is scoped
+    // by `partition_id`, which is per queue), but they are stranded, and the
+    // boot is green either way. One name across both arms is what makes an arm
+    // switch survivable.
+    let queue = producer.outbox_queue(crate::infra::events::QUEUE_NAME, partitions)?;
     let handle = queue
         .start(toolkit_db::outbox::Outbox::builder(db).table_prefix(table_prefix)?)
         .await?;
