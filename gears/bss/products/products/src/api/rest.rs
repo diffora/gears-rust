@@ -130,8 +130,6 @@
 //! status and a body and no headers at all.
 //!
 
-use std::sync::Arc;
-
 use axum::Router;
 use axum::extract::Extension;
 use axum::http::{HeaderMap, StatusCode};
@@ -199,7 +197,9 @@ pub(crate) struct ApiState {
     /// writes the entity row (P-D-22). Populated by `gear.rs`'s
     /// `register_rest` from the handle the runtime holds; see this module's
     /// doc, "The outbox wiring, and where it lives".
-    pub(crate) outbox: Arc<toolkit_db::outbox::Outbox>,
+    /// Either the SDK producer's queue (P-D-47) or the interim one, decided
+    /// once at `Gear::init` — see [`crate::infra::broker::EventSink`].
+    pub(crate) outbox: crate::infra::broker::EventSink,
     /// The operator's own `idempotency_retention_hours`
     /// ([`crate::config::ProductsConfig`]), resolved once in `gear.rs`'s `init` from
     /// `ctx.config_or_default()` and carried here for the same reason the

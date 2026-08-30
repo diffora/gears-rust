@@ -109,10 +109,19 @@ pub(crate) struct ProductsRuntime {
     /// pipeline's background tasks (sequencer, processors, vacuum) on drop —
     /// so the handle must outlive the process, not just the field access.
     ///
-    /// Read by [`RestApiCapability::register_rest`], which clones the inner
-    /// `Arc<Outbox>` onto `api::rest::ApiState` so a door can enqueue inside
-    /// its own transaction.
-    pub outbox: toolkit_db::outbox::OutboxHandle,
+    /// Read by [`RestApiCapability::register_rest`], which clones it onto
+    /// `api::rest::ApiState` so a door can enqueue inside its own transaction.
+    pub sink: crate::infra::broker::EventSink,
+
+    /// Whichever handle keeps the running pipeline's background tasks alive.
+    ///
+    /// Held for its `Drop`, never read: dropping either handle drops its
+    /// `TaskSet` and cancels the sequencer, processors and vacuum, so the
+    /// handle must outlive the process rather than the field access. Two
+    /// shapes because the two pipelines are started by different builders —
+    /// the SDK owns its own handle type when it owns the processor.
+    #[allow(dead_code, reason = "held for its Drop; see the type's own note")]
+    pub pipeline: OutboxLifetime,
 
     /// The database provider `api::rest::ApiState` clones into the read
     /// door's per-request state. Kept on the runtime rather than built fresh
@@ -157,6 +166,20 @@ impl Default for BssProductsGear {
     }
 }
 
+/// Whichever running pipeline the gear started, held only so its background
+/// tasks are not cancelled.
+#[allow(
+    dead_code,
+    reason = "each variant is held only for its Drop: dropping the handle cancels the pipeline's \
+              background tasks, so the value must outlive the process rather than be read"
+)]
+pub(crate) enum OutboxLifetime {
+    /// The SDK producer's own handle.
+    Broker(Box<event_broker_sdk::ProducerOutboxHandle>),
+    /// The plain toolkit handle, for the no-broker fallback.
+    Interim(toolkit_db::outbox::OutboxHandle),
+}
+
 impl toolkit::contracts::DatabaseCapability for BssProductsGear {
     fn migrations(&self) -> Vec<Box<dyn sea_orm_migration::MigrationTrait>> {
         use sea_orm_migration::MigratorTrait;
@@ -177,6 +200,15 @@ impl toolkit::contracts::DatabaseCapability for BssProductsGear {
                  well under the facility's length limit",
             );
         migrations.extend(outbox_migrations);
+
+        // The producer's own registration tables, appended for the same reason
+        // and on the same terms: the SDK owns them, this chain does not declare
+        // them, and the README requires them run *before* a `DbProducer` is
+        // constructed. Appended unconditionally rather than only where a broker
+        // is configured — a migration set that varies with runtime wiring gives
+        // two deployments two different schemas, and the cost here is two
+        // tables a no-broker deployment never writes.
+        migrations.extend(event_broker_sdk::producer_registration_migrations());
         migrations
     }
 }
@@ -240,21 +272,59 @@ impl Gear for BssProductsGear {
         // rows accumulate undelivered rather than being discarded. See
         // `crate::infra::events::PendingBrokerProducer` for why it must not
         // answer `Ok`.
-        let outbox = toolkit_db::outbox::Outbox::builder(outbox_db)
-            .table_prefix(OUTBOX_TABLE_PREFIX)
-            .context("bss-products: invalid outbox table prefix")?
-            .queue(
-                crate::infra::events::QUEUE_NAME,
-                toolkit_db::outbox::Partitions::of(crate::infra::events::PARTITIONS),
-            )
-            .leased(crate::infra::events::PendingBrokerProducer)
-            .start()
-            .await
-            .context("bss-products: outbox pipeline failed to start")?;
+        // **P-D-47, with the owner's fallback.** The processor is the broker
+        // SDK's own producer where a broker is reachable, and the holding
+        // processor where none is. Absence of an `EventBrokerApi` in the
+        // `ClientHub` is the whole condition — no config key of this gear's —
+        // so a deployment that never registered the event-broker module boots
+        // exactly as it did before, and one that did gets the producer without
+        // being asked anything.
+        //
+        // A broker that is *present but refuses* is not this fallback's case:
+        // `bind_producer` answers `Err` there, and this `?` fails the boot,
+        // because a half-configured broker is an operator's mistake and must
+        // not degrade quietly into an envelope no consumer reads.
+        let partitions = toolkit_db::outbox::Partitions::of(crate::infra::events::PARTITIONS);
+        let bound = crate::infra::broker::bind_producer(
+            &ctx.client_hub(),
+            outbox_db.clone(),
+            OUTBOX_TABLE_PREFIX,
+            partitions,
+        )
+        .await
+        .context("bss-products: the event-broker producer could not be bound")?;
+
+        let (sink, pipeline) = if let Some((sink, handle)) = bound {
+            {
+                tracing::info!(
+                    queue = OUTBOX_TABLE_PREFIX,
+                    topic = crate::infra::broker::TOPIC,
+                    "bss-products: publishing through the event-broker SDK producer"
+                );
+                (sink, OutboxLifetime::Broker(Box::new(handle)))
+            }
+        } else {
+            {
+                tracing::warn!(
+                    "bss-products: no EventBrokerApi in the ClientHub; events accumulate                      undelivered on the interim queue and no delivery is ever reported"
+                );
+                let handle = toolkit_db::outbox::Outbox::builder(outbox_db)
+                    .table_prefix(OUTBOX_TABLE_PREFIX)
+                    .context("bss-products: invalid outbox table prefix")?
+                    .queue(crate::infra::events::QUEUE_NAME, partitions)
+                    .leased(crate::infra::events::PendingBrokerProducer)
+                    .start()
+                    .await
+                    .context("bss-products: outbox pipeline failed to start")?;
+                let sink = crate::infra::broker::EventSink::Interim(Arc::clone(handle.outbox()));
+                (sink, OutboxLifetime::Interim(handle))
+            }
+        };
 
         self.runtime.store(Some(Arc::new(ProductsRuntime {
             enforcer,
-            outbox,
+            sink,
+            pipeline,
             db: db_provider,
             idempotency_retention_hours,
         })));
@@ -298,7 +368,7 @@ impl RestApiCapability for BssProductsGear {
         // every door added in this and later slices reaches it the same way.
         let api_state = Arc::new(crate::api::rest::ApiState {
             db: rt.db.clone(),
-            outbox: Arc::clone(rt.outbox.outbox()),
+            outbox: rt.sink.clone(),
             idempotency_retention_hours: rt.idempotency_retention_hours,
         });
         Ok(router

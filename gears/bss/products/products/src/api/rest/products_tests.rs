@@ -1638,7 +1638,7 @@ async fn the_stored_answer_is_the_status_and_body_the_door_returned() {
 fn api_state(harness: &TestHarness) -> Arc<ApiState> {
     Arc::new(ApiState {
         db: harness.db.clone(),
-        outbox: Arc::clone(&harness.outbox),
+        outbox: crate::infra::broker::EventSink::Interim(Arc::clone(&harness.outbox)),
         idempotency_retention_hours: ProductsConfig::default().idempotency_retention_hours,
     })
 }
@@ -4728,6 +4728,9 @@ async fn an_unregistered_payload_type_is_refused_and_enqueues_nothing() {
     const UNREGISTERED: &str = "ProductCreatedV2";
 
     let harness = harness().await;
+    // The interim sink, which is what this harness's pipeline runs: the guard
+    // under test is `events`' own, on the path a no-broker deployment takes.
+    let sink = crate::infra::broker::EventSink::Interim(Arc::clone(&harness.outbox));
     // One checkout for both calls: the harness pins `max_conns: 1`, and the
     // row counts below read their own auxiliary connection into the same file
     // rather than this one.
@@ -4745,7 +4748,7 @@ async fn an_unregistered_payload_type_is_refused_and_enqueues_nothing() {
     };
 
     events::enqueue(
-        &harness.outbox,
+        &sink,
         &conn,
         product_id,
         events::PRODUCT_CREATED_PAYLOAD_TYPE,
@@ -4761,7 +4764,7 @@ async fn an_unregistered_payload_type_is_refused_and_enqueues_nothing() {
     );
 
     let refused = events::enqueue(
-        &harness.outbox,
+        &sink,
         &conn,
         product_id,
         UNREGISTERED,

@@ -75,6 +75,8 @@
 use serde::Serialize;
 use toolkit_db::outbox::{Outbox, OutboxError};
 use toolkit_db::secure::DBRunner;
+
+use crate::infra::broker::{self, EventSink};
 use uuid::Uuid;
 
 /// Table-family prefix this door's events are enqueued under.
@@ -374,6 +376,29 @@ pub(crate) enum EventsError {
     /// instead of on a consumer.
     #[error("no versioned schema reference registered for payload type {0}")]
     UnregisteredSchema(String),
+    /// A `*Published` token reached [`enqueue`], whose body has no
+    /// `publishedVersion` to carry.
+    ///
+    /// The two entry points exist precisely so a publish cannot be announced
+    /// without the version it published at (see [`enqueue_published`]'s own
+    /// doc). Until this variant the wrong entry point emitted a body §4.5 calls
+    /// incomplete and nothing noticed; the SDK's typed events made the
+    /// distinction a compile-time one on the broker path, and this makes it a
+    /// runtime one on both.
+    #[error("{0} carries a publishedVersion and must be enqueued through enqueue_published")]
+    PublishNeedsVersion(String),
+    /// A core-only token reached [`enqueue_published`], which would attach a
+    /// `publishedVersion` §4.5 does not put on it.
+    #[error("{0} carries no publishedVersion and must be enqueued through enqueue")]
+    NotAPublishEvent(String),
+    /// The broker SDK refused the enqueue.
+    ///
+    /// Reached only on [`crate::infra::broker::EventSink::Broker`]. The door
+    /// maps it exactly as it maps [`Self::Outbox`]: the act's transaction
+    /// rolls back, because an entity row whose announcement was refused is the
+    /// split `dod-create-doors` exists to prevent.
+    #[error("the broker producer refused the enqueue: {0}")]
+    Broker(#[from] event_broker_sdk::EventBrokerError),
 }
 
 /// The envelope every enqueued event is wrapped in.
@@ -525,6 +550,35 @@ pub(crate) fn correlation_id() -> Option<String> {
     (trace_id != opentelemetry::trace::TraceId::INVALID).then(|| trace_id.to_string())
 }
 
+/// The full W3C `traceparent` of the request in scope, where there is one.
+///
+/// [`correlation_id`]'s sibling, and **not** interchangeable with it. That one
+/// answers the bare 32-hex trace id, which is the value the interim envelope
+/// calls `correlationId` and which stays grep-equal to the access log. This one
+/// answers the header form — `00-<trace-id>-<span-id>-<flags>` — because that
+/// is what the broker's `Event.trace_parent` field is named for, and putting a
+/// bare trace id in a field called `trace_parent` would be a claim about the
+/// value that is not true of it.
+///
+/// `None` under exactly the conditions [`correlation_id`] answers `None`; see
+/// that function's doc for the three host preconditions.
+#[must_use]
+pub(crate) fn traceparent() -> Option<String> {
+    use tracing_opentelemetry::OpenTelemetrySpanExt as _;
+
+    let context = tracing::Span::current().context();
+    let span = opentelemetry::trace::TraceContextExt::span(&context);
+    let span_context = span.span_context();
+    (span_context.trace_id() != opentelemetry::trace::TraceId::INVALID).then(|| {
+        format!(
+            "00-{}-{}-{:02x}",
+            span_context.trace_id(),
+            span_context.span_id(),
+            span_context.trace_flags().to_u8()
+        )
+    })
+}
+
 /// P-D-22's partition formula, the one place it is computed.
 ///
 /// `N` is fixed at [`PARTITIONS`]; a door never passes its own count, which
@@ -555,23 +609,71 @@ pub(crate) fn partition_for(tenant_id: Uuid, aggregate_id: Uuid) -> u32 {
 /// [`EventsError::Outbox`] on a queue/partition/storage failure from
 /// [`Outbox::enqueue`].
 pub(crate) async fn enqueue(
-    outbox: &Outbox,
+    sink: &EventSink,
     runner: &(impl DBRunner + Sync),
     aggregate_id: Uuid,
     payload_type: &str,
     core: &EventBodyCore,
     actor_ref: Uuid,
 ) -> Result<(), EventsError> {
-    enqueue_body(
-        outbox,
-        runner,
-        core.tenant_id,
-        aggregate_id,
+    if matches!(
         payload_type,
-        core,
-        actor_ref,
-    )
-    .await
+        PRODUCT_PUBLISHED_PAYLOAD_TYPE | SKU_PUBLISHED_PAYLOAD_TYPE
+    ) {
+        return Err(EventsError::PublishNeedsVersion(payload_type.to_owned()));
+    }
+    match sink {
+        EventSink::Interim(outbox) => {
+            enqueue_body(
+                outbox,
+                runner,
+                core.tenant_id,
+                aggregate_id,
+                payload_type,
+                core,
+                actor_ref,
+            )
+            .await
+        }
+        EventSink::Broker(producer) => {
+            let body = broker::CatalogEventCore::from_core(core, actor_ref);
+            match payload_type {
+                PRODUCT_CREATED_PAYLOAD_TYPE => {
+                    producer
+                        .enqueue(runner, broker::ProductCreated { core: body })
+                        .await
+                }
+                SKU_CREATED_PAYLOAD_TYPE => {
+                    producer
+                        .enqueue(runner, broker::SkuCreated { core: body })
+                        .await
+                }
+                PRODUCT_HEAD_SAVED_PAYLOAD_TYPE => {
+                    producer
+                        .enqueue(runner, broker::ProductHeadSaved { core: body })
+                        .await
+                }
+                SKU_HEAD_SAVED_PAYLOAD_TYPE => {
+                    producer
+                        .enqueue(runner, broker::SkuHeadSaved { core: body })
+                        .await
+                }
+                PRODUCT_DISCARDED_PAYLOAD_TYPE => {
+                    producer
+                        .enqueue(runner, broker::ProductDiscarded { core: body })
+                        .await
+                }
+                SKU_DISCARDED_PAYLOAD_TYPE => {
+                    producer
+                        .enqueue(runner, broker::SkuDiscarded { core: body })
+                        .await
+                }
+                other => return Err(EventsError::UnregisteredSchema(other.to_owned())),
+            }
+            .map(|_| ())
+            .map_err(EventsError::Broker)
+        }
+    }
 }
 
 /// [`enqueue`] for the two `*Published` events, whose body is the core
@@ -590,7 +692,7 @@ pub(crate) async fn enqueue(
 /// [`EventsError::Serialize`] and [`EventsError::Outbox`], exactly as
 /// [`enqueue`] raises them.
 pub(crate) async fn enqueue_published(
-    outbox: &Outbox,
+    sink: &EventSink,
     runner: &(impl DBRunner + Sync),
     aggregate_id: Uuid,
     payload_type: &str,
@@ -598,20 +700,60 @@ pub(crate) async fn enqueue_published(
     published_version: i64,
     actor_ref: Uuid,
 ) -> Result<(), EventsError> {
-    let body = PublishedEventBody {
-        core,
-        published_version,
-    };
-    enqueue_body(
-        outbox,
-        runner,
-        core.tenant_id,
-        aggregate_id,
-        payload_type,
-        &body,
-        actor_ref,
-    )
-    .await
+    match sink {
+        EventSink::Interim(outbox) => {
+            if !matches!(
+                payload_type,
+                PRODUCT_PUBLISHED_PAYLOAD_TYPE | SKU_PUBLISHED_PAYLOAD_TYPE
+            ) {
+                return Err(EventsError::NotAPublishEvent(payload_type.to_owned()));
+            }
+            let body = PublishedEventBody {
+                core,
+                published_version,
+            };
+            enqueue_body(
+                outbox,
+                runner,
+                core.tenant_id,
+                aggregate_id,
+                payload_type,
+                &body,
+                actor_ref,
+            )
+            .await
+        }
+        EventSink::Broker(producer) => {
+            let body = broker::CatalogEventCore::from_core(core, actor_ref);
+            match payload_type {
+                PRODUCT_PUBLISHED_PAYLOAD_TYPE => {
+                    producer
+                        .enqueue(
+                            runner,
+                            broker::ProductPublished {
+                                core: body,
+                                published_version,
+                            },
+                        )
+                        .await
+                }
+                SKU_PUBLISHED_PAYLOAD_TYPE => {
+                    producer
+                        .enqueue(
+                            runner,
+                            broker::SkuPublished {
+                                core: body,
+                                published_version,
+                            },
+                        )
+                        .await
+                }
+                other => return Err(EventsError::NotAPublishEvent(other.to_owned())),
+            }
+            .map(|_| ())
+            .map_err(EventsError::Broker)
+        }
+    }
 }
 
 /// The one place a body is wrapped, rendered, partitioned and handed to the

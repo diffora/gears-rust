@@ -843,7 +843,7 @@ async fn insert_sku_with_event(
     claim: Option<IdempotencyClaimInput>,
     actor_ref: Uuid,
 ) -> Result<CreateOutcome, DbError> {
-    let outbox = Arc::clone(&state.outbox);
+    let outbox = state.outbox.clone();
     let tenant_id = new.tenant_id;
     state
         .db
@@ -859,7 +859,7 @@ async fn insert_sku_with_event(
                 // envelope's `event_id` is not: it is minted per enqueue, so
                 // a retried attempt writes a different one. Harmless here —
                 // the rolled-back attempt's id was never committed.
-                let outbox = Arc::clone(&outbox);
+                let outbox = outbox.clone();
                 let scope = scope.clone();
                 let new = new.clone();
                 let claim = claim.clone();
@@ -2380,7 +2380,7 @@ fn fire_invalidation_hook(
 /// answer write.
 async fn announce_and_answer(
     runner: &(impl toolkit_db::secure::DBRunner + Sync),
-    outbox: &toolkit_db::outbox::Outbox,
+    outbox: &crate::infra::broker::EventSink,
     inputs: &HeadActInputs,
     image: &SkuRecord,
     announcement: (&'static str, Option<i64>),
@@ -2725,7 +2725,7 @@ async fn run_publish(
     inputs: &HeadActInputs,
     gate: &(dyn GovernanceGate + Send + Sync),
     mode: GateMode,
-    outbox: &toolkit_db::outbox::Outbox,
+    outbox: &crate::infra::broker::EventSink,
 ) -> Result<MutationOutcome, HeadActError> {
     // -- Phase 1, idempotency: the claim, and the replay that ends the act
     // before any other phase is judged. --
@@ -2938,7 +2938,7 @@ async fn run_discard(
     runner: &(impl toolkit_db::secure::DBRunner + Sync),
     inputs: &HeadActInputs,
     gate: &(dyn GovernanceGate + Send + Sync),
-    outbox: &toolkit_db::outbox::Outbox,
+    outbox: &crate::infra::broker::EventSink,
 ) -> Result<MutationOutcome, HeadActError> {
     if let Some(replay) = claim_for_head_act(runner, inputs).await? {
         return Ok(replay);
@@ -3076,7 +3076,7 @@ async fn publish_in_one_transaction(
     gate: &Arc<dyn GovernanceGate + Send + Sync>,
     mode: GateMode,
 ) -> Result<MutationOutcome, HeadActError> {
-    let outbox = Arc::clone(&state.outbox);
+    let outbox = state.outbox.clone();
     let gate = Arc::clone(gate);
     let inputs = inputs.clone();
     state
@@ -3088,7 +3088,7 @@ async fn publish_in_one_transaction(
             move |tx| {
                 // `FnMut`: every attempt takes its own copies, so a retried
                 // attempt never finds an input the previous one consumed.
-                let outbox = Arc::clone(&outbox);
+                let outbox = outbox.clone();
                 let gate = Arc::clone(&gate);
                 let inputs = inputs.clone();
                 Box::pin(
@@ -3113,7 +3113,7 @@ async fn discard_in_one_transaction(
     inputs: &HeadActInputs,
     gate: &Arc<dyn GovernanceGate + Send + Sync>,
 ) -> Result<MutationOutcome, HeadActError> {
-    let outbox = Arc::clone(&state.outbox);
+    let outbox = state.outbox.clone();
     let gate = Arc::clone(gate);
     let inputs = inputs.clone();
     state
@@ -3123,7 +3123,7 @@ async fn discard_in_one_transaction(
             TxConfig::default(),
             head_act_contention_db_err,
             move |tx| {
-                let outbox = Arc::clone(&outbox);
+                let outbox = outbox.clone();
                 let gate = Arc::clone(&gate);
                 let inputs = inputs.clone();
                 Box::pin(async move { run_discard(tx, &inputs, gate.as_ref(), &outbox).await })
@@ -4092,7 +4092,7 @@ async fn run_save(
     inputs: &HeadActInputs,
     request: &SaveSkuRequest,
     gate: &(dyn GovernanceGate + Send + Sync),
-    outbox: &toolkit_db::outbox::Outbox,
+    outbox: &crate::infra::broker::EventSink,
 ) -> Result<MutationOutcome, HeadActError> {
     // -- Phase 1, idempotency: the claim, and the replay that ends the act
     // before any other phase is judged. --
@@ -4215,7 +4215,7 @@ async fn save_in_one_transaction(
     request: SaveSkuRequest,
     gate: &Arc<dyn GovernanceGate + Send + Sync>,
 ) -> Result<MutationOutcome, HeadActError> {
-    let outbox = Arc::clone(&state.outbox);
+    let outbox = state.outbox.clone();
     let gate = Arc::clone(gate);
     let inputs = inputs.clone();
     state
@@ -4225,7 +4225,7 @@ async fn save_in_one_transaction(
             TxConfig::default(),
             head_act_contention_db_err,
             move |tx| {
-                let outbox = Arc::clone(&outbox);
+                let outbox = outbox.clone();
                 let gate = Arc::clone(&gate);
                 let inputs = inputs.clone();
                 let request = request.clone();

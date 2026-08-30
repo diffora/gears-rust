@@ -357,6 +357,7 @@ cluster-sdk = { package = "cf-gears-cluster-sdk", version = "0.2.1", path = "gea
 types-registry-sdk = { package = "cf-gears-types-registry-sdk", version = "0.3.6", path = "gears/system/types-registry/types-registry-sdk" }
 tenant-resolver-sdk = { package = "cf-gears-tenant-resolver-sdk", version = "0.3.21", path = "gears/system/tenant-resolver/tenant-resolver-sdk" }
 authz-resolver-sdk = { package = "cf-gears-authz-resolver-sdk", version = "0.3.21", path = "gears/system/authz-resolver/authz-resolver-sdk" }
+event-broker-sdk = { package = "cf-gears-event-broker-sdk", version = "0.2.0", path = "gears/system/event-broker/event-broker-sdk" }
 resource-group-sdk = { package = "cf-gears-resource-group-sdk", version = "0.2.7", path = "gears/system/resource-group/resource-group-sdk" }
 oagw-sdk = { package = "cf-gears-oagw-sdk", version = "0.5.9", path = "gears/system/oagw/oagw-sdk" }
 usage-collector-sdk = { package = "cf-gears-usage-collector-sdk", version = "0.3.7", path = "gears/system/usage-collector/usage-collector-sdk" }

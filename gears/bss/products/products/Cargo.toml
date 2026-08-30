@@ -96,6 +96,13 @@ toolkit-security = { workspace = true }
 toolkit-gts = { workspace = true }
 # `gts_instance!`'s expansion references the `gts` crate directly.
 gts = { workspace = true }
+# P-D-47: the toolkit outbox's processor is the broker SDK's own producer, not a
+# handler of this gear's. `outbox` gates `ProducerOutboxQueue`/`ProducerOutbox`
+# and pulls `db` with it; `EventBrokerApi` and `TypedEvent` are unconditional.
+# The gear does not *require* a broker — `Gear::init` falls back to the holding
+# processor when `ClientHub` has none — so this is a plain dependency rather
+# than a `deps = [...]` entry on the gear macro.
+event-broker-sdk = { workspace = true, features = ["outbox"] }
 # `crate::authz::authz_label_type_schemas` returns the stub type-schemas as
 # `serde_json::Value`, matching the sibling pricing gear's equivalent — needed
 # as a normal (not dev-only) dependency because that function is production
@@ -121,6 +128,10 @@ tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync"] }
 # writers genuinely in flight at once — `sqlite::memory:` is private to its
 # connection, so a second writer queues on the pool instead of contending.
 testcontainers-modules = { workspace = true }
+# `MockBroker` (an in-process `EventBrokerApi`) so the producer path is exercised
+# without a running event-broker. Feature-gated in the SDK as `test-util`, which
+# is why it is named again here rather than inherited from the entry above.
+event-broker-sdk = { workspace = true, features = ["outbox", "test-util"] }
 # The positive control on `infra::events::correlation_id`. The function reads
 # a layer it does not install, so without these two the only thing the suite
 # could observe is its `None` branch — which is what let the correlation
