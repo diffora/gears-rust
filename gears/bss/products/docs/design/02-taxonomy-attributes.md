@@ -119,7 +119,9 @@ contract slice 08 projects.
 
 ### Manage the taxonomy (create / rename / re-parent / retire / delete)
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-flow-manage-taxonomy`
+Declared by [`../features/taxonomy-attributes.md`](../features/taxonomy-attributes.md) §2 as `cpt-cf-bss-products-flow-manage-taxonomy`.
+The steps below are this slice's and are the normative ones; the FEATURE carries the
+actor, the scenarios and the boundary.
 
 1. [ ] - `p1` - Authorize `category × write`; wrap the request as a `GovernedLiveOp`; **every one of these five taxonomy ops is material** (PRD `fr-materiality-gated-publish` enumerates category create/rename/re-parent/retire/delete), so the op queues through the slice-05 two-person gate before anything mutates - `inst-tx-governed-op`
 2. [ ] - `p1` - On apply, re-validate against the **live** tree (the gate pinned the op, not the world): name uniqueness within the parent on `(tenant_id, parent_id, normalized(name))` — re-checked on rename **and** re-parent; violation fails `DUPLICATE_CATEGORY_NAME` - `inst-tx-name-in-parent`
@@ -129,14 +131,18 @@ contract slice 08 projects.
 
 ### Assign categories to a Product
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-flow-assign-categories`
+Declared by [`../features/taxonomy-attributes.md`](../features/taxonomy-attributes.md) §2 as `cpt-cf-bss-products-flow-assign-categories`.
+The steps below are this slice's and are the normative ones; the FEATURE carries the
+actor, the scenarios and the boundary.
 
 1. [ ] - `p1` - A Product carries **at most one primary + zero or more secondary** categories (the primary becomes required at publish); assignment is ordinary draft content (rides `inst-fd-save-txn`); this slice registers the validators: target category exists, is not retired (`CATEGORY_RETIRED`), duplicates between primary/secondary rejected - `inst-tx-assign`
 2. [ ] - `p1` - At publish, the registered `→ published` validator requires the primary category present (`PRIMARY_CATEGORY_REQUIRED` — its own code, declared by this slice per 01 §3.3's code → declaring-slice rule (**P-D-36**), L8 fix; the PRD's "optional at draft, required at publish") - `inst-tx-primary-at-publish`
 
 ### Manage attribute definitions (governed live entities)
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-flow-attribute-definitions`
+Declared by [`../features/taxonomy-attributes.md`](../features/taxonomy-attributes.md) §2 as `cpt-cf-bss-products-flow-attribute-definitions`.
+The steps below are this slice's and are the normative ones; the FEATURE carries the
+actor, the scenarios and the boundary.
 
 1. [ ] - `p1` - A definition = `(key, value type, localized?, brand/region visibility scope, state)`; create and **material** changes (type change, visibility narrowing, deprecation) ride `GovernedLiveOp` through the slice-05 gate under grant **`attribute_definition × write`** (05's catalog); display-label edits are non-material ops, whose effective count is `min(N, 1)` per the §17.1 interim materiality default - `inst-ad-governed`
 2. [ ] - `p1` - Changes **MUST** be backward-compatible: a type change on a definition with live values is refused (`DEFINITION_IN_USE`) — the path is deprecate-then-remove: `deprecated` blocks new values, removal is never admitted for a seeded definition (§4.2), and otherwise is admitted once no **non-terminal head** (`draft`/`published`/`deprecated` Product or SKU, active category) carries a value — **and a removal is the definition's `removed` state, never a DELETE** (**P-D-47**, the rule 03 §3.1 states for every `RecognizedSet`): the row survives as a tombstone outside the set, so a value on a terminal head keeps resolving and no `products_attribute_value` row is ever orphaned, and `removed → active` (as `deprecated → active`) re-lists the same identity through the same `GovernedLiveOp`, the identity never having changed — frozen versions are **self-contained copies**: they stay renderable after removal, and they neither block it nor are touched by it (operand narrowed — M2 fix; the PRD attribution it carried is struck, §6 — and it is **not** uniform with 03 `inst-rs-removal-operand`, whose operand is non-terminal *published* heads: 03 §6 registers the divergence) - `inst-ad-deprecate-then-remove`
@@ -144,7 +150,9 @@ contract slice 08 projects.
 
 ### Author localized attribute values
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-flow-attribute-values`
+Declared by [`../features/taxonomy-attributes.md`](../features/taxonomy-attributes.md) §2 as `cpt-cf-bss-products-flow-attribute-values`.
+The steps below are this slice's and are the normative ones; the FEATURE carries the
+actor, the scenarios and the boundary.
 
 1. [ ] - `p1` - **Product/SKU** values are entity content (C2): writes ride the entity draft-save door; this slice registers validators — definition exists and is not `deprecated` (`ATTRIBUTE_DEFINITION_UNKNOWN`/`_DEPRECATED`), value matches the declared type (`ATTRIBUTE_TYPE_MISMATCH`), `(locale, region, brand)` coordinates lie within the definition's visibility scope **and** the entity's own scope (`ATTRIBUTE_SCOPE_VIOLATION`) - `inst-av-validate`
 2. [ ] - `p1` - The **content-PII write block** runs here for attribute/description free text: hard prohibition, fail-closed on uncertainty, curated allow-list for legitimate person-named products; the detector policy + allow-list are slice 10's, this door only invokes them (`CONTENT_PII_BLOCKED`) - `inst-av-pii-block`
@@ -155,7 +163,9 @@ contract slice 08 projects.
 
 ### Write the metadata map
 
-- [ ] `p2` - **ID**: `cpt-cf-bss-products-flow-metadata`
+Declared by [`../features/taxonomy-attributes.md`](../features/taxonomy-attributes.md) §2 as `cpt-cf-bss-products-flow-metadata`.
+The steps below are this slice's and are the normative ones; the FEATURE carries the
+actor, the scenarios and the boundary.
 
 *Door: `PATCH /bss-products/v1/{products|skus}/{id}/metadata`, grant **`metadata × write`** (05's
 catalog — named here; the flow had named neither a path nor a pair, so slice 12's
@@ -168,7 +178,9 @@ lint 3 could not see it).*
 
 ### 3.1 The governed-live-entity pattern
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-algo-governed-live`
+Declared by [`../features/taxonomy-attributes.md`](../features/taxonomy-attributes.md) §3 as `cpt-cf-bss-products-algo-governed-live`.
+The steps below are this slice's and are the normative ones; the FEATURE carries the
+actor, the scenarios and the boundary.
 
 1. [ ] - `p1` - A `GovernedLiveOp` pins the **operation** (kind + target + payload + the target's expected current state), not an entity revision; slice 05 approves the envelope; the apply step re-validates the expected state against the live row and fails `STALE_LIVE_OP` if the world moved (the live-entity analogue of the Foundation's pinned-revision publish) - `inst-gl-envelope`
 2. [ ] - `p1` - Apply is atomic: mutation + event in one transaction (P-D-21); there is no partially-applied taxonomy op - `inst-gl-atomic`
@@ -176,7 +188,9 @@ lint 3 could not see it).*
 
 ### 3.2 Taxonomy integrity mechanics
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-algo-taxonomy-integrity`
+Declared by [`../features/taxonomy-attributes.md`](../features/taxonomy-attributes.md) §3 as `cpt-cf-bss-products-algo-taxonomy-integrity`.
+The steps below are this slice's and are the normative ones; the FEATURE carries the
+actor, the scenarios and the boundary.
 
 1. [ ] - `p1` - Acyclicity is validated by `TaxonomyWalk` (ancestor chain of the new parent must not contain the node) executed inside the write transaction; correctness rests on §3.4's single-writer discipline, not on the walk alone — two concurrent re-parents could otherwise each pass and jointly close a cycle - `inst-ti-acyclic`
 2. [ ] - `p1` - Uniqueness-in-parent is also an index (`UNIQUE (tenant_id, parent_id, name_normalized)`, §4.1), so the read-then-write race is decided by the store exactly as the Foundation's `ReservationIndex` decides `skuCode` - `inst-ti-unique-index`
@@ -213,7 +227,9 @@ row and open to correction; the requirement is that every code carries one.*
 
 ### 3.4 Concurrency
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-algo-taxonomy-concurrency`
+Declared by [`../features/taxonomy-attributes.md`](../features/taxonomy-attributes.md) §3 as `cpt-cf-bss-products-algo-taxonomy-concurrency`.
+The steps below are this slice's and are the normative ones; the FEATURE carries the
+actor, the scenarios and the boundary.
 
 1. [ ] - `p1` - Taxonomy mutations serialize **per tenant** behind a taxonomy writer lock (advisory lock on Postgres, the write transaction on SQLite): taxonomy ops are rare and human-paced, and single-writer is what makes `TaxonomyWalk`'s verdict trustworthy - `inst-tc-writer-lock`
 2. [ ] - `p1` - **Product/SKU** attribute-value and metadata writes need no extra machinery: they ride the entity row's `If-Match` (01); the category live-value door carries its own token — `products_category.mutation_seq`, refusing a mismatch `STALE_CATEGORY_TOKEN` (**P-D-50**, `inst-av-category-branch`) - `inst-tc-etag`
