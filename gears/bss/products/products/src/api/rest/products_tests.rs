@@ -2980,7 +2980,29 @@ async fn enqueued_event_body(dsn: &str, payload_type: &str) -> serde_json::Value
     )
     .await
     .expect("the enqueued row carries a payload");
-    serde_json::from_str(&payload).expect("the door enqueues a JSON body")
+    let envelope: serde_json::Value =
+        serde_json::from_str(&payload).expect("the door enqueues a JSON envelope");
+    // The door wraps every body in `events::EventEnvelope`; §4.5's five
+    // fields live under `data`. Unwrapped here rather than at each call site
+    // so a test that asks for "the body" keeps reading the body.
+    envelope["data"].clone()
+}
+
+/// The **envelope** of the newest enqueued row carrying `payload_type` —
+/// [`enqueued_event_body`]'s outer object, for the cases that assert on
+/// P-D-01's four obligations rather than on §4.5's body core.
+async fn enqueued_event_envelope(dsn: &str, payload_type: &str) -> serde_json::Value {
+    let body_table = format!("{}_body", events::OUTBOX_TABLE_PREFIX);
+    let payload = raw_string_opt(
+        dsn,
+        &format!(
+            "SELECT CAST(payload AS TEXT) AS v FROM {body_table} \
+             WHERE payload_type = '{payload_type}' ORDER BY id DESC LIMIT 1"
+        ),
+    )
+    .await
+    .expect("the enqueued row carries a payload");
+    serde_json::from_str(&payload).expect("the door enqueues a JSON envelope")
 }
 
 /// **`ProductPublished` carries `publishedVersion`, and it is the version the
@@ -4979,4 +5001,87 @@ async fn a_save_enqueues_one_product_head_saved_carrying_the_committed_revision_
         json!("published"),
         "the discriminator is read off the head, so a save on a published head says so"
     );
+}
+
+/// **The envelope P-D-01 requires comes out of the door**, not merely out of
+/// the struct that models it.
+///
+/// `events_tests` proves `EventEnvelope` renders the four obligations; that is
+/// a statement about a type. This is the statement about the *door*: a create
+/// that built its body correctly and enqueued it unwrapped would leave that
+/// unit test green and this one red.
+///
+/// **`actorRef` is checked against the identity map, not merely for
+/// presence.** The pseudonymous ref is the one value here a door could
+/// plausibly satisfy by minting a fresh `UUID` — it is a `UUID` either way,
+/// and every "is it there" assertion would pass. So this reads the ref slice
+/// 10's map actually minted for the acting principal and requires the
+/// envelope to carry that one.
+#[tokio::test]
+async fn a_created_events_envelope_carries_the_four_obligations_from_the_door() {
+    let harness = harness().await;
+    let app = app_for(&harness, TENANT);
+
+    let response = post_create_product(
+        app,
+        TENANT,
+        &json!({ "brand_id": BRAND, "name": "Fibre 500" }),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::CREATED);
+
+    let envelope = enqueued_event_envelope(&harness.dsn, "ProductCreated").await;
+
+    assert_eq!(
+        envelope["schemaRef"], "bss-products.ProductCreated.v1.0.0",
+        "the envelope must announce the versioned schema its body is shaped by"
+    );
+    let event_id = envelope["eventId"]
+        .as_str()
+        .expect("P-D-47's idempotency key must be on the envelope");
+    assert!(
+        Uuid::parse_str(event_id).is_ok(),
+        "the event id must be a UUID, not a placeholder: {event_id}"
+    );
+
+    // `hex()`, not `CAST(.. AS TEXT)`: `SQLite` stores a `UUID` as a 16-byte
+    // BLOB, and casting those bytes to text yields invalid UTF-8 rather than
+    // the hyphenated form. Both sides are normalised to bare upper-case hex so
+    // the comparison is about the value and not about either rendering.
+    let minted = raw_string_opt(
+        &harness.dsn,
+        "SELECT hex(actor_ref) AS v FROM products_identity_ref LIMIT 1",
+    )
+    .await
+    .expect("the create resolved an actor ref through the identity map");
+    let carried = envelope["actorRef"]
+        .as_str()
+        .expect("the envelope must carry the acting principal's ref")
+        .replace('-', "")
+        .to_uppercase();
+    assert_eq!(
+        carried, minted,
+        "the envelope must carry the ref the identity map minted, not one of its own"
+    );
+
+    // No causing event: an operator request caused this one. Omitted rather
+    // than echoing the correlation id, which is the distinction the pair
+    // exists to draw.
+    assert!(
+        envelope.get("causationId").is_none(),
+        "an operator-caused event must name no causing event"
+    );
+    // And no correlation id, honestly: this suite installs no `OTel`
+    // subscriber, so there is no ambient trace to read. A door that minted
+    // one per event would show up right here as a value that correlates
+    // nothing.
+    assert!(
+        envelope.get("correlationId").is_none(),
+        "an untraced request must leave the correlation id off the wire"
+    );
+
+    // The body still reads exactly as §4.5 writes it, one level in.
+    assert_eq!(envelope["data"]["entityKind"], "product");
+    assert_eq!(envelope["data"]["internalRevision"], 1);
+    assert_eq!(envelope["data"]["lifecycleState"], "draft");
 }

@@ -833,6 +833,7 @@ async fn insert_sku_with_event(
     scope: AccessScope,
     new: NewSku,
     claim: Option<IdempotencyClaimInput>,
+    actor_ref: Uuid,
 ) -> Result<CreateOutcome, DbError> {
     let outbox = Arc::clone(&state.outbox);
     let tenant_id = new.tenant_id;
@@ -885,6 +886,7 @@ async fn insert_sku_with_event(
                         record.sku_id,
                         events::SKU_CREATED_PAYLOAD_TYPE,
                         &core,
+                        actor_ref,
                     )
                     .await
                     .map_err(|e| DbError::Sea(DbErr::Custom(format!("enqueue SkuCreated: {e}"))))?;
@@ -1346,7 +1348,7 @@ async fn create_sku(
         created_at: now,
     };
 
-    let insert_outcome = insert_sku_with_event(&state, scope.clone(), new, claim).await;
+    let insert_outcome = insert_sku_with_event(&state, scope.clone(), new, claim, actor_ref).await;
 
     match insert_outcome {
         Ok(CreateOutcome::Created {
@@ -2382,10 +2384,28 @@ async fn announce_and_answer(
     };
     match published_version {
         Some(version) => {
-            events::enqueue_published(outbox, runner, inputs.sku_id, payload_type, &core, version)
-                .await
+            events::enqueue_published(
+                outbox,
+                runner,
+                inputs.sku_id,
+                payload_type,
+                &core,
+                version,
+                inputs.actor_ref,
+            )
+            .await
         }
-        None => events::enqueue(outbox, runner, inputs.sku_id, payload_type, &core).await,
+        None => {
+            events::enqueue(
+                outbox,
+                runner,
+                inputs.sku_id,
+                payload_type,
+                &core,
+                inputs.actor_ref,
+            )
+            .await
+        }
     }
     .map_err(|e| {
         HeadActError::Db(DbError::Sea(DbErr::Custom(format!(
@@ -3510,14 +3530,6 @@ async fn discard_sku_gated(
 /// trail by `action = 'save'` is asking one question of both entity kinds.
 const SAVE_AUDIT_ACTION: &str = "save";
 
-/// `SkuHeadSaved`'s `payload_type` token (§4.5's roster of eight).
-///
-/// It belongs beside its siblings in `crate::infra::events`, and is here for
-/// the reason `products::PRODUCT_HEAD_SAVED_PAYLOAD_TYPE` states: that module
-/// is outside this slice's target paths. The two tokens are one decision and
-/// move together.
-const SKU_HEAD_SAVED_PAYLOAD_TYPE: &str = "SkuHeadSaved";
-
 /// The concrete resource path a save claims its idempotency key under
 /// (**P-D-42**), on [`publish_endpoint`]'s terms — the same string [`router`]
 /// registers the `PATCH` at, with `{id}` resolved. A save needs no act suffix
@@ -4171,7 +4183,7 @@ async fn run_save(
         outbox,
         inputs,
         &committed,
-        (SKU_HEAD_SAVED_PAYLOAD_TYPE, None),
+        (events::SKU_HEAD_SAVED_PAYLOAD_TYPE, None),
     )
     .await
 }

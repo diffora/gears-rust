@@ -51,12 +51,14 @@
 //! It does not register a queue, does not run a consumer, and does not
 //! decide **which** running [`toolkit_db::outbox::Outbox`] a door enqueues
 //! against — that instance is [`crate::api::rest::ApiState`]'s to hold and
-//! `crate::gear::BssProductsGear`'s to build and hand to the router. See
-//! `api/rest.rs`'s module doc for the wiring gap this leaves and who owns
-//! closing it: `gear.rs` is outside every target path this slice was allowed
-//! to touch, and the queue this door needs registered (with a consumer
-//! handler — [`OUTBOX_TABLE_PREFIX`]'s sibling constant, [`QUEUE_NAME`], and
-//! [`PARTITIONS`]) lives in its builder chain, not here.
+//! `crate::gear::BssProductsGear`'s to build and hand to the router.
+//! `gear.rs` registers the queue from this module's own
+//! [`OUTBOX_TABLE_PREFIX`], [`QUEUE_NAME`] and [`PARTITIONS`], so the three
+//! have one definition site between them.
+//!
+//! **What is still owed here is delivery, not wiring**: the queue's processor
+//! is [`PendingBrokerProducer`], which holds every message rather than
+//! publishing it. See that type's own doc, and P-D-47.
 
 use serde::Serialize;
 use toolkit_db::outbox::{Outbox, OutboxError};
@@ -65,10 +67,11 @@ use uuid::Uuid;
 
 /// Table-family prefix this door's events are enqueued under.
 ///
-/// MUST equal `crate::gear::OUTBOX_TABLE_PREFIX` (currently a private
-/// constant of that module, duplicated here rather than imported because
-/// `gear.rs` is outside this slice's target paths) — a mismatch would point
-/// this door's `enqueue` at tables the running pipeline never created.
+/// **The one definition.** `crate::gear` imports this constant rather than
+/// declaring its own, so the prefix the pipeline creates its tables under and
+/// the prefix this door enqueues against cannot disagree. The duplication an
+/// earlier revision of this doc warned about was closed when `gear.rs` came
+/// into scope; the warning outlived it and is removed here.
 pub(crate) const OUTBOX_TABLE_PREFIX: &str = "bss_products_outbox";
 
 /// The one queue every Foundation event on this gear's Product/SKU surface
@@ -102,10 +105,25 @@ pub(crate) const PARTITIONS: u16 = 8;
 ///
 /// It deliberately does **not** answer `Ok`. An `Ok` would mark the message
 /// delivered and hand it to the vacuum, so every event this gear enqueues
-/// before Phase 8 would be reclaimed having reached no broker at all — a
-/// silent loss of exactly the events `fr-registry-eventing-audit` requires.
-/// A queue that visibly cannot deliver is recoverable; one that quietly
-/// discards is not.
+/// before the producer lands would be reclaimed having reached no broker at
+/// all — a silent loss of exactly the events `fr-registry-eventing-audit`
+/// requires. A queue that visibly cannot deliver is recoverable; one that
+/// quietly discards is not.
+///
+/// # Two things this handler's absence leaves owed, recorded here
+///
+/// 1. **"Emitted" before durable broker acceptance.** The requirement
+///    (`fr-event-delivery-resilience`, registry-side half) is the *handler's*
+///    contract, not a column to mark, so it cannot be discharged until the
+///    handler exists. Today nothing is reported emitted at all, which is the
+///    safe side of that requirement rather than a breach of it.
+/// 2. **The sub-3-second publication-propagation probe is owed**, and the
+///    01/06 split of that budget is open at the PRD owner. No measurement in
+///    the design set establishes it, and none can be taken here: the elapsed
+///    time from a committed act to a consumer-visible event is dominated by
+///    the broker leg this handler does not yet make. Recorded rather than
+///    estimated — a number produced against a handler that holds every
+///    message would describe this stub, not the system.
 pub(crate) struct PendingBrokerProducer;
 
 #[async_trait::async_trait]
@@ -161,6 +179,83 @@ pub(crate) const SKU_PUBLISHED_PAYLOAD_TYPE: &str = "SkuPublished";
 /// `SkuDiscarded`'s payload type token — [`PRODUCT_DISCARDED_PAYLOAD_TYPE`]'s
 /// SKU sibling, carrying the bare core for the same reason.
 pub(crate) const SKU_DISCARDED_PAYLOAD_TYPE: &str = "SkuDiscarded";
+
+/// `ProductHeadSaved`'s payload type token (§4.5's roster of eight).
+///
+/// It and its SKU twin below spent two phases declared inside the doors that
+/// emit them, each carrying a note saying it belonged here. Both notes gave
+/// the same reason — that this module was outside that slice's target paths
+/// — and that reason expired with the slice. They are here now, so the
+/// roster of eight reads as one list and [`SCHEMA_REFS`] can be checked
+/// against it.
+pub(crate) const PRODUCT_HEAD_SAVED_PAYLOAD_TYPE: &str = "ProductHeadSaved";
+
+/// `SkuHeadSaved`'s payload type token — [`PRODUCT_HEAD_SAVED_PAYLOAD_TYPE`]'s
+/// SKU sibling, carrying the bare core.
+pub(crate) const SKU_HEAD_SAVED_PAYLOAD_TYPE: &str = "SkuHeadSaved";
+
+/// Every payload type this gear emits, paired with the **versioned schema
+/// reference** its envelope carries (P-D-01: *"versioned (semver) schema
+/// references — the broker-native equivalent of `dataschema`"*).
+///
+/// One list rather than a constant beside each token, because the property
+/// that matters is *coverage*: a ninth event, or a renamed token, must not be
+/// able to reach the wire with no schema reference. [`schema_ref_for`] is
+/// total over this array and nothing else, and `events_tests` asserts the
+/// array names exactly the eight of §4.5.
+///
+/// **The version is per event, not per gear.** §4.5's own rule makes an added
+/// optional field a minor bump, so one event's schema may move while the
+/// other seven stand still; a single gear-wide version would force seven
+/// false bumps or hide one real one. All eight read `1.0.0` today because
+/// none has shipped a second shape.
+pub(crate) const SCHEMA_REFS: &[(&str, &str)] = &[
+    (
+        PRODUCT_CREATED_PAYLOAD_TYPE,
+        "bss-products.ProductCreated.v1.0.0",
+    ),
+    (SKU_CREATED_PAYLOAD_TYPE, "bss-products.SkuCreated.v1.0.0"),
+    (
+        PRODUCT_HEAD_SAVED_PAYLOAD_TYPE,
+        "bss-products.ProductHeadSaved.v1.0.0",
+    ),
+    (
+        SKU_HEAD_SAVED_PAYLOAD_TYPE,
+        "bss-products.SkuHeadSaved.v1.0.0",
+    ),
+    (
+        PRODUCT_PUBLISHED_PAYLOAD_TYPE,
+        "bss-products.ProductPublished.v1.0.0",
+    ),
+    (
+        SKU_PUBLISHED_PAYLOAD_TYPE,
+        "bss-products.SkuPublished.v1.0.0",
+    ),
+    (
+        PRODUCT_DISCARDED_PAYLOAD_TYPE,
+        "bss-products.ProductDiscarded.v1.0.0",
+    ),
+    (
+        SKU_DISCARDED_PAYLOAD_TYPE,
+        "bss-products.SkuDiscarded.v1.0.0",
+    ),
+];
+
+/// The versioned schema reference for a payload type, or `None` for a token
+/// [`SCHEMA_REFS`] does not name.
+///
+/// `None` rather than a woven-in default: a default would let an unregistered
+/// event reach a consumer announcing a schema it does not have, which is the
+/// one failure a schema reference exists to prevent. [`enqueue_body`] turns
+/// the `None` into [`EventsError::UnregisteredSchema`] and refuses the write,
+/// so the act rolls back rather than emitting an unidentifiable event.
+#[must_use]
+pub(crate) fn schema_ref_for(payload_type: &str) -> Option<&'static str> {
+    SCHEMA_REFS
+        .iter()
+        .find(|(token, _)| *token == payload_type)
+        .map(|(_, schema_ref)| *schema_ref)
+}
 
 /// Which entity a body core describes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -242,6 +337,113 @@ pub(crate) enum EventsError {
     Serialize(#[from] serde_json::Error),
     #[error("enqueue event: {0}")]
     Outbox(#[from] OutboxError),
+    /// [`schema_ref_for`] did not recognise the payload type, so the event
+    /// has no versioned schema reference to announce.
+    ///
+    /// Refused rather than defaulted: see [`schema_ref_for`]'s own doc. It is
+    /// unreachable while every caller passes one of [`SCHEMA_REFS`]' eight
+    /// tokens, and `events_tests` holds that roster equal to §4.5's — but a
+    /// ninth event added without an entry lands here, at its first enqueue,
+    /// instead of on a consumer.
+    #[error("no versioned schema reference registered for payload type {0}")]
+    UnregisteredSchema(String),
+}
+
+/// The envelope every enqueued event is wrapped in.
+///
+/// # Why the obligations sit here and not on the broker's own envelope
+///
+/// P-D-01 fixes four semantic obligations and calls them **envelope-agnostic**:
+/// versioned schema references, correlation/causation, per-aggregate ordering
+/// keys, and pseudonymous actors. Measured against the platform as it stands,
+/// the broker's `Event` (`gears/system/event-broker/event-broker-sdk`,
+/// `models::Event`) carries `id`, `type_id`, `topic`, `tenant_id`, `source`,
+/// `subject`, `subject_type`, `partition_key`, `occurred_at`, `trace_parent`
+/// and `data` — and **no field for a causation id, and none for an actor**.
+/// So three of the four have no broker slot to be written into, and the
+/// obligations are discharged here, in the payload this gear controls, which
+/// is exactly what "envelope-agnostic" licenses.
+///
+/// When P-D-47's producer lands it will lift what maps: [`Self::event_id`]
+/// into the broker's `id`, [`Self::schema_ref`] into its `type_id`,
+/// [`Self::correlation_id`] into its `trace_parent`. [`Self::actor_ref`] and
+/// [`Self::causation_id`] stay in the body, because there is nowhere else for
+/// them to go.
+///
+/// # `data` is a nested object, not a flattening
+///
+/// The body core keeps its own object rather than being `flatten`ed beside
+/// these five, so a consumer reading §4.5's five fields reads them from one
+/// place whatever the envelope grows next, and an envelope field can never
+/// collide with a body field of the same name.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct EventEnvelope<'body, B: Serialize> {
+    /// The event's own identity, and **P-D-47's idempotency key**: a consumer
+    /// that sees this id twice has seen one event twice.
+    ///
+    /// Minted per enqueue rather than derived from the act, because the same
+    /// act may legitimately emit more than one event and a derived id would
+    /// make them indistinguishable.
+    pub event_id: Uuid,
+    /// The versioned schema reference for [`Self::data`]'s shape
+    /// ([`SCHEMA_REFS`]).
+    pub schema_ref: &'static str,
+    /// The W3C trace id of the request that caused this event, where this
+    /// gear is running inside a traced request.
+    ///
+    /// **Read from the ambient span, never minted** ([`correlation_id`]). A
+    /// minted-per-event value would correlate nothing while reading, to an
+    /// operator, as though it did — the same judgement
+    /// `repo::AuditCommon::correlation_id` records for the audit trail's own
+    /// column, and the reason this field is an `Option` that is honestly
+    /// absent rather than a `Uuid` that is always present and usually a lie.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub correlation_id: Option<String>,
+    /// The event that caused this one.
+    ///
+    /// **`None` for all eight Foundation events, and that is the measurement
+    /// rather than an omission**: every one of them is caused by an operator
+    /// request, not by another event, so there is no event id to name. It
+    /// becomes populated the first time a slice emits an event *in reaction
+    /// to* one. Carrying the field with an honest `None` is what lets a
+    /// consumer tell "not caused by an event" from "nobody filled this in";
+    /// minting the correlation id into it would collapse the distinction the
+    /// pair exists to draw.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub causation_id: Option<Uuid>,
+    /// The acting principal's **pseudonymous** ref — never a direct operator
+    /// identity. The value slice 10's identity-reference map minted; the same
+    /// one the act's audit row would carry.
+    pub actor_ref: Uuid,
+    /// The event body: [`EventBodyCore`], or [`PublishedEventBody`] for the
+    /// two publish events.
+    pub data: &'body B,
+}
+
+/// The W3C trace id of the request in scope, where there is one.
+///
+/// `None` outside a traced request — a background task, or a test that
+/// installed no subscriber — which is why every caller carries it as an
+/// `Option` rather than substituting a value.
+///
+/// The idiom, not an invention: `gears/mini-chat`'s
+/// `domain::service::current_otel_trace_id` reads the same id the same way,
+/// and `toolkit`'s `api::canonical_error_layer::extract_trace_id` puts the
+/// same 32-hex trace-id segment on every canonical error. Rendering it as
+/// that hex string rather than as a `Uuid` is what keeps this value
+/// **grep-equal** to the one in the access log, the `OTel` span and the error
+/// envelope; a `Uuid` rendering of the same 128 bits would carry hyphens and
+/// join to none of them by string equality.
+#[must_use]
+pub(crate) fn correlation_id() -> Option<String> {
+    use tracing_opentelemetry::OpenTelemetrySpanExt as _;
+
+    let context = tracing::Span::current().context();
+    let trace_id = opentelemetry::trace::TraceContextExt::span(&context)
+        .span_context()
+        .trace_id();
+    (trace_id != opentelemetry::trace::TraceId::INVALID).then(|| trace_id.to_string())
 }
 
 /// P-D-22's partition formula, the one place it is computed.
@@ -279,6 +481,7 @@ pub(crate) async fn enqueue(
     aggregate_id: Uuid,
     payload_type: &str,
     core: &EventBodyCore,
+    actor_ref: Uuid,
 ) -> Result<(), EventsError> {
     enqueue_body(
         outbox,
@@ -287,6 +490,7 @@ pub(crate) async fn enqueue(
         aggregate_id,
         payload_type,
         core,
+        actor_ref,
     )
     .await
 }
@@ -313,6 +517,7 @@ pub(crate) async fn enqueue_published(
     payload_type: &str,
     core: &EventBodyCore,
     published_version: i64,
+    actor_ref: Uuid,
 ) -> Result<(), EventsError> {
     let body = PublishedEventBody {
         core,
@@ -325,11 +530,13 @@ pub(crate) async fn enqueue_published(
         aggregate_id,
         payload_type,
         &body,
+        actor_ref,
     )
     .await
 }
 
-/// The one place a body is rendered, partitioned and handed to the outbox.
+/// The one place a body is wrapped, rendered, partitioned and handed to the
+/// outbox.
 ///
 /// Both public entry points above go through it, so the envelope, the queue
 /// and P-D-22's partition formula are written once and a new body shape
@@ -338,9 +545,15 @@ pub(crate) async fn enqueue_published(
 /// field a function can read; both callers pass their own core's
 /// `tenant_id`, which is the same value the body itself carries.
 ///
+/// The schema reference is resolved **before** anything is written, so an
+/// event with no registered schema fails the caller's transaction rather than
+/// reaching the queue unidentifiable.
+///
 /// # Errors
-/// [`EventsError::Serialize`] if `body` cannot be rendered as JSON;
-/// [`EventsError::Outbox`] on a queue/partition/storage failure.
+/// [`EventsError::UnregisteredSchema`] if `payload_type` is not one of
+/// [`SCHEMA_REFS`]'; [`EventsError::Serialize`] if the envelope cannot be
+/// rendered as JSON; [`EventsError::Outbox`] on a queue/partition/storage
+/// failure.
 async fn enqueue_body(
     outbox: &Outbox,
     runner: &(impl DBRunner + Sync),
@@ -348,14 +561,31 @@ async fn enqueue_body(
     aggregate_id: Uuid,
     payload_type: &str,
     body: &impl Serialize,
+    actor_ref: Uuid,
 ) -> Result<(), EventsError> {
-    let payload = serde_json::to_vec(body)?;
+    let schema_ref = schema_ref_for(payload_type)
+        .ok_or_else(|| EventsError::UnregisteredSchema(payload_type.to_owned()))?;
+    let envelope = EventEnvelope {
+        event_id: Uuid::new_v4(),
+        schema_ref,
+        correlation_id: correlation_id(),
+        // See the field's own doc: an operator request causes these eight,
+        // and a request is not an event.
+        causation_id: None,
+        actor_ref,
+        data: body,
+    };
+    let payload = serde_json::to_vec(&envelope)?;
     let partition = partition_for(tenant_id, aggregate_id);
     outbox
         .enqueue(runner, QUEUE_NAME, partition, payload, payload_type)
         .await?;
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "events_tests.rs"]
+mod events_tests;
 
 #[cfg(test)]
 mod tests {

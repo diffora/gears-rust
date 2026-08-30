@@ -956,6 +956,7 @@ async fn insert_product_with_event(
     scope: AccessScope,
     new: NewProduct,
     claim: Option<IdempotencyClaimInput>,
+    actor_ref: Uuid,
 ) -> Result<CreateOutcome, DbError> {
     let outbox = Arc::clone(&state.outbox);
     let tenant_id = new.tenant_id;
@@ -1008,6 +1009,7 @@ async fn insert_product_with_event(
                         record.product_id,
                         events::PRODUCT_CREATED_PAYLOAD_TYPE,
                         &core,
+                        actor_ref,
                     )
                     .await
                     .map_err(|e| {
@@ -1319,7 +1321,8 @@ async fn create_product(
     // -- 6. The mutation: the idempotency claim, the entity row, its
     // creation outbox row and the answer written back into the claim, one
     // transaction, nothing else written. --
-    let insert_outcome = insert_product_with_event(&state, scope.clone(), new, claim).await;
+    let insert_outcome =
+        insert_product_with_event(&state, scope.clone(), new, claim, actor_ref).await;
 
     match insert_outcome {
         Ok(CreateOutcome::Created {
@@ -2310,7 +2313,7 @@ impl Announcement {
         match self {
             Self::Published => events::PRODUCT_PUBLISHED_PAYLOAD_TYPE,
             Self::Discarded => events::PRODUCT_DISCARDED_PAYLOAD_TYPE,
-            Self::HeadSaved => PRODUCT_HEAD_SAVED_PAYLOAD_TYPE,
+            Self::HeadSaved => events::PRODUCT_HEAD_SAVED_PAYLOAD_TYPE,
         }
     }
 }
@@ -2361,11 +2364,20 @@ async fn announce_and_answer(
                 payload_type,
                 &core,
                 head.published_version,
+                inputs.actor_ref,
             )
             .await
         }
         Announcement::Discarded | Announcement::HeadSaved => {
-            events::enqueue(outbox, runner, head.product_id, payload_type, &core).await
+            events::enqueue(
+                outbox,
+                runner,
+                head.product_id,
+                payload_type,
+                &core,
+                inputs.actor_ref,
+            )
+            .await
         }
     }
     .map_err(|e| HeadActError::from_storage(&e))?;
@@ -3313,17 +3325,6 @@ async fn discard_product_under_gate(
 /// two must stay equal: an operator filtering the trail by `action = 'save'`
 /// is asking one question of both entity kinds.
 const SAVE_AUDIT_ACTION: &str = "save";
-
-/// `ProductHeadSaved`'s `payload_type` token (§4.5's roster of eight).
-///
-/// **It belongs beside its seven siblings in `crate::infra::events`**, where
-/// `PRODUCT_PUBLISHED_PAYLOAD_TYPE` and `PRODUCT_DISCARDED_PAYLOAD_TYPE`
-/// already live; it is here because that module is outside this slice's
-/// target paths, exactly as `events::SKU_CREATED_PAYLOAD_TYPE`'s own doc
-/// records a token that spent a wave in the wrong file. Moving it is a
-/// one-line change with no behaviour in it, and the token itself is the
-/// design's own spelling either way.
-const PRODUCT_HEAD_SAVED_PAYLOAD_TYPE: &str = "ProductHeadSaved";
 
 /// The concrete resource path a save claims its idempotency key under
 /// (**P-D-42**), on [`publish_endpoint`]'s terms: the id is in the path, so

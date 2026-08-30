@@ -2345,7 +2345,28 @@ async fn enqueued_event_body(dsn: &str, payload_type: &str) -> serde_json::Value
     )
     .await
     .expect("the enqueued row carries a payload");
-    serde_json::from_str(&payload).expect("the door enqueues a JSON body")
+    let envelope: serde_json::Value =
+        serde_json::from_str(&payload).expect("the door enqueues a JSON envelope");
+    // See `products_tests::enqueued_event_body`: the door wraps every body in
+    // `events::EventEnvelope` and §4.5's five fields live under `data`.
+    envelope["data"].clone()
+}
+
+/// The **envelope** of the newest enqueued row carrying `payload_type` —
+/// [`enqueued_event_body`]'s outer object, for the case that asserts on
+/// P-D-01's four obligations rather than on §4.5's body core.
+async fn enqueued_event_envelope(dsn: &str, payload_type: &str) -> serde_json::Value {
+    let body_table = format!("{}_body", events::OUTBOX_TABLE_PREFIX);
+    let payload = raw_string_opt(
+        dsn,
+        &format!(
+            "SELECT CAST(payload AS TEXT) AS v FROM {body_table} \
+             WHERE payload_type = '{payload_type}' ORDER BY id DESC LIMIT 1"
+        ),
+    )
+    .await
+    .expect("the enqueued row carries a payload");
+    serde_json::from_str(&payload).expect("the door enqueues a JSON envelope")
 }
 
 /// **`SkuPublished` carries `publishedVersion`, and it is the version the act
@@ -2419,15 +2440,21 @@ async fn the_published_event_carries_the_post_act_published_version() {
     )
     .await
     .expect("the re-publish enqueued its own row");
+    // Read inline rather than through `enqueued_event_body` because this case
+    // wants the *newest* row of two; the body still sits under the envelope's
+    // `data`, exactly as that helper unwraps it.
     let after: serde_json::Value =
-        serde_json::from_str(&after).expect("the door enqueues a JSON body");
+        serde_json::from_str(&after).expect("the door enqueues a JSON envelope");
     assert_eq!(
-        after["publishedVersion"],
+        after["data"]["publishedVersion"],
         json!(head_version(&harness.dsn, sku_id).await),
         "the re-publish announces 2, the version it produced, not the 1 the head carried \
          when it began"
     );
-    assert_eq!(after["publishedVersion"], json!(2));
+    // The same number again, against a literal rather than against a second
+    // database read: if `head_version` and the event were both wrong in the
+    // same direction, the assertion above would still pass.
+    assert_eq!(after["data"]["publishedVersion"], json!(2));
 }
 
 /// **A `SkuDiscarded` body carries no `publishedVersion` at all.**
@@ -4111,7 +4138,11 @@ async fn newest_enqueued_event_body(dsn: &str, payload_type: &str) -> serde_json
     )
     .await
     .expect("the enqueued row carries a payload");
-    serde_json::from_str(&payload).expect("the door enqueues a JSON body")
+    let envelope: serde_json::Value =
+        serde_json::from_str(&payload).expect("the door enqueues a JSON envelope");
+    // See `products_tests::enqueued_event_body`: the door wraps every body in
+    // `events::EventEnvelope` and §4.5's five fields live under `data`.
+    envelope["data"].clone()
 }
 
 /// **A save enqueues exactly one `SkuHeadSaved` row, and its body carries the
@@ -4224,4 +4255,77 @@ async fn a_save_enqueues_one_sku_head_saved_carrying_the_committed_revision_and_
         Some("published"),
         "and that reading agrees with the head itself"
     );
+}
+
+/// **The envelope P-D-01 requires comes out of this door too** — the twin of
+/// `products_tests::a_created_events_envelope_carries_the_four_obligations_from_the_door`.
+///
+/// The two doors were built by parallel slices and diverged six times in
+/// Phase 6, every divergence defended by its own prose. This pair is the
+/// guard against a seventh: whatever the Product door's envelope carries,
+/// this one carries, under the same names, with only the schema reference
+/// differing.
+#[tokio::test]
+async fn a_created_events_envelope_carries_the_four_obligations_from_the_door() {
+    let harness = harness().await;
+    let parent_id = seed_parent(&harness, new_parent_product(Uuid::now_v7(), TENANT)).await;
+    let app = app_for(&harness, TENANT);
+
+    let response = post_create_sku(
+        app,
+        TENANT,
+        &json!({ "product_id": parent_id, "sku_code": "SKU-500" }),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::CREATED);
+
+    let envelope = enqueued_event_envelope(&harness.dsn, "SkuCreated").await;
+
+    assert_eq!(
+        envelope["schemaRef"], "bss-products.SkuCreated.v1.0.0",
+        "the SKU door announces its own event's schema, not the Product door's"
+    );
+    let event_id = envelope["eventId"]
+        .as_str()
+        .expect("P-D-47's idempotency key must be on the envelope");
+    assert!(
+        Uuid::parse_str(event_id).is_ok(),
+        "the event id must be a UUID, not a placeholder: {event_id}"
+    );
+
+    // The ref the identity map minted for the acting principal, not a fresh
+    // one. See the Product twin for why presence alone would not catch a door
+    // that invented it.
+    // `hex()`, not `CAST(.. AS TEXT)`: `SQLite` stores a `UUID` as a 16-byte
+    // BLOB, and casting those bytes to text yields invalid UTF-8 rather than
+    // the hyphenated form. Both sides are normalised to bare upper-case hex so
+    // the comparison is about the value and not about either rendering.
+    let minted = raw_string_opt(
+        &harness.dsn,
+        "SELECT hex(actor_ref) AS v FROM products_identity_ref LIMIT 1",
+    )
+    .await
+    .expect("the create resolved an actor ref through the identity map");
+    let carried = envelope["actorRef"]
+        .as_str()
+        .expect("the envelope must carry the acting principal's ref")
+        .replace('-', "")
+        .to_uppercase();
+    assert_eq!(
+        carried, minted,
+        "the envelope must carry the ref the identity map minted, not one of its own"
+    );
+
+    assert!(
+        envelope.get("causationId").is_none(),
+        "an operator-caused event must name no causing event"
+    );
+    assert!(
+        envelope.get("correlationId").is_none(),
+        "an untraced request must leave the correlation id off the wire"
+    );
+
+    assert_eq!(envelope["data"]["entityKind"], "sku");
+    assert_eq!(envelope["data"]["internalRevision"], 1);
+    assert_eq!(envelope["data"]["lifecycleState"], "draft");
 }

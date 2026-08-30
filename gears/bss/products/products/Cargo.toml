@@ -18,6 +18,16 @@ async-trait = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+# `infra::events::correlation_id` reads the W3C trace id off the ambient span,
+# which is the one request-scoped identifier the platform actually propagates
+# and the only honest source for the event envelope's `correlationId`
+# (P-D-01). `OpenTelemetrySpanExt::context` is the read-back;
+# `opentelemetry::trace` supplies `TraceContextExt` and the `TraceId::INVALID`
+# sentinel that distinguishes "no active span" from a real id. The same pair
+# `gears/mini-chat` uses for `current_otel_trace_id`, taken rather than
+# invented.
+tracing-opentelemetry = { workspace = true }
+opentelemetry = { workspace = true }
 # `v4` on top of the workspace's `serde`/`v5`: minting an `actor_ref` needs a
 # random uuid, and a v5 derived from the principal would make the pseudonym
 # recomputable by anyone holding the principal id — the opposite of what the
