@@ -9,7 +9,7 @@
 //!
 //! Structurally the SKU twin of [`crate::api::rest::products`]: same
 //! authorization shape, same miss/hit split on the read door, and the create
-//! door repeats [`crate::api::rest::products::create_product`]'s order
+//! door repeats `products::create_product`'s order
 //! (`actor_ref` resolution ahead of the gate, the authorization gate, shape
 //! validation, the mutation, the conflict/audit discipline) and its
 //! audit-every-refusal discipline — see that module's own doc for the
@@ -43,7 +43,7 @@
 //! second, wider scope built to read `products_product`. A parent read under
 //! a broader scope would let a caller attach a SKU to a Product the PDP never
 //! actually granted it visibility into, which is exactly the existence leak
-//! [`crate::api::rest::products::get_product`]'s own doc names for the read
+//! `products::get_product`'s own doc names for the read
 //! door's miss/hit split — the same failure mode, reached from the write
 //! side instead.
 //!
@@ -99,7 +99,7 @@
 //! # Idempotency: the same phase, under this door's own endpoint
 //!
 //! [`create_sku`] runs the identical phase
-//! [`crate::api::rest::products::create_product`] does — see that module's
+//! `products::create_product` does — see that module's
 //! own "Idempotency" section for the three outcomes, the keyless skip
 //! (P-D-34) and the claim's transaction obligation (P-D-42) — under
 //! [`CREATE_ENDPOINT`], its own concrete resource path. The key component
@@ -276,7 +276,7 @@ const CREATE_ENDPOINT: &str = "/bss-products/v1/skus";
 
 /// The SKU entity's resource marker for this door's 403/404 answers. Its own
 /// type, distinct from `infra::error_mapping`'s private `SkuResource`, for
-/// [`crate::api::rest::products::ProductResource`]'s own doc's reason.
+/// `infra::error_mapping::ProductResource`'s own doc's reason.
 #[resource_error(gts_id!("cf.bss.products.sku.v1~"))]
 struct SkuResource;
 
@@ -518,7 +518,7 @@ fn register_head_act_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Ro
         .register(router, openapi)
 }
 
-/// `GET /skus/{id}`. See [`crate::api::rest::products::get_product`]'s doc
+/// `GET /skus/{id}`. See `products::get_product`'s doc
 /// for the authorization scope, the miss/hit split and why the miss carries
 /// no registry code — this handler is its structural twin over
 /// `sku x read` and [`repo::find_sku`].
@@ -648,7 +648,7 @@ fn describe_resolved_scope(scope: &ResolvedScope) -> String {
 ///
 /// **Every door that can raise the code renders it here**: this one,
 /// [`recheck_parent_containment`] on the SKU save and publish re-runs, and
-/// [`crate::api::rest::products::check_children_stay_contained`] on the
+/// `products::check_children_stay_contained` on the
 /// Product save — where the same verdict is reached from the parent's end.
 /// One function rather than a copy per door, so the entity kinds cannot word
 /// or code the same verdict two ways.
@@ -763,7 +763,7 @@ fn payload_digest(request: &CreateSkuRequest) -> Vec<u8> {
 
 /// Insert the entity row and enqueue its `SkuCreated` event, in one
 /// transaction (`dod-create-doors`) — and nothing else. The SKU door's own
-/// copy of [`crate::api::rest::products::create_product`]'s
+/// copy of `products::create_product`'s
 /// `insert_product_with_event` — see this module's doc, "What is duplicated
 /// from the Product door, and why", for why this is not a shared function.
 ///
@@ -990,7 +990,7 @@ pub(super) fn parent_scope_pair(parent: &repo::ProductRecord) -> Result<ScopePai
 ///
 /// **One parse site, two callers**, on [`parent_scope_pair`]'s own terms:
 /// [`recheck_parent_containment`] here, and
-/// [`crate::api::rest::products::check_children_stay_contained`] on the
+/// `products::check_children_stay_contained` on the
 /// Product door, which asks the same containment question from the other
 /// end — a parent narrowing under its live children rather than a child
 /// moving out from under its parent. Written once so the two doors cannot
@@ -1126,7 +1126,7 @@ async fn resolve_parent_scope(
 ///
 /// See this module's doc, "What the SKU door adds over the Product door",
 /// for the three parent/containment refusals, and
-/// [`crate::api::rest::products::create_product`]'s own doc for the
+/// `products::create_product`'s own doc for the
 /// audit-every-refusal discipline this handler repeats.
 ///
 /// # Every refusal is audited, on its own runner
@@ -1412,7 +1412,7 @@ async fn create_sku(
 /// module's doc, "What is duplicated from the Product door, and why", for
 /// why `products_sku` has only the one unique index to classify.
 ///
-/// See [`crate::api::rest::products::classify_insert_conflict`]'s own doc for
+/// See `products::classify_insert_conflict`'s own doc for
 /// the cost this substring match over driver text carries, which applies
 /// identically here.
 fn classify_sku_insert_conflict(message: &str) -> bool {
@@ -2522,7 +2522,7 @@ async fn classify_unmatched(
 /// fail-closed check in the registered-validators phase, ahead of the
 /// governance gate"*. That obligation is discharged, on the Product save
 /// door, by
-/// [`crate::api::rest::products::check_children_stay_contained`], which
+/// `products::check_children_stay_contained`, which
 /// reads the Product's non-terminal children and judges each stored child
 /// pair against the pair the save **would** leave. It reaches this module
 /// for both halves of the verdict — [`sku_scope_pair`] and

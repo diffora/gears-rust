@@ -293,7 +293,7 @@
 //! A fourth clause is discharged by a host that does nothing:
 //! `inst-fd-publish-consume` requires the gate's `satisfied` record to be
 //! flipped `consumed` in this transaction. [`NoMaterialityPolicyGate`]
-//! names no record ([`ApprovalDisposition::NoRecord`]), so there is nothing
+//! names no record ([`crate::domain::governance::ApprovalDisposition::NoRecord`]), so there is nothing
 //! to consume, and `GateAuthorization::approval_to_consume` is the only
 //! route to an id for the flip — it answers `None`, which is why the flip is
 //! absent rather than forgotten. Slice 05 supplies both the record and the
@@ -3990,7 +3990,7 @@ fn save_conflict(
 /// third request would leave behind is a `published` child scoped outside
 /// its parent. The child pays for it later: its next save or re-publish is
 /// refused `SCOPE_NOT_CONTAINED` by
-/// [`crate::api::rest::skus::recheck_parent_containment`] on a request that
+/// `skus::recheck_parent_containment` on a request that
 /// changed nothing about it. §4.1 answers that here instead — *"a narrowing
 /// that would orphan a live child meets `fr-parent-child-integrity`'s
 /// fail-closed check in the registered-validators phase, ahead of the
@@ -4016,7 +4016,7 @@ fn save_conflict(
 /// columns the routing admitted, so no other column can drift into it.
 ///
 /// The **child** operand is each child's **own stored pair**, exactly as
-/// [`crate::api::rest::skus::recheck_parent_containment`] argues from the
+/// `skus::recheck_parent_containment` argues from the
 /// other end: re-resolving a child against the parent would re-widen it to
 /// whatever the parent now carries and turn the very narrowing this exists
 /// to catch into a silent pass.

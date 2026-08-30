@@ -112,7 +112,7 @@ pub(crate) const PARTITIONS: u16 = 8;
 /// that wiring in Phase 8 with `dod-outbox-eventing`.
 ///
 /// So this handler exists to make the queue declarable while delivery is
-/// still owed, and it answers [`MessageResult::Retry`] to every message:
+/// still owed, and it answers [`toolkit_db::outbox::MessageResult::Retry`] to every message:
 /// a transient failure, which leaves the row in the queue and dead-letters
 /// nothing. That is the honest shape of "enqueued, not yet deliverable".
 ///

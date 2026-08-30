@@ -41,6 +41,30 @@
 //! reason stated above: a repair aimed at one half must be visible from the
 //! other.
 //!
+//! # The duplication here is measured and accepted, not overlooked
+//!
+//! Four cases, 96 to 108 lines each, and the save pair is **0.88** similar line
+//! for line. Adding the `SKU` half doubled a choreography this file already
+//! carried twice, which is the very shape review wave D went and removed from
+//! the door suites — so the asymmetry is deliberate and the reason is recorded
+//! here rather than left for the next reader to re-derive.
+//!
+//! Two things resist extraction. The choreography lives **inside**
+//! `in_transaction`'s closure, whose `for<'a> FnMut(&'a DbTx<'a>)` shape cannot
+//! be bounded by any lifetime a helper holds — the obstacle
+//! `api::rest::products::HeadActInputs` documents at length — and the winner's
+//! notify-and-park must run *within* that closure, so a helper would have to
+//! take the racer's body and its two `Notify` handles and would save nothing.
+//! The eight `timeout(..).expect().expect().expect()` triples look extractable
+//! until their messages are read: each names **which** racer and **why** its
+//! outcome is the expected one, and a shared helper would either take those
+//! strings as parameters, saving nothing, or drop them and delete the file's
+//! reasoning.
+//!
+//! What is shared instead is everything that can be: one `head_column` reader
+//! behind all seven column accessors, one `frozen`/`frozen_sku` pair, one
+//! seed per entity. The residue is the race sequence itself.
+//!
 //! # Why `SQLite` cannot host either
 //!
 //! The in-crate suites prove the guard refuses a *stale* revision — one already
@@ -138,6 +162,14 @@ fn rename(to: &str, normalized: &str) -> ProductHeadSave {
 /// `published_version = 0`, which the publish race below moves; a bucket-i
 /// save would therefore give the loser's filter a second reason to miss and
 /// the assertion could not say which one fired.
+///
+/// **Every value passed here stays inside the parent Product's
+/// `region_scope`** (`"eu,apac"`), the loser's included. Containment is a
+/// phase of the save *door*, above the repository these probes call, so an
+/// uncontained value is admitted at this layer today and the probe would still
+/// be sound — but only by accident. Were containment ever pushed down to the
+/// repository or to a `CHECK`, an uncontained loser would be refused for the
+/// wrong reason and this file would stay green while measuring nothing.
 fn rescope(to: &str) -> SkuHeadSave {
     SkuHeadSave {
         sku_code: None,
@@ -569,7 +601,7 @@ async fn two_sku_saves_presenting_one_if_match_serialize_and_the_loser_is_refuse
                             TENANT,
                             SKU,
                             CONTESTED_REVISION,
-                            &rescope("latam"),
+                            &rescope("apac"),
                             at(11),
                         )
                         .await
@@ -688,7 +720,7 @@ async fn a_sku_publish_and_an_edit_presenting_one_if_match_serialize_and_the_edi
                             TENANT,
                             SKU,
                             CONTESTED_REVISION,
-                            &rescope("latam"),
+                            &rescope("apac"),
                             at(11),
                         )
                         .await

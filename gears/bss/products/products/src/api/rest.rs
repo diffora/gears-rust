@@ -5,7 +5,7 @@
 //! — `GET /bss-products/v1/products/{id}` and `GET /bss-products/v1/skus/{id}`
 //! — as `products` and `skus`, sibling modules under `api::rest`, following
 //! the sibling pricing and ledger gears' shape: one module per resource,
-//! composed in [`crate::gear::BssProductsGear::register_rest`] rather than
+//! composed in `BssProductsGear::register_rest` rather than
 //! wired inline. Slice D1 adds the Product half of the create doors
 //! (`POST /bss-products/v1/products`, `products::create_product`) in the same
 //! module; the SKU half follows the same shape in a later slice.
