@@ -83,6 +83,7 @@ use uuid::Uuid;
 use super::router;
 use crate::api::rest::ApiState;
 use crate::api::rest::preconditions;
+use crate::config::ProductsConfig;
 use crate::domain::concurrency::InternalRevision;
 use crate::infra::events;
 use crate::infra::storage::migrations::Migrator;
@@ -90,6 +91,9 @@ use crate::infra::storage::repo::{self, NewProduct};
 
 const TENANT: Uuid = Uuid::from_u128(0xd0_01);
 const BRAND: Uuid = Uuid::from_u128(0xd0_02);
+/// A second tenant, for the case that proves the key's own `tenant_id`
+/// component is load-bearing rather than decorative.
+const OTHER_TENANT: Uuid = Uuid::from_u128(0xd0_03);
 
 /// Everything a test in this file needs: the database, and the started
 /// outbox pipeline the create door enqueues `ProductCreated` against. Both
@@ -313,28 +317,186 @@ fn app_for(harness: &TestHarness, tenant: Uuid) -> Router {
     let state = Arc::new(ApiState {
         db: harness.db.clone(),
         outbox: Arc::clone(&harness.outbox),
+        // The value `gear.rs` resolves from the operator's file; the tests
+        // configure nothing, so the typed default is what an unconfigured
+        // boot would carry here.
+        idempotency_retention_hours: ProductsConfig::default().idempotency_retention_hours,
     });
     let openapi = OpenApiRegistryImpl::new();
     router(state, &openapi).layer(axum::Extension(flat_in_enforcer(tenant)))
 }
 
-/// `POST /bss-products/v1/products` with `body`, authenticated as `tenant`.
+/// `POST /bss-products/v1/products` with `body`, authenticated as `tenant`
+/// and carrying **no** `Idempotency-Key` — the keyless shape every
+/// pre-idempotency case in this file already used, kept so those cases keep
+/// exercising the skip rather than the claim.
 async fn post_create_product(
     app: Router,
     tenant: Uuid,
     body: &serde_json::Value,
 ) -> axum::http::Response<Body> {
+    post_create_product_with_headers(app, tenant, body, &[]).await
+}
+
+/// [`post_create_product`] with `headers` set on the request — the one dial
+/// the idempotency cases below turn. A slice of pairs rather than a
+/// `HeaderMap` argument: every case sets one or two literal headers, and the
+/// pairs read at the call site as the request a client actually sent.
+async fn post_create_product_with_headers(
+    app: Router,
+    tenant: Uuid,
+    body: &serde_json::Value,
+    headers: &[(&str, &str)],
+) -> axum::http::Response<Body> {
+    let mut request = Request::builder()
+        .method("POST")
+        .uri("/bss-products/v1/products")
+        .header(axum::http::header::CONTENT_TYPE, "application/json")
+        .extension(authed_ctx(tenant));
+    for (name, value) in headers {
+        request = request.header(*name, *value);
+    }
     app.oneshot(
-        Request::builder()
-            .method("POST")
-            .uri("/bss-products/v1/products")
-            .header(axum::http::header::CONTENT_TYPE, "application/json")
-            .extension(authed_ctx(tenant))
+        request
             .body(Body::from(body.to_string()))
             .expect("build the create request"),
     )
     .await
     .expect("the router answers")
+}
+
+/// `POST /bss-products/v1/products` carrying `key` as its `Idempotency-Key`.
+async fn post_create_product_with_key(
+    app: Router,
+    tenant: Uuid,
+    body: &serde_json::Value,
+    key: &str,
+) -> axum::http::Response<Body> {
+    post_create_product_with_headers(app, tenant, body, &[("Idempotency-Key", key)]).await
+}
+
+/// How many `products_idempotency` rows exist for `client_key`, in whatever
+/// state — the count every case below asserts the claim, or its absence, on.
+async fn idempotency_rows_for(dsn: &str, client_key: &str) -> i64 {
+    raw_i64(
+        dsn,
+        &format!(
+            "SELECT COUNT(*) AS v FROM products_idempotency WHERE client_key = '{client_key}'"
+        ),
+    )
+    .await
+}
+
+/// The digest this door would take of `body` — computed the way the door
+/// computes it, by parsing the same wire `JSON` into the same `DTO` and
+/// calling the same function, so a case seeding a stored digest cannot
+/// silently disagree with the door about which fields the operand carries.
+fn digest_of(body: &serde_json::Value) -> Vec<u8> {
+    let request: super::CreateProductRequest =
+        serde_json::from_value(body.clone()).expect("the case's own body parses as the create DTO");
+    super::payload_digest(&request)
+}
+
+/// Seed a **live, unanswered** claim for this door's own endpoint under
+/// `client_key`, recorded against `payload_hash`: the in-flight state, and
+/// the only way to reach it now that a committed create answers its own
+/// claim.
+///
+/// `payload_hash` is a parameter rather than a fixed literal because the
+/// digest decides which refusal the seeded state produces: a duplicate whose
+/// digest **matches** is refused `IDEMPOTENCY_KEY_IN_FLIGHT`, and one that
+/// differs is refused `IDEMPOTENCY_CONFLICT` — "a payload mismatch stays
+/// `IDEMPOTENCY_CONFLICT` in either state"
+/// (`design/01-foundation.md` §3.2 `inst-fd-idem-claim-inflight`). An earlier
+/// version seeded one fixed literal that no case's body ever hashed to, so
+/// the in-flight case it fed was really the mismatch case wearing the wrong
+/// name.
+///
+/// The claim goes through the repository's own `claim_idempotency_key` on
+/// the harness's production connection, which is checked back in when this
+/// function returns — the door's own transaction needs it, and this file's
+/// pool is pinned to one connection.
+async fn seed_live_claim(harness: &TestHarness, client_key: &str, payload_hash: &[u8]) {
+    let conn = harness
+        .db
+        .conn()
+        .expect("checkout the pinned production connection");
+    let scope = toolkit_db::secure::AccessScope::for_tenant(TENANT);
+    let now = Utc::now();
+    let held = repo::claim_idempotency_key(
+        &conn,
+        &scope,
+        TENANT,
+        "/bss-products/v1/products",
+        client_key,
+        payload_hash,
+        now,
+        now + chrono::TimeDelta::hours(24),
+    )
+    .await
+    .expect("seed the live claim this case collides with");
+    assert_eq!(
+        held,
+        repo::IdempotencyClaim::Claimed,
+        "this case's own premise: the key is held and unanswered"
+    );
+}
+
+/// Seed an `answered` idempotency row for this door's own endpoint under
+/// `client_key`, recorded against `payload_hash`, carrying a `201` and a
+/// recognizable body.
+///
+/// Both steps run through the repository's own functions — the claim
+/// through `claim_idempotency_key`, the transition through
+/// `answer_idempotency_key` — so the row these cases read is written by the
+/// code path production writes it with. An earlier version wrote the
+/// transition by hand, because no answer-writer existed.
+///
+/// The stored body is deliberately **not** a rendered `ProductView`: a
+/// replay must serve the stored bytes rather than re-render the entity, and
+/// a recognizable body is what tells the two apart in
+/// `an_answered_key_replays_its_stored_response_even_though_the_retry_carries_a_precondition`.
+async fn seed_answered_claim(harness: &TestHarness, client_key: &str, payload_hash: &[u8]) {
+    let conn = harness
+        .db
+        .conn()
+        .expect("checkout the pinned production connection");
+    let scope = toolkit_db::secure::AccessScope::for_tenant(TENANT);
+    let now = Utc::now();
+    let outcome = repo::claim_idempotency_key(
+        &conn,
+        &scope,
+        TENANT,
+        "/bss-products/v1/products",
+        client_key,
+        payload_hash,
+        now,
+        now + chrono::TimeDelta::hours(24),
+    )
+    .await
+    .expect("seed the claim this case answers");
+    assert_eq!(
+        outcome,
+        repo::IdempotencyClaim::Claimed,
+        "this case's own premise: the seeded key was free"
+    );
+
+    let answered = repo::answer_idempotency_key(
+        &conn,
+        &scope,
+        TENANT,
+        "/bss-products/v1/products",
+        client_key,
+        201,
+        json!({ "replayed": "the stored answer" }),
+    )
+    .await
+    .expect("record the answer this case replays");
+    assert_eq!(
+        answered,
+        repo::IdempotencyAnswer::Recorded,
+        "this case's own premise: the claim it just took was still held"
+    );
 }
 
 /// A `GET` under the reserved prefix for an unknown id reaches **this**
@@ -869,5 +1031,713 @@ async fn an_unwritable_refusal_audit_answers_audit_unavailable_not_the_domain_re
     assert_eq!(
         persisted, 1,
         "the losing create's row still must not have been persisted"
+    );
+}
+
+/// A create carrying an `Idempotency-Key` persists the entity **and** an
+/// `answered` idempotency row keyed by the concrete endpoint, in one
+/// transaction.
+///
+/// This is `dod-idempotency-store`'s baseline at the door: the row exists,
+/// it names the **concrete resource path** and not a route template
+/// (P-D-42), and it sits beside the entity row the same transaction wrote —
+/// a claim written on a runner of its own could not be told from this by a
+/// count alone, which is why
+/// `a_rolled_back_mutation_frees_the_key_for_a_later_create` exists beside
+/// this case.
+///
+/// The state asserted is `answered`, not `claimed`: the create committed,
+/// and a committed create answers its own claim in the transaction that
+/// took it (§3.2 `inst-fd-idem-claim-write`). `claimed` is the state of a
+/// key whose act is still in flight, and it survives a commit nowhere —
+/// which is exactly why `a_second_create_on_a_live_key_is_refused_in_flight`
+/// has to seed one rather than produce it with a first create.
+#[tokio::test]
+async fn a_create_with_an_idempotency_key_persists_the_entity_and_an_answered_row() {
+    let harness = harness().await;
+
+    let response = post_create_product_with_key(
+        app_for(&harness, TENANT),
+        TENANT,
+        &json!({ "brand_id": BRAND, "name": "Fibre 500" }),
+        "author-retry-1",
+    )
+    .await;
+    assert_eq!(
+        response.status(),
+        StatusCode::CREATED,
+        "a keyed create is admitted exactly like a keyless one"
+    );
+
+    let persisted = raw_i64(&harness.dsn, "SELECT COUNT(*) AS v FROM products_product").await;
+    assert_eq!(persisted, 1, "the entity row is written");
+
+    let claims = idempotency_rows_for(&harness.dsn, "author-retry-1").await;
+    assert_eq!(claims, 1, "the key is claimed exactly once");
+
+    let state = raw_string_opt(
+        &harness.dsn,
+        "SELECT state AS v FROM products_idempotency WHERE client_key = 'author-retry-1'",
+    )
+    .await;
+    assert_eq!(
+        state.as_deref(),
+        Some("answered"),
+        "the committed create wrote its own answer into the claim it took"
+    );
+
+    let endpoint = raw_string_opt(
+        &harness.dsn,
+        "SELECT endpoint AS v FROM products_idempotency WHERE client_key = 'author-retry-1'",
+    )
+    .await;
+    assert_eq!(
+        endpoint.as_deref(),
+        Some("/bss-products/v1/products"),
+        "endpoint is the concrete resource path, never a route template (P-D-42)"
+    );
+}
+
+/// A create **without** the header succeeds and writes **no** idempotency
+/// row: the phase is skipped, not failed (P-D-34).
+///
+/// The rule is one word in `dod-idempotency-store` — "skipping" — and it is
+/// exactly the kind a later edit inverts by making the header mandatory,
+/// which would break every existing caller of this door at once. The
+/// assertion is on the row count rather than on the status alone: a door
+/// that claimed a key under some placeholder for the missing header would
+/// still answer `201` here.
+#[tokio::test]
+async fn a_create_without_an_idempotency_key_succeeds_and_claims_nothing() {
+    let harness = harness().await;
+
+    let response = post_create_product(
+        app_for(&harness, TENANT),
+        TENANT,
+        &json!({ "brand_id": BRAND, "name": "Fibre 500" }),
+    )
+    .await;
+    assert_eq!(
+        response.status(),
+        StatusCode::CREATED,
+        "a keyless create proceeds normally"
+    );
+
+    let persisted = raw_i64(&harness.dsn, "SELECT COUNT(*) AS v FROM products_product").await;
+    assert_eq!(persisted, 1, "the entity row is written");
+
+    let claims = raw_i64(
+        &harness.dsn,
+        "SELECT COUNT(*) AS v FROM products_idempotency",
+    )
+    .await;
+    assert_eq!(
+        claims, 0,
+        "a keyless request claims nothing at all: the phase is skipped, not failed"
+    );
+}
+
+/// A second create on a key a live claim already holds is refused
+/// `IDEMPOTENCY_KEY_IN_FLIGHT`, writes no second entity row, and is audited.
+///
+/// The refusal executes nothing, which is the property the code exists for,
+/// and it audits through the same `crate::api::rest::audit_refusal_and_report`
+/// every other refusal on this door uses — an idempotency refusal is a
+/// refusal, and a fourth path would be one more place the
+/// answer-only-after-the-row-commits discipline could be forgotten.
+///
+/// **The live claim is seeded, not produced by a first create**, and that is
+/// a consequence of the answer write rather than a convenience: a create
+/// that commits answers its own claim in the same transaction, so no
+/// committed act leaves a `claimed` row behind. A key is `claimed` exactly
+/// while its act is in flight, which at this door means a claim taken on
+/// another connection whose transaction has not finished — which is what
+/// `repo::claim_idempotency_key` on the harness's own connection reproduces
+/// here. Before the answer write existed this case could seed the state with
+/// an ordinary successful create, and that it no longer can is the whole
+/// point of the change.
+///
+/// The create below sends a **different name** from nothing at all — there
+/// is no first Product — so the `409` asserted cannot be the
+/// `DUPLICATE_NAME` this door also answers with a `409`: the audited
+/// `error_code` is what tells the two apart.
+///
+/// **The seeded claim is recorded against this very body's digest**, because
+/// the in-flight refusal belongs to "a duplicate whose payload hash matches
+/// the claimed key's" (§3.2 `inst-fd-idem-claim-inflight`). An earlier
+/// version seeded a fixed literal the retry could never hash to, so what it
+/// asserted as in-flight was in fact a payload mismatch; the case below is
+/// that mismatch, given its own name and its own expected code.
+#[tokio::test]
+async fn a_second_create_on_a_live_key_is_refused_in_flight_and_audited() {
+    let harness = harness().await;
+
+    let body = json!({ "brand_id": BRAND, "name": "Fibre 900" });
+    seed_live_claim(&harness, "author-retry-2", &digest_of(&body)).await;
+
+    let second =
+        post_create_product_with_key(app_for(&harness, TENANT), TENANT, &body, "author-retry-2")
+            .await;
+    assert_eq!(
+        second.status(),
+        StatusCode::CONFLICT,
+        "a duplicate under a live claim is a 409"
+    );
+
+    let persisted = raw_i64(&harness.dsn, "SELECT COUNT(*) AS v FROM products_product").await;
+    assert_eq!(
+        persisted, 0,
+        "the refused duplicate must not have created a Product"
+    );
+
+    let audit_rows = raw_i64(&harness.dsn, "SELECT COUNT(*) AS v FROM products_audit_log").await;
+    assert_eq!(audit_rows, 1, "the refusal is audited exactly once");
+    let error_code = raw_string_opt(
+        &harness.dsn,
+        "SELECT error_code AS v FROM products_audit_log",
+    )
+    .await;
+    assert_eq!(
+        error_code.as_deref(),
+        Some("IDEMPOTENCY_KEY_IN_FLIGHT"),
+        "the audited code names the idempotency refusal, not the 409 this door also raises for a \
+         duplicate name"
+    );
+}
+
+/// A second create on a key a live claim holds, **carrying a different
+/// payload**, is refused `IDEMPOTENCY_CONFLICT` rather than in flight.
+///
+/// The pair to the case above, and the half the door could not previously
+/// answer at all: `repo::IdempotencyClaim::InFlight` carried no digest, so
+/// no comparison against a live claim was structurally possible and every
+/// duplicate was told in flight whatever it sent. §3.2
+/// `inst-fd-idem-claim-inflight` is explicit that a payload mismatch "stays
+/// `IDEMPOTENCY_CONFLICT` **in either state**" — against a stored answer and
+/// against a live claim alike.
+///
+/// The distinction is not cosmetic. `IDEMPOTENCY_KEY_IN_FLIGHT` tells a
+/// client its own request is racing itself and that retrying is the right
+/// move; `IDEMPOTENCY_CONFLICT` tells it the key is already spoken for by a
+/// *different* act and that retrying will never work. Answering the first
+/// for the second invites a retry loop that is refused until the key expires.
+///
+/// The audited `error_code` is the assertion, not the status: both refusals
+/// answer `409`, which is exactly why the code is what tells them apart.
+#[tokio::test]
+async fn a_second_create_on_a_live_key_under_a_different_payload_is_refused_conflict() {
+    let harness = harness().await;
+
+    let held = json!({ "brand_id": BRAND, "name": "Fibre 900" });
+    seed_live_claim(&harness, "author-retry-2b", &digest_of(&held)).await;
+
+    let second = post_create_product_with_key(
+        app_for(&harness, TENANT),
+        TENANT,
+        &json!({ "brand_id": BRAND, "name": "A Different Product Entirely" }),
+        "author-retry-2b",
+    )
+    .await;
+    assert_eq!(
+        second.status(),
+        StatusCode::CONFLICT,
+        "a different payload under a live key is a 409, as the in-flight refusal also is"
+    );
+
+    let persisted = raw_i64(&harness.dsn, "SELECT COUNT(*) AS v FROM products_product").await;
+    assert_eq!(persisted, 0, "the refused act wrote nothing");
+
+    let error_code = raw_string_opt(
+        &harness.dsn,
+        "SELECT error_code AS v FROM products_audit_log",
+    )
+    .await;
+    assert_eq!(
+        error_code.as_deref(),
+        Some("IDEMPOTENCY_CONFLICT"),
+        "a mismatching payload is a conflict in either state, never an in-flight refusal"
+    );
+
+    let claims = raw_i64(
+        &harness.dsn,
+        "SELECT COUNT(*) AS v FROM products_idempotency",
+    )
+    .await;
+    assert_eq!(
+        claims, 1,
+        "the refusal owns nothing: the seeded claim is still the only row on the key"
+    );
+}
+
+/// **A rolled-back mutation frees the key.** This is the load-bearing case
+/// of the whole slice.
+///
+/// P-D-42 makes the claim `INSERT` join the guarded mutation's transaction
+/// precisely so that a mutation which rolls back takes its claim with it,
+/// with no release step anywhere. Wire the claim onto a runner of its own —
+/// a second `state.db.transaction(..)`, or `state.db.conn()` before the
+/// mutation — and everything else in this file still passes: the claim is
+/// still written, the entity is still created, the duplicate is still
+/// refused. Only this case fails, and it fails in the direction that matters
+/// in production: a key locked for its whole retention window against an act
+/// that never happened, so the client's honest retry is refused forever.
+///
+/// Both halves are asserted, because either alone is satisfiable by a wrong
+/// wiring: that the refused mutation left **no** claim behind, and that a
+/// later create on that same key **succeeds**.
+#[tokio::test]
+async fn a_rolled_back_mutation_frees_the_key_for_a_later_create() {
+    let harness = harness().await;
+
+    // The setup act, keyless, so it holds no key of its own: it exists only
+    // to make the next create collide on `uq_products_product_name` and roll
+    // back after its claim was taken.
+    let setup = post_create_product(
+        app_for(&harness, TENANT),
+        TENANT,
+        &json!({ "brand_id": BRAND, "name": "Fibre 500" }),
+    )
+    .await;
+    assert_eq!(setup.status(), StatusCode::CREATED);
+
+    // The mutation that fails *after* the claim: same normalized name, so
+    // the entity insert inside the transaction that already claimed
+    // `author-retry-3` raises the duplicate-name conflict and the whole
+    // transaction rolls back.
+    let refused = post_create_product_with_key(
+        app_for(&harness, TENANT),
+        TENANT,
+        &json!({ "brand_id": BRAND, "name": "Fibre 500" }),
+        "author-retry-3",
+    )
+    .await;
+    assert_eq!(
+        refused.status(),
+        StatusCode::CONFLICT,
+        "the colliding create is refused DUPLICATE_NAME"
+    );
+
+    // First half: the claim rolled back with the mutation. A claim taken on
+    // a runner of its own would still be sitting here.
+    let stranded = idempotency_rows_for(&harness.dsn, "author-retry-3").await;
+    assert_eq!(
+        stranded, 0,
+        "a refused mutation stores nothing, claim included (P-D-38, P-D-42): the key is free"
+    );
+
+    // Second half: the freed key is usable. This is what the client
+    // experiences, and a stranded claim would refuse it
+    // IDEMPOTENCY_KEY_IN_FLIGHT instead.
+    let retry = post_create_product_with_key(
+        app_for(&harness, TENANT),
+        TENANT,
+        &json!({ "brand_id": BRAND, "name": "Fibre 900" }),
+        "author-retry-3",
+    )
+    .await;
+    assert_eq!(
+        retry.status(),
+        StatusCode::CREATED,
+        "the same key claims again after the earlier mutation rolled back"
+    );
+    assert_eq!(
+        idempotency_rows_for(&harness.dsn, "author-retry-3").await,
+        1,
+        "the retry's own claim is the only row the key ever committed"
+    );
+    let persisted = raw_i64(&harness.dsn, "SELECT COUNT(*) AS v FROM products_product").await;
+    assert_eq!(
+        persisted, 2,
+        "the setup Product and the retry's, and nothing from the refusal"
+    );
+}
+
+/// The same client key under two different tenants both claim.
+///
+/// `tenant_id` is the first component of the composite key, and a store
+/// keyed on `(endpoint, client_key)` alone would let one tenant's key
+/// silently refuse another's act — a cross-tenant denial of service that no
+/// caller could diagnose. Both creates must be admitted and both claims must
+/// exist.
+#[tokio::test]
+async fn the_same_key_under_two_tenants_both_claim() {
+    let harness = harness().await;
+
+    let first = post_create_product_with_key(
+        app_for(&harness, TENANT),
+        TENANT,
+        &json!({ "brand_id": BRAND, "name": "Fibre 500" }),
+        "shared-key",
+    )
+    .await;
+    assert_eq!(first.status(), StatusCode::CREATED);
+
+    let second = post_create_product_with_key(
+        app_for(&harness, OTHER_TENANT),
+        OTHER_TENANT,
+        &json!({ "brand_id": BRAND, "name": "Fibre 500" }),
+        "shared-key",
+    )
+    .await;
+    assert_eq!(
+        second.status(),
+        StatusCode::CREATED,
+        "another tenant's identical key is a different key entirely"
+    );
+
+    assert_eq!(
+        idempotency_rows_for(&harness.dsn, "shared-key").await,
+        2,
+        "two tenants, two claims, one client key"
+    );
+    let tenants = raw_i64(
+        &harness.dsn,
+        "SELECT COUNT(DISTINCT tenant_id) AS v FROM products_idempotency \
+         WHERE client_key = 'shared-key'",
+    )
+    .await;
+    assert_eq!(
+        tenants, 2,
+        "the two claims differ in their tenant component"
+    );
+}
+
+/// The same client key against a **different endpoint** claims too.
+///
+/// `endpoint` is the key's middle component, and P-D-42 puts the concrete
+/// resource path there so that two acts on different resources under one
+/// client key cannot share a key and replay each other's outcome. The other
+/// endpoint here is one of the three reserved non-`HTTP` lane names
+/// (`internal:cascade-leg`), seeded through the repository's own claim path
+/// — which also shows this door coexisting with the lanes rather than only
+/// with its sibling doors.
+#[tokio::test]
+async fn the_same_key_against_a_different_endpoint_also_claims() {
+    let harness = harness().await;
+    let conn = harness
+        .db
+        .conn()
+        .expect("checkout the pinned production connection");
+    let scope = toolkit_db::secure::AccessScope::for_tenant(TENANT);
+    let now = Utc::now();
+    let outcome = repo::claim_idempotency_key(
+        &conn,
+        &scope,
+        TENANT,
+        "internal:cascade-leg",
+        "shared-key",
+        b"a-lane's-own-digest",
+        now,
+        now + chrono::TimeDelta::hours(24),
+    )
+    .await
+    .expect("the lane's claim is taken");
+    assert_eq!(
+        outcome,
+        repo::IdempotencyClaim::Claimed,
+        "this case's own premise: the lane holds the key first"
+    );
+
+    let response = post_create_product_with_key(
+        app_for(&harness, TENANT),
+        TENANT,
+        &json!({ "brand_id": BRAND, "name": "Fibre 500" }),
+        "shared-key",
+    )
+    .await;
+    assert_eq!(
+        response.status(),
+        StatusCode::CREATED,
+        "the same key on a different endpoint is a different key entirely"
+    );
+
+    assert_eq!(
+        idempotency_rows_for(&harness.dsn, "shared-key").await,
+        2,
+        "two endpoints, two claims, one client key"
+    );
+}
+
+/// An `answered` key whose stored digest matches replays the stored response
+/// and executes nothing — **even though this retry carries a precondition**
+/// the original did not.
+///
+/// Two properties in one case, because they share a setup and neither is
+/// meaningful without the other:
+///
+/// - The replay itself (§3.2 `inst-fd-idem-replay-outcome`): the stored
+///   status and body come back and no Product is created.
+/// - The precondition does not participate in the digest (P-D-34). The
+///   stored digest was computed from the body alone; this retry sends the
+///   identical body **plus** an `If-Match`, and is still recognised as the
+///   same request. A door that folded the header into the digest would
+///   answer `IDEMPOTENCY_CONFLICT` here — which is exactly what a client
+///   refused `STALE_REVISION` and retrying with a fresher tag would meet.
+///
+/// The `answered` row is seeded rather than produced by a first create so
+/// that what is measured here is the replay-plus-precondition property and
+/// nothing else: a first create through the door would bring its own entity
+/// row, its own outbox row and its own audit trail, and the two counts this
+/// case asserts to be zero would then be asserting the *difference* a replay
+/// makes rather than that it writes nothing at all. The seeding runs through
+/// `repo::answer_idempotency_key`, the production answer-writer, so the row
+/// read here is written by the code path production writes it with
+/// (`seed_answered_claim`'s own doc).
+#[tokio::test]
+async fn an_answered_key_replays_its_stored_response_even_though_the_retry_carries_a_precondition()
+{
+    let harness = harness().await;
+    let body = json!({ "brand_id": BRAND, "name": "Fibre 500" });
+    seed_answered_claim(&harness, "author-retry-4", &digest_of(&body)).await;
+
+    let response = post_create_product_with_headers(
+        app_for(&harness, TENANT),
+        TENANT,
+        &body,
+        &[("Idempotency-Key", "author-retry-4"), ("If-Match", "\"7\"")],
+    )
+    .await;
+
+    assert_eq!(
+        response.status(),
+        StatusCode::CREATED,
+        "the replay reproduces the stored status, not a freshly computed one"
+    );
+    let replayed = axum::body::to_bytes(response.into_body(), 64 * 1024)
+        .await
+        .expect("read the replayed body");
+    let replayed: serde_json::Value =
+        serde_json::from_slice(&replayed).expect("the replayed body is JSON");
+    assert_eq!(
+        replayed,
+        json!({ "replayed": "the stored answer" }),
+        "the body is the stored one, byte for byte, not a re-rendered view"
+    );
+
+    let persisted = raw_i64(&harness.dsn, "SELECT COUNT(*) AS v FROM products_product").await;
+    assert_eq!(
+        persisted, 0,
+        "a replay executes nothing: no entity row, no event, no second act"
+    );
+    let audit_rows = raw_i64(&harness.dsn, "SELECT COUNT(*) AS v FROM products_audit_log").await;
+    assert_eq!(
+        audit_rows, 0,
+        "a replay is not a refusal and audits nothing of its own"
+    );
+}
+
+/// An `answered` key arriving with a **different** payload is refused
+/// `IDEMPOTENCY_CONFLICT`, audited, and executes nothing.
+///
+/// The pair to the replay above, and the reason the digest is stored at all:
+/// without the comparison the store would answer a different act with
+/// another act's outcome — the silent no-op §3.2 `inst-fd-idem-conflict`
+/// refuses by name.
+#[tokio::test]
+async fn an_answered_key_under_a_different_payload_is_refused_conflict_and_audited() {
+    let harness = harness().await;
+    let original = json!({ "brand_id": BRAND, "name": "Fibre 500" });
+    seed_answered_claim(&harness, "author-retry-5", &digest_of(&original)).await;
+
+    let response = post_create_product_with_key(
+        app_for(&harness, TENANT),
+        TENANT,
+        &json!({ "brand_id": BRAND, "name": "A Different Product Entirely" }),
+        "author-retry-5",
+    )
+    .await;
+    assert_eq!(
+        response.status(),
+        StatusCode::CONFLICT,
+        "a different payload under a live key is a 409"
+    );
+
+    let persisted = raw_i64(&harness.dsn, "SELECT COUNT(*) AS v FROM products_product").await;
+    assert_eq!(persisted, 0, "the refused act wrote nothing");
+    let error_code = raw_string_opt(
+        &harness.dsn,
+        "SELECT error_code AS v FROM products_audit_log",
+    )
+    .await;
+    assert_eq!(
+        error_code.as_deref(),
+        Some("IDEMPOTENCY_CONFLICT"),
+        "the refusal is audited under its own code"
+    );
+}
+
+/// A present but blank `Idempotency-Key` is refused `VALIDATION` and
+/// audited, rather than silently treated as absent.
+///
+/// The skip belongs to a request that asked for no key at all. A caller that
+/// sent the header and got a `201` would reasonably read its act as
+/// protected at-most-once when nothing keyed it, which is the one way this
+/// door could mislead a client about a guarantee it did not give.
+#[tokio::test]
+async fn a_blank_idempotency_key_is_refused_validation_rather_than_skipped() {
+    let harness = harness().await;
+
+    let response = post_create_product_with_key(
+        app_for(&harness, TENANT),
+        TENANT,
+        &json!({ "brand_id": BRAND, "name": "Fibre 500" }),
+        "   ",
+    )
+    .await;
+    assert_eq!(
+        response.status(),
+        StatusCode::BAD_REQUEST,
+        "an unusable key is a shape refusal, not a silent skip"
+    );
+
+    let persisted = raw_i64(&harness.dsn, "SELECT COUNT(*) AS v FROM products_product").await;
+    assert_eq!(persisted, 0, "the refused create wrote no Product");
+    let error_code = raw_string_opt(
+        &harness.dsn,
+        "SELECT error_code AS v FROM products_audit_log",
+    )
+    .await;
+    assert_eq!(
+        error_code.as_deref(),
+        Some("VALIDATION"),
+        "the refusal rides the same VALIDATION code every other shape refusal here does"
+    );
+}
+
+/// Read a response body as generic JSON, for the cases that compare one
+/// response against another rather than against a literal.
+async fn json_body(response: axum::http::Response<Body>) -> serde_json::Value {
+    let bytes = axum::body::to_bytes(response.into_body(), 64 * 1024)
+        .await
+        .expect("read the response body");
+    serde_json::from_slice(&bytes).expect("the response body is JSON")
+}
+
+/// **A retry after a committed create replays the original response, and
+/// executes nothing.** This is the case the whole idempotency store exists
+/// for.
+///
+/// Every other case in this file exercises a half of the mechanism: the
+/// claim, the in-flight refusal, the conflict, the replay of a seeded
+/// answer. This one drives the client's own sequence end to end — a create
+/// that succeeds, then the identical request under the same key, which is
+/// what a client sends after a timeout it never learned the outcome of. Its
+/// answer must be the original `201` and the original body, not a second
+/// Product and not the `IDEMPOTENCY_KEY_IN_FLIGHT` a store with no
+/// answer-writer refuses it with.
+///
+/// Both "executes nothing" halves are asserted on storage rather than on
+/// the status alone: **no second entity row** and **no second outbox row**.
+/// A door that re-ran the mutation and merely happened to answer `201`
+/// would pass a status-only assertion while duplicating the act and the
+/// event.
+#[tokio::test]
+async fn a_retry_after_a_committed_create_replays_the_original_response() {
+    let harness = harness().await;
+    let body = json!({ "brand_id": BRAND, "name": "Fibre 500" });
+
+    let first =
+        post_create_product_with_key(app_for(&harness, TENANT), TENANT, &body, "author-retry-6")
+            .await;
+    assert_eq!(first.status(), StatusCode::CREATED);
+    let original = json_body(first).await;
+
+    let state = raw_string_opt(
+        &harness.dsn,
+        "SELECT state AS v FROM products_idempotency WHERE client_key = 'author-retry-6'",
+    )
+    .await;
+    assert_eq!(
+        state.as_deref(),
+        Some("answered"),
+        "the committed create answered its own claim, in the transaction that took it"
+    );
+
+    let retry =
+        post_create_product_with_key(app_for(&harness, TENANT), TENANT, &body, "author-retry-6")
+            .await;
+    assert_eq!(
+        retry.status(),
+        StatusCode::CREATED,
+        "the retry replays the original status; a store that never answered its claim would \
+         refuse this 409 IDEMPOTENCY_KEY_IN_FLIGHT"
+    );
+    assert_eq!(
+        json_body(retry).await,
+        original,
+        "the replay reproduces the original body, the created view included, not a second \
+         Product's"
+    );
+
+    let persisted = raw_i64(&harness.dsn, "SELECT COUNT(*) AS v FROM products_product").await;
+    assert_eq!(
+        persisted, 1,
+        "the retry executed nothing: no second entity row"
+    );
+    let body_table = format!("{}_body", events::OUTBOX_TABLE_PREFIX);
+    let enqueued = raw_i64(
+        &harness.dsn,
+        &format!("SELECT COUNT(*) AS v FROM {body_table}"),
+    )
+    .await;
+    assert_eq!(
+        enqueued, 1,
+        "the retry executed nothing: no second ProductCreated row"
+    );
+    let audit_rows = raw_i64(&harness.dsn, "SELECT COUNT(*) AS v FROM products_audit_log").await;
+    assert_eq!(
+        audit_rows, 0,
+        "a replay is neither an act nor a refusal, so it audits nothing"
+    );
+    assert_eq!(
+        idempotency_rows_for(&harness.dsn, "author-retry-6").await,
+        1,
+        "one key, one row: the retry answered from it rather than claiming again"
+    );
+}
+
+/// The stored answer is the response the door actually gave: status `201`
+/// and the created view, recorded under the key the caller sent.
+///
+/// The replay case above proves the two agree by comparing responses; this
+/// one reads the columns directly, so a regression that stored, say, a `200`
+/// or an empty object is named at the column rather than diagnosed from a
+/// mismatched replay.
+#[tokio::test]
+async fn the_stored_answer_is_the_status_and_body_the_door_returned() {
+    let harness = harness().await;
+
+    let response = post_create_product_with_key(
+        app_for(&harness, TENANT),
+        TENANT,
+        &json!({ "brand_id": BRAND, "name": "Fibre 500" }),
+        "author-retry-7",
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let answered = json_body(response).await;
+
+    let status = raw_i64(
+        &harness.dsn,
+        "SELECT response_status AS v FROM products_idempotency \
+         WHERE client_key = 'author-retry-7'",
+    )
+    .await;
+    assert_eq!(
+        status, 201,
+        "the stored status is the status the door answered"
+    );
+
+    let stored = raw_string_opt(
+        &harness.dsn,
+        "SELECT response_body AS v FROM products_idempotency \
+         WHERE client_key = 'author-retry-7'",
+    )
+    .await
+    .expect("an answered row carries a body; the CHECK admits no other shape");
+    let stored: serde_json::Value = serde_json::from_str(&stored).expect("the stored body is JSON");
+    assert_eq!(
+        stored, answered,
+        "the stored body is the body the door answered, not a re-rendered view of the row"
     );
 }

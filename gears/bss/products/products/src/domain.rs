@@ -4,6 +4,7 @@
 pub mod concurrency;
 pub mod containment;
 pub mod error;
+pub mod idempotency;
 pub mod name;
 pub mod rules;
 pub mod validation;

@@ -113,6 +113,23 @@ pub(crate) struct ProductsRuntime {
     /// unnecessary place this gear's boot could fail on a missing `db`
     /// capability.
     pub db: toolkit_db::DBProvider<toolkit_db::DbError>,
+
+    /// The operator's `idempotency_retention_hours` **as
+    /// `ProductsConfig::resolved_idempotency_retention_hours` resolved it**,
+    /// carried here for the reason the three fields above are:
+    /// `ctx.config_or_default()` is `init()`'s call, and `register_rest`
+    /// copies the resolved value onto `api::rest::ApiState` so the create
+    /// doors stamp a claim's `expires_at` from what the operator configured.
+    /// `api::rest`'s `idempotency_expiry` previously read
+    /// `ProductsConfig::default()` itself and silently gave every operator
+    /// the design's 24-hour floor.
+    ///
+    /// **Resolved, never raw**: this is the boot-time enforcement point for
+    /// the `max(24h, max_freeze_timeout)` floor (C6,
+    /// `dod-idempotency-store`). A raw `0` stored here would reach
+    /// `idempotency_expiry` and stamp `expires_at == now`, which switches
+    /// at-most-once off with no failure anywhere to see it.
+    pub idempotency_retention_hours: u32,
 }
 
 /// The products gear.
@@ -162,10 +179,26 @@ impl Gear for BssProductsGear {
         // the boot here rather than at the first request that happens to need
         // a field from it.
         let cfg: ProductsConfig = ctx.config_or_default()?;
-        tracing::info!(
-            idempotency_retention_hours = cfg.idempotency_retention_hours,
-            "bss-products initialised"
-        );
+        // The retention window is resolved once, here, and only the resolved
+        // value ever leaves this function. `ProductsConfig::
+        // resolved_idempotency_retention_hours` states why a bad value is
+        // clamped rather than refused; what it cannot do is make the raise
+        // visible, so this is where the operator hears about it. A `0` that
+        // reached `api::rest::idempotency_expiry` would stamp
+        // `expires_at == now`, and the next request on that key would read it
+        // as expired, take it over and run the guarded mutation again.
+        let idempotency_retention_hours = cfg.resolved_idempotency_retention_hours();
+        if idempotency_retention_hours != cfg.idempotency_retention_hours {
+            tracing::warn!(
+                configured_retention_hours = cfg.idempotency_retention_hours,
+                resolved_retention_hours = idempotency_retention_hours,
+                floor_hours = crate::config::IDEMPOTENCY_RETENTION_FLOOR_HOURS,
+                ceiling_hours = crate::config::IDEMPOTENCY_RETENTION_CEILING_HOURS,
+                "bss-products: configured idempotency_retention_hours is outside the \
+                 design's retention bounds and was clamped"
+            );
+        }
+        tracing::info!(idempotency_retention_hours, "bss-products initialised");
 
         // Platform PEP. Authz is security-critical — the catalog this gear
         // authors is what pricing and every downstream reader depend on — so a
@@ -214,6 +247,7 @@ impl Gear for BssProductsGear {
             enforcer,
             outbox,
             db: db_provider,
+            idempotency_retention_hours,
         })));
 
         Ok(())
@@ -256,6 +290,7 @@ impl RestApiCapability for BssProductsGear {
         let api_state = Arc::new(crate::api::rest::ApiState {
             db: rt.db.clone(),
             outbox: Arc::clone(rt.outbox.outbox()),
+            idempotency_retention_hours: rt.idempotency_retention_hours,
         });
         Ok(router
             .merge(crate::api::rest::products::router(

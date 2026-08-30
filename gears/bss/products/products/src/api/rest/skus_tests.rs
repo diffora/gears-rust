@@ -11,12 +11,12 @@
 //! # Harness shape, and why it repeats `products_tests`'s own
 //!
 //! [`harness`] and its helpers (`raw_i64`, `raw_string_opt`, `drop_table`,
-//! `set_parent_lifecycle_state`) are this file's own copies of
+//! `walk_parent_to`) are this file's own copies of
 //! `products_tests`'s identically named functions, for the reason
 //! `crate::api::rest::skus`'s own module doc gives for
 //! [`super::insert_sku_with_event`]: `products_tests.rs` is outside this
 //! slice's `target_paths`, so nothing in it can be imported.
-//! `set_parent_lifecycle_state` is this file's one addition beyond
+//! `walk_parent_to` is this file's one addition beyond
 //! `products_tests`'s own set — the parent-terminal tests need to move a
 //! seeded parent Product to `retired`/`discarded` after insertion, and
 //! `infra::storage::repo` has no lifecycle-transition writer yet (that is
@@ -58,6 +58,7 @@ use uuid::Uuid;
 
 use super::router;
 use crate::api::rest::ApiState;
+use crate::config::ProductsConfig;
 use crate::infra::events;
 use crate::infra::storage::migrations::Migrator;
 use crate::infra::storage::repo::{self, NewProduct};
@@ -186,41 +187,71 @@ async fn drop_table(dsn: &str, table: &str) {
     conn.close().await.ok();
 }
 
-/// Move a seeded parent to `retired`/`discarded` after insertion — the lever
-/// the parent-terminal tests need, since `infra::storage::repo` exposes no
-/// lifecycle-transition writer this door's own slice may call.
+/// Walk a seeded parent to `retired` or `discarded` along **admitted edges**,
+/// bumping `internal_revision` on every step.
 ///
-/// Goes through the **secure** update wrapper, not a bare
-/// `UpdateMany::exec`: the workspace disallows the bare form precisely so a
-/// write cannot reach the database without a scope, and a test helper is not
-/// exempt from the rule it exists alongside. It also settles the storage
-/// representation of the `Uuid`, which a raw `UPDATE ... WHERE product_id =
-/// '<hyphenated>'` did not — the first version of this helper matched no
-/// rows for that reason, leaving the parent `draft` and failing two tests
-/// against a door that was behaving correctly. The `rows_affected`
-/// assertion below is what would catch the next such miss.
-async fn set_parent_lifecycle_state(
+/// It cannot simply write the target state. Phase 5's head-row guard admits
+/// only the edges `draft -> published`, `draft -> discarded`,
+/// `published -> deprecated`, `deprecated -> published` and
+/// `deprecated -> retired`, and it requires `internal_revision` to move by
+/// exactly one on **every** admitted update without exception. An earlier
+/// version of this helper wrote `draft -> retired` in one statement with no
+/// revision bump; the guard refused it on both counts, correctly, and these
+/// two tests went red against a door that was fine. Walking the real path is
+/// also a positive control: it proves the guard admits the transitions the
+/// lifecycle actually uses, not merely that it refuses everything.
+async fn walk_parent_to(
+    provider: &DBProvider<DbError>,
+    scope: &toolkit_db::secure::AccessScope,
+    product_id: Uuid,
+    target: &str,
+) {
+    let path: &[&str] = match target {
+        "discarded" => &["discarded"],
+        "retired" => &["published", "deprecated", "retired"],
+        other => panic!("no admitted path to `{other}` from `draft`"),
+    };
+    for step in path {
+        step_parent_state(provider, scope, product_id, step).await;
+    }
+}
+
+/// One admitted edge, with the revision bump the guard requires and, on the
+/// publish step, the `published_version` bump that goes with it.
+async fn step_parent_state(
     provider: &DBProvider<DbError>,
     scope: &toolkit_db::secure::AccessScope,
     product_id: Uuid,
     state: &str,
 ) {
     use crate::infra::storage::entity::product;
+    use sea_orm::sea_query::ExprTrait as _;
     use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
     use toolkit_db::secure::SecureUpdateExt as _;
 
     let conn = provider.conn().expect("scoped connection");
-    let result = product::Entity::update_many()
+    let mut update = product::Entity::update_many()
         .col_expr(product::Column::LifecycleState, Expr::value(state))
+        .col_expr(
+            product::Column::InternalRevision,
+            Expr::col(product::Column::InternalRevision).add(1_i64),
+        );
+    if state == "published" {
+        update = update.col_expr(
+            product::Column::PublishedVersion,
+            Expr::col(product::Column::PublishedVersion).add(1_i64),
+        );
+    }
+    let result = update
         .filter(product::Column::ProductId.eq(product_id))
         .secure()
         .scope_with(scope)
         .exec(&conn)
         .await
-        .expect("move the parent's lifecycle state");
+        .unwrap_or_else(|e| panic!("move the parent to `{state}`: {e}"));
     assert!(
         result.rows_affected > 0,
-        "the parent's state was never moved to `{state}`, so this test's premise never held"
+        "the parent was never moved to `{state}`, so this test's premise never held"
     );
 }
 
@@ -290,6 +321,9 @@ fn app_for(harness: &TestHarness, tenant: Uuid) -> Router {
     let state = Arc::new(ApiState {
         db: harness.db.clone(),
         outbox: Arc::clone(&harness.outbox),
+        // What `gear.rs` resolves from the operator's file; these tests
+        // configure nothing, so the typed default is what a boot would carry.
+        idempotency_retention_hours: ProductsConfig::default().idempotency_retention_hours,
     });
     let openapi = OpenApiRegistryImpl::new();
     router(state, &openapi).layer(axum::Extension(flat_in_enforcer(tenant)))
@@ -312,6 +346,96 @@ async fn post_create_sku(
     )
     .await
     .expect("the router answers")
+}
+
+/// [`post_create_sku`] carrying `key` as its `Idempotency-Key` — the one
+/// dial this file's idempotency cases turn, kept beside the keyless helper
+/// rather than replacing it so every pre-idempotency case above keeps
+/// exercising the keyless **skip**.
+async fn post_create_sku_with_key(
+    app: Router,
+    tenant: Uuid,
+    body: &serde_json::Value,
+    key: &str,
+) -> axum::http::Response<Body> {
+    app.oneshot(
+        Request::builder()
+            .method("POST")
+            .uri("/bss-products/v1/skus")
+            .header(axum::http::header::CONTENT_TYPE, "application/json")
+            .header("Idempotency-Key", key)
+            .extension(authed_ctx(tenant))
+            .body(Body::from(body.to_string()))
+            .expect("build the create request"),
+    )
+    .await
+    .expect("the router answers")
+}
+
+/// How many `products_idempotency` rows exist for `client_key`, in whatever
+/// state.
+async fn idempotency_rows_for(dsn: &str, client_key: &str) -> i64 {
+    raw_i64(
+        dsn,
+        &format!(
+            "SELECT COUNT(*) AS v FROM products_idempotency WHERE client_key = '{client_key}'"
+        ),
+    )
+    .await
+}
+
+/// The digest this door would take of `body` — computed the way the door
+/// computes it, by parsing the same wire `JSON` into the same `DTO` and
+/// calling the same function, so a case seeding a stored digest cannot
+/// silently disagree with the door about which fields the operand carries.
+///
+/// The Product door's twin (`products_tests::digest_of`) is the same three
+/// lines against that door's own `DTO`.
+fn digest_of(body: &serde_json::Value) -> Vec<u8> {
+    let request: super::CreateSkuRequest =
+        serde_json::from_value(body.clone()).expect("the case's own body parses as the create DTO");
+    super::payload_digest(&request)
+}
+
+/// Seed a **live, unanswered** claim under this door's own endpoint,
+/// recorded against `payload_hash`: the in-flight state, and the only way to
+/// reach it now that a committed create answers its own claim.
+///
+/// `payload_hash` is a parameter rather than a fixed literal because the
+/// digest decides which refusal the seeded state produces: a matching
+/// duplicate is refused `IDEMPOTENCY_KEY_IN_FLIGHT` and a differing one
+/// `IDEMPOTENCY_CONFLICT`, since a payload mismatch "stays
+/// `IDEMPOTENCY_CONFLICT` in either state"
+/// (`design/01-foundation.md` §3.2 `inst-fd-idem-claim-inflight`). The
+/// Product door's twin (`products_tests::seed_live_claim`) carries the same
+/// parameter for the same reason.
+///
+/// The connection is checked back in when this function returns, because the
+/// door's own transaction needs the file-backed pool's single connection.
+async fn seed_live_claim(harness: &TestHarness, client_key: &str, payload_hash: &[u8]) {
+    let conn = harness
+        .db
+        .conn()
+        .expect("checkout the pinned production connection");
+    let scope = toolkit_db::secure::AccessScope::for_tenant(TENANT);
+    let now = Utc::now();
+    let held = repo::claim_idempotency_key(
+        &conn,
+        &scope,
+        TENANT,
+        "/bss-products/v1/skus",
+        client_key,
+        payload_hash,
+        now,
+        now + chrono::TimeDelta::hours(24),
+    )
+    .await
+    .expect("seed the live claim this case collides with");
+    assert_eq!(
+        held,
+        repo::IdempotencyClaim::Claimed,
+        "this case's own premise: the key is held and unanswered"
+    );
 }
 
 /// Insert a parent Product directly through the repository (not through the
@@ -513,7 +637,7 @@ async fn a_parent_belonging_to_another_tenant_is_not_resolvable() {
 async fn a_retired_parent_is_refused_parent_terminal() {
     let harness = harness().await;
     let parent_id = seed_parent(&harness, new_parent_product(Uuid::now_v7(), TENANT)).await;
-    set_parent_lifecycle_state(
+    walk_parent_to(
         &harness.db,
         &toolkit_db::secure::AccessScope::for_tenant(TENANT),
         parent_id,
@@ -548,7 +672,7 @@ async fn a_retired_parent_is_refused_parent_terminal() {
 async fn a_discarded_parent_is_refused_parent_terminal() {
     let harness = harness().await;
     let parent_id = seed_parent(&harness, new_parent_product(Uuid::now_v7(), TENANT)).await;
-    set_parent_lifecycle_state(
+    walk_parent_to(
         &harness.db,
         &toolkit_db::secure::AccessScope::for_tenant(TENANT),
         parent_id,
@@ -860,4 +984,311 @@ async fn a_scope_with_an_empty_token_is_refused_validation() {
         persisted, 0,
         "a refused create must not have left a row behind"
     );
+}
+
+/// A keyed create persists the SKU **and** an `answered` row under **this
+/// door's own** concrete endpoint.
+///
+/// The Product door's twin of this case
+/// (`products_tests::a_create_with_an_idempotency_key_persists_the_entity_and_an_answered_row`)
+/// carries the full reasoning. What is this door's own is the `endpoint`
+/// value asserted below: two creates under one client key, one of a Product
+/// and one of a SKU, are different acts, and the key component that keeps
+/// them apart is exactly this one (P-D-42).
+#[tokio::test]
+async fn a_keyed_create_persists_the_sku_and_an_answered_row_under_this_doors_endpoint() {
+    let harness = harness().await;
+    let parent_id = seed_parent(&harness, new_parent_product(Uuid::now_v7(), TENANT)).await;
+
+    let response = post_create_sku_with_key(
+        app_for(&harness, TENANT),
+        TENANT,
+        &json!({ "product_id": parent_id, "sku_code": "SKU-500" }),
+        "author-retry-1",
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::CREATED);
+
+    let persisted = raw_i64(&harness.dsn, "SELECT COUNT(*) AS v FROM products_sku").await;
+    assert_eq!(persisted, 1, "the entity row is written");
+    assert_eq!(
+        idempotency_rows_for(&harness.dsn, "author-retry-1").await,
+        1,
+        "the key is claimed exactly once"
+    );
+
+    let endpoint = raw_string_opt(
+        &harness.dsn,
+        "SELECT endpoint AS v FROM products_idempotency WHERE client_key = 'author-retry-1'",
+    )
+    .await;
+    assert_eq!(
+        endpoint.as_deref(),
+        Some("/bss-products/v1/skus"),
+        "this door claims under its own concrete resource path, not the Product door's and not \
+         a route template"
+    );
+    let state = raw_string_opt(
+        &harness.dsn,
+        "SELECT state AS v FROM products_idempotency WHERE client_key = 'author-retry-1'",
+    )
+    .await;
+    assert_eq!(
+        state.as_deref(),
+        Some("answered"),
+        "the committed create answered its own claim in the transaction that took it"
+    );
+}
+
+/// A create **without** the header succeeds and claims nothing: the phase is
+/// skipped, not failed (P-D-34).
+///
+/// Stated at this door too rather than left to the Product door's own case,
+/// because the skip is a per-door wiring decision — a door that read the
+/// header into a mandatory field would fail here and nowhere else.
+#[tokio::test]
+async fn a_keyless_sku_create_succeeds_and_claims_nothing() {
+    let harness = harness().await;
+    let parent_id = seed_parent(&harness, new_parent_product(Uuid::now_v7(), TENANT)).await;
+
+    let response = post_create_sku(
+        app_for(&harness, TENANT),
+        TENANT,
+        &json!({ "product_id": parent_id, "sku_code": "SKU-500" }),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::CREATED);
+
+    let claims = raw_i64(
+        &harness.dsn,
+        "SELECT COUNT(*) AS v FROM products_idempotency",
+    )
+    .await;
+    assert_eq!(
+        claims, 0,
+        "a keyless request claims nothing at all: the phase is skipped, not failed"
+    );
+}
+
+/// **A rolled-back SKU mutation frees the key** — the load-bearing property,
+/// asserted at this door as well as at the Product door.
+///
+/// The claim and the entity insert share one transaction (P-D-42), so a
+/// `sku_code` collision rolls the claim back with the mutation and the key
+/// is immediately reusable. Wiring the claim onto a runner of its own would
+/// leave it committed and refuse the client's honest retry
+/// `IDEMPOTENCY_KEY_IN_FLIGHT` for the whole retention window — and this
+/// door has its own copy of the wiring
+/// ([`super::insert_sku_with_event`]), so the Product door's own case cannot
+/// prove it here.
+///
+/// Both halves are asserted: no claim survives the refusal, and a later
+/// create on the same key succeeds.
+#[tokio::test]
+async fn a_rolled_back_sku_mutation_frees_the_key_for_a_later_create() {
+    let harness = harness().await;
+    let parent_id = seed_parent(&harness, new_parent_product(Uuid::now_v7(), TENANT)).await;
+
+    let setup = post_create_sku(
+        app_for(&harness, TENANT),
+        TENANT,
+        &json!({ "product_id": parent_id, "sku_code": "SKU-500" }),
+    )
+    .await;
+    assert_eq!(setup.status(), StatusCode::CREATED);
+
+    let refused = post_create_sku_with_key(
+        app_for(&harness, TENANT),
+        TENANT,
+        &json!({ "product_id": parent_id, "sku_code": "SKU-500" }),
+        "author-retry-2",
+    )
+    .await;
+    assert_eq!(
+        refused.status(),
+        StatusCode::CONFLICT,
+        "the colliding create is refused DUPLICATE_CODE"
+    );
+    assert_eq!(
+        idempotency_rows_for(&harness.dsn, "author-retry-2").await,
+        0,
+        "a refused mutation stores nothing, claim included (P-D-38, P-D-42): the key is free"
+    );
+
+    let retry = post_create_sku_with_key(
+        app_for(&harness, TENANT),
+        TENANT,
+        &json!({ "product_id": parent_id, "sku_code": "SKU-900" }),
+        "author-retry-2",
+    )
+    .await;
+    assert_eq!(
+        retry.status(),
+        StatusCode::CREATED,
+        "the same key claims again after the earlier mutation rolled back"
+    );
+    assert_eq!(
+        idempotency_rows_for(&harness.dsn, "author-retry-2").await,
+        1,
+        "the retry's own claim is the only row the key ever committed"
+    );
+    let persisted = raw_i64(&harness.dsn, "SELECT COUNT(*) AS v FROM products_sku").await;
+    assert_eq!(
+        persisted, 2,
+        "the setup SKU and the retry's, and nothing from the refusal"
+    );
+}
+
+/// A second keyed create while the first claim is live is refused
+/// `IDEMPOTENCY_KEY_IN_FLIGHT` and audited, writing no second SKU.
+///
+/// The duplicate deliberately sends a `sku_code` no row holds, so the `409`
+/// cannot be this door's `DUPLICATE_CODE`: the audited `error_code` is what
+/// tells the two apart, and it also proves the refusal took the shared
+/// `audit_sku_refusal` path rather than one of its own.
+///
+/// **The live claim is seeded, not produced by a first create.** A create
+/// that commits answers its own claim in the same transaction, so no
+/// committed act leaves a `claimed` row behind; `claimed` is the state of an
+/// act still in flight, which here is a claim taken on another connection.
+/// The Product door's twin
+/// (`products_tests::a_second_create_on_a_live_key_is_refused_in_flight_and_audited`)
+/// carries the same note.
+///
+/// **The seeded claim is recorded against this very body's digest.** The
+/// in-flight refusal is reserved for "a duplicate whose payload hash matches
+/// the claimed key's" (§3.2 `inst-fd-idem-claim-inflight`); a mismatch is
+/// `IDEMPOTENCY_CONFLICT` in either state, and is the case below.
+#[tokio::test]
+async fn a_second_keyed_sku_create_on_a_live_key_is_refused_in_flight_and_audited() {
+    let harness = harness().await;
+    let parent_id = seed_parent(&harness, new_parent_product(Uuid::now_v7(), TENANT)).await;
+    let body = json!({ "product_id": parent_id, "sku_code": "SKU-900" });
+    seed_live_claim(&harness, "author-retry-3", &digest_of(&body)).await;
+
+    let second =
+        post_create_sku_with_key(app_for(&harness, TENANT), TENANT, &body, "author-retry-3").await;
+    assert_eq!(second.status(), StatusCode::CONFLICT);
+
+    let persisted = raw_i64(&harness.dsn, "SELECT COUNT(*) AS v FROM products_sku").await;
+    assert_eq!(persisted, 0, "the refused duplicate wrote no SKU");
+    let error_code = raw_string_opt(
+        &harness.dsn,
+        "SELECT error_code AS v FROM products_audit_log",
+    )
+    .await;
+    assert_eq!(
+        error_code.as_deref(),
+        Some("IDEMPOTENCY_KEY_IN_FLIGHT"),
+        "the audited code names the idempotency refusal, not the 409 this door also raises for a \
+         duplicate code"
+    );
+}
+
+/// A second keyed create while the first claim is live, **carrying a
+/// different payload**, is refused `IDEMPOTENCY_CONFLICT` rather than in
+/// flight.
+///
+/// The SKU end of the property the Product door's twin
+/// (`products_tests::a_second_create_on_a_live_key_under_a_different_payload_is_refused_conflict`)
+/// states in full: a payload mismatch "stays `IDEMPOTENCY_CONFLICT` in
+/// either state" (§3.2 `inst-fd-idem-claim-inflight`), so a live claim is
+/// compared against just as a stored answer is. Both doors call the same
+/// `crate::api::rest::claim_idempotency`, and this case is what proves the
+/// SKU door reaches it with its own digest rather than only the Product door
+/// doing so.
+///
+/// The `sku_code` differs from the held claim's, so the `409` is not this
+/// door's `DUPLICATE_CODE` either — the audited `error_code` is the
+/// assertion.
+#[tokio::test]
+async fn a_second_keyed_sku_create_on_a_live_key_under_a_different_payload_is_refused_conflict() {
+    let harness = harness().await;
+    let parent_id = seed_parent(&harness, new_parent_product(Uuid::now_v7(), TENANT)).await;
+    let held = json!({ "product_id": parent_id, "sku_code": "SKU-900" });
+    seed_live_claim(&harness, "author-retry-3b", &digest_of(&held)).await;
+
+    let second = post_create_sku_with_key(
+        app_for(&harness, TENANT),
+        TENANT,
+        &json!({ "product_id": parent_id, "sku_code": "SKU-901" }),
+        "author-retry-3b",
+    )
+    .await;
+    assert_eq!(second.status(), StatusCode::CONFLICT);
+
+    let persisted = raw_i64(&harness.dsn, "SELECT COUNT(*) AS v FROM products_sku").await;
+    assert_eq!(persisted, 0, "the refused duplicate wrote no SKU");
+    let error_code = raw_string_opt(
+        &harness.dsn,
+        "SELECT error_code AS v FROM products_audit_log",
+    )
+    .await;
+    assert_eq!(
+        error_code.as_deref(),
+        Some("IDEMPOTENCY_CONFLICT"),
+        "a mismatching payload under a live claim is a conflict, not an in-flight refusal"
+    );
+}
+
+/// A retry after a committed SKU create replays the original response and
+/// executes nothing — this door's own end of `dod-idempotency-store`.
+///
+/// The Product door's twin
+/// (`products_tests::a_retry_after_a_committed_create_replays_the_original_response`)
+/// carries the full reasoning for why this case, and not the claim cases
+/// above, is what the store exists for. It is stated at this door too
+/// because the answer write is per-door wiring inside
+/// `insert_sku_with_event`: a door that took the claim and never answered it
+/// would pass every other idempotency case in this file and fail only here,
+/// refusing the client's honest retry `IDEMPOTENCY_KEY_IN_FLIGHT`.
+///
+/// Both "executes nothing" halves are asserted on storage: no second SKU row
+/// and no second `SkuCreated` outbox row.
+#[tokio::test]
+async fn a_retry_after_a_committed_sku_create_replays_the_original_response() {
+    let harness = harness().await;
+    let parent_id = seed_parent(&harness, new_parent_product(Uuid::now_v7(), TENANT)).await;
+    let body = json!({ "product_id": parent_id, "sku_code": "SKU-500" });
+
+    let first =
+        post_create_sku_with_key(app_for(&harness, TENANT), TENANT, &body, "author-retry-4").await;
+    assert_eq!(first.status(), StatusCode::CREATED);
+    let original = body_json(first).await;
+
+    let state = raw_string_opt(
+        &harness.dsn,
+        "SELECT state AS v FROM products_idempotency WHERE client_key = 'author-retry-4'",
+    )
+    .await;
+    assert_eq!(
+        state.as_deref(),
+        Some("answered"),
+        "the committed create answered its own claim inside the transaction that took it"
+    );
+
+    let retry =
+        post_create_sku_with_key(app_for(&harness, TENANT), TENANT, &body, "author-retry-4").await;
+    assert_eq!(
+        retry.status(),
+        StatusCode::CREATED,
+        "the retry replays the original status rather than being refused in flight"
+    );
+    assert_eq!(
+        body_json(retry).await,
+        original,
+        "the replay reproduces the original body, not a second SKU's"
+    );
+
+    let persisted = raw_i64(&harness.dsn, "SELECT COUNT(*) AS v FROM products_sku").await;
+    assert_eq!(persisted, 1, "the retry wrote no second SKU row");
+    let body_table = format!("{}_body", events::OUTBOX_TABLE_PREFIX);
+    let enqueued = raw_i64(
+        &harness.dsn,
+        &format!("SELECT COUNT(*) AS v FROM {body_table}"),
+    )
+    .await;
+    assert_eq!(enqueued, 1, "the retry enqueued no second SkuCreated row");
+    let audit_rows = raw_i64(&harness.dsn, "SELECT COUNT(*) AS v FROM products_audit_log").await;
+    assert_eq!(audit_rows, 0, "a replay is neither an act nor a refusal");
 }

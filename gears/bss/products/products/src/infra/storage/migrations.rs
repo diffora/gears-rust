@@ -21,6 +21,7 @@ pub mod m20260829_000002_create_products_product;
 pub mod m20260829_000003_create_products_sku;
 pub mod m20260829_000004_create_products_audit_log;
 pub mod m20260829_000005_create_products_identity_ref;
+pub mod m20260829_000006_create_products_idempotency;
 
 use sea_orm::{ConnectionTrait, Statement};
 use sea_orm_migration::prelude::*;
@@ -85,6 +86,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20260829_000003_create_products_sku::Migration),
             Box::new(m20260829_000004_create_products_audit_log::Migration),
             Box::new(m20260829_000005_create_products_identity_ref::Migration),
+            Box::new(m20260829_000006_create_products_idempotency::Migration),
         ]
     }
 }

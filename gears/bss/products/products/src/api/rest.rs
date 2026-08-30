@@ -68,23 +68,88 @@
 //! have since been made, and the description outlived them — which is why
 //! this section now names where the wiring is rather than where it is not.
 //!
+//! # The idempotency phase, and why its parts sit here
+//!
+//! [`idempotency_key`], [`idempotency_expiry`], [`IdempotencyClaimInput`],
+//! [`claim_idempotency`], [`ClaimVerdict`], [`CreateOutcome`] and
+//! [`replay_response`] are shared by both create doors for this module's own
+//! stated reason: not one of them reads which entity is being served. The
+//! key is read off a header, the expiry off the retention window, the claim
+//! off `(tenant, endpoint, client key)`, and the replay off two stored
+//! columns — a second copy in `skus` would only be a copy to keep in sync.
+//!
+//! **Where the phase sits in the flow.** `design/01-foundation.md` §2's
+//! create-flow step list puts it in step **2**: *"Authorize `product × write`
+//! ...; resolve the idempotency key `(tenant, endpoint, client key)`"* —
+//! after step 1's `actor_ref` resolution, and in the same step as the
+//! authorization gate. Both doors follow §2 rather than
+//! `dod-idempotency-store`'s summary phrase "the first pipeline phase":
+//! the `DoD` names the phase's rank among the *pipeline* phases, and §2 is
+//! the step list that says which of this door's own steps precede it. So the
+//! order is `actor_ref` → authorization gate → **read the key and digest the
+//! payload** → shape validation → the mutation, with the claim `INSERT`
+//! itself executed inside the mutation's transaction (P-D-42; see
+//! [`claim_idempotency`]).
+//!
+//! **The phase is split between two places on purpose.** Reading the header
+//! and digesting the parsed body happen in the handler, at the position
+//! above; the claim `INSERT` happens inside `insert_*_with_event`'s
+//! transaction closure, because P-D-42 makes that `INSERT` the gate and
+//! requires it to join the guarded mutation's transaction so a rollback
+//! frees the key. Nothing observable rides on the gap: a refusal raised
+//! between the two stores nothing either way (P-D-38).
+//!
+//! **A keyless request skips the phase, it does not fail it** (P-D-34,
+//! `dod-idempotency-store`). [`idempotency_key`] answers `Ok(None)` for an
+//! absent header and both doors then claim nothing and create normally. A
+//! later edit that made the header mandatory would contradict §2's own
+//! opening sentence, which says every mutating door *accepts*
+//! `Idempotency-Key` and none requires it.
+//!
+//! **The answer write closes the loop.** §3.2 `inst-fd-idem-claim-write`
+//! requires the door to set `state = answered` with `response_status` and
+//! `response_body` together, in the mutation's own transaction, on
+//! completion. [`record_idempotency_answer`] is where both doors do it,
+//! called from inside the same `insert_*_with_event` closure that took the
+//! claim and wrote the entity row, so all three commit together or not at
+//! all. An earlier version of this doc recorded the gap this left instead:
+//! until the write existed, a committed create left its key `claimed` and
+//! the client's own in-window retry was refused
+//! `IDEMPOTENCY_KEY_IN_FLIGHT` rather than replaying the original `201`.
+//! That is the case the store exists for, and
+//! `products_tests::a_retry_after_a_committed_create_replays_the_original_response`
+//! is what holds it closed.
+//!
+//! **What is stored is what was answered.** The `201`'s body is rendered
+//! **inside** the transaction, stored there, and then returned by the
+//! handler from that same rendered value ([`CreateOutcome::Created`] carries
+//! it) — a door that re-rendered the view for the wire could drift from the
+//! bytes it stored, and a replay that reproduces a different response is
+//! worse than no replay. The one thing a replay cannot reproduce is the
+//! `ETag`, and [`replay_response`]'s own doc says why: the table stores a
+//! status and a body and no headers at all.
+//!
 
 use std::sync::Arc;
 
 use axum::Router;
 use axum::extract::Extension;
-use chrono::{DateTime, Utc};
+use axum::http::{HeaderMap, StatusCode};
+use axum::response::{IntoResponse, Response};
+use chrono::{DateTime, TimeDelta, Utc};
 use sea_orm::DbErr;
+use serde_json::Value as JsonValue;
 use toolkit::api::canonical_prelude::CanonicalError;
 use toolkit_db::DbError;
-use toolkit_db::secure::AccessScope;
+use toolkit_db::secure::{AccessScope, DBRunner};
 use toolkit_security::SecurityContext;
 use uuid::Uuid;
 
 use crate::authz::AuthzError;
 use crate::domain::error::DomainError;
+use crate::domain::validation::ValidationReport;
 use crate::infra::storage::RepoError;
-use crate::infra::storage::repo::{self, AuditCommon, RefusalSubject};
+use crate::infra::storage::repo::{self, AuditCommon, IdempotencyClaim, RefusalSubject};
 
 pub mod preconditions;
 pub mod products;
@@ -117,11 +182,17 @@ pub(crate) struct ApiState {
     /// The provider `state.db.conn()` opens a non-transactional runner from,
     /// and `state.db.transaction(..)` opens a transactional one from. The
     /// read door only ever calls `.conn()`; the create door
-    /// (`products::create_product`) calls `.transaction(..)` three times —
-    /// once for `resolve_actor_ref`, once for the entity insert plus its
-    /// outbox row, and once more, conditionally, for a refusal's audit row —
-    /// each its own, per this module's doc on the entity/outbox pairing and
+    /// (`products::create_product`) opens three transactions — one for
+    /// `resolve_actor_ref`, one for the entity insert plus its outbox row,
+    /// and one more, conditionally, for a refusal's audit row — each its
+    /// own, per this module's doc on the entity/outbox pairing and
     /// `infra::storage::repo`'s own doc on the other two.
+    ///
+    /// The middle one is opened through `state.db.db().
+    /// transaction_with_retry(..)` rather than `state.db.transaction(..)`:
+    /// it is the transaction concurrent duplicates collide on by design, and
+    /// `DBProvider::transaction` has no contention retry. See
+    /// `products::insert_product_with_event`'s own doc.
     pub(crate) db: toolkit_db::DBProvider<toolkit_db::DbError>,
     /// The running transactional-outbox pipeline the create doors enqueue
     /// their events through, inside the same mutation transaction that
@@ -129,6 +200,15 @@ pub(crate) struct ApiState {
     /// `register_rest` from the handle the runtime holds; see this module's
     /// doc, "The outbox wiring, and where it lives".
     pub(crate) outbox: Arc<toolkit_db::outbox::Outbox>,
+    /// The operator's own `idempotency_retention_hours`
+    /// ([`crate::config::ProductsConfig`]), resolved once in `gear.rs`'s `init` from
+    /// `ctx.config_or_default()` and carried here for the same reason the
+    /// enforcer, the outbox and the provider are: a door reads per-request
+    /// state, never a configuration source of its own. [`idempotency_expiry`]
+    /// is its only reader. An earlier version read
+    /// `ProductsConfig::default()` here, which silently gave every operator
+    /// the design's 24-hour floor however they had configured the window.
+    pub(crate) idempotency_retention_hours: u32,
 }
 
 /// Extract the authenticated [`SecurityContext`] from the request
@@ -323,4 +403,429 @@ pub(crate) async fn audit_refusal_and_report(
             CanonicalError::from(DomainError::AuditUnavailable(db_error.to_string()))
         }
     }
+}
+
+/// The header a caller carries its idempotency key in
+/// (`design/01-foundation.md` §2: every mutating door *accepts*
+/// `Idempotency-Key`, and none requires it).
+pub(crate) const IDEMPOTENCY_KEY_HEADER: &str = "Idempotency-Key";
+
+/// The idempotency key on this request, if it carries one.
+///
+/// `Ok(None)` is the **skip**, not a failure: a create without the header
+/// proceeds normally and claims nothing (`dod-idempotency-store`, P-D-34:
+/// "skipping the phase on a keyless request rather than failing it"). A
+/// later edit that turned this into a refusal would make the header
+/// mandatory on every mutating door, which is the opposite of what §2 says
+/// the doors accept.
+///
+/// # Errors
+///
+/// [`DomainError::Validation`] naming `Idempotency-Key` when the header is
+/// **present but unusable** — not valid `UTF-8`, or blank after trimming.
+/// Present-but-unusable is not the same as absent: the caller asked for
+/// at-most-once semantics and this door cannot key them, and silently
+/// skipping the phase would hand back a `201` the caller would reasonably
+/// read as protected. The same `VALIDATION` code and the same
+/// audit-then-answer discipline as every other shape refusal, following
+/// `preconditions::if_match`'s own reading of an unreadable header.
+pub(crate) fn idempotency_key(headers: &HeaderMap) -> Result<Option<String>, DomainError> {
+    let Some(raw) = headers.get(IDEMPOTENCY_KEY_HEADER) else {
+        return Ok(None);
+    };
+    let value = raw
+        .to_str()
+        .map_err(|_| refuse_idempotency_key("the header value is not valid UTF-8"))?
+        .trim();
+    if value.is_empty() {
+        return Err(refuse_idempotency_key(
+            "the header is present but blank; send a stable, caller-chosen key or omit the \
+             header entirely",
+        ));
+    }
+    Ok(Some(value.to_owned()))
+}
+
+/// Build the [`DomainError::Validation`] an unusable `Idempotency-Key` is
+/// refused with — one site, so every case [`idempotency_key`] raises carries
+/// the same subject and the same wire code.
+fn refuse_idempotency_key(detail: &str) -> DomainError {
+    let mut report = ValidationReport::new();
+    report.violate("VALIDATION", IDEMPOTENCY_KEY_HEADER, detail);
+    DomainError::Validation(report)
+}
+
+/// The `expires_at` a claim taken at `now` is stamped with — the key's
+/// **retention** window, not a deadline anything waits on
+/// (`design/01-foundation.md` §3.2 `inst-fd-idem-retention`).
+///
+/// The floor the design pins is `max(24h, max_freeze_timeout)`, and
+/// [`crate::config::ProductsConfig`]'s own field doc records that the second half has no
+/// source until the catalog-version feature exists. `retention_hours` is the
+/// **operator's** value as
+/// [`crate::config::ProductsConfig::resolved_idempotency_retention_hours`]
+/// resolved it, carried from `gear.rs`'s `ctx.config_or_default()` on
+/// [`ApiState::idempotency_retention_hours`] — an earlier version read
+/// `ProductsConfig::default()` right here, so an operator who raised the
+/// window silently got the 24-hour minimum instead.
+///
+/// # The floor is enforced at boot, and the fallback here is the floor too
+///
+/// The clamp belongs at boot, where a bad value cannot get past it, so this
+/// function is not where the floor is decided — see
+/// `resolved_idempotency_retention_hours`. What it must still not do is
+/// **degrade**: the arithmetic can fail only for a window `chrono` cannot
+/// add to `now`, and the previous `unwrap_or(now)` answered that with
+/// `expires_at == now`, i.e. a key that is already expired when it is
+/// written. The next request on it takes it over and re-executes the guarded
+/// mutation — the longest window an operator can ask for silently becoming
+/// no window at all. The fallback is therefore the floor, and it is logged:
+/// the boot-time ceiling makes this unreachable, and an unreachable arm that
+/// is wrong is exactly the kind that stays wrong.
+fn idempotency_expiry(now: DateTime<Utc>, retention_hours: u32) -> DateTime<Utc> {
+    let stamp = |hours: u32| {
+        TimeDelta::try_hours(i64::from(hours)).and_then(|window| now.checked_add_signed(window))
+    };
+    if let Some(expires_at) = stamp(retention_hours) {
+        return expires_at;
+    }
+    tracing::error!(
+        retention_hours,
+        floor_hours = crate::config::IDEMPOTENCY_RETENTION_FLOOR_HOURS,
+        "bss-products: idempotency retention window is not representable; stamping the \
+         design's floor instead"
+    );
+    // The floor is hours away from `now`, so this cannot fail for any
+    // instant a running process can observe; `now` is returned only for one
+    // within a day of `chrono`'s own maximum, and the error above has
+    // already been emitted by then.
+    stamp(crate::config::IDEMPOTENCY_RETENTION_FLOOR_HOURS).unwrap_or(now)
+}
+
+/// The `DbErr` inside a [`DbError`], for `Db::transaction_with_retry`'s
+/// contention classifier — the one piece of glue that helper asks a caller
+/// for.
+///
+/// Only [`DbError::Sea`] can carry one. Every other variant is a
+/// configuration or connection-string fault that no retry can clear, and
+/// returning `None` for those is what short-circuits the retry loop instead
+/// of paying the backoff for a failure that will repeat identically.
+pub(crate) fn contention_db_err(error: &DbError) -> Option<&DbErr> {
+    if let DbError::Sea(err) = error {
+        Some(err)
+    } else {
+        None
+    }
+}
+
+/// Everything [`claim_idempotency`] needs beyond the runner, the scope and
+/// the tenant, grouped because these five always travel together: a door
+/// that has a key to claim has all of them, never a subset.
+///
+/// [`Clone`] because the mutation that carries it runs under
+/// `Db::transaction_with_retry`, whose body is `FnMut` and may be re-entered
+/// on a retryable contention failure: every attempt gets its own copy of the
+/// inputs, and no attempt can consume what the next one needs. The values
+/// are the same on every attempt by construction — `now` and `expires_at`
+/// are stamped once, before the first attempt, so a retry claims the same
+/// window rather than sliding it forward.
+#[derive(Clone)]
+pub(crate) struct IdempotencyClaimInput {
+    /// The **concrete resource path**, never the route template (P-D-42):
+    /// `/bss-products/v1/products`, not a pattern with a placeholder. Three
+    /// reserved lane names — `internal:scheduled-activation`,
+    /// `internal:cascade-leg`, `internal:bulk-row` — are held for non-HTTP
+    /// callers; this phase has none, so both doors pass their own path.
+    pub(crate) endpoint: &'static str,
+    /// The caller's own `Idempotency-Key`, as [`idempotency_key`] read it.
+    pub(crate) client_key: String,
+    /// `crate::domain::idempotency::payload_digest` over the parsed body.
+    pub(crate) payload_hash: Vec<u8>,
+    /// The door's own request instant.
+    pub(crate) now: DateTime<Utc>,
+    /// [`idempotency_expiry`]'s answer for that instant.
+    pub(crate) expires_at: DateTime<Utc>,
+}
+
+impl IdempotencyClaimInput {
+    /// Build the input for `endpoint`, `client_key` and `payload_hash` at
+    /// `now`, stamping the expiry from the retention window so no door
+    /// spells that arithmetic itself.
+    ///
+    /// `retention_hours` is the operator's own window, read off
+    /// [`ApiState::idempotency_retention_hours`] by the calling door — this
+    /// type reaches no configuration of its own, exactly as it reasons about
+    /// no clock of its own.
+    pub(crate) fn new(
+        endpoint: &'static str,
+        client_key: String,
+        payload_hash: Vec<u8>,
+        now: DateTime<Utc>,
+        retention_hours: u32,
+    ) -> Self {
+        Self {
+            endpoint,
+            client_key,
+            payload_hash,
+            now,
+            expires_at: idempotency_expiry(now, retention_hours),
+        }
+    }
+}
+
+/// What a door does next, having asked the store for the key.
+///
+/// Three outcomes, kept apart here rather than collapsed into a
+/// `Result<bool, _>`, because each one is a different act: one proceeds, one
+/// answers without executing anything, and one refuses.
+pub(crate) enum ClaimVerdict {
+    /// The key is this caller's; the guarded mutation runs.
+    Proceed,
+    /// A stored answer exists for this key **and** the payloads agree: serve
+    /// it and execute nothing (§3.2 `inst-fd-idem-replay-outcome`).
+    Replay {
+        /// The status the original caller was told.
+        status: i32,
+        /// The body the original caller was told.
+        body: JsonValue,
+    },
+    /// `IDEMPOTENCY_CONFLICT` (a different payload under a live key, in
+    /// **either** of its states — stored answer or live claim) or
+    /// `IDEMPOTENCY_KEY_IN_FLIGHT` (the same payload under a live claim, or
+    /// a lost takeover race). Both execute nothing and both audit through
+    /// [`audit_refusal_and_report`] like every other refusal on this
+    /// surface.
+    Refused(DomainError),
+}
+
+/// What a create door's mutation transaction produced.
+///
+/// Not generic over the entity record, and deliberately so. The idempotency
+/// phase runs inside the mutation's own transaction (P-D-42) and can end it
+/// before the entity exists, so this type has to be able to say "no row, and
+/// here is why" without inventing one — and the created arm carries the
+/// **rendered response body**, not the record, because that same body was
+/// stored as the answer inside the transaction that built it
+/// ([`record_idempotency_answer`]). A variant carrying the record instead
+/// would leave the handler free to re-render a view that could differ from
+/// the bytes a later replay serves; carrying the value makes the two the
+/// same object. `internal_revision` rides beside it because it is the
+/// `ETag`'s operand and is the one field the handler still needs that the
+/// body cannot supply as a header.
+pub(crate) enum CreateOutcome {
+    /// The mutation ran: the created view as it will be answered, and the
+    /// revision the `ETag` is minted from.
+    Created {
+        /// The row's `internal_revision`, the `ETag` operand
+        /// (`crate::domain::concurrency`).
+        internal_revision: i64,
+        /// The response body, rendered inside the transaction and stored
+        /// there as the idempotency answer when the request carried a key.
+        body: JsonValue,
+    },
+    /// A stored answer was replayed; nothing was written.
+    Replay {
+        /// The stored status.
+        status: i32,
+        /// The stored body.
+        body: JsonValue,
+    },
+    /// The idempotency phase refused; nothing was written.
+    Refused(DomainError),
+}
+
+/// The status a create answers on success, and therefore the status a
+/// replay of that create reproduces.
+///
+/// One spelling, read by the response the door builds **and** by the answer
+/// it stores, so the two cannot drift: a stored status that was not the
+/// status answered would make every later replay a different response from
+/// the original.
+pub(crate) const CREATE_RESPONSE_STATUS: StatusCode = StatusCode::CREATED;
+
+/// Take the claim for `input` **on the caller's own runner** and read the
+/// outcome as a [`ClaimVerdict`].
+///
+/// # `runner` MUST be the guarded mutation's transaction
+///
+/// `repo::claim_idempotency_key`'s own doc states the obligation and why it
+/// is stricter than `repo::resolve_actor_ref`'s: the claim `INSERT` **is**
+/// the gate (P-D-42), and joining the mutation's transaction is what makes a
+/// rollback free the key with no release step. A claim taken on a runner of
+/// its own would survive a mutation that rolled back and lock the key
+/// against an act that never happened — the one property this whole
+/// mechanism exists to provide. Both doors therefore call this from inside
+/// their `insert_*_with_event` closure, before the entity insert.
+///
+/// The payload comparison is made **here** and not in the repository: that
+/// layer was never handed the incoming request to compare against the stored
+/// digest (`IdempotencyClaim::Answered`'s own doc), and the comparison is
+/// what separates a replay from `IDEMPOTENCY_CONFLICT`
+/// (§3.2 `inst-fd-idem-conflict`).
+///
+/// # The comparison is owed against a live claim too, with one exception
+///
+/// §3.2 `inst-fd-idem-claim-inflight` reserves `IDEMPOTENCY_KEY_IN_FLIGHT`
+/// for a duplicate "**whose payload hash matches the claimed key's**"; a
+/// mismatch "stays `IDEMPOTENCY_CONFLICT` **in either state**". So the digest
+/// is compared against an `answered` row and against a live `claimed` one
+/// alike, and only the matching duplicate is told in flight. Answering
+/// in-flight for a mismatch would tell a client that its *different* request
+/// is merely racing itself, and invite the retry that keeps being refused.
+///
+/// The exception is `IdempotencyClaim::TakeoverRaceLost` and it is the
+/// reason that outcome is a variant rather than an in-flight hit with no
+/// digest: the loser of an expired-key takeover "may even carry a different
+/// payload from the winner, and is still refused in-flight rather than for
+/// the mismatch, since this transaction never compared the two"
+/// (§3.2 `inst-fd-idem-retention`, P-D-49). It read the *expired* holder's
+/// row; the payload now under the key is the winner's, which it never saw.
+/// A conflict raised from a digest this transaction never read would be a
+/// fabricated verdict, so the two paths stay apart in the type rather than
+/// in a comment.
+///
+/// # Errors
+///
+/// [`RepoError`] exactly as `repo::claim_idempotency_key` raises it — a
+/// storage or scope failure, or a stored row that contradicts its own
+/// `CHECK` constraints.
+pub(crate) async fn claim_idempotency(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    input: &IdempotencyClaimInput,
+) -> Result<ClaimVerdict, RepoError> {
+    let claim = repo::claim_idempotency_key(
+        runner,
+        scope,
+        tenant_id,
+        input.endpoint,
+        &input.client_key,
+        &input.payload_hash,
+        input.now,
+        input.expires_at,
+    )
+    .await?;
+
+    Ok(match claim {
+        IdempotencyClaim::Claimed => ClaimVerdict::Proceed,
+        IdempotencyClaim::Answered {
+            payload_hash,
+            response_status,
+            response_body,
+        } => {
+            if payload_hash == input.payload_hash {
+                ClaimVerdict::Replay {
+                    status: response_status,
+                    body: response_body,
+                }
+            } else {
+                ClaimVerdict::Refused(DomainError::IdempotencyConflict(format!(
+                    "{} was already answered for a different payload on {}",
+                    input.client_key, input.endpoint
+                )))
+            }
+        }
+        IdempotencyClaim::InFlight { payload_hash } if payload_hash != input.payload_hash => {
+            ClaimVerdict::Refused(DomainError::IdempotencyConflict(format!(
+                "{} is held by an act still in flight under a different payload on {}",
+                input.client_key, input.endpoint
+            )))
+        }
+        IdempotencyClaim::InFlight { .. } | IdempotencyClaim::TakeoverRaceLost => {
+            ClaimVerdict::Refused(DomainError::IdempotencyKeyInFlight(format!(
+                "{} is held by an act still in flight on {}",
+                input.client_key, input.endpoint
+            )))
+        }
+    })
+}
+
+/// Record the answer for `input`'s key **on the caller's own runner**: the
+/// status and body the door is about to return, written into the claim the
+/// same transaction took (§3.2 `inst-fd-idem-claim-write`, P-D-29).
+///
+/// # `runner` MUST be the runner the claim and the mutation ran on
+///
+/// `repo::answer_idempotency_key`'s own doc states the obligation:
+/// claim, mutation and answer commit together or not at all. Both doors call
+/// this from inside their `insert_*_with_event` closure, after the entity
+/// insert and the outbox enqueue, on the same `tx`.
+///
+/// # A key that is not held fails the mutation
+///
+/// `repo::answer_idempotency_key` reports `IdempotencyAnswer::NotHeld`
+/// rather than raising, because a lane answering a claim taken elsewhere may
+/// legitimately meet it. **This caller is not that caller**: the claim was
+/// taken on this very transaction moments earlier, so nothing outside it can
+/// have moved the row, and a `NotHeld` here means the store contradicts
+/// itself. Answering `201` anyway would commit an act whose answer was never
+/// recorded — the state this whole write exists to remove — so it is
+/// surfaced as an error, the mutation rolls back, and the key is left free
+/// for the client's retry to claim honestly.
+///
+/// # Errors
+///
+/// [`RepoError::Db`] as the repository raises it, or one naming the
+/// unheld key.
+pub(crate) async fn record_idempotency_answer(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    input: &IdempotencyClaimInput,
+    status: StatusCode,
+    body: &JsonValue,
+) -> Result<(), RepoError> {
+    let recorded = repo::answer_idempotency_key(
+        runner,
+        scope,
+        tenant_id,
+        input.endpoint,
+        &input.client_key,
+        i32::from(status.as_u16()),
+        body.clone(),
+    )
+    .await?;
+
+    if recorded == repo::IdempotencyAnswer::NotHeld {
+        return Err(RepoError::Db(format!(
+            "idempotency key {} on {} was claimed by this transaction but no claimed row \
+             remained to answer",
+            input.client_key, input.endpoint
+        )));
+    }
+    Ok(())
+}
+
+/// Serve a stored answer as a replay: the recorded status and body, and
+/// nothing else.
+///
+/// **No `ETag`.** `products_idempotency` stores a status and a body and no
+/// headers at all (§3.2 `inst-fd-idem-claim-write`, §4.4's two response
+/// columns), so a replay cannot reproduce the original `ETag`. A client that
+/// needs the tag reads the head, which is the door that mints tags. This is
+/// a property of the stored shape rather than of this function, and is
+/// stated here because it is where a reader would look for the missing
+/// header.
+///
+/// A stored status outside `u16`, or outside the status range, answers a
+/// bare 500 rather than a fabricated status: reaching it means a row was
+/// written around this gear, since the only writer is a door that stores the
+/// status it just answered.
+pub(crate) fn replay_response(status: i32, body: JsonValue) -> Response {
+    let recorded = u16::try_from(status)
+        .ok()
+        .and_then(|code| StatusCode::from_u16(code).ok());
+    if let Some(code) = recorded {
+        return (code, axum::Json(body)).into_response();
+    }
+    tracing::error!(
+        status,
+        "bss-products: stored idempotency response_status is not a status code"
+    );
+    CanonicalError::internal(format!(
+        "bss-products: stored idempotency response_status {status} is not a status code"
+    ))
+    .create()
+    .into_response()
 }

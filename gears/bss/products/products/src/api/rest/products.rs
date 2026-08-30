@@ -131,34 +131,66 @@
 //! and the wiring gap this slice leaves in `gear.rs` for the running
 //! [`toolkit_db::outbox::Outbox`] instance [`ApiState`] now carries.
 //!
+//! # Idempotency: what this door claims, and where
+//!
+//! A create carrying an `Idempotency-Key` claims
+//! `(tenant_id, "/bss-products/v1/products", key)` for the digest of its own
+//! parsed body ([`payload_digest`]), and **the claim `INSERT` runs inside the
+//! mutation's transaction** ([`insert_product_with_event`], P-D-42) so a
+//! rollback frees the key. A create **without** the header skips the phase
+//! and creates normally (P-D-34) — it is a skip, not a refusal, and a later
+//! edit must not invert it. `endpoint` is the concrete resource path, never
+//! a route template ([`CREATE_ENDPOINT`]).
+//!
+//! The three outcomes: a fresh claim proceeds; a stored answer whose digest
+//! matches is replayed with nothing executed; a stored answer under a
+//! different digest is `IDEMPOTENCY_CONFLICT` and a live claim is
+//! `IDEMPOTENCY_KEY_IN_FLIGHT`. Both refusals go through the same
+//! `crate::api::rest::audit_refusal_and_report` every other refusal here
+//! uses — an idempotency refusal is a refusal, and gets no fourth path.
+//!
+//! A committed create **writes its answer back** before the transaction
+//! ends: `state = answered` with the `201` and the rendered
+//! [`ProductView`], through `crate::api::rest::record_idempotency_answer`,
+//! on the same `tx` as the claim and the row
+//! ([`insert_product_with_event`]). That is what makes the client's own
+//! in-window retry replay the original response instead of being refused
+//! `IDEMPOTENCY_KEY_IN_FLIGHT` for an act that already succeeded.
+//!
 //! @cpt-cf-bss-products-dod-read-door
 //! @cpt-cf-bss-products-dod-create-doors
 //! @cpt-cf-bss-products-dod-code-reservation
+//! @cpt-cf-bss-products-dod-idempotency-store
 
 use std::sync::Arc;
 
 use axum::Json;
 use axum::Router;
 use axum::extract::{Extension, Path};
+use axum::http::HeaderMap;
 use axum::http::StatusCode;
 use axum::http::header::ETAG;
 use axum::response::{IntoResponse, Response};
 use chrono::{DateTime, Utc};
 use sea_orm::DbErr;
+use serde_json::{Map as JsonMap, Value as JsonValue};
 use toolkit::api::OpenApiRegistry;
 use toolkit::api::canonical_prelude::{CanonicalError, resource_error};
 use toolkit::api::operation_builder::OperationBuilder;
 use toolkit_db::DbError;
-use toolkit_db::secure::AccessScope;
+use toolkit_db::secure::{AccessScope, TxConfig};
 use toolkit_security::SecurityContext;
 use uuid::Uuid;
 
 use crate::api::rest::preconditions;
 use crate::api::rest::{
-    ApiState, authz_error_to_canonical, repo_error_to_canonical, require_authenticated,
+    ApiState, CREATE_RESPONSE_STATUS, ClaimVerdict, CreateOutcome, IdempotencyClaimInput,
+    authz_error_to_canonical, claim_idempotency, contention_db_err, idempotency_key,
+    record_idempotency_answer, replay_response, repo_error_to_canonical, require_authenticated,
 };
 use crate::domain::concurrency::InternalRevision;
 use crate::domain::error::DomainError;
+use crate::domain::idempotency;
 use crate::domain::name;
 use crate::domain::validation::ValidationReport;
 use crate::infra::events;
@@ -167,6 +199,26 @@ use crate::infra::storage::repo::{self, NewProduct, ProductRecord, RefusalSubjec
 
 /// `OpenAPI` tag for the Product surface's operations.
 const TAG: &str = "BSS Products";
+
+/// The `endpoint` component of every idempotency key this door claims
+/// (**P-D-42**: *"`endpoint` MUST be the concrete resource path, not the
+/// route template"*).
+///
+/// A create's concrete path **is** the collection path — there is no id yet
+/// to put in it — so this constant and the path [`router`] registers are the
+/// same string, and they are two spellings on purpose: the router's is a
+/// literal because route registration is what the architecture lint over
+/// route shape reads, and this one is what the store is keyed by. They must
+/// stay equal; a door claiming a key under a path it does not serve would
+/// let one caller's key collide with another door's.
+///
+/// Three lane names are reserved for callers with no wire surface —
+/// `internal:scheduled-activation`, `internal:cascade-leg`,
+/// `internal:bulk-row` — and this phase has none, so none is used here. They
+/// are named rather than defined as constants because the first non-`HTTP`
+/// caller is the one that knows which of the three it is and what it writes
+/// in `client_key`.
+const CREATE_ENDPOINT: &str = "/bss-products/v1/products";
 
 /// The Product entity's resource marker for this file's own 403/404
 /// answers — an authz deny on either door, and the read door's scope-closed
@@ -285,7 +337,13 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
              `VALIDATION`. \
              `product_code`'s and the normalized name's uniqueness are reserved by the insert \
              itself: a collision refuses `DUPLICATE_CODE`/`DUPLICATE_NAME`, each with an \
-             audited reason.",
+             audited reason. \
+             An optional `Idempotency-Key` header claims the key \
+             `(tenant, /bss-products/v1/products, key)` in the same transaction as the \
+             mutation: a duplicate under a live key is refused \
+             `IDEMPOTENCY_KEY_IN_FLIGHT`, and the same key under a different payload is \
+             refused `IDEMPOTENCY_CONFLICT`. A request without the header is created \
+             normally.",
         )
         .tag(TAG)
         .authenticated()
@@ -420,6 +478,51 @@ pub struct CreateProductRequest {
     pub brand_scope: Option<String>,
 }
 
+/// The digest of one parsed create request, as the claim is taken against
+/// (`crate::domain::idempotency`, **P-D-34**).
+///
+/// The operand is the **fields this request carries**, each rendered from
+/// the parsed value rather than from the received bytes: an omitted optional
+/// field is left out of the object entirely rather than rendered `null`, so
+/// a client that omits `product_code` and one that clears it are only the
+/// same request to the extent this `DTO` can tell them apart — which it
+/// cannot, since `Option<String>` collapses an absent key and an explicit
+/// `null` into one `None` (`CreateSkuRequest`'s own doc names the same
+/// three-state reading from the other side). Telling those two apart is owed
+/// to whichever door first needs the distinction on the wire, and it costs a
+/// `DTO` change, not a change here.
+///
+/// The values are rendered as the domain rendering takes them: a `Uuid` as
+/// its canonical hyphenated string, a `String` verbatim — deliberately
+/// **before** this door's own trimming and `name` normalization, because the
+/// hash's subject is the request the caller sent, not the row this door
+/// derives from it.
+///
+/// Nothing about the transport enters the object: no header, no
+/// correlation id, no precondition (**P-D-34**; the `If-Match` exclusion is
+/// structural here, since this function is never handed the headers).
+fn payload_digest(request: &CreateProductRequest) -> Vec<u8> {
+    let mut fields = JsonMap::new();
+    if let Some(id) = request.id {
+        fields.insert("id".to_owned(), JsonValue::String(id.to_string()));
+    }
+    fields.insert(
+        "brand_id".to_owned(),
+        JsonValue::String(request.brand_id.to_string()),
+    );
+    fields.insert("name".to_owned(), JsonValue::String(request.name.clone()));
+    if let Some(code) = request.product_code.clone() {
+        fields.insert("product_code".to_owned(), JsonValue::String(code));
+    }
+    if let Some(region) = request.region_scope.clone() {
+        fields.insert("region_scope".to_owned(), JsonValue::String(region));
+    }
+    if let Some(brand) = request.brand_scope.clone() {
+        fields.insert("brand_scope".to_owned(), JsonValue::String(brand));
+    }
+    idempotency::payload_digest(&JsonValue::Object(fields))
+}
+
 /// Insert the entity row and enqueue its `ProductCreated` event, in one
 /// transaction (`dod-create-doors`) — and nothing else. Split out of
 /// [`create_product`] to keep that function's own body to the steps its doc
@@ -430,40 +533,154 @@ pub struct CreateProductRequest {
 /// distinguish a unique-index collision from an unrelated storage failure
 /// (`classify_insert_conflict`), which a [`CanonicalError`] would already
 /// have discarded.
+///
+/// # The claim runs here, on the mutation's own runner
+///
+/// `claim` is `Some` exactly when the request carried an `Idempotency-Key`
+/// (a keyless request skips the phase, P-D-34), and its `INSERT` is executed
+/// **inside this closure**, on the same `tx` the entity insert and the
+/// outbox enqueue run on. That is P-D-42's whole requirement and this
+/// function is where it is discharged: the claim, the entity row and the
+/// event commit together or not at all, so a rollback frees the key with no
+/// release step of its own. Moving the claim to a runner of its own — a
+/// second `state.db.transaction(..)`, or `state.db.conn()` before this call
+/// — would leave a claim behind for a mutation that never committed, which
+/// is the defect `products_tests
+/// ::a_rolled_back_mutation_frees_the_key_for_a_later_create` exists to
+/// catch.
+///
+/// The claim is the closure's **first** statement, so a replay or a refusal
+/// ends the transaction before the entity insert runs and nothing is
+/// written on either path (P-D-38).
+///
+/// # The answer is the closure's **last** statement, and why it is last
+///
+/// `record_idempotency_answer` runs after the entity insert and after the
+/// outbox enqueue, because it stores the response body and the body cannot
+/// be rendered before the row it renders exists. Everything the answer
+/// records is therefore already written when it runs, and it commits with
+/// them — `inst-fd-idem-claim-write`'s "together or not at all". Ordering it
+/// before the enqueue would be no safer and would store an answer for an
+/// event that had not been queued yet; ordering it outside the closure would
+/// leave a committed create with a `claimed` key, which is the state the
+/// write exists to remove.
+///
+/// The body is rendered here, once, and travels out on
+/// [`CreateOutcome::Created`] — the handler answers **that** value rather
+/// than re-rendering the view, so what a later replay serves and what the
+/// original caller was told are the same bytes.
+///
+/// # The mutation runs under `transaction_with_retry`, not a bare transaction
+///
+/// `DBProvider::transaction` has no contention retry, and the claim `INSERT`
+/// being the gate (P-D-42) makes this transaction one that *concurrent
+/// duplicates deliberately collide on*. On `SQLite` "the loser is answered
+/// `SQLITE_BUSY` rather than blocking, so the door carries a busy timeout and
+/// retries" (`design/01-foundation.md` §3.2 `inst-fd-idem-claim-txn`), and on
+/// `PostgreSQL` the same collision can surface as a serialization failure.
+/// Without a retry that transaction fails outright, and the failure carries
+/// neither "unique constraint" nor "duplicate key", so `classify_insert_conflict`
+/// does not recognise it either: the client gets a bare 500 instead of the
+/// replay or the `409` the store promises it. `toolkit_db::Db::
+/// transaction_with_retry` classifies both through
+/// `toolkit_db::contention::is_retryable_contention`, and `contention_db_err`
+/// is the accessor it asks the caller for.
+///
+/// **The closure is safe to re-run.** Its first statement is the claim, and
+/// the claim rolls back with everything after it (P-D-38), so a retried
+/// attempt starts against exactly the state the first one started against:
+/// no key held, no entity row, no outbox row. Nothing in it is derived from
+/// the attempt — `now` and `expires_at` were stamped before the first — so
+/// the values written are attempt-independent. The body is `FnMut`, so the
+/// inputs are cloned per attempt rather than moved in once.
 async fn insert_product_with_event(
     state: &ApiState,
     scope: AccessScope,
     new: NewProduct,
-) -> Result<ProductRecord, DbError> {
+    claim: Option<IdempotencyClaimInput>,
+) -> Result<CreateOutcome, DbError> {
     let outbox = Arc::clone(&state.outbox);
+    let tenant_id = new.tenant_id;
     state
         .db
-        .transaction(move |tx| {
-            Box::pin(async move {
-                let record = repo::insert_product(tx, &scope, new)
+        .db()
+        .transaction_with_retry::<CreateOutcome, DbError, _, _>(
+            TxConfig::default(),
+            contention_db_err,
+            move |tx| {
+                // `FnMut`: every attempt gets its own copies, so a retried
+                // attempt never finds an input the previous one consumed.
+                // Nothing here is derived from the attempt — the claim's
+                // `now`/`expires_at` were stamped before the first one — so
+                // the second attempt writes exactly what the first tried to.
+                let outbox = Arc::clone(&outbox);
+                let scope = scope.clone();
+                let new = new.clone();
+                let claim = claim.clone();
+                Box::pin(async move {
+                    if let Some(input) = claim.as_ref() {
+                        match claim_idempotency(tx, &scope, tenant_id, input)
+                            .await
+                            .map_err(|e| DbError::Sea(DbErr::Custom(e.to_string())))?
+                        {
+                            ClaimVerdict::Proceed => {}
+                            ClaimVerdict::Replay { status, body } => {
+                                return Ok(CreateOutcome::Replay { status, body });
+                            }
+                            ClaimVerdict::Refused(refusal) => {
+                                return Ok(CreateOutcome::Refused(refusal));
+                            }
+                        }
+                    }
+
+                    let record = repo::insert_product(tx, &scope, new)
+                        .await
+                        .map_err(|e| DbError::Sea(DbErr::Custom(e.to_string())))?;
+
+                    let core = events::EventBodyCore {
+                        tenant_id: record.tenant_id,
+                        entity_kind: events::EntityKind::Product.as_str(),
+                        entity_id: record.product_id,
+                        internal_revision: record.internal_revision,
+                        lifecycle_state: record.lifecycle_state.as_str(),
+                    };
+                    events::enqueue(
+                        &outbox,
+                        tx,
+                        record.product_id,
+                        events::PRODUCT_CREATED_PAYLOAD_TYPE,
+                        &core,
+                    )
                     .await
-                    .map_err(|e| DbError::Sea(DbErr::Custom(e.to_string())))?;
+                    .map_err(|e| {
+                        DbError::Sea(DbErr::Custom(format!("enqueue ProductCreated: {e}")))
+                    })?;
 
-                let core = events::EventBodyCore {
-                    tenant_id: record.tenant_id,
-                    entity_kind: events::EntityKind::Product.as_str(),
-                    entity_id: record.product_id,
-                    internal_revision: record.internal_revision,
-                    lifecycle_state: record.lifecycle_state.as_str(),
-                };
-                events::enqueue(
-                    &outbox,
-                    tx,
-                    record.product_id,
-                    events::PRODUCT_CREATED_PAYLOAD_TYPE,
-                    &core,
-                )
-                .await
-                .map_err(|e| DbError::Sea(DbErr::Custom(format!("enqueue ProductCreated: {e}"))))?;
+                    let internal_revision = record.internal_revision;
+                    let body = serde_json::to_value(ProductView::from(record)).map_err(|e| {
+                        DbError::Sea(DbErr::Custom(format!("render the created Product: {e}")))
+                    })?;
 
-                Ok(record)
-            })
-        })
+                    if let Some(input) = claim.as_ref() {
+                        record_idempotency_answer(
+                            tx,
+                            &scope,
+                            tenant_id,
+                            input,
+                            CREATE_RESPONSE_STATUS,
+                            &body,
+                        )
+                        .await
+                        .map_err(|e| DbError::Sea(DbErr::Custom(e.to_string())))?;
+                    }
+
+                    Ok(CreateOutcome::Created {
+                        internal_revision,
+                        body,
+                    })
+                })
+            },
+        )
         .await
 }
 
@@ -513,22 +730,42 @@ async fn insert_product_with_event(
 ///    tenant-scoped self access (`crate::api::rest::
 ///    audit_refusal_and_report`'s own doc explains why no write scope exists
 ///    yet to reuse).
-/// 4. Shape validation: `name` non-blank, `brand_id` non-nil, and `id`
+/// 4. The idempotency phase (`dod-idempotency-store`): read
+///    `Idempotency-Key` off the headers and digest the parsed body. §2's own
+///    step list puts this in step 2, *with* the authorization gate and after
+///    the `actor_ref` resolution, which is why it sits here and not ahead of
+///    step 2 — see `crate::api::rest`'s module doc, "The idempotency phase",
+///    for the reading of `dod-idempotency-store`'s "first pipeline phase"
+///    against §2's step list. **A request with no header skips the phase**
+///    (P-D-34); a header present but unusable is `VALIDATION`, audited like
+///    every other shape refusal. The claim `INSERT` itself is not made here:
+///    it joins the mutation's transaction in step 6 (P-D-42).
+/// 5. Shape validation: `name` non-blank, `brand_id` non-nil, and `id`
 ///    absent (`dod-create-doors`'s server-minted-id clause, F-6). Audited
 ///    under the gate's own scope.
-/// 5. The mutation: [`repo::insert_product`] and `crate::infra::events`'s
-///    `ProductCreated` enqueue, in one transaction (`dod-create-doors`).
-/// 6. On a unique-index collision, [`classify_insert_conflict`] and
-///    [`refuse_insert_conflict`].
+/// 6. The mutation: the claim, [`repo::insert_product`],
+///    `crate::infra::events`'s `ProductCreated` enqueue and the answer
+///    written back into the claim, in one transaction
+///    (`dod-create-doors`, P-D-42, `inst-fd-idem-claim-write`).
+/// 7. On a unique-index collision, [`classify_insert_conflict`] and
+///    [`refuse_insert_conflict`]; on an idempotency verdict, a replay served
+///    from the stored answer or a refusal audited through
+///    `crate::api::rest::audit_refusal_and_report` — never a fourth path.
 async fn create_product(
     Extension(state): Extension<Arc<ApiState>>,
     Extension(enforcer): Extension<authz_resolver_sdk::PolicyEnforcer>,
     extension_ctx: Option<Extension<SecurityContext>>,
+    headers: HeaderMap,
     Json(body): Json<CreateProductRequest>,
 ) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(extension_ctx)?;
     let tenant_id = ctx.subject_tenant_id();
     let now = Utc::now();
+
+    // The digest is taken from the parsed request before it is destructured,
+    // so the operand is what the caller sent rather than what the steps
+    // below derive from it (`payload_digest`'s own doc).
+    let payload_hash = payload_digest(&body);
 
     // -- 1. Destructure up front: every refusal below, including the
     // authorization denial, audits against `trimmed_name`. --
@@ -587,7 +824,39 @@ async fn create_product(
         }
     };
 
-    // -- 4. Shape validation. --
+    // -- 4. The idempotency phase: the key, and the digest taken above. An
+    // absent header is the skip (P-D-34), not a refusal; a present but
+    // unusable one is `VALIDATION`, audited under the gate's own scope like
+    // every other shape refusal. --
+    let client_key = match idempotency_key(&headers) {
+        Ok(key) => key,
+        Err(domain_err) => {
+            return Err(crate::api::rest::audit_refusal_and_report(
+                &state,
+                &scope,
+                crate::api::rest::RefusalAuditContext {
+                    tenant_id,
+                    actor_ref,
+                    subject_kind: crate::authz::labels::PRODUCT,
+                    error_code: domain_err.code(),
+                },
+                RefusalSubject::Attempted(trimmed_name.clone()),
+                CanonicalError::from(domain_err),
+            )
+            .await);
+        }
+    };
+    let claim = client_key.map(|key| {
+        IdempotencyClaimInput::new(
+            CREATE_ENDPOINT,
+            key,
+            payload_hash,
+            now,
+            state.idempotency_retention_hours,
+        )
+    });
+
+    // -- 5. Shape validation. --
     let mut report = ValidationReport::new();
     if trimmed_name.is_empty() {
         report.violate("VALIDATION", "name", "name must not be blank");
@@ -645,20 +914,44 @@ async fn create_product(
         created_at: now,
     };
 
-    // -- 5. The mutation: the entity row and its creation outbox row, one
+    // -- 6. The mutation: the idempotency claim, the entity row, its
+    // creation outbox row and the answer written back into the claim, one
     // transaction, nothing else written. --
-    let insert_outcome = insert_product_with_event(&state, scope.clone(), new).await;
+    let insert_outcome = insert_product_with_event(&state, scope.clone(), new, claim).await;
 
     match insert_outcome {
-        Ok(record) => {
-            let tag = preconditions::etag(InternalRevision::new(record.internal_revision));
-            Ok((
-                StatusCode::CREATED,
-                [(ETAG, tag)],
-                Json(ProductView::from(record)),
-            )
-                .into_response())
+        Ok(CreateOutcome::Created {
+            internal_revision,
+            body,
+        }) => {
+            let tag = preconditions::etag(InternalRevision::new(internal_revision));
+            // `body` is the value rendered inside the mutation transaction
+            // and, for a keyed create, stored there as the idempotency
+            // answer. Answering it rather than re-rendering the view is what
+            // makes a later replay reproduce this response and not a
+            // lookalike.
+            Ok((CREATE_RESPONSE_STATUS, [(ETAG, tag)], Json(body)).into_response())
         }
+        // A replay executes nothing and audits nothing: it is not a refusal,
+        // and the act it reproduces was audited (or, being a success,
+        // deliberately not — P-D-21) when it originally ran.
+        Ok(CreateOutcome::Replay { status, body }) => Ok(replay_response(status, body)),
+        // An idempotency refusal is a refusal like any other: the audit row
+        // on its own runner first, then the answer — or `AUDIT_UNAVAILABLE`
+        // over it if that row cannot be written.
+        Ok(CreateOutcome::Refused(domain_err)) => Err(crate::api::rest::audit_refusal_and_report(
+            &state,
+            &scope,
+            crate::api::rest::RefusalAuditContext {
+                tenant_id,
+                actor_ref,
+                subject_kind: crate::authz::labels::PRODUCT,
+                error_code: domain_err.code(),
+            },
+            RefusalSubject::Attempted(trimmed_name),
+            CanonicalError::from(domain_err),
+        )
+        .await),
         Err(db_error) => {
             let message = db_error.to_string();
             match classify_insert_conflict(&message) {
