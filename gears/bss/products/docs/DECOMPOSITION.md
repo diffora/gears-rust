@@ -354,10 +354,13 @@ authored downstream of this document, in the order §3 establishes.
 - **Design Constraints Covered**:
 
   - [ ] `p1` - `cpt-cf-bss-products-constraint-no-commercial-concern`
+  - [ ] `p1` - `cpt-cf-bss-products-constraint-broker-native-events`
 
 - **Domain Model Entities**:
   - RecognizedSet (code sets, unit sets and the `PlanTier` taxonomy, discriminated by `set_kind`)
   - MeterDeclaration
+  - TypeProfile
+  - UsageTypeResolver
 
 - **Design Components**:
 

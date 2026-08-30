@@ -123,7 +123,9 @@ additions owed there).
 
 ### Type a SKU / evolve its classification
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-flow-classify-sku`
+Declared by [`../features/sku-classification.md`](../features/sku-classification.md) §2 as `cpt-cf-bss-products-flow-classify-sku`.
+The steps below are this slice's and are the normative ones; the FEATURE carries the
+actor, the scenarios and the boundary.
 
 1. [ ] - `p1` - `TypeProfile` validators register on SKU save and publish: `type` present and in the closed set (`SKU_TYPE_UNKNOWN`); per-type required fields at publish — `product`/`service` require both accounting codes (`ACCOUNTING_CODE_REQUIRED` naming the missing one), `bundle` requires neither (composition is pricing's; a bundle is commercially incomplete by design) - `inst-cl-type-profile`
 2. [ ] - `p1` - Promotional/$0/"Free" offerings are ordinary SKUs — no separate entity, no special validator path (PRD `fr-define-sku`) - `inst-cl-no-promo-entity`
@@ -132,7 +134,9 @@ additions owed there).
 
 ### Declare a metering unit
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-flow-declare-meter`
+Declared by [`../features/sku-classification.md`](../features/sku-classification.md) §2 as `cpt-cf-bss-products-flow-declare-meter`.
+The steps below are this slice's and are the normative ones; the FEATURE carries the
+actor, the scenarios and the boundary.
 
 1. [ ] - `p1` - A `MeterDeclaration` is atomic: `unit` and `usageTypeRef` together or not at all (`METER_DECLARATION_INCOMPLETE`); exactly one unit (C2); registered on SKU save and publish (§1.8) - `inst-mt-atomic-pair`
 2. [ ] - `p1` - The unit **MUST** be in the recognized-unit set and `active`: unknown — or `removed`, which is outside the set (§3.1) — fails `UNRECOGNIZED_UNIT` (the path to a new unit is `RecognizedSet` elevated approval, never inline); a `deprecated` unit fails new declarations (`UNIT_DEPRECATED`) — including a draft whose unit was deprecated before its first publish (PRD: treated as a new declaration and rejected) - `inst-mt-recognized`
@@ -141,7 +145,9 @@ additions owed there).
 
 ### Govern the recognized-unit set
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-flow-unit-set`
+Declared by [`../features/sku-classification.md`](../features/sku-classification.md) §2 as `cpt-cf-bss-products-flow-unit-set`.
+The steps below are this slice's and are the normative ones; the FEATURE carries the
+actor, the scenarios and the boundary.
 
 1. [ ] - `p1` - The set is a `RecognizedSet` (governed live entity via `GovernedLiveOp`): seeded per PRD §17.1 (`vCPU-hours`, `GB-storage`, `GB-egress`, `request-count`); adding a unit = **elevated approval** (slice-05 gate, FinanceReviewer not required — owner is Product + Rating per PRD §15) - `inst-us-governed`
 2. [ ] - `p1` - De-listing: removal refused while a non-terminal published head (a `published`/`deprecated` SKU) declares the unit (`UNIT_DELIST_BLOCKED`, holders sampled); the admitted path is `deprecated` (no new declarations, existing publishes unaffected) then removal once unreferenced — the `removed` state, never a DELETE, and never at all for a seeded member (§3.1 `inst-rs-seeded`; **P-D-47**) — where "referenced" means **non-terminal published heads** (published/deprecated SKUs); frozen version content is self-contained and never blocks removal (operand narrowed with slice 02's — M2 fix) - `inst-us-delist`
@@ -150,7 +156,9 @@ additions owed there).
 
 ### Govern the PlanTier taxonomy & assign tiers
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-flow-plantier`
+Declared by [`../features/sku-classification.md`](../features/sku-classification.md) §2 as `cpt-cf-bss-products-flow-plantier`.
+The steps below are this slice's and are the normative ones; the FEATURE carries the
+actor, the scenarios and the boundary.
 
 1. [ ] - `p1` - The taxonomy is a `RecognizedSet` variant with a display label: identity = the **stable tier code**; rename touches the label only (display-only by construction — the code column has no update path); seeded with a neutral value (PRD §17.1 offers `standard`/`none` — §6) - `inst-pt-stable-code`
 2. [ ] - `p1` - Taxonomy ops (add/rename/deprecate/retire) are governed (`GovernedLiveOp`, elevated approval — the same shape the other sets take) and emit `PlanTierUpdated`; retiring a value is refused while a non-terminal published head (a `published`/`deprecated` SKU) carries it (`PLAN_TIER_RETIRE_BLOCKED`) — deprecate-then-retire, same shape as units (a retired tier is the set's `removed` state, §3.1), and a seeded value is deprecatable but never retired (§3.1 `inst-rs-seeded`) - `inst-pt-governed`
@@ -158,7 +166,9 @@ additions owed there).
 
 ### Set accounting codes
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-flow-accounting-codes`
+Declared by [`../features/sku-classification.md`](../features/sku-classification.md) §2 as `cpt-cf-bss-products-flow-accounting-codes`.
+The steps below are this slice's and are the normative ones; the FEATURE carries the
+actor, the scenarios and the boundary.
 
 1. [ ] - `p1` - `taxCategory` and `glCode` each validate against their `RecognizedSet` (owner Finance; unknown fails `ACCOUNTING_CODE_UNKNOWN`); the sets follow the same governed lifecycle (elevated add; a `deprecated` code blocks new assignment — `ACCOUNTING_CODE_DEPRECATED`; removal refused while a non-terminal published head carries it — `ACCOUNTING_CODE_DELIST_BLOCKED`; one code per refusal for `taxCategory` and `glCode` alike, as `ACCOUNTING_CODE_UNKNOWN` already is — **P-D-47**); the validators are registered on SKU save and publish (§1.8) - `inst-ac-recognized`
 2. [ ] - `p1` - Required at publish for `product`/`service` types (via `TypeProfile`, flow 1); both are bucket iii finance-material — ≥ 1 FinanceReviewer in the `N`-governed approval (slice 05 role predicate). **At `N = 0` the predicate is recorded `predicateUnsatisfiable` rather than blocking (P-D-11)**: this very rule is the operand P-D-11's amendment names — `taxCategory` being required at publish for `product`/`service` types is what would otherwise have left the one-person tenant unable to publish their first such SKU **forever**, which is the block that decision exists to remove - `inst-ac-required`
@@ -168,13 +178,19 @@ additions owed there).
 
 ### 3.1 `RecognizedSet` mechanics (shared by units, codes, tiers)
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-algo-recognized-set`
+Declared by [`../features/sku-classification.md`](../features/sku-classification.md) §3 as `cpt-cf-bss-products-algo-recognized-set`.
+The steps below are this slice's and are the normative ones; the FEATURE carries the
+actor, the scenarios and the boundary.
 
 1. [ ] - `p1` - One generic shape: `(tenant_id, set_kind, member_code, display_label?, state ∈ {active, deprecated, removed}, seeded_by?)`; mutations ride `GovernedLiveOp` (02 §3.1), and every admitted mutation emits the set's event in the same transaction (§4); membership checks are the classification validators' single lookup — **the set is the `active` and `deprecated` rows; a `removed` row is a tombstone outside it** (**P-D-47**: a removal is a state flip, never a DELETE — the donor's taxonomy values are `Active|Retired` and its repository refuses to delete one for the reason that holds here, that a value a published row names has to keep existing; the PK therefore never frees, which makes C3 a schema property rather than a convention) - `inst-rs-shape`
 2. [ ] - `p1` - Removal operand is uniform **across this slice's four sets**: **non-terminal published heads** — a member is removable — flipped to `removed` — when no non-terminal published head references it; frozen versions are self-contained copies, neither blocking removal nor touched by it (M2 fix); the transitions are `active → deprecated → removed`, and `removed → active` (as `deprecated → active`) re-lists the same identity through the same `GovernedLiveOp`, which is safe because the identity never changed (**P-D-47**, the donor's re-add re-activating a retired value); the pre-publish lint (P-D-02: informational) surfaces `deprecated`-member usage so operators see debt before refusal teaches them - `inst-rs-removal-operand`
 3. [ ] - `p2` - Seeded members (`seeded_by` set) are deprecatable but not removable — the platform baseline survives tenant edits, mirroring slice 02's `WellKnownSeed` rule - `inst-rs-seeded`
 
 ### 3.2 Error taxonomy (slice-owned codes)
+
+Declared by [`../features/sku-classification.md`](../features/sku-classification.md) §3 as `cpt-cf-bss-products-algo-classification-errors`.
+The code roster below is this slice's and is the normative one; the FEATURE carries the
+registration obligation and the boundary.
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-contract-classification-errors`
 
@@ -207,7 +223,9 @@ row and open to correction; the requirement is that every code carries one.
 
 ### 3.3 The publish-time collector dependency
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-algo-collector-dependency`
+Declared by [`../features/sku-classification.md`](../features/sku-classification.md) §3 as `cpt-cf-bss-products-algo-collector-dependency`.
+The steps below are this slice's and are the normative ones; the FEATURE carries the
+actor, the scenarios and the boundary.
 
 1. [ ] - `p1` - `UsageTypeResolver` is the gear's only synchronous cross-gear call inside a publish pipeline; it runs **once per publish per distinct `usageTypeRef`** (not per validator) — the correction lane's publish resolving both the stored ref and the corrected one, with a short timeout and no retry inside the registered-validators phase, which runs before the publish transaction opens (01 `inst-fd-publish-txn`, which opens it only on the gate's yes; 07 `inst-cr-republish` reads the boundary the other way — §6) — on timeout the publish fails `USAGE_TYPE_UNAVAILABLE` and the operator retries the publish (idempotent by 01 §3.2). **On the scheduled lane there is no operator, so the code is explicitly retryable there too** (item 37 of the review): 04 `inst-ar-failure` wraps the publish door's `STALE_REVISION`/`APPROVAL_REQUIRED` into `SCHEDULE_STALE_APPROVAL` and makes `failed` terminal, which burned a pinned approval on a transient collector blip. `USAGE_TYPE_UNAVAILABLE` therefore joins the runner's **`deferred`** set, not its `failed` set — re-evaluated on the runner's own cadence, bounded by the transition's own attempt budget before it lands `failed` - `inst-cd-once`
 2. [ ] - `p2` - The resolved `(gts_id, kind, metadata_fields)` snapshot is frozen into the entity's `products_entity_version` row (owner's call, 2026-08-27; it was stamped into the publish's audit row until **P-D-21** removed audit rows from committed acts, and the publish event is not a home either — **P-D-22**'s vacuum reclaims the outbox row and a broker is not an archive, while PRD §15's deletion-negotiation and pricing's `meter_binding_divergent` remediation both need to ask what the binding resolved to long after the fact) — the record of *what the binding resolved to* at publish time (**P-D-23**) - `inst-cd-stamp`
