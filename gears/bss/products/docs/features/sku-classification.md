@@ -90,11 +90,15 @@ notes intact:
   `cpt-cf-bss-products-fr-accounting-codes`
 - Scoped: `cpt-cf-bss-products-fr-define-sku` (typing and classification only; the identity
   clause is `01-foundation`'s)
-- Surfaces: `cpt-cf-bss-products-usecase-product-sku-editor`
+- Surfaces — **claimed here and owed back to the entry**, which lists six `fr-` ids and no
+  surface of its own: `cpt-cf-bss-products-usecase-product-sku-editor`,
+  `cpt-cf-bss-products-contract-classification-errors`,
+  `cpt-cf-bss-products-contract-registry-events`
 
 **Principles**: `cpt-cf-bss-products-principle-registered-validators`.
 
-**Constraint**: `cpt-cf-bss-products-constraint-no-commercial-concern`.
+**Constraints**: `cpt-cf-bss-products-constraint-no-commercial-concern`,
+`cpt-cf-bss-products-constraint-broker-native-events`.
 
 **Component**: `cpt-cf-bss-products-component-capability-handlers`.
 
@@ -106,7 +110,13 @@ forgotten: **authentication**, **observability** and outbox delivery are `01-fou
 **read performance**, caching and faceting are `08-read-models`'; **retention and erasure** are
 `10-retention-erasure`'s; **PII** is not reachable here — this feature stores codes and
 references, never operator free text, so `02-taxonomy-attributes`'s write-block hook has no call
-site in it. One latency statement is owed rather than delegated: `UsageTypeResolver` is the
+site in it. **Authorization** is `01-foundation`'s frame and `05-governance`'s catalog: the grants
+and routes of this feature's four vocabulary doors are open item 9, and tenant isolation is the
+Foundation's `tenant_id`-leading keys, which this feature's table follows. **Operator-facing
+message wording**, editor affordances and accessibility are the API and UI layers' — the fifteen
+codes are the contract. **Rollout** is forward-only migration per `01-foundation` with no feature
+flag; the one runtime knob is the resolver timeout, whose value is open item 12 and whose
+configuration home is named nowhere. One latency statement is owed rather than delegated: `UsageTypeResolver` is the
 gear's **only synchronous cross-gear call inside a publish pipeline**, its timeout has no number
 (open item 12), and `08-read-models` and `12-consumer-contracts` are asked to surface resolver
 latency in the publish SLO breakdown.
@@ -143,8 +153,15 @@ collector's; and the approval machinery (`05-governance`).
   - **§5 restates `design/03` §4's storage shapes**, which is a deliberate second exception: a
     Definition of Done has to name the columns, the `CHECK` and the trigger whitelist it obliges,
     or it obliges nothing testable. **Where §5 and §4 differ on a column-level fact, §4 governs.**
+  - **§4's state machine is a third exception, and its ids are this document's.** The template
+    requires a step id per transition row, and `design/03` expresses the same content inside
+    `inst-rs-shape` and `inst-rs-removal-operand` rather than as rows, so neither can be reused per
+    row. The four `inst-rm-*` ids and `cpt-cf-bss-products-state-recognized-set` are declared here
+    and cited by no slice — unlike the flows and algos, they have no reciprocal pointer, which is
+    owed to `design/03`. **Where §4 and the slice differ on a rule, the slice governs.**
   - **`contract-` ids are cited but not defined here.** A FEATURE may **define** only `flow`,
-    `algo`, `state`, `dod` and `featstatus` ids, so this document defines none of the
+    `algo`, `state`, `dod` and `featstatus` ids — plus the `inst-` steps of a state machine it
+    declares, per the exception above — so this document defines none of the
     `contract-` ids the design slices declare. They remain freely **citable**: `artifacts.toml`
     registers `DESIGN_SLICE` with `pattern = "design/*.md"` and `traceability = "FULL"`, so
     `cfs where-defined` resolves every one of them to its slice.
@@ -390,7 +407,9 @@ Two more appear in the slice's response map and are **declared elsewhere**:
 is not a second declaration, so the one-declaration rule stands.
 
 **Boundary**: the taxonomy and every code's RFC 9457 status are specified by
-[`../design/03-sku-classification.md`](../design/03-sku-classification.md) §3.2. `USAGE_TYPE_UNAVAILABLE`
+`cpt-cf-bss-products-contract-classification-errors`, declared at
+[`../design/03-sku-classification.md`](../design/03-sku-classification.md) §3.2 — cited by id
+rather than by section number, which does not survive a renumber. `USAGE_TYPE_UNAVAILABLE`
 at 503 is this gear's own addition — the donor's set carries no 503 at all, so that one class is
 **not** "checked against the donor" and is offered for correction. The architectural 422s reach
 the wire as 400 carrying their code.
@@ -411,19 +430,30 @@ slice's `inst-rs-shape` and `inst-rs-removal-operand`; see §1.4 for why they ca
 
 **Transitions**:
 1. [ ] - `p1` - **FROM** `active` **TO** `deprecated` **WHEN** an approved `GovernedLiveOp` applies; new declarations and new assignments against the member are thereafter refused and existing published carriers keep resolving - `inst-rm-edge-deprecate`
-2. [ ] - `p1` - **FROM** `deprecated` **TO** `removed` **WHEN** no non-terminal published head references the member **and** the member is not seeded; the row survives as a tombstone outside the set, so no published row ever names a member that has ceased to exist and the primary key never frees - `inst-rm-edge-remove`
+2. [ ] - `p1` - **FROM** `deprecated` **TO** `removed` **WHEN** an approved `GovernedLiveOp` applies and no non-terminal published head references the member **and** the member is not seeded; the row survives as a tombstone outside the set, so no published row ever names a member that has ceased to exist and the primary key never frees - `inst-rm-edge-remove`
 3. [ ] - `p1` - **FROM** `deprecated` **TO** `active` and **FROM** `removed` **TO** `active` **WHEN** an approved `GovernedLiveOp` re-lists the member; this is safe precisely because the identity never changed - `inst-rm-edge-relist`
-4. [ ] - `p1` - **NO DELETE** and **no `member_code` UPDATE** in any state: the trigger whitelist admits `state` and `display_label` only, which makes semantic immutability a schema property rather than a convention - `inst-rm-append-only`
+4. [ ] - `p1` - **No transition other than those above is admitted** — in particular `active → removed` is refused, because the whole safety property of de-listing is that deprecation blocks new declarations first — and there is **NO DELETE** and **no `member_code` UPDATE** in any state: the trigger whitelist admits `state` and `display_label` only, which makes semantic immutability a schema property rather than a convention - `inst-rm-append-only`
 
-**Unstated authorization.** Transition 2's `WHEN` is a pure predicate where transitions 1 and 3
-name an approved envelope. Whether a removal is itself a material op is **open item 16's sibling
-question** and is not settled by this document: the slice's material-op enumeration omits removal
-while including the deprecation that precedes it.
+**All three mutations are governed and material.** `design/03` §3.1 covers them under one clause
+— mutations ride `GovernedLiveOp` — and `05-governance` `inst-mt-inputs` registers "03's
+recognized-set add/deprecate/remove and `PlanTier` taxonomy ops" among the kinds their owning
+slice makes material. The first draft of this section wrote the envelope clause into transitions 1
+and 3 and dropped it from 2, then reported that asymmetry as a defect of the slice on the strength
+of a material-op enumeration `design/03` does not contain. Both halves were wrong and both are
+struck: the omission was this rendering's, and the transplanted premise belongs to
+`02-taxonomy-attributes`, whose `inst-ad-governed` genuinely does omit removal.
 
 ## 5. Definitions of Done
 
-Twenty-two. Every entry is separately testable except `dod-sdk-read-shape`, whose consumer half is
-`12-consumer-contracts`' and is named as such.
+Twenty-two, in three groups rather than one. **Separately testable**: sixteen. **Testable only
+against a named double**: `dod-bundle-override`, `dod-finance-materiality`,
+`dod-recognized-set-mechanics` and `dod-plantier-governance` all spend a `05-governance` approval
+that has no runnable gate, and `dod-meter-bucket` spends `07-reference-signal`'s correction door —
+so each owes an **in-test approval double**, without which its probe goes green against a gate
+that approves nothing, `dod-finance-materiality`'s `predicateUnsatisfiable` arm included.
+**Consumer half elsewhere**: `dod-sdk-read-shape`, whose other side is `12-consumer-contracts`'.
+The first draft claimed a single exception; the partition above is what the three-lens review
+measured.
 
 ### Recognized-set table and its append-only guard
 
@@ -456,9 +486,12 @@ feature owns: `type`, `sellable`, `plan_tier`, `tax_category_ref`, `gl_code_ref`
 and `usage_type_ref`. A `CHECK` **MUST** enforce that `metering_unit` and `usage_type_ref` are
 both null or both non-null — the physical floor under the atomic-pair rule — with a `CorruptRow`
 probe on both engines. `tax_category_ref` and `gl_code_ref` are **contingent columns** (open item
-5). `plan_tier` is a validated code and **not** a database foreign key (open item 7): a single
-code column cannot reference a three-column primary key without `set_kind` supplied as a literal,
-and a real constraint would raise a raw violation instead of `PLAN_TIER_RETIRE_BLOCKED`.
+5). **Whether any of the four reference columns is a real database foreign key is open item 7**
+and this DoD obliges no constraint until it is answered: `plan_tier`, `tax_category_ref`,
+`gl_code_ref` and `metering_unit` are all single code columns into the same three-column primary
+key, none can reference it without `set_kind` supplied as a literal, and each has a de-list code a
+raw violation would pre-empt. `design/03` §4 asks the question of `plan_tier` because that is the
+column whose FK claim was struck; the argument holds for all four and §4 governs.
 
 **Implements**: `cpt-cf-bss-products-flow-classify-sku`,
 `cpt-cf-bss-products-flow-declare-meter`
@@ -820,12 +853,32 @@ The system **MUST** expose `type`, `sellable`, `plan_tier`, `metering_unit`, `us
       per-field classification edit emits none of its own
 - [ ] **Every refusal enumerated in §2 has a paired positive control proving the door admits the
       corresponding legal act.** The controls are owed **per code**, not in bulk: a blanket
-      criterion is ticked by inspection rather than by a test, and the 2026-08-31 review of this
-      feature's sibling found eight of sixteen codes carrying none
+      criterion is ticked by inspection rather than by a test. The per-code lines below carry the
+      obligation; this line is the rule, not the test
 - [ ] A `CorruptRow` probe exists for the meter pair `CHECK` and for each guarded column class of
       `products_recognized_set`, on both engines
 - [ ] A schema-oracle golden exists for `products_recognized_set` on both engines with a
       perturbation case proving it can fail
+- [ ] A `product` published against a `deprecated` `taxCategory` is refused
+      `ACCOUNTING_CODE_DEPRECATED`, and an `active` one publishes
+- [ ] A code removal is refused `ACCOUNTING_CODE_DELIST_BLOCKED` while a published SKU carries it,
+      and is admitted once none does
+- [ ] An unknown tier is refused `PLAN_TIER_UNKNOWN`, and a known one is admitted
+- [ ] A tier retire is admitted once no non-terminal published head carries the value — the
+      positive control on `PLAN_TIER_RETIRE_BLOCKED`
+- [ ] A `type` inside the closed set is admitted — the positive control on `SKU_TYPE_UNKNOWN`
+- [ ] A known accounting code is admitted — the positive control on `ACCOUNTING_CODE_UNKNOWN`
+- [ ] A complete `(unit, usageTypeRef)` pair is admitted — the positive control on
+      `METER_DECLARATION_INCOMPLETE`
+- [ ] An `active` recognized unit is admitted — the positive control on `UNRECOGNIZED_UNIT` and on
+      `UNIT_DEPRECATED`
+- [ ] A resolvable `usageTypeRef` publishes — the positive control on `USAGE_TYPE_UNRESOLVED`,
+      distinct from the collector-returns control on `USAGE_TYPE_UNAVAILABLE`
+- [ ] A zero-price "free" SKU takes the ordinary path — the criterion `dod-type-profile` owes, the
+      slice carrying it as `inst-cl-no-promo-entity`
+- [ ] Building the bucket-ii class turns `buckets_ii_and_iv_have_no_members_today`,
+      `an_unregistered_column_fails_closed_rather_than_defaulting` and
+      `the_class_counts_are_pinned_per_entity` red, and each is updated with its reason recorded
 - [ ] No `#[ignore]`d test exists without a CI tier that runs it
 
 ## 7. Known unknowns
@@ -845,30 +898,53 @@ does not decide it.
 | 2 | **The collector sits in the publish path**, so publish availability is bounded by collector availability for usage SKUs | `dod-usage-type-resolution` | this feature with 08 and 12 |
 | 3 | **`UsageType` deletion** — the binding snapshot gives remediation its evidence, but the negotiation with the collector is open | `dod-binding-snapshot` | the PRD §15 owner |
 | 4 | **`sellable`, `usage_type_ref` and `type` are missing from pricing's `CatalogSku`** — three of the four members that consumer contract names | `dod-sdk-read-shape` | 12 with pricing |
-| 5 | **`tax_category_ref` and `gl_code_ref` may not belong to this registry at all.** PRD §2.1 says they are owned elsewhere while `fr-accounting-codes` requires this registry to persist and validate them. The answer may delete this feature's validators, its two `set_kind` values and its publish-blocking requirement together | `dod-classification-columns`, `dod-accounting-validators`, `dod-finance-materiality` | the PRD owner |
+| 5 | **`tax_category_ref` and `gl_code_ref` may not belong to this registry at all.** PRD §2.1 says they are owned elsewhere while `fr-accounting-codes` requires this registry to persist and validate them. The answer may delete this feature's validators, its two `set_kind` values and its publish-blocking requirement together | `dod-classification-columns`, `dod-accounting-validators`, `dod-finance-materiality`, `dod-recognized-set-table` (two of its four `set_kind` values), `dod-bucket-registration`, `dod-sdk-read-shape`, `dod-recognized-set-events`, `dod-type-profile` | the PRD owner |
 | 6 | **Is the resolved-binding snapshot inside the content digest, and what carries it across the phase boundary?** `01-foundation`'s version-row roster is closed and names no such column; if the snapshot is digested, the `digest_version` constant bumps off 1 and the golden vector is re-pinned | `dod-binding-snapshot` | this feature with 01 |
 | 7 | **Is `plan_tier` a real database foreign key?** A single code column cannot reference the three-column primary key without `set_kind` as a literal, and a real constraint would refuse a removal this feature's own operand admits, raising a raw violation instead of `PLAN_TIER_RETIRE_BLOCKED`. The FK claim was struck | `dod-classification-columns`, `dod-plantier-assign` | this feature with the schema owner |
-| 8 | **At which publishes do the recognized-and-active checks run, and what tells a new declaration from a carried-forward one?** A bucket-iii re-publish re-runs every registered validator fail-closed, so as written, deprecating a unit, a tier or a code **freezes every SKU carrying it against any further publish**. No store holds a new-versus-carried-forward marker | `dod-unit-recognition`, `dod-plantier-assign`, `dod-accounting-validators` | this feature with 01 |
-| 9 | **Which door writes `products_recognized_set`, at what path and under what grant?** The only stated write mechanism is `GovernedLiveOp` and this feature names no route, while `05-governance` already mints `recognized_set × write` and `plan_tier × write` with no door to attach them to | `dod-recognized-set-mechanics`, `dod-plantier-governance` | this feature with 05 |
+| 8 | **At which publishes do the recognized-and-active checks run, and what tells a new declaration from a carried-forward one?** A bucket-iii re-publish re-runs every registered validator fail-closed, so as written, deprecating a **tier or an accounting code** freezes every SKU carrying it against any further publish. **The unit half is not open**: the declaration is bucket ii, so it cannot change on an ordinary re-publish and every such publish is carried-forward by construction. For the two bucket-iii fields the comparand is the previous `products_entity_version` row, whose absence means first publish — a diff, not a marker | `dod-plantier-assign`, `dod-accounting-validators` | this feature with 01 |
+| 9 | **Which door writes `products_recognized_set`, at what path and under what grant?** The only stated write mechanism is `GovernedLiveOp` and this feature names no route, while `05-governance` already mints `recognized_set × write` and `plan_tier × write` with no door to attach them to | `dod-recognized-set-mechanics`, `dod-plantier-governance`, `dod-unit-immutable`, `dod-unit-delist`, `dod-accounting-validators`, `dod-recognized-set-events` | this feature with 05 |
 | 10 | **Who writes the seed members for a tenant created after the migration, and are the Finance sets seeded at all?** A tenant provisioned afterwards could declare no meter. `02-taxonomy-attributes` registers the identical question and names this feature in it | `dod-seeded-members` | this feature with 01 |
 | 11 | **Which seed value does the `PlanTier` taxonomy get?** PRD §17.1 offers `standard` or `none` and neither is pinned; the seeded `member_code` is a live contract value that a downstream guard would compare as a string | `dod-seeded-members` | the Product owner |
 | 12 | **What is the resolver's timeout, and what is its unavailable path on the bulk lane and on an unwired deployment?** "A short timeout" has no number and §17.1 carries no row; the bulk lane consumes its batch approval once at the commit flip, so a blip mid-commit fails rows under an approval already spent; and "not wired" is not separated from "unreachable" | `dod-usage-type-resolution` | this feature with 09 and the §17.1 owner |
 | 13 | **Which code does an absent `type` carry?** If `type` is required at create the shape phase raises `VALIDATION` and the run stops, so `SKU_TYPE_UNKNOWN`'s absent arm is unreachable and the AC map reads two ways | `dod-type-profile`, `dod-classification-errors` | this feature with the error-contract owner |
 | 14 | **The override ceremony reads findings from a report no slice builds.** `05-governance` acknowledges lint findings **by name**, and `06-catalog-version` §6 records that no instruction, store, RBAC pair, error code or probe delivers that report | `dod-bundle-override` | the design-set owner with 06 |
-| 15 | **Do 02 and 03 admit a `draft` head as a blocking reference?** This feature reads non-terminal **published** heads; `02-taxonomy-attributes` reads `draft`/`published`/`deprecated`; the PRD is narrower than both. Open item 5 in that feature's §7 is the same question from the other side | `dod-recognized-set-mechanics`, `dod-unit-delist` | this feature with 02, jointly |
+| 15 | **Do 02 and 03 admit a `draft` head as a blocking reference?** This feature reads non-terminal **published** heads; `02-taxonomy-attributes` reads `draft`/`published`/`deprecated`; the PRD is narrower than both. Open item 5 in that feature's §7 is the same question from the other side | `dod-recognized-set-mechanics`, `dod-unit-delist`, `dod-plantier-governance`, `dod-accounting-validators` — the operand is declared uniform across all four sets | this feature with 02, jointly |
 | 16 | **Is a `sellable` flip material?** `05-governance` registers it among the bucket-iii fields that make any touch material, while the PRD's material-change enumeration names `PlanTier`, the metering unit, `taxCategory` and `glCode` and not `sellable` | `dod-sellable` | the PRD owner with 05 |
 | 17 | **Is a `PlanTier` display-label rename material?** This feature makes it display-only by construction, `05-governance` registers the taxonomy ops as material without excepting it, and `02-taxonomy-attributes` calls the identical edit on its own vocabulary non-material at `min(N, 1)` | `dod-plantier-governance` | this feature with 02 and 05 |
-| 18 | **Which code refuses the removal of a seeded, unreferenced member?** All three de-list codes are predicated on holders, so none fits; `02-taxonomy-attributes` carries the identical silence for its own seeds | `dod-seeded-members` | this feature with 02 and the error-contract owner |
-| 19 | **Does the registered-validators phase run before the publish transaction, or inside it?** This feature and `01-foundation` say before; `07-reference-signal` says inside and its own fix depends on that. Both cannot hold, and on 07's reading this feature's resolver call sits inside an open publish transaction | `dod-usage-type-resolution`, `dod-binding-snapshot` | 01 as the pipeline owner, with 07 and this feature |
+| 18 | **Which code refuses the removal of a seeded, unreferenced member?** All three de-list codes are predicated on holders, so none fits; `02-taxonomy-attributes` carries the identical silence for its own seeds | `dod-seeded-members`; a sixteenth code would also break `dod-classification-errors` and its acceptance criterion, both of which say fifteen | this feature with 02 and the error-contract owner |
+| 19 | **Does the registered-validators phase run before the publish transaction, or inside it?** This feature and `01-foundation` say before; `07-reference-signal` says inside and its own fix depends on that. **The costs are not symmetric**: on 07's reading a cross-gear call with a short timeout and no retry sits inside a transaction that has already written the frozen version row, holding the head-row lock and a pooled connection for the timeout on Postgres and serializing every other publish in the database on SQLite — a collector stall becomes a gear-wide publish stall. **And §5 as written builds that reading**, because `dod-usage-type-resolution` names no phase while `dod-binding-snapshot` pulls the resolve toward the transaction that consumes its value | `dod-usage-type-resolution`, `dod-binding-snapshot` | 01 as the pipeline owner, with 07 and this feature |
 | 20 | **What operand tells a composed bundle from an uncomposed one?** The only registry-side record is `composition_pending`, whose default is `false` on an uncomposed draft, so it cannot distinguish never-composed from composed. Read literally, an ordinary bucket-iii re-publish of a composed bundle demands the override again and re-raises the flag | `dod-bundle-override` | this feature with 01 and 06 |
 
 ### Raised here rather than carried
 
-- **§4 transition 2 carries no authorization condition** where transitions 1 and 3 name an
-  approved envelope, because the slice's material-op enumeration omits removal while including the
-  deprecation before it. That asymmetry makes the destructive edge cheaper than the restorative
-  one, and it is the same shape `02-taxonomy-attributes` §7 item 10 registers for its own
-  definitions. *Owner: this feature with 05.*
+- **"With the holders sampled" has no bound.** `UNIT_DELIST_BLOCKED` names a sample and gives it
+  no size, no ordering and no payload shape, while `PLAN_TIER_RETIRE_BLOCKED` and
+  `ACCOUNTING_CODE_DELIST_BLOCKED` say nothing about sampling at all — three refusals, one of
+  which samples, none of which says how many. The scan is a write-path guard over `products_sku`
+  for four `set_kind` values and is not covered by the read-performance delegation.
+  *Owner: this feature.*
+- **The removal-vs-publish race is unguarded.** `STALE_LIVE_OP` guards a stale envelope against
+  the set row; it says nothing about a publish that adds the **first** reference between the
+  removal's holder scan and its state flip. No isolation level, no lock and no
+  re-check-inside-the-transaction clause is stated. `02-taxonomy-attributes` registers the
+  analogous class as its own item 14. *Owner: this feature with 01.*
+- **The seven classification columns never join the frozen version content roster.** Acceptance
+  criterion 12 requires a removal admitted while only frozen content names the unit, which is
+  possible only if `metering_unit` is inside that content. Open item 6 raises the roster and
+  digest question for the binding snapshot alone; it applies to all seven columns, and a first
+  content change after deployment bumps `digest_version` off 1. *Owner: this feature with 01.*
+
+- **The bucket-ii class does not exist in the shipped code, and building this feature turns three
+  green tests red.** `products_sku`'s migration states "Bucket-ii and bucket-iv have no members
+  among today's columns" and creates only the bucket-i and bucket-iii triggers; `bucket_tests.rs`
+  asserts the bucket-ii count is zero with the message "bucket-ii columns arrive with slice 07",
+  samples `sellable`, `plan_tier`, `metering_unit` and `type` as columns that must **fail closed**
+  as unregistered, and pins the per-entity class counts. `dod-bucket-registration` and
+  `dod-classification-columns` contradict all three. The cost is a both-engine trigger clause for a
+  class that has never existed, a `CorruptRow` probe for it, a re-pinned schema-oracle golden on an
+  already-ticked Foundation DoD, and three test rewrites. **The code believes bucket ii arrives
+  with `07-reference-signal`; this feature brings it with 03.** *Owner: this feature with 01 and
+  07.*
 - **`USAGE_TYPE_UNAVAILABLE` at 503 is unchecked against the donor.** The status mapping was
   checked against pricing code by code, but pricing's set carries **no 503 at all**, so this one
   class rests on this gear's own judgement. *Owner: the API-contract owner.*

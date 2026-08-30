@@ -959,7 +959,7 @@ mutate the map after a snapshot and prove the old snapshot's checksum does not m
       status
 - [ ] Every refusal enumerated in §2 has a paired positive control proving the door admits the
       corresponding legal act. **The controls are owed per code, not in bulk** — the review of
-      2026-08-31 found eight of the sixteen carrying one: `TAXONOMY_CYCLE`, `TAXONOMY_LIMIT`,
+      2026-08-31 found eight of the sixteen carrying **none**: `TAXONOMY_CYCLE`, `TAXONOMY_LIMIT`,
       `STALE_LIVE_OP`, `CATEGORY_RETIRED`, `DEFINITION_IN_USE`, `STALE_CATEGORY_TOKEN`,
       `METADATA_LIMIT` and `DEFAULT_LOCALE_MISSING` had none, and a blanket criterion is ticked by
       inspection rather than by a test
