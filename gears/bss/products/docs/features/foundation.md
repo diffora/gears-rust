@@ -407,7 +407,7 @@ The six rows below are the template's id-bearing rendering of the slice's
 
 ### Entity tables and their guards
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-entity-tables`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-entity-tables`
 
 The system **MUST** create `products_product` and `products_sku` with their Foundation columns,
 on both engines, one migration per table, with the partial unique index on
@@ -448,7 +448,7 @@ engines under the `digest_version` it was computed with. Frozen rows admit **no 
 
 ### Audit table and the reserved sealing seam
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-audit-table`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-audit-table`
 
 The system **MUST** create `products_audit_log` with the same append-only posture as the entity
 tables: a trigger whitelist admitting no UPDATE or DELETE except the sealing seam's one-way arm
@@ -473,7 +473,7 @@ no verification job.
 
 ### Append-only head-row guard
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-append-only-guard`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-append-only-guard`
 
 The system **MUST** enforce the head-row trigger whitelist on **both** engines, admitting exactly:
 `lifecycle_state` along the edge list; `published_version` only as `+1` and only where the
@@ -501,7 +501,7 @@ state.
 
 ### Validation pipeline with registered validators
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-validation-pipeline`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-validation-pipeline`
 
 The system **MUST** implement the pre-pipeline authorization gate and the seven ordered phases,
 stopping at the first failing phase and collecting violations per field within that phase into
@@ -519,7 +519,7 @@ only.
 
 ### Error taxonomy as constants on the raising rules
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-error-taxonomy`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-error-taxonomy`
 
 The system **MUST** declare the Foundation-owned codes as constants on the rules that raise them
 (P-D-36), map each to its HTTP status through the RFC-9457 `Problem` ladder, return every
@@ -540,7 +540,7 @@ The `state` phase's precedence **MUST** be `ENTITY_TERMINAL` → `PARENT_TERMINA
 
 ### Name normalization and absolute uniqueness
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-name-uniqueness`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-name-uniqueness`
 
 The system **MUST** compute `name_normalized` application-side as Unicode NFKC, then full
 casefold, then trim and collapse internal whitespace to single spaces, so both engines store
@@ -556,7 +556,7 @@ Region scope plays no part (P-D-04).
 
 ### Code reservation, atomic at insert
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-code-reservation`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-code-reservation`
 
 The system **MUST** treat the insert itself as the reservation for both `skuCode` and
 `productCode`, refusing the loser of a concurrent race as `DUPLICATE_CODE` with an audited
@@ -573,7 +573,7 @@ value for a concurrent create.
 
 ### Create doors
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-create-doors`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-create-doors`
 
 The system **MUST** serve `POST /bss-products/v1/products` and `POST /bss-products/v1/skus`
 through `OperationBuilder` with authentication and the standard error set, minting the entity id
@@ -595,7 +595,7 @@ change, and until it resolves this door does not write them.
 
 ### Parent and scope containment at SKU create
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-containment`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-containment`
 
 The system **MUST** refuse a SKU whose parent does not resolve in the tenant as `VALIDATION`,
 whose parent is `retired` or `discarded` as `PARENT_TERMINAL`, and whose scope is not provably
@@ -612,7 +612,7 @@ omits either set **MUST** take the parent's.
 
 ### Authoring head read
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-read-door`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-read-door`
 
 The system **MUST** serve `GET /bss-products/v1/{products|skus}/{id}` under `… × read`, returning
 `200` with the head's `internal_revision` as the `ETag`. This is the surface the `If-Match`
@@ -685,7 +685,7 @@ treat the unchanged content as a no-op.
 
 ### Discard door and transition guard
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-transition-guard`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-transition-guard`
 
 The system **MUST** serve `POST /bss-products/v1/{products|skus}/{id}/discard`, and **MUST** admit
 exactly the five edges of the state machine, refusing anything else as `ILLEGAL_TRANSITION` and
@@ -703,7 +703,7 @@ transition that consumes an approval in the same transaction, which bumps once w
 
 ### Idempotency store
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-idempotency-store`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-idempotency-store`
 
 The system **MUST** create `products_idempotency` and resolve `(tenant, endpoint, client key)` as
 the first pipeline phase of every mutating flow that carries an `Idempotency-Key`, skipping the
@@ -777,7 +777,7 @@ document establishes it.
 
 ### Audit trail for the acts that emit no event
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-audit-trail`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-audit-trail`
 
 The system **MUST** write an append-only audit row for every refusal, every read under elevation,
 and every committed act the design declares emits no broker event — and for nothing else, the
@@ -805,7 +805,7 @@ Three transaction disciplines, and they differ:
 
 ### Actor-ref resolution ahead of the gate
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-actor-ref`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-actor-ref`
 
 The system **MUST** resolve the acting principal to an `actor_ref` through the identity-ref map,
 **in its own transaction, before the authorization gate and any phase that can refuse** (P-D-26),

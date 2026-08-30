@@ -80,19 +80,54 @@
 //! - **`internal_revision`** must move by exactly `OLD + 1` on every admitted
 //!   `UPDATE`, without exception.
 //! - **`updated_at`** is admitted unconditionally.
+//! - **`composition_pending`** is admitted **only in the same statement as a
+//!   `published_version` bump** — a change to the flag where
+//!   `published_version` does not also move is refused
+//!   (`design/01-foundation.md` §4.2: the flag is *"changed only in the same
+//!   statement as a `published_version` bump"*). That one predicate admits
+//!   both writers without the guard knowing which door it was: the
+//!   `PublishDoor`'s raise on an override-carrying `bundle` publish (P-D-30)
+//!   and slice 06's clearing re-publish (`inst-cc-clear`), both of which are
+//!   the publish door's own head-row `UPDATE` carrying `published_version
+//!   += 1` (**P-D-32**: `inst-fd-save-txn` never touches `published_version`,
+//!   so an ordinary operator save cannot move the flag — which is what makes
+//!   it system-owned rather than a bucket-iii/iv column).
 //! - **`tenant_id`, the primary key (`sku_id`) and `created_by`** are admitted
 //!   in **no** update at all (P-D-34); neither is `created_at`.
 //!
 //! **Bucket-ii and bucket-iv have no members among today's columns.** The
-//! same four not-yet-existing columns the sibling table's doc names are owed
-//! here too, and they are **not all owed by the same slice**:
+//! remaining three not-yet-existing columns the sibling table's doc names are
+//! owed here too, and they are **not all owed by the same slice**:
 //! `cloned_from`, `deprecation_provenance` and `replaced_by_sku_id` arrive
 //! with slice 03, while **`composition_pending` is this slice's own** — §1.5's
 //! **In** list names *"the `PublishDoor`'s `composition_pending` write"* among
 //! the guards that *"ride this slice's first migration and publish door"*, and
-//! assigns only the composition *semantics* to slice 06. This migration guards
-//! what exists today; the `composition_pending` column and its clause are an
-//! unpaid debt of this phase rather than a later slice's arrival.
+//! assigns only the composition *semantics* to slice 06.
+//!
+//! ## `composition_pending` ships here, its semantics do not
+//!
+//! The column ships in this migration with its **guard** (the clause above,
+//! on both engines) and its **default**: `NOT NULL DEFAULT false` (**P-D-35**
+//! — the create flow writes it nowhere and the publish door on a `bundle` is
+//! its only raiser, so the default is the unraised state, and the first
+//! migration needs no nullable third reading). It is a `products_sku` column
+//! only: `bundle` is a value of the SKU-only `type` column, so
+//! `products_product` carries none (§4.2).
+//!
+//! What remains **owed** is the *semantics*, not the schema:
+//!
+//! - slice 06's clear lane (`inst-cc-clear`) — the inbound composition signal,
+//!   its deferred-on-a-dirty-head behaviour and the `SkuCompositionCleared`
+//!   emission;
+//! - slice 03's bundle-override condition (`inst-cl-bundle-override`) — the
+//!   `BUNDLE_OVERRIDE_REQUIRED` refusal whose acknowledgment is the operand
+//!   P-D-30 makes the door read;
+//! - the `PublishDoor`'s **write** of the flag, a later wave of **this same
+//!   phase** rather than a later slice's arrival.
+//!
+//! The guard is deliberately live ahead of all three: it judges data, so it
+//! costs nothing while nothing writes the column, and it means the first
+//! writer to arrive lands inside a predicate rather than beside one.
 //!
 //! The guard judges the data, never the door (P-D-31): every predicate reads
 //! only `OLD`, `NEW` and — in the `published_version` clause alone —
@@ -120,18 +155,19 @@ pub struct Migration;
 
 const PG_UP_STATEMENTS: &[&str] = &[
     "CREATE TABLE bss.products_sku (
-            tenant_id         uuid        NOT NULL,
-            sku_id            uuid        NOT NULL,
-            product_id        uuid        NOT NULL,
-            sku_code          text        NOT NULL,
-            lifecycle_state   text        NOT NULL,
-            internal_revision bigint      NOT NULL,
-            published_version bigint      NOT NULL,
-            region_scope      text        NOT NULL DEFAULT '',
-            brand_scope       text        NOT NULL DEFAULT '',
-            created_by        text        NOT NULL,
-            created_at        timestamptz NOT NULL,
-            updated_at        timestamptz NOT NULL,
+            tenant_id           uuid        NOT NULL,
+            sku_id              uuid        NOT NULL,
+            product_id          uuid        NOT NULL,
+            sku_code            text        NOT NULL,
+            lifecycle_state     text        NOT NULL,
+            internal_revision   bigint      NOT NULL,
+            published_version   bigint      NOT NULL,
+            composition_pending boolean     NOT NULL DEFAULT false,
+            region_scope        text        NOT NULL DEFAULT '',
+            brand_scope         text        NOT NULL DEFAULT '',
+            created_by          text        NOT NULL,
+            created_at          timestamptz NOT NULL,
+            updated_at          timestamptz NOT NULL,
             CONSTRAINT products_sku_pkey PRIMARY KEY (sku_id),
             CONSTRAINT fk_products_sku_product FOREIGN KEY (product_id) REFERENCES bss.products_product (product_id),
             CONSTRAINT chk_products_sku_lifecycle_state CHECK (lifecycle_state IN ('draft', 'published', 'deprecated', 'retired', 'discarded')),
@@ -208,6 +244,12 @@ const PG_UP_STATEMENTS: &[&str] = &[
             RAISE EXCEPTION 'products_sku: bucket-iii columns are admitted only while the head is non-terminal';
           END IF;
 
+          IF NEW.composition_pending IS DISTINCT FROM OLD.composition_pending
+             AND NEW.published_version IS NOT DISTINCT FROM OLD.published_version
+          THEN
+            RAISE EXCEPTION 'products_sku: composition_pending is admitted only in the same statement as a published_version bump';
+          END IF;
+
           RETURN NEW;
         END;
      $$ LANGUAGE plpgsql",
@@ -221,18 +263,19 @@ const PG_DOWN_STATEMENTS: &[&str] = &[
 
 const SQLITE_UP_STATEMENTS: &[&str] = &[
     "CREATE TABLE products_sku (
-            tenant_id         text   NOT NULL,
-            sku_id            text   NOT NULL,
-            product_id        text   NOT NULL,
-            sku_code          text   NOT NULL,
-            lifecycle_state   text   NOT NULL,
-            internal_revision bigint NOT NULL,
-            published_version bigint NOT NULL,
-            region_scope      text   NOT NULL DEFAULT '',
-            brand_scope       text   NOT NULL DEFAULT '',
-            created_by        text   NOT NULL,
-            created_at        text   NOT NULL,
-            updated_at        text   NOT NULL,
+            tenant_id           text    NOT NULL,
+            sku_id              text    NOT NULL,
+            product_id          text    NOT NULL,
+            sku_code            text    NOT NULL,
+            lifecycle_state     text    NOT NULL,
+            internal_revision   bigint  NOT NULL,
+            published_version   bigint  NOT NULL,
+            composition_pending boolean NOT NULL DEFAULT 0,
+            region_scope        text    NOT NULL DEFAULT '',
+            brand_scope         text    NOT NULL DEFAULT '',
+            created_by          text    NOT NULL,
+            created_at          text    NOT NULL,
+            updated_at          text    NOT NULL,
             PRIMARY KEY (sku_id),
             CONSTRAINT fk_products_sku_product FOREIGN KEY (product_id) REFERENCES products_product (product_id),
             CONSTRAINT chk_products_sku_lifecycle_state CHECK (lifecycle_state IN ('draft', 'published', 'deprecated', 'retired', 'discarded')),
@@ -290,6 +333,10 @@ const SQLITE_UP_STATEMENTS: &[&str] = &[
             OR NEW.brand_scope IS NOT OLD.brand_scope
         ) AND OLD.lifecycle_state IN ('retired', 'discarded')
         BEGIN SELECT RAISE(ABORT, 'products_sku: bucket-iii columns are admitted only while the head is non-terminal'); END",
+    "CREATE TRIGGER trg_products_sku_composition_pending BEFORE UPDATE ON products_sku FOR EACH ROW WHEN
+            NEW.composition_pending IS NOT OLD.composition_pending
+            AND NEW.published_version IS OLD.published_version
+        BEGIN SELECT RAISE(ABORT, 'products_sku: composition_pending is admitted only in the same statement as a published_version bump'); END",
 ];
 
 const SQLITE_DOWN_STATEMENTS: &[&str] = &["DROP TABLE IF EXISTS products_sku"];

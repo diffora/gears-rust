@@ -10,9 +10,10 @@
 //! **no** `ON CONFLICT` handling here: `uq_products_sku_code`'s
 //! reservation-by-insert semantics belong to `dod-code-reservation`, and
 //! giving a duplicate-key insert typed conflict handling now would be scope
-//! taken from that phase. A duplicate insert surfacing as [`RepoError::Db`]
-//! is the correct behaviour for this phase — the create door that will call
-//! this repository does not exist yet to act on a finer answer.
+//! taken from that phase. A duplicate insert surfacing as
+//! [`RepoError::Driver`] is the correct behaviour for this phase — the create
+//! door that will call this repository does not exist yet to act on a finer
+//! answer.
 //!
 //! Phase 2 Slice C adds [`resolve_actor_ref`], which closes the code half of
 //! `dod-actor-ref`. Slice D, the phase's last, adds [`AuditEntry`] and the
@@ -88,6 +89,35 @@ use crate::infra::storage::RepoError;
 use crate::infra::storage::entity::{
     audit_log, entity_version, idempotency, identity_ref, product, sku,
 };
+
+/// A statement's failure, with `sea-orm`'s own error kept unchanged.
+///
+/// # This function opens nothing and touches no runner
+///
+/// It is a constructor, called from a `map_err` on a statement the caller's
+/// transaction has already run. Every statement in this module is a
+/// `SecureORM` one, so every one of them fails as a [`ScopeError`], and this
+/// is the single place that reads which kind it is.
+///
+/// `ScopeError::Db` wraps the driver error the statement raised, and that
+/// inner error is exactly what a retry classifier needs, so it is unwrapped
+/// and preserved as [`RepoError::Driver`]. Preserving it is the whole point:
+/// `toolkit_db::contention::is_retryable_contention` classifies only
+/// `DbErr::Exec` and `DbErr::Query`, so a contention failure rendered to a
+/// string on the way out of this module reaches the caller as a bare 500
+/// where the doors promise a retry.
+///
+/// The other three variants are the scope layer refusing to build or run the
+/// statement at all: no driver error exists, nothing about them is transient,
+/// and they stay [`RepoError::Db`].
+fn driver_failure(context: String, source: ScopeError) -> RepoError {
+    match source {
+        ScopeError::Db(source) => RepoError::Driver { context, source },
+        ScopeError::Invalid(_) | ScopeError::TenantNotInScope { .. } | ScopeError::Denied(_) => {
+            RepoError::Db(format!("{context}: {source}"))
+        }
+    }
+}
 
 /// The row an insert of `products_product` supplies.
 ///
@@ -205,6 +235,13 @@ pub struct SkuRecord {
     pub internal_revision: i64,
     /// Moves only on publish.
     pub published_version: i64,
+    /// Whether this SKU's composition is still unresolved
+    /// (`design/01-foundation.md` §4.2, **P-D-35**). System-owned: the head
+    /// table's guard admits a write of it only in the same statement as a
+    /// `published_version` bump, so it moves on a publish or not at all.
+    /// `products_product` carries no twin — `bundle` is a value of the
+    /// SKU-only `type` column.
+    pub composition_pending: bool,
     /// The region value set. Empty means unrestricted.
     pub region_scope: String,
     /// The brand value set. Empty means unrestricted.
@@ -221,7 +258,7 @@ pub struct SkuRecord {
 /// (`dod-create-doors`).
 ///
 /// # Errors
-/// [`RepoError::Db`] on a scope failure or a `CHECK`/uniqueness violation the
+/// [`RepoError::Driver`] on a `CHECK`/uniqueness violation the
 /// database refuses the insert for — including a duplicate `(tenant_id,
 /// brand_id, name_normalized)` or a duplicate `product_code`, which this
 /// phase reports undifferentiated because no caller yet exists to act on a
@@ -251,10 +288,10 @@ pub async fn insert_product(
     let row = product::Entity::insert(model.clone())
         .secure()
         .scope_with_model(scope, &model)
-        .map_err(|e| RepoError::Db(format!("product {} scope: {e}", new.product_id)))?
+        .map_err(|e| driver_failure(format!("product {} scope", new.product_id), e))?
         .exec_with_returning(runner)
         .await
-        .map_err(|e| RepoError::Db(format!("insert product {}: {e}", new.product_id)))?;
+        .map_err(|e| driver_failure(format!("insert product {}", new.product_id), e))?;
 
     into_product_record(row)
 }
@@ -269,9 +306,9 @@ pub async fn insert_product(
 /// sensitive, so absence is what a foreign scope sees.
 ///
 /// # Errors
-/// [`RepoError::Db`] on a storage failure; [`RepoError::CorruptRow`] when the
-/// stored `lifecycle_state` is outside the enumeration [`LifecycleState`]
-/// parses.
+/// [`RepoError::Driver`] on a storage failure; [`RepoError::CorruptRow`] when
+/// the stored `lifecycle_state` is outside the enumeration
+/// [`LifecycleState`] parses.
 pub async fn find_product(
     runner: &impl DBRunner,
     scope: &AccessScope,
@@ -288,7 +325,7 @@ pub async fn find_product(
         )
         .one(runner)
         .await
-        .map_err(|e| RepoError::Db(format!("read product {product_id}: {e}")))?;
+        .map_err(|e| driver_failure(format!("read product {product_id}"), e))?;
 
     row.map(into_product_record).transpose()
 }
@@ -324,7 +361,7 @@ fn into_product_record(row: product::Model) -> Result<ProductRecord, RepoError> 
 /// (`dod-create-doors`).
 ///
 /// # Errors
-/// [`RepoError::Db`] on a scope failure, the `fk_products_sku_product`
+/// [`RepoError::Driver`] on the `fk_products_sku_product`
 /// foreign key, or a duplicate `(tenant_id, sku_code)` — `sku_code`'s
 /// reservation-by-insert (`dod-code-reservation`) is the index's job in this
 /// phase; this repository does not yet type the conflict.
@@ -341,6 +378,12 @@ pub async fn insert_sku(
         lifecycle_state: Set(LifecycleState::Draft.as_str().to_owned()),
         internal_revision: Set(1),
         published_version: Set(0),
+        // The column's own default, written explicitly because this literal is
+        // exhaustive: a create raises nothing (P-D-35 names the publish door
+        // on a `bundle` as the flag's only raiser), and the head table's guard
+        // refuses any later write of it that does not also bump
+        // `published_version`.
+        composition_pending: Set(false),
         region_scope: Set(new.region_scope),
         brand_scope: Set(new.brand_scope),
         created_by: Set(new.created_by),
@@ -351,10 +394,10 @@ pub async fn insert_sku(
     let row = sku::Entity::insert(model.clone())
         .secure()
         .scope_with_model(scope, &model)
-        .map_err(|e| RepoError::Db(format!("sku {} scope: {e}", new.sku_id)))?
+        .map_err(|e| driver_failure(format!("sku {} scope", new.sku_id), e))?
         .exec_with_returning(runner)
         .await
-        .map_err(|e| RepoError::Db(format!("insert sku {}: {e}", new.sku_id)))?;
+        .map_err(|e| driver_failure(format!("insert sku {}", new.sku_id), e))?;
 
     into_sku_record(row)
 }
@@ -365,9 +408,9 @@ pub async fn insert_sku(
 /// lies outside `scope`, for [`find_product`]'s reason.
 ///
 /// # Errors
-/// [`RepoError::Db`] on a storage failure; [`RepoError::CorruptRow`] when the
-/// stored `lifecycle_state` is outside the enumeration [`LifecycleState`]
-/// parses.
+/// [`RepoError::Driver`] on a storage failure; [`RepoError::CorruptRow`] when
+/// the stored `lifecycle_state` is outside the enumeration
+/// [`LifecycleState`] parses.
 pub async fn find_sku(
     runner: &impl DBRunner,
     scope: &AccessScope,
@@ -384,7 +427,7 @@ pub async fn find_sku(
         )
         .one(runner)
         .await
-        .map_err(|e| RepoError::Db(format!("read sku {sku_id}: {e}")))?;
+        .map_err(|e| driver_failure(format!("read sku {sku_id}"), e))?;
 
     row.map(into_sku_record).transpose()
 }
@@ -406,6 +449,7 @@ fn into_sku_record(row: sku::Model) -> Result<SkuRecord, RepoError> {
         lifecycle_state,
         internal_revision: row.internal_revision,
         published_version: row.published_version,
+        composition_pending: row.composition_pending,
         region_scope: row.region_scope,
         brand_scope: row.brand_scope,
         created_by: row.created_by,
@@ -458,8 +502,9 @@ fn into_sku_record(row: sku::Model) -> Result<SkuRecord, RepoError> {
 /// `uq_products_identity_ref_active`, not by this function.
 ///
 /// # Errors
-/// [`RepoError::Db`] on a scope failure or a storage failure, including the
-/// `uq_products_identity_ref_active` violation a race between two
+/// [`RepoError::Driver`] on a storage failure, or [`RepoError::Db`] on a
+/// scope refusal that raised no driver error. The
+/// driver failures include the `uq_products_identity_ref_active` violation a race between two
 /// resolutions of the same never-before-seen principal would raise — this
 /// phase reports that race undifferentiated, as [`insert_product`]'s own doc
 /// does for its own uniqueness index.
@@ -481,7 +526,7 @@ pub async fn resolve_actor_ref(
         )
         .one(runner)
         .await
-        .map_err(|e| RepoError::Db(format!("resolve actor ref, tenant {tenant_id}: {e}")))?;
+        .map_err(|e| driver_failure(format!("resolve actor ref, tenant {tenant_id}"), e))?;
 
     if let Some(row) = live {
         // The liveness predicate is repeated here, and it is not redundant.
@@ -508,10 +553,10 @@ pub async fn resolve_actor_ref(
             .exec(runner)
             .await
             .map_err(|e| {
-                RepoError::Db(format!(
-                    "advance last_seen_at for actor {}: {e}",
-                    row.actor_ref
-                ))
+                driver_failure(
+                    format!("advance last_seen_at for actor {}", row.actor_ref),
+                    e,
+                )
             })?;
 
         // Zero rows means the race above was lost. That is not an error: it
@@ -540,10 +585,10 @@ pub async fn resolve_actor_ref(
     identity_ref::Entity::insert(model.clone())
         .secure()
         .scope_with_model(scope, &model)
-        .map_err(|e| RepoError::Db(format!("actor ref {actor_ref} scope: {e}")))?
+        .map_err(|e| driver_failure(format!("actor ref {actor_ref} scope"), e))?
         .exec(runner)
         .await
-        .map_err(|e| RepoError::Db(format!("mint actor ref, tenant {tenant_id}: {e}")))?;
+        .map_err(|e| driver_failure(format!("mint actor ref, tenant {tenant_id}"), e))?;
 
     Ok(actor_ref)
 }
@@ -751,10 +796,10 @@ async fn insert_audit_row(
     audit_log::Entity::insert(model.clone())
         .secure()
         .scope_with_model(scope, &model)
-        .map_err(|e| RepoError::Db(format!("audit row {audit_id} scope: {e}")))?
+        .map_err(|e| driver_failure(format!("audit row {audit_id} scope"), e))?
         .exec(runner)
         .await
-        .map_err(|e| RepoError::Db(format!("insert audit row {audit_id}: {e}")))?;
+        .map_err(|e| driver_failure(format!("insert audit row {audit_id}"), e))?;
 
     Ok(())
 }
@@ -816,7 +861,8 @@ pub async fn write_refusal_audit(
 /// mutation's own transaction failing.
 ///
 /// # Errors
-/// [`RepoError::Db`] on a scope failure or a storage failure.
+/// [`RepoError::Driver`] on a storage failure, or [`RepoError::Db`] on a
+/// scope refusal that raised no driver error.
 pub async fn write_eventless_act_audit(
     runner: &impl DBRunner,
     scope: &AccessScope,
@@ -993,7 +1039,8 @@ fn idempotency_key_of(tenant_id: Uuid, endpoint: &str, client_key: &str) -> Cond
 /// caller to compare.
 ///
 /// # Errors
-/// [`RepoError::Db`] on a scope failure or a storage failure, including a
+/// [`RepoError::Driver`] on a storage failure, or [`RepoError::Db`] on a
+/// scope refusal that raised no driver error. The failures include a
 /// conflicting row this call cannot read back inside its own transaction —
 /// the store contradicting itself, not a foreign tenant's row, since the
 /// insert was already validated against the same scope.
@@ -1043,9 +1090,10 @@ pub async fn claim_idempotency_key(
         .secure()
         .scope_with_model(scope, &model)
         .map_err(|e| {
-            RepoError::Db(format!(
-                "idempotency claim {tenant_id}/{endpoint}/{client_key} scope: {e}"
-            ))
+            driver_failure(
+                format!("idempotency claim {tenant_id}/{endpoint}/{client_key} scope"),
+                e,
+            )
         })?
         .on_conflict_raw(on_conflict)
         .exec(runner)
@@ -1055,9 +1103,10 @@ pub async fn claim_idempotency_key(
         // The key is already held; the conflict swallowed the insert.
         Err(ScopeError::Db(DbErr::RecordNotInserted)) => {}
         Err(e) => {
-            return Err(RepoError::Db(format!(
-                "idempotency claim {tenant_id}/{endpoint}/{client_key}: {e}"
-            )));
+            return Err(driver_failure(
+                format!("idempotency claim {tenant_id}/{endpoint}/{client_key}"),
+                e,
+            ));
         }
     }
 
@@ -1068,9 +1117,10 @@ pub async fn claim_idempotency_key(
         .one(runner)
         .await
         .map_err(|e| {
-            RepoError::Db(format!(
-                "read held idempotency claim {tenant_id}/{endpoint}/{client_key}: {e}"
-            ))
+            driver_failure(
+                format!("read held idempotency claim {tenant_id}/{endpoint}/{client_key}"),
+                e,
+            )
         })?
         .ok_or_else(|| {
             RepoError::Db(format!(
@@ -1126,7 +1176,8 @@ pub async fn claim_idempotency_key(
 /// transaction never read it.
 ///
 /// # Errors
-/// [`RepoError::Db`] on a scope failure or a storage failure.
+/// [`RepoError::Driver`] on a storage failure, or [`RepoError::Db`] on a
+/// scope refusal that raised no driver error.
 async fn take_over_expired_idempotency_claim(
     runner: &impl DBRunner,
     scope: &AccessScope,
@@ -1161,10 +1212,13 @@ async fn take_over_expired_idempotency_claim(
         .exec(runner)
         .await
         .map_err(|e| {
-            RepoError::Db(format!(
-                "take over expired idempotency claim {}/{}/{}: {e}",
-                held.tenant_id, held.endpoint, held.client_key
-            ))
+            driver_failure(
+                format!(
+                    "take over expired idempotency claim {}/{}/{}",
+                    held.tenant_id, held.endpoint, held.client_key
+                ),
+                e,
+            )
         })?;
 
     // Zero rows means the takeover race above was lost: another caller's
@@ -1245,7 +1299,8 @@ pub enum IdempotencyAnswer {
 /// own doc for why the outcome is returned rather than raised.
 ///
 /// # Errors
-/// [`RepoError::Db`] on a scope failure or a storage failure. A key that is
+/// [`RepoError::Driver`] on a storage failure, or [`RepoError::Db`] on a
+/// scope refusal that raised no driver error. A key that is
 /// simply not held is **not** an error; it is
 /// [`IdempotencyAnswer::NotHeld`].
 pub async fn answer_idempotency_key(
@@ -1279,9 +1334,10 @@ pub async fn answer_idempotency_key(
         .exec(runner)
         .await
         .map_err(|e| {
-            RepoError::Db(format!(
-                "answer idempotency claim {tenant_id}/{endpoint}/{client_key}: {e}"
-            ))
+            driver_failure(
+                format!("answer idempotency claim {tenant_id}/{endpoint}/{client_key}"),
+                e,
+            )
         })?;
 
     // Zero rows is a real answer, not a no-op to shrug at: no `claimed` row
@@ -1402,7 +1458,8 @@ pub enum HeadWrite {
 /// (**P-D-29**, **P-D-33**).
 ///
 /// # Errors
-/// [`RepoError::Db`] on a scope failure or a storage failure, including a
+/// [`RepoError::Driver`] on a storage failure, or [`RepoError::Db`] on a
+/// scope refusal that raised no driver error. The driver failures include a
 /// duplicate key — the same version of the same entity frozen twice — and
 /// the `chk_products_entity_version_published_version` /
 /// `chk_products_entity_version_digest_version` lower bounds. The table is
@@ -1430,22 +1487,28 @@ pub async fn insert_entity_version(
         .secure()
         .scope_with_model(scope, &model)
         .map_err(|e| {
-            RepoError::Db(format!(
-                "freeze {} {} v{} scope: {e}",
-                new.entity_kind.as_str(),
-                new.entity_id,
-                new.published_version
-            ))
+            driver_failure(
+                format!(
+                    "freeze {} {} v{} scope",
+                    new.entity_kind.as_str(),
+                    new.entity_id,
+                    new.published_version
+                ),
+                e,
+            )
         })?
         .exec(runner)
         .await
         .map_err(|e| {
-            RepoError::Db(format!(
-                "freeze {} {} v{}: {e}",
-                new.entity_kind.as_str(),
-                new.entity_id,
-                new.published_version
-            ))
+            driver_failure(
+                format!(
+                    "freeze {} {} v{}",
+                    new.entity_kind.as_str(),
+                    new.entity_id,
+                    new.published_version
+                ),
+                e,
+            )
         })?;
 
     Ok(())
@@ -1544,18 +1607,13 @@ const PUBLISHABLE_HEAD_STATES: [&str; 3] = [
 /// Two columns `inst-fd-publish-txn` puts in this same `UPDATE` are absent
 /// here, deliberately and not silently:
 ///
-/// - **`composition_pending`** (§4.2, **P-D-32**) — the column does not exist
-///   yet, and it is **this slice's** to add, not a later one's. §1.5's **In**
-///   list names *"the `PublishDoor`'s `composition_pending` write"* among the
-///   column guards that *"ride this slice's first migration and publish
-///   door"*, and adds that *"the composition semantics behind another [are]
-///   06's"* — so 06 owns only when the flag is set and cleared
-///   (`inst-cc-clear`), 03 owns the bundle-override condition
-///   (`inst-cl-bundle-override`), and the column, its `NOT NULL DEFAULT
-///   false` and its clause in this statement are owed here. An earlier
-///   revision of this doc filed the whole thing under slice 07, which owns
-///   the bucket-ii `CorrectionDoor` and nothing else here; a debt sent to a
-///   slice that never looks for it is a debt with no owner.
+/// - **`composition_pending`** (§4.2, **P-D-32**) — **this** function will
+///   never write it on any wave, and the reason is the schema rather than a
+///   schedule: it is the Product publish, and `products_product` has no such
+///   column, because `bundle` is a value of the SKU-only `type` column (§4.2).
+///   The column, its guard clause and now its write are all
+///   [`publish_sku_head`]'s, which carries the flag as a parameter; see that
+///   function's own doc for the one narrowing still owed there.
 /// - **A corrected bucket-ii value** (`inst-fd-publish-correction`,
 ///   **P-D-41**) — the door that supplies one is slice 07's `CorrectionDoor`,
 ///   which has no caller here to hand it in. §4.2 admits a bucket-ii write
@@ -1564,8 +1622,9 @@ const PUBLISHABLE_HEAD_STATES: [&str; 3] = [
 ///   second one, on the "once" argument above.
 ///
 /// # Errors
-/// [`RepoError::Db`] on a scope failure or a storage failure, including the
-/// head-row guard's refusal of a bump whose frozen version row is missing —
+/// [`RepoError::Driver`] on a storage failure, or [`RepoError::Db`] on a
+/// scope refusal that raised no driver error. The driver failures include
+/// the head-row guard's refusal of a bump whose frozen version row is missing —
 /// which is a raised refusal, not a zero-row result. A stale revision is
 /// **not** an error; it is [`HeadWrite::Unmatched`].
 pub async fn publish_product_head(
@@ -1605,7 +1664,7 @@ pub async fn publish_product_head(
         )
         .exec(runner)
         .await
-        .map_err(|e| RepoError::Db(format!("publish product {product_id}: {e}")))?;
+        .map_err(|e| driver_failure(format!("publish product {product_id}"), e))?;
 
     // Zero rows is an answer, not a no-op: the head no longer carries the
     // revision the door pinned its approval to, or it is terminal, or it is
@@ -1621,11 +1680,53 @@ pub async fn publish_product_head(
 
 /// Publish a SKU head, in one `UPDATE`, on [`publish_product_head`]'s terms
 /// exactly — same freeze-first ordering, same single-statement rule, same
-/// `CASE`-decided edge, same two owed columns.
+/// `CASE`-decided edge — **plus `composition_pending`**, which only this twin
+/// has a column for.
+///
+/// # `composition_pending` rides this statement and can ride no other
+///
+/// `inst-fd-publish-freeze`: *"On a `bundle` SKU that same `UPDATE` also
+/// carries `composition_pending` — set where this publish carried the
+/// uncomposed-bundle override, cleared where it did not"* (§4.2, **P-D-32**).
+/// `composition_pending` is a `products_sku` column and no other table has
+/// one, and `m20260829_000003_create_products_sku`'s guard admits a change to
+/// it **only in the same statement as a `published_version` bump** — so this
+/// `UPDATE`, the single statement that bumps the version, is the one place in
+/// the gear the flag can move at all. A second statement would be refused by
+/// the trigger, and would also break `inst-fd-publish-bump`'s "once" on the
+/// way there.
+///
+/// `composition_pending` is therefore a **parameter**, not a value this
+/// function derives: it is the door's gate verdict
+/// (`domain::governance::GateAuthorization::uncomposed_bundle_override`) that
+/// says whether this act carried the override, and a repository that guessed
+/// would be a second answer to a question the ceremony already answered.
+/// Writing the same value the row already holds is not a change and does not
+/// trip the guard (`IS DISTINCT FROM`), so the "cleared where it did not"
+/// half costs nothing on a row that was never raised.
+///
+/// # What is still owed here, and it is a narrowing rather than a write
+///
+/// The instruction scopes the clause to a **`bundle`** SKU. `bundle` is a
+/// value of the `type` column, which is **slice 03's** and does not exist on
+/// `products_sku` at this commit, so there is no operand this statement could
+/// test. What is built is the clause with its subject widened to every SKU:
+/// set from the override, cleared without it. That is exactly right wherever
+/// the override is granted — and the override is itself a bundle-composition
+/// ceremony's, so a non-`bundle` SKU has nothing to carry one — but it is
+/// **not** the narrowing the instruction states, and it is recorded as owed to
+/// slice 03 rather than reported as present. When `type` lands, the condition
+/// joins this statement's `col_expr` as a `CASE`, not as a caller-side `if`,
+/// for the same reason the edge's `CASE` is here: the row image the write
+/// lands on is what must be tested.
+///
+/// The bucket-ii correction is owed by both twins alike; see
+/// [`publish_product_head`].
 ///
 /// # Errors
-/// [`RepoError::Db`] on a scope failure or a storage failure, including the
-/// head-row guard's refusal of a bump whose frozen version row is missing. A
+/// [`RepoError::Driver`] on a storage failure, or [`RepoError::Db`] on a
+/// scope refusal that raised no driver error. The driver failures include
+/// the head-row guard's refusal of a bump whose frozen version row is missing. A
 /// stale revision is [`HeadWrite::Unmatched`], not an error.
 pub async fn publish_sku_head(
     runner: &impl DBRunner,
@@ -1633,6 +1734,7 @@ pub async fn publish_sku_head(
     tenant_id: Uuid,
     sku_id: Uuid,
     expected_internal_revision: i64,
+    composition_pending: bool,
     now: DateTime<Utc>,
 ) -> Result<HeadWrite, RepoError> {
     let next_state: SimpleExpr = Expr::case(
@@ -1654,6 +1756,12 @@ pub async fn publish_sku_head(
             Expr::col(sku::Column::InternalRevision).add(Expr::val(1_i64)),
         )
         .col_expr(sku::Column::LifecycleState, next_state)
+        // In this statement and no other: the head-row guard admits a change
+        // to the flag only alongside the `published_version` bump above.
+        .col_expr(
+            sku::Column::CompositionPending,
+            Expr::value(composition_pending),
+        )
         .col_expr(sku::Column::UpdatedAt, Expr::value(now))
         .filter(
             Condition::all()
@@ -1664,7 +1772,7 @@ pub async fn publish_sku_head(
         )
         .exec(runner)
         .await
-        .map_err(|e| RepoError::Db(format!("publish sku {sku_id}: {e}")))?;
+        .map_err(|e| driver_failure(format!("publish sku {sku_id}"), e))?;
 
     if result.rows_affected == 0 {
         return Ok(HeadWrite::Unmatched);
@@ -1706,7 +1814,8 @@ pub async fn publish_sku_head(
 /// keeps it: the predicate names `discarded` alone.
 ///
 /// # Errors
-/// [`RepoError::Db`] on a scope failure or a storage failure. A row that is
+/// [`RepoError::Driver`] on a storage failure, or [`RepoError::Db`] on a
+/// scope refusal that raised no driver error. A row that is
 /// not legal to discard, or that no longer carries the expected revision, is
 /// **not** an error; it is [`HeadWrite::Unmatched`] — see that enum's doc for
 /// how a door tells the readings apart.
@@ -1740,7 +1849,7 @@ pub async fn discard_product_head(
         )
         .exec(runner)
         .await
-        .map_err(|e| RepoError::Db(format!("discard product {product_id}: {e}")))?;
+        .map_err(|e| driver_failure(format!("discard product {product_id}"), e))?;
 
     // Zero rows is an answer: the head was published, already terminal,
     // moved under the door's pinned revision, or belongs to another tenant.
@@ -1761,7 +1870,8 @@ pub async fn discard_product_head(
 /// and by no separate statement.
 ///
 /// # Errors
-/// [`RepoError::Db`] on a scope failure or a storage failure. An
+/// [`RepoError::Driver`] on a storage failure, or [`RepoError::Db`] on a
+/// scope refusal that raised no driver error. An
 /// inadmissible discard is [`HeadWrite::Unmatched`], not an error.
 pub async fn discard_sku_head(
     runner: &impl DBRunner,
@@ -1793,7 +1903,7 @@ pub async fn discard_sku_head(
         )
         .exec(runner)
         .await
-        .map_err(|e| RepoError::Db(format!("discard sku {sku_id}: {e}")))?;
+        .map_err(|e| driver_failure(format!("discard sku {sku_id}"), e))?;
 
     if result.rows_affected == 0 {
         return Ok(HeadWrite::Unmatched);

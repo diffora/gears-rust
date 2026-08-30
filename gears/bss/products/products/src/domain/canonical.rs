@@ -86,6 +86,37 @@ use serde_json::{Number, Value as JsonValue};
 /// re-verifies every historical row against a rule it was never computed
 /// under and reports the whole table corrupt. Changing the number alone
 /// changes nothing about the bytes and is strictly a lie told to the drill.
+///
+/// # Why the `composition_pending` addition did not bump it
+///
+/// The rule §4.3 states is real: *"adding a column to a frozen row's content
+/// is a digest-version bump, not a silent change"*. `composition_pending`
+/// joined `skus::SKU_VERSION_CONTENT_ROSTER` and this constant stayed at `1`
+/// anyway, and the reason is the sentence above about rows, not a reading of
+/// the rule.
+///
+/// **No row has ever been written under version `1`.** The gear has never
+/// been deployed; `products_entity_version` is created by an unreleased
+/// migration; and the content shape is still being assembled inside the very
+/// phase that introduced it. A bump here would mint a version `1` that no row
+/// ever used and that no restore drill could ever encounter — a phantom in
+/// the one place whose whole value is being an accurate record of what a
+/// stored row was computed under. Leaving `1` alone keeps the number
+/// truthful: every row that will ever carry it was computed under the shape
+/// this code holds now.
+///
+/// It is the identical disposition, on the identical ground, as this phase's
+/// swap of the idempotency digest primitive: free **because** the gear is
+/// pre-production, and free for no other reason. Nothing about the rule was
+/// weakened.
+///
+/// **The first content change after deployment must bump, and from that point
+/// the rule is unconditional.** Once one row exists carrying version `1`, a
+/// roster edit changes the bytes a re-rendering produces for rows the drill
+/// will re-verify, and the bump — plus the code that can still reproduce the
+/// old rendering for those rows — is what keeps the drill's answer meaningful.
+/// The condition that makes today's non-bump correct is exactly *"no stored
+/// row"*, and it expires the first time this gear writes one.
 pub const DIGEST_VERSION: i32 = 1;
 
 /// Which of §4.3's two readings of *absence* a rendering is taken under.
@@ -314,9 +345,10 @@ fn render_number(number: &Number) -> String {
 /// carrying it verbatim, which is why the module doc's timestamp clause says
 /// the precision decision stays with the caller that owns the column. What
 /// that clause does not license is *two* callers each keeping their own copy
-/// of the conversion: `api::rest::products` and `api::rest::skus` hold one
-/// verbatim duplicate each, and both record it as owed a home here. This is
-/// that home. A third copy must not be written.
+/// of the conversion. `api::rest::products` and `api::rest::skus` held one
+/// verbatim duplicate each, both recording it as owed a home here; both have
+/// been deleted and both doors now call this. A third copy must not be
+/// written.
 ///
 /// # It truncates, and rendering alone cannot fix what that costs
 ///
@@ -341,9 +373,12 @@ fn render_number(number: &Number) -> String {
 /// they stored different values. The fix is to truncate the instant to
 /// microseconds **where it is written** — at the head-row insert, so that both
 /// engines store a value with nothing below the microsecond for either of them
-/// to disagree about. That is **owed by whichever wave touches the head-row
-/// write path**, and until it is paid a Postgres-stored `created_at` can
-/// disagree with a `SQLite`-stored one in the sixth digit.
+/// to disagree about. That is **still owed**, and this doc is no longer the
+/// only place it is recorded: the note now sits at both create doors' own
+/// `created_at: now` line, which is the write in question, so the debt is
+/// beside the code that would pay it rather than only beside the renderer that
+/// cannot. Until it is paid a Postgres-stored `created_at` can disagree with a
+/// `SQLite`-stored one in the sixth digit.
 #[must_use]
 pub fn render_instant(instant: DateTime<Utc>) -> String {
     instant.format("%Y-%m-%dT%H:%M:%S%.6fZ").to_string()

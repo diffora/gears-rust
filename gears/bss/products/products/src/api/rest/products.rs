@@ -180,9 +180,18 @@
 //!    (`ENTITY_TERMINAL`); the precondition comparison (`STALE_REVISION`);
 //!    the **full validation pipeline re-run** (`inst-fd-publish-revalidate`)
 //!    over the entity as it now stands, so one that stopped being
-//!    publishable since approval fails closed; the **governance gate**, in
-//!    [`GateMode::Gate`] **always** and never from a wire parameter
-//!    (`inst-fd-gate-mode`), refusing `APPROVAL_REQUIRED`; then the writes —
+//!    publishable since approval fails closed — **with no containment step**,
+//!    because a Product has no parent: `products_product` carries
+//!    `region_scope`/`brand_scope` as its own bucket-iii columns and no
+//!    reference upwards, so §3.3's `SCOPE_NOT_CONTAINED` has no second
+//!    operand on this side and the SKU door's own
+//!    `recheck_parent_containment` has no analogue here; the **governance
+//!    gate**, whose
+//!    [`GateMode`] is an explicit argument of the in-process entry point
+//!    ([`publish_product_under_gate`]) and never a wire parameter
+//!    (`inst-fd-gate-mode`) — the `REST` handler passes
+//!    [`GateMode::Gate`] and nothing else — refusing `APPROVAL_REQUIRED`;
+//!    then the writes —
 //!    freeze the **post-act image** at `published_version + 1` first,
 //!    because the head-row guard admits the bump only where the matching
 //!    frozen row already exists; then **exactly one** head-row `UPDATE`,
@@ -253,13 +262,15 @@
 //!   value must be applied to the record **before** [`freeze_for`] renders it
 //!   *and* carried by [`repo::publish_product_head`]'s own statement — not by
 //!   a second one.
-//! - **`composition_pending`** (§4.2, **P-D-32**): not a column at this
-//!   commit, and **this slice's** to add — §1.5's **In** list names *"the
-//!   `PublishDoor`'s `composition_pending` write"*, leaving only the
-//!   composition *semantics* to slice 06. It is a `products_sku` column, so
-//!   this Product door may never carry it at all;
-//!   [`repo::publish_product_head`]'s own doc records the same gap from the
-//!   storage side.
+//! - **`composition_pending`** (§4.2, **P-D-32**): a `products_sku` column,
+//!   and **only** that — `bundle` is a value of the SKU-only `type` column, so
+//!   `products_product` has no twin and this Product door may never carry the
+//!   flag at all. It is not a gap on this side; it is an asymmetry in the
+//!   schema. §1.5's **In** list names *"the `PublishDoor`'s
+//!   `composition_pending` write"* and that write is built, on the SKU door
+//!   alone (`skus::run_publish`, `repo::publish_sku_head`).
+//!   [`repo::publish_product_head`]'s own doc states the same from the storage
+//!   side.
 //!
 //! A clause that **was** owed and is now discharged: **`publishedVersion` on
 //! the `ProductPublished` body** (§4.5): *"every one of the eight carries the
@@ -307,7 +318,8 @@
 //!
 //! **What the transition costs the row** is read off `transition::guard`'s
 //! return value rather than decided at the call site
-//! ([`head_act_invalidation`]): a transition bumps `internal_revision` and
+//! ([`transition::invalidation_for`]): a transition bumps `internal_revision`
+//! and
 //! fires the approval-invalidation hook, **except** one that consumes an
 //! approval in the same transaction, which bumps once with no hook (P-D-26,
 //! P-D-34). A discard consumes none, so the hook fires; publish's
@@ -316,9 +328,20 @@
 //! [`fire_invalidation_hook`] call on the same argument, so neither has the
 //! distinction hard-coded.
 //!
-//! **No governance gate on a discard**: `inst-fd-governance-gate` puts the
-//! gate on the publish door, and discarding a never-published draft consumes
-//! no approval and requires none.
+//! **The gate phase runs on the discard door too, and passes trivially.**
+//! §3.1's `inst-fd-pipeline-gate-phase` puts the phase at *every* mutating
+//! door and has it pass where the act is ungated (**P-D-34**), and §1.1 calls
+//! governance *"a registered gate phase inside the pipeline, hosting any
+//! gated act ... not a separate path around it"*;
+//! [`crate::domain::validation::Phase::GovernanceGate`] carries the same
+//! words. So [`run_discard`] asks the host, in [`GateMode::Gate`], exactly
+//! as [`run_publish`] does, and the default host authorizes naming no record
+//! — a discard consumes no approval and today requires none. What that buys
+//! is the case the phase exists for: the moment slice 05 registers a
+//! ceremony on a transition, this door already has the seam and needs no
+//! reopening. `inst-fd-governance-gate` is **not** the authority for
+//! skipping it — that instruction is about the publish door and does not
+//! reach the question.
 //!
 //! @cpt-cf-bss-products-dod-read-door
 //! @cpt-cf-bss-products-dod-create-doors
@@ -366,7 +389,6 @@ use crate::domain::name;
 use crate::domain::rules::{CreateEntityCandidate, NameShapeRule};
 use crate::domain::transition::{
     self, ApprovalInvalidation, ApprovalInvalidationHook as _, NoApprovalStoreHook,
-    TransitionDecision,
 };
 use crate::domain::validation::{ValidationPipeline, ValidationReport};
 use crate::infra::events;
@@ -833,6 +855,17 @@ fn payload_digest(request: &CreateProductRequest) -> Vec<u8> {
 /// `toolkit_db::contention::is_retryable_contention`, and `contention_db_err`
 /// is the accessor it asks the caller for.
 ///
+/// **The classifier can only answer `true` because the driver's own error
+/// survives the repository.** `is_retryable_contention` matches `DbErr::Exec`
+/// and `DbErr::Query` and nothing else, so the flattening this closure used
+/// to do — `DbErr::Custom(e.to_string())` over every `RepoError` — made every
+/// contention failure unretryable while this section claimed the opposite.
+/// This door was written first and both head-act doors inherited the same
+/// wrap. It is closed in one place for all of them: the repository raises
+/// `RepoError::Driver`, which carries `sea-orm`'s error unchanged, and every
+/// door maps it through `RepoError::to_db_err` (the head-act doors through
+/// `HeadActError::from_repo`) rather than through its `Display`.
+///
 /// **The closure is safe to re-run.** Its first statement is the claim, and
 /// the claim rolls back with everything after it (P-D-38), so a retried
 /// attempt starts against exactly the state the first one started against:
@@ -868,7 +901,7 @@ async fn insert_product_with_event(
                     if let Some(input) = claim.as_ref() {
                         match claim_idempotency(tx, &scope, tenant_id, input)
                             .await
-                            .map_err(|e| DbError::Sea(DbErr::Custom(e.to_string())))?
+                            .map_err(|e| DbError::Sea(e.to_db_err()))?
                         {
                             ClaimVerdict::Proceed => {}
                             ClaimVerdict::Replay { status, body } => {
@@ -882,7 +915,7 @@ async fn insert_product_with_event(
 
                     let record = repo::insert_product(tx, &scope, new)
                         .await
-                        .map_err(|e| DbError::Sea(DbErr::Custom(e.to_string())))?;
+                        .map_err(|e| DbError::Sea(e.to_db_err()))?;
 
                     let core = events::EventBodyCore {
                         tenant_id: record.tenant_id,
@@ -918,7 +951,7 @@ async fn insert_product_with_event(
                             &body,
                         )
                         .await
-                        .map_err(|e| DbError::Sea(DbErr::Custom(e.to_string())))?;
+                        .map_err(|e| DbError::Sea(e.to_db_err()))?;
                     }
 
                     Ok(CreateOutcome::Created {
@@ -1158,6 +1191,18 @@ async fn create_product(
         region_scope: region_scope.unwrap_or_default(),
         brand_scope: brand_scope.unwrap_or_default(),
         created_by: actor_ref.to_string(),
+        // `now` is written with everything `Utc::now()` gave it, nanoseconds
+        // included, and **that is a debt this line owes**, carried here from
+        // `canonical::render_instant`'s own doc so it sits where it can be
+        // paid. `created_at` is on the frozen-content roster; `SQLite` stores
+        // all nine digits while Postgres `timestamptz` rounds to six, and the
+        // renderer truncates, so one engine can freeze `.123456` where the
+        // other freezes `.123457` for the same entity and the two
+        // `content_digest` values differ. Truncating the instant to
+        // microseconds **at this write** is what actually closes it -- neither
+        // engine would then hold a digit the other could round differently --
+        // and it is not done here because it moves a value on a live column
+        // and is owed a decision of its own rather than a drive-by change.
         created_at: now,
     };
 
@@ -1479,21 +1524,6 @@ fn bodiless_payload_digest() -> Vec<u8> {
     idempotency::payload_digest(&JsonValue::Object(JsonMap::new()))
 }
 
-/// One timestamp, rendered as §4.3 pins them: `RFC 3339`, `UTC`, microsecond
-/// precision.
-///
-/// `crate::domain::canonical` deliberately converts no instant — its own doc
-/// says the caller renders its instant into a string field, so the precision
-/// decision stays with whoever owns the column. This is that decision for
-/// `products_product`'s `created_at`, and it is spelled **identically** in
-/// `skus::render_instant` for `products_sku`'s. The two copies are owed a
-/// single home in `crate::domain::canonical`, which is the module that owns
-/// the rendering rules; that module is not open in this slice, and a third
-/// copy must not be written before the move happens.
-fn render_instant(instant: DateTime<Utc>) -> String {
-    instant.format("%Y-%m-%dT%H:%M:%S%.6fZ").to_string()
-}
-
 /// The frozen content of one Product head, as the object
 /// [`PRODUCT_CONTENT_ROSTER`] is rendered against.
 ///
@@ -1542,7 +1572,7 @@ fn product_content(record: &ProductRecord) -> JsonValue {
     );
     content.insert(
         "created_at".to_owned(),
-        JsonValue::String(render_instant(record.created_at)),
+        JsonValue::String(canonical::render_instant(record.created_at)),
     );
     content.insert(
         "created_by".to_owned(),
@@ -2007,6 +2037,21 @@ impl HeadActError {
     fn from_storage(error: &impl core::fmt::Display) -> Self {
         Self::Db(DbError::Sea(DbErr::Custom(error.to_string())))
     }
+
+    /// Wrap a repository failure, preserving the driver error inside it.
+    ///
+    /// The difference from [`Self::from_storage`] is the whole of a fix this
+    /// door's own doc used to claim without holding: `RepoError::Driver`
+    /// carries `sea-orm`'s error as the driver raised it, and
+    /// [`RepoError::to_db_err`] hands that variant on unchanged, so
+    /// `transaction_with_retry`'s classifier can still see an `Exec`/`Query`
+    /// contention failure and re-attempt the act. Rendering the same failure
+    /// through `from_storage` would flatten it to `DbErr::Custom`, which
+    /// `is_retryable_contention` answers `false` for by construction — the
+    /// bare 500 this door promised a retry instead of.
+    fn from_repo(error: &RepoError) -> Self {
+        Self::Db(DbError::Sea(error.to_db_err()))
+    }
 }
 
 /// The `DbErr` inside a [`HeadActError`], for `transaction_with_retry`'s
@@ -2070,7 +2115,7 @@ async fn classify_unmatched_publish(
             head.internal_revision
         )))),
         Ok(None) => HeadActError::Vanished,
-        Err(error) => HeadActError::from_storage(&error),
+        Err(error) => HeadActError::from_repo(&error),
     }
 }
 
@@ -2101,7 +2146,7 @@ async fn classify_unmatched_discard(
             to: LifecycleState::Discarded.as_str().to_owned(),
         }),
         Ok(None) => HeadActError::Vanished,
-        Err(error) => HeadActError::from_storage(&error),
+        Err(error) => HeadActError::from_repo(&error),
     }
 }
 
@@ -2161,7 +2206,7 @@ async fn announce_and_answer(
 ) -> Result<HeadActOutcome, HeadActError> {
     let head = repo::find_product(runner, &inputs.scope, inputs.tenant_id, inputs.product_id)
         .await
-        .map_err(|e| HeadActError::from_storage(&e))?
+        .map_err(|e| HeadActError::from_repo(&e))?
         .ok_or(HeadActError::Vanished)?;
 
     let core = events::EventBodyCore {
@@ -2207,7 +2252,7 @@ async fn announce_and_answer(
             &body,
         )
         .await
-        .map_err(|e| HeadActError::from_storage(&e))?;
+        .map_err(|e| HeadActError::from_repo(&e))?;
     }
 
     Ok(HeadActOutcome::Applied {
@@ -2236,7 +2281,7 @@ async fn claim_for_head_act(
     };
     match claim_idempotency(runner, scope, tenant_id, input)
         .await
-        .map_err(|e| HeadActError::from_storage(&e))?
+        .map_err(|e| HeadActError::from_repo(&e))?
     {
         ClaimVerdict::Proceed => Ok(None),
         ClaimVerdict::Replay { status, body } => Ok(Some(HeadActOutcome::Replay { status, body })),
@@ -2280,6 +2325,16 @@ async fn claim_for_head_act(
 /// writes is derived from the attempt, `now` having been stamped before the
 /// first.
 ///
+/// # The retry needs the driver's error, not its text
+///
+/// `is_retryable_contention` matches `DbErr::Exec`/`DbErr::Query` only, so
+/// this section's promise holds only while the failure keeps that variant
+/// all the way from the driver to [`head_act_contention_db_err`]. It is
+/// [`RepoError::Driver`] that carries it and
+/// [`HeadActError::from_repo`] that preserves it; a wrap through `Display`
+/// anywhere on that path — which is what this door originally did, inheriting
+/// it from the create door — turns every collision back into a bare `500`.
+///
 /// # The gate arrives as an `Arc`, and it has to
 ///
 /// `transaction_with_retry`'s body is
@@ -2289,10 +2344,14 @@ async fn claim_for_head_act(
 /// all — the same constraint [`HeadActInputs`] exists for. An owned,
 /// cheaply-cloned handle can be, which is why the port travels as
 /// `Arc<dyn GovernanceGate + Send + Sync>` from the handler down.
+///
+/// `mode` travels beside it, by value: [`GateMode`] is `Copy`, so every retry
+/// attempt takes its own copy the way every other input does.
 async fn publish_in_one_transaction(
     state: &ApiState,
     opened: &OpenedHeadDoor,
     gate: &Arc<dyn GovernanceGate + Send + Sync>,
+    mode: GateMode,
 ) -> Result<HeadActOutcome, HeadActError> {
     let outbox = Arc::clone(&state.outbox);
     let gate = Arc::clone(gate);
@@ -2309,7 +2368,9 @@ async fn publish_in_one_transaction(
                 let outbox = Arc::clone(&outbox);
                 let gate = Arc::clone(&gate);
                 let inputs = inputs.clone();
-                Box::pin(async move { run_publish(tx, &inputs, gate.as_ref(), &outbox).await })
+                Box::pin(
+                    async move { run_publish(tx, &inputs, gate.as_ref(), mode, &outbox).await },
+                )
             },
         )
         .await
@@ -2338,11 +2399,17 @@ async fn publish_in_one_transaction(
 /// [`run_discard`] makes decides the *edge* and reports what the transition
 /// costs; it does not stand in for the filter, because even a read taken
 /// inside this transaction is a read, and the filter is the write.
+///
+/// The gate host travels as an `Arc` for [`publish_in_one_transaction`]'s
+/// stated reason: the phase runs here too (`inst-fd-pipeline-gate-phase`),
+/// and the closure this transaction takes cannot capture a borrow.
 async fn discard_in_one_transaction(
     state: &ApiState,
     opened: &OpenedHeadDoor,
+    gate: &Arc<dyn GovernanceGate + Send + Sync>,
 ) -> Result<HeadActOutcome, HeadActError> {
     let outbox = Arc::clone(&state.outbox);
+    let gate = Arc::clone(gate);
     let inputs = opened.act_inputs();
     state
         .db
@@ -2352,8 +2419,9 @@ async fn discard_in_one_transaction(
             head_act_contention_db_err,
             move |tx| {
                 let outbox = Arc::clone(&outbox);
+                let gate = Arc::clone(&gate);
                 let inputs = inputs.clone();
-                Box::pin(async move { run_discard(tx, &inputs, &outbox).await })
+                Box::pin(async move { run_discard(tx, &inputs, gate.as_ref(), &outbox).await })
             },
         )
         .await
@@ -2495,44 +2563,6 @@ fn fire_invalidation_hook(
     Ok(())
 }
 
-/// Whether this act fires the approval-invalidation hook, **read off
-/// [`transition::guard`]'s own answer** rather than decided at the call site
-/// (`dod-transition-guard`: *"Every transition bumps `internal_revision` and
-/// fires the approval-invalidation hook, except a transition that consumes
-/// an approval in the same transaction, which bumps once with no hook"*).
-///
-/// The exception is the interesting half, and it is why this reads the
-/// guard's return value instead of testing the edge itself. A **publish** of
-/// a `draft` takes `draft -> published`, which
-/// [`transition::GATED_EDGES`] marks: the revision bump is
-/// [`transition::RevisionBump::CarriedByTheAuthorizedAct`] — this door's own
-/// single head-row `UPDATE` — and the hook is
-/// [`ApprovalInvalidation::Skip`], because this very transaction consumes
-/// the approval and a hook firing against the record the act is spending has
-/// no defined ordering. A **discard** takes `draft -> discarded`, consumes
-/// nothing, and so bumps through its own statement
-/// ([`transition::RevisionBump::Own`], carried by
-/// [`repo::discard_product_head`]'s `UPDATE`) and fires the hook. Either
-/// way [`transition::TransitionEffects::bumps_on_the_row`] is **one**, which
-/// is the property both doors' single statement discharges and neither adds
-/// to.
-///
-/// [`transition::TransitionDecision::NotATransition`] reaches this from one
-/// place only: a **re-publish**, where the head is already `published` or
-/// `deprecated` and the act changes the version rather than the state. The
-/// floor leaves the bump and the hook to the writing door there, and this
-/// door answers as the gated edge does — no hook — on the identical
-/// argument, the transaction that re-publishes being the one that consumes
-/// the approval for version N+1. A discard cannot reach that arm at all: the
-/// only same-value discard is `discarded -> discarded`, which
-/// [`transition::check_head_write`] has already refused as terminal.
-const fn head_act_invalidation(decision: TransitionDecision) -> ApprovalInvalidation {
-    match decision {
-        TransitionDecision::Transition(effects) => effects.invalidation,
-        TransitionDecision::NotATransition => ApprovalInvalidation::Skip,
-    }
-}
-
 /// The state a publish leaves the head in, which is also the `to` side of
 /// the edge [`transition::guard`] is asked about.
 ///
@@ -2612,7 +2642,13 @@ fn freeze_for(
 /// The publish act itself, **every phase of it on the mutation's own
 /// transaction** and in the pipeline's own phase order
 /// (`crate::domain::validation::Phase`): the idempotency claim, the
-/// precondition, the re-validation, the governance gate, then the writes.
+/// precondition, the re-validation, the edge, the governance gate, then the
+/// writes.
+///
+/// The edge sits **before** the gate because `Phase::ordered()` puts `State`
+/// ahead of `GovernanceGate`. This door asked the gate first until this fix,
+/// which contradicted the order this very sentence claims; the call site
+/// carries the argument and the measurement of what the swap changes today.
 ///
 /// # Why every phase is in here, and not half of them outside
 ///
@@ -2638,10 +2674,33 @@ fn freeze_for(
 /// `crate::domain::governance`'s own doc anticipates this: a store-backed
 /// host will want "an operand the door already loaded inside its
 /// transaction", which is exactly where slice 05's host will find itself.
+///
+/// # The mode is an argument, not a literal
+///
+/// `dod-publish-door` (**P-D-30**): *"the door MUST take a gate mode as an
+/// explicit argument"*. `mode` is that argument. Under [`GateMode::Gate`]
+/// the host looks for a `satisfied` record and consumes it; under
+/// [`GateMode::PreAuthorized`] it verifies the named record and consumes
+/// nothing, which is what lets `04-lifecycle`'s scheduled-publish runner
+/// drive **this** door instead of a second one — a runner forced through
+/// `Gate` would meet an already-`consumed` record and fail the run
+/// terminally.
+///
+/// §2's `inst-fd-gate-mode` calls the mode *"an internal door argument,
+/// never a wire-visible parameter"*. Those are two clauses, not one: the
+/// second constrains where the argument may come **from**, and an earlier
+/// revision of this door read it as forbidding the first. It is structurally
+/// wire-invisible here rather than conventionally so — [`GateMode`] is
+/// reachable from no request DTO, no header reader and no query extractor in
+/// this crate, and the only `axum` handler that reaches this function,
+/// [`publish_product`], passes the [`GateMode::Gate`] literal. The single
+/// in-process entry point that can pass anything else is
+/// [`publish_product_under_gate`], which is not routed.
 async fn run_publish(
     runner: &(impl DBRunner + Sync),
     inputs: &HeadActInputs,
     gate: &(dyn GovernanceGate + Send + Sync),
+    mode: GateMode,
     outbox: &toolkit_db::outbox::Outbox,
 ) -> Result<HeadActOutcome, HeadActError> {
     // -- Phase 1, idempotency: the claim, and the replay that ends the act
@@ -2662,7 +2721,7 @@ async fn run_publish(
     // one, and it answers the same bare `404`.
     let head = repo::find_product(runner, &inputs.scope, inputs.tenant_id, inputs.product_id)
         .await
-        .map_err(|e| HeadActError::from_storage(&e))?
+        .map_err(|e| HeadActError::from_repo(&e))?
         .ok_or(HeadActError::Vanished)?;
 
     // -- Terminality, which reaches every head write and not only a
@@ -2692,9 +2751,43 @@ async fn run_publish(
         return Err(HeadActError::Refused(revalidation_refusal(&report)));
     }
 
-    // -- Phase 7, the governance gate, inside the door, in `Gate` mode
-    // always (`inst-fd-gate-mode`). The two `Err`s are two different kinds
-    // of thing and take two different routes.
+    // -- Phases 3 to 5 continued, the state phase: the edge, and what the
+    // floor says it costs. `published_state_after` decides the `to` side from
+    // the row image, the same way the head-row `UPDATE`'s own `CASE` does.
+    //
+    // **It runs before the gate, and the order is the pipeline's rather than
+    // this door's.** `Phase::ordered()` puts `State` ahead of
+    // `GovernanceGate`, so an act that is not legal at all must be refused as
+    // illegal rather than answered with an approval question: a caller told
+    // to seek an approval for an edge the machine does not admit has been
+    // sent to obtain something that would not help. This door asked the gate
+    // first until this fix, contradicting the phase order its own module doc
+    // claims to follow, while `skus::run_publish` and both discard doors had
+    // the compliant order from the start.
+    //
+    // At this commit the reordering changes no answer, and that is measured
+    // rather than assumed: `check_head_write` above has already refused every
+    // terminal head, and on the three states that survive it
+    // (`draft`, `published`, `deprecated`) `published_state_after` yields
+    // either the admitted `draft -> published` edge or the same-value
+    // diagonal, both of which `transition::guard` admits. So the guard cannot
+    // refuse a publish today and the two orders are observationally equal.
+    // The order is fixed anyway, because the thing that makes it observable
+    // is a *later* slice widening `published_state_after` or the edge list,
+    // and a defect that only appears then is one nobody will be looking for.
+    // --
+    let decision = transition::guard(
+        head.lifecycle_state,
+        published_state_after(head.lifecycle_state),
+    )
+    .map_err(HeadActError::Refused)?;
+
+    // -- Phase 7, the governance gate, inside the door, in the mode this
+    // act was entered under (`inst-fd-gate-mode`). `Gate` from every wire
+    // surface; `PreAuthorized` only from an in-process caller, which is the
+    // seam `04-lifecycle`'s scheduled-publish runner arrives through. The
+    // two `Err`s are two different kinds of thing and take two different
+    // routes.
     //
     // `evaluate`'s is the host failing to **reach** an answer — a
     // record-store read that failed, say. `crate::domain::governance`'s own
@@ -2713,18 +2806,18 @@ async fn run_publish(
     // store-backed host, which is why it is routed now rather than when the
     // first operator reads `APPROVAL_REQUIRED` off a failed read.
     // `skus::run_publish` has carried this shape from the start; this door
-    // mapped both arms to `Refused` until this fix. --
+    // mapped both arms to `Refused` until this fix.
+    //
+    // The phase is **last**, after the state phase above, which is where
+    // `Phase::ordered()` puts it and where `skus::run_publish` and both
+    // discard doors already asked it. --
     let subject = EntityRef {
         tenant_id: inputs.tenant_id,
         entity_kind: CatalogEntityKind::Product,
         entity_id: inputs.product_id,
     };
     let verdict = gate
-        .evaluate(
-            subject,
-            InternalRevision::new(inputs.expected),
-            GateMode::Gate,
-        )
+        .evaluate(subject, InternalRevision::new(inputs.expected), mode)
         .map_err(|e| {
             HeadActError::Db(DbError::Sea(DbErr::Custom(format!(
                 "bss-products: the governance gate host failed: {e}"
@@ -2734,15 +2827,6 @@ async fn run_publish(
         .into_authorization()
         .map_err(HeadActError::Refused)?;
 
-    // -- The edge, and what the floor says it costs. `published_state_after`
-    // decides the `to` side from the row image, the same way the head-row
-    // `UPDATE`'s own `CASE` does. --
-    let decision = transition::guard(
-        head.lifecycle_state,
-        published_state_after(head.lifecycle_state),
-    )
-    .map_err(HeadActError::Refused)?;
-
     // -- a. Freeze the post-act image, at `published_version + 1`. --
     repo::insert_entity_version(
         runner,
@@ -2750,7 +2834,7 @@ async fn run_publish(
         freeze_for(inputs, &head, &authorization),
     )
     .await
-    .map_err(|e| HeadActError::from_storage(&e))?;
+    .map_err(|e| HeadActError::from_repo(&e))?;
 
     // -- b. Then exactly one head-row `UPDATE`. --
     let write = repo::publish_product_head(
@@ -2762,7 +2846,7 @@ async fn run_publish(
         inputs.now,
     )
     .await
-    .map_err(|e| HeadActError::from_storage(&e))?;
+    .map_err(|e| HeadActError::from_repo(&e))?;
     if write == HeadWrite::Unmatched {
         // An error rather than an outcome, and the whole reason
         // [`HeadActError`] exists: this rolls the freeze back. An `Ok` here
@@ -2774,9 +2858,13 @@ async fn run_publish(
     // fires one. On `draft -> published` it does not — that is
     // `ApprovalInvalidation::Skip`, this transaction being the one that
     // consumes the approval — so this call is a no-op today. It is here, and
-    // it reads `head_act_invalidation`'s answer, so that the decision stays
-    // `transition::guard`'s rather than becoming a fact hard-coded here. --
-    fire_invalidation_hook(inputs, head_act_invalidation(decision))?;
+    // it reads `transition::invalidation_for`'s answer, so that the decision
+    // stays `crate::domain::transition`'s rather than becoming a fact
+    // hard-coded here. That function is the single home the two doors' own
+    // copies of this fold were owed: `ADMITTED_EDGES` and `GATED_EDGES`
+    // already live there, and the `NotATransition` arm is a case of the same
+    // rule rather than a case outside it. --
+    fire_invalidation_hook(inputs, transition::invalidation_for(decision))?;
 
     // -- d. Then the event, and the stored answer. --
     announce_and_answer(runner, outbox, inputs, Announcement::Published).await
@@ -2786,15 +2874,42 @@ async fn run_publish(
 /// the mutation's own transaction, the idempotency claim first, and the head
 /// read under the write.
 ///
-/// The phases a discard does **not** have are as deliberate as the ones it
-/// does. There is **no pipeline re-run** — nothing is being published, and
-/// `inst-fd-publish-revalidate` is the publish act's clause — and **no
-/// governance gate**: `inst-fd-governance-gate` puts the gate on the publish
-/// door, and discarding a never-published draft consumes and requires no
-/// approval.
+/// The one phase a discard does **not** have is as deliberate as the ones it
+/// does: there is **no pipeline re-run**, because nothing is being published
+/// and `inst-fd-publish-revalidate` is the publish act's clause.
+///
+/// # The governance-gate phase runs here, and passes trivially
+///
+/// §3.1's `inst-fd-pipeline-gate-phase` says the phase *"runs at every
+/// mutating door and passes trivially where the act is ungated
+/// (**P-D-34**)"*, and §1.1 makes governance *"a registered gate phase
+/// inside the pipeline, hosting any gated act — publish or transition alike
+/// (**P-D-30**) — not a separate path around it"*.
+/// [`crate::domain::validation::Phase::GovernanceGate`]'s own doc carries
+/// the same rule. So the phase is asked here, in [`GateMode::Gate`], and the
+/// gear's default host authorizes naming no record: a discard of a
+/// never-published draft consumes no approval and today requires none.
+///
+/// Behaviourally that is the same answer as not asking. It stops being the
+/// same answer the moment slice 05 registers a ceremony on a transition,
+/// which is the case the phase exists to make reachable **without reopening
+/// every door** — and the door that had to be reopened would be exactly this
+/// one. An earlier revision cited `inst-fd-governance-gate` as authority for
+/// skipping the phase; that instruction is about the publish door and does
+/// not govern this question.
+///
+/// The mode is the [`GateMode::Gate`] literal rather than an argument, and
+/// the asymmetry with [`run_publish`] is measured, not forgotten:
+/// `dod-publish-door` requires the *publish* door to take the mode
+/// explicitly because `04-lifecycle`'s scheduled-publish runner needs
+/// [`GateMode::PreAuthorized`] to drive it. No scheduled or cascaded
+/// **discard** exists in any slice, so there is no caller for a
+/// pre-authorized discard and no instruction asking for one. The host is
+/// still a parameter, for [`discard_product_under_gate`]'s stated reason.
 async fn run_discard(
     runner: &(impl DBRunner + Sync),
     inputs: &HeadActInputs,
+    gate: &(dyn GovernanceGate + Send + Sync),
     outbox: &toolkit_db::outbox::Outbox,
 ) -> Result<HeadActOutcome, HeadActError> {
     if let Some(replay) = claim_for_head_act(
@@ -2810,7 +2925,7 @@ async fn run_discard(
 
     let head = repo::find_product(runner, &inputs.scope, inputs.tenant_id, inputs.product_id)
         .await
-        .map_err(|e| HeadActError::from_storage(&e))?
+        .map_err(|e| HeadActError::from_repo(&e))?
         .ok_or(HeadActError::Vanished)?;
 
     if head.internal_revision != inputs.expected {
@@ -2827,6 +2942,39 @@ async fn run_discard(
     let decision = transition::guard(head.lifecycle_state, LifecycleState::Discarded)
         .map_err(HeadActError::Refused)?;
 
+    // -- Phase 7, the governance gate: the pipeline's last phase, asked here
+    // as it is at every other mutating door (`inst-fd-pipeline-gate-phase`).
+    // It sits after the edge because `Phase::ordered()` puts `State` before
+    // `GovernanceGate`, so a `published` head is `ILLEGAL_TRANSITION` rather
+    // than an approval question. The two `Err` routes are `run_publish`'s
+    // and carry its reasoning: a host that could not *reach* an answer is
+    // infrastructure and answers 5xx, while the ceremony's own `no` is
+    // `APPROVAL_REQUIRED`. --
+    let verdict = gate
+        .evaluate(
+            EntityRef {
+                tenant_id: inputs.tenant_id,
+                entity_kind: CatalogEntityKind::Product,
+                entity_id: inputs.product_id,
+            },
+            InternalRevision::new(inputs.expected),
+            GateMode::Gate,
+        )
+        .map_err(|e| {
+            HeadActError::Db(DbError::Sea(DbErr::Custom(format!(
+                "bss-products: the governance gate host failed: {e}"
+            ))))
+        })?;
+    // The authorization is collapsed into the door's control flow and then
+    // dropped, and that is the whole of what an ungated act does with a
+    // trivial `yes`: a discard freezes no `products_entity_version` row, so
+    // the `approval_ref` the verdict may name has no column to reach. The
+    // day slice 05 gates a transition, the refusal arm above is already
+    // wired and only the record's destination is new.
+    verdict
+        .into_authorization()
+        .map_err(HeadActError::Refused)?;
+
     let write = repo::discard_product_head(
         runner,
         &inputs.scope,
@@ -2836,14 +2984,14 @@ async fn run_discard(
         inputs.now,
     )
     .await
-    .map_err(|e| HeadActError::from_storage(&e))?;
+    .map_err(|e| HeadActError::from_repo(&e))?;
     if write == HeadWrite::Unmatched {
         return Err(classify_unmatched_discard(runner, inputs).await);
     }
 
     // A discard consumes no approval, so the floor says its edge fires the
     // hook — read off `transition::guard`'s own answer, not decided here.
-    fire_invalidation_hook(inputs, head_act_invalidation(decision))?;
+    fire_invalidation_hook(inputs, transition::invalidation_for(decision))?;
 
     announce_and_answer(runner, outbox, inputs, Announcement::Discarded).await
 }
@@ -2867,26 +3015,49 @@ async fn publish_product(
         &ctx,
         product_id,
         &headers,
-        // `inst-fd-gate-mode` and the owner's call of 2026-08-27: the REST
-        // surface always calls in `Gate` mode. The mode is fixed inside
-        // `run_publish`, not here; what this call site fixes is *which host
-        // answers*, and this is the only host the gear has until slice 05
-        // registers a materiality policy.
+        // This call site fixes the two things a wire request may not
+        // choose. *Which host answers*: the only host the gear has until
+        // slice 05 registers a materiality policy. And *which mode*:
+        // `GateMode::Gate`, a literal here and nowhere else, which is
+        // `inst-fd-gate-mode`'s "never a wire-visible parameter" and the
+        // owner's call of 2026-08-27.
         &(Arc::new(NoMaterialityPolicyGate) as Arc<dyn GovernanceGate + Send + Sync>),
+        GateMode::Gate,
     )
     .await
 }
 
-/// The publish door, with its governance host as an explicit argument.
+/// The publish door, with its governance host **and its gate mode** as
+/// explicit arguments — the in-process entry point every other caller of
+/// this door uses.
 ///
-/// # Why the host is a parameter, and why the mode is not
+/// # Why the mode is a parameter
 ///
-/// The **mode** is fixed at [`GateMode::Gate`] inside [`run_publish`] and is
-/// reachable from nowhere else: no request field, no header and no query
-/// parameter selects [`GateMode::PreAuthorized`], which is
-/// `inst-fd-gate-mode`'s own requirement — a `PreAuthorized` publish
-/// reachable from the wire would let any caller naming an approval id skip
-/// the ceremony.
+/// `dod-publish-door` (**P-D-30**): *"the door MUST take a gate mode as an
+/// explicit argument"*, so that `04-lifecycle`'s scheduled-publish runner
+/// can drive **this** door in [`GateMode::PreAuthorized`] rather than force
+/// a second publish path into existence. An earlier revision of this
+/// function fixed the mode at [`GateMode::Gate`] inside [`run_publish`] and
+/// cited `inst-fd-gate-mode` as requiring that. It does not: the
+/// instruction's clause is *"an internal door argument, never a wire-visible
+/// parameter"*, and reading the second half as a prohibition on the first
+/// left [`GateMode::PreAuthorized`] a type with no call path at all.
+///
+/// **Never wire-visible, structurally rather than by convention.**
+/// [`GateMode`] implements no `Deserialize`: its derive list is `Debug`,
+/// `Clone`, `Copy`, `PartialEq`, `Eq`, `Hash`, and `#[domain_model]` adds
+/// only a marker trait impl — measured at
+/// `toolkit_macros`'s own expansion, 2026-08-30. So the type **cannot** be
+/// parsed out of a body, a query string or a header at all, and adding it to
+/// a DTO would not compile without someone deliberately deriving the trait.
+/// Beside that, it appears in no request DTO, header reader or query
+/// extractor in this crate; the only `axum` handler that reaches this
+/// function is [`publish_product`], and it passes the [`GateMode::Gate`]
+/// literal. This function is not routed, so the set of callers that can pass
+/// anything else is the set of Rust call sites in this crate — which is the
+/// bound `crate::domain::governance`'s own module doc states.
+///
+/// # Why the host is a parameter
 ///
 /// The **host** is a parameter because the gear's only host,
 /// [`NoMaterialityPolicyGate`], never refuses under `Gate` — it authorizes,
@@ -2903,6 +3074,7 @@ async fn publish_product_under_gate(
     product_id: Uuid,
     headers: &HeaderMap,
     gate: &Arc<dyn GovernanceGate + Send + Sync>,
+    mode: GateMode,
 ) -> Result<Response, CanonicalError> {
     let act = HeadAct {
         authz_action: crate::authz::actions::PUBLISH,
@@ -2915,7 +3087,7 @@ async fn publish_product_under_gate(
 
     // The act: every remaining phase, then the freeze, the one head-row
     // `UPDATE` and the event, on one transaction.
-    let result = publish_in_one_transaction(state, &opened, gate).await;
+    let result = publish_in_one_transaction(state, &opened, gate, mode).await;
 
     // The answer, the replay, or the audited refusal.
     answer_head_act(state, &opened, PUBLISH_AUDIT_ACTION, result).await
@@ -2944,14 +3116,57 @@ async fn discard_product(
     headers: HeaderMap,
 ) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(extension_ctx)?;
+    discard_product_under_gate(
+        &state,
+        &enforcer,
+        &ctx,
+        product_id,
+        &headers,
+        // The same literal [`publish_product`] passes, and for the same
+        // reason: the only host the gear has, and no wire input choosing it.
+        &(Arc::new(NoMaterialityPolicyGate) as Arc<dyn GovernanceGate + Send + Sync>),
+    )
+    .await
+}
+
+/// The discard door, with its governance host as an explicit argument —
+/// [`publish_product_under_gate`]'s twin, minus the mode.
+///
+/// # Why the host is a parameter here too
+///
+/// The gate phase runs on this door (`inst-fd-pipeline-gate-phase`; see
+/// [`run_discard`]), and the gear's only host never refuses under
+/// [`GateMode::Gate`]. That makes the phase's refusal arm unreachable
+/// through [`discard_product`] and therefore untestable at the door — the
+/// identical argument [`publish_product_under_gate`] makes — and a phase
+/// nothing can exercise is one a reader cannot tell from a phase that is
+/// absent. This seam is also where slice 05's host arrives the day it gates
+/// a transition.
+///
+/// The **mode** is not a parameter, and [`run_discard`]'s own doc measures
+/// that asymmetry against `dod-publish-door`: the explicit-mode requirement
+/// is the publish door's, and no slice schedules or cascades a discard.
+///
+/// # Errors
+///
+/// Every refusal this door raises, each audited; the bare `404`; the `500` a
+/// storage or gate-host failure raises.
+async fn discard_product_under_gate(
+    state: &ApiState,
+    enforcer: &authz_resolver_sdk::PolicyEnforcer,
+    ctx: &SecurityContext,
+    product_id: Uuid,
+    headers: &HeaderMap,
+    gate: &Arc<dyn GovernanceGate + Send + Sync>,
+) -> Result<Response, CanonicalError> {
     let act = HeadAct {
         authz_action: crate::authz::actions::WRITE,
         audit_action: DISCARD_AUDIT_ACTION,
         endpoint: discard_endpoint(product_id),
     };
-    let opened = open_head_door(&state, &enforcer, &ctx, product_id, &headers, &act).await?;
-    let result = discard_in_one_transaction(&state, &opened).await;
-    answer_head_act(&state, &opened, DISCARD_AUDIT_ACTION, result).await
+    let opened = open_head_door(state, enforcer, ctx, product_id, headers, &act).await?;
+    let result = discard_in_one_transaction(state, &opened, gate).await;
+    answer_head_act(state, &opened, DISCARD_AUDIT_ACTION, result).await
 }
 
 #[cfg(test)]

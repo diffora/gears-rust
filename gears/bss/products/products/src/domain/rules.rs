@@ -9,6 +9,7 @@
 use toolkit_macros::domain_model;
 use uuid::Uuid;
 
+use crate::domain::containment::ResolvedScope;
 use crate::domain::name;
 use crate::domain::validation::{Phase, ValidationReport, ValidationRule};
 
@@ -87,6 +88,108 @@ impl ValidationRule<CreateEntityCandidate> for NameShapeRule {
                 Self::CODE,
                 "name",
                 "a name must contain at least one non-whitespace character after normalization",
+            );
+        }
+    }
+}
+
+/// The candidate the SKU publish door's re-validation re-run judges: the head
+/// **as it now stands**, reduced to the columns the re-run's rules read.
+///
+/// @cpt-cf-bss-products-dod-publish-door
+///
+/// # Why this type exists rather than the repository record
+///
+/// The two rules below judged `infra::storage::repo::SkuRecord` directly and
+/// were declared in `api::rest::skus` beside the door that ran them. Both
+/// halves of that were wrong for the same reason, and the second is the
+/// load-bearing one. `inst-fd-publish-revalidate` re-runs **the pipeline**,
+/// and the point of writing these as rules rather than as `if`s in the door
+/// is that slices 04 and 05 register their `-> published` validators beside
+/// them; a rule whose subject is a **repository DTO** cannot be registered by
+/// either without that slice taking a dependency on `infra::storage::repo`,
+/// which inverts the gear's own layering. The subject a domain rule judges has
+/// to be a domain value, so this is one — built by the door from the record
+/// the way [`CreateEntityCandidate`] is built from a payload, and the way
+/// `api::rest::products::publish_candidate` already builds one on the Product
+/// side.
+///
+/// It carries three columns and not the whole head on purpose: a subject
+/// wider than its rules read invites a fourth rule to reach for a column the
+/// re-run was never scoped over, and `internal_revision`, `lifecycle_state`
+/// and `published_version` are decided by the door's own precondition,
+/// terminality and edge steps rather than by a registered rule.
+#[domain_model]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PublishRevalidationSubject {
+    /// The head's `sku_code`, as stored.
+    pub sku_code: String,
+    /// The head's stored region value set. Empty means unrestricted.
+    pub region_scope: String,
+    /// The head's stored brand value set. Same reading.
+    pub brand_scope: String,
+}
+
+/// The `sku_code` a head must still carry to be publishable.
+///
+/// @cpt-cf-bss-products-dod-publish-door
+///
+/// A [`ValidationRule`] rather than an `if` in the door, because
+/// `inst-fd-publish-revalidate` re-runs **the pipeline**, and a check written
+/// as an `if` is one slices 04 and 05 cannot register beside their own.
+pub struct SkuCodeStillPresent;
+
+impl ValidationRule<PublishRevalidationSubject> for SkuCodeStillPresent {
+    fn name(&self) -> &'static str {
+        "inst-fd-publish-revalidate/sku_code"
+    }
+
+    fn phase(&self) -> Phase {
+        Phase::Shape
+    }
+
+    fn evaluate(&self, subject: &PublishRevalidationSubject, report: &mut ValidationReport) {
+        if subject.sku_code.trim().is_empty() {
+            report.violate(
+                "INCOMPLETE_ENTITY",
+                "sku_code",
+                "sku_code is blank, so this entity is no longer publishable",
+            );
+        }
+    }
+}
+
+/// The two stored scope columns must still parse under
+/// [`ResolvedScope::parse`]'s own rule.
+///
+/// @cpt-cf-bss-products-dod-publish-door
+///
+/// [`Phase::Identity`] because §4.2 files containment and reservation there,
+/// and this is the operand the containment rule reads.
+pub struct SkuScopeColumnsStillParse;
+
+impl ValidationRule<PublishRevalidationSubject> for SkuScopeColumnsStillParse {
+    fn name(&self) -> &'static str {
+        "inst-fd-publish-revalidate/scope-columns"
+    }
+
+    fn phase(&self) -> Phase {
+        Phase::Identity
+    }
+
+    fn evaluate(&self, subject: &PublishRevalidationSubject, report: &mut ValidationReport) {
+        if ResolvedScope::parse(&subject.region_scope).is_err() {
+            report.violate(
+                "INCOMPLETE_ENTITY",
+                "region_scope",
+                "region_scope contains an empty value between separators",
+            );
+        }
+        if ResolvedScope::parse(&subject.brand_scope).is_err() {
+            report.violate(
+                "INCOMPLETE_ENTITY",
+                "brand_scope",
+                "brand_scope contains an empty value between separators",
             );
         }
     }

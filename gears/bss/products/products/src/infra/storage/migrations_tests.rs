@@ -1205,6 +1205,10 @@ mod sku_row {
         pub lifecycle_state: String,
         pub internal_revision: i64,
         pub published_version: i64,
+        /// Raised by the publish door on an override-carrying `bundle` publish,
+        /// cleared by slice 06's signal. Admitted in an `UPDATE` only alongside
+        /// a `published_version` bump.
+        pub composition_pending: bool,
         pub region_scope: String,
         pub brand_scope: String,
         pub created_by: String,
@@ -2249,6 +2253,7 @@ mod sku_guard_tests {
             lifecycle_state: Set("draft".to_owned()),
             internal_revision: Set(1),
             published_version: Set(0),
+            composition_pending: Set(false),
             region_scope: Set(String::new()),
             brand_scope: Set(String::new()),
             created_by: Set("actor-ada".to_owned()),
@@ -2972,6 +2977,102 @@ mod sku_guard_tests {
         assert!(
             result.is_err(),
             "a SKU head row is retired through lifecycle_state, never removed"
+        );
+    }
+
+    /// Class 8 (`composition_pending`): the refusal side. A change to the flag
+    /// **without** a `published_version` bump in the same statement is refused
+    /// (`design/01-foundation.md` §4.2, the flag is *"changed only in the same
+    /// statement as a `published_version` bump"*, P-D-32).
+    #[tokio::test]
+    async fn a_composition_pending_change_without_a_publish_bump_is_refused() {
+        let provider = harness().await;
+        let scope = AccessScope::for_tenant(TENANT);
+        let product_id = Uuid::from_u128(12);
+        insert_parent(&provider, &scope, product_id).await;
+        let sku_id = Uuid::from_u128(114);
+        insert(&provider, &scope, draft_row(sku_id, product_id, "sku-14"))
+            .await
+            .expect("insert draft sku");
+
+        let result = update(
+            &provider,
+            &scope,
+            sku_id,
+            vec![
+                (Column::CompositionPending, true.into()),
+                (Column::InternalRevision, 2i64.into()),
+                (Column::UpdatedAt, at(12).into()),
+            ],
+        )
+        .await;
+
+        assert!(
+            result.is_err(),
+            "composition_pending moves only in the statement that bumps published_version"
+        );
+    }
+
+    /// Class 8 (`composition_pending`): the positive control. The same flag
+    /// change **with** a `published_version` bump in the same statement is
+    /// admitted — the publish door's own head-row `UPDATE` (P-D-32).
+    ///
+    /// The bump has two prerequisites of its own that have nothing to do with
+    /// this clause: the matching `products_entity_version` row must already
+    /// exist, and the head must be non-terminal. The fixture satisfies both,
+    /// so a refusal here could only come from the clause under test.
+    #[tokio::test]
+    async fn a_composition_pending_change_with_a_publish_bump_is_admitted() {
+        let provider = harness().await;
+        let scope = AccessScope::for_tenant(TENANT);
+        let product_id = Uuid::from_u128(13);
+        insert_parent(&provider, &scope, product_id).await;
+        let sku_id = Uuid::from_u128(115);
+        insert(&provider, &scope, draft_row(sku_id, product_id, "sku-15"))
+            .await
+            .expect("insert draft sku");
+        freeze_version(&provider, &scope, sku_id, 1).await;
+
+        let result = update(
+            &provider,
+            &scope,
+            sku_id,
+            vec![
+                (Column::CompositionPending, true.into()),
+                (Column::PublishedVersion, 1i64.into()),
+                (Column::LifecycleState, "published".to_owned().into()),
+                (Column::InternalRevision, 2i64.into()),
+                (Column::UpdatedAt, at(12).into()),
+            ],
+        )
+        .await;
+
+        assert_applied(
+            &result,
+            "the publish door's own head-row UPDATE may raise composition_pending",
+        );
+    }
+
+    /// The column exists on the executed `SQLite` schema and carries its
+    /// default: an `INSERT` that never mentions `composition_pending` stores
+    /// the unraised state (**P-D-35**, `NOT NULL` default `false`).
+    #[tokio::test]
+    async fn composition_pending_defaults_to_false_when_the_insert_omits_it() {
+        let provider = harness().await;
+        let scope = AccessScope::for_tenant(TENANT);
+        let product_id = Uuid::from_u128(14);
+        insert_parent(&provider, &scope, product_id).await;
+        let sku_id = Uuid::from_u128(116);
+        let mut row = draft_row(sku_id, product_id, "sku-16");
+        row.composition_pending = sea_orm::ActiveValue::NotSet;
+
+        let stored = insert(&provider, &scope, row)
+            .await
+            .expect("an INSERT that omits composition_pending is accepted");
+
+        assert!(
+            !stored.composition_pending,
+            "composition_pending's default is the unraised state"
         );
     }
 }

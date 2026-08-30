@@ -90,7 +90,9 @@ use crate::config::ProductsConfig;
 use crate::domain::canonical;
 use crate::domain::concurrency::InternalRevision;
 use crate::domain::error::DomainError;
-use crate::domain::governance::{EntityRef, GateMode, GateVerdict, GovernanceGate};
+use crate::domain::governance::{
+    ApprovalDisposition, ApprovalId, EntityRef, GateMode, GateVerdict, GovernanceGate,
+};
 use crate::infra::events;
 use crate::infra::storage::migrations::Migrator;
 use crate::infra::storage::repo::{self, NewProduct};
@@ -2303,10 +2305,17 @@ async fn a_gate_that_answers_no_refuses_approval_required_and_writes_nothing() {
     );
 
     let gate: Arc<dyn GovernanceGate + Send + Sync> = Arc::new(RefusingGate);
-    let refusal =
-        super::publish_product_under_gate(&state, &enforcer, &ctx, product_id, &headers, &gate)
-            .await
-            .expect_err("a refusing gate must refuse the publish");
+    let refusal = super::publish_product_under_gate(
+        &state,
+        &enforcer,
+        &ctx,
+        product_id,
+        &headers,
+        &gate,
+        GateMode::Gate,
+    )
+    .await
+    .expect_err("a refusing gate must refuse the publish");
     assert_eq!(
         refusal.into_response().status(),
         StatusCode::FORBIDDEN,
@@ -2410,10 +2419,17 @@ async fn a_gate_host_that_fails_is_an_internal_failure_not_a_refusal() {
     );
 
     let gate: Arc<dyn GovernanceGate + Send + Sync> = Arc::new(FailingGate);
-    let failure =
-        super::publish_product_under_gate(&state, &enforcer, &ctx, product_id, &headers, &gate)
-            .await
-            .expect_err("a host that cannot answer must not publish");
+    let failure = super::publish_product_under_gate(
+        &state,
+        &enforcer,
+        &ctx,
+        product_id,
+        &headers,
+        &gate,
+        GateMode::Gate,
+    )
+    .await
+    .expect_err("a host that cannot answer must not publish");
     let response = failure.into_response();
     assert!(
         response.status().is_server_error(),
@@ -3071,4 +3087,425 @@ async fn a_discarded_event_carries_no_published_version() {
     );
     assert_eq!(body["lifecycleState"], json!("discarded"));
     assert_eq!(body["internalRevision"], json!(2));
+}
+
+/// A gate host that records the mode it was asked in and names a record
+/// either way — the double the `PreAuthorized` seam needs.
+///
+/// The two arms differ the way `inst-fd-gate-mode-gate` and
+/// `inst-fd-gate-mode-preauthorized` say a real host's must: under `Gate` it
+/// names a record **to consume**, under `PreAuthorized` one already
+/// **verified**. `NoMaterialityPolicyGate` can do neither — it holds no
+/// record store, so it names no record under `Gate` and refuses outright
+/// under `PreAuthorized` — which is why the seam is unreachable without a
+/// double.
+struct RecordingGate {
+    approval: ApprovalId,
+    asked: std::sync::Mutex<Vec<GateMode>>,
+}
+
+impl RecordingGate {
+    fn new(approval: ApprovalId) -> Self {
+        Self {
+            approval,
+            asked: std::sync::Mutex::new(Vec::new()),
+        }
+    }
+
+    /// Every mode this host was asked in, in order.
+    fn modes(&self) -> Vec<GateMode> {
+        self.asked
+            .lock()
+            .expect("no case poisons this lock")
+            .clone()
+    }
+}
+
+impl GovernanceGate for RecordingGate {
+    fn evaluate(
+        &self,
+        _subject: EntityRef,
+        _expected_revision: InternalRevision,
+        mode: GateMode,
+    ) -> Result<GateVerdict, DomainError> {
+        self.asked
+            .lock()
+            .expect("no case poisons this lock")
+            .push(mode);
+        let disposition = match mode {
+            GateMode::Gate => ApprovalDisposition::Consume(self.approval),
+            GateMode::PreAuthorized(id) => ApprovalDisposition::Verified(id),
+        };
+        Ok(GateVerdict::authorized(
+            disposition,
+            false,
+            "this double authorizes and records the mode it was asked in".to_owned(),
+        ))
+    }
+}
+
+/// **A publish driven in `PreAuthorized` mode reaches the host in that mode,
+/// publishes, and consumes nothing.**
+///
+/// This is the seam `dod-publish-door` (**P-D-30**) requires the door to
+/// have: *"the door MUST take a gate mode as an explicit argument ... under
+/// `PreAuthorized(approvalId)` it verifies the named record and does not
+/// consume it, which is what lets `04-lifecycle`'s scheduled-publish runner
+/// drive this same door"*. Until the mode became an argument,
+/// `GateMode::PreAuthorized` was a type with no call path anywhere in the
+/// gear, so the runner 04 will ship had nothing to arrive through.
+///
+/// Three things are asserted, and the first is the one that fails against a
+/// door that hard-codes the mode: the host was asked in
+/// `PreAuthorized(approval)` and in nothing else. A case asserting only that
+/// the publish succeeded would pass against a door that quietly substituted
+/// `Gate`, since this double authorizes under both.
+///
+/// **"Consumes nothing" is asserted as far as this slice can reach.** The
+/// consume flip itself is `inst-fd-publish-consume`'s and belongs to slice
+/// 05's record store, which does not exist here — there is nothing in this
+/// gear a flip could write to. What is provable now is the property the flip
+/// will be written against: the verdict the door acted on names the record
+/// for `approval_ref` and offers **no** id for consumption, and the frozen
+/// version row carries that id. `approval_to_consume()` answering `None` is
+/// what makes "nothing is consumed under `PreAuthorized`" a property of the
+/// type rather than a rule a future door has to remember.
+#[tokio::test]
+async fn a_preauthorized_publish_reaches_the_host_in_that_mode_and_consumes_nothing() {
+    let harness = harness().await;
+    let product_id = Uuid::now_v7();
+    seed_draft(&harness, product_id).await;
+
+    let approval = ApprovalId::new(Uuid::now_v7());
+    let recorder = Arc::new(RecordingGate::new(approval));
+    let gate: Arc<dyn GovernanceGate + Send + Sync> = Arc::clone(&recorder) as _;
+
+    let state = api_state(&harness);
+    let enforcer = flat_in_enforcer(TENANT);
+    let ctx = authed_ctx(TENANT);
+    let mut headers = axum::http::HeaderMap::new();
+    headers.insert(
+        axum::http::header::IF_MATCH,
+        if_match(1)
+            .parse()
+            .expect("the ETag is a valid header value"),
+    );
+
+    let response = super::publish_product_under_gate(
+        &state,
+        &enforcer,
+        &ctx,
+        product_id,
+        &headers,
+        &gate,
+        GateMode::PreAuthorized(approval),
+    )
+    .await
+    .expect("a verified pre-authorization must publish");
+    assert_eq!(
+        response.into_response().status(),
+        StatusCode::OK,
+        "the scheduled-publish path drives the ordinary door to the ordinary answer"
+    );
+
+    assert_eq!(
+        recorder.modes(),
+        vec![GateMode::PreAuthorized(approval)],
+        "the door passed the caller's mode through unchanged, and asked exactly once; a door \
+         that substituted GateMode::Gate would still have published, which is why the mode \
+         itself is the assertion"
+    );
+
+    // The disposition the door acted on, asked of the same host the door
+    // asked: `Verified` names the record for `approval_ref` and offers
+    // nothing to spend.
+    let verdict = recorder
+        .evaluate(
+            EntityRef {
+                tenant_id: TENANT,
+                entity_kind: bss_products_sdk::models::EntityKind::Product,
+                entity_id: product_id,
+            },
+            InternalRevision::new(1),
+            GateMode::PreAuthorized(approval),
+        )
+        .expect("this double never fails to reach an answer");
+    let GateVerdict::Authorized(authorization) = verdict else {
+        panic!("this double authorizes under PreAuthorized")
+    };
+    assert_eq!(
+        authorization.approval_to_consume(),
+        None,
+        "nothing is consumed under PreAuthorized (inst-fd-publish-consume), and that is a \
+         property of ApprovalDisposition rather than a rule the door remembers"
+    );
+    assert_eq!(
+        authorization.approval_ref(),
+        Some(approval),
+        "a PreAuthorized act still records which approval stands behind the frozen version"
+    );
+
+    let matched = raw_i64(
+        &harness.dsn,
+        &format!(
+            "SELECT COUNT(*) AS v FROM products_entity_version WHERE approval_ref = '{approval}' \
+             OR hex(approval_ref) = '{}'",
+            approval.get().simple().to_string().to_uppercase()
+        ),
+    )
+    .await;
+    assert_eq!(
+        matched, 1,
+        "the frozen row carries the verified record's id in approval_ref, which is the one \
+         accessor this act reads off the verdict"
+    );
+}
+
+/// **The governance-gate phase runs on the discard door: a host that says no
+/// refuses `APPROVAL_REQUIRED` and writes nothing.**
+///
+/// §3.1's `inst-fd-pipeline-gate-phase` puts the phase at *every* mutating
+/// door, passing trivially where the act is ungated (**P-D-34**), and §1.1
+/// makes governance a phase *inside* the pipeline rather than a path around
+/// it. Under the gear's own host a discard is ungated and the phase is
+/// invisible, so this double is the only way to tell a phase that passes
+/// from a phase that was never asked — which is exactly the distinction that
+/// stops mattering the day slice 05 registers a ceremony on a transition.
+///
+/// The status alone would not separate those two worlds either way, so the
+/// assertions are the problem body's own code and the audit row's
+/// `error_code`.
+#[tokio::test]
+async fn a_gate_that_answers_no_refuses_the_discard_and_writes_nothing() {
+    let harness = harness().await;
+    let product_id = Uuid::now_v7();
+    seed_draft(&harness, product_id).await;
+
+    let state = api_state(&harness);
+    let enforcer = flat_in_enforcer(TENANT);
+    let ctx = authed_ctx(TENANT);
+    let mut headers = axum::http::HeaderMap::new();
+    headers.insert(
+        axum::http::header::IF_MATCH,
+        if_match(1)
+            .parse()
+            .expect("the ETag is a valid header value"),
+    );
+
+    let gate: Arc<dyn GovernanceGate + Send + Sync> = Arc::new(RefusingGate);
+    let refusal =
+        super::discard_product_under_gate(&state, &enforcer, &ctx, product_id, &headers, &gate)
+            .await
+            .expect_err("a refusing gate must refuse the discard, which proves it was asked");
+
+    let response = refusal.into_response();
+    assert_eq!(
+        response.status(),
+        StatusCode::FORBIDDEN,
+        "APPROVAL_REQUIRED is the gate's own 403"
+    );
+
+    let head = head_of(&harness, product_id).await;
+    assert_eq!(
+        head.lifecycle_state.as_str(),
+        "draft",
+        "a rejection flips no state (inst-fd-gate-rejection), on this door as on publish"
+    );
+    assert_eq!(
+        head.internal_revision, 1,
+        "the refusal rolled the transaction back, so no head-row UPDATE landed"
+    );
+
+    let error_code = raw_string_opt(
+        &harness.dsn,
+        "SELECT error_code AS v FROM products_audit_log",
+    )
+    .await;
+    assert_eq!(
+        error_code.as_deref(),
+        Some("APPROVAL_REQUIRED"),
+        "the discard door's gate refusal audits under its own code, like every other refusal"
+    );
+}
+
+/// **The discard door's gate phase passes trivially under the gear's own
+/// host**: a routed discard, which wires `NoMaterialityPolicyGate`,
+/// succeeds.
+///
+/// The other half of the pair. `inst-fd-pipeline-gate-phase` asks for both
+/// halves at once — the phase runs *and* it costs an ungated act nothing —
+/// and a case proving only the refusal would leave a door that refuses every
+/// discard indistinguishable from a correct one.
+#[tokio::test]
+async fn the_discard_doors_gate_phase_passes_trivially_under_the_default_host() {
+    let harness = harness().await;
+    let product_id = Uuid::now_v7();
+    seed_draft(&harness, product_id).await;
+
+    let response = post_head_act(
+        app_for(&harness, TENANT),
+        TENANT,
+        product_id,
+        "discard",
+        &[("If-Match", &if_match(1))],
+    )
+    .await;
+
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "the default host authorizes naming no record, so an ungated discard pays nothing for \
+         the phase"
+    );
+    let head = head_of(&harness, product_id).await;
+    assert_eq!(head.lifecycle_state.as_str(), "discarded");
+    assert_eq!(
+        raw_i64(&harness.dsn, "SELECT COUNT(*) AS v FROM products_audit_log").await,
+        0,
+        "a success is not a refusal and audits nothing (P-D-21)"
+    );
+}
+
+/// [`RefusingGate`] that also counts how many times it was asked.
+///
+/// The count is the operand the precedence case below needs and the plain
+/// refusal cannot give: "the state phase is judged before the gate" is a claim
+/// about **whether the gate is consulted at all**, and a door that asked it
+/// and then discarded the answer would look identical from the response.
+struct CountingRefusingGate {
+    asked: std::sync::atomic::AtomicUsize,
+}
+
+impl CountingRefusingGate {
+    const fn new() -> Self {
+        Self {
+            asked: std::sync::atomic::AtomicUsize::new(0),
+        }
+    }
+
+    fn asked(&self) -> usize {
+        self.asked.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+impl GovernanceGate for CountingRefusingGate {
+    fn evaluate(
+        &self,
+        _subject: EntityRef,
+        _expected_revision: InternalRevision,
+        _mode: GateMode,
+    ) -> Result<GateVerdict, DomainError> {
+        self.asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(GateVerdict::Refused {
+            reason: "this double refuses every act it is asked about".to_owned(),
+        })
+    }
+}
+
+/// **The state phase outranks the governance gate on the Product publish
+/// door: a head the state phase refuses answers the state phase's code and
+/// the gate is never asked.**
+///
+/// `crate::domain::validation::Phase::ordered()` puts `State` ahead of
+/// `GovernanceGate`, and the consequence is not cosmetic: a caller told to
+/// seek an approval for an act that is not legal at all has been sent to
+/// obtain something that would not help, and the audit trail records an
+/// approval question where the machine's own refusal belongs. This door asked
+/// the gate ahead of `transition::guard` until the ordering was corrected; it
+/// now asks it last, as `skus::run_publish` and both discard doors already
+/// did.
+///
+/// # What this case does and does not discriminate, measured
+///
+/// It pins the rule for the one state-phase refusal a publish can reach —
+/// terminality — and it is honest to say that this refusal was ordered
+/// correctly **before** the fix as well: `transition::check_head_write` has
+/// always run ahead of the gate, and only `transition::guard` moved.
+///
+/// A case that discriminated the swap itself would need a head that fails the
+/// **edge** and would be refused by the gate, and no such head exists on this
+/// door. `check_head_write` refuses `retired` and `discarded` first, and on
+/// the three states that survive it — `draft`, `published`, `deprecated` —
+/// `super::published_state_after` yields either the admitted
+/// `draft -> published` edge or the same-value diagonal, both of which
+/// `transition::guard` admits. So `guard` cannot refuse a publish at this
+/// commit and the two orderings are observationally equal; the swap is a
+/// compliance fix against `Phase::ordered()` and against the SKU door, not a
+/// behaviour fix. This case is what will notice if a later slice widens
+/// `published_state_after` or `ADMITTED_EDGES` and the ordering silently
+/// stops holding.
+///
+/// The gate's own call count is asserted rather than only the response,
+/// because both refusals render a status this suite already sees: a status
+/// assertion alone would pass against a door that asked the gate, got its
+/// `no`, and happened to report the terminal refusal anyway.
+#[tokio::test]
+async fn the_state_phase_outranks_the_gate_on_the_publish_door() {
+    let harness = harness().await;
+    let product_id = Uuid::now_v7();
+    seed_draft(&harness, product_id).await;
+
+    let discarded = post_head_act(
+        app_for(&harness, TENANT),
+        TENANT,
+        product_id,
+        "discard",
+        &[("If-Match", &if_match(1))],
+    )
+    .await;
+    assert_eq!(
+        discarded.status(),
+        StatusCode::OK,
+        "this case's own premise: the draft discards cleanly, leaving a terminal head"
+    );
+
+    let state = api_state(&harness);
+    let enforcer = flat_in_enforcer(TENANT);
+    let ctx = authed_ctx(TENANT);
+    let mut headers = axum::http::HeaderMap::new();
+    headers.insert(
+        axum::http::header::IF_MATCH,
+        if_match(2)
+            .parse()
+            .expect("the ETag is a valid header value"),
+    );
+
+    let counter = Arc::new(CountingRefusingGate::new());
+    let gate: Arc<dyn GovernanceGate + Send + Sync> = Arc::clone(&counter) as _;
+    let refusal = super::publish_product_under_gate(
+        &state,
+        &enforcer,
+        &ctx,
+        product_id,
+        &headers,
+        &gate,
+        GateMode::Gate,
+    )
+    .await
+    .expect_err("a terminal head is refused whatever the gate would have said");
+    assert_eq!(
+        refusal.into_response().status(),
+        StatusCode::CONFLICT,
+        "ENTITY_TERMINAL is a 409; APPROVAL_REQUIRED would have been a 403, which is what makes \
+         the status readable here at all"
+    );
+
+    assert_eq!(
+        counter.asked(),
+        0,
+        "the state phase refused, so the gate was never consulted -- the property the phase \
+         order exists to give, and the one a status assertion cannot see"
+    );
+
+    let error_code = raw_string_opt(
+        &harness.dsn,
+        "SELECT error_code AS v FROM products_audit_log",
+    )
+    .await;
+    assert_eq!(
+        error_code.as_deref(),
+        Some("ENTITY_TERMINAL"),
+        "the audited code names the rule that actually refused, not the approval question that \
+         was never asked"
+    );
 }

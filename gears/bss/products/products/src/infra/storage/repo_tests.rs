@@ -45,9 +45,10 @@
 
 use chrono::{TimeZone, Utc};
 use sea_orm::sea_query::Expr;
-use sea_orm::{ColumnTrait, Condition, EntityTrait};
+use sea_orm::{ColumnTrait, Condition, DbBackend, DbErr, EntityTrait, RuntimeErr};
 use sea_orm_migration::MigratorTrait;
 use serde_json::json;
+use toolkit_db::contention::is_retryable_contention;
 use toolkit_db::secure::{AccessScope, SecureEntityExt, SecureUpdateExt};
 use toolkit_db::{ConnectOpts, DBProvider, DbError, connect_db};
 use uuid::Uuid;
@@ -201,6 +202,9 @@ async fn a_sku_inserted_through_the_repository_reads_back_with_every_field_intac
     );
     assert_eq!(found.internal_revision, 1);
     assert_eq!(found.published_version, 0);
+    // A create writes the column's default and nothing else raises it, so the
+    // read-back is the unraised state (P-D-35).
+    assert!(!found.composition_pending);
     assert_eq!(found.region_scope, "eu");
     assert_eq!(found.brand_scope, "");
     assert_eq!(found.created_by, "principal:author-1");
@@ -291,7 +295,7 @@ async fn a_sku_belonging_to_another_tenant_is_not_visible_through_a_foreign_scop
 }
 
 /// A second Product colliding on `(tenant_id, brand_id, name_normalized)`
-/// is refused as [`RepoError::Db`] — the documented behaviour
+/// is refused as [`RepoError::Driver`] — the documented behaviour
 /// [`insert_product`]'s own doc promises for `uq_products_product_name`,
 /// asserted here rather than left to the doc comment alone.
 #[tokio::test]
@@ -308,11 +312,11 @@ async fn a_duplicate_product_name_within_a_tenant_and_brand_is_refused_as_a_db_e
     let err = insert_product(&conn, &scope, new_product(second_id, TENANT))
         .await
         .expect_err("a duplicate name_normalized must be refused");
-    assert!(matches!(err, RepoError::Db(_)));
+    assert!(matches!(err, RepoError::Driver { .. }), "got {err:?}");
 }
 
 /// A second SKU colliding on `(tenant_id, sku_code)` is refused as
-/// [`RepoError::Db`] — the documented behaviour [`insert_sku`]'s own doc
+/// [`RepoError::Driver`] — the documented behaviour [`insert_sku`]'s own doc
 /// promises for `uq_products_sku_code`.
 #[tokio::test]
 async fn a_duplicate_sku_code_within_a_tenant_is_refused_as_a_db_error() {
@@ -331,11 +335,11 @@ async fn a_duplicate_sku_code_within_a_tenant_is_refused_as_a_db_error() {
     let err = insert_sku(&conn, &scope, new_sku(second_id, TENANT, PRODUCT))
         .await
         .expect_err("a duplicate sku_code must be refused");
-    assert!(matches!(err, RepoError::Db(_)));
+    assert!(matches!(err, RepoError::Driver { .. }), "got {err:?}");
 }
 
 /// A SKU inserted against a `product_id` with no matching Product row is
-/// refused as [`RepoError::Db`] — the documented `fk_products_sku_product`
+/// refused as [`RepoError::Driver`] — the documented `fk_products_sku_product`
 /// path [`insert_sku`]'s own doc promises.
 #[tokio::test]
 async fn a_sku_referencing_a_nonexistent_product_is_refused_as_a_db_error() {
@@ -347,7 +351,7 @@ async fn a_sku_referencing_a_nonexistent_product_is_refused_as_a_db_error() {
     let err = insert_sku(&conn, &scope, new_sku(SKU, TENANT, orphan_product_id))
         .await
         .expect_err("a sku with no parent product must be refused");
-    assert!(matches!(err, RepoError::Db(_)));
+    assert!(matches!(err, RepoError::Driver { .. }), "got {err:?}");
 }
 
 /// An unparseable `lifecycle_state` on a hand-built [`product::Model`] is
@@ -388,6 +392,7 @@ fn an_unparseable_sku_lifecycle_state_is_a_corrupt_row() {
         lifecycle_state: "paused".to_owned(),
         internal_revision: 1,
         published_version: 0,
+        composition_pending: false,
         region_scope: String::new(),
         brand_scope: String::new(),
         created_by: "principal:author-1".to_owned(),
@@ -2285,7 +2290,7 @@ async fn publishing_a_draft_sku_moves_both_counters_by_exactly_one_and_takes_the
         .expect("insert sku");
     freeze(&conn, &scope, VersionedEntityKind::Sku, SKU, 1).await;
 
-    let outcome = publish_sku_head(&conn, &scope, TENANT, SKU, 1, at(10))
+    let outcome = publish_sku_head(&conn, &scope, TENANT, SKU, 1, false, at(10))
         .await
         .expect("publish the sku head");
     assert_eq!(outcome, HeadWrite::Applied);
@@ -2308,8 +2313,8 @@ async fn publishing_a_draft_sku_moves_both_counters_by_exactly_one_and_takes_the
 ///
 /// The refusal comes from the database, not from this repository, and it is
 /// the reason the freeze must ride the publish's own transaction. Reported as
-/// [`RepoError::Db`]: the guard raises, and the statement fails rather than
-/// matching zero rows.
+/// [`RepoError::Driver`]: the guard raises, and the statement fails rather
+/// than matching zero rows.
 #[tokio::test]
 async fn a_publish_without_its_frozen_row_is_refused_by_the_head_row_guard() {
     let provider = harness().await;
@@ -2323,7 +2328,7 @@ async fn a_publish_without_its_frozen_row_is_refused_by_the_head_row_guard() {
     let err = publish_product_head(&conn, &scope, TENANT, PRODUCT, 1, at(10))
         .await
         .expect_err("the guard refuses a bump with no frozen row");
-    assert!(matches!(err, RepoError::Db(_)), "got {err:?}");
+    assert!(matches!(err, RepoError::Driver { .. }), "got {err:?}");
 }
 
 /// Discarding a never-published `draft` Product succeeds and bumps the
@@ -2485,7 +2490,7 @@ async fn discarding_a_published_sku_matches_no_row() {
         .await
         .expect("insert sku");
     freeze(&conn, &scope, VersionedEntityKind::Sku, SKU, 1).await;
-    publish_sku_head(&conn, &scope, TENANT, SKU, 1, at(10))
+    publish_sku_head(&conn, &scope, TENANT, SKU, 1, false, at(10))
         .await
         .expect("publish");
 
@@ -2613,5 +2618,108 @@ async fn a_re_publish_from_a_deprecated_head_leaves_it_deprecated() {
         head.lifecycle_state,
         bss_products_sdk::models::LifecycleState::Deprecated,
         "a re-publish takes no edge, so the deprecation stands"
+    );
+}
+
+// ── The retry classifier reads a variant, not a string ────────────────────
+
+/// The two lines the flattening defect consisted of: `DbErr::Custom` is never
+/// retryable, and the variant the driver actually raises is.
+///
+/// This is the whole of the property the publish and discard doors document
+/// and, before `RepoError::Driver` existed, did not hold. `RepoError::Db`
+/// rendered a `sea_orm::DbErr` into a string at the moment it was raised, and
+/// each door re-wrapped that string as `DbErr::Custom`;
+/// `is_retryable_contention` matches `DbErr::Exec` and `DbErr::Query` and
+/// nothing else, so a genuine `SQLITE_BUSY` collision between two concurrent
+/// publishes classified as *not contention* and reached the caller as a bare
+/// 500 rather than being re-attempted. Both errors below carry the identical
+/// message text: what the classifier reads is the variant, so the text is
+/// exactly the thing that cannot carry the signal.
+///
+/// The `DbErr`s here are hand-built, which is why this is a unit assertion
+/// and not a claim about a real collision — see
+/// `a_real_driver_failure_is_preserved_as_the_variant_the_driver_raised` for
+/// the half that is measured against the database.
+#[test]
+fn a_stringified_contention_error_is_not_retryable_and_the_preserved_one_is() {
+    let text = "error returned from database: (code: 5) database is locked";
+
+    let flattened = RepoError::Db(format!("publish product {PRODUCT}: {text}")).to_db_err();
+    assert!(
+        matches!(flattened, DbErr::Custom(_)),
+        "a string-carrying RepoError has no driver variant left to answer with: {flattened:?}"
+    );
+    assert!(
+        !is_retryable_contention(DbBackend::Sqlite, &flattened),
+        "the flattened form is what made a retryable collision a 500"
+    );
+
+    let preserved = RepoError::Driver {
+        context: format!("publish product {PRODUCT}"),
+        source: DbErr::Exec(RuntimeErr::Internal(text.to_owned())),
+    }
+    .to_db_err();
+    assert!(
+        matches!(preserved, DbErr::Exec(_)),
+        "to_db_err must hand the driver's own variant on unchanged: {preserved:?}"
+    );
+    assert!(
+        is_retryable_contention(DbBackend::Sqlite, &preserved),
+        "the preserved form is what lets transaction_with_retry re-attempt the act"
+    );
+}
+
+/// A failure the `SQLite` driver actually raised arrives as
+/// [`RepoError::Driver`] carrying the variant it was raised with, so the
+/// classifier's `Exec`/`Query` match is reachable from a real statement and
+/// not only from a hand-built error.
+///
+/// The head-row guard is the one deterministic driver failure this suite can
+/// provoke without a second writer: `AFTER UPDATE` on `products_product`
+/// raises when a `published_version` bump has no matching frozen row, and the
+/// statement fails rather than matching zero rows.
+///
+/// # What this does not measure, and what it would take
+///
+/// **It is not a contention probe.** A guard refusal is `Exec`, which is the
+/// variant the classifier requires, but its *message* is not a busy or
+/// deadlock signature, so `is_retryable_contention` correctly answers `false`
+/// for it — asserted below so the case cannot be read as more than it is.
+/// The two halves of the fix are therefore measured separately: the variant
+/// survives a real statement here, and the classifier's verdict on each
+/// variant is pinned by the unit case above.
+///
+/// A real contention probe needs two writers on **one** database, which this
+/// harness cannot supply: `sqlite::memory:` is private to its connection and
+/// the pool is pinned to a single connection (`max_conns: Some(1)`), so a
+/// second writer would queue on the pool rather than be answered
+/// `SQLITE_BUSY` by `SQLite`. It would take a shared database — a
+/// `file:...?cache=shared` `DSN` or a temp file — a pool of at least two, and
+/// two transactions held open across each other's writes; on Postgres, the
+/// `pg` tier plus two connections deliberately deadlocked. Either is a new
+/// harness, not a new case in this one.
+#[tokio::test]
+async fn a_real_driver_failure_is_preserved_as_the_variant_the_driver_raised() {
+    let provider = harness().await;
+    let conn = provider.conn().expect("scoped connection");
+    let scope = AccessScope::for_tenant(TENANT);
+
+    insert_product(&conn, &scope, new_product(PRODUCT, TENANT))
+        .await
+        .expect("insert product");
+
+    let err = publish_product_head(&conn, &scope, TENANT, PRODUCT, 1, at(10))
+        .await
+        .expect_err("the guard refuses a bump with no frozen row");
+
+    let db_err = err.to_db_err();
+    assert!(
+        matches!(db_err, DbErr::Exec(_) | DbErr::Query(_)),
+        "the driver's own variant must reach the door, not a rendering of it: {db_err:?}"
+    );
+    assert!(
+        !is_retryable_contention(DbBackend::Sqlite, &db_err),
+        "a guard refusal is not contention: the variant is right, the message is not"
     );
 }

@@ -122,10 +122,18 @@
 //! ([`crate::domain::governance`]) and the version freeze
 //! ([`crate::domain::canonical`], `products_entity_version`).
 //!
-//! **The gate runs inside the door, in [`GateMode::Gate`], always**
-//! (`inst-fd-gate-mode`). The mode is an internal argument and never a
-//! wire-visible parameter: it is a literal in [`run_publish`], and the host
-//! is a literal in [`publish_sku`]. Nothing a caller sends selects either.
+//! **The gate phase runs inside both doors** — publish and discard alike,
+//! because `inst-fd-pipeline-gate-phase` puts it at *every* mutating door
+//! and has it pass trivially where the act is ungated (**P-D-34**). On
+//! publish the mode is an **explicit argument** of
+//! [`publish_sku_gated`] (`dod-publish-door`, **P-D-30**), which is what
+//! lets `04-lifecycle`'s scheduled runner drive this same door; on discard
+//! it is the [`GateMode::Gate`] literal, for [`run_discard`]'s stated
+//! reason. `inst-fd-gate-mode`'s *"never a wire-visible parameter"* holds
+//! structurally: [`GateMode`] reaches no DTO, header reader or extractor in
+//! this crate, and [`publish_sku`] and [`discard_sku`] — the only routed
+//! handlers — pass literals for both the mode and the host. Nothing a caller
+//! sends selects either.
 //!
 //! **Every phase runs inside the act's own transaction, after the idempotency
 //! claim.** `Phase::Idempotency` is the pipeline's first and P-D-42 puts the
@@ -155,9 +163,12 @@
 //! What these doors deliberately do **not** build, and who owns each, is
 //! enumerated in [`publish_sku_gated`]'s own doc: the retirement
 //! re-announcement is slice 04's, the corrected bucket-ii argument is slice
-//! 07's `CorrectionDoor`'s, the approval-record consume flip is slice 05's,
-//! and `composition_pending` is **this slice's own unpaid debt** rather than
-//! anyone else's arrival.
+//! 07's `CorrectionDoor`'s, and the approval-record consume flip is slice
+//! 05's. `composition_pending` was on that list as this slice's own unpaid
+//! debt and is no longer: [`run_publish`] reads the gate verdict's
+//! `uncomposed_bundle_override` and carries it into both the frozen image and
+//! the single head-row `UPDATE`. What remains owed there is the instruction's
+//! `bundle` narrowing, which needs slice 03's `type` column.
 //!
 //! @cpt-cf-bss-products-dod-read-door
 //! @cpt-cf-bss-products-dod-create-doors
@@ -204,10 +215,11 @@ use crate::domain::governance::{
     ApprovalId, EntityRef, GateMode, GovernanceGate, NoMaterialityPolicyGate,
 };
 use crate::domain::idempotency;
-use crate::domain::transition::{
-    self, ApprovalInvalidation, ApprovalInvalidationHook as _, TransitionDecision,
+use crate::domain::rules::{
+    PublishRevalidationSubject, SkuCodeStillPresent, SkuScopeColumnsStillParse,
 };
-use crate::domain::validation::{Phase, ValidationPipeline, ValidationReport, ValidationRule};
+use crate::domain::transition::{self, ApprovalInvalidation, ApprovalInvalidationHook as _};
+use crate::domain::validation::{ValidationPipeline, ValidationReport};
 use crate::infra::events;
 use crate::infra::storage::RepoError;
 use crate::infra::storage::repo::{
@@ -714,6 +726,17 @@ fn payload_digest(request: &CreateSkuRequest) -> Vec<u8> {
 /// `toolkit_db::contention::is_retryable_contention`, and `contention_db_err`
 /// is the accessor it asks the caller for.
 ///
+/// **The classifier can only answer `true` because the driver's own error
+/// survives the repository.** `is_retryable_contention` matches `DbErr::Exec`
+/// and `DbErr::Query` and nothing else, so the flattening this closure used
+/// to do — `DbErr::Custom(e.to_string())` over every `RepoError` — made every
+/// contention failure unretryable while this section claimed the opposite.
+/// This door was written first and both head-act doors inherited the same
+/// wrap. It is closed in one place for all of them: the repository raises
+/// `RepoError::Driver`, which carries `sea-orm`'s error unchanged, and every
+/// door maps it through `RepoError::to_db_err` (the head-act doors through
+/// `HeadActError::from_repo`) rather than through its `Display`.
+///
 /// **The closure is safe to re-run.** Its first statement is the claim, and
 /// the claim rolls back with everything after it (P-D-38), so a retried
 /// attempt starts against exactly the state the first one started against:
@@ -749,7 +772,7 @@ async fn insert_sku_with_event(
                     if let Some(input) = claim.as_ref() {
                         match claim_idempotency(tx, &scope, tenant_id, input)
                             .await
-                            .map_err(|e| DbError::Sea(DbErr::Custom(e.to_string())))?
+                            .map_err(|e| DbError::Sea(e.to_db_err()))?
                         {
                             ClaimVerdict::Proceed => {}
                             ClaimVerdict::Replay { status, body } => {
@@ -763,7 +786,7 @@ async fn insert_sku_with_event(
 
                     let record = repo::insert_sku(tx, &scope, new)
                         .await
-                        .map_err(|e| DbError::Sea(DbErr::Custom(e.to_string())))?;
+                        .map_err(|e| DbError::Sea(e.to_db_err()))?;
 
                     let core = events::EventBodyCore {
                         tenant_id: record.tenant_id,
@@ -797,7 +820,7 @@ async fn insert_sku_with_event(
                             &body,
                         )
                         .await
-                        .map_err(|e| DbError::Sea(DbErr::Custom(e.to_string())))?;
+                        .map_err(|e| DbError::Sea(e.to_db_err()))?;
                     }
 
                     Ok(CreateOutcome::Created {
@@ -836,6 +859,33 @@ async fn insert_sku_with_event(
 pub(crate) struct PayloadScopes {
     pub(crate) region: Option<String>,
     pub(crate) brand: Option<String>,
+}
+
+/// The parent Product's two stored scope columns, parsed into the
+/// [`ScopePair`] the containment rule reads.
+///
+/// **One parse site, two callers**: [`resolve_parent_scope`] on create and
+/// [`recheck_parent_containment`] on the publish re-run
+/// (§3.3, *"the identity phase raises ... `SCOPE_NOT_CONTAINED` wherever it
+/// runs — create, save, and the publish re-run"*). They differ only in what
+/// a malformed column costs them, which is why the error is the **column
+/// name** rather than a rendered error: each caller renders it into its own
+/// failure channel, and neither can drift from the other on how the columns
+/// are read.
+///
+/// # Errors
+///
+/// The name of the first column that does not parse under
+/// [`ResolvedScope::parse`]'s own rule. A stored column that fails is a
+/// storage invariant violation rather than any caller's fault, and both
+/// callers answer it as an internal failure.
+fn parent_scope_pair(parent: &repo::ProductRecord) -> Result<ScopePair, &'static str> {
+    Ok(ScopePair {
+        region: ResolvedScope::parse(&parent.region_scope)
+            .map_err(|EmptyScopeToken| "region_scope")?,
+        brand: ResolvedScope::parse(&parent.brand_scope)
+            .map_err(|EmptyScopeToken| "brand_scope")?,
+    })
 }
 
 async fn resolve_parent_scope(
@@ -894,22 +944,12 @@ async fn resolve_parent_scope(
     // invariant violation, not the caller's own refusal, so it renders like
     // `repo_error_to_canonical`'s own bare 500 rather than through the
     // refusal-audit discipline above.
-    let parent_region = ResolvedScope::parse(&parent.region_scope).map_err(|EmptyScopeToken| {
-        CanonicalError::internal(
-            "bss-products: parent Product's stored region_scope contains an empty token",
-        )
+    let parent_scope = parent_scope_pair(&parent).map_err(|column| {
+        CanonicalError::internal(format!(
+            "bss-products: parent Product's stored {column} contains an empty token"
+        ))
         .create()
     })?;
-    let parent_brand = ResolvedScope::parse(&parent.brand_scope).map_err(|EmptyScopeToken| {
-        CanonicalError::internal(
-            "bss-products: parent Product's stored brand_scope contains an empty token",
-        )
-        .create()
-    })?;
-    let parent_scope = ScopePair {
-        region: parent_region,
-        brand: parent_brand,
-    };
 
     // Both fields are parsed before either is judged, so a payload that gets
     // both wrong is refused with one report naming both, the same
@@ -1178,6 +1218,18 @@ async fn create_sku(
         region_scope: child_scope.region.render(),
         brand_scope: child_scope.brand.render(),
         created_by: actor_ref.to_string(),
+        // `now` is written with everything `Utc::now()` gave it, nanoseconds
+        // included, and **that is a debt this line owes**, carried here from
+        // `canonical::render_instant`'s own doc so it sits where it can be
+        // paid. `created_at` is on the frozen-content roster; `SQLite` stores
+        // all nine digits while Postgres `timestamptz` rounds to six, and the
+        // renderer truncates, so one engine can freeze `.123456` where the
+        // other freezes `.123457` for the same entity and the two
+        // `content_digest` values differ. Truncating the instant to
+        // microseconds **at this write** is what actually closes it -- neither
+        // engine would then hold a digit the other could round differently --
+        // and it is not done here because it moves a value on a live column
+        // and is owed a decision of its own rather than a drive-by change.
         created_at: now,
     };
 
@@ -1360,6 +1412,32 @@ const ACT_RESPONSE_STATUS: StatusCode = StatusCode::OK;
 /// silence alone. That is a difference in the **table**, not in the reading
 /// of §4.3.
 ///
+/// # `composition_pending` is on the roster, and its own guard is the argument
+///
+/// It is the one column whose movement **coincides** with the version row
+/// instead of bypassing it, which is the exact inverse of the criterion every
+/// exclusion above rests on. §4.3 excludes its four columns because they
+/// *"move on transitions, which write no version row, so freezing them would
+/// need the digest to change on a write that produces no row to digest"*.
+/// `composition_pending` cannot move that way: its clause in
+/// `m20260829_000003_create_products_sku` admits a change to it **only in the
+/// same statement as a `published_version` bump**, so every value it ever
+/// takes is a value some frozen row was written alongside. There is no
+/// transition that moves it and no save that can.
+///
+/// `inst-fd-publish-freeze` settles it from the other direction, naming the
+/// column outright: the door *"computes the content this act leaves behind —
+/// including the `composition_pending` value the same `UPDATE` is about to
+/// write — and freezes that"* (**P-D-33**). A roster that omitted it would
+/// make that sentence unimplementable.
+///
+/// It is also the roster's **only** member the publish act itself moves, and
+/// therefore the one that makes the choice of image load-bearing: the freeze
+/// is taken over [`post_publish_image`] and not over the pre-act head, because
+/// the two now differ on this field. That write is [`run_publish`]'s, landed
+/// with the flag on the same wave as the statement that carries it — the pair
+/// this doc previously named as owed.
+///
 /// # `updated_at` is excluded by P-D-35's own criterion
 ///
 /// This is an **application of a stated criterion to a column the
@@ -1407,8 +1485,9 @@ const ACT_RESPONSE_STATUS: StatusCode = StatusCode::OK;
 /// name `updated_at` and `published_version` beside `internal_revision` as
 /// columns the original enumeration missed. Until it does, this doc and its
 /// Product twin are where the reading is recorded.
-const SKU_VERSION_CONTENT_ROSTER: [&str; 8] = [
+const SKU_VERSION_CONTENT_ROSTER: [&str; 9] = [
     "brand_scope",
+    "composition_pending",
     "created_at",
     "created_by",
     "product_id",
@@ -1634,64 +1713,28 @@ async fn load_head(
         .ok_or_else(|| sku_not_found(sku_id))
 }
 
-/// The `sku_code` a head must still carry to be publishable.
+/// The candidate the re-run judges: the head **as it now stands**, reduced to
+/// what the registered rules read.
 ///
-/// A [`ValidationRule`] rather than an `if` in the door, because
-/// `inst-fd-publish-revalidate` re-runs **the pipeline**, and a check written
-/// as an `if` is one slice 04 and 05 cannot register beside their own.
-struct SkuCodeStillPresent;
-
-impl ValidationRule<SkuRecord> for SkuCodeStillPresent {
-    fn name(&self) -> &'static str {
-        "inst-fd-publish-revalidate/sku_code"
-    }
-
-    fn phase(&self) -> Phase {
-        Phase::Shape
-    }
-
-    fn evaluate(&self, subject: &SkuRecord, report: &mut ValidationReport) {
-        if subject.sku_code.trim().is_empty() {
-            report.violate(
-                "INCOMPLETE_ENTITY",
-                "sku_code",
-                "sku_code is blank, so this entity is no longer publishable",
-            );
-        }
-    }
-}
-
-/// The two stored scope columns must still parse under
-/// [`ResolvedScope::parse`]'s own rule.
+/// The Product door's [`crate::api::rest::products`] twin,
+/// `publish_candidate`, does the same thing with
+/// [`crate::domain::rules::CreateEntityCandidate`], and for the same reason:
+/// the rules are the **domain's**, and a domain rule keyed to
+/// [`SkuRecord`] — a repository DTO — is one slices 04 and 05 cannot register
+/// beside their own without depending on `infra::storage::repo`. The
+/// translation from the stored row to the judged subject belongs here, in the
+/// door that read the row, which is exactly where a translation between a
+/// storage shape and a domain shape belongs.
 ///
-/// [`Phase::Identity`] because §4.2 files containment and reservation there,
-/// and this is the operand the containment rule reads.
-struct SkuScopeColumnsStillParse;
-
-impl ValidationRule<SkuRecord> for SkuScopeColumnsStillParse {
-    fn name(&self) -> &'static str {
-        "inst-fd-publish-revalidate/scope-columns"
-    }
-
-    fn phase(&self) -> Phase {
-        Phase::Identity
-    }
-
-    fn evaluate(&self, subject: &SkuRecord, report: &mut ValidationReport) {
-        if ResolvedScope::parse(&subject.region_scope).is_err() {
-            report.violate(
-                "INCOMPLETE_ENTITY",
-                "region_scope",
-                "region_scope contains an empty value between separators",
-            );
-        }
-        if ResolvedScope::parse(&subject.brand_scope).is_err() {
-            report.violate(
-                "INCOMPLETE_ENTITY",
-                "brand_scope",
-                "brand_scope contains an empty value between separators",
-            );
-        }
+/// Behaviour is unchanged by the move: the two rules read `sku_code`,
+/// `region_scope` and `brand_scope` and nothing else, so this carries those
+/// three and no more — see [`PublishRevalidationSubject`]'s own doc for why a
+/// wider subject would be worse rather than merely larger.
+fn publish_revalidation_subject(record: &SkuRecord) -> PublishRevalidationSubject {
+    PublishRevalidationSubject {
+        sku_code: record.sku_code.clone(),
+        region_scope: record.region_scope.clone(),
+        brand_scope: record.brand_scope.clone(),
     }
 }
 
@@ -1703,10 +1746,16 @@ impl ValidationRule<SkuRecord> for SkuScopeColumnsStillParse {
 /// *every registered validator for `→ published`*. What is here is the
 /// Foundation's own share of it, and only that:
 ///
-/// - **Shape** and **Identity** are the two rules above, over the head row as
-///   it now stands rather than over a payload — which is the point of a
-///   re-run: an entity that stopped being publishable since approval fails
-///   closed rather than publishing stale.
+/// - **Shape** and **Identity** are [`SkuCodeStillPresent`] and
+///   [`SkuScopeColumnsStillParse`], judging the head row as it now stands
+///   rather than a payload — which is the point of a re-run: an entity that
+///   stopped being publishable since approval fails closed rather than
+///   publishing stale. Both live in [`crate::domain::rules`], beside
+///   [`crate::domain::rules::NameShapeRule`] and the Product door's own
+///   re-run rule, because a rule slices 04 and 05 must be able to register
+///   beside their own cannot be declared in an API module over an `infra`
+///   type; [`publish_revalidation_subject`] is the translation this door owes
+///   in exchange.
 /// - **State** is not registered as a rule and is not missing: it runs as
 ///   [`transition::check_head_write`] and [`transition::guard`] in the door's
 ///   own steps 3 and 5, and `repo::publish_sku_head` states the same rule a
@@ -1715,14 +1764,15 @@ impl ValidationRule<SkuRecord> for SkuScopeColumnsStillParse {
 /// - **`RegisteredValidators` is empty, and that is a real gap, not a
 ///   passing phase.** The `→ published` validators the instruction names are
 ///   `04-lifecycle`'s and `05-governance`'s, and neither exists at this
-///   commit; [`Phase::RegisteredValidators`] therefore admits everything. The
+///   commit; [`crate::domain::validation::Phase::RegisteredValidators`] therefore admits
+///   everything. The
 ///   re-run is fail-closed over the rules that exist and silent over the ones
 ///   that do not, and no reading of this function should treat the phase's
 ///   emptiness as the entity having satisfied it.
 /// - **`Idempotency`, `Precondition` and `GovernanceGate`** are phases the
 ///   door runs directly (the claim, the `If-Match`, the gate) rather than as
 ///   registered rules, for the same reason State is not registered.
-fn publish_revalidation_pipeline() -> ValidationPipeline<SkuRecord> {
+fn publish_revalidation_pipeline() -> ValidationPipeline<PublishRevalidationSubject> {
     ValidationPipeline::new()
         .with_rule(Box::new(SkuCodeStillPresent))
         .with_rule(Box::new(SkuScopeColumnsStillParse))
@@ -1767,23 +1817,47 @@ fn post_publish_state(from: LifecycleState) -> LifecycleState {
 /// `inst-fd-publish-freeze` and **P-D-33** require the freeze to be taken
 /// over.
 ///
-/// Both counters move by exactly one here, and `updated_at` becomes the
-/// act's own instant, which is what the single head-row `UPDATE` below will
-/// write.
+/// Both counters move by exactly one here, `updated_at` becomes the act's own
+/// instant, and `composition_pending` becomes the flag this act carries —
+/// which is exactly the set of columns the single head-row `UPDATE` below
+/// writes. The image and the statement are two spellings of one act, and
+/// [`sku_version_content`] renders the image, so a column the statement writes
+/// and this function forgot would be frozen at its **pre-act** value under the
+/// **post-act** key, with a perfectly valid digest over it.
 ///
-/// What this image now decides is the frozen row's **key**:
-/// [`freeze_for`] reads `published_version` off it, and `N + 1` is what
-/// makes the head table's guard subquery find the frozen row when the
-/// `UPDATE` a statement later asks for it. It no longer decides the frozen
-/// **content**: every column this function moves is excluded from
-/// [`SKU_VERSION_CONTENT_ROSTER`], so [`sku_version_content`] renders the
-/// same bytes from either image. The two come apart again the moment a slice
-/// makes a *content* column move inside the act.
-fn post_publish_image(head: &SkuRecord, now: DateTime<Utc>) -> SkuRecord {
+/// This image decides the frozen row's **key**: [`freeze_for`] reads
+/// `published_version` off it, and `N + 1` is what makes the head table's
+/// guard subquery find the frozen row when the `UPDATE` a statement later asks
+/// for it.
+///
+/// It now also decides part of the frozen **content**, and that is new.
+/// `published_version`, `internal_revision`, `lifecycle_state` and
+/// `updated_at` are all excluded from [`SKU_VERSION_CONTENT_ROSTER`], so for
+/// as long as those were the only columns the act moved, the pre-act head and
+/// this image rendered identical bytes and the choice between them was
+/// invisible. `composition_pending` is **on** the roster — see that constant's
+/// own doc for why its own guard clause is the argument for including it — so
+/// from this wave on the two images genuinely differ, and
+/// `inst-fd-publish-freeze` is unambiguous about which one is frozen: the door
+/// *"computes the content this act leaves behind — including the
+/// `composition_pending` value the same `UPDATE` is about to write — and
+/// freezes that"*.
+///
+/// `composition_pending` is a **parameter** rather than something derived
+/// here, for `repo::publish_sku_head`'s own reason: the operand is the gate
+/// verdict's `uncomposed_bundle_override`, and this function and that
+/// statement must be handed the same value from the same place or the frozen
+/// row and the head row disagree about the act that produced them.
+fn post_publish_image(
+    head: &SkuRecord,
+    composition_pending: bool,
+    now: DateTime<Utc>,
+) -> SkuRecord {
     SkuRecord {
         lifecycle_state: post_publish_state(head.lifecycle_state),
         internal_revision: head.internal_revision.saturating_add(1),
         published_version: head.published_version.saturating_add(1),
+        composition_pending,
         updated_at: now,
         ..head.clone()
     }
@@ -1801,22 +1875,6 @@ fn post_discard_image(head: &SkuRecord, now: DateTime<Utc>) -> SkuRecord {
     }
 }
 
-/// One timestamp, rendered as §4.3 pins them: `RFC 3339`, `UTC`, microsecond
-/// precision.
-///
-/// `crate::domain::canonical` deliberately converts no instant — its own doc
-/// says the caller renders its instant into a string field, so the precision
-/// decision stays with whoever owns the column. This is that decision for
-/// `products_sku`'s `created_at`, the one timestamp
-/// [`SKU_VERSION_CONTENT_ROSTER`] still names — `updated_at` left the roster
-/// with P-D-35's criterion, see that constant's own doc. It is spelled
-/// identically in `products::render_instant`, and the two copies are owed a
-/// single home in `crate::domain::canonical`, the module that owns the
-/// rendering rules.
-fn render_instant(instant: DateTime<Utc>) -> String {
-    instant.format("%Y-%m-%dT%H:%M:%S%.6fZ").to_string()
-}
-
 /// The content a frozen SKU version row carries, as the value
 /// [`SKU_VERSION_CONTENT_ROSTER`] is the complete set of.
 ///
@@ -1828,17 +1886,27 @@ fn render_instant(instant: DateTime<Utc>) -> String {
 /// does forget one, because `Absence::Null` alone would make the omission
 /// silent.
 ///
-/// # The pre-act/post-act hazard is structurally absent here
+/// # The image is the operand, and now it has to be
 ///
 /// `inst-fd-publish-freeze` (**P-D-33**) takes the freeze over the image the
-/// act leaves behind, and [`post_publish_image`] is what supplies one. On
-/// the **roster's** fields, though, that image and the pre-act head are
-/// equal: `published_version`, `internal_revision`, `lifecycle_state` and
-/// `updated_at` are the four columns a publish moves, and all four are
-/// excluded ([`SKU_VERSION_CONTENT_ROSTER`]'s own doc argues each). No
-/// caller can therefore freeze a pre-act value under a post-act key — the
-/// image decides the key in [`freeze_for`] and nothing else. The hazard
-/// returns the moment a slice makes a *content* column move inside the act.
+/// act leaves behind, and [`post_publish_image`] is what supplies one. That
+/// was a distinction without a difference until `composition_pending` gained
+/// its write: `published_version`, `internal_revision`, `lifecycle_state` and
+/// `updated_at` are the other four columns a publish moves and all four are
+/// excluded from [`SKU_VERSION_CONTENT_ROSTER`], so the pre-act head and the
+/// post-act image rendered the same bytes and a caller that passed the wrong
+/// one produced a correct row by luck.
+///
+/// It is no longer luck. `composition_pending` is on the roster and the act
+/// moves it, so a freeze taken over the **pre-act** head would store the
+/// previous flag under the **new** version's key — and the digest over it
+/// would be perfectly valid, because the row would agree with itself and lie
+/// only about the act that produced it. No reader downstream could detect
+/// that: `content_digest` is a function of `content`, and both would be
+/// self-consistently wrong. `skus_tests::
+/// a_publish_carrying_the_uncomposed_bundle_override_freezes_the_raised_flag`
+/// is what holds this closed, by reading the flag back out of
+/// `products_entity_version` rather than off any in-memory value.
 fn sku_version_content(image: &SkuRecord) -> JsonValue {
     let mut fields = JsonMap::new();
     fields.insert(
@@ -1865,13 +1933,21 @@ fn sku_version_content(image: &SkuRecord) -> JsonValue {
         "brand_scope".to_owned(),
         JsonValue::String(image.brand_scope.clone()),
     );
+    // A JSON boolean, not a rendered string: canonical::render_into writes
+    // `true`/`false` for a Bool, and §4.3's rendering rule has no clause that
+    // would turn a flag into text. Rendering it as `"false"` would make the
+    // frozen bytes disagree with the column's own type for no reason.
+    fields.insert(
+        "composition_pending".to_owned(),
+        JsonValue::Bool(image.composition_pending),
+    );
     fields.insert(
         "created_by".to_owned(),
         JsonValue::String(image.created_by.clone()),
     );
     fields.insert(
         "created_at".to_owned(),
-        JsonValue::String(render_instant(image.created_at)),
+        JsonValue::String(canonical::render_instant(image.created_at)),
     );
     JsonValue::Object(fields)
 }
@@ -2026,14 +2102,29 @@ impl From<DbError> for HeadActError {
 }
 
 impl HeadActError {
-    /// Wrap any error whose text is all this door needs.
+    /// Wrap a repository failure, preserving the driver error inside it.
     ///
-    /// `repo::RepoError` and `events::EventsError` are each a storage or
-    /// infrastructure failure of this act's own mutation, and neither can be
-    /// classified by `transaction_with_retry` unless it arrives as a
-    /// `DbErr`; each becomes [`Self::Db`] carrying the text that named it.
-    fn from_storage(error: &impl core::fmt::Display) -> Self {
-        Self::Db(DbError::Sea(DbErr::Custom(error.to_string())))
+    /// `repo::RepoError` is a storage failure of this act's own mutation, and
+    /// it cannot be classified by `transaction_with_retry` unless it arrives
+    /// as a `DbErr` — so it becomes [`Self::Db`] carrying the one
+    /// [`RepoError::to_db_err`] answers.
+    ///
+    /// **Which `DbErr` that is, is the whole of a fix this door's own doc
+    /// used to claim without holding.** An earlier version of this
+    /// constructor took `&impl Display` and wrapped every failure as
+    /// `DbErr::Custom(error.to_string())`; `is_retryable_contention` answers
+    /// `false` for `Custom` by construction, so a lock-contention failure —
+    /// the loser of two concurrent publishes of the same SKU — reached the
+    /// caller as a bare 500 where [`publish_in_one_transaction`]'s doc
+    /// promises a retry. `RepoError::Driver` now carries `sea-orm`'s error as
+    /// the driver raised it and `to_db_err` hands that variant on unchanged,
+    /// so the classifier sees the `Exec`/`Query` it needs.
+    ///
+    /// The events layer keeps its own inline wrap at the enqueue call: an
+    /// `EventsError` never held a `DbErr`, so there is nothing for this
+    /// constructor to preserve and no reason to take a second argument type.
+    fn from_repo(error: &RepoError) -> Self {
+        Self::Db(DbError::Sea(error.to_db_err()))
     }
 }
 
@@ -2104,45 +2195,11 @@ async fn claim_for_head_act(
     };
     match claim_idempotency(runner, &inputs.scope, inputs.tenant_id, input)
         .await
-        .map_err(|e| HeadActError::from_storage(&e))?
+        .map_err(|e| HeadActError::from_repo(&e))?
     {
         ClaimVerdict::Proceed => Ok(None),
         ClaimVerdict::Replay { status, body } => Ok(Some(MutationOutcome::Replay { status, body })),
         ClaimVerdict::Refused(refusal) => Err(HeadActError::Refused(refusal)),
-    }
-}
-
-/// Whether this act fires the approval-invalidation hook, **read off
-/// [`transition::guard`]'s own answer** rather than decided at the call site
-/// (`inst-fd-transition-bump`: *"Every transition bumps `internal_revision`
-/// and fires the approval-invalidation hook, except a transition that
-/// consumes an approval in the same transaction, which bumps once with no
-/// hook"*).
-///
-/// [`transition::TransitionDecision::NotATransition`] reaches this from one
-/// place only: a **re-publish**, where the head is already `published` or
-/// `deprecated` and the act moves the version rather than the state. The
-/// answer is [`transition::ApprovalInvalidation::Skip`], the same one the
-/// gated `draft -> published` edge carries, and on the identical argument:
-/// the instruction's exception is *a transition that consumes an approval in
-/// the same transaction*, because *a hook firing against the record the act
-/// is consuming has no defined ordering* — and a re-publish is exactly such
-/// an act, this transaction being the one that spends the approval for
-/// version N+1. Answering `Fire` here would, the moment slice 05 supplies a
-/// real hook, invalidate the very `ApprovalRecord` the re-publish is
-/// spending. `products::head_act_invalidation` is the Product door's
-/// identical function and answers the same constant; the two are one rule
-/// and `crate::domain::transition` — which already houses `ADMITTED_EDGES`
-/// and `GATED_EDGES` — is where the single copy belongs. That module is not
-/// open in this fix.
-///
-/// A discard cannot reach that arm at all: the only same-value discard is
-/// `discarded -> discarded`, which [`transition::guard`] has already refused
-/// as terminal.
-const fn head_act_invalidation(decision: TransitionDecision) -> ApprovalInvalidation {
-    match decision {
-        TransitionDecision::Transition(effects) => effects.invalidation,
-        TransitionDecision::NotATransition => ApprovalInvalidation::Skip,
     }
 }
 
@@ -2239,7 +2296,7 @@ async fn announce_and_answer(
             &body,
         )
         .await
-        .map_err(|e| HeadActError::from_storage(&e))?;
+        .map_err(|e| HeadActError::from_repo(&e))?;
     }
 
     Ok(MutationOutcome::Applied {
@@ -2267,15 +2324,154 @@ async fn classify_unmatched(
             requested_state,
         )),
         Ok(None) => HeadActError::Vanished,
-        Err(error) => HeadActError::from_storage(&error),
+        Err(error) => HeadActError::from_repo(&error),
     }
+}
+
+/// Re-run the containment check against the **parent as it now stands**, as
+/// part of the publish re-validation's identity phase.
+///
+/// # Why the publish door has to ask this at all
+///
+/// §3.3: *"the identity phase raises the uniqueness, reservation and
+/// containment codes (`DUPLICATE_NAME`, `DUPLICATE_CODE`,
+/// `SCOPE_NOT_CONTAINED`) wherever it runs — create, save, and the publish
+/// re-run"*. §4.1 puts `region_scope`/`brand_scope` in bucket iii *"in both
+/// directions, widening and narrowing alike, so a narrowing that would
+/// orphan a live child meets `fr-parent-child-integrity`'s fail-closed check
+/// ... ahead of the governance gate"*.
+///
+/// The operand is the **parent's** row, and it can move after the child is
+/// created: nothing freezes a parent's scope when a SKU is minted under it,
+/// and the head-row guard admits a bucket-iii narrowing on any non-terminal
+/// head. Until this function existed the publish re-run re-parsed the SKU's
+/// own two columns and nothing else ([`SkuScopeColumnsStillParse`]), so a
+/// parent narrowed out from under a child — or a parent since retired —
+/// published that child anyway. `SCOPE_NOT_CONTAINED` is a
+/// Foundation-declared code (§3.3, and `04-lifecycle` §C5 carries the
+/// reciprocal *"named in 01, registered here"* for its final semantics), so
+/// this is not a later slice's debt.
+///
+/// # Why it is not a registered rule
+///
+/// [`publish_revalidation_pipeline`] is synchronous and judges the
+/// [`SkuRecord`] alone; this check needs the parent row, which is a read.
+/// So it runs as a continuation of the same identity phase, immediately
+/// after the pipeline and before the edge and the gate — the position §4.1
+/// asks for — rather than as a [`crate::domain::validation::Phase::Identity`]
+/// rule that cannot reach
+/// its operand. The same argument [`publish_revalidation_pipeline`]'s doc
+/// makes for State not being registered.
+///
+/// # There is no Product-door analogue, and that is measured
+///
+/// A Product has no parent. `products_product` carries `region_scope` and
+/// `brand_scope` as its **own** bucket-iii columns and no `product_id`
+/// pointing anywhere, so containment has no second operand on that side and
+/// `crate::api::rest::products::run_publish` correctly asks nothing. The
+/// asymmetry is the schema's, not an omission.
+///
+/// # Errors
+///
+/// [`HeadActError::Refused`] carrying `SCOPE_NOT_CONTAINED` where the
+/// child's scope is not provably a subset of the parent's — including the
+/// case where the parent does not resolve at all, which is fail-closed for
+/// the same reason **P-D-39** makes not-provably-subset a refusal:
+/// containment that cannot be evaluated has not been established.
+/// [`DomainError::ParentTerminal`] where the parent went `retired` or
+/// `discarded` after the child was created, which is `create_sku`'s own
+/// refusal asked a second time of a row that has since moved.
+/// [`HeadActError::Db`] on a storage failure, or on a stored scope column
+/// that no longer parses — a storage invariant violation rather than this
+/// request's fault.
+async fn recheck_parent_containment(
+    runner: &(impl toolkit_db::secure::DBRunner + Sync),
+    inputs: &HeadActInputs,
+    head: &SkuRecord,
+) -> Result<(), HeadActError> {
+    let parent = repo::find_product(runner, &inputs.scope, inputs.tenant_id, head.product_id)
+        .await
+        .map_err(|e| HeadActError::from_repo(&e))?;
+
+    let Some(parent) = parent else {
+        return Err(HeadActError::Refused(DomainError::ScopeNotContained(
+            format!(
+                "the parent Product {} does not resolve under the caller's granted scope, so \
+                 this SKU's scope cannot be proved contained in it",
+                head.product_id
+            ),
+        )));
+    };
+
+    if parent.lifecycle_state.is_terminal() {
+        return Err(HeadActError::Refused(DomainError::ParentTerminal(format!(
+            "the parent Product {} is `{}`",
+            parent.product_id,
+            parent.lifecycle_state.as_str()
+        ))));
+    }
+
+    let parent_scope = parent_scope_pair(&parent).map_err(|column| {
+        head_act_internal(format!(
+            "bss-products: parent Product's stored {column} contains an empty token"
+        ))
+    })?;
+
+    // The child's operand is its **own stored pair**, already resolved
+    // against the parent at create time (`ScopePair::resolve_child`): an
+    // omitted scope was materialized into the column then, so there is
+    // nothing left to inherit and re-resolving here would re-widen a child
+    // back to whatever the parent now carries — turning the very narrowing
+    // this function exists to catch into a silent pass.
+    //
+    // Both columns parsed a few lines earlier, in
+    // [`SkuScopeColumnsStillParse`], which refuses `INCOMPLETE_ENTITY`
+    // first; an `Err` here therefore means the row changed under the
+    // transaction, and it takes the internal channel rather than answering
+    // that refusal a second time in a different phase.
+    let child_scope = ScopePair {
+        region: ResolvedScope::parse(&head.region_scope).map_err(|EmptyScopeToken| {
+            head_act_internal(
+                "bss-products: the SKU's stored region_scope contains an empty token".to_owned(),
+            )
+        })?,
+        brand: ResolvedScope::parse(&head.brand_scope).map_err(|EmptyScopeToken| {
+            head_act_internal(
+                "bss-products: the SKU's stored brand_scope contains an empty token".to_owned(),
+            )
+        })?,
+    };
+
+    if let Err(failure) = parent_scope.check_containment(&child_scope) {
+        // The identical translation `create_sku` uses, so the two doors
+        // cannot word or code the same verdict differently. Its `Err` arm is
+        // the `Contained`-on-a-refusal-path impossibility; it answers
+        // internally here for the reason that function's own doc gives.
+        let domain_err = scope_not_contained_domain_err(failure).map_err(|_| {
+            head_act_internal(
+                "bss-products: containment check reported Contained on a refusal path".to_owned(),
+            )
+        })?;
+        return Err(HeadActError::Refused(domain_err));
+    }
+
+    Ok(())
+}
+
+/// A failure that is this gear's own rather than any caller's:
+/// [`HeadActError::Db`] is the door's internal-failure channel, so a
+/// storage-invariant breach rolls the transaction back and answers 5xx
+/// instead of being audited as a domain refusal.
+fn head_act_internal(detail: String) -> HeadActError {
+    HeadActError::Db(DbError::Sea(DbErr::Custom(detail)))
 }
 
 /// The publish act itself, **every phase of it on the mutation's own
 /// transaction** and in the pipeline's own phase order
 /// (`crate::domain::validation::Phase`): the idempotency claim, terminality,
-/// the precondition, the re-validation re-run, the edge, the governance
-/// gate, then the writes.
+/// the precondition, the re-validation re-run, the containment re-check
+/// against the parent as it now stands ([`recheck_parent_containment`]), the
+/// edge, the governance gate, then the writes.
 ///
 /// # Why every phase is in here, and not half of them outside
 ///
@@ -2304,32 +2500,57 @@ async fn classify_unmatched(
 /// move it twice for one act and the `ETag` a client holds would skip a value
 /// the door never returned (`inst-fd-publish-bump`).
 ///
-/// # The gate runs in `Gate` mode, always
+/// # The mode is an argument, not a literal
 ///
-/// `inst-fd-gate-mode`, and the owner's call of 2026-08-27: the mode is a
-/// literal here and reachable from nowhere else — no request field, header or
-/// query parameter selects [`GateMode::PreAuthorized`]. The *host* is a
-/// parameter, for [`publish_sku_gated`]'s stated reason. A refusal is
+/// `dod-publish-door` (**P-D-30**): *"the door MUST take a gate mode as an
+/// explicit argument"*. `mode` is that argument. Under [`GateMode::Gate`]
+/// the host looks for a `satisfied` record and consumes it; under
+/// [`GateMode::PreAuthorized`] it verifies the named record and consumes
+/// nothing, which is what lets `04-lifecycle`'s scheduled-publish runner
+/// drive **this** door rather than a second one — a runner forced through
+/// `Gate` would meet an already-`consumed` record and 04's `inst-ar-failure`
+/// would wrap that into a terminal `SCHEDULE_STALE_APPROVAL`.
+///
+/// §2's `inst-fd-gate-mode` calls the mode *"an internal door argument,
+/// never a wire-visible parameter"*. Those are two clauses, not one, and an
+/// earlier revision of this door read the second as forbidding the first —
+/// which left [`GateMode::PreAuthorized`] a type with no call path anywhere
+/// in the gear. Wire-invisibility is structural rather than conventional
+/// here: [`GateMode`] implements no `Deserialize` — its derive list is
+/// `Debug`, `Clone`, `Copy`, `PartialEq`, `Eq`, `Hash`, and
+/// `#[domain_model]` adds only a marker trait impl, measured at
+/// `toolkit_macros`'s own expansion, 2026-08-30 — so the type cannot be
+/// parsed out of a body, a query string or a header at all. Beside that it
+/// reaches no request DTO, header reader or query extractor in this crate,
+/// and [`publish_sku`], the only routed handler above this function, passes
+/// the [`GateMode::Gate`] literal. [`publish_sku_gated`] is the in-process
+/// entry point and is not routed.
+///
+/// The *host* is a parameter too, for [`publish_sku_gated`]'s stated
+/// reason. A refusal is
 /// `APPROVAL_REQUIRED` and writes nothing (`inst-fd-gate-rejection`); a host
 /// that could not **reach** an answer is not a refusal and must not be
 /// reported as one, which is why [`GovernanceGate::evaluate`]'s `Err` becomes
 /// a bare `500` while `into_authorization`'s becomes the ceremony's refusal.
 ///
-/// # What the verdict carries that this door drops on the floor
+/// # What this act reads off the verdict, and what it does with each
 ///
-/// `crate::domain::governance::GateAuthorization::uncomposed_bundle_override`
-/// is **not read here at all** — nothing in this file binds it, and
-/// `GateAuthorization` is not even imported. That is not an oversight to
-/// tidy: it is §4.2's `composition_pending` operand and `products_sku` has no
-/// such column at this commit, so there is nowhere for a reader to put it.
-/// The column is **this slice's** to add — §1.5's **In** list names *"the
-/// `PublishDoor`'s `composition_pending` write"* and leaves slice 06 only the
-/// composition semantics — so this is an unpaid debt of this phase, not a
-/// later slice's arrival; its clause joins `repo::publish_sku_head`'s
-/// single `UPDATE` when it lands. The accessor's only reader today is
-/// `governance_tests`. `approval_ref` is the one accessor this act does read,
-/// and it goes to `products_entity_version.approval_ref` through
-/// [`freeze_for`].
+/// Two accessors, and both have a destination.
+/// `crate::domain::governance::GateAuthorization::approval_ref` goes to
+/// `products_entity_version.approval_ref` through [`freeze_for`], under either
+/// mode. `uncomposed_bundle_override` is §4.2's `composition_pending` operand
+/// and goes to **two** places from one read: [`post_publish_image`], so the
+/// frozen content carries the flag this act leaves behind, and
+/// `repo::publish_sku_head`'s single `UPDATE`, which is the only statement the
+/// head-row guard admits a change to that column in. An earlier revision of
+/// this doc recorded the override as *"not read here at all"* because
+/// `products_sku` had no such column; the column landed earlier in this phase
+/// and §1.5's **In** list names *"the `PublishDoor`'s `composition_pending`
+/// write"* as this slice's, so the debt is paid here rather than deferred.
+///
+/// `approval_to_consume` is the one accessor this act still does not read, and
+/// that is slice 05's: [`NoMaterialityPolicyGate`] answers
+/// `ApprovalDisposition::NoRecord`, so there is nothing to spend.
 ///
 /// # Errors
 ///
@@ -2341,6 +2562,7 @@ async fn run_publish(
     runner: &(impl toolkit_db::secure::DBRunner + Sync),
     inputs: &HeadActInputs,
     gate: &(dyn GovernanceGate + Send + Sync),
+    mode: GateMode,
     outbox: &toolkit_db::outbox::Outbox,
 ) -> Result<MutationOutcome, HeadActError> {
     // -- Phase 1, idempotency: the claim, and the replay that ends the act
@@ -2354,7 +2576,7 @@ async fn run_publish(
     // one, and it answers the same bare `404`.
     let head = repo::find_sku(runner, &inputs.scope, inputs.tenant_id, inputs.sku_id)
         .await
-        .map_err(|e| HeadActError::from_storage(&e))?
+        .map_err(|e| HeadActError::from_repo(&e))?
         .ok_or(HeadActError::Vanished)?;
 
     // -- Terminality, which reaches every head write and not only a
@@ -2377,9 +2599,18 @@ async fn run_publish(
 
     // -- Phases 3 to 5, the re-validation re-run
     // (`inst-fd-publish-revalidate`), over the head as it now stands. --
-    if let Some((_phase, report)) = publish_revalidation_pipeline().run(&head) {
+    if let Some((_phase, report)) =
+        publish_revalidation_pipeline().run(&publish_revalidation_subject(&head))
+    {
         return Err(HeadActError::Refused(revalidation_refusal(&report)));
     }
+
+    // -- Phase 5 continued: containment, which §3.3 puts in the identity
+    // phase "wherever it runs — create, save, and the publish re-run", and
+    // §4.1 puts ahead of the governance gate. Its operand is the parent row,
+    // so it is a read rather than a registered rule; `recheck_parent_
+    // containment`'s own doc argues both. --
+    recheck_parent_containment(runner, inputs, &head).await?;
 
     // -- The edge, and what the floor says it costs. `post_publish_state`
     // decides the `to` side from the row image, the same way the head-row
@@ -2388,7 +2619,9 @@ async fn run_publish(
     let decision =
         transition::guard(head.lifecycle_state, target).map_err(HeadActError::Refused)?;
 
-    // -- Phase 7, the governance gate. --
+    // -- Phase 7, the governance gate, in the mode this act was entered
+    // under (`inst-fd-gate-mode`): `Gate` from every wire surface,
+    // `PreAuthorized` only from an in-process caller. --
     let verdict = gate
         .evaluate(
             EntityRef {
@@ -2397,7 +2630,7 @@ async fn run_publish(
                 entity_id: inputs.sku_id,
             },
             InternalRevision::new(inputs.expected),
-            GateMode::Gate,
+            mode,
         )
         .map_err(|e| {
             HeadActError::Db(DbError::Sea(DbErr::Custom(format!(
@@ -2408,7 +2641,24 @@ async fn run_publish(
         .into_authorization()
         .map_err(HeadActError::Refused)?;
 
-    let image = post_publish_image(&head, inputs.now);
+    // The one operand of the verdict this act carries into the head row
+    // (`inst-fd-publish-freeze`, §4.2, **P-D-32**): *"On a `bundle` SKU that
+    // same `UPDATE` also carries `composition_pending` -- set where this
+    // publish carried the uncomposed-bundle override, cleared where it did
+    // not"*. Read once, here, and handed to **both** the image the freeze
+    // renders and the statement that writes the head, because a value the two
+    // did not share would freeze one flag under the key of a row carrying the
+    // other.
+    //
+    // The `bundle` narrowing the instruction states is **not** implemented and
+    // is not silently dropped: `bundle` is a value of the `type` column, which
+    // is slice 03's and is not on `products_sku` at this commit, so there is
+    // no operand to test. What runs is the clause with its subject widened to
+    // every SKU. `repo::publish_sku_head`'s own doc records the narrowing as
+    // owed to 03 and says where it lands.
+    let composition_pending = authorization.uncomposed_bundle_override;
+
+    let image = post_publish_image(&head, composition_pending, inputs.now);
 
     // -- a. Freeze the post-act image, at `published_version + 1`. --
     repo::insert_entity_version(
@@ -2422,7 +2672,7 @@ async fn run_publish(
         ),
     )
     .await
-    .map_err(|e| HeadActError::from_storage(&e))?;
+    .map_err(|e| HeadActError::from_repo(&e))?;
 
     // -- b. Then exactly one head-row `UPDATE`. An `Err` rather than an
     // outcome, and the whole reason `HeadActError` exists: this rolls the
@@ -2433,10 +2683,11 @@ async fn run_publish(
         inputs.tenant_id,
         inputs.sku_id,
         inputs.expected,
+        composition_pending,
         inputs.now,
     )
     .await
-    .map_err(|e| HeadActError::from_storage(&e))?;
+    .map_err(|e| HeadActError::from_repo(&e))?;
     if written == repo::HeadWrite::Unmatched {
         return Err(classify_unmatched(runner, inputs, target).await);
     }
@@ -2444,7 +2695,7 @@ async fn run_publish(
     // -- c. The approval-invalidation hook, where the floor says this edge
     // fires one. It does not on `draft -> published`, nor on a re-publish;
     // the answer is read off `transition::guard` rather than hard-coded. --
-    fire_invalidation_hook(inputs, head_act_invalidation(decision))?;
+    fire_invalidation_hook(inputs, transition::invalidation_for(decision))?;
 
     // -- d. Then the event, and the stored answer. --
     announce_and_answer(
@@ -2464,12 +2715,38 @@ async fn run_publish(
 /// the mutation's own transaction, the idempotency claim first, and the head
 /// read under the write.
 ///
-/// The phases a discard does **not** have are as deliberate as the ones it
-/// does. There is **no re-validation re-run** — nothing is being published,
-/// and `inst-fd-publish-revalidate` is the publish act's clause — and **no
-/// governance gate**: `inst-fd-governance-gate` puts the gate on the publish
-/// door, and discarding a never-published draft consumes and requires no
-/// approval.
+/// The one phase a discard does **not** have is as deliberate as the ones it
+/// does: there is **no re-validation re-run**, because nothing is being
+/// published and `inst-fd-publish-revalidate` is the publish act's clause.
+///
+/// # The governance-gate phase runs here, and passes trivially
+///
+/// §3.1's `inst-fd-pipeline-gate-phase` says the phase *"runs at every
+/// mutating door and passes trivially where the act is ungated
+/// (**P-D-34**)"*, and §1.1 makes governance *"a registered gate phase
+/// inside the pipeline, hosting any gated act — publish or transition alike
+/// (**P-D-30**) — not a separate path around it"*.
+/// [`crate::domain::validation::Phase::GovernanceGate`]'s own doc carries
+/// the same rule. So the phase is asked here, in [`GateMode::Gate`], and the
+/// gear's default host authorizes naming no record: a discard of a
+/// never-published draft consumes no approval and today requires none.
+///
+/// Behaviourally that is the same answer as not asking. It stops being the
+/// same answer the moment slice 05 registers a ceremony on a transition,
+/// which is the case the phase exists to make reachable **without reopening
+/// every door** — and this door is one of the two that would have to be
+/// reopened. An earlier revision cited `inst-fd-governance-gate` as the
+/// authority for skipping the phase; that instruction is about the publish
+/// door and does not govern this question.
+///
+/// The mode is the [`GateMode::Gate`] literal rather than an argument, and
+/// the asymmetry with [`run_publish`] is measured rather than forgotten:
+/// `dod-publish-door` requires the *publish* door to take the mode
+/// explicitly because `04-lifecycle`'s scheduled-publish runner needs
+/// [`GateMode::PreAuthorized`] to drive it, and no slice schedules or
+/// cascades a **discard**. The host is still a parameter, for
+/// [`discard_sku_gated`]'s stated reason. `products::run_discard` carries
+/// the identical shape and the identical argument.
 ///
 /// # The edge decision is the guard's, and the legality is the statement's
 ///
@@ -2498,6 +2775,7 @@ async fn run_publish(
 async fn run_discard(
     runner: &(impl toolkit_db::secure::DBRunner + Sync),
     inputs: &HeadActInputs,
+    gate: &(dyn GovernanceGate + Send + Sync),
     outbox: &toolkit_db::outbox::Outbox,
 ) -> Result<MutationOutcome, HeadActError> {
     if let Some(replay) = claim_for_head_act(runner, inputs).await? {
@@ -2506,7 +2784,7 @@ async fn run_discard(
 
     let head = repo::find_sku(runner, &inputs.scope, inputs.tenant_id, inputs.sku_id)
         .await
-        .map_err(|e| HeadActError::from_storage(&e))?
+        .map_err(|e| HeadActError::from_repo(&e))?
         .ok_or(HeadActError::Vanished)?;
 
     if head.internal_revision != inputs.expected {
@@ -2526,6 +2804,37 @@ async fn run_discard(
         }));
     }
 
+    // -- Phase 7, the governance gate: the pipeline's last phase, asked here
+    // as it is at every other mutating door (`inst-fd-pipeline-gate-phase`).
+    // After the edge, because `Phase::ordered()` puts `State` before
+    // `GovernanceGate`, so a `published` head is `ILLEGAL_TRANSITION` rather
+    // than an approval question. The two `Err` routes are `run_publish`'s
+    // and carry its reasoning. --
+    let verdict = gate
+        .evaluate(
+            EntityRef {
+                tenant_id: inputs.tenant_id,
+                entity_kind: EntityKind::Sku,
+                entity_id: inputs.sku_id,
+            },
+            InternalRevision::new(inputs.expected),
+            GateMode::Gate,
+        )
+        .map_err(|e| {
+            HeadActError::Db(DbError::Sea(DbErr::Custom(format!(
+                "bss-products: the governance gate host failed: {e}"
+            ))))
+        })?;
+    // Collapsed into the door's control flow and then dropped, which is the
+    // whole of what an ungated act does with a trivial `yes`: a discard
+    // freezes no `products_entity_version` row, so the `approval_ref` the
+    // verdict may name has no column to reach. The day slice 05 gates a
+    // transition, the refusal arm above is already wired and only the
+    // record's destination is new.
+    verdict
+        .into_authorization()
+        .map_err(HeadActError::Refused)?;
+
     let image = post_discard_image(&head, inputs.now);
 
     let written = repo::discard_sku_head(
@@ -2537,14 +2846,14 @@ async fn run_discard(
         inputs.now,
     )
     .await
-    .map_err(|e| HeadActError::from_storage(&e))?;
+    .map_err(|e| HeadActError::from_repo(&e))?;
     if written == repo::HeadWrite::Unmatched {
         return Err(classify_unmatched(runner, inputs, LifecycleState::Discarded).await);
     }
 
     // A discard consumes no approval, so the floor says its edge fires the
     // hook — read off `transition::guard`'s own answer, not decided here.
-    fire_invalidation_hook(inputs, head_act_invalidation(decision))?;
+    fire_invalidation_hook(inputs, transition::invalidation_for(decision))?;
 
     announce_and_answer(
         runner,
@@ -2568,6 +2877,16 @@ async fn run_discard(
 /// claim rolls back with everything after it, and nothing it writes is
 /// derived from the attempt, `now` having been stamped before the first.
 ///
+/// # The retry needs the driver's error, not its text
+///
+/// `is_retryable_contention` matches `DbErr::Exec`/`DbErr::Query` only, so
+/// this section's promise holds only while the failure keeps that variant
+/// all the way from the driver to [`head_act_contention_db_err`]. It is
+/// [`RepoError::Driver`] that carries it and
+/// [`HeadActError::from_repo`] that preserves it; a wrap through `Display`
+/// anywhere on that path — which is what this door originally did, inheriting
+/// it from the create door — turns every collision back into a bare `500`.
+///
 /// # The gate arrives as an `Arc`, and it has to
 ///
 /// `transaction_with_retry`'s body is
@@ -2583,10 +2902,14 @@ async fn run_discard(
 /// # Errors
 ///
 /// See [`run_publish`].
+///
+/// `mode` travels beside it, by value: [`GateMode`] is `Copy`, so every retry
+/// attempt takes its own copy the way every other input does.
 async fn publish_in_one_transaction(
     state: &ApiState,
     inputs: &HeadActInputs,
     gate: &Arc<dyn GovernanceGate + Send + Sync>,
+    mode: GateMode,
 ) -> Result<MutationOutcome, HeadActError> {
     let outbox = Arc::clone(&state.outbox);
     let gate = Arc::clone(gate);
@@ -2603,14 +2926,19 @@ async fn publish_in_one_transaction(
                 let outbox = Arc::clone(&outbox);
                 let gate = Arc::clone(&gate);
                 let inputs = inputs.clone();
-                Box::pin(async move { run_publish(tx, &inputs, gate.as_ref(), &outbox).await })
+                Box::pin(
+                    async move { run_publish(tx, &inputs, gate.as_ref(), mode, &outbox).await },
+                )
             },
         )
         .await
 }
 
-/// [`publish_in_one_transaction`]'s discard twin, on the same terms and with
-/// no gate to carry.
+/// [`publish_in_one_transaction`]'s discard twin, on the same terms —
+/// including the gate host, which travels as an `Arc` for that function's
+/// stated reason now that the phase runs on this door too
+/// (`inst-fd-pipeline-gate-phase`). The mode does not travel: it is
+/// [`GateMode::Gate`] inside [`run_discard`], which argues why.
 ///
 /// # Errors
 ///
@@ -2618,8 +2946,10 @@ async fn publish_in_one_transaction(
 async fn discard_in_one_transaction(
     state: &ApiState,
     inputs: &HeadActInputs,
+    gate: &Arc<dyn GovernanceGate + Send + Sync>,
 ) -> Result<MutationOutcome, HeadActError> {
     let outbox = Arc::clone(&state.outbox);
+    let gate = Arc::clone(gate);
     let inputs = inputs.clone();
     state
         .db
@@ -2629,8 +2959,9 @@ async fn discard_in_one_transaction(
             head_act_contention_db_err,
             move |tx| {
                 let outbox = Arc::clone(&outbox);
+                let gate = Arc::clone(&gate);
                 let inputs = inputs.clone();
-                Box::pin(async move { run_discard(tx, &inputs, &outbox).await })
+                Box::pin(async move { run_discard(tx, &inputs, gate.as_ref(), &outbox).await })
             },
         )
         .await
@@ -2754,15 +3085,22 @@ fn build_claim(
     }))
 }
 
-/// `POST /skus/{id}/publish`, with the governance gate host as an argument.
+/// `POST /skus/{id}/publish`, with the governance gate host **and the gate
+/// mode** as arguments — the in-process entry point every non-wire caller of
+/// this door uses.
 ///
 /// The handler [`publish_sku`] passes [`NoMaterialityPolicyGate`], which is
-/// the only host that exists at this commit; the parameter is what lets a
-/// test drive a refusing host, since the default one never refuses under
-/// [`GateMode::Gate`] and an `APPROVAL_REQUIRED` path with no test would be
-/// an untested one. It is **not** a seam for a caller: the mode stays a
-/// literal in [`run_publish`], so no wire input reaches either the host or
-/// the mode. It arrives as an `Arc<dyn ...>` for
+/// the only host that exists at this commit, and [`GateMode::Gate`], which
+/// is the only mode a wire surface may ever pass. The **host** parameter is
+/// what lets a test drive a refusing host, since the default one never
+/// refuses under [`GateMode::Gate`] and an `APPROVAL_REQUIRED` path with no
+/// test would be an untested one. The **mode** parameter is
+/// `dod-publish-door`'s own requirement (**P-D-30**) and the seam
+/// `04-lifecycle`'s scheduled-publish runner arrives through; see
+/// [`run_publish`]'s doc, which also records that an earlier revision read
+/// `inst-fd-gate-mode` as forbidding it. Neither is a seam for a wire
+/// caller: this function is not routed, and [`GateMode`] reaches no DTO,
+/// header reader or extractor in the crate. Both travel as owned values for
 /// [`publish_in_one_transaction`]'s stated reason.
 ///
 /// # Order of operations
@@ -2778,8 +3116,9 @@ fn build_claim(
 /// 4. The head read ([`load_head`]), whose only refusal is the bare `404`.
 /// 5. The act ([`run_publish`], on [`publish_in_one_transaction`]): the
 ///    claim, terminality, the precondition, the re-validation re-run, the
-///    edge, the gate, the freeze, one head-row `UPDATE`, `SkuPublished`, the
-///    invalidation hook and the stored answer — one transaction.
+///    containment re-check against the parent, the edge, the gate, the
+///    freeze, one head-row `UPDATE`, `SkuPublished`, the invalidation hook
+///    and the stored answer — one transaction.
 /// 6. [`answer_head_act`].
 ///
 /// # What this door does not build, and who owns each
@@ -2793,9 +3132,14 @@ fn build_claim(
 ///   has no caller here to hand one in. When 07 lands, its value must ride
 ///   `repo::publish_sku_head`'s single `UPDATE` rather than a second
 ///   statement.
-/// - **`composition_pending`** is not a column yet, so the uncomposed-bundle
-///   override the gate verdict can carry has nowhere to be written. Owed to
-///   slice **07**; see [`run_publish`]'s own doc.
+/// - **The `bundle` narrowing on `composition_pending`.** The write itself is
+///   built — [`run_publish`] reads the verdict's uncomposed-bundle override
+///   and carries it into the frozen image and the head-row `UPDATE` alike —
+///   but `inst-fd-publish-freeze` scopes the clause to a **`bundle`** SKU, and
+///   `bundle` is a value of the `type` column, which is **slice 03's** and is
+///   not on `products_sku` at this commit. The clause therefore runs with its
+///   subject widened to every SKU. Owed to slice **03**; see
+///   `repo::publish_sku_head`'s own doc for where the condition lands.
 /// - **Consuming the gate's `satisfied` record** (`inst-fd-publish-consume`)
 ///   has nothing to consume: [`NoMaterialityPolicyGate`] answers
 ///   `ApprovalDisposition::NoRecord`, and
@@ -2815,6 +3159,7 @@ async fn publish_sku_gated(
     headers: &HeaderMap,
     sku_id: Uuid,
     gate: &Arc<dyn GovernanceGate + Send + Sync>,
+    mode: GateMode,
 ) -> Result<Response, CanonicalError> {
     let now = Utc::now();
     let act = open_act(
@@ -2857,7 +3202,7 @@ async fn publish_sku_gated(
         claim,
     };
 
-    let outcome = publish_in_one_transaction(state, &inputs, gate).await;
+    let outcome = publish_in_one_transaction(state, &inputs, gate, mode).await;
     answer_head_act(state, &act, sku_id, head.internal_revision, outcome).await
 }
 
@@ -2865,10 +3210,10 @@ async fn publish_sku_gated(
 /// transaction.
 ///
 /// The thin `axum` shell over [`publish_sku_gated`], which carries the whole
-/// pipeline and its reasoning. The only thing decided here is the governance
-/// host and, with it, that no wire input can choose one:
-/// [`NoMaterialityPolicyGate`] is passed as a literal, exactly as
-/// [`GateMode::Gate`] is inside.
+/// pipeline and its reasoning. The only things decided here are the two a
+/// wire request may not choose — the governance host and the gate mode —
+/// and they are decided the same way: [`NoMaterialityPolicyGate`] and
+/// [`GateMode::Gate`], both literals at this one call site.
 ///
 /// # Errors
 ///
@@ -2888,6 +3233,7 @@ async fn publish_sku(
         &headers,
         sku_id,
         &(Arc::new(NoMaterialityPolicyGate) as Arc<dyn GovernanceGate + Send + Sync>),
+        GateMode::Gate,
     )
     .await
 }
@@ -2895,11 +3241,10 @@ async fn publish_sku(
 /// `POST /skus/{id}/discard`: discard a never-published draft
 /// (`inst-fd-discard`).
 ///
-/// The door's own steps are [`publish_sku_gated`]'s, minus the gate: the
-/// `sku x write` grant, the key, the `If-Match`, the head read, then
-/// [`run_discard`] on one transaction and [`answer_head_act`]. The legality
-/// rule, the effects the guard reports and the reservation the write releases
-/// are all argued at [`run_discard`].
+/// The thin `axum` shell over [`discard_sku_gated`]. The only thing decided
+/// here is the governance host, and it is decided the way [`publish_sku`]
+/// decides it: [`NoMaterialityPolicyGate`] as a literal, so no wire input
+/// chooses one.
 ///
 /// # The grant is `write`, not `discard`
 ///
@@ -2913,9 +3258,7 @@ async fn publish_sku(
 ///
 /// # Errors
 ///
-/// The audited `VALIDATION`, `STALE_REVISION`, `ENTITY_TERMINAL`,
-/// `ILLEGAL_TRANSITION` or idempotency refusal, the `404` a miss answers, or
-/// a `500` from storage.
+/// See [`discard_sku_gated`].
 async fn discard_sku(
     Extension(state): Extension<Arc<ApiState>>,
     Extension(enforcer): Extension<authz_resolver_sdk::PolicyEnforcer>,
@@ -2924,11 +3267,57 @@ async fn discard_sku(
     Path(sku_id): Path<Uuid>,
 ) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(extension_ctx)?;
-    let now = Utc::now();
-    let act = open_act(
+    discard_sku_gated(
         &state,
         &enforcer,
         &ctx,
+        &headers,
+        sku_id,
+        &(Arc::new(NoMaterialityPolicyGate) as Arc<dyn GovernanceGate + Send + Sync>),
+    )
+    .await
+}
+
+/// `POST /skus/{id}/discard`, with the governance gate host as an argument —
+/// [`publish_sku_gated`]'s twin, minus the mode.
+///
+/// The door's own steps are [`publish_sku_gated`]'s: the `sku x write`
+/// grant, the key, the `If-Match`, the head read, then [`run_discard`] on
+/// one transaction and [`answer_head_act`]. The legality rule, the effects
+/// the guard reports and the reservation the write releases are all argued
+/// at [`run_discard`].
+///
+/// # Why the host is a parameter here too
+///
+/// The gate phase runs on this door (`inst-fd-pipeline-gate-phase`; see
+/// [`run_discard`]), and the gear's only host never refuses under
+/// [`GateMode::Gate`]. That makes the phase's refusal arm unreachable
+/// through [`discard_sku`] and therefore untestable at the door — the
+/// identical argument [`publish_sku_gated`] makes for its own host
+/// parameter — and a phase nothing can exercise is one a reader cannot tell
+/// from a phase that is absent. This seam is also where slice 05's host
+/// arrives the day it gates a transition. The **mode** is not a parameter,
+/// and [`run_discard`]'s own doc measures that asymmetry.
+///
+/// # Errors
+///
+/// The audited `VALIDATION`, `STALE_REVISION`, `ENTITY_TERMINAL`,
+/// `ILLEGAL_TRANSITION`, `APPROVAL_REQUIRED` or idempotency refusal, the
+/// `404` a miss answers, or a `500` from storage or an unreachable gate
+/// host.
+async fn discard_sku_gated(
+    state: &ApiState,
+    enforcer: &authz_resolver_sdk::PolicyEnforcer,
+    ctx: &SecurityContext,
+    headers: &HeaderMap,
+    sku_id: Uuid,
+    gate: &Arc<dyn GovernanceGate + Send + Sync>,
+) -> Result<Response, CanonicalError> {
+    let now = Utc::now();
+    let act = open_act(
+        state,
+        enforcer,
+        ctx,
         sku_id,
         crate::authz::actions::WRITE,
         DISCARD_AUDIT_ACTION,
@@ -2936,20 +3325,20 @@ async fn discard_sku(
     )
     .await?;
 
-    let claim = match build_claim(&state, &headers, discard_endpoint(sku_id), now) {
+    let claim = match build_claim(state, headers, discard_endpoint(sku_id), now) {
         Ok(claim) => claim,
         Err(refusal) => {
-            return Err(audit_act_refusal(&state, &act, minted(sku_id, None), refusal).await);
+            return Err(audit_act_refusal(state, &act, minted(sku_id, None), refusal).await);
         }
     };
-    let expected = match preconditions::if_match(&headers) {
+    let expected = match preconditions::if_match(headers) {
         Ok(expected) => expected,
         Err(refusal) => {
-            return Err(audit_act_refusal(&state, &act, minted(sku_id, None), refusal).await);
+            return Err(audit_act_refusal(state, &act, minted(sku_id, None), refusal).await);
         }
     };
 
-    let head = load_head(&state, &act, sku_id).await?;
+    let head = load_head(state, &act, sku_id).await?;
     let inputs = HeadActInputs {
         scope: act.scope.clone(),
         tenant_id: act.tenant_id,
@@ -2962,8 +3351,8 @@ async fn discard_sku(
         claim,
     };
 
-    let outcome = discard_in_one_transaction(&state, &inputs).await;
-    answer_head_act(&state, &act, sku_id, head.internal_revision, outcome).await
+    let outcome = discard_in_one_transaction(state, &inputs, gate).await;
+    answer_head_act(state, &act, sku_id, head.internal_revision, outcome).await
 }
 
 #[cfg(test)]

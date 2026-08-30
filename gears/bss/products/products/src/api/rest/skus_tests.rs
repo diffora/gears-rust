@@ -1359,12 +1359,19 @@ async fn a_retry_after_a_committed_sku_create_replays_the_original_response() {
 /// A governance host that refuses everything.
 ///
 /// The production default, `NoMaterialityPolicyGate`, **never** refuses under
-/// `GateMode::Gate` — its own doc says so, and says why: no materiality
-/// policy is registered, so the act needs no ceremony. That makes the
-/// `APPROVAL_REQUIRED` path unreachable through the router, and a path with
-/// no test is one nothing pins. This double is why `super::publish_sku_gated`
-/// takes the host as an argument at all; the *mode* is still a literal
-/// inside it, so nothing here reaches `GateMode::PreAuthorized` either.
+/// `GateMode::Gate` — its own doc says so, and says why: it holds no
+/// approval-record store, so it cannot evaluate the ceremony
+/// `inst-fd-gate-mode-gate` requires and authorizes without one. That is a
+/// recorded deviation, **not** a finding that the act needed no approval;
+/// an earlier revision of this doc made the second claim and `05-governance`
+/// `inst-gv-materiality` contradicts it, materiality deciding the quorum
+/// *count* and never whether a record exists. Either way the
+/// `APPROVAL_REQUIRED` path is unreachable through the router, and a path
+/// with no test is one nothing pins. This double is why
+/// `super::publish_sku_gated` and `super::discard_sku_gated` take the host
+/// as an argument at all. The *mode* is a separate argument, for
+/// `dod-publish-door`'s own reason; [`RecordingGate`] is what reaches
+/// `GateMode::PreAuthorized`.
 struct RefusingGate;
 
 impl crate::domain::governance::GovernanceGate for RefusingGate {
@@ -1914,6 +1921,7 @@ async fn a_publish_a_gate_refuses_is_approval_required_and_writes_nothing() {
         sku_id,
         &(Arc::new(RefusingGate)
             as Arc<dyn crate::domain::governance::GovernanceGate + Send + Sync>),
+        crate::domain::governance::GateMode::Gate,
     )
     .await;
 
@@ -2165,6 +2173,14 @@ async fn a_replayed_publish_returns_the_stored_answer_and_does_not_publish_twice
 /// absent from this array: they are not columns of `products_sku` at this
 /// commit, and naming a column the table does not have would make the
 /// `is a real column` assertion below fail for the wrong reason.
+///
+/// `composition_pending` **is** a column and is deliberately **not** here.
+/// The four above share one criterion — they move on writes that produce no
+/// version row — and that column is its inverse: its trigger clause admits a
+/// change only in the same statement as a `published_version` bump, so it
+/// moves only where a version row is written. `inst-fd-publish-freeze` names
+/// it in the frozen content outright. Adding it to this array would make the
+/// case below assert the opposite of the design set.
 const EXCLUDED_FROM_FROZEN_CONTENT: [&str; 4] = [
     "internal_revision",
     "lifecycle_state",
@@ -2239,8 +2255,11 @@ async fn the_sku_content_roster_is_the_head_table_minus_the_excluded_columns() {
         roster, expected,
         "section 4.3 scopes a frozen row's content as the publish-time entity minus its named \
          exclusions, so the roster is the head table's columns minus those and nothing else. A \
-         slice that adds a content column to products_sku adds it here too, and bumps \
-         canonical::DIGEST_VERSION with it"
+         slice that adds a content column to products_sku adds it here too. It owes \
+         canonical::DIGEST_VERSION a bump as well once any row has been stored under the \
+         current value; while none has -- the gear is undeployed and products_entity_version \
+         is an unreleased migration -- a bump would mint a version no row ever used and no \
+         restore drill could encounter. See that constant's own doc"
     );
 }
 
@@ -2263,6 +2282,13 @@ async fn the_sku_content_roster_is_the_head_table_minus_the_excluded_columns() {
 /// this case prove less than it appears to, the way the Product twin's
 /// `product_code` can. Every value below is distinct and non-empty for the
 /// same reason.
+///
+/// `composition_pending` is seeded `true`, against the column's own default,
+/// on that same reasoning read for a boolean: a `bool` has only two values
+/// and one of them is what every row carries today, so a fixture holding the
+/// default is the one fixture that cannot distinguish a builder writing the
+/// field from a builder writing nothing at all once this case grows a value
+/// assertion.
 #[test]
 fn the_sku_content_builder_writes_exactly_the_roster() {
     let record = repo::SkuRecord {
@@ -2273,6 +2299,7 @@ fn the_sku_content_builder_writes_exactly_the_roster() {
         lifecycle_state: bss_products_sdk::models::LifecycleState::Draft,
         internal_revision: 1,
         published_version: 0,
+        composition_pending: true,
         region_scope: "eu".to_owned(),
         brand_scope: "acme".to_owned(),
         created_by: "principal:author-1".to_owned(),
@@ -2758,5 +2785,592 @@ async fn a_publish_whose_target_tenant_is_outside_the_compiled_scope_is_denied_a
         head_state(&harness.dsn, sku_id).await.as_deref(),
         Some("draft"),
         "and nothing moved"
+    );
+}
+
+/// A gate host that records the mode it was asked in and names a record
+/// either way — `products_tests::RecordingGate`'s twin, and deliberately the
+/// same shape, since the two doors must behave identically under the same
+/// mode.
+///
+/// The two arms differ the way `inst-fd-gate-mode-gate` and
+/// `inst-fd-gate-mode-preauthorized` say a real host's must: under `Gate` it
+/// names a record **to consume**, under `PreAuthorized` one already
+/// **verified**. `NoMaterialityPolicyGate` can do neither — it holds no
+/// record store, so it names no record under `Gate` and refuses outright
+/// under `PreAuthorized` — which is why the seam is unreachable without a
+/// double.
+struct RecordingGate {
+    approval: crate::domain::governance::ApprovalId,
+    asked: std::sync::Mutex<Vec<crate::domain::governance::GateMode>>,
+}
+
+impl RecordingGate {
+    fn new(approval: crate::domain::governance::ApprovalId) -> Self {
+        Self {
+            approval,
+            asked: std::sync::Mutex::new(Vec::new()),
+        }
+    }
+
+    /// Every mode this host was asked in, in order.
+    fn modes(&self) -> Vec<crate::domain::governance::GateMode> {
+        self.asked
+            .lock()
+            .expect("no case poisons this lock")
+            .clone()
+    }
+}
+
+impl crate::domain::governance::GovernanceGate for RecordingGate {
+    fn evaluate(
+        &self,
+        _subject: crate::domain::governance::EntityRef,
+        _expected_revision: crate::domain::concurrency::InternalRevision,
+        mode: crate::domain::governance::GateMode,
+    ) -> Result<crate::domain::governance::GateVerdict, crate::domain::error::DomainError> {
+        use crate::domain::governance::{ApprovalDisposition, GateMode, GateVerdict};
+
+        self.asked
+            .lock()
+            .expect("no case poisons this lock")
+            .push(mode);
+        let disposition = match mode {
+            GateMode::Gate => ApprovalDisposition::Consume(self.approval),
+            GateMode::PreAuthorized(id) => ApprovalDisposition::Verified(id),
+        };
+        Ok(GateVerdict::authorized(
+            disposition,
+            false,
+            "this double authorizes and records the mode it was asked in".to_owned(),
+        ))
+    }
+}
+
+/// **A publish driven in `PreAuthorized` mode reaches the host in that mode,
+/// publishes, and consumes nothing.**
+///
+/// `products_tests::a_preauthorized_publish_reaches_the_host_in_that_mode_and_consumes_nothing`
+/// is the same case on the Product door, and its doc carries the full
+/// argument: `dod-publish-door` (**P-D-30**) requires the mode to be an
+/// explicit argument so that `04-lifecycle`'s scheduled-publish runner can
+/// drive **this** door, and until it became one `GateMode::PreAuthorized`
+/// had no call path anywhere in the gear.
+///
+/// The load-bearing assertion is the recorded mode, not the `200`: this
+/// double authorizes under both modes, so a door that substituted `Gate`
+/// would still publish. The "consumes nothing" half is asserted as far as
+/// this slice reaches — the consume flip is `inst-fd-publish-consume`'s and
+/// belongs to slice 05's record store — so what is pinned is the property
+/// the flip will be written against: `approval_to_consume()` is `None` while
+/// `approval_ref()` names the record, and the frozen row carries that id.
+#[tokio::test]
+async fn a_preauthorized_publish_reaches_the_host_in_that_mode_and_consumes_nothing() {
+    use crate::domain::governance::{GateMode, GateVerdict, GovernanceGate as _};
+
+    let harness = harness().await;
+    let parent_id = seed_parent(&harness, new_parent_product(Uuid::now_v7(), TENANT)).await;
+    let (sku_id, etag) = seed_draft_sku(&harness, parent_id, "SKU-500").await;
+
+    let approval = crate::domain::governance::ApprovalId::new(Uuid::now_v7());
+    let recorder = Arc::new(RecordingGate::new(approval));
+
+    let mut headers = axum::http::HeaderMap::new();
+    headers.insert(
+        axum::http::header::IF_MATCH,
+        etag.parse().expect("the ETag is a valid header value"),
+    );
+    let response = super::publish_sku_gated(
+        &api_state(&harness),
+        &flat_in_enforcer(TENANT),
+        &authed_ctx(TENANT),
+        &headers,
+        sku_id,
+        &(Arc::clone(&recorder)
+            as Arc<dyn crate::domain::governance::GovernanceGate + Send + Sync>),
+        GateMode::PreAuthorized(approval),
+    )
+    .await
+    .expect("a verified pre-authorization must publish");
+    assert_eq!(
+        response.into_response().status(),
+        StatusCode::OK,
+        "the scheduled-publish path drives the ordinary door to the ordinary answer"
+    );
+
+    assert_eq!(
+        recorder.modes(),
+        vec![GateMode::PreAuthorized(approval)],
+        "the door passed the caller's mode through unchanged, and asked exactly once; a door \
+         that substituted GateMode::Gate would still have published, which is why the mode \
+         itself is the assertion"
+    );
+
+    let verdict = recorder
+        .evaluate(
+            crate::domain::governance::EntityRef {
+                tenant_id: TENANT,
+                entity_kind: bss_products_sdk::models::EntityKind::Sku,
+                entity_id: sku_id,
+            },
+            crate::domain::concurrency::InternalRevision::new(1),
+            GateMode::PreAuthorized(approval),
+        )
+        .expect("this double never fails to reach an answer");
+    let GateVerdict::Authorized(authorization) = verdict else {
+        panic!("this double authorizes under PreAuthorized")
+    };
+    assert_eq!(
+        authorization.approval_to_consume(),
+        None,
+        "nothing is consumed under PreAuthorized (inst-fd-publish-consume), and that is a \
+         property of ApprovalDisposition rather than a rule the door remembers"
+    );
+    assert_eq!(
+        authorization.approval_ref(),
+        Some(approval),
+        "a PreAuthorized act still records which approval stands behind the frozen version"
+    );
+
+    let matched = raw_i64(
+        &harness.dsn,
+        &format!(
+            "SELECT COUNT(*) AS v FROM products_entity_version WHERE approval_ref = '{approval}' \
+             OR hex(approval_ref) = '{}'",
+            approval.get().simple().to_string().to_uppercase()
+        ),
+    )
+    .await;
+    assert_eq!(
+        matched, 1,
+        "the frozen row carries the verified record's id in approval_ref, which is the one \
+         accessor this act reads off the verdict"
+    );
+}
+
+/// **The governance-gate phase runs on the discard door: a host that says no
+/// refuses `APPROVAL_REQUIRED` and writes nothing.**
+///
+/// `inst-fd-pipeline-gate-phase` puts the phase at *every* mutating door,
+/// passing trivially where the act is ungated (**P-D-34**); §1.1 makes
+/// governance a phase *inside* the pipeline rather than a path around it.
+/// Under the gear's own host a discard is ungated and the phase is
+/// invisible, so this double is the only way to tell a phase that passes
+/// from a phase that was never asked. `products_tests
+/// ::a_gate_that_answers_no_refuses_the_discard_and_writes_nothing` is the
+/// same case on the Product door.
+///
+/// The assertions are the problem body's own code and the audit row's
+/// `error_code`: a status alone does not separate this refusal from the
+/// `ILLEGAL_TRANSITION` and `ENTITY_TERMINAL` ones this door already raises.
+#[tokio::test]
+async fn a_gate_that_answers_no_refuses_the_discard_and_writes_nothing() {
+    let harness = harness().await;
+    let parent_id = seed_parent(&harness, new_parent_product(Uuid::now_v7(), TENANT)).await;
+    let (sku_id, etag) = seed_draft_sku(&harness, parent_id, "SKU-500").await;
+
+    let mut headers = axum::http::HeaderMap::new();
+    headers.insert(
+        axum::http::header::IF_MATCH,
+        etag.parse().expect("the ETag is a valid header value"),
+    );
+    let result = super::discard_sku_gated(
+        &api_state(&harness),
+        &flat_in_enforcer(TENANT),
+        &authed_ctx(TENANT),
+        &headers,
+        sku_id,
+        &(Arc::new(RefusingGate)
+            as Arc<dyn crate::domain::governance::GovernanceGate + Send + Sync>),
+    )
+    .await;
+
+    let Err(refusal) = result else {
+        panic!("a refusing gate must refuse the discard, which proves it was asked")
+    };
+    let response = refusal.into_response();
+    assert_eq!(
+        response.status(),
+        StatusCode::FORBIDDEN,
+        "APPROVAL_REQUIRED is the gate's own 403"
+    );
+    let view = body_json(response).await;
+    assert_eq!(view["context"]["reason"], json!("APPROVAL_REQUIRED"));
+
+    assert_eq!(
+        head_state(&harness.dsn, sku_id).await.as_deref(),
+        Some("draft"),
+        "a rejection flips no state (inst-fd-gate-rejection), on this door as on publish"
+    );
+    assert_eq!(
+        head_revision(&harness.dsn, sku_id).await,
+        1,
+        "the refusal rolled the transaction back, so no head-row UPDATE landed"
+    );
+    let error_code = raw_string_opt(
+        &harness.dsn,
+        "SELECT error_code AS v FROM products_audit_log",
+    )
+    .await;
+    assert_eq!(
+        error_code.as_deref(),
+        Some("APPROVAL_REQUIRED"),
+        "the discard door's gate refusal audits under its own code, like every other refusal"
+    );
+}
+
+/// **The discard door's gate phase passes trivially under the gear's own
+/// host**: a routed discard, which wires `NoMaterialityPolicyGate`,
+/// succeeds and audits nothing.
+///
+/// The other half of the pair. `inst-fd-pipeline-gate-phase` asks for both
+/// halves at once — the phase runs *and* it costs an ungated act nothing —
+/// and a case proving only the refusal would leave a door that refuses every
+/// discard indistinguishable from a correct one.
+#[tokio::test]
+async fn the_discard_doors_gate_phase_passes_trivially_under_the_default_host() {
+    let harness = harness().await;
+    let parent_id = seed_parent(&harness, new_parent_product(Uuid::now_v7(), TENANT)).await;
+    let (sku_id, etag) = seed_draft_sku(&harness, parent_id, "SKU-500").await;
+
+    let response = post_discard(app_for(&harness, TENANT), TENANT, sku_id, Some(&etag)).await;
+
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "the default host authorizes naming no record, so an ungated discard pays nothing for \
+         the phase"
+    );
+    assert_eq!(
+        head_state(&harness.dsn, sku_id).await.as_deref(),
+        Some("discarded")
+    );
+    assert_eq!(
+        raw_i64(&harness.dsn, "SELECT COUNT(*) AS v FROM products_audit_log").await,
+        0,
+        "a success is not a refusal and audits nothing (P-D-21)"
+    );
+}
+
+/// Narrow a seeded parent's `region_scope` out of band, bumping
+/// `internal_revision` the way the head-row guard demands of **every**
+/// admitted update.
+///
+/// Out of band on purpose: no door of this slice edits a Product's scope —
+/// the save door is a later slice's — so the only way to reach the state
+/// `04-lifecycle` C5 calls a narrowing is to write it. The guard still
+/// judges the write, which makes this helper a positive control too: it
+/// proves a bucket-iii narrowing **is** admitted on a non-terminal head,
+/// which is precisely why a child can be orphaned between create and
+/// publish.
+async fn narrow_parent_region(dsn: &str, product_id: Uuid, region: &str) {
+    let conn = Database::connect(dsn)
+        .await
+        .expect("open an auxiliary connection to narrow the parent");
+    let result = conn
+        .execute_unprepared(&format!(
+            "UPDATE products_product SET region_scope = '{region}', \
+             internal_revision = internal_revision + 1 WHERE {}",
+            id_matches("product_id", product_id)
+        ))
+        .await
+        .expect("the head-row guard admits a bucket-iii write on a non-terminal head");
+    assert_eq!(
+        result.rows_affected(),
+        1,
+        "the parent this case narrows must exist, or its premise never held"
+    );
+    conn.close().await.ok();
+}
+
+/// **A SKU whose parent narrowed out from under it is refused
+/// `SCOPE_NOT_CONTAINED` at publish.**
+///
+/// §3.3 puts containment in the identity phase *"wherever it runs — create,
+/// save, and **the publish re-run**"*, and §4.1 makes `region_scope` a
+/// bucket-iii column *"in both directions, widening and narrowing alike, so
+/// a narrowing that would orphan a live child meets
+/// `fr-parent-child-integrity`'s fail-closed check ... ahead of the
+/// governance gate"*. Nothing freezes a parent's scope when a child is
+/// minted under it, so this state is reachable and the publish door is the
+/// only thing standing between it and a published orphan.
+///
+/// The child's own two columns are untouched and still parse, so
+/// `SkuScopeColumnsStillParse` — the only identity rule the re-run had
+/// before `recheck_parent_containment` — passes: the defect this case pins
+/// is a door that judged the child alone and never loaded the parent.
+///
+/// **The code is the assertion, not the status.** `SCOPE_NOT_CONTAINED` and
+/// `INCOMPLETE_ENTITY` both render wire `400`, so a status assertion would
+/// pass against a door that refused for the wrong reason entirely. The audit
+/// row's `error_code` is asserted for the same reason.
+#[tokio::test]
+async fn a_publish_whose_parent_narrowed_out_of_band_is_refused_scope_not_contained() {
+    let harness = harness().await;
+    let mut parent = new_parent_product(Uuid::now_v7(), TENANT);
+    parent.region_scope = "eu,us".to_owned();
+    let parent_id = seed_parent(&harness, parent).await;
+
+    // The child inherits `eu,us` (the omitted-scope arm of P-D-39), so it is
+    // contained at create and the create door is not what this case tests.
+    let (sku_id, etag) = seed_draft_sku(&harness, parent_id, "SKU-500").await;
+
+    narrow_parent_region(&harness.dsn, parent_id, "eu").await;
+
+    let response = post_publish(app_for(&harness, TENANT), TENANT, sku_id, Some(&etag)).await;
+
+    assert_eq!(
+        response.status(),
+        StatusCode::BAD_REQUEST,
+        "SCOPE_NOT_CONTAINED renders as an architectural 422, wire 400"
+    );
+    let view = body_json(response).await;
+    assert_eq!(
+        view["context"]["violations"][0]["type"],
+        json!("SCOPE_NOT_CONTAINED"),
+        "the refusal names containment, not INCOMPLETE_ENTITY: the child's own columns are \
+         intact and it is the parent that moved"
+    );
+
+    assert_eq!(
+        frozen_versions_for(&harness.dsn, sku_id).await,
+        0,
+        "an orphaned child freezes no version"
+    );
+    assert_eq!(
+        head_state(&harness.dsn, sku_id).await.as_deref(),
+        Some("draft"),
+        "and the head never leaves draft"
+    );
+    let error_code = raw_string_opt(
+        &harness.dsn,
+        "SELECT error_code AS v FROM products_audit_log",
+    )
+    .await;
+    assert_eq!(
+        error_code.as_deref(),
+        Some("SCOPE_NOT_CONTAINED"),
+        "the refusal is audited under the code it raised"
+    );
+}
+
+/// **A SKU whose parent went terminal after the create is refused
+/// `PARENT_TERMINAL` at publish.**
+///
+/// `create_sku` already refuses a terminal parent; this is the same question
+/// asked a second time, of a row that has since moved. Without the publish
+/// re-check a SKU minted under a live parent publishes under a `retired`
+/// one, which is a live child of a dead parent —
+/// `fr-parent-child-integrity`'s own case.
+///
+/// `PARENT_TERMINAL` rather than `SCOPE_NOT_CONTAINED`: the two are separate
+/// codes with separate meanings, and answering the containment code here
+/// would tell an operator the scopes disagreed when the scopes are fine.
+#[tokio::test]
+async fn a_publish_whose_parent_went_terminal_is_refused_parent_terminal() {
+    let harness = harness().await;
+    let parent_id = seed_parent(&harness, new_parent_product(Uuid::now_v7(), TENANT)).await;
+    let (sku_id, etag) = seed_draft_sku(&harness, parent_id, "SKU-500").await;
+
+    let scope = toolkit_db::secure::AccessScope::for_tenant(TENANT);
+    walk_parent_to(&harness.db, &scope, parent_id, "retired").await;
+
+    let response = post_publish(app_for(&harness, TENANT), TENANT, sku_id, Some(&etag)).await;
+
+    assert_eq!(
+        response.status(),
+        StatusCode::CONFLICT,
+        "PARENT_TERMINAL is a 409, which is what tells it from SCOPE_NOT_CONTAINED's wire 400"
+    );
+    let view = body_json(response).await;
+    assert_eq!(
+        view["context"]["reason"],
+        json!("PARENT_TERMINAL"),
+        "a retired parent is a terminal-parent refusal, not a containment one; the create door          words the same refusal the same way"
+    );
+    assert_eq!(
+        frozen_versions_for(&harness.dsn, sku_id).await,
+        0,
+        "nothing is frozen under a dead parent"
+    );
+    assert_eq!(
+        head_state(&harness.dsn, sku_id).await.as_deref(),
+        Some("draft")
+    );
+}
+
+/// A gate host that authorizes and **raises the uncomposed-bundle override**.
+///
+/// [`RefusingGate`] and [`RecordingGate`] both leave
+/// `GateAuthorization::uncomposed_bundle_override` `false` — `RecordingGate`
+/// passes the literal, and `NoMaterialityPolicyGate` cannot raise it at all,
+/// holding no record store — so the raised state is unreachable without a
+/// double of its own. `inst-fd-publish-freeze` makes that state the operand of
+/// `composition_pending`, so this is the only way to exercise the door's write
+/// of it before slice 05's real host lands.
+struct OverridingGate;
+
+impl crate::domain::governance::GovernanceGate for OverridingGate {
+    fn evaluate(
+        &self,
+        _subject: crate::domain::governance::EntityRef,
+        _expected_revision: crate::domain::concurrency::InternalRevision,
+        _mode: crate::domain::governance::GateMode,
+    ) -> Result<crate::domain::governance::GateVerdict, crate::domain::error::DomainError> {
+        Ok(crate::domain::governance::GateVerdict::authorized(
+            crate::domain::governance::ApprovalDisposition::NoRecord,
+            true,
+            "this double authorizes and carries the uncomposed-bundle override".to_owned(),
+        ))
+    }
+}
+
+/// The `content` string of one entity's frozen version row.
+async fn frozen_content(dsn: &str, sku_id: Uuid, version: i64) -> String {
+    raw_string_opt(
+        dsn,
+        &format!(
+            "SELECT content AS v FROM products_entity_version \
+             WHERE {} AND entity_kind = 'sku' AND published_version = {version}",
+            id_matches("entity_id", sku_id)
+        ),
+    )
+    .await
+    .expect("the publish this case ran froze a row at this version")
+}
+
+/// One SKU head's `composition_pending`, as the column stores it.
+async fn head_composition_pending(dsn: &str, sku_id: Uuid) -> i64 {
+    raw_i64(
+        dsn,
+        &format!(
+            "SELECT composition_pending AS v FROM products_sku WHERE {}",
+            id_matches("sku_id", sku_id)
+        ),
+    )
+    .await
+}
+
+/// Drive [`super::publish_sku_gated`] against `gate` in `GateMode::Gate`.
+///
+/// The routed handler wires `NoMaterialityPolicyGate` as a literal — that is
+/// `inst-fd-gate-mode`'s wire-invisibility holding — so a case that needs a
+/// different host has to enter through the in-process seam, exactly as
+/// `a_preauthorized_publish_reaches_the_host_in_that_mode_and_consumes_nothing`
+/// does. Everything else is what a routed request would produce.
+async fn publish_under_gate(
+    harness: &TestHarness,
+    sku_id: Uuid,
+    etag: &str,
+    gate: Arc<dyn crate::domain::governance::GovernanceGate + Send + Sync>,
+) -> axum::http::Response<Body> {
+    let mut headers = axum::http::HeaderMap::new();
+    headers.insert(
+        axum::http::header::IF_MATCH,
+        etag.parse().expect("the ETag is a valid header value"),
+    );
+    super::publish_sku_gated(
+        &api_state(harness),
+        &flat_in_enforcer(TENANT),
+        &authed_ctx(TENANT),
+        &headers,
+        sku_id,
+        &gate,
+        crate::domain::governance::GateMode::Gate,
+    )
+    .await
+    .expect("this case's gate authorizes, so the publish must land")
+    .into_response()
+}
+
+/// **A publish carrying the uncomposed-bundle override raises
+/// `composition_pending` on the head *and* freezes the raised flag under the
+/// version that publish produced.**
+///
+/// `inst-fd-publish-freeze` (§4.2, **P-D-32**): *"On a `bundle` SKU that same
+/// `UPDATE` also carries `composition_pending` — set where this publish
+/// carried the uncomposed-bundle override, cleared where it did not"*. The
+/// operand is `GateAuthorization::uncomposed_bundle_override`, which had no
+/// reader in the gear at all until this wave.
+///
+/// # The frozen row is the load-bearing assertion, not the head
+///
+/// The head column alone would pass against the defect this case exists to
+/// catch. `composition_pending` is on `super::SKU_VERSION_CONTENT_ROSTER`, and
+/// the freeze is taken over `super::post_publish_image`; a door that carried
+/// the flag into `repo::publish_sku_head`'s `UPDATE` but not into that image
+/// would write a correct head **and** freeze the **pre-act** flag under the
+/// **post-act** version's key. The digest over that content would be perfectly
+/// valid — the row would agree with itself and lie only about the act that
+/// produced it — so no digest check, no restore drill and no other case in
+/// this file would notice. Only reading the stored `content` back does.
+///
+/// It is read out of `products_entity_version` rather than off the door's own
+/// in-memory image for the same reason: an assertion against the value the
+/// door computed cannot tell a value that reached storage from one that did
+/// not.
+#[tokio::test]
+async fn a_publish_carrying_the_uncomposed_bundle_override_freezes_the_raised_flag() {
+    let harness = harness().await;
+    let parent_id = seed_parent(&harness, new_parent_product(Uuid::now_v7(), TENANT)).await;
+    let (sku_id, etag) = seed_draft_sku(&harness, parent_id, "SKU-500").await;
+
+    assert_eq!(
+        head_composition_pending(&harness.dsn, sku_id).await,
+        0,
+        "this case's own premise: the column's default is the unraised state, so a door that \
+         wrote nothing would leave it here"
+    );
+
+    let response = publish_under_gate(&harness, sku_id, &etag, Arc::new(OverridingGate)).await;
+    assert_eq!(response.status(), StatusCode::OK);
+
+    assert_eq!(
+        head_composition_pending(&harness.dsn, sku_id).await,
+        1,
+        "the head-row UPDATE carries the flag the verdict raised; the migration's own guard \
+         admits it in that statement and in no other"
+    );
+
+    let content = frozen_content(&harness.dsn, sku_id, 1).await;
+    assert!(
+        content.contains(r#""composition_pending":true"#),
+        "the freeze is taken over the post-act image, so the version this publish produced \
+         carries the flag this publish raised; the stored content was {content}"
+    );
+}
+
+/// **A publish whose verdict carries no override freezes the cleared flag** —
+/// the other half of `inst-fd-publish-freeze`'s *"cleared where it did not"*,
+/// and the control that keeps the case above from passing against a door that
+/// hard-codes `true`.
+///
+/// It runs through the router, so the host is the gear's own
+/// `NoMaterialityPolicyGate`, whose authorization carries
+/// `uncomposed_bundle_override: false` by construction.
+///
+/// The `false` value is also what the column already held, so this case cannot
+/// tell a door that wrote `false` from one that wrote nothing — that
+/// discrimination is the raised case's, and this one exists to pin that the
+/// ordinary path did not become the raised one.
+#[tokio::test]
+async fn a_publish_without_the_override_freezes_the_cleared_flag() {
+    let harness = harness().await;
+    let parent_id = seed_parent(&harness, new_parent_product(Uuid::now_v7(), TENANT)).await;
+    let (sku_id, etag) = seed_draft_sku(&harness, parent_id, "SKU-500").await;
+
+    let response = post_publish(app_for(&harness, TENANT), TENANT, sku_id, Some(&etag)).await;
+    assert_eq!(response.status(), StatusCode::OK);
+
+    assert_eq!(
+        head_composition_pending(&harness.dsn, sku_id).await,
+        0,
+        "no override was granted, so the flag stays cleared"
+    );
+    let content = frozen_content(&harness.dsn, sku_id, 1).await;
+    assert!(
+        content.contains(r#""composition_pending":false"#),
+        "the frozen content states the cleared flag rather than omitting it, Absence::Null's \
+         roster naming the field either way; the stored content was {content}"
     );
 }

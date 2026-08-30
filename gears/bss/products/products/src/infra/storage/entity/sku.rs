@@ -35,6 +35,13 @@ pub struct Model {
     pub internal_revision: i64,
     /// Moves only on publish.
     pub published_version: i64,
+    /// The unresolved-composition flag (`design/01-foundation.md` §4.2,
+    /// **P-D-35**). `NOT NULL DEFAULT false`, and system-owned: the migration's
+    /// guard admits a change to it **only** in the same statement as a
+    /// `published_version` bump, so no operator save can move it. `bool`
+    /// rather than a nullable third reading, because the create flow writes it
+    /// nowhere and the unraised state is the default.
+    pub composition_pending: bool,
     /// A flat value set, contained in the parent's. `NOT NULL`, default empty,
     /// where **empty means unrestricted**.
     pub region_scope: String,
