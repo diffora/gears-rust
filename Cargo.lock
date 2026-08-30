@@ -1997,6 +1997,7 @@ dependencies = [
  "anyhow",
  "arc-swap",
  "async-trait",
+ "aws-lc-rs",
  "axum",
  "cf-gears-authz-resolver",
  "cf-gears-authz-resolver-sdk",

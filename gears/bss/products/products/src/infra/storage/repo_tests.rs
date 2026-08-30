@@ -21,6 +21,26 @@
 //! `an_unparseable_lifecycle_state_is_a_corrupt_row` and its `SKU` twin below
 //! do. `approval_repo_tests` in the sibling pricing gear takes the identical
 //! shortcut for the identical reason.
+//!
+//! # Only the `SQLite` mirror is executed, and what that leaves unmeasured
+//!
+//! The whole suite runs in-memory on `SQLite`, so **no case here executes a
+//! Postgres statement**. Three things below therefore rest on the
+//! Postgres half being the clause-for-clause mirror `migrations_tests.rs`
+//! asserts by reading: the head-row guard's `PL/pgSQL` refusal of a
+//! `published_version` bump with no frozen row
+//! (`a_publish_without_its_frozen_row_is_refused_by_the_head_row_guard`
+//! exercises the `SQLite` trigger only), the two partial unique indexes whose
+//! `WHERE lifecycle_state <> 'discarded'` predicate is what the discard cases
+//! measure as a release, and the `CASE` expression the publish `UPDATE` uses
+//! to leave a non-`draft` state alone.
+//!
+//! The `deprecated` half of "a re-publish takes no edge" **is** measured, by
+//! `a_re_publish_from_a_deprecated_head_leaves_it_deprecated`, but its setup
+//! is a hand-written `UPDATE` rather than a door: the transition door that
+//! writes `published -> deprecated` is not this slice's. The guard judges
+//! that setup write exactly as it would judge the door's, so what the case
+//! leaves unmeasured is the door, not the rule.
 #![allow(clippy::expect_used)]
 
 use chrono::{TimeZone, Utc};
@@ -33,14 +53,17 @@ use toolkit_db::{ConnectOpts, DBProvider, DbError, connect_db};
 use uuid::Uuid;
 
 use super::{
-    AuditCommon, IdempotencyAnswer, IdempotencyClaim, NewProduct, NewSku, RefusalSubject,
-    RepoError, answer_idempotency_key, claim_idempotency_key, find_product, find_sku,
-    insert_product, insert_sku, into_product_record, into_sku_record, resolve_actor_ref,
-    take_over_expired_idempotency_claim, write_elevated_read_audit, write_eventless_act_audit,
-    write_refusal_audit,
+    AuditCommon, HeadWrite, IdempotencyAnswer, IdempotencyClaim, NewEntityVersion, NewProduct,
+    NewSku, RefusalSubject, RepoError, VersionedEntityKind, answer_idempotency_key,
+    claim_idempotency_key, discard_product_head, discard_sku_head, find_product, find_sku,
+    insert_entity_version, insert_product, insert_sku, into_product_record, into_sku_record,
+    publish_product_head, publish_sku_head, resolve_actor_ref, take_over_expired_idempotency_claim,
+    write_elevated_read_audit, write_eventless_act_audit, write_refusal_audit,
 };
 use crate::domain::error::DomainError;
-use crate::infra::storage::entity::{audit_log, idempotency, identity_ref, product, sku};
+use crate::infra::storage::entity::{
+    audit_log, entity_version, idempotency, identity_ref, product, sku,
+};
 use crate::infra::storage::migrations::Migrator;
 
 const TENANT: Uuid = Uuid::from_u128(0x7e_11);
@@ -50,6 +73,8 @@ const PRODUCT: Uuid = Uuid::from_u128(0xf0_01);
 const SKU: Uuid = Uuid::from_u128(0x5c_01);
 const AUDIT: Uuid = Uuid::from_u128(0xa0_01);
 const SESSION: Uuid = Uuid::from_u128(0x5e_01);
+const ACTOR: Uuid = Uuid::from_u128(0xac_01);
+const APPROVAL: Uuid = Uuid::from_u128(0xa9_01);
 
 /// A pinned in-memory `SQLite` pool, one connection only.
 ///
@@ -1958,5 +1983,635 @@ async fn the_answer_write_rolls_back_with_the_transaction_it_rides_in() {
             .is_none(),
         "claim and answer commit with the mutation, so a rollback leaves no answered row, and \
          no claimed one either"
+    );
+}
+
+/// A minimal but well-formed frozen row for `(kind, entity_id)` at `version`.
+///
+/// The digest bytes and `digest_version` are distinctive rather than zeroed,
+/// because the freeze case below asserts the repository stores **what it was
+/// handed**: a helper that passed `vec![0; 32]` and `1` would keep a writer
+/// that computed its own digest, or defaulted the version, green.
+fn frozen_version(kind: VersionedEntityKind, entity_id: Uuid, version: i64) -> NewEntityVersion {
+    NewEntityVersion {
+        tenant_id: TENANT,
+        entity_kind: kind,
+        entity_id,
+        published_version: version,
+        content: r#"{"name":"Fibre 500","productCode":"FIBRE-500"}"#.to_owned(),
+        content_digest: (1..=32_u8).collect(),
+        digest_version: 7,
+        approval_ref: Some(APPROVAL),
+        actor_ref: ACTOR,
+        published_at: at(10),
+    }
+}
+
+/// Freeze `version` of `(kind, entity_id)` through the repository's own
+/// writer, which is what the head-row guard's existence half looks for.
+///
+/// Every publish case below goes through this rather than a hand-written
+/// insert: a publish probe that seeded the version row by hand would stay
+/// green while [`insert_entity_version`] regressed, and the guard would then
+/// refuse every real publish with the suite still passing.
+async fn freeze(
+    runner: &impl toolkit_db::secure::DBRunner,
+    scope: &AccessScope,
+    kind: VersionedEntityKind,
+    entity_id: Uuid,
+    version: i64,
+) {
+    insert_entity_version(runner, scope, frozen_version(kind, entity_id, version))
+        .await
+        .expect("freeze a version row");
+}
+
+/// Read one frozen row back by its whole key.
+async fn find_frozen_version(
+    runner: &impl toolkit_db::secure::DBRunner,
+    scope: &AccessScope,
+    kind: &str,
+    entity_id: Uuid,
+    version: i64,
+) -> Option<entity_version::Model> {
+    entity_version::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(entity_version::Column::TenantId.eq(TENANT))
+                .add(entity_version::Column::EntityKind.eq(kind))
+                .add(entity_version::Column::EntityId.eq(entity_id))
+                .add(entity_version::Column::PublishedVersion.eq(version)),
+        )
+        .one(runner)
+        .await
+        .expect("read frozen version row")
+}
+
+/// The freeze write stores the content, the digest and the digest version it
+/// was handed, byte for byte.
+///
+/// The digest and the rendering are the **door's** to compute; this
+/// repository stores bytes. Only a case that hands in bytes it could not have
+/// derived — a distinctive digest and a `digest_version` that is not the
+/// `1` every other row carries — can tell a writer that stores its input from
+/// one that recomputes or defaults it, and slice 10's restore drill compares
+/// exactly these bytes.
+#[tokio::test]
+async fn a_frozen_row_stores_the_content_digest_and_digest_version_it_was_handed() {
+    let provider = harness().await;
+    let conn = provider.conn().expect("scoped connection");
+    let scope = AccessScope::for_tenant(TENANT);
+
+    insert_entity_version(
+        &conn,
+        &scope,
+        frozen_version(VersionedEntityKind::Product, PRODUCT, 1),
+    )
+    .await
+    .expect("freeze v1");
+
+    let row = find_frozen_version(&conn, &scope, "product", PRODUCT, 1)
+        .await
+        .expect("the frozen row exists");
+
+    assert_eq!(
+        row.content,
+        r#"{"name":"Fibre 500","productCode":"FIBRE-500"}"#
+    );
+    assert_eq!(row.content_digest, (1..=32_u8).collect::<Vec<u8>>());
+    assert_eq!(row.digest_version, 7);
+    assert_eq!(row.approval_ref, Some(APPROVAL));
+    assert_eq!(row.actor_ref, ACTOR);
+    assert_eq!(row.published_at, at(10));
+}
+
+/// The freeze commits **inside** the caller's transaction: a rollback takes
+/// it with the publish it was written for.
+///
+/// This is the whole reason the function opens no transaction of its own. A
+/// freeze that committed separately would leave a version row behind on a
+/// rolled-back publish, and the head-row guard would then admit a later
+/// `published_version` bump that no committed act produced. Without this case
+/// a writer that acquired its own runner would keep every other case here
+/// green.
+#[tokio::test]
+async fn the_freeze_rolls_back_with_the_transaction_it_rides_in() {
+    let provider = harness().await;
+    let scope = AccessScope::for_tenant(TENANT);
+    let scope_for_mutation = scope.clone();
+
+    let mutation = provider
+        .transaction(move |tx| {
+            Box::pin(async move {
+                insert_entity_version(
+                    tx,
+                    &scope_for_mutation,
+                    frozen_version(VersionedEntityKind::Product, PRODUCT, 1),
+                )
+                .await
+                .map_err(|e| DbError::Other(anyhow::Error::msg(e.to_string())))?;
+
+                Err::<(), DbError>(DbError::Other(anyhow::Error::msg(
+                    "the publish fails after its freeze",
+                )))
+            })
+        })
+        .await;
+    assert!(mutation.is_err(), "the publish must roll back");
+
+    let conn = provider.conn().expect("scoped connection");
+    assert!(
+        find_frozen_version(&conn, &scope, "product", PRODUCT, 1)
+            .await
+            .is_none(),
+        "a freeze that survived its rolled-back publish would leave the head-row guard \
+         willing to admit a bump no committed act produced"
+    );
+}
+
+/// Publishing a `draft` Product moves `published_version` and
+/// `internal_revision` by exactly one each, in one statement, and writes the
+/// `draft -> published` edge.
+///
+/// Both counters are asserted, not one: the guard bumps `internal_revision`
+/// on **every** admitted `UPDATE`, so a two-statement publish would move it
+/// twice while `published_version` still read `1`, and a case that checked
+/// only the version would pass on it.
+#[tokio::test]
+async fn publishing_a_draft_product_moves_both_counters_by_exactly_one_and_takes_the_edge() {
+    let provider = harness().await;
+    let conn = provider.conn().expect("scoped connection");
+    let scope = AccessScope::for_tenant(TENANT);
+
+    insert_product(&conn, &scope, new_product(PRODUCT, TENANT))
+        .await
+        .expect("insert product");
+    freeze(&conn, &scope, VersionedEntityKind::Product, PRODUCT, 1).await;
+
+    let outcome = publish_product_head(&conn, &scope, TENANT, PRODUCT, 1, at(10))
+        .await
+        .expect("publish the product head");
+    assert_eq!(outcome, HeadWrite::Applied);
+
+    let head = find_product(&conn, &scope, TENANT, PRODUCT)
+        .await
+        .expect("read product")
+        .expect("the row exists");
+    assert_eq!(head.published_version, 1, "exactly one version bump");
+    assert_eq!(head.internal_revision, 2, "exactly one revision bump");
+    assert_eq!(
+        head.lifecycle_state,
+        bss_products_sdk::models::LifecycleState::Published
+    );
+    assert_eq!(head.updated_at, at(10));
+}
+
+/// A re-publish of an already `published` Product head moves both counters
+/// and leaves `lifecycle_state` alone.
+///
+/// A re-publish takes no edge. An `UPDATE` that wrote `'published'`
+/// unconditionally would be indistinguishable here from one that leaves the
+/// state alone, which is why the case that matters is the `deprecated` one
+/// this pair's `SKU` twin cannot yet reach: the transition door that produces
+/// a `deprecated` head is not this slice's. See the module doc.
+#[tokio::test]
+async fn a_re_publish_from_a_published_head_leaves_the_state_alone() {
+    let provider = harness().await;
+    let conn = provider.conn().expect("scoped connection");
+    let scope = AccessScope::for_tenant(TENANT);
+
+    insert_product(&conn, &scope, new_product(PRODUCT, TENANT))
+        .await
+        .expect("insert product");
+    freeze(&conn, &scope, VersionedEntityKind::Product, PRODUCT, 1).await;
+    publish_product_head(&conn, &scope, TENANT, PRODUCT, 1, at(10))
+        .await
+        .expect("first publish");
+
+    freeze(&conn, &scope, VersionedEntityKind::Product, PRODUCT, 2).await;
+    let outcome = publish_product_head(&conn, &scope, TENANT, PRODUCT, 2, at(11))
+        .await
+        .expect("re-publish");
+    assert_eq!(outcome, HeadWrite::Applied);
+
+    let head = find_product(&conn, &scope, TENANT, PRODUCT)
+        .await
+        .expect("read product")
+        .expect("the row exists");
+    assert_eq!(head.published_version, 2);
+    assert_eq!(head.internal_revision, 3);
+    assert_eq!(
+        head.lifecycle_state,
+        bss_products_sdk::models::LifecycleState::Published,
+        "a re-publish changes the version, never the state"
+    );
+}
+
+/// A publish carrying a stale expected revision matches no row and is
+/// reported, never swallowed.
+///
+/// The zero-row result is the whole of `STALE_REVISION`'s detection. A
+/// function returning `Ok(())` here would tell the door its publish landed
+/// while the head still carried the other writer's content.
+#[tokio::test]
+async fn a_publish_with_a_stale_expected_revision_matches_no_row_and_is_reported() {
+    let provider = harness().await;
+    let conn = provider.conn().expect("scoped connection");
+    let scope = AccessScope::for_tenant(TENANT);
+
+    insert_product(&conn, &scope, new_product(PRODUCT, TENANT))
+        .await
+        .expect("insert product");
+    freeze(&conn, &scope, VersionedEntityKind::Product, PRODUCT, 1).await;
+
+    let outcome = publish_product_head(&conn, &scope, TENANT, PRODUCT, 99, at(10))
+        .await
+        .expect("the stale publish is an outcome, not a storage failure");
+    assert_eq!(outcome, HeadWrite::Unmatched);
+
+    let head = find_product(&conn, &scope, TENANT, PRODUCT)
+        .await
+        .expect("read product")
+        .expect("the row exists");
+    assert_eq!(head.published_version, 0, "nothing was written");
+    assert_eq!(head.internal_revision, 1, "nothing was written");
+    assert_eq!(
+        head.lifecycle_state,
+        bss_products_sdk::models::LifecycleState::Draft
+    );
+}
+
+/// A publish under a foreign scope matches no row of the owning tenant.
+#[tokio::test]
+async fn a_publish_under_a_foreign_scope_does_not_move_another_tenants_head() {
+    let provider = harness().await;
+    let conn = provider.conn().expect("scoped connection");
+    let scope = AccessScope::for_tenant(TENANT);
+    let foreign = AccessScope::for_tenant(OTHER_TENANT);
+
+    insert_product(&conn, &scope, new_product(PRODUCT, TENANT))
+        .await
+        .expect("insert product");
+    freeze(&conn, &scope, VersionedEntityKind::Product, PRODUCT, 1).await;
+
+    let outcome = publish_product_head(&conn, &foreign, TENANT, PRODUCT, 1, at(10))
+        .await
+        .expect("a foreign publish is an outcome, not a storage failure");
+    assert_eq!(outcome, HeadWrite::Unmatched);
+
+    let head = find_product(&conn, &scope, TENANT, PRODUCT)
+        .await
+        .expect("read product")
+        .expect("the row exists");
+    assert_eq!(head.published_version, 0);
+    assert_eq!(head.internal_revision, 1);
+}
+
+/// Publishing a `draft` SKU moves both counters by exactly one and takes the
+/// edge, for the Product case's reasons.
+#[tokio::test]
+async fn publishing_a_draft_sku_moves_both_counters_by_exactly_one_and_takes_the_edge() {
+    let provider = harness().await;
+    let conn = provider.conn().expect("scoped connection");
+    let scope = AccessScope::for_tenant(TENANT);
+
+    insert_product(&conn, &scope, new_product(PRODUCT, TENANT))
+        .await
+        .expect("insert product");
+    insert_sku(&conn, &scope, new_sku(SKU, TENANT, PRODUCT))
+        .await
+        .expect("insert sku");
+    freeze(&conn, &scope, VersionedEntityKind::Sku, SKU, 1).await;
+
+    let outcome = publish_sku_head(&conn, &scope, TENANT, SKU, 1, at(10))
+        .await
+        .expect("publish the sku head");
+    assert_eq!(outcome, HeadWrite::Applied);
+
+    let head = find_sku(&conn, &scope, TENANT, SKU)
+        .await
+        .expect("read sku")
+        .expect("the row exists");
+    assert_eq!(head.published_version, 1, "exactly one version bump");
+    assert_eq!(head.internal_revision, 2, "exactly one revision bump");
+    assert_eq!(
+        head.lifecycle_state,
+        bss_products_sdk::models::LifecycleState::Published
+    );
+    assert_eq!(head.updated_at, at(10));
+}
+
+/// A publish whose frozen row was never written is refused by the head-row
+/// guard rather than admitted.
+///
+/// The refusal comes from the database, not from this repository, and it is
+/// the reason the freeze must ride the publish's own transaction. Reported as
+/// [`RepoError::Db`]: the guard raises, and the statement fails rather than
+/// matching zero rows.
+#[tokio::test]
+async fn a_publish_without_its_frozen_row_is_refused_by_the_head_row_guard() {
+    let provider = harness().await;
+    let conn = provider.conn().expect("scoped connection");
+    let scope = AccessScope::for_tenant(TENANT);
+
+    insert_product(&conn, &scope, new_product(PRODUCT, TENANT))
+        .await
+        .expect("insert product");
+
+    let err = publish_product_head(&conn, &scope, TENANT, PRODUCT, 1, at(10))
+        .await
+        .expect_err("the guard refuses a bump with no frozen row");
+    assert!(matches!(err, RepoError::Db(_)), "got {err:?}");
+}
+
+/// Discarding a never-published `draft` Product succeeds and bumps the
+/// revision once.
+#[tokio::test]
+async fn discarding_a_never_published_draft_product_succeeds_and_bumps_the_revision_once() {
+    let provider = harness().await;
+    let conn = provider.conn().expect("scoped connection");
+    let scope = AccessScope::for_tenant(TENANT);
+
+    insert_product(&conn, &scope, new_product(PRODUCT, TENANT))
+        .await
+        .expect("insert product");
+
+    let outcome = discard_product_head(&conn, &scope, TENANT, PRODUCT, 1, at(10))
+        .await
+        .expect("discard the draft");
+    assert_eq!(outcome, HeadWrite::Applied);
+
+    let head = find_product(&conn, &scope, TENANT, PRODUCT)
+        .await
+        .expect("read product")
+        .expect("the row exists");
+    assert_eq!(
+        head.lifecycle_state,
+        bss_products_sdk::models::LifecycleState::Discarded
+    );
+    assert_eq!(head.internal_revision, 2);
+    assert_eq!(head.published_version, 0, "a discard never publishes");
+    assert_eq!(head.updated_at, at(10));
+}
+
+/// A discard of a published Product matches zero rows: the legality is in the
+/// statement's own filter, so no prior read decides it.
+///
+/// A read-then-write would race — the head can be published between the read
+/// and the write — and the whole point of putting `lifecycle_state = 'draft'`
+/// and `published_version = 0` in the `WHERE` clause is that the database
+/// judges the row image the write actually lands on.
+#[tokio::test]
+async fn discarding_a_published_product_matches_no_row() {
+    let provider = harness().await;
+    let conn = provider.conn().expect("scoped connection");
+    let scope = AccessScope::for_tenant(TENANT);
+
+    insert_product(&conn, &scope, new_product(PRODUCT, TENANT))
+        .await
+        .expect("insert product");
+    freeze(&conn, &scope, VersionedEntityKind::Product, PRODUCT, 1).await;
+    publish_product_head(&conn, &scope, TENANT, PRODUCT, 1, at(10))
+        .await
+        .expect("publish");
+
+    let outcome = discard_product_head(&conn, &scope, TENANT, PRODUCT, 2, at(11))
+        .await
+        .expect("an inadmissible discard is an outcome, not a storage failure");
+    assert_eq!(outcome, HeadWrite::Unmatched);
+
+    let head = find_product(&conn, &scope, TENANT, PRODUCT)
+        .await
+        .expect("read product")
+        .expect("the row exists");
+    assert_eq!(
+        head.lifecycle_state,
+        bss_products_sdk::models::LifecycleState::Published,
+        "nothing was written"
+    );
+    assert_eq!(head.internal_revision, 2);
+}
+
+/// A discarded Product releases both its name and its `product_code`: a
+/// second Product takes them.
+///
+/// Seeded and asserted rather than inferred from the two partial indexes.
+/// The release is a property of the discard write, and reading the index
+/// definition proves only that the index was declared the way someone
+/// intended.
+#[tokio::test]
+async fn a_discarded_products_name_and_code_are_free_for_a_second_product() {
+    let provider = harness().await;
+    let conn = provider.conn().expect("scoped connection");
+    let scope = AccessScope::for_tenant(TENANT);
+    let successor = Uuid::from_u128(0xf0_02);
+
+    insert_product(&conn, &scope, new_product(PRODUCT, TENANT))
+        .await
+        .expect("insert product");
+    let blocked = insert_product(&conn, &scope, new_product(successor, TENANT)).await;
+    assert!(
+        blocked.is_err(),
+        "this case's own premise: the name and the code are held while the first row lives"
+    );
+
+    discard_product_head(&conn, &scope, TENANT, PRODUCT, 1, at(10))
+        .await
+        .expect("discard the draft");
+
+    let taken = insert_product(&conn, &scope, new_product(successor, TENANT))
+        .await
+        .expect("the discard released the name and the code by its own write");
+    assert_eq!(taken.name_normalized, "fibre 500");
+    assert_eq!(taken.product_code.as_deref(), Some("FIBRE-500"));
+}
+
+/// Discarding a never-published `draft` SKU succeeds and releases its
+/// `skuCode`, for the Product case's reasons.
+#[tokio::test]
+async fn a_discarded_skus_code_is_free_for_a_second_sku() {
+    let provider = harness().await;
+    let conn = provider.conn().expect("scoped connection");
+    let scope = AccessScope::for_tenant(TENANT);
+    let successor = Uuid::from_u128(0x5c_02);
+
+    insert_product(&conn, &scope, new_product(PRODUCT, TENANT))
+        .await
+        .expect("insert product");
+    insert_sku(&conn, &scope, new_sku(SKU, TENANT, PRODUCT))
+        .await
+        .expect("insert sku");
+    let blocked = insert_sku(&conn, &scope, new_sku(successor, TENANT, PRODUCT)).await;
+    assert!(
+        blocked.is_err(),
+        "this case's own premise: the code is reserved while the first row lives"
+    );
+
+    let outcome = discard_sku_head(&conn, &scope, TENANT, SKU, 1, at(10))
+        .await
+        .expect("discard the draft sku");
+    assert_eq!(outcome, HeadWrite::Applied);
+
+    let head = find_sku(&conn, &scope, TENANT, SKU)
+        .await
+        .expect("read sku")
+        .expect("the row exists");
+    assert_eq!(
+        head.lifecycle_state,
+        bss_products_sdk::models::LifecycleState::Discarded
+    );
+    assert_eq!(head.internal_revision, 2);
+
+    let taken = insert_sku(&conn, &scope, new_sku(successor, TENANT, PRODUCT))
+        .await
+        .expect("the discard released the reservation by its own write");
+    assert_eq!(taken.sku_code, "FIBRE-500-STD");
+}
+
+/// A discard of a published SKU matches zero rows, for the Product case's
+/// reasons.
+#[tokio::test]
+async fn discarding_a_published_sku_matches_no_row() {
+    let provider = harness().await;
+    let conn = provider.conn().expect("scoped connection");
+    let scope = AccessScope::for_tenant(TENANT);
+
+    insert_product(&conn, &scope, new_product(PRODUCT, TENANT))
+        .await
+        .expect("insert product");
+    insert_sku(&conn, &scope, new_sku(SKU, TENANT, PRODUCT))
+        .await
+        .expect("insert sku");
+    freeze(&conn, &scope, VersionedEntityKind::Sku, SKU, 1).await;
+    publish_sku_head(&conn, &scope, TENANT, SKU, 1, at(10))
+        .await
+        .expect("publish");
+
+    let outcome = discard_sku_head(&conn, &scope, TENANT, SKU, 2, at(11))
+        .await
+        .expect("an inadmissible discard is an outcome, not a storage failure");
+    assert_eq!(outcome, HeadWrite::Unmatched);
+
+    let head = find_sku(&conn, &scope, TENANT, SKU)
+        .await
+        .expect("read sku")
+        .expect("the row exists");
+    assert_eq!(
+        head.lifecycle_state,
+        bss_products_sdk::models::LifecycleState::Published,
+        "nothing was written"
+    );
+}
+
+/// A discard carrying a stale expected revision matches no row and is
+/// reported, for the publish case's reason.
+#[tokio::test]
+async fn a_discard_with_a_stale_expected_revision_matches_no_row_and_is_reported() {
+    let provider = harness().await;
+    let conn = provider.conn().expect("scoped connection");
+    let scope = AccessScope::for_tenant(TENANT);
+
+    insert_product(&conn, &scope, new_product(PRODUCT, TENANT))
+        .await
+        .expect("insert product");
+
+    let outcome = discard_product_head(&conn, &scope, TENANT, PRODUCT, 99, at(10))
+        .await
+        .expect("the stale discard is an outcome, not a storage failure");
+    assert_eq!(outcome, HeadWrite::Unmatched);
+
+    let head = find_product(&conn, &scope, TENANT, PRODUCT)
+        .await
+        .expect("read product")
+        .expect("the row exists");
+    assert_eq!(
+        head.lifecycle_state,
+        bss_products_sdk::models::LifecycleState::Draft,
+        "nothing was written"
+    );
+    assert_eq!(head.internal_revision, 1);
+}
+
+/// Move a `published` Product head to `deprecated` by the one write the
+/// head-row guard admits for it, so the re-publish case below has a head
+/// whose state an unconditional write would visibly damage.
+///
+/// Written here rather than through a repository function because the
+/// transition door is not this slice's. It is not a hand-rolled shortcut
+/// around the schema: the statement runs against the real table through the
+/// same secure wrappers, and the guard's edge clause judges it exactly as it
+/// would judge the door's own.
+async fn deprecate(
+    runner: &impl toolkit_db::secure::DBRunner,
+    scope: &AccessScope,
+    product_id: Uuid,
+    next_internal_revision: i64,
+) {
+    let moved = product::Entity::update_many()
+        .secure()
+        .scope_with(scope)
+        .col_expr(
+            product::Column::LifecycleState,
+            Expr::value(bss_products_sdk::models::LifecycleState::Deprecated.as_str()),
+        )
+        .col_expr(
+            product::Column::InternalRevision,
+            Expr::value(next_internal_revision),
+        )
+        .col_expr(product::Column::UpdatedAt, Expr::value(at(11)))
+        .filter(
+            Condition::all()
+                .add(product::Column::TenantId.eq(TENANT))
+                .add(product::Column::ProductId.eq(product_id)),
+        )
+        .exec(runner)
+        .await
+        .expect("the guard admits published -> deprecated");
+    assert_eq!(moved.rows_affected, 1, "this helper's own premise");
+}
+
+/// A re-publish of a `deprecated` head bumps the version and leaves the head
+/// `deprecated`.
+///
+/// This is the case that tells a `CASE` expression from an unconditional
+/// `lifecycle_state = 'published'`: from a `published` head the two writes
+/// are indistinguishable, and only a head whose state is neither `draft` nor
+/// `published` can show the difference. An unconditional write here would
+/// silently undo a deprecation — a state change the transition door owns and
+/// a two-person ceremony governs — on a publish that is supposed to change
+/// content only.
+#[tokio::test]
+async fn a_re_publish_from_a_deprecated_head_leaves_it_deprecated() {
+    let provider = harness().await;
+    let conn = provider.conn().expect("scoped connection");
+    let scope = AccessScope::for_tenant(TENANT);
+
+    insert_product(&conn, &scope, new_product(PRODUCT, TENANT))
+        .await
+        .expect("insert product");
+    freeze(&conn, &scope, VersionedEntityKind::Product, PRODUCT, 1).await;
+    publish_product_head(&conn, &scope, TENANT, PRODUCT, 1, at(10))
+        .await
+        .expect("first publish");
+    deprecate(&conn, &scope, PRODUCT, 3).await;
+
+    freeze(&conn, &scope, VersionedEntityKind::Product, PRODUCT, 2).await;
+    let outcome = publish_product_head(&conn, &scope, TENANT, PRODUCT, 3, at(12))
+        .await
+        .expect("re-publish a deprecated head");
+    assert_eq!(outcome, HeadWrite::Applied);
+
+    let head = find_product(&conn, &scope, TENANT, PRODUCT)
+        .await
+        .expect("read product")
+        .expect("the row exists");
+    assert_eq!(head.published_version, 2);
+    assert_eq!(head.internal_revision, 4);
+    assert_eq!(
+        head.lifecycle_state,
+        bss_products_sdk::models::LifecycleState::Deprecated,
+        "a re-publish takes no edge, so the deprecation stands"
     );
 }

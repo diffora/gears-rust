@@ -157,10 +157,175 @@
 //! in-window retry replay the original response instead of being refused
 //! `IDEMPOTENCY_KEY_IN_FLIGHT` for an act that already succeeded.
 //!
+//! # The publish door
+//!
+//! `POST /bss-products/v1/products/{id}/publish` (`dod-publish-door`,
+//! `docs/design/01-foundation.md` §2 "Publish an entity (the mechanics
+//! half)") gates on `product x publish` and runs, in this order:
+//!
+//! 1. `actor_ref` resolution and authorization — **as at create**, and
+//!    through the same helpers ([`open_head_door`]).
+//! 2. The idempotency phase, whose key's `endpoint` is the **concrete
+//!    resource path** and therefore carries the id ([`publish_endpoint`],
+//!    P-D-42). A create's concrete path happens to be a constant because
+//!    there is no id yet; this door's is not, and the store's key type was
+//!    widened to an owned `String` rather than have this door claim under
+//!    the route template.
+//! 3. `If-Match` is read and parsed here (`VALIDATION` if absent or
+//!    unreadable) but **compared** inside the act, for the ordering reason
+//!    below (**P-D-33**).
+//! 4. The head read, whose only miss is this module's bare `404`.
+//! 5. Then the act itself, on **one transaction** ([`run_publish`]): the
+//!    idempotency claim; the head re-read under the write; terminality
+//!    (`ENTITY_TERMINAL`); the precondition comparison (`STALE_REVISION`);
+//!    the **full validation pipeline re-run** (`inst-fd-publish-revalidate`)
+//!    over the entity as it now stands, so one that stopped being
+//!    publishable since approval fails closed; the **governance gate**, in
+//!    [`GateMode::Gate`] **always** and never from a wire parameter
+//!    (`inst-fd-gate-mode`), refusing `APPROVAL_REQUIRED`; then the writes —
+//!    freeze the **post-act image** at `published_version + 1` first,
+//!    because the head-row guard admits the bump only where the matching
+//!    frozen row already exists; then **exactly one** head-row `UPDATE`,
+//!    because the guard bumps `internal_revision` on every admitted `UPDATE`
+//!    without exception and two statements would bump twice for one act;
+//!    then the `ProductPublished` enqueue, through the outbox path the
+//!    create doors already use.
+//! 6. The idempotency key is answered with the success response, as at
+//!    create, so the client's own retry replays it.
+//! 7. **Every refusal audits**, on its own runner, before it is reported —
+//!    and an unwritable audit row answers `AUDIT_UNAVAILABLE` 503 instead of
+//!    the domain refusal, exactly as at create. The one exception is the
+//!    bare `404`, and [`open_head_door`]'s doc says why it can have no audit
+//!    row.
+//!
+//! ## Why the precondition is compared inside the act and not before it
+//!
+//! This is the one place the head doors' shape differs from the create
+//! doors', and it is forced by two rules that only interact here.
+//! `Phase::Idempotency` runs **before** `Phase::Precondition`
+//! (`crate::domain::validation::Phase`), and P-D-42 puts the claim `INSERT`
+//! inside the guarded mutation's transaction. Together they put every phase
+//! after the claim inside that transaction too.
+//!
+//! Reversing them is not a stylistic choice but a functional defect, and a
+//! silent one: a client whose publish committed and whose response was lost
+//! retries with the `If-Match` it still holds — the revision *before* the
+//! act it never learned about — so its precondition is stale **by
+//! construction**. A door that judged the precondition first would refuse
+//! every such retry `STALE_REVISION` and would never reach the stored
+//! answer, leaving the idempotency store inert at exactly this door.
+//! `products_tests::a_replayed_publish_serves_the_stored_answer_and_does_not_publish_twice`
+//! is what holds this closed; it fails with a `409` against the other order.
+//!
+//! [`run_publish`] carries the same argument at the code, and
+//! [`publish_revalidation_pipeline`] carries what the re-run does and does
+//! **not** currently reach — the Foundation's own registered rule set is one
+//! rule at this commit, and the `→ published` validators the design names
+//! are 04's and 05's, which do not exist yet. The door re-runs the pipeline
+//! it has; it does not claim to run rules nobody has registered.
+//!
+//! The content the freeze renders is named by [`PRODUCT_CONTENT_ROSTER`],
+//! which is where a later slice adding a content column changes one thing
+//! rather than three — and `products_tests::
+//! the_product_content_roster_is_the_head_table_minus_the_excluded_columns`
+//! is what fails if that slice forgets, since it derives the expected roster
+//! from the executed schema rather than from a second hand-written list.
+//!
+//! ## What this door does **not** build, and who owns each
+//!
+//! Three clauses of `dod-publish-door`/`inst-fd-publish-txn` are not
+//! discharged here. None is silently omitted; each has an owner and a
+//! measurable reason:
+//!
+//! - **The retirement re-announcement** (`inst-fd-publish-reannounce`,
+//!   **P-D-48**): where the entity holds a live retire intent, the same
+//!   transaction must also enqueue `ProductRetired` with the new
+//!   `fromVersion`. A live retire intent **is** a pending-retirement
+//!   `ScheduledTransition`, which is `04-lifecycle`'s row and does not exist
+//!   at this commit — there is no table, no type and no reader for one, so
+//!   the condition this clause triggers on cannot be evaluated. Owed to
+//!   **slice 04**, and it lands as a second `events::enqueue` inside
+//!   [`publish_in_one_transaction`].
+//! - **The corrected bucket-ii value** (`inst-fd-publish-correction`,
+//!   **P-D-41**): §4.2 admits a bucket-ii write only in the same statement as
+//!   a `published_version` bump, and the door that supplies one is **slice
+//!   07**'s `CorrectionDoor`, which has no caller here. When it lands, the
+//!   value must be applied to the record **before** [`freeze_for`] renders it
+//!   *and* carried by [`repo::publish_product_head`]'s own statement — not by
+//!   a second one.
+//! - **`composition_pending`** (§4.2, **P-D-32**): not a column at this
+//!   commit, and **this slice's** to add — §1.5's **In** list names *"the
+//!   `PublishDoor`'s `composition_pending` write"*, leaving only the
+//!   composition *semantics* to slice 06. It is a `products_sku` column, so
+//!   this Product door may never carry it at all;
+//!   [`repo::publish_product_head`]'s own doc records the same gap from the
+//!   storage side.
+//!
+//! A clause that **was** owed and is now discharged: **`publishedVersion` on
+//! the `ProductPublished` body** (§4.5): *"every one of the eight carries the
+//! same body core ... `ProductPublished`/`SkuPublished` **additionally carry
+//! `publishedVersion`**, which is what 06 reads as content and 08's projector
+//! keys on"*. Both this door and the SKU one enqueued the core alone while
+//! `infra::events` sat outside either slice's target paths. It now carries the
+//! field, on [`events::PublishedEventBody`] rather than as a sixth field of
+//! [`events::EventBodyCore`] — "additionally" is the word that decides that,
+//! and `events`' own module doc argues it. [`announce_and_answer`] supplies
+//! the post-act `N + 1`, read back off the head the act committed.
+//!
+//! A fourth clause is discharged by a host that does nothing:
+//! `inst-fd-publish-consume` requires the gate's `satisfied` record to be
+//! flipped `consumed` in this transaction. [`NoMaterialityPolicyGate`]
+//! names no record ([`ApprovalDisposition::NoRecord`]), so there is nothing
+//! to consume, and `GateAuthorization::approval_to_consume` is the only
+//! route to an id for the flip — it answers `None`, which is why the flip is
+//! absent rather than forgotten. Slice 05 supplies both the record and the
+//! store the flip writes to.
+//!
+//! # The discard door
+//!
+//! `POST /bss-products/v1/products/{id}/discard` (`dod-transition-guard`,
+//! §2 "Discard a never-published draft") is legal **only** from `draft` with
+//! `published_version = 0`; the transition is `draft → discarded`, which is
+//! terminal. Anything else is `ILLEGAL_TRANSITION` and a head write on an
+//! already-terminal row is `ENTITY_TERMINAL` — two refusals, decided by
+//! `transition::guard`, which asks terminality first so the answer names the
+//! rule that actually refused.
+//!
+//! The legality conditions are **also** in [`repo::discard_product_head`]'s
+//! own `WHERE` clause, and that is the copy that decides: a read-then-write
+//! would let a concurrent publish slip between the guard's answer and the
+//! statement. The guard decides the *edge*; the database decides the *row*.
+//!
+//! **The reservations release by that same write.** `uq_products_product_name`
+//! and `uq_products_product_code` are both partial unique indexes excluding
+//! `discarded` rows, so the name and the `productCode` leave both indexes the
+//! moment the `UPDATE` commits and are free for the next holder. There is no
+//! release step, and a later reader should not add one — there would be
+//! nothing left for it to release. This is also why a discarded draft frees
+//! its name while a `retired` entity keeps it: the predicate names
+//! `discarded` alone.
+//!
+//! **What the transition costs the row** is read off `transition::guard`'s
+//! return value rather than decided at the call site
+//! ([`head_act_invalidation`]): a transition bumps `internal_revision` and
+//! fires the approval-invalidation hook, **except** one that consumes an
+//! approval in the same transaction, which bumps once with no hook (P-D-26,
+//! P-D-34). A discard consumes none, so the hook fires; publish's
+//! `draft → published` is the gated edge, so it bumps once — through the
+//! door's own single `UPDATE` — and fires no hook. Both doors run the same
+//! [`fire_invalidation_hook`] call on the same argument, so neither has the
+//! distinction hard-coded.
+//!
+//! **No governance gate on a discard**: `inst-fd-governance-gate` puts the
+//! gate on the publish door, and discarding a never-published draft consumes
+//! no approval and requires none.
+//!
 //! @cpt-cf-bss-products-dod-read-door
 //! @cpt-cf-bss-products-dod-create-doors
 //! @cpt-cf-bss-products-dod-code-reservation
 //! @cpt-cf-bss-products-dod-idempotency-store
+//! @cpt-cf-bss-products-dod-publish-door
+//! @cpt-cf-bss-products-dod-transition-guard
 
 use std::sync::Arc;
 
@@ -178,9 +343,11 @@ use toolkit::api::OpenApiRegistry;
 use toolkit::api::canonical_prelude::{CanonicalError, resource_error};
 use toolkit::api::operation_builder::OperationBuilder;
 use toolkit_db::DbError;
-use toolkit_db::secure::{AccessScope, TxConfig};
+use toolkit_db::secure::{AccessScope, DBRunner, TxConfig};
 use toolkit_security::SecurityContext;
 use uuid::Uuid;
+
+use bss_products_sdk::models::{EntityKind as CatalogEntityKind, LifecycleState};
 
 use crate::api::rest::preconditions;
 use crate::api::rest::{
@@ -188,14 +355,26 @@ use crate::api::rest::{
     authz_error_to_canonical, claim_idempotency, contention_db_err, idempotency_key,
     record_idempotency_answer, replay_response, repo_error_to_canonical, require_authenticated,
 };
+use crate::domain::canonical;
 use crate::domain::concurrency::InternalRevision;
 use crate::domain::error::DomainError;
+use crate::domain::governance::{
+    ApprovalId, EntityRef, GateAuthorization, GateMode, GovernanceGate, NoMaterialityPolicyGate,
+};
 use crate::domain::idempotency;
 use crate::domain::name;
-use crate::domain::validation::ValidationReport;
+use crate::domain::rules::{CreateEntityCandidate, NameShapeRule};
+use crate::domain::transition::{
+    self, ApprovalInvalidation, ApprovalInvalidationHook as _, NoApprovalStoreHook,
+    TransitionDecision,
+};
+use crate::domain::validation::{ValidationPipeline, ValidationReport};
 use crate::infra::events;
 use crate::infra::storage::RepoError;
-use crate::infra::storage::repo::{self, NewProduct, ProductRecord, RefusalSubject};
+use crate::infra::storage::repo::{
+    self, HeadWrite, NewEntityVersion, NewProduct, ProductRecord, RefusalSubject,
+    VersionedEntityKind,
+};
 
 /// `OpenAPI` tag for the Product surface's operations.
 const TAG: &str = "BSS Products";
@@ -358,6 +537,74 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
         .error_400(openapi)
         .error_401(openapi)
         .error_403(openapi)
+        .error_409(openapi)
+        .error_500(openapi)
+        .error_503(openapi)
+        .register(router, openapi);
+
+    let router = OperationBuilder::post("/bss-products/v1/products/{id}/publish")
+        .operation_id("bss_products.publish_product")
+        .summary("Publish a Product")
+        .description(
+            "Freezes the Product's current content as `products_entity_version` version N+1 and \
+             moves the head in one transaction: `published_version += 1`, \
+             `internal_revision += 1`, and `lifecycle_state = 'published'` where the head was a \
+             draft. A re-publish of a `published` or `deprecated` head changes the version and \
+             leaves the state alone. Gates on `product x publish` and requires `If-Match` on the \
+             head's internal revision: an absent precondition is refused `VALIDATION`, a stale \
+             one `STALE_REVISION`. The full validation pipeline is re-run here, so an entity \
+             that stopped being publishable since it was approved fails closed; the governance \
+             gate runs inside the door and a refusal is `APPROVAL_REQUIRED`. A head that is \
+             `retired` or `discarded` is refused `ENTITY_TERMINAL`. Enqueues \
+             `ProductPublished` in the same transaction, and accepts an optional \
+             `Idempotency-Key`.",
+        )
+        .tag(TAG)
+        .authenticated()
+        .no_license_required()
+        .path_param("id", "The Product to publish.")
+        .handler(publish_product)
+        .json_response_with_schema::<ProductView>(
+            openapi,
+            StatusCode::OK,
+            "The published Product head.",
+        )
+        .error_400(openapi)
+        .error_401(openapi)
+        .error_403(openapi)
+        .error_404(openapi)
+        .error_409(openapi)
+        .error_500(openapi)
+        .error_503(openapi)
+        .register(router, openapi);
+
+    let router = OperationBuilder::post("/bss-products/v1/products/{id}/discard")
+        .operation_id("bss_products.discard_product")
+        .summary("Discard a never-published draft Product")
+        .description(
+            "Moves a `draft` Product with `published_version = 0` to the terminal `discarded` \
+             state, bumps `internal_revision` and enqueues `ProductDiscarded`, in one \
+             transaction. The Product's name and `productCode` reservations release by that \
+             same write, both partial unique indexes excluding discarded rows. Any other \
+             starting state is refused `ILLEGAL_TRANSITION`, and a head that is already \
+             `retired` or `discarded` is refused `ENTITY_TERMINAL`. Gates on \
+             `product x write` and requires `If-Match` on the head's internal revision. \
+             Accepts an optional `Idempotency-Key`.",
+        )
+        .tag(TAG)
+        .authenticated()
+        .no_license_required()
+        .path_param("id", "The Product to discard.")
+        .handler(discard_product)
+        .json_response_with_schema::<ProductView>(
+            openapi,
+            StatusCode::OK,
+            "The discarded Product head.",
+        )
+        .error_400(openapi)
+        .error_401(openapi)
+        .error_403(openapi)
+        .error_404(openapi)
         .error_409(openapi)
         .error_500(openapi)
         .error_503(openapi)
@@ -992,11 +1239,18 @@ enum InsertConflict {
 /// (`uq_products_product_code`) and `SQLite`'s column-list wording both
 /// contain it literally, and it cannot appear in a message the name index
 /// produced on either backend.
+///
+/// **Two disjuncts, not three.** A third one testing for
+/// `unique constraint failed` — `SQLite`'s exact opening words — stood here
+/// beside `unique constraint` and could never add a match: it is a strict
+/// superstring of its neighbour, so every message it would have accepted the
+/// neighbour had accepted a term earlier. Deleting it changes no answer this
+/// function gives on either backend; it removes a disjunct a reader would
+/// otherwise take for a case being covered.
 fn classify_insert_conflict(message: &str) -> Option<InsertConflict> {
     let lower = message.to_ascii_lowercase();
-    let looks_like_a_unique_violation = lower.contains("unique constraint")
-        || lower.contains("unique constraint failed")
-        || lower.contains("duplicate key");
+    let looks_like_a_unique_violation =
+        lower.contains("unique constraint") || lower.contains("duplicate key");
     if !looks_like_a_unique_violation {
         return None;
     }
@@ -1059,6 +1313,1645 @@ async fn refuse_insert_conflict(
         CanonicalError::from(domain_err),
     )
     .await
+}
+
+/// The status a publish and a discard answer on success, and therefore the
+/// status a replay of either reproduces (§2's own door table: both answer
+/// **200**, where a create answers **201**).
+///
+/// One spelling, read by the response each door builds **and** by the answer
+/// it stores, for [`CREATE_RESPONSE_STATUS`]'s reason: a stored status that
+/// was not the status answered would make every later replay a different
+/// response from the original.
+const HEAD_ACT_RESPONSE_STATUS: StatusCode = StatusCode::OK;
+
+/// The **complete named field set** a frozen Product version row's content
+/// is rendered against (`canonical::Absence::Null`, §4.3, **P-D-24**,
+/// **P-D-35**).
+///
+/// Named here, once, in code, because §4.3 makes the roster load-bearing in
+/// two directions. A field the roster names and the value omits is rendered
+/// `null` rather than dropped, which is the clause that keeps absence and
+/// the empty string apart; and *"adding a column to a frozen row's content
+/// is a digest-version bump, not a silent change"*, which is only checkable
+/// if there is one place that says what the content was. A later slice
+/// adding a content column adds it here and bumps
+/// [`canonical::DIGEST_VERSION`] with it — `products_tests::
+/// the_product_content_roster_is_the_head_table_minus_the_excluded_columns`
+/// is what fails if it forgets.
+///
+/// # The rule this is derived from
+///
+/// §4.3 scopes the frozen content as **the publish-time entity**, excluding
+/// the metadata map and excluding `lifecycle_state`,
+/// `deprecation_provenance`, `replaced_by_sku_id` and `internal_revision`
+/// (**P-D-24**, extended by **P-D-35**). So the roster is
+/// `products_product`'s own column list minus those, and **not** a hand-made
+/// selection: a column of the head that §4.3 does not exclude is content.
+///
+/// **What is in it**: `brand_id`, `brand_scope`, `created_at`, `created_by`,
+/// `name`, `name_normalized`, `product_code`, `product_id`, `region_scope`,
+/// `tenant_id`.
+///
+/// **What is excluded, and why each:**
+///
+/// - `lifecycle_state` and `internal_revision` — §4.3's own, verbatim
+///   (**P-D-24**, **P-D-35**).
+/// - `deprecation_provenance` and `replaced_by_sku_id` — §4.3's other two,
+///   which have **no column on this table at this commit**
+///   (`deprecation_provenance` is slice 04's, `replaced_by_sku_id` is a SKU
+///   column), so their exclusion here is structural as well as stated.
+/// - The metadata map — slice 02's `products_metadata` (**P-D-06**): it
+///   lives beside the entity and is captured only by `CatalogVersion`
+///   snapshots. Not a column either.
+/// - `updated_at` and `published_version` — **neither is named by §4.3's
+///   enumeration, and both are excluded anyway**. §4.3 lists four columns
+///   plus the metadata map and neither of these two is on that list, so each
+///   is a reading this code states and argues. The two sections below are
+///   those arguments, and the section after them is what the pair buys
+///   together.
+///
+/// # `updated_at` is excluded by P-D-35's own criterion
+///
+/// This is an **application of a stated criterion to a column the
+/// enumeration does not list**, not a new rule this code invented. §4.3
+/// gives P-D-35's criterion in words: those columns *"move on transitions,
+/// which write no version row, so freezing them would need the digest to
+/// change on a write that produces no row to digest"* — and it adds
+/// `internal_revision` on exactly that ground, noting it *"was left out of
+/// the original enumeration"*. `updated_at` is *"a column that moves on a
+/// transition writing no version row"* in the criterion's own words: it
+/// moves on every transition and every save. It was left out of the
+/// enumeration the same way `internal_revision` was, and §5 corroborates
+/// from a second direction — it already counts the update timestamp among
+/// the mechanical columns that sit outside the bucket comparison.
+///
+/// Nothing is lost by leaving it out: the instant of the write that produced
+/// this version is already on the version row, as `published_at`.
+///
+/// # `published_version` is excluded because it is the row's own key
+///
+/// `products_entity_version` is keyed by `(tenant_id, entity_kind,
+/// entity_id, published_version)`. Rendering `published_version` into the
+/// content therefore writes the key **inside the payload it keys** — the row
+/// says which version it is twice, once where a reader looks and once where
+/// the digest is taken. That duplication is not merely redundant; it is what
+/// makes the digest move on a publish whose content did not change, since
+/// the version number moves by construction on every publish.
+///
+/// The column is also the one place in this door where the pre-act and
+/// post-act head images differ on a roster field, and an earlier revision of
+/// this file paid for that with a second argument to [`product_content`] and
+/// a shared expression in [`freeze_for`] to keep the key and the content
+/// agreeing. With the column off the roster the hazard is **structurally
+/// absent** rather than handled: the content is a function of the head alone
+/// and there is no second number that could disagree with the key.
+///
+/// # What the two exclusions buy together
+///
+/// *The same content produces the same digest.* That is the property that
+/// lets a reader answer *"did the content change between version N and
+/// N+1"* by comparing two rows' digests — the question §2's
+/// `inst-fd-publish-reannounce` raises when it contemplates re-announcing
+/// unchanged content, the question slice 06's `CatalogVersion` is built on,
+/// and the one slice 10's restore drill asks of a pair of rows.
+///
+/// It is a property of **both** exclusions and of neither alone, which is
+/// worth saying plainly because an earlier revision of this doc claimed it
+/// for the `updated_at` exclusion by itself. That claim was measurably
+/// false while `published_version` was still on the roster: the version
+/// number moves on every publish, so the digest moved on every publish
+/// whether or not a single content field had changed, and excluding
+/// `updated_at` bought nothing on its own.
+///
+/// **The design set's §4.3 enumeration is owed both additions.** It should
+/// name `updated_at` and `published_version` beside `internal_revision` as
+/// columns the original enumeration missed; until it does, this doc is where
+/// the reading is recorded, and `skus::SKU_VERSION_CONTENT_ROSTER`'s twin
+/// says the same.
+const PRODUCT_CONTENT_ROSTER: [&str; 10] = [
+    "brand_id",
+    "brand_scope",
+    "created_at",
+    "created_by",
+    "name",
+    "name_normalized",
+    "product_code",
+    "product_id",
+    "region_scope",
+    "tenant_id",
+];
+
+/// The concrete resource path a publish claims its idempotency key under
+/// (**P-D-42**: *"`endpoint` MUST be the concrete resource path, not the
+/// route template"*).
+///
+/// A function rather than a constant because the path **carries the id**, and
+/// that is exactly the requirement: `/bss-products/v1/products/{that id}/publish`,
+/// never the `{id}` template [`router`] registers. Two publishes of two
+/// different Products under one client key are then two keys, which is what
+/// makes the key safe for a client that reuses one across a batch.
+fn publish_endpoint(product_id: Uuid) -> String {
+    format!("/bss-products/v1/products/{product_id}/publish")
+}
+
+/// [`publish_endpoint`]'s discard twin, on the same terms.
+fn discard_endpoint(product_id: Uuid) -> String {
+    format!("/bss-products/v1/products/{product_id}/discard")
+}
+
+/// The idempotency digest of a **bodiless** head act (`crate::domain::
+/// idempotency`, **P-D-34**).
+///
+/// P-D-34 takes the hash over *"the canonical rendering of the parsed
+/// request, excluding the precondition header"*. A publish and a discard
+/// carry no request body at all, so the parsed request's named field set is
+/// **empty** and every such request under this door renders identically —
+/// the digest is a constant, and deliberately so. Nothing is lost by that:
+/// the two operands that distinguish one act from another are already in the
+/// key, the entity id through the concrete endpoint ([`publish_endpoint`])
+/// and the caller's own key beside it, and the `If-Match` revision is the one
+/// operand P-D-34 explicitly keeps out. A door that folded the precondition
+/// in would refuse a client's own retry as `IDEMPOTENCY_CONFLICT` the moment
+/// a neighbour's write moved the head, which is the opposite of what the
+/// store is for.
+fn bodiless_payload_digest() -> Vec<u8> {
+    idempotency::payload_digest(&JsonValue::Object(JsonMap::new()))
+}
+
+/// One timestamp, rendered as §4.3 pins them: `RFC 3339`, `UTC`, microsecond
+/// precision.
+///
+/// `crate::domain::canonical` deliberately converts no instant — its own doc
+/// says the caller renders its instant into a string field, so the precision
+/// decision stays with whoever owns the column. This is that decision for
+/// `products_product`'s `created_at`, and it is spelled **identically** in
+/// `skus::render_instant` for `products_sku`'s. The two copies are owed a
+/// single home in `crate::domain::canonical`, which is the module that owns
+/// the rendering rules; that module is not open in this slice, and a third
+/// copy must not be written before the move happens.
+fn render_instant(instant: DateTime<Utc>) -> String {
+    instant.format("%Y-%m-%dT%H:%M:%S%.6fZ").to_string()
+}
+
+/// The frozen content of one Product head, as the object
+/// [`PRODUCT_CONTENT_ROSTER`] is rendered against.
+///
+/// # The pre-act/post-act hazard is structurally absent here
+///
+/// `inst-fd-publish-freeze` and **P-D-33** take the freeze over the image
+/// the act **leaves behind**, while `record` is the head as it stood
+/// **before** the write — so on the face of it this function has to be told
+/// which fields the act moved. It does not, and the reason is the roster:
+/// every column a publish moves is excluded from it. `published_version`,
+/// `internal_revision`, `lifecycle_state` and `updated_at` are the four
+/// columns the act writes, and none of them is content
+/// ([`PRODUCT_CONTENT_ROSTER`]'s own doc argues each). On the roster's own
+/// fields the two images are **equal**, so the pre-act head renders exactly
+/// what the post-act head would.
+///
+/// This function took `published_version` as a second argument until
+/// `published_version` left the roster, precisely so the content would carry
+/// the post-act `N + 1` that [`freeze_for`] keys the row at. That argument
+/// had no reader once the column was excluded, and with it went the last
+/// place where a pre-act value could have been frozen under a post-act key.
+/// The hazard is now absent by construction rather than handled by a
+/// convention two call sites had to keep.
+///
+/// It comes back the moment a **content** column starts moving in the act.
+/// Slice 07's `CorrectionDoor` is that case: it supplies a corrected
+/// bucket-ii value, and that value must be applied to `record` **before**
+/// this function renders it, never to the head-row `UPDATE` alone, or the
+/// freeze would store content the act never produced.
+///
+/// `product_code` is **omitted** from the map when the head carries none,
+/// rather than inserted as `JsonValue::Null`. That is not a shortcut: it is
+/// what exercises `canonical::Absence::Null`'s own clause — the roster names
+/// the field, so the rendering writes `null` for it — and a door that
+/// pre-filled the nulls itself would make the roster a no-op precisely in
+/// the case it exists for.
+fn product_content(record: &ProductRecord) -> JsonValue {
+    let mut content = JsonMap::new();
+    content.insert(
+        "brand_id".to_owned(),
+        JsonValue::String(record.brand_id.to_string()),
+    );
+    content.insert(
+        "brand_scope".to_owned(),
+        JsonValue::String(record.brand_scope.clone()),
+    );
+    content.insert(
+        "created_at".to_owned(),
+        JsonValue::String(render_instant(record.created_at)),
+    );
+    content.insert(
+        "created_by".to_owned(),
+        JsonValue::String(record.created_by.clone()),
+    );
+    content.insert("name".to_owned(), JsonValue::String(record.name.clone()));
+    content.insert(
+        "name_normalized".to_owned(),
+        JsonValue::String(record.name_normalized.clone()),
+    );
+    if let Some(code) = record.product_code.clone() {
+        content.insert("product_code".to_owned(), JsonValue::String(code));
+    }
+    content.insert(
+        "product_id".to_owned(),
+        JsonValue::String(record.product_id.to_string()),
+    );
+    content.insert(
+        "region_scope".to_owned(),
+        JsonValue::String(record.region_scope.clone()),
+    );
+    content.insert(
+        "tenant_id".to_owned(),
+        JsonValue::String(record.tenant_id.to_string()),
+    );
+    JsonValue::Object(content)
+}
+
+/// Which authorization grant and which audit `action` token a head act runs
+/// under, and the concrete endpoint it claims its key at — the three things
+/// [`open_head_door`] needs that differ between publish and discard.
+///
+/// Grouped rather than passed as three loose arguments for
+/// `RefusalAuditContext`'s own reason: they always travel together, and two
+/// of the three are `&'static str`s that a call site could transpose without
+/// the compiler noticing.
+struct HeadAct {
+    /// `crate::authz::actions::PUBLISH` or `::WRITE` — see [`publish_product`]
+    /// and [`discard_product`] for why the discard door gates on `write`
+    /// rather than on a `discard` action of its own.
+    authz_action: &'static str,
+    /// The `products_audit_log.action` token every refusal of this act is
+    /// recorded under: `publish` or `discard`.
+    audit_action: &'static str,
+    /// The concrete resource path this act's idempotency key is claimed at
+    /// ([`publish_endpoint`], [`discard_endpoint`]).
+    endpoint: String,
+}
+
+/// Everything the phases before the mutation established, handed on to the
+/// act itself.
+///
+/// A value rather than a tuple because five of its seven fields are the
+/// operands a refusal below it audits with, and a caller that had to unpack
+/// them positionally would eventually pass the wrong `Uuid`.
+struct OpenedHeadDoor {
+    /// The caller's own tenant.
+    tenant_id: Uuid,
+    /// The pseudonymous ref every audit row of this act attributes to.
+    actor_ref: Uuid,
+    /// The scope the authorization gate compiled — the one every read and
+    /// every write below runs under, never one rebuilt from `tenant_id`.
+    scope: AccessScope,
+    /// The head as it stood when the door opened. The mutation re-decides
+    /// everything this record was read for, under the write itself; this
+    /// copy exists so a refusal can be *named* precisely.
+    record: ProductRecord,
+    /// The revision the caller pinned with `If-Match` (**P-D-33**).
+    expected: InternalRevision,
+    /// The claim this act will take inside its own mutation transaction, or
+    /// `None` where the request carried no `Idempotency-Key` (the skip,
+    /// P-D-34).
+    claim: Option<IdempotencyClaimInput>,
+    /// The door's own request instant, stamped once.
+    now: DateTime<Utc>,
+}
+
+impl OpenedHeadDoor {
+    /// The refusal subject every audit row below this point names.
+    ///
+    /// [`RefusalSubject::Minted`] rather than the create doors'
+    /// [`RefusalSubject::Attempted`]: the subject of a publish or a discard
+    /// is a row that already exists and already has an id, which is exactly
+    /// the distinction §4.4's roster draws. The revision travels with it so
+    /// an operator reading the trail can see which image of the head was
+    /// refused.
+    fn refusal_subject(&self) -> RefusalSubject {
+        RefusalSubject::Minted {
+            subject_id: self.record.product_id,
+            subject_revision: Some(self.record.internal_revision),
+        }
+    }
+
+    /// The owned operand set this act's transaction runs on — see
+    /// [`HeadActInputs`] for why the transaction cannot simply borrow this
+    /// value.
+    fn act_inputs(&self) -> HeadActInputs {
+        HeadActInputs {
+            scope: self.scope.clone(),
+            tenant_id: self.tenant_id,
+            product_id: self.record.product_id,
+            actor_ref: self.actor_ref,
+            expected: self.expected.get(),
+            now: self.now,
+            claim: self.claim.clone(),
+        }
+    }
+}
+
+/// Write one refusal's audit row on its own runner and then answer it — the
+/// head doors' equivalent of the create doors' direct
+/// `crate::api::rest::audit_refusal_and_report` call, differing only in that
+/// the `action` token recorded is this act's rather than `create`.
+///
+/// Every refusal either door raises goes through here, so "the row commits
+/// before the refusal is reported, and an unwritable row answers
+/// `AUDIT_UNAVAILABLE` instead" cannot be forgotten on a branch a later edit
+/// adds.
+async fn audit_and_refuse(
+    state: &ApiState,
+    opened: &OpenedHeadDoor,
+    audit_action: &str,
+    domain_err: DomainError,
+) -> CanonicalError {
+    let error_code = domain_err.code();
+    crate::api::rest::audit_refusal_of_action_and_report(
+        state,
+        &opened.scope,
+        crate::api::rest::RefusalAuditContext {
+            tenant_id: opened.tenant_id,
+            actor_ref: opened.actor_ref,
+            subject_kind: crate::authz::labels::PRODUCT,
+            error_code,
+        },
+        audit_action,
+        opened.refusal_subject(),
+        CanonicalError::from(domain_err),
+    )
+    .await
+}
+
+/// Who a refusal raised **before** the head has been read is recorded
+/// against: the compiled scope it audits under, the caller, the id the
+/// caller named, and this act's own audit `action` token.
+///
+/// A value rather than four loose arguments because three of the four are
+/// `Uuid`s or `&str`s a call site could transpose without the compiler
+/// noticing — `RefusalAuditContext`'s own reason for existing, one layer up.
+struct HeadRefusalTarget<'target> {
+    /// The scope the audit row is written under — the caller's own compiled
+    /// scope from the authorization gate this door has already passed.
+    scope: &'target AccessScope,
+    /// Owning tenant.
+    tenant_id: Uuid,
+    /// The pseudonymous ref this refusal attributes to.
+    actor_ref: Uuid,
+    /// The head the caller named. Carried as an id with **no revision**: the
+    /// row has not been read at this point, and a revision reported here
+    /// would be one nothing measured.
+    product_id: Uuid,
+    /// `publish` or `discard`.
+    audit_action: &'target str,
+}
+
+/// Audit one pre-read refusal and answer it — the header phases' equivalent
+/// of [`audit_and_refuse`], differing only in that the subject it names
+/// carries no revision.
+async fn audit_head_refusal(
+    state: &ApiState,
+    target: &HeadRefusalTarget<'_>,
+    domain_err: DomainError,
+) -> CanonicalError {
+    let error_code = domain_err.code();
+    crate::api::rest::audit_refusal_of_action_and_report(
+        state,
+        target.scope,
+        crate::api::rest::RefusalAuditContext {
+            tenant_id: target.tenant_id,
+            actor_ref: target.actor_ref,
+            subject_kind: crate::authz::labels::PRODUCT,
+            error_code,
+        },
+        target.audit_action,
+        RefusalSubject::Minted {
+            subject_id: target.product_id,
+            subject_revision: None,
+        },
+        CanonicalError::from(domain_err),
+    )
+    .await
+}
+
+/// The phases both head doors run before either one's own act: `actor_ref`
+/// resolution, authorization, the idempotency key, the `If-Match`
+/// precondition and the head read.
+///
+/// # The order, and why it is this order
+///
+/// 1. **`actor_ref` resolution**, on its own transaction, **before** the
+///    authorization gate — `repo::resolve_actor_ref`'s own doc gives the
+///    reason and [`create_product`] follows it identically: a refusal below
+///    audits on a transaction of its own and needs a ref to attribute to, and
+///    an authorization denial is such a refusal.
+/// 2. **The authorization gate**, anchored to the caller's own tenant with
+///    `require_constraints = true` and the resource id pinned. A denial is
+///    audited under the caller's tenant-scoped self access, there being no
+///    compiled write scope to reuse — the gate is what refused.
+/// 3. **The idempotency phase** (`Phase::Idempotency`, the pipeline's first):
+///    the key off the header, the digest of the parsed request
+///    ([`bodiless_payload_digest`]). An absent header **skips** the phase
+///    (P-D-34); a present but unusable one is `VALIDATION`. The claim
+///    `INSERT` is not taken here — it joins the mutation's own transaction
+///    (P-D-42).
+/// 4. **The `If-Match` precondition** (`Phase::Precondition`, the pipeline's
+///    second, which is why it follows the key rather than leading): absent is
+///    `VALIDATION`, unparseable is `VALIDATION`, and a *stale* one is not
+///    judged here at all — the comparison belongs under the write
+///    (`preconditions`' own doc).
+/// 5. **The head read**, under the compiled scope. A miss — absent, or
+///    outside the caller's scope, indistinguishably — is this module's bare
+///    `404` ([`product_not_found`]).
+///
+/// # The `404` is the one refusal that writes no audit row
+///
+/// Every other refusal below audits. A miss does not, and the reason is the
+/// same one this module's doc gives for the read door's `404` being bare: it
+/// is judged before the pipeline opens and raises no registry code at all, so
+/// there is no `error_code` for `products_audit_log.error_code` to carry —
+/// inventing a `NOT_FOUND` token for the column would put a code in the
+/// audit trail that the error taxonomy does not define. It is also the one
+/// answer that must not distinguish an absent row from another tenant's,
+/// and an audit row written for one and not the other would be exactly that
+/// distinction, recorded.
+async fn open_head_door(
+    state: &ApiState,
+    enforcer: &authz_resolver_sdk::PolicyEnforcer,
+    ctx: &SecurityContext,
+    product_id: Uuid,
+    headers: &HeaderMap,
+    act: &HeadAct,
+) -> Result<OpenedHeadDoor, CanonicalError> {
+    let tenant_id = ctx.subject_tenant_id();
+    let now = Utc::now();
+
+    // -- 1. actor_ref resolution: its own transaction, ahead of the gate. --
+    let actor_ref =
+        crate::api::rest::resolve_creator_actor_ref(state, tenant_id, ctx.subject_id(), now)
+            .await?;
+
+    // -- 2. The authorization gate. --
+    let scope = match crate::authz::access_scope(
+        enforcer,
+        ctx,
+        &crate::authz::resource_types::PRODUCT,
+        act.authz_action,
+        /* owner_tenant_id */ Some(tenant_id),
+        /* resource_id */ Some(product_id),
+        /* require_constraints */ true,
+    )
+    .await
+    {
+        Ok(scope) => scope,
+        Err(crate::authz::AuthzError::Denied(reason)) => {
+            let self_scope = AccessScope::for_tenant(tenant_id);
+            return Err(crate::api::rest::audit_refusal_of_action_and_report(
+                state,
+                &self_scope,
+                crate::api::rest::RefusalAuditContext {
+                    tenant_id,
+                    actor_ref,
+                    subject_kind: crate::authz::labels::PRODUCT,
+                    error_code: "PERMISSION_DENIED",
+                },
+                act.audit_action,
+                // The head has not been read yet — a denied caller may not
+                // learn whether it exists — so the subject is named by the
+                // id alone, with no revision to report.
+                RefusalSubject::Minted {
+                    subject_id: product_id,
+                    subject_revision: None,
+                },
+                ProductResource::permission_denied()
+                    .with_reason(reason)
+                    .create(),
+            )
+            .await);
+        }
+        Err(err @ crate::authz::AuthzError::Unavailable(_)) => {
+            return Err(authz_error_to_canonical(err, |reason| {
+                ProductResource::permission_denied()
+                    .with_reason(reason)
+                    .create()
+            }));
+        }
+    };
+
+    // Both remaining header phases refuse under the compiled scope and
+    // name the same subject; `target` is the shape they share.
+    let target = HeadRefusalTarget {
+        scope: &scope,
+        tenant_id,
+        actor_ref,
+        product_id,
+        audit_action: act.audit_action,
+    };
+
+    // -- 3. The idempotency phase: the key, and the bodiless digest. --
+    let client_key = match idempotency_key(headers) {
+        Ok(key) => key,
+        Err(domain_err) => return Err(audit_head_refusal(state, &target, domain_err).await),
+    };
+    let claim = client_key.map(|key| {
+        IdempotencyClaimInput::new(
+            act.endpoint.clone(),
+            key,
+            bodiless_payload_digest(),
+            now,
+            state.idempotency_retention_hours,
+        )
+    });
+
+    // -- 4. The `If-Match` precondition (P-D-33). --
+    let expected = match preconditions::if_match(headers) {
+        Ok(revision) => revision,
+        Err(domain_err) => return Err(audit_head_refusal(state, &target, domain_err).await),
+    };
+
+    // -- 5. The head read, under the compiled scope. The connection is
+    // released before the act's own transaction opens: a pool pinned to one
+    // connection — which is what this door's own test harness runs — would
+    // otherwise deadlock against itself. --
+    let record = {
+        let conn = state.db.conn().map_err(|e| {
+            CanonicalError::internal(format!("bss-products: db conn: {e}")).create()
+        })?;
+        repo::find_product(&conn, &scope, tenant_id, product_id)
+            .await
+            .map_err(|e| repo_error_to_canonical(&e))?
+            .ok_or_else(|| product_not_found(product_id))?
+    };
+
+    Ok(OpenedHeadDoor {
+        tenant_id,
+        actor_ref,
+        scope,
+        record,
+        expected,
+        claim,
+        now,
+    })
+}
+
+/// The operands one head act's transaction runs on, owned so the
+/// `transaction_with_retry` closure can hold them.
+///
+/// A copy of five fields of [`OpenedHeadDoor`] rather than a reference to it,
+/// and the retry helper is the reason: its body is
+/// `for<'a> FnMut(&'a DbTx<'a>) -> Pin<Box<dyn Future + Send + 'a>>`, and the
+/// higher-ranked `'a` cannot be bounded by any lifetime the caller holds — a
+/// borrow of the door's state simply does not typecheck there. `Clone` for
+/// the same helper's other reason: the body is `FnMut` and may be re-entered
+/// on a retryable contention failure, so every attempt takes its own copy and
+/// no attempt can consume what the next one needs. The values are
+/// attempt-independent by construction — `now` was stamped before the first
+/// attempt, and the claim's window with it.
+#[derive(Clone)]
+struct HeadActInputs {
+    /// The compiled scope every read and write of the act runs under.
+    scope: AccessScope,
+    /// Owning tenant.
+    tenant_id: Uuid,
+    /// The head being acted on.
+    product_id: Uuid,
+    /// The pseudonymous ref the frozen version row attributes the publish
+    /// to.
+    actor_ref: Uuid,
+    /// The revision the caller pinned, as the head-row filter compares it.
+    expected: i64,
+    /// The act's instant, stamped once before the first attempt.
+    now: DateTime<Utc>,
+    /// The claim to take as the transaction's first statement, or `None`
+    /// where the request carried no key (P-D-34's skip).
+    claim: Option<IdempotencyClaimInput>,
+}
+
+/// What one head act's transaction produced.
+///
+/// [`CreateOutcome`]'s two success shapes without its third: a refusal
+/// decided inside the transaction is an `Err` here rather than an `Ok`
+/// variant, because a publish has already **written** its frozen version row
+/// by the time the head-row `UPDATE` can report `Unmatched`, and only an
+/// `Err` rolls that write back. See [`HeadActError`].
+enum HeadActOutcome {
+    /// The act ran: the revision the `ETag` is minted from, and the response
+    /// body rendered inside the transaction and stored there as the
+    /// idempotency answer when the request carried a key.
+    Applied {
+        /// The committed `internal_revision`.
+        internal_revision: i64,
+        /// The response body, as answered and as stored.
+        body: JsonValue,
+    },
+    /// A stored answer was replayed; nothing was written.
+    Replay {
+        /// The stored status.
+        status: i32,
+        /// The stored body.
+        body: JsonValue,
+    },
+}
+
+/// Why a head act's transaction ended without applying.
+///
+/// # Every variant here rolls the transaction back, and that is the point
+///
+/// `Db::transaction_with_retry` **commits on `Ok`**. The create doors can
+/// therefore return their idempotency refusal as an `Ok` variant: the claim
+/// `INSERT` is their first statement, so a refusal there has written
+/// nothing and committing an empty transaction is harmless. The publish door
+/// cannot: `inst-fd-publish-txn` forces the freeze **before** the head-row
+/// `UPDATE`, so by the time [`repo::publish_product_head`] can answer
+/// [`repo::HeadWrite::Unmatched`] a `products_entity_version` row is already
+/// written on this transaction. Committing that would leave a frozen version
+/// for a publish that never happened — and, worse, one the head-row guard
+/// would then accept as the missing prerequisite for a later bump nobody
+/// authorized. So a refusal discovered inside the transaction travels as an
+/// error, and the rollback is what un-writes the freeze.
+///
+/// The retry classifier ([`head_act_contention_db_err`]) answers `None` for
+/// every variant but [`Self::Db`], so a refusal is never mistaken for
+/// contention and re-attempted.
+enum HeadActError {
+    /// A domain refusal decided inside the transaction: the idempotency
+    /// phase's, or the head-row write's own `Unmatched` once
+    /// [`classify_unmatched_publish`]/[`classify_unmatched_discard`] has read
+    /// which of its several meanings applied.
+    Refused(DomainError),
+    /// The head vanished from the caller's scope between the door's read and
+    /// its write. Answered as this module's bare `404`, unaudited, for
+    /// [`open_head_door`]'s stated reason.
+    Vanished,
+    /// A storage failure, including one the contention classifier may decide
+    /// to retry.
+    Db(DbError),
+}
+
+impl From<DbError> for HeadActError {
+    fn from(error: DbError) -> Self {
+        Self::Db(error)
+    }
+}
+
+impl HeadActError {
+    /// Wrap any error whose text is all this door needs.
+    ///
+    /// The repository layer returns `RepoError`, the events layer returns
+    /// `EventsError`, and neither can be retried by
+    /// `transaction_with_retry` unless it arrives as a `DbErr`; each is a
+    /// storage or infrastructure failure of this act's own mutation, so each
+    /// becomes [`Self::Db`] carrying the text that named it. This mirrors
+    /// what [`insert_product_with_event`] does with the same failures.
+    fn from_storage(error: &impl core::fmt::Display) -> Self {
+        Self::Db(DbError::Sea(DbErr::Custom(error.to_string())))
+    }
+}
+
+/// The `DbErr` inside a [`HeadActError`], for `transaction_with_retry`'s
+/// contention classifier.
+///
+/// Only [`HeadActError::Db`] can carry one. A refusal and a vanished head
+/// answer `None` deliberately: both are decided answers, and retrying either
+/// would re-run an act whose outcome the door has already established.
+fn head_act_contention_db_err(error: &HeadActError) -> Option<&DbErr> {
+    match error {
+        HeadActError::Db(db_error) => contention_db_err(db_error),
+        HeadActError::Refused(_) | HeadActError::Vanished => None,
+    }
+}
+
+/// Which refusal a zero-row head write actually was.
+///
+/// [`repo::HeadWrite::Unmatched`] has several readings — the head no longer
+/// carries the pinned revision, it is terminal, it is another tenant's, or
+/// (for a discard) it is not legal to discard — and that repository's own
+/// doc says a door that needs to tell them apart re-reads the head. This is
+/// that re-read. **It decides only which message is returned, never whether
+/// the write landed**, so it carries none of the race a read-then-write
+/// would: the database has already judged the row image the write would have
+/// landed on, and this read judges only what to call the answer.
+///
+/// Ordered revision-first because a moved revision is the only one of the
+/// readings the caller can act on — refetch the head, re-send the `ETag` —
+/// and reporting a terminal state for a row a neighbour retired *after*
+/// moving it would name the second cause of a refusal whose first cause the
+/// caller could have fixed.
+async fn classify_unmatched_publish(
+    runner: &impl DBRunner,
+    inputs: &HeadActInputs,
+) -> HeadActError {
+    match repo::find_product(runner, &inputs.scope, inputs.tenant_id, inputs.product_id).await {
+        Ok(Some(head)) if head.internal_revision != inputs.expected => {
+            HeadActError::Refused(DomainError::StaleRevision {
+                expected: inputs.expected,
+                found: head.internal_revision,
+            })
+        }
+        Ok(Some(head)) if head.lifecycle_state.is_terminal() => {
+            HeadActError::Refused(DomainError::EntityTerminal(format!(
+                "no head write is admitted on a {} entity",
+                head.lifecycle_state.as_str()
+            )))
+        }
+        // The filter admits `draft`, `published` and `deprecated` at the
+        // pinned revision, and the three arms above have excluded every
+        // other reading, so this row satisfies the filter that did not match
+        // it. That is a contradiction in the store rather than a refusal of
+        // the caller, and it is reported as one instead of being dressed up
+        // as a stale revision the caller could pointlessly retry.
+        Ok(Some(head)) => HeadActError::Db(DbError::Sea(DbErr::Custom(format!(
+            "publish matched no row for product {} at revision {}, yet the head is {} at \
+             revision {}",
+            head.product_id,
+            inputs.expected,
+            head.lifecycle_state.as_str(),
+            head.internal_revision
+        )))),
+        Ok(None) => HeadActError::Vanished,
+        Err(error) => HeadActError::from_storage(&error),
+    }
+}
+
+/// [`classify_unmatched_publish`]'s discard twin, with the one reading a
+/// discard adds: the act is legal **only** from `draft` with
+/// `published_version = 0` (`inst-fd-discard`), both conditions carried in
+/// [`repo::discard_product_head`]'s own filter, so a row that fails either
+/// is refused `ILLEGAL_TRANSITION` naming the edge it asked for.
+async fn classify_unmatched_discard(
+    runner: &impl DBRunner,
+    inputs: &HeadActInputs,
+) -> HeadActError {
+    match repo::find_product(runner, &inputs.scope, inputs.tenant_id, inputs.product_id).await {
+        Ok(Some(head)) if head.internal_revision != inputs.expected => {
+            HeadActError::Refused(DomainError::StaleRevision {
+                expected: inputs.expected,
+                found: head.internal_revision,
+            })
+        }
+        Ok(Some(head)) if head.lifecycle_state.is_terminal() => {
+            HeadActError::Refused(DomainError::EntityTerminal(format!(
+                "no head write is admitted on a {} entity",
+                head.lifecycle_state.as_str()
+            )))
+        }
+        Ok(Some(head)) => HeadActError::Refused(DomainError::IllegalTransition {
+            from: head.lifecycle_state.as_str().to_owned(),
+            to: LifecycleState::Discarded.as_str().to_owned(),
+        }),
+        Ok(None) => HeadActError::Vanished,
+        Err(error) => HeadActError::from_storage(&error),
+    }
+}
+
+/// Which Foundation event a head act announces — and, with it, which body
+/// shape §4.5 puts on it.
+///
+/// An enum rather than the payload-type token alone, because the token and
+/// the body shape are **one** decision: §4.5 gives `ProductPublished` a
+/// `publishedVersion` beyond the shared core and gives `ProductDiscarded`
+/// only the core, so a caller that could pass an arbitrary token would be
+/// able to pair either token with either body. Here it cannot: the token is
+/// read off the variant and so is the body.
+#[derive(Debug, Clone, Copy)]
+enum Announcement {
+    /// `ProductPublished` — core plus `publishedVersion`
+    /// (`events::PublishedEventBody`).
+    Published,
+    /// `ProductDiscarded` — the bare core. A discard writes no version row
+    /// and moves no version counter, so there is no `publishedVersion` this
+    /// event could truthfully carry.
+    Discarded,
+}
+
+impl Announcement {
+    /// The `payload_type` token the outbox row carries.
+    const fn payload_type(self) -> &'static str {
+        match self {
+            Self::Published => events::PRODUCT_PUBLISHED_PAYLOAD_TYPE,
+            Self::Discarded => events::PRODUCT_DISCARDED_PAYLOAD_TYPE,
+        }
+    }
+}
+
+/// Render the head as it now stands, enqueue `announcement` for it, and —
+/// where the request carried a key — store that rendering as the act's
+/// idempotency answer. The tail every head act's transaction shares.
+///
+/// The head is **re-read** rather than reconstructed from the pre-act record
+/// plus what the door believes it wrote. The reconstruction is what a reader
+/// expects to find here, and it is exactly the thing this file should not
+/// do: the head-row guard, the `CASE` that decides the edge inside
+/// [`repo::publish_product_head`] and the two counters are all the
+/// **database's** answers, and a door that told the client its own arithmetic
+/// instead would report a `200` describing a row that might differ from the
+/// one it committed. The event's `internal_revision` is "the value as
+/// committed by the act" (**P-D-29**) for the same reason.
+///
+/// The re-read is also what supplies `publishedVersion`: `head
+/// .published_version` **after** the act is `N + 1`, the very number
+/// [`freeze_for`] keyed the frozen row at, read back from the row the
+/// `UPDATE` committed rather than recomputed here.
+async fn announce_and_answer(
+    runner: &(impl DBRunner + Sync),
+    outbox: &toolkit_db::outbox::Outbox,
+    inputs: &HeadActInputs,
+    announcement: Announcement,
+) -> Result<HeadActOutcome, HeadActError> {
+    let head = repo::find_product(runner, &inputs.scope, inputs.tenant_id, inputs.product_id)
+        .await
+        .map_err(|e| HeadActError::from_storage(&e))?
+        .ok_or(HeadActError::Vanished)?;
+
+    let core = events::EventBodyCore {
+        tenant_id: head.tenant_id,
+        entity_kind: events::EntityKind::Product.as_str(),
+        entity_id: head.product_id,
+        internal_revision: head.internal_revision,
+        lifecycle_state: head.lifecycle_state.as_str(),
+    };
+    let payload_type = announcement.payload_type();
+    match announcement {
+        Announcement::Published => {
+            events::enqueue_published(
+                outbox,
+                runner,
+                head.product_id,
+                payload_type,
+                &core,
+                head.published_version,
+            )
+            .await
+        }
+        Announcement::Discarded => {
+            events::enqueue(outbox, runner, head.product_id, payload_type, &core).await
+        }
+    }
+    .map_err(|e| HeadActError::from_storage(&e))?;
+
+    let internal_revision = head.internal_revision;
+    let body = serde_json::to_value(ProductView::from(head)).map_err(|e| {
+        HeadActError::Db(DbError::Sea(DbErr::Custom(format!(
+            "render the published Product: {e}"
+        ))))
+    })?;
+
+    if let Some(input) = inputs.claim.as_ref() {
+        record_idempotency_answer(
+            runner,
+            &inputs.scope,
+            inputs.tenant_id,
+            input,
+            HEAD_ACT_RESPONSE_STATUS,
+            &body,
+        )
+        .await
+        .map_err(|e| HeadActError::from_storage(&e))?;
+    }
+
+    Ok(HeadActOutcome::Applied {
+        internal_revision,
+        body,
+    })
+}
+
+/// Take the act's idempotency claim, if it carries one, on the mutation's
+/// own runner (**P-D-42**) — the first statement of every head act's
+/// transaction, exactly as it is the first statement of
+/// [`insert_product_with_event`]'s.
+///
+/// `Ok(None)` means proceed; `Ok(Some(outcome))` is a replay to serve with
+/// nothing executed; an `Err` is a refusal, and it rolls the transaction back
+/// rather than committing an empty one — see [`HeadActError`] for why every
+/// refusal here is an error and not an outcome.
+async fn claim_for_head_act(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    claim: Option<&IdempotencyClaimInput>,
+) -> Result<Option<HeadActOutcome>, HeadActError> {
+    let Some(input) = claim else {
+        return Ok(None);
+    };
+    match claim_idempotency(runner, scope, tenant_id, input)
+        .await
+        .map_err(|e| HeadActError::from_storage(&e))?
+    {
+        ClaimVerdict::Proceed => Ok(None),
+        ClaimVerdict::Replay { status, body } => Ok(Some(HeadActOutcome::Replay { status, body })),
+        ClaimVerdict::Refused(refusal) => Err(HeadActError::Refused(refusal)),
+    }
+}
+
+/// Freeze the version row, then move the head, then announce — one
+/// transaction, in the order `inst-fd-publish-txn` forces
+/// (`dod-publish-door`). The act itself is [`run_publish`]; this function is
+/// the runner it rides on.
+///
+/// # The order is not a preference
+///
+/// The head-row guard admits a `published_version` bump **only where the
+/// matching `products_entity_version` row already exists**
+/// (`m20260829_000002_create_products_product`'s
+/// `trg_products_product_published_version_row`), so the freeze has to be
+/// visible to the bump. Freeze first, bump second, and both on this one
+/// transaction — a freeze committed on a runner of its own would survive a
+/// rolled-back publish and would then stand as the guard's prerequisite for
+/// a version no committed act ever produced.
+///
+/// # Exactly one head-row statement
+///
+/// [`repo::publish_product_head`] carries the version bump, the revision
+/// bump, the `draft -> published` edge and `updated_at` in one `UPDATE`,
+/// because the guard bumps `internal_revision` on **every** admitted
+/// `UPDATE` without exception (`inst-fd-publish-bump`) and two statements
+/// would therefore move it twice for one act. Neither this function nor
+/// [`run_publish`] may grow a second head-row write.
+///
+/// # It runs under `transaction_with_retry`, for the create door's reason
+///
+/// The claim `INSERT` is this transaction's first statement and is the gate
+/// (P-D-42), which makes this the transaction concurrent duplicates
+/// deliberately collide on; `DBProvider::transaction` has no contention
+/// retry. The body is safe to re-run: the claim rolls back with everything
+/// after it, so a retried attempt starts against exactly the state the first
+/// one did — no key held, no version row, no head movement — and nothing it
+/// writes is derived from the attempt, `now` having been stamped before the
+/// first.
+///
+/// # The gate arrives as an `Arc`, and it has to
+///
+/// `transaction_with_retry`'s body is
+/// `for<'a> FnMut(&'a DbTx<'a>) -> Pin<Box<dyn Future + Send + 'a>>`: the
+/// higher-ranked `'a` cannot be bounded by any lifetime the caller holds, so
+/// a borrowed `&dyn GovernanceGate` cannot be captured by the closure at
+/// all — the same constraint [`HeadActInputs`] exists for. An owned,
+/// cheaply-cloned handle can be, which is why the port travels as
+/// `Arc<dyn GovernanceGate + Send + Sync>` from the handler down.
+async fn publish_in_one_transaction(
+    state: &ApiState,
+    opened: &OpenedHeadDoor,
+    gate: &Arc<dyn GovernanceGate + Send + Sync>,
+) -> Result<HeadActOutcome, HeadActError> {
+    let outbox = Arc::clone(&state.outbox);
+    let gate = Arc::clone(gate);
+    let inputs = opened.act_inputs();
+    state
+        .db
+        .db()
+        .transaction_with_retry::<HeadActOutcome, HeadActError, _, _>(
+            TxConfig::default(),
+            head_act_contention_db_err,
+            move |tx| {
+                // `FnMut`: every attempt takes its own copies, so a retried
+                // attempt never finds an input the previous one consumed.
+                let outbox = Arc::clone(&outbox);
+                let gate = Arc::clone(&gate);
+                let inputs = inputs.clone();
+                Box::pin(async move { run_publish(tx, &inputs, gate.as_ref(), &outbox).await })
+            },
+        )
+        .await
+}
+
+/// Discard a never-published draft: one guarded head-row `UPDATE`, the
+/// approval-invalidation hook the transition owes, and the
+/// `ProductDiscarded` event — one transaction (`inst-fd-discard`). The act
+/// itself is [`run_discard`].
+///
+/// # No freeze, and no release statement
+///
+/// A discard writes no `products_entity_version` row: nothing was published,
+/// so there is no version to freeze. It also writes no reservation-release
+/// statement, and that is a property of the indexes rather than an omission
+/// here — `uq_products_product_name` and `uq_products_product_code` are both
+/// partial on `lifecycle_state <> 'discarded'`, so the row leaves both the
+/// moment this `UPDATE` commits and the name and the `productCode` are free
+/// for the next holder. A second statement would have no rows to touch.
+///
+/// # The legality is in the `WHERE` clause
+///
+/// `draft` and `published_version = 0` are both carried by
+/// [`repo::discard_product_head`]'s own filter, so the **database** judges
+/// the row image the write lands on. The [`transition::guard`] call
+/// [`run_discard`] makes decides the *edge* and reports what the transition
+/// costs; it does not stand in for the filter, because even a read taken
+/// inside this transaction is a read, and the filter is the write.
+async fn discard_in_one_transaction(
+    state: &ApiState,
+    opened: &OpenedHeadDoor,
+) -> Result<HeadActOutcome, HeadActError> {
+    let outbox = Arc::clone(&state.outbox);
+    let inputs = opened.act_inputs();
+    state
+        .db
+        .db()
+        .transaction_with_retry::<HeadActOutcome, HeadActError, _, _>(
+            TxConfig::default(),
+            head_act_contention_db_err,
+            move |tx| {
+                let outbox = Arc::clone(&outbox);
+                let inputs = inputs.clone();
+                Box::pin(async move { run_discard(tx, &inputs, &outbox).await })
+            },
+        )
+        .await
+}
+
+/// Turn one head act's transaction result into the response the caller gets.
+///
+/// Shared by both doors: the success, the replay, the audited refusal, the
+/// vanished head and the storage failure are answered identically whichever
+/// act produced them, and the only thing that differs is the `action` token
+/// a refusal's audit row records.
+async fn answer_head_act(
+    state: &ApiState,
+    opened: &OpenedHeadDoor,
+    audit_action: &str,
+    result: Result<HeadActOutcome, HeadActError>,
+) -> Result<Response, CanonicalError> {
+    match result {
+        Ok(HeadActOutcome::Applied {
+            internal_revision,
+            body,
+        }) => {
+            let tag = preconditions::etag(InternalRevision::new(internal_revision));
+            // `body` is the value rendered inside the mutation transaction
+            // and, for a keyed act, stored there as the idempotency answer.
+            // Answering it rather than re-rendering the view is what makes a
+            // later replay reproduce this response and not a lookalike.
+            Ok((HEAD_ACT_RESPONSE_STATUS, [(ETAG, tag)], axum::Json(body)).into_response())
+        }
+        // A replay executes nothing and audits nothing: it is not a refusal,
+        // and the act it reproduces was audited — or, being a success,
+        // deliberately not (P-D-21) — when it originally ran.
+        Ok(HeadActOutcome::Replay { status, body }) => Ok(replay_response(status, body)),
+        Err(HeadActError::Refused(domain_err)) => {
+            Err(audit_and_refuse(state, opened, audit_action, domain_err).await)
+        }
+        Err(HeadActError::Vanished) => Err(product_not_found(opened.record.product_id)),
+        Err(HeadActError::Db(db_error)) => Err(repo_error_to_canonical(&RepoError::Db(
+            db_error.to_string(),
+        ))),
+    }
+}
+
+/// The validation pipeline the publish door re-runs
+/// (`inst-fd-publish-revalidate`).
+///
+/// **This is the Foundation's pipeline, and this slice's Foundation
+/// registers exactly one rule** — `crate::domain::rules::NameShapeRule`. The
+/// design's own wording for this step is "shape, state, identity, **every
+/// registered validator for `→ published`**", and the registered validators
+/// are 04's and 05's: they do not exist at this commit, so the re-run cannot
+/// include them and this door does not pretend it does. What the re-run
+/// *does* discharge is the fail-closed property the step exists for — the
+/// pipeline is re-executed at publish over the entity as it now stands,
+/// rather than the door trusting a judgement made when the entity was
+/// authored — so a validator registered later is picked up here with no
+/// change to this door.
+///
+/// Built per call rather than held in a `static`: the pipeline owns boxed
+/// trait objects, and a lazily-initialised global would buy nothing at this
+/// size while adding an initialisation order to reason about.
+fn publish_revalidation_pipeline() -> ValidationPipeline<CreateEntityCandidate> {
+    ValidationPipeline::new().with_rule(Box::new(NameShapeRule))
+}
+
+/// The candidate the re-run judges: the head **as it now stands**, not the
+/// payload that created it.
+///
+/// `CreateEntityCandidate` is named for the door that first presented one,
+/// and it is the right shape here for the reason its own doc gives — it
+/// carries the payload fields plus the normalization the identity phase keys
+/// on. A publish presents the row instead of a payload, which is precisely
+/// what `inst-fd-publish-revalidate` asks for: *an entity that stopped being
+/// publishable since approval fails closed*.
+fn publish_candidate(record: &ProductRecord) -> CreateEntityCandidate {
+    CreateEntityCandidate {
+        tenant_id: record.tenant_id,
+        brand_id: record.brand_id,
+        name: record.name.clone(),
+        code: record.product_code.clone(),
+    }
+}
+
+/// Turn a failing publish re-validation into the door's refusal.
+///
+/// **`INCOMPLETE_ENTITY` rather than `VALIDATION`.**
+/// `inst-fd-publish-revalidate` names *"`INCOMPLETE_ENTITY`/rule-named
+/// code"* for an entity that stopped being publishable since approval, and
+/// the distinction is not cosmetic here: a publish carries **no request
+/// body** ([`bodiless_payload_digest`] is built on exactly that fact), so a
+/// `VALIDATION` problem would name a field of a request that had no fields.
+/// It would tell a caller to fix its payload when the payload was fine and
+/// the row was not. This door answered `VALIDATION` until this fix;
+/// `skus::revalidation_refusal` is the twin, and it argued the same point
+/// first.
+///
+/// The report's violations are folded into the detail string rather than
+/// carried as per-field entries, because the wire shape
+/// `DomainError::IncompleteEntity` offers is a message: what a reader needs
+/// is *which* rule stopped being satisfied, and `subject: detail` per
+/// violation is that, joined.
+fn revalidation_refusal(report: &ValidationReport) -> DomainError {
+    let detail = report
+        .violations()
+        .iter()
+        .map(|violation| format!("{}: {}", violation.subject, violation.detail))
+        .collect::<Vec<_>>()
+        .join("; ");
+    DomainError::IncompleteEntity(format!("the entity is no longer publishable: {detail}"))
+}
+
+/// Fire the approval-invalidation hook where the transition floor says this
+/// act's edge fires one, inside the act's own transaction.
+///
+/// The hook runs on the transaction rather than after it because
+/// [`transition::ApprovalInvalidationHook`]'s own contract says so: a failure
+/// fails the transition rather than leaving an approval standing against a
+/// head that has moved. The host is
+/// [`transition::NoApprovalStoreHook`] until slice 05 supplies a record
+/// store — a no-op that **succeeds**, because there is no store and therefore
+/// no record that could be stale.
+///
+/// A hook failure travels as [`HeadActError::Refused`]: it is the domain's
+/// own refusal of the transition, and it rolls the act back like every other
+/// refusal decided inside the transaction.
+fn fire_invalidation_hook(
+    inputs: &HeadActInputs,
+    invalidation: ApprovalInvalidation,
+) -> Result<(), HeadActError> {
+    if invalidation == ApprovalInvalidation::Fire {
+        NoApprovalStoreHook
+            .invalidate(EntityRef {
+                tenant_id: inputs.tenant_id,
+                entity_kind: CatalogEntityKind::Product,
+                entity_id: inputs.product_id,
+            })
+            .map_err(HeadActError::Refused)?;
+    }
+    Ok(())
+}
+
+/// Whether this act fires the approval-invalidation hook, **read off
+/// [`transition::guard`]'s own answer** rather than decided at the call site
+/// (`dod-transition-guard`: *"Every transition bumps `internal_revision` and
+/// fires the approval-invalidation hook, except a transition that consumes
+/// an approval in the same transaction, which bumps once with no hook"*).
+///
+/// The exception is the interesting half, and it is why this reads the
+/// guard's return value instead of testing the edge itself. A **publish** of
+/// a `draft` takes `draft -> published`, which
+/// [`transition::GATED_EDGES`] marks: the revision bump is
+/// [`transition::RevisionBump::CarriedByTheAuthorizedAct`] — this door's own
+/// single head-row `UPDATE` — and the hook is
+/// [`ApprovalInvalidation::Skip`], because this very transaction consumes
+/// the approval and a hook firing against the record the act is spending has
+/// no defined ordering. A **discard** takes `draft -> discarded`, consumes
+/// nothing, and so bumps through its own statement
+/// ([`transition::RevisionBump::Own`], carried by
+/// [`repo::discard_product_head`]'s `UPDATE`) and fires the hook. Either
+/// way [`transition::TransitionEffects::bumps_on_the_row`] is **one**, which
+/// is the property both doors' single statement discharges and neither adds
+/// to.
+///
+/// [`transition::TransitionDecision::NotATransition`] reaches this from one
+/// place only: a **re-publish**, where the head is already `published` or
+/// `deprecated` and the act changes the version rather than the state. The
+/// floor leaves the bump and the hook to the writing door there, and this
+/// door answers as the gated edge does — no hook — on the identical
+/// argument, the transaction that re-publishes being the one that consumes
+/// the approval for version N+1. A discard cannot reach that arm at all: the
+/// only same-value discard is `discarded -> discarded`, which
+/// [`transition::check_head_write`] has already refused as terminal.
+const fn head_act_invalidation(decision: TransitionDecision) -> ApprovalInvalidation {
+    match decision {
+        TransitionDecision::Transition(effects) => effects.invalidation,
+        TransitionDecision::NotATransition => ApprovalInvalidation::Skip,
+    }
+}
+
+/// The state a publish leaves the head in, which is also the `to` side of
+/// the edge [`transition::guard`] is asked about.
+///
+/// Decided from the row image, exactly as [`repo::publish_product_head`]'s
+/// own `CASE` decides it: a `draft` becomes `published`, and every other
+/// admitted head keeps its state. Asking the guard about
+/// `deprecated -> published` instead would pull the two-person un-deprecate
+/// ceremony onto a content re-publish that changes no state — the reading
+/// `inst-fd-publish-revalidate` explicitly rejects.
+const fn published_state_after(from: LifecycleState) -> LifecycleState {
+    match from {
+        LifecycleState::Draft => LifecycleState::Published,
+        LifecycleState::Published
+        | LifecycleState::Deprecated
+        | LifecycleState::Retired
+        | LifecycleState::Discarded => from,
+    }
+}
+
+/// The `products_audit_log.action` token every publish refusal is recorded
+/// under. Named, not spelled at each call site, so the trail is greppable by
+/// one string.
+const PUBLISH_AUDIT_ACTION: &str = "publish";
+
+/// [`PUBLISH_AUDIT_ACTION`]'s discard twin.
+const DISCARD_AUDIT_ACTION: &str = "discard";
+
+/// The version row this publish freezes: the act's own image, rendered
+/// canonically and digested (`inst-fd-publish-freeze`, §4.3, **P-D-33**).
+///
+/// `published_version` is `N + 1` — the version this act produces, not the
+/// one the head currently carries — which is what makes the head-row guard's
+/// subquery find this row when the `UPDATE` a statement later asks for it.
+/// That number is the **only** post-act value this function needs. P-D-33
+/// requires the freeze to be the image the act leaves behind, and it is: the
+/// four columns the act moves are all off [`PRODUCT_CONTENT_ROSTER`], so
+/// [`product_content`] renders the same bytes from the pre-act head as it
+/// would from the post-act one. [`product_content`]'s own doc carries that
+/// argument and the day it stops holding.
+///
+/// `approval_ref` is whatever the gate's verdict named, under **either**
+/// mode: `GateAuthorization::approval_ref`, not `approval_to_consume`. The
+/// column records which approval stands behind the frozen version; the
+/// consume flip is a different question, asked of a different accessor, and
+/// there is nothing to spend under the default host.
+fn freeze_for(
+    inputs: &HeadActInputs,
+    head: &ProductRecord,
+    authorization: &GateAuthorization,
+) -> NewEntityVersion {
+    // `N + 1`, the version this act produces. It is read by the row's **key**
+    // and by nothing else: `published_version` is not on
+    // `PRODUCT_CONTENT_ROSTER`, so the content does not restate it and there
+    // is no second copy of this number for the key to disagree with.
+    let published_version = head.published_version + 1;
+    let rendering = canonical::canonical_rendering(
+        &product_content(head),
+        canonical::Absence::Null {
+            roster: &PRODUCT_CONTENT_ROSTER,
+        },
+    );
+    let content_digest = canonical::content_digest(&rendering);
+    NewEntityVersion {
+        tenant_id: inputs.tenant_id,
+        entity_kind: VersionedEntityKind::Product,
+        entity_id: inputs.product_id,
+        published_version,
+        content: rendering,
+        content_digest,
+        digest_version: canonical::DIGEST_VERSION,
+        approval_ref: authorization.approval_ref().map(ApprovalId::get),
+        actor_ref: inputs.actor_ref,
+        published_at: inputs.now,
+    }
+}
+
+/// The publish act itself, **every phase of it on the mutation's own
+/// transaction** and in the pipeline's own phase order
+/// (`crate::domain::validation::Phase`): the idempotency claim, the
+/// precondition, the re-validation, the governance gate, then the writes.
+///
+/// # Why every phase is in here, and not half of them outside
+///
+/// `Phase::Idempotency` runs **before** `Phase::Precondition`, and that
+/// ordering is not decorative: a client whose first publish committed but
+/// whose response was lost retries with the `If-Match` it still holds — the
+/// revision *before* the publish it never learned about. That precondition
+/// is stale by construction. A door that judged the precondition first would
+/// refuse every such retry `STALE_REVISION` and would never reach the stored
+/// answer, which is precisely the case the idempotency store exists for; the
+/// store would be inert at this door.
+///
+/// The claim `INSERT` must join this transaction (**P-D-42**), so "the
+/// idempotency phase first" and "the claim inside the mutation" together
+/// force every later phase in here too. That is why the precondition
+/// comparison, the pipeline re-run and the gate all run on `runner` rather
+/// than ahead of it in the handler. It costs nothing — none of them writes —
+/// and it buys three properties: the phases run in the order §3.1 states,
+/// every refusal rolls back whatever the transaction had already written,
+/// and the head each phase judges is the one read **under the write** rather
+/// than one read a moment earlier.
+///
+/// `crate::domain::governance`'s own doc anticipates this: a store-backed
+/// host will want "an operand the door already loaded inside its
+/// transaction", which is exactly where slice 05's host will find itself.
+async fn run_publish(
+    runner: &(impl DBRunner + Sync),
+    inputs: &HeadActInputs,
+    gate: &(dyn GovernanceGate + Send + Sync),
+    outbox: &toolkit_db::outbox::Outbox,
+) -> Result<HeadActOutcome, HeadActError> {
+    // -- Phase 1, idempotency: the claim, and the replay that ends the act
+    // before any precondition is judged. --
+    if let Some(replay) = claim_for_head_act(
+        runner,
+        &inputs.scope,
+        inputs.tenant_id,
+        inputs.claim.as_ref(),
+    )
+    .await?
+    {
+        return Ok(replay);
+    }
+
+    // The head as it stands **under the write**. A miss here is the head
+    // vanishing from the caller's scope between the door's own read and this
+    // one, and it answers the same bare `404`.
+    let head = repo::find_product(runner, &inputs.scope, inputs.tenant_id, inputs.product_id)
+        .await
+        .map_err(|e| HeadActError::from_storage(&e))?
+        .ok_or(HeadActError::Vanished)?;
+
+    // -- Terminality, which reaches every head write and not only a
+    // transition (`inst-fd-terminal`, P-D-25 widened by P-D-32). Asked
+    // directly rather than left to `transition::guard` below, because a
+    // re-publish takes no edge at all and an edge-keyed check would let
+    // exactly this write through. --
+    transition::check_head_write(head.lifecycle_state).map_err(HeadActError::Refused)?;
+
+    // -- Phase 2, the precondition (P-D-33, `inst-fd-publish-pin`). The
+    // head-row `UPDATE` carries the same comparison in its own filter, and
+    // that copy is what decides whether the write lands; this one decides
+    // whether the gate is asked at all, since an approval is only usable
+    // against the exact revision it pinned. --
+    if head.internal_revision != inputs.expected {
+        return Err(HeadActError::Refused(DomainError::StaleRevision {
+            expected: inputs.expected,
+            found: head.internal_revision,
+        }));
+    }
+
+    // -- Phases 3 to 5, the pipeline re-run (`inst-fd-publish-revalidate`).
+    // The phase the run stopped at is not carried onto the wire: the report
+    // carries the codes and the per-field detail, and the audit row records
+    // one code (P-D-37). --
+    if let Some((_phase, report)) = publish_revalidation_pipeline().run(&publish_candidate(&head)) {
+        return Err(HeadActError::Refused(revalidation_refusal(&report)));
+    }
+
+    // -- Phase 7, the governance gate, inside the door, in `Gate` mode
+    // always (`inst-fd-gate-mode`). The two `Err`s are two different kinds
+    // of thing and take two different routes.
+    //
+    // `evaluate`'s is the host failing to **reach** an answer — a
+    // record-store read that failed, say. `crate::domain::governance`'s own
+    // contract forbids reporting that as a refusal: it "must not be reported
+    // as `APPROVAL_REQUIRED`, which would tell an operator an approval was
+    // missing when none was ever looked at", and a refusal would also audit
+    // an infrastructure fault as a domain decision and answer it 4xx. So it
+    // becomes a `Db` error, this door's internal-failure channel, which
+    // rolls the transaction back and answers 5xx. `into_authorization`'s
+    // `Err` is the ceremony's own no — `APPROVAL_REQUIRED` — and that one is
+    // a refusal.
+    //
+    // The host branch is **unreachable at this commit**:
+    // [`NoMaterialityPolicyGate`] is infallible, so its `evaluate` never
+    // answers `Err`. It goes live the moment slice 05 registers a
+    // store-backed host, which is why it is routed now rather than when the
+    // first operator reads `APPROVAL_REQUIRED` off a failed read.
+    // `skus::run_publish` has carried this shape from the start; this door
+    // mapped both arms to `Refused` until this fix. --
+    let subject = EntityRef {
+        tenant_id: inputs.tenant_id,
+        entity_kind: CatalogEntityKind::Product,
+        entity_id: inputs.product_id,
+    };
+    let verdict = gate
+        .evaluate(
+            subject,
+            InternalRevision::new(inputs.expected),
+            GateMode::Gate,
+        )
+        .map_err(|e| {
+            HeadActError::Db(DbError::Sea(DbErr::Custom(format!(
+                "bss-products: the governance gate host failed: {e}"
+            ))))
+        })?;
+    let authorization = verdict
+        .into_authorization()
+        .map_err(HeadActError::Refused)?;
+
+    // -- The edge, and what the floor says it costs. `published_state_after`
+    // decides the `to` side from the row image, the same way the head-row
+    // `UPDATE`'s own `CASE` does. --
+    let decision = transition::guard(
+        head.lifecycle_state,
+        published_state_after(head.lifecycle_state),
+    )
+    .map_err(HeadActError::Refused)?;
+
+    // -- a. Freeze the post-act image, at `published_version + 1`. --
+    repo::insert_entity_version(
+        runner,
+        &inputs.scope,
+        freeze_for(inputs, &head, &authorization),
+    )
+    .await
+    .map_err(|e| HeadActError::from_storage(&e))?;
+
+    // -- b. Then exactly one head-row `UPDATE`. --
+    let write = repo::publish_product_head(
+        runner,
+        &inputs.scope,
+        inputs.tenant_id,
+        inputs.product_id,
+        inputs.expected,
+        inputs.now,
+    )
+    .await
+    .map_err(|e| HeadActError::from_storage(&e))?;
+    if write == HeadWrite::Unmatched {
+        // An error rather than an outcome, and the whole reason
+        // [`HeadActError`] exists: this rolls the freeze back. An `Ok` here
+        // would commit a frozen version for a publish that never landed.
+        return Err(classify_unmatched_publish(runner, inputs).await);
+    }
+
+    // -- c. The approval-invalidation hook, where the floor says this edge
+    // fires one. On `draft -> published` it does not — that is
+    // `ApprovalInvalidation::Skip`, this transaction being the one that
+    // consumes the approval — so this call is a no-op today. It is here, and
+    // it reads `head_act_invalidation`'s answer, so that the decision stays
+    // `transition::guard`'s rather than becoming a fact hard-coded here. --
+    fire_invalidation_hook(inputs, head_act_invalidation(decision))?;
+
+    // -- d. Then the event, and the stored answer. --
+    announce_and_answer(runner, outbox, inputs, Announcement::Published).await
+}
+
+/// The discard act itself, on [`run_publish`]'s terms exactly: every phase on
+/// the mutation's own transaction, the idempotency claim first, and the head
+/// read under the write.
+///
+/// The phases a discard does **not** have are as deliberate as the ones it
+/// does. There is **no pipeline re-run** — nothing is being published, and
+/// `inst-fd-publish-revalidate` is the publish act's clause — and **no
+/// governance gate**: `inst-fd-governance-gate` puts the gate on the publish
+/// door, and discarding a never-published draft consumes and requires no
+/// approval.
+async fn run_discard(
+    runner: &(impl DBRunner + Sync),
+    inputs: &HeadActInputs,
+    outbox: &toolkit_db::outbox::Outbox,
+) -> Result<HeadActOutcome, HeadActError> {
+    if let Some(replay) = claim_for_head_act(
+        runner,
+        &inputs.scope,
+        inputs.tenant_id,
+        inputs.claim.as_ref(),
+    )
+    .await?
+    {
+        return Ok(replay);
+    }
+
+    let head = repo::find_product(runner, &inputs.scope, inputs.tenant_id, inputs.product_id)
+        .await
+        .map_err(|e| HeadActError::from_storage(&e))?
+        .ok_or(HeadActError::Vanished)?;
+
+    if head.internal_revision != inputs.expected {
+        return Err(HeadActError::Refused(DomainError::StaleRevision {
+            expected: inputs.expected,
+            found: head.internal_revision,
+        }));
+    }
+
+    // The edge. `transition::guard` runs terminality first and the edge list
+    // second, so a `retired` head is `ENTITY_TERMINAL` while a `published`
+    // one is `ILLEGAL_TRANSITION` — two refusals for two different reasons,
+    // which a single "is this legal" test would have collapsed into one.
+    let decision = transition::guard(head.lifecycle_state, LifecycleState::Discarded)
+        .map_err(HeadActError::Refused)?;
+
+    let write = repo::discard_product_head(
+        runner,
+        &inputs.scope,
+        inputs.tenant_id,
+        inputs.product_id,
+        inputs.expected,
+        inputs.now,
+    )
+    .await
+    .map_err(|e| HeadActError::from_storage(&e))?;
+    if write == HeadWrite::Unmatched {
+        return Err(classify_unmatched_discard(runner, inputs).await);
+    }
+
+    // A discard consumes no approval, so the floor says its edge fires the
+    // hook — read off `transition::guard`'s own answer, not decided here.
+    fire_invalidation_hook(inputs, head_act_invalidation(decision))?;
+
+    announce_and_answer(runner, outbox, inputs, Announcement::Discarded).await
+}
+
+/// `POST /products/{id}/publish`.
+///
+/// See this module's doc, "The publish door", for the pipeline in order,
+/// what this writes, and the three clauses of `dod-publish-door` this slice
+/// cannot close.
+async fn publish_product(
+    Extension(state): Extension<Arc<ApiState>>,
+    Extension(enforcer): Extension<authz_resolver_sdk::PolicyEnforcer>,
+    extension_ctx: Option<Extension<SecurityContext>>,
+    Path(product_id): Path<Uuid>,
+    headers: HeaderMap,
+) -> Result<Response, CanonicalError> {
+    let ctx = require_authenticated(extension_ctx)?;
+    publish_product_under_gate(
+        &state,
+        &enforcer,
+        &ctx,
+        product_id,
+        &headers,
+        // `inst-fd-gate-mode` and the owner's call of 2026-08-27: the REST
+        // surface always calls in `Gate` mode. The mode is fixed inside
+        // `run_publish`, not here; what this call site fixes is *which host
+        // answers*, and this is the only host the gear has until slice 05
+        // registers a materiality policy.
+        &(Arc::new(NoMaterialityPolicyGate) as Arc<dyn GovernanceGate + Send + Sync>),
+    )
+    .await
+}
+
+/// The publish door, with its governance host as an explicit argument.
+///
+/// # Why the host is a parameter, and why the mode is not
+///
+/// The **mode** is fixed at [`GateMode::Gate`] inside [`run_publish`] and is
+/// reachable from nowhere else: no request field, no header and no query
+/// parameter selects [`GateMode::PreAuthorized`], which is
+/// `inst-fd-gate-mode`'s own requirement — a `PreAuthorized` publish
+/// reachable from the wire would let any caller naming an approval id skip
+/// the ceremony.
+///
+/// The **host** is a parameter because the gear's only host,
+/// [`NoMaterialityPolicyGate`], never refuses under `Gate` — it authorizes,
+/// naming no record, because no materiality policy is registered. That makes
+/// the `APPROVAL_REQUIRED` branch unreachable through [`publish_product`]
+/// and therefore untestable at the door, and an untested refusal path is one
+/// that quietly stops working. This seam is also the one slice 05 fills: its
+/// host arrives here as another `Arc<dyn GovernanceGate + Send + Sync>`, not
+/// as a rewrite of this function.
+async fn publish_product_under_gate(
+    state: &ApiState,
+    enforcer: &authz_resolver_sdk::PolicyEnforcer,
+    ctx: &SecurityContext,
+    product_id: Uuid,
+    headers: &HeaderMap,
+    gate: &Arc<dyn GovernanceGate + Send + Sync>,
+) -> Result<Response, CanonicalError> {
+    let act = HeadAct {
+        authz_action: crate::authz::actions::PUBLISH,
+        audit_action: PUBLISH_AUDIT_ACTION,
+        endpoint: publish_endpoint(product_id),
+    };
+    // `actor_ref`, authorization, the key, the precondition header and the
+    // head read — the phases that precede the act.
+    let opened = open_head_door(state, enforcer, ctx, product_id, headers, &act).await?;
+
+    // The act: every remaining phase, then the freeze, the one head-row
+    // `UPDATE` and the event, on one transaction.
+    let result = publish_in_one_transaction(state, &opened, gate).await;
+
+    // The answer, the replay, or the audited refusal.
+    answer_head_act(state, &opened, PUBLISH_AUDIT_ACTION, result).await
+}
+
+/// `POST /products/{id}/discard`.
+///
+/// See this module's doc, "The discard door", for the legality rule, the
+/// reservations this releases without a statement of its own, and why the
+/// gate is not asked.
+///
+/// # The grant is `write`, not `discard`
+///
+/// §2 narrates this door under `product × discard`, and `crate::authz` does
+/// not declare a `discard` action: `05-governance.md` §3.2's own RBAC
+/// catalog rows the same door under `product × write`, and that document's
+/// open-items list records the contradiction as unresolved with the decision
+/// owned by that slice. This door therefore gates on the action the
+/// normative catalog table currently grants it. When 05 settles the
+/// question, the change is one constant here and one in `crate::authz`.
+async fn discard_product(
+    Extension(state): Extension<Arc<ApiState>>,
+    Extension(enforcer): Extension<authz_resolver_sdk::PolicyEnforcer>,
+    extension_ctx: Option<Extension<SecurityContext>>,
+    Path(product_id): Path<Uuid>,
+    headers: HeaderMap,
+) -> Result<Response, CanonicalError> {
+    let ctx = require_authenticated(extension_ctx)?;
+    let act = HeadAct {
+        authz_action: crate::authz::actions::WRITE,
+        audit_action: DISCARD_AUDIT_ACTION,
+        endpoint: discard_endpoint(product_id),
+    };
+    let opened = open_head_door(&state, &enforcer, &ctx, product_id, &headers, &act).await?;
+    let result = discard_in_one_transaction(&state, &opened).await;
+    answer_head_act(&state, &opened, DISCARD_AUDIT_ACTION, result).await
 }
 
 #[cfg(test)]

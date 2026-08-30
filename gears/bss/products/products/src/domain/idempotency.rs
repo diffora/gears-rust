@@ -28,87 +28,94 @@
 //! `crate::api::rest::products::products_tests
 //! ::an_answered_key_replays_its_stored_response_even_though_the_retry_carries_a_precondition`.
 //!
-//! # The canonical rendering is §4.3's, and the design set fixed it
+//! # The canonical rendering is §4.3's, and it lives in one place
 //!
 //! This gear pins **one** canonicalization rule rather than two: §4.3
 //! ("Engine-canonical serialization is pinned here") states it for a frozen
 //! version row's content, and §3.2 reuses it for a parsed request precisely
-//! so a later reader has one rule to learn. As it applies here:
-//!
-//! - `JSON`, object keys **sorted lexicographically by field name**, `UTF-8`
-//!   without `BOM`, and no insignificant whitespace at all.
-//! - Integers as bare decimal strings, no locale and no trailing zeroes — so
-//!   `1` and `1.0` render identically and hash equal.
-//! - Timestamps `RFC 3339` in `UTC`: a caller rendering one into a string
-//!   field gets that string verbatim, since no request field on this surface
-//!   is typed as an instant.
+//! so a later reader has one rule to learn. The rule itself therefore lives
+//! in [`crate::domain::canonical`], not here, and this module binds it to the
+//! one reading a request is taken under: [`Absence::Omit`].
 //!
 //! **What §4.3's "absent values written `null`" clause does *not* mean here.**
 //! That clause addresses a *complete* named field set — a version row's
-//! columns. **P-D-34** narrows it for a request: *"A parsed request's named
-//! field set is the fields the request carries"*, so an omitted field is
-//! omitted from the rendering rather than rendered `null`, and a `PATCH` that
-//! omits a field and one that sends it `null` hash **differently**, which is
-//! what they mean at the head door. Callers build the operand accordingly:
-//! see [`payload_digest`]'s own contract.
+//! columns — and is [`Absence::Null`]. **P-D-34** narrows it for a request:
+//! *"A parsed request's named field set is the fields the request carries"*,
+//! so an omitted field is omitted from the rendering rather than rendered
+//! `null`, and a `PATCH` that omits a field and one that sends it `null` hash
+//! **differently**, which is what they mean at the head door. Callers build
+//! the operand accordingly: see [`payload_digest`]'s own contract.
 //!
-//! **An array is rendered in the order received.** §4.3 sorts a *row
-//! collection* by the collection's own identifier, and neither create door's
-//! payload carries a collection today — no field on `CreateProductRequest` or
-//! `CreateSkuRequest` is an array. The first door whose payload does carry
-//! one owes that sort here rather than at its own call site; it is named as
-//! owed rather than pre-built, because the sort key is the collection's
-//! identifier and no collection exists yet to name one.
+//! **An array is rendered in the order received**, and the collection sort
+//! §4.3 states is owed by the first door whose payload carries a collection.
+//! Neither create door's payload does today — no field on
+//! `CreateProductRequest` or `CreateSkuRequest` is an array — and the debt is
+//! recorded in [`crate::domain::canonical`]'s own doc, beside the code that
+//! will pay it.
 //!
-//! # The digest primitive, and what it costs
+//! # The digest primitive
 //!
-//! [`payload_digest`] is a `UUID` v5 — the `RFC 4122` namespaced `SHA-1`
-//! construction — over the canonical rendering, stored as its 16 bytes in
-//! `payload_hash` (`bytea` on Postgres, `blob` on `SQLite`; the migration
-//! fixes no length, so 16 bytes is admitted).
+//! [`payload_digest`] is `SHA-256` through `aws-lc-rs`, the platform's
+//! `FIPS`-validated provider, stored as its 32 bytes in `payload_hash`
+//! (`bytea` on Postgres, `blob` on `SQLite`; the migration fixes no length).
+//! It is [`crate::domain::canonical::content_digest`] — the same function and
+//! the same primitive §4.3 names for a version row's `content_digest`, so the
+//! gear has one digest as well as one rendering.
 //!
-//! It is **not** the primitive the donor uses: `gears/bss/pricing`'s
-//! `IdempotencyGate::payload_hash` takes a full `SHA-256` through
-//! `aws-lc-rs`, the platform's own `FIPS`-validated provider. This gear
-//! cannot: `aws-lc-rs` is not a dependency of this crate and this slice may
-//! not touch `Cargo.toml`, while `sha2`/`sha1`/`md5` are refused outright by
-//! architecture lint `DE0708` (`docs/security/SECURITY.md`). The `uuid` crate
-//! is already a direct dependency with its `v5` feature on, so v5 is the one
-//! specified, stable, cross-language digest reachable from here without a
-//! manifest change.
+//! It is also the donor's: `gears/bss/pricing`'s
+//! `IdempotencyGate::payload_hash` takes `aws-lc-rs` `SHA-256` through the
+//! identical call. This module previously could not, `aws-lc-rs` not being a
+//! dependency of this crate while `sha2`/`sha1`/`md5` are refused outright by
+//! architecture lint `DE0708` (`docs/security/SECURITY.md`), and stood on a
+//! `UUID` v5 instead. **That debt — recorded here as owed "to whichever slice
+//! may add a dependency to this gear's manifest" — is paid**: the manifest
+//! now carries `aws-lc-rs` and the truncated 128-bit `SHA-1` construction is
+//! gone. Nothing else in this module moved, because the rendering — the part
+//! the design set actually pins — is independent of which digest consumes it,
+//! which is what that entry predicted.
 //!
-//! **The cost, stated plainly**: 128 bits truncated out of `SHA-1` rather
-//! than 256 bits of `SHA-256`. This digest is not a security primitive — it
-//! never crosses the wire, and it is compared only against the other digests
-//! stored under the *same* `(tenant_id, endpoint, client_key)`, so the whole
-//! consequence of a collision is that one caller's own retry replays its own
-//! earlier answer instead of being refused `IDEMPOTENCY_CONFLICT`. Moving to
-//! the donor's `aws-lc-rs` `SHA-256` is owed to whichever slice may add a
-//! dependency to this gear's manifest; nothing else about this module changes
-//! when it does, because the rendering — the part the design set actually
-//! pins — is independent of which digest consumes it.
-//!
-//! **A later reader can reproduce a digest** without this crate:
-//! `python3 -c "import uuid;
-//! print(uuid.uuid5(uuid.UUID('8a1f4d2c-7b93-4e51-9c6a-2f08d3b715e4'),
-//! '<the canonical rendering>'))"`. `idempotency_tests
+//! **A later reader can reproduce a digest** without this crate, the digest
+//! being a plain `SHA-256` over the rendering with no namespace, no salt and
+//! no length prefix:
+//! `printf '%s' '<the canonical rendering>' | sha256sum`. `idempotency_tests
 //! ::the_digest_is_stable_across_runs_and_reproducible_outside_this_crate`
 //! pins one such vector byte for byte.
 //!
+//! # What the swap costs a stored row, and why it is free here
+//!
+//! The primitive changed under a table that stores its output. The namespace
+//! constant removed by the swap carried the rule for exactly this class of
+//! change in its own doc: *"A change here is a digest-version bump with a
+//! retention window to wait out, never a refactor."* Paying the debt above
+//! does not discharge that rule, so it is stated here rather than left to be
+//! rediscovered.
+//!
+//! **The consequence.** `payload_hash` moved from 16 bytes to 32 and from one
+//! construction to another, so any row written before this commit carries a
+//! digest no arriving request can now match. `claim_idempotency_key` compares
+//! the arriving digest against the stored one and answers
+//! `IDEMPOTENCY_CONFLICT` on a mismatch, so an in-window retry against such a
+//! row is refused rather than replayed - the precise failure the store exists
+//! to prevent.
+//!
+//! **The disposition.** This gear is pre-production: it has never been
+//! deployed, `products_idempotency` has no rows anywhere, and the migration
+//! chain that creates it is itself unreleased. The swap is therefore free,
+//! and it is free **because of that fact and no other** - not because the
+//! rule is soft.
+//!
+//! **What a later swap owes.** Against live data the same change is a
+//! `digest_version` bump plus a wait-out of the store's retention floor - C6
+//! (`design/01-foundation.md` §1.6): at least 24 hours **and** at least the
+//! maximum freeze timeout slice 06 exports. Every key claimed before the swap
+//! must have expired before the new primitive may answer a claim, or a
+//! caller's own retry meets a digest it cannot match.
+//!
 //! @cpt-cf-bss-products-dod-idempotency-store
 
-use serde_json::{Number, Value as JsonValue};
-use uuid::Uuid;
+use serde_json::Value as JsonValue;
 
-/// The `UUID` v5 namespace every payload digest on this surface is taken
-/// under.
-///
-/// Arbitrary in the way any namespace is, and **pinned** in the way that
-/// matters: changing it changes every digest, which would make every live
-/// claim's stored `payload_hash` unmatchable and turn every in-window retry
-/// into an `IDEMPOTENCY_CONFLICT`. A change here is a digest-version bump
-/// with a retention window to wait out, never a refactor.
-pub const PAYLOAD_NAMESPACE: Uuid = Uuid::from_u128(0x8a1f_4d2c_7b93_4e51_9c6a_2f08_d3b7_15e4);
+use crate::domain::canonical::{Absence, content_digest};
 
 /// The digest of one parsed request, as `products_idempotency.payload_hash`
 /// stores it.
@@ -128,101 +135,23 @@ pub const PAYLOAD_NAMESPACE: Uuid = Uuid::from_u128(0x8a1f_4d2c_7b93_4e51_9c6a_2
 ///   fields that applies to.
 #[must_use]
 pub fn payload_digest(payload: &JsonValue) -> Vec<u8> {
-    Uuid::new_v5(&PAYLOAD_NAMESPACE, canonical_rendering(payload).as_bytes())
-        .as_bytes()
-        .to_vec()
+    content_digest(&canonical_rendering(payload))
 }
 
-/// The canonical rendering [`payload_digest`] hashes — §4.3's rule as this
-/// module's doc restates it for a parsed request.
+/// The canonical rendering [`payload_digest`] hashes — §4.3's rule read
+/// under **P-D-34**'s request mode.
+///
+/// A named binding rather than a call site's argument: the mode a request is
+/// rendered under is a decision of this module, not of each door, and
+/// [`crate::domain::canonical::canonical_rendering`] takes the mode
+/// explicitly precisely so no caller can pick it by accident.
 ///
 /// Public because the rendering, not the digest, is the part the design set
 /// pins: a test, and a later reader reproducing a stored digest by hand, both
 /// need to see the exact string that went in.
 #[must_use]
-pub fn canonical_rendering(value: &JsonValue) -> String {
-    let mut rendered = String::new();
-    render_into(value, &mut rendered);
-    rendered
-}
-
-/// Append `value`'s canonical rendering to `out`.
-///
-/// Recursive rather than iterative for the reason the shape is recursive:
-/// a value nests, and the sort applies at every object level, not only the
-/// outermost one.
-fn render_into(value: &JsonValue, out: &mut String) {
-    match value {
-        JsonValue::Null => out.push_str("null"),
-        JsonValue::Bool(flag) => out.push_str(if *flag { "true" } else { "false" }),
-        JsonValue::Number(number) => out.push_str(&render_number(number)),
-        JsonValue::String(text) => out.push_str(&render_string(text)),
-        JsonValue::Array(items) => {
-            out.push('[');
-            for (position, item) in items.iter().enumerate() {
-                if position > 0 {
-                    out.push(',');
-                }
-                render_into(item, out);
-            }
-            out.push(']');
-        }
-        JsonValue::Object(map) => {
-            // Sorted here rather than trusted from the map: `serde_json`'s
-            // own ordering depends on whether its `preserve_order` feature
-            // is on anywhere in the graph, and a digest that changed with a
-            // feature unification elsewhere in the workspace would be the
-            // opposite of canonical.
-            let mut entries: Vec<(&String, &JsonValue)> = map.iter().collect();
-            entries.sort_unstable_by(|left, right| left.0.cmp(right.0));
-            out.push('{');
-            for (position, (key, entry)) in entries.into_iter().enumerate() {
-                if position > 0 {
-                    out.push(',');
-                }
-                out.push_str(&render_string(key));
-                out.push(':');
-                render_into(entry, out);
-            }
-            out.push('}');
-        }
-    }
-}
-
-/// One string, escaped the way `JSON` escapes strings.
-///
-/// Reached through [`JsonValue`]'s own infallible `Display` rather than
-/// `serde_json::to_string`'s `Result`: escaping a string cannot fail, and a
-/// fallible call here would need a fallback branch that could only ever
-/// render something *other* than the canonical form.
-fn render_string(text: &str) -> String {
-    JsonValue::String(text.to_owned()).to_string()
-}
-
-/// One number, as a bare decimal string with no trailing zeroes.
-///
-/// Integers render exactly. A fractional value renders through `f64`'s own
-/// shortest-round-trip `Display`, which prints `1.0` as `1` — so a client
-/// that sent `1` on its first attempt and `1.0` on its retry hashes the same,
-/// which is the whole point of hashing a *parsed* request.
-///
-/// **The stated cost**: a magnitude large or small enough to make `f64`'s
-/// `Display` reach exponent form renders in that form, and a value beyond
-/// `f64`'s precision renders as the nearest representable one. No request
-/// field on this surface is numeric today; the first door that adds one owes
-/// a decimal-string operand rather than a float, which is §4.3's own rule
-/// ("integers and decimals as bare decimal strings") read strictly.
-fn render_number(number: &Number) -> String {
-    if let Some(value) = number.as_i64() {
-        return value.to_string();
-    }
-    if let Some(value) = number.as_u64() {
-        return value.to_string();
-    }
-    match number.as_f64() {
-        Some(value) => format!("{value}"),
-        None => number.to_string(),
-    }
+pub fn canonical_rendering(payload: &JsonValue) -> String {
+    crate::domain::canonical::canonical_rendering(payload, Absence::Omit)
 }
 
 #[cfg(test)]

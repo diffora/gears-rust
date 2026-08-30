@@ -41,9 +41,36 @@
 //!   `features/foundation.md` §4 declares — the machine is shared by Product
 //!   and SKU (`design/01-foundation.md` §4, "The machine is shared by
 //!   `Product` and `SKU`"). `retired` and `discarded` are terminal.
-//! - **`published_version`** is admitted only unchanged or exactly `OLD + 1`;
-//!   the "matching frozen version row exists" half is **owed to Phase 6**'s
-//!   `products_entity_version`, for the identical reason as the sibling table.
+//! - **`published_version`** is admitted only unchanged or exactly `OLD + 1`,
+//!   **and, when it moves at all, only where the matching frozen version row
+//!   already exists** — a row of `products_entity_version` keyed
+//!   `(NEW.tenant_id, 'sku', NEW.sku_id, NEW.published_version)`. Both halves
+//!   of the `DoD`'s rule ship here; an unchanged `published_version` is
+//!   admitted with no subquery. The existence half was owed to Phase 6 when
+//!   this file was written and is paid now, for the identical reason and by
+//!   the identical mechanism as the sibling table: a trigger body resolves
+//!   table names at execution, not at creation, so this trigger may reference
+//!   `m20260829_000007_create_products_entity_version`'s table even though
+//!   that migration runs later in name order. `migrations_tests.rs` asserts
+//!   that empirically rather than assuming it.
+//!
+//!   A subquery is compatible with **P-D-31**, whose objection was to a guard
+//!   reading the **door** through a session variable that exists on one engine
+//!   only: this subquery judges **data**, and both engines evaluate it.
+//!
+//!   Since Phase 6 a **third** half ships alongside them, identical to the
+//!   sibling table's: a bump is refused outright when `OLD.lifecycle_state`
+//!   is `retired` or `discarded`. No neighbouring clause reached that write
+//!   — a publish of an already-terminal head writes no `lifecycle_state`, so
+//!   the edge clause never fires — and
+//!   `cpt-cf-bss-products-dod-transition-guard` requires refusing *"any head
+//!   write on a `retired` or `discarded` row"* (P-D-25, P-D-32) under §1.6
+//!   C5's physical append-only posture. It is gated on the counter
+//!   **moving**, deliberately: it is not a ban on every `UPDATE` of a
+//!   terminal row, because slice 04 writes `deprecation_provenance` and
+//!   `replaced_by_sku_id` on terminal rows by design. Do not simplify it
+//!   into a blanket ban; `migrations_tests.rs` pins both sides of that
+//!   boundary.
 //! - **Bucket-i** (`sku_code`, `product_id`) is admitted only while
 //!   `OLD.published_version = 0` **and** `OLD.lifecycle_state` is
 //!   non-terminal, never again after first publish.
@@ -57,14 +84,20 @@
 //!   in **no** update at all (P-D-34); neither is `created_at`.
 //!
 //! **Bucket-ii and bucket-iv have no members among today's columns.** The
-//! same four not-yet-existing columns the sibling table's doc names —
-//! `cloned_from`, `deprecation_provenance`, `replaced_by_sku_id` (slice 03)
-//! and `composition_pending` (slice 07) — are owed here too; this migration
-//! guards what exists today.
+//! same four not-yet-existing columns the sibling table's doc names are owed
+//! here too, and they are **not all owed by the same slice**:
+//! `cloned_from`, `deprecation_provenance` and `replaced_by_sku_id` arrive
+//! with slice 03, while **`composition_pending` is this slice's own** — §1.5's
+//! **In** list names *"the `PublishDoor`'s `composition_pending` write"* among
+//! the guards that *"ride this slice's first migration and publish door"*, and
+//! assigns only the composition *semantics* to slice 06. This migration guards
+//! what exists today; the `composition_pending` column and its clause are an
+//! unpaid debt of this phase rather than a later slice's arrival.
 //!
 //! The guard judges the data, never the door (P-D-31): every predicate reads
-//! only `OLD` and `NEW`, on both engines, for the identical reason as the
-//! sibling table's guard.
+//! only `OLD`, `NEW` and — in the `published_version` clause alone —
+//! committed data in another table, on both engines, for the identical reason
+//! as the sibling table's guard.
 //!
 //! **DELETE is refused unconditionally, on both engines** — the same C5
 //! append-only posture as `products_product`, `products_audit_log` and history
@@ -130,6 +163,24 @@ const PG_UP_STATEMENTS: &[&str] = &[
                   OR NEW.published_version IS NOT DISTINCT FROM OLD.published_version + 1)
           THEN
             RAISE EXCEPTION 'products_sku: published_version only moves by +1';
+          END IF;
+
+          IF NEW.published_version IS DISTINCT FROM OLD.published_version
+             AND NOT EXISTS (
+               SELECT 1 FROM bss.products_entity_version v
+               WHERE v.tenant_id = NEW.tenant_id
+                 AND v.entity_kind = 'sku'
+                 AND v.entity_id = NEW.sku_id
+                 AND v.published_version = NEW.published_version
+             )
+          THEN
+            RAISE EXCEPTION 'products_sku: a published_version bump requires the matching products_entity_version row to exist';
+          END IF;
+
+          IF NEW.published_version IS DISTINCT FROM OLD.published_version
+             AND OLD.lifecycle_state IN ('retired', 'discarded')
+          THEN
+            RAISE EXCEPTION 'products_sku: a published_version bump is not admitted on a terminal head';
           END IF;
 
           IF NEW.lifecycle_state IS DISTINCT FROM OLD.lifecycle_state
@@ -205,6 +256,20 @@ const SQLITE_UP_STATEMENTS: &[&str] = &[
             NEW.published_version IS OLD.published_version
             OR NEW.published_version IS (OLD.published_version + 1)
         ) BEGIN SELECT RAISE(ABORT, 'products_sku: published_version only moves by +1'); END",
+    "CREATE TRIGGER trg_products_sku_published_version_row BEFORE UPDATE ON products_sku FOR EACH ROW WHEN
+            NEW.published_version IS NOT OLD.published_version
+            AND NOT EXISTS (
+                SELECT 1 FROM products_entity_version v
+                WHERE v.tenant_id IS NEW.tenant_id
+                  AND v.entity_kind = 'sku'
+                  AND v.entity_id IS NEW.sku_id
+                  AND v.published_version IS NEW.published_version
+            )
+        BEGIN SELECT RAISE(ABORT, 'products_sku: a published_version bump requires the matching products_entity_version row to exist'); END",
+    "CREATE TRIGGER trg_products_sku_published_version_terminal BEFORE UPDATE ON products_sku FOR EACH ROW WHEN
+            NEW.published_version IS NOT OLD.published_version
+            AND OLD.lifecycle_state IN ('retired', 'discarded')
+        BEGIN SELECT RAISE(ABORT, 'products_sku: a published_version bump is not admitted on a terminal head'); END",
     "CREATE TRIGGER trg_products_sku_lifecycle_edge BEFORE UPDATE ON products_sku FOR EACH ROW WHEN
             NEW.lifecycle_state IS NOT OLD.lifecycle_state
             AND NOT (

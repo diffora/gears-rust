@@ -1,5 +1,6 @@
-//! Repositories for `products_product`, `products_sku`, `products_identity_ref`
-//! and `products_audit_log` (`design/01-foundation.md` §4.1, §4.2, §4.4;
+//! Repositories for `products_product`, `products_sku`,
+//! `products_entity_version`, `products_identity_ref` and
+//! `products_audit_log` (`design/01-foundation.md` §4.1, §4.2, §4.3, §4.4;
 //! `design/10-retention-erasure.md` `inst-im-map`).
 //!
 //! Phase 1's `products_product`/`products_sku` functions close no Definition
@@ -37,6 +38,20 @@
 //! finds `claimed` or reports that it found none — never a silent zero-row
 //! success (`inst-fd-idem-claim-write`, **P-D-29**).
 //!
+//! Phase 6 adds the four writes the publish and discard transactions are
+//! made of, and nothing above them: [`insert_entity_version`] freezes one
+//! version row, [`publish_product_head`] and [`publish_sku_head`] carry the
+//! whole of a publish in **one** guarded `UPDATE` each, and
+//! [`discard_product_head`] and [`discard_sku_head`] carry a discard in one.
+//! The doors that call them, the canonical rendering they are handed and the
+//! digest over it are all a later slice's; this module stores bytes and
+//! moves counters. All six join the caller's transaction, for the reason
+//! below, and the publish pair depends on it in a way the others do not: the
+//! head-row guard admits a `published_version` bump only where the matching
+//! frozen row already exists (`m20260829_000002_create_products_product`), so
+//! a freeze committed on a runner of its own would both trip the guard's
+//! ordering and outlive a rolled-back publish.
+//!
 //! # Free functions, not a provider-holding struct
 //!
 //! Every write this gear will make joins a multi-row transaction: the create
@@ -58,7 +73,7 @@
 
 use chrono::{DateTime, Utc};
 use sea_orm::ActiveValue::Set;
-use sea_orm::sea_query::{Expr, OnConflict};
+use sea_orm::sea_query::{Expr, ExprTrait, OnConflict, SimpleExpr};
 use sea_orm::{ColumnTrait, Condition, DbErr, EntityTrait};
 use serde_json::Value as JsonValue;
 use toolkit_db::secure::{
@@ -70,7 +85,9 @@ use bss_products_sdk::models::LifecycleState;
 
 use crate::domain::error::DomainError;
 use crate::infra::storage::RepoError;
-use crate::infra::storage::entity::{audit_log, idempotency, identity_ref, product, sku};
+use crate::infra::storage::entity::{
+    audit_log, entity_version, idempotency, identity_ref, product, sku,
+};
 
 /// The row an insert of `products_product` supplies.
 ///
@@ -637,6 +654,26 @@ pub struct AuditCommon {
     pub reason: Option<String>,
     /// Ties related rows together across a single request, where one
     /// exists.
+    ///
+    /// **Reserved, and unwritable today: every caller in this crate passes
+    /// `None`, and that is not an oversight to fix at the call site.** The
+    /// gear has no request-scoped correlation id to carry. `SecurityContext`
+    /// (`toolkit-security`) exposes a subject, a subject type, a tenant and
+    /// token scopes, and no request identifier; no door in this crate reads
+    /// an `x-request-id` or `x-correlation-id` header (the one place the
+    /// platform reads those is `toolkit-http`'s retry layer, for its own log
+    /// line, and it does not publish them to a handler); and the only
+    /// request-scoped identifier the platform propagates is the W3C trace
+    /// id, which `toolkit-http`'s `otel` module records onto the span but
+    /// offers no read-back for, and which is not a `UUID` in any case.
+    ///
+    /// So the column stays `NULL` until the gear adopts one. **Owed:** a
+    /// request-scoped correlation id, resolved once per request and carried
+    /// on `ApiState`'s per-request inputs the way the actor ref already is,
+    /// after which every audit writer sets this field and the audit trail
+    /// becomes joinable to a request. Minting one per audit row here would
+    /// be worse than `NULL`: it would fill the column with values that
+    /// correlate nothing while reading, to an operator, as though they did.
     pub correlation_id: Option<Uuid>,
     /// The commit instant; the operand `10-retention-erasure`'s
     /// `RetentionClock` reads. Taken as a parameter rather than read from
@@ -1254,6 +1291,514 @@ pub async fn answer_idempotency_key(
         return Ok(IdempotencyAnswer::NotHeld);
     }
     Ok(IdempotencyAnswer::Recorded)
+}
+
+/// Which head table a frozen row belongs to.
+///
+/// `products_entity_version.entity_kind` is a closed roster on both engines
+/// (`chk_products_entity_version_entity_kind`), so it is carried as an
+/// enumeration here rather than as a caller-supplied string: a third kind is
+/// a migration, never a typo at a call site.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VersionedEntityKind {
+    /// A `products_product` head.
+    Product,
+    /// A `products_sku` head.
+    Sku,
+}
+
+impl VersionedEntityKind {
+    /// The stored token, matching the `CHECK` roster and the head-row
+    /// guard's own literal.
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Product => "product",
+            Self::Sku => "sku",
+        }
+    }
+}
+
+/// The row a freeze supplies to `products_entity_version`
+/// (`design/01-foundation.md` §4.3).
+///
+/// [`Self::content`] and [`Self::content_digest`] are **inputs**, not
+/// computed here: the canonical rendering and the `SHA-256` over it are the
+/// publish door's, and this repository stores the bytes it is handed. Any
+/// re-rendering on the way to storage would put the digest and slice 10's
+/// byte-for-byte restore drill on different bytes, which is the one property
+/// the column exists to have.
+#[derive(Clone, Debug)]
+pub struct NewEntityVersion {
+    /// Owning tenant.
+    pub tenant_id: Uuid,
+    /// Which head table [`Self::entity_id`] names.
+    pub entity_kind: VersionedEntityKind,
+    /// The head row's own id.
+    pub entity_id: Uuid,
+    /// The version being frozen, `>= 1`.
+    pub published_version: i64,
+    /// The canonical rendering itself, exactly the bytes
+    /// [`Self::content_digest`] was computed over.
+    pub content: String,
+    /// `SHA-256` over [`Self::content`] as handed in, computed by the door.
+    pub content_digest: Vec<u8>,
+    /// The digest scheme [`Self::content_digest`] was computed under.
+    pub digest_version: i32,
+    /// The authorizing `ApprovalRecord`'s id on a yes verdict, where the
+    /// gate that mints one has run.
+    pub approval_ref: Option<Uuid>,
+    /// The pseudonymous ref of whoever published.
+    pub actor_ref: Uuid,
+    /// The publish instant.
+    pub published_at: DateTime<Utc>,
+}
+
+/// What a guarded head-row `UPDATE` found: the outcome the caller acts on,
+/// never a silent zero-row success.
+///
+/// A returned enum for [`IdempotencyAnswer`]'s reason: this layer cannot
+/// tell the readings of a zero-row result apart, and only the door can. On a
+/// publish, [`Self::Unmatched`] means the head no longer carries the expected
+/// `internal_revision` — `STALE_REVISION` — or it is terminal, or it lies
+/// outside `scope`. On a discard it means the same, plus the row not being
+/// legal to discard. A door that needs to tell those apart re-reads the head
+/// through [`find_product`]/[`find_sku`] to pick the refusal code; that read
+/// decides only which message is returned, never whether the write landed,
+/// so it carries none of the race a read-then-write would.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HeadWrite {
+    /// The `UPDATE` matched its row and the write landed.
+    Applied,
+    /// No row matched the filter. **Nothing was written.**
+    Unmatched,
+}
+
+/// Freeze one version row: insert `products_entity_version` for
+/// `(tenant_id, entity_kind, entity_id, published_version)`
+/// (`design/01-foundation.md` §4.3, `inst-fd-publish-freeze`).
+///
+/// # This function opens no transaction — `runner` MUST be the publish's own
+///
+/// It takes the caller's runner like every other function in this module,
+/// and that runner MUST be the very transaction the head-row `UPDATE` runs
+/// on. This is not a preference: the head-row guard admits a
+/// `published_version` bump **only where the matching frozen row already
+/// exists**, so the freeze has to be visible to the bump — and a freeze that
+/// committed on a runner of its own would leave a version row behind when
+/// the publish rolled back, after which the guard would admit a later bump
+/// to a version no committed act ever produced. Freeze first, bump second,
+/// one transaction (`inst-fd-publish-txn`).
+///
+/// # The digest is an input, and this function computes nothing
+///
+/// `content` and `content_digest` arrive already computed. Rendering the
+/// content canonically and hashing it is the publish door's work — it is the
+/// door that knows the post-act image (**P-D-33**) — and this repository
+/// deliberately imports no canonicalizer: bytes re-rendered on the way to
+/// storage are no longer guaranteed to be the bytes the digest was taken
+/// over, which is the single property slice 10's restore drill depends on.
+/// `digest_version` is likewise stored as handed in, so that "a digest-version
+/// bump, not a silent change" stays checkable from the row alone
+/// (**P-D-29**, **P-D-33**).
+///
+/// # Errors
+/// [`RepoError::Db`] on a scope failure or a storage failure, including a
+/// duplicate key — the same version of the same entity frozen twice — and
+/// the `chk_products_entity_version_published_version` /
+/// `chk_products_entity_version_digest_version` lower bounds. The table is
+/// append-only with no `UPDATE` path at all, so a re-freeze is a refusal
+/// rather than an overwrite.
+pub async fn insert_entity_version(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    new: NewEntityVersion,
+) -> Result<(), RepoError> {
+    let model = entity_version::ActiveModel {
+        tenant_id: Set(new.tenant_id),
+        entity_kind: Set(new.entity_kind.as_str().to_owned()),
+        entity_id: Set(new.entity_id),
+        published_version: Set(new.published_version),
+        content: Set(new.content),
+        content_digest: Set(new.content_digest),
+        digest_version: Set(new.digest_version),
+        approval_ref: Set(new.approval_ref),
+        actor_ref: Set(new.actor_ref),
+        published_at: Set(new.published_at),
+    };
+
+    entity_version::Entity::insert(model.clone())
+        .secure()
+        .scope_with_model(scope, &model)
+        .map_err(|e| {
+            RepoError::Db(format!(
+                "freeze {} {} v{} scope: {e}",
+                new.entity_kind.as_str(),
+                new.entity_id,
+                new.published_version
+            ))
+        })?
+        .exec(runner)
+        .await
+        .map_err(|e| {
+            RepoError::Db(format!(
+                "freeze {} {} v{}: {e}",
+                new.entity_kind.as_str(),
+                new.entity_id,
+                new.published_version
+            ))
+        })?;
+
+    Ok(())
+}
+
+/// The head states a publish is admitted from: a `draft` for its first
+/// publish, a `published` or `deprecated` head for version N+1
+/// (`inst-fd-publish-pin`).
+///
+/// Carried in the `UPDATE`'s own filter rather than checked by a prior read,
+/// for the reason [`discard_product_head`] gives at greater length.
+///
+/// # Two enforcements stand between a terminal head and a version N+1, and both are wanted
+///
+/// The **first** is physical. `m20260829_000002_create_products_product.rs`
+/// and `m20260829_000003_create_products_sku.rs` each raise on a bump off a
+/// terminal head, on both engines — Postgres as
+///
+/// ```sql
+/// IF NEW.published_version IS DISTINCT FROM OLD.published_version
+///    AND OLD.lifecycle_state IN ('retired', 'discarded')
+/// THEN
+///   RAISE EXCEPTION 'products_product: a published_version bump is not admitted on a terminal head';
+/// END IF;
+/// ```
+///
+/// and `SQLite` as `trg_products_product_published_version_terminal` /
+/// `trg_products_sku_published_version_terminal`, whose `WHEN` is the same
+/// pair of conditions spelled `IS NOT` / `IN`. The **second** is this
+/// filter.
+///
+/// An earlier version of this doc called the filter "the only thing
+/// standing between a terminal head and a version N+1 nobody may publish".
+/// That held when it was written and stopped holding later in the same
+/// phase, when both migrations gained the clause quoted above. It is
+/// corrected here rather than deleted because the stale wording invites the
+/// opposite error: a reader who reconstructs the pairing from this file
+/// alone could strike the trigger clause as redundant, and the trigger is
+/// the half that does not depend on any caller composing the right `WHERE`.
+///
+/// Neither half subsumes the other. The trigger refuses the write however
+/// it is issued — a future door, a migration, a repair script — and is
+/// therefore the invariant. The filter is what makes the refusal *usable*:
+/// a terminal head simply falls outside the `UPDATE`'s match set, so the
+/// door gets `rows_affected == 0` and classifies it through the ordinary
+/// `Unmatched` path into `ENTITY_TERMINAL`, instead of a raised database
+/// exception it would have to parse a driver message to tell apart from a
+/// genuine storage failure.
+///
+/// Note also that the neighbouring head-row guard clauses do **not** cover
+/// this case on their own: a bump on a `retired` head changes no
+/// `lifecycle_state`, so the edge clause never fires, and the guard's
+/// `published_version` clause is satisfied by the frozen version row alone.
+/// That is why the terminal clause had to be added to the trigger as a
+/// clause of its own.
+const PUBLISHABLE_HEAD_STATES: [&str; 3] = [
+    LifecycleState::Draft.as_str(),
+    LifecycleState::Published.as_str(),
+    LifecycleState::Deprecated.as_str(),
+];
+
+/// Publish a Product head: one `UPDATE` carrying the version bump, the
+/// revision bump, the `draft -> published` edge and `updated_at`
+/// (`inst-fd-publish-freeze`, `inst-fd-publish-bump`).
+///
+/// # This function opens no transaction, and the freeze MUST precede it on
+/// # the same runner
+///
+/// [`insert_entity_version`] for `published_version + 1` must already have
+/// run on this very `runner`: the head-row guard admits the bump only where
+/// that row exists, so the reverse order trips the guard on every publish
+/// and a separately committed freeze survives a rolled-back publish.
+///
+/// # Exactly one statement, and why that is load-bearing
+///
+/// `inst-fd-publish-bump` requires `internal_revision` to move **once**, and
+/// the guard bumps nothing itself — it *refuses* any `UPDATE` whose
+/// `internal_revision` is not `OLD + 1`, "on every admitted UPDATE, without
+/// exception". Two statements would therefore move the revision twice for
+/// one act, and the `ETag` a client holds would skip a value the door never
+/// returned. So the version bump, the revision bump, the state and
+/// `updated_at` all ride one `UPDATE`.
+///
+/// # The edge is decided by the row image, not by the caller
+///
+/// `lifecycle_state` is written through a `CASE` that maps `draft` to
+/// `published` and leaves every other value as it stands. A re-publish from
+/// a `published` or `deprecated` head takes no edge, and writing
+/// `'published'` unconditionally would flip a `deprecated` head back —
+/// a state change the transition door owns and the two-person ceremony
+/// governs. Deciding it in the statement rather than from a prior read also
+/// keeps the decision on the row image the write actually lands on.
+///
+/// # What this statement does not yet write, and who owes it
+///
+/// Two columns `inst-fd-publish-txn` puts in this same `UPDATE` are absent
+/// here, deliberately and not silently:
+///
+/// - **`composition_pending`** (§4.2, **P-D-32**) — the column does not exist
+///   yet, and it is **this slice's** to add, not a later one's. §1.5's **In**
+///   list names *"the `PublishDoor`'s `composition_pending` write"* among the
+///   column guards that *"ride this slice's first migration and publish
+///   door"*, and adds that *"the composition semantics behind another [are]
+///   06's"* — so 06 owns only when the flag is set and cleared
+///   (`inst-cc-clear`), 03 owns the bundle-override condition
+///   (`inst-cl-bundle-override`), and the column, its `NOT NULL DEFAULT
+///   false` and its clause in this statement are owed here. An earlier
+///   revision of this doc filed the whole thing under slice 07, which owns
+///   the bucket-ii `CorrectionDoor` and nothing else here; a debt sent to a
+///   slice that never looks for it is a debt with no owner.
+/// - **A corrected bucket-ii value** (`inst-fd-publish-correction`,
+///   **P-D-41**) — the door that supplies one is slice 07's `CorrectionDoor`,
+///   which has no caller here to hand it in. §4.2 admits a bucket-ii write
+///   only in the same statement as a `published_version` bump, so when 07
+///   lands, its value must be carried by **this** statement rather than by a
+///   second one, on the "once" argument above.
+///
+/// # Errors
+/// [`RepoError::Db`] on a scope failure or a storage failure, including the
+/// head-row guard's refusal of a bump whose frozen version row is missing —
+/// which is a raised refusal, not a zero-row result. A stale revision is
+/// **not** an error; it is [`HeadWrite::Unmatched`].
+pub async fn publish_product_head(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    product_id: Uuid,
+    expected_internal_revision: i64,
+    now: DateTime<Utc>,
+) -> Result<HeadWrite, RepoError> {
+    let next_state: SimpleExpr = Expr::case(
+        Expr::col(product::Column::LifecycleState).eq(LifecycleState::Draft.as_str()),
+        Expr::val(LifecycleState::Published.as_str()),
+    )
+    .finally(Expr::col(product::Column::LifecycleState))
+    .into();
+
+    let result = product::Entity::update_many()
+        .secure()
+        .scope_with(scope)
+        .col_expr(
+            product::Column::PublishedVersion,
+            Expr::col(product::Column::PublishedVersion).add(Expr::val(1_i64)),
+        )
+        .col_expr(
+            product::Column::InternalRevision,
+            Expr::col(product::Column::InternalRevision).add(Expr::val(1_i64)),
+        )
+        .col_expr(product::Column::LifecycleState, next_state)
+        .col_expr(product::Column::UpdatedAt, Expr::value(now))
+        .filter(
+            Condition::all()
+                .add(product::Column::TenantId.eq(tenant_id))
+                .add(product::Column::ProductId.eq(product_id))
+                .add(product::Column::InternalRevision.eq(expected_internal_revision))
+                .add(product::Column::LifecycleState.is_in(PUBLISHABLE_HEAD_STATES)),
+        )
+        .exec(runner)
+        .await
+        .map_err(|e| RepoError::Db(format!("publish product {product_id}: {e}")))?;
+
+    // Zero rows is an answer, not a no-op: the head no longer carries the
+    // revision the door pinned its approval to, or it is terminal, or it is
+    // another tenant's. Reporting it as success would tell the door its
+    // version landed while the head still carries someone else's content,
+    // and the frozen row it wrote a statement earlier would be the only
+    // trace of a publish that never happened.
+    if result.rows_affected == 0 {
+        return Ok(HeadWrite::Unmatched);
+    }
+    Ok(HeadWrite::Applied)
+}
+
+/// Publish a SKU head, in one `UPDATE`, on [`publish_product_head`]'s terms
+/// exactly — same freeze-first ordering, same single-statement rule, same
+/// `CASE`-decided edge, same two owed columns.
+///
+/// # Errors
+/// [`RepoError::Db`] on a scope failure or a storage failure, including the
+/// head-row guard's refusal of a bump whose frozen version row is missing. A
+/// stale revision is [`HeadWrite::Unmatched`], not an error.
+pub async fn publish_sku_head(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    sku_id: Uuid,
+    expected_internal_revision: i64,
+    now: DateTime<Utc>,
+) -> Result<HeadWrite, RepoError> {
+    let next_state: SimpleExpr = Expr::case(
+        Expr::col(sku::Column::LifecycleState).eq(LifecycleState::Draft.as_str()),
+        Expr::val(LifecycleState::Published.as_str()),
+    )
+    .finally(Expr::col(sku::Column::LifecycleState))
+    .into();
+
+    let result = sku::Entity::update_many()
+        .secure()
+        .scope_with(scope)
+        .col_expr(
+            sku::Column::PublishedVersion,
+            Expr::col(sku::Column::PublishedVersion).add(Expr::val(1_i64)),
+        )
+        .col_expr(
+            sku::Column::InternalRevision,
+            Expr::col(sku::Column::InternalRevision).add(Expr::val(1_i64)),
+        )
+        .col_expr(sku::Column::LifecycleState, next_state)
+        .col_expr(sku::Column::UpdatedAt, Expr::value(now))
+        .filter(
+            Condition::all()
+                .add(sku::Column::TenantId.eq(tenant_id))
+                .add(sku::Column::SkuId.eq(sku_id))
+                .add(sku::Column::InternalRevision.eq(expected_internal_revision))
+                .add(sku::Column::LifecycleState.is_in(PUBLISHABLE_HEAD_STATES)),
+        )
+        .exec(runner)
+        .await
+        .map_err(|e| RepoError::Db(format!("publish sku {sku_id}: {e}")))?;
+
+    if result.rows_affected == 0 {
+        return Ok(HeadWrite::Unmatched);
+    }
+    Ok(HeadWrite::Applied)
+}
+
+/// Discard a never-published draft Product: `lifecycle_state = 'discarded'`,
+/// one revision bump, `updated_at` (`inst-fd-discard`).
+///
+/// # This function opens no transaction — `runner` is the discard act's
+///
+/// Like every function in this module it joins the caller's transaction, so
+/// the state write, the act's audit row's governing mutation and its outbox
+/// row commit together or not at all.
+///
+/// # The legality lives in the `WHERE` clause, not in a prior read
+///
+/// `inst-fd-discard` admits the act only from `draft` with
+/// `published_version = 0`. Both conditions are carried by the statement's
+/// own filter, beside the expected `internal_revision`, so the **database**
+/// judges the row image the write lands on. A read-then-write would be a
+/// race: a concurrent publish between the read and the write would leave
+/// this statement discarding a head that is published by the time it runs,
+/// and the head-row guard would admit it — `published -> discarded` is not an
+/// edge, so the guard would refuse *that* one, but `draft -> discarded` on a
+/// head that published and was somehow still `draft` is exactly the shape no
+/// guard can catch. The reservation and the claim in this same module make
+/// the identical argument for the identical reason.
+///
+/// # The reservations release by this same write, with no second statement
+///
+/// `uq_products_product_name` and `uq_products_product_code` are both partial
+/// on `lifecycle_state <> 'discarded'`, so the row leaves both indexes the
+/// moment this `UPDATE` commits: the name and the `productCode` are free for
+/// the next holder. There is no release statement here because there is
+/// nothing left to release — a separate one would have no rows to touch.
+/// This is why a discarded draft releases its name while a `retired` entity
+/// keeps it: the predicate names `discarded` alone.
+///
+/// # Errors
+/// [`RepoError::Db`] on a scope failure or a storage failure. A row that is
+/// not legal to discard, or that no longer carries the expected revision, is
+/// **not** an error; it is [`HeadWrite::Unmatched`] — see that enum's doc for
+/// how a door tells the readings apart.
+pub async fn discard_product_head(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    product_id: Uuid,
+    expected_internal_revision: i64,
+    now: DateTime<Utc>,
+) -> Result<HeadWrite, RepoError> {
+    let result = product::Entity::update_many()
+        .secure()
+        .scope_with(scope)
+        .col_expr(
+            product::Column::LifecycleState,
+            Expr::value(LifecycleState::Discarded.as_str()),
+        )
+        .col_expr(
+            product::Column::InternalRevision,
+            Expr::col(product::Column::InternalRevision).add(Expr::val(1_i64)),
+        )
+        .col_expr(product::Column::UpdatedAt, Expr::value(now))
+        .filter(
+            Condition::all()
+                .add(product::Column::TenantId.eq(tenant_id))
+                .add(product::Column::ProductId.eq(product_id))
+                .add(product::Column::InternalRevision.eq(expected_internal_revision))
+                .add(product::Column::LifecycleState.eq(LifecycleState::Draft.as_str()))
+                .add(product::Column::PublishedVersion.eq(0_i64)),
+        )
+        .exec(runner)
+        .await
+        .map_err(|e| RepoError::Db(format!("discard product {product_id}: {e}")))?;
+
+    // Zero rows is an answer: the head was published, already terminal,
+    // moved under the door's pinned revision, or belongs to another tenant.
+    // Reporting it as success would emit `ProductDiscarded` for a row that
+    // is still live and still holding its name.
+    if result.rows_affected == 0 {
+        return Ok(HeadWrite::Unmatched);
+    }
+    Ok(HeadWrite::Applied)
+}
+
+/// Discard a never-published draft SKU, on [`discard_product_head`]'s terms
+/// exactly.
+///
+/// The reservation released here is `uq_products_sku_code` — the `skuCode`
+/// reservation itself (`dod-code-reservation`), partial on the same
+/// `lifecycle_state <> 'discarded'` predicate, so it releases by this write
+/// and by no separate statement.
+///
+/// # Errors
+/// [`RepoError::Db`] on a scope failure or a storage failure. An
+/// inadmissible discard is [`HeadWrite::Unmatched`], not an error.
+pub async fn discard_sku_head(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    sku_id: Uuid,
+    expected_internal_revision: i64,
+    now: DateTime<Utc>,
+) -> Result<HeadWrite, RepoError> {
+    let result = sku::Entity::update_many()
+        .secure()
+        .scope_with(scope)
+        .col_expr(
+            sku::Column::LifecycleState,
+            Expr::value(LifecycleState::Discarded.as_str()),
+        )
+        .col_expr(
+            sku::Column::InternalRevision,
+            Expr::col(sku::Column::InternalRevision).add(Expr::val(1_i64)),
+        )
+        .col_expr(sku::Column::UpdatedAt, Expr::value(now))
+        .filter(
+            Condition::all()
+                .add(sku::Column::TenantId.eq(tenant_id))
+                .add(sku::Column::SkuId.eq(sku_id))
+                .add(sku::Column::InternalRevision.eq(expected_internal_revision))
+                .add(sku::Column::LifecycleState.eq(LifecycleState::Draft.as_str()))
+                .add(sku::Column::PublishedVersion.eq(0_i64)),
+        )
+        .exec(runner)
+        .await
+        .map_err(|e| RepoError::Db(format!("discard sku {sku_id}: {e}")))?;
+
+    if result.rows_affected == 0 {
+        return Ok(HeadWrite::Unmatched);
+    }
+    Ok(HeadWrite::Applied)
 }
 
 #[cfg(test)]

@@ -30,6 +30,12 @@ uuid = { workspace = true, features = ["v4"] }
 # than the `sea-orm`-internal alias the entities use.
 chrono = { workspace = true }
 
+# `SHA-256` for the idempotency payload digest and, from slice 06 on, a frozen
+# version row's `content_digest` (`domain::canonical`). The platform's own
+# FIPS-validated provider and the primitive the sibling pricing gear already
+# uses; `sha2`/`sha1`/`md5` are refused outright by architecture lint DE0708.
+aws-lc-rs = { workspace = true }
+
 # `normalized(name)` is pinned to NFKC then full casefold then whitespace
 # collapse, and is computed application-side precisely so both engines store
 # identical bytes. `char::to_lowercase` is not full casefold and NFKC has no

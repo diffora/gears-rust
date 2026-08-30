@@ -249,6 +249,15 @@ pub(crate) fn unauthenticated() -> CanonicalError {
 
 /// Map a storage-layer [`RepoError`] to a [`CanonicalError`].
 ///
+/// Read and write doors alike route through this one helper — the create,
+/// publish and discard paths as much as the two `GET`s — which is why its
+/// log line names no door. An earlier version said "repository failure on
+/// the read door", written when the read door was the only caller, and it
+/// went on reporting a failed publish as a read-door failure once the
+/// write doors were attached. If a future edit needs the doors told apart
+/// in the log, take the context as an argument rather than restoring a
+/// constant that only one caller matches.
+///
 /// Both variants are refusals of an invariant the request did not cause —
 /// a scope/driver failure, or a stored value the database's own `CHECK`
 /// constraints should have kept from ever landing — so both render as a bare
@@ -256,8 +265,33 @@ pub(crate) fn unauthenticated() -> CanonicalError {
 /// `infra::error_mapping`'s `AuditUnavailable` arm uses for the identical
 /// reason: neither a `Product` nor a `SKU` refused anything, so tagging
 /// either with a resource marker would name something that did not happen.
+///
+/// # The diagnostic passed to `CanonicalError::internal` does not reach the wire
+///
+/// `err` renders driver text — on a constraint violation, the constraint,
+/// table and column names — and the publish/discard doors additionally hand
+/// this helper a message built from a head row's own `lifecycle_state` and
+/// `internal_revision`. None of that is answered to a caller, and the
+/// suppression is the toolkit's, not this gear's, so it is recorded here
+/// rather than re-implemented: `ResourceErrorBuilder::create`
+/// (`libs/toolkit-canonical-errors/src/builder.rs`) routes the string into
+/// `Internal::description` and is the one arm that deliberately skips
+/// `with_detail`, so the wire `detail` stays the fixed
+/// `"An internal error occurred. Please retry later."` that
+/// `CanonicalError::__internal` mints; `InternalV1::description` is
+/// `#[serde(skip)]`, so it is absent from `Problem::context` too. Only
+/// `Problem::from_error_debug`, behind the `debug-problem` feature no
+/// manifest in this workspace enables, surfaces it — and its own doc forbids
+/// production use.
+///
+/// The consequence for an edit here: keep giving this constructor the full
+/// diagnostic, but do not move that string onto a category whose `detail`
+/// *is* serialized (every category except `Internal` and `Unknown`), and do
+/// not reach for `.with_detail(..)` with it. Either would put driver text on
+/// the wire and breach `api-contracts.md`'s *"do not expose internal
+/// diagnostics in production `Problem` responses"*.
 pub(crate) fn repo_error_to_canonical(err: &RepoError) -> CanonicalError {
-    tracing::error!(error = %err, "bss-products: repository failure on the read door");
+    tracing::error!(error = %err, "bss-products: repository failure");
     CanonicalError::internal(format!("bss-products: {err}")).create()
 }
 
@@ -369,13 +403,44 @@ pub(crate) async fn audit_refusal_and_report(
     subject: RefusalSubject,
     refusal: CanonicalError,
 ) -> CanonicalError {
+    audit_refusal_of_action_and_report(state, scope, ctx, "create", subject, refusal).await
+}
+
+/// [`audit_refusal_and_report`] with the audit row's `action` token supplied
+/// by the caller — the same discipline, for a door that is not a create.
+///
+/// The `action` arrived as an argument rather than as a sixth field on
+/// [`RefusalAuditContext`] deliberately: that struct is built by literal at
+/// every call site in this crate, including in a module a concurrently
+/// running slice owns, and adding a field to it would break every one of
+/// them at once for a value only the non-create doors vary. A create keeps
+/// calling [`audit_refusal_and_report`] and keeps writing `create`, so no
+/// row's `action` changes meaning; the publish and discard doors write
+/// `publish` and `discard`, which is what an operator reading
+/// `products_audit_log` needs the column to say. There is no vocabulary
+/// `CHECK` on the column yet (the audit-log migration's own doc records
+/// that as an owed debt), so this crate's own tokens are what keep it a
+/// closed set in practice.
+pub(crate) async fn audit_refusal_of_action_and_report(
+    state: &ApiState,
+    scope: &AccessScope,
+    ctx: RefusalAuditContext<'_>,
+    action: &str,
+    subject: RefusalSubject,
+    refusal: CanonicalError,
+) -> CanonicalError {
     let common = AuditCommon {
         audit_id: Uuid::new_v4(),
         tenant_id: ctx.tenant_id,
         actor_ref: ctx.actor_ref,
-        action: "create".to_owned(),
+        action: action.to_owned(),
         subject_kind: ctx.subject_kind.to_owned(),
-        reason: Some(format!("{}: refused at create", ctx.error_code)),
+        reason: Some(format!("{}: refused at {action}", ctx.error_code)),
+        // Reserved and unwritable: this gear has no request-scoped
+        // correlation id to carry, so every audit row it writes leaves the
+        // column NULL. `repo::AuditCommon::correlation_id`'s own doc records
+        // what was searched for, why nothing was found, and what adopting one
+        // is owed; this is deliberate, not a forgotten field.
         correlation_id: None,
         written_at: Utc::now(),
     };
@@ -536,7 +601,19 @@ pub(crate) struct IdempotencyClaimInput {
     /// reserved lane names — `internal:scheduled-activation`,
     /// `internal:cascade-leg`, `internal:bulk-row` — are held for non-HTTP
     /// callers; this phase has none, so both doors pass their own path.
-    pub(crate) endpoint: &'static str,
+    ///
+    /// An owned [`String`], not a `&'static str`, and P-D-42 is the reason:
+    /// a create's concrete path is a constant because there is no id yet to
+    /// put in one, but **every id-bearing door's is not** — the publish and
+    /// discard doors claim under
+    /// `/bss-products/v1/products/{that id}/publish`, a value that exists
+    /// only per request. The alternatives were claiming under the route
+    /// template, which is exactly what P-D-42 forbids, and leaking a
+    /// `String` per request to manufacture a `'static` lifetime, which
+    /// trades a spec violation for an unbounded allocation. Both create
+    /// doors still pass their `&'static str` constant unchanged:
+    /// [`IdempotencyClaimInput::new`] takes `impl Into<String>`.
+    pub(crate) endpoint: String,
     /// The caller's own `Idempotency-Key`, as [`idempotency_key`] read it.
     pub(crate) client_key: String,
     /// `crate::domain::idempotency::payload_digest` over the parsed body.
@@ -557,14 +634,14 @@ impl IdempotencyClaimInput {
     /// type reaches no configuration of its own, exactly as it reasons about
     /// no clock of its own.
     pub(crate) fn new(
-        endpoint: &'static str,
+        endpoint: impl Into<String>,
         client_key: String,
         payload_hash: Vec<u8>,
         now: DateTime<Utc>,
         retention_hours: u32,
     ) -> Self {
         Self {
-            endpoint,
+            endpoint: endpoint.into(),
             client_key,
             payload_hash,
             now,
@@ -699,7 +776,7 @@ pub(crate) async fn claim_idempotency(
         runner,
         scope,
         tenant_id,
-        input.endpoint,
+        &input.endpoint,
         &input.client_key,
         &input.payload_hash,
         input.now,
@@ -780,7 +857,7 @@ pub(crate) async fn record_idempotency_answer(
         runner,
         scope,
         tenant_id,
-        input.endpoint,
+        &input.endpoint,
         &input.client_key,
         i32::from(status.as_u16()),
         body.clone(),

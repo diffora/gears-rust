@@ -168,21 +168,22 @@ fn folding_a_precondition_into_the_operand_would_change_the_digest() {
 /// The digest is stable across runs and reproducible outside this crate.
 ///
 /// The vector below was computed independently of this code, from the
-/// canonical rendering asserted beside it:
+/// canonical rendering asserted beside it. It is a plain `SHA-256` over the
+/// rendering — no namespace, no salt, no length prefix — so any tool
+/// reproduces it:
 ///
 /// ```text
-/// python3 -c "import uuid; print(uuid.uuid5(
-///     uuid.UUID('8a1f4d2c-7b93-4e51-9c6a-2f08d3b715e4'),
-///     '{\"brand_id\":\"3f8f6a1e-0000-4000-8000-000000000001\",\
-///       \"name\":\"Fibre 500\",\"product_code\":\"FIBRE-500\"}'))"
-/// # 43a81039-ca91-5be7-8ffc-1a8931d35530
+/// printf '%s' '{"brand_id":"3f8f6a1e-0000-4000-8000-000000000001","name":"Fibre 500","product_code":"FIBRE-500"}' | sha256sum
+/// # f116d4e24d6e8f5d078b202390f70f3386bbf31595071b0814bc31bcc3802365
 /// ```
 ///
-/// A digest that drifted — a changed namespace, a changed rendering, a
+/// A digest that drifted — a changed rendering, a changed primitive, a
 /// hasher swapped for a `Rust`-version-dependent one such as
 /// `DefaultHasher` — would make every claim stored before the change
 /// unmatchable and turn every in-window retry into an
-/// `IDEMPOTENCY_CONFLICT`. This case is what makes such a change loud.
+/// `IDEMPOTENCY_CONFLICT`. This case is what makes such a change loud, and
+/// it is the reason the move off the earlier `UUID` v5 construction to
+/// `aws-lc-rs` `SHA-256` had to re-pin the vector rather than keep it.
 #[test]
 fn the_digest_is_stable_across_runs_and_reproducible_outside_this_crate() {
     let payload = json!({
@@ -200,8 +201,9 @@ fn the_digest_is_stable_across_runs_and_reproducible_outside_this_crate() {
     assert_eq!(
         payload_digest(&payload),
         vec![
-            0x43, 0xa8, 0x10, 0x39, 0xca, 0x91, 0x5b, 0xe7, 0x8f, 0xfc, 0x1a, 0x89, 0x31, 0xd3,
-            0x55, 0x30,
+            0xf1, 0x16, 0xd4, 0xe2, 0x4d, 0x6e, 0x8f, 0x5d, 0x07, 0x8b, 0x20, 0x23, 0x90, 0xf7,
+            0x0f, 0x33, 0x86, 0xbb, 0xf3, 0x15, 0x95, 0x07, 0x1b, 0x08, 0x14, 0xbc, 0x31, 0xbc,
+            0xc3, 0x80, 0x23, 0x65,
         ],
         "the stored digest must equal the independently computed vector, byte for byte"
     );

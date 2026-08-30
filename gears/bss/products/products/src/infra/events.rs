@@ -6,11 +6,28 @@
 //! §4.5 fixes one body core across all eight Foundation events —
 //! `{tenantId, entityKind, entityId, internalRevision, lifecycleState}` — and
 //! names anything beyond it where the act that adds it is specified (only
-//! `*Published`, with `publishedVersion`, so far). [`EventBodyCore`] is that
-//! shape; `ProductCreated` ([`PRODUCT_CREATED_PAYLOAD_TYPE`]) and `SkuCreated`
-//! ([`SKU_CREATED_PAYLOAD_TYPE`]) both carry **only** the core, built through
-//! this same type, rather than each redeclaring the five fields a second
-//! time.
+//! `*Published`, with `publishedVersion`). [`EventBodyCore`] is that shape;
+//! six of the eight carry **only** the core, built through this same type,
+//! rather than each redeclaring the five fields a second time.
+//!
+//! # `publishedVersion` sits **outside** the core, not inside it
+//!
+//! §4.5's sentence is two clauses, and the second one is what fixes the
+//! shape: *"every one of the eight carries the same body core"*, and
+//! `ProductPublished`/`SkuPublished` ***additionally*** *carry
+//! `publishedVersion`*. A sixth field on [`EventBodyCore`] would satisfy the
+//! two publish events and break the other six, which would then announce a
+//! `publishedVersion` §4.5 does not put on them — and, worse, would have to
+//! invent a value for it on a `ProductDiscarded`, whose act writes no
+//! version at all. So the extra field lives on
+//! [`PublishedEventBody`], which **borrows** a core and adds the one field
+//! beside it through `serde`'s `flatten`. The wire shape is a single flat
+//! object either way, which is what §4.5 describes; the type is what keeps
+//! "additionally" from quietly becoming "always".
+//!
+//! [`enqueue`] is the core-only entry and [`enqueue_published`] the
+//! publish one; both go through the same private body writer, so neither can
+//! drift from the other on the partition formula or the envelope.
 //!
 //! # One home for the partition formula, so the SKU door does not grow a
 //! second copy
@@ -119,6 +136,32 @@ pub(crate) const PRODUCT_CREATED_PAYLOAD_TYPE: &str = "ProductCreated";
 /// doc, "One home for the body core").
 pub(crate) const SKU_CREATED_PAYLOAD_TYPE: &str = "SkuCreated";
 
+/// `ProductPublished`'s payload type token (§4.5, `inst-fd-publish-emit`).
+///
+/// It and the three below were each declared inside the door that emits
+/// them, by two slices running in parallel, and each of the four carried a
+/// note saying it belonged here beside [`PRODUCT_CREATED_PAYLOAD_TYPE`].
+/// They are here now, so this gear's payload-type roster reads in one place
+/// and a consumer contract can be checked against one list.
+///
+/// Its body is [`PublishedEventBody`] — the core plus `publishedVersion` —
+/// and it is enqueued through [`enqueue_published`].
+pub(crate) const PRODUCT_PUBLISHED_PAYLOAD_TYPE: &str = "ProductPublished";
+
+/// `ProductDiscarded`'s payload type token (§4.5, `inst-fd-discard`). Its
+/// body is the bare [`EventBodyCore`]: §4.5 names nothing beyond the core
+/// for it, and a discard writes no version there could be a
+/// `publishedVersion` to announce.
+pub(crate) const PRODUCT_DISCARDED_PAYLOAD_TYPE: &str = "ProductDiscarded";
+
+/// `SkuPublished`'s payload type token — [`PRODUCT_PUBLISHED_PAYLOAD_TYPE`]'s
+/// SKU sibling, on the same [`PublishedEventBody`] shape.
+pub(crate) const SKU_PUBLISHED_PAYLOAD_TYPE: &str = "SkuPublished";
+
+/// `SkuDiscarded`'s payload type token — [`PRODUCT_DISCARDED_PAYLOAD_TYPE`]'s
+/// SKU sibling, carrying the bare core for the same reason.
+pub(crate) const SKU_DISCARDED_PAYLOAD_TYPE: &str = "SkuDiscarded";
+
 /// Which entity a body core describes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum EntityKind {
@@ -154,6 +197,32 @@ pub(crate) struct EventBodyCore {
     pub entity_id: Uuid,
     pub internal_revision: i64,
     pub lifecycle_state: &'static str,
+}
+
+/// A `*Published` body: the shared [`EventBodyCore`], **plus** the one field
+/// §4.5 puts on `ProductPublished` and `SkuPublished` beyond it.
+///
+/// See this module's doc, "`publishedVersion` sits outside the core", for
+/// why this is a second type rather than a sixth field on the core. The
+/// `flatten` is what keeps the wire object flat: a consumer reads
+/// `{tenantId, entityKind, entityId, internalRevision, lifecycleState,
+/// publishedVersion}`, one object, exactly as §4.5 writes it.
+///
+/// The core is **borrowed**, not owned: every caller already built one for
+/// its own act and there is nothing here to take ownership of.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PublishedEventBody<'core> {
+    /// The five fields every Foundation event carries.
+    #[serde(flatten)]
+    pub core: &'core EventBodyCore,
+    /// The version the publish act **produced** — `N + 1`, the key the
+    /// frozen `products_entity_version` row was written at, never the `N`
+    /// the head carried before the act. `06` reads this as the content
+    /// pointer and `08`'s projector keys on it, so a body carrying the
+    /// pre-act number would point both at a version that is not the one this
+    /// event announces.
+    pub published_version: i64,
 }
 
 /// Failures constructing or enqueuing an event. Never a `DomainError`: an
@@ -211,8 +280,77 @@ pub(crate) async fn enqueue(
     payload_type: &str,
     core: &EventBodyCore,
 ) -> Result<(), EventsError> {
-    let payload = serde_json::to_vec(core)?;
-    let partition = partition_for(core.tenant_id, aggregate_id);
+    enqueue_body(
+        outbox,
+        runner,
+        core.tenant_id,
+        aggregate_id,
+        payload_type,
+        core,
+    )
+    .await
+}
+
+/// [`enqueue`] for the two `*Published` events, whose body is the core
+/// **plus** `publishedVersion` (§4.5, [`PublishedEventBody`]).
+///
+/// A separate entry point rather than an `Option<i64>` on [`enqueue`]: the
+/// six core-only events have no version to pass and would each have to write
+/// a `None` that means nothing, and a publish that passed `None` by mistake
+/// would silently emit a body §4.5 says is incomplete. Here the field is a
+/// plain `i64` the caller cannot omit.
+///
+/// `published_version` MUST be the **post-act** version — the key the frozen
+/// row was written at; see [`PublishedEventBody::published_version`].
+///
+/// # Errors
+/// [`EventsError::Serialize`] and [`EventsError::Outbox`], exactly as
+/// [`enqueue`] raises them.
+pub(crate) async fn enqueue_published(
+    outbox: &Outbox,
+    runner: &(impl DBRunner + Sync),
+    aggregate_id: Uuid,
+    payload_type: &str,
+    core: &EventBodyCore,
+    published_version: i64,
+) -> Result<(), EventsError> {
+    let body = PublishedEventBody {
+        core,
+        published_version,
+    };
+    enqueue_body(
+        outbox,
+        runner,
+        core.tenant_id,
+        aggregate_id,
+        payload_type,
+        &body,
+    )
+    .await
+}
+
+/// The one place a body is rendered, partitioned and handed to the outbox.
+///
+/// Both public entry points above go through it, so the envelope, the queue
+/// and P-D-22's partition formula are written once and a new body shape
+/// cannot arrive with its own copy of any of the three. `tenant_id` is an
+/// argument rather than read off `body` because a `Serialize` value has no
+/// field a function can read; both callers pass their own core's
+/// `tenant_id`, which is the same value the body itself carries.
+///
+/// # Errors
+/// [`EventsError::Serialize`] if `body` cannot be rendered as JSON;
+/// [`EventsError::Outbox`] on a queue/partition/storage failure.
+async fn enqueue_body(
+    outbox: &Outbox,
+    runner: &(impl DBRunner + Sync),
+    tenant_id: Uuid,
+    aggregate_id: Uuid,
+    payload_type: &str,
+    body: &impl Serialize,
+) -> Result<(), EventsError> {
+    let payload = serde_json::to_vec(body)?;
+    let partition = partition_for(tenant_id, aggregate_id);
     outbox
         .enqueue(runner, QUEUE_NAME, partition, payload, payload_type)
         .await?;

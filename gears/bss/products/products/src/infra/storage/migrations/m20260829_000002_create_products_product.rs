@@ -41,11 +41,54 @@
 //!   `deprecated → retired`); `retired` and `discarded` are terminal, so no
 //!   edge admits a write out of either. A same-value write (`NEW = OLD`) is
 //!   not a transition and is never blocked by this clause.
-//! - **`published_version`** is admitted only unchanged or exactly `OLD + 1`.
-//!   The `DoD` also requires the write to land "only where the matching frozen
-//!   version row exists"; that half is **owed to Phase 6**, whose
-//!   `products_entity_version` table this migration predates and cannot read
-//!   from a trigger before it exists. Only the row-image `+1` half ships here.
+//! - **`published_version`** is admitted only unchanged or exactly `OLD + 1`,
+//!   **and, when it moves at all, only where the matching frozen version row
+//!   already exists** — a row of `products_entity_version` keyed
+//!   `(NEW.tenant_id, 'product', NEW.product_id, NEW.published_version)`. Both
+//!   halves of the `DoD`'s rule ship here. An **unchanged**
+//!   `published_version` is admitted with no subquery at all, so the ordinary
+//!   edit path pays nothing for this clause.
+//!
+//!   The existence half was owed to Phase 6 when this file was written, whose
+//!   `m20260829_000007_create_products_entity_version` this migration
+//!   predates in name order. It is paid now. **A trigger may reference a table
+//!   a later migration creates**: `PL/pgSQL` function bodies and `SQLite`
+//!   trigger bodies both resolve table names at execution, not at creation, so
+//!   the trigger this file installs is inert until the first `UPDATE` — by
+//!   which time the whole chain has run. That is asserted empirically, not
+//!   assumed: the chain boots in every guard test in `migrations_tests.rs`,
+//!   and `a_published_version_bump_without_its_version_row_is_refused` shows
+//!   this very clause resolving `products_entity_version` at `UPDATE` time.
+//!
+//!   **A subquery here is compatible with P-D-31.** That decision's objection
+//!   was to a guard reading the **door** through a session variable that
+//!   exists on Postgres and not on `SQLite`, which would make the two engines
+//!   enforce different rules. This subquery judges **data**, and both engines
+//!   evaluate it identically — the same reason §4.3 gives for its own
+//!   referential `DELETE` predicate (**P-D-40**).
+//!
+//!   **A third half, since Phase 6: a bump is refused outright when
+//!   `OLD.lifecycle_state` is `retired` or `discarded`.** Without it the
+//!   physical layer admitted publishing a terminal entity, and none of the
+//!   neighbouring clauses reached that write — a publish of an
+//!   already-terminal head writes no `lifecycle_state`, so the edge clause
+//!   below never fires; the `+1` and existence halves are both satisfied by
+//!   a legitimately frozen row; and bucket-i and bucket-iii guard columns
+//!   the publish does not touch.
+//!   `cpt-cf-bss-products-dod-transition-guard` requires refusing *"any head
+//!   write on a `retired` or `discarded` row"* as `ENTITY_TERMINAL` (P-D-25,
+//!   widened by P-D-32), and `design/01-foundation.md` §1.6 C5 puts head rows
+//!   under a physical append-only posture "not just conventionally", so the
+//!   application's refusal owes a physical twin.
+//!
+//!   **The clause is gated on the counter moving, and must stay that way.**
+//!   It is *not* a ban on every `UPDATE` of a terminal row, and simplifying
+//!   it into one would be wrong: slice 04 writes `deprecation_provenance`
+//!   and `replaced_by_sku_id` **on** terminal rows by design, and both
+//!   columns arrive in that later slice. `migrations_tests.rs` pins the
+//!   boundary from both sides — a bump on a `retired` and on a `discarded`
+//!   head is refused, a bump on a `deprecated` head is admitted, and an
+//!   update that moves no counter is admitted on a `retired` head.
 //! - **Bucket-i** (`product_code`, `brand_id` — `design/01-foundation.md` §4.1,
 //!   "Bucket assignment for the Foundation-owned columns") is admitted only
 //!   while `OLD.published_version = 0` **and** `OLD.lifecycle_state` is
@@ -66,8 +109,11 @@
 //!   by the `INSERT`.
 //!
 //! **Bucket-ii and bucket-iv have no members among today's columns.** Slice 03
-//! (`cloned_from`, `deprecation_provenance`, `replaced_by_sku_id`) and slice 07
-//! (`composition_pending`) bring the columns those clauses govern; this
+//! brings `cloned_from`, `deprecation_provenance` and `replaced_by_sku_id`;
+//! `composition_pending` is **this slice's own** (§1.5 **In**: *"the
+//! `PublishDoor`'s `composition_pending` write"*, with only the composition
+//! semantics left to 06) and is a `products_sku` column, so it never reaches
+//! this table at all. This
 //! migration guards what exists today and is silent — by measurement, not by
 //! oversight — on the four columns it does not yet have. When those columns
 //! land, their clauses join this same file's whitelist rather than a
@@ -75,7 +121,8 @@
 //!
 //! ## The guard judges the data, never the door (P-D-31)
 //!
-//! Every predicate above reads only `OLD` and `NEW` — the row image — never
+//! Every predicate above reads only `OLD`, `NEW` and — in the
+//! `published_version` clause alone — committed data in another table, never
 //! who is writing. Postgres has a session variable that could carry a door's
 //! identity; `SQLite` has none. Reading one on Postgres and not on `SQLite`
 //! would make the two engines enforce different rules, so neither trigger
@@ -163,6 +210,24 @@ const PG_UP_STATEMENTS: &[&str] = &[
             RAISE EXCEPTION 'products_product: published_version only moves by +1';
           END IF;
 
+          IF NEW.published_version IS DISTINCT FROM OLD.published_version
+             AND NOT EXISTS (
+               SELECT 1 FROM bss.products_entity_version v
+               WHERE v.tenant_id = NEW.tenant_id
+                 AND v.entity_kind = 'product'
+                 AND v.entity_id = NEW.product_id
+                 AND v.published_version = NEW.published_version
+             )
+          THEN
+            RAISE EXCEPTION 'products_product: a published_version bump requires the matching products_entity_version row to exist';
+          END IF;
+
+          IF NEW.published_version IS DISTINCT FROM OLD.published_version
+             AND OLD.lifecycle_state IN ('retired', 'discarded')
+          THEN
+            RAISE EXCEPTION 'products_product: a published_version bump is not admitted on a terminal head';
+          END IF;
+
           IF NEW.lifecycle_state IS DISTINCT FROM OLD.lifecycle_state
              AND NOT (
                (OLD.lifecycle_state = 'draft' AND NEW.lifecycle_state = 'published')
@@ -239,6 +304,20 @@ const SQLITE_UP_STATEMENTS: &[&str] = &[
             NEW.published_version IS OLD.published_version
             OR NEW.published_version IS (OLD.published_version + 1)
         ) BEGIN SELECT RAISE(ABORT, 'products_product: published_version only moves by +1'); END",
+    "CREATE TRIGGER trg_products_product_published_version_row BEFORE UPDATE ON products_product FOR EACH ROW WHEN
+            NEW.published_version IS NOT OLD.published_version
+            AND NOT EXISTS (
+                SELECT 1 FROM products_entity_version v
+                WHERE v.tenant_id IS NEW.tenant_id
+                  AND v.entity_kind = 'product'
+                  AND v.entity_id IS NEW.product_id
+                  AND v.published_version IS NEW.published_version
+            )
+        BEGIN SELECT RAISE(ABORT, 'products_product: a published_version bump requires the matching products_entity_version row to exist'); END",
+    "CREATE TRIGGER trg_products_product_published_version_terminal BEFORE UPDATE ON products_product FOR EACH ROW WHEN
+            NEW.published_version IS NOT OLD.published_version
+            AND OLD.lifecycle_state IN ('retired', 'discarded')
+        BEGIN SELECT RAISE(ABORT, 'products_product: a published_version bump is not admitted on a terminal head'); END",
     "CREATE TRIGGER trg_products_product_lifecycle_edge BEFORE UPDATE ON products_product FOR EACH ROW WHEN
             NEW.lifecycle_state IS NOT OLD.lifecycle_state
             AND NOT (

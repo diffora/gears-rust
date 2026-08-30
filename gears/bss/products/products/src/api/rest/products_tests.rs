@@ -59,6 +59,8 @@
 
 use std::sync::Arc;
 
+use core::fmt::Write as _;
+
 use async_trait::async_trait;
 use authz_resolver_sdk::constraints::{Constraint, InPredicate, Predicate};
 use authz_resolver_sdk::models::{
@@ -68,6 +70,7 @@ use authz_resolver_sdk::{AuthZResolverClient, AuthZResolverError, PolicyEnforcer
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
+use axum::response::IntoResponse as _;
 use chrono::{TimeZone, Utc};
 use sea_orm::{ConnectionTrait, Database, DbBackend, FromQueryResult, Statement};
 use sea_orm_migration::MigratorTrait;
@@ -84,7 +87,10 @@ use super::router;
 use crate::api::rest::ApiState;
 use crate::api::rest::preconditions;
 use crate::config::ProductsConfig;
+use crate::domain::canonical;
 use crate::domain::concurrency::InternalRevision;
+use crate::domain::error::DomainError;
+use crate::domain::governance::{EntityRef, GateMode, GateVerdict, GovernanceGate};
 use crate::infra::events;
 use crate::infra::storage::migrations::Migrator;
 use crate::infra::storage::repo::{self, NewProduct};
@@ -314,14 +320,10 @@ fn new_product(product_id: Uuid, tenant_id: Uuid) -> NewProduct {
 /// Build the router under test, layered with a `flat_in_enforcer` allowed
 /// for `tenant` — the shape every test below shares.
 fn app_for(harness: &TestHarness, tenant: Uuid) -> Router {
-    let state = Arc::new(ApiState {
-        db: harness.db.clone(),
-        outbox: Arc::clone(&harness.outbox),
-        // The value `gear.rs` resolves from the operator's file; the tests
-        // configure nothing, so the typed default is what an unconfigured
-        // boot would carry here.
-        idempotency_retention_hours: ProductsConfig::default().idempotency_retention_hours,
-    });
+    // The `idempotency_retention_hours` inside is the value `gear.rs`
+    // resolves from the operator's file; the tests configure nothing, so the
+    // typed default is what an unconfigured boot would carry here.
+    let state = api_state(harness);
     let openapi = OpenApiRegistryImpl::new();
     router(state, &openapi).layer(axum::Extension(flat_in_enforcer(tenant)))
 }
@@ -1740,4 +1742,1333 @@ async fn the_stored_answer_is_the_status_and_body_the_door_returned() {
         stored, answered,
         "the stored body is the body the door answered, not a re-rendered view of the row"
     );
+}
+
+/// The state both doors and both direct-call cases build their router or
+/// their handler call from. Extracted from [`app_for`] so the governance-gate
+/// case, which calls `publish_product_under_gate` directly rather than
+/// through the router, builds exactly the same state a routed request would.
+fn api_state(harness: &TestHarness) -> Arc<ApiState> {
+    Arc::new(ApiState {
+        db: harness.db.clone(),
+        outbox: Arc::clone(&harness.outbox),
+        idempotency_retention_hours: ProductsConfig::default().idempotency_retention_hours,
+    })
+}
+
+/// Insert one `draft` Product head straight through the repository — the
+/// starting state every publish and discard case below needs, and one no
+/// door of this slice's own can be blamed for getting wrong.
+async fn seed_draft(harness: &TestHarness, product_id: Uuid) -> repo::ProductRecord {
+    let conn = harness
+        .db
+        .conn()
+        .expect("checkout the pinned production connection");
+    let scope = toolkit_db::secure::AccessScope::for_tenant(TENANT);
+    repo::insert_product(&conn, &scope, new_product(product_id, TENANT))
+        .await
+        .expect("seed the draft this case acts on")
+}
+
+/// Read one Product head back through the repository.
+///
+/// Through `find_product` rather than through this file's `raw_i64`: the
+/// head's key is a `Uuid`, and a raw `SQLite` predicate over one would have
+/// to guess how the driver stored it. The counters these cases assert are
+/// read off the typed record instead.
+async fn head_of(harness: &TestHarness, product_id: Uuid) -> repo::ProductRecord {
+    let conn = harness
+        .db
+        .conn()
+        .expect("checkout the pinned production connection");
+    let scope = toolkit_db::secure::AccessScope::for_tenant(TENANT);
+    repo::find_product(&conn, &scope, TENANT, product_id)
+        .await
+        .expect("read the head back")
+        .expect("the head this case acted on exists")
+}
+
+/// `POST /bss-products/v1/products/{id}/{act}` with the supplied headers.
+///
+/// `act` is `publish` or `discard`, and it is a parameter for the reason the
+/// door pair is one slice: every case below drives the same request shape
+/// against the two paths, and a second copy of this helper would only be a
+/// copy to keep in sync.
+async fn post_head_act(
+    app: Router,
+    tenant: Uuid,
+    product_id: Uuid,
+    act: &str,
+    headers: &[(&str, &str)],
+) -> axum::http::Response<Body> {
+    let mut request = Request::builder()
+        .method("POST")
+        .uri(format!("/bss-products/v1/products/{product_id}/{act}"))
+        .extension(authed_ctx(tenant));
+    for (name, value) in headers {
+        request = request.header(*name, *value);
+    }
+    app.oneshot(
+        request
+            .body(Body::empty())
+            .expect("build the head-act request"),
+    )
+    .await
+    .expect("the router answers")
+}
+
+/// The `If-Match` value a caller holding `revision` would send — built the
+/// way the read door builds the `ETag` it hands out, so a case cannot
+/// silently disagree with the door about the tag's shape.
+fn if_match(revision: i64) -> String {
+    preconditions::etag(InternalRevision::new(revision))
+}
+
+/// How many frozen version rows exist.
+async fn version_rows(dsn: &str) -> i64 {
+    raw_i64(dsn, "SELECT COUNT(*) AS v FROM products_entity_version").await
+}
+
+/// A gate host that refuses everything, with a reason a test can recognise.
+///
+/// **Without this double the `APPROVAL_REQUIRED` path is unreachable.** The
+/// gear's only registered host is
+/// `crate::domain::governance::NoMaterialityPolicyGate`, which authorizes
+/// under `Gate` mode — not permissively, but because no materiality policy
+/// is registered yet — so no request through the router can produce a
+/// refusal. Slice 05's host is the first one that can, and this double
+/// stands in for it so the door's refusal branch is exercised before that
+/// slice lands rather than after it breaks.
+struct RefusingGate;
+
+impl GovernanceGate for RefusingGate {
+    fn evaluate(
+        &self,
+        _subject: EntityRef,
+        _expected_revision: InternalRevision,
+        _mode: GateMode,
+    ) -> Result<GateVerdict, DomainError> {
+        Ok(GateVerdict::Refused {
+            reason: "this double refuses every act".to_owned(),
+        })
+    }
+}
+
+/// **A first publish freezes exactly one version row and moves *both*
+/// counters by exactly one.**
+///
+/// Both counters are asserted, and that is the point of the case rather than
+/// thoroughness for its own sake: the head-row guard bumps
+/// `internal_revision` on every admitted `UPDATE` without exception, so a
+/// door that issued two statements — say, one to freeze-and-bump the version
+/// and another to write the state — would move `internal_revision` by two
+/// while `published_version` still read `1`. A case asserting only
+/// `published_version` passes against exactly that defect, and the `ETag` a
+/// client then holds would skip a value the door never returned.
+#[tokio::test]
+async fn a_first_publish_freezes_one_version_row_and_moves_both_counters_by_exactly_one() {
+    let harness = harness().await;
+    let product_id = Uuid::now_v7();
+    let seeded = seed_draft(&harness, product_id).await;
+    assert_eq!(
+        (seeded.internal_revision, seeded.published_version),
+        (1, 0),
+        "this case's own premise: a freshly created head is at revision 1, version 0"
+    );
+
+    let response = post_head_act(
+        app_for(&harness, TENANT),
+        TENANT,
+        product_id,
+        "publish",
+        &[("If-Match", &if_match(1))],
+    )
+    .await;
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "a well-formed publish of a draft must be admitted"
+    );
+    assert_eq!(
+        response
+            .headers()
+            .get(axum::http::header::ETAG)
+            .and_then(|tag| tag.to_str().ok()),
+        Some(if_match(2).as_str()),
+        "the response carries the ETag of the revision the act committed, so the caller's next \
+         verb has a precondition to send"
+    );
+
+    let head = head_of(&harness, product_id).await;
+    assert_eq!(
+        head.published_version, 1,
+        "the publish moved published_version to 1"
+    );
+    assert_eq!(
+        head.internal_revision, 2,
+        "internal_revision moved by exactly one: one act, one head-row UPDATE, one bump"
+    );
+    assert_eq!(
+        head.lifecycle_state.as_str(),
+        "published",
+        "the draft -> published edge is taken by the same UPDATE"
+    );
+
+    assert_eq!(
+        version_rows(&harness.dsn).await,
+        1,
+        "exactly one frozen version row for one publish"
+    );
+    let frozen_version = raw_i64(
+        &harness.dsn,
+        "SELECT published_version AS v FROM products_entity_version",
+    )
+    .await;
+    assert_eq!(
+        frozen_version, 1,
+        "the frozen row is keyed at the version the act produced, not at the one the head \
+         carried before it"
+    );
+
+    let body_table = format!("{}_body", events::OUTBOX_TABLE_PREFIX);
+    let payload_type = raw_string_opt(
+        &harness.dsn,
+        &format!("SELECT payload_type AS v FROM {body_table}"),
+    )
+    .await;
+    assert_eq!(
+        payload_type.as_deref(),
+        Some("ProductPublished"),
+        "the publish enqueues ProductPublished in its own transaction"
+    );
+    let audit_rows = raw_i64(&harness.dsn, "SELECT COUNT(*) AS v FROM products_audit_log").await;
+    assert_eq!(
+        audit_rows, 0,
+        "a successful publish writes no audit row: its event is its record (P-D-21)"
+    );
+}
+
+/// **The frozen row's `content_digest` is the digest of the rendering the
+/// row itself stores.**
+///
+/// Read back from storage and **recomputed**, rather than compared against
+/// the value the door computed in memory: the property slice 10's restore
+/// drill depends on is that the digest can be re-verified from the row
+/// alone, and a case that called the same helper on the same in-memory value
+/// the door hashed would assert the door against itself and would still pass
+/// if the door stored a *different* rendering than the one it hashed.
+#[tokio::test]
+async fn the_frozen_rows_digest_is_the_digest_of_the_rendering_the_row_stores() {
+    let harness = harness().await;
+    let product_id = Uuid::now_v7();
+    seed_draft(&harness, product_id).await;
+
+    let response = post_head_act(
+        app_for(&harness, TENANT),
+        TENANT,
+        product_id,
+        "publish",
+        &[("If-Match", &if_match(1))],
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let stored_content = raw_string_opt(
+        &harness.dsn,
+        "SELECT content AS v FROM products_entity_version",
+    )
+    .await
+    .expect("a frozen row always carries its rendering");
+    let stored_digest = raw_string_opt(
+        &harness.dsn,
+        "SELECT hex(content_digest) AS v FROM products_entity_version",
+    )
+    .await
+    .expect("a frozen row always carries its digest");
+
+    let mut recomputed = String::new();
+    for byte in canonical::content_digest(&stored_content) {
+        write!(recomputed, "{byte:02X}").expect("writing to a String cannot fail");
+    }
+    assert_eq!(
+        stored_digest, recomputed,
+        "the stored digest must be SHA-256 over the stored rendering, byte for byte"
+    );
+
+    // The rendering itself is §4.3's: keys sorted, an absent value written
+    // `null` rather than omitted, and no whitespace at all. The seed carries
+    // a `product_code`, so the null this asserts is not that one — it is
+    // proof the roster reaches a field the value did carry, in sorted
+    // position.
+    //
+    // `published_version` is **absent**, not `1`. It is the frozen row's own
+    // key column, so the content would restate the key inside the payload
+    // the key keys; `super::PRODUCT_CONTENT_ROSTER`'s doc carries the
+    // argument. The row still says which version it is — the key column
+    // does, and the query above selects on it.
+    let seeded = new_product(product_id, TENANT);
+    assert_eq!(
+        stored_content,
+        format!(
+            "{{\"brand_id\":\"{}\",\"brand_scope\":\"\",\
+             \"created_at\":\"2026-08-29T09:00:00.000000Z\",\"created_by\":\"{}\",\
+             \"name\":\"{}\",\"name_normalized\":\"{}\",\"product_code\":\"{}\",\
+             \"product_id\":\"{product_id}\",\
+             \"region_scope\":\"{}\",\"tenant_id\":\"{}\"}}",
+            seeded.brand_id,
+            seeded.created_by,
+            seeded.name,
+            seeded.name_normalized,
+            seeded
+                .product_code
+                .clone()
+                .expect("the seed carries a code"),
+            seeded.region_scope,
+            TENANT,
+        ),
+        "the frozen content is the roster's fields, sorted, and nothing else: no \
+         lifecycle_state, no internal_revision, no updated_at and no published_version"
+    );
+    for excluded in EXCLUDED_FROM_FROZEN_CONTENT {
+        assert!(
+            !stored_content.contains(excluded),
+            "{excluded} is excluded from a frozen row's content \
+             (super::PRODUCT_CONTENT_ROSTER's doc argues each of the four); together the four \
+             are what makes `the same content produces the same digest` true, which is what \
+             lets a reader answer `did the content change between N and N+1` by comparing two \
+             rows' digests. Stored rendering was {stored_content}"
+        );
+    }
+
+    let digest_version = raw_i64(
+        &harness.dsn,
+        "SELECT digest_version AS v FROM products_entity_version",
+    )
+    .await;
+    assert_eq!(
+        i32::try_from(digest_version).expect("the column holds an i32"),
+        canonical::DIGEST_VERSION,
+        "the row records the scheme its digest was computed under, so a later bump stays \
+         checkable from the row alone"
+    );
+}
+
+/// **A re-publish moves the version and leaves the state alone.**
+///
+/// `inst-fd-publish-freeze`: *"a re-publish changes the version, never the
+/// state"*. The second publish takes no edge — `published -> published` is
+/// not in the machine's edge list and is not supposed to be — so a door that
+/// wrote `lifecycle_state = 'published'` unconditionally would still pass a
+/// state assertion here while failing the same rule for a `deprecated` head,
+/// which is why [`repo::publish_product_head`] decides the edge with a
+/// `CASE` over the row image rather than from a caller's argument.
+#[tokio::test]
+async fn a_republish_moves_the_version_again_and_leaves_the_state_published() {
+    let harness = harness().await;
+    let product_id = Uuid::now_v7();
+    seed_draft(&harness, product_id).await;
+
+    let first = post_head_act(
+        app_for(&harness, TENANT),
+        TENANT,
+        product_id,
+        "publish",
+        &[("If-Match", &if_match(1))],
+    )
+    .await;
+    assert_eq!(first.status(), StatusCode::OK);
+
+    let second = post_head_act(
+        app_for(&harness, TENANT),
+        TENANT,
+        product_id,
+        "publish",
+        &[("If-Match", &if_match(2))],
+    )
+    .await;
+    assert_eq!(
+        second.status(),
+        StatusCode::OK,
+        "a published head is publishable again as version N+1"
+    );
+
+    let head = head_of(&harness, product_id).await;
+    assert_eq!(head.published_version, 2, "the second publish is version 2");
+    assert_eq!(
+        head.internal_revision, 3,
+        "the second act moved the revision by exactly one again"
+    );
+    assert_eq!(
+        head.lifecycle_state.as_str(),
+        "published",
+        "a re-publish takes no edge and leaves the state where it was"
+    );
+    assert_eq!(
+        version_rows(&harness.dsn).await,
+        2,
+        "two publishes, two frozen rows: the history is append-only"
+    );
+}
+
+/// **A stale `If-Match` is refused `STALE_REVISION`, it is audited, and
+/// nothing is written.**
+///
+/// The "nothing is written" half is asserted on storage, not inferred from
+/// the status: the freeze runs *before* the head-row `UPDATE` can report
+/// that it matched no row, so a door that returned its refusal as an
+/// ordinary outcome rather than as an error would **commit** the frozen row
+/// it had already written — leaving a version nobody published and, worse,
+/// satisfying the head-row guard's prerequisite for a later bump.
+#[tokio::test]
+async fn a_publish_with_a_stale_if_match_is_refused_and_writes_nothing() {
+    let harness = harness().await;
+    let product_id = Uuid::now_v7();
+    seed_draft(&harness, product_id).await;
+
+    let response = post_head_act(
+        app_for(&harness, TENANT),
+        TENANT,
+        product_id,
+        "publish",
+        &[("If-Match", &if_match(7))],
+    )
+    .await;
+    assert_eq!(
+        response.status(),
+        StatusCode::CONFLICT,
+        "a stale precondition is refused STALE_REVISION, a 409"
+    );
+
+    let head = head_of(&harness, product_id).await;
+    assert_eq!(
+        (head.internal_revision, head.published_version),
+        (1, 0),
+        "neither counter moved"
+    );
+    assert_eq!(
+        head.lifecycle_state.as_str(),
+        "draft",
+        "the head is still a draft"
+    );
+    assert_eq!(
+        version_rows(&harness.dsn).await,
+        0,
+        "no version row was frozen for a publish that never happened"
+    );
+
+    let error_code = raw_string_opt(
+        &harness.dsn,
+        "SELECT error_code AS v FROM products_audit_log",
+    )
+    .await;
+    assert_eq!(
+        error_code.as_deref(),
+        Some("STALE_REVISION"),
+        "the refusal wrote its own audit row, naming the code it refused with"
+    );
+    let action = raw_string_opt(&harness.dsn, "SELECT action AS v FROM products_audit_log").await;
+    assert_eq!(
+        action.as_deref(),
+        Some("publish"),
+        "the audit row records the act that was refused, not the create door's token"
+    );
+}
+
+/// **A publish with no `If-Match` at all is refused `VALIDATION`**, and the
+/// row is audited too — the second of the two distinct refusals this file
+/// pins an audit row for.
+///
+/// `VALIDATION` rather than a bare `400`: the request parsed, so the bare
+/// 400 this gear reserves for a malformed request does not apply (P-D-33,
+/// `preconditions`' own doc).
+#[tokio::test]
+async fn a_publish_without_if_match_is_refused_validation_and_audited() {
+    let harness = harness().await;
+    let product_id = Uuid::now_v7();
+    seed_draft(&harness, product_id).await;
+
+    let response = post_head_act(
+        app_for(&harness, TENANT),
+        TENANT,
+        product_id,
+        "publish",
+        &[],
+    )
+    .await;
+    assert_eq!(
+        response.status(),
+        StatusCode::BAD_REQUEST,
+        "an absent precondition rides VALIDATION, which renders 400"
+    );
+
+    assert_eq!(
+        version_rows(&harness.dsn).await,
+        0,
+        "a request refused before the transaction opens writes no version row"
+    );
+    let error_code = raw_string_opt(
+        &harness.dsn,
+        "SELECT error_code AS v FROM products_audit_log",
+    )
+    .await;
+    assert_eq!(
+        error_code.as_deref(),
+        Some("VALIDATION"),
+        "every refusal audits, this one included"
+    );
+}
+
+/// **A publish on a terminal head is refused `ENTITY_TERMINAL`.**
+///
+/// The terminal head is produced by this slice's own discard door rather
+/// than written by hand, so the case also proves the two doors compose: what
+/// discard leaves behind is exactly what publish must refuse.
+#[tokio::test]
+async fn a_publish_on_a_terminal_head_is_refused_entity_terminal() {
+    let harness = harness().await;
+    let product_id = Uuid::now_v7();
+    seed_draft(&harness, product_id).await;
+
+    let discarded = post_head_act(
+        app_for(&harness, TENANT),
+        TENANT,
+        product_id,
+        "discard",
+        &[("If-Match", &if_match(1))],
+    )
+    .await;
+    assert_eq!(
+        discarded.status(),
+        StatusCode::OK,
+        "this case's own premise: the draft discards cleanly"
+    );
+
+    let response = post_head_act(
+        app_for(&harness, TENANT),
+        TENANT,
+        product_id,
+        "publish",
+        &[("If-Match", &if_match(2))],
+    )
+    .await;
+    assert_eq!(
+        response.status(),
+        StatusCode::CONFLICT,
+        "no head write is admitted on a discarded entity: ENTITY_TERMINAL, a 409"
+    );
+    assert_eq!(
+        version_rows(&harness.dsn).await,
+        0,
+        "the refused publish froze nothing"
+    );
+    let codes = raw_string_opt(
+        &harness.dsn,
+        "SELECT error_code AS v FROM products_audit_log",
+    )
+    .await;
+    assert_eq!(
+        codes.as_deref(),
+        Some("ENTITY_TERMINAL"),
+        "the terminal refusal is audited under its own code"
+    );
+}
+
+/// **A gate that answers no refuses `APPROVAL_REQUIRED` and nothing is
+/// written.**
+///
+/// Driven through `publish_product_under_gate` directly rather than through
+/// the router, because the host the router wires is the only one this gear
+/// registers and it never refuses — see [`RefusingGate`]. Everything else
+/// about the call is what a routed request would produce: the same
+/// [`ApiState`], the same enforcer, the same authenticated context and the
+/// same headers.
+///
+/// `inst-fd-gate-rejection` is the property under test: a rejection flips no
+/// state, freezes nothing and emits nothing.
+#[tokio::test]
+async fn a_gate_that_answers_no_refuses_approval_required_and_writes_nothing() {
+    let harness = harness().await;
+    let product_id = Uuid::now_v7();
+    seed_draft(&harness, product_id).await;
+
+    let state = api_state(&harness);
+    let enforcer = flat_in_enforcer(TENANT);
+    let ctx = authed_ctx(TENANT);
+    let mut headers = axum::http::HeaderMap::new();
+    headers.insert(
+        axum::http::header::IF_MATCH,
+        if_match(1)
+            .parse()
+            .expect("the ETag is a valid header value"),
+    );
+
+    let gate: Arc<dyn GovernanceGate + Send + Sync> = Arc::new(RefusingGate);
+    let refusal =
+        super::publish_product_under_gate(&state, &enforcer, &ctx, product_id, &headers, &gate)
+            .await
+            .expect_err("a refusing gate must refuse the publish");
+    assert_eq!(
+        refusal.into_response().status(),
+        StatusCode::FORBIDDEN,
+        "APPROVAL_REQUIRED is a 403"
+    );
+
+    let head = head_of(&harness, product_id).await;
+    assert_eq!(
+        (head.internal_revision, head.published_version),
+        (1, 0),
+        "a rejection flips no state and moves no counter"
+    );
+    assert_eq!(
+        head.lifecycle_state.as_str(),
+        "draft",
+        "a first-publish entity stays draft when the gate refuses"
+    );
+    assert_eq!(
+        version_rows(&harness.dsn).await,
+        0,
+        "the gate refuses before the transaction opens, so nothing is frozen"
+    );
+    let error_code = raw_string_opt(
+        &harness.dsn,
+        "SELECT error_code AS v FROM products_audit_log",
+    )
+    .await;
+    assert_eq!(
+        error_code.as_deref(),
+        Some("APPROVAL_REQUIRED"),
+        "the gate's refusal is audited like every other"
+    );
+}
+
+/// A gate host that cannot **reach** an answer, as distinct from one that
+/// answers no.
+///
+/// [`RefusingGate`] is the ceremony saying no; this is the record store
+/// behind the ceremony failing to be read. `crate::domain::governance`'s own
+/// contract keeps the two apart and says why: a host failure "must not be
+/// reported as `APPROVAL_REQUIRED`, which would tell an operator an approval
+/// was missing when none was ever looked at".
+///
+/// **Without this double the branch is unreachable.**
+/// `NoMaterialityPolicyGate` is infallible, so no request through the router
+/// can produce an `Err` from `evaluate`. Slice 05's store-backed host is the
+/// first one that can, and until it lands this double is the only way to
+/// exercise the route the door takes.
+struct FailingGate;
+
+impl GovernanceGate for FailingGate {
+    fn evaluate(
+        &self,
+        _subject: EntityRef,
+        _expected_revision: InternalRevision,
+        _mode: GateMode,
+    ) -> Result<GateVerdict, DomainError> {
+        Err(DomainError::AuditUnavailable(
+            "this double cannot reach its record store".to_owned(),
+        ))
+    }
+}
+
+/// **A gate host that fails is an internal failure, not a domain refusal.**
+///
+/// The door has two `Err`s to route out of the gate step and they are two
+/// different kinds of thing: `into_authorization`'s is the ceremony's no
+/// (`APPROVAL_REQUIRED`, a 403, audited as a refusal) and `evaluate`'s is
+/// the host failing to reach an answer at all. This door mapped **both** to
+/// `HeadActError::Refused` until the fix, so a record-store read that failed
+/// was answered 4xx and written into the audit trail as a decision the
+/// domain had made.
+///
+/// What this case pins is that the two do not share an answer: a failing
+/// host answers 5xx and writes **no audit row**. The audit row is the
+/// discriminating half, deliberately. The double answers `AuditUnavailable`
+/// — the taxonomy value a real store-read failure would carry — and that
+/// value renders 503 under **either** door, so the status assertion states
+/// the intent while the audit-row count is what actually reddens against the
+/// old code, where `map_err(HeadActError::Refused)` put the host's error on
+/// the refusal path and the trail recorded a judgement nobody made.
+///
+/// Driven through `publish_product_under_gate` for [`RefusingGate`]'s stated
+/// reason — the host the router wires cannot fail — and everything else
+/// about the call is what a routed request would produce.
+#[tokio::test]
+async fn a_gate_host_that_fails_is_an_internal_failure_not_a_refusal() {
+    let harness = harness().await;
+    let product_id = Uuid::now_v7();
+    seed_draft(&harness, product_id).await;
+
+    let state = api_state(&harness);
+    let enforcer = flat_in_enforcer(TENANT);
+    let ctx = authed_ctx(TENANT);
+    let mut headers = axum::http::HeaderMap::new();
+    headers.insert(
+        axum::http::header::IF_MATCH,
+        if_match(1)
+            .parse()
+            .expect("the ETag is a valid header value"),
+    );
+
+    let gate: Arc<dyn GovernanceGate + Send + Sync> = Arc::new(FailingGate);
+    let failure =
+        super::publish_product_under_gate(&state, &enforcer, &ctx, product_id, &headers, &gate)
+            .await
+            .expect_err("a host that cannot answer must not publish");
+    let response = failure.into_response();
+    assert!(
+        response.status().is_server_error(),
+        "a host that could not reach an answer is infrastructure, so it answers 5xx; a 4xx \
+         would tell the caller its own request was at fault. Answered {}",
+        response.status()
+    );
+
+    let head = head_of(&harness, product_id).await;
+    assert_eq!(
+        (head.internal_revision, head.published_version),
+        (1, 0),
+        "the transaction rolls back with the failure: no counter moves"
+    );
+    assert_eq!(
+        version_rows(&harness.dsn).await,
+        0,
+        "nothing is frozen behind a gate that never answered"
+    );
+    assert_eq!(
+        raw_i64(&harness.dsn, "SELECT COUNT(*) AS v FROM products_audit_log").await,
+        0,
+        "a host failure is not a domain decision, so it leaves no refusal row behind. This is \
+         the assertion that reddens against the old door: map_err(HeadActError::Refused) sent \
+         the host's error down the refusal path, which audits, and the trail would then read \
+         as though the domain had judged this act and said no"
+    );
+}
+
+/// Blank the seeded head's `name` behind the door's back, and move
+/// `internal_revision` with it as the head-row guard requires.
+///
+/// This is the only lever that produces the state
+/// `inst-fd-publish-revalidate` is written for: an entity that **was**
+/// publishable when it was authored and is not any more. No door in this
+/// slice can write a blank name — the create door refuses one — so the
+/// re-run's fail-closed branch is unreachable through the gear's own
+/// surface, and a raw `UPDATE` through an auxiliary connection is what
+/// stands in for the later slice that will move the row.
+///
+/// No `WHERE`: every case using this seeds exactly one Product, and a
+/// predicate over a `Uuid` would have to guess how the driver stored it.
+/// `internal_revision + 1` is not decoration either — the head table's
+/// `trg_products_product_internal_revision` aborts an `UPDATE` that does not
+/// move it by exactly one, so the corruption has to be an admitted write.
+async fn blank_the_only_products_name(dsn: &str) {
+    let conn = Database::connect(dsn)
+        .await
+        .expect("open an auxiliary connection to corrupt the head");
+    conn.execute_unprepared(
+        "UPDATE products_product SET name = '   ', internal_revision = internal_revision + 1",
+    )
+    .await
+    .expect("the head-row guard admits a bucket-iii write on a non-terminal draft");
+    conn.close().await.ok();
+}
+
+/// **A publish whose re-validation fails is refused `INCOMPLETE_ENTITY`, not
+/// `VALIDATION`.**
+///
+/// `inst-fd-publish-revalidate`: *"an entity that stopped being publishable
+/// since approval fails closed `INCOMPLETE_ENTITY`/rule-named code"*. The
+/// distinction is not bookkeeping. A publish carries **no request body** —
+/// `bodiless_payload_digest` is built on exactly that fact — so a
+/// `VALIDATION` answer names a field (`name`) of a request that had no
+/// fields, and tells the caller to fix a payload it never sent. The row is
+/// what is wrong.
+///
+/// The two codes render the same wire **status** (both 400), which is
+/// precisely why this case asserts the `type` in the problem body and the
+/// audited `error_code` rather than the status: a status assertion would
+/// have passed against the defect. Against the old door this case reddens
+/// twice, on `VALIDATION` in both places.
+#[tokio::test]
+async fn a_publish_whose_revalidation_fails_is_refused_incomplete_entity() {
+    let harness = harness().await;
+    let product_id = Uuid::now_v7();
+    seed_draft(&harness, product_id).await;
+    blank_the_only_products_name(&harness.dsn).await;
+
+    // Revision 2, not 1: the corruption above is itself an admitted head
+    // write, so the caller's precondition has to be the post-corruption one
+    // or this case would measure STALE_REVISION instead.
+    let response = post_head_act(
+        app_for(&harness, TENANT),
+        TENANT,
+        product_id,
+        "publish",
+        &[("If-Match", &if_match(2))],
+    )
+    .await;
+    assert_eq!(
+        response.status(),
+        StatusCode::BAD_REQUEST,
+        "INCOMPLETE_ENTITY is an architectural 422, wire 400"
+    );
+    let body = axum::body::to_bytes(response.into_body(), 64 * 1024)
+        .await
+        .expect("read the response body");
+    let view: serde_json::Value = serde_json::from_slice(&body).expect("the response body is JSON");
+    assert_eq!(
+        view["context"]["violations"][0]["type"],
+        json!("INCOMPLETE_ENTITY"),
+        "a publish carries no body, so VALIDATION would name a field of a request that had \
+         none; the row stopped being publishable and that is what the code must say"
+    );
+
+    assert_eq!(
+        version_rows(&harness.dsn).await,
+        0,
+        "a re-validation that fails closed freezes nothing"
+    );
+    let head = head_of(&harness, product_id).await;
+    assert_eq!(
+        (head.internal_revision, head.published_version),
+        (2, 0),
+        "the refusal rolls the act back: the only revision move is the corruption's own"
+    );
+    let error_code = raw_string_opt(
+        &harness.dsn,
+        "SELECT error_code AS v FROM products_audit_log",
+    )
+    .await;
+    assert_eq!(
+        error_code.as_deref(),
+        Some("INCOMPLETE_ENTITY"),
+        "the audit row records the code the caller was answered (P-D-37), so it moves with it"
+    );
+}
+
+/// **A discard of a never-published draft succeeds; a discard of a published
+/// head is refused.**
+///
+/// The refusal is `ILLEGAL_TRANSITION` rather than a validation failure, and
+/// the two halves are one case because the second is only meaningful against
+/// the first: the same request that is admitted from `draft` is refused from
+/// `published`, so what changed is the row's state and nothing else.
+#[tokio::test]
+async fn a_draft_discards_and_a_published_head_does_not() {
+    let harness = harness().await;
+    let draft_id = Uuid::now_v7();
+    seed_draft(&harness, draft_id).await;
+
+    let discarded = post_head_act(
+        app_for(&harness, TENANT),
+        TENANT,
+        draft_id,
+        "discard",
+        &[("If-Match", &if_match(1))],
+    )
+    .await;
+    assert_eq!(discarded.status(), StatusCode::OK);
+
+    let head = head_of(&harness, draft_id).await;
+    assert_eq!(
+        head.lifecycle_state.as_str(),
+        "discarded",
+        "the draft is discarded, terminally"
+    );
+    assert_eq!(
+        head.internal_revision, 2,
+        "the transition bumps the revision exactly once, through its own single UPDATE"
+    );
+    assert_eq!(
+        head.published_version, 0,
+        "a discard never touches published_version"
+    );
+    let body_table = format!("{}_body", events::OUTBOX_TABLE_PREFIX);
+    let payload_type = raw_string_opt(
+        &harness.dsn,
+        &format!("SELECT payload_type AS v FROM {body_table}"),
+    )
+    .await;
+    assert_eq!(
+        payload_type.as_deref(),
+        Some("ProductDiscarded"),
+        "the discard enqueues ProductDiscarded"
+    );
+
+    // The published head: same request, different starting state.
+    let published_id = Uuid::now_v7();
+    {
+        let conn = harness
+            .db
+            .conn()
+            .expect("checkout the pinned production connection");
+        let scope = toolkit_db::secure::AccessScope::for_tenant(TENANT);
+        let mut second = new_product(published_id, TENANT);
+        second.name = "Fibre 900".to_owned();
+        second.name_normalized = "fibre 900".to_owned();
+        second.product_code = Some("FIBRE-900".to_owned());
+        repo::insert_product(&conn, &scope, second)
+            .await
+            .expect("seed the second draft");
+    }
+    let published = post_head_act(
+        app_for(&harness, TENANT),
+        TENANT,
+        published_id,
+        "publish",
+        &[("If-Match", &if_match(1))],
+    )
+    .await;
+    assert_eq!(published.status(), StatusCode::OK);
+
+    let refused = post_head_act(
+        app_for(&harness, TENANT),
+        TENANT,
+        published_id,
+        "discard",
+        &[("If-Match", &if_match(2))],
+    )
+    .await;
+    assert_eq!(
+        refused.status(),
+        StatusCode::CONFLICT,
+        "a discard is legal only from draft at published_version 0: ILLEGAL_TRANSITION, a 409"
+    );
+    assert_eq!(
+        head_of(&harness, published_id)
+            .await
+            .lifecycle_state
+            .as_str(),
+        "published",
+        "the refused discard left the published head exactly where it was"
+    );
+}
+
+/// **After a discard, the next Product may take the discarded one's
+/// `product_code` and name.**
+///
+/// Both reservations release by the discard's own `UPDATE`, the two partial
+/// unique indexes excluding `discarded` rows — there is no release step to
+/// forget, and this case is what would notice if either index's predicate
+/// were narrowed to exclude only `retired`, or if a later edit added a
+/// release statement that did the job twice.
+#[tokio::test]
+async fn a_discarded_products_name_and_code_are_free_for_the_next_product() {
+    let harness = harness().await;
+    let product_id = Uuid::now_v7();
+    let seeded = seed_draft(&harness, product_id).await;
+
+    // The premise: while the draft lives, the name and the code are taken.
+    let blocked = post_create_product(
+        app_for(&harness, TENANT),
+        TENANT,
+        &json!({
+            "brand_id": BRAND,
+            "name": seeded.name.clone(),
+            "product_code": seeded.product_code.clone(),
+        }),
+    )
+    .await;
+    assert_eq!(
+        blocked.status(),
+        StatusCode::CONFLICT,
+        "this case's own premise: a live draft holds its name and its code"
+    );
+
+    let discarded = post_head_act(
+        app_for(&harness, TENANT),
+        TENANT,
+        product_id,
+        "discard",
+        &[("If-Match", &if_match(1))],
+    )
+    .await;
+    assert_eq!(discarded.status(), StatusCode::OK);
+
+    let admitted = post_create_product(
+        app_for(&harness, TENANT),
+        TENANT,
+        &json!({
+            "brand_id": BRAND,
+            "name": seeded.name,
+            "product_code": seeded.product_code,
+        }),
+    )
+    .await;
+    assert_eq!(
+        admitted.status(),
+        StatusCode::CREATED,
+        "the discard released both reservations by its own write, with no release step"
+    );
+}
+
+/// **A replayed publish returns the stored answer and does not publish
+/// twice.**
+///
+/// The case the idempotency store exists for, at this door: a client that
+/// never learned the outcome retries under the same key, and must be served
+/// the original `200` rather than publishing version 2. Both "executes
+/// nothing" halves are asserted on storage — no second frozen row and no
+/// second event — because a door that re-ran the act and merely happened to
+/// answer `200` would pass a status-only assertion while duplicating the
+/// version history.
+#[tokio::test]
+async fn a_replayed_publish_serves_the_stored_answer_and_does_not_publish_twice() {
+    let harness = harness().await;
+    let product_id = Uuid::now_v7();
+    seed_draft(&harness, product_id).await;
+
+    let first = post_head_act(
+        app_for(&harness, TENANT),
+        TENANT,
+        product_id,
+        "publish",
+        &[("If-Match", &if_match(1)), ("Idempotency-Key", "publish-1")],
+    )
+    .await;
+    assert_eq!(first.status(), StatusCode::OK);
+    let original = json_body(first).await;
+
+    let state = raw_string_opt(
+        &harness.dsn,
+        "SELECT state AS v FROM products_idempotency WHERE client_key = 'publish-1'",
+    )
+    .await;
+    assert_eq!(
+        state.as_deref(),
+        Some("answered"),
+        "the committed publish answered its own claim, in the transaction that took it"
+    );
+    let endpoint = raw_string_opt(
+        &harness.dsn,
+        "SELECT endpoint AS v FROM products_idempotency WHERE client_key = 'publish-1'",
+    )
+    .await;
+    assert_eq!(
+        endpoint.as_deref(),
+        Some(format!("/bss-products/v1/products/{product_id}/publish").as_str()),
+        "the key names the concrete resource path, id and all, never the route template (P-D-42)"
+    );
+
+    // The retry carries the *original* precondition, which is what a client
+    // that never saw the first response would still hold.
+    let retry = post_head_act(
+        app_for(&harness, TENANT),
+        TENANT,
+        product_id,
+        "publish",
+        &[("If-Match", &if_match(1)), ("Idempotency-Key", "publish-1")],
+    )
+    .await;
+    assert_eq!(
+        retry.status(),
+        StatusCode::OK,
+        "the retry replays the original status rather than being refused for the now-stale \
+         precondition"
+    );
+    assert_eq!(
+        json_body(retry).await,
+        original,
+        "the replay reproduces the original body"
+    );
+
+    let head = head_of(&harness, product_id).await;
+    assert_eq!(
+        (head.published_version, head.internal_revision),
+        (1, 2),
+        "the retry executed nothing: neither counter moved a second time"
+    );
+    assert_eq!(
+        version_rows(&harness.dsn).await,
+        1,
+        "the retry executed nothing: no second frozen version row"
+    );
+    let body_table = format!("{}_body", events::OUTBOX_TABLE_PREFIX);
+    let enqueued = raw_i64(
+        &harness.dsn,
+        &format!("SELECT COUNT(*) AS v FROM {body_table}"),
+    )
+    .await;
+    assert_eq!(
+        enqueued, 1,
+        "the retry executed nothing: no second ProductPublished row"
+    );
+}
+
+/// The four head columns §4.3 keeps **out** of a frozen row's content, as
+/// this file states them independently of the door.
+///
+/// Spelled here rather than read out of
+/// [`super::PRODUCT_CONTENT_ROSTER`]'s own module because that is what makes
+/// the case below a **drift** test: the roster is a literal list, and the
+/// only way to catch a literal list that forgot a column is to derive the
+/// answer from something the roster does not control — the executed schema,
+/// plus this short, independently authored exclusion set.
+///
+/// Two of the four are §4.3's own words (`lifecycle_state`,
+/// `internal_revision`; P-D-24 and P-D-35). The other two are readings the
+/// door states and argues, because §4.3 enumerates its exclusions as a
+/// closed list of four columns plus the metadata map and names neither:
+/// `updated_at` is P-D-35's own stated criterion applied to a column the
+/// enumeration does not list, and `published_version` is the version row's
+/// own key column, which the content would otherwise restate inside the
+/// payload the key keys. See [`super::PRODUCT_CONTENT_ROSTER`]'s doc for
+/// both arguments and for the additions the design set is owed. §4.3's other two exclusions,
+/// `deprecation_provenance` and `replaced_by_sku_id`, are deliberately
+/// absent: neither is a column of `products_product` at this commit, and
+/// naming one would make the `is a real column` assertion below fail for the
+/// wrong reason.
+const EXCLUDED_FROM_FROZEN_CONTENT: [&str; 4] = [
+    "internal_revision",
+    "lifecycle_state",
+    "published_version",
+    "updated_at",
+];
+
+/// Every column of `table`, read out of the **executed** `SQLite` schema.
+///
+/// `pragma_table_info` rather than a hand-written list, and rather than the
+/// migration's own source text: the property the case below needs is that
+/// the roster matches the table the chain actually created, which is the
+/// only artifact that can disagree with the roster at run time.
+/// `group_concat` collapses the pragma's rows into the single named column
+/// [`raw_string_opt`] reads, so no second row-shape helper is needed here.
+async fn table_columns(dsn: &str, table: &str) -> Vec<String> {
+    let joined = raw_string_opt(
+        dsn,
+        &format!("SELECT group_concat(name, ',') AS v FROM pragma_table_info('{table}')"),
+    )
+    .await
+    .expect("the migration chain created this table, so the pragma answers a non-empty list");
+    joined.split(',').map(ToOwned::to_owned).collect()
+}
+
+/// **[`super::PRODUCT_CONTENT_ROSTER`] is `products_product`'s own columns
+/// minus [`EXCLUDED_FROM_FROZEN_CONTENT`]** — §4.3's rule, measured against
+/// the schema the migration chain executed.
+///
+/// The roster is the third copy of this column list (the two migrations hold
+/// the others), and slices 02 and 03 add content columns. Nothing else in
+/// this suite would notice a roster that forgot one: a forgotten column
+/// simply never reaches the digest, every existing case still passes, and
+/// the loss surfaces years later as a restore that cannot reproduce a
+/// version. This case is what notices.
+///
+/// The three assertions are not one assertion written three ways. The middle
+/// one — that each excluded name **is** a real column — is what stops the
+/// exclusion set from quietly becoming decorative: an exclusion naming a
+/// column that does not exist subtracts nothing, and the equality would then
+/// hold for a roster that is simply the whole table.
+#[tokio::test]
+async fn the_product_content_roster_is_the_head_table_minus_the_excluded_columns() {
+    let harness = harness().await;
+    let columns = table_columns(&harness.dsn, "products_product").await;
+
+    for excluded in EXCLUDED_FROM_FROZEN_CONTENT {
+        assert!(
+            columns.contains(&excluded.to_owned()),
+            "{excluded} must be a real column of products_product for its exclusion to \
+             subtract anything; the executed schema has {columns:?}"
+        );
+        assert!(
+            !super::PRODUCT_CONTENT_ROSTER.contains(&excluded),
+            "section 4.3 excludes {excluded} from a frozen row's content, so the roster must \
+             not name it"
+        );
+    }
+
+    let mut expected: Vec<String> = columns
+        .into_iter()
+        .filter(|column| !EXCLUDED_FROM_FROZEN_CONTENT.contains(&column.as_str()))
+        .collect();
+    expected.sort();
+    let mut roster: Vec<String> = super::PRODUCT_CONTENT_ROSTER
+        .iter()
+        .map(|name| (*name).to_owned())
+        .collect();
+    roster.sort();
+
+    assert_eq!(
+        roster, expected,
+        "section 4.3 scopes a frozen row's content as the publish-time entity minus its named \
+         exclusions, so the roster is the head table's columns minus those and nothing else. A \
+         slice that adds a content column to products_product adds it here too, and bumps \
+         canonical::DIGEST_VERSION with it"
+    );
+}
+
+/// **[`super::product_content`] writes exactly
+/// [`super::PRODUCT_CONTENT_ROSTER`]'s names** — no extra key, and, the part
+/// that matters, no missing one.
+///
+/// The drift case above compares the *roster* to the executed schema.
+/// Nothing compared the *builder* to the roster, and
+/// `canonical::Absence::Null` is what makes that gap silent: a roster name
+/// the builder forgot is rendered `null` rather than refused, so a builder
+/// that dropped `name` would freeze `"name":null`, digest cleanly, and pass
+/// every other case in this file — the digest case included, since that one
+/// re-hashes whatever was stored rather than judging what it says. Slice
+/// 10's restore drill would then reproduce a Product with no name and call
+/// it a match.
+///
+/// The fixture's `product_code` is **present**, and that is a premise the
+/// case asserts rather than assumes: `product_code` is the one roster field
+/// the builder legitimately omits from the map when the head carries none
+/// (that omission is what exercises `Absence::Null`), so against a
+/// code-less fixture this equality would hold for a builder that had dropped
+/// the field entirely and the case would prove one name less than it looks
+/// like it does.
+#[tokio::test]
+async fn the_product_content_builder_writes_exactly_the_roster() {
+    let harness = harness().await;
+    let product_id = Uuid::now_v7();
+    let head = seed_draft(&harness, product_id).await;
+    assert!(
+        head.product_code.is_some(),
+        "this case's own premise: the optional roster field is present, or the equality below \
+         would hold for a builder that had dropped it"
+    );
+
+    let content = super::product_content(&head);
+    let mut written: Vec<&str> = content
+        .as_object()
+        .expect("the builder renders a JSON object")
+        .keys()
+        .map(String::as_str)
+        .collect();
+    written.sort_unstable();
+    let mut roster = super::PRODUCT_CONTENT_ROSTER;
+    roster.sort_unstable();
+
+    assert_eq!(
+        written, roster,
+        "the builder and the roster are one field set stated twice, and only this assertion \
+         holds them equal: Absence::Null renders a name the builder forgot as null instead of \
+         failing, so the omission would reach storage and no other case would notice"
+    );
+}
+
+/// The JSON body of the newest enqueued outbox row carrying `payload_type`.
+///
+/// The `payload` column is a `BLOB`; `CAST(.. AS TEXT)` is what lets
+/// [`raw_string_opt`]'s single-text-column shape read it. Filtering by
+/// `payload_type` keeps this off the `ProductCreated` row any seeded create
+/// enqueued, and the descending order is what makes a second publish's body
+/// readable rather than the first one's.
+async fn enqueued_event_body(dsn: &str, payload_type: &str) -> serde_json::Value {
+    let body_table = format!("{}_body", events::OUTBOX_TABLE_PREFIX);
+    let payload = raw_string_opt(
+        dsn,
+        &format!(
+            "SELECT CAST(payload AS TEXT) AS v FROM {body_table} \
+             WHERE payload_type = '{payload_type}' ORDER BY id DESC LIMIT 1"
+        ),
+    )
+    .await
+    .expect("the enqueued row carries a payload");
+    serde_json::from_str(&payload).expect("the door enqueues a JSON body")
+}
+
+/// **`ProductPublished` carries `publishedVersion`, and it is the version the
+/// act produced.**
+///
+/// §4.5: every one of the eight Foundation events carries the same body core,
+/// and `ProductPublished`/`SkuPublished` **additionally** carry
+/// `publishedVersion` — which slice 06 reads as content and slice 08's
+/// projector keys on. A body without it is a body those two consumers cannot
+/// use.
+///
+/// The **value** is asserted, not merely the key's presence. A door that
+/// hard-coded a zero, or that announced the pre-act `N` the head carried
+/// before the publish, would satisfy an existence check and would still point
+/// 06 and 08 at the wrong version. So this reads `published_version` off the
+/// head after the act and requires the event to agree — and, to separate the
+/// two candidate numbers, it publishes **twice**: after a re-publish the
+/// pre-act value is `1` and the post-act value is `2`, so a door announcing
+/// `N` fails here even though it would pass on a first publish only if it
+/// also happened to be off by one in the other direction.
+#[tokio::test]
+async fn the_published_event_carries_the_post_act_published_version() {
+    let harness = harness().await;
+    let product_id = Uuid::now_v7();
+    seed_draft(&harness, product_id).await;
+
+    let first = post_head_act(
+        app_for(&harness, TENANT),
+        TENANT,
+        product_id,
+        "publish",
+        &[("If-Match", &if_match(1))],
+    )
+    .await;
+    assert_eq!(first.status(), StatusCode::OK, "this case's premise");
+
+    let body = enqueued_event_body(&harness.dsn, "ProductPublished").await;
+    assert_eq!(
+        body["publishedVersion"],
+        json!(head_of(&harness, product_id).await.published_version),
+        "the event announces the version the act wrote, read back off the head"
+    );
+    assert_eq!(
+        body["publishedVersion"],
+        json!(1),
+        "a first publish produces version 1"
+    );
+    // The core is still there, unchanged: `publishedVersion` is *additional
+    // to* the core (§4.5), not a replacement for any of it.
+    assert_eq!(body["entityKind"], json!("product"));
+    assert_eq!(body["entityId"], json!(product_id.to_string()));
+    assert_eq!(body["tenantId"], json!(TENANT.to_string()));
+    assert_eq!(body["lifecycleState"], json!("published"));
+    assert_eq!(body["internalRevision"], json!(2));
+
+    let second = post_head_act(
+        app_for(&harness, TENANT),
+        TENANT,
+        product_id,
+        "publish",
+        &[("If-Match", &if_match(2))],
+    )
+    .await;
+    assert_eq!(second.status(), StatusCode::OK, "a re-publish is admitted");
+
+    let after = enqueued_event_body(&harness.dsn, "ProductPublished").await;
+    assert_eq!(
+        after["publishedVersion"],
+        json!(head_of(&harness, product_id).await.published_version),
+        "the re-publish announces 2, the version it produced, not the 1 the head carried when \
+         it began"
+    );
+    assert_eq!(after["publishedVersion"], json!(2));
+}
+
+/// **A `ProductDiscarded` body carries no `publishedVersion` at all.**
+///
+/// §4.5 puts the field on the two `*Published` events and on no other, which
+/// is the whole reason it lives on `events::PublishedEventBody` rather than
+/// becoming a sixth field of `events::EventBodyCore`. A discard writes no
+/// version row and moves no version counter, so any number it announced would
+/// be one nothing produced.
+#[tokio::test]
+async fn a_discarded_event_carries_no_published_version() {
+    let harness = harness().await;
+    let product_id = Uuid::now_v7();
+    seed_draft(&harness, product_id).await;
+
+    let response = post_head_act(
+        app_for(&harness, TENANT),
+        TENANT,
+        product_id,
+        "discard",
+        &[("If-Match", &if_match(1))],
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK, "this case's premise");
+
+    let body = enqueued_event_body(&harness.dsn, "ProductDiscarded").await;
+    assert_eq!(
+        body.get("publishedVersion"),
+        None,
+        "section 4.5 names publishedVersion on the two *Published events and on no other"
+    );
+    assert_eq!(body["lifecycleState"], json!("discarded"));
+    assert_eq!(body["internalRevision"], json!(2));
 }

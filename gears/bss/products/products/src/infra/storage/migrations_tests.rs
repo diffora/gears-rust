@@ -34,7 +34,36 @@
 //! `published_version`/`internal_revision` counters and the immutable-column
 //! set — one refusal probe per guarded column class, and, per this suite's
 //! own rule, a positive control alongside every refusal probe that could
-//! otherwise pass on a guard that refuses everything.
+//! otherwise pass on a guard that refuses everything. Since Phase 6 that
+//! whitelist includes the `published_version` clause's **existence** half —
+//! a bump is admitted only where the matching `products_entity_version` row
+//! already exists — asserted for `products_product` and `products_sku`
+//! separately, each trigger carrying its own `entity_kind` literal.
+//! Since Phase 6 it also includes that clause's **terminal** half — a bump is
+//! refused outright on a `retired` or `discarded` head — probed from both
+//! sides on both tables, because the clause is gated on the counter moving
+//! and must not become a blanket ban on writing a terminal row.
+//!
+//! Last: `products_entity_version` itself, through the gear's own
+//! `entity::entity_version` (the first of these modules that needs no
+//! test-only mirror). What it exercises is the migration: the column set, the
+//! unique key, the `entity_kind` roster `CHECK`, the two lower-bound `CHECK`s,
+//! and the frozen-row guard's unconditional refusal of `UPDATE` and `DELETE`.
+//!
+//! And last of all, `lifecycle_roster_tests`: the admitted-edge roster is
+//! written out in five places — the application's
+//! `domain::transition::ADMITTED_EDGES` and four SQL clauses, two per engine
+//! per table — and nothing else holds them equal. That module pins all five
+//! against one another, reading the `SQLite` halves back out of
+//! `sqlite_master` and the Postgres halves out of the migration sources.
+//!
+//! **Only the `SQLite` mirror is executed.** The whole suite runs in-memory on
+//! `SQLite`, so no test in this file executes a Postgres statement; the
+//! `PL/pgSQL` halves of every guard asserted here were compared to their
+//! `SQLite` counterparts clause for clause **by reading** — except the
+//! lifecycle edge list, which `lifecycle_roster_tests` now compares
+//! mechanically, from the Postgres source text since there is no executed
+//! Postgres artifact to read.
 #![allow(clippy::expect_used)]
 
 use sea_orm_migration::MigratorTrait;
@@ -998,6 +1027,118 @@ mod idempotency_guard_tests {
     }
 }
 
+/// A trigger created by one migration may reference a table a **later**
+/// migration creates.
+///
+/// `m20260829_000002_create_products_product` and
+/// `m20260829_000003_create_products_sku` install a `published_version` guard
+/// whose existence clause reads `products_entity_version`, which
+/// `m20260829_000007_create_products_entity_version` creates — and the runner
+/// applies migrations in **name** order, so `000007` runs after both. That is
+/// admitted because a trigger body is late-bound on both engines
+/// (`PL/pgSQL` function bodies and `SQLite` trigger bodies resolve table names
+/// at execution, not at creation), but "admitted in theory" is a claim, so
+/// this test measures it: it asserts the ordering is genuinely the awkward
+/// one, and then boots the whole chain.
+///
+/// A boot is the assertion. Were `SQLite` to resolve the referenced table at
+/// `CREATE TRIGGER` time, statement 5 of `000002` would fail and
+/// `run_migrations_for_testing` would return an error here.
+/// `product_guard_tests::a_published_version_bump_without_its_version_row_is_refused`
+/// carries the other half — that the clause does resolve, and does refuse, at
+/// `UPDATE` time.
+#[tokio::test]
+async fn a_trigger_may_reference_a_table_a_later_migration_creates() {
+    use toolkit_db::{ConnectOpts, connect_db};
+
+    let names: Vec<String> = Migrator::migrations()
+        .iter()
+        .map(|m| m.name().to_owned())
+        .collect();
+    let head = names
+        .iter()
+        .position(|n| n == "m20260829_000002_create_products_product")
+        .expect("the product migration is in the roster");
+    let version = names
+        .iter()
+        .position(|n| n == "m20260829_000007_create_products_entity_version")
+        .expect("the entity-version migration is in the roster");
+    assert!(
+        head < version,
+        "this test is only meaningful while the referencing migration runs first"
+    );
+
+    let opts = ConnectOpts {
+        max_conns: Some(1),
+        min_conns: Some(1),
+        ..Default::default()
+    };
+    let db = connect_db("sqlite::memory:", opts)
+        .await
+        .expect("connect in-memory sqlite");
+
+    let booted =
+        toolkit_db::migration_runner::run_migrations_for_testing(&db, Migrator::migrations()).await;
+
+    assert!(
+        booted.is_ok(),
+        "the chain must boot with a trigger referencing a table created three migrations later: {booted:?}"
+    );
+}
+
+/// Seeds `products_entity_version` rows, so the head-row guard's existence
+/// half has something to find.
+///
+/// Unlike the five entities above this is **not** a test-only mirror: it
+/// writes through the gear's own `entity::entity_version`, which Phase 6
+/// lands alongside the migration. A frozen row seeded here is minimal but
+/// well-formed — the `CHECK`s on `entity_kind`, `published_version` and
+/// `digest_version` all bite on it, so a mis-seeded row fails loudly here
+/// rather than quietly weakening the probe it feeds.
+mod frozen_version {
+    use chrono::{TimeZone, Utc};
+    use sea_orm::ActiveValue::Set;
+    use sea_orm::EntityTrait;
+    use toolkit_db::secure::{AccessScope, SecureInsertExt};
+    use toolkit_db::{DBProvider, DbError};
+    use uuid::Uuid;
+
+    use crate::infra::storage::entity::entity_version::{ActiveModel, Entity};
+
+    const ACTOR: Uuid = Uuid::from_u128(0xac_70_12);
+
+    /// Freezes `version` of `(kind, entity_id)` for `tenant_id`.
+    pub async fn freeze(
+        provider: &DBProvider<DbError>,
+        scope: &AccessScope,
+        tenant_id: Uuid,
+        kind: &str,
+        entity_id: Uuid,
+        version: i64,
+    ) {
+        let model = ActiveModel {
+            tenant_id: Set(tenant_id),
+            entity_kind: Set(kind.to_owned()),
+            entity_id: Set(entity_id),
+            published_version: Set(version),
+            content: Set("{}".to_owned()),
+            content_digest: Set(vec![0_u8; 32]),
+            digest_version: Set(1),
+            approval_ref: Set(None),
+            actor_ref: Set(ACTOR),
+            published_at: Set(Utc.with_ymd_and_hms(2026, 8, 29, 10, 0, 0).unwrap()),
+        };
+        let conn = provider.conn().expect("scoped connection");
+        Entity::insert(model.clone())
+            .secure()
+            .scope_with_model(scope, &model)
+            .expect("scope insert")
+            .exec_with_returning(&conn)
+            .await
+            .expect("seed a frozen version row");
+    }
+}
+
 /// A local, test-only `SeaORM` entity for `products_product`.
 ///
 /// Not the gear's production entity — that lives at
@@ -1198,6 +1339,20 @@ mod product_guard_tests {
         }
     }
 
+    /// Freezes `version` of this product in `products_entity_version`, which
+    /// is what the `published_version` guard's existence half looks for. A
+    /// probe that bumps `published_version` without calling this is refused
+    /// by that clause before the clause it meant to exercise ever runs.
+    async fn freeze_version(
+        provider: &DBProvider<DbError>,
+        scope: &AccessScope,
+        product_id: Uuid,
+        version: i64,
+    ) {
+        super::frozen_version::freeze(provider, scope, TENANT, "product", product_id, version)
+            .await;
+    }
+
     /// Class 1/2 (bucket-i): refused after first publish, admitted before it.
     ///
     /// This is the refusal half — `published_version = 1` (already
@@ -1211,6 +1366,7 @@ mod product_guard_tests {
         insert(&provider, &scope, draft_row(id, "alpha"))
             .await
             .expect("insert draft");
+        freeze_version(&provider, &scope, id, 1).await;
         update(
             &provider,
             &scope,
@@ -1409,6 +1565,7 @@ mod product_guard_tests {
         insert(&provider, &scope, draft_row(id, "golf"))
             .await
             .expect("insert draft");
+        freeze_version(&provider, &scope, id, 1).await;
 
         let result = update(
             &provider,
@@ -1434,6 +1591,9 @@ mod product_guard_tests {
         insert(&provider, &scope, draft_row(id, "hotel"))
             .await
             .expect("insert draft");
+        // Freeze the version the jump aims at, so the refusal below can only
+        // come from the `+1` clause and not from the existence clause.
+        freeze_version(&provider, &scope, id, 2).await;
 
         let result = update(
             &provider,
@@ -1459,6 +1619,9 @@ mod product_guard_tests {
         row.published_version = Set(2);
         row.lifecycle_state = Set("published".to_owned());
         insert(&provider, &scope, row).await.expect("insert row");
+        // Both versions frozen, so only the ordering clause can refuse.
+        freeze_version(&provider, &scope, id, 1).await;
+        freeze_version(&provider, &scope, id, 2).await;
 
         let result = update(
             &provider,
@@ -1484,6 +1647,7 @@ mod product_guard_tests {
         insert(&provider, &scope, draft_row(id, "juliet"))
             .await
             .expect("insert draft");
+        freeze_version(&provider, &scope, id, 1).await;
 
         let result = update(
             &provider,
@@ -1498,6 +1662,251 @@ mod product_guard_tests {
         .await;
 
         assert_applied(&result, "+1 is the one admitted published_version move");
+    }
+
+    /// Class 6b (`published_version`, the existence half): a `+1` bump is
+    /// **refused** when `products_entity_version` carries no matching frozen
+    /// row.
+    ///
+    /// This is the half the `DoD` words as "only where the matching frozen
+    /// version row exists", owed to Phase 6 until that phase created the
+    /// table this clause reads. It is also the empirical proof that a trigger
+    /// created by migration `000002` may reference a table created by
+    /// migration `000007`, which runs **later** in name order: the chain
+    /// booted in `harness()` above, and the clause resolves
+    /// `products_entity_version` here, at `UPDATE` time.
+    #[tokio::test]
+    async fn a_published_version_bump_without_its_version_row_is_refused() {
+        let provider = harness().await;
+        let scope = AccessScope::for_tenant(TENANT);
+        let id = Uuid::from_u128(30);
+        insert(&provider, &scope, draft_row(id, "mike"))
+            .await
+            .expect("insert draft");
+
+        let result = update(
+            &provider,
+            &scope,
+            id,
+            vec![
+                (Column::PublishedVersion, 1i64.into()),
+                (Column::InternalRevision, 2i64.into()),
+                (Column::LifecycleState, "published".to_owned().into()),
+            ],
+        )
+        .await;
+
+        assert!(
+            result.is_err(),
+            "a published_version bump with no frozen version row behind it is refused"
+        );
+    }
+
+    /// Class 6b: the positive control for the probe above — the identical
+    /// bump, with the matching frozen row seeded first, is admitted.
+    ///
+    /// Seeded for the **exact** key the clause reads, `(tenant_id,
+    /// 'product', product_id, NEW.published_version)`; a row under any other
+    /// key would leave this probe passing on a guard that refuses every bump.
+    #[tokio::test]
+    async fn a_published_version_bump_with_its_version_row_is_admitted() {
+        let provider = harness().await;
+        let scope = AccessScope::for_tenant(TENANT);
+        let id = Uuid::from_u128(31);
+        insert(&provider, &scope, draft_row(id, "november"))
+            .await
+            .expect("insert draft");
+        freeze_version(&provider, &scope, id, 1).await;
+
+        let result = update(
+            &provider,
+            &scope,
+            id,
+            vec![
+                (Column::PublishedVersion, 1i64.into()),
+                (Column::InternalRevision, 2i64.into()),
+                (Column::LifecycleState, "published".to_owned().into()),
+            ],
+        )
+        .await;
+
+        assert_applied(
+            &result,
+            "the bump is admitted exactly where the frozen version row exists",
+        );
+    }
+
+    /// Class 6b: an `UPDATE` that leaves `published_version` unchanged is
+    /// admitted with **no** frozen version row anywhere — the existence
+    /// clause is gated on the counter moving, so the ordinary edit path pays
+    /// nothing for it.
+    #[tokio::test]
+    async fn an_unchanged_published_version_needs_no_version_row() {
+        let provider = harness().await;
+        let scope = AccessScope::for_tenant(TENANT);
+        let id = Uuid::from_u128(32);
+        let mut row = draft_row(id, "oscar");
+        row.published_version = Set(3);
+        row.lifecycle_state = Set("published".to_owned());
+        insert(&provider, &scope, row).await.expect("insert row");
+
+        let result = update(
+            &provider,
+            &scope,
+            id,
+            vec![
+                (Column::RegionScope, "eu".to_owned().into()),
+                (Column::InternalRevision, 2i64.into()),
+            ],
+        )
+        .await;
+
+        assert_applied(
+            &result,
+            "an edit that does not move published_version is untouched by the existence clause",
+        );
+    }
+
+    /// Class 6c (`published_version`, the terminal half): a `+1` bump on a
+    /// `retired` head is refused, even with its frozen version row in place.
+    ///
+    /// The clause exists because none of its neighbours reaches this write.
+    /// A publish of an already-terminal head writes no `lifecycle_state`, so
+    /// the edge clause never fires; the `+1` clause is satisfied; the
+    /// existence clause is satisfied by the frozen row seeded below; and
+    /// bucket-i and bucket-iii guard columns this update does not touch. So
+    /// without a clause of its own the physical layer admitted publishing a
+    /// terminal entity, against `cpt-cf-bss-products-dod-transition-guard`'s
+    /// "any head write on a `retired` or `discarded` row" (P-D-25, P-D-32)
+    /// and against `design/01-foundation.md` §1.6 C5's physical append-only
+    /// posture.
+    #[tokio::test]
+    async fn a_published_version_bump_on_a_retired_head_is_refused() {
+        let provider = harness().await;
+        let scope = AccessScope::for_tenant(TENANT);
+        let id = Uuid::from_u128(33);
+        let mut row = draft_row(id, "papa");
+        row.published_version = Set(1);
+        row.lifecycle_state = Set("retired".to_owned());
+        insert(&provider, &scope, row).await.expect("insert row");
+        // Frozen, so the existence clause cannot be what refuses this.
+        freeze_version(&provider, &scope, id, 2).await;
+
+        let result = update(
+            &provider,
+            &scope,
+            id,
+            vec![
+                (Column::PublishedVersion, 2i64.into()),
+                (Column::InternalRevision, 2i64.into()),
+            ],
+        )
+        .await;
+
+        assert!(
+            result.is_err(),
+            "a terminal head admits no publish: ENTITY_TERMINAL is refused physically, not only by the door"
+        );
+    }
+
+    /// Class 6c: the same probe against a `discarded` head — the other
+    /// terminal state, which the clause names separately.
+    #[tokio::test]
+    async fn a_published_version_bump_on_a_discarded_head_is_refused() {
+        let provider = harness().await;
+        let scope = AccessScope::for_tenant(TENANT);
+        let id = Uuid::from_u128(34);
+        let mut row = draft_row(id, "quebec");
+        row.published_version = Set(1);
+        row.lifecycle_state = Set("discarded".to_owned());
+        insert(&provider, &scope, row).await.expect("insert row");
+        freeze_version(&provider, &scope, id, 2).await;
+
+        let result = update(
+            &provider,
+            &scope,
+            id,
+            vec![
+                (Column::PublishedVersion, 2i64.into()),
+                (Column::InternalRevision, 2i64.into()),
+            ],
+        )
+        .await;
+
+        assert!(
+            result.is_err(),
+            "discarded is terminal too, and the clause names both states"
+        );
+    }
+
+    /// Class 6c: the positive control — the identical bump on a
+    /// `deprecated` head is admitted.
+    ///
+    /// `deprecated` is the last non-terminal state, and a re-publish from it
+    /// is an ordinary act (`inst-fd-publish-freeze`). Without this the two
+    /// refusals above would pass on a clause that refused every bump.
+    #[tokio::test]
+    async fn a_published_version_bump_on_a_deprecated_head_is_admitted() {
+        let provider = harness().await;
+        let scope = AccessScope::for_tenant(TENANT);
+        let id = Uuid::from_u128(35);
+        let mut row = draft_row(id, "romeo");
+        row.published_version = Set(1);
+        row.lifecycle_state = Set("deprecated".to_owned());
+        insert(&provider, &scope, row).await.expect("insert row");
+        freeze_version(&provider, &scope, id, 2).await;
+
+        let result = update(
+            &provider,
+            &scope,
+            id,
+            vec![
+                (Column::PublishedVersion, 2i64.into()),
+                (Column::InternalRevision, 2i64.into()),
+            ],
+        )
+        .await;
+
+        assert_applied(
+            &result,
+            "a re-publish from deprecated is an ordinary act, and the terminal clause must not reach it",
+        );
+    }
+
+    /// Class 6c: the clause is gated on `published_version` **moving**, not
+    /// on the row being terminal — an update that leaves the counter alone
+    /// is admitted on a terminal head.
+    ///
+    /// This is the boundary the clause must not overrun. Slice 04 writes
+    /// `deprecation_provenance` and `replaced_by_sku_id` **on** terminal rows
+    /// by design, so a blanket "no UPDATE on a terminal row" would collide
+    /// with the slice that brings those two columns. This probe fails the day
+    /// someone simplifies the clause that way.
+    #[tokio::test]
+    async fn an_update_that_moves_no_counter_is_admitted_on_a_retired_head() {
+        let provider = harness().await;
+        let scope = AccessScope::for_tenant(TENANT);
+        let id = Uuid::from_u128(36);
+        let mut row = draft_row(id, "sierra");
+        row.published_version = Set(1);
+        row.lifecycle_state = Set("retired".to_owned());
+        insert(&provider, &scope, row).await.expect("insert row");
+
+        let result = update(
+            &provider,
+            &scope,
+            id,
+            vec![
+                (Column::UpdatedAt, at(12).into()),
+                (Column::InternalRevision, 2i64.into()),
+            ],
+        )
+        .await;
+
+        assert_applied(
+            &result,
+            "a terminal row still takes writes that move no counter; slice 04 depends on it",
+        );
     }
 
     /// Class 7 (`internal_revision`): an otherwise-admitted update (a bucket-
@@ -1890,6 +2299,18 @@ mod sku_guard_tests {
         }
     }
 
+    /// Freezes `version` of this SKU in `products_entity_version` — the
+    /// `'sku'` half of the same existence clause the sibling module seeds
+    /// for products.
+    async fn freeze_version(
+        provider: &DBProvider<DbError>,
+        scope: &AccessScope,
+        sku_id: Uuid,
+        version: i64,
+    ) {
+        super::frozen_version::freeze(provider, scope, TENANT, "sku", sku_id, version).await;
+    }
+
     /// Class 1/2 (bucket-i, `sku_code`/`product_id`): refused once published.
     #[tokio::test]
     async fn bucket_i_change_is_refused_once_published_version_is_above_zero() {
@@ -1901,6 +2322,7 @@ mod sku_guard_tests {
         insert(&provider, &scope, draft_row(sku_id, product_id, "sku-1"))
             .await
             .expect("insert draft sku");
+        freeze_version(&provider, &scope, sku_id, 1).await;
         update(
             &provider,
             &scope,
@@ -2096,6 +2518,9 @@ mod sku_guard_tests {
         insert(&provider, &scope, draft_row(jump_id, product_id, "sku-8"))
             .await
             .expect("insert draft sku");
+        // Freeze the version the jump aims at, so only the `+1` clause can
+        // refuse it.
+        freeze_version(&provider, &scope, jump_id, 2).await;
         let jumped = update(
             &provider,
             &scope,
@@ -2113,6 +2538,9 @@ mod sku_guard_tests {
         row.published_version = Set(2);
         row.lifecycle_state = Set("published".to_owned());
         insert(&provider, &scope, row).await.expect("insert sku");
+        // Both versions frozen, so only the ordering clause can refuse.
+        freeze_version(&provider, &scope, decrement_id, 1).await;
+        freeze_version(&provider, &scope, decrement_id, 2).await;
         let decremented = update(
             &provider,
             &scope,
@@ -2137,6 +2565,7 @@ mod sku_guard_tests {
         insert(&provider, &scope, draft_row(sku_id, product_id, "sku-10"))
             .await
             .expect("insert draft sku");
+        freeze_version(&provider, &scope, sku_id, 1).await;
 
         let result = update(
             &provider,
@@ -2151,6 +2580,227 @@ mod sku_guard_tests {
         .await;
 
         assert_applied(&result, "+1 is the one admitted published_version move");
+    }
+
+    /// Class 6b (`published_version`, the existence half): a `+1` bump on a
+    /// SKU is refused without its frozen `products_entity_version` row, and
+    /// admitted with it.
+    ///
+    /// The `'sku'` arm of the clause is asserted separately from the
+    /// `'product'` arm rather than inferred from it: the two triggers carry
+    /// their own `entity_kind` literal and their own primary-key column, so a
+    /// copy-paste that left `'product'` in this file would pass every
+    /// product-side probe and refuse every SKU publish forever.
+    #[tokio::test]
+    async fn a_published_version_bump_needs_its_version_row() {
+        let provider = harness().await;
+        let scope = AccessScope::for_tenant(TENANT);
+        let product_id = Uuid::from_u128(30);
+        insert_parent(&provider, &scope, product_id).await;
+
+        let bare_id = Uuid::from_u128(130);
+        insert(&provider, &scope, draft_row(bare_id, product_id, "sku-30"))
+            .await
+            .expect("insert draft sku");
+        let refused = update(
+            &provider,
+            &scope,
+            bare_id,
+            vec![
+                (Column::PublishedVersion, 1i64.into()),
+                (Column::InternalRevision, 2i64.into()),
+                (Column::LifecycleState, "published".to_owned().into()),
+            ],
+        )
+        .await;
+        assert!(
+            refused.is_err(),
+            "a SKU published_version bump with no frozen version row behind it is refused"
+        );
+
+        let frozen_id = Uuid::from_u128(131);
+        insert(
+            &provider,
+            &scope,
+            draft_row(frozen_id, product_id, "sku-31"),
+        )
+        .await
+        .expect("insert draft sku");
+        freeze_version(&provider, &scope, frozen_id, 1).await;
+        let admitted = update(
+            &provider,
+            &scope,
+            frozen_id,
+            vec![
+                (Column::PublishedVersion, 1i64.into()),
+                (Column::InternalRevision, 2i64.into()),
+                (Column::LifecycleState, "published".to_owned().into()),
+            ],
+        )
+        .await;
+        assert_applied(
+            &admitted,
+            "the SKU bump is admitted exactly where the frozen version row exists",
+        );
+    }
+
+    /// Class 6b: an `UPDATE` that leaves `published_version` unchanged is
+    /// admitted with no frozen version row at all.
+    #[tokio::test]
+    async fn an_unchanged_published_version_needs_no_version_row() {
+        let provider = harness().await;
+        let scope = AccessScope::for_tenant(TENANT);
+        let product_id = Uuid::from_u128(31);
+        insert_parent(&provider, &scope, product_id).await;
+        let sku_id = Uuid::from_u128(132);
+        let mut row = draft_row(sku_id, product_id, "sku-32");
+        row.published_version = Set(3);
+        row.lifecycle_state = Set("published".to_owned());
+        insert(&provider, &scope, row).await.expect("insert sku");
+
+        let result = update(
+            &provider,
+            &scope,
+            sku_id,
+            vec![
+                (Column::RegionScope, "eu".to_owned().into()),
+                (Column::InternalRevision, 2i64.into()),
+            ],
+        )
+        .await;
+
+        assert_applied(
+            &result,
+            "an edit that does not move published_version is untouched by the existence clause",
+        );
+    }
+
+    /// Class 6c (`published_version`, the terminal half): a `+1` bump on a
+    /// `retired` SKU head is refused, with its frozen version row in place.
+    ///
+    /// The sibling table's probe carries the full rationale; this one
+    /// measures the `products_sku` trigger, which states the clause
+    /// independently and could drift from it.
+    #[tokio::test]
+    async fn a_published_version_bump_on_a_retired_head_is_refused() {
+        let provider = harness().await;
+        let scope = AccessScope::for_tenant(TENANT);
+        let product_id = Uuid::from_u128(33);
+        insert_parent(&provider, &scope, product_id).await;
+        let sku_id = Uuid::from_u128(133);
+        let mut row = draft_row(sku_id, product_id, "sku-33");
+        row.published_version = Set(1);
+        row.lifecycle_state = Set("retired".to_owned());
+        insert(&provider, &scope, row).await.expect("insert row");
+        freeze_version(&provider, &scope, sku_id, 2).await;
+
+        let result = update(
+            &provider,
+            &scope,
+            sku_id,
+            vec![
+                (Column::PublishedVersion, 2i64.into()),
+                (Column::InternalRevision, 2i64.into()),
+            ],
+        )
+        .await;
+
+        assert!(
+            result.is_err(),
+            "a terminal SKU head admits no publish either"
+        );
+    }
+
+    /// Class 6c: the same probe against a `discarded` SKU head.
+    #[tokio::test]
+    async fn a_published_version_bump_on_a_discarded_head_is_refused() {
+        let provider = harness().await;
+        let scope = AccessScope::for_tenant(TENANT);
+        let product_id = Uuid::from_u128(34);
+        insert_parent(&provider, &scope, product_id).await;
+        let sku_id = Uuid::from_u128(134);
+        let mut row = draft_row(sku_id, product_id, "sku-34");
+        row.published_version = Set(1);
+        row.lifecycle_state = Set("discarded".to_owned());
+        insert(&provider, &scope, row).await.expect("insert row");
+        freeze_version(&provider, &scope, sku_id, 2).await;
+
+        let result = update(
+            &provider,
+            &scope,
+            sku_id,
+            vec![
+                (Column::PublishedVersion, 2i64.into()),
+                (Column::InternalRevision, 2i64.into()),
+            ],
+        )
+        .await;
+
+        assert!(result.is_err(), "discarded is terminal on this table too");
+    }
+
+    /// Class 6c: the positive control — the identical bump on a
+    /// `deprecated` SKU head is admitted.
+    #[tokio::test]
+    async fn a_published_version_bump_on_a_deprecated_head_is_admitted() {
+        let provider = harness().await;
+        let scope = AccessScope::for_tenant(TENANT);
+        let product_id = Uuid::from_u128(35);
+        insert_parent(&provider, &scope, product_id).await;
+        let sku_id = Uuid::from_u128(135);
+        let mut row = draft_row(sku_id, product_id, "sku-35");
+        row.published_version = Set(1);
+        row.lifecycle_state = Set("deprecated".to_owned());
+        insert(&provider, &scope, row).await.expect("insert row");
+        freeze_version(&provider, &scope, sku_id, 2).await;
+
+        let result = update(
+            &provider,
+            &scope,
+            sku_id,
+            vec![
+                (Column::PublishedVersion, 2i64.into()),
+                (Column::InternalRevision, 2i64.into()),
+            ],
+        )
+        .await;
+
+        assert_applied(
+            &result,
+            "a re-publish from deprecated is an ordinary act on a SKU as well",
+        );
+    }
+
+    /// Class 6c: the boundary — an update that moves no counter is admitted
+    /// on a terminal SKU head, because slice 04 writes `replaced_by_sku_id`
+    /// on exactly such rows.
+    #[tokio::test]
+    async fn an_update_that_moves_no_counter_is_admitted_on_a_retired_head() {
+        let provider = harness().await;
+        let scope = AccessScope::for_tenant(TENANT);
+        let product_id = Uuid::from_u128(36);
+        insert_parent(&provider, &scope, product_id).await;
+        let sku_id = Uuid::from_u128(136);
+        let mut row = draft_row(sku_id, product_id, "sku-36");
+        row.published_version = Set(1);
+        row.lifecycle_state = Set("retired".to_owned());
+        insert(&provider, &scope, row).await.expect("insert row");
+
+        let result = update(
+            &provider,
+            &scope,
+            sku_id,
+            vec![
+                (Column::UpdatedAt, at(12).into()),
+                (Column::InternalRevision, 2i64.into()),
+            ],
+        )
+        .await;
+
+        assert_applied(
+            &result,
+            "a terminal SKU row still takes writes that move no counter",
+        );
     }
 
     /// Class 7 (`internal_revision`): refused when an otherwise-admitted
@@ -2323,5 +2973,626 @@ mod sku_guard_tests {
             result.is_err(),
             "a SKU head row is retired through lifecycle_state, never removed"
         );
+    }
+}
+
+/// `products_entity_version`'s own shape and its frozen-row guard
+/// (`cpt-cf-bss-products-dod-version-history-table`), exercised against the
+/// executed `SQLite` mirror.
+///
+/// Unlike the five modules above, these tests speak through the gear's own
+/// `entity::entity_version` rather than a test-only mirror, that entity
+/// having landed with the migration.
+///
+/// **The Postgres half is not executed by any test in this file.** The whole
+/// suite runs on the in-memory `SQLite` mirror, so the `PL/pgSQL` function
+/// and its trigger were compared to the `SQLite` triggers **clause for clause
+/// by reading**, not by execution: same two refusals, same two messages, same
+/// `BEFORE DELETE OR UPDATE` reach. The same is true of the head-row guard's
+/// new existence clause asserted in the two modules above.
+///
+/// **One §5 probe is owed and cannot run here.** §5 requires that deleting a
+/// row a `products_catalog_version_entry` still references be refused by the
+/// guard rather than skipped by the GC. That table is slice 06's and does not
+/// exist at this commit, so the probe's premise cannot be established. What
+/// is asserted instead is the interim rule as shipped — `DELETE` refused
+/// unconditionally — which is strictly stronger than the predicate it stands
+/// in for; the owed probe lands with the predicate it exercises.
+mod entity_version_guard_tests {
+    use chrono::{TimeZone, Utc};
+    use sea_orm::ActiveValue::Set;
+    use sea_orm::sea_query::Expr;
+    use sea_orm::{ColumnTrait, Condition, EntityTrait, QueryFilter};
+    use sea_orm_migration::MigratorTrait;
+    use toolkit_db::secure::{
+        AccessScope, ScopeError, SecureDeleteExt, SecureEntityExt, SecureInsertExt, SecureUpdateExt,
+    };
+    use toolkit_db::{ConnectOpts, DBProvider, DbError, connect_db};
+    use uuid::Uuid;
+
+    use super::Migrator;
+    use crate::infra::storage::entity::entity_version::{ActiveModel, Column, Entity, Model};
+
+    const TENANT: Uuid = Uuid::from_u128(0xe0_11);
+    const ACTOR: Uuid = Uuid::from_u128(0xe0_22);
+    const APPROVAL: Uuid = Uuid::from_u128(0xe0_33);
+
+    /// A pinned in-memory `SQLite` pool, one connection only — the identical
+    /// idiom every other guard-test module in this file uses, for the
+    /// identical reason.
+    async fn harness() -> DBProvider<DbError> {
+        let opts = ConnectOpts {
+            max_conns: Some(1),
+            min_conns: Some(1),
+            ..Default::default()
+        };
+        let db = connect_db("sqlite::memory:", opts)
+            .await
+            .expect("connect in-memory sqlite");
+        toolkit_db::migration_runner::run_migrations_for_testing(&db, Migrator::migrations())
+            .await
+            .expect("run migrator");
+        DBProvider::<DbError>::new(db)
+    }
+
+    /// The canonical rendering a freeze stores: `JSON`, keys sorted
+    /// lexicographically, absent values written `null` rather than omitted,
+    /// no insignificant whitespace (§4.3). Held as one literal here so the
+    /// round-trip below compares what was written against what came back
+    /// rather than against a second literal that could drift from it.
+    ///
+    /// `1.10` is deliberate. It is a numeric literal Postgres `jsonb` would
+    /// have normalized to `1.1` and `text` keeps verbatim, so a future change
+    /// of the column type in the direction the digest cannot survive shows up
+    /// as a failure of `every_column_the_design_names_round_trips` rather than
+    /// as a silent restore-drill failure years later. **On the executed
+    /// `SQLite` mirror the column is plain `text` and would keep it either
+    /// way** — the assertion is a tripwire for the Postgres statement, which
+    /// no test in this file executes. The Postgres column is `text` as well;
+    /// see the migration's module doc for why neither `json` nor `jsonb`
+    /// could hold this value.
+    fn canonical_content() -> String {
+        r#"{"brandId":"b-1","name":"alpha","productCode":null,"weight":1.10}"#.to_owned()
+    }
+
+    /// A well-formed frozen row: every column set, including the two nullable
+    /// ones, so a round-trip reads back what was written.
+    fn frozen_row(kind: &str, entity_id: Uuid, version: i64) -> ActiveModel {
+        ActiveModel {
+            tenant_id: Set(TENANT),
+            entity_kind: Set(kind.to_owned()),
+            entity_id: Set(entity_id),
+            published_version: Set(version),
+            content: Set(canonical_content()),
+            content_digest: Set(vec![7_u8; 32]),
+            digest_version: Set(1),
+            approval_ref: Set(Some(APPROVAL)),
+            actor_ref: Set(ACTOR),
+            published_at: Set(Utc.with_ymd_and_hms(2026, 8, 29, 11, 0, 0).unwrap()),
+        }
+    }
+
+    async fn insert(
+        provider: &DBProvider<DbError>,
+        scope: &AccessScope,
+        model: ActiveModel,
+    ) -> Result<Model, ScopeError> {
+        let conn = provider.conn().expect("scoped connection");
+        Entity::insert(model.clone())
+            .secure()
+            .scope_with_model(scope, &model)
+            .expect("scope insert")
+            .exec_with_returning(&conn)
+            .await
+    }
+
+    /// Every column §4.3 names survives a write and a read.
+    ///
+    /// A round-trip rather than a schema dump: `SeaORM` would fail the
+    /// `INSERT` outright on a column the migration does not carry, and the
+    /// read-back is what proves the values are stored rather than merely
+    /// accepted — including `content`, whose whole purpose is to hand back
+    /// **exactly** the bytes the digest was taken over.
+    #[tokio::test]
+    async fn every_column_the_design_names_round_trips() {
+        let provider = harness().await;
+        let scope = AccessScope::for_tenant(TENANT);
+        let entity_id = Uuid::from_u128(1);
+        insert(&provider, &scope, frozen_row("product", entity_id, 1))
+            .await
+            .expect("insert a frozen row");
+
+        let conn = provider.conn().expect("scoped connection");
+        let row = Entity::find()
+            .secure()
+            .scope_with(&scope)
+            .and_id(entity_id)
+            .expect("resource-scoped find")
+            .one(&conn)
+            .await
+            .expect("read row")
+            .expect("row exists");
+
+        assert_eq!(row.tenant_id, TENANT);
+        assert_eq!(row.entity_kind, "product");
+        assert_eq!(row.entity_id, entity_id);
+        assert_eq!(row.published_version, 1);
+        assert_eq!(row.content, canonical_content());
+        assert_eq!(row.content_digest, vec![7_u8; 32]);
+        assert_eq!(row.digest_version, 1);
+        assert_eq!(row.approval_ref, Some(APPROVAL));
+        assert_eq!(row.actor_ref, ACTOR);
+        assert_eq!(
+            row.published_at,
+            Utc.with_ymd_and_hms(2026, 8, 29, 11, 0, 0).unwrap()
+        );
+    }
+
+    /// `approval_ref` is the one nullable column, and a row written without
+    /// it is accepted — the state every publish is in until slice 05's gate
+    /// mints an `ApprovalRecord` to name.
+    #[tokio::test]
+    async fn approval_ref_is_nullable() {
+        let provider = harness().await;
+        let scope = AccessScope::for_tenant(TENANT);
+        let entity_id = Uuid::from_u128(2);
+        let mut model = frozen_row("sku", entity_id, 1);
+        model.approval_ref = Set(None);
+
+        let row = insert(&provider, &scope, model)
+            .await
+            .expect("a frozen row with no approval behind it is accepted");
+        assert_eq!(row.approval_ref, None);
+    }
+
+    /// The key is `UNIQUE`: a second row on the same
+    /// `(tenant_id, entity_kind, entity_id, published_version)` is refused.
+    #[tokio::test]
+    async fn the_version_key_is_unique() {
+        let provider = harness().await;
+        let scope = AccessScope::for_tenant(TENANT);
+        let entity_id = Uuid::from_u128(3);
+        insert(&provider, &scope, frozen_row("product", entity_id, 1))
+            .await
+            .expect("insert the first freeze");
+
+        let result = insert(&provider, &scope, frozen_row("product", entity_id, 1)).await;
+
+        assert!(
+            result.is_err(),
+            "one entity cannot have two frozen rows for one published version"
+        );
+    }
+
+    /// The key's positive control: the same entity's **next** version, and
+    /// the same id under the **other** kind, are both distinct keys and both
+    /// admitted. Without this the uniqueness probe above could pass on a
+    /// table that refused every second insert.
+    #[tokio::test]
+    async fn a_different_version_or_kind_is_a_different_key() {
+        let provider = harness().await;
+        let scope = AccessScope::for_tenant(TENANT);
+        let entity_id = Uuid::from_u128(4);
+        insert(&provider, &scope, frozen_row("product", entity_id, 1))
+            .await
+            .expect("insert version 1");
+        insert(&provider, &scope, frozen_row("product", entity_id, 2))
+            .await
+            .expect("version 2 of the same entity is a different key");
+        insert(&provider, &scope, frozen_row("sku", entity_id, 1))
+            .await
+            .expect("the same id under the other kind is a different key");
+    }
+
+    /// The `entity_kind` roster is closed to exactly `product` and `sku`.
+    #[tokio::test]
+    async fn the_entity_kind_roster_is_closed() {
+        let provider = harness().await;
+        let scope = AccessScope::for_tenant(TENANT);
+        insert(
+            &provider,
+            &scope,
+            frozen_row("product", Uuid::from_u128(5), 1),
+        )
+        .await
+        .expect("product is in the roster");
+        insert(&provider, &scope, frozen_row("sku", Uuid::from_u128(6), 1))
+            .await
+            .expect("sku is in the roster");
+
+        let result = insert(
+            &provider,
+            &scope,
+            frozen_row("catalog_version", Uuid::from_u128(7), 1),
+        )
+        .await;
+
+        assert!(
+            result.is_err(),
+            "a third entity kind is a migration, never a convention"
+        );
+    }
+
+    /// Version `0` has no frozen row: it is the unpublished head's counter
+    /// value, and the head-row guard's existence clause reads this table only
+    /// for a version the head is moving **to**.
+    #[tokio::test]
+    async fn version_zero_is_refused() {
+        let provider = harness().await;
+        let scope = AccessScope::for_tenant(TENANT);
+
+        let result = insert(
+            &provider,
+            &scope,
+            frozen_row("product", Uuid::from_u128(8), 0),
+        )
+        .await;
+
+        assert!(result.is_err(), "there is no frozen version zero");
+    }
+
+    /// `digest_version` starts at `1` (**P-D-33**) and a row claiming a
+    /// lower one is refused — the constant is what makes a later bump
+    /// checkable, so a `0` would make the check meaningless.
+    #[tokio::test]
+    async fn digest_version_below_one_is_refused() {
+        let provider = harness().await;
+        let scope = AccessScope::for_tenant(TENANT);
+        let mut model = frozen_row("product", Uuid::from_u128(9), 1);
+        model.digest_version = Set(0);
+
+        let result = insert(&provider, &scope, model).await;
+
+        assert!(
+            result.is_err(),
+            "digest_version is pinned at 1 and only ever moves up"
+        );
+    }
+
+    /// **No `UPDATE` path at all, ever** (§4.3). Probed on `content_digest`,
+    /// the column a corrupting rewrite would have to touch to go unnoticed,
+    /// and there is no positive control to pair it with because there is no
+    /// admitted `UPDATE` for one to exercise.
+    #[tokio::test]
+    async fn an_update_of_a_frozen_row_is_refused() {
+        let provider = harness().await;
+        let scope = AccessScope::for_tenant(TENANT);
+        let entity_id = Uuid::from_u128(10);
+        insert(&provider, &scope, frozen_row("product", entity_id, 1))
+            .await
+            .expect("insert a frozen row");
+
+        let conn = provider.conn().expect("scoped connection");
+        let result = Entity::update_many()
+            .col_expr(Column::ContentDigest, Expr::value(vec![9_u8; 32]))
+            .filter(Condition::all().add(Column::EntityId.eq(entity_id)))
+            .secure()
+            .scope_with(&scope)
+            .exec(&conn)
+            .await;
+
+        assert!(
+            result.is_err(),
+            "a frozen row is never mutated; diffs are computed between rows"
+        );
+    }
+
+    /// An `UPDATE` that changes nothing is refused too — the guard is
+    /// unconditional, not a whitelist with an empty admit list, so a
+    /// no-op rewrite is not a way past it.
+    #[tokio::test]
+    async fn an_update_that_rewrites_the_same_value_is_refused() {
+        let provider = harness().await;
+        let scope = AccessScope::for_tenant(TENANT);
+        let entity_id = Uuid::from_u128(11);
+        insert(&provider, &scope, frozen_row("product", entity_id, 1))
+            .await
+            .expect("insert a frozen row");
+
+        let conn = provider.conn().expect("scoped connection");
+        let result = Entity::update_many()
+            .col_expr(Column::DigestVersion, Expr::value(1_i32))
+            .filter(Condition::all().add(Column::EntityId.eq(entity_id)))
+            .secure()
+            .scope_with(&scope)
+            .exec(&conn)
+            .await;
+
+        assert!(result.is_err(), "the no-UPDATE rule has no no-op carve-out");
+    }
+
+    /// `DELETE` is refused unconditionally at this commit.
+    ///
+    /// §4.3 admits exactly one `DELETE`, under P-D-40's referential
+    /// predicate against `products_catalog_version_entry`. That table is
+    /// slice 06's; a literal predicate today would find nothing referencing
+    /// any row and therefore admit **every** delete, which is fail-open. The
+    /// interim rule this asserts is the strictly stronger one, and it is what
+    /// slice 06 replaces in this migration file in place.
+    #[tokio::test]
+    async fn a_delete_of_a_frozen_row_is_refused() {
+        let provider = harness().await;
+        let scope = AccessScope::for_tenant(TENANT);
+        let entity_id = Uuid::from_u128(12);
+        insert(&provider, &scope, frozen_row("product", entity_id, 1))
+            .await
+            .expect("insert a frozen row");
+
+        let conn = provider.conn().expect("scoped connection");
+        let result = Entity::delete_many()
+            .filter(Condition::all().add(Column::EntityId.eq(entity_id)))
+            .secure()
+            .scope_with(&scope)
+            .exec(&conn)
+            .await;
+
+        assert!(
+            result.is_err(),
+            "no DELETE is admitted here until slice 06 supplies the referential predicate"
+        );
+    }
+
+    /// The table is tenant-scoped like every other Foundation table: a
+    /// neighbour tenant's scope does not see this tenant's frozen rows.
+    #[tokio::test]
+    async fn a_frozen_row_is_invisible_to_another_tenant() {
+        let provider = harness().await;
+        let scope = AccessScope::for_tenant(TENANT);
+        let entity_id = Uuid::from_u128(13);
+        insert(&provider, &scope, frozen_row("product", entity_id, 1))
+            .await
+            .expect("insert a frozen row");
+
+        let other = AccessScope::for_tenant(Uuid::from_u128(0xe0_99));
+        let conn = provider.conn().expect("scoped connection");
+        let found = Entity::find()
+            .secure()
+            .scope_with(&other)
+            .and_id(entity_id)
+            .expect("resource-scoped find")
+            .one(&conn)
+            .await
+            .expect("read row");
+
+        assert!(found.is_none(), "version history is tenant-scoped");
+    }
+}
+
+/// The admitted-edge roster, pinned across every copy of it this repository
+/// holds.
+///
+/// The five-edge state machine `features/foundation.md` §4 declares is written
+/// out in **five** places, and nothing in the type system holds them equal:
+///
+/// 1. [`crate::domain::transition::ADMITTED_EDGES`], the application's copy;
+/// 2. `m20260829_000002`'s Postgres `PL/pgSQL` clause;
+/// 3. `m20260829_000002`'s `SQLite` trigger `WHEN` clause;
+/// 4. `m20260829_000003`'s Postgres clause;
+/// 5. `m20260829_000003`'s `SQLite` clause.
+///
+/// A sixth copy is the design set's prose, which is not machine-checkable from
+/// here. Every copy below is measured against the first, so an edge added to
+/// or dropped from any one of them fails here rather than at a customer.
+///
+/// **Two measurement routes, each used where it is the stronger one.** The
+/// `SQLite` halves are read back out of `sqlite_master` after the chain has
+/// booted, so what is compared is the artifact the engine actually holds
+/// rather than a string in this repository that may never have been executed.
+/// The Postgres halves are read from the migration **source**, because no test
+/// in this crate executes a Postgres statement — the whole suite runs
+/// in-memory on `SQLite` — so the source text is the only evidence available,
+/// and a `const` that no reader can name from outside its module
+/// (`PG_UP_STATEMENTS` is private) has to be reached with `include_str!`.
+mod lifecycle_roster_tests {
+    use std::collections::BTreeSet;
+
+    use bss_products_sdk::models::LifecycleState;
+    use sea_orm::ConnectionTrait;
+    use sea_orm_migration::MigratorTrait;
+
+    use super::Migrator;
+    use crate::domain::transition::ADMITTED_EDGES;
+
+    /// The two migration sources, as text. `include_str!` resolves relative to
+    /// the file holding the macro, which is this one — `src/infra/storage/`.
+    const PRODUCT_SOURCE: &str =
+        include_str!("migrations/m20260829_000002_create_products_product.rs");
+    const SKU_SOURCE: &str = include_str!("migrations/m20260829_000003_create_products_sku.rs");
+
+    /// A `(from, to)` edge set in the column's own wire spellings, which is
+    /// the one vocabulary all five copies share.
+    type Edges = BTreeSet<(String, String)>;
+
+    /// The Postgres statement list of a migration source, sliced out by its
+    /// two `const` headers.
+    ///
+    /// Narrower than scanning the whole file on purpose: it keeps a sentence
+    /// of module-doc prose from ever counting as an edge, and it keeps the
+    /// `DOWN` list out.
+    fn pg_section(source: &str) -> &str {
+        let start = source
+            .find("const PG_UP_STATEMENTS")
+            .expect("every migration declares its Postgres UP list");
+        let end = source
+            .find("const PG_DOWN_STATEMENTS")
+            .expect("every migration declares its Postgres DOWN list");
+        &source[start..end]
+    }
+
+    /// Every `(OLD.lifecycle_state <op> 'x' AND NEW.lifecycle_state <op> 'y')`
+    /// pair in `sql`.
+    ///
+    /// `comparison` is `=` for a `PL/pgSQL` body and `IS` for a `SQLite`
+    /// trigger, which is the whole dialect difference between the two
+    /// renderings of one clause.
+    ///
+    /// The requirement that an `OLD` comparison be **immediately followed** by
+    /// the matching `NEW` one is what keeps the bucket clauses out of the
+    /// result: those spell the state as `OLD.lifecycle_state IN (...)` and
+    /// `NOT IN (...)`, neither of which opens with the comparison operator and
+    /// neither of which names `NEW.lifecycle_state` at all.
+    fn edges_in(sql: &str, comparison: &str) -> Edges {
+        let opening = format!("OLD.lifecycle_state {comparison} '");
+        let joining = format!(" AND NEW.lifecycle_state {comparison} '");
+        let mut found = Edges::new();
+        let mut rest = sql;
+        while let Some(at) = rest.find(&opening) {
+            let after = &rest[at + opening.len()..];
+            rest = after;
+            let Some(close) = after.find('\'') else { break };
+            let from = &after[..close];
+            let tail = &after[close + 1..];
+            if let Some(pair) = tail.strip_prefix(&joining)
+                && let Some(end) = pair.find('\'')
+            {
+                found.insert((from.to_owned(), pair[..end].to_owned()));
+            }
+        }
+        found
+    }
+
+    /// The application's roster, rendered through `LifecycleState::as_str` —
+    /// the same method the column's values come from, so the comparison is
+    /// against the spellings that actually reach the database.
+    fn declared_edges() -> Edges {
+        ADMITTED_EDGES
+            .iter()
+            .map(|(from, to)| (from.as_str().to_owned(), to.as_str().to_owned()))
+            .collect()
+    }
+
+    /// Boots the whole chain on a fresh in-memory `SQLite` database and hands
+    /// back the **executed** text of one trigger, read from `sqlite_master`.
+    ///
+    /// A raw `SeaORM` connection rather than the `SecureORM` provider the
+    /// guard suites use: `DbConn` deliberately exposes no raw-SQL path, and
+    /// `sqlite_master` is not a tenant-scoped table. One connection, pinned,
+    /// for the reason every harness in this file pins one — a default
+    /// `sqlite::memory:` pool hands each checked-out connection its own empty
+    /// database.
+    async fn executed_trigger(name: &str) -> String {
+        let mut opts = sea_orm::ConnectOptions::new("sqlite::memory:");
+        opts.max_connections(1).min_connections(1);
+        let db = sea_orm::Database::connect(opts)
+            .await
+            .expect("connect in-memory sqlite");
+        Migrator::up(&db, None).await.expect("boot the chain");
+        let query = format!(
+            "SELECT sql AS v FROM sqlite_master WHERE type = 'trigger' AND name = '{name}'"
+        );
+        let rows = db
+            .query_all_raw(sea_orm::Statement::from_string(
+                sea_orm::DatabaseBackend::Sqlite,
+                query,
+            ))
+            .await
+            .expect("query sqlite_master");
+        let row = rows
+            .first()
+            .expect("the lifecycle-edge trigger reached the engine");
+        let text: String = row.try_get("", "v").expect("the trigger's executed text");
+        text
+    }
+
+    /// All four SQL copies of the edge roster equal the application's.
+    #[tokio::test]
+    async fn every_copy_of_the_admitted_edge_roster_agrees() {
+        let declared = declared_edges();
+        assert_eq!(
+            declared.len(),
+            ADMITTED_EDGES.len(),
+            "a duplicate entry in ADMITTED_EDGES would shrink the set and weaken every comparison below"
+        );
+
+        let product_postgres = edges_in(pg_section(PRODUCT_SOURCE), "=");
+        let sku_postgres = edges_in(pg_section(SKU_SOURCE), "=");
+        let product_sqlite = edges_in(
+            &executed_trigger("trg_products_product_lifecycle_edge").await,
+            "IS",
+        );
+        let sku_sqlite = edges_in(
+            &executed_trigger("trg_products_sku_lifecycle_edge").await,
+            "IS",
+        );
+
+        assert_eq!(
+            product_postgres, declared,
+            "products_product's PL/pgSQL edge list has drifted from ADMITTED_EDGES"
+        );
+        assert_eq!(
+            product_sqlite, declared,
+            "products_product's executed SQLite trigger has drifted from ADMITTED_EDGES"
+        );
+        assert_eq!(
+            sku_postgres, declared,
+            "products_sku's PL/pgSQL edge list has drifted from ADMITTED_EDGES"
+        );
+        assert_eq!(
+            sku_sqlite, declared,
+            "products_sku's executed SQLite trigger has drifted from ADMITTED_EDGES"
+        );
+    }
+
+    /// The `lifecycle_state` `CHECK` roster, on both engines of both tables,
+    /// admits exactly the states the enum spells.
+    ///
+    /// Asserted without restating the five variants here, which would be a
+    /// seventh copy of the roster and would drift like the rest. Two
+    /// measurements close it from both sides instead: **every** token in the
+    /// `CHECK` parses through `LifecycleState::parse`, whose only outputs are
+    /// the five variants, so the set can hold no invented state and is at most
+    /// five; and every state the machine names appears in it, and the machine
+    /// names all five, so it is at least five.
+    #[test]
+    fn every_check_roster_admits_exactly_the_lifecycle_states() {
+        const MARKER: &str = "CHECK (lifecycle_state IN (";
+
+        for (table, source) in [
+            ("products_product", PRODUCT_SOURCE),
+            ("products_sku", SKU_SOURCE),
+        ] {
+            let mut rosters: Vec<BTreeSet<String>> = Vec::new();
+            let mut rest = source;
+            while let Some(at) = rest.find(MARKER) {
+                let after = &rest[at + MARKER.len()..];
+                rest = after;
+                let close = after.find(')').expect("the token list closes");
+                rosters.push(
+                    after[..close]
+                        .split(',')
+                        .map(|token| token.trim().trim_matches('\'').to_owned())
+                        .collect(),
+                );
+            }
+
+            assert_eq!(
+                rosters.len(),
+                2,
+                "{table}: one lifecycle_state CHECK per engine, Postgres and SQLite"
+            );
+            for roster in &rosters {
+                for token in roster {
+                    assert!(
+                        LifecycleState::parse(token).is_some(),
+                        "{table}: the CHECK admits {token}, which is not a LifecycleState"
+                    );
+                }
+                for (from, to) in &ADMITTED_EDGES {
+                    assert!(
+                        roster.contains(from.as_str()),
+                        "{table}: the machine takes an edge out of a state the CHECK refuses"
+                    );
+                    assert!(
+                        roster.contains(to.as_str()),
+                        "{table}: the machine takes an edge into a state the CHECK refuses"
+                    );
+                }
+            }
+            assert_eq!(
+                rosters.first(),
+                rosters.last(),
+                "{table}: the two engines admit different lifecycle_state rosters"
+            );
+        }
     }
 }
