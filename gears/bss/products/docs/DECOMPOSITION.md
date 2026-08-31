@@ -504,6 +504,9 @@ authored downstream of this document, in the order §3 establishes.
   - ApprovalRecord
   - ApprovalDecision
   - BreakGlassSession
+  - MaterialityEvaluator
+  - QuorumEvaluator
+  - OverrideCeremony
 
 - **Design Components**:
 

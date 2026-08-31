@@ -129,7 +129,9 @@ inbox merges with pricing's.
 
 ### Submit a change for approval
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-flow-submit`
+Declared by [`../features/governance.md`](../features/governance.md) §2 as `cpt-cf-bss-products-flow-submit`.
+The steps below are this slice's and are the normative ones; the FEATURE carries the
+actor, the scenarios and the boundary.
 
 1. [ ] - `p1` - Submission runs `MaterialityEvaluator` over the change set (head-row pending edits vs last published version; for a `GovernedLiveOp`, the op payload): **material** ⇒ quorum descriptor per C1 (`required = N`); **non-material** ⇒ `min(N, 1)` — so a tenant at `N = 0` publishes approver-less by policy and the record says exactly that, which is the point of P-D-11 and replaces the earlier "nothing publishes approver-less" interim; first publish and every lifecycle transition **to `published`/`deprecated`/`retired`** are material at their **initiating human act** — the mechanical stages of an approved scheduled act (the `effectiveAt` flip, cascade legs) re-enter the gate only in 01's `PreAuthorized(approvalId)` mode, consuming nothing further (H-2, see `inst-gv-one-shot`); a bucket-iv-only re-publish is the non-material case (a re-publish is not a transition, 01's head-row model), and `draft→discarded` is ungated beyond authz (M-1) - `inst-gv-materiality`
 2. [ ] - `p1` - The `ApprovalRecord` **stores the submitted content snapshot** at submission time — the diff shown to approvers is rendered from the STORED snapshot against the last published version, never re-derived from the live head (the pricing pinned-content defect, designed out) - `inst-gv-stored-snapshot`
@@ -138,7 +140,9 @@ inbox merges with pricing's.
 
 ### Decide (approve / reject)
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-flow-decide`
+Declared by [`../features/governance.md`](../features/governance.md) §2 as `cpt-cf-bss-products-flow-decide`.
+The steps below are this slice's and are the normative ones; the FEATURE carries the
+actor, the scenarios and the boundary.
 
 1. [ ] - `p1` - `approval × decide` grant required; at every `N ≥ 1` (C1) the author's own decision is refused `SELF_APPROVAL_FORBIDDEN` — by principal, not role (C2) - `inst-gv-self`
 2. [ ] - `p1` - The approver's brand/region claims MUST cover the subject's scope, read with 01 **P-D-39**'s two
@@ -151,7 +155,9 @@ inbox merges with pricing's.
 
 ### Publish / apply against the gate
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-flow-gate`
+Declared by [`../features/governance.md`](../features/governance.md) §2 as `cpt-cf-bss-products-flow-gate`.
+The steps below are this slice's and are the normative ones; the FEATURE carries the
+actor, the scenarios and the boundary.
 
 1. [ ] - `p1` - **The Foundation's gate phase runs on any gated act, not on publish alone** (**P-D-30**) — which is what hosts this slice's gate on 04's un-deprecation edge: a transition door consumes the `satisfied` record exactly as the publish door does, and `inst-gv-one-shot`'s same-transaction flip binds identically there. Separately, **authorization is a pre-pipeline gate rather than a phase** (same call), run before 01's pipeline opens so a denied caller neither consumes an idempotency key nor writes a claim row; the denial's code and status are this slice's to declare, and remain open below. The Foundation gate (01 `inst-fd-governance-gate`) asks this slice: an `ApprovalRecord` in state `satisfied` (`superseded` being a value of the same column, §4) whose pinned revision equals the door's expected revision ⇒ yes; a stage entering in 01's `PreAuthorized(approvalId)` mode naming a **`consumed`** record that
   authorized this subject at this pinned revision ⇒ yes, consuming nothing further (`inst-gv-one-shot`);
@@ -165,13 +171,17 @@ inbox merges with pricing's.
 
 ### Read the pending queue (the studio inbox contract)
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-flow-queue`
+Declared by [`../features/governance.md`](../features/governance.md) §2 as `cpt-cf-bss-products-flow-queue`.
+The steps below are this slice's and are the normative ones; the FEATURE carries the
+actor, the scenarios and the boundary.
 
 1. [ ] - `p1` - `GET /bss-products/v1/approvals?state=pending` (`approval × read`) → **200** returns the common inbox envelope — `{subjectRef, subjectKind, state, submitter, submittedAt, quorum: {required, satisfied, financeRequired, predicateUnsatisfiable, quorumReduced, configuredQuorum}}` (`required` is **the `ApprovalRecord`'s effective count** — `N` for a material change, `min(N, 1)` for a non-material one per `inst-gv-materiality` — never the raw configured `N`, so a card cannot show "2 required" for a record that closes on one; `configuredQuorum` carries the raw `N` when a surface needs it. Heterogeneous quorums therefore render per card and parity with pricing's queue is a configuration rather than a schema question — P-D-11) + the per-kind diff payload — deliberately merge-compatible with pricing's queue so the studio renders one inbox with per-kind cards (the PRD-era UI requirement recorded at design time) - `inst-gv-queue`
 
 ### Break-glass elevation (read/audit-export only)
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-flow-breakglass`
+Declared by [`../features/governance.md`](../features/governance.md) §2 as `cpt-cf-bss-products-flow-breakglass`.
+The steps below are this slice's and are the normative ones; the FEATURE carries the
+actor, the scenarios and the boundary.
 
 1. [ ] - `p1` - Elevation opens a `BreakGlassSession`: mandatory reason, time-boxed window (configured), scope named (which tenant); itself **two-person-approved or post-hoc-reviewed** — and this "two-person" is a **fixed floor of two distinct platform principals, outside the tenant's configured `N` entirely** (P-D-13: the acting principal is a platform owner and the subject is another tenant's data, so no tenant configuration has standing over it; the post-hoc-review arm is the escape the floor needs, so the floor blocks nobody) — (both paths recorded; the post-hoc path raises the review obligation as an alert, not a silent log line); `BreakGlassElevated` emitted + a distinct alert channel; the reason passes 02's `inst-av-pii-block` before the row is written, a hit failing `CONTENT_PII_BLOCKED` (**P-D-50**; 02 `inst-av-pii-reason` enumerates this door) - `inst-bg-open`
 2. [ ] - `p1` - Under elevation: cross-tenant **read and audit-export only**; every access is individually audited with the session id, reason, and correlation id; any write attempt is refused `BREAKGLASS_WRITE_FORBIDDEN` — no exception in v1 (C5) - `inst-bg-readonly`
@@ -181,13 +191,18 @@ inbox merges with pricing's.
 
 ### 3.1 Materiality mechanics
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-algo-materiality`
+Declared by [`../features/governance.md`](../features/governance.md) §3 as `cpt-cf-bss-products-algo-materiality`.
+The steps below are this slice's and are the normative ones; the FEATURE carries the
+actor, the scenarios and the boundary.
 
 1. [ ] - `p1` - Inputs: (a) the **`BucketRegistry`** — a **Foundation** artifact named in 01 §1.7 beside `RegisteredValidator` (**P-D-28**: a slice registers its columns' bucket tags exactly as it registers validators, code not config; the Foundation's head-door guard and this slice's materiality judgement read the same registry) — bucket-iii fields registered by their slices (03: `PlanTier`, `taxCategory`, `glCode`, `sellable`; 01: frame) make any touch material; the FR-enumerated **metering-unit** field is bucket ii — it reaches publish through the save door while `published_version = 0` (01 `inst-fd-save-txn`, **P-D-41**), and after first publish only through the slice-07 correction door (itself `N`-governed with the reduction recorded — P-D-13), so the evaluator never sees it as an ordinary touch (L-1); (b) the PRD-enumerated ops — lifecycle transitions **to `published`/`deprecated`/`retired`** (the FR's exact enumeration — `draft→discarded` is outside it and stays ungated beyond its own authz, M-1), category create/rename/re-parent/retire/delete, material attribute-definition changes; (c) the affected-entity count ≥ the configured trigger (interim 10) for batch acts (09); (d) **`GovernedLiveOp` kinds registered material by their owning slice** (H-1 fix): 02's taxonomy ops (= the enumeration), 03's recognized-set add/deprecate/remove and `PlanTier` taxonomy ops, 04's `ScheduledTransition` **cancel** ops (the governed retirement abort — `inst-lc-undeprecate`; without this line the evaluator judged it non-material and `inst-gv-materiality` would set `required = min(N, 1)`, one approver at the default, for the only act that unwinds a cascade), 06's freeze-participant membership ops, 07's reference-producer registration ops, 10's PII-allow-list ops. **A registered kind's approver role predicate NARROWS within the C1 base set and never replaces it; v1 registers no extension point that could** (C8, P-D-10 — this clause previously granted a replacing predicate, with 10's Legal-designated role as its only intended user, flagged as a design reading of AC #35's "Legal sign-off"; the product call retired both, since AC #35 asks for a *recorded* sign-off and not a role) — the PRD/slice-03 phrase "elevated approval" **means exactly this material quorum**, with the FinanceReviewer predicate on the Finance-owned code sets and not on the Product+Rating-owned unit set - `inst-mt-inputs`
 2. [ ] - `p1` - The policy object — **field set + trigger + the approver count `N`** (item 36 of the review: `N` was omitted, though C1 and P-D-11 both require every later change to it to be material under the then-current quorum, which only holds if it is part of the governed object) — is a `GovernedLiveOp` subject whose **own mutation is always material** (C4), on its **own** resource pair `materiality_policy × write`, never a config-admin's general grant: pricing builds a separate resource precisely so the holder of a config grant cannot weaken the threshold that governs it - `inst-mt-policy-material`
 3. [ ] - `p2` - Evaluated once at submission against the policy in force at the submission instant (never the reader's clock — the pricing D-194 lesson, adopted) - `inst-mt-once`
 
 ### 3.2 RBAC catalog
+
+Declared by [`../features/governance.md`](../features/governance.md) §3 as `cpt-cf-bss-products-algo-rbac-catalog`.
+The catalog table below is this slice's and is the normative one; the FEATURE carries the obligation and the boundary.
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-contract-rbac`
 
@@ -249,6 +264,9 @@ topology. Every door
 names its pair; slice 12's coverage check asserts no door is unnamed.
 
 ### 3.3 Error taxonomy (slice-owned codes)
+
+Declared by [`../features/governance.md`](../features/governance.md) §3 as `cpt-cf-bss-products-algo-governance-errors`.
+The code roster below is this slice's and is the normative one; the FEATURE carries the obligation and the boundary.
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-contract-governance-errors`
 
