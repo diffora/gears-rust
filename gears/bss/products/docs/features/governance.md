@@ -493,7 +493,10 @@ distinctness-by-principal**: one principal, one decision, whatever roles they ho
 
 The system **MUST** create `products_breakglass_session` carrying the session id, the principal as
 an `actor_ref` — pseudonymous, never a raw identifier — the target tenant, the reason, the window as a half-open interval, and the
-approval path — a two-person reference or a post-hoc obligation state. Elevated audit rows **MUST**
+approval path — a two-person reference or a post-hoc obligation **state ∈ {pending, reviewed}**
+with `reviewed_by (actor_ref)` / `reviewed_at`, discharged by the **second platform principal's**
+late decision (**P-D-68** — one ceremony, two timings; no new door) — plus the **`expired_emitted`**
+CAS stamp the expiry event's one emitter flips (P-D-68). Elevated audit rows **MUST**
 carry the session id. **The post-hoc obligation's state set is enumerated nowhere and no door
 discharges it** (open item 20).
 
@@ -668,7 +671,10 @@ leaving the subject unchanged, and emit `ApprovalDecided` on either verdict.
 The system **MUST** require each approver to acknowledge the named lint findings **by name** where
 the subject carries override conditions, and **MUST** store the acknowledgments on the record and
 in audit — an informed override, never a blind one. At `N = 0` the **author** performs the
-acknowledgment and the record carries `quorumReduced`. The record **MUST** be the ceremony's only
+acknowledgment **in nullable `author_override_ack` / `author_override_ack_at` on
+`products_approval`, written by the submit door only at effective quorum zero** (**P-D-68** — a
+synthetic decision row would break C2's one-principal-one-decision UNIQUE), and the record carries
+`quorumReduced`. The record **MUST** be the ceremony's only
 home: a lane that publishes an override subject without one is a defect, not an exemption.
 **Where the `N = 0` acknowledgment is stored is open item 10** — the only column for
 acknowledgments sits on the decision row, which demands an approver principal and a verdict the
@@ -820,9 +826,13 @@ rule states how a live session widens either.
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-breakglass-expiry`
 
 The system **MUST** refuse every elevated call past the window with `BREAKGLASS_EXPIRED` and emit
-`BreakGlassExpired`. Standing cross-tenant access **MUST NOT** be grantable — the grant model has
-no such shape. **Who produces the expiry event is open item 19**: the only producer named is a
-refused call, so an uncalled session never emits it and a session called ten times after expiry
+`BreakGlassExpired` **exactly once — by the first post-expiry act, via a CAS flip of the session's
+`expired_emitted` stamp in the same transaction as that refusal** (**P-D-68**: the winner emits, a
+replay emits nothing; an untouched session emits no event, its expiry a stored fact observable as a
+gauge with the alerting rule on top). **Expiry gates admission, not completion** — a read admitted
+inside the window finishes. Standing cross-tenant access **MUST NOT** be grantable — the grant model
+has no such shape. **Item 19 was the producer question and P-D-68 closed it**: the only producer
+previously named was a refused call, so an uncalled session never emits it and a session called ten times after expiry
 emits ten.
 
 **Implements**: `cpt-cf-bss-products-flow-breakglass`
@@ -868,7 +878,9 @@ and the role predicate is not; `APPROVAL_SUPERSEDED` **MUST** be raised at **dec
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-governance-events`
 
 The system **MUST** emit `ApprovalDecided` on both verdicts, `BreakGlassElevated` and
-`BreakGlassExpired` through the Foundation's outbox in the mutating transaction. Submissions and
+`BreakGlassExpired` through the Foundation's outbox in the mutating transaction —
+`BreakGlassExpired`'s mutating transaction being the **first post-expiry refusal's**, whose CAS on
+`expired_emitted` makes the emission exactly-once (**P-D-68**). Submissions and
 supersessions **MUST** emit no broker event — the queue is a pull surface and every submission
 already rides the entity's own audit row — and that absence **MUST** be recorded as an explicit
 no-event declaration.
@@ -1009,7 +1021,7 @@ in it is a question about every other feature's gate.
 | 7 | **Does the authoring head read need an action of its own?** The Foundation's `GET` is an authoring read and its own §4.3 says that read is not a consumer read, while the catalog lists only `read\|write\|publish` per kind | `dod-rbac-catalog` | this feature |
 | 8 | **What does `Gate` mode require of a gated transition?** The Foundation's mode instruction is worded for a publish and pins "the door's expected revision", while the transition doors are this feature's and `04-lifecycle`'s and pin nothing stated there | `dod-gate-host`, `dod-preauthorized-mode` | this feature with 04 |
 | 9 | **Is a break-glass two-person approval an `ApprovalRecord`, and what holds its fixed floor?** The elevation demands two distinct platform principals outside the tenant's `N`, while `required` is defined only as `N` or `min(N, 1)` — **no writer can produce a fixed 2** — the store's row is tenant-scoped, and the approver-scope rule would refuse a platform approver on another tenant's subject. The stored approval path is a reference to an unnamed thing | `dod-breakglass-open`, `dod-approval-store`, `dod-quorum-descriptor` | this feature with the platform-identity owner |
-| 10 | **Where is the `N = 0` override acknowledgment stored?** The author performs it and the acknowledgments are said to live "on the record and in audit", but the only column for them sits on the decision row, which demands an approver principal and a verdict the author does not have, and the approval row has no acknowledgment column | `dod-override-ceremony`, `dod-approval-store` | this feature's storage owner |
+| 10 | ~~**Where is the `N = 0` override acknowledgment stored?**~~ **Answered (owner call, 2026-09-01 — P-D-68 arm 1): on `products_approval`, in nullable `author_override_ack` / `author_override_ack_at`, written by the submit door only when the effective quorum is zero** — a synthetic decision row would break C2's one-principal-one-decision UNIQUE, so the fact gets a column (the P-D-50 convention); decision rows keep theirs for `N ≥ 1`. *Original text:* The author performs it and the acknowledgments are said to live "on the record and in audit", but the only column for them sits on the decision row, which demands an approver principal and a verdict the author does not have, and the approval row has no acknowledgment column | no DoD — **resolved by P-D-68**; `dod-override-ceremony` and `dod-approval-store` carry the columns | was this feature's storage owner; **closed** |
 | 11 | **Which transaction writes `state = satisfied`?** Every other value has a named writer; this one has only an evaluator, and nothing says whether a record at `required = 0` is born satisfied. If satisfaction is evaluated at gate time instead, the `satisfied` branch of the partial unique index is dead | `dod-quorum-evaluator`, `dod-approval-store`, `cpt-cf-bss-products-state-approval-record` | this feature |
 | 12 | **What door carries submit, decide and break-glass elevation?** The catalog mints `approval × submit\|decide` and `breakglass × elevate`, and the only route this feature declares is the inbox `GET`. The Foundation closes its own set at five wire doors | `dod-decide`, `dod-breakglass-open`, `dod-rbac-catalog` | this feature with the contract owner |
 | 13 | **Is `APPROVER_ROLE_REQUIRED` 403 or 409?** The convention puts 409 where the current state refuses the act and 403 where the caller may not act at all; by its stated raise site the caller may publish and it is the record's state that refuses — which is where the sibling `APPROVAL_SUPERSEDED` sits at 409 | `dod-governance-errors` | the governance owner with the taxonomy owner |
@@ -1018,11 +1030,11 @@ in it is a question about every other feature's gate.
 | 16 | **Does the base role set bind the single approver of a non-material change?** The constraint scopes its CatalogAdmin-or-FinanceReviewer floor to material changes, and a non-material one gets `min(N, 1)` with no base role set on the descriptor. Nothing says whether any holder of `approval × decide` may close one | `dod-quorum-evaluator` | this feature |
 | 17 | **Does AC #26's third bullet still bind?** It carries both a superseded two-person count and a `draft` return the head-row model cannot honour; the decision that rewrote the first two bullets names neither | `dod-decide` | the PRD owner with the governance owner |
 | 18 | **What does an elevation change about the authorization decision?** Deny-by-default runs over tenant-scoped claims and all repository access goes through tenant-scoped ORM queries; **no rule anywhere says how a live session widens either**, nor where in the pre-pipeline gate that operand is read | `dod-breakglass-readonly`, `dod-rbac-catalog` | this feature with the `ToolKit` owner |
-| 19 | **Who produces `BreakGlassExpired`, and what happens to an act in flight at expiry?** The only producer named is a refused call, so an uncalled session never emits it and a session called ten times after expiry emits ten; no sweeper is named, and nothing says whether a read begun inside the window may finish | `dod-breakglass-expiry`, `dod-governance-events` | this feature with the ops owner |
-| 20 | **What is the post-hoc obligation's state set, and who discharges it?** The state is stored and the review obligation is raised as an alert; no door, event or flow writes a discharge, and no values are enumerated | `dod-breakglass-store`, `dod-breakglass-open` | this feature |
+| 19 | ~~**Who produces `BreakGlassExpired`, and what happens to an act in flight at expiry?**~~ **Answered (owner call, 2026-09-01 — P-D-68 arm 2): the first post-expiry act emits it, exactly once, via a CAS flip of the session's `expired_emitted` stamp in the same transaction as its refusal** — the winner emits, a replay emits nothing (P-D-54's mechanism); an untouched session emits no event, its expiry being a stored fact observable as a gauge with the alerting rule on top (P-D-59's). **Expiry gates admission, not completion** — a read admitted inside the window finishes. *Original text:* The only producer named is a refused call, so an uncalled session never emits it and a session called ten times after expiry emits ten; no sweeper is named, and nothing says whether a read begun inside the window may finish | no DoD — **resolved by P-D-68**; `dod-breakglass-expiry` and `dod-governance-events` carry the mechanism | was this feature with the ops owner; **closed** |
+| 20 | ~~**What is the post-hoc obligation's state set, and who discharges it?**~~ **Answered (owner call, 2026-09-01 — P-D-68 arm 3): the state set is `{pending, reviewed}` and the discharger is the second platform principal** — rule 1's *two-person-approved or post-hoc-reviewed* is one ceremony with two timings, so the review is the second principal's decision arriving late, writing `reviewed_by`/`reviewed_at`; no new door or grant. Whether its record is an `ApprovalRecord` stays its own open item, not presupposed. *Original text:* The state is stored and the review obligation is raised as an alert; no door, event or flow writes a discharge, and no values are enumerated | no DoD — **resolved by P-D-68**; `dod-breakglass-store` and `dod-breakglass-open` carry the set and the discharger | was this feature; **closed** |
 | 21* | **Is a sealing capability owed, and on what terms?** *(carried from the slice's constraint C7, not from §6)* Audit sealing is a platform capability this gear deliberately does not build; the requirements it must satisfy are carried as a PRD open owned by Architecture, and until it activates the gear ships completeness without tamper-evidence | `dod-governance-audit` | Architecture |
 | 22 | **The break-glass window's two normative facts live only in the PRD's interim-policy table** — a 4-hour interim **and** "no renewal without a new session". The elevation instruction states neither, and renewal is neither forbidden nor admitted | `dod-breakglass-open` | the governance owner with the §17.1 owner |
-| 23 | ~~**Is the approval hook's no-fire exception still worded for `draft→published` alone?**~~ **Closed on re-measurement 2026-08-31**: the slice's C3 already reads "except any transition that consumes an approval in the same transaction — `draft→published` … and every gated edge P-D-30 put the gate phase on", and cites P-D-34 three times. The §6 bullet is stale against its own constraint and is **owed a strike in the slice**; `dod-supersede` obliges C3's widened exception | `dod-supersede` | this feature — to strike in `design/05` §6 |
+| 23 | ~~**Is the approval hook's no-fire exception still worded for `draft→published` alone?**~~ **Closed on re-measurement 2026-08-31**: the slice's C3 already reads "except any transition that consumes an approval in the same transaction — `draft→published` … and every gated edge P-D-30 put the gate phase on", and cites P-D-34 three times. The §6 bullet is stale against its own constraint and is **owed a strike in the slice**; `dod-supersede` obliges C3's widened exception | no DoD — **resolved**: the owed strike in `design/05` §6 was filed by **P-D-68** on 2026-09-01, so `dod-supersede` is freed | was this feature; **closed** |
 
 | 24 | **Which slice mints a grant pair when the owning slice names none?** The roster carries `scheduled_transition × write\|cancel\|read` and `product\|sku × discard` for doors that name no pair, while §3.2 asserts "Every door names its pair" and `12-consumer-contracts`' lint runs door-to-catalog only — so a catalog entry with no door is invisible to it in both directions. **This is the item the first draft dropped** | `dod-rbac-catalog` | the governance owner with 04, 08 and 12 |
 | 25** | **A principal's *role* is not on any surface the gear has.** `SecurityContext` exposes `subject_id`, `subject_type`, `subject_tenant_id`, `token_scopes` and `bearer_token` — no roles, no brand claim, no region claim — and `roles`/`role_` returns **zero** hits across the gear's source. Authorization is permission-based: `authz.rs` asks the policy point `(resource, action)` for the **current** caller and returns a query filter. There is no way to ask whether principal X holds role R, still less to ask it of a **past** approver at gate time. The cheapest place to hold the answer is the decision row, which today stores neither the roles nor the scope claims that were true when the decision was made | `dod-quorum-evaluator`, `dod-finance-predicate`, `dod-approver-scope`, `dod-decision-store` | this feature with the platform-identity owner |

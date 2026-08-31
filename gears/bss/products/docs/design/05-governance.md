@@ -185,7 +185,7 @@ actor, the scenarios and the boundary.
 
 1. [ ] - `p1` - Elevation opens a `BreakGlassSession`: mandatory reason, time-boxed window (configured), scope named (which tenant); itself **two-person-approved or post-hoc-reviewed** — and this "two-person" is a **fixed floor of two distinct platform principals, outside the tenant's configured `N` entirely** (P-D-13: the acting principal is a platform owner and the subject is another tenant's data, so no tenant configuration has standing over it; the post-hoc-review arm is the escape the floor needs, so the floor blocks nobody) — (both paths recorded; the post-hoc path raises the review obligation as an alert, not a silent log line); `BreakGlassElevated` emitted + a distinct alert channel; the reason passes 02's `inst-av-pii-block` before the row is written, a hit failing `CONTENT_PII_BLOCKED` (**P-D-50**; 02 `inst-av-pii-reason` enumerates this door) - `inst-bg-open`
 2. [ ] - `p1` - Under elevation: cross-tenant **read and audit-export only**; every access is individually audited with the session id, reason, and correlation id; any write attempt is refused `BREAKGLASS_WRITE_FORBIDDEN` — no exception in v1 (C5) - `inst-bg-readonly`
-3. [ ] - `p1` - Expiry is hard: past the window every elevated call fails `BREAKGLASS_EXPIRED`; `BreakGlassExpired` emitted; standing cross-tenant access is not grantable in the catalog at all — the grant model has no such shape - `inst-bg-expiry`
+3. [ ] - `p1` - Expiry is hard: past the window every elevated call fails `BREAKGLASS_EXPIRED`; `BreakGlassExpired` is emitted **exactly once, by the first post-expiry act, via a CAS flip of the session's `expired_emitted` stamp in the same transaction as its refusal — the winner emits, a replay emits nothing, and a session never touched after expiry emits no event at all, its expiry being a stored fact observable as a gauge with the alerting rule on top** (**P-D-68**, on P-D-54's and P-D-59's mechanisms); **expiry gates admission, not completion** — an elevated read admitted inside the window finishes (P-D-68); standing cross-tenant access is not grantable in the catalog at all — the grant model has no such shape - `inst-bg-expiry`
 
 ## 3. Processes / Business Logic
 
@@ -309,9 +309,14 @@ row and open to correction; the requirement is that every code carries one.
   finalization.
 - **`products_approval_decision`** — `(approval_id, approver_principal)` UNIQUE — the principal **as `actor_ref`**, pseudonymous — · verdict ·
   reason · override acknowledgments · instant. The UNIQUE is C2's physical floor: one principal,
-  one decision.
+  one decision. **At `N = 0` the acknowledgment has no decision row to ride, so `products_approval`
+  carries nullable `author_override_ack` and `author_override_ack_at`** (**P-D-68**), written by the
+  submit door only when the effective quorum is zero — a fact gets a column rather than
+  parameterizing someone else's row (the P-D-50 convention).
 - **`products_breakglass_session`** — session id · principal (**as `actor_ref`** — pseudonymous like every actor-bearing store, M5 of the slice-10 review) · target tenant · reason ·
-  window `[from, until)` · approval path (`two_person` ref | `post_hoc` obligation state) ·
+  window `[from, until)` · approval path (`two_person` ref | `post_hoc` obligation
+  state ∈ {pending, reviewed} with `reviewed_by (actor_ref)` / `reviewed_at` — **P-D-68**) ·
+  **`expired_emitted`** (the CAS stamp `BreakGlassExpired`'s one emitter flips — P-D-68) ·
   timestamps. Elevated audit rows carry the session id.
 - **Events**: `ApprovalDecided` (both verdicts), `BreakGlassElevated`, `BreakGlassExpired` —
   broker-native; submissions/supersessions are audit-plane (explicit "no broker event": the
@@ -383,7 +388,11 @@ finance fields), 04 (un-deprecation, retirement confirmation, scheduled-approval
   a ref to an unnamed thing. Owner: this slice with the platform-identity owner — the store, the
   descriptor writer, and whether the tenant-scoped approval rules apply at all.
   *(Two lenses raised it independently.)*
-- **Where is the `N = 0` override acknowledgment stored?** `inst-gv-override` has the author perform
+- ~~**Where is the `N = 0` override acknowledgment stored?**~~
+  **Answered (owner call, 2026-09-01 — P-D-68): on `products_approval`, in nullable
+  `author_override_ack` / `author_override_ack_at`, written by the submit door only when the
+  effective quorum is zero.** A synthetic decision row would break C2's one-principal-one-decision
+  UNIQUE; a fact gets a column instead (the P-D-50 convention). Original text: `inst-gv-override` has the author perform
   it and says acknowledgments are "stored on the record and in audit"; the only column for them is
   on `products_approval_decision`, whose row demands an approver principal and a verdict the author
   does not have, and `products_approval` has no acknowledgment column. Owner: this slice's storage
@@ -431,13 +440,27 @@ finance fields), 04 (un-deprecation, retirement confirmation, scheduled-approval
   no rule anywhere says how a live `BreakGlassSession` widens either the grant check or the query
   scoping. Owner: this slice with the ToolKit/SecureORM owner — the operand a door reads, and where
   in the pre-pipeline gate it is read. *(Raised by the slice-05 first lens pass.)*
-- **Who produces `BreakGlassExpired`, and what happens to an act in flight at expiry?** The only
+- ~~**Who produces `BreakGlassExpired`, and what happens to an act in flight at expiry?**~~
+  **Answered (owner call, 2026-09-01 — P-D-68): the first post-expiry act emits it, exactly once, via
+  a CAS flip of the session's `expired_emitted` stamp in the same transaction as its refusal** — the
+  winner emits, a replay emits nothing (P-D-54's mechanism); an untouched session emits no event, its
+  expiry being a stored fact observable as a gauge with the alerting rule on top (P-D-59's), which is
+  also what the review alert keys on. **Expiry gates admission, not completion**: a read admitted
+  inside the window finishes. Original text: The only
   producer named is a refused call, so a session nobody calls again never emits it and a session
   called ten times after expiry emits ten; no sweeper is named in any slice, and nothing says
-  whether a read begun inside the window may finish. Owner: this slice with the ops owner. *(Raised by the slice-05 first lens pass.)*
-- **What is the `post_hoc` obligation's state set, and who discharges it?** §4 stores the state and
+  whether a read begun inside the window may finish. Owner: was this slice with the ops owner;
+  **closed**. *(Raised by the slice-05 first lens pass.)*
+- ~~**What is the `post_hoc` obligation's state set, and who discharges it?**~~
+  **Answered (owner call, 2026-09-01 — P-D-68): the set is `{pending, reviewed}`, and the discharger
+  is the second platform principal** — rule 1's *"two-person-approved or post-hoc-reviewed"* is one
+  ceremony with two timings, so the review is the second principal's decision arriving after the
+  fact, writing `reviewed_by (actor_ref)` / `reviewed_at` and flipping the state; **no new door or
+  grant is minted**. Whether that decision's record is an `ApprovalRecord` stays its own item above,
+  deliberately not presupposed. Original text: §4 stores the state and
   `inst-bg-open` raises the review obligation as an alert; no door, event or flow writes a
-  discharge, and no values are enumerated — §6 books only an owner and an SLA. Owner: this slice.
+  discharge, and no values are enumerated — §6 books only an owner and an SLA. Owner: was this
+  slice; **closed**.
   *(Raised by the slice-05 first lens pass.)*
 - **The break-glass window's two normative facts live only in `PRD` §17.1.** That row carries a
   4-hour interim **and** "no renewal without a new session", crediting this slice's own review with
@@ -447,10 +470,14 @@ finance fields), 04 (un-deprecation, retirement confirmation, scheduled-approval
   pre-P-D-11 count ("v1 uses a single two-person step") and the `draft` return the head-row model
   cannot honour; P-D-11's propagation names two bullets of AC #26 and not this one. Owner: the PRD
   owner with the governance owner, in the register. *(Raised by the slice-05 first lens pass.)*
-- **Is C3's no-hook exception still worded for `draft→published` alone?** C3 fires 01's
+- ~~**Is C3's no-hook exception still worded for `draft→published` alone?**~~
+  **Closed on re-measurement (2026-09-01, filed by P-D-68): stale against its own constraint.** C3
+  already reads *"except any transition that consumes an approval in the same transaction"* and this
+  slice cites **P-D-34** three times, so both of this item's premises were false at HEAD —
+  `features/governance.md` §7 row 23 measured it and owed this strike. Original text: C3 fires 01's
   `inst-fd-approval-hook` on any frozen-content write, while the exception it carries is written
   for a `draft→published` publish; **P-D-34** widened the unit to any transition that consumes an
   approval in the same transaction, and this slice cites P-D-34 nowhere. Either the exception
-  widens with it or the narrower wording is deliberate and says so. Owner: this slice.
+  widens with it or the narrower wording is deliberate and says so. Owner: was this slice; **closed**.
   *(Filed from 01 §6 by the P-D-43…49 propagation audit — the eighth pass's own repair note
   claimed this was filed and it was not.)*

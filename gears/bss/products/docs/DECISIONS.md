@@ -1569,6 +1569,62 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   (the re-publish step).
 
 
+#### P-D-68 — Governance's own queue: the override ack's column, the expiry event's one emitter, the review's discharger
+
+- **Date**: 2026-09-01 (owner call, autonomous under the standing instruction; row 18 — what an
+  elevation changes about the authorization decision — is **deferred to the owner**, its co-owner
+  being the ToolKit and both candidate mechanisms living outside this gear)
+- **Context**: `features/governance.md` §7 is a table the sole-blocker recipe never parsed, so its
+  queue surfaced only when a table-aware pass ran: rows 10, 19, 20 and 23 jointly held six DoDs.
+
+**1. The `N = 0` override acknowledgment gets its own nullable columns on `products_approval`**
+(row 10). The decision row already carries *"reason · override acknowledgments · instant"*, but at
+`N = 0` no decision row exists — the author is not an approver and has no verdict. So the approval
+record gains nullable **`author_override_ack`** (the named findings acknowledged) and
+**`author_override_ack_at`**, written by the **submit door** only when the effective quorum is zero —
+the P-D-50 convention again: a fact gets a column instead of parameterizing someone else's row.
+Decision rows keep theirs for `N ≥ 1`; audit carries both as already stated.
+
+**2. `BreakGlassExpired` is emitted exactly once, by the first post-expiry act, via a CAS stamp**
+(row 19). The measured defect: the only named producer is a refused call, so an untouched session
+emits nothing and a session called ten times emits ten. The mechanism is assembled from the set's own
+precedents: the session row gains **`expired_emitted`**, flipped by CAS in the same transaction as the
+first post-expiry refusal — **the winner emits, a replay emits nothing** (P-D-54's mechanism) — and a
+session never touched after expiry emits no event at all: its expiry is a stored fact (`until`
+passed), observable as a **gauge** with the alerting rule on top (P-D-59's mechanism), which is also
+what the post-hoc review alert keys on. **In-flight acts complete**: expiry gates **admission** — an
+elevated read admitted inside the window finishes; the gate judges at admission, as every
+claim-shaped mechanism in this set does.
+
+**3. The post-hoc obligation's state set is `{pending, reviewed}`, and the discharger is the second
+platform principal** (row 20). Rule 1 already says an elevation is *"two-person-approved **or**
+post-hoc-reviewed"* with a fixed floor of two distinct platform principals — one ceremony, two
+timings. So the review **is** the second principal's decision arriving after the fact: it writes
+`reviewed_by (actor_ref)` / `reviewed_at` and flips the state, and **no new door or grant is
+minted**. Whether that decision's record is an `ApprovalRecord` stays its own open §6 item,
+deliberately not presupposed here — this arm names the discharger and the state set, nothing about
+the record's shape.
+
+**4. Row 23 is a filing, not a decision**: the row itself closed on re-measurement (C3 already
+carries the widened exception), and the stale `design/05` §6 bullet it names is struck in the same
+change.
+
+- **The arguments against, stated**: arm 1 adds two columns for a ceremony variant (the alternative —
+  a synthetic decision row with the author as approver — would break C2's *"one principal, one
+  decision"* UNIQUE and the two-person invariant it enforces); arm 2's event is conditional on a
+  post-expiry touch, which is deliberate — an event nobody's act produced would need a sweeper, and
+  the quiet case is the gauge's; arm 3 leans on the one-ceremony reading of *"two-person-approved or
+  post-hoc-reviewed"*, and a later decision that the post-hoc review is a different ceremony would
+  reopen the discharger, not the state set.
+- **Not changed**: C5's read-only boundary, the fixed floor of two, `BREAKGLASS_EXPIRED`'s refusal
+  semantics, and row 18's question — the elevation-vs-authorization seam stays open with the ToolKit
+  co-owner, **parked for the owner** rather than decided.
+- **Propagated**: `design/05-governance.md` (§4 the approval columns and the session columns, §2's
+  expiry and override rules, §6 items answered for rows 10, 19, 20 and the row-23 bullet struck),
+  `features/governance.md` (`dod-override-ceremony`, `dod-approval-store`, `dod-breakglass-expiry`,
+  `dod-governance-events`, `dod-breakglass-store`, `dod-supersede`, the table rows and the section
+  arithmetic).
+
 #### P-D-67 — The catalog-version sweep: nine rows, every answer forced by a measurement already in the set
 
 - **Date**: 2026-08-31 (owner call, taken under the standing instruction to decide where the
