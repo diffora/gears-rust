@@ -482,8 +482,12 @@ the decoder being the half nothing in the crate supplies. It **MUST** be the inv
 - [ ] `p3` - **ID**: `cpt-cf-bss-products-dod-clone-identity`
 
 New `productId`/`skuId` are minted. The code is **suggested** as `{source}-copy-N`,
-**operator-overridable**, and reserved atomically through the same index the create door uses — a
-collision is the ordinary `DUPLICATE_CODE`, which **P-D-25** made one code covering both the
+**operator-overridable**, and reserved atomically through the same index the create door uses —
+**`N` is the first free integer for the suggested string, decided by the index under the
+reservation** (**P-D-62**): a reservation conflict moves to the next free integer and retries, so
+concurrent clones of one source are arbitrated by the index rather than racing a read, and no counter
+column exists to drift. A collision on an **operator-supplied** code is the ordinary
+`DUPLICATE_CODE`, which **P-D-25** made one code covering both the
 `skuCode` and `productCode` reservations.
 
 **A source Product with no `productCode` suggests none**, and the clone's stays null. `product_code`
@@ -515,9 +519,11 @@ rule is supplied**, not by inventing one here.
 
 - [ ] `p3` - **ID**: `cpt-cf-bss-products-dod-rename-rule`
 
-**Every same-brand Product clone renames.** The suggestion is `{name}-copy-N`, flavoured
-`{name}-revived` for a `retired` source, and is operator-overridable; a collision on an
-operator-supplied name is the ordinary `DUPLICATE_NAME`.
+**Every same-brand Product clone renames.** The suggestion is `{name}-copy-N` — `N` the first free
+integer under the reservation (**P-D-62**) — flavoured `{name}-revived` for a `retired` source, **and
+a second revival of one lineage suggests `{name}-revived-N`** by the same first-free rule, so the
+flavor survives and the suggestion path never produces a refusal. It is operator-overridable; a
+collision on an operator-supplied name is the ordinary `DUPLICATE_NAME`.
 
 **The premise is measurable and must be tested as such.** **P-D-04** makes name uniqueness absolute
 on `(tenantId, brandId, normalized(name))` and region-independent, and the index holds the source's
@@ -905,10 +911,10 @@ assertion on the first code passes on a build that short-circuits, which is the 
 [`../design/11-clone.md`](../design/11-clone.md) §6 — the slice's full count, not a selection — and
 **seventeen raised here**: twelve while authoring and five by the three-lens review of this
 document. Eight of the seventeen (rows 11, 12, 13, 14, 17, 20, 23 and 25) come from reading the
-crate and nine from the design set. Of the twenty-seven, **five block
-no DoD in this document** (rows 9, 10, 21 and 24, plus row 13 since **P-D-55 resolved it on
-2026-08-31** — kept in place rather than struck); the other twenty-two each name the DoD they
-block. A
+crate and nine from the design set. Of the twenty-seven, **six block
+no DoD in this document** (rows 9, 10, 21 and 24, plus rows 13 and 4, which **P-D-55 and P-D-62
+resolved on 2026-08-31** — kept in place rather than struck); the other twenty-one each name the DoD
+they block. A
 third subsection carries defects owed to other documents, recorded and not repaired here; those are
 not rows. The two register pointers are in this preamble, not there.
 
@@ -962,12 +968,20 @@ duplicating it.
    **Blocks**: `cpt-cf-bss-products-dod-clone-authz`.
    **Owner**: `05-governance`'s owner with `02-taxonomy-attributes`'.
 
-4. **How are `-copy-N` and `-revived` generated?** `N` is never defined (per-source counter, global,
+4. ~~**How are `-copy-N` and `-revived` generated?**~~
+   **Answered in the slice (owner call, 2026-08-31 — P-D-62): the first free integer for the
+   suggested string, decided by the index under the reservation** — P-D-37's and P-D-42's mechanism,
+   no counter column and no read-then-suggest race — **and a second revival suggests
+   `{name}-revived-N`** by the same rule, so the flavor survives and the suggestion path never
+   refuses. The operator path is untouched: a collision on a supplied name or code stays the ordinary
+   `DUPLICATE_NAME`/`DUPLICATE_CODE`.
+   Original text: `N` is never defined (per-source counter, global,
    first free integer), `-revived` carries no counter at all, and the index admits one holder per name
    in every non-`discarded` state — so a second revival of one lineage produces a suggestion the
    registry must refuse, and concurrent clones computing `N` by a read race each other.
-   **Blocks**: `cpt-cf-bss-products-dod-clone-identity`, `cpt-cf-bss-products-dod-rename-rule`.
-   **Owner**: this feature.
+   **Blocks**: no DoD — **resolved by P-D-62**; `cpt-cf-bss-products-dod-clone-identity` and
+   `cpt-cf-bss-products-dod-rename-rule` are both freed — the only row that freed two.
+   **Owner**: was this feature; **closed**.
 
 5. **What does the door answer for a `discarded` source?** C1 admits four states and `discarded` is
    the fifth, reachable and addressable; nothing says whether it is a 404-class miss, a state refusal

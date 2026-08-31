@@ -1569,6 +1569,105 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   (the re-publish step).
 
 
+#### P-D-64 — The missing-sign-off refusal rides `VALIDATION`, and the owned roster stays at one
+
+- **Date**: 2026-08-31 (owner call)
+- **Context**: `design/10` §6 asked what code `inst-pp-allowlist`'s refusal carries — an allow-list
+  entry *"offered without a mandatory Legal sign-off reference"* is refused, §5 asserts that refusal
+  with a positive control, and §3.2 declares no code for it. The item's own arms: ride 01's
+  `VALIDATION` or declare a slice code.
+- **Decision**: it **rides `VALIDATION`**. A missing mandatory member of the offered entry is a
+  shape-class refusal, and 01's convention for those is
+  `violate("VALIDATION", <field>, <detail>)` — the caller's discriminator is the violation's
+  **field**, exactly as for every other missing-field refusal in the gear, so the SDK error enum's
+  `VALIDATION` member is the member this refusal uses. **P-D-52's counter-precedent does not
+  transfer**: there the wire shape was forced by a consumer that discriminates on the specific code;
+  nothing discriminates on this one. And `dod-retention-error-taxonomy` holds *"One code is the whole
+  owned roster"* as a measurement — `ERASURE_UNKNOWN_ACTOR` — which a second minted code would break
+  for a refusal the ordinary machinery already classifies.
+- **The argument against, stated**: a caller automating allow-list submission cannot switch on a code
+  to detect specifically this refusal; it must read the violation's field. That is the same position
+  every shape refusal in the gear puts a caller in, and routine-ness does not create a taxonomy entry
+  when the discriminator already exists.
+- **Not changed**: `ERASURE_UNKNOWN_ACTOR`, its 422-architectural response, the alarms-not-errors
+  posture of the GC and the drill, and `inst-pp-allowlist`'s refusal condition itself.
+- **Propagated**: `design/10-retention-erasure.md` (§2 `inst-pp-allowlist`'s code, §6 answered),
+  `features/retention-erasure.md` (`dod-pii-allowlist`, `dod-retention-error-taxonomy`, §7's
+  arithmetic and row 13 answered).
+
+#### P-D-63 — The `Operand` grammar gains marker annotations, and `+` is normalized out of the cells
+
+- **Date**: 2026-08-31 (owner call — amends **P-D-43** arm 3)
+- **Context**: `design/12` §6 measured that lint 9's cell grammar — *"one token per pin member,
+  comma-separated, each either a catalog field name or one of three non-field markers"* — does not
+  describe the cells it reads. Measured at HEAD: the register has **fourteen** rows (the item said
+  thirteen, and the FEATURE's `dod-obligation-register` already says fourteen). Three cells fit the
+  grammar (`compositionPending`, `sellable`, `skuId`); **six** lead a non-field marker with a
+  backticked identifier (five `` `CatalogVersion` (surface) ``, one `` `SkuRetired` payload ``) —
+  and a backticked identifier is not prose under any form the grammar states; **four** join with
+  `+` rather than a comma (the item said three), and what `+` joins is a field with a **phrase**
+  (*"its value vocabulary"*, *"the metering-unit declaration"*), not two field names; one is
+  `none in v1` with a prose parenthetical, which the grammar already covers.
+- **Decision**: one production is added and one separator is refused.
+
+  | Call | Propagation |
+  |---|---|
+  | **A non-field marker may be preceded by exactly one backticked identifier, which the marker consumes as its annotation.** `` `CatalogVersion` (surface) `` and `` `SkuRetired` payload `` are each **one token**; the identifier names the surface or payload and the lint does not look it up in the pin | `design/12` §3.2 lint 9 (amends **P-D-43** arm 3) |
+  | **`+` is not admitted to the grammar — it is normalized out of the four cells**, each rewritten to comma-separated pin tokens: `` `status` + its value vocabulary `` → `` `status` `` (the vocabulary is part of that pin member's own definition); `` `PlanTier` + the metering-unit declaration `` → `` `PlanTier`, `unit`, `usageTypeRef` ``; `the metering-unit declaration + `usageTypeRef`` → `` `unit`, `usageTypeRef` `` (the second half was redundant, the declaration being the pair); `` `type` + the metering-unit declaration (07 C4's bucket-ii set) `` → `` `type`, `unit`, `usageTypeRef` `` with the parenthetical staying as ignorable prose | `design/12` §2.2, the four cells |
+  | **After both, all fourteen cells parse**: five surface-annotated, one payload-annotated, one `none in v1`, three already clean, four normalized | `dod-obligation-register`, `dod-lint-pin-coupling` |
+
+- **The argument against, stated**: fitting the grammar to the cells risks the opposite failure —
+  a grammar grown until everything parses checks nothing. That is why `+` was normalized out rather
+  than admitted: the annotation production encodes one real distinction (a marker's referent), while
+  admitting `+` would have encoded a typographic habit.
+- **Two sub-questions the carry recorded land with it.** (i) **A backticked catalog field name is a
+  token, not prose** — the cells' own convention writes every field token backticked, and the
+  conforming class of the FEATURE's census is exactly "one backticked field token and nothing else";
+  the amendment states it so *"prose beside the tokens is ignored"* can never be read as swallowing a
+  backticked identifier. (ii) **A cell whose only token is `none in v1` is outside lint 9's coupling
+  population by construction** — the rule the markers already carry: a marker token is outside the
+  pin, and a row with no operand couples nothing in either direction.
+- **Not changed**: the three markers, the comma, *"prose beside the tokens is ignored"*, lint 9's
+  coupling rule itself, and the pin's membership.
+- **Propagated**: `design/12-consumer-contracts.md` (§3.2 lint 9's grammar, §2.2's four cells, §6
+  answered), `features/consumer-contracts.md` (`dod-obligation-register`, `dod-lint-pin-coupling`,
+  §7's arithmetic and row 15 answered).
+
+#### P-D-62 — Clone suffixes: the first free integer, decided by the index under the reservation
+
+- **Date**: 2026-08-31 (owner call)
+- **Context**: `design/11` §6 measured that `N` in `{name}-copy-N` / `{source}-copy-N` is never
+  defined (per-source counter, global, first free integer), that `-revived` carries no counter while
+  the uniqueness index admits **one holder per name in every non-`discarded` state** — so a second
+  revival of one lineage produces a suggestion the registry must refuse — and that concurrent clones
+  computing `N` by a read race each other.
+
+  **The gear has already chosen this mechanism twice.** `inst-cn-identity` already says the suggested
+  code is *"reserved atomically"*; **P-D-37** established that the `identity` phase is *"decided by
+  the index under the write"*; and **P-D-42** adopted the donor's sentence that *"the gate is the
+  insert, not a lookup"*. A read-then-suggest is exactly the arrangement those two decisions
+  dismantled elsewhere.
+- **Decision**: three arms.
+
+  | Call | Propagation |
+  |---|---|
+  | **`N` is the first free integer for the suggested string, decided under the reservation.** The clone door reserves `{name}-copy-N` (name) and `{source}-copy-N` (code) starting at the lowest free integer; a reservation conflict moves to the next free one and retries. Two concurrent clones of one source get `-copy-2` and `-copy-3` — the index arbitrates, no lock and no counter column exists | `design/11` §2 `inst-cn-identity`, `inst-cn-rename` |
+  | **A second revival of one lineage suggests `{name}-revived-N`**, the same first-free rule over the `-revived` family, so the flavor survives and the suggestion path never produces a refusal. The alternative — falling back to `-copy-N` — was declined because it silently drops the one signal `-revived` exists to carry | `inst-cn-rename`; `dod-rename-rule` |
+  | **The operator path is untouched**: a collision on an operator-supplied name or code stays the ordinary `DUPLICATE_NAME`/`DUPLICATE_CODE`, exactly as both instructions already state | `dod-clone-identity` |
+
+- **The argument against, stated**: `-revived-N` is a small invention — the slice names only
+  `-revived` — and retry-under-reservation costs a loop at the door where a counter column would cost
+  one read. The column was declined because it is a value that can drift from the thing it counts
+  (**P-D-40** declined a reference counter on the same ground), and the loop's iterations are bounded
+  by the lineage's own clone count.
+- **Scope**: the suggestion for a clone of a clone (`X-copy-2-copy-1`) is left as the rule computes
+  it; nothing here shortens or rewrites base names. Whether the reverse lineage lookup gets a surface
+  stays its own §6 item.
+- **Not changed**: the disposition table's rows, the null-code arm (a source Product with no
+  `productCode` suggests none), and the index scopes.
+- **Propagated**: `design/11-clone.md` (§2 `inst-cn-identity` and `inst-cn-rename`, §6 answered),
+  `features/clone.md` (`dod-clone-identity`, `dod-rename-rule`, §7's arithmetic and row 4 answered).
+
 #### P-D-61 — Three carried rows of `09-bulk-promotion`: a read door, an authored §4, and eight `no event` markers
 
 - **Date**: 2026-08-31 (owner call — the second round over **carried** rows)

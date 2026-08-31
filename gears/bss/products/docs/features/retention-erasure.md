@@ -553,7 +553,10 @@ author of another slice's code. §7 routes it.
 
 The system **MUST** create `products_pii_allowlist` holding governed entries with their
 justifications and a **mandatory Legal sign-off reference** — the artifact identifying the external
-decision — per tenant, audited, and **exportable for the Legal review**.
+decision — per tenant, audited, and **exportable for the Legal review**. **An entry offered without
+the reference is refused riding 01's `VALIDATION`**, the violation naming the missing field
+(**P-D-64**): a missing mandatory member of the offered entry is a shape-class refusal, and no slice
+code is minted for it.
 
 A mutation **MUST** be a `GovernedLiveOp` on `pii_allowlist × write` under the **base approver
 quorum** (**P-D-10** — there is no gear-side Legal role), and **MUST** emit `PiiAllowlistChanged`. An
@@ -699,7 +702,9 @@ The system **MUST** add a `DomainError` variant for `ERASURE_UNKNOWN_ACTOR` carr
 through `DomainError::code`, and **MUST** give it the RFC 9457 response `design/10` §3.2 pins —
 **422 architectural, reaching the wire as a 400**.
 
-**One code is the whole owned roster**, and that is a measurement rather than an omission:
+**One code is the whole owned roster**, and **P-D-64** keeps it so: the allow-list's
+missing-sign-off refusal rides 01's `VALIDATION` with the violation naming the field, rather than
+minting a second code nothing discriminates on. That is a measurement rather than an omission:
 `CONTENT_PII_BLOCKED` is 02's declaration and the GC and drill raise **alarms, not API errors**.
 
 `DomainError::code` is exhaustive, so the variant itself is compile-gated. **Five hand-written sites
@@ -867,8 +872,9 @@ to prevent, and `ActorErased` deliberately carries none.
 **The arithmetic of this section.** Thirty-two rows: **fourteen carried verbatim** from
 [`../design/10-retention-erasure.md`](../design/10-retention-erasure.md) §6 — the slice's full count,
 not a selection — and **eighteen raised here**: five while authoring, from reading the crate, and
-thirteen by the three-lens review of this document. Of the thirty-two, **six block no DoD in this
-document** (rows 1, 2, 3, 30, 31 and 32); the other twenty-six each name the DoD they block. A third
+thirteen by the three-lens review of this document. Of the thirty-two, **seven block no DoD in this
+document** (rows 1, 2, 3, 30, 31 and 32, plus row 13 since **P-D-64 resolved it on 2026-08-31** —
+kept in place rather than struck); the other twenty-five each name the DoD they block. A third
 subsection below carries one-line pointers into other documents' registers; those are not rows.
 
 **Carried, not answered**, and registered against **its owner's** register. **Three departures from
@@ -993,14 +999,22 @@ cited instead:
     `cpt-cf-bss-products-dod-pii-detector`.
     **Owner**: Legal with the data-protection owner.
 
-13. **What code does the allow-list's missing-sign-off refusal carry?** `inst-pp-allowlist` refuses
+13. ~~**What code does the allow-list's missing-sign-off refusal carry?**~~
+    **Answered in the slice (owner call, 2026-08-31 — P-D-64): it rides 01's `VALIDATION`.** A
+    missing mandatory member of the offered entry is a shape-class refusal, the caller's
+    discriminator is the violation's **field**, and the SDK enum's `VALIDATION` member is the member
+    this refusal uses — the owned roster stays at one code, which this document's own taxonomy DoD
+    holds as a measurement. P-D-52's counter-precedent does not transfer: nothing discriminates on
+    this code. Original text: `inst-pp-allowlist` refuses
     an entry offered without a Legal sign-off reference, §5 asserts that refusal with a positive
     control, and §3.2 declares no code for it — so the door answers unclassified and the SDK error
     enum has no member for a refusal a caller will routinely hit. Either it rides 01's `VALIDATION`
     or this slice declares its own.
-    **Blocks**: `cpt-cf-bss-products-dod-pii-allowlist`,
-    `cpt-cf-bss-products-dod-retention-error-taxonomy`.
-    **Owner**: this feature with the error-contract owner.
+    **Blocks**: no DoD — **resolved by P-D-64**;
+    `cpt-cf-bss-products-dod-retention-error-taxonomy` is freed, and
+    `cpt-cf-bss-products-dod-pii-allowlist` carries the answer while staying blocked by rows 12
+    and 23.
+    **Owner**: was this feature with the error-contract owner; **closed**.
 
 14. **What does "byte-identical in effect" mean for the age-triggered path?** §5 asserts the age path
     is byte-identical in effect to the requested path, while the requested path is "audited with a

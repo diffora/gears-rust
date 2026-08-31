@@ -517,10 +517,12 @@ cell by cell over all **fourteen**, which is the register's own row count:
 row 15 says *"three of the thirteen"* and *"three more"*, which is twelve against a stated thirteen
 and an actual fourteen. That is recorded against its owner rather than repaired in the carry.
 
-**So the repair scope is eleven cells, not ten**, and §7 carries two things the grammar does not
-settle: whether a backticked field name counts as a token or as the "prose beside the tokens" the
-rule ignores, and whether a cell whose only token is `none in v1` is inside the population lint 9
-counts at all.
+**The repair landed** (**P-D-63**, amending P-D-43 arm 3): a non-field marker consumes exactly one
+preceding backticked identifier as its annotation, `+` is refused and the four cells that used it are
+normalized to comma-separated pin tokens — so **all fourteen cells parse**. The two things the
+grammar had not settled land with it: **a backticked catalog field name is a token, never the
+ignorable prose** (the census's own conforming class assumed it), and **a `none in v1` cell is
+outside lint 9's coupling population by construction**, the marker rule already carrying that.
 
 **Implements**: `cpt-cf-bss-products-flow-seam-suite`
 
@@ -921,7 +923,9 @@ reason. **This is what makes C1's membership a rule rather than a list.**
 entity surface and not the event surface — and is excluded **by that reason** rather than by
 omission. The `SkuRetired` re-announcement row is the one such row.
 
-**The lint reads tokens only** (**P-D-43**): a field token must appear in the pin; a marker token —
+**The lint reads tokens only** (**P-D-43**, amended by **P-D-63**: a marker may consume one
+preceding backticked identifier as its annotation, which the lint never looks up in the pin; `+` is
+not a separator): a field token must appear in the pin; a marker token —
 `(surface)`, `none in v1`, `payload` — is outside the pin by construction and carries its exclusion
 reason in the row's prose. **Any prose beside the tokens is ignored, so a cell is never judged by
 being read.**
@@ -1067,9 +1071,10 @@ artifacts, not types.
 **The arithmetic of this section.** Thirty-seven rows: **twenty-one carried verbatim** from
 [`../design/12-consumer-contracts.md`](../design/12-consumer-contracts.md) §6 — the slice's full
 count, not a selection — and **sixteen raised here**: five while authoring and eleven by the
-three-lens review of this document. Of the thirty-seven, **seven block no DoD in this document**
-(rows 3, 6, 12, 27 and 36, plus rows 25 and 26, which **P-D-57 and P-D-58 resolved on 2026-08-31** —
-kept in place rather than struck); the other thirty each name the DoD they block. A final subsection
+three-lens review of this document. Of the thirty-seven, **eight block no DoD in this document**
+(rows 3, 6, 12, 27 and 36, plus rows 25, 26 and 15, which **P-D-57, P-D-58 and P-D-63 resolved on
+2026-08-31** — kept in place rather than struck); the other twenty-nine each name the DoD they
+block. A final subsection
 carries defects owed to other documents, recorded and not repaired here; those are not rows.
 
 **Carried, not answered**, and registered against **its owner's** register. **Three departures from
@@ -1201,7 +1206,15 @@ diffed against `design/12` §6 sentence by sentence, mechanically, and every row
     **Blocks**: `cpt-cf-bss-products-dod-lint-declarations`.
     **Owner**: this slice with 05. *(Raised by the P-D-43…49 propagation audit.)*
 
-15. **Lint 9's `Operand` grammar does not describe the cells it reads.** **P-D-43** arm 3 fixes
+15. ~~**Lint 9's `Operand` grammar does not describe the cells it reads.**~~
+    **Answered in the slice (owner call, 2026-08-31 — P-D-63, amending P-D-43 arm 3): one production
+    added, one separator refused, and the two unsettled readings land with it.** A non-field marker
+    consumes exactly one preceding backticked identifier as its annotation; `+` is refused and the
+    four cells that used it (**four at HEAD on a register of fourteen** — this row's thirteen and
+    three were both stale, as this document's own census already recorded) are normalized to
+    comma-separated pin tokens; a backticked field name is a token, never the ignorable prose; and a
+    `none in v1` cell is outside the coupling population by the marker rule. **All fourteen cells
+    parse.** Original text: **P-D-43** arm 3 fixes
     the cell as "one token per pin member, comma-separated, each either a catalog field name or
     one of three non-field markers". At HEAD three of the thirteen §2.2 cells fit that grammar
     (`compositionPending`, `sellable`, `skuId`). Six lead with a backticked non-field token — five
@@ -1210,9 +1223,9 @@ diffed against `design/12` §6 sentence by sentence, mechanically, and every row
     `CatalogVersion` in the `SchemaPin` and fails; three more join their operands with `+` rather
     than a comma. Arm 3's "prose beside the tokens is ignored" may be meant to cover the leading
     token, but a backticked identifier is not prose under any form the grammar states.
-    **Blocks**: `cpt-cf-bss-products-dod-obligation-register`,
-    `cpt-cf-bss-products-dod-lint-pin-coupling`.
-    **Owner**: this slice. *(Raised by the P-D-43…49 propagation audit.)*
+    **Blocks**: no DoD — **resolved by P-D-63**; `cpt-cf-bss-products-dod-obligation-register` is
+    freed, and `cpt-cf-bss-products-dod-lint-pin-coupling` carries the amendment while staying blocked by row 33.
+    **Owner**: was this slice; **closed**. *(Raised by the P-D-43…49 propagation audit.)*
 
 16. **Seven register entries carry two `Propagated` fields, and lint 5 says there is one.** Lint
     5's grammar (**P-D-43** arm 4) reads "the register carries **one** propagation field, spelled

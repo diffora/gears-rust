@@ -129,7 +129,10 @@ The steps below are this slice's and are the normative ones; the FEATURE carries
 actor, the scenarios and the boundary.
 
 1. [ ] - `p1` - `PiiDetector` answers 02's hook: block (fail-closed, `CONTENT_PII_BLOCKED` naming the field, never the detected value) / allow / allow-by-list; **uncertainty blocks** (C2) - `inst-pp-detect`
-2. [ ] - `p1` - The allow-list is a `GovernedLiveOp` (`pii_allowlist × write`) under the **base approver quorum** (05 C1 — no gear-side Legal role; **P-D-10**). Legal's authority is exercised **outside** the system and enters it as a record: each entry carries a **mandatory Legal sign-off reference** (the artifact identifying the external decision) alongside its justification, and an entry offered without one is refused — which is PRD AC #35's own construction, "curated allow-list; **Legal sign-off recorded in the approval artifact**". Emits `PiiAllowlistChanged` (L3); entries are per-tenant, audited, and exportable for the Legal review. **What this deliberately does not claim:** the gear proves a Legal reference was recorded, never that Legal approved — the control is the §15 paper sign-off plus the export, and pretending otherwise would require Legal counsel to hold platform identities, which no requirement asks for - `inst-pp-allowlist`
+2. [ ] - `p1` - The allow-list is a `GovernedLiveOp` (`pii_allowlist × write`) under the **base approver quorum** (05 C1 — no gear-side Legal role; **P-D-10**). Legal's authority is exercised **outside** the system and enters it as a record: each entry carries a **mandatory Legal sign-off reference** (the artifact identifying the external decision) alongside its justification, and an entry offered without one is refused — **riding 01's `VALIDATION` with the violation naming
+the missing field, no slice code minted** (**P-D-64**: a missing mandatory member of the offered
+entry is a shape-class refusal, and the caller's discriminator is the violation's field, as for every
+such refusal in the gear) — which is PRD AC #35's own construction, "curated allow-list; **Legal sign-off recorded in the approval artifact**". Emits `PiiAllowlistChanged` (L3); entries are per-tenant, audited, and exportable for the Legal review. **What this deliberately does not claim:** the gear proves a Legal reference was recorded, never that Legal approved — the control is the §15 paper sign-off plus the export, and pretending otherwise would require Legal counsel to hold platform identities, which no requirement asks for - `inst-pp-allowlist`
 
 ### Run retention (the GC)
 
@@ -302,11 +305,18 @@ either way).
   question decides whether the allow-list's justification and sign-off fields belong in §3.1's
   content-PII write block — this pass synced that enumeration to 02's canonical list and
   deliberately did **not** add these two fields. Owner: Legal with the data-protection owner. *(Raised by the slice-10 first lens pass.)*
-- **What code does the allow-list's missing-sign-off refusal carry?** `inst-pp-allowlist` refuses
+- ~~**What code does the allow-list's missing-sign-off refusal carry?**~~
+  **Answered (owner call, 2026-08-31 — P-D-64): it rides 01's `VALIDATION`.** A missing mandatory
+  member of the offered entry is a shape-class refusal, the caller's discriminator is the violation's
+  **field**, and the SDK enum's `VALIDATION` member is the member this refusal uses — so the slice's
+  owned roster stays at one code, which `cpt-cf-bss-products-dod-retention-error-taxonomy` holds as a
+  measurement. P-D-52's counter-precedent does not transfer: nothing discriminates on this code.
+  Original text: `inst-pp-allowlist` refuses
   an entry offered without a Legal sign-off reference, §5 asserts that refusal with a positive
   control, and §3.2 declares no code for it — so the door answers unclassified and the SDK error
   enum has no member for a refusal a caller will routinely hit. Either it rides 01's `VALIDATION`
-  or this slice declares its own. Owner: this slice with the error-contract owner. *(Raised by the slice-10 first lens pass.)*
+  or this slice declares its own. Owner: was this slice with the error-contract owner; **closed**.
+  *(Raised by the slice-10 first lens pass.)*
 - **What does "byte-identical in effect" mean for the age-triggered path?** §5 asserts the age
   path is byte-identical in effect to the requested path, while the requested path is "audited
   with a reason" and the age path has no requester and no supplied reason. Nothing says whether
