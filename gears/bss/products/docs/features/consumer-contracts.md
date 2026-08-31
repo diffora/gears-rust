@@ -393,8 +393,10 @@ is still the spine of the feature, because the suite itself cannot run without t
 
 **TOML, so a gate reads it without parsing prose** — `design/12` §4 fixes the format for that reason.
 
-**Each field member carries a comparability flag** (**P-D-57**), and **`CatalogVersion` is an entry
-of kind `surface`** (**P-D-65**): `kind = "surface"`, a `delegated-to` naming the counterpart port
+**Each field member carries a comparability flag** (**P-D-57**); **a member spelled differently per
+side carries per-side names** (**P-D-66**: the `status` entry's token is the seam's name, with
+`registry-field = "lifecycle_state"` as the annotation the job resolves the registry side by); and
+**`CatalogVersion` is an entry of kind `surface`** (**P-D-65**): `kind = "surface"`, a `delegated-to` naming the counterpart port
 trait, and **no comparability flag** — the job neither compares it nor asserts its absence, its drift
 protection being the adapter the pricing-side port doc promises, which the compiler checks. That is
 the pin file's schema for a surface-level member, which this DoD was blocked on. Membership stays P-D-12's rule and nothing
@@ -607,6 +609,12 @@ surface reads as partial.
 `status` and its value vocabulary are **normative pin members** (**P-D-12**). Browse serves
 `published|deprecated` only — draft is never served and retired is history-only — and **the SDK enum
 documents all five states with the wire subset named**.
+
+**The pin entry is settled** (**P-D-66**): the token is **`status`** — the seam's name, fixed by
+`CatalogSku`-superset-compatibility — with the registry-side source spelling recorded as an
+annotation (`registry-field = "lifecycle_state"`), and the vocabulary is **two members**,
+`published` and `deprecated`. Pricing's three-value doc is the display tolerance this DoD already
+names, and the pin replaces it rather than adopting its list.
 
 **Half of this ships and is not to be rebuilt.** `LifecycleState` already carries all five variants
 with a `parse`. What the DoD adds is the **wire-subset annotation** and the pin entry.
@@ -1077,10 +1085,10 @@ artifacts, not types.
 **The arithmetic of this section.** Thirty-seven rows: **twenty-one carried verbatim** from
 [`../design/12-consumer-contracts.md`](../design/12-consumer-contracts.md) §6 — the slice's full
 count, not a selection — and **sixteen raised here**: five while authoring and eleven by the
-three-lens review of this document. Of the thirty-seven, **nine block no DoD in this document**
-(rows 3, 6, 12, 27 and 36, plus rows 25, 26, 15 and 33, which **P-D-57, P-D-58, P-D-63 and P-D-65
-resolved on 2026-08-31** — kept in place rather than struck); the other twenty-eight each name the
-DoD they block. A final subsection
+three-lens review of this document. Of the thirty-seven, **eleven block no DoD in this document**
+(rows 3, 6, 12, 27 and 36, plus rows 25, 26, 15, 33, 24 and 34, which **P-D-57, P-D-58, P-D-63,
+P-D-65 and P-D-66 resolved on 2026-08-31** — kept in place rather than struck); the other twenty-six
+each name the DoD they block. A final subsection
 carries defects owed to other documents, recorded and not repaired here; those are not rows.
 
 **Carried, not answered**, and registered against **its owner's** register. **Three departures from
@@ -1309,15 +1317,23 @@ diffed against `design/12` §6 sentence by sentence, mechanically, and every row
     **Blocks**: `cpt-cf-bss-products-dod-lint-prd-universe`.
     **Owner**: this feature, with `01`, `02` and `06` for the third qualifier.
 
-24. **Does the `status` pin bind a field the SDK does not carry?**
-    `cpt-cf-bss-products-dod-status-vocabulary` pins `status` and its vocabulary, and the shipped
+24. ~~**Does the `status` pin bind a field the SDK does not carry?**~~
+    **Answered (owner call, 2026-08-31 — P-D-66): the pinned token is `status`, and the entry carries
+    the registry-side spelling as an annotation.** The seam's name is fixed by
+    `CatalogSku`-superset-compatibility — pricing's shipped `CatalogSku.status` — and pinning
+    `lifecycle_state` would make the comparison against that shipped member impossible; the
+    `registry-field = "lifecycle_state"` annotation is what the job resolves this side by. The cost is
+    recorded in the register: a seam `status` member is a second spelling of `lifecycle_state` inside
+    this gear's SDK, accepted because the seam contract is shipped on the consumer's side.
+    Original text: `cpt-cf-bss-products-dod-status-vocabulary` pins `status` and its vocabulary, and
+    the shipped
     `Sku` carries `lifecycle_state` — the same value under a different name — while
     `inst-sdk-catalogsku` names the member `status`. The pin is a comparison between two gears' field
     names, so whether the pinned token is `status` or `lifecycle_state` decides whether the
     comparison can be made at all, and no document states which spelling the pin file uses.
-    **Blocks**: `cpt-cf-bss-products-dod-schema-pin`,
-    `cpt-cf-bss-products-dod-status-vocabulary`.
-    **Owner**: this feature with the plan-price owner.
+    **Blocks**: no DoD — **resolved by P-D-66** (with row 34).
+    **Owner**: was this feature with the plan-price owner; **closed** — nothing pricing-side
+    changes.
 
 25. ~~**Seven of the ten pinned read-shape members have no shipped column, so which side of the pin
     moves first?**~~
@@ -1464,16 +1480,24 @@ diffed against `design/12` §6 sentence by sentence, mechanically, and every row
     **Owner**: was this feature with the plan-price owner; **closed** — nothing pricing-side
     changes.
 
-34. **Which `status` value vocabulary does the pin carry — two members or three?** This document
+34. ~~**Which `status` value vocabulary does the pin carry — two members or three?**~~
+    **Answered (owner call, 2026-08-31 — P-D-66): two — `published` and `deprecated` — and the answer
+    was already normative in this document.** `inst-sdk-catalogsku` M4 states the wire subset:
+    *"browse serves `published|deprecated` only (draft never served, retired history-only — 08 C2)"*.
+    Pricing's `draft` is the display tolerance its own doc declares — the field stays a string so *"a
+    fifth state must not become a parse failure in the gear that merely displays it"* — and the pin
+    **replaces** that tolerance rather than adopting its list; `draft` is not a pinned member because
+    the wire never serves it. Original text: This document
     pins *"`status` with its value vocabulary"* and states that browse serves `published|deprecated`
     only. The counterpart documents **three**: pricing's own catalog client reads *"`draft` |
     `published` | `deprecated`, verbatim. Not an enum:"*. The pin is a comparison between two gears'
     declarations, so a two-member and a three-member vocabulary give opposite CI colours. Row 24
     asks only about the field **name**; this asks about the value set, and whether `draft` is a
     pinned member.
-    **Blocks**: `cpt-cf-bss-products-dod-status-vocabulary`,
-    `cpt-cf-bss-products-dod-schema-pin`.
-    **Owner**: this feature with the plan-price owner.
+    **Blocks**: no DoD — **resolved by P-D-66** (with row 24);
+    `cpt-cf-bss-products-dod-status-vocabulary` and `cpt-cf-bss-products-dod-schema-pin` are both
+    freed, row 33 having been resolved by P-D-65 the same day.
+    **Owner**: was this feature with the plan-price owner; **closed**.
 
 35. **Where does the studio-inbox envelope cross-check land?** `DECOMPOSITION.md` §2.12 puts it
     **In** scope — *"The SDK and §9 surfaces, including the studio-inbox envelope cross-check"* — as

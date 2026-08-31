@@ -1569,6 +1569,35 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   (the re-publish step).
 
 
+#### P-D-66 — The `status` pin entry: token `status`, spelled per side, vocabulary of two
+
+- **Date**: 2026-08-31 (owner call, taken under the standing instruction to decide where the
+  measurement is dominant — both halves were already answered by `inst-sdk-catalogsku` and the rows
+  had not connected the texts)
+- **Context**: `features/consumer-contracts.md` §7 rows 24 and 34, jointly the last blockers of
+  `dod-schema-pin` and `dod-status-vocabulary`. Row 24: the shipped registry `Sku` carries
+  `lifecycle_state` while the seam shape names the member `status`, and no document said which
+  spelling the pin file uses. Row 34: this document pins a two-member wire vocabulary while pricing's
+  shipped client doc reads *"`draft` | `published` | `deprecated`, verbatim. Not an enum:"* — three.
+
+- **Decision, both halves from the seam contract already in force**:
+
+  | Call | Propagation |
+  |---|---|
+  | **The pinned token is `status`** — the seam's name, fixed by `CatalogSku`-superset-compatibility, which `dod-catalogsku-shape` already decided and pricing's shipped `CatalogSku.status` already carries. **The entry records the registry-side source spelling as an annotation** (`registry-field = "lifecycle_state"`), so the job can resolve each side by its own name; pinning `lifecycle_state` instead would make the comparison against the consumer's shipped member impossible | `dod-schema-pin`; `dod-status-vocabulary` |
+  | **The vocabulary is two members, `published` and `deprecated`** — `inst-sdk-catalogsku` M4 is already normative on it: *"browse serves `published\|deprecated` only (draft never served, retired history-only — 08 C2)"*, with the SDK enum documenting all five states and the wire subset named. Pricing's `draft` is display-tolerance prose — its own doc keeps the field a string so *"a fifth state must not become a parse failure in the gear that merely displays it"* — and the pin **replaces** that tolerance rather than adopting its list | `dod-status-vocabulary` |
+
+- **The cost, recorded**: a registry-side `CatalogSku` read shape with a `status` member introduces a
+  second spelling of `lifecycle_state` inside this gear's own SDK, against that crate's stated
+  one-spelling rule. The seam contract wins because it is shipped on the consumer's side; the rule's
+  purpose — no third spelling invented ad hoc — survives, the second spelling being the seam's, not a
+  convenience.
+- **Not changed**: `LifecycleState`'s five variants and its `parse`, pricing's `CatalogSku` type, and
+  browse's visibility rules (08 C2).
+- **Propagated**: `features/consumer-contracts.md` (`dod-schema-pin`, `dod-status-vocabulary`, §7's
+  arithmetic and rows 24 and 34 answered). `design/12` §2's `inst-sdk-catalogsku` already carries both
+  halves and is unchanged.
+
 #### P-D-65 — `CatalogVersion` is a pin entry of kind `surface`, delegated to the port trait and compared by nothing
 
 - **Date**: 2026-08-31 (owner call — the last sole-blocking row of the 2026-08-31 queue)
