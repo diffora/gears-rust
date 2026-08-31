@@ -214,6 +214,10 @@ normative ones. What this section carries is the triggering actor, the scenarios
   lands in **one** `CatalogVersion`.
 - **Completion emits exactly one `CatalogBulkOperationCompleted`** with the ledger digest, and the
   ledger stays queryable.
+- **The batch is readable, and that is the reader C1 requires** (**P-D-61**):
+  `GET /bss-products/v1/bulk/batches/{batchId}` spends **`bulk × read`** — its own grant, a reader
+  not being an executor — and returns the batch state plus the `RowLedger` one entry per row with its
+  disposition, code and reason. **One route serves both lanes**, the key being the batch id.
 
 **Error Scenarios**:
 
@@ -478,10 +482,13 @@ failure" checkable after the fact.
 **The ledger is the idempotency store for row keys**, and it is **not** the Foundation's endpoint
 store: row keys are **batch-scoped**, so the same row id in a different batch is a different act.
 
-**What this DoD cannot specify**: `design/09` §4 declares the two table names and **no columns**,
-where every sibling section supplies a normative shape. §7 row 9 carries it, and this DoD is met by
-the tables with the discipline above rather than by a column roster this document would have to
-invent.
+**The column shape is now `design/09` §4's** (**P-D-61**), authored from the values with a stated
+writer and from nothing else: the batch carries `batch_key` UNIQUE with `tenant_id`, `lane`, the six
+states, `operation_key`, `approval_ref`, and the worker's `claimed_at`/`attempt`; the row carries
+`(tenant_id, batch_id, row_key)`, `entity_kind`/`entity_id`, `pinned_revision`, `disposition`, `code`,
+`reason` — **a literal from a closed set, never operator text** (**P-D-50**) — `governed_live_op` and
+`override_acknowledged`. **The `ChangeReport` has no table**: it is derived from the ledger at the
+report edge. No counter duplicating the ledger was added.
 
 **Implements**: `cpt-cf-bss-products-algo-batch`
 
@@ -749,6 +756,14 @@ per-row **progress noise**. `12-consumer-contracts`' event bookkeeping lint read
 addition to the register, and the slice records that explicitly so the lint does not read it as
 events withheld.
 
+**It is also this slice's only event, and the other instructions now say so** (**P-D-61**): the eight
+state-changing instructions of `design/09` carry an inline `**no event**` marker on 01's convention,
+because a row's own act is announced by the 01 and 04 doors it drives and the batch's history — the
+ledger, the `ChangeReport`, 05's approval record — is audit-plane (**P-D-21**). **What lint 12 reads is
+the `EventRegister` table**, authored and never harvested (**P-D-45**), so this slice owes it exactly
+one row: `CatalogBulkOperationCompleted` → `inst-bk-complete`. That authoring is `design/12` §6's
+standing per-slice debt and is not discharged here.
+
 **Adding it is not a one-line change.** The event roster is enumerated at **seven** sites across four
 files: the payload-type constant, the `SCHEMA_REFS` row and the typed-event `match` arm in
 `infra::events`; the `catalog_event!` invocation **and `prepare_every_event_type`'s per-type
@@ -853,8 +868,11 @@ feature's commit phase raises, is `02-taxonomy-attributes`' and also ships nowhe
 parallel taxonomy — which is why this roster is five rows and not thirty.
 
 **Four of the five are per-row ledger outcomes and the door answers 202**, so their statuses apply
-only where a caller asks a single row's disposition. **No surface in this design does that**, and §7
-row 8 carries which one will.
+only where a caller asks a single row's disposition — **and that caller now exists** (**P-D-61**):
+`GET /bss-products/v1/bulk/batches/{batchId}`, spending its own **`bulk × read`** grant, returns the
+batch state plus the `RowLedger` one entry per row, and those statuses are what it returns per row.
+One route serves both lanes. It was minted rather than the statuses declared dormant because C1 and
+`PRD.md` both carry *"report per-row success/failure"* as a **MUST**.
 
 **The statuses are proposed, and this DoD carries that rather than pinning them.** `design/09` §3.2
 ends *"Proposed per row and open to correction; the requirement is that every code carries one."* The
@@ -1004,12 +1022,14 @@ built from an independent primitive: the number of `- ` line starts in that sect
 eighteen and agrees with both the split and the transcribed rows. A final subsection carries defects
 owed to other documents; those are not rows.
 
-**Two of the twenty-nine block no DoD**: row 1, and **row 26 since P-D-54 resolved it on
-2026-08-31** — kept in place rather than struck, because the §4 executor paragraph cites it. Row 26
-was the only blocker of `cpt-cf-bss-products-dod-stage-phase`, which is now free;
-`dod-batch-state-machine` stays blocked by rows 5, 6, 7 and 19, and `dod-coalesced-event` by row 18
-— which row 26's answer **promoted from co-blocker to sole blocker**, so answering one row here did
-not shrink this document's queue by one.
+**Five of the twenty-nine block no DoD**: row 1, plus rows 8, 9, 18 and 26, all resolved on
+**2026-08-31** — kept in place rather than struck. **P-D-54** answered row 26, freeing
+`cpt-cf-bss-products-dod-stage-phase` and promoting row 18 from co-blocker to sole blocker of
+`dod-coalesced-event`; **P-D-61** then answered rows 8, 9 and 18, freeing `dod-bulk-errors`,
+`dod-bulk-tables` and `dod-coalesced-event`. `dod-batch-state-machine` remains blocked by rows 5, 6,
+7 and 19 — the missing rejection edge and abandon state, the never-approved batch's tenant slot, the
+commit-phase trigger, and whether `PreAuthorized`'s predicate can name a batch at all — none of which
+is answered here.
 
 **Carried, not answered**, and registered against **its owner's** register. **Three departures from
 verbatim, declared so the claim is checkable.** First, the slice's inline `Owner:` sentence and any
@@ -1077,19 +1097,33 @@ whether DECOMPOSITION's entity field is a listing convention or an ontological c
     `cpt-cf-bss-products-dod-batch-state-machine`.
     **Owner**: this slice with 05. *(Raised by the slice-09 first lens pass.)*
 
-8. **What surface reports the `RowLedger`?** Four per-row codes carry HTTP statuses that apply
+8. ~~**What surface reports the `RowLedger`?**~~
+    **Answered in the slice (owner call, 2026-08-31 — P-D-61): one read route.**
+    `GET /bss-products/v1/bulk/batches/{batchId}` (`design/09` §2 `inst-bk-read`) returns the batch
+    state plus the `RowLedger` one entry per row, under its own **`bulk × read`** grant — a reader is
+    not an executor, and the finance reviewer who signs a batch must read without gaining the right to
+    start one. One route for both lanes, the key being the batch id. It was minted rather than the
+    statuses declared dormant because C1 and `PRD.md` both carry *"report per-row success/failure"* as
+    a **MUST**; the price is 05's roster and a third route census.
+    Original text: Four per-row codes carry HTTP statuses that apply
     "where a caller asks a single row's disposition", and no route, verb or grant exists for that
     ask — the RBAC catalog mints only the two execute pairs, 08 projects no bulk read model, and
     §4 adds no read surface. C1's "per-row success/failure reported" has no reader.
-    **Blocks**: `cpt-cf-bss-products-dod-bulk-errors`.
-    **Owner**: this slice with the contract owner. *(Raised by the slice-09 first lens pass.)*
+    **Blocks**: no DoD — **resolved by P-D-61**; `cpt-cf-bss-products-dod-bulk-errors` is freed.
+    **Owner**: was this slice with the contract owner; **closed**.
 
-9. **§4 declares two table names and no columns.** The heading promises a normative shape and
+9. ~~**§4 declares two table names and no columns.**~~
+    **Answered in the slice (owner call, 2026-08-31 — P-D-61): `design/09` §4 now carries the
+    normative shape**, authored from exactly the values this row enumerated plus P-D-54's six states
+    and the worker's claim and lease — and from nothing else: no counter duplicating the ledger, no
+    table for the derived `ChangeReport`, and `reason` a literal from a closed set rather than
+    operator text (**P-D-50**).
+    Original text: The heading promises a normative shape and
     every sibling supplies one. Values with a stated writer and no column: the per-row pinned
     revision, the batch and row keys, the row disposition and reason, the pending `GovernedLiveOp`
     payload, the itemised override set, and the `operation_key`.
-    **Blocks**: `cpt-cf-bss-products-dod-bulk-tables`.
-    **Owner**: this slice's storage owner with 05's. *(Raised by the slice-09 first lens pass.)*
+    **Blocks**: no DoD — **resolved by P-D-61**; `cpt-cf-bss-products-dod-bulk-tables` is freed.
+    **Owner**: was this slice's storage owner with 05's; **closed**.
 
 10. **Does a `bulk_batch` approval authorize a `GovernedLiveOp` apply?** This slice says the
     live-entity ops apply "under the same consumed approval", while 05's live-op gate asks its
@@ -1148,11 +1182,21 @@ whether DECOMPOSITION's entity field is a listing convention or an ontological c
     **Blocks**: `cpt-cf-bss-products-dod-change-report`.
     **Owner**: this slice. *(Raised by the slice-09 first lens pass.)*
 
-18. **No instruction in this slice names its event or records "no event".** 01 states the rule
+18. ~~**No instruction in this slice names its event or records "no event".**~~
+    **Answered in the slice (owner call, 2026-08-31 — P-D-61): the marker is on the eight
+    state-changing instructions**, and this row's premise was half wrong. **Lint 12 reads only the
+    `EventRegister` table** — authored, never harvested (**P-D-45**) — so it lints the register rather
+    than the instructions; what 01 supplies is the inline `**no event**` convention. Measured: 13
+    instructions, one naming an event. The eight carrying the marker are `inst-bk-keys`,
+    `inst-bk-stage`, `inst-bk-report`, `inst-bk-commit`, `inst-bk-override`, `inst-pm-resolve`,
+    `inst-bl-lifecycle` and `inst-bm-resume`; `inst-bk-export` is a read and `inst-bm-tables`,
+    `inst-bm-limits` and `inst-pm-review` declare rather than write. **The row's count of six is short
+    by two**, which is a judgement about what counts as state-changing, so all eight are enumerated
+    rather than totalled. Original text: 01 states the rule
     over every slice and 12 lints it; only `inst-bk-complete` names one, while six further
     state-changing instructions declare nothing.
-    **Blocks**: `cpt-cf-bss-products-dod-coalesced-event`.
-    **Owner**: this slice. *(Raised by the slice-09 first lens pass.)*
+    **Blocks**: no DoD — **resolved by P-D-61**; `cpt-cf-bss-products-dod-coalesced-event` is freed.
+    **Owner**: was this slice; **closed**, the one owed `EventRegister` row staying `design/12` §6's.
 
 
 ### Raised here rather than carried
@@ -1236,11 +1280,12 @@ whether DECOMPOSITION's entity field is a listing convention or an ontological c
     carry the answer while staying blocked by their other rows.
     **Owner**: was this feature; **closed**.
 
-27. **Which of the three grants must be minted, and by whom?** This feature spends
-    `bulk × execute`, `catalog_version × read` and `bulk_lifecycle × execute`. All three are in
+27. **Which of the grants must be minted, and by whom?** This feature spends
+    `bulk × execute`, `catalog_version × read`, `bulk_lifecycle × execute` and — since **P-D-61** —
+    **`bulk × read`**, so the count is **four, not three**. All four are in
     `design/05`'s RBAC catalog; **none is in the shipped permission roster**, which holds exactly six
     ids, all `product_*` and `sku_*`, under a two-way set-equality assertion. Whether this feature
-    mints the three instances or `05-governance`'s catalog DoD does is stated nowhere.
+    mints the instances or `05-governance`'s catalog DoD does is stated nowhere.
     **Blocks**: `cpt-cf-bss-products-dod-import-door`,
     `cpt-cf-bss-products-dod-export`, `cpt-cf-bss-products-dod-bulk-lifecycle`.
     **Owner**: `05-governance`'s owner with this feature.

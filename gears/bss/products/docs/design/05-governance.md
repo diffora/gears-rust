@@ -222,6 +222,7 @@ multi-action row would otherwise read as if the whole row were doored.
 | `compliance × export` | `GET /bss-products/v1/compliance/identity-export` | 10 |
 | `erasure × execute` | `POST /bss-products/v1/erasure-requests` | 10 |
 | `bulk × execute` | `POST /bss-products/v1/bulk/imports` | 09 |
+| `bulk × read` | `GET /bss-products/v1/bulk/batches/{batchId}` (**P-D-61** — the `RowLedger` reader C1 requires; one route for both lanes, and a reader is not an executor) | 09 |
 | `bulk_lifecycle × execute` | `POST /bss-products/v1/bulk/lifecycle` | 09 |
 | `catalog_version × request` | `POST /bss-products/v1/catalog-version-requests` | 06 |
 | `catalog_version × ack`, `× release` | **S2S, no route declared** — service-identity claims; `release` is **P-D-18**'s door | 06 |

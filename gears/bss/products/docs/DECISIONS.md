@@ -1569,6 +1569,91 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   (the re-publish step).
 
 
+#### P-D-61 — Three carried rows of `09-bulk-promotion`: a read door, an authored §4, and eight `no event` markers
+
+- **Date**: 2026-08-31 (owner call — the second round over **carried** rows)
+- **Context**: `design/09` §6's three sole-blocking items. Each was decided by measuring what the set
+  already requires rather than by preference.
+
+**1. The `RowLedger` gets a read door, because a PRD-level MUST demands a reader.**
+
+C1 requires *"per-row success/failure reported — no hidden partial failure"* and `PRD.md` says the
+same twice (§ *"report per-row success/failure"*, and *"track per-row success/failure"*). Measured
+against the surface: the slice declares three routes — `POST bulk/imports`, `GET bulk/exports`,
+`POST bulk/lifecycle` — and **none reads a batch**. The export door is 06's manifest under
+`catalog_version × read`, deliberately decoupled. `05`'s RBAC roster mints only the two execute
+pairs. `08` projects no bulk read model, and §4 says export artifacts are *"streamed, not stored"*.
+So the door answers **202**, the caller holds a batch id, and nothing resolves it — the same shape
+`design/06` §6 records as the doorless `committed_version` poll.
+
+| Call | Propagation |
+|---|---|
+| **One read route**: `GET /bss-products/v1/bulk/batches/{batchId}` → the batch state (§4's six, P-D-54) plus its `RowLedger`, one entry per row with its disposition, code and reason. **One route for both lanes**, the key being the batch id and not the lane | `design/09` §2 new `inst-bk-read`; `dod-bulk-errors` |
+| **Its own grant, `bulk × read`.** Not `bulk × execute` — a reader is not an executor, and the finance reviewer who signs batches must read without gaining the right to start one. Not `catalog_version × read`, which is the export's, auditor-shaped over a manifest and decoupled on purpose | `design/05` §RBAC roster; `dod-bulk-errors` |
+| **The four per-row codes' statuses now have the surface their own clause was waiting for** — *"the status below applies only where a caller asks a single row's disposition"*. That caller exists | `design/09` §3.2 |
+
+**The argument against, stated**: minting a route and a grant is authoring API surface, and the row's
+co-owner is the contract owner. The price is 05's roster plus **three route censuses, not two**. The
+cheaper arm — declaring the statuses dormant — was declined because it leaves a PRD-level **MUST**
+unmet, which is worse than an owed census.
+
+**2. §4 is authored from the operands already stated, and from nothing else.**
+
+§4 is two sentences where every sibling slice carries a normative shape. Nothing needs inventing: the
+row enumerates the values with a stated writer and no column — the per-row pinned revision, the batch
+and row keys, the row disposition and `reason`, the pending `GovernedLiveOp` payload, the itemised
+override set, and `operation_key` — and P-D-54 adds the six states with the worker's claim and lease.
+Two constraints bound the authoring: **`reason` is a literal from a closed set, never operator text**
+(**P-D-50** — `batch-abandoned` is a constant), and the **`ChangeReport` is derived**, carrying
+*"the itemised override-carrying rows (`skuCode` per row)"*, so it needs no table.
+
+Nothing beyond that list is added: no counters that duplicate the ledger, no report table, no free
+text.
+
+**The argument against, stated**: a schema in a design document commits migrations, and this §4 was
+deliberately thin. But `cpt-cf-bss-products-dod-bulk-tables` cannot be met without it, and thinness
+here is the outlier across twelve slices rather than a convention.
+
+**3. The `no event` marker goes on eight instructions, and the row's premise was half wrong.**
+
+Row 18 says *"01 states the rule over every slice and 12 lints it"*. **Lint 12 reads only the
+`EventRegister` table** — *"The register is authored, never harvested"* (**P-D-45**), after five
+harvest passes returned 31, 24, 32 and 35 events — so it lints the register, never the instructions.
+What 01 supplies is the **convention**: an inline `**no event**` marker, in exactly that form on
+`inst-fd-actor-ref-mint`, `inst-fd-actor-ref-seen` and `inst-fd-gate-rejection`.
+
+Measured over `design/09`: **13 instructions, of which one names an event** — `inst-bk-complete` with
+`CatalogBulkOperationCompleted`, and none records "no event". The marker goes on the eight that change
+state: `inst-bk-keys`, `inst-bk-stage`, `inst-bk-report`, `inst-bk-commit`, `inst-bk-override`,
+`inst-pm-resolve`, `inst-bl-lifecycle`, `inst-bm-resume`. The remaining four need none —
+`inst-bk-export` is a read, `inst-bm-tables` and `inst-bm-limits` are declarative, and
+`inst-pm-review` states a review step rather than a write.
+
+**The reason is already written**, in `dod-coalesced-event`: row-level domain events are emitted by
+01's doors that the rows drive, so **the acts are announced — just not by this slice's
+instructions** — and the batch's own history is the ledger, which is audit-plane (**P-D-21**: the
+audit table holds only what emits no event).
+
+**The row's count is short by two, and the classification is named so it is checkable**: it says six,
+the measurement gives eight. The two the row's count omits are a judgement about what counts as
+state-changing, which is why all eight are enumerated rather than totalled.
+
+- **Scope**: this decision does not author `design/09`'s `EventRegister` rows — that is owed per slice
+  by `design/12` §6, and this slice's owing is exactly one row (`CatalogBulkOperationCompleted` →
+  `inst-bk-complete`). It does not decide the job home of anything, does not touch the `ChangeReport`'s
+  content, and does not answer §6's other items — the rejection edge, the abandon state, the `failed`
+  entry edge, or what ends a never-approved batch.
+- **A second grant was considered and declined**: a separate read grant for lifecycle batches, on the
+  argument that `bulk_lifecycle × execute` is its own grant because that door is the gear's most
+  destructive. Reading a ledger is not destructive and both lanes' rows carry the same shape, so one
+  `bulk × read` covers both; the alternative is recorded here rather than left to be rediscovered.
+- **Not changed**: the two execute grants, the export door's grant, `08`'s read models, and the
+  streamed-not-stored export.
+- **Propagated**: `design/09-bulk-promotion.md` (§2's new `inst-bk-read` and the eight markers, §3.2's
+  status note, §4 authored, §6's three items answered), `design/05-governance.md` (the RBAC roster row),
+  `features/bulk-promotion.md` (§2's read scenario, `dod-bulk-errors`, `dod-bulk-tables`,
+  `dod-coalesced-event`, the grant census, §7's arithmetic and rows 8, 9 and 18 answered).
+
 #### P-D-60 — Four carried rows of `06-catalog-version`: two events, two tables, a struck state value, and six edges
 
 - **Date**: 2026-08-31 (owner call — the first round over **carried** rows, answered in the slice and
