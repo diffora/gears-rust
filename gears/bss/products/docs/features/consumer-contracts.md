@@ -386,6 +386,12 @@ is still the spine of the feature, because the suite itself cannot run without t
 
 **TOML, so a gate reads it without parsing prose** — `design/12` §4 fixes the format for that reason.
 
+**Each member carries a comparability flag** (**P-D-57**). Membership stays P-D-12's rule and nothing
+is dropped for being unshipped; the flag says only whether the member is comparable against the SDK
+surface *yet*, and it is authored conservatively — `comparable` only once both the column and the SDK
+member ship. That is what keeps `cpt-cf-bss-products-dod-seam-suite-home`'s job green from the day the
+pin lands, without shrinking the pin to shipped-only.
+
 **Its membership is derived, not listed** (**P-D-12**): the pin covers exactly the catalog-field
 operands the `ObligationRegister`'s guards read. The v1 set is `skuId`, `type`, the metering-unit
 declaration (`unit` **and** `usageTypeRef` as an atomic pair), `PlanTier`, `status` **with its value
@@ -412,7 +418,10 @@ SDK**, and this DoD is met by the file with its derived membership, not by a pas
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-seam-suite-home`
 
 The suite is one CI job over **`cf-gears-bss-fixtures`**, consuming both gears' SDKs and the
-`SchemaPin` and failing on any divergence in the C1 fields.
+`SchemaPin`, and it is **two-sided** (**P-D-57**): it fails on any divergence in the C1 fields the pin
+marks **comparable**, and on the **presence** of any C1 field the pin marks not-yet-comparable. So a
+member that ships while still flagged fails the job **in the change that shipped it**, and the flag
+cannot rot into a standing excuse.
 
 **The home exists and nothing is wired to it.** `gears/bss/fixtures/bss-fixtures/` is present and its
 own description names it *"the only fixture crate a gear may take as a production dependency"* —
@@ -554,7 +563,9 @@ as an omission: the capability columns *"belong to the features that own their r
 reads them from those."* So this DoD is a **decision about which side moves**, and it states the
 decision rather than assuming it: the superset lands on `products-sdk`'s read shape as those features
 land their columns, and until then the pin's membership is derived from the design set rather than
-compared against the type.
+compared against the type. **P-D-57** carries that forward into the job: the pin keeps every derived
+member with a comparability flag, so the interval in which a member is derived but not
+yet compared became a datum the CI reads rather than a period nobody encoded.
 
 **Five of the ten have no shipped column either** — `metering_unit`, `plan_tier`, `sellable`,
 `usage_type_ref` and `type`. The other five do: `sku_id` and `sku_code` on both entity tables,
@@ -1041,8 +1052,9 @@ artifacts, not types.
 **The arithmetic of this section.** Thirty-seven rows: **twenty-one carried verbatim** from
 [`../design/12-consumer-contracts.md`](../design/12-consumer-contracts.md) §6 — the slice's full
 count, not a selection — and **sixteen raised here**: five while authoring and eleven by the
-three-lens review of this document. Of the thirty-seven, **five block no DoD in this document**
-(rows 3, 6, 12, 27 and 36); the other thirty-two each name the DoD they block. A final subsection
+three-lens review of this document. Of the thirty-seven, **six block no DoD in this document**
+(rows 3, 6, 12, 27 and 36, plus row 25 since **P-D-57 resolved it on 2026-08-31** — kept in place
+rather than struck); the other thirty-one each name the DoD they block. A final subsection
 carries defects owed to other documents, recorded and not repaired here; those are not rows.
 
 **Carried, not answered**, and registered against **its owner's** register. **Three departures from
@@ -1273,8 +1285,20 @@ diffed against `design/12` §6 sentence by sentence, mechanically, and every row
     `cpt-cf-bss-products-dod-status-vocabulary`.
     **Owner**: this feature with the plan-price owner.
 
-25. **Seven of the ten pinned read-shape members have no shipped column, so which side of the pin
-    moves first?** `metering_unit`, `usage_type_ref`, `plan_tier`, `sellable` and `type` are on
+25. ~~**Seven of the ten pinned read-shape members have no shipped column, so which side of the pin
+    moves first?**~~
+    **Answered (owner call, 2026-08-31 — P-D-57), and half of it was already decided here.** Which
+    side moves is `cpt-cf-bss-products-dod-catalogsku-shape`'s call: the SDK's read shape grows
+    additively and the pin never shrinks to shipped-only. What was open is the CI colour, and the
+    answer is that **the pin carries a per-member comparability flag and the job is two-sided** —
+    comparing the comparable members, asserting the absence of the rest, so a member that ships while
+    still flagged fails the job in the change that shipped it. The flag is authored conservatively:
+    `comparable` only once both the column and the SDK member ship.
+    **The row's own count conflated three sets.** The read shape is ten members; the **pin** is eight
+    fields with `skuCode` and `name` deliberately out; the SDK's `Sku` ships **seven** members, of
+    which two are pin members (`skuId`, and `status` as `lifecycle_state`). So **six of the pin's
+    eight** have no shipped operand — and `name`, one of the row's seven, is not a pin member at all.
+    Original text: `metering_unit`, `usage_type_ref`, `plan_tier`, `sellable` and `type` are on
     neither the shipped `Sku` nor any shipped table — five of the ten. Two more, `name` and
     `composition_pending`, have columns but are absent from the SDK type, and `status` ships as
     `lifecycle_state`. The pin's
@@ -1282,10 +1306,11 @@ diffed against `design/12` §6 sentence by sentence, mechanically, and every row
     but a CI job comparing it against the SDK would fail on seven absent members for the whole
     period `02`, `03` and `06` are landing them. Whether the job admits a member as `owed` or the
     pin lists only shipped members is unstated, and the two give opposite CI colours for months.
-    **Blocks**: `cpt-cf-bss-products-dod-schema-pin`,
-    `cpt-cf-bss-products-dod-seam-suite-home`,
-    `cpt-cf-bss-products-dod-catalogsku-shape`.
-    **Owner**: this feature with the plan-price owner.
+    **Blocks**: no DoD — **resolved by P-D-57**; `cpt-cf-bss-products-dod-catalogsku-shape` is
+    freed, while `dod-schema-pin` stays blocked by rows 24, 33 and 34 and `dod-seam-suite-home` by
+    rows 2, 8 and 31.
+    **Owner**: was this feature with the plan-price owner; **closed** — nothing on the consumer's side
+    is changed by it.
 
 26. **Is the replay contract testable at all before `dyn EventBrokerApi` has a production
     registration?** Nothing in the workspace registers it except this gear's own `broker_tests.rs`,

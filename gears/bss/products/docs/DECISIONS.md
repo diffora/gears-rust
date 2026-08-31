@@ -1569,6 +1569,63 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   (the re-publish step).
 
 
+#### P-D-57 — The pin keeps every derived member and carries its comparability; the job is two-sided
+
+- **Date**: 2026-08-31 (owner call)
+- **Context**: `features/consumer-contracts.md` §7 row 25 asked which side of the schema pin moves
+  first, given that members of the pinned set have no shipped column, and named two arms that *"give
+  opposite CI colours for months"*: a job admitting a member as `owed`, or a pin listing only shipped
+  members.
+
+  **Half of it was already decided, and the row's own count came from conflating three sets.**
+  `dod-catalogsku-shape` states the call: *"the superset lands on `products-sdk`'s read shape as those
+  features land their columns, and until then the pin's membership is derived from the design set
+  rather than compared against the type."* So the SDK side moves, additively, and the pin never
+  shrinks to shipped-only. And the three sets are distinct, as this feature's own §1 says — *"The read
+  shape is ten members; the **pin** is a different and smaller set"*:
+
+  | set | size | measured against the crate |
+  |---|---|---|
+  | the catalog **read shape** | 10 members | 5 have no shipped column |
+  | the **pin** (C1, P-D-12) | 8 fields, `skuCode` and `name` deliberately out — *"pick-list display, drift cosmetic"* | **6 of 8** have no shipped operand, counting the metering pair as its two tokens |
+  | the SDK's `Sku` type | **7 members** — `sku_id`, `tenant_id`, `product_id`, `sku_code`, `lifecycle_state`, `internal_revision`, `published_version` | pin members present: `skuId`, and `status` under the name `lifecycle_state` |
+
+  So `name`, one of the row's seven, **is not a pin member at all**.
+
+  **And the SDK type calls its own absences deliberate**: *"The capability columns a SKU carries —
+  typing, `sellable`, `PlanTier`, the accounting codes, the metering unit — are not here. They belong
+  to the features that own their rules, and a consumer reads them from those."*
+
+  **What actually forces the row is that the normative text today is the months-of-red arm.** C1 says
+  the *"CI test **fails on divergence**"* and `inst-ss-home` that the job *"**fails on any
+  divergence** in the C1 fields"*. Against a pin authored from the register and an SDK that carries
+  two of its eight members, that is red from the day the pin lands until `02`, `03` and `06` finish.
+
+- **Decision**: the pin lists **every** derived member and carries each member's **comparability**;
+  the CI job is **two-sided**.
+
+  | Call | Propagation |
+  |---|---|
+  | **The pin keeps its derived membership and gains a per-member comparability flag.** Membership stays P-D-12's rule; the flag says only whether the member is comparable against the SDK surface *yet*. Nothing is removed from the pin and no member is dropped for being unshipped | `design/12` §1 C1, §2.1 `inst-ss-pin`; `dod-schema-pin` |
+  | **The job compares the comparable members and asserts the absence of the rest.** So a member that ships while still marked non-comparable **fails the job** — the flag cannot rot into a standing excuse, and the failure lands in the change that shipped the member | `design/12` §2.1 `inst-ss-home`; `dod-seam-suite-home` |
+  | **The flag is authored conservatively: `comparable` only once both the column and the SDK member ship.** That makes the job green the day the pin lands and turns each landing into a deliberate pin edit reviewed by both gears, which is the asymmetry `inst-ss-pin` already relies on | `dod-schema-pin`, `dod-catalogsku-shape` |
+
+- **The argument against, stated**: the two-sided check only catches the **late** direction. A flag
+  reading `comparable` for a member that never ships is a plain red — exactly the months-long red the
+  row wants to avoid — and nothing mechanical prevents it; the protection is conservative authoring,
+  not the mechanism. Recorded rather than engineered around, because the alternative is a third state
+  that means "expected soon", which is a schedule in a contract artifact.
+- **Scope**: this decision does not touch **lint 9's grammar** — the register's `Operand` cell keeps
+  P-D-43's one-token-per-member form and its three non-field markers, and the lint keeps reading only
+  that cell. It does not decide the job's **home** (still a §15 open), does not reopen which side
+  moves, and adds no member to the pin.
+- **Not changed**: P-D-12's membership rule, C1's v1 set, the `skuCode`/`name` exclusions, and the
+  runtime fail-closed on divergence (the dependent plan publish is rejected pricing-side), which is a
+  different mechanism from the CI comparison and is untouched.
+- **Propagated**: `design/12-consumer-contracts.md` (§1 C1 and §2.1 `inst-ss-home`),
+  `features/consumer-contracts.md` (`dod-schema-pin`, `dod-seam-suite-home`, `dod-catalogsku-shape`,
+  §7's arithmetic and row 25 answered).
+
 #### P-D-56 — Two budgets, not one number: the door's acknowledgement and the lane's batching SLO
 
 - **Date**: 2026-08-31 (owner call)
@@ -1590,7 +1647,7 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   `committed_version` returns `Option<CatalogVersion>`, `None` until commit, with the doc: *"A pending
   ref that stays unresolved past the batching SLO is an alarm, not an error here — the caller decides
   that, since only it knows how long the ref has been outstanding."* **That sentence presumes a
-  published batching SLO**, or "past the batching SLO" has no referent.
+  published batching SLO**, or *"past the batching SLO"* has no referent.
 
   **And the caller's budget exists to protect the caller, not to describe us.**
   `infra/registry_deadline.rs`: *"an unanswering peer pins a transaction, its row locks and a pool
