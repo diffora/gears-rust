@@ -1569,6 +1569,50 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   (the re-publish step).
 
 
+#### P-D-59 — `reference_watermark_stale` is an alerting rule over a gauge, so no fired-state is stored
+
+- **Date**: 2026-08-31 (owner call)
+- **Context**: `features/reference-signal.md` §7 row 27 measured that the alarm is described *"both as
+  an output of a read and as a property of the registered set"*, that no verdict is stored so there is
+  nowhere to record that it has already fired, and that `04-lifecycle`'s runner polls the predicate on
+  a cadence — so a read-time emission *"alarms once per call"*.
+
+  **The operand for a gauge already exists and is already stored.** `design/07` §4 declares
+  `products_reference_watermark` — `(tenant_id, producer)` → `watermark_at`, `posted_at` — and
+  `inst-wm-freshness` already says that *"the staleness alarm keys on the registered set so a retired
+  producer stops alarming"*. So per-producer watermark age is derivable from a committed store over a
+  set the gear maintains; nothing new is needed to observe it.
+
+  **And the threshold is the gear's own exported config value, not a number in someone else's
+  system.** `ProductsConfig` carries the freshness threshold (interim 15 min), and this feature
+  already requires it exported *"because another feature already depends on reading it"* —
+  `04-lifecycle`'s flip guard re-evaluating on the predicate's freshness cadence.
+
+- **Decision**: `reference_watermark_stale` is an **alerting rule over a gauge**, not an emission from
+  the predicate's evaluation.
+
+  | Call | Propagation |
+  |---|---|
+  | **The gear exposes a gauge**: `now − watermark_at` per `(tenant_id, producer)`, over the **registered** producer set only. Deregistration removes the series rather than silencing an alarm, which is what `inst-wm-freshness` already promises | `design/07` §2 `inst-wm-freshness`; `dod-reference-predicate` |
+  | **The alarm is the observability owner's rule over that gauge, and its condition references the gear's exported freshness threshold** rather than restating it. One number, one home | `dod-reference-events` |
+  | **Nothing is raised per call and no fired-state is stored.** Repetition, for-duration and grouping belong to the alerting side, which is what dissolves the second half of the question: there is no verdict to persist because there is no per-call emission to suppress | `design/07` §2 `inst-rp-eval` |
+  | **The predicate keeps its verdict unchanged.** `conservatively_referenced(stale, producer)` stays exactly as `inst-rp-eval` states, the per-producer detail already carrying `stale` — which is what `04`'s confirmation screen shows. What is corrected is only the reading of *"+ the `reference_watermark_stale` alarm"* as an emission the evaluation performs | `dod-reference-predicate`, and the §6 control that pairs `stale` with the alarm |
+
+- **The argument against, stated**: the threshold lands in two places the moment an alerting rule
+  restates it instead of reading it, and there is **no mechanical guard** against that — the
+  protection is the requirement to reference the exported value. It is a smaller exposure than the
+  alternative, which was to store a fired-state in this gear and own suppression, deduplication and
+  re-arming for one alarm.
+- **Scope — this does not answer §7 row 28.** Two of this feature's three alarms are unnamed (the
+  future-watermark alert and the tripwire escalation) and naming them is that row's, owned by the
+  observability owner with this feature. This entry decides the mechanism for the one alarm that
+  **is** named, and the mechanism transfers to the other two only once they have names.
+- **Not changed**: no store, column or config field is added; the freshness threshold's value and its
+  config home are untouched, and `posted_at` remains read by nothing.
+- **Propagated**: `design/07-reference-signal.md` (§2 `inst-rp-eval` and `inst-wm-freshness`),
+  `features/reference-signal.md` (`dod-reference-predicate`, `dod-reference-events`, the §6 control,
+  §7's arithmetic and row 27 answered).
+
 #### P-D-58 — The replay fixtures are authorable now, against the SDK's own broker double
 
 - **Date**: 2026-08-31 (owner call)

@@ -136,7 +136,7 @@ Declared by [`../features/reference-signal.md`](../features/reference-signal.md)
 The steps below are this slice's and are the normative ones; the FEATURE carries the
 actor, the scenarios and the boundary.
 
-1. [ ] - `p1` - `ReferencePredicate(skuId)` over every **registered** producer: any fresh watermark containing the SKU ⇒ `referenced(producer)`; a fresh watermark omitting it ⇒ zero for that producer; a stale watermark ⇒ `conservatively_referenced(stale, producer)` + the `reference_watermark_stale` alarm; never-received ⇒ `conservatively_referenced(never_received, producer)` with the distinct flag (C2); the verdict is the OR, the detail is per-producer (what 04's confirmation screen shows) - `inst-rp-eval`
+1. [ ] - `p1` - `ReferencePredicate(skuId)` over every **registered** producer: any fresh watermark containing the SKU ⇒ `referenced(producer)`; a fresh watermark omitting it ⇒ zero for that producer; a stale watermark ⇒ `conservatively_referenced(stale, producer)`, the condition the `reference_watermark_stale` alarm fires on — **the evaluation emits nothing** (**P-D-59**: the alarm is an alerting rule over the per-producer watermark-age gauge, so a polled predicate does not alarm once per call and no fired-state is stored); never-received ⇒ `conservatively_referenced(never_received, producer)` with the distinct flag (C2); the verdict is the OR, the detail is per-producer (what 04's confirmation screen shows) - `inst-rp-eval`
 2. [ ] - `p1` - **Fresh-zero** = every registered producer fresh AND omitting the SKU — the only state that unlocks retirement flips and the correction door's **ordinary** gate (C5's two exceptional gates admit without it); with zero registered producers the predicate answers `no_producers` (fail-safe: conservative, distinct from fresh-zero — an empty producer set never frees anything) - `inst-rp-freshzero`
 
 ### Register / retire a producer
@@ -180,7 +180,7 @@ The steps below are this slice's and are the normative ones; the FEATURE carries
 Input, the Output and the boundary.
 
 1. [ ] - `p1` - `products_reference_watermark` — `(tenant_id, producer)` → `watermark_at`, `posted_at`; `products_reference_member` — `(tenant_id, producer, sku_id)`, replaced as a set per ingestion (the atomic swap of `inst-ws-atomic`); membership lookup is an index hit, the predicate is O(producers) - `inst-wm-tables`
-2. [ ] - `p1` - Freshness is evaluated at read time against `watermark_at` (never `posted_at` — the producer's claim instant is the semantic one); the staleness alarm keys on the registered set so a retired producer stops alarming. **`posted_at` is written from the receiving clock the future bound of `inst-ws-not-future` was evaluated against**, and is read by nothing - `inst-wm-freshness`
+2. [ ] - `p1` - Freshness is evaluated at read time against `watermark_at` (never `posted_at` — the producer's claim instant is the semantic one); the staleness alarm keys on the registered set so a retired producer stops alarming — **as a gauge of `now − watermark_at` per `(tenant_id, producer)` over that set** (**P-D-59**), so deregistration removes the series rather than silencing an alarm, and the alerting rule's condition **references** this gear's exported freshness threshold rather than restating it. **`posted_at` is written from the receiving clock the future bound of `inst-ws-not-future` was evaluated against**, and is read by nothing - `inst-wm-freshness`
 
 ### 3.2 Error taxonomy (slice-owned codes)
 

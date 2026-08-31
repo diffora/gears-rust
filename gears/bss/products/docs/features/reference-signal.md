@@ -579,7 +579,8 @@ An idempotent replay — the same `watermark_at` with the same set — **MUST** 
 The system **MUST** evaluate over every **registered** producer and return **both** the OR verdict
 and the **per-producer detail**. A fresh watermark containing the SKU gives `referenced`; a fresh
 watermark omitting it gives zero for that producer; a stale watermark gives
-`conservatively_referenced(stale)` plus the `reference_watermark_stale` alarm; never-received gives
+`conservatively_referenced(stale)` — the condition `reference_watermark_stale` fires on, the
+evaluation itself emitting nothing (**P-D-59**); never-received gives
 `conservatively_referenced(never_received)` under a **distinct** flag and **no** alarm.
 
 **Fresh-zero MUST require every registered producer to be fresh AND omitting the SKU.** With zero
@@ -947,7 +948,12 @@ not re-raise them.** Its **`aggregate_id`** — which `infra::events::enqueue` r
 `partition_for` consumes — is raised by neither, and is registered in §7 here.
 
 The **alarms** are separate from the events and **MUST** be raised as alarms:
-`reference_watermark_stale`, the future-watermark alert, and the tripwire escalation. **Never-received
+`reference_watermark_stale` — **an alerting rule over a gauge** (**P-D-59**): the gear exposes
+`now − watermark_at` per `(tenant_id, producer)` over the **registered** set, the rule's condition
+references the exported freshness threshold, and **no fired-state is stored** because nothing is
+raised per call. Deregistration removes the series rather than silencing an alarm. The mechanism
+transfers to the other two once §7 row 28 names them —
+the future-watermark alert, and the tripwire escalation. **Never-received
 is a verdict flag and MUST NOT raise an alarm** (C2) — the distinction is deliberate, because a
 producer that has never posted is a deployment state rather than an incident.
 
@@ -990,7 +996,8 @@ side.
       the OR.
 - [ ] Every conservative refusal is paired with its **fresh-zero positive control**, so no assertion
       can pass because the fixture could not reach the permissive branch.
-- [ ] `never-received` raises **no** alarm while `stale` raises `reference_watermark_stale`; asserted
+- [ ] `never-received` puts no series in the staleness gauge while `stale` does, which is what
+      `reference_watermark_stale` fires on (**P-D-59** — the predicate raises nothing itself); asserted
       apart, because the distinction is the design's and a merged assertion would hide it.
 - [ ] `no_producers` is distinguishable from fresh-zero in the returned verdict, not only in a log
       line.
@@ -1088,8 +1095,9 @@ here is ticked by inspection.
 **The arithmetic of this section.** Thirty-three rows: **sixteen carried verbatim** from
 [`../design/07-reference-signal.md`](../design/07-reference-signal.md) §6 — the slice's full count,
 not a selection — and **seventeen raised here**: five while authoring, from reading the crate, and
-twelve by the three-lens review of this document. Of the thirty-three, **six block no DoD in this
-document** (rows 3, 4, 17, 31, 32 and 33); the other twenty-seven each name the DoD they block.
+twelve by the three-lens review of this document. Of the thirty-three, **seven block no DoD in this
+document** (rows 3, 4, 17, 31, 32 and 33, plus row 27 since **P-D-59 resolved it on 2026-08-31** —
+kept in place rather than struck); the other twenty-six each name the DoD they block.
 
 **Carried, not answered.** A question is registered against **its owner's** register. Where the
 owner is another document, the row carries a one-line pointer and nothing more.
@@ -1392,13 +1400,24 @@ Five, all from reading the crate at `19a81a406`. Every quotation was byte-verifi
     `cpt-cf-bss-products-dod-producer-registration`.
     **Owner**: this feature, alongside row 12.
 
-27. **What raises `reference_watermark_stale`, and what stops it repeating?** The alarm is described
+27. ~~**What raises `reference_watermark_stale`, and what stops it repeating?**~~
+    **Answered (owner call, 2026-08-31 — P-D-59): an alerting rule over a gauge, and the second half
+    dissolves.** The gear exposes `now − watermark_at` per `(tenant_id, producer)` over the
+    **registered** set — an operand `design/07` §4 already stores — and the alarm is the observability
+    owner's rule over that gauge, its condition **referencing** this gear's exported freshness
+    threshold rather than restating it. **Nothing is raised per call, so there is no fired-state to
+    store**: repetition, for-duration and grouping belong to the alerting side, and a polled predicate
+    no longer alarms once per call. Deregistration removes the series rather than silencing an alarm,
+    which is what `inst-wm-freshness` already promised. The predicate's verdict is unchanged —
+    `conservatively_referenced(stale, producer)` stays exactly as `inst-rp-eval` states.
+    Original text: The alarm is described
     both as an output of a read and as a property of the registered set, and no verdict is stored, so
     there is nowhere to record that it has already fired — while `04-lifecycle`'s runner polls the
     predicate on a cadence. Read-time emission alarms once per call.
-    **Blocks**: `cpt-cf-bss-products-dod-reference-predicate`,
-    `cpt-cf-bss-products-dod-reference-events`.
-    **Owner**: this feature with the observability owner.
+    **Blocks**: no DoD — **resolved by P-D-59**; `cpt-cf-bss-products-dod-reference-predicate` is
+    freed, while `dod-reference-events` stays blocked by rows 25 and 28.
+    **Owner**: was this feature with the observability owner; **closed** for the named alarm. Row 28's
+    two unnamed alarms are not settled here.
 
 28. **Two of this feature's three alarms have no names.** `reference_watermark_stale` is named; the
     future-watermark alert and the tripwire escalation are described. An alarm name is a consumer
