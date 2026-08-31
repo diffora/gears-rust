@@ -836,6 +836,7 @@ authored downstream of this document, in the order §3 establishes.
   - RowLedger
   - ChangeReport
   - PromotionResolver
+  - BatchWorker (claims a batch and flips the report and completion edges of its state machine — **P-D-54**)
 
 - **Design Components**:
 

@@ -417,7 +417,10 @@ row. The slice declares no `state-` id for it, as no slice in this set declares 
 
 1. [ ] - `p1` - **FROM** `staging` **TO** `reported` **WHEN** every row has reached a stage outcome
    and the `ChangeReport` is generated from the ledger and submitted to the governance gate as one
-   approval with subject kind `bulk_batch` - `inst-bb-edge-report`
+   approval with subject kind `bulk_batch`. **The executor is the gear-owned batch worker's claim
+   transaction — the one that stages the last row** (**P-D-54**), which generates and submits the
+   report in that same transaction, so the report exists exactly when the ledger says staging is done
+   and no detection pass sits between - `inst-bb-edge-report`
 2. [ ] - `p1` - **FROM** `reported` **TO** `approved` **WHEN** the quorum evaluator finds the stored
    descriptor met; the report and the ledger's per-row pinned revisions are the approval's stored
    snapshot, so **a post-report edit to a member entity does not supersede the batch** — that row
@@ -430,7 +433,11 @@ row. The slice declares no `state-` id for it, as no slice in this set declares 
 4. [ ] - `p1` - **FROM** `committing` **TO** `completed` **WHEN** every row has reached a terminal
    ledger state, whatever the mix of published, applied, no-op and failed; completion emits exactly
    one `CatalogBulkOperationCompleted` with the ledger digest. **A batch with failed rows still
-   completes** — parts-succeeded is the honest end state, not an error - `inst-bb-edge-complete`
+   completes** — parts-succeeded is the honest end state, not an error. **The executor is the same
+   worker's claim transaction at the other end — the one that lands the last row's terminal state**
+   (**P-D-54**), and the event is emitted **inside that CAS**: the winner emits, a re-claim after a
+   lease expiry finds the state already flipped and emits nothing, which is where "exactly one" comes
+   from - `inst-bb-edge-complete`
 5. [ ] - `p1` - **No transition other than the four above is admitted.** Rows are immutable after
    their own terminal states — the ledger is append-only evidence from then on - `inst-bb-terminal`
 
@@ -443,12 +450,14 @@ with no state to hold it. And **`failed` has no stated entry edge at all** — e
 feature describes is row-local, so what fails a whole batch is unstated. **Both are §7 row 5's** —
 it carries all three absences, and row 6 is the separate question of what ends a batch never approved.
 
-**Three of the four edges fire on a condition with no executor, and only one is registered.** Edge 1
-fires when every row has reached a stage outcome, edge 4 when every row has reached a terminal state,
-and edge 3 *"on quorum"* — none names a door, actor or signal, and the import door cannot be one for
-edges 1 and 4 because it answers **202**. §7 row 7 registers edge 3's; edges 1 and 4 are §7 row 26's.
-A builder reading only edge 3 as open would stage ten thousand rows synchronously behind a door that
-has already answered.
+**Three of the four edges fired on a condition with no executor; two now have one and edge 3 does
+not.** Edge 1 fires when every row has reached a stage outcome, edge 4 when every row has reached a
+terminal state, and edge 3 *"on quorum"* — none named a door, actor or signal, and the import door
+cannot be one, because it answers **202**. **P-D-54** gives edges 1 and 4 the gear-owned batch
+worker's claim transaction, which closes §7 row 26. **Edge 3 stays §7 row 7's**, carried and owned
+with `05`, with two live candidates: this worker, or `05`'s decide door flipping the state in the same
+transaction as the quorum verdict. A builder taking edge 3 as settled by that decision would put the
+commit-phase start in whatever code sits nearest — the substitution row 7 exists to prevent.
 
 ## 5. Definitions of Done
 
@@ -488,6 +497,11 @@ invent.
 
 The six states and four edges of §4 are implemented, with `completed` and `failed` terminal.
 
+**Two of the four edges have a named executor and one does not.** Edges 1 and 4 are flipped by the
+gear-owned batch worker's claim transaction (**P-D-54**); edge 3's executor is **§7 row 7**'s and
+still open. A build that flips edge 1 or edge 4 from a door has the wrong actor — that door answered
+**202** and is gone.
+
 **The `approved → committing` edge is the whole feature's governance contract.** It is the single
 place a batch approval is consumed, and every per-row act after it verifies without spending. A build
 that consumed per row would spend one record many times; a build that consumed nowhere would publish
@@ -507,7 +521,7 @@ store and no grant check"*. So this DoD's write path is `05`'s to supply.
 **Touches**:
 - DB Table: `products_bulk_batch`, `products_approval` (`05-governance`'s, unshipped)
 - Modules: `domain::governance`
-- Entities: `BulkBatch`
+- Entities: `BulkBatch`, `BatchWorker`
 
 ### The import door and its two key scopes
 
@@ -581,13 +595,18 @@ set member by `(set kind, member code)`, a definition by its key.
 row that skipped a validator interactive authoring runs would make bulk a governance bypass by
 omission rather than by design.
 
+**The phase has a named executor, and the ceiling moves with it.** Rows are staged by the gear-owned
+batch worker under a claim, and §4's edge 1 is flipped by the claim transaction that stages the last
+row (**P-D-54**). So `inst-bm-limits`' per-tenant concurrent-batch ceiling is enforced **at claim**,
+not only at admission — a ceiling checked only by the door drifts as batches hang.
+
 **Implements**: `cpt-cf-bss-products-flow-import`, `cpt-cf-bss-products-algo-batch`
 
 **Principles**: `cpt-cf-bss-products-principle-registered-validators`
 
 **Touches**:
 - DB Table: `products_bulk_row`
-- Entities: `RowLedger`
+- Entities: `RowLedger`, `BatchWorker`
 
 ### The `ChangeReport`, which is what the quorum signs
 
@@ -719,6 +738,11 @@ wiring it at the door would make an in-process commit self-call its own HTTP sur
 
 Completion emits **exactly one** `CatalogBulkOperationCompleted` with the ledger digest. It ships
 nowhere.
+
+**"Exactly one" has a mechanism, not a convention.** The event is emitted **inside edge 4's CAS**
+(**P-D-54**) — the transaction that flips `committing → completed` is the one that emits — so a
+re-claim after a lease expiry finds the state already flipped and emits nothing. A build that emits
+in a step after the flip carries no such guarantee.
 
 **It is additive, not a suppression.** Row-level domain events all emit; what the summary coalesces is
 per-row **progress noise**. `12-consumer-contracts`' event bookkeeping lint reads the summary as an
@@ -887,7 +911,7 @@ raises no second one.
 **Implements**: `cpt-cf-bss-products-algo-batch`, `cpt-cf-bss-products-flow-promote`
 
 **Touches**:
-- Entities: `BulkBatch`, `RowLedger`, `ChangeReport`, `PromotionResolver`
+- Entities: `BulkBatch`, `RowLedger`, `ChangeReport`, `PromotionResolver`, `BatchWorker`
 
 ## 6. Acceptance Criteria
 
@@ -979,6 +1003,13 @@ selection — and **eleven raised by the three-lens review of this document**. T
 built from an independent primitive: the number of `- ` line starts in that section, which is
 eighteen and agrees with both the split and the transcribed rows. A final subsection carries defects
 owed to other documents; those are not rows.
+
+**Two of the twenty-nine block no DoD**: row 1, and **row 26 since P-D-54 resolved it on
+2026-08-31** — kept in place rather than struck, because the §4 executor paragraph cites it. Row 26
+was the only blocker of `cpt-cf-bss-products-dod-stage-phase`, which is now free;
+`dod-batch-state-machine` stays blocked by rows 5, 6, 7 and 19, and `dod-coalesced-event` by row 18
+— which row 26's answer **promoted from co-blocker to sole blocker**, so answering one row here did
+not shrink this document's queue by one.
 
 **Carried, not answered**, and registered against **its owner's** register. **Three departures from
 verbatim, declared so the claim is checkable.** First, the slice's inline `Owner:` sentence and any
@@ -1189,12 +1220,21 @@ whether DECOMPOSITION's entity field is a listing convention or an ontological c
     `cpt-cf-bss-products-dod-import-door`.
     **Owner**: this feature's storage owner with `01-foundation`'s, when §4's row columns land.
 
-26. **What executes edges 1 and 4?** Both fire on a condition over every row — a stage outcome, a
+26. ~~**What executes edges 1 and 4?**~~
+    **Answered (owner call, 2026-08-31 — P-D-54): the gear-owned batch worker's claim transaction, at
+    both ends.** Edge 1 is flipped by the claim that stages the last row, edge 4 by the claim that
+    lands the last row's terminal state, and `CatalogBulkOperationCompleted` is emitted **inside edge
+    4's CAS**, which is where *"exactly one"* comes from. Crash recovery is the claim's **lease** — the
+    actor `design/09`'s `inst-bm-resume` has needed since it promised a batch resumes from the ledger.
+    The normative text names no framework; the register carries the platform measurement, and the
+    donor's inline posture is named as not transferring, because that door answers before the work
+    starts. Original text: Both fire on a condition over every row — a stage outcome, a
     terminal ledger state — and neither names a door, actor or signal; the import door cannot be one,
     having answered **202**. Carried row 7 registers edge 3's executor and not these two.
-    **Blocks**: `cpt-cf-bss-products-dod-batch-state-machine`,
-    `cpt-cf-bss-products-dod-stage-phase`, `cpt-cf-bss-products-dod-coalesced-event`.
-    **Owner**: this feature.
+    **Blocks**: no DoD — **resolved by P-D-54**; `cpt-cf-bss-products-dod-stage-phase` is freed,
+    and `cpt-cf-bss-products-dod-batch-state-machine` and `cpt-cf-bss-products-dod-coalesced-event`
+    carry the answer while staying blocked by their other rows.
+    **Owner**: was this feature; **closed**.
 
 27. **Which of the three grants must be minted, and by whom?** This feature spends
     `bulk × execute`, `catalog_version × read` and `bulk_lifecycle × execute`. All three are in

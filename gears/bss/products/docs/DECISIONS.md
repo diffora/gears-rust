@@ -24,11 +24,14 @@ CodeRabbit's suggestion of 2026-08-26 — would make this register parse as zero
 is a regression this gear has already paid for once. This intermediate heading satisfies MD001
 instead.*
 
-*Consequence for the TOC gate, measured 2026-08-29: `cfs validate-toc` indexes to `--max-level 3`
-by default, so at the default it cannot see these `####` headings and reports all fifty anchors as
-dangling. They are not — an anchor is derived from a heading's text, not its level. **This file
-validates with `cfs validate-toc --max-level 4`**, which returns exit 0. The two headings above are
-listed in the TOC for the same gate.*
+*Consequence for the TOC gate. `cfs validate-toc` indexes to `--max-level 3` by default, so at the
+default it does not see these `####` headings at all: **the default invocation is the one that
+returns exit 0**, and the TOC lists only the two `##`/`###` headings above. Passing
+`--max-level 4` makes every entry indexable and reports one `toc-heading-not-in-toc` per decision —
+**54 errors on 2026-08-31, not a defect in this file**. Do not "fix" that by listing the entries;
+run the gate at its default. (This paragraph said the opposite until 2026-08-31, measured against
+both invocations at that date: it described a state in which the TOC still carried the fifty
+per-decision anchors, and it was corrected by running the command it prescribed.)*
 
 #### P-D-01 — Broker-native event envelope (not CloudEvents 1.0)
 
@@ -1565,6 +1568,80 @@ listed in the TOC for the same gate.*
   `design/03-sku-classification.md` (`inst-mt-bucket`), `design/07-reference-signal.md`
   (the re-publish step).
 
+
+#### P-D-54 — The executor the batch machine never named: a gear-owned worker flips edges 1 and 4 inside its own claim
+
+- **Date**: 2026-08-31 (owner call)
+- **Context**: `features/bulk-promotion.md` §7 row 26 measured that edges 1 and 4 of the `BulkBatch`
+  machine fire on a condition over every row — a stage outcome, a terminal ledger state — and name no
+  door, actor or signal. The import door cannot be either: it answers **202**.
+
+  **The design already bought the actor and did not name it.** `design/09` §3.1 `inst-bm-resume`
+  states that a batch is resumable — *"a crash mid-commit resumes from the ledger (per-row publishes
+  idempotent by row key)"*. Something has to re-enter a batch and re-read its ledger, and a door that
+  answered 202 is gone.
+
+  **The gear specifies this executor shape once already, and it was reviewed.** `design/04` §3.1's
+  `algo-activation-runner`: due rows *"claimed atomically (state CAS `pending|deferred → running`
+  with `claimed_at`"*, a `running` row past its **lease** reclaimed *"`running → pending` with
+  `attempt += 1`"*, outcomes *"`applied|failed|deferred`"*, the runner *"its own raising door"*, and
+  gauges for *"due-but-unclaimed and deferred counts"*.
+
+  **The donor's mechanism does not transfer, though its conclusion is written down.**
+  `gears/bss/pricing`'s `infra/bulk.rs` runs a bulk batch **inline in the caller's request** —
+  *"Every row is its own transaction, and that is the whole shape"*, and the *"repository methods open
+  their own transactions and that is why they are used rather than their runner-taking forms"*. Its
+  module doc then records the price: *"`pricing_bulk_row_lock` has no sweeper, D-37's lease takeover
+  is unbuilt"*, so a panic or a dropped future leaves the run in `committing` holding every row's
+  lock — *"That run stays `committing`, which is where the remedy is"*. Pricing answers its caller
+  when the work is done; **this door answers before the work starts**, and `inst-bm-resume` promises
+  recovery, so neither half of the donor's posture is available here.
+
+  **The platform ships the machinery, which is what makes this a naming decision rather than a new
+  mechanism.** `toolkit_db::outbox::taskward` is framework-level and outbox-agnostic — its
+  `PacingConfig` says so in as many words, *"Framework-level — no outbox-specific knowledge"* — and
+  carries `WorkerBuilder`/`WorkerAction`/`Directive`, `PanicPolicy`, `WorkerListener` for
+  observability, `ConcurrencyLimit::{Fixed,Tiered}` with `BackoffConfig`, and a caller-supplied wake
+  source: *"Wake-up sources (notifiers, pokers) are the caller's responsibility via
+  `WorkerBuilder::notifier()`"*, so a door can start the work without waiting a poll interval. It has
+  four production consumers — `processor`, `sequencer`, `reconciler`, `vacuum` — **all inside the
+  outbox and none in a gear**. And a gear may own such a task: `RunnableCapability::start(cancel)`
+  (*"Start the gear's background task"*) with two-phase graceful shutdown, implemented by
+  `gears/file-storage/file-storage/src/gear.rs:280`.
+
+- **Decision**: edges 1 and 4 are flipped by a **gear-owned batch worker** that claims a batch the way
+  `inst-ar-claim` claims a transition. The flip is a **CAS on the batch state inside the same
+  transaction that finishes the last row**, so there is no separate detection pass to lag or race.
+
+  | Call | Propagation |
+  |---|---|
+  | **Edge 1's executor is the claim transaction that stages the last row.** The `ChangeReport` is generated and submitted to the governance gate in that same transaction, so the report exists exactly when the ledger says staging is done | `features/bulk-promotion.md` §4 `inst-bb-edge-report`, `dod-stage-phase` |
+  | **Edge 4's executor is the same worker at the other end** — the claim that lands the last row's terminal state — and `CatalogBulkOperationCompleted` is emitted **inside that CAS**. The winner emits; a re-claim after a lease expiry finds the state already flipped and emits nothing. That is where *"exactly one"* comes from | §4 `inst-bb-edge-complete`, `dod-coalesced-event` |
+  | **Crash recovery is the claim's lease, not a sweeper.** A worker lost between the last row and the flip leaves a batch whose rows are all terminal and whose state is not; the lease reclaims it and the CAS makes the flip idempotent | `design/09` §3.1 `inst-bm-resume` (owed) |
+  | **`inst-bm-limits`' per-tenant concurrent-batch ceiling is enforced at claim, not only at admission**, because a ceiling checked only by the door drifts as batches hang | `dod-stage-phase` |
+
+- **The normative text names no framework, and that is deliberate.** `design/04`'s runner names none
+  either. The platform measurement above is recorded as **evidence that a gear-owned worker with a
+  claim, a lease and a wake source is available rather than aspirational** — not as a pin on
+  `taskward`. **The argument against, stated**: products would be the first gear to run that
+  framework, so the gear-side wiring is unproven and a build may find the abstraction cost real; the
+  measurement is in this register so that finding arrives as a build note rather than a
+  re-litigation of the executor.
+- **Scope — this decision does NOT answer what performs edge 3.** `approved → committing` is §7 row
+  **7**'s, carried from `design/09` §6 and owned by this slice with `05`. It has two live candidates
+  — this worker, or `05`'s decide door flipping the state in the same transaction as the quorum
+  verdict, which is also where the one-shot consumption would be enforced — and the carried row
+  records that `05`'s decide door is itself unowned, so nothing here narrows it. Rows 5 and 6 are
+  equally untouched: the missing rejection edge, the absent abandon state, the unstated `failed`
+  entry edge, and the tenant slot a never-approved batch holds.
+- **Not changed**: `products/src` carries none of this. `ActivationRunner`, `claimed_at`,
+  `scheduled_transition`, `BulkBatch` and `bulk_batch` are **zero occurrences** across the crate, so
+  nothing shipped constrains or contradicts the call.
+- **Propagated**: `features/bulk-promotion.md` (§4 `inst-bb-edge-report`, `inst-bb-edge-complete` and
+  the executor paragraph; `dod-stage-phase`, `dod-batch-state-machine`, `dod-coalesced-event`; §7's
+  arithmetic and row 26 answered), `DECOMPOSITION.md` §2.9 (`BatchWorker`). **Owed and not edited
+  here**: `design/09` §3.1's `inst-bm-resume`, which should name the claim and the lease — that is
+  `design/09`'s edit.
 
 #### P-D-53 — The increment transaction runs at the engine default, because the guard is what closes the race
 
