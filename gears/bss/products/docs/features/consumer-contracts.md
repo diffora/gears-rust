@@ -393,7 +393,11 @@ is still the spine of the feature, because the suite itself cannot run without t
 
 **TOML, so a gate reads it without parsing prose** — `design/12` §4 fixes the format for that reason.
 
-**Each member carries a comparability flag** (**P-D-57**). Membership stays P-D-12's rule and nothing
+**Each field member carries a comparability flag** (**P-D-57**), and **`CatalogVersion` is an entry
+of kind `surface`** (**P-D-65**): `kind = "surface"`, a `delegated-to` naming the counterpart port
+trait, and **no comparability flag** — the job neither compares it nor asserts its absence, its drift
+protection being the adapter the pricing-side port doc promises, which the compiler checks. That is
+the pin file's schema for a surface-level member, which this DoD was blocked on. Membership stays P-D-12's rule and nothing
 is dropped for being unshipped; the flag says only whether the member is comparable against the SDK
 surface *yet*, and it is authored conservatively — `comparable` only once both the column and the SDK
 member ship. That is what keeps `cpt-cf-bss-products-dod-seam-suite-home`'s job green from the day the
@@ -925,8 +929,10 @@ omission. The `SkuRetired` re-announcement row is the one such row.
 
 **The lint reads tokens only** (**P-D-43**, amended by **P-D-63**: a marker may consume one
 preceding backticked identifier as its annotation, which the lint never looks up in the pin; `+` is
-not a separator): a field token must appear in the pin; a marker token —
-`(surface)`, `none in v1`, `payload` — is outside the pin by construction and carries its exclusion
+not a separator): a field token must appear in the pin; a marker token is outside the
+**field-comparison population** by construction (**P-D-65** narrowed this from "outside the pin"): a
+`` `CatalogVersion` (surface) `` token couples to the pin's `surface` entry in both directions, while
+`payload` and `none in v1` couple to nothinn and carries its exclusion
 reason in the row's prose. **Any prose beside the tokens is ignored, so a cell is never judged by
 being read.**
 
@@ -1071,10 +1077,10 @@ artifacts, not types.
 **The arithmetic of this section.** Thirty-seven rows: **twenty-one carried verbatim** from
 [`../design/12-consumer-contracts.md`](../design/12-consumer-contracts.md) §6 — the slice's full
 count, not a selection — and **sixteen raised here**: five while authoring and eleven by the
-three-lens review of this document. Of the thirty-seven, **eight block no DoD in this document**
-(rows 3, 6, 12, 27 and 36, plus rows 25, 26 and 15, which **P-D-57, P-D-58 and P-D-63 resolved on
-2026-08-31** — kept in place rather than struck); the other twenty-nine each name the DoD they
-block. A final subsection
+three-lens review of this document. Of the thirty-seven, **nine block no DoD in this document**
+(rows 3, 6, 12, 27 and 36, plus rows 25, 26, 15 and 33, which **P-D-57, P-D-58, P-D-63 and P-D-65
+resolved on 2026-08-31** — kept in place rather than struck); the other twenty-eight each name the
+DoD they block. A final subsection
 carries defects owed to other documents, recorded and not repaired here; those are not rows.
 
 **Carried, not answered**, and registered against **its owner's** register. **Three departures from
@@ -1436,16 +1442,27 @@ diffed against `design/12` §6 sentence by sentence, mechanically, and every row
     **Blocks**: `cpt-cf-bss-products-dod-lint-declarations`.
     **Owner**: this feature with `design/05`'s owner.
 
-33. **Is `CatalogVersion` a pin entry or outside the pin?** **P-D-12** says it is *"pinned as a
+33. ~~**Is `CatalogVersion` a pin entry or outside the pin?**~~
+    **Answered (owner call, 2026-08-31 — P-D-65): both sentences become literally true.** The pin
+    carries a `CatalogVersion` entry of kind **`surface`** — `kind = "surface"`, a `delegated-to`
+    naming the port trait, no comparability flag — and the job neither compares it nor asserts its
+    absence, the drift protection being the adapter the pricing-side port doc promises, which the
+    compiler checks. Lint 9's formulation narrows from *"outside the pin"* to *"outside the
+    **field-comparison** population"*, and the five annotated markers couple to the surface entry in
+    both directions. P-D-12's sentence stands unreinterpreted, which was the tiebreaker: re-reading a
+    confirmed decision that five register rows and C1 cite is a retraction with a radius.
+    Original text: **P-D-12** says it is *"pinned as a
     **surface**, not a field"*, while lint 9's grammar makes a `(surface)` marker *"outside the pin by
     construction"*. Five of the fourteen register rows carry `` `CatalogVersion` (surface) ``. Under
     the first reading the pin file has a `CatalogVersion` entry and lint 9's second arm needs a
     register row naming it as a field; under the second there is no entry and the five rows pass by
     exclusion. The pin file's schema for a surface-level member has to be settled before
     `cpt-cf-bss-products-dod-schema-pin` can be written.
-    **Blocks**: `cpt-cf-bss-products-dod-schema-pin`,
-    `cpt-cf-bss-products-dod-lint-pin-coupling`.
-    **Owner**: this feature with the plan-price owner.
+    **Blocks**: no DoD — **resolved by P-D-65**; `cpt-cf-bss-products-dod-lint-pin-coupling` is
+    freed, and `cpt-cf-bss-products-dod-schema-pin` carries the schema while staying blocked by rows
+    24 and 34.
+    **Owner**: was this feature with the plan-price owner; **closed** — nothing pricing-side
+    changes.
 
 34. **Which `status` value vocabulary does the pin carry — two members or three?** This document
     pins *"`status` with its value vocabulary"* and states that browse serves `published|deprecated`

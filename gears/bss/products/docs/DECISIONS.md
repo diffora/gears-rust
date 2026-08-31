@@ -1569,6 +1569,47 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   (the re-publish step).
 
 
+#### P-D-65 — `CatalogVersion` is a pin entry of kind `surface`, delegated to the port trait and compared by nothing
+
+- **Date**: 2026-08-31 (owner call — the last sole-blocking row of the 2026-08-31 queue)
+- **Context**: `features/consumer-contracts.md` §7 row 33 measured a conflict between two confirmed
+  texts. **P-D-12** says `CatalogVersion` is *"pinned as a **surface**, not a field"*; lint 9's
+  grammar makes a `(surface)` marker *"outside the pin by construction"*. Five of the register's
+  fourteen rows carry `` `CatalogVersion` (surface) ``, and the pin file's schema for a surface-level
+  member had to be settled before `dod-schema-pin` could be written.
+
+  **What the surface concretely is**: the `CatalogVersion` type the counterpart port carries —
+  `bss_pricing_sdk::CatalogVersionRegistryV1::committed_version` returns `Option<CatalogVersion>` —
+  and its drift protection already exists structurally: *"when the registry publishes its own SDK
+  this trait becomes an adapter over it"*, at which point the **compiler** checks the shape, which is
+  strictly stronger than a TOML comparison. Before the adapter lands, `bss-products-sdk` carries no
+  `CatalogVersion` type, so a pin comparison would have nothing to compare on this side either way.
+
+- **Decision**: both sentences become literally true. **The pin carries a `CatalogVersion` entry of
+  kind `surface`; the CI job neither compares it nor asserts its absence — its comparison is
+  delegated to the port trait**; and lint 9's formulation narrows from *"outside the pin"* to
+  *"outside the **field-comparison** population"*.
+
+  | Call | Propagation |
+  |---|---|
+  | **A third entry kind, `surface`**: `kind = "surface"`, a `delegated-to` naming the port trait, **no comparability flag** — P-D-57's flag governs what the job compares, and this entry is compared by nothing, so carrying the flag would claim a comparison that never runs | `dod-schema-pin` |
+  | **Lint 9 couples the five annotated markers to the surface entry**: a `` `CatalogVersion` (surface) `` token satisfies the operand→pin direction against the surface entry, and the surface entry's pin→operand direction is satisfied by those five rows. `payload` and `none in v1` couple to nothing, as before | `design/12` §3.2 lint 9; `dod-lint-pin-coupling` |
+  | **P-D-12's sentence stands unreinterpreted** — the entry exists, as a surface and not a field — which is the point: re-reading a confirmed decision that five register rows and C1 cite is a retraction with a radius, and the entry costs one TOML kind instead | `design/12` §1 C1 |
+
+- **The argument against, stated**: a third entry kind in a file that does not yet exist is schema
+  growth for one row, and a `delegated-to` field is a claim the job never exercises — if the adapter
+  promise is withdrawn, the entry silently protects nothing. That risk is accepted and recorded: the
+  entry's honesty rests on the adapter sentence in the pricing-side port doc, which P-D-65 now cites
+  from a second place.
+- **Scope**: nothing pricing-side changes — the trait, its `CatalogVersion` type and the adapter
+  promise stay as shipped. The five register cells stay exactly as P-D-63 normalized them. The event
+  surface stays outside the pin entirely: `payload` rows gain no entry.
+- **Not changed**: P-D-12's membership rule and its wording, P-D-57's comparability flag for field
+  members, and the coupling rule's field direction.
+- **Propagated**: `design/12-consumer-contracts.md` (§1 C1's pinned-as-a-surface clause, §3.2 lint
+  9's narrowed formulation), `features/consumer-contracts.md` (`dod-schema-pin`,
+  `dod-lint-pin-coupling`, §7's arithmetic and row 33 answered).
+
 #### P-D-64 — The missing-sign-off refusal rides `VALIDATION`, and the owned roster stays at one
 
 - **Date**: 2026-08-31 (owner call)
