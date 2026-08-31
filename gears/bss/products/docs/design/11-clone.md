@@ -107,7 +107,11 @@ The table below is this slice's and is the normative one; the FEATURE carries th
 Input, the Output and the boundary.
 
 *Every re-validation row below refuses on failure and the refusal collects across rows (C4); a
-clone either lands whole or lands not at all.*
+clone either lands whole or lands not at all.* **The row order below is also the rules' registration
+order** (**P-D-55**), and therefore their execution order within the phase and the precedence
+`ValidationReport::audit_code` would answer with — a tie-break over an attribution channel, fixed
+here so it is not settled by whoever registers first. It ranks **rows**: a row whose code is not yet
+minted takes its place when it is.
 
 | Field class | Applies to | Disposition |
 |-------------|-----------|-------------|

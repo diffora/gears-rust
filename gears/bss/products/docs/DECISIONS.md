@@ -1569,6 +1569,68 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   (the re-publish step).
 
 
+#### P-D-55 — The disposition rules register in the table's own row order, and the order is unobservable at this commit
+
+- **Date**: 2026-08-31 (owner call)
+- **Context**: `features/clone.md` §7 row 13 measured that within a phase rules run in **registration
+  order** (`design/01` §3.1, and `design/01-foundation.md`'s own §3 states *"execution order is
+  registration order within the phase"*), that `ValidationReport::audit_code` returns
+  `self.violations.first().map(|v| v.code)`, and that **no document fixes the order** for the
+  disposition set — while **P-D-37** fixed a precedence for the `state` phase's four codes for
+  exactly this reason.
+
+  **Collision is the expected case here, not a corner.** `design/11` §3.1 has five
+  `Copy + re-validate` rows and says of them *"Every re-validation row below refuses on failure and
+  the refusal collects across rows (C4); a clone either lands whole or lands not at all"*. A clone of
+  an old `retired` SKU can fail its attribute definition, its `PlanTier` and its accounting code in
+  one report. `ValidationRule`'s contract — it *"never short-circuits the run"* and *"never reads
+  another rule's verdict"* — is what makes the collection fall out of registration.
+
+  **But the question is a tie-break, not a correctness question, and P-D-37 already settled that
+  framing**: the caller's rejection carries every violation the failing phase collected and the audit
+  row records one code. What the one code buys is **attribution** — `design/12` §4.1's AC #38 map is
+  `AC #38 row → code → declaring slice`, asserted by a lint — so with several classes failing there
+  is no single slice to attribute to and no order can be *right*, only stable and recorded.
+
+  **And two of the five rows name no code at all**: *Category assignments* says only
+  *"retired category ⇒ re-select"*, and *Metering declaration* says *"fail per AC #38"*. A precedence
+  over codes would have to mint two; a precedence over **table rows** does not.
+
+- **Decision**: the disposition rules register in the **row order of `design/11` §3.1's table**, which
+  is therefore its execution order and fixes which violation `audit_code()` would answer with.
+
+  | Call | Propagation |
+  |---|---|
+  | **The table's row order is the registration order.** It is normative, already reviewed, and ordered; using it invents no code and changes no mechanism — `audit_code()` stays `violations.first()`, which `domain/rules_tests.rs:131` already pins as *"whichever runs first wins the audit row"* | `design/11` §3.1's caption; `features/clone.md`'s `dod-disposition-rules` |
+  | **The precedence ranks rows, not codes**, so the two rows whose code is unminted take their place when it is minted, and nothing is invented to fill them | `design/11` §3.1 |
+
+- **The order is unobservable at this commit, for two independent reasons, and neither is this
+  feature's to change.** Measured in `products/src`: `ValidationReport::audit_code` has **zero
+  production callers** (`domain/rules_tests.rs` and `domain/validation_tests.rs` only) — every door
+  writes `error_code: domain_err.code()`, and `domain/error.rs:114` maps `Self::Validation(_)` to
+  `"VALIDATION"`. **And every registered rule raises that same literal**: `domain/rules.rs:73` is
+  `pub const CODE: &'static str = "VALIDATION"`, every `report.violate(…)` call site passes
+  `"VALIDATION"`, and `domain/validation_tests.rs:70` asserts `audit_code()` answers `"VALIDATION"`
+  for a two-violation report. So even a routed `audit_code()` would not discriminate today.
+- **Scope — the observability half is already filed with its owner and this decision does not answer
+  it.** `design/01-foundation.md` §6 item 2 asks *"Which code does the audit row store when a phase
+  other than `state` collects two?"*, owned by that slice with the error-contract owner, and clone's
+  row 13 is a specific instance of it. **No new item is filed here** — a duplicate would leave the
+  specific one looking open after the general one closes. The consequence for this feature is
+  determinate meanwhile: **a refused clone stores `VALIDATION`, like every other shipped door**, and
+  the clone door does not diverge to route `audit_code()` on its own.
+- **The argument against, stated**: `design/11` §3.1's row order was authored for readability —
+  identity, codes, name, brand, `created_by`, structure, parent, then the re-validating rows — so
+  *Display/localized attributes* leads and every multi-class failure that also failed on attributes
+  will attribute to `02-taxonomy-attributes`. If attribution should ever prefer the class costliest
+  to remedy, this reopens. And the decision **adds** a meaning to that table: its caption spoke to
+  collection across rows, not to order.
+- **Not changed**: `audit_code()`'s definition, the single `error_code` column, and AC #38's map. No
+  code is minted and no door's behaviour changes.
+- **Propagated**: `design/11-clone.md` §3.1 (the caption's order clause), `features/clone.md`
+  (`dod-disposition-rules`, `dod-clone-audit`, §7's arithmetic and row 13 answered). Extends
+  **P-D-37**'s precedence convention to a second rule set without amending it.
+
 #### P-D-54 — The executor the batch machine never named: a gear-owned worker flips edges 1 and 4 inside its own claim
 
 - **Date**: 2026-08-31 (owner call)

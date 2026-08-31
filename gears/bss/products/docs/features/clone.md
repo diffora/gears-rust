@@ -562,6 +562,11 @@ phase is its consequence, not a separate requirement.
 and no phase's stated scope covers a live-lifecycle check on another registry's row. §7 row 11 is
 where that is routed, together with §7 row 25's question of which pipeline would host it at all.
 
+**They register in `design/11` §3.1's row order** (**P-D-55**), which is therefore their execution
+order within the phase. The table is the normative list, so the order it already carries becomes the
+order rather than being settled by whoever registers first; it ranks rows, so the two rows whose code
+is unminted take their place when it is minted.
+
 **The rules append and never short-circuit.** That is `ValidationRule`'s own contract — *"It never
 short-circuits the run, never mutates the subject, and **never reads another rule's verdict**"* — and
 it is what makes the collected refusal fall out of the registration rather than needing a
@@ -747,9 +752,16 @@ field classes returns three violations to the caller and stores the single code 
 **That is P-D-37's split, and it is also a gap.** *"The caller's rejection carries every violation the
 failing phase collected; the audit row records one code"* holds; what does not hold is the assumption
 that the recorded code discriminates. `AC #38`'s map reads the **stored** code, and a stored
-`VALIDATION` tells it nothing about which field class failed. Whether the clone door routes
-`audit_code()` into the refusal audit row — making registration order observable — or stores
-`VALIDATION` like every shipped door, is §7 row 13's, not this DoD's to settle.
+`VALIDATION` tells it nothing about which field class failed.
+
+**Answered (P-D-55): this door stores `VALIDATION` like every shipped door, and does not route
+`audit_code()` on its own.** So the obligation is determinate — one audit row carrying `VALIDATION` —
+and the discrimination gap is **`design/01-foundation.md` §6 item 2**'s, owned by that slice with the
+error-contract owner, which asks the same question in its general form. The registration order that
+would become observable if the code were ever routed is fixed by `design/11` §3.1's row order, also
+P-D-55. **Two things make the order unobservable today, not one**: `audit_code()` has no production
+caller, *and* every registered rule raises the literal `"VALIDATION"` (`domain/rules.rs:73`), so even
+a routed call would not discriminate.
 
 **Implements**: `cpt-cf-bss-products-algo-disposition`
 
@@ -893,8 +905,9 @@ assertion on the first code passes on a build that short-circuits, which is the 
 [`../design/11-clone.md`](../design/11-clone.md) §6 — the slice's full count, not a selection — and
 **seventeen raised here**: twelve while authoring and five by the three-lens review of this
 document. Eight of the seventeen (rows 11, 12, 13, 14, 17, 20, 23 and 25) come from reading the
-crate and nine from the design set. Of the twenty-seven, **four block
-no DoD in this document** (rows 9, 10, 21 and 24); the other twenty-three each name the DoD they
+crate and nine from the design set. Of the twenty-seven, **five block
+no DoD in this document** (rows 9, 10, 21 and 24, plus row 13 since **P-D-55 resolved it on
+2026-08-31** — kept in place rather than struck); the other twenty-two each name the DoD they
 block. A
 third subsection carries defects owed to other documents, recorded and not repaired here; those are
 not rows. The two register pointers are in this preamble, not there.
@@ -1020,13 +1033,28 @@ duplicating it.
     **Blocks**: `cpt-cf-bss-products-dod-disposition-rules`, `cpt-cf-bss-products-dod-clone-door`.
     **Owner**: this feature with `01-foundation`'s.
 
-13. **Which of the disposition rules registers first?** Within a phase, rules run in registration
+13. ~~**Which of the disposition rules registers first?**~~
+    **Answered (owner call, 2026-08-31 — P-D-55): in `design/11` §3.1's own row order.** The table is
+    the normative list of the field classes and it is ordered, so the order it already carries becomes
+    the registration order — nothing is invented, `audit_code()` keeps returning
+    `violations.first()`, and the precedence ranks **rows**, so the two rows naming no code take their
+    place when one is minted. It is a tie-break rather than a correctness question, which is
+    **P-D-37**'s own framing: the caller's rejection carries every violation, the audit row records
+    one code, and what that code buys is attribution.
+    **And the order is unobservable at this commit for two independent reasons**, neither of them this
+    feature's: `audit_code()` has zero production callers, and every registered rule raises the
+    literal `"VALIDATION"` (`domain/rules.rs:73`), so a routed call would not discriminate either.
+    That half is **`design/01-foundation.md` §6 item 2**'s — the same question in its general form,
+    already filed with its owner — and no duplicate is filed here.
+    Original text: Within a phase, rules run in registration
     order, `ValidationReport::audit_code` stores `violations.first()`, and `AC #38`'s map reads the
     **stored** code. So the audit code for a multi-class clone failure is a consequence of
     registration order, and no document fixes that order. **P-D-37** fixed a precedence for the
     `state` phase's four codes for exactly this reason; the disposition set has none.
-    **Blocks**: `cpt-cf-bss-products-dod-clone-audit`.
-    **Owner**: this feature with `01-foundation`'s, whose precedence convention this would extend.
+    **Blocks**: no DoD — **resolved by P-D-55**; `cpt-cf-bss-products-dod-clone-audit` carries the
+    answer and is freed.
+    **Owner**: was this feature with `01-foundation`'s; **closed**, the observability half staying
+    with `01`.
 
 14. **What is the clone's idempotency key, and does a retried clone return the first clone or make a
     second?** The pipeline's first phase is `Idempotency` and the door is a mutation, so a key is
