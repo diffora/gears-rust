@@ -599,9 +599,13 @@ needs, the DoD says so and §7 carries the question.
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-catalog-version-table`
 
 The system **MUST** create `products_catalog_version`, keyed `(tenant_id, catalog_version_id)`
-with the id monotonic per tenant, carrying `checksum`, `staged_at`, `published_at`,
+with the id monotonic per tenant, carrying `checksum`, `published_at`,
 `participant_set_snapshot`, `freeze_state ∈ {open, complete, complete(forced)}` and the manifest
-header, on **both** engines.
+header, on **both** engines. **`staged_at` is struck** (**P-D-67**): no admitted writer — a
+stage-time insert would burn gapless ids on every refusal — and no reader, the SLO measuring from
+`requested_at`. And **`participant_set_snapshot` here is a derived cache** (P-D-67): the
+authoritative copy is the capture store's and is the one inside the checksum, the same convention
+`freeze_state` on this row already carries.
 
 The table **MUST** be append-only and **physically guarded** — but on the **whitelist**
 discipline, **not** the unconditional refusal `m20260829_000007_create_products_entity_version.rs`
@@ -618,7 +622,7 @@ So the model is `m20260829_000002_create_products_product.rs`'s head-row guard
 with `IS DISTINCT FROM`; on SQLite, which has no procedural language and whose `RAISE(ABORT, …)`
 takes a literal message, the same whitelist split across **one no-delete trigger and one
 `WHEN`-guarded trigger per column class**, using `IS`/`IS NOT`. **`freeze_state` MUST be the only
-column the `UPDATE` arm admits**; every other column of this table — `checksum`, `staged_at`,
+column the `UPDATE` arm admits**; every other column of this table — `checksum`,
 `published_at`, `participant_set_snapshot` and the manifest header — **MUST** be refused, since the
 byte-identity flagship rests on them. `DELETE` **MUST** be refused outright.
 
@@ -642,13 +646,16 @@ operand every predicate reads. Admitting its write is a storage permission, not 
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-version-counter`
 
 The system **MUST** create `products_catalog_version_counter`, keyed `(tenant_id)`, holding the
-next id, and **MUST** allocate from it **inside the same transaction as the version insert**, so
+next id **starting at `1`** (**P-D-67** — pinned so the dev-space ordering argument has a stated
+premise; the sweep of pricing's dev-minted ~10¹² ids over `pricing_plan_revision.pending_version_ref`
+is **pricing's**, its own module doc saying nothing there should outlive a real registry), and
+**MUST** allocate from it **inside the same transaction as the version insert**, so
 that ids are gapless by construction rather than by a reconciliation pass.
 
 A refused run **MUST NOT** consume an id. This is what forbids an insert at stage time: an insert
 before publication would burn an id on every `STAGED_ENTITY_CHANGED` refusal, against the gapless
-guarantee C1 and `inst-cvc-serial` both assert. **The `staged_at` column therefore has no admitted
-writer in the design set as it stands** — §7.
+guarantee C1 and `inst-cvc-serial` both assert. **The `staged_at` column is therefore struck** (**P-D-67**) rather than given a writer this
+argument forbids.
 
 **Implements**: `cpt-cf-bss-products-flow-increment`
 
@@ -930,7 +937,9 @@ as `bss-pricing`'s and `bss-ledger`'s migrators already do. The dependency alone
 fails at runtime on every increment against a `coord_leases` table no migration in this gear
 creates.
 
-**The lease key is per tenant, and that shape is already in production in BSS** —
+**The lease key is per tenant, and that shape is already in production in BSS** — the cardinality
+objection is settled by that precedent (**P-D-67**, `bss-ledger` running finer keys per
+`(tenant, period)`) —
 `bss-ledger` keys `recognition-run:{tenant}:{period_id}` and
 `period-close:{tenant_id}:{legal_entity_id}:{period_id}`, and `coord`'s README names one per
 `(tenant, period)` as a typical fit. Pricing's *"per gear and per pass, never per tenant"* is a doc
@@ -1061,14 +1070,12 @@ Re-resolution **MUST** be byte-identical forever: content renders from the **sto
 the frozen entity versions and is **never re-collected**, and the checksum is returned and
 verifiable.
 
-**This resolver is one of five doors of this feature with no route declared anywhere in the design
-set.** The increment door and the diff carry one each; `08-read-models` puts this surface out of its
-own scope, and `01-foundation` hands this feature the intent clause without a surface. The other
-four are named by `05-governance` §3.2's own `Doors` column: `catalog_version × ack` and
-`× release` (*"S2S, no route declared"*), `catalog_version × force_complete` (*"has no route
-declared — an operator surface named in prose only"*) and `freeze_participant × write` (*"no route
-declared"*). §7 carries all five; row 12 is the slice's own carry about this one. The
-route is therefore **owed and not invented here** — §7.
+**This resolver is now the one door of this feature with no route declared anywhere in the design
+set.** It was one of five: **P-D-67** declared the other four — the ack, release, force-completion
+and freeze-participant doors — and `05-governance` §3.2's `Doors` column carries their spellings. The
+increment door and the diff carry one each; `08-read-models` puts this surface out of its own scope,
+and `01-foundation` hands this feature the intent clause without a surface. §7 row 12 is the slice's
+own carry about this one, and its route stays **owed and not invented here** — §7.
 
 **Implements**: `cpt-cf-bss-products-flow-resolve`
 
@@ -1084,6 +1091,12 @@ The system **MUST** record participant acks in `products_freeze_ack`, idempotent
 **`(tenant_id, catalog_version_id, participant)`** — the table's own primary key at `design/06`
 §4 — and **MUST** accept a participant's ack **only from that participant's own service identity**
 (S2S claims).
+
+**The route is declared** (**P-D-67**): `POST /bss-products/v1/catalog-versions/{catalogVersionId}/acks`,
+the release door riding `…/releases` — the increment door's own pattern, a contract with an
+in-process default and this S2S binding. **And the door is an UPDATE, not an upsert**: the increment
+transaction seeds one `pending` row per `participant_set_snapshot` member (P-D-67), so the row's
+existence *is* the membership check and a non-member's ack has no row to flip.
 
 **The full key is stated rather than the slice's shorthand.** `inst-fz-ack` writes the idempotency
 as *"idempotent per `(version, participant)`"*, which elides the tenant; because
@@ -1152,7 +1165,9 @@ the code agree and only the wire is missing.
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-force-completion`
 
 Force-completion **MUST** be a `05-governance` two-person ceremony on
-`catalog_version × force_complete`, `N`-governed, recording `quorumReduced` on the record **and on
+`catalog_version × force_complete` — its door
+**`POST /bss-products/v1/catalog-versions/{catalogVersionId}/force-completions`** (**P-D-67**) —
+`N`-governed, recording `quorumReduced` on the record **and on
 `FreezeForceCompleted`** below the default of 2 (**P-D-13** — no fixed floor, since one would leave
 a solo tenant's timed-out version permanently un-resolvable, the class of block **P-D-11** exists to
 remove).
@@ -1197,7 +1212,8 @@ both arguments and the answer arrives in one round rather than two.
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-participant-set`
 
 Membership of `products_freeze_participant` **MUST** be a `GovernedLiveOp` on
-`freeze_participant × write` — **material**, and enumerated as one of 06's kinds in
+`freeze_participant × write` — through **`POST /bss-products/v1/freeze-participants`** (**P-D-67**) —
+**material**, and enumerated as one of 06's kinds in
 `05-governance`'s input (d). Each change **MUST** emit `FreezeParticipantSetChanged`, because
 participants must learn they were added.
 
@@ -1228,7 +1244,8 @@ The per-`(catalogVersionId, participant)` registration and ack rows **MUST** be 
 dimension.
 
 Liveness **MUST** end by an **explicit release**: the `catalog_version × release` door (S2S, the
-participant's own identity) records that the participant holds no more live references to that
+participant's own identity — **`POST /bss-products/v1/catalog-versions/{catalogVersionId}/releases`**,
+P-D-67) records that the participant holds no more live references to that
 version. This is the second half of PRD §9.2's freeze-participant contract (**P-D-18**), which had
 been a duty on three counterpart gears that §9.2 told none of them they owed.
 
@@ -1536,7 +1553,10 @@ implementation obligation already met.
 
 - [ ] `p2` - **ID**: `cpt-cf-bss-products-dod-posting-safe-observability`
 
-The system **MUST** instrument `requested_at → published_at` at p95 ≤ 60 s and max 5 min, and
+The system **MUST** instrument `requested_at → published_at` at p95 ≤ 60 s and max 5 min **for the
+interactive lane, and the same pair from window close for the bulk lane** (**P-D-67** — a batch whose
+window closes at the five-minute hard max cannot also publish within five minutes of its earliest
+request, so the unscoped clause was unsatisfiable for every bulk batch that ran to its bound), and
 **MUST** raise `catalog_version_overdue` for a pending request past the lane deadline — the
 registry-side mirror of pricing's `commit_overdue`.
 
@@ -1694,11 +1714,12 @@ here is ticked by inspection.
 [`../design/06-catalog-version.md`](../design/06-catalog-version.md) §6 — the slice's full count,
 not a selection — and **thirty-three raised here**, across two review passes: eleven while
 authoring, **twelve by the first three-lens pass** and **ten by the second**. Of the fifty-one,
-**sixteen block no DoD in this document**: rows 3, 4, 5, 14, 34, 49, 50 and 51, plus the eight
-resolved on **2026-08-31** — rows 22 and 41 by **P-D-52**, row 37 by **P-D-53**, row 30 by
-**P-D-56**, and rows 1, 9, 10 and 11 by **P-D-60**, the first round over *carried* rows, answered in
-`design/06` §6 first with the carry following. The other **thirty-five** each name the DoD they
-block.
+**twenty-five block no DoD in this document**: rows 3, 4, 5, 14, 34, 49, 50 and 51, plus the
+seventeen resolved on **2026-08-31** — rows 22 and 41 by **P-D-52**, row 37 by **P-D-53**, row 30 by
+**P-D-56**, rows 1, 9, 10 and 11 by **P-D-60** (the first round over *carried* rows, answered in
+`design/06` §6 first with the carry following), and rows 8, 16, 23, 26, 29, 31, 32, 33 and 46 by
+**P-D-67**, the nine-arm sweep that freed this document's last five sole-held DoDs. The other
+**twenty-six** each name the DoD they block.
 
 **A resolved row is kept in place rather than struck from the register**, because rows 41 and 45 cite
 row 22 and a deleted record would break the citations. Of the four DoDs row 30 named,
@@ -1787,15 +1808,18 @@ resolved record elsewhere can retract a decision's propagation, so none was touc
    **Blocks**: `cpt-cf-bss-products-dod-ack-door`.
    **Owner**: this feature.
 
-8. **`participant_set_snapshot` is stored twice and only one copy is inside the checksum.** §4 puts
+8. ~~**`participant_set_snapshot` is stored twice and only one copy is inside the checksum.**~~
+    **Answered in the slice (owner call, 2026-08-31 — P-D-67 arm 1): the capture-store copy is
+    authoritative and inside the checksum; the version-row copy is a derived cache**, annotated
+    exactly as `freeze_state` on the same row already is — one byte-identity, one convention.
+    Original text: §4 puts
    it on the `products_catalog_version` row; `inst-sn-collect` puts it in the capture store, whose
    bullet says "the checksum covers both halves". Which is authoritative — and therefore whether the
    participant set is inside the byte-identity checksum — is stated nowhere; `freeze_state` on the
    same row carries a "(derived cache)" annotation and this column does not. *Re-measured at
    `41d1baa5e`: the annotation asymmetry is exactly as stated.*
-   **Blocks**: `cpt-cf-bss-products-dod-participant-set`,
-   `cpt-cf-bss-products-dod-snapshot-builder`.
-   **Owner**: this feature.
+    **Blocks**: no DoD — **resolved by P-D-67**; `cpt-cf-bss-products-dod-participant-set` and the table DoD carry the annotation.
+    **Owner**: was this feature; **closed**.
 
 9. ~~**Is the capture store the same table as `products_catalog_version_entry`?**~~
    **Answered in the slice (owner call, 2026-08-31 — P-D-60): two tables.** The capture rows are
@@ -1847,8 +1871,8 @@ resolved record elsewhere can retract a decision's propagation, so none was touc
     records *each **missing** participant*, so it never overwrites `acked` or `released`; and the
     release door's precondition is holding no live references rather than having acked, so
     **`pending → released` is admitted**. `released` is terminal, no other transition is admitted, and
-    **the table has no entry point** — who writes `pending` is row 46's and what creates the ledger
-    rows is `design/06` §6's, both open. `freezeComplete`'s formula regression on `acked → released`
+    **the entry point arrived the same day**: **P-D-67** seeds one `pending` row per snapshot member in
+    the increment transaction, closing row 46 and `design/06` §6's creation item. `freezeComplete`'s formula regression on `acked → released`
     stays row 6's. Original text: Unstated: whether `pending` may go
     straight to `released`, whether force-completion may overwrite a row already `acked` or
     `released`, and whether a forced participant's later ack clears the `released_at` the ceremony
@@ -1905,14 +1929,17 @@ resolved record elsewhere can retract a decision's propagation, so none was touc
     **Blocks**: `cpt-cf-bss-products-dod-snapshot-builder`.
     **Owner**: whoever owns 01 §4.3's canonicalization pin (P-D-29), with this feature.
 
-16. **`staged_at` has no admitted writer.** A `staged_at` column implies the version row exists
+16. ~~**`staged_at` has no admitted writer.**~~
+    **Answered in the slice (owner call, 2026-08-31 — P-D-67 arm 2): `staged_at` is struck** — no
+    admitted writer, and no reader either, the SLO measuring from `requested_at`; the `superseded`
+    pattern again.
+    Original text: A `staged_at` column implies the version row exists
     before publication, while the only stated insert is inside the commit transaction and
     `freeze_state`'s roster has no staged value for such a row to occupy — and an insert at stage
     would burn an id on every `STAGED_ENTITY_CHANGED` refusal, against the gapless guarantee C1 and
     `inst-cvc-serial` both assert.
-    **Blocks**: `cpt-cf-bss-products-dod-version-counter`,
-    `cpt-cf-bss-products-dod-catalog-version-table`.
-    **Owner**: this feature.
+    **Blocks**: no DoD — **resolved by P-D-67**; the table and counter DoDs carry the strike.
+    **Owner**: was this feature; **closed**.
 
 17. **The `commit → durable-acceptance` meter is declared by no slice.** `design/06` §3.3
     decomposes NFR #4's
@@ -1993,8 +2020,14 @@ against source at `41d1baa5e`.
     `cpt-cf-bss-products-dod-cv-error-taxonomy` both carry the answer.
     **Owner**: was this feature with pricing's SDK owner; **closed**.
 
-23. **Pricing's dev-minted version space collides with this feature's counter, and the sweep has no
-    owner.** `LocalDevCatalogVersionRegistryV1` mints from `Utc::now().timestamp_millis()` — order
+23. ~~**Pricing's dev-minted version space collides with this feature's counter, and the sweep has no
+    owner.**~~
+    **Answered (owner call, 2026-08-31 — P-D-67 arm 3): the counter starts at `1`, and the sweep is
+    pricing's.** The initial value is pinned so the ordering argument has a stated premise; the sweep
+    runs over pricing's own table (`pricing_plan_revision.pending_version_ref`), its dev module names
+    it, and its doc says nothing there should outlive a real registry — recorded as pricing-owed
+    rather than authored here.
+    Original text: `LocalDevCatalogVersionRegistryV1` mints from `Utc::now().timestamp_millis()` — order
     10¹² — while this feature's counter is expected to start low. `CatalogVersion` is `Ord` and
     pricing's pin-eligibility frontier is **prefix-closed**, so every version this registry issues
     sorts earlier than every dev-minted one and the frontier cannot advance past the contamination.
@@ -2009,9 +2042,8 @@ against source at `41d1baa5e`.
     `design/06`'s *"their adoption is one event handler"* is **not** the claim this row
     contradicts — that clause sits inside `inst-cc-clear` and is about pricing registering the
     inbound composition signal, which the version space does not touch.
-    **Blocks**: `cpt-cf-bss-products-dod-version-counter`,
-    `cpt-cf-bss-products-dod-increment-request-port`.
-    **Owner**: this feature, jointly with pricing.
+    **Blocks**: no DoD — **resolved by P-D-67**; `cpt-cf-bss-products-dod-version-counter` carries the value, and `dod-increment-request-port` is unblocked by it.
+    **Owner**: was this feature, jointly with pricing; **closed** on this side, the sweep owed pricing-side.
 
 24. **The manifest checksum has no `digest_version` companion.** `design/06` §4 gives
     `products_catalog_version` a `checksum` and no digest-version column, while
@@ -2037,16 +2069,22 @@ against source at `41d1baa5e`.
     across engines*), which is why **this feature does not tick that DoD**.
     **Owner**: `01-foundation` — the create doors are where the write is. One-line pointer only.
 
-26. **`GovernanceGate`'s subject cannot name a catalog version or a participant set.**
+26. ~~**`GovernanceGate`'s subject cannot name a catalog version or a participant set.**~~
+    **Answered (owner call, 2026-08-31 — P-D-67 arm 4): the gate's subject widens to the approval
+    store's own pair, `(subject_kind, subject_ref)`**, `EntityRef` remaining the constructor for the
+    entity kinds. The store already fixed the vocabulary — `bulk_batch`, `governed_live_op`,
+    `system_signal`, `sku_correction` beside the entities — so the seam expressing less than the
+    store records was the defect. `features/governance.md` §7 row 29 is the same seam from the other
+    side and is answered by the same arm.
+    Original text:
     `GovernanceGate::evaluate` takes an `EntityRef` whose `entity_kind` is
     `bss_products_sdk::models::EntityKind`, and that enum is exactly `Product | Sku`. So
     `catalog_version × force_complete` and `freeze_participant × write` — both governed acts of this
     feature — have no expressible subject. This is a **wrong-typed subject**, not a missing operand,
     and it is the same class as `features/governance.md`'s own record that `PreAuthorized` cannot
     admit a cascade leg or a bulk row.
-    **Blocks**: `cpt-cf-bss-products-dod-force-completion`,
-    `cpt-cf-bss-products-dod-participant-set`.
-    **Owner**: `05-governance`, with this feature.
+    **Blocks**: no DoD — **resolved by P-D-67**; `cpt-cf-bss-products-dod-force-completion` carries the widened subject.
+    **Owner**: was `05-governance`, with this feature; **closed**.
 
 27. **Three of this feature's four events need a body with no entity dimension.** `EventBodyCore` is
     `{tenantId, entityKind, entityId, internalRevision, lifecycleState}`, and its module doc rules
@@ -2069,7 +2107,12 @@ against source at `41d1baa5e`.
     **Blocks**: `cpt-cf-bss-products-dod-increment-request-port`.
     **Owner**: this feature, with `12-consumer-contracts`, which owns the SDK type's audience.
 
-29. **What is the cardinality cost of a per-tenant increment lease?** `gears/bss/libs/coord` is the
+29. ~~**What is the cardinality cost of a per-tenant increment lease?**~~
+    **Answered (owner call, 2026-08-31 — P-D-67 arm 5): accepted on the precedent.** `bss-ledger`
+    already runs finer keys in production — `recognition-run:{tenant}:{period_id}` and
+    `period-close:{tenant_id}:{legal_entity_id}:{period_id}` — so a per-tenant increment lease is
+    within the shared primitive's demonstrated envelope.
+    Original text: `gears/bss/libs/coord` is the
     shared primitive, and a per-tenant key is **precedented**: `bss-ledger` keys
     `recognition-run:{tenant}:{period_id}` and
     `period-close:{tenant_id}:{legal_entity_id}:{period_id}`, and the README offers one per
@@ -2079,8 +2122,8 @@ against source at `41d1baa5e`.
     puts a `coord_leases` row per active tenant in the increment path; whether that is right, or the
     worker should shard tenants under a bounded key set, is open — and it is the one row here whose
     answer changes an SLO rather than a schema.
-    **Blocks**: `cpt-cf-bss-products-dod-coalescer`.
-    **Owner**: this feature, with the `bss-coord` owner.
+    **Blocks**: no DoD — **resolved by P-D-67**; `cpt-cf-bss-products-dod-coalescer` carries the acceptance.
+    **Owner**: was this feature, with the `bss-coord` owner; **closed**.
 
 
 30. ~~**Is the door's answer time this feature's to publish, and is five seconds it?**~~
@@ -2107,36 +2150,48 @@ against source at `41d1baa5e`.
     **Owner**: was this feature with pricing's SDK owner; **closed** — nothing in the consumer's
     crate or register is changed by it.
 
-31. **Four more of this feature's doors have no route, and the design set records them as
-    routeless rather than as absent.** `05-governance` §3.2 marks `catalog_version × ack`,
+31. ~~**Four more of this feature's doors have no route, and the design set records them as
+    routeless rather than as absent.**~~
+    **Answered (owner call, 2026-08-31 — P-D-67 arm 6): the four routes are declared**, on the
+    increment door's own pattern — `POST /bss-products/v1/catalog-versions/{catalogVersionId}/acks`,
+    `…/releases`, `…/force-completions`, and `POST /bss-products/v1/freeze-participants` — and 05's
+    roster carries them. *Admitting the grants are unspent* was declined: it would retract P-D-18 and
+    P-D-19, closed records the `VERSION_FORCED_INCOMPLETE` lifting path rests on.
+    Original text: `05-governance` §3.2 marks `catalog_version × ack`,
     `× release`, `× force_complete` and `freeze_participant × write` *"no route declared"*, and its
     own §6 counts eleven such rows gear-wide. Without a surface, a participant has nothing to send
     an ack or a release to, so the whole `VERSION_FORCED_INCOMPLETE` lifting path is unbuildable and
     §6's ack-identity criterion is untestable. Whether the fix is declaring the routes or admitting
     the grants are unspent is not this document's call.
-    **Blocks**: `cpt-cf-bss-products-dod-ack-door`,
-    `cpt-cf-bss-products-dod-liveness-and-release`,
-    `cpt-cf-bss-products-dod-force-completion`, `cpt-cf-bss-products-dod-participant-set`.
-    **Owner**: this feature, with 05's roster owner.
+    **Blocks**: no DoD — **resolved by P-D-67**; `cpt-cf-bss-products-dod-ack-door`, `dod-liveness-and-release`, `dod-force-completion` and `dod-participant-set` all carry their routes.
+    **Owner**: was this feature, with 05's roster owner; **closed** — 05's §6 route census re-measured the same day.
 
-32. **Which lane does the `requested_at → published_at` maximum of five minutes belong to?** A bulk
+32. ~~**Which lane does the `requested_at → published_at` maximum of five minutes belong to?**~~
+    **Answered (owner call, 2026-08-31 — P-D-67 arm 7): the five-minute maximum is the interactive
+    lane's; the bulk lane is measured from its window close under the same pair.** The unscoped
+    clause was unsatisfiable for every bulk batch that ran to its bound, which is a measurement, not
+    a preference.
+    Original text: A bulk
     batch whose window closes at the five-minute hard max cannot also publish inside a five-minute
     maximum measured from the same instant, so the SLO is unsatisfiable for every bulk batch that
     runs to its bound. `design/06` C1 and `inst-cv-slo` state both numbers in one clause without
     scoping either, and §6 treats them as separate without saying which meter carries the maximum.
-    **Blocks**: `cpt-cf-bss-products-dod-posting-safe-observability`,
-    `cpt-cf-bss-products-dod-coalescer`.
-    **Owner**: the owner of pricing D-47 / C1, with this feature.
+    **Blocks**: no DoD — **resolved by P-D-67**; `cpt-cf-bss-products-dod-posting-safe-observability` carries the scoping.
+    **Owner**: was the owner of pricing D-47 / C1, with this feature; **closed**.
 
-33. **Which acts write `products_freeze_ack.released_at`?** `design/06` §4 gives the column its own
+33. ~~**Which acts write `products_freeze_ack.released_at`?**~~
+    **Answered (owner call, 2026-08-31 — P-D-67 arm 8): the participant's own release door does not
+    stamp `released_at`.** The column exists so the release fact cannot be read as a release through
+    that door — it is the force-completion ceremony's alone; a door-released row is
+    `state = released` with `released_at` NULL, and the retention gate's two arms read exactly that.
+    Original text: `design/06` §4 gives the column its own
     existence so the release fact *"cannot be read as an ack or as a release through the
     participant's own door"*; the force-completion ceremony stamps it with `state` unchanged; and
     the retention gate reads the `(state, released_at)` pair. **No location says whether the
     participant's own release door stamps it too.** Row 11 asks for the state transition table and
     does not reach the column's writers.
-    **Blocks**: `cpt-cf-bss-products-dod-liveness-and-release`,
-    `cpt-cf-bss-products-dod-force-completion`.
-    **Owner**: `10-retention-erasure`, jointly with this feature — its gate reads the pair.
+    **Blocks**: no DoD — **resolved by P-D-67**; `cpt-cf-bss-products-dod-liveness-and-release` and `dod-freeze-ledger-tables` carry the answer.
+    **Owner**: was `10-retention-erasure`, jointly with this feature — its gate reads the pair; **closed**.
 
 34. **Do the manifest DoDs discharge `nfr-snapshot-archival-dr` and `nfr-scale-extensibility`, or is
     a further DoD owed?** Both ids are in §1.2's roster and both are divided at §1.2's table, yet no
@@ -2267,7 +2322,12 @@ against source at `41d1baa5e`.
     **Blocks**: `cpt-cf-bss-products-dod-freeze-timeout`.
     **Owner**: this gear's config owner with `01-foundation`'s — the pairing row 36 names.
 
-46. **Who writes `products_freeze_ack.state = pending`, and is the value live or dead?** No DoD in
+46. ~~**Who writes `products_freeze_ack.state = pending`, and is the value live or dead?**~~
+    **Answered (owner call, 2026-08-31 — P-D-67 arm 9): the increment transaction seeds the rows** —
+    one per `participant_set_snapshot` member, `state = pending` — so `pending` is live, P-D-60's
+    machine has its entry point, the empty-ledger hazard dies, and the ack door is an UPDATE whose
+    row-existence is the membership check. P-D-49's snapshot rule stays as the defensive belt.
+    Original text: No DoD in
     §5 names an act that writes it: the ack door writes `acked`, force-completion writes
     `not_frozen(forced)`, the release door writes `released`. Yet
     `cpt-cf-bss-products-dod-liveness-and-release` rests its whole v1 posture on *"a `pending`
@@ -2276,9 +2336,8 @@ against source at `41d1baa5e`.
     transition table and row 33 for `released_at`'s writers; neither asks whether `pending` has a
     writer at all. Deciding it would author the ledger's creation point, which is what §4 of this
     document declines.
-    **Blocks**: `cpt-cf-bss-products-dod-ack-door`,
-    `cpt-cf-bss-products-dod-liveness-and-release`.
-    **Owner**: this feature, with `10-retention-erasure` — its gate reads the pair.
+    **Blocks**: no DoD — **resolved by P-D-67**; `cpt-cf-bss-products-dod-ack-door` and `dod-liveness-and-release` carry the seeding.
+    **Owner**: was this feature, with `10-retention-erasure` — its gate reads the pair; **closed**.
 
 47. **Do the `SUBJECT_TYPE` ids P-D-51 pins extend to a subject that is not an entity, and where do
     causation and actor land for a body that does not exist yet?** **P-D-51** is not in §1.4's

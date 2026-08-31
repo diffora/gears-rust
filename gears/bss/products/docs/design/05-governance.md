@@ -225,8 +225,8 @@ multi-action row would otherwise read as if the whole row were doored.
 | `bulk × read` | `GET /bss-products/v1/bulk/batches/{batchId}` (**P-D-61** — the `RowLedger` reader C1 requires; one route for both lanes, and a reader is not an executor) | 09 |
 | `bulk_lifecycle × execute` | `POST /bss-products/v1/bulk/lifecycle` | 09 |
 | `catalog_version × request` | `POST /bss-products/v1/catalog-version-requests` | 06 |
-| `catalog_version × ack`, `× release` | **S2S, no route declared** — service-identity claims; `release` is **P-D-18**'s door | 06 |
-| `catalog_version × read`, `× force_complete` | `GET /bss-products/v1/bulk/exports?catalogVersionId=` (09's export door) spends **`× read`** (**P-D-50**); **`× force_complete` has no route declared** — an operator surface named in prose only | 06 |
+| `catalog_version × ack`, `× release` | `POST /bss-products/v1/catalog-versions/{catalogVersionId}/acks` and `…/releases` (**P-D-67** — S2S under the participant's identity; `release` is **P-D-18**'s door) | 06 |
+| `catalog_version × read`, `× force_complete` | `GET /bss-products/v1/bulk/exports?catalogVersionId=` (09's export door) spends **`× read`** (**P-D-50**); **`× force_complete`** is `POST /bss-products/v1/catalog-versions/{catalogVersionId}/force-completions` (**P-D-67** — the operator ceremony's door) | 06 |
 | `catalog_version × publish` | **none** — 06 §6 records that no door consumes it | 06 |
 | `category × read\|write` | `GET /bss-products/v1/browse…` (08's browse door, which names `category × read` explicitly) spends **`× read`** (**P-D-50**); **`× write` has no route declared** — 02's live-value door, named in prose | 02 |
 | `attribute_definition × write` | **no route declared** | 02 |
@@ -235,7 +235,7 @@ multi-action row would otherwise read as if the whole row were doored.
 | `materiality_policy × write` | **no route declared** | 05 |
 | `breakglass × elevate` | **no route declared** | 05 |
 | `scheduled_transition × write\|cancel\|read` | **none** — no slice names these pairs on a door (§6) | 04 |
-| `freeze_participant × write` | **no route declared** | 06 |
+| `freeze_participant × write` | `POST /bss-products/v1/freeze-participants` (**P-D-67** — the governed set write) | 06 |
 | `reference_signal × post`, `reference_producer × write`, `sku × correct` | **no route declared** — 07's watermark, producer and correction doors, named in prose | 07 |
 | `pii_allowlist × write` | **no route declared** | 10 |
 | `audit × read\|export` | **no route declared** (M-4 fix) | 05 |
@@ -339,7 +339,15 @@ row and open to correction; the requirement is that every code carries one.
 finance fields), 04 (un-deprecation, retirement confirmation, scheduled-approval pinning), 06 (force-completion, participant-set membership, the `system_signal` composition clear), 07 (`sku_correction`, reference-producer registration), 09 (`bulk_batch`), 10 (`pii_allowlist × write`).
 
 **Risks & open items**:
-- **Eleven of the twenty-three grant rows carry no route in the `Doors` column.** P-D-45's `Doors` column made this countable for the first time, and **P-D-50** then took the three contradictions the propagation audit found — `approval × read`, `category × read` and `catalog_version × read` each had a route declared elsewhere in the set while their own cell read "no route declared". Twelve rows now name a route and the column holds all **seventeen** routes the set declares as code spans, so lint 3 is green. The eleven rows without one are `catalog_version`'s ack/release and publish, `category × write`, `attribute_definition`, `recognized_set`+`plan_tier` (one row), `approval × submit|decide`, `materiality_policy`, `breakglass`, `scheduled_transition`, `freeze_participant`, 07's three (one row), `pii_allowlist` and `audit` — plus `catalog_version × force_complete`, whose row is doored on `× read` alone. Two are already known absences (`scheduled_transition`, `catalog_version × publish`); the remaining nine are unmeasured, and an authorization surface nobody can enumerate is one nobody can review. Whether the fix is declaring the routes or admitting the grants are unspent is not a review's call. Owner: this slice with each door's owner. *(Raised by the P-D-45 round; re-measured by the P-D-43…49 propagation audit; the three contradictions closed by **P-D-50**.)*
+- **Eleven of the twenty-three grant rows carry no route in the `Doors` column.** P-D-45's `Doors` column made this countable for the first time, and **P-D-50** then took the three contradictions the propagation audit found — `approval × read`, `category × read` and `catalog_version × read` each had a route declared elsewhere in the set while their own cell read "no route declared". *Re-measured 2026-08-31 after **P-D-61** (the `bulk × read` row) and **P-D-67** (routes for
+  `catalog_version × ack`/`× release`, `× force_complete` and `freeze_participant × write`):* the
+  roster is **twenty-four** rows, **fifteen** name a route, and the `Doors` column declares
+  **twenty-two** routes. The rows still without one are **nine**: `category × write` (its row doored
+  on `× read` alone), `attribute_definition`, `recognized_set`+`plan_tier` (one row),
+  `approval × submit|decide`, `materiality_policy`, `breakglass`, 07's three (one row),
+  `pii_allowlist` and `audit × read` — plus the two known absences spelled differently
+  (`scheduled_transition`, and `catalog_version × publish`, which no door consumes). An authorization
+  surface nobody can enumerate is one nobody can review. Whether the fix is declaring the routes or admitting the grants are unspent is not a review's call. Owner: this slice with each door's owner. *(Raised by the P-D-45 round; re-measured by the P-D-43…49 propagation audit; the three contradictions closed by **P-D-50**.)*
 - **Does the discard door get its own grant, or inherit `product|sku × write`?** 01 §2 declares
   `POST /bss-products/v1/{products|skus}/{id}/discard` under **`… × discard`**, and this slice's
   RBAC catalog carries only `product × read|write|publish` and `sku × read|write|publish` — so

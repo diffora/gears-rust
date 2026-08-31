@@ -1569,6 +1569,42 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   (the re-publish step).
 
 
+#### P-D-67 — The catalog-version sweep: nine rows, every answer forced by a measurement already in the set
+
+- **Date**: 2026-08-31 (owner call, taken under the standing instruction to decide where the
+  measurement is dominant; rows 8 and 16 are carried and answered in `design/06` §6 first)
+- **Context**: the nine §7 rows of `features/catalog-version.md` that jointly held five DoDs —
+  `dod-version-counter`, `dod-coalescer`, `dod-participant-set`, `dod-force-completion`,
+  `dod-liveness-and-release` — plus `features/governance.md` row 29, which is the same seam defect as
+  row 26 seen from the other side.
+
+- **Decision, nine arms**:
+
+  | # | row | call |
+  |---|---|---|
+  | 1 | §7.8 | **The capture-store copy of `participant_set_snapshot` is authoritative and inside the checksum; the version-row copy is a derived cache**, annotated exactly as `freeze_state` on the same row already is. One byte-identity, one convention |
+  | 2 | §7.16 | **`staged_at` is struck.** It has no admitted writer — an insert at stage would burn gapless ids on every `STAGED_ENTITY_CHANGED` refusal — and **no reader**: the SLO measures from `requested_at`, and nothing else names it. A column with neither is the `superseded` pattern again |
+  | 3 | §7.23 | **The counter's initial value is pinned: `1`.** Gapless, monotonic, per tenant — every fixture already assumes a low start, and no other value has an argument. That makes the dev-space ordering hazard real, so the second half routes: **the sweep is pricing's**, whose table (`pricing_plan_revision.pending_version_ref`), dev module and doc (*"nothing here should outlive one"*) it is — recorded as pricing-owed, not authored here |
+  | 4 | §7.26 + governance §7.29 | **The gate's subject widens to the approval store's own pair, `(subject_kind, subject_ref)`**, with `EntityRef` remaining the constructor for the entity kinds. The store already fixed the vocabulary (`bulk_batch`, `governed_live_op`, `system_signal`, `sku_correction` beside the entities), so the seam expressing less than the store records was the defect — the store is the authority, the seam conforms |
+  | 5 | §7.29 | **The per-tenant increment lease's cardinality is accepted.** `bss-ledger` already runs finer keys in production — `recognition-run:{tenant}:{period_id}` and `period-close:{tenant_id}:{legal_entity_id}:{period_id}` — so the objection dissolves against the precedent |
+  | 6 | §7.31 | **The four routes are declared, on the increment door's own pattern** (a contract with an in-process default and an S2S/REST binding): `POST /bss-products/v1/catalog-versions/{catalogVersionId}/acks` and `…/releases` (S2S, participant identity — P-D-18's door), `…/force-completions` (the operator ceremony), and `POST /bss-products/v1/freeze-participants` (the governed set write). *"Admitting the grants are unspent"* was declined: it would retract P-D-18/P-D-19, closed records the lifting path rests on |
+  | 7 | §7.32 | **The five-minute maximum is the interactive lane's.** For the bulk lane the same p95/max applies **from window close**, because a batch whose window closes at the five-minute hard max cannot also publish within five minutes of its earliest request — the SLO as written was unsatisfiable for every bulk batch that ran to its bound |
+  | 8 | §7.33 | **The participant's own release door does not stamp `released_at`.** The column exists so the release fact *"cannot be read as … a release through the participant's own door"* — it is the force-completion ceremony's alone; a door-released row is `state = released`, `released_at` NULL, and the retention gate's two arms read exactly that |
+  | 9 | §7.46 | **The ledger rows are seeded by the increment transaction**: one row per `participant_set_snapshot` member, `state = pending`. So `pending` is live, P-D-60's machine has its entry point, the *"empty ledger satisfies all acked"* hazard dies, and **the ack door becomes an UPDATE whose row-existence is the membership check** — a non-member's ack has no row to flip. P-D-49's snapshot rule stays as the defensive belt |
+
+- **The arguments against, stated**: arm 4 widens a shipped seam type (code cost, deferred to the
+  build); arm 6 mints four routes in one decision — the largest surface addition of the day, taken on
+  the same forcing P-D-61 was (a contract with nothing to send to); arm 9 adds a seeding fan-out to
+  the increment transaction — one row per participant per version, which at the v1 set of one
+  participant is one row.
+- **Not changed**: `freeze_state`'s roster and its derived-cache annotation, the coalescing windows,
+  P-D-49, P-D-60's six edges, and pricing's dev module.
+- **Propagated**: `design/06-catalog-version.md` (§2 SLO scoping and door routes, §4 `staged_at`
+  struck / the derived-cache annotation / the seeding / the counter start, §6 items answered for the
+  two carried rows), `design/05-governance.md` (four roster cells gain their routes),
+  `features/catalog-version.md` (the five DoDs, §7's arithmetic and the nine rows answered),
+  `features/governance.md` (row 29 answered; its DoDs carry the widened seam).
+
 #### P-D-66 — The `status` pin entry: token `status`, spelled per side, vocabulary of two
 
 - **Date**: 2026-08-31 (owner call, taken under the standing instruction to decide where the
