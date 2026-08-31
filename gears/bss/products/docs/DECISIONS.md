@@ -10,58 +10,7 @@ joint contracts, cited from here by their pricing numbers, never duplicated.
 <!-- toc -->
 
 - [Decision register](#decision-register)
-- [Entries](#entries)
-- [P-D-01 — Broker-native event envelope (not CloudEvents 1.0)](#p-d-01--broker-native-event-envelope-not-cloudevents-10)
-- [P-D-02 — CatalogVersion increments are mechanical; governance at entity publish](#p-d-02--catalogversion-increments-are-mechanical-governance-at-entity-publish)
-- [P-D-03 — SkuReferenceCount v1 producer set = {pricing}](#p-d-03--skureferencecount-v1-producer-set--pricing)
-- [P-D-04 — Absolute product-name uniqueness (region-independent)](#p-d-04--absolute-product-name-uniqueness-region-independent)
-- [P-D-05 — `usageTypeRef` validates resolvability only; UC3(c) lives at the pricing meter binding](#p-d-05--usagetyperef-validates-resolvability-only-uc3c-lives-at-the-pricing-meter-binding)
-- [P-D-06 — Metadata map lives outside frozen version content](#p-d-06--metadata-map-lives-outside-frozen-version-content)
-- [P-D-07 — The staleness stamp is a floor, advanced only when its content is present](#p-d-07--the-staleness-stamp-is-a-floor-advanced-only-when-its-content-is-present)
-- [P-D-08 — Audit sealing is a platform capability: reserved seam + stated requirements](#p-d-08--audit-sealing-is-a-platform-capability-reserved-seam--stated-requirements)
-- [P-D-09 — Stage-vs-commit fail-closed is delivered per lane; the requirement says so](#p-d-09--stage-vs-commit-fail-closed-is-delivered-per-lane-the-requirement-says-so)
-- [P-D-10 — No gear-side Legal role: the allow-list records Legal's decision, it does not enact it](#p-d-10--no-gear-side-legal-role-the-allow-list-records-legals-decision-it-does-not-enact-it)
-- [P-D-11 — The approver count is a policy value with floor 0; the predicates are not](#p-d-11--the-approver-count-is-a-policy-value-with-floor-0-the-predicates-are-not)
-- [P-D-12 — The `SchemaPin`'s membership is a rule, not a list](#p-d-12--the-schemapins-membership-is-a-rule-not-a-list)
-- [P-D-13 — The quorum shorthand's reach is enumerated; a floor only where the principal is not the tenant's](#p-d-13--the-quorum-shorthands-reach-is-enumerated-a-floor-only-where-the-principal-is-not-the-tenants)
-- [P-D-14 — `system_signal` is an approval subject kind, not an exemption; the authorizing principal is the signal](#p-d-14--system_signal-is-an-approval-subject-kind-not-an-exemption-the-authorizing-principal-is-the-signal)
-- [P-D-15 — The two inbound machine contracts are `products-sdk` clients from `ClientHub`, not out-of-process REST doors](#p-d-15--the-two-inbound-machine-contracts-are-products-sdk-clients-from-clienthub-not-out-of-process-rest-doors)
-- [P-D-16 — A third correction-admission arm: an unresolvable meter target](#p-d-16--a-third-correction-admission-arm-an-unresolvable-meter-target)
-- [P-D-17 — Promotion identity collision with different content is update-as-draft, not a per-row conflict](#p-d-17--promotion-identity-collision-with-different-content-is-update-as-draft-not-a-per-row-conflict)
-- [P-D-18 — Version liveness ends by an explicit release; the release is a fifth inbound contract](#p-d-18--version-liveness-ends-by-an-explicit-release-the-release-is-a-fifth-inbound-contract)
-- [P-D-19 — A force-completed version stays refused for posted use until opt-in; the pin is the registry's own door](#p-d-19--a-force-completed-version-stays-refused-for-posted-use-until-opt-in-the-pin-is-the-registrys-own-door)
-- [P-D-20 — A publish during the retirement lead window re-announces `SkuRetired`; the door stays open](#p-d-20--a-publish-during-the-retirement-lead-window-re-announces-skuretired-the-door-stays-open)
-- [P-D-21 — The local audit table holds only what emits no event; the event stream is the success-path record](#p-d-21--the-local-audit-table-holds-only-what-emits-no-event-the-event-stream-is-the-success-path-record)
-- [P-D-22 — The registry uses the toolkit's transactional outbox, not a gear-local one](#p-d-22--the-registry-uses-the-toolkits-transactional-outbox-not-a-gear-local-one)
-- [P-D-23 — The 2026-08-27 slice-01 owner round: eighteen calls on standing open items](#p-d-23--the-2026-08-27-slice-01-owner-round-eighteen-calls-on-standing-open-items)
-- [P-D-24 — The 2026-08-27 fifth-pass round: four calls closing slice-01 open items](#p-d-24--the-2026-08-27-fifth-pass-round-four-calls-closing-slice-01-open-items)
-- [P-D-25 — The error contract completed: DUPLICATE_CODE, ENTITY_TERMINAL, AUDIT_UNAVAILABLE, and the audit row's two columns](#p-d-25--the-error-contract-completed-duplicate_code-entity_terminal-audit_unavailable-and-the-audit-rows-two-columns)
-- [P-D-26 — Idempotency, identity and the publish bump: four transaction boundaries](#p-d-26--idempotency-identity-and-the-publish-bump-four-transaction-boundaries)
-- [P-D-27 — The event contract: HeadSaved, a common body core, the toolkit's seq, and what the third audit class covers](#p-d-27--the-event-contract-headsaved-a-common-body-core-the-toolkits-seq-and-what-the-third-audit-class-covers)
-- [P-D-28 — Four read paths the guard needed: the bucket-i writer, the BucketRegistry, the audit row's key, and one canonicalization rule](#p-d-28--four-read-paths-the-guard-needed-the-bucket-i-writer-the-bucketregistry-the-audit-rows-key-and-one-canonicalization-rule)
-- [P-D-29 — What a replay, an envelope and a digest actually carry](#p-d-29--what-a-replay-an-envelope-and-a-digest-actually-carry)
-- [P-D-30 — Where the gate hosts, where authorization sits, whose validator, and what the door can see](#p-d-30--where-the-gate-hosts-where-authorization-sits-whose-validator-and-what-the-door-can-see)
-- [P-D-31 — The four the slice had routed outward, decided here](#p-d-31--the-four-the-slice-had-routed-outward-decided-here)
-- [P-D-32 — Six calls closing the slice-01 second lens wave](#p-d-32--six-calls-closing-the-slice-01-second-lens-wave)
-- [P-D-33 — Eight calls from weeding slice 01's open items](#p-d-33--eight-calls-from-weeding-slice-01s-open-items)
-- [P-D-34 — The remaining slice-01 items, decided from the set](#p-d-34--the-remaining-slice-01-items-decided-from-the-set)
-- [P-D-35 — The five slice-01 items the set already forced](#p-d-35--the-five-slice-01-items-the-set-already-forced)
-- [P-D-36 — The phase unit is withdrawn; a code's unit is its declaring slice](#p-d-36--the-phase-unit-is-withdrawn-a-codes-unit-is-its-declaring-slice)
-- [P-D-37 — One code per audit row, every violation in the answer](#p-d-37--one-code-per-audit-row-every-violation-in-the-answer)
-- [P-D-38 — A refusal stores nothing and releases the key](#p-d-38--a-refusal-stores-nothing-and-releases-the-key)
-- [P-D-39 — The scope columns, and what the empty set means](#p-d-39--the-scope-columns-and-what-the-empty-set-means)
-- [P-D-40 — The entity-version retention DELETE, under a referential predicate](#p-d-40--the-entity-version-retention-delete-under-a-referential-predicate)
-- [P-D-41 — The two doors that write bucket-ii](#p-d-41--the-two-doors-that-write-bucket-ii)
-- [P-D-42 — The idempotency store's last three operands](#p-d-42--the-idempotency-stores-last-three-operands)
-- [P-D-43 — The checking layer's four grammars: a lint reads tokens, not prose](#p-d-43--the-checking-layers-four-grammars-a-lint-reads-tokens-not-prose)
-- [P-D-44 — The AC #38 map, and the artifacts that turned out to already exist](#p-d-44--the-ac-38-map-and-the-artifacts-that-turned-out-to-already-exist)
-- [P-D-45 — The last four lint grammars, and an event register that cannot be harvested](#p-d-45--the-last-four-lint-grammars-and-an-event-register-that-cannot-be-harvested)
-- [P-D-46 — Four write-path blockers, three of them settled by opening the donor](#p-d-46--four-write-path-blockers-three-of-them-settled-by-opening-the-donor)
-- [P-D-47 — The last four build-blockers: a tombstone state, a withdrawn opt-in, two codes, and the broker's own producer](#p-d-47--the-last-four-build-blockers-a-tombstone-state-a-withdrawn-opt-in-two-codes-and-the-brokers-own-producer)
-- [P-D-48 — The six flagged decisions, put to the owner: two amended, one completed, three confirmed as recorded](#p-d-48--the-six-flagged-decisions-put-to-the-owner-two-amended-one-completed-three-confirmed-as-recorded)
-- [P-D-49 — Six live contradictions: the takeover race, the vacuous GC gate, one clone vocabulary, a clearable successor, a principal column, and an entity-kind column](#p-d-49--six-live-contradictions-the-takeover-race-the-vacuous-gc-gate-one-clone-vocabulary-a-clearable-successor-a-principal-column-and-an-entity-kind-column)
-- [P-D-50 — Seven taken ahead of the build: two columns, a minted code, a grant deliberately not minted, and three cells that denied a route the set declares](#p-d-50--seven-taken-ahead-of-the-build-two-columns-a-minted-code-a-grant-deliberately-not-minted-and-three-cells-that-denied-a-route-the-set-declares)
-- [P-D-51 — Where an envelope obligation lands when the transport has no slot, and the two subject types §6 asked for](#p-d-51--where-an-envelope-obligation-lands-when-the-transport-has-no-slot-and-the-two-subject-types-6-asked-for)
+  - [Entries](#entries)
 
 <!-- /toc -->
 
@@ -1616,6 +1565,118 @@ listed in the TOC for the same gate.*
   `design/03-sku-classification.md` (`inst-mt-bucket`), `design/07-reference-signal.md`
   (the re-publish step).
 
+
+#### P-D-53 — The increment transaction runs at the engine default, because the guard is what closes the race
+
+- **Date**: 2026-08-31 (owner call)
+- **Context**: `features/catalog-version.md` §7 row 37 measured that **no isolation level is stated
+  anywhere in the design set or the crate**, while three levels give three different behaviours for
+  the same recorded design. `inst-sn-collect` collects the snapshot *"inside the serialized
+  transaction"* and `inst-sn-revalidate` re-reads the heads *"before commit"* in that same
+  transaction, and §6 requires the detected race to surface as a **refusal**,
+  `STAGED_ENTITY_CHANGED`.
+
+  **The design already carries the mechanism, which is what makes the level a consequence rather
+  than a choice.** `inst-sn-revalidate` records each collected entity's
+  `(id, published_version, lifecycle_state)` and compares at re-read — a **row-version guard**. Of
+  the three levels only one lets it work:
+
+  | level | what happens to the guard |
+  |---|---|
+  | snapshot-isolating (`REPEATABLE READ`, SI) | the re-read returns the **collect-time** snapshot, so the guard **cannot fire** and a version publishes content the design says must be refused |
+  | `SERIALIZABLE` | the transaction **aborts** with a serialization failure instead of raising the code, so §6's required refusal never reaches the caller |
+  | **engine default — `READ COMMITTED` on Postgres** | every statement takes a fresh snapshot, the re-read sees the concurrent change, the guard fires and the door refuses `STAGED_ENTITY_CHANGED` |
+
+  **The donor drew this distinction first, and it is cited for the distinction only.**
+  `gears/bss/pricing`'s publish path opens the engine default and states the reason in a contract
+  paragraph, separating two invariants an earlier revision had conflated — *"the conflation is what
+  hid a live defect"*. Its counter invariants *"need no SSI"* because unique keys make a fork
+  unrepresentable *"at any isolation level"*; its predicate invariant is *"a different thing, and no
+  key covers it"*, and the conclusion is the sentence that transfers: **"It is closed by the
+  row-version guard, not by isolation."**
+
+  **What does not transfer is the donor's cost argument against `SERIALIZABLE`** — *"it would hold
+  predicate locks across the registry round-trip"*. This increment holds **no** cross-gear call:
+  `inst-sn-collect` reads `products_entity_version` and the heads, both local. So `SERIALIZABLE` is
+  declined here for the refusal-versus-abort reason above, not for the donor's, and the borrowed
+  reason is named as not applying so a later reader does not inherit it.
+
+  **And it is a judgement rather than an impossibility.** `libs/toolkit-db`'s
+  `Db::transaction_ref_mapped_with_config` takes a transaction config, so raising the level is
+  available on the platform and is being declined deliberately.
+
+- **Decision**: the increment transaction opens at the **engine default**, `READ COMMITTED` on
+  Postgres, and the stage-vs-commit race is closed by `inst-sn-revalidate`'s **row-version guard**,
+  never by isolation.
+
+  | Call | Propagation |
+  |---|---|
+  | **The level is the engine default and is stated, not assumed.** The word *"serialized"* in `inst-sn-collect` describes the coalescer's **one-worker-per-tenant** serialization, not a database isolation level, and is not to be read as `SERIALIZABLE` | `design/06` §2; `features/catalog-version.md`'s `dod-snapshot-builder` |
+  | **The guard is the correctness mechanism and its comparison is normative**: the collected `(id, published_version, lifecycle_state)` triple, re-read before commit, refusing `STAGED_ENTITY_CHANGED` on any difference. A build that relies on the snapshot instead has no detector | `features/catalog-version.md`'s `dod-stage-commit-revalidation` |
+  | **`SERIALIZABLE` is refused for a stated reason**: it converts the design's refusal into an abort, and §6 requires the code | `design/06` §2 |
+
+- **Scope — this decision does NOT set a gear-wide isolation posture, and the radius sweep found the
+  one other site.** `features/sku-classification.md` §7 records *"The removal-vs-publish race is
+  unguarded… No isolation level, no lock and no re-check-inside-the-transaction clause is stated"*,
+  and that race is **not** of this shape: a publish adds the **first** reference between the holder
+  scan and the state flip, so there is no row to version — it is precisely the donor's *"predicate
+  invariant… no key covers it"*. It needs its own answer, and `02-taxonomy-attributes` registers the
+  analogous class as its own item. This entry settles the increment door and nothing else.
+- **Not changed**: `products/src` sets no isolation level anywhere and continues to take the engine
+  default everywhere; no transaction config is introduced by this decision.
+- **Propagated**: `features/catalog-version.md` (`dod-snapshot-builder`,
+  `dod-stage-commit-revalidation`, §7 row 37 answered). **Owed and not edited here**:
+  `design/06-catalog-version.md` §2's `inst-sn-collect` and `inst-sn-revalidate`, which should carry
+  the level and the guard's normative comparison — that is `design/06`'s edit.
+
+#### P-D-52 — The increment-request door gains a refusal code, and the counterparty's discriminator fixes its shape
+
+- **Date**: 2026-08-31 (owner call)
+- **Context**: `features/catalog-version.md` §7 row 22 measured a live asymmetry. The shipped
+  `pricing-sdk` port `CatalogVersionRegistryError` carries a fourth arm, **`Rejected(String)`**,
+  discriminated by the wire constant `CATALOG_VERSION_REJECTED`, and argues for its own existence:
+  *"a refusal is a decision and will be made identically for as long as the request is unchanged; an
+  outage is a deployment state a retry may find changed."* But **none of this feature's six codes is
+  a refusal of an increment request.** `inst-cv-request` fixes the trigger set at exactly three —
+  registered downstream addressability requests, this gear's own slice-09 bulk commits as a
+  registered internal requester, and the operator catalog-publish act — and §3.2 declares no code for
+  a request from a source outside it. So either the door owed a code or the port's arm was
+  unreachable against this registry.
+
+  **The refusal is not authorization-shaped, which is what makes the ladder position forced rather
+  than chosen.** The door already gates on `catalog_version × request`, so a caller without the grant
+  is refused by authz. What was missing is the refusal for a caller that *holds* the grant and whose
+  `source` is not a registered requester — a precondition on the request's content, decided by the
+  registry, identical for as long as the request is unchanged.
+
+  **And the counterparty's discriminator fixes the wire shape, measured in its source.** The port
+  reaches `Rejected` only on `CanonicalError::FailedPrecondition` **and** a precondition violation
+  whose `type_` is `CATALOG_VERSION_REJECTED`, and it says why it matches on both: *"`FailedPrecondition`
+  is a shape the registry could raise for something other than a refusal, and folding those onto
+  `Rejected` would hand the gear a 400 for a fact it never decided."* It also takes its sentence from
+  the **violation**, not the envelope detail. A 403 — the position `PARTICIPANT_UNKNOWN` holds for an
+  analogous roster miss — would arrive as a different category and land on the port's `Other` arm,
+  leaving the arm as unreachable as before.
+
+- **Decision**: **`REQUEST_SOURCE_UNKNOWN` is minted**, declared by `06-catalog-version` in §3.2 and
+  raised by `inst-cv-request` alone, when a request's `source` is outside the trigger set that
+  instruction fixes.
+
+  | Call | Propagation |
+  |---|---|
+  | **The code is `REQUEST_SOURCE_UNKNOWN`**, following the set's `*_UNKNOWN` idiom for a roster miss (`CATALOG_VERSION_UNKNOWN`, `PARTICIPANT_UNKNOWN`) | `design/06` §3.2 |
+  | **Its class is `FailedPrecondition` — a 422 architecturally, reaching the wire as a 400 carrying its code** — and the refusal **MUST** carry a precondition violation of type `CATALOG_VERSION_REJECTED` with the registry's own sentence as the violation description. This is the first code in this gear whose wire shape is set by a consumer's discriminator rather than by the gear's own ladder, and it is recorded as such so a later status sweep does not "correct" it to 403 | `design/06` §3.2's problem-response block; `features/catalog-version.md`'s `dod-request-door` and `dod-cv-error-taxonomy` |
+  | **It is NOT authorization-shaped and MUST NOT be 403**: the grant check has already passed when it is raised | `design/06` §3.2 |
+  | **The code count moves from six to seven** wherever this feature states it — including §6's *"six codes, six lines"* positive-control criterion, which becomes seven | `features/catalog-version.md` §6, §5, §7 |
+  | **It does not join AC #38's map.** That map's rows are the PRD's fifteen enumerated failure cases and this is not one of them; `design/12` §4.1 is unchanged | recorded, no edit |
+
+- **Not changed**: the trigger set stays exactly three; the door's grant stays
+  `catalog_version × request`; the composition clear still raises no code by design.
+- **Propagated**: `design/06-catalog-version.md` (§3.2), `features/catalog-version.md` (§5's
+  `dod-request-door` and `dod-cv-error-taxonomy`, §6's positive-control block, §7 row 22 struck).
+  **Owed and not edited here**: `design/12-consumer-contracts.md`'s `inst-sdk-surface`, whose SDK
+  error enum is built *"from every slice's registered codes"* and now has a seventh from this slice —
+  that is 12's edit, not this one's.
 
 #### P-D-51 — Where an envelope obligation lands when the transport has no slot, and the two subject types §6 asked for
 

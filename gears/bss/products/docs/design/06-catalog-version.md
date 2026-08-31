@@ -215,7 +215,11 @@ The roster below is this slice's and is the normative one; the FEATURE carries t
 
 `INTENT_REQUIRED`, `FREEZE_INCOMPLETE`, **`VERSION_FORCED_INCOMPLETE`** (posted resolution of a force-completed version while a forced participant has neither frozen nor released — P-D-19, P-D-47), `STAGED_ENTITY_CHANGED` (operator publish lane),
 `CATALOG_VERSION_UNKNOWN` (one door: the shared version-lookup — L3), `PARTICIPANT_UNKNOWN`
-(an ack from a principal that is not in that version's **snapshotted** set — `inst-fz-ack`, not the live registered set, which membership governance moves — refused, audited). Ceremony refusals ride the 05
+(an ack from a principal that is not in that version's **snapshotted** set — `inst-fz-ack`, not the live registered set, which membership governance moves — refused, audited),
+**`REQUEST_SOURCE_UNKNOWN`** (an `IncrementRequest` whose `source` is outside the trigger set
+`inst-cv-request` fixes at exactly three — **P-D-52**; raised by that instruction alone, after the
+`catalog_version × request` grant has passed, so it is a precondition on the request and **not**
+authorization-shaped). Ceremony refusals ride the 05
 gate's own codes (L4).
 
 The composition clear raises **no** error code by design (`inst-cc-clear`): its caller is an
@@ -223,7 +227,17 @@ inbound signal, not a request, so a blocked clear is an **alert plus a retained 
 (`composition_clear_held`) and never a refusal a producer would have to interpret — the same
 posture as 04's deferred retirement flip.
 
-**Problem responses (RFC 9457):** `PARTICIPANT_UNKNOWN` (403); `CATALOG_VERSION_UNKNOWN` (404); `FREEZE_INCOMPLETE`, `VERSION_FORCED_INCOMPLETE`, `STAGED_ENTITY_CHANGED` (409); `INTENT_REQUIRED` (422 — architectural, so it reaches the wire as the **400** its own flow row calls it, carrying its code; a bare 400 is reserved for a malformed request).
+**Problem responses (RFC 9457):** `PARTICIPANT_UNKNOWN` (403); `CATALOG_VERSION_UNKNOWN` (404); `FREEZE_INCOMPLETE`, `VERSION_FORCED_INCOMPLETE`, `STAGED_ENTITY_CHANGED` (409); `INTENT_REQUIRED`, **`REQUEST_SOURCE_UNKNOWN`** (422 — architectural, so each reaches the wire as the **400** its own flow row calls it, carrying its code; a bare 400 is reserved for a malformed request).
+
+**`REQUEST_SOURCE_UNKNOWN`'s shape is fixed by the counterparty's discriminator, not by this
+ladder** (**P-D-52**). The `pricing-sdk` port reaches its `Rejected` arm only on a
+`FailedPrecondition` **carrying a precondition violation of type `CATALOG_VERSION_REJECTED`**, and it
+matches on both because *"`FailedPrecondition` is a shape the registry could raise for something
+other than a refusal"*; it also takes its sentence from the **violation**, not the envelope detail.
+So this refusal **MUST** carry that violation type with the registry's own sentence as the
+description. A 403 — `PARTICIPANT_UNKNOWN`'s position for an analogous roster miss — would land on
+the port's `Other` arm and leave `Rejected` as unreachable as it was. **This is the only code in the
+gear whose status a consumer fixes**, recorded so a later status sweep does not correct it.
 
 *Statuses added, corrected the same day by the fix-wave review. The gear declared
 its codes with no HTTP status and no problem-response block in any slice, against

@@ -863,6 +863,14 @@ close signal**, the window ending on the five-minute hard max (**P-D-46**); and 
 **An entity publish MUST NEVER enqueue an increment**, and a retirement's `effectiveAt` flip
 **MUST NOT** either — the next demand-driven version reflects it.
 
+**A request whose `source` is outside that set MUST be refused `REQUEST_SOURCE_UNKNOWN`**
+(**P-D-52**). The refusal is raised **after** the `catalog_version × request` grant has passed, so it
+is a precondition on the request's content rather than an authorization fact — and it **MUST** arrive
+as a `FailedPrecondition` carrying a precondition violation of type `CATALOG_VERSION_REJECTED` with
+the registry's own sentence as the description, because that pair is what the `pricing-sdk` port's
+`Rejected` arm discriminates on. **A 403 would land on the port's `Other` arm** and leave the arm
+unreachable, which is the asymmetry this code was minted to close.
+
 **Implements**: `cpt-cf-bss-products-flow-increment`
 
 **Touches**:
@@ -908,6 +916,10 @@ gets its own probe.
 ### The snapshot builder and the first row collection through the canonical pin
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-snapshot-builder`
+
+**`inst-sn-collect`'s "serialized transaction" is the coalescer's serialization, not a database
+isolation level** (**P-D-53**): one worker per tenant is what serializes, and the transaction itself
+opens at the engine default.
 
 The system **MUST** collect, **inside the serialized transaction**: every published or deprecated
 entity's current published-version **reference** into `products_entity_version`; and, as **stored
@@ -959,6 +971,13 @@ named key. Until one exists, two runs or two engines may hash the same snapshot 
 ### Stage-vs-commit re-validation, both arms
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-stage-commit-revalidation`
+
+**The transaction opens at the engine default — `READ COMMITTED` on Postgres** (**P-D-53**), and the
+guard below is what closes the race, not the isolation level. The builder records each collected
+entity's `(id, published_version, lifecycle_state)` and re-reads the heads before commit; any
+difference refuses `STAGED_ENTITY_CHANGED`. A build relying on the snapshot instead has no detector:
+under a snapshot-isolating level the re-read returns the collect-time view and the guard cannot fire,
+and under `SERIALIZABLE` the transaction aborts rather than raising the code §6 requires.
 
 The builder **MUST** record each collected entity's `(id, published_version, lifecycle_state)` and,
 before commit, re-read the heads. Any entity whose published version **or lifecycle state** moved
@@ -1286,13 +1305,13 @@ given pair, and **MUST** have **no retention effect**.
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-cv-error-taxonomy`
 
-The system **MUST** add a `DomainError` variant for each of the **six** codes in §3, and each
+The system **MUST** add a `DomainError` variant for each of the **seven** codes in §3, and each
 **MUST** carry its wire code through `DomainError::code`.
 
 **The extension is compile-gated, and that is the good news measured here.** `DomainError` ships
 14 variants and `code()` is *"deliberately exhaustive rather than a catch-all: a variant added
 without a code is a compile error here, which is the only thing that keeps the taxonomy and the
-vocabulary from drifting."* **None of the six exists today.**
+vocabulary from drifting."* **None of the seven exists today.**
 
 Each **MUST** carry an RFC 9457 problem response at the status §3 states, following the sibling
 pricing gear's mapping code by code: **422** for content the door cannot process, **409** where the
@@ -1301,6 +1320,14 @@ only where a path segment names a resource this tenant has none of.
 
 `PARTICIPANT_UNKNOWN` **MUST** be **403** rather than 404, because the caller's identity is the
 subject of the refusal and a 404 would leak whether the version exists.
+
+**`REQUEST_SOURCE_UNKNOWN` MUST NOT be 403, and its status is the one exception to the ladder
+above** (**P-D-52**): it is a `FailedPrecondition` — 422 architecturally, 400 on the wire — and
+**MUST** carry a precondition violation of type `CATALOG_VERSION_REJECTED`, because that is what the
+consumer's port discriminates its refusal arm on. The grant has already passed when it is raised, so
+it is not an authorization refusal despite naming a caller's source. **This is the only code in the
+gear whose wire shape a consumer fixes**, and it is stated here so a status sweep does not align it
+with `PARTICIPANT_UNKNOWN`.
 
 **`INTENT_REQUIRED` is a 422 architecturally and reaches the wire as a 400** carrying its code —
 not because *no path can produce* a 422, which `design/01-foundation.md` §3.3 records as a retired
@@ -1583,11 +1610,16 @@ column is this feature's to add or `01-foundation`'s is registered in §7.
       an `UPDATE` that moves **only** `freeze_state` is admitted. The admitted arm is what proves the
       whitelist is a whitelist and not a renamed unconditional refusal.
 
-**Positive controls, one line per declared code** — six codes, six lines. A blanket criterion here
-is ticked by inspection.
+**Positive controls, one line per declared code** — seven codes, seven lines. A blanket criterion
+here is ticked by inspection.
 
 - [ ] `INTENT_REQUIRED` — a resolution request with no `intent` is refused; the same request with
       `intent = browse` succeeds.
+- [ ] `REQUEST_SOURCE_UNKNOWN` — a request from a source outside the trigger set is refused **after**
+      the grant passes, and the refusal carries a `CATALOG_VERSION_REJECTED` precondition violation;
+      the same request from a registered source succeeds. **Both halves in one probe**: a refusal that
+      omits the violation type is invisible to the consumer's `Rejected` arm, which is the whole
+      reason the code exists.
 - [ ] `FREEZE_INCOMPLETE` — `posted` against an open ledger is refused; the same request after every
       snapshot member acks succeeds.
 - [ ] `VERSION_FORCED_INCOMPLETE` — `posted` against `complete(forced)` is refused **naming the
@@ -1611,8 +1643,10 @@ is ticked by inspection.
 [`../design/06-catalog-version.md`](../design/06-catalog-version.md) §6 — the slice's full count,
 not a selection — and **thirty-three raised here**, across two review passes: eleven while
 authoring, **twelve by the first three-lens pass** and **ten by the second**. Of the fifty-one,
-**eight block no DoD in this document** (rows 3, 4, 5, 14, 34, 49, 50 and 51); the other forty-three
-each name the DoD they block. Rows 14 and 34 block nothing for a reason that is itself the finding:
+**eleven block no DoD in this document** (rows 3, 4, 5, 14, 34, 49, 50 and 51, plus rows 22 and 41,
+which **P-D-52 resolved on 2026-08-31**, and row 37, which **P-D-53** resolved the same day — they are kept in place rather than struck from the register,
+because rows 41 and 45 cite row 22 and a deleted record would break the citations); the other
+forty each name the DoD they block. Rows 14 and 34 block nothing for a reason that is itself the finding:
 **no DoD in §5 declares the `validate(lint)` door**, because nothing in the design set specifies it,
 and none names the archival or scale halves. Rows 49-51 block nothing because each asks what a
 convention **means**, not what a door does.
@@ -1837,17 +1871,24 @@ against source at `41d1baa5e`.
     `cpt-cf-bss-products-dod-intentful-resolver`.
     **Owner**: this feature, with pricing's SDK owner.
 
-22. **The shipped port has a fourth error arm this feature's roster cannot produce.** Beside
+22. ~~**The shipped port has a fourth error arm this feature's roster cannot produce.**~~
+    **Answered (owner call, 2026-08-31 — P-D-52): the request door owes the code.**
+    `REQUEST_SOURCE_UNKNOWN` is minted, declared in `design/06` §3.2 and raised by
+    `inst-cv-request` alone. Its shape is not a free choice: the port reaches `Rejected` only
+    on a `FailedPrecondition` **carrying a precondition violation of type
+    `CATALOG_VERSION_REJECTED`**, so the refusal is 422-architectural, 400 on the wire, and
+    **not** the 403 an analogous roster miss would take. The body below is kept because rows
+    41 and 45 cite this row's owner pairing. Original text: Beside
     Unconfigured / Unreachable / Internal it carries **`Rejected`**, discriminated by the wire
     constant `CATALOG_VERSION_REJECTED`, and argues that *"a refusal is a decision and will be made
     identically for as long as the request is unchanged; an outage is a deployment state a retry may
-    find changed."* None of this feature's six codes is a refusal **of an increment request** — the
+    find changed."* None of this feature's six codes **was** a refusal **of an increment request** — the
     door refuses only an unregistered source, and §3.2 declares no code for it. So either the
     request door owes a refusal code, or the port's `Rejected` arm is unreachable against this
     registry.
-    **Blocks**: `cpt-cf-bss-products-dod-request-door`,
-    `cpt-cf-bss-products-dod-cv-error-taxonomy`.
-    **Owner**: this feature, with pricing's SDK owner.
+    **Blocks**: no DoD — **resolved by P-D-52**; `cpt-cf-bss-products-dod-request-door` and
+    `cpt-cf-bss-products-dod-cv-error-taxonomy` both carry the answer.
+    **Owner**: was this feature with pricing's SDK owner; **closed**.
 
 23. **Pricing's dev-minted version space collides with this feature's counter, and the sweep has no
     owner.** `LocalDevCatalogVersionRegistryV1` mints from `Utc::now().timestamp_millis()` — order
@@ -2009,15 +2050,25 @@ against source at `41d1baa5e`.
     **Blocks**: `cpt-cf-bss-products-dod-freeze-timeout`.
     **Owner**: this gear's config owner, with `01-foundation`'s.
 
-37. **At what isolation level does the increment transaction run?** The snapshot is collected
+37. ~~**At what isolation level does the increment transaction run?**~~
+    **Answered (owner call, 2026-08-31 — P-D-53): the engine default, `READ COMMITTED` on
+    Postgres.** The race is closed by `inst-sn-revalidate`'s row-version guard, never by isolation:
+    of the three levels, only the default lets the guard fire and produce §6's required refusal — a
+    snapshot-isolating level returns the collect-time snapshot so it cannot fire, and `SERIALIZABLE`
+    aborts instead of raising the code. The word *"serialized"* in `inst-sn-collect` is the
+    coalescer's one-worker-per-tenant serialization, not a database level. P-D-53 also scopes itself:
+    it does not settle `03-sku-classification`'s removal-vs-publish race, which has no row to
+    version. Original text:
+    **At what isolation level does the increment transaction run?** The snapshot is collected
     *"inside the serialized transaction"* and the heads are re-read *"before commit"* in the same
     transaction. Under a snapshot-isolating level that re-read returns the collect-time snapshot and
     the race is undetectable; under read-committed it is detectable; under serializable the
     transaction aborts rather than raising `STAGED_ENTITY_CHANGED`, which §6 requires as a refusal.
     No isolation level is stated anywhere in the design set or the crate.
-    **Blocks**: `cpt-cf-bss-products-dod-stage-commit-revalidation`,
-    `cpt-cf-bss-products-dod-snapshot-builder`.
-    **Owner**: this feature, with whoever owns the storage posture.
+    **Blocks**: no DoD — **resolved by P-D-53**; both
+    `cpt-cf-bss-products-dod-stage-commit-revalidation` and
+    `cpt-cf-bss-products-dod-snapshot-builder` carry the answer.
+    **Owner**: was this feature with the storage-posture owner; **closed**.
 
 38. **Which act refreshes `freeze_state` to `complete`?** `design/06` §4 annotates the column *"(derived
     cache of the ledger)"* and this document forbids it being the authority; the force-completion
@@ -2049,15 +2100,16 @@ against source at `41d1baa5e`.
     `cpt-cf-bss-products-dod-increment-request-port`.
     **Owner**: the design-set owner.
 
-41. **Does the request door owe a refusal code, or is the error algo's Input clause scoped?**
+41. ~~**Does the request door owe a refusal code, or is the error algo's Input clause scoped?**~~
+    **Answered with row 22 (owner call, 2026-08-31 — P-D-52): a seventh code is owed, and the
+    Input clause stands unnarrowed.** `REQUEST_SOURCE_UNKNOWN` is that code. Original text:
     `cpt-cf-bss-products-algo-catalog-version-errors` declares its Input to be *"a refusal raised by
     any door of this feature"*, and §2 documents one refusal with no code: *"A request whose `source`
     is not a registered requester is refused at the door."* Row 22 records the same gap from the
     counterpart port's side. Either a seventh code is owed or the Input clause is narrowed; minting
     a code here would author the taxonomy.
-    **Blocks**: `cpt-cf-bss-products-algo-catalog-version-errors`,
-    `cpt-cf-bss-products-dod-request-door`.
-    **Owner**: this feature, with pricing's SDK owner — the pairing row 22 names.
+    **Blocks**: no DoD — **resolved by P-D-52** with row 22.
+    **Owner**: was this feature with pricing's SDK owner; **closed**.
 
 
 42. **What is "the manifest header"?** `design/06` §4 lists it as the last item of
@@ -2144,7 +2196,7 @@ against source at `41d1baa5e`.
     **Owner**: the design-set owner — row 40's owner.
 
 50. **Is §6 owed one criterion per DoD, or is it a deliberately selected set?** §6 states its own
-    completeness only for the positive controls — *"six codes, six lines"* — while several DoDs have
+    completeness only for the positive controls — *"seven codes, seven lines"* — while several DoDs have
     no criterion, among them `cpt-cf-bss-products-dod-cv-authz`, whose body argues the opposite
     discipline (*"the DoD names them as lines because a blanket criterion is ticked by
     inspection"*), `cpt-cf-bss-products-dod-cv-events`,
