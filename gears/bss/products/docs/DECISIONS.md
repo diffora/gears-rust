@@ -1569,6 +1569,58 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   (the re-publish step).
 
 
+#### P-D-72 — The family clone resumes from its own data, and the identity-map remainder is a widening
+
+- **Date**: 2026-09-01 (owner call, autonomous under the standing instruction;
+  `features/retention-erasure.md` §7 row 8 — which surfaces may resolve an identity through the map —
+  is **parked with `features/read-models.md`'s row 25**, the same privacy fork seen from the other
+  side)
+- **Context**: `features/clone.md` §7 rows 7, 19 and 26, jointly holding `dod-clone-children` and
+  `dod-clone-lineage`, and `features/retention-erasure.md` §7 row 20.
+
+**1. A child's `cloned_from` names its own source SKU** (clone row 19) — the column is uniform:
+every clone's `cloned_from` names *its* source, same-kind, never the parent act. The batch stays
+walkable anyway: the new parent's `cloned_from` names the source product, and the family
+reconstructs from `parent_id` plus the children's own pointers — which arm 2 turns into the resume
+operand.
+
+**2. The durable ledger is the data itself, and the same-key retry resumes the family act**
+(clone row 7). The decided posture stands — per-child transactions, an honestly-reported partial —
+and no ledger table is built. A crash between children leaves the new parent's committed children
+carrying their `cloned_from` pointers, so **resumption is a re-entry**: the retry with the same
+idempotency key finds the claim committed and unanswered, scans the new parent's children, skips
+sources already cloned, clones the rest, and stores the answer at completion. **This extends
+P-D-42 for composite wire acts, and the extension is named**: the endpoint claim joins the
+*parent's* transaction (the composite's first), and a committed-but-unanswered claim means
+*in progress — resume*, never *replay* and never the refusal a conflicting concurrent claim gets.
+
+**3. The family act answers `201` with a per-child receipt** (clone row 26): the parent was created
+and *parent-plus-surviving-children is a valid, intended end state*, so the partial is not an error
+status — the response carries one entry per attempted child,
+`{source sku_id, disposition ∈ {created, failed}, new sku_id | code + violations}`, the codes being
+the owning doors' verbatim (no parallel taxonomy, `09`'s own rule). A **failing parent** stays the
+ordinary refusal of the whole act.
+
+**4. The identity-map remainder is a widening of the ticked foundation DoD, not a second DoD**
+(retention row 20): the tombstone-inclusive read belongs to `dod-actor-ref`, the function's owner —
+a second DoD over the same code has two owners and no recorded precedence, the row's own argument.
+`dod-identity-map` keeps the erasure-resolve and export halves, which their own DoDs already oblige.
+
+- **The arguments against, stated**: arm 2 makes the clone door's claim semantics composite-aware —
+  a committed unanswered claim is a third state P-D-42's single-entity reading did not have, and the
+  resume scan costs a read of the new parent's children per retry; arm 3 reports a partial success
+  as `201`, which a caller must read the receipt to see — the alternative (a 207-style multi-status)
+  imports a vocabulary this API nowhere else uses.
+- **Not changed**: per-child transactions and the honest partial (already decided), the lone-SKU
+  carve-out, `retention` row 8 and `read-models` row 25 (parked together), and P-D-42's single-entity
+  semantics everywhere else.
+- **Propagated**: `design/11-clone.md` (§2 rule 6 the resume re-entry and the receipt, §6 twin for
+  row 7 where carried), `features/clone.md` (`dod-clone-children`, `dod-clone-lineage`,
+  `dod-clone-door`, §7's arithmetic and rows 7, 19, 26 answered), `features/retention-erasure.md`
+  (`dod-identity-map`, §7's arithmetic and row 20 answered), `design/01-foundation.md` §3.2 —
+  **owed**: the composite-claim extension's one-sentence home, recorded here and filed at the next
+  01 edit.
+
 #### P-D-71 — Reference-signal's seven: the flag named, the hash stored, absence means never-received
 
 - **Date**: 2026-09-01 (owner call, autonomous under the standing instruction)

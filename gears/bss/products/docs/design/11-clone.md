@@ -96,7 +96,13 @@ actor, the scenarios and the boundary.
 3. [ ] - `p3` - **The rename rule (P-D-04, reframed per L3)**: **every same-brand Product clone renames** — the uniqueness index holds the source's name in every non-`discarded` state, so a clone of a draft, published, deprecated or retired Product collides alike; the suggestion is `{name}-copy-N` (matching the code suggestion, `N` the first free integer under the reservation — **P-D-62**), `{name}-revived` flavored for a retired source — **and a second revival of one lineage suggests `{name}-revived-N`**, the same first-free rule over the `-revived` family, so the flavor survives and the suggestion path never produces a refusal (P-D-62; falling back to `-copy-N` was declined as silently dropping the one signal `-revived` carries); operator-overridable. A collision on an operator-supplied name is the ordinary `DUPLICATE_NAME`. Revival is why the rule is non-negotiable, not when it applies. Display attributes copy verbatim as to their values (still re-validated per §3.1) — the quasi-code renames, the storefront doesn't - `inst-cn-rename`
 4. [ ] - `p3` - The `DispositionTable` (§3.1) is applied field-class by field-class; every re-validated reference that fails names the field and the live-registry verdict (C4) so the operator re-selects rather than guesses - `inst-cn-disposition`
 5. [ ] - `p3` - `clonedFrom = (entity id, published_version | 'draft')` is recorded on the clone (immutable thereafter — lineage, not a live link); the clone rides `ProductCreated`/`SkuCreated` (P-D-21: the event stream is the audit of record for what succeeds, so a committed act that emits one writes no audit row) (explicit: no separate clone event — the lineage field is queryable) - `inst-cn-lineage`
-6. [ ] - `p3` - Product-with-SKUs clone: children clone per the same table in one batch-like act, each child riding its own `SkuCreated` (no new event — §4) (per-child ledger of failures — per-row atomic acts honestly reported, the PRD's own §6.9 shape, which is how this squares with 01's no-partial-application rule: each act IS complete, L1); a child failing re-validation fails alone; **parent-plus-surviving-children is a valid, intended end state** (drafts are cheap — failed children are re-selectable and re-clonable); a failing **parent** creates nothing (children never attempted) - `inst-cn-children`
+6. [ ] - `p3` - Product-with-SKUs clone: children clone per the same table in one batch-like act, each child riding its own `SkuCreated` (no new event — §4) (per-child ledger of failures — per-row atomic acts honestly reported, the PRD's own §6.9 shape, which is how this squares with 01's no-partial-application rule: each act IS complete, L1); a child failing re-validation fails alone; **parent-plus-surviving-children is a valid, intended end state** (drafts are cheap — failed children are re-selectable and re-clonable); a failing **parent** creates nothing (children never attempted). **The family act answers `201`
+with a per-child receipt** — `{source sku_id, disposition ∈ {created, failed}, new sku_id | code +
+violations}`, codes the owning doors' verbatim — **and resumes from its own data** (**P-D-72**): the
+door's claim joins the *parent's* transaction, a committed-but-unanswered claim means *in progress*,
+and the same-key retry re-enters, skipping sources the new parent's children's `cloned_from` already
+names, cloning the rest, storing the answer at completion — no ledger table, the store already
+carrying the facts - `inst-cn-children`
 
 ## 3. Processes / Business Logic
 
@@ -203,7 +209,11 @@ which is why its gaps are omissions rather than contradictions:
   the lineage field being "queryable", and the field appears in no read model and no SDK shape; a
   clone is a draft, which the browse projection cannot see at all. Owner: 08's and 12's owners —
   expose it, or withdraw the justification. *(Two lenses raised it independently.)*
-- **Where does the per-child ledger of a product-with-SKUs clone live?** §4 declares no tables and no
+- ~~**Where does the per-child ledger of a product-with-SKUs clone live?**~~
+  **Answered (owner call, 2026-09-01 — P-D-72): in the data itself.** The new parent's children carry
+  their own `cloned_from` pointers, so the same-key retry re-enters the family act and resumes —
+  skip, clone the rest, answer at completion; no table is built and the response receipt stays a
+  receipt. The claim semantics extension is named on P-D-42. Original text: §4 declares no tables and no
   events, so the ledger is response-only and a crash between children leaves an unreported half-clone
   with no resumption path — 09, whose shape this cites, has both a table and a resume rule. Owner:
   this slice with 09's storage owner. *(Raised by the slice-11 first lens pass.)*

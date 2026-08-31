@@ -531,7 +531,10 @@ actor, the scenarios and the boundary.
      having rolled back — and claims the key itself. Visibility is never required; the unique index
      does the work. On SQLite the loser is answered `SQLITE_BUSY` rather than blocking, so the door
      carries a busy timeout and retries: the guarantee is identical — two are never admitted — and
-     only the waiting differs - `inst-fd-idem-claim-txn`
+     only the waiting differs. **One composite wire act extends this** (**P-D-72**): the
+     product-with-SKUs clone's claim joins the *parent's* transaction — the composite's first — and a
+     committed-but-unanswered claim there means *in progress: resume*, the retry re-entering the
+     family act and skipping sources already cloned, never replaying and never refusing - `inst-fd-idem-claim-txn`
    - [ ] - `p1` - A duplicate **whose payload hash matches the claimed key's** arriving against a
      `claimed`, unanswered key is refused **`IDEMPOTENCY_KEY_IN_FLIGHT`** (409) — without this
      state such a duplicate matches neither branch of `inst-fd-idem-replay`, because a stored

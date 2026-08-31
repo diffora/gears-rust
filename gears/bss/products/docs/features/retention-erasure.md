@@ -417,6 +417,9 @@ it as new work.
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-identity-map`
 
 `products_identity_ref` **already exists** with the columns and guards this feature needs:
+**and this DoD's remainder is scoped** (**P-D-72**): the tombstone-inclusive read is a **widening of
+the ticked `cpt-cf-bss-products-dod-actor-ref`**, the function's owner — never a second DoD over the
+same code — while this DoD keeps the erasure-resolve and export halves its siblings oblige.
 `(tenant_id, actor_ref)` PK, `principal_ref NOT NULL`, nullable `identity_payload`, `tombstoned_at`,
 `first_seen_at`, `last_seen_at`, `chk_products_identity_ref_tombstone`,
 `chk_products_identity_ref_seen_order`, the `(tenant_id, principal_ref)` index and the partial unique
@@ -872,9 +875,11 @@ to prevent, and `ActorErased` deliberately carries none.
 **The arithmetic of this section.** Thirty-two rows: **fourteen carried verbatim** from
 [`../design/10-retention-erasure.md`](../design/10-retention-erasure.md) §6 — the slice's full count,
 not a selection — and **eighteen raised here**: five while authoring, from reading the crate, and
-thirteen by the three-lens review of this document. Of the thirty-two, **seven block no DoD in this
-document** (rows 1, 2, 3, 30, 31 and 32, plus row 13 since **P-D-64 resolved it on 2026-08-31** —
-kept in place rather than struck); the other twenty-five each name the DoD they block. A third
+thirteen by the three-lens review of this document. Of the thirty-two, **eight block no DoD in this
+document** (rows 1, 2, 3, 30, 31 and 32, plus row 13, resolved by **P-D-64 on 2026-08-31**, and row
+20, resolved by **P-D-72 on 2026-09-01** — kept in place rather than struck); the other twenty-four
+each name the DoD they block. Row 8 is **parked for the owner** with `features/read-models.md`'s
+row 25 — the same identity-map privacy fork — so `dod-identity-map` waits on it. A third
 subsection below carries one-line pointers into other documents' registers; those are not rows.
 
 **Carried, not answered**, and registered against **its owner's** register. **Three departures from
@@ -1076,16 +1081,21 @@ Five, from reading the crate at `80eee534a`. Every quotation was byte-verified a
     **Owner**: `12-consumer-contracts`, with `08-read-models`.
 
 
-20. **What does `cpt-cf-bss-products-dod-identity-map` still oblige, now that the read path is a
-    ticked foundation DoD?** `repo::resolve_actor_ref` ships under
+20. ~~**What does `cpt-cf-bss-products-dod-identity-map` still oblige, now that the read path is a
+    ticked foundation DoD?**~~
+    **Answered (owner call, 2026-09-01 — P-D-72 arm 4): the tombstone-inclusive read is a widening of
+    the ticked foundation DoD**, `cpt-cf-bss-products-dod-actor-ref`, the function's owner — a second
+    DoD over the same code has two owners and no recorded precedence, this row's own argument. This
+    DoD keeps the erasure-resolve and export halves, which their own DoDs already oblige.
+    Original text: `repo::resolve_actor_ref` ships under
     `features/foundation.md`'s `cpt-cf-bss-products-dod-actor-ref`, which is `[x]`, and both
     `products_identity_ref` source files carry its `@cpt-dod` marker. Of the three rules this DoD
     named, the first-appearance predicate is that function, and the erasure resolve and the export
     are obliged by their own DoDs here. What is left is the tombstone-inclusive read — whether that
     is a DoD of its own, a widening of the ticked one, or nothing, has no stated answer, and a
     second DoD over the same code has no recorded precedence.
-    **Blocks**: `cpt-cf-bss-products-dod-identity-map`.
-    **Owner**: this feature with `01-foundation`.
+    **Blocks**: no DoD — **resolved by P-D-72**; `cpt-cf-bss-products-dod-identity-map` carries the split while staying blocked by row 8, parked.
+    **Owner**: was this feature with `01-foundation`; **closed**.
 
 21. **Does a principal have at most one live `actor_ref` per tenant, and is the erasure act therefore
     single-row?** The partial unique index caps live rows at one and the shipped resolve uses

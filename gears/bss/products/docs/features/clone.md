@@ -653,7 +653,9 @@ codes"*, and this document adds nothing to that.
 
 `cloned_from` is written in the creating statement to the **immediate** source — never copied from
 the source's own `cloned_from`, so a clone of a clone points one step back and the chain stays
-walkable. The create-only guard makes a copied value unrepairable, which is why the reset is a rule
+walkable. **In a product-with-SKUs clone a child's `cloned_from` names its own source SKU** (**P-D-72**
+— uniform, same-kind, never the parent act; the family reconstructs from `parent_id` plus the
+children's own pointers, and that walkability is what the resume re-entry reads). The create-only guard makes a copied value unrepairable, which is why the reset is a rule
 and not a convention.
 
 **No clone event is emitted.** The clone rides `ProductCreated` / `SkuCreated`, and each child of a
@@ -696,12 +698,13 @@ no live retire intent — `PARENT_TERMINAL` / `RETIREMENT_PENDING`. So a lone cl
 parent's SKU must name a new parent, even though C1 admits a retired *source*. The two rules are
 about different entities and both hold.
 
-**What this DoD cannot specify.** `design/11` §4 declares **no tables and no events**, so the
-per-child ledger of failures is response-only: a crash between children leaves an unreported
-half-clone with no resumption path. `09-bulk-promotion`, whose shape this cites, has **both** a table
-and a resume rule. §7 carries it, owned jointly with `09`'s storage owner. **This DoD is met by the
-response-carried ledger the slice specifies**, and the durability question is not silently resolved
-by building one.
+**The durability question is answered without a table** (**P-D-72**): the durable ledger is the data
+itself — the new parent's children carry their own `cloned_from` pointers — and the **same-key retry
+resumes the family act**, the door's claim joining the *parent's* transaction, a
+committed-but-unanswered claim meaning *in progress*, the re-entry skipping already-cloned sources
+and storing the answer at completion. **The family act answers `201` with a per-child receipt** —
+`{source sku_id, disposition, new sku_id | code + violations}`, codes the owning doors' verbatim — a
+failing parent staying the ordinary refusal of the whole act.
 
 **Implements**: `cpt-cf-bss-products-flow-clone`
 
@@ -911,10 +914,10 @@ assertion on the first code passes on a build that short-circuits, which is the 
 [`../design/11-clone.md`](../design/11-clone.md) §6 — the slice's full count, not a selection — and
 **seventeen raised here**: twelve while authoring and five by the three-lens review of this
 document. Eight of the seventeen (rows 11, 12, 13, 14, 17, 20, 23 and 25) come from reading the
-crate and nine from the design set. Of the twenty-seven, **six block
-no DoD in this document** (rows 9, 10, 21 and 24, plus rows 13 and 4, which **P-D-55 and P-D-62
-resolved on 2026-08-31** — kept in place rather than struck); the other twenty-one each name the DoD
-they block. A
+crate and nine from the design set. Of the twenty-seven, **nine block
+no DoD in this document** (rows 9, 10, 21 and 24, plus rows 13 and 4, resolved by **P-D-55 and
+P-D-62 on 2026-08-31**, and rows 7, 19 and 26, resolved by **P-D-72 on 2026-09-01** — kept in place
+rather than struck); the other eighteen each name the DoD they block. A
 third subsection carries defects owed to other documents, recorded and not repaired here; those are
 not rows. The two register pointers are in this preamble, not there.
 
@@ -998,11 +1001,17 @@ duplicating it.
    **Owner**: `08-read-models`' and `12-consumer-contracts`' owners — expose it, or withdraw the
    justification.
 
-7. **Where does the per-child ledger of a product-with-SKUs clone live?** §4 declares no tables and no
+7. ~~**Where does the per-child ledger of a product-with-SKUs clone live?**~~
+   **Answered (owner call, 2026-09-01 — P-D-72 arm 2): in the data itself.** The new parent's
+   children carry their own `cloned_from` pointers, so the same-key retry **resumes** the family act
+   — the claim joins the parent's transaction, committed-but-unanswered means *in progress*, the
+   re-entry skips already-cloned sources and stores the answer at completion. No table is built; the
+   response receipt stays a receipt. The P-D-42 extension is named on the decision.
+   Original text: §4 declares no tables and no
    events, so the ledger is response-only and a crash between children leaves an unreported half-clone
    with no resumption path — 09, whose shape this cites, has both a table and a resume rule.
-   **Blocks**: `cpt-cf-bss-products-dod-clone-children`.
-   **Owner**: this feature with `09-bulk-promotion`'s storage owner.
+   **Blocks**: no DoD — **resolved by P-D-72**; `cpt-cf-bss-products-dod-clone-children` carries the mechanism.
+   **Owner**: was this feature with `09-bulk-promotion`'s storage owner; **closed**.
 
 8. **Which role holds the clone grant?** §1.3 gives it to the product manager and the PRD's own §11
    console gives clone to an Operator/Platform owner, while the door spends the authoring pair. The
@@ -1118,13 +1127,17 @@ duplicating it.
     **Blocks**: `cpt-cf-bss-products-dod-cloned-from-column`, `cpt-cf-bss-products-dod-clone-lineage`.
     **Owner**: `01-foundation`'s schema owner, whose §6 already carries the storage half.
 
-19. **Does `cloned_from` point across tables?** A SKU clone's source is a SKU and a Product clone's a
+19. ~~**Does `cloned_from` point across tables?**~~
+   **Answered (owner call, 2026-09-01 — P-D-72 arm 1): a child's `cloned_from` names its own source
+    SKU** — uniform, same-kind, never the parent act; the family stays walkable through `parent_id`
+    plus the children's own pointers, which is exactly the operand the resume re-entry reads.
+   Original text: A SKU clone's source is a SKU and a Product clone's a
     Product, so the column is same-table today — but a product-with-SKUs clone creates children whose
     sources are the source product's children, and nothing says whether a child's `cloned_from` names
     its own source SKU or the parent act. The first makes the column uniform; the second makes the
     batch walkable.
-    **Blocks**: `cpt-cf-bss-products-dod-clone-lineage`, `cpt-cf-bss-products-dod-clone-children`.
-    **Owner**: this feature.
+   **Blocks**: no DoD — **resolved by P-D-72**; `cpt-cf-bss-products-dod-clone-lineage` and `dod-clone-children` carry it.
+   **Owner**: was this feature; **closed**.
 
 20. **Which store answers the metadata map read for a `retired` source?** **P-D-06** places the map
     outside frozen version content so it survives retirement, and `design/11` §2 relies on that —
@@ -1188,16 +1201,22 @@ duplicating it.
     **Owner**: `01-foundation`'s door and pipeline owner, with this feature. Row 11 asks *which
     phase*; this row asks *which pipeline*, and the second must be answered first.
 
-26. **What status does a partial product-with-SKUs clone answer, and what is a ledger entry?**
+26. ~~**What status does a partial product-with-SKUs clone answer, and what is a ledger entry?**~~
+   **Answered (owner call, 2026-09-01 — P-D-72 arm 3): `201` with a per-child receipt** —
+    `{source sku_id, disposition ∈ {created, failed}, new sku_id | code + violations}`, codes the
+    owning doors' verbatim, no parallel taxonomy. Parent-plus-surviving-children is the valid intended
+    end state, so the partial is not an error status; a failing parent stays the ordinary refusal of
+    the whole act.
+   Original text:
     `design/11` §2 fixes the single-entity answer at **201** and names the per-child ledger without
     shaping it — no field, no entry contents, no status for the partial outcome. `09-bulk-promotion`,
     whose shape the slice cites, is explicitly Out. So `cpt-cf-bss-products-dod-clone-children`'s
     acceptance criterion — the response reports the failed child — cannot be turned into an
     assertion. What must be decided: the partial-clone status, the ledger field on the response, and
     whether a failed child carries its whole collected refusal or one code.
-    **Blocks**: `cpt-cf-bss-products-dod-clone-children`.
-    **Owner**: this feature with `12-consumer-contracts`, which row 1 already holds the request half
-    of.
+   **Blocks**: no DoD — **resolved by P-D-72**; `cpt-cf-bss-products-dod-clone-children` is freed.
+   **Owner**: was this feature with `12-consumer-contracts`, which row 1 already holds the request half
+    of; **closed**.
 
 27. **Do the two accounting codes survive into the positive-control count?**
     `cpt-cf-bss-products-dod-clone-tests` states a count per code raised, and **P-D-47** arm 3 makes
