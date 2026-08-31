@@ -487,6 +487,13 @@ and the reason is that an index not leading with `tenant_id` cannot serve a per-
 `ReadProjector` exists as the single event-driven consumer, ordered per `(tenant, aggregate)`,
 projecting each event idempotently against a **consumer checkpoint per aggregate**.
 
+**Its stamp-advance step reads `products_catalog_version_entry`** (**P-D-70**): the
+`CatalogVersionPublished` changed-entity list selects, the manifest supplies each entity's frozen
+version reference, and the head's `published_version` is refused as the source — it may run ahead of
+the catalog version and reading it breaches the three-column carve-out. **A Product's retirement
+reaches it through the Product analogue of `SkuRetirementEffective`**, whose mint is `04`'s
+already-registered item, now load-bearing (P-D-70).
+
 **Its key is already guaranteed and this DoD does not re-specify it.**
 `api/rest/products_tests.rs` asserts that `ProductPublished` and `SkuPublished` carry
 `publishedVersion` **by value**, and says why in as many words: *"which slice 06 reads as content and
@@ -569,7 +576,7 @@ Five states, three surfaces, one rule each:
 |---|---|---|---|
 | `published` | served | served | served |
 | `deprecated` | served **with the flag** | excludable by `excludeDeprecated` | served |
-| `retired` | **never** | **never** | **served — the one carve-out** |
+| `retired` | **never** | **never — the by-id read serves it under an explicit state opt-in, P-D-70** | **served — the one carve-out** |
 | `draft` | **never** | **never** | **never** |
 | `discarded` | **never** | **never** | **never** |
 
@@ -589,7 +596,13 @@ two priorities disagree, and §7 carries it rather than this DoD resolving it: a
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-staleness-stamp`
 
-Every read response carries `(asOfCatalogVersion, projectedAt)`.
+Every read response carries `(asOfCatalogVersion, projectedAt)` — **persisted as one per-tenant
+stamp row** (**P-D-70**: a column duplicated per projection row cannot answer an *empty* projection,
+the anchorless rebuild's own arm, and deriving from the consumer checkpoint ties response metadata to
+broker internals). **`projectedAt` advances on every projector apply, version or none** — a
+zero-version tenant's bootstrap is an apply and stamps it — and every polled surface carries the
+stamp of its own table's last apply, which is what C3's every-response rule means for
+`products_read_delivery_state`.
 
 **The stamp is a floor** (**P-D-07**), and the DoD is that the implementation encode the floor
 reading rather than the completeness reading: everything at or below the stamp is reflected, and
@@ -619,7 +632,11 @@ dropped stamp.
 `GET /bss-products/v1/{products|skus}/{id}/versions` returns the version list, the per-version diff
 **computed between frozen rows**, the approval references and the actor pseudonyms.
 
-**It is the only surface that reaches a `retired` entity.**
+**It is no longer the only surface that reaches a `retired` entity** (**P-D-70**): the by-id read
+serves `retired` under an explicit state opt-in — never the default — which is what keeps the FR's
+`p1` promise while this flow stays `p2`. **And it is a request-time read over frozen rows, settled**:
+frozen rows are not write-path for C1's purpose, C1 keeping browse and search off the *head* tables,
+and `products_entity_version` being append-only history a read contends with nothing on.
 
 **Whether it is a materialized projection or a request-time read is not settled**, and this DoD does
 not settle it: `design/08` §1.5 puts it in scope and `design/08` §4 calls the projection tables
@@ -866,7 +883,10 @@ answer is *ontological*, this sweep and this DoD's rationale both reverse.
 **The arithmetic of this section.** Twenty-five rows: **sixteen carried verbatim** from
 [`../design/08-read-models.md`](../design/08-read-models.md) §6 — the slice's full count, not a
 selection — and **nine raised by the three-lens review of this document**. Of the twenty-five,
-**three block no DoD** (rows 1, 3 and 17); the other twenty-two each name the DoD they block. A final subsection carries defects owed to other documents; those are not rows.
+**nine block no DoD** (rows 1, 3 and 17, plus rows 6, 7, 13, 14, 20 and 21, which **P-D-70 resolved
+on 2026-09-01** — kept in place rather than struck); the other sixteen each name the DoD they block.
+Rows 10 and 25 are **parked for the owner** by the same decision — the dashboards' door and the
+identity-map render — so `dod-dashboards` and `dod-history-timeline` wait on them. A final subsection carries defects owed to other documents; those are not rows.
 
 **Sixteen, not fifteen, and the correction is worth stating.** The first transcription split the
 slice's bullets on a bold-led marker and so fused two items — the locale-materialization note and the
@@ -935,21 +955,31 @@ below rather than by duplicating the row.
     **Blocks**: `cpt-cf-bss-products-dod-nfr-meters`.
     **Owner**: the Program Lead with 01 and 06. *(Raised by the slice-08 first lens pass.)*
 
-6. **Is the history timeline a materialized projection or a request-time read?** §1.5 puts it In
+6. ~~**Is the history timeline a materialized projection or a request-time read?**~~
+    **Answered in the slice (owner call, 2026-09-01 — P-D-70 arm 1): a request-time read over frozen
+   rows, and frozen rows are not write-path for C1's purpose** — C1 keeps browse and search off the
+   *head* tables, and append-only history contends with nothing. §3.1 declaring no history table was
+   the choice already made.
+    Original text: §1.5 puts it In
     scope and §4 calls the projection tables rebuildable state, while §3.1 declares no history
     table and `inst-rh-timeline` describes a computation over 01's frozen rows. If it runs at
     request time it meets C1's "browse/search never touches write-path tables at request time"
     head-on, and nothing says whether frozen rows count as write-path for that purpose.
-    **Blocks**: `cpt-cf-bss-products-dod-history-timeline`.
-    **Owner**: this slice with 01. *(Two lenses raised it independently.)*
+    **Blocks**: no DoD — **resolved by P-D-70**.
+    **Owner**: was this slice with 01. *(Two lenses raised it independently.)*; **closed**.
 
-7. **What tells the projector a Product has been retired?** C2 requires `retired` out of default
+7. ~~**What tells the projector a Product has been retired?**~~
+    **Answered in the slice (owner call, 2026-09-01 — P-D-70 arm 2): the Product analogue of
+   `SkuRetirementEffective`**, whose mint is `04`'s already-registered §6 item, now load-bearing —
+   nothing else can carry a flip that may trail `effectiveAt`. Until `04` mints it, a retired Product
+   stays browsable, pinned on the owning item.
+    Original text: C2 requires `retired` out of default
     browse and `inst-rp-stamp` rests its floor semantics on the flip, while 04's Events list names
     a SKU-only `SkuRetirementEffective` and 04 §6 registers that it has no Product analogue and no
     explicit "no event". As it stands a retired Product stays browsable forever.
-    **Blocks**: `cpt-cf-bss-products-dod-projector`, `cpt-cf-bss-products-dod-visibility`.
-    **Owner**: the lifecycle owner with the events consumer set — this slice is the surface that
-    fails. *(Raised by the slice-08 first lens pass.)*
+    **Blocks**: no DoD — **resolved by P-D-70**; `cpt-cf-bss-products-dod-projector` and `dod-visibility` carry the mechanism.
+    **Owner**: was the lifecycle owner with the events consumer set — this slice is the surface that
+    fails. *(Raised by the slice-08 first lens pass.)*; **closed**.
 
 8. **What happens to live events during a bootstrap rebuild, and what checkpoint does cutover
     install?** `inst-rp-bootstrap` says the rebuild serves the old projection until cutover and
@@ -991,19 +1021,27 @@ below rather than by duplicating the row.
     **Owner**: this slice with the events consumer owner. *(Raised by the slice-08 first lens
     pass.)*
 
-13. **When does `projectedAt` advance, and do polled surfaces carry the stamp?** The advance rule
+13. ~~**When does `projectedAt` advance, and do polled surfaces carry the stamp?**~~
+    **Answered in the slice (owner call, 2026-09-01 — P-D-70 arm 3): `projectedAt` advances on every
+    projector apply, version or none** — a zero-version tenant's bootstrap is an apply and stamps
+    it — and every polled surface carries the stamp of its own table's last apply.
+    Original text: The advance rule
     covers the version half only, and for a zero-version tenant `projectedAt` is the sole
     freshness signal with no rule writing it. Separately §3.2 makes the dashboards read endpoints,
     so C3's every-response rule reaches `products_read_delivery_state`, whose content bears no
     relation to a catalog version.
-    **Blocks**: `cpt-cf-bss-products-dod-staleness-stamp`, `cpt-cf-bss-products-dod-dashboards`.
-    **Owner**: this slice with P-D-07's owner. *(Raised by the slice-08 first lens pass.)*
+    **Blocks**: no DoD — **resolved by P-D-70**; `cpt-cf-bss-products-dod-staleness-stamp` and `dod-dashboards` carry the rule.
+    **Owner**: was this slice with P-D-07's owner. *(Raised by the slice-08 first lens pass.)*; **closed**.
 
-14. **Is `retired` retrievable in the p1 cut?** C2 and `inst-rb-query` state it at `p1` through
+14. ~~**Is `retired` retrievable in the p1 cut?**~~
+    **Answered in the slice (owner call, 2026-09-01 — P-D-70 arm 4): yes — through the by-id read
+    under an explicit state opt-in**, never the default; browse stays exclusionary and the timeline
+    stays `p2`, the FR's `p1` met by the smallest surface that can carry it.
+    Original text: C2 and `inst-rb-query` state it at `p1` through
     "the explicit history surface", and that surface is the `p2` timeline flow.
-    **Blocks**: `cpt-cf-bss-products-dod-visibility`, `cpt-cf-bss-products-dod-history-timeline`.
-    **Owner**: this slice with the PRD owner, the FR's priority being the PRD's. *(Raised by the
-    slice-08 first lens pass.)*
+    **Blocks**: no DoD — **resolved by P-D-70**; `cpt-cf-bss-products-dod-visibility` is freed and `dod-history-timeline` carries the widened access note.
+    **Owner**: was this slice with the PRD owner, the FR's priority being the PRD's. *(Raised by the
+    slice-08 first lens pass.)*; **closed**.
 
 15. **Under which aggregate key are 02's two display events ordered?** The projector's idempotence
     rests on a per-`(tenant, aggregate)` checkpoint, and 02 §6 registers that
@@ -1051,22 +1089,30 @@ below rather than by duplicating the row.
     **Owner**: **P-D-24**'s and **P-D-35**'s owner with `01-foundation` — it is that enumeration
     that is at stake.
 
-20. **Which frozen row does the stamp-advance step read?** `CatalogVersionPublished` carries a
+20. ~~**Which frozen row does the stamp-advance step read?**~~
+    **Answered (owner call, 2026-09-01 — P-D-70 arm 5): the stamp-advance reads
+    `products_catalog_version_entry`** — the event's list selects, the manifest supplies the frozen
+    version references (the table P-D-60 made exactly this shape), and the head's
+    `published_version` is refused as the source.
+    Original text: `CatalogVersionPublished` carries a
     changed-entity **list**, not per-entity versions, and this feature's own Input names frozen
     version rows without naming `06`'s manifest — which is where each entity's current published
     version reference lives. The head's `published_version` is the only other candidate and may be
     ahead of the catalog version, and reading it would breach the three-column carve-out.
-    **Blocks**: `cpt-cf-bss-products-dod-staleness-stamp`.
-    **Owner**: this feature with `06-catalog-version`.
+    **Blocks**: no DoD — **resolved by P-D-70**; `cpt-cf-bss-products-dod-projector` carries the feed.
+    **Owner**: was this feature with `06-catalog-version`; **closed**.
 
-21. **Where is the `StalenessStamp` persisted?** Every read response carries both halves, and
+21. ~~**Where is the `StalenessStamp` persisted?**~~
+    **Answered (owner call, 2026-09-01 — P-D-70 arm 6): one per-tenant stamp row** carrying the last
+    `catalog_version_id` and `projectedAt` — the only arm that answers an **empty** projection, the
+    anchorless rebuild's own case.
+    Original text: Every read response carries both halves, and
     **neither is in the projection row's normative shape** — `design/08` §3.1 ends at
     `published_version`. A per-tenant stamp row, a duplicated column on every projection row, and
     derivation from the consumer checkpoint are all admissible and none is stated; the answer is
     load-bearing for the anchorless rebuild arm, which has no version to restate the stamp from.
-    **Blocks**: `cpt-cf-bss-products-dod-staleness-stamp`,
-    `cpt-cf-bss-products-dod-projection-table`.
-    **Owner**: this feature with **P-D-07**'s owner — the pairing carried row 13 already names.
+    **Blocks**: no DoD — **resolved by P-D-70**; `cpt-cf-bss-products-dod-staleness-stamp` is freed.
+    **Owner**: was this feature with **P-D-07**'s owner — the pairing carried row 13 already names; **closed**.
 
 22. **Is faceting a route or a browse parameter, and are the dashboards endpoints at all?**
     `design/08` §3.2 and this document both count **four** read endpoints, while DECOMPOSITION

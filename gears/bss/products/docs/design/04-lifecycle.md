@@ -308,7 +308,7 @@ pricing D-47 (joint contract), P-D-04 (containment residue).
 - **What announces a Product's `deprecated→retired` flip?** 01 §4.5 asserts this slice announces
   all three floor edges, naming `SkuRetirementEffective` on `deprecated→retired`. This slice gives
   the parent Product its own retire `ScheduledTransition` on that edge (H2 fix) and emits
-  `ProductRetired` at *initiation*, but its Events list names no Product analogue for the flip
+  `ProductRetired` at *initiation*, but its Events list names no Product analogue for the flip — **now load-bearing: P-D-70 keys `08`'s projector on exactly that analogue, so until this slice mints it a retired Product stays browsable**
   itself and records no explicit "no event" for it — which §4.5's own rule and slice 12's
   completeness check both require. Naming one would invent normative content. Owner: the lifecycle
   owner, with the events/audit consumer set. *(Raised by the slice-01 fifth-pass review.)*

@@ -1569,6 +1569,59 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   (the re-publish step).
 
 
+#### P-D-70 — Read-models' six: the timeline's nature, the retirement signal, the stamp's home and its feed
+
+- **Date**: 2026-09-01 (owner call, autonomous under the standing instruction; rows 10 — the
+  dashboards' door and grant — and 25 — whether a timeline render may resolve an identity through
+  `10`'s map — are **deferred to the owner**, the first minting an operator surface with several
+  sub-choices, the second a privacy-adjacent three-way fork)
+- **Context**: `features/read-models.md` §7 rows 6, 7, 13, 14, 20 and 21.
+
+**1. The history timeline is a request-time read over frozen rows, and frozen rows are not
+write-path for C1's purpose** (row 6). C1 exists to keep browse and search off the **head** tables —
+contention and head-state dependence — and `products_entity_version` is append-only immutable
+history; a read on it contends with nothing. §3.1 declaring no history table is the design's choice
+already made: materializing would need a table the slice deliberately lacks.
+
+**2. What tells the projector a Product retired is the Product analogue of `SkuRetirementEffective`,
+and its mint is `04`'s already-registered item** (row 7). Nothing else can carry it: the effective
+flip may trail `effectiveAt` (the D-47 guard), so no clock and no head read can substitute. Until
+`04` mints it the projector has no signal and a retired Product stays browsable — the defect this row
+measured, now pinned on the owning slice's own §6 entry rather than floating.
+
+**3. `projectedAt` advances on every projector apply, version or none** (row 13) — the bootstrap of
+a zero-version tenant is an apply and stamps it, so the sole freshness signal always has a writer —
+**and every polled surface carries the stamp of its own table's last apply**, which is what C3's
+every-response rule means for `products_read_delivery_state`, whose content bears no relation to a
+catalog version.
+
+**4. `retired` is retrievable at `p1` through the by-id read under an explicit state opt-in**
+(row 14): the browse default stays exclusionary, the timeline stays `p2`, and the FR's `p1` promise
+is met by the smallest surface that can carry it — no new route, one explicit parameter, never the
+default.
+
+**5. The stamp-advance step reads `products_catalog_version_entry`** (row 20): the event's
+changed-entity list selects, the manifest supplies each entity's frozen version reference — the table
+P-D-60 made exactly this shape. The head's `published_version` is refused as the source: it may be
+ahead of the catalog version, and reading it breaches the three-column carve-out.
+
+**6. The `StalenessStamp` persists as one per-tenant stamp row** (row 21), carrying the last
+`catalog_version_id` and `projectedAt`. The alternatives fail a measured case: a column duplicated on
+every projection row cannot answer an **empty** projection — the anchorless rebuild's own arm — and
+derivation from the consumer checkpoint ties response metadata to broker internals.
+
+- **The arguments against, stated**: arm 1 reads C1's clause purposively rather than literally —
+  recorded so a stricter reading is a deliberate reopening; arm 2 names a mechanism whose event
+  another slice must mint, so `dod-visibility` is determinate but not buildable until `04` moves;
+  arm 4 widens the by-id read's parameter surface by one value.
+- **Not changed**: rows 10 and 25 stay open (parked for the owner with the reasons above); C2's
+  browse exclusion; the timeline's `p2` priority.
+- **Propagated**: `design/08-read-models.md` (§2/§3 the six answers at their rules, §6 twins where
+  carried), `features/read-models.md` (`dod-history-timeline`, `dod-projector`, `dod-visibility`,
+  `dod-staleness-stamp`, `dod-dashboards` untouched, §7's arithmetic and the six rows answered);
+  `design/04-lifecycle.md`'s §6 item on the missing Product analogue is now **load-bearing** and is
+  annotated as such rather than answered for its owner.
+
 #### P-D-69 — Bulk's remaining seven: the machine completed, the mode named, the lane's key and digest fixed
 
 - **Date**: 2026-09-01 (owner call, autonomous under the standing instruction)

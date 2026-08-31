@@ -286,13 +286,15 @@ clause — M5); the §5.1 p2 rows "Advanced search, filter & faceting" and the r
   01 declares no observability surface and records its NFR #3 probe as owed; 06 §6 registers the
   same gap and names this slice. Without it the p99 < 2 s show-stopper budget has no measurement
   point for its first segment. Owner: the Program Lead with 01 and 06. *(Raised by the slice-08 first lens pass.)*
-- **Is the history timeline a materialized projection or a request-time read?** §1.5 puts it In
+- ~~**Is the history timeline a materialized projection or a request-time read?**~~
+  **Answered (owner call, 2026-09-01 — P-D-70): a request-time read over frozen rows, and frozen rows are not write-path for C1's purpose** — C1 keeps browse and search off the *head* tables (contention, head-state dependence), and `products_entity_version` is append-only immutable history. §3.1 declaring no history table is the choice already made. Original text: §1.5 puts it In
   scope and §4 calls the projection tables rebuildable state, while §3.1 declares no history table
   and `inst-rh-timeline` describes a computation over 01's frozen rows. If it runs at request time
   it meets C1's "browse/search never touches write-path tables at request time" head-on, and nothing
   says whether frozen rows count as write-path for that purpose. Owner: this slice with 01.
   *(Two lenses raised it independently.)*
-- **What tells the projector a Product has been retired?** C2 requires `retired` out of default
+- ~~**What tells the projector a Product has been retired?**~~
+  **Answered (owner call, 2026-09-01 — P-D-70): the Product analogue of `SkuRetirementEffective`, whose mint is `04`'s own already-registered §6 item — now load-bearing.** Nothing else can carry the flip, which may trail `effectiveAt` (the D-47 guard), so no clock and no head read substitutes. Until `04` mints it a retired Product stays browsable, and that defect is pinned on the owning item rather than floating. Original text: C2 requires `retired` out of default
   browse and `inst-rp-stamp` rests its floor semantics on the flip, while 04's Events list names a
   SKU-only `SkuRetirementEffective` and 04 §6 registers that it has no Product analogue and no
   explicit "no event". As it stands a retired Product stays browsable forever. Owner: the lifecycle
@@ -321,12 +323,14 @@ clause — M5); the §5.1 p2 rows "Advanced search, filter & faceting" and the r
   to the projector, so a caught-up projector holding a row whose target was dead-lettered trips no
   alarm and withholds it indefinitely. Nothing defines the projector's poison-message posture.
   Owner: this slice with the events consumer owner. *(Raised by the slice-08 first lens pass.)*
-- **When does `projectedAt` advance, and do polled surfaces carry the stamp?** The advance rule
+- ~~**When does `projectedAt` advance, and do polled surfaces carry the stamp?**~~
+  **Answered (owner call, 2026-09-01 — P-D-70): it advances on every projector apply, version or none** — a zero-version tenant's bootstrap is an apply and stamps it — **and every polled surface carries the stamp of its own table's last apply**, which is what C3's every-response rule means for `products_read_delivery_state`. Original text: The advance rule
   covers the version half only, and for a zero-version tenant `projectedAt` is the sole freshness
   signal with no rule writing it. Separately §3.2 makes the dashboards read endpoints, so C3's
   every-response rule reaches `products_read_delivery_state`, whose content bears no relation to a
   catalog version. Owner: this slice with P-D-07's owner. *(Raised by the slice-08 first lens pass.)*
-- **Is `retired` retrievable in the p1 cut?** C2 and `inst-rb-query` state it at `p1` through "the
+- ~~**Is `retired` retrievable in the p1 cut?**~~
+  **Answered (owner call, 2026-09-01 — P-D-70): yes, through the by-id read under an explicit state opt-in** — browse stays exclusionary, the timeline stays `p2`, and the FR's `p1` is met by one explicit parameter that is never the default. Original text: C2 and `inst-rb-query` state it at `p1` through "the
   explicit history surface", and that surface is the `p2` timeline flow. Owner: this slice with the
   PRD owner, the FR's priority being the PRD's. *(Raised by the slice-08 first lens pass.)*
 - **Under which aggregate key are 02's two display events ordered?** The projector's idempotence
