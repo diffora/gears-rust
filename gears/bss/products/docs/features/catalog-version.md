@@ -573,7 +573,8 @@ columns, normative at that slice's §4:
   slice as a **derived cache of the ledger**, so it is a projection rather than an independently
   driven state.
 - `products_freeze_ack.state ∈ {pending, acked, released, not_frozen(forced)}` — **four values,
-  one column**. The retention-release fact rides its **own column**, `released_at`, precisely so
+  one column**, with **six admitted transitions and no others** (**P-D-60**). The retention-release
+  fact rides its **own column**, `released_at`, precisely so
   that it cannot be read as an ack or as a release through the participant's own door.
 
 Because §4 declares nothing, **this feature mints no `inst-` id at all** — unlike
@@ -661,11 +662,13 @@ writer in the design set as it stands** — §7.
 
 The system **MUST** create `products_catalog_version_entry`, keyed
 `(tenant_id, catalog_version_id, entity_kind, entity_id)` → `published_version`, holding
-**references** into immutable `products_entity_version` rows; and **MUST** hold the capture store's
-rows, keyed `(tenant_id, catalog_version_id, capture_kind)` → the **stored canonical copy** of the
+**references** into immutable `products_entity_version` rows; and **MUST** create
+**`products_catalog_version_capture`** as a table of its own (**P-D-60**), keyed
+`(tenant_id, catalog_version_id, capture_kind)` → the **stored canonical copy** of the
 category tree and display values, attribute definitions, category values, metadata maps,
 recognized sets, freeze-participant set and reference-producer set as of the snapshot. Live content
-is **copied, never referenced**. Both halves are append-only and the checksum covers both.
+is **copied, never referenced**. Both are append-only and the checksum covers both halves, being
+computed over content rather than over a table.
 
 The system **MUST** additionally index `(tenant_id, entity_kind, entity_id, published_version)` —
 **not** for a read of this feature's own, but because the primary key leads with
@@ -673,14 +676,17 @@ The system **MUST** additionally index `(tenant_id, entity_kind, entity_id, publ
 must look a row up by its entity coordinates. Without this index the predicate is a scan of every
 version of every tenant.
 
-**Whether the capture store is the same table is unresolved** — one slice bullet gives one table
-two disjoint keys and two disjoint column sets, and the answer changes what P-D-40's subquery
-scans. §7.
+**The capture store is its own table** (**P-D-60**), and that is what keeps this index honest: one
+PK cannot express both keys, a shared table would make every column of both halves nullable —
+admitting a row that is neither a valid entry nor a valid capture — and **P-D-40 needs no
+re-aiming**, its predicate being written over `products_catalog_version_entry`, whose every row now
+references an entity version. Capture rows reference nothing, so they never participated in that
+predicate.
 
 **Implements**: `cpt-cf-bss-products-flow-snapshot`
 
 **Touches**:
-- DB Table: `products_catalog_version_entry`
+- DB Table: `products_catalog_version_entry`, `products_catalog_version_capture`
 - Entities: `CatalogVersionEntry`, `VersionManifest`
 
 ### The P-D-40 referential predicate, by editing `m20260829_000007` in place
@@ -689,7 +695,9 @@ scans. §7.
 
 The system **MUST** replace `products_entity_version`'s **unconditional** `DELETE` refusal with
 **P-D-40**'s referential predicate: a frozen row may be deleted only when **no
-`products_catalog_version_entry` references it**. The change **MUST** be made **by editing
+`products_catalog_version_entry` references it** — a table whose **every row now references an entity
+version**, the capture rows having moved to `products_catalog_version_capture` (**P-D-60**), so the
+predicate and its index are exactly right as written and **P-D-40 needs no re-aiming**. The change **MUST** be made **by editing
 `m20260829_000007_create_products_entity_version.rs` in place** — this migration chain edits
 migrations in place and does not chase them with tightening ones — and **MUST** land on both
 engines: the Postgres `PL/pgSQL` `TG_OP` arm and the SQLite `trg_products_entity_version_no_delete`
@@ -741,7 +749,8 @@ triggers *by reading*. After this edit the Postgres arm's only execution remains
 
 The system **MUST** create `products_catalog_version_request` carrying `tenant_id`, `source`,
 `lane ∈ {interactive, bulk}`, `request_key`, `operation_key` (**nullable** — the bulk batch
-identity), `requested_at`, `state ∈ {pending, coalesced, superseded}` and `satisfied_by_version_id`
+identity), `requested_at`, `state ∈ {pending, coalesced}` — two values, **P-D-60** having struck
+`superseded` — and `satisfied_by_version_id`
 (**nullable** FK to `products_catalog_version`). **Both value columns carry a roster**, on the
 slice's own convention that *"every other state column in the set carries one"*: without one on
 `lane`, the column ships as free text, the coalescer's two-lane branch has an unhandled third case,
@@ -758,11 +767,14 @@ set rebuilt, and pricing's stuck pending refs cannot be reconciled.
 `requested_at` **MUST** be stamped by the door at ingress and **MUST NOT** be accepted from the
 caller — `design/06` §1.7's entity requires it and the lane SLO measures from it.
 
-**No door in the design set writes `superseded`, `coalesced` or `satisfied_by_version_id`.** The
-`superseded` value is either dead or an unwritten obligation; the other two are read by obligations
-this document states — `satisfied_by_version_id` is what rebuilds `satisfiedRequests` on a replay —
-with no writer named anywhere. Left open by this DoD deliberately: naming the doors would author
-the queue's state machine. §7.
+**The writer is named** (**P-D-60**): the **increment transaction** marks every request it satisfied
+`coalesced` and stamps its `satisfied_by_version_id` in the same transaction — it is the transaction
+that produces the `satisfiedRequests` set, which is the set P-D-50 gave the column its existence to
+let a replay rebuild. `coalesced` is **terminal**: a satisfied request is history naming its
+satisfying version. And `superseded` is **struck rather than given a door**, because nothing
+supersedes a request — a failed mechanical run re-coalesces and retries fresh, an unregistered source
+is refused at the door before a row exists (**P-D-52**), and an idempotent replay is caught by the
+UNIQUE above.
 
 **Implements**: `cpt-cf-bss-products-flow-increment`
 
@@ -782,6 +794,17 @@ and `products_freeze_ack`, keyed `(tenant_id, catalog_version_id, participant)` 
 The **retention-release fact MUST ride its own column**, `released_at`, and **MUST NOT** become a
 fifth state value. An earlier design revision wrote a `released(forced)` *state*, which asked one
 column to hold two values and left the implementer choosing which of two requirements to break.
+
+**Six transitions are admitted and no others** (**P-D-60**), stated in `design/06` §4:
+`pending → acked`; `pending → released` and `acked → released` through the participant's own
+`catalog_version × release` door, whose precondition is that it holds no live references rather than
+that it acked; `pending → not_frozen(forced)` by force-completion, **missing participants only**, so
+a row already `acked` or `released` is never overwritten; and `not_frozen(forced) → acked` /
+`→ released` for a recovered participant. `released` is **terminal** and `released_at` is
+**write-once** — a later ack does not clear it, the state moving to `acked` being what makes the stamp
+inert, since slice 10's gate reads the `(state, released_at)` pair.
+**The table has no entry point on purpose**: who writes `pending` at all is §7 row 46's, and the
+question of what creates the ledger rows is `design/06` §6's, both open.
 
 These rows **MUST NOT** be garbage-collected while their version exists: they are AC #44's
 version-liveness source, and never the per-SKU reference count, which carries no version dimension.
@@ -1257,6 +1280,10 @@ system **MUST** clear `composition_pending` as a **system save plus a re-publish
 version N+1, carrying **no** uncomposed-bundle override so **P-D-30**'s predicate is false on it and
 the flag is not re-raised.
 
+It **MUST** emit `SkuCompositionCleared` **and** the publish's own `SkuPublished` — two events, both
+naming the same `publishedVersion` (**P-D-60**, and `cpt-cf-bss-products-dod-cv-events` carries the
+reason).
+
 The flag **MUST** be written by the **publish door's own head-row `UPDATE`** — the statement
 carrying `published_version += 1` — and by no other, since 01 §4.2 admits the change only there and
 a save never bumps the version (**P-D-32**). Verified in shipped code: `composition_pending` is a
@@ -1425,6 +1452,14 @@ re-triggers are audit-plane and **MUST** carry **no** broker event.
 
 Each **MUST** be enqueued in the **same transaction** as the act it announces, and each **MUST**
 carry a **versioned** schema reference.
+
+**`SkuCompositionCleared` rides beside the `SkuPublished` the clear's own publish emits, and that
+publish event MUST NOT be suppressed** (**P-D-60**): `inst-fd-publish-emit` fires unconditionally and
+`08`'s projector keys on `publishedVersion` from `*Published`, so suppressing it would leave the read
+model a version behind on the entity whose flag just changed. The two are **additive**, carry the same
+entity and the same `publishedVersion`, and a consumer keyed on version therefore sees **one** version
+change — so no consumer obligation is created. `09`'s additivity rule is **not** widened by this; it
+stays scoped to its coalesced summary.
 
 **Two hand-transcribed rosters pin the eight, and all four events redden both — each MUST be
 extended in the same change.** `infra::events::events_tests::THE_EIGHT` pins the payload roster
@@ -1659,13 +1694,20 @@ here is ticked by inspection.
 [`../design/06-catalog-version.md`](../design/06-catalog-version.md) §6 — the slice's full count,
 not a selection — and **thirty-three raised here**, across two review passes: eleven while
 authoring, **twelve by the first three-lens pass** and **ten by the second**. Of the fifty-one,
-**twelve block no DoD in this document** (rows 3, 4, 5, 14, 34, 49, 50 and 51, plus rows 22 and 41,
-which **P-D-52 resolved on 2026-08-31**, row 37, which **P-D-53** resolved the same day, and row 30,
-resolved by **P-D-56** — of the four DoDs row 30 named, `cpt-cf-bss-products-dod-request-door` is
-freed, while `dod-increment-request-port`, `dod-coalescer` and `dod-posting-safe-observability` stay
-blocked by their own other rows. They are kept in place rather than struck from the register,
-because rows 41 and 45 cite row 22 and a deleted record would break the citations); the other
-thirty-nine each name the DoD they block. Rows 14 and 34 block nothing for a reason that is itself the finding:
+**sixteen block no DoD in this document**: rows 3, 4, 5, 14, 34, 49, 50 and 51, plus the eight
+resolved on **2026-08-31** — rows 22 and 41 by **P-D-52**, row 37 by **P-D-53**, row 30 by
+**P-D-56**, and rows 1, 9, 10 and 11 by **P-D-60**, the first round over *carried* rows, answered in
+`design/06` §6 first with the carry following. The other **thirty-five** each name the DoD they
+block.
+
+**A resolved row is kept in place rather than struck from the register**, because rows 41 and 45 cite
+row 22 and a deleted record would break the citations. Of the four DoDs row 30 named,
+`cpt-cf-bss-products-dod-request-door` is freed, while `dod-increment-request-port`, `dod-coalescer`
+and `dod-posting-safe-observability` stay blocked by their own other rows; P-D-60 freed
+`dod-composition-clear`, `dod-referential-delete-predicate`, `dod-request-queue` and
+`dod-freeze-ledger-tables`.
+
+Rows 14 and 34 block nothing for a reason that is itself the finding:
 **no DoD in §5 declares the `validate(lint)` door**, because nothing in the design set specifies it,
 and none names the archival or scale halves. Rows 49-51 block nothing because each asks what a
 convention **means**, not what a door does.
@@ -1676,13 +1718,22 @@ resolved record elsewhere can retract a decision's propagation, so none was touc
 
 ### Carried verbatim from `design/06` §6
 
-1. **Does the composition-clear re-publish emit `SkuPublished` beside `SkuCompositionCleared`?**
-   `inst-cc-clear` routes the clear through 01's publish door, whose `inst-fd-publish-emit` fires
+1. ~~**Does the composition-clear re-publish emit `SkuPublished` beside `SkuCompositionCleared`?**~~
+   **Answered in the slice (owner call, 2026-08-31 — P-D-60): both, `SkuCompositionCleared`
+   additive.** `design/06` §6 carries the answer and §2's `inst-cc-clear` the rule. Suppressing
+   `SkuPublished` would leave the read model a version behind on the entity whose flag just changed,
+   `08`'s projector keying on `publishedVersion` from `*Published`. Both carry the same entity and the
+   same `publishedVersion`, so a consumer keyed on version sees one version change and **no
+   obligation is created**; `12`'s additivity rule is not widened.
+   Original text: `inst-cc-clear` routes the clear through 01's publish door, whose
+   `inst-fd-publish-emit` fires
    `ProductPublished`/`SkuPublished` unconditionally, and 08's projector keys on `publishedVersion`
    from `*Published`. Neither slice says whether a consumer sees one event or two, and 12's
    additivity rule is scoped to 09's coalesced summary.
-   **Blocks**: `cpt-cf-bss-products-dod-cv-events`, `cpt-cf-bss-products-dod-composition-clear`.
-   **Owner**: this feature, with the events/audit consumer owner and `08-read-models`.
+   **Blocks**: no DoD — **resolved by P-D-60**; `cpt-cf-bss-products-dod-composition-clear` is freed,
+   while `dod-cv-events` stays blocked by rows 20, 27, 35, 39 and 47.
+   **Owner**: was this feature with the events/audit consumer owner and `08-read-models`;
+   **closed**.
 
 2. **OPEN — which budget this slice carries.** `DESIGN.md` §1.2 reads "the < 3 s propagation and
    < 5 s posting-safe budgets on the slice-01 outbox + slice-06 freeze machine". Read distributively
@@ -1746,36 +1797,69 @@ resolved record elsewhere can retract a decision's propagation, so none was touc
    `cpt-cf-bss-products-dod-snapshot-builder`.
    **Owner**: this feature.
 
-9. **Is the capture store the same table as `products_catalog_version_entry`?** One §4 bullet gives
+9. ~~**Is the capture store the same table as `products_catalog_version_entry`?**~~
+   **Answered in the slice (owner call, 2026-08-31 — P-D-60): two tables.** The capture rows are
+   **`products_catalog_version_capture`**, keyed `(tenant_id, catalog_version_id, capture_kind)`;
+   the entity half keeps the name, the key and the index. One PK cannot express both keys, and a
+   shared table would make every column of both halves nullable, admitting a row that is neither a
+   valid entry nor a valid capture. **P-D-40 needs no re-aiming** — its predicate is written over
+   `products_catalog_version_entry`, whose every row now references an entity version, so the
+   predicate and the index are exactly right as written. This row's own owner clause was **inverted**
+   on that point: two tables is the arm that owes no re-aiming, capture rows holding copies and
+   referencing nothing per §4's H3 fix. Original text: One §4 bullet gives
    one table two disjoint keys and two disjoint column sets. This is not cosmetic: 01 **P-D-40**'s
    DELETE predicate is written over that table name, so on the one-table reading the guard's
    subquery also scans capture rows that reference no entity version, and the index at §4 was added
    for the entity half only.
-   **Blocks**: `cpt-cf-bss-products-dod-version-entry-table`,
-   `cpt-cf-bss-products-dod-referential-delete-predicate` — **and it blocks the flagship**, because
-   the predicate cannot be written against a table whose row population is undecided.
-   **Owner**: this feature, with whoever re-aims P-D-40 if the answer is two tables.
+   **Blocks**: no DoD — **resolved by P-D-60**;
+   `cpt-cf-bss-products-dod-referential-delete-predicate` — **the flagship** — is freed, and
+   `dod-version-entry-table` stays blocked by row 49.
+   **Owner**: was this feature with whoever re-aims P-D-40; **closed**, and no re-aiming is owed.
 
-10. **Who writes the request states `superseded` and `coalesced`, and `satisfied_by_version_id`,
-    and what leaves them?** No instruction in `design/06` §2 or §3 writes any of the three, and
+10. ~~**Who writes the request states `superseded` and `coalesced`, and `satisfied_by_version_id`,
+    and what leaves them?**~~
+    **Answered in the slice (owner call, 2026-08-31 — P-D-60): the increment transaction writes two,
+    and `superseded` is struck.** The transaction that allocates the id, builds the manifest and
+    emits `CatalogVersionPublished` marks each request it satisfied `coalesced` and stamps its
+    `satisfied_by_version_id` — it is the transaction that produces the `satisfiedRequests` set, the
+    set **P-D-50** gave the column its existence to let a replay rebuild. `coalesced` is
+    **terminal**, which answers *"what leaves them"*. Nothing supersedes a request, so the roster
+    becomes `(pending, coalesced)`.
+    **A carry-fidelity note**: `design/06` §6 asks this of **`superseded` alone**; this row widened it
+    to all three and added the P-D-50 sentence. The widening is correct on the measurement — none of
+    the three had a writer — but it is a departure from verbatim this section's preamble does not
+    declare among its three. Original text: No instruction in `design/06` §2 or §3 writes any of the
+    three, and
     `satisfied_by_version_id` is the **P-D-50** column whose stated purpose is that without it a
     replayed `CatalogVersionPublished` cannot have its `satisfiedRequests` set rebuilt and pricing's
     stuck pending refs cannot be reconciled. On `superseded` specifically: `inst-sn-revalidate` says a failed mechanical run "re-coalesces and retries
     fresh, the request never lost", which the PRD echoes as "A request is never dropped". The value
     is either dead or an unwritten obligation.
-    **Blocks**: `cpt-cf-bss-products-dod-request-queue`.
-    **Owner**: this feature — name the door or strike the value.
+    **Blocks**: no DoD — **resolved by P-D-60**; `cpt-cf-bss-products-dod-request-queue` is freed.
+    **Owner**: was this feature; **closed** — the door named for two values, the third struck.
 
-11. **What is `products_freeze_ack.state`'s transition table?** Unstated: whether `pending` may go
+11. ~~**What is `products_freeze_ack.state`'s transition table?**~~
+    **Answered in the slice (owner call, 2026-08-31 — P-D-60): six edges, and one of the three
+    sub-questions was already answered elsewhere in this document.**
+    `cpt-cf-bss-products-dod-force-completion` already stated that a recovered participant's later ack
+    moves the row to `acked` and *"the stale stamp frees nothing"* — so `released_at` is **not**
+    cleared and is write-once. The other two follow from the doors' own wording: force-completion
+    records *each **missing** participant*, so it never overwrites `acked` or `released`; and the
+    release door's precondition is holding no live references rather than having acked, so
+    **`pending → released` is admitted**. `released` is terminal, no other transition is admitted, and
+    **the table has no entry point** — who writes `pending` is row 46's and what creates the ledger
+    rows is `design/06` §6's, both open. `freezeComplete`'s formula regression on `acked → released`
+    stays row 6's. Original text: Unstated: whether `pending` may go
     straight to `released`, whether force-completion may overwrite a row already `acked` or
     `released`, and whether a forced participant's later ack clears the `released_at` the ceremony
     stamped. Each answer changes both `freezeComplete` and slice 10's collection gate, which reads
     the pair.
-    **Blocks**: `cpt-cf-bss-products-dod-freeze-ledger-tables`,
-    `cpt-cf-bss-products-dod-force-completion`,
-    `cpt-cf-bss-products-dod-liveness-and-release`. It is also why §4 of this document declares no
-    state machine: authoring one here would be authoring the answer.
-    **Owner**: this feature, with `10-retention-erasure`.
+    **Blocks**: no DoD — **resolved by P-D-60**; `cpt-cf-bss-products-dod-freeze-ledger-tables` is
+    freed, while `dod-force-completion` stays blocked by rows 26, 31 and 33 and
+    `dod-liveness-and-release` by rows 31, 33 and 46. **§4 of this document now states the six edges**
+    rather than declining a machine, because the edges are the slice's answer and not this document's
+    invention.
+    **Owner**: was this feature with `10-retention-erasure`; **closed** for the edges.
 
 12. **What is the resolution API's transport and route?** `IntentfulResolver` is the only door in
     this slice with no route: the increment door and the diff both carry one, 08 explicitly puts the

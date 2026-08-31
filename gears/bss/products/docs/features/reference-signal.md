@@ -644,9 +644,10 @@ its five foreign seams — the two halves are one obligation seen from two sides
 **Implements**: `cpt-cf-bss-products-flow-producer-registration`
 
 **Touches**:
-- DB Table: `products_reference_producer`; and `products_catalog_version_entry` **only if**
-  `features/catalog-version.md` §7 row 9 resolves the capture store onto that table — cited, not
-  decided here
+- DB Table: `products_reference_producer`; and **`products_catalog_version_capture`**, the capture
+  store having been resolved onto a table of its own by **P-D-60** (`features/catalog-version.md`
+  §7 row 9, closed) — never `products_catalog_version_entry`, whose every row references an entity
+  version
 - Entities: `ReferenceProducer`
 
 ### The correction door, and the three gates it admits on

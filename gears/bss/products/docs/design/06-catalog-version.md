@@ -136,7 +136,7 @@ actor, the scenarios and the boundary.
 
 1. [ ] - `p1` - An `IncrementRequest` arrives through the **`products-sdk` increment-request client** (**P-D-15**) — a typed contract the consumer resolves from `ClientHub`, never an implementation package (manifest §3.4.1); the default deployment binds it **in-process**, and `POST /bss-products/v1/catalog-version-requests` (S2S; `catalog_version × request`) is the same contract's out-of-process binding and the authz door both bindings pass. The transport is not the performance axis — the lane SLO below is p95 ≤ 60 s, against which a round trip is noise (and **P-D-56** makes that structural rather than incidental: the door stamps `requested_at`, claims idempotently, enqueues and answers — taking **no** lease, that being the coalescer's in rule 2, and making no cross-gear call — so it fits inside the smallest budget a consumer may configure, its `registry_call_timeout_secs` rejecting `0` and capping at 60; the published batching SLO is rule 4's p95, not this acknowledgement) — it is the **error axis**: an in-process binding cannot fail with a network error, which is why the client's error taxonomy separates "not wired" from "unreachable" from "unusable answer" the way pricing's own `ProductCatalogClientV1` already does for the opposite direction. The request carries `{source, lane, request_key, operation_key?}` — **`requested_at` is stamped by the door at ingress**, never accepted from the caller (stated: §1.7's entity requires it and §2's lane SLO (`inst-cv-slo`) measures from it, while this list omitted it, so an SDK built from the flow would have left it unset), and the request carries — idempotent per `(source, request_key)`; a **bulk** request names its `operation_key` so the whole operation coalesces into ONE version (M3 fix). The trigger set (M1 fix): registered downstream addressability requests (pricing; **and this gear's own slice-09 bulk commits — a registered internal requester** whose requests carry an `operation_key` so the batch coalesces into one version; it sends no close signal, the window ending on D-47's 5-minute hard max (**P-D-46**, as rule 2 below states)), and the operator **catalog-publish act** — an entity publish NEVER enqueues an increment (the PRD §6.6 preamble is substance, not a 5-second technicality; a retirement's `effectiveAt` flip likewise does not enqueue — the next demand-driven version reflects it, L5 intended) - `inst-cv-request`
 2. [ ] - `p1` - The **coalescer** (one worker per tenant — C3 serialization) drains the queue: interactive requests coalesce within ≤ 5 s of the earliest pending; a **keyed bulk batch stays open** until the **5-minute hard max** from its earliest request — there is no early-close signal, **P-D-46** having struck `closed_at` — and lands as ONE version — interactive versions may publish in between without shredding it (M3 fix: D-47's "**bulk** … coalesces into one version" holds per `operation_key`, not per quiet window) - `inst-cv-coalesce`
-3. [ ] - `p1` - The increment transaction: allocate the next `catalog_version_id` from the per-tenant counter row (gapless by construction — the counter update and the version insert share the transaction), build the manifest (flow below), commit, emit `CatalogVersionPublished` carrying the changed-entity list vs the previous version **and `satisfiedRequests` — the `(source, request_key)` set this version committed** (H1 fix: pricing's finalizer maps its pending refs by its own request keys; a pure-pricing batch has an empty changed-entity list but never an empty `satisfiedRequests`). **No approval is consulted** (C2) - `inst-cv-commit`
+3. [ ] - `p1` - The increment transaction: allocate the next `catalog_version_id` from the per-tenant counter row (gapless by construction — the counter update and the version insert share the transaction), build the manifest (flow below), **mark every request it satisfied `coalesced` and stamp its `satisfied_by_version_id` in the same transaction** (**P-D-60** — this is the transaction that produces the set, and P-D-50 gave the column its existence so a replay can rebuild it), commit, emit `CatalogVersionPublished` carrying the changed-entity list vs the previous version **and `satisfiedRequests` — the `(source, request_key)` set this version committed** (H1 fix: pricing's finalizer maps its pending refs by its own request keys; a pure-pricing batch has an empty changed-entity list but never an empty `satisfiedRequests`). **No approval is consulted** (C2) - `inst-cv-commit`
 4. [ ] - `p1` - SLO instrumentation: `requested_at → published_at` p95 ≤ 60 s / max 5 min; a pending request past the lane deadline raises `catalog_version_overdue` (the registry-side mirror of pricing's `commit_overdue`) - `inst-cv-slo`
 
 ### Build the snapshot
@@ -185,7 +185,7 @@ Declared by [`../features/catalog-version.md`](../features/catalog-version.md) �
 The steps below are this slice's and are the normative ones; the FEATURE carries the
 actor, the scenarios and the boundary.
 
-1. [ ] - `p2` - The inbound composition signal (pricing's — **unregistered on their side, PRD §15**; the registry-side door is designed now so their adoption is one event handler) names the composed `bundle` SKU; the registry clears `composition_pending` as a **system save + re-publish** of the head (version N+1) — the flag itself being written by the **publish door's own head-row UPDATE**, the one carrying `published_version += 1`, since 01 §4.2 admits the change only in that statement and a save never bumps the version (**P-D-32**) — carrying no uncomposed-bundle override, so **P-D-30**'s predicate is false on it and the flag is not re-raised. **It requires a clean head (Blocking 5 fix)**: a publish freezes the *full* entity content (01 `inst-fd-publish-txn`), so this publish cannot deliver what slice 05 calls it — one "whose **sole content** is a system-owned flag" — while the head carries anything else. Any unpublished local edit or open approval on that head (`taxCategory` and `PlanTier` among them) would ride out under an `ApprovalRecord` with **no human approver**. So on a dirty head the clear is **deferred, never refused** *(P-D-14 as confirmed by **P-D-48**: deferred, never refused)*: the inbound signal is durable and idempotent, `composition_pending` stays `true`, a **`composition_clear_held`** alert names the entity and the blocking edit or approval, and the clear re-evaluates when the head next goes clean — including immediately after the operator publishes their own edit through the ordinary gate. The signal is never dropped and never carries someone else's change. This is the third instance of one guard: `CORRECTION_DIRTY_HEAD`/`CORRECTION_APPROVAL_OPEN` (07) and `PROMOTION_DIRTY_HEAD` (09) are the other two. On a clean head — **not exempt from the gate**: it runs as a `system_signal` approval subject auto-satisfied by the **signal itself as the authorizing principal** (recorded on the `ApprovalRecord` with the signal reference — the approver is the governed pricing-side act, named and audited, rather than an exemption). The satisfaction is **independent of the tenant's configured `N`** (05 C1, P-D-11): a `system_signal` subject neither consumes the human quorum nor is exempt from the gate, because `N` governs human approvals of **operator** acts and the governance for this one already happened pricing-side. *(This clause previously leaned on 05's "nothing publishes approver-less" interim, which P-D-11 retired when the count gained floor 0.)* The flag stays system-owned, never operator-mutable, emits `SkuCompositionCleared` — **this gear's outbound event, distinct from the inbound `BundleCompositionCompleted` that drove it** (one name had carried both directions until; a registry emitting the very event it consumes is a loop, not a contract) — and audits with the signal reference. Prior frozen versions keep the flag as it was (C4) - `inst-cc-clear`
+1. [ ] - `p2` - The inbound composition signal (pricing's — **unregistered on their side, PRD §15**; the registry-side door is designed now so their adoption is one event handler) names the composed `bundle` SKU; the registry clears `composition_pending` as a **system save + re-publish** of the head (version N+1) — the flag itself being written by the **publish door's own head-row UPDATE**, the one carrying `published_version += 1`, since 01 §4.2 admits the change only in that statement and a save never bumps the version (**P-D-32**) — carrying no uncomposed-bundle override, so **P-D-30**'s predicate is false on it and the flag is not re-raised. **It requires a clean head (Blocking 5 fix)**: a publish freezes the *full* entity content (01 `inst-fd-publish-txn`), so this publish cannot deliver what slice 05 calls it — one "whose **sole content** is a system-owned flag" — while the head carries anything else. Any unpublished local edit or open approval on that head (`taxCategory` and `PlanTier` among them) would ride out under an `ApprovalRecord` with **no human approver**. So on a dirty head the clear is **deferred, never refused** *(P-D-14 as confirmed by **P-D-48**: deferred, never refused)*: the inbound signal is durable and idempotent, `composition_pending` stays `true`, a **`composition_clear_held`** alert names the entity and the blocking edit or approval, and the clear re-evaluates when the head next goes clean — including immediately after the operator publishes their own edit through the ordinary gate. The signal is never dropped and never carries someone else's change. This is the third instance of one guard: `CORRECTION_DIRTY_HEAD`/`CORRECTION_APPROVAL_OPEN` (07) and `PROMOTION_DIRTY_HEAD` (09) are the other two. On a clean head — **not exempt from the gate**: it runs as a `system_signal` approval subject auto-satisfied by the **signal itself as the authorizing principal** (recorded on the `ApprovalRecord` with the signal reference — the approver is the governed pricing-side act, named and audited, rather than an exemption). The satisfaction is **independent of the tenant's configured `N`** (05 C1, P-D-11): a `system_signal` subject neither consumes the human quorum nor is exempt from the gate, because `N` governs human approvals of **operator** acts and the governance for this one already happened pricing-side. *(This clause previously leaned on 05's "nothing publishes approver-less" interim, which P-D-11 retired when the count gained floor 0.)* The flag stays system-owned, never operator-mutable, emits `SkuCompositionCleared` — **this gear's outbound event, distinct from the inbound `BundleCompositionCompleted` that drove it** (one name had carried both directions until; a registry emitting the very event it consumes is a loop, not a contract) — **beside the `SkuPublished` its own publish emits, which is not suppressed** (**P-D-60**: `inst-fd-publish-emit` fires unconditionally and 08's projector keys on `publishedVersion` from `*Published`, so a suppressed publish event would leave the read model a version behind on the entity whose flag just changed; `SkuCompositionCleared` is additive, both carry the same `publishedVersion`, and a consumer keyed on version sees one version change) — and audits with the signal reference. Prior frozen versions keep the flag as it was (C4) - `inst-cc-clear`
 
 ### Diff two versions (AC #20a)
 
@@ -272,22 +272,32 @@ without a fourth clock.
   · `checksum` · `staged_at` / `published_at` · `participant_set_snapshot` · `freeze_state ∈ {open, complete, complete(forced)}` (roster stated — every other state column in the set carries one, and C5 and `inst-rv-intent` both branch on `complete(forced)` being a value of it)
   (derived cache of the ledger) · manifest header. Append-only, physically guarded.
 - **`products_catalog_version_entry`** — `(tenant_id, catalog_version_id, entity_kind,
-  entity_id)` → `published_version` (references into immutable `products_entity_version`); plus
-  the **capture store** rows — `(tenant_id, catalog_version_id, capture_kind)` → the **stored
-  canonical copy** of the category tree and display values / attribute definitions / category values / metadata maps / recognized sets / freeze-participant set
-  / reference-producer set (07's symmetric-snapshot ride) as-of the snapshot (H3 fix: live
-  content is copied, never referenced). The manifest body;
-  append-only; the checksum covers both halves. **Indexed additionally on
+  entity_id)` → `published_version` (references into immutable `products_entity_version`).
+  Append-only. **Indexed additionally on
   `(tenant_id, entity_kind, entity_id, published_version)`** — not for a read of this slice's own,
   but because 01's `products_entity_version` retention DELETE is admitted only when no entry
   references the row (01 **P-D-40**), and the PK above leads with `catalog_version_id`.
+- **`products_catalog_version_capture`** — the **capture store**, a table of its own
+  (**P-D-60**): `(tenant_id, catalog_version_id, capture_kind)` → the **stored canonical copy** of
+  the category tree and display values / attribute definitions / category values / metadata maps /
+  recognized sets / freeze-participant set / reference-producer set (07's symmetric-snapshot ride)
+  as-of the snapshot (H3 fix: live content is copied, never referenced). Append-only. **It is
+  separate because one PK cannot express both keys** and a shared table would make every column of
+  both halves nullable, admitting a row that is neither a valid entry nor a valid capture; and
+  because P-D-40's predicate and index then judge a population whose every row references an entity
+  version. Capture rows reference nothing, so they never participated in that predicate.
+  Together the two tables are the **manifest body**, and the checksum covers both halves — it is
+  computed over content, not over a table.
 - **`products_catalog_version_counter`** — `(tenant_id)` → next id (the gapless allocator).
 - **`products_catalog_version_request`** — the queue: `tenant_id`, `source`, `lane`, **`request_key`**
   (UNIQUE with `(tenant_id, source)` — the idempotency and `satisfiedRequests` operand; the tenant
   column is what C3's per-tenant coalescer selects on, and without it one `source` serving many
   tenants collides across them), **`operation_key`**
   (nullable; the bulk batch identity — **P-D-46** struck `closed_at`, D-47's five-minute hard max being the declared bound rather than a fallback), `requested_at`, state
-  `(pending, coalesced, superseded)` and **`satisfied_by_version_id`** (nullable FK to
+  `(pending, coalesced)` — two values (**P-D-60** struck `superseded`: nothing supersedes a request,
+  a failed mechanical run re-coalescing and retrying fresh) — with `coalesced` **terminal** and
+  written, together with the FK below, by the **increment transaction** that produces the
+  `satisfiedRequests` set — and **`satisfied_by_version_id`** (nullable FK to
   `products_catalog_version` — **P-D-50**: the satisfying version gets a column instead of
   parameterizing a state value, exactly as the `FreezeLedger`'s `not_frozen(forced_at,
   ceremony_ref)` is spelled out in columns below. Without it a replayed `CatalogVersionPublished`
@@ -299,6 +309,16 @@ without a fourth clock.
   **`released_at`** /
   `not_frozen(forced_at, ceremony_ref)`; together the `FreezeLedger` and the AC #44 liveness
   records (never GC'd while their version exists — slice 10 contract).
+  **Six transitions and no others** (**P-D-60**): `pending → acked` (the ack door);
+  `pending → released` and `acked → released` (the participant's own `catalog_version × release`
+  door — its precondition is that the participant holds no live references, not that it acked);
+  `pending → not_frozen(forced)` (force-completion, **missing participants only**, stamping
+  `released_at` in the same transaction, so it never overwrites a row already `acked` or
+  `released`); `not_frozen(forced) → acked` and `not_frozen(forced) → released` (a recovered
+  participant through its own door — the stamp is not cleared, the state moving is what makes it
+  inert, and slice 10's gate reads the `(state, released_at)` pair). `released` is **terminal** and
+  `released_at` is **write-once** per registration. **The table has no entry point**: who writes
+  `pending` at all is §6's own open item, unanswered.
 - **Events**: `CatalogVersionPublished` (changed-entity list, `satisfiedRequests`, checksum,
   participant set), `FreezeForceCompleted`, `FreezeParticipantSetChanged`,
   `SkuCompositionCleared`; acks and re-triggers are audit-plane (explicit "no broker
@@ -343,12 +363,18 @@ lint 1, plus an orphaned `(records half);` fragment. All four now carry ids and 
 struck. Branch review.)*
 
 **Risks & open items**:
-- **Does the composition-clear re-publish emit `SkuPublished` beside `SkuCompositionCleared`?**
-  `inst-cc-clear` routes the clear through 01's publish door, whose `inst-fd-publish-emit` fires
-  `ProductPublished`/`SkuPublished` unconditionally, and 08's projector keys on `publishedVersion`
-  from `*Published`. Neither slice says whether a consumer sees one event or two, and 12's
-  additivity rule is scoped to 09's coalesced summary. Owner: this slice with the events/audit
-  consumer owner and 08. *(Raised by the slice-01 fourth lens wave.)*
+- ~~**Does the composition-clear re-publish emit `SkuPublished` beside `SkuCompositionCleared`?**~~
+  **Answered (owner call, 2026-08-31 — P-D-60): both, `SkuCompositionCleared` additive.** The clear is
+  a real publish producing version N+1, `inst-fd-publish-emit` fires unconditionally, and 08's
+  projector keys on `publishedVersion` from `*Published` — so suppressing `SkuPublished` would leave
+  the read model a version behind on the very entity whose flag changed. Both carry the same entity
+  and the same `publishedVersion`, so a consumer keyed on version sees one version change and no
+  obligation is created. 12's additivity rule is **not** widened; it stays scoped to 09's coalesced
+  summary and this act states its own. Original text: `inst-cc-clear` routes the clear through 01's
+  publish door, whose `inst-fd-publish-emit` fires `ProductPublished`/`SkuPublished` unconditionally,
+  and 08's projector keys on `publishedVersion` from `*Published`. Neither slice says whether a
+  consumer sees one event or two, and 12's additivity rule is scoped to 09's coalesced summary. Owner:
+  was this slice with the events/audit consumer owner and 08; **closed**.
 
 - **OPEN — which budget this slice carries.** `DESIGN.md` §1.2 reads "the < 3 s
   propagation and < 5 s posting-safe budgets on the slice-01 outbox + slice-06 freeze machine". Read
@@ -389,22 +415,46 @@ struck. Branch review.)*
   participant set is inside the byte-identity checksum — is stated nowhere; `freeze_state` on the
   same row carries a "(derived cache)" annotation and this column does not. Owner: this slice.
   *(Raised by the slice-06 first lens pass.)*
-- **Is the capture store the same table as `products_catalog_version_entry`?** One §4 bullet gives
+- ~~**Is the capture store the same table as `products_catalog_version_entry`?**~~
+  **Answered (owner call, 2026-08-31 — P-D-60): two tables.** The capture rows move to
+  **`products_catalog_version_capture`**, keyed `(tenant_id, catalog_version_id, capture_kind)`; the
+  entity half keeps the name, the key and the P-D-40 index. One PK cannot express both keys, and on
+  the one-table reading every column of both halves becomes nullable, admitting a row that is neither
+  a valid entry nor a valid capture. **P-D-40 needs no re-aiming** — its predicate is written over
+  `products_catalog_version_entry`, and under two tables it and its index are exactly right as
+  written, scanning no capture rows and carrying no dead entries; capture rows hold copies and
+  reference nothing, per this section's own H3 fix. Original text: One §4 bullet gives
   one table two disjoint keys and two disjoint column sets. This is not cosmetic: 01 **P-D-40**'s
   DELETE predicate is written over that table name, so on the one-table reading the guard's
   subquery also scans capture rows that reference no entity version, and the index at §4 was added
-  for the entity half only. Owner: this slice, with whoever re-aims P-D-40 if the answer is two
-  tables. *(Raised by the slice-06 first lens pass.)*
-- **Who writes the request state `superseded`, and what leaves it?** No instruction in §2 or §3
-  writes that value; `inst-sn-revalidate` says a failed mechanical run "re-coalesces and retries
-  fresh, the request never lost", which the PRD echoes as "A request is never dropped". The value
-  is either dead or an unwritten obligation. Owner: this slice — name the door or strike the value.
-  *(Raised by the slice-06 first lens pass.)*
-- **What is `products_freeze_ack.state`'s transition table?** Unstated: whether `pending` may go
+  for the entity half only. Owner: was this slice with whoever re-aims P-D-40; **closed** — no
+  re-aiming is owed.
+- ~~**Who writes the request state `superseded`, and what leaves it?**~~
+  **Answered (owner call, 2026-08-31 — P-D-60): the value is struck.** Nothing supersedes a request:
+  a failed mechanical run re-coalesces and retries fresh, an unregistered source is refused
+  `REQUEST_SOURCE_UNKNOWN` at the door before a row exists (**P-D-52**), and an idempotent replay is
+  caught by the `(tenant_id, source, request_key)` UNIQUE. The roster is **`(pending, coalesced)`**,
+  and the **increment transaction** writes `coalesced` and `satisfied_by_version_id` together — it is
+  the transaction that produces the `satisfiedRequests` set, which is the set **P-D-50** gave the
+  column its existence to let a replay rebuild. `coalesced` is **terminal**. Original text: No
+  instruction in §2 or §3 writes that value; `inst-sn-revalidate` says a failed mechanical run
+  "re-coalesces and retries fresh, the request never lost", which the PRD echoes as "A request is
+  never dropped". The value is either dead or an unwritten obligation. Owner: was this slice;
+  **closed**.
+- ~~**What is `products_freeze_ack.state`'s transition table?**~~
+  **Answered (owner call, 2026-08-31 — P-D-60): six edges, stated in §4, and one sub-question was
+  already answered elsewhere.** A forced participant's later ack does **not** clear `released_at` —
+  the state moving to `acked` is what makes the stamp inert, slice 10's gate reading the
+  `(state, released_at)` pair, which `cpt-cf-bss-products-dod-force-completion` already states.
+  Force-completion records *each missing participant*, so it never overwrites a row already `acked` or
+  `released`. And the release door's precondition is about live references rather than about having
+  acked, so **`pending → released` is admitted**. `released` is terminal; the table has **no entry
+  point**, who writes `pending` staying this section's *"nothing creates the ledger rows"* item and
+  `features/catalog-version.md` §7 row 46. Original text: Unstated: whether `pending` may go
   straight to `released`, whether force-completion may overwrite a row already `acked` or
   `released`, and whether a forced participant's later ack clears the `released_at` the ceremony
   stamped. Each answer changes both `freezeComplete` and slice 10's collection gate, which reads
-  the pair. Owner: this slice with 10. *(Raised by the slice-06 first lens pass.)*
+  the pair. Owner: was this slice with 10; **closed** for the edges.
 - **What is the resolution API's transport and route?** `IntentfulResolver` is the only door in
   this slice with no route: the increment door and the diff both carry one, 08 explicitly puts the
   surface out of its scope, and 01 hands this slice the intent clause without a surface. 12's

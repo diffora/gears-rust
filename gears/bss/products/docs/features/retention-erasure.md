@@ -888,7 +888,8 @@ cited instead:
   `cpt-cf-bss-products-dod-retention-gate`, whose predicate is the other half of all three;
 - the entity-version `DELETE` predicate this feature's GC spends —
   `features/catalog-version.md`'s `cpt-cf-bss-products-dod-referential-delete-predicate`, which
-  obliges it, and its §7 row 9 on whether the capture store shares that table;
+  obliges it — **row 9 is closed** (**P-D-60**): the capture store is its own table, so the predicate
+  judges a population whose every row references an entity version and needs no re-aiming;
 - whether §6 owes one criterion per DoD — `features/catalog-version.md` §7 row 50.
 
 ### Carried verbatim from `design/10` §6

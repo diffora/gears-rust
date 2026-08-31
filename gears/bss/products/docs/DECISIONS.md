@@ -1569,6 +1569,109 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   (the re-publish step).
 
 
+#### P-D-60 — Four carried rows of `06-catalog-version`: two events, two tables, a struck state value, and six edges
+
+- **Date**: 2026-08-31 (owner call — the first round over **carried** rows, answered in the slice and
+  then in the carry)
+- **Context**: `design/06` §6's four sole-blocking open items, taken together because they are one
+  document's and each turned out to be partly answered by text already in the set.
+
+**1. The composition-clear re-publish emits both events.**
+
+`inst-cc-clear` routes the clear through 01's publish door as a *"system save + re-publish of the head
+(version N+1)"*, `inst-fd-publish-emit` fires `ProductPublished`/`SkuPublished` unconditionally, and
+the crate's own event module says of the version field: *"`06` reads this as the content pointer and
+`08`'s projector keys on it"*. So suppressing `SkuPublished` would leave the read model one version
+behind on exactly the entity whose flag just changed. `SkuCompositionCleared` is **additive**, carrying
+the semantic fact a bare publish does not distinguish. **Both name the same entity and the same
+`publishedVersion`**, so a consumer keyed on version sees one version change — no consumer obligation
+is created. 09's additivity rule is *not* widened; it stays scoped to its coalesced summary and this
+act states its own.
+
+**2. The capture store is its own table.**
+
+§4's one bullet gave one name two disjoint keys — `(tenant_id, catalog_version_id, entity_kind,
+entity_id)` and `(tenant_id, catalog_version_id, capture_kind)` — and two disjoint column sets, one
+holding `published_version` as a reference into `products_entity_version`, the other a stored
+canonical copy. One PK cannot express both, and on the one-table reading every column of both halves
+becomes nullable, admitting a row that is neither a valid entry nor a valid capture — the class this
+gear's CHECK constraints exist to refuse. So `products_catalog_version_entry` keeps the entity half
+and **`products_catalog_version_capture`** takes the capture rows.
+
+**P-D-40 needs no re-aiming, and the row's own owner clause was inverted on this point.** Its
+predicate is written over `products_catalog_version_entry`, which the entity half keeps; two tables is
+the arm under which the predicate and its index
+`(tenant_id, entity_kind, entity_id, published_version)` are exactly right as written, with no
+capture rows scanned and no dead index entries. Capture rows hold copies and reference nothing, which
+is §4's own H3 fix — *"live content is copied, never referenced"* — so they never participated in that
+predicate on either reading.
+
+**3. `superseded` is struck; the increment transaction writes the other two.**
+
+No instruction writes any of the three, and the roster's third value has no candidate writer at all:
+`inst-sn-revalidate` says a failed mechanical run *"re-coalesces and retries fresh, the request never
+lost"*, the PRD echoes *"A request is never dropped"*, an unregistered source is refused
+`REQUEST_SOURCE_UNKNOWN` at the door before a row exists (**P-D-52**), and an idempotent replay is
+caught by the `(tenant_id, source, request_key)` UNIQUE. Nothing supersedes a request. The roster
+becomes **`(pending, coalesced)`**.
+
+`coalesced` and `satisfied_by_version_id` are written by the **increment transaction** — the one that
+allocates the id, builds the manifest, commits and emits `CatalogVersionPublished` carrying
+`satisfiedRequests`. That set *is* the requests it satisfied, so the same transaction marks them and
+stamps the FK; **P-D-50** gave the column its existence precisely so a replayed
+`CatalogVersionPublished` can have that set rebuilt, which fixes its writer as whoever produces it.
+`coalesced` is **terminal** — a satisfied request is history naming its satisfying version — which
+answers *"and what leaves them"*.
+
+**4. `products_freeze_ack.state`: six edges, and one of the three sub-questions was already answered.**
+
+`dod-force-completion` already states the third: *"a forced participant that later recovers and acks
+moves to `acked`, and `10-retention-erasure`'s gate reads the `(state, released_at)` **pair**, so the
+stale stamp frees nothing."* So a later ack does **not** clear `released_at`; the state moving is what
+makes the stamp inert, and `released_at` is write-once per registration. The other two follow from the
+doors' own wording: force-completion records *"each **missing** participant"*, so it never overwrites a
+row already `acked` or `released`; and the release door records that the participant *"holds no more
+live references to that version"*, a precondition about references rather than about having acked, so
+**`pending → released` is admitted** — a participant with nothing to freeze self-resolves without a
+two-person ceremony.
+
+| edge | door |
+|---|---|
+| `pending → acked` | the ack door |
+| `pending → released` | the participant's own `catalog_version × release` door |
+| `acked → released` | the same door (the `freezeComplete` regression this creates is §6's own separate item, unanswered here) |
+| `pending → not_frozen(forced)` | force-completion, missing participants only, stamping `released_at` in the same transaction |
+| `not_frozen(forced) → acked` | a recovered participant's ack; the stale stamp frees nothing |
+| `not_frozen(forced) → released` | a recovered participant's own door — the other arm `VERSION_FORCED_INCOMPLETE` names |
+
+**`released` is terminal**, and no transition other than the six is admitted. **The table has no entry
+point, deliberately**: who writes `pending` at all is `features/catalog-version.md` §7 row **46**'s,
+with §6's *"nothing creates the ledger rows"* item beside it, and both stay open.
+
+- **The arguments against, stated.** (1) Two events per act oblige a consumer to de-duplicate; the
+  shared `publishedVersion` is how, and that is a property of the payloads rather than a new duty.
+  (2) Two tables mean two append-only guards and two migrations; the checksum still covers both
+  halves, being computed over content rather than over a table. (3) Striking a roster value is a
+  closed-set edit — measured at three sites in two files, and the same word in `04`'s
+  `ScheduledTransition`, `05`'s `ApprovalRecord` and `01`'s approval rows is untouched. (4) A
+  transition table without an initial state is incomplete on purpose, and a reader who misses that
+  will look for the creation point in §4 rather than in row 46.
+- **A carry-fidelity finding, recorded because it changed the scope of arm 3.** `design/06` §6 asks
+  *"Who writes the request state `superseded`, and what leaves it?"* — one value. The FEATURE's
+  carried row 10 widened it to *"the request states `superseded` and `coalesced`, and
+  `satisfied_by_version_id`"* and added a P-D-50 sentence. The widening is correct on the measurement
+  and is what makes arm 3 answer all three, but it is a **departure from verbatim that §7's preamble
+  does not declare** — it lists three departures and question-widening is not among them.
+- **Not changed**: the `capture_kind` value roster and its own count question, `freezeComplete`'s
+  formula, `staged_at`'s missing writer, the resolution API's transport, and every other §6 item.
+- **Propagated**: `design/06-catalog-version.md` (§2 `inst-cc-clear` and the increment rule; §4's
+  entry/capture split, the request roster, the ack transition table; §6's four items answered),
+  `features/catalog-version.md` (§4 mirror, `dod-cv-events`, `dod-composition-clear`,
+  `dod-version-entry-table`, `dod-referential-delete-predicate`, `dod-request-queue`,
+  `dod-freeze-ledger-tables`, §7's arithmetic and rows 1, 9, 10, 11 answered),
+  `features/reference-signal.md` and `features/retention-erasure.md` — both cite row 9 as the
+  unresolved capture-store question and must now read as resolved.
+
 #### P-D-59 — `reference_watermark_stale` is an alerting rule over a gauge, so no fired-state is stored
 
 - **Date**: 2026-08-31 (owner call)
