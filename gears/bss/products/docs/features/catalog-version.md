@@ -120,7 +120,7 @@ all — and the division is the design set's rather than this document's:
 | `fr-grandfathered-retention-coupling` | the per-version freeze-registration records — the liveness **source** | the retention gate that reads them (`10-retention-erasure`, `inst-rt-gc`) |
 | `fr-revision-vs-version` | the version-binding-at-freeze clause | the two counters and the version history (`01-foundation`) |
 | `fr-bundle-adoption-guard` | the registry half — the `compositionPending` clearing lane | the pricing-side composition signal, unregistered (PRD §15) |
-| `nfr-snapshot-archival-dr` | the archival and snapshot operand | restore verification and the DR posture (`10-retention-erasure`) |
+| `nfr-snapshot-archival-dr` | the archival and snapshot operand — **see §7** | restore verification and the DR posture (`10-retention-erasure`) |
 | `nfr-publication-propagation` | **contested — see §7.** The slice claims the freeze-machine half of the < 3 s budget and `01-foundation` claims the outbox half, and both slices record the split as unsettled in their own open items | — |
 | `fr-prepublish-lint` | claimed by the slice and scoped In by its §1.5 | **nothing delivers it — see §7.** No instruction, store, grant, code or probe in the design set produces the report `09-bulk-promotion` consumes |
 
@@ -201,12 +201,14 @@ was twelve. The fifth is the only one this feature **writes into** rather than r
 counterpart clause. Two further foreign ids — `inst-fd-rule-registry` and `inst-lc-undeprecate` —
 appear only inside §7 re-measurement notes and are **not** seams this feature takes. The two unwritten ones are the reference-producer set's symmetric snapshot ride and the
 retention GC that reads this feature's liveness records — neither is a write path this feature
-takes, and both are named in §7.
+takes.
 
 **Positive findings against the shipped crate.**
 
 Three claims the design set makes about code were byte-verified at `41d1baa5e` and **hold**. They
-are recorded because a later reader will otherwise re-measure them.
+are recorded because a later reader will otherwise re-measure them. *Measurements in this document
+dated `41d1baa5e` still stand at `c081872ab`: no `.rs` file changed between the two commits, both
+being documentation-only.*
 
 - **`inst-cc-clear`'s mechanism is exactly what ships.** `composition_pending` is a
   `products_sku` column only, and `infra/storage/repo.rs` carries it as a **parameter** of the
@@ -224,9 +226,10 @@ are recorded because a later reader will otherwise re-measure them.
   `partition_for`.**
 - **The increment port already ships on the counterpart side, and it pre-agreed to become an
   adapter.** `bss_pricing_sdk::CatalogVersionRegistryV1` exists, is wired with a fail-closed
-  default, and `request_version` is reached from **thirteen production call sites in eleven
-  modules**, every one of them through `infra::registry_deadline::request_version_now`; plus a
-  single `committed_version` caller in `infra::jobs::readmodel_warm`. Its module doc: *"The contract lives here, in the catalog's
+  default, and `request_version` is reached from **twelve production call sites in ten modules** —
+  the count `infra::registry_deadline`'s own doc states — every one of them through
+  `infra::registry_deadline::request_version_now`; plus a single `committed_version` caller in
+  `infra::jobs::readmodel_warm`. Its module doc: *"The contract lives here, in the catalog's
   own SDK, because the registry gear has no code in this repository yet. That is a temporary
   asymmetry, not a claim of ownership: when the registry publishes its own SDK this trait becomes
   an adapter over it."* So `design/06` §1.7's *"The contract is the `products-sdk`
@@ -240,8 +243,9 @@ are recorded because a later reader will otherwise re-measure them.
 Pricing
 ships `LocalDevCatalogVersionRegistryV1`, selectable by `mode = "local_dev_invented_versions"`,
 which mints versions from `Utc::now().timestamp_millis()` — of the order 10¹² — behind a boot
-`warn!` reading *"Never run this beside the Product & SKU registry."* This feature's counter starts
-at **1** per tenant; `CatalogVersion` is `Ord`; and pricing's pin-eligibility frontier is
+`warn!` reading *"Never run this beside the Product & SKU registry."* This feature's counter is
+expected to start low — **no document pins its initial value**, which is part of what §7 row 23
+asks; `CatalogVersion` is `Ord`; and pricing's pin-eligibility frontier is
 **prefix-closed**. So on any deployment that ran in that mode, every version this registry issues
 sorts **earlier** than every locally minted one, and the frontier cannot advance past the
 contamination. The shipped code names the sweep — `LIKE 'dev-local-%'` over
@@ -482,9 +486,11 @@ previous version **inside the same transaction**.
 as *"advisory lock / queue partition"*; the house mechanism is neither — `gears/bss/libs/coord`
 ships a DB-backed distributed lease (`LeaseManager`, `LeaseGuard::spawn_renewal`, and
 `LeaseGuard::with_ack_in_tx`, a write fence), on which both `bss-pricing` and `bss-ledger` already
-depend. Both existing users key it **per gear and per pass, never per tenant**; this feature needs
-it **per tenant** and would be the first in BSS to do so. The key shape is therefore a decision,
-recorded in §7.
+depend. **A per-tenant key is precedented, not new**: `bss-pricing` keys its three job leases per
+gear and per pass, while **`bss-ledger` already keys two per tenant** —
+`recognition-run:{tenant}:{period_id}` and `period-close:{tenant_id}:{legal_entity_id}:{period_id}`
+— and `coord`'s own README offers one per `(tenant, period)` as a typical fit. What remains a
+decision is the **cardinality cost**, recorded in §7.
 
 Entity publishes are **not** blocked by a running increment — they land on heads, and the
 re-validation step decides whether the run must retry. Fan-out ordering per tenant is the version
@@ -520,15 +526,19 @@ state that it does not exist** — force-completion refusals ride `05-governance
 reader counting screaming-case tokens in that file arrives at eleven; the roster is six.
 
 **The 422 here is architectural, not wire — and it is a choice, not an impossibility.** The reason
-is **not** that no `CanonicalError` category renders 422: `design/01-foundation.md` §3.3 records that
-premise as **measured false** and retired by an owner's call of 2026-08-27, since a transport
-override can move a single occurrence's wire status inside its status class and 422 is in
-`FailedPrecondition`'s. What makes the rule true is the property it protects — *"this gear declares
+is **not** that *no path can produce* a 422: `design/01-foundation.md` §3.3 records **that** premise
+as measured false and retired by an owner's call of 2026-08-27, since a transport override can move
+a single occurrence's wire status inside its status class and 422 is in `FailedPrecondition`'s. The
+platform having **no 422 category** is a separate fact that §3.3 still quotes as governing, and it is
+not what was retired. What makes the rule true is the property it protects — *"this gear declares
 no transport override anywhere, and neither does pricing — so every registry code has exactly one
 wire shape"*. So `INTENT_REQUIRED` reaches the wire as a **400** carrying its code, no endpoint may
 declare a 422 for an error carrying a registry code in OpenAPI, and a bare 400 stays reserved for a
-malformed request. `error_mapping_tests::the_products_owned_422_codes_stay_wire_400_by_design` is
-what guards it, and reaching for `Http::status_code` is what it exists to catch.
+malformed request. `error_mapping_tests::the_products_owned_422_codes_stay_wire_400_by_design`
+guards the **three** codes shipped today (`VALIDATION`, `SCOPE_NOT_CONTAINED`, `INCOMPLETE_ENTITY`)
+as a **hard-coded array**, not a sweep, so it cannot see a fourth — which is why
+`cpt-cf-bss-products-dod-cv-error-taxonomy` obliges `INTENT_REQUIRED`'s row in it. Reaching for
+`Http::status_code` is what that test exists to catch.
 
 **The composition clear raises nothing** (`inst-cc-clear`) — see §2.
 
@@ -579,7 +589,7 @@ machine authored in this document would be authoring the answer. §7 carries the
 
 ## 5. Definitions of Done
 
-Every DoD below names types, functions, tables and tests **that exist at `41d1baa5e`** wherever
+Every DoD below names types, functions, tables and tests **that exist at `c081872ab`** wherever
 one exists, rather than inventing a shape. Where the shipped seam cannot host what this feature
 needs, the DoD says so and §7 carries the question.
 
@@ -592,16 +602,31 @@ with the id monotonic per tenant, carrying `checksum`, `staged_at`, `published_a
 `participant_set_snapshot`, `freeze_state ∈ {open, complete, complete(forced)}` and the manifest
 header, on **both** engines.
 
-The table **MUST** be append-only and **physically guarded**, mirroring the discipline
-`m20260829_000007_create_products_entity_version.rs` already ships for the frozen history: on
-Postgres one `PL/pgSQL` function branching on `TG_OP` behind a single trigger firing
-`BEFORE DELETE OR UPDATE`; on SQLite, which has no procedural language and whose `RAISE(ABORT, …)`
-takes a literal message, **two** triggers carrying the two messages. Both refusal messages **MUST**
-be asserted **apart**, because a body that lost its `UPDATE` branch would still refuse an update
-with the delete message — same outcome, different guard, and only the text tells them apart.
+The table **MUST** be append-only and **physically guarded** — but on the **whitelist**
+discipline, **not** the unconditional refusal `m20260829_000007_create_products_entity_version.rs`
+ships. That migration refuses every `UPDATE` outright, and says why: *"there is no admitted
+`UPDATE` for one to describe — unlike the head tables one migration over, where the whitelist
+exists precisely because some updates are legitimate."* **This table has an admitted update**:
+`cpt-cf-bss-products-dod-force-completion` obliges `freeze_state` to move to `complete(forced)`, and
+whichever act §7 row 38 assigns must move it to `complete`. Mirroring the unconditional guard would
+make the whole `complete(forced)` path uncommittable.
+
+So the model is `m20260829_000002_create_products_product.rs`'s head-row guard
+(`cpt-cf-bss-products-dod-append-only-guard`): on Postgres one `PL/pgSQL` function branching on
+`TG_OP` behind a single trigger firing `BEFORE DELETE OR UPDATE`, comparing `NEW` against `OLD`
+with `IS DISTINCT FROM`; on SQLite, which has no procedural language and whose `RAISE(ABORT, …)`
+takes a literal message, the same whitelist split across **one no-delete trigger and one
+`WHEN`-guarded trigger per column class**, using `IS`/`IS NOT`. **`freeze_state` MUST be the only
+column the `UPDATE` arm admits**; every other column of this table — `checksum`, `staged_at`,
+`published_at`, `participant_set_snapshot` and the manifest header — **MUST** be refused, since the
+byte-identity flagship rests on them. `DELETE` **MUST** be refused outright.
+
+Both refusal messages — the delete arm's and the update arm's — **MUST** be asserted **apart**,
+because a body that lost its `UPDATE` branch would still refuse an update with the delete message:
+same outcome, different guard, and only the text tells them apart.
 
 **`freeze_state` MUST NOT be the authority.** The column is a derived cache; the ledger is the
-operand every predicate reads.
+operand every predicate reads. Admitting its write is a storage permission, not a promotion.
 
 **Implements**: `cpt-cf-bss-products-flow-increment`
 
@@ -672,7 +697,7 @@ trigger.
 
 This DoD is the reason this feature was built sixth. The shipped migration names it in five places,
 including the refusal message itself on both engines — a plain SQL string literal reading
-`DELETE is not permitted until the referential predicate lands with products_catalog_version_entry`
+`products_entity_version is frozen: DELETE is not permitted until the referential predicate lands with products_catalog_version_entry`
 — and its own module doc:
 *"the referential arm is **owed to slice 06**"*.
 
@@ -715,9 +740,12 @@ triggers *by reading*. After this edit the Postgres arm's only execution remains
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-request-queue`
 
 The system **MUST** create `products_catalog_version_request` carrying `tenant_id`, `source`,
-`lane`, `request_key`, `operation_key` (**nullable** — the bulk batch identity), `requested_at`,
-`state ∈ {pending, coalesced, superseded}` and `satisfied_by_version_id` (**nullable** FK to
-`products_catalog_version`).
+`lane ∈ {interactive, bulk}`, `request_key`, `operation_key` (**nullable** — the bulk batch
+identity), `requested_at`, `state ∈ {pending, coalesced, superseded}` and `satisfied_by_version_id`
+(**nullable** FK to `products_catalog_version`). **Both value columns carry a roster**, on the
+slice's own convention that *"every other state column in the set carries one"*: without one on
+`lane`, the column ships as free text, the coalescer's two-lane branch has an unhandled third case,
+and a typo'd lane produces a request neither window ever drains.
 
 `request_key` **MUST** be `UNIQUE` with `(tenant_id, source)`. **The tenant column is part of the
 key deliberately**: it is what the per-tenant coalescer selects on, and without it one `source`
@@ -855,11 +883,18 @@ Single-activeness **MUST** be taken through `gears/bss/libs/coord`'s `LeaseManag
 hand-rolled advisory lock: it is the shared BSS primitive, both `bss-pricing` and `bss-ledger`
 already depend on it, and `LeaseGuard::with_ack_in_tx` is the write fence a serialized increment
 transaction needs. `products/Cargo.toml` does **not** carry the dependency today and **MUST** gain
-it.
+it — **and the gear's `Migrator` MUST register `coord::migration::Migration::in_schema("bss")`**,
+as `bss-pricing`'s and `bss-ledger`'s migrators already do. The dependency alone compiles and then
+fails at runtime on every increment against a `coord_leases` table no migration in this gear
+creates.
 
-**The lease key is per tenant, and this feature is the first in BSS to key one that way** — both
-existing users key theirs *"per gear and per pass, never per tenant"*. The key shape and its
-cardinality cost are registered in §7.
+**The lease key is per tenant, and that shape is already in production in BSS** —
+`bss-ledger` keys `recognition-run:{tenant}:{period_id}` and
+`period-close:{tenant_id}:{legal_entity_id}:{period_id}`, and `coord`'s README names one per
+`(tenant, period)` as a typical fit. Pricing's *"per gear and per pass, never per tenant"* is a doc
+comment on **one of its three sweep keys** and carries a reason specific to a sweep: *"one sweep is
+one pass over every tenant, so there is nothing per-tenant to hold."* The **cardinality cost** is
+what §7 registers.
 
 **A steady interactive trickle MUST NOT defer a bulk window past its hard max**; the deadline logic
 gets its own probe.
@@ -882,6 +917,12 @@ the recognized sets, the
 **freeze-participant set snapshot** (AC #23) and the **reference-producer set snapshot** — 07's
 symmetric ride, for which the capture store declares its own `capture_kind`.
 
+**Seven, and the seventh is §4's.** `design/06` §4's capture-store bullet carries `category values`
+as a kind of its own; the normative instruction steps `inst-sn-collect` and `inst-df-diff` both list
+**six** and omit it. §4 governs on a column-level fact and a `capture_kind` value is one, so the
+roster here is seven — and the divergence is registered in §7 as owed to those two steps rather than
+resolved here.
+
 **Every live capture MUST be a stored copy, never a reference.** Category values, metadata,
 recognized sets and both set snapshots have no frozen versions of their own, so a reference to
 their live rows would break byte-identity the moment they moved. Only the Product and SKU halves
@@ -896,7 +937,7 @@ already records as owed there rather than at a call site.** `domain::canonical`'
 > *"§4.3 sorts a *row collection* — the category-assignment set, the attribute-value set — **by the
 > collection's own identifier**, and no payload on this surface carries a collection today… The
 > first door whose payload carries a collection owes that sort **here**, rather than at its own call
-> site."*
+> site…"*
 
 and, on the complete-set mode:
 
@@ -1083,7 +1124,14 @@ there is no `FORCE_COMPLETE_QUORUM`.
 **The shipped gate cannot form this subject.** `domain::governance::GovernanceGate::evaluate` takes
 an `EntityRef` whose `entity_kind` is `bss_products_sdk::models::EntityKind`, and that enum is
 exactly `Product | Sku`. **A catalog version is neither.** This is not a missing operand but a
-wrong-typed subject, and it applies equally to the participant-set DoD below. §7.
+wrong-typed subject, and it applies equally to the participant-set DoD below.
+
+**And the subject is not the only unformable argument.** `evaluate`'s second parameter is
+`expected_revision: InternalRevision` — the door's `If-Match` (**P-D-33**), which the trait's doc
+calls *"not advisory: an approval is only usable against the exact revision it pinned"*. A catalog
+version and a participant set carry **no internal revision**, as this document states about the
+event body below. Widening the subject type alone would still leave the call unwritable, so §7 names
+both arguments and the answer arrives in one round rather than two.
 
 **Implements**: `cpt-cf-bss-products-flow-freeze`
 
@@ -1105,8 +1153,10 @@ forever: a removal after publish **MUST NOT** retro-flip a historical version (A
 
 **`participant_set_snapshot` is stored twice and only one copy is inside the checksum** — the slice
 puts it on the `products_catalog_version` row *and* in the capture store, whose bullet says the
-checksum covers both halves. Which is authoritative, and therefore whether the participant set is
-inside the byte-identity checksum, is stated nowhere. §7.
+checksum covers both halves — and `cpt-cf-bss-products-dod-version-entry-table` obliges exactly
+that for the capture half, so the **capture** copy is inside the checksum. What is stated nowhere is
+which of the two copies is authoritative, and therefore whether the
+`products_catalog_version` row's copy is inside it. §7.
 
 The gate-subject problem from the DoD above applies here identically.
 
@@ -1133,14 +1183,16 @@ Version-liveness **MUST** be evaluated over the version's `participant_set_snaps
 snapshot member with **no registration row** still holds the version (**P-D-49**).
 
 **The honest v1 posture MUST be recorded rather than glossed.** The v1 set's one participant,
-pricing, is §15-silent, so **every** version's registration sits `pending` — a state the summary
-formula *"acked-and-not-yet-released"* does not classify, since it presumes an ack. **The operative
+pricing, is §15-silent, so every version's registration, **where one exists at all**, sits
+`pending` — a state the summary formula *"acked-and-not-yet-released"* does not classify, since it
+presumes an ack. (§7 row 7 records that nothing in the design set creates the row in the first
+place, so the two facts are separate and both open.) **The operative
 predicate is the retention gate's**: `inst-rt-gc` and the PRD require every registration to read
 `released`, or `not_frozen(forced)` with `released_at` stamped, so a `pending` registration holds
 the version. The gate therefore over-retains and never over-collects — the fail-safe direction —
 and **MUST** be read as *designed and not yet exercised* rather than as a working reclamation path.
 Whether the formula here and in P-D-18 should be restated to match the gate's predicate is the
-owner's — §7.
+owner's.
 
 **Implements**: `cpt-cf-bss-products-flow-freeze`, `cpt-cf-bss-products-flow-grandfathering`
 
@@ -1251,9 +1303,23 @@ only where a path segment names a resource this tenant has none of.
 subject of the refusal and a 404 would leak whether the version exists.
 
 **`INTENT_REQUIRED` is a 422 architecturally and reaches the wire as a 400** carrying its code —
-not because 422 is unreachable, which `design/01-foundation.md` §3.3 records as a retired false
-premise, but because this gear declares no transport override anywhere and neither does pricing, so
-every registry code has exactly one wire shape. A bare 400 stays reserved for a malformed request.
+not because *no path can produce* a 422, which `design/01-foundation.md` §3.3 records as a retired
+false premise, but because this gear declares no transport override anywhere and neither does
+pricing, so every registry code has exactly one wire shape. A bare 400 stays reserved for a malformed request.
+
+`INTENT_REQUIRED` **MUST** be added to
+`error_mapping_tests::the_products_owned_422_codes_stay_wire_400_by_design`'s array in the same
+change. That test is a hard-coded three-element list, so a fourth architectural 422 is unguarded
+until its row lands — and the day someone attaches `Http::status_code(422)` to it, every test stays
+green.
+
+**Every new variant MUST carry a resource marker** rather than falling to `ProductResource`'s
+default. `infra::error_mapping`'s own rule is *"Two resource markers, not one"* — a `Problem`'s
+`resource_type` and a caller's authorization both key on which resource actually refused — and
+`error_mapping_tests` pins `ProductResource` as the default for every unclaimed variant. Without a
+marker per new authz label, six catalog-version and freeze refusals would reach the wire naming a
+**Product that refused nothing**. Which marker each code takes follows the labels
+`cpt-cf-bss-products-dod-cv-authz` declares; where the design set does not say, §7 carries it.
 
 **Implements**: `cpt-cf-bss-products-algo-catalog-version-errors`
 
@@ -1285,6 +1351,13 @@ inspection:
   **hard-coded** `known = [READ, WRITE, PUBLISH]`, so **every new action must be added to that array
   as well as to `actions`**.
 
+The system **MUST** also declare one `crate::authz::resource_types` descriptor per new label.
+`authz.rs` requires it in terms — *"every authoring door passes one of these, never a bare label
+string, to `access_scope`"* — and **nothing goes red if it is omitted**: the descriptor test asserts
+only the two that exist, and the stub type-schemas derive from `labels::ALL`. So the labels would
+land, the permission instances would land, all four rosters would go green, and the six doors would
+have no `ResourceType` to hand the gate.
+
 Both modules admit the extension: their docs say the wider catalog *"belongs to the slices that
 build those doors"*. So this is a cost to state, not a contradiction to resolve.
 
@@ -1315,10 +1388,17 @@ re-triggers are audit-plane and **MUST** carry **no** broker event.
 Each **MUST** be enqueued in the **same transaction** as the act it announces, and each **MUST**
 carry a **versioned** schema reference.
 
-**`infra::events::events_tests::THE_EIGHT` pins the payload roster exact in both directions plus a
-length assertion, so all four redden it and MUST be extended in the same change.** The both-ways
+**Two hand-transcribed rosters pin the eight, and all four events redden both — each MUST be
+extended in the same change.** `infra::events::events_tests::THE_EIGHT` pins the payload roster
+exact in both directions plus a length assertion; `infra::broker::broker_tests::THE_EIGHT` is a
+second, wider roster — one row per event carrying the payload token, the `TYPE_ID` it must map to
+and the `SUBJECT_TYPE` that id must carry — with its counterpart `declared()` list hand-written
+beside it. **Neither is derived from the code**, both for the same stated reason: *"a list built
+from the code under test could only prove the code equals itself."* So the second one stays green at
+eight-and-eight while four new events' `TYPE_ID`, `SUBJECT_TYPE` and `TOPIC` literals go
+unasserted. The both-ways
 sweep is deliberate: *"a missing entry is an event that would be refused at its first enqueue; a
-**surplus** entry is a schema reference announced for an event this gear does not emit, which a
+*surplus* entry is a schema reference announced for an event this gear does not emit, which a
 consumer contract would take for a promise."*
 
 **Three of the four have no body type that fits, and this is stronger than a missing field.**
@@ -1328,7 +1408,15 @@ the other six … would have to invent a value for it"*. `EntityKind` is exactly
 **catalog version** and a **freeze participant set** have no entity kind, no entity id, no internal
 revision and no lifecycle state, so `CatalogVersionPublished`, `FreezeForceCompleted` and
 `FreezeParticipantSetChanged` need a body with **no entity dimension at all**. Only
-`SkuCompositionCleared` fits the existing shape, on a SKU. The new body type's shape is §7's.
+`SkuCompositionCleared` fits the existing shape, on a SKU.
+
+**And three artifacts are missing, not one.** Beyond the body core, `TypedEvent` demands `TYPE_ID`,
+`TOPIC` and **`SUBJECT_TYPE`** as compile-time constants, and every shipped event's `subject()`
+returns its `entity_id` — with exactly two subject-type constants declared, one per entity. On the
+interim queue `infra::events::enqueue` additionally requires an **`aggregate_id`**, which
+`partition_for` consumes. So a subject that is not an entity needs a subject type, a value for
+`subject()` **and** an aggregate id; two implementers left to invent the last would spread one
+tenant's versions across partitions differently. All three are §7's.
 
 **Implements**: `cpt-cf-bss-products-flow-increment`, `cpt-cf-bss-products-flow-freeze`,
 `cpt-cf-bss-products-flow-composition-clear`
@@ -1340,7 +1428,11 @@ revision and no lifecycle state, so `CatalogVersionPublished`, `FreezeForceCompl
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-require-broker`
 
-A deployment running this feature **MUST** set `ProductsConfig::require_broker = true`.
+A deployment running this feature **MUST** set `ProductsConfig::require_broker = true` **once a
+`dyn EventBrokerApi` provider is registered in its `ClientHub`** — and **MUST NOT** set it before,
+because until a provider exists the setting makes the gear un-bootable everywhere, which the
+`config.rs` sentence quoted below states outright. The ordering is part of the obligation, not a
+caveat on it.
 
 **This feature is the first whose own correctness depends on outbound delivery.** The freeze
 protocol begins with participants **receiving** `CatalogVersionPublished`; with no broker, the
@@ -1348,7 +1440,7 @@ holding processor accumulates the events undelivered, no participant ever acks, 
 is posting-unsafe forever** — while the only signal is one `warn!` line, which
 `config.rs` says is *"indistinguishable from a broker the gear failed to reach"*.
 
-Measured at `41d1baa5e`: the **only** `register::<dyn EventBrokerApi>` in the entire workspace is in
+Measured at `c081872ab`: the **only** `register::<dyn EventBrokerApi>` anywhere is in
 this gear's own `broker_tests.rs`, and `require_broker` defaults `false` because — in the config
 doc's own words — *"as of 2026-08-30 no gear in this workspace registers a `dyn EventBrokerApi` in
 any `ClientHub`, so defaulting to `true` would make this gear un-bootable everywhere today. The
@@ -1396,6 +1488,17 @@ Every ack, release, re-trigger, force-completion, participant-set change and com
 A force-completion's row **MUST** carry its `ceremony_ref`, the same value
 `products_freeze_ack.not_frozen(forced_at, ceremony_ref)` stores, so the ceremony and the
 registration are joinable from either side.
+
+**`products_audit_log` has no column that can carry it.** Its shipped columns are `audit_id`,
+`tenant_id`, `actor_ref`, `action`, `subject_kind`, `subject_id`, `subject_revision`, `error_code`,
+`attempted_key`, `reason`, `correlation_id`, `written_at`, `session_id`, `seal_state`, `chain_id`,
+`seq`, `prev_hash`, `row_hash` — no `ceremony_ref` and no generic payload column, and the token
+appears nowhere in the crate. The column **MUST** therefore land **by editing
+`m20260829_000004_create_products_audit_log.rs` in place**, on both engines, **nullable** since only
+force-completion rows carry it — the same in-place discipline
+`cpt-cf-bss-products-dod-referential-delete-predicate` follows. Overloading `attempted_key` or
+`reason` with a ceremony id is not available: neither is joinable and neither is typed. Whether the
+column is this feature's to add or `01-foundation`'s is registered in §7.
 
 **Implements**: `cpt-cf-bss-products-flow-freeze`,
 `cpt-cf-bss-products-flow-composition-clear`
@@ -1475,6 +1578,10 @@ registration are joinable from either side.
       refusal.
 - [ ] `UPDATE` on a frozen row is still refused with the **UPDATE** message, asserted apart from the
       delete message.
+- [ ] On `products_catalog_version`, a `DELETE` and an `UPDATE` of any column other than
+      `freeze_state` are each refused **with their own message, asserted apart**, on both engines;
+      an `UPDATE` that moves **only** `freeze_state` is admitted. The admitted arm is what proves the
+      whitelist is a whitelist and not a renamed unconditional refusal.
 
 **Positive controls, one line per declared code** — six codes, six lines. A blanket criterion here
 is ticked by inspection.
@@ -1500,16 +1607,15 @@ is ticked by inspection.
 
 ## 7. Known unknowns
 
-**The arithmetic of this section.** Forty-one rows: **eighteen carried verbatim** from
+**The arithmetic of this section.** Fifty-one rows: **eighteen carried verbatim** from
 [`../design/06-catalog-version.md`](../design/06-catalog-version.md) §6 — the slice's full count,
-not a selection — and **twenty-three raised here**, of which eleven were raised while authoring
-(four from the counterpart gear's shipped port, one from that gear's dev registry, one from the
-shared `gears/bss/libs/coord` library and five from this gear's own crate) and **twelve by the
-three-lens review of this document**. Of the forty-one, **five block no DoD in this document**
-(rows 3, 4, 5, 14 and 34); the other thirty-six each name the DoD they block. Rows 14 and 34 block
-nothing for a reason that is itself the finding: **no DoD in §5 declares the `validate(lint)`
-door**, because nothing in the design set specifies it, and none names the archival or scale
-halves.
+not a selection — and **thirty-three raised here**, across two review passes: eleven while
+authoring, **twelve by the first three-lens pass** and **ten by the second**. Of the fifty-one,
+**eight block no DoD in this document** (rows 3, 4, 5, 14, 34, 49, 50 and 51); the other forty-three
+each name the DoD they block. Rows 14 and 34 block nothing for a reason that is itself the finding:
+**no DoD in §5 declares the `validate(lint)` door**, because nothing in the design set specifies it,
+and none names the archival or scale halves. Rows 49-51 block nothing because each asks what a
+convention **means**, not what a door does.
 
 **Carried, not answered.** A question is registered against **its owner's** register. Where the
 owner is another document, the row carries a one-line pointer and nothing more; striking a
@@ -1597,8 +1703,11 @@ resolved record elsewhere can retract a decision's propagation, so none was touc
    the predicate cannot be written against a table whose row population is undecided.
    **Owner**: this feature, with whoever re-aims P-D-40 if the answer is two tables.
 
-10. **Who writes the request state `superseded`, and what leaves it?** No instruction in
-    `design/06` §2 or §3 writes that value; `inst-sn-revalidate` says a failed mechanical run "re-coalesces and retries
+10. **Who writes the request states `superseded` and `coalesced`, and `satisfied_by_version_id`,
+    and what leaves them?** No instruction in `design/06` §2 or §3 writes any of the three, and
+    `satisfied_by_version_id` is the **P-D-50** column whose stated purpose is that without it a
+    replayed `CatalogVersionPublished` cannot have its `satisfiedRequests` set rebuilt and pricing's
+    stuck pending refs cannot be reconciled. On `superseded` specifically: `inst-sn-revalidate` says a failed mechanical run "re-coalesces and retries
     fresh, the request never lost", which the PRD echoes as "A request is never dropped". The value
     is either dead or an unwritten obligation.
     **Blocks**: `cpt-cf-bss-products-dod-request-queue`.
@@ -1700,7 +1809,7 @@ against source at `41d1baa5e`.
 19. **The shipped port carries no `source`, `lane` or `operation_key`.**
     `CatalogVersionRegistryV1::request_version` takes `request_id: &str` and nothing else, while
     this feature's `IncrementRequest` is `(source, lane ∈ {interactive, bulk}, request_key,
-    operation_key?, requested_at)` and its uniqueness is on `(source, request_key)`. So **D-47's
+    operation_key?, requested_at)` and its uniqueness is on `(tenant_id, source, request_key)`. So **D-47's
     two-lane split and the `operation_key` coalescing have no operand on the only shipped caller**:
     pricing, the v1 registered set's one member, can express one lane. Whether the adapter supplies
     defaults, or the port widens, is not this document's to decide.
@@ -1718,9 +1827,10 @@ against source at `41d1baa5e`.
     **Owner**: this feature, with pricing's SDK owner.
 
 21. **`committed_version` is a poll and this feature declares no door for it.** The shipped port's
-    second method resolves a pending ref to its committed version, and pricing has **two** readers
-    of it — the publish path and the `ReadModelWarmJob` sweep, which `module.rs` says *"never calls
-    `request_version` — only `committed_version`"*. This feature's doors are request, read, ack,
+    second method resolves a pending ref to its committed version, and pricing has **exactly one**
+    caller of it — the `ReadModelWarmJob` sweep, which `infra::registry_deadline`'s own doc records
+    as *"awaited once, from the read-model warm sweep"*. `module.rs`'s *"One requester, two readers"*
+    counts **holders of the registry**, not callers of this method. This feature's doors are request, read, ack,
     release and force_complete, and its resolver is keyed on `catalogVersionId`. **Implementing the
     port today leaves one of its two methods with no surface.**
     **Blocks**: `cpt-cf-bss-products-dod-increment-request-port`,
@@ -1815,12 +1925,16 @@ against source at `41d1baa5e`.
     **Blocks**: `cpt-cf-bss-products-dod-increment-request-port`.
     **Owner**: this feature, with `12-consumer-contracts`, which owns the SDK type's audience.
 
-29. **The increment lease is BSS's first per-tenant one, and the key shape is a decision.**
-    `gears/bss/libs/coord` is the shared primitive and both existing users key theirs *"per gear and
-    per pass, never per tenant"*. A per-tenant key makes lease cardinality equal to tenant count and
-    puts a `coord_leases` row per active tenant in the increment path. Whether that is the right
-    shape, or the worker should shard tenants under a bounded key set, is open — and it is the one
-    row here whose answer changes an SLO rather than a schema.
+29. **What is the cardinality cost of a per-tenant increment lease?** `gears/bss/libs/coord` is the
+    shared primitive, and a per-tenant key is **precedented**: `bss-ledger` keys
+    `recognition-run:{tenant}:{period_id}` and
+    `period-close:{tenant_id}:{legal_entity_id}:{period_id}`, and the README offers one per
+    `(tenant, period)` as a typical fit. *(An earlier draft of this row called the shape "BSS's
+    first per-tenant one", generalising a doc comment that speaks for one of pricing's three sweep
+    keys. Withdrawn — the precedent question is settled and only the cost is open.)* A per-tenant key
+    puts a `coord_leases` row per active tenant in the increment path; whether that is right, or the
+    worker should shard tenants under a bounded key set, is open — and it is the one row here whose
+    answer changes an SLO rather than a schema.
     **Blocks**: `cpt-cf-bss-products-dod-coalescer`.
     **Owner**: this feature, with the `bss-coord` owner.
 
@@ -1945,6 +2059,113 @@ against source at `41d1baa5e`.
     `cpt-cf-bss-products-dod-request-door`.
     **Owner**: this feature, with pricing's SDK owner — the pairing row 22 names.
 
+
+42. **What is "the manifest header"?** `design/06` §4 lists it as the last item of
+    `products_catalog_version`'s column set and no document in the tree states its field set, its
+    type, or whether the checksum covers it. Every other column on that table has a stated shape or
+    a row here — `staged_at` at row 16, `participant_set_snapshot` at row 8, the missing
+    `digest_version` at row 24 — and this one has neither. Until it is decided the row cannot be
+    created.
+    **Blocks**: `cpt-cf-bss-products-dod-catalog-version-table`,
+    `cpt-cf-bss-products-dod-snapshot-builder`.
+    **Owner**: this feature, with whoever owns `design/06` §4.
+
+43. **Under which absence mode, and against which roster, is the manifest rendered?**
+    `domain::canonical`'s entry point takes the mode as a **required** argument precisely because the
+    wrong choice is undetectable — *"a caller that picked the wrong one would produce a plausible
+    string and a wrong digest, and nothing downstream could tell"* — and the complete-set arm
+    additionally requires a **declared roster**, since *"a set is only complete against a declared
+    roster, so the roster travels with the mode rather than being inferred from the value"*. No
+    document says which arm the manifest takes, or what its roster is. This is the same pairing row
+    15 names and belongs beside it.
+    **Blocks**: `cpt-cf-bss-products-dod-snapshot-builder`.
+    **Owner**: whoever owns 01 §4.3's canonicalization pin, with this feature.
+
+44. **Is `09-bulk-promotion`'s export door a third consumer of the shared version lookup, and who
+    refuses an unknown id there?** `cpt-cf-bss-products-dod-intentful-resolver` obliges one component
+    to be *"the single raising door of `CATALOG_VERSION_UNKNOWN` for both resolve and diff"*, while
+    `05-governance` §3.2 records a third route taking a `catalogVersionId` and spending the same
+    `× read` grant — 09's export door. Either that door resolves through this feature's component,
+    keeping the single-door clause true, or it raises its own refusal and the clause is false as
+    written.
+    **Blocks**: `cpt-cf-bss-products-dod-intentful-resolver`, `cpt-cf-bss-products-dod-cv-authz`.
+    **Owner**: this feature, with `09-bulk-promotion`'s owner and 05's roster owner.
+
+45. **What bounds `max_freeze_timeout` against the retention ceiling?**
+    `cpt-cf-bss-products-dod-freeze-timeout` obliges the export into
+    `resolved_idempotency_retention_hours`'s clamp, and the shipped call is **two-sided**: its upper
+    bound exists so *"the resolution stays total"*. `u32::clamp` requires `min <= max`, so a
+    `max_freeze_timeout` above the ten-year ceiling turns every expiry stamp into a panic. Row 36
+    asks for the field, its owner and its unit and does not reach this interaction.
+    **Blocks**: `cpt-cf-bss-products-dod-freeze-timeout`.
+    **Owner**: this gear's config owner with `01-foundation`'s — the pairing row 36 names.
+
+46. **Who writes `products_freeze_ack.state = pending`, and is the value live or dead?** No DoD in
+    §5 names an act that writes it: the ack door writes `acked`, force-completion writes
+    `not_frozen(forced)`, the release door writes `released`. Yet
+    `cpt-cf-bss-products-dod-liveness-and-release` rests its whole v1 posture on *"a `pending`
+    registration holds the version"*. This document applies exactly this test to the request
+    queue's values at row 10 and to `staged_at` at row 16, and not here. Row 11 asks for the
+    transition table and row 33 for `released_at`'s writers; neither asks whether `pending` has a
+    writer at all. Deciding it would author the ledger's creation point, which is what §4 of this
+    document declines.
+    **Blocks**: `cpt-cf-bss-products-dod-ack-door`,
+    `cpt-cf-bss-products-dod-liveness-and-release`.
+    **Owner**: this feature, with `10-retention-erasure` — its gate reads the pair.
+
+47. **Do the `SUBJECT_TYPE` ids P-D-51 pins extend to a subject that is not an entity, and where do
+    causation and actor land for a body that does not exist yet?** **P-D-51** is not in §1.4's
+    decision roster, which stops at P-D-50, and both its arms bear on this feature: arm 1 moves
+    causation and the pseudonymous actor onto the **payload** because the transport has no slot for
+    them, and arm 2 pins `subject_type` as the Product and SKU namespaces — neither of which a
+    catalog version or a participant set is. Row 27 asks for the body core and does not reach
+    either arm.
+    **Blocks**: `cpt-cf-bss-products-dod-cv-events`.
+    **Owner**: the events/audit owner with the PRD §4.5 owner — the pair row 27 names.
+
+48. **May a per-action `Doors` cell in `05-governance` §3.2 carry several routes?** **P-D-50** fixed
+    that *"a cell is per action"*, and `× read`'s cell names 09's export door. This feature spends
+    `× read` at two further doors — the diff, which is routed, and the resolver, which is not — so
+    either the cell's grammar admits several routes, or lint 3's route population is short, or rows
+    12, 13 and 31 should have counted `× read` as routed-but-under-declared. This feature cannot
+    widen another slice's table grammar.
+    **Blocks**: `cpt-cf-bss-products-dod-cv-authz`, `cpt-cf-bss-products-dod-diff-door`.
+    **Owner**: 05's roster owner, with the P-D-45/P-D-50 owner.
+
+49. **Does "column-level fact" reach a row population?** Row 40 asks whether a slice's §2
+    instruction step or its §4 storage shape governs a **column-level fact**, and applies it to a
+    key. The capture-store roster is a different shape of the same question: §4's bullet carries
+    **seven** `capture_kind` values and `inst-sn-collect` and `inst-df-diff` each list **six**,
+    omitting `category values`. This document takes §4 as governing and says so at the site, but the
+    precedence for a set of admitted row values rather than a column is stated nowhere. Either
+    answer edits a document this feature does not own.
+    **Blocks**: `cpt-cf-bss-products-dod-snapshot-builder`,
+    `cpt-cf-bss-products-dod-diff-door`, `cpt-cf-bss-products-dod-version-entry-table`.
+    **Owner**: the design-set owner — row 40's owner.
+
+50. **Is §6 owed one criterion per DoD, or is it a deliberately selected set?** §6 states its own
+    completeness only for the positive controls — *"six codes, six lines"* — while several DoDs have
+    no criterion, among them `cpt-cf-bss-products-dod-cv-authz`, whose body argues the opposite
+    discipline (*"the DoD names them as lines because a blanket criterion is ticked by
+    inspection"*), `cpt-cf-bss-products-dod-cv-events`,
+    `cpt-cf-bss-products-dod-increment-request-port`, `cpt-cf-bss-products-dod-require-broker` and
+    the export clamp of `cpt-cf-bss-products-dod-freeze-timeout`. The FEATURE template gives a DoD
+    no requirement field, so nothing mechanical settles it — the same absence row 34 notes for a
+    different purpose.
+    **Blocks**: no DoD directly; it decides whether §6 is short.
+    **Owner**: the design-set owner.
+
+51. **Does `pN` bind a delivery wave or a per-id importance?** `cpt-cf-bss-products-dod-cv-events`
+    and `cpt-cf-bss-products-dod-cv-audit` are `p1` and both oblige work whose flow and DoD are
+    `p2` — `cpt-cf-bss-products-flow-composition-clear` and
+    `cpt-cf-bss-products-dod-composition-clear`. Neither this document, the FEATURE template nor
+    `docs/checklists/FEATURE.md` states what the marker binds; the checklist constrains only that
+    `featstatus` be consistent with the flow, algo, state and dod checkbox states, not their
+    priorities. On the wave reading, one of these markers must move; on the importance reading,
+    nothing is wrong.
+    **Blocks**: no DoD; it decides whether four markers are misassigned.
+    **Owner**: the design-set owner.
+
 ### Owed to other documents, recorded and deliberately not edited
 
 Each is a one-line pointer into its owner's register. None was edited here.
@@ -1956,6 +2177,14 @@ Each is a one-line pointer into its owner's register. None was edited here.
 - **`infra/storage/entity/entity_version.rs`**'s module doc says *"no repository function reads or
   writes this table yet"*; `repo::insert_entity_version` exists and has two production callers.
   Owner: `01-foundation`'s code.
+- **`features/governance.md` open item 14** records that the auto-satisfied `system_signal`'s
+  *"signal reference as the authorizing principal" has no column*, the decision key being
+  `(approval_id, approver_principal)`. `cpt-cf-bss-products-dod-composition-clear` obliges that
+  write, so the approver of every auto-satisfied clear is unrecorded until 05 answers.
+  Owner: `05-governance`.
+- **`design/06` `inst-sn-collect` and `inst-df-diff`** each list six capture kinds where that
+  slice's own §4 carries seven; the omitted kind is `category values`. Owner: that slice — row 49
+  asks which side governs.
 
 **Three further items were carried into a draft of this section from the session handoff and are
 struck here, because re-measuring them at `41d1baa5e` is what the rule requires and two of the
