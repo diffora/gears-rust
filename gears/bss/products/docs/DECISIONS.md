@@ -1569,6 +1569,69 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   (the re-publish step).
 
 
+#### P-D-56 — Two budgets, not one number: the door's acknowledgement and the lane's batching SLO
+
+- **Date**: 2026-08-31 (owner call)
+- **Context**: `features/catalog-version.md` §7 row 30 asked whether the increment door's answer time
+  is this feature's to publish and whether five seconds is it, having measured that the only bound
+  stated anywhere lives in the caller's crate as `DEFAULT_REGISTRY_CALL_TIMEOUT_SECS = 5`.
+
+  **There are two independent fives in the picture and they never meet.** Pricing's is a
+  **client-side, per-deployment configurable** await budget: `config.rs`'s
+  `registry_call_timeout_secs` defaults to `DEFAULT_REGISTRY_CALL_TIMEOUT_SECS`, rejects `0`, and is
+  bounded above by `MAX_REGISTRY_CALL_TIMEOUT_SECS = 60`. So five is one deployment's default, and
+  adopting it as a published server promise would pin this gear's contract to a consumer's config
+  value. The design's own five — `dod-coalescer`'s *"within ≤ 5 s of the earliest pending"* — is the
+  **coalescing window**, which sits behind the acknowledgement rather than inside it.
+
+  **The shipped consumer contract already separates the two objects.**
+  `bss_pricing_sdk::CatalogVersionRegistryV1`'s `request_version` returns
+  `PendingVersionRef { request_id, pending_ref }` — an acknowledgement, not a version — and
+  `committed_version` returns `Option<CatalogVersion>`, `None` until commit, with the doc: *"A pending
+  ref that stays unresolved past the batching SLO is an alarm, not an error here — the caller decides
+  that, since only it knows how long the ref has been outstanding."* **That sentence presumes a
+  published batching SLO**, or "past the batching SLO" has no referent.
+
+  **And the caller's budget exists to protect the caller, not to describe us.**
+  `infra/registry_deadline.rs`: *"an unanswering peer pins a transaction, its row locks and a pool
+  connection on every mutating path at once"*, with ten of twelve awaits inside an open write
+  transaction.
+
+- **Decision**: this feature publishes **two** budgets, and neither is the number in the consumer's
+  crate.
+
+  | Call | Propagation |
+  |---|---|
+  | **The acknowledgement budget is a shape, not a copied number.** The door stamps `requested_at` at ingress, claims idempotently per `(tenant_id, source, request_key)`, enqueues and answers. It takes **no lease** and makes **no cross-gear call**, so it fits inside the *smallest* budget a consumer may configure — the config admits `1` and rejects `0` — rather than inside the default of five. The value stays the consumer's to set; what this gear owes is that the door's synchronous path has no unbounded step in it | `design/06` §2 rule 1; `dod-request-door`, `dod-increment-request-port` |
+  | **The batching SLO is already published and is C1's**: `requested_at → published_at` **p95 ≤ 60 s, max 5 min**, instrumented by `inst-cv-slo` and alarmed as `catalog_version_overdue`. This decision **mints nothing** — it names those numbers as the referent the shipped consumer's *"batching SLO"* means, so the consumer's alarm and this gear's meter key on one thing | `dod-posting-safe-observability` |
+  | **The ≤ 5 s interactive window and the five-minute bulk hard max are inputs to that SLO, not the SLO.** Reading either as the door's answer time is the conflation this entry exists to close | `dod-coalescer` |
+
+- **A defect the round found, and it was load-bearing.**
+  `features/catalog-version.md`'s `dod-increment-request-port` said the door *"MUST answer inside that
+  budget, and anything it does synchronously — taking the per-tenant lease
+  `cpt-cf-bss-products-dod-coalescer` obliges, or resolving a committed version — is inside it"*. The
+  lease is **not** the door's: `design/06` §2 rule 2 gives it to *"the **coalescer** (one worker per
+  tenant — C3 serialization)"* which *"drains the queue"*, and rule 3 puts the increment transaction
+  there too. A door that waited on a per-tenant lease could not fit inside a one-second budget under
+  contention, so the sentence and the budget could not both hold. Corrected: **the door enqueues, the
+  coalescer leases.** That also settles row 30's own conditional clause about `dod-coalescer`.
+- **The argument against, stated**: deriving the door's obligation from the *minimum* configurable
+  consumer budget is stricter than any real deployment needs, and it is a bound this gear cannot yet
+  measure — no door ships. The weaker alternative was to publish only the qualitative obligation and
+  defer any number; it was declined because the qualitative obligation is exactly what arm 1 states,
+  and naming the floor it must clear costs nothing while making the claim falsifiable the day the
+  door ships.
+- **Scope**: this decision does not answer §7 row 29, the cardinality cost of a per-tenant increment
+  lease, which stays open with its own owner. It sets no timeout for `committed_version` polling and
+  mints no code — a door that cannot answer is the consumer's `unreachable` arm, already distinct
+  from `REQUEST_SOURCE_UNKNOWN`'s refusal by **P-D-52**.
+- **Not changed**: pricing's constant, its config bounds, and C1's numbers. Nothing is edited in the
+  consumer's crate or its register.
+- **Propagated**: `design/06-catalog-version.md` (§2 rule 1's acknowledgement clause),
+  `features/catalog-version.md` (`dod-request-door`, `dod-increment-request-port` — the corrected
+  lease sentence, `dod-coalescer`, `dod-posting-safe-observability`, §7's arithmetic and row 30
+  answered).
+
 #### P-D-55 — The disposition rules register in the table's own row order, and the order is unobservable at this commit
 
 - **Date**: 2026-08-31 (owner call)

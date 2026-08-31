@@ -810,16 +810,23 @@ pending answer back to another.
 axis a transport choice actually moves, since an in-process binding cannot fail with a network
 error.
 
-**What the lane SLO does not bound is the door's own answer time, and the counterpart bounds it at
-five seconds.** The p95 ≤ 60 s of C1 measures `requested_at → published_at`, i.e. the **version**.
-Pricing holds the **call** to `DEFAULT_REGISTRY_CALL_TIMEOUT_SECS`, and its own doc says why that is
-short: *"what the budget bounds is not the registry's latency but the write transaction the caller is
-holding open while it waits — ten of the twelve call sites are inside one."* Its
+**What the lane SLO does not bound is the door's own answer time, and the two are different
+objects** (**P-D-56**). The p95 ≤ 60 s of C1 measures `requested_at → published_at`, i.e. the
+**version**. Pricing holds the **call** to `DEFAULT_REGISTRY_CALL_TIMEOUT_SECS`, and its own doc says
+why that is short: *"what the budget bounds is not the registry's latency but the write transaction
+the caller is holding open while it waits — ten of the twelve call sites are inside one."* Its
 `infra::registry_deadline` seam exists for the same reason — *"a hung peer pins a transaction, its
-row locks and a pool connection on every mutating path at once"*. So the door **MUST** answer inside
-that budget, and anything it does synchronously — taking the per-tenant lease
-`cpt-cf-bss-products-dod-coalescer` obliges, or resolving a committed version — is inside it. §7
-carries the question of whether the budget is this feature's to publish.
+row locks and a pool connection on every mutating path at once"*.
+
+**So the door's synchronous path MUST have no unbounded step in it**: it stamps `requested_at`, claims
+idempotently, enqueues and answers. It **MUST NOT** take the per-tenant lease — that is the
+coalescer's, `design/06` §2 rule 2 giving it to the worker that *drains the queue* — and **MUST NOT**
+resolve a committed version. **Five seconds is not the bound**: the consumer's
+`registry_call_timeout_secs` is per-deployment configurable, rejects `0` and is capped at
+`MAX_REGISTRY_CALL_TIMEOUT_SECS = 60`, so the door is held to the *smallest* value a consumer may
+configure rather than to that default. *(An earlier revision of this paragraph put the lease inside
+the door's synchronous work; a door that waited on a per-tenant lease could not fit any such budget
+under contention, and the two claims could not both hold.)*
 
 **This is the SDK's first write method**, and that is a shape decision this DoD names rather than
 takes. `bss_products_sdk::api::ProductsClient` ships exactly two methods, `get_product` and
@@ -886,6 +893,10 @@ within ≤ 5 s of the earliest pending, and holding a **keyed bulk batch open** 
 five-minute hard max from its earliest request — landing as **one** version, with interactive
 versions free to publish in between without shredding it. D-47's *"bulk … coalesces into one
 version"* holds **per `operation_key`**, not per quiet window.
+
+**The lease belongs to the drain worker, never to the door** (**P-D-56**): the request door enqueues
+and answers, and single-activeness is held by the per-tenant worker that drains. So the ≤ 5 s window
+and the five-minute bulk maximum are **inputs to the lane SLO, not the door's answer time**.
 
 Single-activeness **MUST** be taken through `gears/bss/libs/coord`'s `LeaseManager` rather than a
 hand-rolled advisory lock: it is the shared BSS primitive, both `bss-pricing` and `bss-ledger`
@@ -1492,7 +1503,12 @@ implementation obligation already met.
 
 The system **MUST** instrument `requested_at → published_at` at p95 ≤ 60 s and max 5 min, and
 **MUST** raise `catalog_version_overdue` for a pending request past the lane deadline — the
-registry-side mirror of pricing's `commit_overdue`. It **MUST** expose `event → ack` per participant
+registry-side mirror of pricing's `commit_overdue`.
+
+**Those two numbers are the published batching SLO** (**P-D-56**), and that is the referent the
+shipped consumer contract means: `committed_version`'s doc says *"A pending ref that stays unresolved
+past the batching SLO is an alarm, not an error here — the caller decides that"*. Nothing new is
+minted; the consumer's alarm and this meter **MUST** key on the same pair. It **MUST** expose `event → ack` per participant
 from this ledger, and the gauges: pending-request age per lane and unacked participants per version.
 
 **The `commit → durable-acceptance` meter is attributed to `01-foundation` by §3.3 and is declared
@@ -1643,10 +1659,13 @@ here is ticked by inspection.
 [`../design/06-catalog-version.md`](../design/06-catalog-version.md) §6 — the slice's full count,
 not a selection — and **thirty-three raised here**, across two review passes: eleven while
 authoring, **twelve by the first three-lens pass** and **ten by the second**. Of the fifty-one,
-**eleven block no DoD in this document** (rows 3, 4, 5, 14, 34, 49, 50 and 51, plus rows 22 and 41,
-which **P-D-52 resolved on 2026-08-31**, and row 37, which **P-D-53** resolved the same day — they are kept in place rather than struck from the register,
+**twelve block no DoD in this document** (rows 3, 4, 5, 14, 34, 49, 50 and 51, plus rows 22 and 41,
+which **P-D-52 resolved on 2026-08-31**, row 37, which **P-D-53** resolved the same day, and row 30,
+resolved by **P-D-56** — of the four DoDs row 30 named, `cpt-cf-bss-products-dod-request-door` is
+freed, while `dod-increment-request-port`, `dod-coalescer` and `dod-posting-safe-observability` stay
+blocked by their own other rows. They are kept in place rather than struck from the register,
 because rows 41 and 45 cite row 22 and a deleted record would break the citations); the other
-forty each name the DoD they block. Rows 14 and 34 block nothing for a reason that is itself the finding:
+thirty-nine each name the DoD they block. Rows 14 and 34 block nothing for a reason that is itself the finding:
 **no DoD in §5 declares the `validate(lint)` door**, because nothing in the design set specifies it,
 and none names the archival or scale halves. Rows 49-51 block nothing because each asks what a
 convention **means**, not what a door does.
@@ -1980,17 +1999,29 @@ against source at `41d1baa5e`.
     **Owner**: this feature, with the `bss-coord` owner.
 
 
-30. **Is the door's answer time this feature's to publish, and is five seconds it?** Pricing holds
+30. ~~**Is the door's answer time this feature's to publish, and is five seconds it?**~~
+    **Answered (owner call, 2026-08-31 — P-D-56): yes to publish, no to five, and there are two
+    budgets rather than one.** The **acknowledgement** budget is a shape: the door stamps
+    `requested_at`, claims idempotently, enqueues and answers, taking no lease and making no
+    cross-gear call, so it fits inside the *smallest* value a consumer may configure — its
+    `registry_call_timeout_secs` rejects `0` and caps at 60 — rather than inside that default of
+    five. The **batching SLO** is already published and is C1's, `requested_at → published_at`
+    p95 ≤ 60 s / max 5 min, which is the referent the shipped consumer's *"batching SLO"* means; the
+    ≤ 5 s window and the five-minute bulk maximum are inputs to it, not the door's answer time.
+    **The conditional clause below is settled too: the door does not take the lease** — `design/06`
+    §2 rule 2 gives it to the coalescer that drains the queue, and this document's own contradicting
+    sentence was corrected in the same round. Original text: Pricing holds
     every cross-gear registry call to `DEFAULT_REGISTRY_CALL_TIMEOUT_SECS = 5`, and
     `infra::registry_deadline`'s doc gives the reason: *"a hung peer pins a transaction, its row
     locks and a pool connection on every mutating path at once"*, with ten of twelve call sites
     inside an open write transaction. No document in this gear's design set states a bound on the
     increment door's own answer time; C1 bounds the **version**, not the call. So the budget the
     door is actually held to is declared only in the caller's crate.
-    **Blocks**: `cpt-cf-bss-products-dod-request-door`,
-    `cpt-cf-bss-products-dod-increment-request-port`, and constrains
-    `cpt-cf-bss-products-dod-coalescer` if the lease is taken synchronously in the door.
-    **Owner**: this feature, with pricing's SDK owner.
+    **Blocks**: no DoD — **resolved by P-D-56**; `cpt-cf-bss-products-dod-request-door`,
+    `cpt-cf-bss-products-dod-increment-request-port`, `cpt-cf-bss-products-dod-coalescer` and
+    `cpt-cf-bss-products-dod-posting-safe-observability` all carry the answer.
+    **Owner**: was this feature with pricing's SDK owner; **closed** — nothing in the consumer's
+    crate or register is changed by it.
 
 31. **Four more of this feature's doors have no route, and the design set records them as
     routeless rather than as absent.** `05-governance` §3.2 marks `catalog_version × ack`,
