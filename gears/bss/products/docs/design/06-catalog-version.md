@@ -130,7 +130,9 @@ on; the diff surface.
 
 ### Request → increment (the D-47 lanes)
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-flow-increment`
+Declared by [`../features/catalog-version.md`](../features/catalog-version.md) §2 as `cpt-cf-bss-products-flow-increment`.
+The steps below are this slice's and are the normative ones; the FEATURE carries the
+actor, the scenarios and the boundary.
 
 1. [ ] - `p1` - An `IncrementRequest` arrives through the **`products-sdk` increment-request client** (**P-D-15**) — a typed contract the consumer resolves from `ClientHub`, never an implementation package (manifest §3.4.1); the default deployment binds it **in-process**, and `POST /bss-products/v1/catalog-version-requests` (S2S; `catalog_version × request`) is the same contract's out-of-process binding and the authz door both bindings pass. The transport is not the performance axis — the lane SLO below is p95 ≤ 60 s, against which a round trip is noise — it is the **error axis**: an in-process binding cannot fail with a network error, which is why the client's error taxonomy separates "not wired" from "unreachable" from "unusable answer" the way pricing's own `ProductCatalogClientV1` already does for the opposite direction. The request carries `{source, lane, request_key, operation_key?}` — **`requested_at` is stamped by the door at ingress**, never accepted from the caller (stated: §1.7's entity requires it and §2's lane SLO (`inst-cv-slo`) measures from it, while this list omitted it, so an SDK built from the flow would have left it unset), and the request carries — idempotent per `(source, request_key)`; a **bulk** request names its `operation_key` so the whole operation coalesces into ONE version (M3 fix). The trigger set (M1 fix): registered downstream addressability requests (pricing; **and this gear's own slice-09 bulk commits — a registered internal requester** whose requests carry an `operation_key` so the batch coalesces into one version; it sends no close signal, the window ending on D-47's 5-minute hard max (**P-D-46**, as rule 2 below states)), and the operator **catalog-publish act** — an entity publish NEVER enqueues an increment (the PRD §6.6 preamble is substance, not a 5-second technicality; a retirement's `effectiveAt` flip likewise does not enqueue — the next demand-driven version reflects it, L5 intended) - `inst-cv-request`
 2. [ ] - `p1` - The **coalescer** (one worker per tenant — C3 serialization) drains the queue: interactive requests coalesce within ≤ 5 s of the earliest pending; a **keyed bulk batch stays open** until the **5-minute hard max** from its earliest request — there is no early-close signal, **P-D-46** having struck `closed_at` — and lands as ONE version — interactive versions may publish in between without shredding it (M3 fix: D-47's "**bulk** … coalesces into one version" holds per `operation_key`, not per quiet window) - `inst-cv-coalesce`
@@ -139,7 +141,9 @@ on; the diff surface.
 
 ### Build the snapshot
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-flow-snapshot`
+Declared by [`../features/catalog-version.md`](../features/catalog-version.md) §2 as `cpt-cf-bss-products-flow-snapshot`.
+The steps below are this slice's and are the normative ones; the FEATURE carries the
+actor, the scenarios and the boundary.
 
 1. [ ] - `p1` - `SnapshotBuilder` collects, inside the serialized transaction: every published/deprecated entity's **current published version reference** (into `products_entity_version` — 01's only-consumer-read-surface rule makes this the sole content source), current categories + their live display values (02 H2 branch), current attribute definitions, per-entity **metadata maps as of this instant** (P-D-06), the recognized sets, the **freeze-participant set snapshot** (AC #23), and the **reference-producer set snapshot** (07 `inst-pr-snapshot`'s symmetric ride — item 12 of the review: the capture store declares a `capture_kind` for it and both slice 07 and AC #43 depend on it, but this enumeration omitted it in both of its copies, so nothing wrote the row and the diff surface read an absent capture). **Every live capture is a STORED COPY** (canonical serialization into the manifest's capture store — H3 fix): category values, metadata, recognized sets, the freeze-participant set **and the reference-producer set** have no frozen versions of their own, so a reference to their live rows would break byte-identity the moment they moved; only the Product/SKU halves are references (into the immutable `products_entity_version` rows) - `inst-sn-collect`
 2. [ ] - `p1` - **Stage-vs-commit re-validation (AC #40)**: the builder records each collected entity's `(id, published_version, lifecycle_state)`; before commit it re-reads the heads — any entity whose published version **or lifecycle state** moved between collect and commit (the AC's explicit "published version **or lifecycle state** moved" arm, its `When` naming the `deprecate`/`retire` race — H2 fix) **fails the run closed naming the entity** (`STAGED_ENTITY_CHANGED` for an operator publish; a mechanical run re-coalesces and retries fresh, the request never lost — **the lane split is now normative: `fr-catalog-publish-concurrency` and AC #40 were amended to state it (P-D-09), so this is no longer a design reading of the word "rejected"**) - `inst-sn-revalidate`
@@ -148,14 +152,18 @@ on; the diff surface.
 
 ### Resolve a version (declared intent)
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-flow-resolve`
+Declared by [`../features/catalog-version.md`](../features/catalog-version.md) §2 as `cpt-cf-bss-products-flow-resolve`.
+The steps below are this slice's and are the normative ones; the FEATURE carries the
+actor, the scenarios and the boundary.
 
 1. [ ] - `p1` - `IntentfulResolver` (`catalog_version × read` — the shared version-lookup component behind resolve AND diff is the single raising door of `CATALOG_VERSION_UNKNOWN`, L3) requires `intent`: absent ⇒ `INTENT_REQUIRED` (400-class, the consumer-side obligation the seam suite will assert); `browse` serves any published version at once; `posted` is refused `FREEZE_INCOMPLETE` until the `FreezeLedger` reads complete (C5) — and, at `complete(forced)`, refused **`VERSION_FORCED_INCOMPLETE`** naming each `not_frozen(forced)` participant, until every forced participant has since frozen or released **through its own `catalog_version × release` door** (the predicate reads `state`, so a row left `not_frozen(forced)` with `released_at` stamped by force-completion does **not** satisfy it; otherwise force-completion would discharge its own refusal in the transaction that raises it) (**P-D-19**: `fr-freeze-recovery`'s "pinned fail-closed" default is the registry's to enforce on its own door — it cannot rest on a consumer obligation booked against a gear that does not exist). **There is no second disjunct in v1** (**P-D-47**): the per-version auto-fallback opt-in stays what `fr-freeze-recovery` calls it, an off-by-default later enhancement, so no column, door or ceremony carries it here. A version whose forced participant never returns is superseded, not rescued — the participant leaves the governed set (`inst-fz-membership`) and the next increment snapshots the reduced set (C3, roll-forward only) — while the forced version itself stays refused, which is the pinned default. `browse` is unaffected in both cases - `inst-rv-intent`
 2. [ ] - `p1` - Re-resolution is byte-identical forever: content renders from the stored manifest + frozen entity versions; the checksum is returned and verifiable - `inst-rv-bytes`
 
 ### The freeze protocol
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-flow-freeze`
+Declared by [`../features/catalog-version.md`](../features/catalog-version.md) §2 as `cpt-cf-bss-products-flow-freeze`.
+The steps below are this slice's and are the normative ones; the FEATURE carries the
+actor, the scenarios and the boundary.
 
 1. [ ] - `p1` - On `CatalogVersionPublished`, every participant in the **version's snapshotted set** owes an ack; `products_freeze_ack` records them; `freezeComplete` = all acked (AC #21). The ack door (`catalog_version × ack`) accepts a participant's ack **only from that participant's own service identity** (S2S claims — the registration check `PARTICIPANT_UNKNOWN` is membership, not authn); idempotent per `(version, participant)` - `inst-fz-ack`
 2. [ ] - `p1` - The bounded timeout (configured; its value floors 01's idempotency retention) fails **closed**: past it the version stays non-posting-safe and `freeze_overdue` alarms name the silent participants (today: pricing, the v1 set's one member — **P-D-48**; the PRD §15 open is visible in this gear's own telemetry from day one) - `inst-fz-timeout`
@@ -165,19 +173,25 @@ on; the diff surface.
 
 ### Grandfathering invariant
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-flow-grandfathering`
+Declared by [`../features/catalog-version.md`](../features/catalog-version.md) §2 as `cpt-cf-bss-products-flow-grandfathering`.
+The steps below are this slice's and are the normative ones; the FEATURE carries the
+actor, the scenarios and the boundary.
 
 1. [ ] - `p1` - A frozen snapshot referenced by a grandfathered consumer is **never mutated** — held by construction: entity versions are append-only under 01 C5's history rows, manifests under §4 of this slice, and retirement/deprecation touch head rows only (04). This instruction exists so the delegation is auditable from the registry side: eligibility policy is plan-price/subscriptions-lifecycle's, the immutability is ours - `inst-gf-invariant`
 
 ### `compositionPending` clearing
 
-- [ ] `p2` - **ID**: `cpt-cf-bss-products-flow-composition-clear`
+Declared by [`../features/catalog-version.md`](../features/catalog-version.md) §2 as `cpt-cf-bss-products-flow-composition-clear`.
+The steps below are this slice's and are the normative ones; the FEATURE carries the
+actor, the scenarios and the boundary.
 
 1. [ ] - `p2` - The inbound composition signal (pricing's — **unregistered on their side, PRD §15**; the registry-side door is designed now so their adoption is one event handler) names the composed `bundle` SKU; the registry clears `composition_pending` as a **system save + re-publish** of the head (version N+1) — the flag itself being written by the **publish door's own head-row UPDATE**, the one carrying `published_version += 1`, since 01 §4.2 admits the change only in that statement and a save never bumps the version (**P-D-32**) — carrying no uncomposed-bundle override, so **P-D-30**'s predicate is false on it and the flag is not re-raised. **It requires a clean head (Blocking 5 fix)**: a publish freezes the *full* entity content (01 `inst-fd-publish-txn`), so this publish cannot deliver what slice 05 calls it — one "whose **sole content** is a system-owned flag" — while the head carries anything else. Any unpublished local edit or open approval on that head (`taxCategory` and `PlanTier` among them) would ride out under an `ApprovalRecord` with **no human approver**. So on a dirty head the clear is **deferred, never refused** *(P-D-14 as confirmed by **P-D-48**: deferred, never refused)*: the inbound signal is durable and idempotent, `composition_pending` stays `true`, a **`composition_clear_held`** alert names the entity and the blocking edit or approval, and the clear re-evaluates when the head next goes clean — including immediately after the operator publishes their own edit through the ordinary gate. The signal is never dropped and never carries someone else's change. This is the third instance of one guard: `CORRECTION_DIRTY_HEAD`/`CORRECTION_APPROVAL_OPEN` (07) and `PROMOTION_DIRTY_HEAD` (09) are the other two. On a clean head — **not exempt from the gate**: it runs as a `system_signal` approval subject auto-satisfied by the **signal itself as the authorizing principal** (recorded on the `ApprovalRecord` with the signal reference — the approver is the governed pricing-side act, named and audited, rather than an exemption). The satisfaction is **independent of the tenant's configured `N`** (05 C1, P-D-11): a `system_signal` subject neither consumes the human quorum nor is exempt from the gate, because `N` governs human approvals of **operator** acts and the governance for this one already happened pricing-side. *(This clause previously leaned on 05's "nothing publishes approver-less" interim, which P-D-11 retired when the count gained floor 0.)* The flag stays system-owned, never operator-mutable, emits `SkuCompositionCleared` — **this gear's outbound event, distinct from the inbound `BundleCompositionCompleted` that drove it** (one name had carried both directions until; a registry emitting the very event it consumes is a loop, not a contract) — and audits with the signal reference. Prior frozen versions keep the flag as it was (C4) - `inst-cc-clear`
 
 ### Diff two versions (AC #20a)
 
-- [ ] `p2` - **ID**: `cpt-cf-bss-products-flow-diff`
+Declared by [`../features/catalog-version.md`](../features/catalog-version.md) §2 as `cpt-cf-bss-products-flow-diff`.
+The steps below are this slice's and are the normative ones; the FEATURE carries the
+actor, the scenarios and the boundary.
 
 1. [ ] - `p2` - `GET …/catalog-versions/{a}/diff/{b}` covers **every snapshot member**: entities added/removed + per-entity published-version deltas (rendering the 01 history diff), **and the capture half — category tree and display values, attribute definitions, recognized sets, per-entity metadata maps, the participant/producer sets** (a metadata-only or live-entity-only change between two versions must appear; the manifest's own membership is the diff's universe) — computed read-only from the two stored manifests, byte-stable for a given pair, no retention effect (AC #20a) - `inst-df-diff`
 
@@ -185,12 +199,17 @@ on; the diff surface.
 
 ### 3.1 Concurrency & ordering
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-algo-cv-concurrency`
+Declared by [`../features/catalog-version.md`](../features/catalog-version.md) §3 as `cpt-cf-bss-products-algo-cv-concurrency`.
+The steps below are this slice's and are the normative ones; the FEATURE carries the
+Input, the Output and the boundary.
 
 1. [ ] - `p1` - One increment worker per tenant (advisory lock / queue partition): publishes serialize (AC #40), the counter row makes ids gapless and monotonic; entity publishes are **not** blocked by a running increment — they land on heads, and the re-validation step decides whether the run must retry - `inst-cvc-serial`
 2. [ ] - `p2` - The changed-entity list in `CatalogVersionPublished` is computed against the immediately previous version inside the same transaction — fan-out ordering per tenant is the version order by construction - `inst-cvc-order`
 
 ### 3.2 Error taxonomy (slice-owned codes)
+
+Declared by [`../features/catalog-version.md`](../features/catalog-version.md) §3 as `cpt-cf-bss-products-algo-catalog-version-errors`.
+The roster below is this slice's and is the normative one; the FEATURE carries the obligation and the boundary.
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-contract-cv-errors`
 
@@ -223,7 +242,9 @@ row and open to correction; the requirement is that every code carries one.*
 
 ### 3.3 Observability (the posting-safe budget)
 
-- [ ] `p2` - **ID**: `cpt-cf-bss-products-algo-posting-safe`
+Declared by [`../features/catalog-version.md`](../features/catalog-version.md) §3 as `cpt-cf-bss-products-algo-posting-safe`.
+The steps below are this slice's and are the normative ones; the FEATURE carries the
+Input, the Output and the boundary.
 
 NFR #4's program SLO decomposes here: `commit → event durably accepted` (the commit→durable-acceptance meter — 08 §3.3 names it as 01's, while 01 declares no observability surface and records its NFR #3 probe as owed; §6),
 `event → ack` per participant (this ledger), `requested → published` (C1). Gauges:

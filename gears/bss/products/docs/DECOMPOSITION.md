@@ -605,6 +605,10 @@ authored downstream of this document, in the order §3 establishes.
   - IncrementRequest
   - FreezeParticipant
   - FreezeAck
+  - VersionManifest
+  - FreezeLedger
+  - SnapshotBuilder
+  - IntentfulResolver
 
 - **Design Components**:
 
