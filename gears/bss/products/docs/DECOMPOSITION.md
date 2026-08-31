@@ -835,6 +835,7 @@ authored downstream of this document, in the order §3 establishes.
   - BulkBatch
   - RowLedger
   - ChangeReport
+  - PromotionResolver
 
 - **Design Components**:
 

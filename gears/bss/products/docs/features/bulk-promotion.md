@@ -1,0 +1,1236 @@
+# Feature: Bulk & Promotion
+
+- [ ] `p1` - **ID**: `cpt-cf-bss-products-featstatus-bulk-promotion-implemented`
+
+<!-- reference to DECOMPOSITION entry -->
+- [ ] `p1` - `cpt-cf-bss-products-feature-bulk-promotion`
+
+<!-- toc -->
+
+- [1. Feature Context](#1-feature-context)
+  - [1.1 Overview](#11-overview)
+  - [1.2 Purpose](#12-purpose)
+  - [1.3 Actors](#13-actors)
+  - [1.4 References](#14-references)
+- [2. Actor Flows (CDSL)](#2-actor-flows-cdsl)
+  - [Import a batch](#import-a-batch)
+  - [Export](#export)
+  - [Promote between environments](#promote-between-environments)
+  - [Bulk lifecycle](#bulk-lifecycle)
+- [3. Processes / Business Logic (CDSL)](#3-processes--business-logic-cdsl)
+  - [Batch mechanics](#batch-mechanics)
+  - [Error taxonomy](#error-taxonomy)
+- [4. States (CDSL)](#4-states-cdsl)
+  - [BulkBatch State Machine](#bulkbatch-state-machine)
+- [5. Definitions of Done](#5-definitions-of-done)
+  - [The two tables and the ledger's append-only discipline](#the-two-tables-and-the-ledgers-append-only-discipline)
+  - [The batch state machine, and its one consuming edge](#the-batch-state-machine-and-its-one-consuming-edge)
+  - [The import door and its two key scopes](#the-import-door-and-its-two-key-scopes)
+  - [The reserved idempotency lane, which ships unused](#the-reserved-idempotency-lane-which-ships-unused)
+  - [The stage phase, over two row kinds with different natures](#the-stage-phase-over-two-row-kinds-with-different-natures)
+  - [The `ChangeReport`, which is what the quorum signs](#the-changereport-which-is-what-the-quorum-signs)
+  - [The commit phase, and the gate mode this feature gives a caller](#the-commit-phase-and-the-gate-mode-this-feature-gives-a-caller)
+  - [The override ceremony that survives the lane](#the-override-ceremony-that-survives-the-lane)
+  - [One batch, one catalog version — and a window this feature does not close](#one-batch-one-catalog-version--and-a-window-this-feature-does-not-close)
+  - [The coalesced completion event](#the-coalesced-completion-event)
+  - [Export, and what makes it deterministic](#export-and-what-makes-it-deterministic)
+  - [The promotion resolver, total over identity](#the-promotion-resolver-total-over-identity)
+  - [The bulk lifecycle arm, and its separate grant](#the-bulk-lifecycle-arm-and-its-separate-grant)
+  - [The five codes, and the surface that reports them](#the-five-codes-and-the-surface-that-reports-them)
+  - [Resume and abandon, both through ordinary doors](#resume-and-abandon-both-through-ordinary-doors)
+  - [The four design-introduced names exist as named seams](#the-four-design-introduced-names-exist-as-named-seams)
+- [6. Acceptance Criteria](#6-acceptance-criteria)
+- [7. Known unknowns](#7-known-unknowns)
+  - [Carried verbatim from `design/09` §6](#carried-verbatim-from-design09-6)
+  - [Raised here rather than carried](#raised-here-rather-than-carried)
+  - [Owed to other documents, recorded and deliberately not edited](#owed-to-other-documents-recorded-and-deliberately-not-edited)
+
+<!-- /toc -->
+
+## 1. Feature Context
+
+### 1.1 Overview
+
+This feature owns catalog change at volume and the movement of a catalog between environments: the
+import pipeline — parse, per-row validate, stage as drafts, aggregated report, batch approval,
+per-row publish — plus export, promotion identity resolution, bulk lifecycle operations, batch and
+row idempotency, the single coalesced completion event, and the wiring that tags catalog-version
+requests with the batch's operation key so one batch lands in one catalog version.
+
+### 1.2 Purpose
+
+Ten thousand SKUs must be authorable in one act without the act becoming a governance bypass or a
+partial-failure surface. Two rules carry the whole design.
+
+**Bulk runs the ordinary pipeline per row, never a parallel one.** Every row goes through the same
+registered validators interactive authoring uses, lands through the same doors, and raises the same
+codes. Bulk introduces no second rule set and no second taxonomy.
+
+**No hidden partial failure.** Every row's fate is a ledger row with a reason, siblings never block
+each other, and a failure is row-local by construction — because each row's publish is atomic and
+independent, and the batch is a composite act whose approval is spent exactly once.
+
+### 1.3 Actors
+
+| Actor | Role in this feature |
+|-------|----------------------|
+| `cpt-cf-bss-products-actor-catalog-admin` | Runs imports, exports and promotions and bulk lifecycle acts; reads the ledger |
+| `cpt-cf-bss-products-actor-finance-reviewer` | **Approves batches** and reviews the `ChangeReport` before the quorum — materiality by first publishes and lifecycle transitions at any size, with the affected-entity trigger catching large non-material edits |
+
+`design/09` §1.3 names exactly these two. `PRD.md` §3 scopes the product manager to authoring, whose
+Needs list carries no approval queue and no lint report, and the finance reviewer to *"Reviews and
+approves finance-material catalog changes"* with *"Pending-approval queue with diffs, pre-publish lint
+report"* — the `ChangeReport` being that report. An earlier draft of this table gave the review to the
+product manager and omitted the approver entirely; **the actor who performs the act this feature's
+governance contract turns on is the finance reviewer**, and who runs an export is §7 row 22's.
+
+### 1.4 References
+
+- [`../PRD.md`](../PRD.md) §6.9 (`cpt-cf-bss-products-fr-bulk-import-export`), §10's
+  `cpt-cf-bss-products-usecase-bulk-operations` and
+  `cpt-cf-bss-products-usecase-environment-promotion`, §12 AC #33a and AC #38's bulk row.
+- [`../DECISIONS.md`](../DECISIONS.md) **P-D-02** (the bundle override ceremony's home), **P-D-17**
+  (update-as-draft as the promotion's purpose, which amended the FR, AC #33a and the use case),
+  **P-D-25** (one `DUPLICATE_CODE` for both reservations), **P-D-26** (the reserved
+  `internal:bulk-row` idempotency lane), **P-D-46** (`closed_at` struck; the bulk window closes on a
+  hard timer), **P-D-50** (this feature writes no operator free-text reason).
+- [`../design/09-bulk-promotion.md`](../design/09-bulk-promotion.md) — the slice. Its §2 carries the
+  **normative steps** of all four flows, §3.1 the batch mechanics and §3.2 the normative error
+  roster. This document declares their ids and carries the actor, the scenarios, the Input/Output and
+  the boundary.
+- Sibling slices: [`../design/01-foundation.md`](../design/01-foundation.md) (the doors every row
+  rides, the gate modes, the idempotency lanes),
+  [`../design/05-governance.md`](../design/05-governance.md) (the approval ceremony, the materiality
+  evaluator, the one-shot rule),
+  [`../design/06-catalog-version.md`](../design/06-catalog-version.md) (the increment requests this
+  feature tags, and the manifest export renders from),
+  [`../design/02-taxonomy-attributes.md`](../design/02-taxonomy-attributes.md) (the governed
+  live-entity envelope the staged live ops apply under),
+  [`../design/12-consumer-contracts.md`](../design/12-consumer-contracts.md) (the export artifact's
+  schema-version discipline).
+
+**Requirements**: `cpt-cf-bss-products-fr-bulk-import-export`,
+`cpt-cf-bss-products-usecase-bulk-operations`,
+`cpt-cf-bss-products-usecase-environment-promotion`
+
+**Principles**: `cpt-cf-bss-products-principle-registered-validators`
+
+**Constraints**: `cpt-cf-bss-products-constraint-tenant-isolation`
+
+**Components**: `cpt-cf-bss-products-component-capability-handlers`
+
+**Sequences**: `cpt-cf-bss-products-seq-environment-promotion`
+
+`design/09` §3.2 carried only `cpt-cf-bss-products-contract-bulk-errors`, and a `contract-` id stays
+at its slice. So **`cpt-cf-bss-products-algo-bulk-errors` is minted here** and §3.2 points at it — the
+eleventh time a `contract-`-only §3 section has needed it.
+
+**The code surface this feature is written against, measured at `7d5864c09`.** As on
+`features/clone.md`, part of what this feature needs was built ahead of its caller — and the two
+seams in question are each less finished than they look.
+
+**Two seams are prepared for a bulk row, and neither is prepared *for this feature alone*.**
+
+- **`GateMode::PreAuthorized` ships as an explicit door argument with no production caller.**
+  `domain::governance` declares the variant; both authoring doors record that an earlier revision,
+  reading `inst-fd-gate-mode`'s second clause as forbidding the first, *"left
+  [`GateMode::PreAuthorized`] a type with no call path at all"* (`api/rest/products.rs`) and *"no
+  call path anywhere in the gear"* (`api/rest/skus.rs`). Both now take the mode as an argument, and
+  within `products/src` it is passed only from `products_tests.rs`, `skus_tests.rs` and
+  `governance_tests.rs`.
+  **The caller it was added for is not this feature.** `domain::governance` says so: *"the caller it
+  exists for, `04-lifecycle`'s scheduled-publish runner, does not exist at this commit either, so
+  nothing is blocked by the refusal today."* A bulk row is **one of three** in-process callers the
+  variant enumerates — *"a scheduled activation, a cascade leg, a bulk row"* (emphasis this
+  document's) — so `inst-bk-commit`'s claim that the gate-mode instruction names a bulk row among its
+  callers is verifiable, and the ownership claim is not.
+- **`internal:bulk-row` is reserved in prose and in no code.** `api::rest` lists it among the lanes
+  *"held for non-HTTP"* callers and the idempotency migration's doc repeats the roster, while the
+  shipped phase says *"and this phase has none, so none is used here"* — and the doors give the
+  reason: the three names *"are named rather than defined as constants because the first non-`HTTP`
+  caller is the one that knows which of the three it is and what it writes in `client_key`."* Every
+  occurrence in the crate is inside a doc comment: no constant, no enum, no constraint.
+
+**What the crate's five "nothing is consumed" statements do and do not settle.**
+`domain::governance` says in five places that **nothing is consumed** under that mode, and its gate
+returns `GateVerdict::Refused` for it. This feature's commit phase says the batch approval **is**
+consumed once. **On consumption the two agree**: the spend happens at the `approved → committing`
+flip, and the per-row publishes that follow run `PreAuthorized`, **verifying** the named record
+without spending it. A DoD that read the crate as forbidding consumption would invert the design.
+
+**What they do not settle is whether the predicate can name a batch at all**, and that is registered
+against this feature elsewhere. `features/governance.md` §7 row 27 records it: the mode verifies that
+a record *"authorized **this subject** at **this pinned revision**"*, while a bulk row's revision is
+its own — *"Both fail by construction, and the mode carries only an id with no plan-membership
+operand."* The shipped seam is narrower still: `evaluate`'s subject is an `EntityRef` whose
+`entity_kind` is `{Product, Sku}`, so a `bulk_batch` subject cannot be named. That row names *"this
+feature with 04 and 09"* as owners, and §7's owed subsection carries it rather than this section
+claiming the reconciliation is complete.
+
+**Everything the bulk path is made of is absent** — zero occurrences each across `products/src`:
+
+- the tables `products_bulk_batch` and `products_bulk_row`;
+- all three routes — `bulk/imports`, `bulk/exports`, `bulk/lifecycle`;
+- all five codes this feature declares, plus `STALE_LIVE_OP`, which is
+  `02-taxonomy-attributes`' and which this feature's commit phase raises;
+- the coalesced event `CatalogBulkOperationCompleted`;
+- **`operation_key`** — the whole mechanism that makes one batch land in one catalog version.
+
+## 2. Actor Flows (CDSL)
+
+Each flow below is **declared here and stepped in
+[`../design/09-bulk-promotion.md`](../design/09-bulk-promotion.md) §2**, whose steps are the
+normative ones. What this section carries is the triggering actor, the scenarios and the boundary.
+
+### Import a batch
+
+- [ ] `p1` - **ID**: `cpt-cf-bss-products-flow-import`
+
+**Actor**: `cpt-cf-bss-products-actor-catalog-admin`, with
+`cpt-cf-bss-products-actor-finance-reviewer` reviewing the report and approving
+
+**Success Scenarios**:
+
+- **The door is idempotent on the batch key.** `POST /bss-products/v1/bulk/imports` spends
+  `bulk × execute`; a replayed batch returns the existing `BulkBatch` rather than starting a second.
+- **Row keys are batch-scoped**, and a row reaching the publish door resolves that door's key as the
+  reserved lane `internal:bulk-row` with the row's id as the client key. A row re-listed in a **new**
+  batch is a **new act** — its stage validation decides its fate against the store — and only a
+  retry **within** the batch no-ops against the ledger.
+- **Stage runs the ordinary pipeline per row.** Product and SKU rows run the same registered
+  validators as interactive authoring and land as `draft` through the Foundation doors.
+- **Live-entity rows have no draft state, so they stage as pending operations.** Categories,
+  attribute definitions and recognized-set members validate at stage as a **dry run** against the
+  live tree and sets, and are recorded in the ledger as pending `GovernedLiveOp`s applied at commit
+  under the batch approval.
+- **Dependency order is categories and vocabularies, then Products, then SKUs**, and commit
+  preserves it.
+- **The `ChangeReport` is generated from the ledger** — counts, per-type summary, a deterministic
+  sample, the pre-publish lint findings, the scope-values lint, and the itemised override-carrying
+  rows named individually — and submitted to `05-governance` as **one** approval with subject kind
+  `bulk_batch`.
+- **The commit phase publishes per row in `PreAuthorized` mode**, each row pinned to its ledger
+  revision, and the batch's catalog-version requests carry the `operation_key` so the whole batch
+  lands in **one** `CatalogVersion`.
+- **Completion emits exactly one `CatalogBulkOperationCompleted`** with the ledger digest, and the
+  ledger stays queryable.
+
+**Error Scenarios**:
+
+- **A row whose in-batch dependency failed fails `BULK_DEPENDENCY_FAILED` without touching the
+  store.**
+- **A row edited after the report fails `STALE_REVISION` alone**, in the ledger. The batch approval
+  stands, siblings publish, and the ledger names the row. **A post-report edit to a member entity
+  does not supersede the batch** — which is why the state machine needs no supersession edge.
+- **A live-entity operation whose pinned expected target state moved fails `STALE_LIVE_OP` alone**,
+  row-locally, exactly as an edited entity row fails `STALE_REVISION`.
+- **A row whose override condition appeared after the report fails
+  `BULK_OVERRIDE_UNACKNOWLEDGED`** rather than publishing unacknowledged.
+- **Over the configured bounds** — max rows per batch, max concurrent batches per tenant — the door
+  refuses `BULK_LIMIT`.
+
+**Boundary, and the four things this flow deliberately is not.**
+
+**It is not a second rule set.** Row-level validation rules belong to the features that own them;
+bulk runs the same pipeline per row and never a parallel one. That is the whole reason a bulk row
+raises the owning feature's codes verbatim inside the ledger.
+
+**It is not the approval ceremony.** `05-governance` owns the quorum, the materiality evaluation and
+the one-shot rule. This feature submits one approval and consumes it once.
+
+**It does not increment the catalog version.** `06-catalog-version` does. This feature tags its
+requests with the `operation_key`, and **the bulk window closes on a five-minute hard maximum rather
+than on any signal this feature sends** — which is why **P-D-46** struck the stored close marker.
+
+**It writes no operator free-text reason** (**P-D-50**). `batch-abandoned` is a literal constant, the
+ceremony's reason lives on the approval record and the mass-retire reason on `04-lifecycle`'s — so
+`02-taxonomy-attributes`' content-PII enumeration no longer names this feature.
+
+### Export
+
+- [ ] `p1` - **ID**: `cpt-cf-bss-products-flow-export`
+
+**Actor**: `cpt-cf-bss-products-actor-catalog-admin` — `design/09` §1.3's own attribution. §7 row
+22 carries the three-way disagreement between that, this document's earlier reading, and `PRD.md`'s
+two role entries.
+
+**Success Scenarios**:
+
+- `GET /bss-products/v1/bulk/exports?catalogVersionId=` spends **`catalog_version × read`** — its own
+  grant, decoupled from the import pair, because an export renders a catalog-version manifest and is
+  auditor-shaped rather than an authoring act.
+- **It is rendered from the manifest**: entity halves from frozen versions, capture halves from the
+  capture store.
+- **It is byte-for-byte deterministic for a given version.**
+- **The artifact header carries a schema format version**, versioned in `products-sdk` under
+  `12-consumer-contracts`' compatibility discipline, and the format carries the stable codes and
+  canonical names — the promotion identities — plus full content.
+
+**Error Scenarios**:
+
+- A `catalogVersionId` this tenant has none of is the ordinary not-found; export introduces no code
+  of its own.
+
+**Boundary.** **Export artifacts are streamed, not stored** — determinism makes storage redundant,
+and that is the stated reason rather than a size argument.
+
+### Promote between environments
+
+- [ ] `p1` - **ID**: `cpt-cf-bss-products-flow-promote`
+
+**Actor**: `cpt-cf-bss-products-actor-catalog-admin` at the target
+
+**Success Scenarios**:
+
+- **Promotion *is* import.** The target imports a source export; there is no promotion door and no
+  governance bypass.
+- **`PromotionResolver` classifies every row, exhaustively, in four classes**: an unknown identity
+  **creates** with re-minted ids; an identity bound to matching content is a **no-op**; an identity
+  bound to **different** content is an **update-as-draft** against the existing entity — *"a
+  same-identity content difference is the promotion's purpose"* (**P-D-17**, which amended the
+  requirement, the acceptance criterion and the use case to match); and an incompatible kind or type,
+  a `retired` holder **or a dirty head** all **conflict**.
+- **The reviewer's pre-approval view is the `ChangeReport`** — staged content against the target's
+  current heads, the only diff producible before anything publishes.
+
+**Error Scenarios**:
+
+- **`PROMOTION_IDENTITY_CONFLICT`** where the identity is bound to an incompatible kind or type, or
+  to a **`retired`** holder — revival is clone-only, which is what makes the resolver total.
+- **`PROMOTION_DIRTY_HEAD`** where the target head carries unpublished local edits or an open
+  approval. An import **never silently merges into in-flight work** and never supersedes a local
+  approval.
+
+**Boundary.** The catalog-version diff of the post-commit verification view is **not** the reviewer's
+pre-approval view, and the slice records that the requirement's own sentence calling the version diff
+*"the reviewer's view for approvals"* still conflicts with that. This document does not resolve it,
+and **it is not a §7 row**: the slice flags it inline in `inst-pm-review` (M4), not in its §6, so no
+carried row can contain it. §7's owed subsection records it against the PRD's owner with `06`.
+
+### Bulk lifecycle
+
+- [ ] `p2` - **ID**: `cpt-cf-bss-products-flow-bulk-lifecycle`
+
+**Actor**: `cpt-cf-bss-products-actor-catalog-admin`
+
+**Success Scenarios**:
+
+- Mass deprecate and mass retire-initiate over a filter or id list, through
+  `POST /bss-products/v1/bulk/lifecycle`, spending **`bulk_lifecycle × execute`** — **its own grant**,
+  because the gear's most destructive batch act does not ride the import pair.
+- **Each row runs the ordinary lifecycle policy doors**, provenance `direct`, per-row confirmation
+  data aggregated into one report.
+- **The batch is material at any size** by its lifecycle transitions, with the affected-entity
+  trigger additionally catching large batches.
+- One batch approval, consumed once by the same `approved → committing` flip, each row's transition
+  door running in `PreAuthorized` mode naming that record.
+
+**Error Scenarios**:
+
+- The retire arm schedules per-row transitions and **the flip guards stay per-SKU**: no bulk override
+  of the reference guard exists, so a referenced row defers under the ordinary guard and the batch
+  never force-retires.
+
+**Boundary.** This is the `p2` arm of the feature, and it is the one place where a batch's blast
+radius is a lifecycle change rather than content. The grant split is the control.
+
+## 3. Processes / Business Logic (CDSL)
+
+Each process below is **declared here and specified in
+[`../design/09-bulk-promotion.md`](../design/09-bulk-promotion.md) §3**.
+
+### Batch mechanics
+
+- [ ] `p1` - **ID**: `cpt-cf-bss-products-algo-batch`
+
+**Input**: the submitted rows with the batch key and per-row keys; the target tenant's current heads,
+live tree and sets; the approval record once the quorum is met.
+
+**Output**: `products_bulk_batch` and `products_bulk_row` — the `RowLedger` — carrying every row's
+terminal state and reason; the `ChangeReport`; the per-row publishes and live-entity applies; the
+catalog-version requests tagged with the `operation_key`; and one completion event with the ledger
+digest.
+
+**Boundary**: the ledger is **the idempotency store for row keys**, distinct from the Foundation's
+endpoint store because row keys are **batch-scoped**. Rows are immutable after their terminal state —
+append-only evidence.
+
+**A batch is resumable, and abandonment uses no new door.** A crash mid-commit resumes from the
+ledger, per-row publishes being idempotent by row key. On abandon: created-draft rows discard through
+the ordinary discard door; **update-as-draft rows revert** through the ordinary save door with the
+last frozen version's content as payload, so the head returns to its published content with a
+revision bump and the literal audit reason `batch-abandoned`; pending live-entity operations are
+simply dropped, never applied.
+
+**Size bounds are configured** — max rows per batch and max concurrent batches per tenant, refused
+`BULK_LIMIT` — and the ten-thousand-SKU onboarding case is the sizing fixture rather than an
+illustration.
+
+### Error taxonomy
+
+- [ ] `p1` - **ID**: `cpt-cf-bss-products-algo-bulk-errors`
+
+**Input**: a row at any phase, or a batch at its door.
+
+**Output**: one of five codes this feature declares, or — for a row-level failure of any other kind —
+**the owning feature's code verbatim inside the ledger**.
+
+**Boundary**: the five are `BULK_DEPENDENCY_FAILED`, `PROMOTION_IDENTITY_CONFLICT`,
+`PROMOTION_DIRTY_HEAD`, `BULK_OVERRIDE_UNACKNOWLEDGED` and `BULK_LIMIT`. **Bulk introduces no
+parallel taxonomy**, and that is the rule the roster's shortness follows from.
+
+**Four of the five are per-row ledger outcomes, not responses of the batch door.** The import surface
+answers **202**; the row carries the outcome. So the statuses the slice assigns **to those four** —
+409 for the two promotion codes, 422-architectural for `BULK_DEPENDENCY_FAILED` and
+`BULK_OVERRIDE_UNACKNOWLEDGED` — **apply only where a caller asks a single row's disposition**, and
+there is no surface in this design that does. §7 carries which surface reports the ledger.
+
+**`BULK_LIMIT` is the exception and the door's own refusal.** An over-bounds batch is refused at the
+import door, so its status applies there rather than nowhere — and which status is the slice's open
+question, its whole mapping being recorded as proposed.
+
+**The 422s are architectural, not wire — by this gear's own choice** (`design/01` §3.3), *not*
+because no path can produce one. `infra::error_mapping` is explicit: *"**This is a choice, not an
+impossibility**, and the design set says so explicitly"*, the transport-override mechanism *"genuinely
+exists and genuinely reaches 422"*. Under the choice each reaches the wire as a **400** carrying its
+code, and no endpoint may declare a 422 for an error carrying a registry code.
+
+**And the statuses themselves are recorded as proposed.** `design/09` §3.2 says so in as many words —
+the mapping follows the sibling gear's *"checked against it code by code"*, except the 503 class this
+gear added, and the note ends *"Proposed per row and open to correction; the requirement is that
+every code carries one."* The **codes** are fixed; the statuses are the part still open.
+
+## 4. States (CDSL)
+
+### BulkBatch State Machine
+
+- [ ] `p1` - **ID**: `cpt-cf-bss-products-state-bulk-batch`
+
+The rows below render the state domain `design/09` §1.7 states — four transitions and a terminality
+row. The slice declares no `state-` id for it, as no slice in this set declares one.
+
+**States**: `staging`, `reported`, `approved`, `committing`, `completed`, `failed`
+
+**Initial State**: `staging`, on the import door's admission of the batch key.
+
+**Transitions**:
+
+1. [ ] - `p1` - **FROM** `staging` **TO** `reported` **WHEN** every row has reached a stage outcome
+   and the `ChangeReport` is generated from the ledger and submitted to the governance gate as one
+   approval with subject kind `bulk_batch` - `inst-bb-edge-report`
+2. [ ] - `p1` - **FROM** `reported` **TO** `approved` **WHEN** the quorum evaluator finds the stored
+   descriptor met; the report and the ledger's per-row pinned revisions are the approval's stored
+   snapshot, so **a post-report edit to a member entity does not supersede the batch** — that row
+   fails its own pin at commit, row-locally - `inst-bb-edge-approve`
+3. [ ] - `p1` - **FROM** `approved` **TO** `committing` **WHEN** the commit phase begins, and **this
+   edge is where the batch approval is consumed — once, for the whole composite act**. Every per-row
+   publish that follows runs in `PreAuthorized` mode naming that consumed record and **spends
+   nothing further**, which is the property the shipped gate makes structural rather than a rule a
+   door must remember - `inst-bb-edge-commit`
+4. [ ] - `p1` - **FROM** `committing` **TO** `completed` **WHEN** every row has reached a terminal
+   ledger state, whatever the mix of published, applied, no-op and failed; completion emits exactly
+   one `CatalogBulkOperationCompleted` with the ledger digest. **A batch with failed rows still
+   completes** — parts-succeeded is the honest end state, not an error - `inst-bb-edge-complete`
+5. [ ] - `p1` - **No transition other than the four above is admitted.** Rows are immutable after
+   their own terminal states — the ledger is append-only evidence from then on - `inst-bb-terminal`
+
+**Terminal states**: `completed` and `failed`.
+
+**Three absences the slice states nowhere, and this document invents none of them.** `design/09` §6
+records the first: the machine *"has no rejection edge and no abandon state"*, while `reported` has
+one stated exit and the gate it waits on admits rejection, and §3.1 specifies an abandon **procedure**
+with no state to hold it. And **`failed` has no stated entry edge at all** — every failure this
+feature describes is row-local, so what fails a whole batch is unstated. **Both are §7 row 5's** —
+it carries all three absences, and row 6 is the separate question of what ends a batch never approved.
+
+**Three of the four edges fire on a condition with no executor, and only one is registered.** Edge 1
+fires when every row has reached a stage outcome, edge 4 when every row has reached a terminal state,
+and edge 3 *"on quorum"* — none names a door, actor or signal, and the import door cannot be one for
+edges 1 and 4 because it answers **202**. §7 row 7 registers edge 3's; edges 1 and 4 are §7 row 26's.
+A builder reading only edge 3 as open would stage ten thousand rows synchronously behind a door that
+has already answered.
+
+## 5. Definitions of Done
+
+Every DoD below names what exists at `7d5864c09`. Two seams ship and are named as such; everything
+else this feature is made of is absent, so the rest create.
+
+### The two tables and the ledger's append-only discipline
+
+- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-bulk-tables`
+
+`products_bulk_batch` and `products_bulk_row` exist, tenant-scoped, the second being the `RowLedger`.
+**Neither ships** — zero occurrences across `products/src`.
+
+**Rows are immutable after their terminal state**, which makes the ledger append-only evidence rather
+than working state. That is what lets a crash resume from it and what makes "no hidden partial
+failure" checkable after the fact.
+
+**The ledger is the idempotency store for row keys**, and it is **not** the Foundation's endpoint
+store: row keys are **batch-scoped**, so the same row id in a different batch is a different act.
+
+**What this DoD cannot specify**: `design/09` §4 declares the two table names and **no columns**,
+where every sibling section supplies a normative shape. §7 row 9 carries it, and this DoD is met by
+the tables with the discipline above rather than by a column roster this document would have to
+invent.
+
+**Implements**: `cpt-cf-bss-products-algo-batch`
+
+**Constraints**: `cpt-cf-bss-products-constraint-tenant-isolation`
+
+**Touches**:
+- DB Table: `products_bulk_batch`, `products_bulk_row`
+- Entities: `BulkBatch`, `RowLedger`
+
+### The batch state machine, and its one consuming edge
+
+- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-batch-state-machine`
+
+The six states and four edges of §4 are implemented, with `completed` and `failed` terminal.
+
+**The `approved → committing` edge is the whole feature's governance contract.** It is the single
+place a batch approval is consumed, and every per-row act after it verifies without spending. A build
+that consumed per row would spend one record many times; a build that consumed nowhere would publish
+under no ceremony.
+
+**Three absences are deliberate in the implementation because they are absent from the design**:
+there is no rejection edge out of `reported`, no abandon state, and no entry edge into `failed`. §7 row 5 owns both, and row 6 owns the tenant slot a never-approved batch holds; building either
+edge would be authoring.
+
+**The record it flips has no table in this gear.** The consuming edge writes `05-governance`'s
+approval record, and **no migration for it ships** — seven exist and none is it, while
+`domain::governance` states *"There is no materiality evaluator here, no `ApprovalRecord`, no record
+store and no grant check"*. So this DoD's write path is `05`'s to supply.
+
+**Implements**: `cpt-cf-bss-products-state-bulk-batch`, `cpt-cf-bss-products-algo-batch`
+
+**Touches**:
+- DB Table: `products_bulk_batch`, `products_approval` (`05-governance`'s, unshipped)
+- Modules: `domain::governance`
+- Entities: `BulkBatch`
+
+### The import door and its two key scopes
+
+- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-import-door`
+
+`POST /bss-products/v1/bulk/imports` exists, spending `bulk × execute`, idempotent on the batch key —
+a replay returns the existing batch. **The route does not ship.**
+
+**Two key scopes, and conflating them is the defect this DoD exists to prevent.** The **batch** key
+is the door's idempotency key. The **row** keys are batch-scoped and live in the ledger. A row
+reaching the publish door resolves *that* door's key as the reserved lane `internal:bulk-row` with the
+row's id as the client key — a third scope, the Foundation's.
+
+**A row re-listed in a new batch is a new act.** Its stage validation decides its fate against the
+store — a code collision is the ordinary `DUPLICATE_CODE`, one code covering both reservations — and
+only a retry **within** the batch no-ops against the ledger.
+
+**Implements**: `cpt-cf-bss-products-flow-import`
+
+**Touches**:
+- API: `POST /bss-products/v1/bulk/imports`
+- Modules: `api::rest`
+
+### The reserved idempotency lane, which ships unused
+
+- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-idempotency-lane`
+
+Per-row publishes resolve the publish door's idempotency key as the reserved lane
+`internal:bulk-row` with the row's id as the client key (**P-D-26**).
+
+**The lane is reserved in prose and in no code**, and the doors say why: the three names *"are named
+rather than defined as constants because the first non-`HTTP` caller is the one that knows which of
+the three it is and what it writes in `client_key`."* Every occurrence in the crate is inside a doc
+comment, and the migration adds *"**This migration only holds the column** — which value a door writes
+into it is that door's own rule, built in a later slice."*
+
+**So this DoD adds the constant, the `client_key` rule and the caller** — not merely a caller for an
+existing lane. A build that minted a new lane name instead would leave the reserved one dead.
+
+**And a claim is not enough: the store demands an answer.** `payload_hash` is `NOT NULL` and
+`chk_products_idempotency_response_group` admits only `claimed` with both response columns null or
+`answered` with both set — so an internal lane must answer with **P-D-42**'s synthetic `200` and its
+own outcome record as the body. A row that published and left its key `claimed` would be re-executed
+by the crash-resume path, which §6 asserts it will not be. **What a bulk row's outcome record and
+payload digest are is §7 rows 24 and 25's**, a row having no request body to digest.
+
+**Implements**: `cpt-cf-bss-products-flow-import`
+
+**Touches**:
+- DB Table: `products_idempotency`
+- Modules: `api::rest`
+
+### The stage phase, over two row kinds with different natures
+
+- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-stage-phase`
+
+**Product and SKU rows** run the ordinary per-row pipeline — parse, then **the same registered
+validators as interactive authoring** — and land as `draft` through the Foundation doors.
+
+**Live-entity rows have no draft state, and that is why they are treated differently.** Categories,
+attribute definitions and recognized-set members validate at stage as a **dry run** against the live
+tree and sets, and are recorded as **pending `GovernedLiveOp`s** applied at commit under the batch
+approval. Their promotion identities are stated: a category by `(parent path, normalized name)`, a
+set member by `(set kind, member code)`, a definition by its key.
+
+**Dependency order is normative**: categories and vocabularies, then Products, then SKUs — at stage
+**and** at commit. A dependent row whose in-batch dependency failed fails `BULK_DEPENDENCY_FAILED`
+**without touching the store**.
+
+**Never a parallel rule set.** This is the sentence the whole feature's correctness rests on: a bulk
+row that skipped a validator interactive authoring runs would make bulk a governance bypass by
+omission rather than by design.
+
+**Implements**: `cpt-cf-bss-products-flow-import`, `cpt-cf-bss-products-algo-batch`
+
+**Principles**: `cpt-cf-bss-products-principle-registered-validators`
+
+**Touches**:
+- DB Table: `products_bulk_row`
+- Entities: `RowLedger`
+
+### The `ChangeReport`, which is what the quorum signs
+
+- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-change-report`
+
+The report is generated **from the ledger** and carries: counts, a per-type summary, a
+**deterministic** sample, the pre-publish lint findings, a **scope-values lint** naming region and
+brand values unseen in the target tenant's catalog, and the **itemised** override-carrying rows —
+each by `skuCode`, never as a count.
+
+It is submitted as **one** approval with subject kind `bulk_batch`, carrying the batch's
+affected-entity count. **Materiality is `05-governance`'s to decide**, not this feature's: first
+publishes and lifecycle transitions are material at any size, and the affected-entity trigger catches
+large non-material edits.
+
+**Its stored snapshot is the report plus the ledger's per-row pinned revisions**, and that pairing is
+what makes a post-report edit fail **one row** instead of superseding the batch.
+
+**The itemisation is load-bearing.** An override acknowledgment over a count cannot be an
+acknowledgment by name, and the ceremony this feature stores on the batch's approval record is
+acknowledgment-by-name over that set.
+
+**Implements**: `cpt-cf-bss-products-flow-import`
+
+**Touches**:
+- Entities: `ChangeReport`
+- DB Table: `products_bulk_row`
+
+### The commit phase, and the gate mode this feature gives a caller
+
+- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-commit-phase`
+
+On quorum, rows publish per row through the Foundation's publish door **in `PreAuthorized` mode naming
+the batch's consumed record**, each pinned to its ledger revision. Live-entity operations apply as
+their `GovernedLiveOp`s under the same consumed approval, each re-validating its pinned expected
+target state at apply.
+
+**`GateMode::PreAuthorized` ships, and it ships with no call path.** Both authoring doors say a
+slice's absence *"left [`GateMode::PreAuthorized`] a type with no call path at all"*, and the variant's
+own doc enumerates what it is for: *"a scheduled activation, a cascade leg, **a bulk row**."* **This
+DoD builds the caller, not the mode** — and the caller alone is not enough: the shipped
+`NoMaterialityPolicyGate` refuses every call in this mode, so the commit phase also depends on
+`05-governance` registering a record-backed host. Whether that host's predicate can name a batch at
+all is §7 row 19's.
+
+**And nothing is consumed under it.** The shipped gate returns a refusal for that mode, and
+`domain::governance` states five times that the mode spends nothing — *"A record was **verified**,
+not spent"*. The batch approval is consumed at the `approved → committing` flip and nowhere else. A
+DoD that read the crate as forbidding consumption altogether would invert the design; a build that
+consumed per row would spend one record many times.
+
+**Every failure at commit is row-local**, and each has its own code: an edited row `STALE_REVISION`, a
+moved live-target `STALE_LIVE_OP`, a dependent of a failed row `BULK_DEPENDENCY_FAILED` wrapping the
+underlying code, a late override `BULK_OVERRIDE_UNACKNOWLEDGED`. **Siblings never block**, and the
+published state is never partially inconsistent because each row's publish is atomic and independent.
+
+**Implements**: `cpt-cf-bss-products-flow-import`, `cpt-cf-bss-products-state-bulk-batch`
+
+**Touches**:
+- Modules: `domain::governance`, `api::rest`
+- DB Table: `products_bulk_row`
+
+### The override ceremony that survives the lane
+
+- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-bulk-override-ceremony`
+
+**The problem this DoD solves, stated first because the rule is unreadable without it.** A batch is
+one composite act: its approval is consumed at the flip and its per-row publishes do **not** re-enter
+the governance gate. So a row carrying an override condition — today only an uncomposed `bundle` —
+would otherwise publish with **no ceremony recorded anywhere**.
+
+Therefore: the **stage** phase detects override-carrying rows and names them in the report as a
+distinct itemised section; the batch approval is an **override ceremony** whose
+acknowledgment-by-name is over **that itemised set**, stored on the batch's approval record exactly as
+an entity-publish override is stored on its own; and a row whose override condition **appeared after
+the report** fails `BULK_OVERRIDE_UNACKNOWLEDGED` alone in the ledger.
+
+**A batch with no such row carries no ceremony and is unchanged.** The mechanism is conditional, not
+a tax on every batch.
+
+**This DoD is the batch application of a rule `05-governance` already owns**, and the id is
+deliberately distinct from it: `features/governance.md`'s `cpt-cf-bss-products-dod-override-ceremony`
+states the general obligation — *"The record **MUST** be the ceremony's only home: a lane that
+publishes an override subject without one is a defect, not an exemption"* — and the bulk lane is
+exactly such a lane. What this DoD adds is the itemised set, the batch-scoped acknowledgment and the
+late-condition refusal; it does not restate the general rule.
+
+**Implements**: `cpt-cf-bss-products-flow-import`
+
+**Touches**:
+- Entities: `ChangeReport`
+- DB Table: `products_bulk_row`
+
+### One batch, one catalog version — and a window this feature does not close
+
+- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-operation-key`
+
+The batch's catalog-version requests carry the **whole increment request** —
+`(source, lane = bulk, request_key, operation_key)` — and it is the **lane**, not the key alone, that
+holds the window open: `features/catalog-version.md` states the tuple as a `MUST`, and `design/06`
+coalesces interactive requests within seconds while *"a **keyed bulk batch stays open** until the
+**5-minute hard max** from its earliest request"*. A batch tagged with an `operation_key` on an
+`interactive` lane closes after seconds and **shreds across many `CatalogVersion`s** — the exact
+failure §6's flagship probe claims to assert against.
+
+**`operation_key` occurs zero times in the crate**; the mechanism is entirely unbuilt.
+
+**The window closes on a five-minute hard maximum, not on a signal from here.** **P-D-46** struck the
+stored close marker for that reason, and the marker on `(source, operation_key)` an earlier pass had
+added went with it. So this DoD wires a **tag**, and a build that added a close call would be building
+a mechanism the decision removed.
+
+**The tag rides an in-process contract, not the REST route.**
+`features/catalog-version.md` publishes the increment request as **a client trait in the SDK**, a
+typed contract resolved from `ClientHub` with the in-process binding as the default, and classifies
+this feature as *"a registered **internal** requester whose requests carry an `operation_key`"* — the
+REST door being that contract's **out-of-process** binding. So a bulk commit tags through the trait;
+wiring it at the door would make an in-process commit self-call its own HTTP surface.
+
+**Implements**: `cpt-cf-bss-products-flow-import`
+
+**Touches**:
+- Crates: `products-sdk`
+- Modules: `api::rest`
+
+### The coalesced completion event
+
+- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-coalesced-event`
+
+Completion emits **exactly one** `CatalogBulkOperationCompleted` with the ledger digest. It ships
+nowhere.
+
+**It is additive, not a suppression.** Row-level domain events all emit; what the summary coalesces is
+per-row **progress noise**. `12-consumer-contracts`' event bookkeeping lint reads the summary as an
+addition to the register, and the slice records that explicitly so the lint does not read it as
+events withheld.
+
+**Adding it is not a one-line change.** The event roster is enumerated at **seven** sites across four
+files: the payload-type constant, the `SCHEMA_REFS` row and the typed-event `match` arm in
+`infra::events`; the `catalog_event!` invocation **and `prepare_every_event_type`'s per-type
+`prepare` call** in `infra::broker`; and both `THE_EIGHT` literals in the two test modules.
+
+**The seventh is the one whose omission fails at runtime rather than at boot**, and it says so
+itself: *"Prepare each of the eight event types by name, so a registration missing any one of them
+fails the boot rather than a door's transaction."* An event registered in `SCHEMA_REFS` and not
+prepared there fails **inside the batch's own commit transaction** — the failure that function exists
+to move. A ninth event not wired to the broker at all reaches a runtime `NoTypedEvent`, which
+`infra::events` documents separately.
+
+**Implements**: `cpt-cf-bss-products-flow-import`
+
+**Touches**:
+- Modules: `infra::events`, `infra::broker`
+
+### Export, and what makes it deterministic
+
+- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-export`
+
+`GET /bss-products/v1/bulk/exports?catalogVersionId=` exists, spending **`catalog_version × read`** —
+its own grant, decoupled from the import pair because an export is auditor-shaped. **The route does
+not ship.**
+
+Rendered from the catalog-version manifest: entity halves from frozen versions, capture halves from
+the capture store. **Byte-for-byte deterministic** for a given version. The header carries a schema
+format version, and the format carries the promotion identities plus full content.
+
+**Artifacts are streamed, not stored** — determinism makes storage redundant.
+
+**What determinism actually requires is not stated here and is not this DoD's to state.** §7 row 14
+carries it: a byte-identical rendering needs a fixed ordering over the manifest's members and a
+canonical serialization, and the slice names neither.
+
+**Implements**: `cpt-cf-bss-products-flow-export`
+
+**Touches**:
+- API: `GET /bss-products/v1/bulk/exports`
+- Crates: `products-sdk`
+
+### The promotion resolver, total over identity
+
+- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-promotion-resolver`
+
+`PromotionResolver` classifies every row into **exactly four** classes, in the slice's own order:
+**create** on an unknown identity, ids re-minted; **no-op** where the identity is bound to matching
+content; **update-as-draft** where it is bound to different content; and **conflict** where the identity is
+bound to an incompatible kind or type, to a `retired` holder, or to a head carrying unpublished local
+edits or an open approval — C5's own three arms, a dirty head not being a property of the binding.
+
+**Update-as-draft is the promotion's purpose, and the register had to say so twice.** **P-D-17**
+amended the requirement, the acceptance criterion and the use case to match the resolver, three PRD
+statements having said the opposite after an earlier wave amended the constraint alone.
+
+**The identities are C5's and are stated there**: `skuCode` for SKUs; `productCode`, else
+`(brandId, canonical internal name)`, for Products; and for the live-entity kinds a category by
+`(parent path, normalized name)`, a set member by `(set kind, member code)`, a definition by its key.
+**What the resolver compares to decide *matching content* is stated nowhere** — §7 row 21 — and
+without it `no-op` and `update-as-draft` have no predicate separating them.
+
+**Totality is what makes the classification safe.** A `retired` holder conflicts because revival is
+clone-only; a dirty head conflicts because an import never silently merges into in-flight work or
+supersedes a local approval.
+
+**Implements**: `cpt-cf-bss-products-flow-promote`
+
+**Touches**:
+- Entities: `PromotionResolver`
+
+### The bulk lifecycle arm, and its separate grant
+
+- [ ] `p2` - **ID**: `cpt-cf-bss-products-dod-bulk-lifecycle`
+
+`POST /bss-products/v1/bulk/lifecycle` exists, spending **`bulk_lifecycle × execute`** — **its own
+grant**, so the gear's most destructive batch act cannot be reached with the import pair. **The route
+does not ship, and neither does the grant** — §7 row 27.
+
+Each row runs the ordinary lifecycle policy doors with provenance `direct`, per-row confirmation data
+aggregated into one report. The batch is **material at any size** by its transitions. One approval,
+consumed once by the same flip, each row's transition door in `PreAuthorized` mode.
+
+**The per-SKU flip guards stay.** No bulk override of the reference guard exists, so a referenced row
+defers under the ordinary guard and **the batch never force-retires**. This is the one place where
+"bulk runs the ordinary pipeline" prevents a whole class of operator accident.
+
+**Implements**: `cpt-cf-bss-products-flow-bulk-lifecycle`
+
+**Touches**:
+- API: `POST /bss-products/v1/bulk/lifecycle`
+- Modules: `api::rest`
+
+### The five codes, and the surface that reports them
+
+- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-bulk-errors`
+
+Five codes, none of which ships: `BULK_DEPENDENCY_FAILED`, `PROMOTION_IDENTITY_CONFLICT`,
+`PROMOTION_DIRTY_HEAD`, `BULK_OVERRIDE_UNACKNOWLEDGED`, `BULK_LIMIT`. `STALE_LIVE_OP`, which this
+feature's commit phase raises, is `02-taxonomy-attributes`' and also ships nowhere.
+
+**Row-level failures otherwise reuse the owning feature's code verbatim inside the ledger.** No
+parallel taxonomy — which is why this roster is five rows and not thirty.
+
+**Four of the five are per-row ledger outcomes and the door answers 202**, so their statuses apply
+only where a caller asks a single row's disposition. **No surface in this design does that**, and §7
+row 8 carries which one will.
+
+**The statuses are proposed, and this DoD carries that rather than pinning them.** `design/09` §3.2
+ends *"Proposed per row and open to correction; the requirement is that every code carries one."* The
+codes are fixed; §6's criteria say which of the two they assert.
+
+**Implements**: `cpt-cf-bss-products-algo-bulk-errors`
+
+**Touches**:
+- Modules: `domain::error`, `domain::validation`, `infra::error_mapping`
+
+### Resume and abandon, both through ordinary doors
+
+- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-resume-abandon`
+
+**Resume**: a crash mid-commit resumes from the ledger, per-row publishes being idempotent by row
+key.
+
+**Abandon uses no new door**, and each row kind has its own path: created drafts **discard** through
+the ordinary discard door; **update-as-draft rows revert** through the ordinary save door with the
+last frozen version's content as the payload, so the head returns to its published content with a
+revision bump; pending live-entity operations are **dropped**, never applied.
+
+**The audit reason is a literal constant** — `batch-abandoned` — and this feature writes **no**
+operator free-text reason at all (**P-D-50**). That is why `02-taxonomy-attributes`' content-PII
+enumeration no longer names it, and a build that added a free-text field would put this feature back
+inside a hook it was measured out of.
+
+**Abandon has no state to land in.** §4's machine has no abandon state, so what a batch's state
+becomes after abandonment is §7 row 5's, not this DoD's.
+
+**Implements**: `cpt-cf-bss-products-algo-batch`
+
+**Touches**:
+- DB Table: `products_bulk_batch`, `products_bulk_row`
+- Modules: `api::rest`
+
+### The four design-introduced names exist as named seams
+
+- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-bulk-seams`
+
+`design/09` §1.7 introduces four names and each is addressable:
+
+- **`BulkBatch`** — the unit: rows, batch key and the state machine §4 declares.
+- **`RowLedger`** — per-row state, and **the no-hidden-partial-failure surface**.
+- **`ChangeReport`** — the aggregated approval artifact the quorum signs.
+- **`PromotionResolver`** — the four-way classifier of §5's resolver DoD.
+
+**DECOMPOSITION §2.9's entity list carried three of the four** — `BulkBatch`, `RowLedger`,
+`ChangeReport` — and this pass swept `PromotionResolver` in beside them, on the rule §2.7 follows.
+Whether that field is a listing convention or an ontological claim is registered as
+`features/clone.md` §7 row 24 and assigned to the design-set owner; this document cites that row and
+raises no second one.
+
+**Implements**: `cpt-cf-bss-products-algo-batch`, `cpt-cf-bss-products-flow-promote`
+
+**Touches**:
+- Entities: `BulkBatch`, `RowLedger`, `ChangeReport`, `PromotionResolver`
+
+## 6. Acceptance Criteria
+
+**The sizing flagship**
+
+- [ ] The ten-thousand-row fixture stages, reports and commits within the sizing envelope, emits
+      **exactly one** `CatalogBulkOperationCompleted`, and lands in **exactly one** `CatalogVersion` —
+      the `operation_key` probe, asserted from this side and from `06-catalog-version`'s.
+      **Blocked on §7 row 9**: `operation_key` has a stated writer and no declared column.
+
+**No hidden partial failure**
+
+- [ ] A Product row fails, its SKU rows fail `BULK_DEPENDENCY_FAILED`, **and its siblings proceed** —
+      positive and negative in one batch, with **no orphan at any point**.
+- [ ] A row edited after the report fails `STALE_REVISION` **alone** at commit: the batch approval
+      stands, siblings publish, and the ledger names the row.
+- [ ] A live-entity operation whose target moved fails `STALE_LIVE_OP` **alone**, the same
+      row-local posture.
+- [ ] A batch with failed rows reaches **`completed`**, not `failed` — parts-succeeded is an end
+      state and not an error.
+
+**The governance contract**
+
+- [ ] The batch approval is consumed **exactly once**, at the `approved → committing` flip. A probe
+      counts consumptions across a batch of many rows and asserts **one**.
+- [ ] Every per-row publish runs in `PreAuthorized` mode and **spends nothing**: the record's state
+      after commit is the one the flip left.
+- [ ] A per-row publish attempted **without** a consumed record naming that subject is refused —
+      asserted against `05-governance`'s record-backed host, **not** against the shipped
+      `NoMaterialityPolicyGate`, whose refusal under this mode is **unconditional**: it ignores the
+      subject and the revision and names the missing record store. A probe run against today's host
+      passes for the wrong reason and stops testing anything the moment a real host is registered.
+- [ ] A row whose override condition appeared **after** the report fails
+      `BULK_OVERRIDE_UNACKNOWLEDGED` alone, while the acknowledged itemised set publishes under the
+      one batch ceremony.
+- [ ] The report's override section names rows **by `skuCode`**, never as a count — the case an
+      acknowledgment-by-name cannot be built from.
+
+**Idempotency, across all three key scopes**
+
+- [ ] A replayed **batch** key returns the existing batch and starts no second one.
+- [ ] A **row** retried within the batch commits nothing twice, keyed on the ledger.
+- [ ] A row re-listed in a **new** batch is a new act, and a code collision is the ordinary
+      `DUPLICATE_CODE`.
+- [ ] Per-row publishes resolve the publish door's key on the reserved **`internal:bulk-row`** lane —
+      the lane that ships unused, asserted by name so a build cannot mint a fourth.
+- [ ] A crash mid-commit resumes and completes **without duplicates**.
+
+**Promotion**
+
+- [ ] One fixture over the resolver's **four** classifications — create, no-op, update-as-draft,
+      conflict — including the codeless Product resolved by `(brandId, canonical internal name)`,
+      which is `design/09` C5's fallback where `productCode` is absent.
+- [ ] A `retired` holder conflicts, and the refusal names clone as the revival path.
+- [ ] A target head carrying unpublished local edits or an open approval fails
+      `PROMOTION_DIRTY_HEAD` — **both** cases, since either alone passes a build that checks only the
+      other.
+
+**Export**
+
+- [ ] Two exports of the same `catalogVersionId` are **byte-identical**. **Blocked on §7 row 14**:
+      no document states the ordering and serialization that makes this so.
+- [ ] The artifact header carries a schema format version.
+
+**Bulk lifecycle**
+
+- [ ] Mass retire schedules per-row transitions, and a referenced row's flip **defers under the
+      ordinary guard** — the batch never force-retires.
+- [ ] The lifecycle door refuses a caller holding only the import pair.
+
+**The error roster, one control per code**
+
+- [ ] Each of the **five** declared codes has a failing case **and** a passing control — five pairs.
+      `STALE_LIVE_OP` is `02-taxonomy-attributes`' and is asserted here as a raise, not a declaration.
+- [ ] Each assertion names the **code**, not the status: `design/09` §3.2 records the statuses as
+      *"Proposed per row and open to correction"*, and a probe pinning a proposed number would fail
+      on a correction rather than on a defect.
+
+**Bounds**
+
+- [ ] A batch over the configured row maximum is refused `BULK_LIMIT`, and so is a tenant over the
+      concurrent-batch maximum — two operands, one code.
+
+## 7. Known unknowns
+
+**The arithmetic of this section.** Twenty-nine rows: **eighteen carried verbatim** from
+[`../design/09-bulk-promotion.md`](../design/09-bulk-promotion.md) §6 — the slice's full count, not a
+selection — and **eleven raised by the three-lens review of this document**. The carried count is
+built from an independent primitive: the number of `- ` line starts in that section, which is
+eighteen and agrees with both the split and the transcribed rows. A final subsection carries defects
+owed to other documents; those are not rows.
+
+**Carried, not answered**, and registered against **its owner's** register. **Three departures from
+verbatim, declared so the claim is checkable.** First, the slice's inline `Owner:` sentence and any
+provenance marker become this document's `**Owner**:` field — and rows 1, 2 and 3 state no owner in
+any form, so they are carried unassigned. Second, every bare `§N` inside a carried row is
+**`design/09`'s numbering, not this document's**. Third, each row gains a `**Blocks**:` field, which
+`design/09` §6 does not have.
+
+**One question is deliberately NOT raised here because another document owns the rule it turns on**:
+whether DECOMPOSITION's entity field is a listing convention or an ontological claim —
+`features/clone.md` §7 row 24, the design-set owner's.
+
+### Carried verbatim from `design/09` §6
+
+1. **C6 after the H1 fix is barely a deviation**: domain events all emit; only per-row
+    bulk-progress noise is folded into the coalesced summary — recorded so slice 12's completeness
+    check reads the summary event as additive, not as suppression.
+    **Blocks**: no DoD — it records why the coalesced event reads as additive to slice 12's lint,
+    not as suppression.
+    **Owner**: not stated in the slice; carried unassigned.
+
+2. **Update-as-draft promotion onto a live entity** stages bucket-iii/iv changes on the target's
+    head — bucket-i/ii differences (type, meter) cannot be promoted onto an existing identity and
+    land as per-row conflicts directing to the 07 correction door; these rows classify as
+    update-as-draft and fail at the save door with 01's `ILLEGAL_FIELD_MUTATION`, whose reason
+    names 07's correction door; worth its own probe when built.
+    **Blocks**: `cpt-cf-bss-products-dod-promotion-resolver`.
+    **Owner**: not stated in the slice; carried unassigned.
+
+3. **Export format versioning** (schema evolution of the artifact) rides slice 12's vN→vN+1
+    discipline; named here so the exporter carries a format version from day one.
+    **Blocks**: `cpt-cf-bss-products-dod-export`.
+    **Owner**: not stated in the slice; carried unassigned.
+
+4. **A renamed Product carrying no `productCode` is promoted as a create, not an update.**
+    `normalized(name)` is both bucket-iii in 01 §4.1 (a published Product is renameable) and this
+    slice's C5 fallback promotion identity where `productCode` is absent — and `product_code` is
+    nullable, so a rename between promotions makes the target resolve *unknown identity* and
+    create a second Product, which C5's four-way classification exists to prevent.
+    **Blocks**: `cpt-cf-bss-products-dod-promotion-resolver`.
+    **Owner**: this slice. *(Filed from 01 §6 by the slice-01 eighth lens pass — the pointer
+    claimed it was registered here and it was not.)*
+
+5. **The batch state machine has no rejection edge and no abandon state.** `reported` has one
+    stated exit while the approval it waits on can be `rejected`; nothing states what enters
+    `failed` (every row failure is explicitly row-local, "siblings never block"); and
+    `inst-bm-resume`'s abandon path has no state to write. A rejected batch sits in `reported`
+    forever holding its staged drafts and a slot against the concurrency ceiling.
+    **Blocks**: `cpt-cf-bss-products-dod-batch-state-machine`,
+    `cpt-cf-bss-products-dod-resume-abandon`.
+    **Owner**: this slice, with 05 if abandonment releases the approval. *(Raised by the slice-09
+    first lens pass.)*
+
+6. **What ends a batch that is never approved?** No timeout, expiry or reaper is stated, and the
+    approval it waits on has no deadline either — so an abandoned-but-unabandoned batch consumes a
+    tenant slot permanently.
+    **Blocks**: `cpt-cf-bss-products-dod-batch-state-machine`.
+    **Owner**: this slice with 05. *(Raised by the slice-09 first lens pass.)*
+
+7. **What door, actor or signal starts the commit phase?** "On quorum" names no executor: this
+    slice declares three routes and none is a commit, it names no runner, and 05's decide door is
+    itself unowned (05 §6). The answer fixes which transaction writes `committing` and therefore
+    where the one-shot consumption is enforced.
+    **Blocks**: `cpt-cf-bss-products-dod-commit-phase`,
+    `cpt-cf-bss-products-dod-batch-state-machine`.
+    **Owner**: this slice with 05. *(Raised by the slice-09 first lens pass.)*
+
+8. **What surface reports the `RowLedger`?** Four per-row codes carry HTTP statuses that apply
+    "where a caller asks a single row's disposition", and no route, verb or grant exists for that
+    ask — the RBAC catalog mints only the two execute pairs, 08 projects no bulk read model, and
+    §4 adds no read surface. C1's "per-row success/failure reported" has no reader.
+    **Blocks**: `cpt-cf-bss-products-dod-bulk-errors`.
+    **Owner**: this slice with the contract owner. *(Raised by the slice-09 first lens pass.)*
+
+9. **§4 declares two table names and no columns.** The heading promises a normative shape and
+    every sibling supplies one. Values with a stated writer and no column: the per-row pinned
+    revision, the batch and row keys, the row disposition and reason, the pending `GovernedLiveOp`
+    payload, the itemised override set, and the `operation_key`.
+    **Blocks**: `cpt-cf-bss-products-dod-bulk-tables`.
+    **Owner**: this slice's storage owner with 05's. *(Raised by the slice-09 first lens pass.)*
+
+10. **Does a `bulk_batch` approval authorize a `GovernedLiveOp` apply?** This slice says the
+    live-entity ops apply "under the same consumed approval", while 05's live-op gate asks its
+    question with the op **envelope** as subject, and 05's composite-act enumeration names per-row
+    publishes and nothing else. 05's approval carries one subject and a partial unique over it.
+    **Blocks**: `cpt-cf-bss-products-dod-commit-phase`.
+    **Owner**: the governance owner with 05 and 02 — extend the composite-act enumeration, or give
+    each live-entity row its own record. *(Raised by the slice-09 first lens pass.)*
+
+11. **Does the per-row pin fit 05's store?** This slice states the approval's stored snapshot as
+    the report **plus the ledger's per-row pinned revisions**, and 05 declares one scalar
+    `internal_revision` per record — registering the mismatch itself as "What do the entity-shaped
+    columns hold for the non-entity subject kinds?".
+    **Blocks**: `cpt-cf-bss-products-dod-change-report`.
+    **Owner**: 05's owner with 12. *(Raised by the slice-09 first lens pass.)*
+
+12. **Where does the `ChangeReport`'s diff read its two operands?** The pre-approval view is
+    "staged content vs the target's current heads", this slice books 08 as the input, and 08's C6
+    projects entity content **only** from frozen version rows, never from heads — and serves no
+    draft. Neither operand has a stated producer.
+    **Blocks**: `cpt-cf-bss-products-dod-change-report`.
+    **Owner**: this slice with 08. *(Raised by the slice-09 first lens pass.)*
+
+13. **Which slice builds the lint producer?** The `ChangeReport` is a PRD MUST that must carry
+    lint findings; 06 §6 records that no instruction, store, RBAC pair, error code or probe in
+    that slice delivers the report and names this slice as co-owner of the gap.
+    **Blocks**: `cpt-cf-bss-products-dod-change-report`.
+    **Owner**: the design-set owner with 06 and this slice. *(Two lenses raised it
+    independently.)*
+
+14. **What makes the export byte-deterministic?** C4 promises byte-for-byte determinism for a
+    given version; 06 §6 records that the manifest it renders from has no named sort key for its
+    row collections, and `inst-bk-export` states no canonical serialization for the artifact
+    itself.
+    **Blocks**: `cpt-cf-bss-products-dod-export`.
+    **Owner**: P-D-29's owner with 06 and this slice. *(Raised by the slice-09 first lens pass.)*
+
+15. **Does every import run the `PromotionResolver`, and what selects promotion mode?** The same
+    door, the same stage phase and the identical case — a `skuCode` already bound with different
+    content — gets `DUPLICATE_CODE` under `inst-bk-keys` and update-as-draft under
+    `inst-pm-resolve`. No request field, header or route segment distinguishes an import from a
+    promotion.
+    **Blocks**: `cpt-cf-bss-products-dod-promotion-resolver`,
+    `cpt-cf-bss-products-dod-import-door`.
+    **Owner**: this slice with the contract owner. *(Raised by the slice-09 first lens pass.)*
+
+16. **What is "update-as-draft" for a row kind with no draft state?** C5 calls its four
+    classifications exhaustive and this pass added the live-entity promotion identities to it, so
+    a promoted category whose content differs falls into a classification it cannot occupy.
+    **Blocks**: `cpt-cf-bss-products-dod-promotion-resolver`.
+    **Owner**: this slice with 02. *(Raised by the slice-09 first lens pass.)*
+
+17. **Is the scope-values lint blocking or advisory, and what does "unseen" mean?** It appears
+    once, carries no code, no threshold and no probe, and nothing says whether it stops the
+    report, the approval or nothing.
+    **Blocks**: `cpt-cf-bss-products-dod-change-report`.
+    **Owner**: this slice. *(Raised by the slice-09 first lens pass.)*
+
+18. **No instruction in this slice names its event or records "no event".** 01 states the rule
+    over every slice and 12 lints it; only `inst-bk-complete` names one, while six further
+    state-changing instructions declare nothing.
+    **Blocks**: `cpt-cf-bss-products-dod-coalesced-event`.
+    **Owner**: this slice. *(Raised by the slice-09 first lens pass.)*
+
+
+### Raised here rather than carried
+
+19. **Can `PreAuthorized`'s predicate name a batch at all?** `features/governance.md` §7 row 27
+    records that it cannot: the mode verifies a record *"authorized **this subject** at **this pinned
+    revision**"*, while *"a bulk row's revision is its own"*, and *"the mode carries only an id with
+    no plan-membership operand"*. The shipped seam is narrower — `evaluate`'s subject is an
+    `EntityRef` whose `entity_kind` is `{Product, Sku}`, so a `bulk_batch` subject cannot be
+    expressed, and one scalar revision crosses it. Weakening the predicate to *"names a consumed
+    record"* is refused there as turning a terminal record into an unbounded bearer token.
+    **Blocks**: `cpt-cf-bss-products-dod-commit-phase`,
+    `cpt-cf-bss-products-dod-bulk-lifecycle`, `cpt-cf-bss-products-dod-batch-state-machine`.
+    **Owner**: `05-governance`'s owner with `04-lifecycle`'s and this feature — the owner row 27
+    itself names. *(Raised independently by all three lenses.)*
+
+20. **What does an `internal:bulk-row` claim row write into its response columns?** The store's rule
+    is **P-D-42**'s — an internal lane *"stores a synthetic `200` and its own outcome record as the
+    body"* — and `chk_products_idempotency_response_group` admits no third shape. **What a bulk row's
+    outcome record is, is stated nowhere**, and `design/09` §4 declares no column for it. Without it
+    a published row leaves its key `claimed` and the crash-resume path re-executes it.
+    **Blocks**: `cpt-cf-bss-products-dod-idempotency-lane`,
+    `cpt-cf-bss-products-dod-resume-abandon`.
+    **Owner**: `01-foundation`'s storage owner with this feature.
+
+21. **What does the resolver compare to decide *"matching content"*?** C5 says only *"identity bound
+    to matching content ⇒ **no-op**"*. Which buckets participate, whether capture halves count, and
+    what canonicalization runs are unstated — so `no-op` and `update-as-draft` have no predicate
+    separating them, and two of the resolver's four classes are indistinguishable in a build.
+    Carried row 12 asks where the report's diff reads its operands, not how they are compared.
+    **Blocks**: `cpt-cf-bss-products-dod-promotion-resolver`.
+    **Owner**: this feature with `02-taxonomy-attributes` and `08-read-models`.
+
+22. **Who runs an export?** `design/09` §1.3 gives it to the catalog admin; `PRD.md` §3 gives the
+    catalog admin *"runs bulk import/export"* and the auditor *"exports for compliance"*; this
+    document's own flow named the auditor before this pass corrected it to the slice's attribution.
+    Nothing can settle it from the RBAC catalog, whose columns are resource × action, door and slice
+    — **there is no actor column** — so the grant is mapped to a route and never to a role.
+    **Blocks**: `cpt-cf-bss-products-dod-export`.
+    **Owner**: the PRD owner with `05-governance`'s catalog owner.
+
+23. **Can `content_snapshot` carry N per-row pins?** This feature's approval snapshot is the report
+    **plus the ledger's per-row pinned revisions**, and `design/05` declares one `content_snapshot`
+    column beside one pinned `internal_revision`. Whether one JSON column may hold N pins, and
+    whether the pins are part of what the quorum signs, is unstated — and there is no shipped
+    approval table to measure against. Carried row 11 registers the `internal_revision` half only.
+    **Blocks**: `cpt-cf-bss-products-dod-change-report`,
+    `cpt-cf-bss-products-dod-commit-phase`.
+    **Owner**: `05-governance`'s owner, as the second half of carried row 11.
+
+24. **What does a bulk row's `payload_hash` digest, a row having no request body?** The column is
+    `NOT NULL` and the shipped door sources it from a digest over the parsed request body. All three
+    internal lanes have the same gap, and `features/lifecycle.md` leaves its sibling lane's
+    `client_key` open for the same reason without reaching the digest. One rule should serve all
+    three.
+    **Blocks**: `cpt-cf-bss-products-dod-idempotency-lane`.
+    **Owner**: `01-foundation`'s storage owner with this feature and `04-lifecycle`.
+
+25. **Is the lane's `client_key` the ledger row's surrogate id or the caller's batch-scoped row
+    key?** The shipped primary key is `(tenant_id, endpoint, client_key)` with **no batch column**,
+    so under the second reading a row re-listed in a new batch replays the first batch's answer —
+    contradicting this feature's own rule that such a row is a new act. **P-D-26** says only *"its
+    own id in `client_key`"*.
+    **Blocks**: `cpt-cf-bss-products-dod-idempotency-lane`,
+    `cpt-cf-bss-products-dod-import-door`.
+    **Owner**: this feature's storage owner with `01-foundation`'s, when §4's row columns land.
+
+26. **What executes edges 1 and 4?** Both fire on a condition over every row — a stage outcome, a
+    terminal ledger state — and neither names a door, actor or signal; the import door cannot be one,
+    having answered **202**. Carried row 7 registers edge 3's executor and not these two.
+    **Blocks**: `cpt-cf-bss-products-dod-batch-state-machine`,
+    `cpt-cf-bss-products-dod-stage-phase`, `cpt-cf-bss-products-dod-coalesced-event`.
+    **Owner**: this feature.
+
+27. **Which of the three grants must be minted, and by whom?** This feature spends
+    `bulk × execute`, `catalog_version × read` and `bulk_lifecycle × execute`. All three are in
+    `design/05`'s RBAC catalog; **none is in the shipped permission roster**, which holds exactly six
+    ids, all `product_*` and `sku_*`, under a two-way set-equality assertion. Whether this feature
+    mints the three instances or `05-governance`'s catalog DoD does is stated nowhere.
+    **Blocks**: `cpt-cf-bss-products-dod-import-door`,
+    `cpt-cf-bss-products-dod-export`, `cpt-cf-bss-products-dod-bulk-lifecycle`.
+    **Owner**: `05-governance`'s owner with this feature.
+
+28. **What makes the `ChangeReport`'s sample deterministic?** The report carries *"a deterministic
+    sample"* and no document states a size, a selection rule or an ordering. A sample with no rule
+    cannot be reproduced between the report the quorum signs and the commit that follows it.
+    **Blocks**: `cpt-cf-bss-products-dod-change-report`.
+    **Owner**: this feature, alongside carried row 17's scope-values-lint question.
+
+29. **Where is the batch's itemised override acknowledgment stored?** This feature stores it on the
+    batch's approval record *"exactly as an entity-publish override is stored on its own"*, and
+    `features/governance.md` records that **there is no such column**: the only acknowledgment column
+    sits on the decision row, which demands an approver principal and a verdict, and *"the approval
+    row has no acknowledgment column"*. Its own open item 10 is the same gap from the other side.
+    **Blocks**: `cpt-cf-bss-products-dod-bulk-override-ceremony`.
+    **Owner**: `05-governance`'s owner.
+
+### Owed to other documents, recorded and deliberately not edited
+
+- **`features/governance.md` §7 row 27 names this feature as a co-owner of a by-construction
+  failure.** *"`PreAuthorized`'s predicate cannot admit the composite acts this feature declares…
+  Both fail by construction"*, owner *"this feature with 04 and 09"*. Recorded as row 19 above; the
+  register entry is `features/governance.md`'s.
+- **`design/09` §2's `inst-pm-review` flags a live PRD conflict inline rather than in its §6**, so no
+  carried row can hold it: `fr-catalog-version-diff` calls the version diff *"the reviewer's view for
+  approvals"* while this feature's pre-approval view is the `ChangeReport`. Owner: the PRD owner with
+  `06-catalog-version`.
+- **Two sibling FEATUREs name an actor their slice's §1.3 does not.** Measured across all twelve:
+  `features/catalog-version.md` adds `billing` and `features/reference-signal.md` adds `contracts`;
+  the other ten match their slices exactly. Both are additions rather than drops and may be justified
+  by those features' own flows — recorded as a measured divergence, not a repair. *(Found by
+  censusing the class after this document's own actor table dropped its approver.)*

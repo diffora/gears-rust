@@ -109,7 +109,9 @@ export artifacts.
 
 ### Import a batch
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-flow-import`
+Declared by [`../features/bulk-promotion.md`](../features/bulk-promotion.md) §2 as `cpt-cf-bss-products-flow-import`.
+The steps below are this slice's and are the normative ones; the FEATURE carries the
+actor, the scenarios and the boundary.
 
 1. [ ] - `p1` - `POST /bss-products/v1/bulk/imports` (`bulk × execute`) with the batch key (idempotent: a replayed batch returns the existing `BulkBatch`); rows carry per-row keys, **batch-scoped** (a row reaching 01's publish door resolves that door's key as the reserved lane **`internal:bulk-row`** with the row's id as `client_key` — **P-D-26**; distinct from this slice's own ledger keys) (M1 fix: a row re-listed in a NEW batch is a new act — its stage validation decides its fate against the store, e.g. `DUPLICATE_CODE` — **P-D-25**, one code for both reservations; only a retry **within** the batch no-ops against the ledger) - `inst-bk-keys`
 2. [ ] - `p1` - **Stage phase**: every Product/SKU row runs the ordinary per-row pipeline (parse → the same registered validators as interactive authoring — never a parallel rule set) and lands as `draft` via the 01 doors. **Live-entity rows — categories, attribute definitions, recognized-set members — have no draft state (H2/M5 fix)**: they validate at stage as a dry-run against the live tree/sets and are recorded in the ledger as **pending `GovernedLiveOp`s**, applied at commit under the batch approval (their promotion identities: category = `(parent path, normalized name)`, set member = `(set kind, member code)`, definition = `key`). Failures land in the `RowLedger` with their ordinary error codes; dependency order: categories/vocabularies → Products → SKUs, and a dependent row whose in-batch dependency failed fails `BULK_DEPENDENCY_FAILED` without touching the store (C2) - `inst-bk-stage`
@@ -120,20 +122,26 @@ export artifacts.
 
 ### Export
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-flow-export`
+Declared by [`../features/bulk-promotion.md`](../features/bulk-promotion.md) §2 as `cpt-cf-bss-products-flow-export`.
+The steps below are this slice's and are the normative ones; the FEATURE carries the
+actor, the scenarios and the boundary.
 
 1. [ ] - `p1` - `GET /bss-products/v1/bulk/exports?catalogVersionId=` (`catalog_version × read` — export renders a 06 manifest and is auditor-shaped; decoupled from the import grant, M8): rendered from the 06 manifest (entity halves from frozen versions, capture halves from the capture store) — deterministic byte-for-byte for a given version (C4); the artifact header carries a schema format version (versioned in `products-sdk` under 12 `inst-rc-compat`), and the format carries the stable codes and canonical names (the promotion identities) plus full content - `inst-bk-export`
 
 ### Promote between environments
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-flow-promote`
+Declared by [`../features/bulk-promotion.md`](../features/bulk-promotion.md) §2 as `cpt-cf-bss-products-flow-promote`.
+The steps below are this slice's and are the normative ones; the FEATURE carries the
+actor, the scenarios and the boundary.
 
 1. [ ] - `p1` - Promotion IS import (never a governance bypass — the PRD's own sentence): the target imports a source export; `PromotionResolver` classifies each row by C5 identity — unknown identity ⇒ create (ids re-minted); identity bound to matching content ⇒ no-op; identity bound to **different** content ⇒ per-row **update-as-draft** against the existing entity (M3: a same-identity content difference is the promotion's purpose, so only incompatibilities conflict — **P-D-17**, which amended the FR, AC #33a and the §10 use case to match; C5 alone had been amended in the earlier wave, leaving three PRD statements saying the opposite); identity bound to an incompatible kind/type, to a **retired** holder (revival is clone-only — resolver totality, M3), to a head **carrying unpublished local edits or an open approval** (`PROMOTION_DIRTY_HEAD` — M7, symmetric with 07's rule: an import never silently merges into in-flight work or supersedes a local approval) ⇒ `PROMOTION_IDENTITY_CONFLICT`/`PROMOTION_DIRTY_HEAD` per row - `inst-pm-resolve`
 2. [ ] - `p1` - The reviewer's **pre-approval** view is the `ChangeReport` (staged content vs the target's current heads — the only diff producible before anything publishes); the AC #20a catalog-version diff is the **post-commit verification** view (previous vs new target version). `fr-catalog-version-diff` calls the version diff "the reviewer's view for approvals", which is the sentence that still conflicts — flagged (M4); the §10 use case already agrees with this slice; the substance it wants (what will change) is the report - `inst-pm-review`
 
 ### Bulk lifecycle (p2)
 
-- [ ] `p2` - **ID**: `cpt-cf-bss-products-flow-bulk-lifecycle`
+Declared by [`../features/bulk-promotion.md`](../features/bulk-promotion.md) §2 as `cpt-cf-bss-products-flow-bulk-lifecycle`.
+The steps below are this slice's and are the normative ones; the FEATURE carries the
+actor, the scenarios and the boundary.
 
 1. [ ] - `p2` - Mass deprecate / mass retire-initiate (`POST /bss-products/v1/bulk/lifecycle`, **`bulk_lifecycle × execute`** — its own grant: the gear's most destructive batch act never rides the import pair, M8) over a filter or id list: each row runs the ordinary 04 policy doors (provenance `direct`, per-row confirmation data aggregated into one report), the batch material by its lifecycle transitions at **any** size (05 `inst-gv-materiality`), the affected-entity trigger additionally catching large batches; one batch approval, consumed once by the same `approved → committing` flip, each row's 04 transition door running in 01's `PreAuthorized(approvalId)` mode naming that record (05 `inst-gv-one-shot`); the retire arm schedules per-row transitions — the flip guards stay per-SKU (no bulk override of the D-47 guard exists) - `inst-bl-lifecycle`
 
@@ -141,13 +149,18 @@ export artifacts.
 
 ### 3.1 Batch mechanics
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-algo-batch`
+Declared by [`../features/bulk-promotion.md`](../features/bulk-promotion.md) §3 as `cpt-cf-bss-products-algo-batch`.
+The steps below are this slice's and are the normative ones; the FEATURE carries the
+Input, the Output and the boundary.
 
 1. [ ] - `p1` - `products_bulk_batch` + `products_bulk_row` (the `RowLedger`): batch state machine per §1.7; rows immutable after their terminal state (append-only evidence); the ledger is the idempotency store for row keys (distinct from 01's endpoint store — row keys are batch-scoped) - `inst-bm-tables`
 2. [ ] - `p1` - A batch is **resumable**: a crash mid-commit resumes from the ledger (per-row publishes idempotent by row key). **Abandon (M2)**: created-draft rows discard through the ordinary 01 door; **update-as-draft rows revert** via the ordinary save door with the last frozen version's content as payload (revision++, audit reason `batch-abandoned` — no new door, and the head returns to its published content); pending live-entity ops are simply dropped (never applied). **This slice writes no operator free-text `reason`** (**P-D-50**): `batch-abandoned` is a literal constant, the batch ceremony's reason lives on 05's `ApprovalRecord` and the mass-retire reason on 04's `inst-rt-initiate`, so 02's `inst-av-pii-reason` no longer enumerates this slice - `inst-bm-resume`
 3. [ ] - `p1` - Size bounds: configured max rows/batch and max concurrent batches per tenant (`BULK_LIMIT`); the 10K-SKU onboarding case is the sizing fixture - `inst-bm-limits`
 
 ### 3.2 Error taxonomy (slice-owned codes)
+
+Declared by [`../features/bulk-promotion.md`](../features/bulk-promotion.md) §3 as `cpt-cf-bss-products-algo-bulk-errors`.
+The roster below is this slice's and is the normative one; the FEATURE carries the obligation and the boundary.
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-contract-bulk-errors`
 
