@@ -78,15 +78,21 @@ and `evaluate(&self, subject: &S, report)` — and no kind, transition, target-s
 operand. `01-foundation` hit the same wall twice and wrote down the reason: *"the pipeline is
 synchronous and judges the subject row alone, and this rule's operand is a read of other rows. So
 it runs as that phase's continuation, on this transaction."* Most of this feature's rules read
-other rows. See §7 rows 19 and 20.
+other rows. See §7 row 20.
 
-**Nothing this feature adds contradicts a shipped test.** `ADMITTED_EDGES` is pinned at five by
+**This feature needs no sixth edge and no sixth state.** `ADMITTED_EDGES` is pinned at five by
 `transition_tests::the_five_admitted_edges_are_admitted`, whose message reads *"a sixth needs a
-decision behind it"*, and `ALL_STATES` is pinned at five by the same module's 5×5 sweep. This
-feature needs **no sixth edge and no sixth state**: retirement forces `deprecated` first and flips
+decision behind it"*; `ALL_STATES` is the five-member constant that module's 5×5 sweep quantifies
+over, carrying **no assertion on its length**, so a sixth state would pass it silently. On the
+edges: retirement forces `deprecated` first and flips
 `deprecated → retired`, the parent's path says in its own words that there is no `published →
 retired` edge, auto-discard rides `draft → discarded`, and a `draft` child is skipped from a
 cascade *because* the floor admits no `draft → deprecated`. EOL is a feature flag, not a state.
+
+**Two shipped tests do go red, and both are registered rather than waved through.**
+`events_tests::THE_EIGHT` is an exact roster in both directions, so the first event this feature
+adds reddens it (§7 row 25); and the narrowing refusal's code is asserted by name, so declaring
+`SCOPE_NARROWING_BLOCKED` reddens that case too (§7 row 19).
 
 ### 1.2 Purpose
 
@@ -97,9 +103,11 @@ published content or leak a child outside its parent's scope.
 
 **Requirements** — carried from [`../DECOMPOSITION.md`](../DECOMPOSITION.md) §2.4:
 
-- Whole: `cpt-cf-bss-products-fr-deprecation`, `cpt-cf-bss-products-fr-undeprecation`,
-  `cpt-cf-bss-products-fr-retirement-eol`
-- Shared: `cpt-cf-bss-products-fr-lifecycle-transitions` — the **scheduling clauses**; the machine
+- Whole: `cpt-cf-bss-products-fr-undeprecation`, `cpt-cf-bss-products-fr-retirement-eol`
+- Shared: `cpt-cf-bss-products-fr-deprecation` — the deprecation and un-deprecation machine and
+  its cascades; **the consumer-side adoption block is `12-consumer-contracts`'**, which claims the
+  same id for that half in §2.12.
+  `cpt-cf-bss-products-fr-lifecycle-transitions` — the **scheduling clauses**; the machine
   core is `01-foundation`'s. `cpt-cf-bss-products-fr-parent-child-integrity` — the **final
   containment rule** and publish ordering; the interim check is `01-foundation`'s
 - Surfaces: `cpt-cf-bss-products-usecase-lifecycle-deprecation` — listed in §2.4's own Requirements
@@ -114,9 +122,9 @@ published content or leak a child outside its parent's scope.
 **Sequence**: `cpt-cf-bss-products-seq-retirement-cascade`.
 
 **Not applicable or delegated**: **Authentication** is the platform IdP's. **Authorization** is
-`05-governance`'s RBAC catalog — this feature declares no grant pair of its own, and §7 row 18
-records that the catalog nonetheless carries `scheduled_transition × write|cancel|read` rows whose
-door this feature does not declare. **The approval ceremonies** the edges invoke are
+`05-governance`'s RBAC catalog — this feature declares no grant pair of its own, and
+[`./governance.md`](./governance.md) §7 row 24 records that the catalog nonetheless carries
+`scheduled_transition × write|cancel|read` rows whose door this feature does not declare. **The approval ceremonies** the edges invoke are
 `05-governance`'s; this feature **pins** an approval at scheduling and validates it at activation,
 and registers its `ScheduledTransition` cancel as a material `GovernedLiveOp` kind — it evaluates
 no materiality itself. **The reference predicate** the flip guard reads is
@@ -124,8 +132,8 @@ no materiality itself. **The reference predicate** the flip guard reads is
 immutability** is `06-catalog-version`'s. **Live-subscription migration** is Subscriptions'. **The
 consumer-side adoption block** is the consumer's — the registry marks and exposes, and
 `12-consumer-contracts`' seam suite verifies the counterpart. **Observability** primitives and the
-outbox are `01-foundation`'s; this feature contributes the two gauges and the `retirement_held`
-alert named in §3. **Read-model projection** of the deferred-intent surface is `08-read-models`' —
+outbox are `01-foundation`'s; this feature contributes the `retirement_held` alert and
+the two gauges the slice's `inst-ar-observe` names — due-but-unclaimed count and deferred count. **Read-model projection** of the deferred-intent surface is `08-read-models`' —
 this feature owns the surface, 08 only projects it. **Operator-facing message wording** is the API
 layer's; the seven declared codes are the contract. **Rollout** is forward-only migration per
 `01-foundation`, with one feature flag of its own: the EOL lockout, **OFF by default**.
@@ -143,7 +151,7 @@ adoption block, verified by `12-consumer-contracts`' seam suite.
 
 | Actor | Role in this feature |
 |-------|----------------------|
-| `cpt-cf-bss-products-actor-product-manager` | Deprecates; schedules publishes |
+| `cpt-cf-bss-products-actor-product-manager` | Deprecates; schedules publishes; publishes SKUs and changes Product scope, subject to the parent-child rules |
 | `cpt-cf-bss-products-actor-catalog-admin` | Un-deprecates (two-person), initiates retirement and cascades, resumes deferred cascades |
 | `cpt-cf-bss-products-actor-plan-price` | The counterpart on its **own** `When` — retirement or unpublishing: flags referencing plans and blocks new adoption. A *plain* deprecation has no counterpart yet; `12-consumer-contracts`' register carries the ask |
 | `cpt-cf-bss-products-actor-subscriptions` | Owns live-subscription migration; consumes `replacedBy` (and `mustMigrateBy`, post-v1) |
@@ -175,12 +183,15 @@ adoption block, verified by `12-consumer-contracts`' seam suite.
     `algo`, `state`, `dod` and `featstatus` ids, plus the `inst-` steps of a state machine it
     declares. `cpt-cf-bss-products-contract-lifecycle-errors` remains the slice's and is cited by
     id, which survives a renumber where a section number does not.
-  - **Twelve `inst-*` ids this feature cites are owned elsewhere** and are referenced, never
-    claimed: `inst-fd-approval-hook`, `inst-fd-containment-retire-intent`, `inst-fd-fail-closed`,
-    `inst-fd-publish-reannounce`, `inst-fd-save-txn`, `inst-fd-terminal` (`01-foundation`);
-    `inst-av-pii-block`, `inst-av-pii-reason` (`02-taxonomy-attributes`); `inst-cd-once`
-    (`03-sku-classification`); `inst-gv-materiality`, `inst-gv-one-shot`, `inst-mt-inputs`
-    (`05-governance`).
+  - **Seventeen `inst-*` ids this feature cites are owned elsewhere** and are referenced, never
+    claimed. **Twelve are other slices'**: `inst-fd-approval-hook`,
+    `inst-fd-containment-retire-intent`, `inst-fd-fail-closed`, `inst-fd-publish-reannounce`,
+    `inst-fd-save-txn`, `inst-fd-terminal` (`01-foundation`); `inst-av-pii-block`,
+    `inst-av-pii-reason` (`02-taxonomy-attributes`); `inst-cd-once` (`03-sku-classification`);
+    `inst-gv-materiality`, `inst-gv-one-shot`, `inst-mt-inputs` (`05-governance`). **Five are this
+    feature's own slice's**, cited by §4 and §7 rather than restated: `inst-sp-pin`,
+    `inst-lc-terminal`, `inst-ar-observe`, `inst-pc-narrowing`, `inst-rt-confirm`
+    (`design/04-lifecycle.md`).
 - **Dependencies**: `cpt-cf-bss-products-feature-foundation` is the only build-time dependency —
   its edge list, publish door, save door and validation pipeline are what this feature registers
   into. `cpt-cf-bss-products-feature-governance` and
@@ -285,8 +296,10 @@ act. What `PreAuthorized` requires of a leg whose subject is not the pinned subj
 - The head **stays open to publishes** for the whole lead window, and a publish that moves the
   version **re-emits** the retirement event with the new `fromVersion`, the same `effectiveAt` and
   the same retirement identity; consumers key on `(skuId, effectiveAt)` and take the latest
-- `replacedBy` is an optional input written in the same statement as the lifecycle-state change,
-  and the read surface **resolves the pointer transitively** to the first non-`retired` successor
+- `replacedBy` is an optional input of retirement initiation, written in that transaction —
+  `null` → non-null, the P-D-49 predicate, which does **not** require a lifecycle-state change in
+  the same statement, because on an already-`deprecated` SKU no transition is taken — and the read
+  surface **resolves the pointer transitively** to the first non-`retired` successor
 - At `effectiveAt` the flip runs only on a **fresh all-zero** reference predicate
 
 **Error Scenarios**:
@@ -363,10 +376,11 @@ at flip**, not only planned at confirmation. Which act discharges a deferral, an
 unrestricted parent contains every child and an unrestricted child is contained only by an
 unrestricted parent. The narrowing operand is **non-terminal**, not non-`retired`: `discarded` is
 terminal at the physical layer and is the routine output of the cascade's auto-discard arm, so the
-wider operand would let one discarded draft block that Product's narrowing permanently. **Three
-facts about the shipped code bear on this flow and are carried in §7 rows 19–21**: the narrowing
-check exists, on the save door, raising `SCOPE_NOT_CONTAINED` and deliberately not naming the
-children.
+wider operand would let one discarded draft block that Product's narrowing permanently. **Four
+facts about the shipped code bear on this flow**: the narrowing check exists, it runs on the save
+door with no publish call site, it raises `SCOPE_NOT_CONTAINED`, and it deliberately does not name
+the children. Only the third is carried by §7 row 19; the door and the naming are §7 rows 26 and
+27.
 
 ## 3. Processes / Business Logic (CDSL)
 
@@ -381,7 +395,8 @@ carries, the reference predicate's current answer for a retirement flip, and the
 per-transition attempt budget — **neither of which carries a value anywhere** (§7 row 8)
 
 **Output**: each claimed row finished `applied`, `failed` or `deferred` with its reason recorded in
-`outcome_reason`, plus the two gauges and the `retirement_held` alert
+`outcome_reason`, plus the two gauges the slice's `inst-ar-observe` names — **due-but-unclaimed
+count** and **deferred count** — and the `retirement_held` alert
 
 One runner drives both transition kinds. Due rows are claimed atomically by a state CAS with
 `claimed_at`; a `running` row past the claim lease is reclaimed to `pending` with `attempt += 1`,
@@ -416,7 +431,10 @@ This feature **declares seven** codes: `SCOPE_NARROWING_BLOCKED`, `RETIREMENT_LE
 second declaration. **Seven more** are cited from elsewhere and raised by their own owners:
 `APPROVAL_REQUIRED`, `CONTENT_PII_BLOCKED`, `ILLEGAL_TRANSITION`, `PARENT_TERMINAL`,
 `STALE_REVISION`, `STALE_VERSION`, `USAGE_TYPE_UNAVAILABLE`. Seven, two and seven make the sixteen
-distinct codes the slice names.
+distinct codes the slice names. **One more is raised by a §2 scenario and named by no slice**:
+`ENTITY_TERMINAL`, `01-foundation`'s refusal on a head write against a `retired` or `discarded`
+row, which reaches every act this feature drives and so belongs in the response map — seventeen in
+all.
 
 **Boundary**: the roster and every status are specified by
 `cpt-cf-bss-products-contract-lifecycle-errors`, which stays in the slice. `SCOPE_NARROWING_BLOCKED`,
@@ -483,15 +501,16 @@ admitted, and no edge leaves a terminal state — a re-schedule after `applied` 
 
 **Twenty-six**, counted by `grep` on this file rather than from the plan that sized them.
 **Nineteen are separately testable.** Seven are not, and each names what it needs:
-`dod-flip-guard` and `dod-no-orphan` read `07-reference-signal`'s predicate, which does not exist,
-so they are testable only against a stub — and a stub that always answers fresh-zero passes the
+`dod-flip-guard` reads `07-reference-signal`'s predicate, which does not exist, and `dod-no-orphan`
+reaches it transitively — its own operands are child lifecycle states, but the flip it re-checks at
+is guarded by that predicate — so both are testable only against a stub — and a stub that always answers fresh-zero passes the
 guard while proving nothing, which is why a **four-state negative control** is part of the
 obligation; `dod-undeprecation` and `dod-scheduled-publish-pin` need `05-governance`'s gate host and
 approval store, the existing `RecordingGate` double being the shape; `dod-registered-validator-host`
-cannot be asserted until §7 rows 19 and 20 settle whether these rules are registered rules at all;
+cannot be asserted until §7 row 20 settles whether these rules are registered rules at all;
 `dod-lead-window-reannounce` fires through `01-foundation`'s publish door and needs that door's
-harness; and `dod-lifecycle-events` depends on a broker payload shape this feature adds three
-bodies to (§7 row 25).
+harness; and `dod-lifecycle-events` depends on a broker payload shape this feature adds a
+third body to, and on a roster test that is exact in both directions (§7 row 25).
 
 ### Scheduled-transition store
 
@@ -508,6 +527,7 @@ columns MUST stay separate**: one column let a deferral's failure text overwrite
 engines with a perturbation case proving it can fail.
 
 **Implements**: `cpt-cf-bss-products-flow-scheduled-publish`,
+`cpt-cf-bss-products-flow-retire-sku`, `cpt-cf-bss-products-flow-retire-product`,
 `cpt-cf-bss-products-state-scheduled-transition`
 
 **Constraints**: `cpt-cf-bss-products-constraint-immutable-identity`
@@ -522,7 +542,8 @@ engines with a perturbation case proving it can fail.
 
 The system **MUST** create `products_deferred_retirement` keyed
 `(tenant_id, product_id, cascade_ref)` — `cascade_ref` being the parent's `ScheduledTransition`
-id — carrying the leave-and-list snapshot of children and reasons, `created_by`, `resolved_at`,
+id — carrying the leave-and-list snapshot of children and reasons, `created_by`, `resolved_at`
+(nullable — the partial index below is defined over its NULLs),
 `resolution ∈ {children_cleared, cascade_cancelled}` and timestamps. Resolved rows **MUST** flip
 `resolved_at` and **never delete**, for audit continuity. A **partial**
 `UNIQUE (tenant_id, product_id) WHERE resolved_at IS NULL` **MUST** hold at most one live deferral
@@ -612,8 +633,8 @@ for the parent and every child leg the reversal touches.
 **Constraints**: `cpt-cf-bss-products-constraint-immutable-identity`
 
 **Touches**:
-- DB Table: `products_sku`, `products_scheduled_transition`
-- Entities: `SKU`, `ScheduledTransition`
+- DB Table: `products_product`, `products_sku`, `products_scheduled_transition`
+- Entities: `Product`, `SKU`, `ScheduledTransition`
 
 ### Provenance reversal
 
@@ -727,15 +748,17 @@ was a product-visible constraint no requirement carried and is **not** to be rei
 **Constraints**: `cpt-cf-bss-products-constraint-immutable-identity`
 
 **Touches**:
-- DB Table: `products_sku`, `products_entity_version`
-- Entities: `SKU`, `EntityVersion`
+- DB Table: `products_sku`, `products_entity_version`, `products_scheduled_transition`
+- Entities: `SKU`, `EntityVersion`, `ScheduledTransition`
 
 ### `replacedBy` and its chain
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-replaced-by`
 
 `replacedBy` **MUST** be an optional input of retirement initiation, written to
-`replaced_by_sku_id` in the same statement as the lifecycle-state change, and when given **MUST**
+`replaced_by_sku_id` **in the retirement-initiation transaction** — `null` → non-null, P-D-49's
+predicate, which does not require a lifecycle-state change in the same statement, the initiation on
+an already-`deprecated` SKU taking no transition at all — and when given **MUST**
 name a `published` SKU or refuse `REPLACED_BY_NOT_PUBLISHED`. It is **validated once** and the row
 is terminal at the flip, so the pointer may come to name a later-retired SKU: retiring a SKU that
 any live pointer names **MUST** raise a `replacement_chain_broken` alert listing the pointing SKUs,
@@ -891,8 +914,8 @@ Containment is **over restrictions**: the empty set means unrestricted, so an un
 contains every child and an unrestricted child needs an unrestricted parent.
 
 **This obligation MUST begin by measuring what is left to replace.** `01-foundation` ships
-`domain::containment` implementing exactly these three clauses, wired at the SKU create door, the
-SKU publish re-check and the Product save door. The slice describes this feature as replacing the
+`domain::containment` implementing exactly these three clauses, wired at **four** call sites — the
+SKU create door, the SKU save door, the SKU publish re-check and the Product save door. The slice describes this feature as replacing the
 operand inside the identity phase rather than registering a validator; **what operand remains is
 §7 row 21**, and a DoD that obliges a replacement of something already final would be a no-op
 dressed as work.
@@ -916,13 +939,13 @@ A scope-narrowing Product publish **MUST** fail closed while any **non-terminal*
 routine output of the auto-discard arm, so the wider operand would let one discarded draft block
 that Product's narrowing permanently.
 
-**Three shipped facts bear on this and are carried as §7 rows 19–21**, so the obligation cannot be
-written as new work until they settle: the check exists as
-`products::check_children_stay_contained` with the non-terminal operand already correct; it runs on
-the **save** door and has no publish call site; it raises **`SCOPE_NOT_CONTAINED`**, and
-`SCOPE_NARROWING_BLOCKED` occurs nowhere in the crate; and its refusal **deliberately does not name
-the offending child**, on the stated ground that naming one would be a second wording of a shared
-message.
+**Four shipped facts bear on this, and each is registered**, so the obligation cannot be written
+as new work until they settle: the check exists as `products::check_children_stay_contained` with
+the non-terminal operand already correct; it raises **`SCOPE_NOT_CONTAINED`** while
+`SCOPE_NARROWING_BLOCKED` occurs nowhere in the crate (§7 row 19); it runs on the **save** door and
+has no publish call site (§7 row 26); and its refusal **deliberately does not name the offending
+child**, on the stated ground that naming one would be a second wording of a shared message (§7 row
+27).
 
 **Implements**: `cpt-cf-bss-products-flow-parent-child`
 
@@ -985,9 +1008,13 @@ kinds, and the SKU retirement-effective flip event, through `01-foundation`'s ou
 acts **MUST** be audit-plane records with an **explicit "no broker event"** statement rather than
 silence. **What announces a Product's `deprecated → retired` flip is §7 row 5** — the Events roster
 names no Product analogue and records no explicit no-event for it, and `01-foundation`'s
-`domain::transition` module doc independently records the same hole. The gear ships **four** payload
-types today on two body shapes; the retirement payload's five fields need a third, and this DoD
-**MUST** widen the shape rather than overload `EventBodyCore`.
+`domain::transition` module doc independently records the same hole. The gear ships **eight**
+payload types today on two body shapes — `ProductCreated`, `SkuCreated`, `ProductHeadSaved`,
+`SkuHeadSaved`, `ProductPublished`, `SkuPublished`, `ProductDiscarded`, `SkuDiscarded`; the
+retirement payload's five fields need a third body, and this DoD **MUST** widen the shape rather
+than overload `EventBodyCore`. Each new event **MUST** also take its own versioned schema
+reference, and `events_tests::THE_EIGHT` **MUST** be extended in the same change — that roster is
+asserted exact in **both** directions, so the first event added without it reddens the suite.
 
 **Implements**: `cpt-cf-bss-products-flow-deprecation`,
 `cpt-cf-bss-products-flow-retire-sku`, `cpt-cf-bss-products-flow-retire-product`
@@ -995,7 +1022,8 @@ types today on two body shapes; the retirement payload's five fields need a thir
 **Constraints**: `cpt-cf-bss-products-constraint-immutable-identity`
 
 **Touches**:
-- DB Table: `products_outbox`
+- DB Table: the toolkit outbox's own tables under `OUTBOX_TABLE_PREFIX` — **P-D-22 struck
+  `products_outbox`** as a gear-authored table and this gear declares none
 - Entities: `SKU`, `Product`
 
 ### Audit trail for lifecycle acts
@@ -1003,11 +1031,15 @@ types today on two body shapes; the retirement payload's five fields need a thir
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-lifecycle-audit`
 
 Every lifecycle act and every refusal this feature raises **MUST** leave an audit row carrying its
-reason, through `01-foundation`'s audit plane and its pseudonymous actor refs. Supersessions,
+reason — every flow this feature declares, not the runner alone — through `01-foundation`'s audit
+plane and its pseudonymous actor refs. Supersessions,
 governed cancels, deferrals and the `retirement_held` and `replacement_chain_broken` alerts
 **MUST** each be recorded rather than inferred from a state change.
 
-**Implements**: `cpt-cf-bss-products-algo-activation-runner`
+**Implements**: `cpt-cf-bss-products-algo-activation-runner`,
+`cpt-cf-bss-products-flow-deprecation`, `cpt-cf-bss-products-flow-scheduled-publish`,
+`cpt-cf-bss-products-flow-retire-sku`, `cpt-cf-bss-products-flow-retire-product`,
+`cpt-cf-bss-products-flow-parent-child`
 
 **Constraints**: `cpt-cf-bss-products-constraint-immutable-identity`
 
@@ -1017,8 +1049,9 @@ governed cancels, deferrals and the `retirement_held` and `replacement_chain_bro
 
 ## 6. Acceptance Criteria
 
-- [ ] `ADMITTED_EDGES` still has exactly five members and `ALL_STATES` five after this feature
-      lands — the two shipped assertions that would catch an invented edge or state
+- [ ] `ADMITTED_EDGES` still has exactly five members after this feature lands — the one shipped
+      assertion that would catch an invented edge. `ALL_STATES` carries no length assertion, so a
+      sixth state needs one written here
 - [ ] A `published` child is deprecated `cascaded`, an already-`deprecated` child keeps its
       `direct` stamp, and a `draft` child is listed rather than transitioned — all three arms in
       one fixture
@@ -1039,8 +1072,8 @@ governed cancels, deferrals and the `retirement_held` and `replacement_chain_bro
       and re-execution reaches the identical outcome
 - [ ] A `deferred` row is re-claimed on the next poll; a flip-guard deferral is **never** bounded
       by the attempt budget while a transient-dependency deferral lands `failed` when it is spent
-- [ ] Retirement initiation shows the reference count including its conservative states, and a
-      confirmation against a stale count is refused
+- [ ] Retirement initiation shows the reference count including its conservative states — whether a
+      confirmation against a stale count is *refused* is §7 row 34, and no declared code covers it
 - [ ] Initiation on an already-`deprecated` SKU takes no transition, re-stamps no provenance, and
       emits no deprecation event — asserted as set equality over emitted events, not by inspection
 - [ ] A publish during the lead window re-emits the retirement event with the new `fromVersion`,
@@ -1100,46 +1133,62 @@ governed cancels, deferrals and the `retirement_held` and `replacement_chain_bro
 ## 7. Known unknowns
 
 [`../design/04-lifecycle.md`](../design/04-lifecycle.md) §6 carries **18 open items**, and each is
-carried below with the DoD it blocks and its owner. The table has **25 rows**, and the arithmetic is
-stated rather than left to a reader: §6's eighteen are rows **1–18**, in the slice's own order; rows
-**19–25**, marked `**`, were raised by this document's Phase 1a reading of the crate and are new.
+carried below with its owner and, where it blocks one, the DoD it blocks — **row 17 blocks none**.
+The table has **35 rows**, and the arithmetic is stated rather than left to a reader: §6's eighteen
+are rows **1–18**, in the slice's own order; rows **19–35**, marked `**`, were raised by this
+document's own reading of the crate — seven before the review and ten by it — and are new.
 
 **None of these is answered here.** Registering a question is this document's job; answering one
-would be authoring, and three of the eighteen below are questions the slice put to owners who are
-not this feature.
+would be authoring, and **seven** of the eighteen below are questions the slice put to owners who
+are not this feature — rows 1, 6, 8, 10, 16, 17 and 18.
 
 | # | The question | Blocks | Owner |
 |---|---|---|---|
 | 1 | **Deferred flips can hold indefinitely** while a producer watermark stays stale — correct by constraint but operationally invisible without `08-read-models`' surfacing and the `retirement_held` alert; the fail-safe tripwire bounds the corrections debt, nothing yet bounds held retirements. Candidate for an operator report, not a new mechanism | `dod-flip-guard`, `dod-deferred-intent` | the ops owner |
 | 2 | **Cascade + scheduled child publishes**: a `pending` scheduled publish on a child of a retiring Product is superseded by the cascade — stated, but **the supersession ordering deserves a probe when built** | `dod-cascade-plan` | this feature |
 | 3 | **Owed: the instruction row registering the create-door live-retire-intent validator.** Whose it is has been settled — this feature's, its operand being the live retire intent in `products_scheduled_transition`, which this feature owns. **No instruction row registers it yet, and until one does nobody builds the guard** — leaving the hole open: a draft SKU created under a Product with a live retire intent defers that retirement indefinitely | `dod-scheduled-transition-store`, `dod-cascade-plan` | this feature — to add the row in `design/04` |
-| 4 | **Does any runner write the reserved lane `internal:cascade-leg`?** `01-foundation` reserves three `internal:` lane names and names this feature as the writer of the cascade one, keyed by "the leg's" id — but a repo-wide grep finds the lane only in `01-foundation` and in the decision that reserves it, this feature's cascade rows name no lane, and its one lane use routes legs through the runner on `internal:scheduled-activation` with the transition id. Either the legs ride the activation lane and `01-foundation` reserves a name nothing uses, or this feature owes the row that writes it — and the `client_key` it is keyed by, which no table here supplies | `dod-activation-runner` | this feature with 01 |
+| 4 | **Does any runner write the reserved lane `internal:cascade-leg`?** `01-foundation` reserves three `internal:` lane names and names this feature as the writer of the cascade one, keyed by "the leg's" id — but **the carried claim that a repo-wide grep finds the lane only in `01-foundation` and in the
+decision that reserves it is false at HEAD**: the crate reserves it in `api/rest.rs`, the
+idempotency migration names it, and `products_tests` claims on it. What no artifact supplies is a
+*design row that writes it* — this feature's cascade rows name no lane, and its one lane use routes legs through the runner on `internal:scheduled-activation` with the transition id. Either the legs ride the activation lane and `01-foundation` reserves a name nothing uses, or this feature owes the row that writes it — and the `client_key` it is keyed by, which no table here supplies | `dod-activation-runner` | this feature with 01 |
 | 5 | **What announces a Product's `deprecated→retired` flip?** `01-foundation` §4.5 asserts this feature announces all three floor edges, naming the SKU flip event on `deprecated→retired`. This feature gives the parent Product its own retire `ScheduledTransition` on that edge and emits its retirement event at *initiation*, but its Events list names no Product analogue for the flip itself and records no explicit "no event" for it — which §4.5's own rule and `12-consumer-contracts`' completeness check both require. **Independently corroborated by the crate**: `domain::transition`'s module doc says the three edges are announced by slice 04 *"except the `Product` side of `deprecated -> retired`, which no slice announces"*. Naming one would invent normative content | `dod-lifecycle-events`, `dod-cascade-parent-path` | the lifecycle owner, with the events and audit consumer set |
 | 6 | **EOL (post-v1) will need** the subscriptions-lifecycle AC by number, the consumer-ack contract, and a suspension event — the schema field is already vN-compatible | `dod-eol-lockout` | the PRD owner with Subscriptions |
 | 7 | **Does the create-door retire-intent validator also register on the save door?** `01-foundation`'s save instruction is the only door that may change a SKU's `product_id`, so a draft SKU can be **re-parented** under a retire-pending Product by a door neither arm covers — the hazard `inst-fd-containment-retire-intent` itself describes | `dod-registered-validator-host`, `dod-cascade-plan` | this feature |
-| 8 | **What is the claim lease, and what is the per-transition attempt budget?** The claim instruction reclaims a `running` row "past the claim lease" and the failure instruction bounds retries by "a per-transition attempt budget"; **neither carries a value, a default or a config home**, and the interim-defaults table has no row for either. `03-sku-classification` relies on the same budget. *(All three lenses of the slice's own review raised it independently.)* | `dod-activation-runner`, `dod-runner-failure-posture`, `cpt-cf-bss-products-state-scheduled-transition` | the interim-policy owner |
+| 8 | **What is the claim lease, and what is the per-transition attempt budget?** The claim instruction reclaims a `running` row "past the claim lease" and the failure instruction bounds retries by "a per-transition attempt budget"; **neither carries a value, a default or a config home**, and the interim-defaults table has no row for either. `03-sku-classification` relies on the same budget. **The runner's poll cadence and batch bound are a third knob of the same class**, named nowhere and delegated to nobody, while `dod-flip-guard` defers to "the predicate's freshness cadence" — a fourth clock this feature does not own. *(All three lenses of the slice's own review raised the first two independently.)* | `dod-activation-runner`, `dod-runner-failure-posture`, `cpt-cf-bss-products-state-scheduled-transition` | the interim-policy owner with the ops owner |
 | 9 | **Is the cascade-retire trigger keyed on non-`retired` or non-terminal children?** The plan instruction fires over non-`retired` SKUs while the narrowing instruction rejects that exact operand for its sibling rule and records the narrowing by number. **A `discarded` child is inside the trigger population and fits none of the three plan arms.** The PRD carries the wider wording, so narrowing it is a deliberate deviation that owes a register entry | `dod-cascade-plan` | this feature with the PRD owner |
 | 10 | **Is `SCOPE_NARROWING_BLOCKED`'s operand a PRD deviation that owes an entry?** The narrowing instruction reads **non-terminal**, the requirement reads non-`retired`, and the reasoning is sound — but no decision entry records the change, the way the struck publish freeze was recorded | `dod-scope-narrowing` | the PRD owner |
 | 11 | **Does a deferred cascade complete automatically or by an operator act, and who writes `resolution = children_cleared`?** Three mechanics are in play for one act: the failure instruction says `deferred` re-evaluates automatically, the deferred-intent instruction says the parent is "resumable by an operator once the listed children clear", and the storage roster has a named writer for `cascade_cancelled` and **none** for `children_cleared`. No listed child acquires a retire intent of its own, so "once the listed children clear" names no act that retires them | `dod-deferred-intent`, `dod-deferred-retirement-store` | this feature |
-| 12 | **What does the transitive `replacedBy` resolution return on a cycle, and which surface walks it?** The pointer instruction has the read surface resolve to the first non-`retired` successor. **A cycle is constructible** on this feature's own admission that a cancelled, un-deprecated SKU keeps a successor no admitted write can clear. `08-read-models` claims no chain walk | `dod-replaced-by` | this feature with the read-model owner |
+| 12 | **What does the transitive `replacedBy` resolution return on a cycle, which surface walks it, and what bounds the walk?** The pointer instruction has the read surface resolve to the first non-`retired` successor. **A cycle is constructible** on this feature's own admission that a cancelled, un-deprecated SKU keeps a successor no admitted write can clear. `08-read-models` claims no chain walk | `dod-replaced-by` | this feature with the read-model owner |
 | 13 | **Where is the `replacement_chain_broken` fact stored, and who reads it?** The pointer instruction calls it "a stored fact with a consumer-usable resolution rather than a silent dangling pointer"; the two tables hold no such row and the observability line names only gauges and the `retirement_held` alert. Alert only — and then strike "stored fact" — or a row with a table, key and consumer | `dod-replaced-by`, `dod-lifecycle-audit` | this feature with the observability owner |
 | 14 | **Is `effectiveAt` an operator input or computed?** The initiation instruction has it "honoring the **configured** lead-time policy … `RETIREMENT_LEAD_TIME` otherwise", and the taxonomy declares the code with a status. **If the registry computes `now + policy` the code can never be raised** — a declared code with no raiser, which the completeness check reads as a defect; if the operator supplies a date, the door owes a date input, a fail-closed comparison and a timezone rule | `dod-retirement-initiation`, `dod-lifecycle-errors` | this feature with Product |
 | 15 | **Which actor performs the governed cancel of a `ScheduledTransition`?** The un-deprecation instruction makes the cancel a `GovernedLiveOp` registered material by this feature; the actor roster gives it to nobody — the catalog-admin row carries "initiates retirement/cascades" and "resumes deferred cascades", both forward acts | `dod-undeprecation`, `cpt-cf-bss-products-state-scheduled-transition` | this feature with 05 |
 | 16 | **Does `leave-and-list` cover referenced children or only EOL-requiring ones?** The plan instruction scopes the arm to "children whose flip guard cannot clear — referenced SKUs"; the PRD and its AC both scope it to "EOL-requiring children left un-retired", and EOL is disabled in v1 — so **on the PRD's wording the arm has no v1 population at all** | `dod-cascade-plan` | the PRD owner, as a wording call |
 | 17 | **`inst-lc-terminal` restates a rule the slice's own §1.5 puts out of scope.** The row's whole content is terminality, which §1.5 assigns to `01-foundation`. The one-declaration rule is stated for error codes, not for instruction rows, so nothing says whether a restating row is a second declaration | — | the design-set owner |
 | 18 | **Pointer**: which slice declares `PARENT_NOT_PUBLISHED` is open in `01-foundation` §6. This feature asserts one arm — "named in 01, registered here" — and **the answer is not this feature's to give** | `dod-publish-ordering`, `dod-lifecycle-errors` | the owner of that open item |
-| 19** | **`SCOPE_NARROWING_BLOCKED` has no raiser, and the check it names is already built raising a different code.** `products::check_children_stay_contained` reads the non-terminal children of a Product against its post-save scope pair and refuses — with **`SCOPE_NOT_CONTAINED`**. `SCOPE_NARROWING_BLOCKED` occurs **zero** times in the crate and `DomainError` has no arm for it. Either this feature adds the code and changes the shipped door's refusal, or the declaration is withdrawn and the narrowing rides the containment code — which then carries two rules and one message | `dod-scope-narrowing`, `dod-lifecycle-errors` | this feature with 01 |
+| 19** | **`SCOPE_NARROWING_BLOCKED` has no raiser, and the check it names is already built raising a different code.** `products::check_children_stay_contained` reads the non-terminal children of a Product against its post-save scope pair and refuses — with **`SCOPE_NOT_CONTAINED`**. `SCOPE_NARROWING_BLOCKED` occurs **zero** times in the crate and `DomainError` has no arm for it — and neither does `PARENT_NOT_PUBLISHED`, which `dod-publish-ordering` obliges on the same terms while the parent check that ships raises `PARENT_TERMINAL` only. Either this feature adds the code and changes the shipped door's refusal, or the declaration is withdrawn and the narrowing rides the containment code — which then carries two rules and one message | `dod-scope-narrowing`, `dod-lifecycle-errors` | this feature with 01 |
 | 20** | **The validation pipeline cannot key a rule the way this feature's rules are described.** `ValidationRule<S>` carries `name()`, `phase()` and `evaluate(&self, subject, report)` and **no kind, transition, target-state or field-set operand**, while the slice cites `01-foundation` §3.1 as "registered validators keyed by kind + transition/target-state/field-set" and the publish-ordering rule turns on being registered on the **target state** rather than the edge. Worse, `01-foundation` has already established the workaround and its cost: *"the pipeline is synchronous and judges the subject row alone, and this rule's operand is a read of other rows. So it runs as that phase's continuation."* **Every parent-child, retire-intent and flip-guard rule here reads other rows.** Either the trait widens — against `dod-registered-validator-host`'s no-parallel-vocabulary clause — or this feature's "registered validators" are phase continuations and the design's framing is wrong. **This is the one item that cannot be deferred past the first line of code** | `dod-registered-validator-host`, `dod-publish-ordering`, `dod-scope-narrowing`, `dod-scope-containment-final` | this feature with 01 |
 | 21** | **What operand does this feature replace in the containment check?** The slice describes `SCOPE_NOT_CONTAINED`'s "final semantics" as registered here, replacing the operand inside `01-foundation`'s identity phase. But `domain::containment` **already implements the final restriction-based rule verbatim** — unrestricted parent contains every child, unrestricted child needs an unrestricted parent, ordinary subset between non-empty sets — wired at three call sites. If nothing is left to replace, the obligation is a no-op and the slice's C5 wording is stale | `dod-scope-containment-final` | this feature with 01 |
 | 22** | **`PreAuthorized` cannot admit a cascade leg.** The mode verifies a consumed record that authorized **this subject** at **this pinned revision**, while a cascade leg's subject is a **child** entity with its own revision, and the mode carries only an approval id with no plan-membership operand. The scheduled-publish flow needs the mode for the parent's own row and the cascade needs it for every leg. Weakening the predicate to "names a consumed record" turns a terminal record into a bearer token for any subject in the tenant. *(The same seam is `05-governance`'s row 27, raised there against that feature's own DoDs.)* | `dod-scheduled-publish-pin`, `dod-cascade-plan`, `dod-activation-runner` | this feature with 01 and 05 |
 | 23** | **Can a `deferred` row be superseded, and the slice says two things.** The claim instruction calls the re-claim to `running` *"the only exit that state has"*, while the cascade-plan instruction supersedes a child's **live** intents and the partial unique index counts `deferred` as live. Both cannot hold. §4 row 7 above records the edge as leaving "a live state" precisely because the source does not enumerate them | `cpt-cf-bss-products-state-scheduled-transition`, `dod-cascade-plan`, `dod-scheduled-transition-store` | this feature |
-| 24** | **The runner drives doors whose bump arithmetic has no production caller.** `TransitionEffects::bumps_the_guard_owns()` and its two companions are documented as having no production caller, with *"the first reader is expected to be slice 04's transition door, which drives an edge it does not own a head-row `UPDATE` for and must therefore be told how many bumps to add."* **This feature declares no transition door** — every edge is driven through `01-foundation`'s existing publish, save and discard doors, which carry their own bumps. So either the expected reader never arrives and the three methods stay uncalled, or this feature owes a door the slice does not describe | `dod-activation-runner`, `dod-registered-validator-host` | this feature with 01 |
-| 25** | **Seven broker events against four shipped payload types and two body shapes.** The gear ships `ProductPublished`, `SkuPublished`, `ProductDiscarded` and `SkuDiscarded` on `EventBodyCore` and `PublishedEventBody`. This feature declares seven — deprecation and un-deprecation for both kinds, retirement for both kinds, and the SKU flip — of which the retirement payload carries five fields beyond the core. Nothing in the design set says whether the deprecation events carry a body beyond the core, and the retirement event needs a **third** body type that no artifact names | `dod-lifecycle-events` | this feature with 01 and 12 |
+| 24** | **Three of the four edges this feature owns have no admitted writer, so it owes a transition door the slice never describes.** `published → deprecated`, `deprecated → published` and `deprecated → retired` are what §2's flows and eight of §5's DoDs are made of, and no shipped door can write them: `published_state_after` maps `draft → published` and returns `from` for every other state, the discard door writes `discarded` only, and `SkuHeadSave`/`ProductHeadSave` carry no `lifecycle_state` column at all. The floor says so itself — *"There is also no door here … belongs to the transition and discard doors, which are a later slice's"* — and `TransitionEffects::bumps_the_guard_owns()`, documented as having no production caller, names *"slice 04's transition door"* as its expected first reader. **The activation runner is not that door**: §3 has it drive the ordinary Foundation doors with no privileged path. So the door is owed, its bump arithmetic is the method's, and neither the slice nor this document specifies it | `dod-activation-runner`, `dod-registered-validator-host`, `dod-undeprecation`, `dod-flip-guard` | this feature with 01 |
+| 25** | **Seven broker events against eight shipped payload types, two body shapes and a roster test that is exact in both directions.** The gear ships `ProductCreated`, `SkuCreated`, `ProductHeadSaved`, `SkuHeadSaved`, `ProductPublished`, `SkuPublished`, `ProductDiscarded` and `SkuDiscarded` on `EventBodyCore` and `PublishedEventBody`, and `events_tests::THE_EIGHT` asserts both that every schema-carrying token is in the roster and that the roster's length is eight — so the first event this feature adds reddens it, and every one owes a versioned schema reference or it cannot reach the wire. This feature declares seven — deprecation and un-deprecation for both kinds, retirement for both kinds, and the SKU flip — of which the retirement payload carries five fields beyond the core. Nothing in the design set says whether the deprecation events carry a body beyond the core, and the retirement event needs a **third** body type that no artifact names | `dod-lifecycle-events` | this feature with 01 and 12 |
+| 26** | **The narrowing check ships on the *save* door and has no publish call site**, while `inst-pc-narrowing` and this document's §2 both put it on a **publish**. `products::check_children_stay_contained` has exactly one production call site, inside `run_save`, at what that function's own comment calls "Phase 6, the registered-validators phase". Either the rule moves to publish, or it is registered on both, or the design's "publish" is wrong — and the third reading is the cheapest, since a narrowing is a head write and the save door is where head writes land | `dod-scope-narrowing` | this feature with 01 |
+| 27** | **The document requires the narrowing refusal to name the falling-out children; the shipped door deliberately refuses to.** §5 obliges "the validator **MUST** name the falling-out children" and §6 asserts a refusal "**naming that child**", while `products.rs` records the opposite as a decision: *"The refusal therefore does **not** name the offending child: that message is the shared one, and naming a SKU in it would be a second wording."* No document in the tree carries this as an open item — the slice states the naming requirement flatly and its §6 registers nothing. Accept the shared unnamed message, or fork a second message for the parent's end | `dod-scope-narrowing` | this feature with 01 |
+| 28** | **`attempt` has one increment rule and two populations, so the bounded arm can never spend its budget.** §4 moves the counter only on the lease reclaim (row 3), while the budget it is measured against bounds the *transient-dependency* deferral (row 5). On the text as written a transient deferral never increments, so the budget is never spent and `failed` is unreachable by that path; meanwhile a lease reclaim during an unbounded **flip-guard** hold does bump the same counter toward a budget that arm is expressly not subject to. The slice has the identical shape. Whether these are one column or two, and which transitions move which, is unstated | `cpt-cf-bss-products-state-scheduled-transition`, `dod-runner-failure-posture`, `dod-activation-runner` | this feature with the interim-policy owner |
+| 29** | **Nothing names what hosts the activation runner, or the identity it drives the doors under.** The gear implements exactly two capabilities — `DatabaseCapability` and `RestApiCapability` — and there is no background-job seam, while §2 states the runner "has no wire surface". The doors it must drive take a compiled `AccessScope` and a pseudonymous `actor_ref`, both request-derived, and `dod-lifecycle-audit` obliges every one of its acts to leave an audit row through those refs. Any answer that skips scope compilation is the "privileged path around the pipeline" §4 row 1 forbids | `dod-activation-runner`, `dod-lifecycle-audit`, `cpt-cf-bss-products-state-scheduled-transition` | this feature with 05 and the platform owner |
+| 30** | **The Product retirement event's payload is undefined, and it cannot be the SKU's.** §2 states one retirement payload — `{skuId, fromVersion, reason, replacedBy?, effectiveAt}` — and `dod-cascade-parent-path` has the parent emit "its retirement event at initiation" with no field list. One of the five fields has no Product-side source at all: `replaced_by_sku_id` is `products_sku` only. The slice says "payload analogous to the SKU's", which is not a field list. Row 5 is about the Product **flip**; this is the **initiation** event | `dod-lifecycle-events`, `dod-cascade-parent-path` | this feature with 01 and 12 |
+| 31** | **The cascade's auto-discard arm needs a pre-authorized discard, on a door whose mode was fixed shut because no such caller was believed to exist.** `dod-cascade-plan` runs the whole plan in one transaction, auto-discard included, while the discard door takes `GateMode::Gate` as a literal on a stated premise: *"No scheduled or cascaded **discard** exists in any slice, so there is no caller for a pre-authorized discard and no instruction asking for one."* This feature is that caller. The door also builds its idempotency key from a wire path, where §2 requires an internal caller to write a lane name. Row 4 asks which lane; row 22 asks what `PreAuthorized` requires of a leg's subject; neither reaches the discard door's mode | `dod-cascade-plan` | this feature with 01 and 05 |
+| 32** | **The governed cancel is required to clear `replaced_by_sku_id` "for the parent", and the parent is a Product, which has no such column.** `dod-undeprecation` obliges the clear "for the parent and every child leg the reversal touches" while `dod-lifecycle-columns` pins the column to **`products_sku` only** — "the column names a SKU" — and §1.4 records that the slice was already corrected once for listing it on both tables. The slice carries the same pair, so the contradiction is inherited rather than introduced. Either the parent clause is scoped to the child legs, or Products get the column back | `dod-undeprecation`, `dod-lifecycle-columns` | this feature — with a strike owed in `design/04` |
+| 33** | **Three artifacts give three answers about whose migration creates `deprecation_provenance` and `replaced_by_sku_id`.** `dod-lifecycle-columns` says `01-foundation`'s migrations create them and this feature is their first writer; `design/01-foundation` §4.2 lists them in slice 01's own table shapes annotated with slice 04 as the *writer*; and both shipped entity migrations say in their own docs that **slice 03** brings them. `features/sku-classification.md` obliges no such column addition. Whoever owns it, one of the three is wrong | `dod-lifecycle-columns` | the design-set owner with 01 and 03 |
+| 34** | **Is the active-reference count part of the retirement confirmation token, or only displayed?** `dod-retirement-initiation` and the slice's own `inst-rt-confirm` both stop at *showing* it, and none of the seven declared codes covers a stale-count refusal. If the count is part of the token, a code, a raiser and a staleness comparison are owed; if it is displayed only, the operator confirms against a number that may already have moved — which is the silence the requirement to show it exists to prevent | `dod-retirement-initiation`, `dod-lifecycle-errors` | this feature with Product |
+| 35** | **Does the cascade supersede a child's live *retire* intent in all three arms, or only in the retire arm?** `dod-cascade-plan` supersedes it "for every child in all three arms … the latter replaced by this cascade's own leg", but only the retire arm produces a leg, and the stated justification — a unique-index collision — can only arise where a leg is being inserted. So a leave-and-list or auto-discard child has its own scheduled retirement cancelled and replaced by nothing. Row 11 records the downstream symptom, that no listed child acquires a retire intent, but asks who writes the resolution rather than whether the cancellation was right | `dod-cascade-plan`, `dod-deferred-intent` | this feature |
 
 *Rows marked `**` were raised by this document's own reading of the crate, not carried from the
-slice. Row 20 is the blocking one: it describes a mechanism the design set assumes and the code
-does not provide, and the Foundation has already worked around it twice in the two places it
-needed to.*
+slice — seven before the three-lens review and ten by it. **Two are blocking, and they are the same
+shape**: row 20, a mechanism the design set assumes and the code does not provide, which the
+Foundation has already worked around twice in the two places it needed to; and row 24, three of the
+four edges this feature owns having no admitted writer in any shipped door. Neither can be deferred
+past the first line of code, and both were invisible to a reading of the design set alone.*
 
 ### Raised here rather than carried
 
