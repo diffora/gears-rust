@@ -286,6 +286,13 @@ registers `dyn EventBrokerApi` except this gear's own `broker_tests.rs`, so the 
 That is a standing debt of `01-foundation`'s, restated here because this feature's flow is the one it
 makes untestable end-to-end.
 
+**The fixtures do not wait on it** (**P-D-58**). Their transport is `event-broker-sdk`'s own
+`MockBroker`, under the `test-util` feature this gear already takes in dev-dependencies, registered
+into `ClientHub` as `dyn EventBrokerApi` — the registration a production boot performs, never a
+producer injected past the hub. **What a green suite licenses is narrower than the obligation**: the
+contract holds over this gear's own path with a conforming transport. That events reach consumers in
+production is a different claim, it depends on the missing registration, and **no DoD here owns it**.
+
 ## 3. Processes / Business Logic (CDSL)
 
 Each process below is **declared here and specified in
@@ -431,6 +438,12 @@ and **neither `products` nor `products-sdk` declares a dependency on it**. The h
 So this DoD is: the dependency declared, the fixtures placed, and a job that runs them. **It is not
 met by the fixtures existing** — an unrun job asserts nothing, which is what §7's owner question is
 about.
+
+**There is a second missing wire, and it is in the same manifest.**
+`gears/bss/fixtures/bss-fixtures/Cargo.toml` declares **no dependency on `event-broker-sdk`**, with
+or without `test-util` — and **P-D-58** makes that crate's `MockBroker` the transport under every
+event-bearing fixture, registered into `ClientHub` as `dyn EventBrokerApi` rather than injected past
+it. So the dependency this DoD owes is two edges, not one.
 
 **Implements**: `cpt-cf-bss-products-flow-seam-suite`
 
@@ -658,7 +671,9 @@ no-broker deployment would have emitted it."* Two green test rosters and a runti
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-dedup-ordering`
 
 The consumer contract states both keys and the suite fixtures both cases — a duplicate delivery and
-an out-of-order one.
+an out-of-order one. **Both are assertable now** (**P-D-58**): `MockBroker` exports `StoredEvent` and
+`CursorEntry`, so the stored log and the per-partition cursors are readable from a fixture, which is
+the surface a duplicate and an out-of-order delivery are detected on.
 
 - **Beyond the idempotency window**: `(tenant, aggregate, sequence)`, where `sequence` is the
   **broker's server-assigned read-side value per `(topic, partition)`** (**P-D-47**, which re-took
@@ -1052,9 +1067,9 @@ artifacts, not types.
 **The arithmetic of this section.** Thirty-seven rows: **twenty-one carried verbatim** from
 [`../design/12-consumer-contracts.md`](../design/12-consumer-contracts.md) §6 — the slice's full
 count, not a selection — and **sixteen raised here**: five while authoring and eleven by the
-three-lens review of this document. Of the thirty-seven, **six block no DoD in this document**
-(rows 3, 6, 12, 27 and 36, plus row 25 since **P-D-57 resolved it on 2026-08-31** — kept in place
-rather than struck); the other thirty-one each name the DoD they block. A final subsection
+three-lens review of this document. Of the thirty-seven, **seven block no DoD in this document**
+(rows 3, 6, 12, 27 and 36, plus rows 25 and 26, which **P-D-57 and P-D-58 resolved on 2026-08-31** —
+kept in place rather than struck); the other thirty each name the DoD they block. A final subsection
 carries defects owed to other documents, recorded and not repaired here; those are not rows.
 
 **Carried, not answered**, and registered against **its owner's** register. **Three departures from
@@ -1312,17 +1327,31 @@ diffed against `design/12` §6 sentence by sentence, mechanically, and every row
     **Owner**: was this feature with the plan-price owner; **closed** — nothing on the consumer's side
     is changed by it.
 
-26. **Is the replay contract testable at all before `dyn EventBrokerApi` has a production
-    registration?** Nothing in the workspace registers it except this gear's own `broker_tests.rs`,
+26. ~~**Is the replay contract testable at all before `dyn EventBrokerApi` has a production
+    registration?**~~
+    **Answered (owner call, 2026-08-31 — P-D-58): the fixtures are authorable now and do not wait for
+    it.** Their transport is `event-broker-sdk`'s own `MockBroker` — public SDK API under the
+    `test-util` feature this gear already takes in dev-dependencies, implementing the trait and
+    exporting `StoredEvent` and `CursorEntry` so the log and cursors are readable from a fixture.
+    **And it is not a registration bypass**, which is what decided it: `infra/broker_tests.rs`
+    registers the topic and all eight event types, then `hub.register::<dyn EventBrokerApi>(broker)`
+    into `ClientHub` — the registration a production boot performs, with a different transport behind
+    it. The boundary is the gear's own: *"Anything a real broker adds is on the other side of that
+    boundary and belongs to whoever owns the `01/06` split."* **The claim a green suite licenses is written down and is narrower than the
+    obligation** — the contract holds over this gear's path with a conforming transport; that events
+    reach consumers in production is a different claim with no DoD owning it. `01-foundation`'s
+    standing debt is untouched.
+    Original text: Nothing in the workspace registers it except this gear's own `broker_tests.rs`,
     so the broker producer arm is inert in every real deployment. Every obligation of
     `cpt-cf-bss-products-flow-replay` — versioning, dedup, ordering, bootstrap — rides that arm, and
     the suite's fixtures would assert a contract over a producer that never runs outside tests. The
     standing debt is `01-foundation`'s; what is unstated is whether this feature's fixtures are
     authorable against the test registration or wait for the real one, which is C4's question asked
     of the gear's own transport rather than of a counterparty.
-    **Blocks**: `cpt-cf-bss-products-dod-event-versioning`,
-    `cpt-cf-bss-products-dod-dedup-ordering`, `cpt-cf-bss-products-dod-bootstrap`.
-    **Owner**: `01-foundation`'s broker owner, with this feature.
+    **Blocks**: no DoD — **resolved by P-D-58**; `cpt-cf-bss-products-dod-dedup-ordering` is freed,
+    while `dod-event-versioning` stays blocked by row 29 and `dod-bootstrap` by row 4.
+    **Owner**: was `01-foundation`'s broker owner with this feature; **closed** — the fixture question
+    only. The production registration remains `01`'s and is not settled here.
 
 27. **Does `DECOMPOSITION.md` §2.12 or this document govern the feature's scope?** §2.12's **Scope**
     lists three items — event schema versioning, the replay/bootstrap contract, the SDK/§9 surfaces —

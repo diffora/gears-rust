@@ -1569,6 +1569,67 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   (the re-publish step).
 
 
+#### P-D-58 — The replay fixtures are authorable now, against the SDK's own broker double
+
+- **Date**: 2026-08-31 (owner call)
+- **Context**: `features/consumer-contracts.md` §7 row 26 asked whether the replay contract is
+  testable at all before `dyn EventBrokerApi` has a production registration, since every obligation of
+  `cpt-cf-bss-products-flow-replay` — versioning, dedup, ordering, bootstrap — rides an arm this
+  document's §1 calls *"inert in every real deployment"*. The unstated half was whether this feature's
+  fixtures are authorable against the test registration or wait for the real one.
+
+  **The double is not a local invention: it is public SDK API and this gear already depends on it.**
+  `event-broker-sdk` exposes `pub mod mock` behind its `test-util` feature, `MockBroker` implements the
+  trait (`src/mock/transport.rs:171`), and the module exports `MockBroker`, `MockBrokerHandle`,
+  `StoredEvent` and `CursorEntry` — so the stored log and the cursors are inspectable, which is
+  exactly the surface versioning, dedup, ordering and bootstrap assert over.
+  `products/Cargo.toml` already takes `event-broker-sdk` with
+  `features = ["outbox", "test-util"]` in its dev-dependencies.
+
+  **And it is not a registration bypass, which is the part that decides the question.**
+  `infra/broker_tests.rs` registers the topic and **all eight** event types through
+  `MockBrokerHandle`, then performs `hub.register::<dyn EventBrokerApi>(broker)` into
+  `toolkit::client_hub::ClientHub` — the same registration a production boot performs, with a
+  different transport behind it. The event types are registered *"from the transcribed literals, so
+  this is an agreement between two independent transcriptions rather than the gear agreeing with
+  itself"*.
+
+  **The boundary is already written by the gear, and this entry adopts it rather than drawing a new
+  one.** `broker_tests.rs`: *"Both ends are in-process — `MockBroker` accepts with no network, no disk
+  beyond the local `SQLite` outbox, and no ingest work"*, so what it bounds is *"enqueue, the
+  sequencer, the leased processor's pickup, and the SDK's publish call"*, and *"Anything a real broker
+  adds is on the other side of that boundary and belongs to whoever owns the `01/06` split."*
+
+- **Decision**: the replay fixtures are **authorable now**, against `MockBroker` registered into
+  `ClientHub` as `dyn EventBrokerApi`. They do not wait for a production registration.
+
+  | Call | Propagation |
+  |---|---|
+  | **The suite's transport is the SDK's own double, under `test-util`** — not a fixture-local stub, so a change to the broker contract reaches the fixtures through the same crate the gear compiles against | `design/12` §2.1 joint fixtures; `dod-event-versioning`, `dod-dedup-ordering`, `dod-bootstrap` |
+  | **The fixtures drive the gear's real registration path**, topic and all eight event types included, and the type registration is transcribed independently rather than read from the gear's constants. A fixture that injected a producer past `ClientHub` would assert the contract over wiring no boot performs | `dod-seam-suite-home` |
+  | **The claim the green suite licenses is stated, and it is narrower than the obligation**: the contract holds over this gear's own path with a conforming transport. *"Events reach consumers in production"* is a different claim, it depends on the missing registration, and **no DoD in this gear owns it** | `features/consumer-contracts.md` §1 boundary |
+
+- **A propagation item the round found**: `gears/bss/fixtures/bss-fixtures/Cargo.toml` declares **no
+  dependency on `event-broker-sdk` at all**, with or without `test-util`. That is a second missing
+  wire at the suite's home, beside the one `dod-seam-suite-home` already names — *"the dependency
+  declared, the fixtures placed, and a job that runs them"* — and it is recorded there rather than
+  filed as a new question, the DoD already owning the wiring.
+- **The argument against, stated**: a suite green against a double proves the contract, not the
+  deployment. The producer arm is inert in production, so every replay fixture can pass while no
+  deployment runs the path. That is not removed by using a better double, and it is why the licensed
+  claim above is written down: the suite's greenness is evidence about this gear's path, never about
+  delivery.
+- **Scope — `01-foundation`'s standing debt is untouched and is not closed by this.** Nothing in the
+  workspace registers `dyn EventBrokerApi` outside this gear's tests; `features/catalog-version.md`
+  records the same measurement independently. This entry decides only whether the fixtures wait for
+  that, and they do not. It also does not touch the **event-log retention window**, whose value is a
+  `PRD.md` §15 open and without which, as §1 says, the replay contract *"is words"*.
+- **Not changed**: no fixture is authored here, no dependency edited, and no feature flag added to any
+  manifest.
+- **Propagated**: `features/consumer-contracts.md` (§1's boundary paragraph, `dod-event-versioning`,
+  `dod-dedup-ordering`, `dod-bootstrap`, `dod-seam-suite-home`, §7's arithmetic and row 26 answered),
+  `design/12-consumer-contracts.md` (§2.1's joint-fixture rule).
+
 #### P-D-57 — The pin keeps every derived member and carries its comparability; the job is two-sided
 
 - **Date**: 2026-08-31 (owner call)
