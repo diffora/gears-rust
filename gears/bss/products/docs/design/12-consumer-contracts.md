@@ -99,7 +99,9 @@ fixture, a pinned schema, or a lint. A promise that cannot be asserted is re-lab
 
 ### 2.1 The seam suite
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-flow-seam-suite`
+Declared by [`../features/consumer-contracts.md`](../features/consumer-contracts.md) §2 as `cpt-cf-bss-products-flow-seam-suite`.
+The steps below are this slice's and are the normative ones; the FEATURE carries the
+actor, the scenarios and the boundary.
 
 1. [ ] - `p1` - Home: one CI job over **`cf-gears-bss-fixtures`** (**P-D-44**, path in §4.1's artifact table; the §15 "proposed: `api-contracts` CI" — final owner still a §15 open; the suite is designed to run in either home unchanged); it consumes both gears' SDKs and the `SchemaPin`, and **fails on any divergence** in the C1 fields (C1) - `inst-ss-home`
 2. [ ] - `p1` - The `SchemaPin` is a committed artifact versioned with the SDK: registry-side changes to a pinned field bump it through the ordinary review of BOTH gears (a one-sided bump fails the other side's CI — that asymmetry is the enforcement) - `inst-ss-pin`
@@ -132,7 +134,9 @@ suite's backlog, reviewed whenever a counterpart lands an AC (C4).
 
 ### 2.3 Event versioning, replay & bootstrap
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-flow-replay`
+Declared by [`../features/consumer-contracts.md`](../features/consumer-contracts.md) §2 as `cpt-cf-bss-products-flow-replay`.
+The steps below are this slice's and are the normative ones; the FEATURE carries the
+actor, the scenarios and the boundary.
 
 1. [ ] - `p1` - Every event schema is a versioned artifact in `products-sdk`; the CI compatibility test runs C2's actual direction — **an old (`vN`) consumer deserializing a `vN+1` payload** carrying the new optional fields with defaults (the reverse direction, new code reading old fixtures, is the trivial half and is also asserted) on every schema change — the 04 EOL field (`mustMigrateBy` present-but-unpopulated) is the standing example; **the 09 export-artifact schema joins the same corpus** (L3 — the discipline it cites is now exercised, not borrowed) - `inst-rc-compat`
 2. [ ] - `p1` - Dedup/ordering detection beyond the idempotency window rides `(tenant, aggregate, sequence)`, where **`sequence` is the broker's server-assigned read-side `sequence` per `(topic, partition)` (P-D-47, re-taking P-D-27's slot, which the broker's schema refuses)** — the gear sets no `partition_key`, so the broker's ADR-0002 default puts every event of one tenant on one partition, and `sequence` is monotonic across them; detection needs monotonicity, not density, so the gaps left by neighbouring aggregates in the same partition are expected and must not be read as loss. Within the window the dedup key is the event **`id`**, which the SDK mints once at enqueue and every delivery attempt repeats. The consumer contract states both and the suite fixtures a duplicate + an out-of-order delivery - `inst-rc-dedup`
@@ -158,6 +162,10 @@ running.*
 
 ### 3.1 Monetization traceability (AC #37)
 
+Declared by [`../features/consumer-contracts.md`](../features/consumer-contracts.md) §3 as `cpt-cf-bss-products-algo-monetization-traceability`.
+The obligation below is this slice's and is the normative one; the FEATURE carries the
+Input, the Output and the boundary.
+
 - [ ] `p2` - **ID**: `cpt-cf-bss-products-contract-traceability`
 
 The §17.2 map is the deliverable and it exists in the PRD; this slice's duty is keeping it
@@ -167,7 +175,9 @@ lint failure, not a feature).
 
 ### 3.2 The completeness checks (`CoverageChecks`)
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-algo-coverage`
+Declared by [`../features/consumer-contracts.md`](../features/consumer-contracts.md) §3 as `cpt-cf-bss-products-algo-coverage`.
+The lints below are this slice's and are the normative ones; the FEATURE carries the
+Input, the Output and the boundary.
 
 Doc-plane lints over this design set + PRD (spec-check-class. **Gated by nothing today** — corrected: this read "run in CI with the docs job", and `.github/workflows/docs.yml` holds one job, `Check Markdown Links`; the `Spec Invariants` job that ran `make spec-check` was deleted  together with its Makefile target. These nine are specified here and run on demand until someone adds the job back, which is itself owed):
 

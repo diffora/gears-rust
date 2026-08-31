@@ -1037,8 +1037,10 @@ authored downstream of this document, in the order §3 establishes.
   - [ ] `p1` - `cpt-cf-bss-products-constraint-broker-native-events`
 
 - **Domain Model Entities**:
+  - SeamSuite
   - SchemaPin
   - ObligationRegister
+  - CoverageChecks
 
 - **Design Components**:
 
