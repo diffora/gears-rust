@@ -91,7 +91,7 @@ aggregated but honest (counts, per-type summary, sample, lint findings).
 
 | Name | Meaning |
 |------|---------|
-| `BulkBatch` | The unit: rows + batch key + state machine `staging → reported → approved → committing → completed/failed` |
+| `BulkBatch` | The unit: rows + batch key + state machine `staging → reported → approved → committing → completed/failed`, plus **`abandoned`** (terminal) with `reported → abandoned` on the approval's rejection or explicit withdrawal, and `failed` entered by `staging|committing → failed` on the batch worker's attempt-budget exhaustion — **P-D-69**; row failures stay row-local and enter neither |
 | `RowLedger` | Per-row state: parsed/validated/staged/published/applied (a live-entity op)/no-op/failed(reason) — the no-hidden-partial-failure surface |
 | `ChangeReport` | The aggregated approval artifact: counts, per-type summary, sample rows, lint findings, the itemised override-carrying rows (`skuCode` per row — `inst-bk-override`) — what the 05 quorum signs |
 | `PromotionResolver` | Maps source rows to target identities per C5 and classifies each, exhaustively and in C5's own order: create / no-op / update-as-draft / conflict (four — the count §5's promotion matrix and C5 both carry) |
@@ -121,7 +121,7 @@ approval record — is audit-plane, which is what **P-D-21** means by the audit 
 emits no event. `inst-bk-export` is a read, and `inst-bm-tables`, `inst-bm-limits` and
 `inst-pm-review` declare rather than write, so none of the four carries a marker.*
 
-1. [ ] - `p1` - `POST /bss-products/v1/bulk/imports` (`bulk × execute`) with the batch key (idempotent: a replayed batch returns the existing `BulkBatch`); rows carry per-row keys, **batch-scoped** (a row reaching 01's publish door resolves that door's key as the reserved lane **`internal:bulk-row`** with the row's id as `client_key` — **P-D-26**; distinct from this slice's own ledger keys) (M1 fix: a row re-listed in a NEW batch is a new act — its stage validation decides its fate against the store, e.g. `DUPLICATE_CODE` — **P-D-25**, one code for both reservations; only a retry **within** the batch no-ops against the ledger); **no event** - `inst-bk-keys`
+1. [ ] - `p1` - `POST /bss-products/v1/bulk/imports` (`bulk × execute`) with the batch key (idempotent: a replayed batch returns the existing `BulkBatch`) **and a batch-level `mode ∈ {import, promote}`, default `import`** (**P-D-69**: under `import` a bound `skuCode` with different content is `DUPLICATE_CODE`; only `promote` engages the `PromotionResolver`'s update-as-draft — per-row mixing declined, a mixed batch being two batches); rows carry per-row keys, **batch-scoped** (a row reaching 01's publish door resolves that door's key as the reserved lane **`internal:bulk-row`** with the row's id as `client_key` — **P-D-26**; distinct from this slice's own ledger keys) (M1 fix: a row re-listed in a NEW batch is a new act — its stage validation decides its fate against the store, e.g. `DUPLICATE_CODE` — **P-D-25**, one code for both reservations; only a retry **within** the batch no-ops against the ledger); **no event** - `inst-bk-keys`
 2. [ ] - `p1` - **Stage phase**: every Product/SKU row runs the ordinary per-row pipeline (parse → the same registered validators as interactive authoring — never a parallel rule set) and lands as `draft` via the 01 doors. **Live-entity rows — categories, attribute definitions, recognized-set members — have no draft state (H2/M5 fix)**: they validate at stage as a dry-run against the live tree/sets and are recorded in the ledger as **pending `GovernedLiveOp`s**, applied at commit under the batch approval (their promotion identities: category = `(parent path, normalized name)`, set member = `(set kind, member code)`, definition = `key`). Failures land in the `RowLedger` with their ordinary error codes; dependency order: categories/vocabularies → Products → SKUs, and a dependent row whose in-batch dependency failed fails `BULK_DEPENDENCY_FAILED` without touching the store (C2); **no event** - `inst-bk-stage`
 3. [ ] - `p1` - The `ChangeReport` is generated from the ledger (counts, per-type summary, deterministic sample, the `fr-prepublish-lint` attention conditions (the report is 06's door; its conditions arise in 02/03 — L5; §6), and a **scope-values lint** naming region/brand values unseen in the target tenant's catalog — L7) and submitted to the 05 gate as one approval with subject kind **`bulk_batch`**, carrying the batch's affected-entity count; its materiality is 05's `MaterialityEvaluator`'s to decide (C3: first publishes and lifecycle transitions are material at any size; the affected-entity trigger catches large non-material edits), its stored snapshot the report + **the ledger's per-row pinned revisions** (H3 fix); a post-report edit to a member entity does NOT supersede the batch — that row fails its per-row pin at commit, row-locally (the batch state machine therefore needs no supersession edge — L2 resolved by the same decision); **no event** - `inst-bk-report`
 4. [ ] - `p1` - **Commit phase** (on quorum): the batch approval is **consumed once, by the `approved → committing` flip** (the 05 composite-act model, extended to batch acts in 05's own enumeration — H3); rows then publish per-row through the 01 `PublishDoor` **in `PreAuthorized(approvalId)` mode naming the batch's consumed record** (01 `inst-fd-gate-mode-preauthorized`, which names a bulk row as one of its callers), each pinned to its **ledger revision** — an edited row fails `STALE_REVISION` alone in the ledger, dependents of a failed row fail `BULK_DEPENDENCY_FAILED` wrapping the underlying code, commit preserves the stage ordering (categories/vocabularies → Products → SKUs — L1), siblings never block, and the published state is never partially-inconsistent because each row's publish is atomic and independent; live-entity ops apply as their `GovernedLiveOp`s under the same consumed approval, each re-validating its pinned expected target state at apply and failing `STALE_LIVE_OP` alone in the ledger (02 `inst-gl-envelope`), row-locally, exactly as an edited entity row fails `STALE_REVISION`; the batch's 06 increment requests carry the **`operation_key`** so the whole batch lands in ONE CatalogVersion, and that operation closes on D-47's **5-minute hard max** rather than on any signal this slice sends (**P-D-46** struck `closed_at`; the `close` marker on `(source, operation_key)` that M6 had added goes with it — §1.5); **no event** - `inst-bk-commit`
@@ -208,7 +208,7 @@ text):
 - **`products_bulk_batch`** — `(tenant_id, batch_id)` PK · `batch_key` (**UNIQUE** with `tenant_id` —
   the import door's idempotency operand, distinct from the row keys) · `lane ∈ {import, lifecycle}`
   (roster stated, on the same convention every other state column here follows) ·
-  `state ∈ {staging, reported, approved, committing, completed, failed}` (§1.7, the six of P-D-54) ·
+  `state ∈ {staging, reported, approved, committing, completed, failed, abandoned}` (§1.7 — P-D-54's six plus **P-D-69**'s `abandoned`) ·
   `operation_key` (nullable — the 06 coalescing identity, one batch landing in one `CatalogVersion`) ·
   `approval_ref` (nullable — 05's record, written at the `staging → reported` edge) · `claimed_at`
   (nullable, UTC) and `attempt` (the batch worker's claim and lease, P-D-54) · `created_at` ·
@@ -221,7 +221,7 @@ text):
   per-row outcome code, this slice's or the owning slice's verbatim, no parallel taxonomy) ·
   `reason` (nullable — **a literal from a closed set, never operator text**: **P-D-50** makes
   `batch-abandoned` a constant and this slice writes no free-text reason) ·
-  `governed_live_op` (nullable — the pending payload a live-entity row stages, applied at commit) ·
+  `governed_live_op` (nullable — the pending payload a live-entity row stages, applied at commit) — **the row's `{disposition, code, reason, entity_id, published_version}` is also the `internal:bulk-row` lane's stored outcome record** (**P-D-69** on P-D-42's shape), and **the lane's `client_key` is this ledger row's surrogate id**, so a row re-listed in a new batch has a new key and stays a new act ·
   `override_acknowledged` (the itemised override set, **per row**, which is what the `ChangeReport`
   renders as `skuCode` per row — `inst-bk-override`) · `terminal_at` (nullable). Immutable after its
   terminal state.
@@ -274,7 +274,12 @@ via 05).
   slice's C5 fallback promotion identity where `productCode` is absent — and `product_code` is
   nullable, so a rename between promotions makes the target resolve *unknown identity* and create a
   second Product, which C5's four-way classification exists to prevent. Owner: this slice. *(Filed from 01 §6 by the slice-01 eighth lens pass — the pointer claimed it was registered here and it was not.)*
-- **The batch state machine has no rejection edge and no abandon state.** `reported` has one stated
+- ~~**The batch state machine has no rejection edge and no abandon state.**~~
+  **Answered (owner call, 2026-09-01 — P-D-69): `reported → abandoned` on the approval's rejection or
+  explicit withdrawal** — executing `inst-bm-resume`'s abandon procedure and releasing the tenant
+  slot, `abandoned` terminal — **and `failed` is entered by the worker's attempt-budget exhaustion**
+  (`staging|committing → failed`, `inst-ar-failure`'s own arm), row failures staying row-local. The
+  never-approved slot and edge 3's executor stay their own items. Original text: `reported` has one stated
   exit while the approval it waits on can be `rejected`; nothing states what enters `failed` (every
   row failure is explicitly row-local, "siblings never block"); and `inst-bm-resume`'s abandon path
   has no state to write. A rejected batch sits in `reported` forever holding its staged drafts and a
@@ -332,7 +337,11 @@ via 05).
   version; 06 §6 records that the manifest it renders from has no named sort key for its row
   collections, and `inst-bk-export` states no canonical serialization for the artifact itself. Owner:
   P-D-29's owner with 06 and this slice. *(Raised by the slice-09 first lens pass.)*
-- **Does every import run the `PromotionResolver`, and what selects promotion mode?** The same door,
+- ~~**Does every import run the `PromotionResolver`, and what selects promotion mode?**~~
+  **Answered (owner call, 2026-09-01 — P-D-69): a batch-level `mode ∈ {import, promote}`, default
+  `import`** — the resolver runs only under `promote`; under `import` the collision stays
+  `DUPLICATE_CODE`. Per-row mixing declined: a silent auto-update on collision would convert typos
+  into overwrites. Original text: The same door,
   the same stage phase and the identical case — a `skuCode` already bound with different content —
   gets `DUPLICATE_CODE` under `inst-bk-keys` and update-as-draft under `inst-pm-resolve`. No request
   field, header or route segment distinguishes an import from a promotion. Owner: this slice with the

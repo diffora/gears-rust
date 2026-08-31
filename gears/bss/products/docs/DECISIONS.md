@@ -1569,6 +1569,71 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   (the re-publish step).
 
 
+#### P-D-69 — Bulk's remaining seven: the machine completed, the mode named, the lane's key and digest fixed
+
+- **Date**: 2026-09-01 (owner call, autonomous under the standing instruction)
+- **Context**: the seven §7 rows of `features/bulk-promotion.md` that jointly held
+  `dod-resume-abandon`, `dod-import-door`, `dod-idempotency-lane` and `dod-bulk-lifecycle` (rows 5
+  and 15 carried, answered in `design/09` §6 first).
+
+**1. The machine gains `abandoned`, and `failed` gains its entry** (row 5). `reported → abandoned`
+fires when the batch approval is **rejected or explicitly withdrawn**, executes `inst-bm-resume`'s
+abandon procedure — created drafts discarded, update-drafts reverted, pending live-ops dropped — and
+releases the tenant slot; `abandoned` is terminal. **`failed`'s entry is the worker's attempt-budget
+exhaustion** — `staging → failed` or `committing → failed` when the P-D-54 claim's `attempt` budget
+runs out, exactly `inst-ar-failure`'s arm on the activation runner — while row failures stay
+row-local and never enter it. Rows 6 and 7 (the never-approved slot, edge 3's executor) are
+untouched.
+
+**2. Promotion mode is a batch-level request field** (row 15): `mode ∈ {import, promote}`, default
+`import`. Under `import` a bound `skuCode` with different content is `DUPLICATE_CODE`; only `promote`
+engages the `PromotionResolver`'s update-as-draft. Per-row mixing was declined — a mixed batch is two
+batches, and a silent auto-update on collision would convert typos into overwrites, which is what
+`DUPLICATE_CODE` exists to refuse.
+
+**3. `PreAuthorized` names the batch through the widened subject, and needs no revision operand**
+(row 19). **P-D-67 arm 4** made `(subject_kind = bulk_batch, subject_ref = batch_id)` expressible at
+the gate. The revision half is not the gate's: **P-D-54 edge 2** already pins the approval's stored
+snapshot as the report plus the ledger's per-row revisions, so each per-row publish is checked
+against **its own ledger pin**, row-locally, and the gate in this mode verifies only that the named
+record was consumed for this subject. `features/governance.md` §7 row 27's measured text stands —
+the mode carries no membership operand — because membership is the ledger's, not the gate's.
+
+**4. The `internal:bulk-row` outcome record is the ledger row's disposition** (row 20): the response
+columns store the synthetic `200` (P-D-42's shape) with `{disposition, code, reason, entity_id,
+published_version}` as the body — the same record the P-D-61 read door returns per row — so
+crash-resume replays the stored outcome instead of re-executing a published row.
+
+**5. One digest rule for all three internal lanes** (row 24): an internal lane's `payload_hash`
+digests the **canonical serialization of the act's own input record** — the bulk row's staged
+payload, the `ScheduledTransition` row for `internal:scheduled-activation`, the cascade leg for
+`internal:cascade-leg` — which is what makes a replayed key with different content detectable, the
+column's whole purpose, with no third shape for `chk_products_idempotency_response_group` to admit.
+
+**6. The lane's `client_key` is the ledger row's surrogate id** (row 25) — P-D-26's *"its own id in
+`client_key`"* read at its natural referent. A row re-listed in a **new** batch has a new ledger row
+and therefore a new key: the new-act rule holds with **no batch column added** to the shipped
+primary key.
+
+**7. `05-governance`'s catalog DoD mints all four grant instances** (row 27): the shipped roster is
+one closed set under a two-way set-equality assertion, and a closed set takes **one writer** — the
+lesson this corpus has already paid for at four sites. This feature's doors consume the grants; the
+catalog owns the roster.
+
+- **The arguments against, stated**: arm 1 extends a slice-declared machine (two edges, one state) —
+  the smallest completion that gives the rejection verdict somewhere to land; arm 2 adds a request
+  field, the first on the import door; arm 5 states one rule over three lanes of which only one is
+  this feature's — recorded here because the row asked for exactly that, with `01-foundation`'s
+  storage owner named as the rule's keeper.
+- **Not changed**: rows 6 and 7 stay open; the six-state roster keeps `failed`; `DUPLICATE_CODE`'s
+  meaning; the shipped idempotency PK.
+- **Propagated**: `design/09-bulk-promotion.md` (§1.7/§2 the machine and the mode, §4 the ledger
+  outcome columns, §6 rows 5 and 15 answered), `features/bulk-promotion.md` (§4 the machine,
+  `dod-resume-abandon`, `dod-import-door`, `dod-promotion-resolver`, `dod-idempotency-lane`,
+  `dod-bulk-lifecycle`, `dod-batch-state-machine`, §7's arithmetic and the seven rows answered),
+  `design/01-foundation.md` **owed**: the lane-digest rule's one-sentence home is 01 §3.2/§4.4, filed
+  there rather than edited in this round.
+
 #### P-D-68 — Governance's own queue: the override ack's column, the expiry event's one emitter, the review's discharger
 
 - **Date**: 2026-09-01 (owner call, autonomous under the standing instruction; row 18 — what an

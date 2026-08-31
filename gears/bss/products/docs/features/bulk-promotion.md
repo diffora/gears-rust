@@ -410,10 +410,11 @@ every code carries one."* The **codes** are fixed; the statuses are the part sti
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-state-bulk-batch`
 
-The rows below render the state domain `design/09` §1.7 states — four transitions and a terminality
-row. The slice declares no `state-` id for it, as no slice in this set declares one.
+The rows below render the state domain `design/09` §1.7 states — six transitions and a terminality
+row since **P-D-69** completed the machine. The slice declares no `state-` id for it, as no slice in
+this set declares one.
 
-**States**: `staging`, `reported`, `approved`, `committing`, `completed`, `failed`
+**States**: `staging`, `reported`, `approved`, `committing`, `completed`, `failed`, `abandoned`
 
 **Initial State**: `staging`, on the import door's admission of the batch key.
 
@@ -442,17 +443,21 @@ row. The slice declares no `state-` id for it, as no slice in this set declares 
    (**P-D-54**), and the event is emitted **inside that CAS**: the winner emits, a re-claim after a
    lease expiry finds the state already flipped and emits nothing, which is where "exactly one" comes
    from - `inst-bb-edge-complete`
-5. [ ] - `p1` - **No transition other than the four above is admitted.** Rows are immutable after
+5. [ ] - `p1` - **FROM** `reported` **TO** `abandoned` **WHEN** the batch approval is rejected or
+   explicitly withdrawn (**P-D-69**) — executing `inst-bm-resume`'s abandon procedure (created drafts
+   discarded, update-drafts reverted, pending live-ops dropped) and releasing the
+   tenant slot - `inst-bb-edge-abandon`
+6. [ ] - `p1` - **FROM** `staging` or `committing` **TO** `failed` **WHEN** the batch worker's
+   attempt budget exhausts (**P-D-69** — `inst-ar-failure`'s own arm on the activation runner);
+   **row failures stay row-local and never enter it** - `inst-bb-edge-fail`
+7. [ ] - `p1` - **No transition other than the six above is admitted.** Rows are immutable after
    their own terminal states — the ledger is append-only evidence from then on - `inst-bb-terminal`
 
-**Terminal states**: `completed` and `failed`.
+**Terminal states**: `completed`, `failed` and `abandoned`.
 
-**Three absences the slice states nowhere, and this document invents none of them.** `design/09` §6
-records the first: the machine *"has no rejection edge and no abandon state"*, while `reported` has
-one stated exit and the gate it waits on admits rejection, and §3.1 specifies an abandon **procedure**
-with no state to hold it. And **`failed` has no stated entry edge at all** — every failure this
-feature describes is row-local, so what fails a whole batch is unstated. **Both are §7 row 5's** —
-it carries all three absences, and row 6 is the separate question of what ends a batch never approved.
+**The three absences §7 row 5 carried are answered** (**P-D-69**): the rejection edge and the abandon
+state are edge 5's, `failed`'s entry is edge 6's, and the abandon procedure of §3.1 now has the state
+it writes. Row 6 — what ends a batch never approved — stays open, as does row 7, edge 3's executor.
 
 **Three of the four edges fired on a condition with no executor; two now have one and edge 3 does
 not.** Edge 1 fires when every row has reached a stage outcome, edge 4 when every row has reached a
@@ -483,8 +488,9 @@ failure" checkable after the fact.
 store: row keys are **batch-scoped**, so the same row id in a different batch is a different act.
 
 **The column shape is now `design/09` §4's** (**P-D-61**), authored from the values with a stated
-writer and from nothing else: the batch carries `batch_key` UNIQUE with `tenant_id`, `lane`, the six
-states, `operation_key`, `approval_ref`, and the worker's `claimed_at`/`attempt`; the row carries
+writer and from nothing else: the batch carries `batch_key` UNIQUE with `tenant_id`, `lane`, the seven
+states (**P-D-69** added `abandoned`), `operation_key`, `approval_ref`, and the worker's
+`claimed_at`/`attempt`; the row carries
 `(tenant_id, batch_id, row_key)`, `entity_kind`/`entity_id`, `pinned_revision`, `disposition`, `code`,
 `reason` — **a literal from a closed set, never operator text** (**P-D-50**) — `governed_live_op` and
 `override_acknowledged`. **The `ChangeReport` has no table**: it is derived from the ledger at the
@@ -502,7 +508,7 @@ report edge. No counter duplicating the ledger was added.
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-batch-state-machine`
 
-The six states and four edges of §4 are implemented, with `completed` and `failed` terminal.
+The seven states and six edges of §4 are implemented, with `completed`, `failed` and `abandoned` terminal (**P-D-69** completed the machine).
 
 **Two of the four edges have a named executor and one does not.** Edges 1 and 4 are flipped by the
 gear-owned batch worker's claim transaction (**P-D-54**); edge 3's executor is **§7 row 7**'s and
@@ -514,9 +520,10 @@ place a batch approval is consumed, and every per-row act after it verifies with
 that consumed per row would spend one record many times; a build that consumed nowhere would publish
 under no ceremony.
 
-**Three absences are deliberate in the implementation because they are absent from the design**:
-there is no rejection edge out of `reported`, no abandon state, and no entry edge into `failed`. §7 row 5 owns both, and row 6 owns the tenant slot a never-approved batch holds; building either
-edge would be authoring.
+**The absences closed** (**P-D-69**): `reported → abandoned` on rejection or explicit withdrawal
+(the abandon procedure's state, releasing the tenant slot), and `staging|committing → failed` on the
+worker's attempt-budget exhaustion — `inst-ar-failure`'s own arm — with row failures never entering
+it. Row 6 still owns the tenant slot a never-approved batch holds.
 
 **The record it flips has no table in this gear.** The consuming edge writes `05-governance`'s
 approval record, and **no migration for it ships** — seven exist and none is it, while
@@ -535,7 +542,10 @@ store and no grant check"*. So this DoD's write path is `05`'s to supply.
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-import-door`
 
 `POST /bss-products/v1/bulk/imports` exists, spending `bulk × execute`, idempotent on the batch key —
-a replay returns the existing batch. **The route does not ship.**
+a replay returns the existing batch. **The request carries a batch-level `mode ∈ {import, promote}`,
+default `import`** (**P-D-69**): only `promote` engages the `PromotionResolver`'s update-as-draft,
+and under `import` a bound `skuCode` with different content stays `DUPLICATE_CODE` — a silent
+auto-update on collision would convert typos into overwrites. **The route does not ship.**
 
 **Two key scopes, and conflating them is the defect this DoD exists to prevent.** The **batch** key
 is the door's idempotency key. The **row** keys are batch-scoped and live in the ledger. A row
@@ -557,7 +567,12 @@ only a retry **within** the batch no-ops against the ledger.
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-idempotency-lane`
 
 Per-row publishes resolve the publish door's idempotency key as the reserved lane
-`internal:bulk-row` with the row's id as the client key (**P-D-26**).
+`internal:bulk-row` with the row's id as the client key (**P-D-26**) — **the ledger row's surrogate
+id** (**P-D-69**), so a row re-listed in a new batch has a new key and stays a new act with no batch
+column added to the shipped primary key. **The claim's response columns store P-D-42's synthetic
+`200` with the row's `{disposition, code, reason, entity_id, published_version}` as the outcome
+record, and its `payload_hash` digests the row's staged payload** — one digest rule for all three
+internal lanes, now stated in `design/01` §4.4 (P-D-69).
 
 **The lane is reserved in prose and in no code**, and the doors say why: the three names *"are named
 rather than defined as constants because the first non-`HTTP` caller is the one that knows which of
@@ -809,7 +824,9 @@ canonical serialization, and the slice names neither.
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-promotion-resolver`
 
-`PromotionResolver` classifies every row into **exactly four** classes, in the slice's own order:
+`PromotionResolver` runs **only when the batch's `mode` is `promote`** (**P-D-69** — the operand
+that separates it from a plain import, which refuses the same collision as `DUPLICATE_CODE`), and
+classifies every row into **exactly four** classes, in the slice's own order:
 **create** on an unknown identity, ids re-minted; **no-op** where the identity is bound to matching
 content; **update-as-draft** where it is bound to different content; and **conflict** where the identity is
 bound to an incompatible kind or type, to a `retired` holder, or to a head carrying unpublished local
@@ -840,7 +857,9 @@ supersedes a local approval.
 
 `POST /bss-products/v1/bulk/lifecycle` exists, spending **`bulk_lifecycle × execute`** — **its own
 grant**, so the gear's most destructive batch act cannot be reached with the import pair. **The route
-does not ship, and neither does the grant** — §7 row 27.
+does not ship, and neither does the grant** — and **who mints it is settled** (**P-D-69**):
+`05-governance`'s catalog DoD mints all four of this feature's grant instances, the shipped roster
+being one closed set under a two-way set-equality assertion, and a closed set takes one writer.
 
 Each row runs the ordinary lifecycle policy doors with provenance `direct`, per-row confirmation data
 aggregated into one report. The batch is **material at any size** by its transitions. One approval,
@@ -888,7 +907,13 @@ codes are fixed; §6's criteria say which of the two they assert.
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-resume-abandon`
 
 **Resume**: a crash mid-commit resumes from the ledger, per-row publishes being idempotent by row
-key.
+key — and a **published** row's re-execution is stopped one layer earlier still: its
+`internal:bulk-row` claim stores the ledger outcome as its response record (**P-D-69**), so the
+resume replays the stored answer.
+
+**Abandon now has its state** (**P-D-69**): `reported → abandoned`, entered on the batch approval's
+rejection or explicit withdrawal, terminal, releasing the tenant slot — the procedure below is its
+executor.
 
 **Abandon uses no new door**, and each row kind has its own path: created drafts **discard** through
 the ordinary discard door; **update-as-draft rows revert** through the ordinary save door with the
@@ -1022,14 +1047,14 @@ built from an independent primitive: the number of `- ` line starts in that sect
 eighteen and agrees with both the split and the transcribed rows. A final subsection carries defects
 owed to other documents; those are not rows.
 
-**Five of the twenty-nine block no DoD**: row 1, plus rows 8, 9, 18 and 26, all resolved on
-**2026-08-31** — kept in place rather than struck. **P-D-54** answered row 26, freeing
-`cpt-cf-bss-products-dod-stage-phase` and promoting row 18 from co-blocker to sole blocker of
-`dod-coalesced-event`; **P-D-61** then answered rows 8, 9 and 18, freeing `dod-bulk-errors`,
-`dod-bulk-tables` and `dod-coalesced-event`. `dod-batch-state-machine` remains blocked by rows 5, 6,
-7 and 19 — the missing rejection edge and abandon state, the never-approved batch's tenant slot, the
-commit-phase trigger, and whether `PreAuthorized`'s predicate can name a batch at all — none of which
-is answered here.
+**Twelve of the twenty-nine block no DoD**: row 1, plus rows 8, 9, 18 and 26 (resolved on
+**2026-08-31**: **P-D-54** answered row 26, freeing `cpt-cf-bss-products-dod-stage-phase` and
+promoting row 18 to sole blocker of `dod-coalesced-event`; **P-D-61** answered rows 8, 9 and 18,
+freeing `dod-bulk-errors`, `dod-bulk-tables` and `dod-coalesced-event`), and rows 5, 15, 19, 20, 24,
+25 and 27, resolved on **2026-09-01** by **P-D-69**, freeing `dod-resume-abandon`, `dod-import-door`,
+`dod-promotion-resolver`, `dod-idempotency-lane` and `dod-bulk-lifecycle`. All are kept in place
+rather than struck. `dod-batch-state-machine` remains blocked by rows 6 and 7 — the never-approved
+batch's tenant slot and the commit-phase trigger, neither answered here.
 
 **Carried, not answered**, and registered against **its owner's** register. **Three departures from
 verbatim, declared so the claim is checkable.** First, the slice's inline `Owner:` sentence and any
@@ -1073,15 +1098,20 @@ whether DECOMPOSITION's entity field is a listing convention or an ontological c
     **Owner**: this slice. *(Filed from 01 §6 by the slice-01 eighth lens pass — the pointer
     claimed it was registered here and it was not.)*
 
-5. **The batch state machine has no rejection edge and no abandon state.** `reported` has one
+5. ~~**The batch state machine has no rejection edge and no abandon state.**~~
+    **Answered in the slice (owner call, 2026-09-01 — P-D-69 arm 1): `reported → abandoned` on the
+    approval's rejection or explicit withdrawal — the abandon procedure's own state, terminal,
+    releasing the tenant slot — and `failed` entered by `staging|committing → failed` on the worker's
+    attempt-budget exhaustion**, `inst-ar-failure`'s arm, row failures staying row-local. Rows 6 and 7
+    stay open.
+    Original text: `reported` has one
     stated exit while the approval it waits on can be `rejected`; nothing states what enters
     `failed` (every row failure is explicitly row-local, "siblings never block"); and
     `inst-bm-resume`'s abandon path has no state to write. A rejected batch sits in `reported`
     forever holding its staged drafts and a slot against the concurrency ceiling.
-    **Blocks**: `cpt-cf-bss-products-dod-batch-state-machine`,
-    `cpt-cf-bss-products-dod-resume-abandon`.
-    **Owner**: this slice, with 05 if abandonment releases the approval. *(Raised by the slice-09
-    first lens pass.)*
+    **Blocks**: no DoD — **resolved by P-D-69**; `cpt-cf-bss-products-dod-resume-abandon` is freed, `dod-batch-state-machine` staying blocked by rows 6, 7 and 19.
+    **Owner**: was this slice, with 05 if abandonment releases the approval. *(Raised by the slice-09
+    first lens pass.)*; **closed**.
 
 6. **What ends a batch that is never approved?** No timeout, expiry or reaper is stated, and the
     approval it waits on has no deadline either — so an abandoned-but-unabandoned batch consumes a
@@ -1161,14 +1191,18 @@ whether DECOMPOSITION's entity field is a listing convention or an ontological c
     **Blocks**: `cpt-cf-bss-products-dod-export`.
     **Owner**: P-D-29's owner with 06 and this slice. *(Raised by the slice-09 first lens pass.)*
 
-15. **Does every import run the `PromotionResolver`, and what selects promotion mode?** The same
+15. ~~**Does every import run the `PromotionResolver`, and what selects promotion mode?**~~
+    **Answered in the slice (owner call, 2026-09-01 — P-D-69 arm 2): a batch-level
+    `mode ∈ {import, promote}`, default `import`.** Only `promote` engages the resolver; under
+    `import` the collision stays `DUPLICATE_CODE`. Per-row mixing declined — a mixed batch is two
+    batches, and a silent auto-update on collision converts typos into overwrites.
+    Original text: The same
     door, the same stage phase and the identical case — a `skuCode` already bound with different
     content — gets `DUPLICATE_CODE` under `inst-bk-keys` and update-as-draft under
     `inst-pm-resolve`. No request field, header or route segment distinguishes an import from a
     promotion.
-    **Blocks**: `cpt-cf-bss-products-dod-promotion-resolver`,
-    `cpt-cf-bss-products-dod-import-door`.
-    **Owner**: this slice with the contract owner. *(Raised by the slice-09 first lens pass.)*
+    **Blocks**: no DoD — **resolved by P-D-69**; `cpt-cf-bss-products-dod-promotion-resolver` and `dod-import-door` carry the operand.
+    **Owner**: was this slice with the contract owner. *(Raised by the slice-09 first lens pass.)*; **closed**.
 
 16. **What is "update-as-draft" for a row kind with no draft state?** C5 calls its four
     classifications exhaustive and this pass added the live-entity promotion identities to it, so
@@ -1201,26 +1235,37 @@ whether DECOMPOSITION's entity field is a listing convention or an ontological c
 
 ### Raised here rather than carried
 
-19. **Can `PreAuthorized`'s predicate name a batch at all?** `features/governance.md` §7 row 27
+19. ~~**Can `PreAuthorized`'s predicate name a batch at all?**~~
+    **Answered (owner call, 2026-09-01 — P-D-69 arm 3): expressible since P-D-67 widened the gate's
+    subject to `(subject_kind, subject_ref)`, and the revision operand is not the gate's.** P-D-54
+    edge 2 pins the approval's snapshot as the report plus the ledger's per-row revisions, so each
+    per-row publish checks **its own ledger pin** row-locally, and `PreAuthorized` verifies only that
+    the named record was consumed for this subject. Governance §7 row 27's measured text stands —
+    the mode carries no membership operand — because membership is the ledger's.
+    Original text: `features/governance.md` §7 row 27
     records that it cannot: the mode verifies a record *"authorized **this subject** at **this pinned
     revision**"*, while *"a bulk row's revision is its own"*, and *"the mode carries only an id with
     no plan-membership operand"*. The shipped seam is narrower — `evaluate`'s subject is an
     `EntityRef` whose `entity_kind` is `{Product, Sku}`, so a `bulk_batch` subject cannot be
     expressed, and one scalar revision crosses it. Weakening the predicate to *"names a consumed
     record"* is refused there as turning a terminal record into an unbounded bearer token.
-    **Blocks**: `cpt-cf-bss-products-dod-commit-phase`,
-    `cpt-cf-bss-products-dod-bulk-lifecycle`, `cpt-cf-bss-products-dod-batch-state-machine`.
-    **Owner**: `05-governance`'s owner with `04-lifecycle`'s and this feature — the owner row 27
-    itself names. *(Raised independently by all three lenses.)*
+    **Blocks**: no DoD — **resolved by P-D-69**; `dod-batch-state-machine` stays blocked by rows 6 and 7 only.
+    **Owner**: was `05-governance`'s owner with `04-lifecycle`'s and this feature — the owner row 27
+    itself names. *(Raised independently by all three lenses.)*; **closed**.
 
-20. **What does an `internal:bulk-row` claim row write into its response columns?** The store's rule
+20. ~~**What does an `internal:bulk-row` claim row write into its response columns?**~~
+    **Answered (owner call, 2026-09-01 — P-D-69 arm 4): the outcome record is the ledger row's
+    disposition** — the claim stores P-D-42's synthetic `200` with
+    `{disposition, code, reason, entity_id, published_version}` as the body, the same record the
+    P-D-61 read door returns per row, so crash-resume replays the stored outcome instead of
+    re-executing a published row.
+    Original text: The store's rule
     is **P-D-42**'s — an internal lane *"stores a synthetic `200` and its own outcome record as the
     body"* — and `chk_products_idempotency_response_group` admits no third shape. **What a bulk row's
     outcome record is, is stated nowhere**, and `design/09` §4 declares no column for it. Without it
     a published row leaves its key `claimed` and the crash-resume path re-executes it.
-    **Blocks**: `cpt-cf-bss-products-dod-idempotency-lane`,
-    `cpt-cf-bss-products-dod-resume-abandon`.
-    **Owner**: `01-foundation`'s storage owner with this feature.
+    **Blocks**: no DoD — **resolved by P-D-69**; `cpt-cf-bss-products-dod-idempotency-lane` and `dod-resume-abandon` carry the record.
+    **Owner**: was `01-foundation`'s storage owner with this feature; **closed**.
 
 21. **What does the resolver compare to decide *"matching content"*?** C5 says only *"identity bound
     to matching content ⇒ **no-op**"*. Which buckets participate, whether capture halves count, and
@@ -1247,22 +1292,31 @@ whether DECOMPOSITION's entity field is a listing convention or an ontological c
     `cpt-cf-bss-products-dod-commit-phase`.
     **Owner**: `05-governance`'s owner, as the second half of carried row 11.
 
-24. **What does a bulk row's `payload_hash` digest, a row having no request body?** The column is
+24. ~~**What does a bulk row's `payload_hash` digest, a row having no request body?**~~
+    **Answered (owner call, 2026-09-01 — P-D-69 arm 5): one rule for all three lanes** — an internal
+    lane's `payload_hash` digests the canonical serialization of the act's own input record (the bulk
+    row's staged payload, the `ScheduledTransition` row, the cascade leg), now stated in `design/01`
+    §4.4, keeping a replayed key with different content detectable.
+    Original text: The column is
     `NOT NULL` and the shipped door sources it from a digest over the parsed request body. All three
     internal lanes have the same gap, and `features/lifecycle.md` leaves its sibling lane's
     `client_key` open for the same reason without reaching the digest. One rule should serve all
     three.
-    **Blocks**: `cpt-cf-bss-products-dod-idempotency-lane`.
-    **Owner**: `01-foundation`'s storage owner with this feature and `04-lifecycle`.
+    **Blocks**: no DoD — **resolved by P-D-69**; `cpt-cf-bss-products-dod-idempotency-lane` carries the rule.
+    **Owner**: was `01-foundation`'s storage owner with this feature and `04-lifecycle`; **closed**.
 
-25. **Is the lane's `client_key` the ledger row's surrogate id or the caller's batch-scoped row
-    key?** The shipped primary key is `(tenant_id, endpoint, client_key)` with **no batch column**,
+25. ~~**Is the lane's `client_key` the ledger row's surrogate id or the caller's batch-scoped row
+    key?**~~
+    **Answered (owner call, 2026-09-01 — P-D-69 arm 6): the ledger row's surrogate id** — P-D-26's
+    *"its own id"* at its natural referent. A row re-listed in a new batch has a new ledger row and
+    therefore a new key: the new-act rule holds with no batch column added to the shipped primary
+    key.
+    Original text: The shipped primary key is `(tenant_id, endpoint, client_key)` with **no batch column**,
     so under the second reading a row re-listed in a new batch replays the first batch's answer —
     contradicting this feature's own rule that such a row is a new act. **P-D-26** says only *"its
     own id in `client_key`"*.
-    **Blocks**: `cpt-cf-bss-products-dod-idempotency-lane`,
-    `cpt-cf-bss-products-dod-import-door`.
-    **Owner**: this feature's storage owner with `01-foundation`'s, when §4's row columns land.
+    **Blocks**: no DoD — **resolved by P-D-69**; `cpt-cf-bss-products-dod-idempotency-lane` and `dod-import-door` carry the referent.
+    **Owner**: was this feature's storage owner with `01-foundation`'s, when §4's row columns land; **closed**.
 
 26. ~~**What executes edges 1 and 4?**~~
     **Answered (owner call, 2026-08-31 — P-D-54): the gear-owned batch worker's claim transaction, at
@@ -1280,15 +1334,19 @@ whether DECOMPOSITION's entity field is a listing convention or an ontological c
     carry the answer while staying blocked by their other rows.
     **Owner**: was this feature; **closed**.
 
-27. **Which of the grants must be minted, and by whom?** This feature spends
+27. ~~**Which of the grants must be minted, and by whom?**~~
+    **Answered (owner call, 2026-09-01 — P-D-69 arm 7): `05-governance`'s catalog DoD mints all four
+    instances.** The shipped roster is one closed set under a two-way set-equality assertion, and a
+    closed set takes one writer — the lesson this corpus paid for at four sites. This feature's doors
+    consume the grants.
+    Original text: This feature spends
     `bulk × execute`, `catalog_version × read`, `bulk_lifecycle × execute` and — since **P-D-61** —
     **`bulk × read`**, so the count is **four, not three**. All four are in
     `design/05`'s RBAC catalog; **none is in the shipped permission roster**, which holds exactly six
     ids, all `product_*` and `sku_*`, under a two-way set-equality assertion. Whether this feature
     mints the instances or `05-governance`'s catalog DoD does is stated nowhere.
-    **Blocks**: `cpt-cf-bss-products-dod-import-door`,
-    `cpt-cf-bss-products-dod-export`, `cpt-cf-bss-products-dod-bulk-lifecycle`.
-    **Owner**: `05-governance`'s owner with this feature.
+    **Blocks**: no DoD — **resolved by P-D-69**; `dod-import-door`, `dod-export` and `dod-bulk-lifecycle` are unblocked by it.
+    **Owner**: was `05-governance`'s owner with this feature; **closed**.
 
 28. **What makes the `ChangeReport`'s sample deterministic?** The report carries *"a deterministic
     sample"* and no document states a size, a selection rule or an ordering. A sample with no rule

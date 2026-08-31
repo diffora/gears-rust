@@ -965,7 +965,10 @@ read.
   nothing and releases the key), and the replay is self-contained (P-D-29). **An `internal:` lane,
   having no wire response to reproduce, stores a synthetic `200` and its own outcome record as the
   body** (**P-D-42**): one CHECK, one shape, no nullable-for-internal arm, and absence keeps a
-  single meaning in these columns. The cost is named rather than hidden — a status that never
+  single meaning in these columns. **And an `internal:` lane's `payload_hash` digests the canonical
+  serialization of the act's own input record** (**P-D-69** — the bulk row's staged payload, the
+  `ScheduledTransition` row, the cascade leg: one rule for the three lanes, keeping a replayed key
+  with different content detectable). The cost is named rather than hidden — a status that never
   reached a wire is stored as though it had, and only a replay of an internal lane ever reads it.
 - **`products_audit_log`** — `audit_id` (PK, uuid — owner's call, 2026-08-27, P-D-28: the
 sealing seam's one-way UPDATE has to address a row that is not yet sealed, and `seq` is null
