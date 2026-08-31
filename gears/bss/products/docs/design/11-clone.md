@@ -87,7 +87,9 @@ copies, what resets, and what must be re-proven against today's vocabularies.
 
 ### Clone an entity
 
-- [ ] `p3` - **ID**: `cpt-cf-bss-products-flow-clone`
+Declared by [`../features/clone.md`](../features/clone.md) §2 as `cpt-cf-bss-products-flow-clone`.
+The steps below are this slice's and are the normative ones; the FEATURE carries the
+actor, the scenarios and the boundary.
 
 1. [ ] - `p3` - `POST /bss-products/v1/{products|skus}/{id}/clone` (`product|sku × write`; a product-with-SKUs clone requires **both** grants — L4): source resolved in-tenant, any C1 state. **Read surface (M1/M2)**: a `retired`, `published` or `deprecated` source reads entity content from its **last frozen version** — never a head's pending edits, which would leak in-flight unapproved content — with `clonedFrom` recording exactly that version; the metadata map comes from the beside-entity store (P-D-06 — outside frozen content, survives retirement); a `draft` source reads its head. The clone materializes through the ordinary 01 create door — same validators, same codes, no parallel path — → **201**, as **one transaction per entity** (create + values + metadata: the single-clone act is atomic, L2) - `inst-cn-door`
 2. [ ] - `p3` - Identity per C2: new ids minted; the suggested code is derived (`{source}-copy-N`), operator-overridable, reserved atomically — a collision is the ordinary `DUPLICATE_CODE`; a source Product with no `productCode` suggests none — the clone's stays null (L5) - `inst-cn-identity`
@@ -100,7 +102,9 @@ copies, what resets, and what must be re-proven against today's vocabularies.
 
 ### 3.1 The disposition table
 
-- [ ] `p3` - **ID**: `cpt-cf-bss-products-algo-disposition`
+Declared by [`../features/clone.md`](../features/clone.md) §3 as `cpt-cf-bss-products-algo-disposition`.
+The table below is this slice's and is the normative one; the FEATURE carries the
+Input, the Output and the boundary.
 
 *Every re-validation row below refuses on failure and the refusal collects across rows (C4); a
 clone either lands whole or lands not at all.*
@@ -156,7 +160,7 @@ reservations).
 **Traces to**: `cpt-cf-bss-products-fr-clone`, AC #34; AC #38 (clone-against-deprecated-unit row); the clone-vs-P-D-04
 interaction — resolved here by `inst-cn-rename`.
 
-**Risks & open items** — fourteen, all raised by the first lens pass; the slice is deliberately thin,
+**Risks & open items** — ten, all raised by the first lens pass; the slice is deliberately thin,
 which is why its gaps are omissions rather than contradictions:
 - **What is the clone door's request body?** Three rules require operator input — an overridable
   code, an overridable name, a replacement parent — and a fourth ("forces re-selection") may require

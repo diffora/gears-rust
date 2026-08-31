@@ -960,9 +960,17 @@ authored downstream of this document, in the order §3 establishes.
 - **Design Constraints Covered**:
 
   - [ ] `p2` - `cpt-cf-bss-products-constraint-immutable-identity`
+  - [ ] `p2` - `cpt-cf-bss-products-constraint-tenant-isolation`
+  - [ ] `p2` - `cpt-cf-bss-products-constraint-no-commercial-concern`
 
-- **Domain Model Entities**: None of its own — a clone produces a `Product` or `SKU` row owned by
-  `01-foundation`, distinguished only by its `cloned_from` column
+- **Domain Model Entities**:
+  - DispositionTable
+  - CloneDoor
+
+  Neither is an aggregate of its own: a clone produces a `Product` or `SKU` row owned by
+  `01-foundation`, distinguished only by its `cloned_from` column. Both are
+  `11-clone` §1.7's design-introduced names and are listed here on the same rule as
+  §2.7's and §2.10's.
 
 - **Design Components**:
 
