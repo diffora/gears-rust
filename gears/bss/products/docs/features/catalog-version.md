@@ -1668,7 +1668,8 @@ resolved record elsewhere can retract a decision's propagation, so none was touc
     `cpt-cf-bss-products-dod-catalog-version-table`.
     **Owner**: this feature.
 
-17. **The `commit → durable-acceptance` meter is declared by no slice.** §3.3 decomposes NFR #4's
+17. **The `commit → durable-acceptance` meter is declared by no slice.** `design/06` §3.3
+    decomposes NFR #4's
     program SLO into three meters and attributes this one to 01; 01 declares no observability
     surface and records its NFR #3 probe as owed, while 08 also names the meter as 01's. The
     posting-safe composite is declared derivable from three meters when one is declared nowhere.
