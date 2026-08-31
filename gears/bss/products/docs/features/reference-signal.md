@@ -1191,6 +1191,9 @@ leaves the specific ones looking open:
    the physical guard carries the interim predicate "with a tighter one still **owed by 07**"; this
    slice carries no such item. Until it is supplied, door identity for bucket-ii head-row writes is
    an application guarantee only, and **any** publish carrying the third argument passes the guard.
+   *Re-measured at `19a81a406`: the phrase occurs **twice** in `design/01`, but once under §3.1's
+   `inst-fd-bucket-ii-refusal` and once under §4.2's `products_sku` — not twice in §4.2 as the row
+   reads. The obligation is unaffected; the citation is.*
    **Blocks**: `cpt-cf-bss-products-dod-correction-door`,
    `cpt-cf-bss-products-dod-correction-republish`.
    **Owner**: this feature.
