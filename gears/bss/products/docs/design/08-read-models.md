@@ -120,7 +120,9 @@ history timeline, the dashboards; the convergence and staleness metrics.
 
 ### Browse / search / filter
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-flow-browse`
+Declared by [`../features/read-models.md`](../features/read-models.md) §2 as `cpt-cf-bss-products-flow-browse`.
+The steps below are this slice's and are the normative ones; the FEATURE carries the
+actor, the scenarios and the boundary.
 
 1. [ ] - `p1` - `GET /bss-products/v1/browse…` (`product|sku × read`, plus `category × read` for the category/facet half): tenant/brand/region scope is resolved from claims and applied **inside the query** (`VisibilityFilter` + scope predicates at query build — post-filtering is forbidden because a shed row must never have been fetched) - `inst-rb-query`
 2. [ ] - `p1` - Per-state contract (C2): `deprecated` rows carry the machine-readable flag and an `excludeDeprecated` filter; `retired` appears only through the explicit history surface - `inst-rb-visibility`
@@ -129,13 +131,17 @@ history timeline, the dashboards; the convergence and staleness metrics.
 
 ### Read the version-history timeline
 
-- [ ] `p2` - **ID**: `cpt-cf-bss-products-flow-history`
+Declared by [`../features/read-models.md`](../features/read-models.md) §2 as `cpt-cf-bss-products-flow-history`.
+The steps below are this slice's and are the normative ones; the FEATURE carries the
+actor, the scenarios and the boundary.
 
 1. [ ] - `p2` - `GET /bss-products/v1/{products|skus}/{id}/versions` (`audit × read` for cross-entity trails; `product|sku × read` for the own-entity timeline): projected from 01's frozen rows — version list, per-version diff (computed between frozen rows), approval refs, actor pseudonyms; `retired` entities are reachable here (the C2 carve-out) - `inst-rh-timeline`
 
 ### Project (the write→read pipeline)
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-flow-project`
+Declared by [`../features/read-models.md`](../features/read-models.md) §2 as `cpt-cf-bss-products-flow-project`.
+The steps below are this slice's and are the normative ones; the FEATURE carries the
+actor, the scenarios and the boundary.
 
 1. [ ] - `p1` - `ReadProjector` consumes the broker per `(tenant, aggregate)` ordering; each event is projected idempotently (the sequence is a **consumer checkpoint per aggregate**, not a row version — L1); Product/SKU content is fetched from frozen versions by the ids the event carries, live-entity content from its live tables, and `lifecycle_state`, `deprecation_provenance`, `replaced_by_sku_id` from the head row (C6); no other Product/SKU content is read from heads - `inst-rp-consume`
 2. [ ] - `p1` - **The stamp is a floor (P-D-07)**: every catalog version ≤ the stamp is fully reflected, and later entity events may **add, change, or remove** content relative to the stamped version (H1 fix — the earlier "strictly additive" premise was false: a retirement flip removes without an increment); `projectedAt` is the fine-grained coordinate; a tenant with zero catalog versions stamps `asOfCatalogVersion = null` + `projectedAt` (M6). The stamp **advances only after the event's own changed-entity list is projected from frozen rows in the same step** (H2 fix: the stamp never claims a version whose content it is missing, regardless of cross-aggregate arrival order) - `inst-rp-stamp`
@@ -144,7 +150,9 @@ history timeline, the dashboards; the convergence and staleness metrics.
 
 ### Degrade gracefully
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-flow-degrade`
+Declared by [`../features/read-models.md`](../features/read-models.md) §2 as `cpt-cf-bss-products-flow-degrade`.
+The steps below are this slice's and are the normative ones; the FEATURE carries the
+actor, the scenarios and the boundary.
 
 1. [ ] - `p1` - Above the throughput ceiling: shed or queue with `503` (`READ_MODEL_OVERLOADED`, §3.2) + `Retry-After` — never serve from the write path, never widen scope, never drop the stamp (C3/C4); shedding is per tenant partition so one tenant's burst cannot starve another - `inst-dg-shed`
 2. [ ] - `p1` - Under projector lag past the convergence budget: keep serving (stale-but-labeled), raise `read_model_lag` naming the tenant and the lag; the stamp makes the staleness machine-readable to every caller - `inst-dg-lag`
@@ -153,13 +161,18 @@ history timeline, the dashboards; the convergence and staleness metrics.
 
 ### 3.1 Projection shape & partitioning
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-algo-projection`
+Declared by [`../features/read-models.md`](../features/read-models.md) §3 as `cpt-cf-bss-products-algo-projection`.
+The steps below are this slice's and are the normative ones; the FEATURE carries the
+Input, the Output and the boundary.
 
 1. [ ] - `p1` - `products_read_entity` — per-tenant denormalized rows: identity, state + flags (`deprecated`, `compositionPending`, `sellable`), `deprecation_provenance` and `replaced_by_sku_id` (the head-read fields of C6), **brand/region scope columns** (the operands the query-build scope predicates of `inst-rb-query` filter on — M2; the empty set means **unrestricted** (**P-D-39**), so a predicate matches a row whose set is empty or contains the claim), type/tier/unit display fields, resolved display attributes per locale coordinate (materialized for the tenant's active locales), category paths, `published_version`. Partitioned/indexed per `(tenant_id, …)` — the NFR #1/#2 unit is the tenant partition - `inst-ps-shape`
 2. [ ] - `p1` - `products_read_deferred_intent`, `products_read_freeze_status`, `products_read_delivery_state` — the operator dashboards. These are **polled projections from their owning surfaces** (04's deferred table, 06's `FreezeLedger`, the broker's per-consumer delivery/DLQ state — the `fr-event-delivery-resilience` projection clause, M5), NOT broker consumers: their **state changes** emit no events — 04's deferred table and the broker's delivery/DLQ state emit none at all, and 06's acks and re-triggers are audit-plane (H4 fix — the earlier "refreshed by the same projector" claimed sources that don't exist) - `inst-ps-dashboards`
 3. [ ] - `p2` - **Join mechanics (L1)**: a browse row joins ≥ 3 aggregates; the join is *convergent* — every join-relevant event recomputes the affected rows from projection-local state, and a row whose join target has not yet projected is **parked (withheld from browse) and re-attempted**, the parking bounded by the convergence monitoring (never a placeholder render). The metadata map is **excluded from search by construction** (C: never projected into any searchable field; PRD glossary) — it is retrievable on the single-entity read only - `inst-ps-metadata`
 
 ### 3.2 Error taxonomy (slice-owned codes)
+
+Declared by [`../features/read-models.md`](../features/read-models.md) §3 as `cpt-cf-bss-products-algo-read-errors`.
+The roster below is this slice's and is the normative one; the FEATURE carries the obligation and the boundary.
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-contract-read-errors`
 
@@ -182,7 +195,9 @@ row and open to correction; the requirement is that every code carries one.*
 
 ### 3.3 NFR measurement
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-algo-read-nfrs`
+Declared by [`../features/read-models.md`](../features/read-models.md) §3 as `cpt-cf-bss-products-algo-read-nfrs`.
+The steps below are this slice's and are the normative ones; the FEATURE carries the
+Input, the Output and the boundary.
 
 p95 latency and QPS per tenant partition (NFR #1/#2) measured at the API edge; convergence
 (C5) measured **write-commit → projection-visible** per event class, decomposed into the two

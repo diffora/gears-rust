@@ -762,6 +762,10 @@ authored downstream of this document, in the order §3 establishes.
   - ReadDeliveryState
   - ReadDeferredIntent
   - ReadFreezeStatus
+  - ReadProjector
+  - BrowseProjection
+  - StalenessStamp
+  - VisibilityFilter
 
 - **Design Components**:
 
