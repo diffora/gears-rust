@@ -1569,6 +1569,67 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   (the re-publish step).
 
 
+#### P-D-71 — Reference-signal's seven: the flag named, the hash stored, absence means never-received
+
+- **Date**: 2026-09-01 (owner call, autonomous under the standing instruction)
+- **Context**: `features/reference-signal.md` §7 rows 1, 13, 25, 26, 28, 29 and 30, jointly holding
+  `dod-breakglass-unavailable`, `dod-reference-events` and `dod-watermark-tables` (rows 1 and 13
+  carried, answered in `design/07` §6 first).
+
+**1. The flag is `breakglass_correction_enabled: bool`, default `false`** (row 1) — enable-positive,
+so *"the flag is OFF"* and *"the arm is disabled"* stop being the same words for opposite polarities;
+the refusal code stays `BREAKGLASS_CORRECTION_DISABLED` (403).
+
+**2. It is per-deployment and boot-time** (row 29) — it lives in `ProductsConfig`, *"the gear's boot
+configuration"*, exactly where `dod-reference-config` already put it. **The flag is a policy gate,
+not an incident tool**: the emergency surface is `05`'s read elevation, which has no flag; this arm
+is a deliberate organisational enablement of a write mechanism, and requiring a deploy to turn it on
+is the point. A runtime or per-tenant toggle would need a reload mechanism or a store no slice
+declares.
+
+**3. The set hash is stored at ingestion** (row 13): a `set_hash` column on
+`products_reference_watermark`, computed over the member `sku_id`s **sorted bytewise**, one
+algorithm named (`SHA-256`) — the stored-checksum convention `06` already uses. Recomputing from 10K
+member rows at every idempotence comparison is the declined arm.
+
+**4. `ReferenceProducerSetChanged`'s aggregate is the tenant's producer set itself** (row 25):
+`aggregate_id = tenant_id` — the set is a per-tenant singleton, so per-`(tenant, aggregate)` ordering
+serializes set changes per tenant, which is exactly what a consumer of a *set* needs.
+`FreezeParticipantSetChanged` is the same class and its subject question stays `06`'s row, noted as
+parallel and not decided here.
+
+**5. `never-received` is the absence of the watermark row** (row 26): registration writes **no** row
+in `products_reference_watermark` — the registered set lives in `products_reference_producer`, and
+the watermark table gains a row on first post. A sentinel timestamp is the poison-value class, and
+row-absence is what P-D-59's *"deregistration removes the series"* already reads as.
+
+**6. The two unnamed alarms are named on the named one's convention** (row 28):
+**`reference_watermark_future`** (the future-watermark alert, aligned with `WATERMARK_FUTURE`) and
+**`reference_breakglass_tripwire`** (the tripwire escalation). Prefix and case follow
+`reference_watermark_stale`.
+
+**7. Ingestion accepts unknown member ids and alarms** (row 30): the set is the producer's
+authoritative claim, and an unknown `sku_id` can be **legitimate** — a producer's catalog lags
+erasure, so `10`'s erasure of a SKU leaves the producer naming it until its next full-set post
+replaces the set. Refusing a 10K post for one such id would wedge the producer on our lifecycle;
+silence would hide a typo that silently frees a real SKU. So: accepted, counted per post, and alarmed
+(**`reference_unknown_member`**, the fourth alarm, same convention) — visibility without refusal.
+Erasure leaves member rows untouched; the next post replaces the set, as `inst-wm-tables` already
+states.
+
+- **The arguments against, stated**: arm 2 makes enabling the correction arm a deploy, deliberate but
+  named; arm 4 fixes a partition key for a subject class whose `SUBJECT_TYPE` question (`06` row 47)
+  is still open — the key stands whatever that answer is, but a reader could over-read it; arm 7
+  accepts data that can be a typo, and the alarm is the only detector — a validation pass was
+  declined on the erasure-lag measurement, not on cost alone.
+- **Not changed**: the four watermark refusals, `inst-wm-tables`' set replacement, `10`'s erasure
+  scope, and `06` §7 row 47.
+- **Propagated**: `design/07-reference-signal.md` (§2/§4 the flag, the hash column, the absence rule,
+  the aggregate, the alarm names; §6 twins for rows 1 and 13), `features/reference-signal.md`
+  (`dod-reference-config`, `dod-breakglass-unavailable`, `dod-watermark-tables`,
+  `dod-watermark-door`, `dod-reference-events`, `dod-tripwire`, §7's arithmetic and the seven rows
+  answered).
+
 #### P-D-70 — Read-models' six: the timeline's nature, the retirement signal, the stamp's home and its feed
 
 - **Date**: 2026-09-01 (owner call, autonomous under the standing instruction; rows 10 — the

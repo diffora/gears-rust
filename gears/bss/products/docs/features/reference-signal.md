@@ -470,8 +470,15 @@ the DoD says so and §7 carries the question.
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-watermark-tables`
 
 The system **MUST** create `products_reference_watermark`, keyed `(tenant_id, producer)`, carrying
-`watermark_at` and `posted_at`; and `products_reference_member`, keyed
+`watermark_at`, `posted_at` and **`set_hash`** (**P-D-71**: `SHA-256` over the member `sku_id`s
+sorted bytewise, **stored at ingestion** — recomputation from 10K member rows per comparison
+declined); and `products_reference_member`, keyed
 `(tenant_id, producer, sku_id)`, on **both** engines. Both **MUST** be tenant-scoped.
+**A registered producer that has never posted has no watermark row** — `never-received` is the
+row's absence, registration writing only `products_reference_producer` (P-D-71). **Member ids are
+accepted unvalidated, counted and alarmed** (`reference_unknown_member`, P-D-71): a producer's
+catalog lags erasure legitimately, and erasure leaves member rows untouched until the next full-set
+post replaces them.
 
 The member set **MUST** be **replaced as a set per ingestion**, atomically, so that no concurrent
 reader observes a half-set. Membership lookup **MUST** be an index hit rather than a scan.
@@ -552,7 +559,8 @@ the specific ones close.
 
 The door **MUST** be the out-of-process binding of the contract above and the authz door **both**
 bindings pass (S2S). It **MUST** refuse an unregistered poster `PRODUCER_UNREGISTERED`, an older
-`watermark_at` `WATERMARK_REGRESSION`, an equal `watermark_at` carrying a different set
+`watermark_at` `WATERMARK_REGRESSION` — the equal-`watermark_at` comparison reading the stored
+`set_hash` (**P-D-71**) — an equal `watermark_at` carrying a different set
 `WATERMARK_CONFLICT`, and a `watermark_at` above the receiving clock plus the configured skew
 `WATERMARK_FUTURE` — the last **alerted** as well as refused.
 
@@ -737,8 +745,10 @@ written**.
 
 - [ ] `p2` - **ID**: `cpt-cf-bss-products-dod-breakglass-unavailable`
 
-Admissible **only** when the feature flag is ON **and** at least one producer is registered **and
-every** registered producer is stale or never-received. Single-SKU only, through the same correction
+Admissible **only** when `breakglass_correction_enabled` is `true` (**P-D-71**) **and** at least one
+producer is registered **and
+every** registered producer is stale or never-received — `never-received` being **the absence of the
+producer's watermark row** (P-D-71), never a sentinel value. Single-SKU only, through the same correction
 door.
 
 The registered-producer clause **MUST** be part of the predicate rather than implied: it is what
@@ -790,7 +800,9 @@ wedges the SKU in every other lane at once.
 
 Every break-glass correction — **both arms** — **MUST** increment the `TripwireCounter`, which
 **MUST** be a windowed count over `products_correction_override` rather than stored state. Past the
-configured rate (interim > 5 per 30 days) it **MUST** raise the escalation alarm **and** flip the
+configured rate (interim > 5 per 30 days) it **MUST** raise **`reference_breakglass_tripwire`**
+(**P-D-71** named it on the stale alarm's convention, beside `reference_watermark_future` and
+`reference_unknown_member`) — the escalation alarm **and** flip the
 standing `signal_delivery_release_blocker` status surface.
 
 Degraded operation is escalated, never normalized (C6).
@@ -893,7 +905,10 @@ and this feature's doors would have no `ResourceType` to hand the gate.
 
 `ProductsConfig` **MUST** gain four fields: the **freshness threshold** (interim 15 min), the
 **ingestion clock-skew tolerance** (interim 5 min), the **tripwire rate** (interim > 5 per 30 days),
-and the **break-glass feature flag** (default **OFF**).
+and **`breakglass_correction_enabled: bool`, default `false`** (**P-D-71** named the flag
+enable-positive; **per-deployment and boot-time** — a policy gate, not an incident tool, the
+emergency surface being `05`'s read elevation, and a runtime or per-tenant toggle needing machinery
+no slice declares).
 
 **Measured at `19a81a406`: `ProductsConfig` ships exactly two fields** —
 `idempotency_retention_hours` and `require_broker` — and the words *freshness*, *watermark*,
@@ -940,7 +955,10 @@ beside it. **Neither is derived from the code**, both stating the same reason: *
 the code under test could only prove the code equals itself."*
 
 `SkuImmutableFieldCorrected` and `SkuCorrectionOverride` are SKU-subjected and fit
-`EventBodyCore`'s shape. **`ReferenceProducerSetChanged` does not** — a producer set has no
+`EventBodyCore`'s shape. **`ReferenceProducerSetChanged`'s aggregate is the tenant's producer set
+itself, `aggregate_id = tenant_id`** (**P-D-71**: a per-tenant singleton, so per-`(tenant, aggregate)`
+ordering serializes set changes per tenant — `FreezeParticipantSetChanged` is the same class, its
+subject question staying `06`'s row). **`ReferenceProducerSetChanged` does not** — a producer set has no
 `entityKind`, no `entityId`, no `internalRevision` and no `lifecycleState`, and `EntityKind` is
 exactly `Product | Sku`. It needs the same entity-less core
 `features/catalog-version.md` §7 row 27 registers for three of its own events, and its
@@ -1096,9 +1114,10 @@ here is ticked by inspection.
 **The arithmetic of this section.** Thirty-three rows: **sixteen carried verbatim** from
 [`../design/07-reference-signal.md`](../design/07-reference-signal.md) §6 — the slice's full count,
 not a selection — and **seventeen raised here**: five while authoring, from reading the crate, and
-twelve by the three-lens review of this document. Of the thirty-three, **seven block no DoD in this
-document** (rows 3, 4, 17, 31, 32 and 33, plus row 27 since **P-D-59 resolved it on 2026-08-31** —
-kept in place rather than struck); the other twenty-six each name the DoD they block.
+twelve by the three-lens review of this document. Of the thirty-three, **fourteen block no DoD in this
+document** (rows 3, 4, 17, 31, 32 and 33, plus row 27, which **P-D-59 resolved on 2026-08-31**, and
+rows 1, 13, 25, 26, 28, 29 and 30, which **P-D-71 resolved on 2026-09-01** — all kept in place
+rather than struck); the other nineteen each name the DoD they block.
 
 **Carried, not answered.** A question is registered against **its owner's** register. Where the
 owner is another document, the row carries a one-line pointer and nothing more.
@@ -1129,13 +1148,16 @@ leaves the specific ones looking open:
 
 ### Carried verbatim from `design/07` §6
 
-1. **OPEN — the break-glass arm's feature flag has no name of its own.** It is referred to by the
+1. ~~**OPEN — the break-glass arm's feature flag has no name of its own.**~~
+    **Answered in the slice (owner call, 2026-09-01 — P-D-71 arm 1): `breakglass_correction_enabled:
+   bool`, default `false`** — enable-positive, so the polarity ambiguity dies; the refusal code stays
+   the 403.
+    Original text: It is referred to by the
    refusal code `BREAKGLASS_CORRECTION_DISABLED`, so "the flag is OFF" and "the arm is disabled" are
    the same words for opposite polarities, and `design/07` §5's probe and its C5 have read it both ways. A flag needs
    a name and a stated polarity; the code stays the 403.
-   **Blocks**: `cpt-cf-bss-products-dod-reference-config`,
-   `cpt-cf-bss-products-dod-breakglass-unavailable`.
-   **Owner**: this feature.
+    **Blocks**: no DoD — **resolved by P-D-71**; `cpt-cf-bss-products-dod-reference-config` and `dod-breakglass-unavailable` carry the name.
+    **Owner**: was this feature; **closed**.
 
 2. **OPEN (third full-review pass) — a fresh producer's retirement can still free a SKU, and three
    attempts to write the rule have each introduced a contradiction. Registered rather than drafted a
@@ -1258,13 +1280,16 @@ leaves the specific ones looking open:
     `cpt-cf-bss-products-dod-producer-registration`.
     **Owner**: `fr-reference-producer-registration`'s owner.
 
-13. **Where does `inst-ws-monotonic`'s set hash come from?** An equal `watermark_at` with an identical
+13. ~~**Where does `inst-ws-monotonic`'s set hash come from?**~~
+    **Answered in the slice (owner call, 2026-09-01 — P-D-71 arm 3): a `set_hash` column on
+    `products_reference_watermark`, stored at ingestion** — `SHA-256` over the member `sku_id`s
+    sorted bytewise; recomputation from 10K member rows per comparison declined.
+    Original text: An equal `watermark_at` with an identical
     set hash is an idempotent success and with a different set a refusal, while §4 declares no hash
     column and no rule states its derivation — canonical ordering, algorithm, stored at ingestion or
     recomputed from member rows at 10K SKUs.
-    **Blocks**: `cpt-cf-bss-products-dod-watermark-tables`,
-    `cpt-cf-bss-products-dod-watermark-door`.
-    **Owner**: this feature with the schema owner.
+    **Blocks**: no DoD — **resolved by P-D-71**; `cpt-cf-bss-products-dod-watermark-tables` and `dod-watermark-door` carry the column.
+    **Owner**: was this feature with the schema owner; **closed**.
 
 14. **Is the correction door's `expected revision` the `If-Match` precondition or a body field?**
     This pass gave the mismatch 01's `STALE_REVISION`; which surface carries it is still unstated,
@@ -1384,22 +1409,31 @@ Five, all from reading the crate at `19a81a406`. Every quotation was byte-verifi
     **Owner**: `01-foundation`'s head/version model owner, since the guard is shared by three
     slices.
 
-25. **What `aggregate_id` does `ReferenceProducerSetChanged` carry?** `infra::events::enqueue`
+25. ~~**What `aggregate_id` does `ReferenceProducerSetChanged` carry?**~~
+    **Answered (owner call, 2026-09-01 — P-D-71 arm 4): `aggregate_id = tenant_id`** — the tenant's
+    producer set is a per-tenant singleton, so per-`(tenant, aggregate)` ordering serializes set
+    changes per tenant. `FreezeParticipantSetChanged` is the same class; its subject question stays
+    `06`'s row 47.
+    Original text: `infra::events::enqueue`
     requires one and `partition_for` consumes it, and every shipped event passes its `entity_id`. A
     producer set has none. `features/catalog-version.md` §7 rows 27 and 47 raise the body core and
     the `SUBJECT_TYPE` for the same class of subject and **neither reaches the partition key**, so
     it is registered here rather than cited.
-    **Blocks**: `cpt-cf-bss-products-dod-reference-events`.
-    **Owner**: the events/audit owner, with this feature.
+    **Blocks**: no DoD — **resolved by P-D-71**; `cpt-cf-bss-products-dod-reference-events` carries the key.
+    **Owner**: was the events/audit owner, with this feature; **closed**.
 
-26. **What represents `never-received`?** The value is obliged at registration while the verdicts are
+26. ~~**What represents `never-received`?**~~
+    **Answered (owner call, 2026-09-01 — P-D-71 arm 5): the absence of the watermark row** —
+    registration writes only `products_reference_producer`, the watermark table gaining a row on
+    first post; a sentinel timestamp is the poison-value class, and row-absence is what P-D-59's
+    deregistration-removes-the-series already reads as.
+    Original text: The value is obliged at registration while the verdicts are
     computed from `watermark_at`, the member set and the registered rows, and
     `products_reference_watermark` carries only `watermark_at` and `posted_at`. Absence of a row and
     a sentinel `watermark_at` are both consistent with the text and differ in whether registration
     writes a watermark row at all — which is also row 12's re-registration operand.
-    **Blocks**: `cpt-cf-bss-products-dod-watermark-tables`,
-    `cpt-cf-bss-products-dod-producer-registration`.
-    **Owner**: this feature, alongside row 12.
+    **Blocks**: no DoD — **resolved by P-D-71**; `cpt-cf-bss-products-dod-watermark-tables` carries the rule.
+    **Owner**: was this feature, alongside row 12; **closed**.
 
 27. ~~**What raises `reference_watermark_stale`, and what stops it repeating?**~~
     **Answered (owner call, 2026-08-31 — P-D-59): an alerting rule over a gauge, and the second half
@@ -1420,32 +1454,45 @@ Five, all from reading the crate at `19a81a406`. Every quotation was byte-verifi
     **Owner**: was this feature with the observability owner; **closed** for the named alarm. Row 28's
     two unnamed alarms are not settled here.
 
-28. **Two of this feature's three alarms have no names.** `reference_watermark_stale` is named; the
+28. ~~**Two of this feature's three alarms have no names.**~~
+    **Answered (owner call, 2026-09-01 — P-D-71 arm 6): `reference_watermark_future` and
+    `reference_breakglass_tripwire`**, on the named alarm's convention — prefix, case and the
+    alignment with the refusal code where one exists.
+    Original text: `reference_watermark_stale` is named; the
     future-watermark alert and the tripwire escalation are described. An alarm name is a consumer
     contract the way an event name is, and this document names every event and every code.
-    **Blocks**: `cpt-cf-bss-products-dod-reference-events`,
-    `cpt-cf-bss-products-dod-tripwire`.
-    **Owner**: the observability owner with this feature.
+    **Blocks**: no DoD — **resolved by P-D-71**; `cpt-cf-bss-products-dod-reference-events` and `dod-tripwire` carry the names.
+    **Owner**: was the observability owner with this feature; **closed**.
 
-29. **Is the break-glass flag per deployment or per tenant, and can it be turned on without a
-    restart?** `cpt-cf-bss-products-dod-reference-config` puts it in `ProductsConfig`, which
+29. ~~**Is the break-glass flag per deployment or per tenant, and can it be turned on without a
+    restart?**~~
+    **Answered (owner call, 2026-09-01 — P-D-71 arm 2): per-deployment, boot-time** — it lives in
+    `ProductsConfig`, where `dod-reference-config` already put it, and **the flag is a policy gate,
+    not an incident tool**: the emergency surface is `05`'s read elevation, and a runtime or
+    per-tenant toggle needs machinery no slice declares. Enabling the arm costs a deploy,
+    deliberately.
+    Original text: `cpt-cf-bss-products-dod-reference-config` puts it in `ProductsConfig`, which
     `config.rs` calls *"The gear's boot configuration"* and which carries no tenant dimension, while
     C5 describes the arm as *"unavailable until an operator enables it"* — an act in the moment. Row
     1 asks only for the flag's name and polarity.
-    **Blocks**: `cpt-cf-bss-products-dod-reference-config`,
-    `cpt-cf-bss-products-dod-breakglass-unavailable`.
-    **Owner**: this feature with this gear's config owner — the pairing row 19 names.
+    **Blocks**: no DoD — **resolved by P-D-71**; `cpt-cf-bss-products-dod-reference-config` carries the posture.
+    **Owner**: was this feature with this gear's config owner — the pairing row 19 names; **closed**.
 
-30. **Does ingestion validate the ids in the set?** The set is authoritative and
+30. ~~**Does ingestion validate the ids in the set?**~~
+    **Answered (owner call, 2026-09-01 — P-D-71 arm 7): accepted, counted, alarmed** —
+    `reference_unknown_member` per post. An unknown id can be legitimate (a producer's catalog lags
+    `10`'s erasure until its next full-set post), so refusal would wedge the producer on this gear's
+    lifecycle, and silence would hide a typo that silently frees a real SKU. Erasure leaves member
+    rows untouched.
+    Original text: The set is authoritative and
     `products_reference_member` is keyed `(tenant_id, producer, sku_id)` with no foreign key and no
     existence rule, and the watermark door's four refusals cover the producer, the timestamp and the
     set — never the members. Whether a `skuId` naming no SKU in this tenant is accepted, refused or
     accepted-and-alarmed is unstated, as is what happens to member rows when
     `10-retention-erasure` erases a SKU. Validating 10K ids per post is the cost the full-set design
     was chosen to avoid.
-    **Blocks**: `cpt-cf-bss-products-dod-watermark-door`,
-    `cpt-cf-bss-products-dod-watermark-tables`.
-    **Owner**: this feature with `fr-reference-signal`'s owner.
+    **Blocks**: no DoD — **resolved by P-D-71**; `cpt-cf-bss-products-dod-watermark-tables` and `dod-watermark-door` carry the posture.
+    **Owner**: was this feature with `fr-reference-signal`'s owner; **closed**.
 
 31. **Does "no config home" mean no `config.rs` field, or no PRD §17.1 policy row?** Row 7 uses the
     second sense — the skew tolerance is *"the one configurable in this slice with no home"* because
