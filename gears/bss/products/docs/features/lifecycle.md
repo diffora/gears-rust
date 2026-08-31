@@ -1,0 +1,1156 @@
+# Feature: Lifecycle Policy
+
+- [ ] `p1` - **ID**: `cpt-cf-bss-products-featstatus-lifecycle-implemented`
+
+<!-- reference to DECOMPOSITION entry -->
+- [ ] `p1` - `cpt-cf-bss-products-feature-lifecycle`
+
+<!-- toc -->
+
+- [1. Feature Context](#1-feature-context)
+  - [1.1 Overview](#11-overview)
+  - [1.2 Purpose](#12-purpose)
+  - [1.3 Actors](#13-actors)
+  - [1.4 References](#14-references)
+- [2. Actor Flows (CDSL)](#2-actor-flows-cdsl)
+  - [Deprecate and un-deprecate](#deprecate-and-un-deprecate)
+  - [Schedule a publish](#schedule-a-publish)
+  - [Retire a SKU](#retire-a-sku)
+  - [Retire a Product](#retire-a-product)
+  - [Parent-child integrity](#parent-child-integrity)
+- [3. Processes / Business Logic (CDSL)](#3-processes--business-logic-cdsl)
+  - [The activation runner](#the-activation-runner)
+  - [Lifecycle error taxonomy](#lifecycle-error-taxonomy)
+- [4. States (CDSL)](#4-states-cdsl)
+  - [ScheduledTransition State Machine](#scheduledtransition-state-machine)
+- [5. Definitions of Done](#5-definitions-of-done)
+  - [Scheduled-transition store](#scheduled-transition-store)
+  - [Deferred-retirement store](#deferred-retirement-store)
+  - [Lifecycle columns on the entity tables](#lifecycle-columns-on-the-entity-tables)
+  - [Deprecation with provenance](#deprecation-with-provenance)
+  - [Deprecation cascade dispositions](#deprecation-cascade-dispositions)
+  - [Un-deprecation](#un-deprecation)
+  - [Provenance reversal](#provenance-reversal)
+  - [Scheduled-publish approval pin](#scheduled-publish-approval-pin)
+  - [Activation runner and its claim protocol](#activation-runner-and-its-claim-protocol)
+  - [Runner failure posture](#runner-failure-posture)
+  - [Retirement initiation](#retirement-initiation)
+  - [Lead-window re-announcement](#lead-window-re-announcement)
+  - [`replacedBy` and its chain](#replacedby-and-its-chain)
+  - [Retirement flip guard](#retirement-flip-guard)
+  - [EOL lockout](#eol-lockout)
+  - [Cascade plan](#cascade-plan)
+  - [The cascading parent's own path](#the-cascading-parents-own-path)
+  - [Deferred intent and its surface](#deferred-intent-and-its-surface)
+  - [No-orphan invariant](#no-orphan-invariant)
+  - [Publish ordering](#publish-ordering)
+  - [Scope containment, final rule](#scope-containment-final-rule)
+  - [Scope narrowing](#scope-narrowing)
+  - [Registered-validator host](#registered-validator-host)
+  - [Lifecycle error taxonomy](#lifecycle-error-taxonomy-1)
+  - [Lifecycle events](#lifecycle-events)
+  - [Audit trail for lifecycle acts](#audit-trail-for-lifecycle-acts)
+- [6. Acceptance Criteria](#6-acceptance-criteria)
+- [7. Known unknowns](#7-known-unknowns)
+  - [Raised here rather than carried](#raised-here-rather-than-carried)
+
+<!-- /toc -->
+
+## 1. Feature Context
+
+### 1.1 Overview
+
+`01-foundation` owns the state-machine **floor** — the edge list, terminality, and the head-row
+trigger that states the same rule a second time. This feature owns the **policy on the edges**:
+deprecation with `direct`/`cascaded` provenance, governed un-deprecation, scheduled publish and
+scheduled retirement with their activation mechanics, the retirement flip guard against
+`07-reference-signal`'s predicate, the `replacedBy` successor pointer, parent↔child publish
+ordering and scope containment, cascade-retire with deferred intent, and the v1 EOL lockout.
+
+**The seam it fills is named in code, and so is the wall behind it.** `api/rest/skus.rs` says of
+the publish re-validation pipeline: *"**`RegisteredValidators` is empty, and that is a real gap, not
+a passing phase.** The `→ published` validators the instruction names are `04-lifecycle`'s and
+`05-governance`'s, and neither exists at this commit; …"* `Phase::RegisteredValidators` is this
+feature's slot.
+
+**What the code does not give it is the keying.** `ValidationRule<S>` carries `name()`, `phase()`
+and `evaluate(&self, subject: &S, report)` — and no kind, transition, target-state or field-set
+operand. `01-foundation` hit the same wall twice and wrote down the reason: *"the pipeline is
+synchronous and judges the subject row alone, and this rule's operand is a read of other rows. So
+it runs as that phase's continuation, on this transaction."* Most of this feature's rules read
+other rows. See §7 rows 19 and 20.
+
+**Nothing this feature adds contradicts a shipped test.** `ADMITTED_EDGES` is pinned at five by
+`transition_tests::the_five_admitted_edges_are_admitted`, whose message reads *"a sixth needs a
+decision behind it"*, and `ALL_STATES` is pinned at five by the same module's 5×5 sweep. This
+feature needs **no sixth edge and no sixth state**: retirement forces `deprecated` first and flips
+`deprecated → retired`, the parent's path says in its own words that there is no `published →
+retired` edge, auto-discard rides `draft → discarded`, and a `draft` child is skipped from a
+cascade *because* the floor admits no `draft → deprecated`. EOL is a feature flag, not a state.
+
+### 1.2 Purpose
+
+Lifecycle is where the registry's promises to downstream live or die: `deprecated` must block new
+adoption without touching existing references, retirement must be un-surprising — lead time,
+successor pointer, grandfathered snapshots untouched — and no hierarchy operation may ever orphan
+published content or leak a child outside its parent's scope.
+
+**Requirements** — carried from [`../DECOMPOSITION.md`](../DECOMPOSITION.md) §2.4:
+
+- Whole: `cpt-cf-bss-products-fr-deprecation`, `cpt-cf-bss-products-fr-undeprecation`,
+  `cpt-cf-bss-products-fr-retirement-eol`
+- Shared: `cpt-cf-bss-products-fr-lifecycle-transitions` — the **scheduling clauses**; the machine
+  core is `01-foundation`'s. `cpt-cf-bss-products-fr-parent-child-integrity` — the **final
+  containment rule** and publish ordering; the interim check is `01-foundation`'s
+- Surfaces: `cpt-cf-bss-products-usecase-lifecycle-deprecation` — listed in §2.4's own Requirements
+  Covered block, so this line is carried rather than claimed
+
+**Principles**: `cpt-cf-bss-products-principle-forward-only`.
+
+**Constraints**: `cpt-cf-bss-products-constraint-immutable-identity`.
+
+**Component**: `cpt-cf-bss-products-component-capability-handlers`.
+
+**Sequence**: `cpt-cf-bss-products-seq-retirement-cascade`.
+
+**Not applicable or delegated**: **Authentication** is the platform IdP's. **Authorization** is
+`05-governance`'s RBAC catalog — this feature declares no grant pair of its own, and §7 row 18
+records that the catalog nonetheless carries `scheduled_transition × write|cancel|read` rows whose
+door this feature does not declare. **The approval ceremonies** the edges invoke are
+`05-governance`'s; this feature **pins** an approval at scheduling and validates it at activation,
+and registers its `ScheduledTransition` cancel as a material `GovernedLiveOp` kind — it evaluates
+no materiality itself. **The reference predicate** the flip guard reads is
+`07-reference-signal`'s; this feature owns only the guard that consults it. **Grandfathered-snapshot
+immutability** is `06-catalog-version`'s. **Live-subscription migration** is Subscriptions'. **The
+consumer-side adoption block** is the consumer's — the registry marks and exposes, and
+`12-consumer-contracts`' seam suite verifies the counterpart. **Observability** primitives and the
+outbox are `01-foundation`'s; this feature contributes the two gauges and the `retirement_held`
+alert named in §3. **Read-model projection** of the deferred-intent surface is `08-read-models`' —
+this feature owns the surface, 08 only projects it. **Operator-facing message wording** is the API
+layer's; the seven declared codes are the contract. **Rollout** is forward-only migration per
+`01-foundation`, with one feature flag of its own: the EOL lockout, **OFF by default**.
+**Presentation** is the studio's. **Rate limiting** is the platform gateway's. **Erasure** of the
+operator text this feature stores is `10-retention-erasure`'s; this feature guarantees only that
+the reason columns pass `02-taxonomy-attributes`' content-PII write block at the door.
+
+**Out of scope**, mirroring [`../DECOMPOSITION.md`](../DECOMPOSITION.md) §2.4: the edge list itself
+and terminality (`01-foundation`); the reference predicate (`07-reference-signal`); the approval
+ceremonies the edges invoke (`05-governance`); grandfathered-snapshot immutability
+(`06-catalog-version`); live-subscription migration, which is Subscriptions'; and the consumer-side
+adoption block, verified by `12-consumer-contracts`' seam suite.
+
+### 1.3 Actors
+
+| Actor | Role in this feature |
+|-------|----------------------|
+| `cpt-cf-bss-products-actor-product-manager` | Deprecates; schedules publishes |
+| `cpt-cf-bss-products-actor-catalog-admin` | Un-deprecates (two-person), initiates retirement and cascades, resumes deferred cascades |
+| `cpt-cf-bss-products-actor-plan-price` | The counterpart on its **own** `When` — retirement or unpublishing: flags referencing plans and blocks new adoption. A *plain* deprecation has no counterpart yet; `12-consumer-contracts`' register carries the ask |
+| `cpt-cf-bss-products-actor-subscriptions` | Owns live-subscription migration; consumes `replacedBy` (and `mustMigrateBy`, post-v1) |
+
+### 1.4 References
+
+- [`../DECOMPOSITION.md`](../DECOMPOSITION.md) §2.4 — the entry this feature realizes
+- [`../design/04-lifecycle.md`](../design/04-lifecycle.md) — the design slice. **This FEATURE is
+  the declaration site of the five `flow-` ids and the two `algo-` ids**, and the slice's §2 and §3
+  point here for them; there is one definition site per id. One `algo-` id —
+  `cpt-cf-bss-products-algo-activation-runner` — moved here from the slice;
+  `cpt-cf-bss-products-algo-lifecycle-errors` is **minted here**, because §3.2's code roster
+  carried only a `contract-` id, which a FEATURE may not define.
+  **The slice's step lists remain the normative ones and are not copied here**: re-spelling the 22
+  instruction steps it owns would fork the set's own instruction register and leave two texts where
+  only one can be true. §2 and §3 carry the actor, the scenarios and the boundary.
+  - **§4's state machine is a second exception, and its ids are this document's.** The template
+    requires a step id per transition row, and the slice expresses the `ScheduledTransition`'s
+    states as a column domain in §4 rather than as rows, so no row can be reused. The seven
+    `inst-st-*` ids and `cpt-cf-bss-products-state-scheduled-transition` are declared here and
+    cited by no slice. **Where §4 and the slice differ on a rule, the slice governs.**
+  - **§5 restates the slice's §4 storage shapes**, a third exception on the same terms: a
+    Definition of Done must name the columns and constraints it obliges. **Where §5 and the slice's
+    §4 differ on a column-level fact, the slice governs.** In particular the slice's §4 carries the
+    correction that `replaced_by_sku_id` is on `products_sku` **only**, and its optionality markers
+    (`claimed_at` nullable, `retirement_reason` nullable, `outcome_reason` nullable,
+    `replacedBy?`) are reproduced rather than normalized away.
+  - **`contract-` ids are cited but not defined here.** A FEATURE may **define** only `flow`,
+    `algo`, `state`, `dod` and `featstatus` ids, plus the `inst-` steps of a state machine it
+    declares. `cpt-cf-bss-products-contract-lifecycle-errors` remains the slice's and is cited by
+    id, which survives a renumber where a section number does not.
+  - **Twelve `inst-*` ids this feature cites are owned elsewhere** and are referenced, never
+    claimed: `inst-fd-approval-hook`, `inst-fd-containment-retire-intent`, `inst-fd-fail-closed`,
+    `inst-fd-publish-reannounce`, `inst-fd-save-txn`, `inst-fd-terminal` (`01-foundation`);
+    `inst-av-pii-block`, `inst-av-pii-reason` (`02-taxonomy-attributes`); `inst-cd-once`
+    (`03-sku-classification`); `inst-gv-materiality`, `inst-gv-one-shot`, `inst-mt-inputs`
+    (`05-governance`).
+- **Dependencies**: `cpt-cf-bss-products-feature-foundation` is the only build-time dependency —
+  its edge list, publish door, save door and validation pipeline are what this feature registers
+  into. `cpt-cf-bss-products-feature-governance` and
+  `cpt-cf-bss-products-feature-reference-signal` are required **at integration only**: governance
+  because the lifecycle edges invoke approval ceremonies validated at activation through the gate,
+  and reference-signal because of the retirement flip guard, evaluated against that feature's
+  predicate. The `lifecycle`↔`reference-signal` cycle is broken by phase — this feature's edge
+  policy, deprecation provenance and scheduling build against foundation alone, and the guard is
+  wired once 07 lands.
+- [`../PRD.md`](../PRD.md) §6.5; §12 AC #14–#18, AC #38 (parent, scope and EOL rows); §4.1 (the
+  ≥ 30-day lead); §17.1 (the interim lead-time policy)
+- [`../DESIGN.md`](../DESIGN.md) §1.3 layering, §2.1 principles, §2.2 constraints
+- [`../DECISIONS.md`](../DECISIONS.md) — P-D-04, P-D-13, P-D-20, P-D-24, P-D-25, P-D-26, P-D-30,
+  P-D-32, P-D-34, P-D-35, P-D-36, P-D-39, P-D-44, P-D-46, P-D-48, P-D-49; pricing D-47, whose
+  AC #82 is the joint contract's consumer half
+- [`./foundation.md`](./foundation.md) — the edge list, the publish and save doors, the validation
+  pipeline and the audit trail this feature registers into
+
+## 2. Actor Flows (CDSL)
+
+**Use cases**: `cpt-cf-bss-products-usecase-lifecycle-deprecation`
+
+The step lists live in [`../design/04-lifecycle.md`](../design/04-lifecycle.md) §2 — see §1.4. Each
+flow below names its actor, what success and failure look like, and where its boundary runs.
+
+### Deprecate and un-deprecate
+
+- [ ] `p1` - **ID**: `cpt-cf-bss-products-flow-deprecation`
+
+**Actor**: `cpt-cf-bss-products-actor-product-manager` deprecates;
+`cpt-cf-bss-products-actor-catalog-admin` un-deprecates
+
+**Success Scenarios**:
+- `published → deprecated` records provenance `direct` for an operator act or `cascaded` for a
+  parent-driven one, and emits the deprecation event with the provenance in its payload
+- A plain **Product** deprecation cascades `cascaded` deprecation onto its children with a stated
+  disposition per child state: a `published` child is deprecated `cascaded`, an already-`deprecated`
+  child is **left untouched with its provenance never re-stamped**, and a `draft` child is
+  **skipped and listed** rather than transitioned
+- Un-deprecation is **two-person**, `N`-governed like any transition to `published`, re-opens
+  adoption, and records `quorumReduced` below the default
+- Un-deprecating a Product reverses **only `cascaded`** child deprecations; a child's `direct`
+  deprecation survives its parent's reversal
+
+**Error Scenarios**:
+- Un-deprecation while a live retire intent exists on the entity **or on any child this
+  un-deprecation would revive** — `RETIREMENT_PENDING`, and the refusal names them
+- A head write on a `retired` or `discarded` row — `ENTITY_TERMINAL`, `01-foundation`'s refusal
+  (`inst-fd-terminal`), reached before any edge question is asked
+
+**Boundary**: the registry **marks and exposes**; the new-adoption block is the consumer's.
+Aborting a retirement is its own explicit act — a governed cancel of the `ScheduledTransition`
+that clears `replaced_by_sku_id` in the same statement for the parent and every child leg the
+reversal touches, then un-deprecates. Un-deprecation is never a silent retirement abort. `retired`
+is never reversible; revival is a clone, `11-clone`'s. The `draft`-child skip is not a courtesy:
+the floor admits no `draft → deprecated` edge and any failure rejects the whole mutation, so
+keying the cascade on "non-terminal" would make deprecating a Product with one draft SKU fail
+`ILLEGAL_TRANSITION` with no remedy.
+
+### Schedule a publish
+
+- [ ] `p1` - **ID**: `cpt-cf-bss-products-flow-scheduled-publish`
+
+**Actor**: `cpt-cf-bss-products-actor-product-manager`
+
+**Success Scenarios**:
+- Scheduling **pins** the approval at scheduling time and marks that record `consumed` in the
+  scheduling transaction; the entity's lifecycle state is unchanged until activation
+- At `publishAt` the runner drives `01-foundation`'s **ordinary** publish door in
+  `PreAuthorized(approvalId)` mode, resolving the idempotency key as the reserved lane
+  `internal:scheduled-activation` with the transition id as `client_key`
+- The full pipeline re-runs, pinned-revision check included, and the gate verifies the
+  initiation's consumed record rather than demanding a second satisfied one
+- Activation is idempotent by transition id; a runner crash replays to the identical outcome
+
+**Error Scenarios**:
+- An entity edited after scheduling — `SCHEDULE_STALE_APPROVAL`; the transition lands `failed`
+  with an operator alert and **never a partial publish**
+
+**Boundary**: the runner adds **no privileged path** around the pipeline — it is a caller of the
+same doors an operator uses. Because it has no wire surface it writes a **lane name** rather than
+an endpoint, so two internal lanes cannot collide on one key. `failed` is terminal for that
+transition: a stale approval cannot be silently re-armed, and rescheduling is an explicit operator
+act. What `PreAuthorized` requires of a leg whose subject is not the pinned subject is **§7 row
+22**, and it is not this document's to settle.
+
+### Retire a SKU
+
+- [ ] `p1` - **ID**: `cpt-cf-bss-products-flow-retire-sku`
+
+**Actor**: `cpt-cf-bss-products-actor-catalog-admin`
+
+**Success Scenarios**:
+- Initiation requires explicit confirmation **with the active-reference count shown**, including
+  the predicate's conservative states — the operator confirms against what is known, not against
+  silence
+- On confirmation the SKU is **forced `deprecated` immediately** and adoption blocking starts;
+  on an already-`deprecated` SKU no transition is taken and the provenance is not re-stamped
+- `RetirementScheduled` is recorded with an `effectiveAt` honoring the configured lead-time
+  policy, and the retirement event is emitted **at initiation** carrying
+  `{skuId, fromVersion, reason, replacedBy?, effectiveAt}`
+- The head **stays open to publishes** for the whole lead window, and a publish that moves the
+  version **re-emits** the retirement event with the new `fromVersion`, the same `effectiveAt` and
+  the same retirement identity; consumers key on `(skuId, effectiveAt)` and take the latest
+- `replacedBy` is an optional input written in the same statement as the lifecycle-state change,
+  and the read surface **resolves the pointer transitively** to the first non-`retired` successor
+- At `effectiveAt` the flip runs only on a **fresh all-zero** reference predicate
+
+**Error Scenarios**:
+- An `effectiveAt` inside the configured lead — `RETIREMENT_LEAD_TIME`
+- A `replacedBy` naming a SKU that is not `published` — `REPLACED_BY_NOT_PUBLISHED`
+- Free text in the reason carrying prohibited personal data — `CONTENT_PII_BLOCKED`,
+  `02-taxonomy-attributes`' code raised at this door
+- Any `mustMigrateBy` in v1 — `EOL_DISABLED`, the flag being OFF by default
+
+**Boundary**: the flip guard is **unconditional** — there is no force-retire door in v1. On a
+predicate reading anything but fresh-zero the flip **defers**: the state stays `deprecated`, a
+`retirement_held` alert names the blocking producers, and the runner re-evaluates on the
+predicate's freshness cadence. **The flip may therefore trail the announced `effectiveAt`**, and
+consumers key the state change on the flip event, never on the clock. Truthfulness of the
+announced `fromVersion` is maintained by **re-announcement, not by a freeze**: the earlier design
+refused publishes for the whole window, and that refusal was struck as a product-visible
+constraint no requirement carried. `mustMigrateBy` exists in the schema and is never populated in
+v1. Whether `effectiveAt` is an operator input or computed is **§7 row 14**, and the answer decides
+whether `RETIREMENT_LEAD_TIME` has a raiser at all.
+
+### Retire a Product
+
+- [ ] `p1` - **ID**: `cpt-cf-bss-products-flow-retire-product`
+
+**Actor**: `cpt-cf-bss-products-actor-catalog-admin`
+
+**Success Scenarios**:
+- A Product retirement over non-`retired` SKUs requires **confirmed cascade-retire**, and the plan
+  computed at confirmation lists each child's disposition across three arms: **retire**,
+  **leave-and-list** (deprecated `cascaded` and listed, so adoption stops growing during the
+  deferral), and **auto-discard** (never-published drafts, releasing their codes)
+- The parent gets its **own** retire `ScheduledTransition` under the same configured lead, is
+  forced `deprecated` with provenance `direct`, and emits its retirement event at initiation
+- Computing the plan **supersedes**, for every child in all three arms, that child's live publish
+  intent **and** its live retire intent, the latter replaced by this cascade's own leg and audited
+- Cascades are **partial by design**: where any child is left, the parent's flip defers and a
+  deferred-retire intent is recorded — tracked, queryable through this feature's own surface, and
+  resumable once the listed children clear
+
+**Error Scenarios**:
+- An unconfirmed cascade request — `CASCADE_CONFIRMATION_REQUIRED`
+- Any failure during plan application — the **whole mutation** is rejected
+  (`01-foundation`'s `inst-fd-fail-closed`)
+
+**Boundary**: "partial by design" means **children left un-retired, never a partly-applied plan**;
+application at confirmation is one transaction. The parent's flip guard is **all children
+`retired`/`discarded`** — there is no `published → retired` edge for a Product any more than for a
+SKU, which is why the parent is forced `deprecated` first. The no-orphan invariant is **re-checked
+at flip**, not only planned at confirmation. Which act discharges a deferral, and who writes its
+`children_cleared` resolution, is **§7 row 11**.
+
+### Parent-child integrity
+
+- [ ] `p1` - **ID**: `cpt-cf-bss-products-flow-parent-child`
+
+**Actor**: `cpt-cf-bss-products-actor-product-manager`
+
+**Success Scenarios**:
+- A SKU publish under a non-`published` parent is refused, the validator being registered on the
+  SKU's **`→ published` target state** rather than on the edge, so a re-publish re-runs it
+  fail-closed
+- A SKU's brand and region scope must be a **subset** of its parent's — flat value-set subset,
+  evaluated on save and re-evaluated on publish
+- A scope **widening** on a Product is always admissible
+
+**Error Scenarios**:
+- A SKU publish under a non-`published` parent — `PARENT_NOT_PUBLISHED`
+- A child scope not provably a subset of its parent's — `SCOPE_NOT_CONTAINED`, declared in
+  `01-foundation` and carrying its final semantics here
+- A scope-narrowing Product publish while any **non-terminal** child would fall outside the
+  narrowed scope — `SCOPE_NARROWING_BLOCKED`, the validator naming the falling-out children
+
+**Boundary**: containment is **over restrictions**: the empty set means *unrestricted*, so an
+unrestricted parent contains every child and an unrestricted child is contained only by an
+unrestricted parent. The narrowing operand is **non-terminal**, not non-`retired`: `discarded` is
+terminal at the physical layer and is the routine output of the cascade's auto-discard arm, so the
+wider operand would let one discarded draft block that Product's narrowing permanently. **Three
+facts about the shipped code bear on this flow and are carried in §7 rows 19–21**: the narrowing
+check exists, on the save door, raising `SCOPE_NOT_CONTAINED` and deliberately not naming the
+children.
+
+## 3. Processes / Business Logic (CDSL)
+
+The step lists live in [`../design/04-lifecycle.md`](../design/04-lifecycle.md) §3 — see §1.4.
+
+### The activation runner
+
+- [ ] `p1` - **ID**: `cpt-cf-bss-products-algo-activation-runner`
+
+**Input**: due rows of `products_scheduled_transition` for both kinds, the pinned approval each
+carries, the reference predicate's current answer for a retirement flip, and the claim lease and
+per-transition attempt budget — **neither of which carries a value anywhere** (§7 row 8)
+
+**Output**: each claimed row finished `applied`, `failed` or `deferred` with its reason recorded in
+`outcome_reason`, plus the two gauges and the `retirement_held` alert
+
+One runner drives both transition kinds. Due rows are claimed atomically by a state CAS with
+`claimed_at`; a `running` row past the claim lease is reclaimed to `pending` with `attempt += 1`,
+so a crash never wedges the entity's one live-intent slot, and re-execution is safe because the
+doors are idempotent. Execution runs **through the ordinary Foundation doors** — the runner adds no
+privileged path around the pipeline.
+
+The runner is **its own raising door**: it wraps the publish door's refusal into
+`SCHEDULE_STALE_APPROVAL` on the transition rather than letting the door's own code escape. `failed`
+is terminal for that transition.
+
+**Boundary**: `deferred` carries **two populations and not one** — the retirement flip guard, and
+transient dependency unavailability — and **only the second is bounded** by the attempt budget
+after which it lands `failed`. A flip-guard deferral is **unbounded** by constraint, which is
+correct and is what makes §7 row 1 an operational question rather than a defect. Anything else is
+terminal. The first reader of `01-foundation`'s `TransitionEffects::bumps_the_guard_owns()` — a
+method its own doc records as having no production caller and expects this feature's transition
+door to become — is this runner.
+
+### Lifecycle error taxonomy
+
+- [ ] `p1` - **ID**: `cpt-cf-bss-products-algo-lifecycle-errors`
+
+**Input**: a refused lifecycle act and the rule that refused it
+
+**Output**: one canonical code carrying its declared RFC 9457 status
+
+This feature **declares seven** codes: `SCOPE_NARROWING_BLOCKED`, `RETIREMENT_LEAD_TIME`,
+`REPLACED_BY_NOT_PUBLISHED`, `SCHEDULE_STALE_APPROVAL`, `CASCADE_CONFIRMATION_REQUIRED`,
+`RETIREMENT_PENDING` and `EOL_DISABLED`. **Two** appear in its response map and are declared in
+`01-foundation`: `PARENT_NOT_PUBLISHED` and `SCOPE_NOT_CONTAINED` — the status is repeated, not a
+second declaration. **Seven more** are cited from elsewhere and raised by their own owners:
+`APPROVAL_REQUIRED`, `CONTENT_PII_BLOCKED`, `ILLEGAL_TRANSITION`, `PARENT_TERMINAL`,
+`STALE_REVISION`, `STALE_VERSION`, `USAGE_TYPE_UNAVAILABLE`. Seven, two and seven make the sixteen
+distinct codes the slice names.
+
+**Boundary**: the roster and every status are specified by
+`cpt-cf-bss-products-contract-lifecycle-errors`, which stays in the slice. `SCOPE_NARROWING_BLOCKED`,
+`SCHEDULE_STALE_APPROVAL`, `RETIREMENT_PENDING` and `PARENT_NOT_PUBLISHED` sit at 409;
+`CASCADE_CONFIRMATION_REQUIRED`, `EOL_DISABLED`, `SCOPE_NOT_CONTAINED`, `RETIREMENT_LEAD_TIME` and
+`REPLACED_BY_NOT_PUBLISHED` at 422 **architecturally**, reaching the wire as 400 carrying their
+code, no `CanonicalError` category rendering 422 absent a transport override this design set does
+not declare. **Two of the seven declared codes have a raise-path problem and both are carried, not
+resolved**: `SCOPE_NARROWING_BLOCKED` appears nowhere in the shipped crate while the check it names
+is built and raises `SCOPE_NOT_CONTAINED` (§7 row 19), and `RETIREMENT_LEAD_TIME` can never be
+raised if `effectiveAt` is computed rather than supplied (§7 row 14).
+
+## 4. States (CDSL)
+
+### ScheduledTransition State Machine
+
+- [ ] `p1` - **ID**: `cpt-cf-bss-products-state-scheduled-transition`
+
+The seven rows below are this document's rendering of the slice's §4 column domain; see §1.4.
+
+**States**: `pending`, `running`, `applied`, `failed`, `deferred`, `superseded`
+
+**Initial State**: `pending`, written by the scheduling act — a scheduled publish
+(`inst-sp-pin`), a retirement initiation, or a cascade leg. The row is **live** in `pending`,
+`running` and `deferred`, which is the partial-unique predicate that holds one intent per entity
+per kind.
+
+**Transitions**:
+1. [ ] - `p1` - **FROM** `pending` **TO** `running` **WHEN** the runner's poll finds the row due
+   and wins the atomic state CAS, stamping `claimed_at`. Authorization: the runner's own identity,
+   which holds no privileged path around the pipeline the doors run - `inst-st-claim`
+2. [ ] - `p1` - **FROM** `deferred` **TO** `running` **WHEN** the same poll re-claims it; the
+   slice calls this *"the only exit that state has"*, which **§7 row 23 shows cannot be literally
+   true** while a cascade supersedes live intents and `deferred` counts as live. Authorization: as
+   row 1 - `inst-st-reclaim`
+3. [ ] - `p1` - **FROM** `running` **TO** `pending` **WHEN** the row is past its claim lease, with
+   `attempt += 1`, so a crashed runner never wedges the entity's one live-intent slot; safe because
+   the doors are idempotent. Authorization: as row 1; **the lease has no value anywhere** (§7 row
+   8) - `inst-st-lease-reclaim`
+4. [ ] - `p1` - **FROM** `running` **TO** `applied` **WHEN** the Foundation door the runner drove
+   committed. Authorization: the **pinned** approval, verified at activation in `PreAuthorized`
+   mode — the runner consumes nothing further, the record having been consumed at the initiation
+   transaction - `inst-st-applied`
+5. [ ] - `p1` - **FROM** `running` **TO** `deferred` **WHEN** either the retirement flip guard
+   reads anything but fresh-zero — **unbounded** by constraint — or a transient dependency is
+   unavailable, **bounded** by the attempt budget. `outcome_reason` records which population.
+   Authorization: as row 1 - `inst-st-defer`
+6. [ ] - `p1` - **FROM** `running` **TO** `failed` **WHEN** the door refused terminally — wrapped
+   as `SCHEDULE_STALE_APPROVAL` — or the transient-deferral attempt budget is exhausted. Terminal:
+   an operator reschedules explicitly, because a stale approval may not be silently re-armed.
+   Authorization: as row 1 - `inst-st-failed`
+7. [ ] - `p1` - **FROM** a live state **TO** `superseded` **WHEN** an explicit re-schedule, a
+   governed cancel, or a cascade plan replaces the intent; audited in every case. Authorization:
+   the cancel is a `GovernedLiveOp` kind **registered material by this feature**, so it follows the
+   tenant's `N` with `quorumReduced` recorded — without that registration the evaluator judges it
+   non-material and one approver, or none at `N = 0`, could unwind a cascade. **Which live states
+   admit this edge is §7 row 23**, and **which actor performs the cancel is §7 row 15** - `inst-st-superseded`
+
+**Terminal states**: `applied`, `failed`, `superseded`. No transition other than the seven above is
+admitted, and no edge leaves a terminal state — a re-schedule after `applied` or `failed` is a
+**new row**, which is what keeps the partial unique index sound.
+
+## 5. Definitions of Done
+
+**Twenty-six**, counted by `grep` on this file rather than from the plan that sized them.
+**Nineteen are separately testable.** Seven are not, and each names what it needs:
+`dod-flip-guard` and `dod-no-orphan` read `07-reference-signal`'s predicate, which does not exist,
+so they are testable only against a stub — and a stub that always answers fresh-zero passes the
+guard while proving nothing, which is why a **four-state negative control** is part of the
+obligation; `dod-undeprecation` and `dod-scheduled-publish-pin` need `05-governance`'s gate host and
+approval store, the existing `RecordingGate` double being the shape; `dod-registered-validator-host`
+cannot be asserted until §7 rows 19 and 20 settle whether these rules are registered rules at all;
+`dod-lead-window-reannounce` fires through `01-foundation`'s publish door and needs that door's
+harness; and `dod-lifecycle-events` depends on a broker payload shape this feature adds three
+bodies to (§7 row 25).
+
+### Scheduled-transition store
+
+- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-scheduled-transition-store`
+
+The system **MUST** create `products_scheduled_transition` on both engines carrying `transition_id`
+(PK), `tenant_id`, `entity_kind`/`entity_id`, `kind ∈ {publish, retire}`, `at` (UTC), `approval_ref`,
+`state ∈ {pending, running, applied, failed, deferred, superseded}`, `claimed_at` (nullable, UTC),
+`attempt` (integer, `NOT NULL`, default 0), `retirement_reason` (nullable — the **operator's** text)
+and `outcome_reason` (nullable — the **runner's** outcome text), plus timestamps. **The two reason
+columns MUST stay separate**: one column let a deferral's failure text overwrite the operator's. A
+**partial** `UNIQUE (tenant_id, entity_kind, entity_id, kind) WHERE state IN ('pending','running','deferred')`
+**MUST** hold one live intent per entity per kind. A schema-oracle golden **MUST** exist on both
+engines with a perturbation case proving it can fail.
+
+**Implements**: `cpt-cf-bss-products-flow-scheduled-publish`,
+`cpt-cf-bss-products-state-scheduled-transition`
+
+**Constraints**: `cpt-cf-bss-products-constraint-immutable-identity`
+
+**Touches**:
+- DB Table: `products_scheduled_transition`
+- Entities: `ScheduledTransition`
+
+### Deferred-retirement store
+
+- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-deferred-retirement-store`
+
+The system **MUST** create `products_deferred_retirement` keyed
+`(tenant_id, product_id, cascade_ref)` — `cascade_ref` being the parent's `ScheduledTransition`
+id — carrying the leave-and-list snapshot of children and reasons, `created_by`, `resolved_at`,
+`resolution ∈ {children_cleared, cascade_cancelled}` and timestamps. Resolved rows **MUST** flip
+`resolved_at` and **never delete**, for audit continuity. A **partial**
+`UNIQUE (tenant_id, product_id) WHERE resolved_at IS NULL` **MUST** hold at most one live deferral
+per Product, and a cancelled cascade **MUST** resolve its row `cascade_cancelled` — on the bare
+composite key a cancelled cascade left an unresolved row forever and a second cascade on the same
+Product collided.
+
+**Implements**: `cpt-cf-bss-products-flow-retire-product`
+
+**Constraints**: `cpt-cf-bss-products-constraint-immutable-identity`
+
+**Touches**:
+- DB Table: `products_deferred_retirement`
+- Entities: `DeferredRetireIntent`
+
+### Lifecycle columns on the entity tables
+
+- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-lifecycle-columns`
+
+The system **MUST** carry `deprecation_provenance` on **both** entity tables and
+`replaced_by_sku_id` on **`products_sku` only** — the column names a SKU. Both are created by
+`01-foundation`'s migrations and this feature is their first writer. `replaced_by_sku_id` **MUST**
+be write-once **per retirement, not per row**: the head-row whitelist admits the governed cancel's
+clearing write, and without it a cancelled, un-deprecated SKU stays `published` while permanently
+naming a successor no admitted write could clear.
+
+**Implements**: `cpt-cf-bss-products-flow-retire-sku`, `cpt-cf-bss-products-flow-deprecation`
+
+**Constraints**: `cpt-cf-bss-products-constraint-immutable-identity`
+
+**Touches**:
+- DB Table: `products_product`, `products_sku`
+- Entities: `Product`, `SKU`
+
+### Deprecation with provenance
+
+- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-deprecation-provenance`
+
+The system **MUST** stamp `deprecation_provenance` as `direct` on an operator act and `cascaded`
+on a parent-driven one, on the `published → deprecated` edge, and **MUST** emit the deprecation
+event carrying the provenance in its payload. An **already-`deprecated`** entity **MUST NOT** be
+re-stamped: `direct` re-stamped as `cascaded` would make a parent's un-deprecation revive exactly
+the child the requirement says it must not.
+
+**Implements**: `cpt-cf-bss-products-flow-deprecation`
+
+**Constraints**: `cpt-cf-bss-products-constraint-immutable-identity`
+
+**Touches**:
+- DB Table: `products_product`, `products_sku`
+- Entities: `Product`, `SKU`
+
+### Deprecation cascade dispositions
+
+- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-deprecation-cascade`
+
+The system **MUST** cascade a plain Product deprecation onto its children with a stated disposition
+per child state: `published` ⇒ deprecated `cascaded`; already-`deprecated` ⇒ **left untouched**;
+`draft` ⇒ **skipped and listed**, never transitioned, because the floor admits no
+`draft → deprecated` edge and any failure rejects the whole mutation. `retired` and `discarded`
+children are terminal and outside the population. The listing **MUST** be what the operator sees.
+
+**Implements**: `cpt-cf-bss-products-flow-deprecation`
+
+**Constraints**: `cpt-cf-bss-products-constraint-immutable-identity`
+
+**Touches**:
+- DB Table: `products_sku`
+- Entities: `SKU`
+
+### Un-deprecation
+
+- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-undeprecation`
+
+The system **MUST** put `deprecated → published` behind the governance gate as an `N`-governed
+two-person ceremony, recording `quorumReduced` below the default, and **MUST** refuse it
+`RETIREMENT_PENDING` while a live retire intent exists on the entity **or on any child this
+un-deprecation would revive**, the refusal naming them. Checking only the subject's own intent let
+a parent's cancel-then-un-deprecate revive `cascaded` children whose own retire intents stayed
+live, after which the runner needed a `published → retired` edge that does not exist. The
+governed cancel that aborts a retirement **MUST** clear `replaced_by_sku_id` in the same statement,
+for the parent and every child leg the reversal touches.
+
+**Implements**: `cpt-cf-bss-products-flow-deprecation`,
+`cpt-cf-bss-products-state-scheduled-transition`
+
+**Constraints**: `cpt-cf-bss-products-constraint-immutable-identity`
+
+**Touches**:
+- DB Table: `products_sku`, `products_scheduled_transition`
+- Entities: `SKU`, `ScheduledTransition`
+
+### Provenance reversal
+
+- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-provenance-reversal`
+
+The system **MUST** reverse **only `cascaded`** child deprecations when a Product is un-deprecated;
+a child's `direct` deprecation **MUST** survive its parent's reversal, the provenance column being
+the operand.
+
+**Implements**: `cpt-cf-bss-products-flow-deprecation`
+
+**Constraints**: `cpt-cf-bss-products-constraint-immutable-identity`
+
+**Touches**:
+- DB Table: `products_sku`
+- Entities: `SKU`
+
+### Scheduled-publish approval pin
+
+- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-scheduled-publish-pin`
+
+The system **MUST** pin the approval at scheduling time onto the `ScheduledTransition` and mark
+that record `consumed` **in the scheduling transaction**, leaving the entity's lifecycle state
+unchanged until activation. Activation **MUST** verify that consumed record in `PreAuthorized`
+mode rather than demanding a second satisfied one, and **MUST NOT** consume anything further.
+
+**Implements**: `cpt-cf-bss-products-flow-scheduled-publish`
+
+**Constraints**: `cpt-cf-bss-products-constraint-immutable-identity`
+
+**Touches**:
+- DB Table: `products_scheduled_transition`
+- Entities: `ScheduledTransition`
+
+### Activation runner and its claim protocol
+
+- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-activation-runner`
+
+The system **MUST** run one runner over both transition kinds, claiming due rows by an **atomic
+state CAS** stamping `claimed_at`, re-claiming a `deferred` row on the same poll, and reclaiming a
+`running` row past the claim **lease** to `pending` with `attempt += 1`. Execution **MUST** go
+through the ordinary Foundation doors with **no privileged path** around the pipeline. Activation
+**MUST** be idempotent by transition id, resolving the idempotency key as the reserved lane
+`internal:scheduled-activation` with the transition id as `client_key`. Each row **MUST** finish
+`applied`, `failed` or `deferred` with its reason in `outcome_reason`.
+
+**Implements**: `cpt-cf-bss-products-algo-activation-runner`,
+`cpt-cf-bss-products-state-scheduled-transition`
+
+**Constraints**: `cpt-cf-bss-products-constraint-immutable-identity`
+
+**Touches**:
+- DB Table: `products_scheduled_transition`
+- Entities: `ScheduledTransition`
+
+### Runner failure posture
+
+- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-runner-failure-posture`
+
+The runner **MUST** be its **own raising door**, wrapping the publish door's `STALE_REVISION` or
+`APPROVAL_REQUIRED` refusal into `SCHEDULE_STALE_APPROVAL` on the transition. `failed` **MUST** be
+terminal for that transition. `deferred` **MUST** carry two populations distinguishably — the
+retirement flip guard, **unbounded**, and transient dependency unavailability, **bounded** by a
+per-transition attempt budget after which it lands `failed`. Everything else **MUST** be terminal.
+Without the bounded arm a collector blip burns a pinned approval on a lane with no operator to
+retry it.
+
+**Implements**: `cpt-cf-bss-products-algo-activation-runner`
+
+**Constraints**: `cpt-cf-bss-products-constraint-immutable-identity`
+
+**Touches**:
+- DB Table: `products_scheduled_transition`
+- Entities: `ScheduledTransition`
+
+### Retirement initiation
+
+- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-retirement-initiation`
+
+The system **MUST** require explicit confirmation showing the **active-reference count** including
+its conservative states, then in one transaction force the SKU `deprecated` — taking no transition
+and re-stamping no provenance where it already is — record `RetirementScheduled` with an
+`effectiveAt` honoring the configured lead-time policy or refusing `RETIREMENT_LEAD_TIME`, run
+`02-taxonomy-attributes`' content-PII write block over the free-text `reason` refusing
+`CONTENT_PII_BLOCKED`, and emit the retirement event **at initiation** carrying
+`{skuId, fromVersion, reason, replacedBy?, effectiveAt}` where `fromVersion` is the entity's
+`published_version` at the initiation instant. **Saves MUST stay legal** during the window: they
+touch the head, which no consumer reads.
+
+**Implements**: `cpt-cf-bss-products-flow-retire-sku`
+
+**Constraints**: `cpt-cf-bss-products-constraint-immutable-identity`
+
+**Touches**:
+- DB Table: `products_sku`, `products_scheduled_transition`
+- Entities: `SKU`, `ScheduledTransition`
+
+### Lead-window re-announcement
+
+- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-lead-window-reannounce`
+
+The head **MUST** stay open to publishes for the whole lead window, and a publish that moves the
+version **MUST** re-emit the retirement event with the new `fromVersion`, the same `effectiveAt`
+and the same retirement identity, enqueued in the publish's own transaction by `01-foundation`'s
+publish door. A publish **outside** any window **MUST** emit none. Consumers key on
+`(skuId, effectiveAt)` and take the latest. The alternative — refusing publishes for the window —
+was a product-visible constraint no requirement carried and is **not** to be reintroduced.
+
+**Implements**: `cpt-cf-bss-products-flow-retire-sku`
+
+**Constraints**: `cpt-cf-bss-products-constraint-immutable-identity`
+
+**Touches**:
+- DB Table: `products_sku`, `products_entity_version`
+- Entities: `SKU`, `EntityVersion`
+
+### `replacedBy` and its chain
+
+- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-replaced-by`
+
+`replacedBy` **MUST** be an optional input of retirement initiation, written to
+`replaced_by_sku_id` in the same statement as the lifecycle-state change, and when given **MUST**
+name a `published` SKU or refuse `REPLACED_BY_NOT_PUBLISHED`. It is **validated once** and the row
+is terminal at the flip, so the pointer may come to name a later-retired SKU: retiring a SKU that
+any live pointer names **MUST** raise a `replacement_chain_broken` alert listing the pointing SKUs,
+and the read surface **MUST** resolve the pointer transitively to the first non-`retired` successor
+or report the chain's end. Repairing the frozen pointer is out of scope in v1. **Where the alert's
+fact is stored, what bounds the walk, and what a cycle returns are §7 rows 12 and 13**, so this
+obligation's storage half cannot be closed until they are answered.
+
+**Implements**: `cpt-cf-bss-products-flow-retire-sku`
+
+**Constraints**: `cpt-cf-bss-products-constraint-immutable-identity`
+
+**Touches**:
+- DB Table: `products_sku`
+- Entities: `SKU`
+
+### Retirement flip guard
+
+- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-flip-guard`
+
+At `effectiveAt` the flip **MUST** consult `07-reference-signal`'s predicate and **MUST** defer
+where it reads anything but **fresh-zero** — fresh > 0, stale, never-received, or the defensive
+no-producers state — leaving the state `deprecated`, raising a `retirement_held` alert naming the
+blocking producers, and re-evaluating on the predicate's freshness cadence. The flip **MUST**
+happen only on a fresh all-zero. The flip **MAY** therefore trail the announced `effectiveAt`, and
+the flip event is what consumers key the state change on. There **MUST** be no force-retire door in
+v1. A stub predicate **MUST** be exercised in all four deferring states as well as the passing one.
+
+**Implements**: `cpt-cf-bss-products-flow-retire-sku`,
+`cpt-cf-bss-products-algo-activation-runner`
+
+**Constraints**: `cpt-cf-bss-products-constraint-immutable-identity`
+
+**Touches**:
+- DB Table: `products_sku`, `products_scheduled_transition`
+- Entities: `SKU`, `ScheduledTransition`
+
+### EOL lockout
+
+- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-eol-lockout`
+
+`mustMigrateBy` and the consumer-acknowledgment machinery **MUST** be refused in v1 with
+`EOL_DISABLED`, behind a feature flag **OFF by default**. The payload field **MUST** exist in the
+event schema for vN-compatible widening and **MUST** never be populated in v1, and the schema
+**MUST** round-trip the absent field.
+
+**Implements**: `cpt-cf-bss-products-flow-retire-sku`
+
+**Constraints**: `cpt-cf-bss-products-constraint-immutable-identity`
+
+**Touches**:
+- DB Table: `products_sku`
+- Entities: `SKU`
+
+### Cascade plan
+
+- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-cascade-plan`
+
+A Product retirement over non-`retired` SKUs **MUST** require confirmed cascade-retire, refusing an
+unconfirmed request `CASCADE_CONFIRMATION_REQUIRED`. The plan computed at confirmation **MUST**
+list each child's disposition across exactly three arms — **retire** (scheduled per the SKU flow,
+provenance `cascaded`, the plan passing provenance through), **leave-and-list** (deprecated
+`cascaded` and listed), **auto-discard** (never-published drafts, releasing their codes). Plan
+application **MUST** be one transaction in which any failure rejects the whole mutation. Computing
+the plan **MUST** supersede, for every child in all three arms, that child's live publish intent
+**and** its live retire intent, audited as such — superseding only publish intents collided with
+the one-live-intent-per-kind unique index for any child already holding a retire intent.
+
+**Implements**: `cpt-cf-bss-products-flow-retire-product`
+
+**Constraints**: `cpt-cf-bss-products-constraint-immutable-identity`
+
+**Touches**:
+- DB Table: `products_sku`, `products_scheduled_transition`
+- Entities: `SKU`, `CascadePlan`, `ScheduledTransition`
+
+### The cascading parent's own path
+
+- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-cascade-parent-path`
+
+At confirmation the parent Product **MUST** be forced `deprecated` with provenance `direct` and
+**MUST** get its **own** retire `ScheduledTransition` under the same configured lead, emitting its
+retirement event at initiation. The parent's flip guard **MUST** be **all children
+`retired`/`discarded`** — there is no `published → retired` edge for a Product any more than for a
+SKU.
+
+**Implements**: `cpt-cf-bss-products-flow-retire-product`
+
+**Constraints**: `cpt-cf-bss-products-constraint-immutable-identity`
+
+**Touches**:
+- DB Table: `products_product`, `products_scheduled_transition`
+- Entities: `Product`, `ScheduledTransition`
+
+### Deferred intent and its surface
+
+- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-deferred-intent`
+
+Where any child is left un-retired the parent's flip **MUST** defer and a `DeferredRetireIntent`
+**MUST** be recorded — tracked and **queryable through this feature's own surface**, which
+`08-read-models` projects rather than owns — and resumable by an operator once the listed children
+clear. "Partial by design" **MUST** mean children left un-retired and **never** a partly-applied
+plan.
+
+**Implements**: `cpt-cf-bss-products-flow-retire-product`
+
+**Constraints**: `cpt-cf-bss-products-constraint-immutable-identity`
+
+**Touches**:
+- DB Table: `products_deferred_retirement`
+- Entities: `DeferredRetireIntent`
+
+### No-orphan invariant
+
+- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-no-orphan`
+
+No `published` SKU **MUST** exist under a `retired` Product, and the invariant **MUST** be
+re-checked **at flip**, not only planned at confirmation.
+
+**Implements**: `cpt-cf-bss-products-flow-retire-product`,
+`cpt-cf-bss-products-flow-parent-child`
+
+**Constraints**: `cpt-cf-bss-products-constraint-immutable-identity`
+
+**Touches**:
+- DB Table: `products_product`, `products_sku`
+- Entities: `Product`, `SKU`
+
+### Publish ordering
+
+- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-publish-ordering`
+
+A SKU publish under a non-`published` parent **MUST** fail `PARENT_NOT_PUBLISHED`, the validator
+registered on the SKU's **`→ published` target state** and not on the edge, so a re-publish re-runs
+it fail-closed. The code is declared in `01-foundation` and registered here; **which slice declares
+it is open in that slice's own §6** and is not this document's to settle (§7 row 18).
+
+**Implements**: `cpt-cf-bss-products-flow-parent-child`
+
+**Constraints**: `cpt-cf-bss-products-constraint-immutable-identity`
+
+**Touches**:
+- DB Table: `products_product`, `products_sku`
+- Entities: `Product`, `SKU`
+
+### Scope containment, final rule
+
+- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-scope-containment-final`
+
+A SKU's brand and region scope **MUST** be a flat value-set subset of its parent's, evaluated on
+save and re-evaluated on publish, anything not provably a subset failing `SCOPE_NOT_CONTAINED`.
+Containment is **over restrictions**: the empty set means unrestricted, so an unrestricted parent
+contains every child and an unrestricted child needs an unrestricted parent.
+
+**This obligation MUST begin by measuring what is left to replace.** `01-foundation` ships
+`domain::containment` implementing exactly these three clauses, wired at the SKU create door, the
+SKU publish re-check and the Product save door. The slice describes this feature as replacing the
+operand inside the identity phase rather than registering a validator; **what operand remains is
+§7 row 21**, and a DoD that obliges a replacement of something already final would be a no-op
+dressed as work.
+
+**Implements**: `cpt-cf-bss-products-flow-parent-child`
+
+**Constraints**: `cpt-cf-bss-products-constraint-immutable-identity`
+
+**Touches**:
+- DB Table: `products_product`, `products_sku`
+- Entities: `Product`, `SKU`
+
+### Scope narrowing
+
+- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-scope-narrowing`
+
+A scope-narrowing Product publish **MUST** fail closed while any **non-terminal** child —
+`draft`, `published` or `deprecated` — would fall outside the narrowed scope, and the validator
+**MUST** name the falling-out children. Widening is always admissible. The operand is
+**non-terminal, not non-`retired`**: `discarded` is terminal at the physical layer and is the
+routine output of the auto-discard arm, so the wider operand would let one discarded draft block
+that Product's narrowing permanently.
+
+**Three shipped facts bear on this and are carried as §7 rows 19–21**, so the obligation cannot be
+written as new work until they settle: the check exists as
+`products::check_children_stay_contained` with the non-terminal operand already correct; it runs on
+the **save** door and has no publish call site; it raises **`SCOPE_NOT_CONTAINED`**, and
+`SCOPE_NARROWING_BLOCKED` occurs nowhere in the crate; and its refusal **deliberately does not name
+the offending child**, on the stated ground that naming one would be a second wording of a shared
+message.
+
+**Implements**: `cpt-cf-bss-products-flow-parent-child`
+
+**Constraints**: `cpt-cf-bss-products-constraint-immutable-identity`
+
+**Touches**:
+- DB Table: `products_product`, `products_sku`
+- Entities: `Product`, `SKU`
+
+### Registered-validator host
+
+- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-registered-validator-host`
+
+This feature **MUST** fill `01-foundation`'s `RegisteredValidators` phase for the `→ published`
+target state, which the Foundation's own publish re-validation records as *"a real gap, not a
+passing phase"*. It **MUST NOT** mint a parallel validation vocabulary: the `ValidationRule` trait,
+the `Phase` enum and the pipeline are the Foundation's.
+
+**Whether this feature's rules can be registered rules at all is §7 rows 19 and 20**, and this
+obligation is the one that cannot be deferred past the first line of code. The trait carries no
+kind, transition, target-state or field-set operand, and the Foundation has already established
+that a rule whose operand reads other rows runs as a **phase continuation** rather than a
+registered rule — which is what every parent-child, retire-intent and flip-guard rule here does.
+
+**Implements**: `cpt-cf-bss-products-flow-parent-child`,
+`cpt-cf-bss-products-flow-deprecation`
+
+**Constraints**: `cpt-cf-bss-products-constraint-immutable-identity`
+
+**Touches**:
+- DB Table: `products_product`, `products_sku`
+- Entities: `Product`, `SKU`
+
+### Lifecycle error taxonomy
+
+- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-lifecycle-errors`
+
+The system **MUST** declare seven codes — `SCOPE_NARROWING_BLOCKED`, `RETIREMENT_LEAD_TIME`,
+`REPLACED_BY_NOT_PUBLISHED`, `SCHEDULE_STALE_APPROVAL`, `CASCADE_CONFIRMATION_REQUIRED`,
+`RETIREMENT_PENDING`, `EOL_DISABLED` — each carrying its declared RFC 9457 status and each raised by
+**exactly one** rule. `PARENT_NOT_PUBLISHED` and `SCOPE_NOT_CONTAINED` appear in the response map
+carrying `01-foundation`'s declarations, repeated and not re-declared. **Two of the seven have a
+raise-path problem that this DoD MUST NOT paper over**: `SCOPE_NARROWING_BLOCKED` has no occurrence
+in the crate while its check is built raising another code (§7 row 19), and `RETIREMENT_LEAD_TIME`
+has no raiser at all if `effectiveAt` is computed (§7 row 14).
+
+**Implements**: `cpt-cf-bss-products-algo-lifecycle-errors`
+
+**Constraints**: `cpt-cf-bss-products-constraint-immutable-identity`
+
+**Touches**:
+- Entities: `SKU`, `Product`, `ScheduledTransition`
+
+### Lifecycle events
+
+- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-lifecycle-events`
+
+The system **MUST** emit the deprecation, un-deprecation and retirement events for both entity
+kinds, and the SKU retirement-effective flip event, through `01-foundation`'s outbox. Scheduling
+acts **MUST** be audit-plane records with an **explicit "no broker event"** statement rather than
+silence. **What announces a Product's `deprecated → retired` flip is §7 row 5** — the Events roster
+names no Product analogue and records no explicit no-event for it, and `01-foundation`'s
+`domain::transition` module doc independently records the same hole. The gear ships **four** payload
+types today on two body shapes; the retirement payload's five fields need a third, and this DoD
+**MUST** widen the shape rather than overload `EventBodyCore`.
+
+**Implements**: `cpt-cf-bss-products-flow-deprecation`,
+`cpt-cf-bss-products-flow-retire-sku`, `cpt-cf-bss-products-flow-retire-product`
+
+**Constraints**: `cpt-cf-bss-products-constraint-immutable-identity`
+
+**Touches**:
+- DB Table: `products_outbox`
+- Entities: `SKU`, `Product`
+
+### Audit trail for lifecycle acts
+
+- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-lifecycle-audit`
+
+Every lifecycle act and every refusal this feature raises **MUST** leave an audit row carrying its
+reason, through `01-foundation`'s audit plane and its pseudonymous actor refs. Supersessions,
+governed cancels, deferrals and the `retirement_held` and `replacement_chain_broken` alerts
+**MUST** each be recorded rather than inferred from a state change.
+
+**Implements**: `cpt-cf-bss-products-algo-activation-runner`
+
+**Constraints**: `cpt-cf-bss-products-constraint-immutable-identity`
+
+**Touches**:
+- DB Table: `products_audit_log`
+- Entities: `ScheduledTransition`, `SKU`, `Product`
+
+## 6. Acceptance Criteria
+
+- [ ] `ADMITTED_EDGES` still has exactly five members and `ALL_STATES` five after this feature
+      lands — the two shipped assertions that would catch an invented edge or state
+- [ ] A `published` child is deprecated `cascaded`, an already-`deprecated` child keeps its
+      `direct` stamp, and a `draft` child is listed rather than transitioned — all three arms in
+      one fixture
+- [ ] Deprecating a Product with one `draft` SKU **succeeds** and lists the draft; the
+      non-terminal keying that made it fail `ILLEGAL_TRANSITION` is red before the fix
+- [ ] Un-deprecating a parent revives the `cascaded` child and leaves the `direct` sibling
+      deprecated — positive and negative in one fixture
+- [ ] Un-deprecation with a live retire intent on a **child** is refused and the refusal names the
+      child; with no live intent it is admitted
+- [ ] A governed cancel clears `replaced_by_sku_id` on the parent and every child leg, and the row
+      is writable a second time only through that cancel
+- [ ] Scheduling marks the approval `consumed` in the scheduling transaction and leaves the
+      lifecycle state unchanged; activation consumes nothing further
+- [ ] Editing an entity after scheduling makes activation fail `SCHEDULE_STALE_APPROVAL`, publishes
+      nothing, and lands the transition `failed` — the positive control being an unedited entity
+      that activates
+- [ ] A crashed runner's `running` row past the lease returns to `pending` with `attempt` bumped,
+      and re-execution reaches the identical outcome
+- [ ] A `deferred` row is re-claimed on the next poll; a flip-guard deferral is **never** bounded
+      by the attempt budget while a transient-dependency deferral lands `failed` when it is spent
+- [ ] Retirement initiation shows the reference count including its conservative states, and a
+      confirmation against a stale count is refused
+- [ ] Initiation on an already-`deprecated` SKU takes no transition, re-stamps no provenance, and
+      emits no deprecation event — asserted as set equality over emitted events, not by inspection
+- [ ] A publish during the lead window re-emits the retirement event with the new `fromVersion`,
+      the same `effectiveAt` and the same identity; a publish outside any window emits none
+- [ ] Saves during the lead window are **admitted** — the positive control on the struck freeze
+- [ ] The flip defers on all four conservative predicate states and flips on fresh all-zero; the
+      alert names the blocking producers
+- [ ] The four-state deferral is asserted against a stub that can answer each state, not against
+      one that always answers fresh-zero
+- [ ] A `replacedBy` naming a non-`published` SKU is refused; naming a `published` one is admitted
+- [ ] Retiring a SKU that a live pointer names raises `replacement_chain_broken` listing the
+      pointing SKUs, and the read surface resolves transitively to the first non-`retired` successor
+- [ ] A Product retirement over non-`retired` SKUs without confirmation is refused
+      `CASCADE_CONFIRMATION_REQUIRED`; with confirmation it is admitted
+- [ ] One Product with three children — referenced, clean, never-published — yields leave-and-list,
+      retire and auto-discard in one plan; the parent stays non-`retired` and the intent is queryable
+- [ ] A failure anywhere in plan application leaves **no** child transitioned — asserted over the
+      whole child set, not over the failing child
+- [ ] Computing a plan supersedes a child's live retire intent as well as its live publish intent,
+      proven against the one-live-intent-per-kind unique index
+- [ ] A cancelled cascade resolves its deferred-retirement row `cascade_cancelled`, and a second
+      cascade on the same Product is admitted afterwards
+- [ ] The parent's flip is refused while any child is non-terminal and admitted once all are
+      `retired`/`discarded`; the no-orphan invariant is re-checked at flip and not only at
+      confirmation
+- [ ] A SKU publish under a non-`published` parent is refused `PARENT_NOT_PUBLISHED`; under a
+      `published` parent it is admitted; a re-publish re-runs the check fail-closed
+- [ ] An unrestricted parent contains every child; an unrestricted child is refused by a restricted
+      parent; between two non-empty sets it is ordinary subset
+- [ ] A Product narrowing with one non-terminal child outside is refused **naming that child**;
+      one whose only outside child is `discarded` is admitted; a widening is always admitted
+- [ ] The narrowing refusal carries `SCOPE_NARROWING_BLOCKED` — which requires the shipped
+      save-door check to change its code, and cannot be asserted until §7 row 19 settles
+- [ ] Each of the seven declared codes is raised by exactly one rule and carries its declared
+      status, with a **positive control per code**: an act that is admitted where that same rule
+      would have refused it —
+      `SCOPE_NARROWING_BLOCKED`: a widening publish is admitted;
+      `RETIREMENT_LEAD_TIME`: an `effectiveAt` at exactly the configured lead is admitted;
+      `REPLACED_BY_NOT_PUBLISHED`: a `published` successor is admitted;
+      `SCHEDULE_STALE_APPROVAL`: an unedited scheduled entity activates;
+      `CASCADE_CONFIRMATION_REQUIRED`: a confirmed cascade proceeds;
+      `RETIREMENT_PENDING`: un-deprecation with no live intent is admitted;
+      `EOL_DISABLED`: a retirement carrying no `mustMigrateBy` is admitted
+- [ ] The EOL flag OFF refuses `mustMigrateBy`; the event schema round-trips the absent field
+- [ ] A schema-oracle golden exists for both new tables on both engines, each with a perturbation
+      case proving it can fail
+- [ ] The partial unique index admits one live intent per entity per kind and admits a second row
+      once the first is `applied`, `failed` or `superseded`
+- [ ] `retirement_reason` survives a deferral that writes `outcome_reason` — the two-column split
+      asserted, with the single-column version red
+- [ ] Scheduling acts emit **no** broker event, asserted as set equality over emitted events
+- [ ] Every refusal this feature raises leaves an audit row carrying its reason
+- [ ] A stub reference predicate is exercised in every state before `07-reference-signal` exists,
+      and the suite fails if the stub is replaced by a constant
+- [ ] No `#[ignore]`d test exists without a CI tier that runs it
+
+## 7. Known unknowns
+
+[`../design/04-lifecycle.md`](../design/04-lifecycle.md) §6 carries **18 open items**, and each is
+carried below with the DoD it blocks and its owner. The table has **25 rows**, and the arithmetic is
+stated rather than left to a reader: §6's eighteen are rows **1–18**, in the slice's own order; rows
+**19–25**, marked `**`, were raised by this document's Phase 1a reading of the crate and are new.
+
+**None of these is answered here.** Registering a question is this document's job; answering one
+would be authoring, and three of the eighteen below are questions the slice put to owners who are
+not this feature.
+
+| # | The question | Blocks | Owner |
+|---|---|---|---|
+| 1 | **Deferred flips can hold indefinitely** while a producer watermark stays stale — correct by constraint but operationally invisible without `08-read-models`' surfacing and the `retirement_held` alert; the fail-safe tripwire bounds the corrections debt, nothing yet bounds held retirements. Candidate for an operator report, not a new mechanism | `dod-flip-guard`, `dod-deferred-intent` | the ops owner |
+| 2 | **Cascade + scheduled child publishes**: a `pending` scheduled publish on a child of a retiring Product is superseded by the cascade — stated, but **the supersession ordering deserves a probe when built** | `dod-cascade-plan` | this feature |
+| 3 | **Owed: the instruction row registering the create-door live-retire-intent validator.** Whose it is has been settled — this feature's, its operand being the live retire intent in `products_scheduled_transition`, which this feature owns. **No instruction row registers it yet, and until one does nobody builds the guard** — leaving the hole open: a draft SKU created under a Product with a live retire intent defers that retirement indefinitely | `dod-scheduled-transition-store`, `dod-cascade-plan` | this feature — to add the row in `design/04` |
+| 4 | **Does any runner write the reserved lane `internal:cascade-leg`?** `01-foundation` reserves three `internal:` lane names and names this feature as the writer of the cascade one, keyed by "the leg's" id — but a repo-wide grep finds the lane only in `01-foundation` and in the decision that reserves it, this feature's cascade rows name no lane, and its one lane use routes legs through the runner on `internal:scheduled-activation` with the transition id. Either the legs ride the activation lane and `01-foundation` reserves a name nothing uses, or this feature owes the row that writes it — and the `client_key` it is keyed by, which no table here supplies | `dod-activation-runner` | this feature with 01 |
+| 5 | **What announces a Product's `deprecated→retired` flip?** `01-foundation` §4.5 asserts this feature announces all three floor edges, naming the SKU flip event on `deprecated→retired`. This feature gives the parent Product its own retire `ScheduledTransition` on that edge and emits its retirement event at *initiation*, but its Events list names no Product analogue for the flip itself and records no explicit "no event" for it — which §4.5's own rule and `12-consumer-contracts`' completeness check both require. **Independently corroborated by the crate**: `domain::transition`'s module doc says the three edges are announced by slice 04 *"except the `Product` side of `deprecated -> retired`, which no slice announces"*. Naming one would invent normative content | `dod-lifecycle-events`, `dod-cascade-parent-path` | the lifecycle owner, with the events and audit consumer set |
+| 6 | **EOL (post-v1) will need** the subscriptions-lifecycle AC by number, the consumer-ack contract, and a suspension event — the schema field is already vN-compatible | `dod-eol-lockout` | the PRD owner with Subscriptions |
+| 7 | **Does the create-door retire-intent validator also register on the save door?** `01-foundation`'s save instruction is the only door that may change a SKU's `product_id`, so a draft SKU can be **re-parented** under a retire-pending Product by a door neither arm covers — the hazard `inst-fd-containment-retire-intent` itself describes | `dod-registered-validator-host`, `dod-cascade-plan` | this feature |
+| 8 | **What is the claim lease, and what is the per-transition attempt budget?** The claim instruction reclaims a `running` row "past the claim lease" and the failure instruction bounds retries by "a per-transition attempt budget"; **neither carries a value, a default or a config home**, and the interim-defaults table has no row for either. `03-sku-classification` relies on the same budget. *(All three lenses of the slice's own review raised it independently.)* | `dod-activation-runner`, `dod-runner-failure-posture`, `cpt-cf-bss-products-state-scheduled-transition` | the interim-policy owner |
+| 9 | **Is the cascade-retire trigger keyed on non-`retired` or non-terminal children?** The plan instruction fires over non-`retired` SKUs while the narrowing instruction rejects that exact operand for its sibling rule and records the narrowing by number. **A `discarded` child is inside the trigger population and fits none of the three plan arms.** The PRD carries the wider wording, so narrowing it is a deliberate deviation that owes a register entry | `dod-cascade-plan` | this feature with the PRD owner |
+| 10 | **Is `SCOPE_NARROWING_BLOCKED`'s operand a PRD deviation that owes an entry?** The narrowing instruction reads **non-terminal**, the requirement reads non-`retired`, and the reasoning is sound — but no decision entry records the change, the way the struck publish freeze was recorded | `dod-scope-narrowing` | the PRD owner |
+| 11 | **Does a deferred cascade complete automatically or by an operator act, and who writes `resolution = children_cleared`?** Three mechanics are in play for one act: the failure instruction says `deferred` re-evaluates automatically, the deferred-intent instruction says the parent is "resumable by an operator once the listed children clear", and the storage roster has a named writer for `cascade_cancelled` and **none** for `children_cleared`. No listed child acquires a retire intent of its own, so "once the listed children clear" names no act that retires them | `dod-deferred-intent`, `dod-deferred-retirement-store` | this feature |
+| 12 | **What does the transitive `replacedBy` resolution return on a cycle, and which surface walks it?** The pointer instruction has the read surface resolve to the first non-`retired` successor. **A cycle is constructible** on this feature's own admission that a cancelled, un-deprecated SKU keeps a successor no admitted write can clear. `08-read-models` claims no chain walk | `dod-replaced-by` | this feature with the read-model owner |
+| 13 | **Where is the `replacement_chain_broken` fact stored, and who reads it?** The pointer instruction calls it "a stored fact with a consumer-usable resolution rather than a silent dangling pointer"; the two tables hold no such row and the observability line names only gauges and the `retirement_held` alert. Alert only — and then strike "stored fact" — or a row with a table, key and consumer | `dod-replaced-by`, `dod-lifecycle-audit` | this feature with the observability owner |
+| 14 | **Is `effectiveAt` an operator input or computed?** The initiation instruction has it "honoring the **configured** lead-time policy … `RETIREMENT_LEAD_TIME` otherwise", and the taxonomy declares the code with a status. **If the registry computes `now + policy` the code can never be raised** — a declared code with no raiser, which the completeness check reads as a defect; if the operator supplies a date, the door owes a date input, a fail-closed comparison and a timezone rule | `dod-retirement-initiation`, `dod-lifecycle-errors` | this feature with Product |
+| 15 | **Which actor performs the governed cancel of a `ScheduledTransition`?** The un-deprecation instruction makes the cancel a `GovernedLiveOp` registered material by this feature; the actor roster gives it to nobody — the catalog-admin row carries "initiates retirement/cascades" and "resumes deferred cascades", both forward acts | `dod-undeprecation`, `cpt-cf-bss-products-state-scheduled-transition` | this feature with 05 |
+| 16 | **Does `leave-and-list` cover referenced children or only EOL-requiring ones?** The plan instruction scopes the arm to "children whose flip guard cannot clear — referenced SKUs"; the PRD and its AC both scope it to "EOL-requiring children left un-retired", and EOL is disabled in v1 — so **on the PRD's wording the arm has no v1 population at all** | `dod-cascade-plan` | the PRD owner, as a wording call |
+| 17 | **`inst-lc-terminal` restates a rule the slice's own §1.5 puts out of scope.** The row's whole content is terminality, which §1.5 assigns to `01-foundation`. The one-declaration rule is stated for error codes, not for instruction rows, so nothing says whether a restating row is a second declaration | — | the design-set owner |
+| 18 | **Pointer**: which slice declares `PARENT_NOT_PUBLISHED` is open in `01-foundation` §6. This feature asserts one arm — "named in 01, registered here" — and **the answer is not this feature's to give** | `dod-publish-ordering`, `dod-lifecycle-errors` | the owner of that open item |
+| 19** | **`SCOPE_NARROWING_BLOCKED` has no raiser, and the check it names is already built raising a different code.** `products::check_children_stay_contained` reads the non-terminal children of a Product against its post-save scope pair and refuses — with **`SCOPE_NOT_CONTAINED`**. `SCOPE_NARROWING_BLOCKED` occurs **zero** times in the crate and `DomainError` has no arm for it. Either this feature adds the code and changes the shipped door's refusal, or the declaration is withdrawn and the narrowing rides the containment code — which then carries two rules and one message | `dod-scope-narrowing`, `dod-lifecycle-errors` | this feature with 01 |
+| 20** | **The validation pipeline cannot key a rule the way this feature's rules are described.** `ValidationRule<S>` carries `name()`, `phase()` and `evaluate(&self, subject, report)` and **no kind, transition, target-state or field-set operand**, while the slice cites `01-foundation` §3.1 as "registered validators keyed by kind + transition/target-state/field-set" and the publish-ordering rule turns on being registered on the **target state** rather than the edge. Worse, `01-foundation` has already established the workaround and its cost: *"the pipeline is synchronous and judges the subject row alone, and this rule's operand is a read of other rows. So it runs as that phase's continuation."* **Every parent-child, retire-intent and flip-guard rule here reads other rows.** Either the trait widens — against `dod-registered-validator-host`'s no-parallel-vocabulary clause — or this feature's "registered validators" are phase continuations and the design's framing is wrong. **This is the one item that cannot be deferred past the first line of code** | `dod-registered-validator-host`, `dod-publish-ordering`, `dod-scope-narrowing`, `dod-scope-containment-final` | this feature with 01 |
+| 21** | **What operand does this feature replace in the containment check?** The slice describes `SCOPE_NOT_CONTAINED`'s "final semantics" as registered here, replacing the operand inside `01-foundation`'s identity phase. But `domain::containment` **already implements the final restriction-based rule verbatim** — unrestricted parent contains every child, unrestricted child needs an unrestricted parent, ordinary subset between non-empty sets — wired at three call sites. If nothing is left to replace, the obligation is a no-op and the slice's C5 wording is stale | `dod-scope-containment-final` | this feature with 01 |
+| 22** | **`PreAuthorized` cannot admit a cascade leg.** The mode verifies a consumed record that authorized **this subject** at **this pinned revision**, while a cascade leg's subject is a **child** entity with its own revision, and the mode carries only an approval id with no plan-membership operand. The scheduled-publish flow needs the mode for the parent's own row and the cascade needs it for every leg. Weakening the predicate to "names a consumed record" turns a terminal record into a bearer token for any subject in the tenant. *(The same seam is `05-governance`'s row 27, raised there against that feature's own DoDs.)* | `dod-scheduled-publish-pin`, `dod-cascade-plan`, `dod-activation-runner` | this feature with 01 and 05 |
+| 23** | **Can a `deferred` row be superseded, and the slice says two things.** The claim instruction calls the re-claim to `running` *"the only exit that state has"*, while the cascade-plan instruction supersedes a child's **live** intents and the partial unique index counts `deferred` as live. Both cannot hold. §4 row 7 above records the edge as leaving "a live state" precisely because the source does not enumerate them | `cpt-cf-bss-products-state-scheduled-transition`, `dod-cascade-plan`, `dod-scheduled-transition-store` | this feature |
+| 24** | **The runner drives doors whose bump arithmetic has no production caller.** `TransitionEffects::bumps_the_guard_owns()` and its two companions are documented as having no production caller, with *"the first reader is expected to be slice 04's transition door, which drives an edge it does not own a head-row `UPDATE` for and must therefore be told how many bumps to add."* **This feature declares no transition door** — every edge is driven through `01-foundation`'s existing publish, save and discard doors, which carry their own bumps. So either the expected reader never arrives and the three methods stay uncalled, or this feature owes a door the slice does not describe | `dod-activation-runner`, `dod-registered-validator-host` | this feature with 01 |
+| 25** | **Seven broker events against four shipped payload types and two body shapes.** The gear ships `ProductPublished`, `SkuPublished`, `ProductDiscarded` and `SkuDiscarded` on `EventBodyCore` and `PublishedEventBody`. This feature declares seven — deprecation and un-deprecation for both kinds, retirement for both kinds, and the SKU flip — of which the retirement payload carries five fields beyond the core. Nothing in the design set says whether the deprecation events carry a body beyond the core, and the retirement event needs a **third** body type that no artifact names | `dod-lifecycle-events` | this feature with 01 and 12 |
+
+*Rows marked `**` were raised by this document's own reading of the crate, not carried from the
+slice. Row 20 is the blocking one: it describes a mechanism the design set assumes and the code
+does not provide, and the Foundation has already worked around it twice in the two places it
+needed to.*
+
+### Raised here rather than carried
+
+*Both bullets name the obligation they block, as the table's rows do.*
+
+- **The flip guard's stub is the whole test surface until `07-reference-signal` exists.** *Blocks
+  `dod-flip-guard` and `dod-no-orphan`.* The predicate has five answers and only one of them lets a
+  flip proceed, so a stub that always answers fresh-zero passes every criterion while proving
+  nothing about the four deferring states. Whether the stub is this feature's to own, or belongs in
+  a shared fixture `07-reference-signal` later replaces, is unstated. *Owner: this feature with 07.*
+- **`08-read-models` projects the deferred-intent surface this feature owns, and neither names the
+  shape.** *Blocks `dod-deferred-intent`.* The slice is explicit that 04 owns the table and 08 only
+  projects it, but no artifact declares what the query surface returns — a field-name drift here
+  costs an adapter later, exactly as the sibling inbox envelope did. *Owner: this feature with 08.*

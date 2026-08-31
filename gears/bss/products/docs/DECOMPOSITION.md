@@ -432,6 +432,7 @@ authored downstream of this document, in the order §3 establishes.
 
 - **Domain Model Entities**:
   - ScheduledTransition
+  - ActivationRunner
   - DeferredRetireIntent
   - CascadePlan
 
