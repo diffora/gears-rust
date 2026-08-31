@@ -685,7 +685,7 @@ the corrected version's content — and the subject **MUST** carry no open appro
 **Touches**:
 - API: `POST /bss-products/v1/skus/{id}/corrections` — **the shape the shipped refusal announces;
   the design set pins no route, see §7**
-- DB Table: `products_sku`, `products_entity_version`, `products_approval_record`
+- DB Table: `products_sku`, `products_entity_version`, `products_approval`
 - Entities: `Sku`, `CorrectionOverride`, `CorrectionDoor`
 
 ### The correction re-publish, and the validator that re-checks the lane
@@ -728,7 +728,7 @@ written**.
 `cpt-cf-bss-products-flow-breakglass-correction`
 
 **Touches**:
-- DB Table: `products_sku`, `products_entity_version`, `products_approval_record`
+- DB Table: `products_sku`, `products_entity_version`, `products_approval`
 - Entities: `Sku`, `EntityVersion`
 
 ### Break-glass arm (a): the signal is unavailable

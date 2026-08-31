@@ -113,7 +113,9 @@ export, the GC + its alarms, the restore-drill results surface.
 
 ### Erase an actor (right to erasure)
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-flow-erasure`
+Declared by [`../features/retention-erasure.md`](../features/retention-erasure.md) §2 as `cpt-cf-bss-products-flow-erasure`.
+The steps below are this slice's and are the normative ones; the FEATURE carries the
+actor, the scenarios and the boundary.
 
 1. [ ] - `p1` - `POST /bss-products/v1/erasure-requests` (`erasure × execute`): resolves the operator identity to its `actor_ref`s and **overwrites the map entries with tombstones** (pseudonym retained, identity gone) — one transaction, audited with a reason; no immutable record is touched (C1), and every historical read through the map now renders the tombstone; **erasure completes within one tenant** (**P-D-50**) - `inst-er-erase`
 2. [ ] - `p1` - The act itself is recorded pseudonymously too (the eraser's own ref) — audit-plane, explicit **no broker event** carrying identity; a minimal `ActorErased(actor_ref)` broker event exists as a **defensive cache-buster**: no projection in the set materializes identities (renders join the map — M1 corrected: 08 holds pseudonyms only, and materializing an identity into any projection is a slice-12 lint failure), so the event's consumer set is legitimately empty today - `inst-er-event`
@@ -122,7 +124,9 @@ export, the GC + its alarms, the restore-drill results surface.
 
 ### Enforce the content-PII prohibition
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-flow-pii-policy`
+Declared by [`../features/retention-erasure.md`](../features/retention-erasure.md) §2 as `cpt-cf-bss-products-flow-pii-policy`.
+The steps below are this slice's and are the normative ones; the FEATURE carries the
+actor, the scenarios and the boundary.
 
 1. [ ] - `p1` - `PiiDetector` answers 02's hook: block (fail-closed, `CONTENT_PII_BLOCKED` naming the field, never the detected value) / allow / allow-by-list; **uncertainty blocks** (C2) - `inst-pp-detect`
 2. [ ] - `p1` - The allow-list is a `GovernedLiveOp` (`pii_allowlist × write`) under the **base approver quorum** (05 C1 — no gear-side Legal role; **P-D-10**). Legal's authority is exercised **outside** the system and enters it as a record: each entry carries a **mandatory Legal sign-off reference** (the artifact identifying the external decision) alongside its justification, and an entry offered without one is refused — which is PRD AC #35's own construction, "curated allow-list; **Legal sign-off recorded in the approval artifact**". Emits `PiiAllowlistChanged` (L3); entries are per-tenant, audited, and exportable for the Legal review. **What this deliberately does not claim:** the gear proves a Legal reference was recorded, never that Legal approved — the control is the §15 paper sign-off plus the export, and pretending otherwise would require Legal counsel to hold platform identities, which no requirement asks for - `inst-pp-allowlist`
@@ -134,7 +138,9 @@ covers **domain** acts only, over a `Product`/`SKU` or a governed record. A door
 infrastructure writes (an `actor_ref` resolution, an idempotency claim) are outside it, so this
 slice's audit class does not grow with them.*
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-flow-retention`
+Declared by [`../features/retention-erasure.md`](../features/retention-erasure.md) §2 as `cpt-cf-bss-products-flow-retention`.
+The steps below are this slice's and are the normative ones; the FEATURE carries the
+actor, the scenarios and the boundary.
 
 1. [ ] - `p1` - `RetentionClock` per class (the version arm reads 06's freeze-registration records, whose `released` half is **P-D-18**'s contract — a participant that never releases pins that version's storage indefinitely, which is why the release had to reach PRD §9.2) — frozen versions, catalog versions, audit — whose rows carry `audit_id` (PK, uuid — **P-D-28**, the address the sealing seam's one-way UPDATE needs) and, on a refusal, nullable `error_code` and `attempted_key` (**P-D-25**), so a retention sweep of the audit class deletes whole rows and never leaves a refusal without its classifier — bulk ledgers (outbox-delivered rows are the **toolkit vacuum's** horizon, not a class this clock
 computes candidates for — **P-D-22**; this slice owed that correction), **and the evidential stores this slice owns the interplay for (M4): approval records/decisions, break-glass sessions, correction overrides (audit-grade, statutory max); watermark/member tables are operational-current state (continuously replaced, no clock needed)**: expiry candidates are computed, and for a `catalogVersionId` the `RetentionGate` ranges over that version's **`participant_set_snapshot`** (06 §4), not over whatever ledger rows happen to exist (**P-D-49**): a snapshot member with no registration row **holds** the version, since the fan-out has not reached it yet, while an **empty snapshot** — a tenant with no participant registered at publish — has nobody who ever owed an ack and is collectable. Universally quantifying over the registrations instead let an empty ledger satisfy the gate vacuously and collect a version nobody had frozen, against C4's fail-closed. Over that domain it requires **every freeze registration to satisfy the pair** `state = released`, **or** `state = not_frozen(forced)` **and** `released_at` stamped — never the timestamp alone (corrected: an earlier repair read "`released` or carrying a `released_at`", and because nothing clears the stamp a forced participant that later recovered and acked left `state = acked` beside a live stamp, so this gate collected a version holding live grandfathered references — the very compliance event `PRD` §7 names. The pair is evaluated because a recovery moves `state` and the stale stamp then means nothing). The second arm exists because a participant that never acked cannot use the S2S release door; it releases storage and never posted-use safety (06's release door — the H1 end-of-liveness; acked-and-unreleased = live) — a candidate with a live registration is skipped with the `retention_orphan_blocked` alarm (fail-closed: skipped, never forced; C4); GC deletes are audit-plane, explicit **no broker event** (L3) - `inst-rt-gc`
@@ -143,7 +149,9 @@ computes candidates for — **P-D-22**; this slice owed that correction), **and 
 
 ### Verify durability (the drill)
 
-- [ ] `p2` - **ID**: `cpt-cf-bss-products-flow-restore-drill`
+Declared by [`../features/retention-erasure.md`](../features/retention-erasure.md) §2 as `cpt-cf-bss-products-flow-restore-drill`.
+The steps below are this slice's and are the normative ones; the FEATURE carries the
+actor, the scenarios and the boundary.
 
 1. [ ] - `p2` - On the configured cadence: restore a sampled set of catalog versions **and their referenced entity versions** from backup into an isolated target and re-verify **both** the 06 manifest checksums and the per-row entity-version `content_digest`
 (01 §4.3, named by **P-D-35**, which lists this instruction as a propagation target) (01 §4.3 — H2 fix: manifest checksums alone are blind to version-history corruption) byte-for-byte (C5). **The digest is SHA-256 over 01 §4.3's canonical rendering, and each frozen row carries the `digest_version` it was computed under (P-D-29)** — the drill compares like with like, and re-verifying a row written under an earlier digest version is a version mismatch rather than a corruption alarm. **The frozen column set excludes `lifecycle_state`, `deprecation_provenance`, `replaced_by_sku_id` and `internal_revision` (P-D-24, extended by P-D-35)**: those move on transitions that write no version row, so a drill must not expect them in the digested content — a mismatch is a compliance incident alarm, not a log line; results land on an operator surface with the last-verified watermark per tenant - `inst-rd-drill`
@@ -152,7 +160,9 @@ computes candidates for — **P-D-22**; this slice owed that correction), **and 
 
 ### 3.1 The identity-reference map
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-algo-identity-map`
+Declared by [`../features/retention-erasure.md`](../features/retention-erasure.md) §3 as `cpt-cf-bss-products-algo-identity-map`.
+The steps below are this slice's and are the normative ones; the FEATURE carries the
+Input, the Output and the boundary.
 
 1. [ ] - `p1` - `products_identity_ref` — `(tenant_id, actor_ref)` → **`principal_ref`** (the pseudonymous principal handle, NOT NULL — **P-D-49**: three rules read this map *by principal* and the key admitted no such read, so erasure's resolve, the DSAR export's "per named principal" and the first-appearance predicate had no operand; indexed `(tenant_id, principal_ref)`, with the one-active-ref rule below as a partial UNIQUE over live rows. It is the pseudonym, not the identity, so a tombstone destroys the **payload** and leaves this column standing — which is what "pseudonym retained" already means, and what lets a repeat DSAR and the age predicate keep working after an erasure) → identity payload | tombstone, `first_seen_at`, **`last_seen_at`** (the M2 age operand, **advanced by every act that resolves the ref — not by minting it**: minting happens once per active ref — on the first appearance of a principal with no live ref and there is one active ref per `(tenant, principal)`, so "refreshed by every ref-minting act" left the column pinned to `first_seen_at` forever and age-based erasure tombstoned an active employee mid-employment — the precise failure M2 records as fixed, item 23 of the review. Every door that stamps an `actor_ref` onto an audit row, an approval, a decision, a session or an override resolves the ref and therefore advances it; the write is a same-transaction touch, not a separate act); one active ref per `(tenant, principal)` (L5) — **and a tombstoned ref is retired permanently**
   (PR #14 review): erasure tombstones the map entry while every append-only record
@@ -166,6 +176,9 @@ for a refused act is normal and is exactly what `last_seen_at` should record); *
 2. [ ] - `p1` - Reads join through the map at render time (08 projections, approval queues — never `audit × export` output, §4) — no surface caches resolved identities - `inst-im-render`
 
 ### 3.2 Error taxonomy (slice-owned codes)
+
+Declared by [`../features/retention-erasure.md`](../features/retention-erasure.md) §3 as `cpt-cf-bss-products-algo-retention-errors`.
+The roster below is this slice's and is the normative one; the FEATURE carries the obligation and the boundary.
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-contract-retention-errors`
 

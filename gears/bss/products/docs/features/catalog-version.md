@@ -1136,7 +1136,7 @@ both arguments and the answer arrives in one round rather than two.
 **Implements**: `cpt-cf-bss-products-flow-freeze`
 
 **Touches**:
-- DB Table: `products_freeze_ack`, `products_approval_record`
+- DB Table: `products_freeze_ack`, `products_approval`
 - Entities: `FreezeLedger`, `FreezeAck`
 
 ### Participant-set governance
@@ -1257,7 +1257,7 @@ loop, not a contract. Prior frozen versions **MUST** keep the flag as it was (C4
 **Implements**: `cpt-cf-bss-products-flow-composition-clear`
 
 **Touches**:
-- DB Table: `products_sku`, `products_entity_version`, `products_approval_record`
+- DB Table: `products_sku`, `products_entity_version`, `products_approval`
 - Entities: `Sku`, `EntityVersion`
 
 ### The diff door
