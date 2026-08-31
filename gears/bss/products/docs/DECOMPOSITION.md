@@ -681,6 +681,10 @@ authored downstream of this document, in the order §3 establishes.
   - ReferenceProducer
   - ReferenceMember
   - CorrectionOverride
+  - WatermarkDoor
+  - ReferencePredicate
+  - CorrectionDoor
+  - TripwireCounter
 
 - **Design Components**:
 

@@ -120,7 +120,9 @@ future-watermark and tripwire alarms (never-received is a verdict flag, not an a
 
 ### Ingest a watermark
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-flow-watermark`
+Declared by [`../features/reference-signal.md`](../features/reference-signal.md) §2 as `cpt-cf-bss-products-flow-watermark`.
+The steps below are this slice's and are the normative ones; the FEATURE carries the
+actor, the scenarios and the boundary.
 
 1. [ ] - `p1` - `WatermarkDoor` (`reference_signal × post`; the out-of-process binding is S2S and is accepted only from the producer's own service identity — the in-process binding carries the same identity through `SecurityContext`) receives `(producer, watermark_at, set)`; an unregistered producer is refused `PRODUCER_UNREGISTERED`, audited - `inst-ws-door`
 2. [ ] - `p1` - Watermarks are **monotonic per producer** (F3 fix): `watermark_at` **<** the stored one is refused `WATERMARK_REGRESSION` (an out-of-order replay must not roll liveness backwards); an **equal** `watermark_at` with an identical set hash is an idempotent no-op success; equal with a **different** set is refused `WATERMARK_CONFLICT` (the same never-silent rule as 01's idempotency conflicts) - `inst-ws-monotonic`
@@ -130,14 +132,18 @@ future-watermark and tripwire alarms (never-received is a verdict flag, not an a
 
 ### Evaluate the predicate
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-flow-predicate`
+Declared by [`../features/reference-signal.md`](../features/reference-signal.md) §2 as `cpt-cf-bss-products-flow-predicate`.
+The steps below are this slice's and are the normative ones; the FEATURE carries the
+actor, the scenarios and the boundary.
 
 1. [ ] - `p1` - `ReferencePredicate(skuId)` over every **registered** producer: any fresh watermark containing the SKU ⇒ `referenced(producer)`; a fresh watermark omitting it ⇒ zero for that producer; a stale watermark ⇒ `conservatively_referenced(stale, producer)` + the `reference_watermark_stale` alarm; never-received ⇒ `conservatively_referenced(never_received, producer)` with the distinct flag (C2); the verdict is the OR, the detail is per-producer (what 04's confirmation screen shows) - `inst-rp-eval`
 2. [ ] - `p1` - **Fresh-zero** = every registered producer fresh AND omitting the SKU — the only state that unlocks retirement flips and the correction door's **ordinary** gate (C5's two exceptional gates admit without it); with zero registered producers the predicate answers `no_producers` (fail-safe: conservative, distinct from fresh-zero — an empty producer set never frees anything) - `inst-rp-freshzero`
 
 ### Register / retire a producer
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-flow-producer-registration`
+Declared by [`../features/reference-signal.md`](../features/reference-signal.md) §2 as `cpt-cf-bss-products-flow-producer-registration`.
+The steps below are this slice's and are the normative ones; the FEATURE carries the
+actor, the scenarios and the boundary.
 
 1. [ ] - `p1` - Membership ops are `GovernedLiveOp`s (`reference_producer × write`; material — 05 input (d) enumerates this slice's kinds); v1 seeds {pricing} per tenant (P-D-03); **retiring the LAST registered producer is refused** (`PRODUCER_SET_EMPTY_FORBIDDEN` — F8 fix: the set changes members but never empties in v1, so the `no_producers` verdict is defensive-unreachable, kept as a fail-safe and flagged as a design-introduced extension of the PRD's 3-state taxonomy); each change emits `ReferenceProducerSetChanged` + audit - `inst-pr-governed`
 2. [ ] - `p1` - **Retirement of a silent producer is refused** (item 21 of the review; the row's earlier title, "can only tighten, never free", promised more than the body delivers — **a *fresh* producer's retirement can still free a SKU, and that case is registered in §6's open items, not disposed of here**). Retiring a producer **narrows the AND-quantifier the fresh-zero predicate runs over**, so with two producers, retiring the *stale* one makes the predicate answer fresh-zero over the remaining fresh one — and a correction that `CORRECTION_REFERENCED` had blocked walks through the **normal** door: no feature flag, no `SkuCorrectionOverride`, no `TripwireCounter` increment. Only the last-producer case was guarded. So: retiring a producer whose watermark is **stale or never-received** is refused **`PRODUCER_RETIREMENT_WOULD_FREE`** unless the retiring principal supplies the break-glass ceremony's own justification — the retirement is admissible, its *silence* is not. **The exception's lane is unsettled too**: the break-glass lane in this slice is the single-SKU correction door (`inst-cr-door`, `sku × correct`), which is not a retirement door — sub-question 4 of §6's open item, which the stale case needs answered as much as the fresh one; the reason passes 02's `inst-av-pii-block` before the row is written, a hit failing `CONTENT_PII_BLOCKED` (**P-D-50**; 02 `inst-av-pii-reason` enumerates this door) - `inst-pr-retirement`
@@ -146,7 +152,9 @@ future-watermark and tripwire alarms (never-received is a verdict flag, not an a
 
 ### Correct a bucket-ii field (the fresh-zero door)
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-flow-correction`
+Declared by [`../features/reference-signal.md`](../features/reference-signal.md) §2 as `cpt-cf-bss-products-flow-correction`.
+The steps below are this slice's and are the normative ones; the FEATURE carries the
+actor, the scenarios and the boundary.
 
 1. [ ] - `p1` - `CorrectionDoor` (`sku × correct`) accepts `(skuId, field ∈ {type, meter declaration pair}, new value, expected revision)`; structural identity is never correctable (01 bucket i — the door physically cannot write it). **One door, three admission gates** (F4 fix; the third added — P-D-16's arm is a gate of this door and not only of the break-glass block, and while this row said "two" a SKU with a deleted `UsageType` and `fresh > 0` was refused here and never reached the validator that admits it): the normal fresh-zero gate, the unresolvable-target gate of `inst-bc-unresolvable`, or the break-glass admission of `inst-bc-admission` — the 01 head-row whitelist admits bucket-ii writes **after first publish** via this door alone, both lanes included (below first publish the admitting door is 01 `inst-fd-save-txn` — **P-D-41**). **Preconditions** (F5/F6 fix): the head must be **clean** (no unpublished bucket-iii/iv edits — `CORRECTION_DIRTY_HEAD`: a correction is surgical, and co-published edits would misattribute the corrected version's content) and the subject must carry **no open approval** (`CORRECTION_APPROVAL_OPEN`); the correction's own `ApprovalRecord` subject kind is `sku_correction`; the reason passes 02's `inst-av-pii-block` before the row is written, a hit failing `CONTENT_PII_BLOCKED` (**P-D-50**; 02 `inst-av-pii-reason` enumerates this door) - `inst-cr-door`
 2. [ ] - `p1` - The **normal lane's** gate (the first of `inst-cr-door`'s three): `ReferencePredicate` MUST answer **fresh-zero**; anything else fails `CORRECTION_REFERENCED` unless `inst-bc-admission` or `inst-bc-unresolvable` admits naming the per-producer detail (a stale producer is named as the blocker, not hidden inside a boolean) - `inst-cr-freshzero`
@@ -154,7 +162,9 @@ future-watermark and tripwire alarms (never-received is a verdict flag, not an a
 
 ### Break-glass correction (emergency lane)
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-flow-breakglass-correction`
+Declared by [`../features/reference-signal.md`](../features/reference-signal.md) §2 as `cpt-cf-bss-products-flow-breakglass-correction`.
+The steps below are this slice's and are the normative ones; the FEATURE carries the
+actor, the scenarios and the boundary.
 
 1. [ ] - `p2` - **First admission arm (signal unavailable).** Admissible only when the feature flag is ON (default OFF — `BREAKGLASS_CORRECTION_DISABLED`) **and ≥ 1 producer is registered and every registered producer is stale/never-received** (F8 fix: the quantifier cannot be vacuously true over an empty set, and the unavailability-evidence snapshot is non-empty by construction; a single fresh producer routes to the normal gate: `CORRECTION_SIGNAL_AVAILABLE`, unless `inst-bc-unresolvable`'s arm admits); single-SKU only, through the same `CorrectionDoor` (F4); the flag governs **this arm only** — the second arm below is not behind it (**P-D-16**) - `inst-bc-admission`
 2. [ ] - `p1` - **Second admission arm: an unresolvable meter declaration** (item 19 of the review; authorised by **P-D-16**, which amended `fr-immutable-field-correction` and AC #4 to carry this arm and closed the **registry-side half** of the PRD §15 row it had been silently answering (the cross-gear deletion-guard negotiation stays open — P-D-16, P-D-05's residue) — it stood against two `MUST`s until then). A sold SKU whose `UsageType` the collector deleted is otherwise wedged in every lane at once — fresh > 0 refuses the normal door `CORRECTION_REFERENCED`, the signal *being* available refuses break-glass `CORRECTION_SIGNAL_AVAILABLE`, and retire-and-clone is blocked because the flip guard defers on anything but fresh-zero with no force-retire door in v1 (04 C4). `PRD.md` §15 confirms the collector can delete a referenced usage type, so this is a reachable state, not a hypothetical. So: when the subject's declared `usageTypeRef` **no longer resolves** (03 `UsageTypeResolver` answers not-found, not a timeout), the correction door admits the meter-declaration correction **regardless of the reference predicate** — the reference is real, and that is the reason to repair the declaration rather than the reason to refuse. It keeps the full ceremony (`N`-governed with `quorumReduced` recorded — the ceremony of the correction door's step 3 above, unchanged; corrected, this arm had kept a bare "two-person" after P-D-11/P-D-13 retired the fixed count everywhere else in the slice, which would have re-blocked the `N = 0` tenant on the one door that can repair a deleted `UsageType` — plus mandatory reason + `SkuCorrectionOverride` recording *unresolvable-target* rather than unavailability evidence) and increments the same `TripwireCounter`: a broken cross-gear reference must be escalated, never normalized - `inst-bc-unresolvable`
@@ -165,12 +175,17 @@ future-watermark and tripwire alarms (never-received is a verdict flag, not an a
 
 ### 3.1 Storage & freshness mechanics
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-algo-watermark-storage`
+Declared by [`../features/reference-signal.md`](../features/reference-signal.md) §3 as `cpt-cf-bss-products-algo-watermark-storage`.
+The steps below are this slice's and are the normative ones; the FEATURE carries the
+Input, the Output and the boundary.
 
 1. [ ] - `p1` - `products_reference_watermark` — `(tenant_id, producer)` → `watermark_at`, `posted_at`; `products_reference_member` — `(tenant_id, producer, sku_id)`, replaced as a set per ingestion (the atomic swap of `inst-ws-atomic`); membership lookup is an index hit, the predicate is O(producers) - `inst-wm-tables`
 2. [ ] - `p1` - Freshness is evaluated at read time against `watermark_at` (never `posted_at` — the producer's claim instant is the semantic one); the staleness alarm keys on the registered set so a retired producer stops alarming. **`posted_at` is written from the receiving clock the future bound of `inst-ws-not-future` was evaluated against**, and is read by nothing - `inst-wm-freshness`
 
 ### 3.2 Error taxonomy (slice-owned codes)
+
+Declared by [`../features/reference-signal.md`](../features/reference-signal.md) §3 as `cpt-cf-bss-products-algo-reference-errors`.
+The roster below is this slice's and is the normative one; the FEATURE carries the obligation and the boundary.
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-contract-reference-errors`
 
