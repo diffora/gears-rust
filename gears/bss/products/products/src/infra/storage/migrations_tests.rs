@@ -6254,14 +6254,16 @@ mod attribute_store_guard_tests {
 /// second write — the governed cancel's clearing one (P-D-49's *"write-once
 /// per retirement, not per row"*).
 ///
-/// The head guard names the **immutable** columns rather than the writable
-/// ones, so these two are admitted by construction; that is precisely why the
-/// probe exists. A future revision that turned the guard into a whitelist
-/// would silently make the cancel unperformable, and this case is what fails.
+/// The head guard is a **refusal list, not an admission list**: it names the
+/// changes it forbids, so a column it never mentions is admitted by default.
+/// Both of these ARE mentioned — each carries its own row-image predicate —
+/// but the second write the cancel needs (`non-null → null`) is admitted by
+/// that predicate's own arm rather than by a whitelist entry, and that is
+/// precisely why the probe exists. A future revision that turned the guard
+/// into a true whitelist would silently make the cancel unperformable, and
+/// this case is what fails.
 ///
-/// No marker: `dod-lifecycle-columns`' tick is withdrawn until its own
-/// paragraph and `dod-append-only-guard`'s roster are reconciled against the
-/// predicates as they now ship. The probes below are coverage without a tick.
+/// @cpt-dod:cpt-cf-bss-products-dod-lifecycle-columns:p1
 mod lifecycle_column_guard_tests {
     use sea_orm::ConnectionTrait;
     use sea_orm_migration::MigratorTrait;

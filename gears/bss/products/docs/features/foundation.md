@@ -487,6 +487,17 @@ predicate P-D-41 and P-D-34 pin, standing in for the tighter one `07-reference-s
 timestamp. `cloned_from` is admitted in no update at all, and neither are `tenant_id`, the
 primary key or `created_by` (P-D-34).
 
+**Two of those clauses have no column to govern, and the roster says so rather than reading as
+built.** No Foundation column carries the **bucket-ii** tag, so the trigger installs no clause for
+the class and the interim predicate has nothing to say about this gear's columns yet; that
+emptiness is what `design/01` §5's agreement test asserts on **both** sides — a registry row with
+no clause and a clause with no registry row are opposite failures and both silent — and the arm is
+re-pointed when 07 supplies the tighter predicate. **Bucket-iv** likewise carries no column, and
+needs none of its own: §4.2's whitelist admits iii and iv **together**, which is why the same §5
+test compares them as one class. `composition_pending`'s same-statement-as-a-bump predicate is
+**not** the bucket-ii clause — the column is registered outside the bucket scheme as mechanical,
+and it earns its place in the row-image trio above on its own account.
+
 **The guard judges the data, never the door** (P-D-31). A `CorruptRow`-style probe **MUST** exist
 per guarded column class, proving the whitelist refuses a write outside that column's admitted
 state.

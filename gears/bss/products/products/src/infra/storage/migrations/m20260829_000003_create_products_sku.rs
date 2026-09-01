@@ -149,6 +149,7 @@
 //! @cpt-dod:cpt-cf-bss-products-dod-entity-tables:p1
 //! @cpt-dod:cpt-cf-bss-products-dod-code-reservation:p1
 //! @cpt-dod:cpt-cf-bss-products-dod-append-only-guard:p1
+//! @cpt-dod:cpt-cf-bss-products-dod-lifecycle-columns:p1
 
 use sea_orm_migration::prelude::*;
 
