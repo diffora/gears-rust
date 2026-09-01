@@ -11,7 +11,7 @@ use toolkit_db::secure::AccessScope;
 use toolkit_db::{ConnectOpts, DBProvider, DbError, connect_db};
 use uuid::Uuid;
 
-use super::{StageOutcome, stage_next_batch};
+use super::{BulkWorkerContext, StageOutcome, stage_next_batch};
 use crate::api::rest::ApiState;
 use crate::config::ProductsConfig;
 use crate::infra::events;
@@ -89,6 +89,18 @@ fn return_pinned<T>(conn: T) {
     let _returned = conn;
 }
 
+/// The worker's own context, built from the harness state exactly as
+/// `gear.rs`'s composition root builds it at boot.
+fn worker_ctx(harness: &Harness) -> BulkWorkerContext {
+    BulkWorkerContext {
+        db: harness.state.db.clone(),
+        sink: harness.state.sink.clone(),
+        bulk_max_concurrent_batches_per_tenant: harness
+            .state
+            .bulk_max_concurrent_batches_per_tenant,
+    }
+}
+
 fn scope() -> AccessScope {
     AccessScope::for_tenant(TENANT)
 }
@@ -142,7 +154,7 @@ async fn a_batch_stages_its_rows_and_reports() {
     .await;
 
     let outcome = stage_next_batch(
-        &harness.state,
+        &worker_ctx(&harness),
         TENANT,
         ACTOR,
         Utc::now(),
@@ -207,7 +219,7 @@ async fn a_failing_row_fails_alone_with_the_owning_code() {
     let batch_id = seed_batch(&harness, "b-2", vec![bad, product_row("r-ok", "Delta")]).await;
 
     let outcome = stage_next_batch(
-        &harness.state,
+        &worker_ctx(&harness),
         TENANT,
         ACTOR,
         Utc::now(),
@@ -242,7 +254,7 @@ async fn a_collision_carries_the_foundations_own_code() {
     let harness = harness().await;
     seed_batch(&harness, "b-3", vec![product_row("r-1", "Epsilon")]).await;
     stage_next_batch(
-        &harness.state,
+        &worker_ctx(&harness),
         TENANT,
         ACTOR,
         Utc::now(),
@@ -253,7 +265,7 @@ async fn a_collision_carries_the_foundations_own_code() {
 
     let batch_id = seed_batch(&harness, "b-4", vec![product_row("r-2", "Epsilon")]).await;
     stage_next_batch(
-        &harness.state,
+        &worker_ctx(&harness),
         TENANT,
         ACTOR,
         Utc::now(),
@@ -277,7 +289,7 @@ async fn a_resumed_batch_skips_the_rows_it_already_staged() {
     let harness = harness().await;
     let batch_id = seed_batch(&harness, "b-5", vec![product_row("r-1", "Zeta")]).await;
     stage_next_batch(
-        &harness.state,
+        &worker_ctx(&harness),
         TENANT,
         ACTOR,
         Utc::now(),
@@ -306,7 +318,7 @@ async fn a_resumed_batch_skips_the_rows_it_already_staged() {
     return_pinned(conn);
 
     stage_next_batch(
-        &harness.state,
+        &worker_ctx(&harness),
         TENANT,
         ACTOR,
         Utc::now(),
@@ -347,7 +359,7 @@ async fn a_stale_claim_loses() {
 async fn an_empty_queue_is_a_quiet_pass() {
     let harness = harness().await;
     let outcome = stage_next_batch(
-        &harness.state,
+        &worker_ctx(&harness),
         TENANT,
         ACTOR,
         Utc::now(),

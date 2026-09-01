@@ -109,3 +109,19 @@ impl RepoError {
         }
     }
 }
+
+/// The `DbErr` inside a [`DbError`], for `Db::transaction_with_retry`'s
+/// contention classifier — the one piece of glue that helper asks a caller
+/// for.
+///
+/// Only [`DbError::Sea`] can carry one. Every other variant is a
+/// configuration or connection-string fault that no retry can clear, and
+/// returning `None` for those is what short-circuits the retry loop instead
+/// of paying the backoff for a failure that will repeat identically.
+pub(crate) fn contention_db_err(error: &toolkit_db::DbError) -> Option<&DbErr> {
+    if let toolkit_db::DbError::Sea(err) = error {
+        Some(err)
+    } else {
+        None
+    }
+}

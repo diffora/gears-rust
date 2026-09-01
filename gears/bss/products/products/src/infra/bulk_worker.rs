@@ -54,19 +54,29 @@
 //!
 //! @cpt-dod:cpt-cf-bss-products-dod-stage-phase:p1
 
-use std::sync::Arc;
-
 use chrono::{DateTime, Utc};
 use serde_json::Value as JsonValue;
 use toolkit_db::secure::AccessScope;
 use uuid::Uuid;
 
-use crate::api::rest::ApiState;
 use crate::domain::error::DomainError;
 use crate::domain::name;
 use crate::domain::validation::ValidationReport;
 use crate::infra::storage::RepoError;
 use crate::infra::storage::repo::{self, BulkRowOutcome, NewProduct, NewSku};
+
+/// Everything the batch worker needs, carried on its own type rather than
+/// on `api::rest::ApiState`: the worker is infra and the REST layer is not
+/// its dependency — `gear.rs`, the composition root, builds this from the
+/// same boot state the doors get theirs from.
+pub(crate) struct BulkWorkerContext {
+    /// The provider the claims, reads and per-row transactions run on.
+    pub(crate) db: toolkit_db::DBProvider<toolkit_db::DbError>,
+    /// The outbox the create path enqueues creation events through.
+    pub(crate) sink: crate::infra::broker::EventSink,
+    /// `inst-bm-limits`' second operand, re-checked at claim (P-D-54).
+    pub(crate) bulk_max_concurrent_batches_per_tenant: u32,
+}
 
 /// Why one row's staging failed — the branch operand the row loop needs: a
 /// refusal is the row's own terminal disposition, a storage failure is the
@@ -117,7 +127,7 @@ fn field(payload: &JsonValue, key: &str) -> Option<String> {
 
 /// Stage one Product row through the Foundation's own insert path.
 async fn stage_product(
-    state: &ApiState,
+    ctx: &BulkWorkerContext,
     scope: &AccessScope,
     tenant_id: Uuid,
     actor_ref: Uuid,
@@ -157,12 +167,14 @@ async fn stage_product(
         cloned_from: None,
         cloned_from_version: None,
     };
-    match crate::api::rest::products::insert_product_with_event(
-        state,
+    match crate::infra::create::insert_product_with_event(
+        &ctx.db,
+        &ctx.sink,
         scope.clone(),
         new,
         None,
         actor_ref,
+        discard_render,
     )
     .await
     {
@@ -171,9 +183,19 @@ async fn stage_product(
     }
 }
 
+/// The worker's render: it claims no idempotency key and reads no response
+/// body, so the created record renders to `Null` instead of dragging a
+/// wire view into this layer.
+// The Result is the render fn-pointer's contract (`infra::create`), not
+// this function's choice.
+#[allow(clippy::unnecessary_wraps)]
+fn discard_render<T>(_record: T) -> Result<JsonValue, serde_json::Error> {
+    Ok(JsonValue::Null)
+}
+
 /// Stage one SKU row through the Foundation's own insert path.
 async fn stage_sku(
-    state: &ApiState,
+    ctx: &BulkWorkerContext,
     scope: &AccessScope,
     tenant_id: Uuid,
     actor_ref: Uuid,
@@ -206,8 +228,16 @@ async fn stage_sku(
         cloned_from: None,
         cloned_from_version: None,
     };
-    match crate::api::rest::skus::insert_sku_with_event(state, scope.clone(), new, None, actor_ref)
-        .await
+    match crate::infra::create::insert_sku_with_event(
+        &ctx.db,
+        &ctx.sink,
+        scope.clone(),
+        new,
+        None,
+        actor_ref,
+        discard_render,
+    )
+    .await
     {
         Ok(_) => Ok(sku_id),
         Err(db_error) => Err(insert_failure(&db_error, "sku")),
@@ -280,7 +310,7 @@ fn parse_staged_payload(
 /// keeps `disposition NULL` and the ledger resume retries it on the next
 /// claim.
 async fn stage_one_row(
-    state: &Arc<ApiState>,
+    ctx: &BulkWorkerContext,
     scope: &AccessScope,
     tenant_id: Uuid,
     actor_ref: Uuid,
@@ -290,8 +320,8 @@ async fn stage_one_row(
 ) -> Result<bool, RepoError> {
     let payload = parse_staged_payload(tenant_id, batch_id, row)?;
     let outcome = match row.entity_kind.as_str() {
-        "product" => stage_product(state, scope, tenant_id, actor_ref, &payload, now).await,
-        "sku" => stage_sku(state, scope, tenant_id, actor_ref, &payload, now).await,
+        "product" => stage_product(ctx, scope, tenant_id, actor_ref, &payload, now).await,
+        "sku" => stage_sku(ctx, scope, tenant_id, actor_ref, &payload, now).await,
         other => Err(StageRowError::Refused(DomainError::Validation({
             let mut report = ValidationReport::new();
             report.violate(
@@ -303,7 +333,7 @@ async fn stage_one_row(
         }))),
     };
 
-    let conn = state
+    let conn = ctx
         .db
         .conn()
         .map_err(|e| RepoError::Db(format!("row outcome connection: {e}")))?;
@@ -362,7 +392,7 @@ async fn stage_one_row(
 ///
 /// [`RepoError`] as the reads and writes raise it.
 pub(crate) async fn stage_next_batch(
-    state: &Arc<ApiState>,
+    ctx: &BulkWorkerContext,
     tenant_id: Uuid,
     actor_ref: Uuid,
     now: DateTime<Utc>,
@@ -370,12 +400,12 @@ pub(crate) async fn stage_next_batch(
 ) -> Result<StageOutcome, RepoError> {
     let scope = AccessScope::for_tenant(tenant_id);
     let (batch, rows) = {
-        let conn = state
+        let conn = ctx
             .db
             .conn()
             .map_err(|e| RepoError::Db(format!("batch worker connection: {e}")))?;
         let live = repo::count_live_batches(&conn, &scope, tenant_id).await?;
-        if live > u64::from(state.bulk_max_concurrent_batches_per_tenant) {
+        if live > u64::from(ctx.bulk_max_concurrent_batches_per_tenant) {
             return Ok(StageOutcome::CeilingHeld);
         }
         let Some(batch) = repo::staging_batches(&conn, &scope, tenant_id)
@@ -390,7 +420,7 @@ pub(crate) async fn stage_next_batch(
     };
 
     {
-        let conn = state
+        let conn = ctx
             .db
             .conn()
             .map_err(|e| RepoError::Db(format!("batch claim connection: {e}")))?;
@@ -422,17 +452,7 @@ pub(crate) async fn stage_next_batch(
             }
             continue;
         }
-        if stage_one_row(
-            state,
-            &scope,
-            tenant_id,
-            actor_ref,
-            batch.batch_id,
-            &row,
-            now,
-        )
-        .await?
-        {
+        if stage_one_row(ctx, &scope, tenant_id, actor_ref, batch.batch_id, &row, now).await? {
             staged += 1;
         } else {
             failed += 1;
@@ -440,7 +460,7 @@ pub(crate) async fn stage_next_batch(
     }
 
     // Edge 1 (P-D-54): the pass that stages the last row reports the batch.
-    let conn = state
+    let conn = ctx
         .db
         .conn()
         .map_err(|e| RepoError::Db(format!("batch report connection: {e}")))?;
@@ -473,13 +493,13 @@ pub(crate) async fn stage_next_batch(
 /// The last [`RepoError`] raised — only when EVERY tenant's pass failed,
 /// which is a whole-sweep fault rather than one tenant's.
 pub(crate) async fn sweep(
-    state: &Arc<ApiState>,
+    ctx: &BulkWorkerContext,
     actor_ref: Uuid,
     now: DateTime<Utc>,
     cancel: &tokio_util::sync::CancellationToken,
 ) -> Result<(), RepoError> {
     let tenants = {
-        let conn = state
+        let conn = ctx
             .db
             .conn()
             .map_err(|e| RepoError::Db(format!("batch sweep connection: {e}")))?;
@@ -492,7 +512,7 @@ pub(crate) async fn sweep(
         if cancel.is_cancelled() {
             return Ok(());
         }
-        if let Err(e) = stage_next_batch(state, tenant, actor_ref, now, cancel).await {
+        if let Err(e) = stage_next_batch(ctx, tenant, actor_ref, now, cancel).await {
             failed += 1;
             tracing::error!(
                 %tenant,

@@ -215,7 +215,16 @@ impl BssProductsGear {
             "bss-products: lifecycle started"
         );
         let db = rt.db.clone();
-        let sdk_state = Arc::clone(&rt.sdk_state);
+        // The composition root's one job: the worker is infra and must not
+        // read `api::rest::ApiState`, so its context is built here from the
+        // same boot state the doors get theirs from.
+        let worker_ctx = crate::infra::bulk_worker::BulkWorkerContext {
+            db: rt.sdk_state.db.clone(),
+            sink: rt.sdk_state.sink.clone(),
+            bulk_max_concurrent_batches_per_tenant: rt
+                .sdk_state
+                .bulk_max_concurrent_batches_per_tenant,
+        };
         let mut interval = tokio::time::interval(COALESCER_TICK);
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         // The overdue-freeze scan runs on its own coarser cadence: an
@@ -229,7 +238,7 @@ impl BssProductsGear {
                 () = cancel.cancelled() => break,
                 _ = interval.tick() => {
                     coalescer_tick(&db, &cancel).await;
-                    batch_tick(&sdk_state, rt.system_actor_ref, &cancel).await;
+                    batch_tick(&worker_ctx, rt.system_actor_ref, &cancel).await;
                     if tick_count.is_multiple_of(OVERDUE_SCAN_EVERY_TICKS) {
                         let now = crate::domain::canonical::write_instant(chrono::Utc::now());
                         report_overdue_freezes(&db, now, rt.freeze_timeout_hours).await;
@@ -246,12 +255,12 @@ impl BssProductsGear {
 /// (`dod-stage-phase`). A failed sweep is logged and retried next tick —
 /// the ledger is the record, so nothing is lost.
 async fn batch_tick(
-    state: &Arc<crate::api::rest::ApiState>,
+    ctx: &crate::infra::bulk_worker::BulkWorkerContext,
     actor_ref: uuid::Uuid,
     cancel: &tokio_util::sync::CancellationToken,
 ) {
     let now = crate::domain::canonical::write_instant(chrono::Utc::now());
-    if let Err(error) = crate::infra::bulk_worker::sweep(state, actor_ref, now, cancel).await {
+    if let Err(error) = crate::infra::bulk_worker::sweep(ctx, actor_ref, now, cancel).await {
         tracing::warn!(%error, "bss-products: batch worker sweep failed");
     }
 }
