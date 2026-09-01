@@ -1057,14 +1057,17 @@ built from an independent primitive: the number of `- ` line starts in that sect
 eighteen and agrees with both the split and the transcribed rows. A final subsection carries defects
 owed to other documents; those are not rows.
 
-**Twelve of the twenty-nine block no DoD**: row 1, plus rows 8, 9, 18 and 26 (resolved on
+**Thirty rows now: the twenty-nine below plus row 30, raised by the group 13a build when it reached
+the wall.** **Twelve of the thirty block no DoD**: row 1, plus rows 8, 9, 18 and 26 (resolved on
 **2026-08-31**: **P-D-54** answered row 26, freeing `cpt-cf-bss-products-dod-stage-phase` and
 promoting row 18 to sole blocker of `dod-coalesced-event`; **P-D-61** answered rows 8, 9 and 18,
 freeing `dod-bulk-errors`, `dod-bulk-tables` and `dod-coalesced-event`), and rows 5, 15, 19, 20, 24,
 25 and 27, resolved on **2026-09-01** by **P-D-69**, freeing `dod-resume-abandon`, `dod-import-door`,
 `dod-promotion-resolver`, `dod-idempotency-lane` and `dod-bulk-lifecycle`. All are kept in place
 rather than struck. `dod-batch-state-machine` remains blocked by rows 6 and 7 — the never-approved
-batch's tenant slot and the commit-phase trigger, neither answered here.
+batch's tenant slot and the commit-phase trigger, neither answered here — and
+`dod-stage-phase`, freed by P-D-54, is **re-blocked by row 30**: the phase has an executor and no
+payload to execute over.
 
 **Carried, not answered**, and registered against **its owner's** register. **Three departures from
 verbatim, declared so the claim is checkable.** First, the slice's inline `Owner:` sentence and any
@@ -1371,6 +1374,23 @@ whether DECOMPOSITION's entity field is a listing convention or an ontological c
     row has no acknowledgment column"*. Its own open item 10 is the same gap from the other side.
     **Blocks**: `cpt-cf-bss-products-dod-bulk-override-ceremony`.
     **Owner**: `05-governance`'s owner.
+
+30. **Where does a Product or SKU row's staged payload live between the import door and the
+    worker?** `design/09` §4's ledger columns are `entity_kind`, `entity_id`, `pinned_revision`,
+    `disposition`, `code`, `reason`, `governed_live_op`, `override_acknowledged` and `terminal_at` —
+    and `governed_live_op` is scoped by its own gloss to *"the pending payload a **live-entity** row
+    stages"*. So a Product or SKU row has **no column carrying the content it was imported with**,
+    while two settled statements presuppose one: `cpt-cf-bss-products-dod-stage-phase` has those
+    rows *"run the ordinary per-row pipeline — **parse**, then the same registered validators as
+    interactive authoring"*, and **P-D-69** arm 5 (row 24 above) fixes the lane's `payload_hash` as
+    a digest over *"the bulk row's **staged payload**"*. Measured at `6b8c31c23`: the import door
+    ships and records the ledger; it accepts no content per row, because there is nowhere to put it.
+    Two homes are visible and this document authors neither — a payload column on the ledger row,
+    symmetric with `governed_live_op` and appended by the same in-place edit the chain uses; or a
+    door that stages synchronously, which contradicts the worker `dod-stage-phase` and **P-D-54**
+    both name as the phase's executor. *(Raised by the group 13a build, which reached the wall.)*
+    **Blocks**: `cpt-cf-bss-products-dod-stage-phase`.
+    **Owner**: this feature with `01-foundation`'s storage owner.
 
 ### Owed to other documents, recorded and deliberately not edited
 
