@@ -541,16 +541,16 @@ store and no grant check"*. So this DoD's write path is `05`'s to supply.
 
 ### The import door and its two key scopes
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-import-door`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-import-door`
 
 `POST /bss-products/v1/bulk/imports` exists, spending `bulk × execute`, idempotent on the batch key —
 a replay returns the existing batch. **The request carries a batch-level `mode ∈ {import, promote}`,
 default `import`** (**P-D-69**): only `promote` engages the `PromotionResolver`'s update-as-draft,
 and under `import` a bound `skuCode` with different content stays `DUPLICATE_CODE` — a silent
-auto-update on collision would convert typos into overwrites. **The route does not ship.**
+auto-update on collision would convert typos into overwrites.
 
-**Two key scopes, and conflating them is the defect this DoD exists to prevent.** The **batch** key
-is the door's idempotency key. The **row** keys are batch-scoped and live in the ledger. A row
+**The route ships.** **Two key scopes, and conflating them is the defect this DoD exists to
+prevent.** The **batch** key is the door's idempotency key. The **row** keys are batch-scoped and live in the ledger. A row
 reaching the publish door resolves *that* door's key as the reserved lane `internal:bulk-row` with the
 row's id as the client key — a third scope, the Foundation's.
 
@@ -566,7 +566,7 @@ only a retry **within** the batch no-ops against the ledger.
 
 ### The reserved idempotency lane, which ships unused
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-idempotency-lane`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-idempotency-lane`
 
 Per-row publishes resolve the publish door's idempotency key as the reserved lane
 `internal:bulk-row` with the row's id as the client key (**P-D-26**) — **the ledger row's surrogate
@@ -576,14 +576,15 @@ column added to the shipped primary key. **The claim's response columns store P-
 record, and its `payload_hash` digests the row's staged payload** — one digest rule for all three
 internal lanes, now stated in `design/01` §4.4 (P-D-69).
 
-**The lane is reserved in prose and in no code**, and the doors say why: the three names *"are named
+**The lane was reserved in prose and in no code**, and the doors said why: the three names *"are named
 rather than defined as constants because the first non-`HTTP` caller is the one that knows which of
-the three it is and what it writes in `client_key`."* Every occurrence in the crate is inside a doc
-comment, and the migration adds *"**This migration only holds the column** — which value a door writes
-into it is that door's own rule, built in a later slice."*
+the three it is and what it writes in `client_key`."*
 
 **So this DoD adds the constant, the `client_key` rule and the caller** — not merely a caller for an
-existing lane. A build that minted a new lane name instead would leave the reserved one dead.
+existing lane; a build that minted a new lane name instead would leave the reserved one dead. The
+constant is `api::rest::bulk::INTERNAL_BULK_ROW_LANE` and the `client_key` rule is the ledger row's
+`row_id`, minted by the import door with the row. **The caller is the batch worker's per-row
+publish**, which arrives with `dod-stage-phase`.
 
 **And a claim is not enough: the store demands an answer.** `payload_hash` is `NOT NULL` and
 `chk_products_idempotency_response_group` admits only `claimed` with both response columns null or
@@ -879,17 +880,20 @@ defers under the ordinary guard and **the batch never force-retires**. This is t
 
 ### The five codes, and the surface that reports them
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-bulk-errors`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-bulk-errors`
 
-Five codes, none of which ships: `BULK_DEPENDENCY_FAILED`, `PROMOTION_IDENTITY_CONFLICT`,
-`PROMOTION_DIRTY_HEAD`, `BULK_OVERRIDE_UNACKNOWLEDGED`, `BULK_LIMIT`. `STALE_LIVE_OP`, which this
-feature's commit phase raises, is `02-taxonomy-attributes`' and also ships nowhere.
+Five codes: `BULK_DEPENDENCY_FAILED`, `PROMOTION_IDENTITY_CONFLICT`,
+`PROMOTION_DIRTY_HEAD`, `BULK_OVERRIDE_UNACKNOWLEDGED`, `BULK_LIMIT` — **all five ship** as
+`DomainError` variants with their ladder arms, `BULK_LIMIT` raised by the import door and the other
+four's raisers arriving with the resolver, the stage phase and the override ceremony.
+`STALE_LIVE_OP`, which this feature's commit phase raises, is `02-taxonomy-attributes`' and ships
+nowhere.
 
 **Row-level failures otherwise reuse the owning feature's code verbatim inside the ledger.** No
 parallel taxonomy — which is why this roster is five rows and not thirty.
 
 **Four of the five are per-row ledger outcomes and the door answers 202**, so their statuses apply
-only where a caller asks a single row's disposition — **and that caller now exists** (**P-D-61**):
+only where a caller asks a single row's disposition — **and that caller ships** (**P-D-61**):
 `GET /bss-products/v1/bulk/batches/{batchId}`, spending its own **`bulk × read`** grant, returns the
 batch state plus the `RowLedger` one entry per row, and those statuses are what it returns per row.
 One route serves both lanes. It was minted rather than the statuses declared dormant because C1 and
@@ -938,14 +942,18 @@ becomes after abandonment is §7 row 5's, not this DoD's.
 
 ### The four design-introduced names exist as named seams
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-bulk-seams`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-bulk-seams`
 
 `design/09` §1.7 introduces four names and each is addressable:
 
-- **`BulkBatch`** — the unit: rows, batch key and the state machine §4 declares.
-- **`RowLedger`** — per-row state, and **the no-hidden-partial-failure surface**.
-- **`ChangeReport`** — the aggregated approval artifact the quorum signs.
-- **`PromotionResolver`** — the four-way classifier of §5's resolver DoD.
+- **`BulkBatch`** — the unit: rows, batch key and the state machine §4 declares. *Addressable:
+  `infra::storage::entity::bulk_batch` and the import door's own module.*
+- **`RowLedger`** — per-row state, and **the no-hidden-partial-failure surface**. *Addressable:
+  `infra::storage::entity::bulk_row`, read out by `GET /bulk/batches/{id}`.*
+- **`ChangeReport`** — the aggregated approval artifact the quorum signs. *Arrives with its own
+  DoD.*
+- **`PromotionResolver`** — the four-way classifier of §5's resolver DoD. *Arrives with its own
+  DoD.*
 
 **DECOMPOSITION §2.9's entity list carried three of the four** — `BulkBatch`, `RowLedger`,
 `ChangeReport` — and this pass swept `PromotionResolver` in beside them, on the rule §2.7 follows.

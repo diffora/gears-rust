@@ -1,6 +1,8 @@
 //! One module per table, named for the table without its `products_` prefix.
 
 pub mod audit_log;
+pub mod bulk_batch;
+pub mod bulk_row;
 pub mod catalog_version;
 pub mod catalog_version_capture;
 pub mod catalog_version_counter;

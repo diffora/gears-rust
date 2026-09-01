@@ -68,6 +68,11 @@ fn declared_status_and_code(err: &DomainError) -> (u16, Option<&'static str>) {
         // the audit row through `DomainError::code()`.
         D::CatalogVersionUnknown(_) => (404, None),
         D::ParticipantUnknown(_) => (403, Some("PARTICIPANT_UNKNOWN")),
+        D::BulkDependencyFailed(_) => (400, Some("BULK_DEPENDENCY_FAILED")),
+        D::PromotionIdentityConflict(_) => (409, Some("PROMOTION_IDENTITY_CONFLICT")),
+        D::PromotionDirtyHead(_) => (409, Some("PROMOTION_DIRTY_HEAD")),
+        D::BulkOverrideUnacknowledged(_) => (400, Some("BULK_OVERRIDE_UNACKNOWLEDGED")),
+        D::BulkLimit(_) => (409, Some("BULK_LIMIT")),
     }
 }
 
@@ -111,6 +116,11 @@ fn one_of_every_variant() -> Vec<DomainError> {
         D::StagedEntityChanged(d()),
         D::CatalogVersionUnknown(d()),
         D::ParticipantUnknown(d()),
+        D::BulkDependencyFailed(d()),
+        D::PromotionIdentityConflict(d()),
+        D::PromotionDirtyHead(d()),
+        D::BulkOverrideUnacknowledged(d()),
+        D::BulkLimit(d()),
     ]
 }
 
@@ -121,7 +131,7 @@ fn one_of_every_variant() -> Vec<DomainError> {
 /// new variant makes that match fail to compile, and this makes the roster
 /// that is *missing* the value fail the case. Bump it in the same edit that
 /// adds the variant to both.
-const DOMAIN_ERROR_VARIANTS: usize = 23;
+const DOMAIN_ERROR_VARIANTS: usize = 28;
 
 /// Covers all 14 variants (§3.3's own count, `DomainError::code`'s own
 /// exhaustiveness note): every one lands on the status the design ladder

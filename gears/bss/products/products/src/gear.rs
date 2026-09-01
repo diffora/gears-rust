@@ -122,6 +122,12 @@ pub(crate) struct ProductsRuntime {
     /// overdue scan.
     pub freeze_timeout_hours: u32,
 
+    /// `inst-bm-limits`' two operands, carried for the import door and the
+    /// batch worker's claim-time re-check.
+    pub bulk_max_rows_per_batch: u32,
+    /// The tenant's concurrent-batch ceiling.
+    pub bulk_max_concurrent_batches_per_tenant: u32,
+
     /// Whichever handle keeps the running pipeline's background tasks alive.
     ///
     /// Held for its `Drop`, never read: dropping either handle drops its
@@ -431,6 +437,9 @@ impl Gear for BssProductsGear {
                         db: db_provider.clone(),
                         sink: sink.clone(),
                         idempotency_retention_hours,
+                        bulk_max_rows_per_batch: cfg.bulk_max_rows_per_batch,
+                        bulk_max_concurrent_batches_per_tenant: cfg
+                            .bulk_max_concurrent_batches_per_tenant,
                     }),
                     enforcer: (*enforcer).clone(),
                 },
@@ -440,6 +449,8 @@ impl Gear for BssProductsGear {
             enforcer,
             sink,
             freeze_timeout_hours: cfg.freeze_timeout_hours,
+            bulk_max_rows_per_batch: cfg.bulk_max_rows_per_batch,
+            bulk_max_concurrent_batches_per_tenant: cfg.bulk_max_concurrent_batches_per_tenant,
             pipeline,
             db: db_provider,
             idempotency_retention_hours,
@@ -486,6 +497,8 @@ impl RestApiCapability for BssProductsGear {
             db: rt.db.clone(),
             sink: rt.sink.clone(),
             idempotency_retention_hours: rt.idempotency_retention_hours,
+            bulk_max_rows_per_batch: rt.bulk_max_rows_per_batch,
+            bulk_max_concurrent_batches_per_tenant: rt.bulk_max_concurrent_batches_per_tenant,
         });
         Ok(router
             .merge(crate::api::rest::products::router(
@@ -497,6 +510,10 @@ impl RestApiCapability for BssProductsGear {
                 openapi,
             ))
             .merge(crate::api::rest::catalog_version::router(
+                Arc::clone(&api_state),
+                openapi,
+            ))
+            .merge(crate::api::rest::bulk::router(
                 Arc::clone(&api_state),
                 openapi,
             ))

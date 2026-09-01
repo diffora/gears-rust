@@ -65,12 +65,18 @@ pub mod labels {
     /// (`request` today; `05-governance` §3.2 declares more actions on this
     /// resource, each arriving with its own door — `dod-cv-authz`).
     pub const CATALOG_VERSION: &str = gts_id!("cf.bss.products.catalog_version.v1~");
+    /// Bulk import and promotion — `execute` for the import door,
+    /// `read` for the `RowLedger` reader (`05-governance` §3.2 rows).
+    /// `bulk_lifecycle` is a **separate** label, deliberately: the gear's
+    /// most destructive batch act must not be reachable with the import
+    /// pair, and it arrives with its own door.
+    pub const BULK: &str = gts_id!("cf.bss.products.bulk.v1~");
 
     /// Every authz label this module declares, stable order. The single
     /// canonical list driving [`super::authz_label_type_schemas`]'s stub
     /// registration. MUST match the permission catalog's distinct
     /// `resource_type`s (`crate::gts::permissions`); a drift test enforces it.
-    pub const ALL: &[&str] = &[PRODUCT, SKU, CATALOG_VERSION];
+    pub const ALL: &[&str] = &[PRODUCT, SKU, CATALOG_VERSION, BULK];
 }
 
 /// PEP action names for the labels above.
@@ -96,6 +102,9 @@ pub mod actions {
     /// Release action — a participant ending its version liveness
     /// (`POST /bss-products/v1/catalog-versions/{id}/releases`, P-D-18/67).
     pub const RELEASE: &str = "release";
+    /// Execute action — running a batch
+    /// (`POST /bss-products/v1/bulk/imports`).
+    pub const EXECUTE: &str = "execute";
 }
 
 /// Properties the PEP may compile from PDP constraints for registry rows.
@@ -120,9 +129,11 @@ pub mod resource_types {
         ResourceType::from_static(labels::PRODUCT, SUPPORTED_PROPERTIES);
     /// SKUs — `read`, `write`, `publish`.
     pub const SKU: ResourceType = ResourceType::from_static(labels::SKU, SUPPORTED_PROPERTIES);
-    /// The catalog version — `request`.
+    /// The catalog version — `request`, `ack`, `release`, `read`.
     pub const CATALOG_VERSION: ResourceType =
         ResourceType::from_static(labels::CATALOG_VERSION, SUPPORTED_PROPERTIES);
+    /// Bulk — `execute`, `read`.
+    pub const BULK: ResourceType = ResourceType::from_static(labels::BULK, SUPPORTED_PROPERTIES);
 }
 
 /// Error from the registry's PEP gate.

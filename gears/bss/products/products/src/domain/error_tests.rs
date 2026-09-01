@@ -87,6 +87,23 @@ fn every_variant_carries_its_design_set_wire_code() {
             DomainError::ParticipantUnknown("s".into()),
             "PARTICIPANT_UNKNOWN",
         ),
+        (
+            DomainError::BulkDependencyFailed("s".into()),
+            "BULK_DEPENDENCY_FAILED",
+        ),
+        (
+            DomainError::PromotionIdentityConflict("s".into()),
+            "PROMOTION_IDENTITY_CONFLICT",
+        ),
+        (
+            DomainError::PromotionDirtyHead("s".into()),
+            "PROMOTION_DIRTY_HEAD",
+        ),
+        (
+            DomainError::BulkOverrideUnacknowledged("s".into()),
+            "BULK_OVERRIDE_UNACKNOWLEDGED",
+        ),
+        (DomainError::BulkLimit("s".into()), "BULK_LIMIT"),
     ];
     for (error, expected) in &cases {
         assert_eq!(error.code(), *expected, "wrong code for {error:?}");
@@ -95,14 +112,17 @@ fn every_variant_carries_its_design_set_wire_code() {
     // roster short, and the roster is what the response map is built from.
     assert_eq!(
         cases.len(),
-        23,
+        28,
         "the Foundation owns fourteen raiseable codes and hosts two guests \
          (retention-erasure's ERASURE_UNKNOWN_ACTOR, P-D-64 keeping that \
          roster at one, and the clone door's CLONE_SOURCE_DISCARDED, \
          P-D-75's mint), and the catalog-version feature declares its seven \
          (dod-cv-error-taxonomy): REQUEST_SOURCE_UNKNOWN, INTENT_REQUIRED, \
          FREEZE_INCOMPLETE, VERSION_FORCED_INCOMPLETE, STAGED_ENTITY_CHANGED, \
-         CATALOG_VERSION_UNKNOWN and PARTICIPANT_UNKNOWN; \
+         CATALOG_VERSION_UNKNOWN and PARTICIPANT_UNKNOWN, and bulk-promotion \
+         its five (dod-bulk-errors): BULK_DEPENDENCY_FAILED, \
+         PROMOTION_IDENTITY_CONFLICT, PROMOTION_DIRTY_HEAD, \
+         BULK_OVERRIDE_UNACKNOWLEDGED and BULK_LIMIT; \
          PARENT_NOT_PUBLISHED is registered by the lifecycle feature and \
          RETIREMENT_PENDING is declared by it"
     );

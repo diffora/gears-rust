@@ -1292,6 +1292,9 @@ fn api_state(harness: &TestHarness) -> ApiState {
         db: harness.db.clone(),
         sink: crate::infra::broker::EventSink::Interim(Arc::clone(&harness.outbox)),
         idempotency_retention_hours: ProductsConfig::default().idempotency_retention_hours,
+        bulk_max_rows_per_batch: ProductsConfig::default().bulk_max_rows_per_batch,
+        bulk_max_concurrent_batches_per_tenant: ProductsConfig::default()
+            .bulk_max_concurrent_batches_per_tenant,
     }
 }
 

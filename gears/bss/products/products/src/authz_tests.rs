@@ -26,10 +26,15 @@ use super::{AuthzError, access_scope, actions, authz_label_type_schemas, labels,
 use crate::test_support::flat_in_enforcer;
 
 #[test]
-fn labels_all_is_product_sku_and_catalog_version() {
+fn labels_all_is_product_sku_catalog_version_and_bulk() {
     assert_eq!(
         labels::ALL,
-        [labels::PRODUCT, labels::SKU, labels::CATALOG_VERSION]
+        [
+            labels::PRODUCT,
+            labels::SKU,
+            labels::CATALOG_VERSION,
+            labels::BULK
+        ]
     );
 }
 
@@ -41,6 +46,7 @@ fn resource_types_carry_their_labels() {
         resource_types::CATALOG_VERSION.name(),
         labels::CATALOG_VERSION
     );
+    assert_eq!(resource_types::BULK.name(), labels::BULK);
 }
 
 /// Stronger than a suffix match: every authz label must parse as a

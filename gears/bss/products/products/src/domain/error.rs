@@ -170,6 +170,41 @@ pub enum DomainError {
     /// @cpt-dod:cpt-cf-bss-products-dod-cv-error-taxonomy:p1
     #[error("participant unknown: {0}")]
     ParticipantUnknown(String),
+
+    /// A bulk row whose in-batch dependency failed, refused **without
+    /// touching the store** (`dod-stage-phase`'s dependency order). A
+    /// per-row ledger outcome: the import door answers 202 and the row
+    /// carries this, so its status is what the ledger reader returns.
+    /// 422 architectural, 400 on the wire.
+    #[error("bulk dependency failed: {0}")]
+    BulkDependencyFailed(String),
+
+    /// The promotion resolver's identity collision — two rows, or a row and
+    /// a live entity, claiming one promotion identity. 409; a per-row
+    /// ledger outcome, its raiser arriving with the resolver.
+    #[error("promotion identity conflict: {0}")]
+    PromotionIdentityConflict(String),
+
+    /// An update-as-draft row whose target head carries an unpublished
+    /// edit. 409; a per-row ledger outcome, its raiser arriving with the
+    /// resolver.
+    #[error("promotion dirty head: {0}")]
+    PromotionDirtyHead(String),
+
+    /// A batch override the ceremony left unacknowledged. 422
+    /// architectural, 400 on the wire; a per-row ledger outcome, its raiser
+    /// arriving with the override ceremony.
+    #[error("bulk override unacknowledged: {0}")]
+    BulkOverrideUnacknowledged(String),
+
+    /// The one of the five that is the **door's** own refusal: a batch over
+    /// the configured bounds — max rows per batch, or the tenant's
+    /// concurrent-batch ceiling. Two operands, one code
+    /// (`inst-bm-limits`). 409: the tenant's current state refuses the act.
+    ///
+    /// @cpt-dod:cpt-cf-bss-products-dod-bulk-errors:p1
+    #[error("bulk limit: {0}")]
+    BulkLimit(String),
 }
 
 impl DomainError {
@@ -205,6 +240,11 @@ impl DomainError {
             Self::StagedEntityChanged(_) => "STAGED_ENTITY_CHANGED",
             Self::CatalogVersionUnknown(_) => "CATALOG_VERSION_UNKNOWN",
             Self::ParticipantUnknown(_) => "PARTICIPANT_UNKNOWN",
+            Self::BulkDependencyFailed(_) => "BULK_DEPENDENCY_FAILED",
+            Self::PromotionIdentityConflict(_) => "PROMOTION_IDENTITY_CONFLICT",
+            Self::PromotionDirtyHead(_) => "PROMOTION_DIRTY_HEAD",
+            Self::BulkOverrideUnacknowledged(_) => "BULK_OVERRIDE_UNACKNOWLEDGED",
+            Self::BulkLimit(_) => "BULK_LIMIT",
         }
     }
 }

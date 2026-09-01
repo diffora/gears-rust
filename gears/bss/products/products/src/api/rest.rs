@@ -154,6 +154,7 @@ use crate::domain::validation::ValidationReport;
 use crate::infra::storage::RepoError;
 use crate::infra::storage::repo::{self, AuditCommon, IdempotencyClaim, RefusalSubject};
 
+pub mod bulk;
 pub mod catalog_version;
 pub mod preconditions;
 pub mod products;
@@ -215,6 +216,13 @@ pub(crate) struct ApiState {
     /// `ProductsConfig::default()` here, which silently gave every operator
     /// the design's 24-hour floor however they had configured the window.
     pub(crate) idempotency_retention_hours: u32,
+    /// `inst-bm-limits`' first operand, carried here for the same reason
+    /// as the retention window: the import door reads per-request state,
+    /// never a configuration source of its own.
+    pub(crate) bulk_max_rows_per_batch: u32,
+    /// `inst-bm-limits`' second operand — the tenant's concurrent-batch
+    /// ceiling, checked here and re-checked by the worker at claim.
+    pub(crate) bulk_max_concurrent_batches_per_tenant: u32,
 }
 
 /// Extract the authenticated [`SecurityContext`] from the request

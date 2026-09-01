@@ -244,6 +244,21 @@ impl From<DomainError> for CanonicalError {
             // 403 rather than 404 (`dod-cv-error-taxonomy`): the identity is
             // the refusal's subject and a 404 would leak version existence.
             D::ParticipantUnknown(_detail) => denied("PARTICIPANT_UNKNOWN"),
+
+            // -- The bulk five (`dod-bulk-errors`). Four are per-row ledger
+            // outcomes whose status applies where the ledger reader reports
+            // one row's disposition; `BulkLimit` is the import door's own
+            // refusal. Bulk introduces no parallel taxonomy — a row's other
+            // failures carry the owning feature's code verbatim.
+            D::BulkDependencyFailed(detail) => {
+                precondition("dependency", &detail, "BULK_DEPENDENCY_FAILED")
+            }
+            D::PromotionIdentityConflict(detail) => aborted(detail, "PROMOTION_IDENTITY_CONFLICT"),
+            D::PromotionDirtyHead(detail) => aborted(detail, "PROMOTION_DIRTY_HEAD"),
+            D::BulkOverrideUnacknowledged(detail) => {
+                precondition("override", &detail, "BULK_OVERRIDE_UNACKNOWLEDGED")
+            }
+            D::BulkLimit(detail) => aborted(detail, "BULK_LIMIT"),
             D::IllegalTransition { from, to } => {
                 aborted(format!("from {from} to {to}"), "ILLEGAL_TRANSITION")
             }

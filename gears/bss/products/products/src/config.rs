@@ -27,6 +27,16 @@ pub const IDEMPOTENCY_RETENTION_FLOOR_HOURS: u32 = 24;
 /// retention policy anyone wrote on purpose.
 pub const IDEMPOTENCY_RETENTION_CEILING_HOURS: u32 = 24 * 365 * 10;
 
+/// The default row ceiling: the design's own sizing fixture is the
+/// ten-thousand-SKU onboarding case, so the shipped default admits it and
+/// leaves headroom rather than making the fixture the bound.
+pub const BULK_MAX_ROWS_DEFAULT: u32 = 50_000;
+
+/// The default per-tenant concurrent-batch ceiling. Small on purpose: a
+/// batch is an operator act with an approval attached, and a tenant holding
+/// many at once is the accident the ceiling exists to catch.
+pub const BULK_MAX_CONCURRENT_DEFAULT: u32 = 5;
+
 /// The gear's boot configuration.
 ///
 /// @cpt-cf-bss-products-fr-idempotent-authoring
@@ -70,6 +80,22 @@ pub struct ProductsConfig {
     /// @cpt-dod:cpt-cf-bss-products-dod-freeze-timeout:p1
     pub freeze_timeout_hours: u32,
 
+    /// The maximum rows one bulk batch may carry (`inst-bm-limits`), the
+    /// first of `BULK_LIMIT`'s two operands. The default carries the
+    /// sizing fixture the design names — the ten-thousand-SKU onboarding
+    /// case — with headroom, so the shipped bound refuses nothing that
+    /// case does.
+    pub bulk_max_rows_per_batch: u32,
+
+    /// The maximum batches one tenant may hold outside a terminal state
+    /// (`inst-bm-limits`), `BULK_LIMIT`'s second operand — checked at the
+    /// import door **and** re-checked by the worker at claim (P-D-54: a
+    /// ceiling checked only by the door drifts as batches hang). Both
+    /// bounds are `inst-bm-limits`' — an instruction no `DoD` carries by
+    /// name, so the marker rides `dod-import-door`, which is where the
+    /// refusal they produce is obliged.
+    pub bulk_max_concurrent_batches_per_tenant: u32,
+
     /// Whether a boot without a reachable event-broker is a **failure**.
     ///
     /// `Gear::init` binds the broker SDK's producer when `ClientHub` carries an
@@ -97,6 +123,8 @@ impl Default for ProductsConfig {
         Self {
             idempotency_retention_hours: IDEMPOTENCY_RETENTION_FLOOR_HOURS,
             freeze_timeout_hours: IDEMPOTENCY_RETENTION_FLOOR_HOURS,
+            bulk_max_rows_per_batch: BULK_MAX_ROWS_DEFAULT,
+            bulk_max_concurrent_batches_per_tenant: BULK_MAX_CONCURRENT_DEFAULT,
             require_broker: false,
         }
     }
@@ -148,6 +176,14 @@ impl ProductsConfig {
     ///
     /// A sentence naming the field, the configured value and the ceiling.
     pub fn validate(&self) -> Result<(), String> {
+        if self.bulk_max_rows_per_batch == 0 {
+            return Err("bulk_max_rows_per_batch = 0 admits no batch at all".to_owned());
+        }
+        if self.bulk_max_concurrent_batches_per_tenant == 0 {
+            return Err(
+                "bulk_max_concurrent_batches_per_tenant = 0 admits no batch at all".to_owned(),
+            );
+        }
         if self.freeze_timeout_hours > IDEMPOTENCY_RETENTION_CEILING_HOURS {
             return Err(format!(
                 "freeze_timeout_hours = {} exceeds the retention ceiling of {} hours; \
