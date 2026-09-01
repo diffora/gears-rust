@@ -99,6 +99,15 @@ pub enum DomainError {
     /// the governance feature's and reaches the door as a record's presence.
     #[error("approval required: {0}")]
     ApprovalRequired(String),
+
+    /// The erasure door's own refusal: the named principal resolves to no
+    /// `actor_ref` in this tenant. The one code `10-retention-erasure` owns
+    /// (P-D-64 kept the roster at one) — 422 architectural, reaching the wire
+    /// as a 400 like every architectural 422 here.
+    ///
+    /// @cpt-dod:cpt-cf-bss-products-dod-retention-error-taxonomy:p1
+    #[error("erasure names an unknown actor: {0}")]
+    ErasureUnknownActor(String),
 }
 
 impl DomainError {
@@ -125,6 +134,7 @@ impl DomainError {
             Self::ParentTerminal(_) => "PARENT_TERMINAL",
             Self::IncompleteEntity(_) => "INCOMPLETE_ENTITY",
             Self::ApprovalRequired(_) => "APPROVAL_REQUIRED",
+            Self::ErasureUnknownActor(_) => "ERASURE_UNKNOWN_ACTOR",
         }
     }
 }

@@ -1,0 +1,80 @@
+# schema-pin.toml — the SchemaPin (C1, P-D-12): the versioned, committed
+# serialization of the joint fields both gears' CI compares against.
+#
+# Membership is DERIVED, not listed (P-D-12): exactly the catalog-field
+# operands the ObligationRegister's guards read, plus `CatalogVersion` as a
+# surface. `skuCode` and `name` are deliberately OUT — pick-list display,
+# where drift is cosmetic.
+#
+# Per-member `comparable` (P-D-57): the CI job compares a member only when
+# both the column and the SDK member ship; for the rest it asserts ABSENCE
+# from the SDK surface, so a member that ships while still flagged fails the
+# job in the change that shipped it. The flag is authored conservatively.
+#
+# A member spelled differently per side carries per-side names (P-D-66).
+# A `surface` entry is compared by nothing; its drift protection is the
+# adapter the counterpart port doc promises (P-D-65).
+#
+# @cpt-dod:cpt-cf-bss-products-dod-schema-pin:p1
+
+version = 1
+
+[[member]]
+name = "skuId"
+kind = "field"
+comparable = true
+registry-field = "sku_id"
+consumer-field = "sku_id"
+
+[[member]]
+name = "type"
+kind = "field"
+comparable = false # arrives with 03-sku-classification
+
+[[member]]
+# One half of the metering-unit declaration; the pair is atomic (P-D-12
+# counts it as its two tokens, 03 inst-mt-atomic-pair makes it one act).
+name = "unit"
+kind = "field"
+comparable = false # arrives with 03-sku-classification
+
+[[member]]
+# The other half of the metering-unit declaration.
+name = "usageTypeRef"
+kind = "field"
+comparable = false # arrives with 03-sku-classification
+
+[[member]]
+name = "PlanTier"
+kind = "field"
+comparable = false # arrives with 03-sku-classification
+
+[[member]]
+# The token is the seam's name (CatalogSku-superset-compatibility); the
+# registry spells the same value `lifecycle_state` (P-D-66).
+name = "status"
+kind = "field"
+comparable = true
+registry-field = "lifecycle_state"
+consumer-field = "status"
+# The wire vocabulary is two of the enum's five (P-D-66): draft is never
+# served, retired is history-only (08 C2).
+vocabulary = ["published", "deprecated"]
+
+[[member]]
+name = "sellable"
+kind = "field"
+comparable = false # arrives with 03-sku-classification
+
+[[member]]
+name = "compositionPending"
+kind = "field"
+comparable = false # the column ships (products_sku.composition_pending, P-D-35); the SDK member does not yet
+
+[[member]]
+# Pinned as a surface, not a field (P-D-12); the entry exists and the job
+# neither compares it nor asserts its absence (P-D-65). No comparability
+# flag: carrying one would claim a comparison that never runs.
+name = "CatalogVersion"
+kind = "surface"
+delegated-to = "bss_pricing_sdk::catalog_version_registry::CatalogVersionRegistryV1"

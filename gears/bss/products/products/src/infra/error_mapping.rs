@@ -233,6 +233,13 @@ impl From<DomainError> for CanonicalError {
                 .with_precondition_violation("scope", &detail, "SCOPE_NOT_CONTAINED")
                 .create(),
             D::IncompleteEntity(detail) => precondition("entity", &detail, "INCOMPLETE_ENTITY"),
+            // The erasure door's unknown-principal refusal is the same
+            // architectural-422 class: the request's content cannot be
+            // processed, and the wire renders it 400 with no transport
+            // override (@cpt-dod:cpt-cf-bss-products-dod-retention-error-taxonomy:p1).
+            D::ErasureUnknownActor(detail) => {
+                precondition("actor", &detail, "ERASURE_UNKNOWN_ACTOR")
+            }
 
             // -- Unavailable (503) -- fail closed, retry later. See the
             // module doc for why this carries neither resource marker.

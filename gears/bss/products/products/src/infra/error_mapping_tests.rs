@@ -53,6 +53,7 @@ fn declared_status_and_code(err: &DomainError) -> (u16, Option<&'static str>) {
         D::ParentTerminal(_) => (409, Some("PARENT_TERMINAL")),
         D::IncompleteEntity(_) => (400, Some("INCOMPLETE_ENTITY")),
         D::ApprovalRequired(_) => (403, Some("APPROVAL_REQUIRED")),
+        D::ErasureUnknownActor(_) => (400, Some("ERASURE_UNKNOWN_ACTOR")),
     }
 }
 
@@ -87,6 +88,7 @@ fn one_of_every_variant() -> Vec<DomainError> {
         D::ParentTerminal(d()),
         D::IncompleteEntity(d()),
         D::ApprovalRequired(d()),
+        D::ErasureUnknownActor(d()),
     ]
 }
 
@@ -97,7 +99,7 @@ fn one_of_every_variant() -> Vec<DomainError> {
 /// new variant makes that match fail to compile, and this makes the roster
 /// that is *missing* the value fail the case. Bump it in the same edit that
 /// adds the variant to both.
-const DOMAIN_ERROR_VARIANTS: usize = 14;
+const DOMAIN_ERROR_VARIANTS: usize = 15;
 
 /// Covers all 14 variants (§3.3's own count, `DomainError::code`'s own
 /// exhaustiveness note): every one lands on the status the design ladder
@@ -226,11 +228,15 @@ fn the_products_owned_422_codes_stay_wire_400_by_design() {
     let incomplete_entity = CanonicalError::from(DomainError::IncompleteEntity(
         "a required field is absent at the target state".to_owned(),
     ));
+    let erasure_unknown_actor = CanonicalError::from(DomainError::ErasureUnknownActor(
+        "the named principal resolves to no actor_ref in this tenant".to_owned(),
+    ));
 
     for (err, code) in [
         (&validation, "VALIDATION"),
         (&scope_not_contained, "SCOPE_NOT_CONTAINED"),
         (&incomplete_entity, "INCOMPLETE_ENTITY"),
+        (&erasure_unknown_actor, "ERASURE_UNKNOWN_ACTOR"),
     ] {
         assert_eq!(
             err.status_code(),

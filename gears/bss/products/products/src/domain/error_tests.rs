@@ -54,6 +54,10 @@ fn every_variant_carries_its_design_set_wire_code() {
             DomainError::ApprovalRequired("a".into()),
             "APPROVAL_REQUIRED",
         ),
+        (
+            DomainError::ErasureUnknownActor("a".into()),
+            "ERASURE_UNKNOWN_ACTOR",
+        ),
     ];
     for (error, expected) in &cases {
         assert_eq!(error.code(), *expected, "wrong code for {error:?}");
@@ -62,8 +66,10 @@ fn every_variant_carries_its_design_set_wire_code() {
     // roster short, and the roster is what the response map is built from.
     assert_eq!(
         cases.len(),
-        14,
-        "the Foundation owns fourteen raiseable codes; PARENT_NOT_PUBLISHED is \
+        15,
+        "the Foundation owns fourteen raiseable codes and hosts one of \
+         retention-erasure's (ERASURE_UNKNOWN_ACTOR, the erasure door's own; \
+         P-D-64 keeps that slice's roster at one); PARENT_NOT_PUBLISHED is \
          registered by the lifecycle feature and RETIREMENT_PENDING is declared by it"
     );
 }

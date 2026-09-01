@@ -699,7 +699,7 @@ on"*.
 
 ### The error taxonomy
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-retention-error-taxonomy`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-retention-error-taxonomy`
 
 The system **MUST** add a `DomainError` variant for `ERASURE_UNKNOWN_ACTOR` carrying its wire code
 through `DomainError::code`, and **MUST** give it the RFC 9457 response `design/10` §3.2 pins —

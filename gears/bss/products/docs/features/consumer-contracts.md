@@ -384,7 +384,7 @@ which.
 
 ### The `SchemaPin` file, on which lint 9 and C1 depend
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-schema-pin`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-schema-pin`
 
 `gears/bss/products/products-sdk/schema-pin.toml` exists, versioned with the SDK. **It does not
 exist today**, and it is the artifact **C1** and **`inst-cc-pin`** (lint 9) read, plus the CI job
@@ -604,7 +604,7 @@ surface reads as partial.
 
 ### The `status` wire vocabulary, pinned
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-status-vocabulary`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-status-vocabulary`
 
 `status` and its value vocabulary are **normative pin members** (**P-D-12**). Browse serves
 `published|deprecated` only — draft is never served and retired is history-only — and **the SDK enum

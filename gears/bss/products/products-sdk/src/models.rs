@@ -37,6 +37,18 @@ impl EntityKind {
 /// and by the head-row trigger whitelist. `Retired` and `Discarded` are
 /// terminal at the physical layer: no admitted update writes a
 /// `lifecycle_state` out of either.
+///
+/// # The wire subset, which is smaller than this enum
+///
+/// All five states exist here; **the consumer-facing wire vocabulary is two**:
+/// `published` and `deprecated` (P-D-66, pinned in `schema-pin.toml`). Browse
+/// serves only those; `draft` is never served and `retired` is history-only,
+/// reachable through the versions surface and the by-id read's explicit state
+/// opt-in (P-D-70). A consumer that treats this field as an open string is
+/// choosing display tolerance over the pin's guard, which is its own risk to
+/// carry.
+///
+/// @cpt-dod:cpt-cf-bss-products-dod-status-vocabulary:p1
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum LifecycleState {
     /// Authored, never published. The only state a discard is admitted from.
