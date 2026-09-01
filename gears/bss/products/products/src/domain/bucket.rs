@@ -80,15 +80,17 @@
 //!   row. Both tags are encoded because the door routes by tag, and a tag
 //!   that appears only when its first column lands is a second change to the
 //!   door.
-//! - **No column carries [`FieldClass::CreateOnly`].** §4.1 makes
-//!   `cloned_from` *"stricter than bucket-i — writable only in the creating
-//!   statement and never again, not merely never after first publish, so the
-//!   lineage stays evidence rather than a claim"*. The column arrives with
-//!   slice 11 and neither table has it today, so the class is defined and its
-//!   membership is empty. A `cloned_from` write is still refused today, by the
-//!   fail-closed miss rather than by the create-only rule — the same answer
-//!   from a different rule, and slice 11 owes the row that makes it the right
-//!   one.
+//! - **[`FieldClass::CreateOnly`] carries the `cloned_from` pair, on both
+//!   kinds.** §4.1 makes them *"stricter than bucket-i — writable only in the
+//!   creating statement and never again, not merely never after first publish,
+//!   so the lineage stays evidence rather than a claim"*. The columns landed
+//!   with slice 11 (**P-D-76**), so the class's membership is no longer empty
+//!   and a `cloned_from` write is refused **by the create-only rule** rather
+//!   than by the fail-closed miss — the debt this paragraph used to record,
+//!   paid. The physical guard holds the same rule from the other side: the
+//!   head tables' immutable-column arms name the pair.
+//!
+//!   @cpt-dod:cpt-cf-bss-products-dod-create-only-class:p3
 //! - **The `created_at` call.** §5's row-identity roster names three columns
 //!   and the update timestamp separately; it does not name `created_at`. Both
 //!   head-row triggers refuse a change to it in the same clause as

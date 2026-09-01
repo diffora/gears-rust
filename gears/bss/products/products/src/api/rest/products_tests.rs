@@ -5755,3 +5755,56 @@ mod family_clone_tests {
         );
     }
 }
+
+/// `dod-create-only-class`: a save naming `cloned_from` is refused **by the
+/// create-only rule** — the registry classifies the column now that
+/// P-D-76's pair ships, so the answer no longer comes from the fail-closed
+/// miss. The debt `domain/bucket.rs` recorded is paid, and this case is
+/// what makes the payment observable.
+#[tokio::test]
+async fn a_save_naming_the_lineage_pair_is_refused_by_the_create_only_rule() {
+    let harness = harness().await;
+    let product_id = Uuid::now_v7();
+    seed_draft(&harness, product_id).await;
+
+    for column in ["cloned_from", "cloned_from_version"] {
+        // The registry answers the class rather than a miss, which is the
+        // half this DoD adds; the door's refusal follows from it.
+        assert_eq!(
+            crate::domain::bucket::classify(bss_products_sdk::models::EntityKind::Product, column)
+                .expect("the pair carries its registry tag"),
+            crate::domain::bucket::FieldClass::CreateOnly,
+            "{column} is create-only"
+        );
+
+        let response = app_for(&harness, TENANT)
+            .oneshot(
+                Request::builder()
+                    .method("PATCH")
+                    .uri(format!("/bss-products/v1/products/{product_id}"))
+                    .header("content-type", "application/json")
+                    .header("If-Match", if_match(1))
+                    .extension(authed_ctx(TENANT))
+                    .body(Body::from(
+                        serde_json::json!({ column: "anything" }).to_string(),
+                    ))
+                    .expect("build the save"),
+            )
+            .await
+            .expect("the router answers");
+        assert_eq!(
+            response.status(),
+            StatusCode::CONFLICT,
+            "{column}: a create-only column is never authored through the save door"
+        );
+        let body = axum::body::to_bytes(response.into_body(), 64 * 1024)
+            .await
+            .expect("read");
+        let view: serde_json::Value = serde_json::from_slice(&body).expect("json");
+        assert_eq!(
+            view["context"]["reason"],
+            serde_json::json!("ILLEGAL_FIELD_MUTATION"),
+            "{column}: the refusal is the field-mutation rule's"
+        );
+    }
+}

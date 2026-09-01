@@ -363,7 +363,7 @@ clause joins that group rather than inventing a form.
 
 ### The create-only registry row, over a refusal that already ships
 
-- [ ] `p3` - **ID**: `cpt-cf-bss-products-dod-create-only-class`
+- [x] `p3` - **ID**: `cpt-cf-bss-products-dod-create-only-class`
 
 `cloned_from` is registered in the bucket registry as `FieldClass::CreateOnly` for **both** entity
 kinds. **This DoD builds no refusal.** The arms exist: `route_product_field`
@@ -372,10 +372,11 @@ kinds. **This DoD builds no refusal.** The arms exist: `route_product_field`
 `unroutable_sku_field` already route the class per their own docs — *"`cloned_from`'s `CreateOnly`
 when slice 11 lands it"*.
 
-What changes is only that the arms become **reachable**. `domain/bucket.rs` states the debt this
-discharges: today a `cloned_from` write is refused *"by the fail-closed miss rather than by the
-create-only rule — the same answer from a different rule, and slice 11 owes the row that makes it
-the right one."*
+What changes is only that the arms become **reachable**. `domain/bucket.rs` stated the debt this
+discharges — a `cloned_from` write refused *"by the fail-closed miss rather than by the
+create-only rule — the same answer from a different rule"* — and **the debt is paid**: P-D-76's
+pair carries the registry tag on both kinds, so the classifier answers the class and the door's
+refusal follows from it, with a door-level case asserting the pair for both columns.
 
 **A shipped green test goes red here, by design, and the DoD is not met until it is restated.**
 `domain/bucket_tests.rs`'s `no_column_carries_the_create_only_class_today` asserts both

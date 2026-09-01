@@ -213,10 +213,14 @@ async fn a_closed_interactive_window_commits_one_version() {
         .expect("read captures");
     assert_eq!(
         captures.len(),
-        1,
-        "one capture kind has a shipped source today"
+        2,
+        "two capture kinds have shipped sources: the freeze-participant set and the \
+         reference-producer set (dod-producer-snapshot); the other five arrive with the \
+         stores 02 and 03 own"
     );
-    assert_eq!(captures[0].capture_kind, "freeze_participant_set");
+    let kinds: Vec<&str> = captures.iter().map(|c| c.capture_kind.as_str()).collect();
+    assert!(kinds.contains(&"freeze_participant_set"));
+    assert!(kinds.contains(&"reference_producer_set"));
 }
 
 /// Demand younger than the window waits; the pass commits nothing.
@@ -571,4 +575,73 @@ async fn the_overdue_scan_names_the_silent_participants() {
     assert_eq!(overdue.len(), 1);
     assert_eq!(overdue[0].catalog_version_id, 1);
     assert_eq!(overdue[0].silent_participants, vec!["pricing".to_owned()]);
+}
+
+/// `dod-producer-snapshot`: the registered producer set rides the capture
+/// store per version, symmetrically with the freeze-participant set, so a
+/// historical verdict is judged against the **then-registered** set and
+/// onboarding a producer never retro-flips a past decision.
+#[tokio::test]
+async fn the_registered_producer_set_rides_the_capture_store() {
+    let harness = harness().await;
+    {
+        let conn = harness.db.conn().expect("conn");
+        crate::infra::storage::repo::register_reference_producer(
+            &conn,
+            &scope(),
+            TENANT,
+            "pricing",
+            None,
+            t0() - ChronoDuration::hours(1),
+        )
+        .await
+        .expect("register");
+    }
+    enqueue(&harness, "ps-1", "interactive", None, 6).await;
+    drain_tenant(&harness.db, TENANT, t0())
+        .await
+        .expect("drain");
+
+    let conn = harness.db.conn().expect("conn");
+    let captures = catalog_version_capture::Entity::find()
+        .secure()
+        .scope_with(&scope())
+        .all(&conn)
+        .await
+        .expect("read captures");
+    let producers = captures
+        .iter()
+        .find(|c| c.capture_kind == "reference_producer_set")
+        .expect("the producer set is captured beside the participant set");
+    assert!(
+        producers.content.contains("pricing"),
+        "the capture stores the then-registered set: {}",
+        producers.content
+    );
+
+    // A producer registered AFTER the version must not appear in it.
+    crate::infra::storage::repo::register_reference_producer(
+        &conn,
+        &scope(),
+        TENANT,
+        "contracts",
+        None,
+        t0(),
+    )
+    .await
+    .expect("register later");
+    let captures = catalog_version_capture::Entity::find()
+        .secure()
+        .scope_with(&scope())
+        .all(&conn)
+        .await
+        .expect("read captures");
+    let producers = captures
+        .iter()
+        .find(|c| c.capture_kind == "reference_producer_set")
+        .expect("the capture");
+    assert!(
+        !producers.content.contains("contracts"),
+        "onboarding never retro-flips a past version's snapshot"
+    );
 }

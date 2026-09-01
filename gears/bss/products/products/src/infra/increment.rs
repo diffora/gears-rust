@@ -63,6 +63,7 @@
 //! (§7 rows 27, 35, 39, 47), and consumers poll through the port until it
 //! resolves.
 //!
+//! @cpt-dod:cpt-cf-bss-products-dod-producer-snapshot:p1
 //! @cpt-dod:cpt-cf-bss-products-dod-coalescer:p1
 //! @cpt-dod:cpt-cf-bss-products-dod-snapshot-builder:p1
 //! @cpt-dod:cpt-cf-bss-products-dod-stage-commit-revalidation:p1
@@ -293,9 +294,13 @@ impl SnapshotBuilder {
         let entries = repo::snapshot_entity_refs(runner, scope, tenant_id).await?;
         let participant_set = repo::freeze_participants(runner, scope, tenant_id).await?;
 
-        // The one capture with a shipped source: the freeze-participant
-        // set, rendered canonically like every stored copy (H3). The other
-        // six of CAPTURE_KINDS arrive with their stores.
+        // The two captures with shipped sources, each rendered canonically
+        // like every stored copy (H3): the freeze-participant set, and the
+        // **registered reference-producer set** — `07`'s symmetric ride
+        // (`inst-pr-snapshot`, `dod-producer-snapshot`), which is what makes
+        // a historical reference verdict judgeable against the
+        // then-registered set rather than today's. The other five of
+        // CAPTURE_KINDS arrive with their stores.
         let participants_value = JsonValue::Array(
             participant_set
                 .iter()
@@ -303,10 +308,24 @@ impl SnapshotBuilder {
                 .map(JsonValue::String)
                 .collect(),
         );
-        let captures = vec![(
-            "freeze_participant_set".to_owned(),
-            canonical::canonical_rendering(&participants_value, canonical::Absence::Omit),
-        )];
+        let producers_value = JsonValue::Array(
+            repo::reference_producers(runner, scope, tenant_id)
+                .await?
+                .into_iter()
+                .filter(|row| row.state == "registered")
+                .map(|row| JsonValue::String(row.producer))
+                .collect(),
+        );
+        let captures = vec![
+            (
+                "freeze_participant_set".to_owned(),
+                canonical::canonical_rendering(&participants_value, canonical::Absence::Omit),
+            ),
+            (
+                "reference_producer_set".to_owned(),
+                canonical::canonical_rendering(&producers_value, canonical::Absence::Omit),
+            ),
+        ];
         for (kind, _) in &captures {
             assert!(
                 CAPTURE_KINDS.contains(&kind.as_str()),

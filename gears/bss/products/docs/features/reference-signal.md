@@ -636,7 +636,7 @@ slice, which registered it rather than drafting a fourth rule.
 
 ### The symmetric snapshot ride
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-producer-snapshot`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-producer-snapshot`
 
 The registered producer set **MUST** ride `06-catalog-version`'s capture store per
 `CatalogVersion`, symmetrically with the freeze-participant set, under its own `capture_kind`. A
