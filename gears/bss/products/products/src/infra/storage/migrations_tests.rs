@@ -4330,3 +4330,168 @@ mod counter_and_watermark_guard_tests {
         assert_eq!(rows.len(), 1, "the per-SKU membership index must exist");
     }
 }
+
+/// `products_catalog_version`'s whitelist guard, probed the way the head-row
+/// guards above are: every frozen column poked one at a time, the one
+/// admitted column flipped, and the two refusal messages told apart —
+/// `dod-catalog-version-table` requires the delete arm's and the update
+/// arm's texts asserted separately, because a body that lost its UPDATE
+/// branch would still refuse an update, with the wrong message.
+///
+/// @cpt-dod:cpt-cf-bss-products-dod-catalog-version-table:p1
+mod catalog_version_guard_tests {
+    use sea_orm::ConnectionTrait;
+    use sea_orm_migration::MigratorTrait;
+
+    use super::Migrator;
+
+    async fn harness() -> sea_orm::DatabaseConnection {
+        let mut opts = sea_orm::ConnectOptions::new("sqlite::memory:");
+        opts.max_connections(1).min_connections(1);
+        let db = sea_orm::Database::connect(opts)
+            .await
+            .expect("connect in-memory sqlite");
+        Migrator::up(&db, None).await.expect("boot the chain");
+        db
+    }
+
+    async fn exec(db: &sea_orm::DatabaseConnection, sql: &str) -> Result<(), sea_orm::DbErr> {
+        db.execute_raw(sea_orm::Statement::from_string(
+            sea_orm::DatabaseBackend::Sqlite,
+            sql.to_owned(),
+        ))
+        .await
+        .map(|_| ())
+    }
+
+    async fn seed_version(db: &sea_orm::DatabaseConnection) {
+        exec(
+            db,
+            "INSERT INTO products_catalog_version \
+             (tenant_id, catalog_version_id, checksum, digest_version, published_at, \
+              participant_set_snapshot, freeze_state) \
+             VALUES ('t-a', 1, 'c1', 1, '2026-09-01T00:00:00Z', '[]', 'open')",
+        )
+        .await
+        .expect("a well-shaped version row is admitted");
+    }
+
+    /// `freeze_state` is the one column the UPDATE arm admits, and its own
+    /// roster CHECK still governs the value it moves to.
+    #[tokio::test]
+    async fn freeze_state_is_the_only_admitted_update() {
+        let db = harness().await;
+        seed_version(&db).await;
+
+        exec(
+            &db,
+            "UPDATE products_catalog_version SET freeze_state = 'complete' \
+             WHERE tenant_id = 't-a' AND catalog_version_id = 1",
+        )
+        .await
+        .expect("the admitted column must move");
+
+        let err = exec(
+            &db,
+            "UPDATE products_catalog_version SET freeze_state = 'half-done' \
+             WHERE tenant_id = 't-a' AND catalog_version_id = 1",
+        )
+        .await
+        .expect_err("a value outside the roster must be refused");
+        assert!(
+            err.to_string()
+                .contains("chk_products_catalog_version_freeze_state"),
+            "the roster CHECK still governs the admitted column: {err}"
+        );
+    }
+
+    /// Every frozen column is poked one at a time, and each refusal carries
+    /// the UPDATE arm's message — not the delete arm's.
+    #[tokio::test]
+    async fn every_frozen_column_is_refused_by_the_update_arm() {
+        let db = harness().await;
+        seed_version(&db).await;
+
+        for (column, poison) in [
+            ("tenant_id", "'t-b'"),
+            ("catalog_version_id", "2"),
+            ("checksum", "'c2'"),
+            ("digest_version", "2"),
+            ("published_at", "'2026-09-02T00:00:00Z'"),
+            ("participant_set_snapshot", "'[\"plan-price\"]'"),
+        ] {
+            let err = exec(
+                &db,
+                &format!(
+                    "UPDATE products_catalog_version SET {column} = {poison} \
+                     WHERE tenant_id = 't-a' AND catalog_version_id = 1"
+                ),
+            )
+            .await
+            .expect_err("a frozen column must be refused");
+            let text = err.to_string();
+            assert!(
+                text.contains("freeze_state is the only column the UPDATE arm admits"),
+                "{column}: the refusal must be the UPDATE arm's own message: {text}"
+            );
+        }
+    }
+
+    /// The delete arm refuses with its own message, told apart from the
+    /// update arm's by text — the assertion the `DoD` requires separately.
+    #[tokio::test]
+    async fn delete_is_refused_with_the_delete_arms_own_message() {
+        let db = harness().await;
+        seed_version(&db).await;
+
+        let err = exec(
+            &db,
+            "DELETE FROM products_catalog_version \
+             WHERE tenant_id = 't-a' AND catalog_version_id = 1",
+        )
+        .await
+        .expect_err("DELETE must be refused outright");
+        let text = err.to_string();
+        assert!(
+            text.contains("append-only: DELETE is not permitted"),
+            "the refusal must be the delete arm's: {text}"
+        );
+        assert!(
+            !text.contains("UPDATE arm admits"),
+            "the delete refusal must not ride the update arm's message: {text}"
+        );
+    }
+
+    /// The id floor pins the P-D-67 counter start and the digest floor pins
+    /// the P-D-73 companion — each poison refused by its CHECK's name.
+    #[tokio::test]
+    async fn the_id_and_digest_floors_hold() {
+        let db = harness().await;
+        for (label, sql, check) in [
+            (
+                "id zero",
+                "INSERT INTO products_catalog_version \
+                 (tenant_id, catalog_version_id, checksum, digest_version, published_at, \
+                  participant_set_snapshot, freeze_state) \
+                 VALUES ('t-b', 0, 'c', 1, '2026-09-01T00:00:00Z', '[]', 'open')",
+                "chk_products_catalog_version_id_floor",
+            ),
+            (
+                "digest zero",
+                "INSERT INTO products_catalog_version \
+                 (tenant_id, catalog_version_id, checksum, digest_version, published_at, \
+                  participant_set_snapshot, freeze_state) \
+                 VALUES ('t-b', 1, 'c', 0, '2026-09-01T00:00:00Z', '[]', 'open')",
+                "chk_products_catalog_version_digest",
+            ),
+        ] {
+            let err = exec(&db, sql)
+                .await
+                .expect_err("a floor poison must be refused");
+            assert!(
+                err.to_string().contains(check),
+                "{label}: the refusal must come from {check}: {err}"
+            );
+        }
+    }
+}

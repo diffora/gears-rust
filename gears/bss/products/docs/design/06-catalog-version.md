@@ -269,8 +269,8 @@ without a fourth clock.
 ## 4. Data / Storage (normative shape; DDL in migrations)
 
 - **`products_catalog_version`** — `(tenant_id, catalog_version_id)` PK (monotonic per tenant)
-  · `checksum` · `published_at` (**P-D-67** struck `staged_at`: no admitted writer — a stage-time insert would burn gapless ids on every refusal — and no reader, the SLO measuring from `requested_at`) · `participant_set_snapshot` **(derived cache — the authoritative copy is the capture store's and is inside the checksum, P-D-67)** · `freeze_state ∈ {open, complete, complete(forced)}` (roster stated — every other state column in the set carries one, and C5 and `inst-rv-intent` both branch on `complete(forced)` being a value of it)
-  (derived cache of the ledger) · manifest header. Append-only, physically guarded.
+  · `checksum` · **`digest_version`** (**P-D-73** — written at publish beside the checksum, `products_entity_version`'s own convention: without it the drill cannot re-verify against the rule the digest was computed under) · `published_at` (**P-D-67** struck `staged_at`: no admitted writer — a stage-time insert would burn gapless ids on every refusal — and no reader, the SLO measuring from `requested_at`) · `participant_set_snapshot` **(derived cache — the authoritative copy is the capture store's and is inside the checksum, P-D-67)** · `freeze_state ∈ {open, complete, complete(forced)}` (roster stated — every other state column in the set carries one, and C5 and `inst-rv-intent` both branch on `complete(forced)` being a value of it)
+  (derived cache of the ledger — **refreshed in-transaction by the three acts that change it**: the ack door, the release door and force-completion, each writing the P-D-49 snapshot-driven summary, **P-D-73**). ~~manifest header~~ (**struck by P-D-73**: no field set, no writer, no reader anywhere in the tree — the third strike of the `superseded` class). Append-only, physically guarded.
 - **`products_catalog_version_entry`** — `(tenant_id, catalog_version_id, entity_kind,
   entity_id)` → `published_version` (references into immutable `products_entity_version`).
   Append-only. **Indexed additionally on

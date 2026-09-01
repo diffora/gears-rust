@@ -596,12 +596,13 @@ needs, the DoD says so and §7 carries the question.
 
 ### The version row and its physical append-only guard
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-catalog-version-table`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-catalog-version-table`
 
 The system **MUST** create `products_catalog_version`, keyed `(tenant_id, catalog_version_id)`
-with the id monotonic per tenant, carrying `checksum`, `published_at`,
-`participant_set_snapshot`, `freeze_state ∈ {open, complete, complete(forced)}` and the manifest
-header, on **both** engines. **`staged_at` is struck** (**P-D-67**): no admitted writer — a
+with the id monotonic per tenant, carrying `checksum`, **`digest_version`** (**P-D-73**, the
+entity-version convention: written at publish beside the checksum), `published_at`,
+`participant_set_snapshot` and `freeze_state ∈ {open, complete, complete(forced)}`, on **both**
+engines — **"the manifest header" is struck** (P-D-73: no field set, no writer, no reader anywhere). **`staged_at` is struck** (**P-D-67**): no admitted writer — a
 stage-time insert would burn gapless ids on every refusal — and no reader, the SLO measuring from
 `requested_at`. And **`participant_set_snapshot` here is a derived cache** (P-D-67): the
 authoritative copy is the capture store's and is the one inside the checksum, the same convention
@@ -622,8 +623,8 @@ So the model is `m20260829_000002_create_products_product.rs`'s head-row guard
 with `IS DISTINCT FROM`; on SQLite, which has no procedural language and whose `RAISE(ABORT, …)`
 takes a literal message, the same whitelist split across **one no-delete trigger and one
 `WHEN`-guarded trigger per column class**, using `IS`/`IS NOT`. **`freeze_state` MUST be the only
-column the `UPDATE` arm admits**; every other column of this table — `checksum`,
-`published_at`, `participant_set_snapshot` and the manifest header — **MUST** be refused, since the
+column the `UPDATE` arm admits**; every other column of this table — `checksum`, `digest_version`,
+`published_at` and `participant_set_snapshot` — **MUST** be refused, since the
 byte-identity flagship rests on them. `DELETE` **MUST** be refused outright.
 
 Both refusal messages — the delete arm's and the update arm's — **MUST** be asserted **apart**,
@@ -1096,7 +1097,10 @@ The system **MUST** record participant acks in `products_freeze_ack`, idempotent
 the release door riding `…/releases` — the increment door's own pattern, a contract with an
 in-process default and this S2S binding. **And the door is an UPDATE, not an upsert**: the increment
 transaction seeds one `pending` row per `participant_set_snapshot` member (P-D-67), so the row's
-existence *is* the membership check and a non-member's ack has no row to flip.
+existence *is* the membership check and a non-member's ack has no row to flip. **The same
+transaction refreshes `freeze_state`'s derived cache** (**P-D-73**): the ack, release and
+force-completion doors each recompute the P-D-49 snapshot-driven summary and write it, so `complete`
+lands with the last member's ack and the cache is never stale against the ledger it derives from.
 
 **The full key is stated rather than the slice's shorthand.** `inst-fz-ack` writes the idempotency
 as *"idempotent per `(version, participant)`"*, which elides the tenant; because
@@ -1714,12 +1718,13 @@ here is ticked by inspection.
 [`../design/06-catalog-version.md`](../design/06-catalog-version.md) §6 — the slice's full count,
 not a selection — and **thirty-three raised here**, across two review passes: eleven while
 authoring, **twelve by the first three-lens pass** and **ten by the second**. Of the fifty-one,
-**twenty-five block no DoD in this document**: rows 3, 4, 5, 14, 34, 49, 50 and 51, plus the
+**twenty-eight block no DoD in this document**: rows 3, 4, 5, 14, 34, 49, 50 and 51, plus the
 seventeen resolved on **2026-08-31** — rows 22 and 41 by **P-D-52**, row 37 by **P-D-53**, row 30 by
 **P-D-56**, rows 1, 9, 10 and 11 by **P-D-60** (the first round over *carried* rows, answered in
 `design/06` §6 first with the carry following), and rows 8, 16, 23, 26, 29, 31, 32, 33 and 46 by
-**P-D-67**, the nine-arm sweep that freed this document's last five sole-held DoDs. The other
-**twenty-six** each name the DoD they block.
+**P-D-67**, the nine-arm sweep that freed this document's last five sole-held DoDs, and rows 24, 38
+and 42 by **P-D-73** on 2026-09-01, which unblocked `dod-catalog-version-table` for the build. The
+other **twenty-three** each name the DoD they block.
 
 **A resolved row is kept in place rather than struck from the register**, because rows 41 and 45 cite
 row 22 and a deleted record would break the citations. Of the four DoDs row 30 named,
@@ -2045,16 +2050,20 @@ against source at `41d1baa5e`.
     **Blocks**: no DoD — **resolved by P-D-67**; `cpt-cf-bss-products-dod-version-counter` carries the value, and `dod-increment-request-port` is unblocked by it.
     **Owner**: was this feature, jointly with pricing; **closed** on this side, the sweep owed pricing-side.
 
-24. **The manifest checksum has no `digest_version` companion.** `design/06` §4 gives
+24. ~~**The manifest checksum has no `digest_version` companion.**~~
+    **Answered (owner call, 2026-09-01 — P-D-73 arm 1): the column is added.** `digest_version` is
+    written at publish beside the checksum — `products_entity_version`'s own convention, whose stated
+    reason applies identically to a manifest: without it the drill cannot re-verify against the rule
+    the digest was computed under.
+    Original text: `design/06` §4 gives
     `products_catalog_version` a `checksum` and no digest-version column, while
     `products_entity_version` carries one — and `domain::canonical::DIGEST_VERSION`'s own doc gives
     the reason in terms that apply identically to a manifest: *"Storing it on the row is what lets
     slice 10's restore drill re-verify a sampled entity version against the rule it was actually
     computed under; without it, version-history corruption is invisible to every checksum."* Same
     drill, same argument, one column short.
-    **Blocks**: `cpt-cf-bss-products-dod-catalog-version-table`,
-    `cpt-cf-bss-products-dod-snapshot-builder`.
-    **Owner**: this feature, with `10-retention-erasure`.
+    **Blocks**: no DoD — **resolved by P-D-73**; `cpt-cf-bss-products-dod-catalog-version-table` carries the column.
+    **Owner**: was this feature, with `10-retention-erasure`; **closed**.
 
 25. **An unpaid cross-engine truncation stands under this feature's byte-identity flagship.**
     `canonical::render_instant` truncates to microseconds, and its own doc states the residual
@@ -2240,15 +2249,20 @@ against source at `41d1baa5e`.
     `cpt-cf-bss-products-dod-snapshot-builder` carry the answer.
     **Owner**: was this feature with the storage-posture owner; **closed**.
 
-38. **Which act refreshes `freeze_state` to `complete`?** `design/06` §4 annotates the column *"(derived
+38. ~~**Which act refreshes `freeze_state` to `complete`?**~~
+    **Answered (owner call, 2026-09-01 — P-D-73 arm 2): the three acts that change the ledger refresh
+    the cache in their own transaction** — ack, release, force-completion each recompute the P-D-49
+    snapshot-driven summary and write it, so `complete` lands with the last member's ack and no
+    all-acked-while-`open` window exists. Recompute-on-read was declined: the readers are the
+    resolution refusals, and resolution is the hot path.
+    Original text: `design/06` §4 annotates the column *"(derived
     cache of the ledger)"* and this document forbids it being the authority; the force-completion
     ceremony writes `complete(forced)`; and no DoD writes `complete`. Whether the last ack writes
     the cache in the same transaction, or it is recomputed on read, and what the PRD's per-version
     **MUST expose** obligation returns while the cache reads `open` on an all-acked version, is
     unstated. Rows 6, 7 and 18 concern the predicate and the naming, not the cache's refresh.
-    **Blocks**: `cpt-cf-bss-products-dod-ack-door`,
-    `cpt-cf-bss-products-dod-catalog-version-table`.
-    **Owner**: this feature, with the PRD owner — the pairing row 18 already names.
+    **Blocks**: no DoD — **resolved by P-D-73**; `cpt-cf-bss-products-dod-ack-door` carries the refresh.
+    **Owner**: was this feature, with the PRD owner — the pairing row 18 already names; **closed**.
 
 39. **When four non-Foundation events join the roster, does `design/01` §4.5's list become the
     gear's list?** `events_tests`' own doc says the eight names are *"transcribed from the design's
@@ -2282,15 +2296,19 @@ against source at `41d1baa5e`.
     **Owner**: was this feature with pricing's SDK owner; **closed**.
 
 
-42. **What is "the manifest header"?** `design/06` §4 lists it as the last item of
+42. ~~**What is "the manifest header"?**~~
+    **Answered (owner call, 2026-09-01 — P-D-73 arm 3): struck.** Three mentions in the tree — the
+    roster item, this document's guard mirror, and this row — with no field set, no writer and no
+    reader. The third strike of the `superseded`/`staged_at` class; the manifest's body is the two
+    P-D-60 tables.
+    Original text: `design/06` §4 lists it as the last item of
     `products_catalog_version`'s column set and no document in the tree states its field set, its
     type, or whether the checksum covers it. Every other column on that table has a stated shape or
     a row here — `staged_at` at row 16, `participant_set_snapshot` at row 8, the missing
     `digest_version` at row 24 — and this one has neither. Until it is decided the row cannot be
     created.
-    **Blocks**: `cpt-cf-bss-products-dod-catalog-version-table`,
-    `cpt-cf-bss-products-dod-snapshot-builder`.
-    **Owner**: this feature, with whoever owns `design/06` §4.
+    **Blocks**: no DoD — **resolved by P-D-73**; `cpt-cf-bss-products-dod-catalog-version-table` is freed, `dod-snapshot-builder` staying with its other rows.
+    **Owner**: was this feature, with whoever owns `design/06` §4; **closed**.
 
 43. **Under which absence mode, and against which roster, is the manifest rendered?**
     `domain::canonical`'s entry point takes the mode as a **required** argument precisely because the

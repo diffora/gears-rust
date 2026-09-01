@@ -1569,6 +1569,43 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   (the re-publish step).
 
 
+#### P-D-73 — The version row unblocked: a digest companion, three cache writers, and a header that never existed
+
+- **Date**: 2026-09-01 (owner call, autonomous under the standing instruction — the three rows
+  holding `dod-catalog-version-table`, taken together so the table can be built)
+- **Context**: `features/catalog-version.md` §7 rows 24, 38 and 42.
+
+**1. `products_catalog_version` gains `digest_version`** (row 24) — written at publish beside the
+checksum, mirroring `products_entity_version`'s convention exactly; `domain::canonical`'s own doc
+states the reason and it applies identically to a manifest: without the column, corruption is
+invisible to every checksum because the drill cannot re-verify against the rule the digest was
+actually computed under.
+
+**2. `freeze_state`'s cache is refreshed by the three acts that change the ledger** (row 38): the
+ack door, the release door and the force-completion ceremony each recompute the P-D-49
+snapshot-driven summary **in their own transaction** and write it. `complete` therefore lands with
+the last snapshot member's ack, `complete(forced)` stays the ceremony's, and the
+all-acked-while-cache-reads-`open` window is eliminated by construction. Recompute-on-read was
+declined because the column's readers are the resolution refusals — C5 and `inst-rv-intent` branch
+on it — and resolution is the hot path; a per-read ledger aggregate would tax every posted-intent
+read for the benefit of avoiding one summary write on rare acts.
+
+**3. "The manifest header" is struck** (row 42): it appears in exactly three places — §4's roster
+item, the FEATURE's guard-enumeration mirror, and the row asking what it is — with **no field set,
+no writer and no reader anywhere in the tree**. The third strike of the `superseded`/`staged_at`
+class. The manifest's body is the two P-D-60 tables; the version row's summary columns are already
+named individually.
+
+- **The arguments against, stated**: arm 2 writes a derived value from three doors — three writers of
+  one cache, ordered by their own transactions, and the ledger stays the authority a drill checks
+  the cache against; arm 3 strikes a name a later reader might have wanted as an extension point —
+  an extension point with no stated content is exactly what the class strike exists for.
+- **Not changed**: rows 6, 7 and 18 (the formula's regression semantics, the naming, the predicate),
+  the append-only posture, and `freeze_state`'s roster.
+- **Propagated**: `design/06-catalog-version.md` (§4 the column roster), `features/catalog-version.md`
+  (`dod-catalog-version-table`, `dod-ack-door`, `dod-snapshot-builder`, the guard enumeration, §7's
+  arithmetic and rows 24, 38, 42 answered).
+
 #### P-D-72 — The family clone resumes from its own data, and the identity-map remainder is a widening
 
 - **Date**: 2026-09-01 (owner call, autonomous under the standing instruction;
