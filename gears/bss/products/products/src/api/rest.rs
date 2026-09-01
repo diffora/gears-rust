@@ -154,6 +154,7 @@ use crate::domain::validation::ValidationReport;
 use crate::infra::storage::RepoError;
 use crate::infra::storage::repo::{self, AuditCommon, IdempotencyClaim, RefusalSubject};
 
+pub mod catalog_version;
 pub mod preconditions;
 pub mod products;
 pub mod skus;

@@ -26,14 +26,21 @@ use super::{AuthzError, access_scope, actions, authz_label_type_schemas, labels,
 use crate::test_support::flat_in_enforcer;
 
 #[test]
-fn labels_all_is_product_and_sku() {
-    assert_eq!(labels::ALL, [labels::PRODUCT, labels::SKU]);
+fn labels_all_is_product_sku_and_catalog_version() {
+    assert_eq!(
+        labels::ALL,
+        [labels::PRODUCT, labels::SKU, labels::CATALOG_VERSION]
+    );
 }
 
 #[test]
 fn resource_types_carry_their_labels() {
     assert_eq!(resource_types::PRODUCT.name(), labels::PRODUCT);
     assert_eq!(resource_types::SKU.name(), labels::SKU);
+    assert_eq!(
+        resource_types::CATALOG_VERSION.name(),
+        labels::CATALOG_VERSION
+    );
 }
 
 /// Stronger than a suffix match: every authz label must parse as a

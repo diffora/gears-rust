@@ -1194,7 +1194,7 @@ async fn create_sku(
 ) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(extension_ctx)?;
     let tenant_id = ctx.subject_tenant_id();
-    let now = Utc::now();
+    let now = canonical::write_instant(Utc::now());
 
     // Taken from the parsed request before it is destructured, so the
     // operand is what the caller sent rather than what the steps below
@@ -1349,18 +1349,11 @@ async fn create_sku(
         region_scope: child_scope.region.render(),
         brand_scope: child_scope.brand.render(),
         created_by: actor_ref.to_string(),
-        // `now` is written with everything `Utc::now()` gave it, nanoseconds
-        // included, and **that is a debt this line owes**, carried here from
-        // `canonical::render_instant`'s own doc so it sits where it can be
-        // paid. `created_at` is on the frozen-content roster; `SQLite` stores
-        // all nine digits while Postgres `timestamptz` rounds to six, and the
-        // renderer truncates, so one engine can freeze `.123456` where the
-        // other freezes `.123457` for the same entity and the two
-        // `content_digest` values differ. Truncating the instant to
-        // microseconds **at this write** is what actually closes it -- neither
-        // engine would then hold a digit the other could round differently --
-        // and it is not done here because it moves a value on a live column
-        // and is owed a decision of its own rather than a drive-by change.
+        // `now` arrives already truncated to microseconds — the handler
+        // stamps it through `canonical::write_instant` (P-D-82), which is
+        // what closed the cross-engine digest hazard this comment used to
+        // carry as a debt: neither engine now holds a fractional digit the
+        // other could round differently.
         created_at: now,
         // An ordinary create has no lineage; the clone door is the pair's
         // only writer (P-D-76).
@@ -1640,7 +1633,7 @@ async fn clone_sku(
 ) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(extension_ctx)?;
     let tenant_id = ctx.subject_tenant_id();
-    let now = Utc::now();
+    let now = canonical::write_instant(Utc::now());
     let payload_hash = clone_sku_payload_digest(&body);
 
     let code_override = body.code.as_deref().map(str::trim).map(str::to_owned);
@@ -3741,7 +3734,7 @@ async fn publish_sku_gated(
     gate: &Arc<dyn GovernanceGate + Send + Sync>,
     mode: GateMode,
 ) -> Result<Response, CanonicalError> {
-    let now = Utc::now();
+    let now = canonical::write_instant(Utc::now());
     let act = open_act(
         state,
         enforcer,
@@ -3899,7 +3892,7 @@ async fn discard_sku_gated(
     sku_id: Uuid,
     gate: &Arc<dyn GovernanceGate + Send + Sync>,
 ) -> Result<Response, CanonicalError> {
-    let now = Utc::now();
+    let now = canonical::write_instant(Utc::now());
     let act = open_act(
         state,
         enforcer,
@@ -4729,7 +4722,7 @@ async fn save_sku_gated(
     request: SaveSkuRequest,
     gate: &Arc<dyn GovernanceGate + Send + Sync>,
 ) -> Result<Response, CanonicalError> {
-    let now = Utc::now();
+    let now = canonical::write_instant(Utc::now());
     let act = open_act(
         state,
         enforcer,

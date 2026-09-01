@@ -87,7 +87,7 @@ use bss_products_sdk::models::LifecycleState;
 use crate::domain::error::DomainError;
 use crate::infra::storage::RepoError;
 use crate::infra::storage::entity::{
-    audit_log, entity_version, idempotency, identity_ref, product, sku,
+    audit_log, catalog_version_request, entity_version, idempotency, identity_ref, product, sku,
 };
 
 /// A statement's failure, with `sea-orm`'s own error kept unchanged.
@@ -1485,6 +1485,149 @@ pub async fn answer_idempotency_key(
         return Ok(IdempotencyAnswer::NotHeld);
     }
     Ok(IdempotencyAnswer::Recorded)
+}
+
+/// One increment request as the door writes it — `requested_at` already
+/// stamped, the state the insert's own (`pending`).
+#[derive(Clone, Copy, Debug)]
+pub struct NewIncrementRequest<'a> {
+    /// The registered requester.
+    pub source: &'a str,
+    /// The caller's idempotency handle.
+    pub request_key: &'a str,
+    /// `interactive` or `bulk`.
+    pub lane: &'a str,
+    /// The bulk batch key, absent on the interactive lane.
+    pub operation_key: Option<&'a str>,
+    /// The door's ingress stamp.
+    pub requested_at: DateTime<Utc>,
+}
+
+/// One row of the increment queue, in this repository's vocabulary.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IncrementRequestRecord {
+    /// `pending` or `coalesced`.
+    pub state: String,
+    /// The satisfying version, present exactly when `coalesced`.
+    pub satisfied_by_version_id: Option<i64>,
+}
+
+/// The request door's write (`inst-cv-request`): `INSERT` the request, or
+/// report the row the key already holds — the queue's own UNIQUE **is** the
+/// idempotency, so no `products_idempotency` claim participates.
+///
+/// Answers the row's current state either way: a fresh insert is `pending`,
+/// a replay answers whatever the coalescer has made of it.
+///
+/// # Errors
+///
+/// [`RepoError`] on a storage or scope failure, or a held row that vanished
+/// between the conflict and the read-back — the store contradicting itself.
+pub async fn enqueue_increment_request(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    new: NewIncrementRequest<'_>,
+) -> Result<IncrementRequestRecord, RepoError> {
+    let NewIncrementRequest {
+        source,
+        request_key,
+        lane,
+        operation_key,
+        requested_at,
+    } = new;
+    let model = catalog_version_request::ActiveModel {
+        tenant_id: Set(tenant_id),
+        source: Set(source.to_owned()),
+        request_key: Set(request_key.to_owned()),
+        lane: Set(lane.to_owned()),
+        operation_key: Set(operation_key.map(str::to_owned)),
+        requested_at: Set(requested_at),
+        state: Set("pending".to_owned()),
+        satisfied_by_version_id: Set(None),
+    };
+
+    let on_conflict = OnConflict::columns([
+        catalog_version_request::Column::TenantId,
+        catalog_version_request::Column::Source,
+        catalog_version_request::Column::RequestKey,
+    ])
+    .do_nothing()
+    .to_owned();
+
+    match catalog_version_request::Entity::insert(model.clone())
+        .secure()
+        .scope_with_model(scope, &model)
+        .map_err(|e| {
+            driver_failure(
+                format!("increment request {tenant_id}/{source}/{request_key} scope"),
+                e,
+            )
+        })?
+        .on_conflict_raw(on_conflict)
+        .exec(runner)
+        .await
+    {
+        Ok(_) => {
+            return Ok(IncrementRequestRecord {
+                state: "pending".to_owned(),
+                satisfied_by_version_id: None,
+            });
+        }
+        // The key is already held; the replay answers the stored row.
+        Err(ScopeError::Db(DbErr::RecordNotInserted)) => {}
+        Err(e) => {
+            return Err(driver_failure(
+                format!("increment request {tenant_id}/{source}/{request_key}"),
+                e,
+            ));
+        }
+    }
+
+    find_increment_request(runner, scope, tenant_id, source, request_key)
+        .await?
+        .ok_or_else(|| {
+            RepoError::CorruptRow(format!(
+                "increment request {tenant_id}/{source}/{request_key} conflicted on insert \
+                 but no row remained to read"
+            ))
+        })
+}
+
+/// Read one increment request by its full key — the poll's operand
+/// (P-D-81 arm 3).
+///
+/// # Errors
+///
+/// [`RepoError`] on a storage or scope failure.
+pub async fn find_increment_request(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    source: &str,
+    request_key: &str,
+) -> Result<Option<IncrementRequestRecord>, RepoError> {
+    let row = catalog_version_request::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(catalog_version_request::Column::TenantId.eq(tenant_id))
+                .add(catalog_version_request::Column::Source.eq(source))
+                .add(catalog_version_request::Column::RequestKey.eq(request_key)),
+        )
+        .one(runner)
+        .await
+        .map_err(|e| {
+            driver_failure(
+                format!("read increment request {tenant_id}/{source}/{request_key}"),
+                e,
+            )
+        })?;
+    Ok(row.map(|row| IncrementRequestRecord {
+        state: row.state,
+        satisfied_by_version_id: row.satisfied_by_version_id,
+    }))
 }
 
 /// Stamp the composite act's parent handle onto a `claimed` key (P-D-79).

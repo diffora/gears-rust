@@ -61,12 +61,16 @@ pub mod labels {
     /// SKUs — the authoring data plane for the `SKU` entity (`read`, `write`,
     /// `publish`).
     pub const SKU: &str = gts_id!("cf.bss.products.sku.v1~");
+    /// The catalog version — the demand and freeze plane
+    /// (`request` today; `05-governance` §3.2 declares more actions on this
+    /// resource, each arriving with its own door — `dod-cv-authz`).
+    pub const CATALOG_VERSION: &str = gts_id!("cf.bss.products.catalog_version.v1~");
 
     /// Every authz label this module declares, stable order. The single
     /// canonical list driving [`super::authz_label_type_schemas`]'s stub
     /// registration. MUST match the permission catalog's distinct
     /// `resource_type`s (`crate::gts::permissions`); a drift test enforces it.
-    pub const ALL: &[&str] = &[PRODUCT, SKU];
+    pub const ALL: &[&str] = &[PRODUCT, SKU, CATALOG_VERSION];
 }
 
 /// PEP action names for the labels above.
@@ -82,6 +86,10 @@ pub mod actions {
     /// Publish action — turning an approved draft into a published version
     /// (`POST /bss-products/v1/{products|skus}/{id}/publish`).
     pub const PUBLISH: &str = "publish";
+    /// Request action — enqueueing a `CatalogVersion` increment
+    /// (`POST /bss-products/v1/catalog-version-requests` and the in-process
+    /// binding alike — `design/06` §2 rule 1's one gate for both).
+    pub const REQUEST: &str = "request";
 }
 
 /// Properties the PEP may compile from PDP constraints for registry rows.
@@ -106,6 +114,9 @@ pub mod resource_types {
         ResourceType::from_static(labels::PRODUCT, SUPPORTED_PROPERTIES);
     /// SKUs — `read`, `write`, `publish`.
     pub const SKU: ResourceType = ResourceType::from_static(labels::SKU, SUPPORTED_PROPERTIES);
+    /// The catalog version — `request`.
+    pub const CATALOG_VERSION: ResourceType =
+        ResourceType::from_static(labels::CATALOG_VERSION, SUPPORTED_PROPERTIES);
 }
 
 /// Error from the registry's PEP gate.

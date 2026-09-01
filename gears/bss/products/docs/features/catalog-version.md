@@ -832,7 +832,7 @@ version-liveness source, and never the per-SKU reference count, which carries no
 
 ### The increment-request contract, in `bss-products-sdk`
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-increment-request-port`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-increment-request-port`
 
 The system **MUST** publish the increment-request contract as a **client trait in
 `bss-products-sdk`**, a typed contract a consumer resolves from `ClientHub` rather than an
@@ -866,10 +866,11 @@ configure rather than to that default. *(An earlier revision of this paragraph p
 the door's synchronous work; a door that waited on a per-tenant lease could not fit any such budget
 under contention, and the two claims could not both hold.)*
 
-**This is the SDK's first write method**, and that is a shape decision this DoD names rather than
-takes. `bss_products_sdk::api::ProductsClient` ships exactly two methods, `get_product` and
-`get_sku`, and its own doc calls it *"the in-process contract for **reading** registry entities"*.
-Whether the increment contract widens that trait or arrives as a second one is §7's.
+**This is the SDK's first write method**, and its shape is settled (**P-D-81** — §7 row 28):
+a **second trait** (`IncrementRequests`, `bss_products_sdk::increments`) beside
+`bss_products_sdk::api::ProductsClient`, which ships exactly two methods, `get_product` and
+`get_sku`, and whose own doc calls it *"the in-process contract for **reading** registry
+entities"* — a scope the write contract does not widen.
 
 **The counterpart port already ships and pre-agreed to become an adapter over this one.**
 `bss_pricing_sdk::CatalogVersionRegistryV1` carries `request_version(ctx, request_id)` →
@@ -880,10 +881,12 @@ SDK this trait becomes an adapter over it."* So the new dependency edge runs **`
 `bss-products-sdk`**, not the reverse — the pricing-side doc is explicit that the contract lives
 there only so *"the registry gear can implement it without depending on `bss-pricing`"*.
 
-**Four measured mismatches between that port and this contract are §7's, not this DoD's**: the
-missing `source`/`lane`/`operation_key` operands, the un-echoed `pending_ref`, the doorless
-`committed_version` poll, and the shipped port's fourth error arm (`Rejected`, with its
-`CATALOG_VERSION_REJECTED` wire constant) which this feature's roster has no counterpart for.
+**The four measured mismatches between that port and this contract are settled** (**P-D-81** on
+rows 19, 20, 21 and 28, and **P-D-52** for the fourth): the adapter supplies
+`source`/`lane`/`operation_key`; `pending_ref` is the request's own coordinates rendered; the
+`committed_version` poll's surface is the port method itself; and the shipped port's `Rejected`
+arm now has its counterpart — the door's `REQUEST_SOURCE_UNKNOWN` rides the
+`CATALOG_VERSION_REJECTED` precondition violation that arm discriminates on.
 
 **Implements**: `cpt-cf-bss-products-flow-increment`
 
@@ -893,7 +896,7 @@ missing `source`/`lane`/`operation_key` operands, the un-echoed `pending_ref`, t
 
 ### The increment-request door
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-request-door`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-request-door`
 
 The system **MUST** serve `POST /bss-products/v1/catalog-version-requests` as the
 **out-of-process binding** of the contract above and as the authz door **both** bindings pass

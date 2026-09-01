@@ -21,3 +21,9 @@ toolkit-canonical-errors = { workspace = true }
 # UUID everywhere it appears. The contract carries the type rather than a
 # `String` so a caller cannot pass a code where an id belongs.
 uuid = { workspace = true }
+# The increment-request contract's methods take the caller's SecurityContext:
+# both bindings pass the same `catalog_version x request` gate, and an
+# in-process binding cannot gate without the identity (design/06 sec 2 rule 1).
+toolkit-security = { workspace = true }
+# The resource-error identity is a GTS id, the platform's own naming.
+toolkit-gts = { workspace = true }

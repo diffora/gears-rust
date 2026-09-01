@@ -60,6 +60,17 @@ gts_instance! {
     }
 }
 
+// -- catalog version -- the demand plane ---------------------------------------
+
+gts_instance! {
+    AuthzPermissionV1 {
+        id: gts_id!("cf.toolkit.authz.permission.v1~cf.bss.products.catalog_version_request.v1"),
+        resource_type: labels::CATALOG_VERSION.to_owned(),
+        action: actions::REQUEST.to_owned(),
+        display_name: "Request a catalog-version increment".to_owned(),
+    }
+}
+
 // -- sku -- the authoring data plane ------------------------------------------
 
 gts_instance! {
@@ -103,6 +114,7 @@ mod tests {
         gts_id!("cf.toolkit.authz.permission.v1~cf.bss.products.sku_write.v1"),
         gts_id!("cf.toolkit.authz.permission.v1~cf.bss.products.sku_publish.v1"),
         gts_id!("cf.toolkit.authz.permission.v1~cf.bss.products.sku_read.v1"),
+        gts_id!("cf.toolkit.authz.permission.v1~cf.bss.products.catalog_version_request.v1"),
     ];
 
     fn products_permission_instances() -> Vec<&'static InventoryInstance> {
@@ -195,6 +207,7 @@ mod tests {
             crate::authz::actions::READ,
             crate::authz::actions::WRITE,
             crate::authz::actions::PUBLISH,
+            crate::authz::actions::REQUEST,
         ];
         for entry in products_permission_instances() {
             let action = (entry.payload_fn)()["action"]

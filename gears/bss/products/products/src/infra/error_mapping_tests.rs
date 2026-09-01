@@ -55,6 +55,11 @@ fn declared_status_and_code(err: &DomainError) -> (u16, Option<&'static str>) {
         D::ApprovalRequired(_) => (403, Some("APPROVAL_REQUIRED")),
         D::ErasureUnknownActor(_) => (400, Some("ERASURE_UNKNOWN_ACTOR")),
         D::CloneSourceDiscarded(_) => (409, Some("CLONE_SOURCE_DISCARDED")),
+        // FailedPrecondition renders 400 on the wire; the discriminator the
+        // consumer matches on is the violation TYPE (CATALOG_VERSION_REJECTED),
+        // asserted by its own case below, while the audit channel carries the
+        // domain code.
+        D::RequestSourceUnknown(_) => (400, Some("CATALOG_VERSION_REJECTED")),
     }
 }
 
@@ -91,6 +96,7 @@ fn one_of_every_variant() -> Vec<DomainError> {
         D::ApprovalRequired(d()),
         D::ErasureUnknownActor(d()),
         D::CloneSourceDiscarded(d()),
+        D::RequestSourceUnknown(d()),
     ]
 }
 
@@ -101,7 +107,7 @@ fn one_of_every_variant() -> Vec<DomainError> {
 /// new variant makes that match fail to compile, and this makes the roster
 /// that is *missing* the value fail the case. Bump it in the same edit that
 /// adds the variant to both.
-const DOMAIN_ERROR_VARIANTS: usize = 16;
+const DOMAIN_ERROR_VARIANTS: usize = 17;
 
 /// Covers all 14 variants (§3.3's own count, `DomainError::code`'s own
 /// exhaustiveness note): every one lands on the status the design ladder
@@ -143,11 +149,25 @@ fn every_domain_error_variant_lands_in_its_declared_category() {
             "the ladder must carry {expected_code:?} for {name}"
         );
         if let Some(code) = expected_code {
-            assert_eq!(
-                code, wire_code,
-                "the ladder's own code for {name} must be `DomainError::code()`'s, not a second \
-                 literal"
-            );
+            // One deliberate exception: the request door's refusal carries
+            // the CONSUMER'S discriminator on the wire (P-D-52 — pricing's
+            // `Rejected` arm matches the violation type
+            // `CATALOG_VERSION_REJECTED`), while `DomainError::code()` stays
+            // the audit channel's `REQUEST_SOURCE_UNKNOWN`. For every other
+            // variant the two are one string, and the assertion holds the
+            // pair together so a second literal cannot drift in unnoticed.
+            if wire_code == "REQUEST_SOURCE_UNKNOWN" {
+                assert_eq!(
+                    code, "CATALOG_VERSION_REJECTED",
+                    "the request-source refusal must carry the consumer's discriminator"
+                );
+            } else {
+                assert_eq!(
+                    code, wire_code,
+                    "the ladder's own code for {name} must be `DomainError::code()`'s, not a \
+                     second literal"
+                );
+            }
         }
     }
 }

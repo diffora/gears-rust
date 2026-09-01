@@ -373,6 +373,19 @@ fn render_number(number: &Number) -> String {
     }
 }
 
+/// An instant as every head-row write stores it: truncated to microseconds
+/// (**P-D-82**). `SQLite` stores all nine fractional digits while Postgres
+/// `timestamptz` **rounds** to six, so a nanosecond-carrying write can
+/// freeze one logical entity under two `content` strings and two digests
+/// across engines; truncating at the write removes the digits before either
+/// engine sees them, and [`render_instant`]'s own truncation becomes
+/// defense in depth instead of the only line.
+#[must_use]
+pub fn write_instant(instant: DateTime<Utc>) -> DateTime<Utc> {
+    let sub_micro = i64::from(instant.timestamp_subsec_nanos() % 1000);
+    instant - chrono::Duration::nanoseconds(sub_micro)
+}
+
 /// One instant, as §4.3's timestamp clause renders it: `RFC 3339` in `UTC` at
 /// **microsecond** precision, with the offset spelled `Z`.
 ///
@@ -410,12 +423,10 @@ fn render_number(number: &Number) -> String {
 /// they stored different values. The fix is to truncate the instant to
 /// microseconds **where it is written** — at the head-row insert, so that both
 /// engines store a value with nothing below the microsecond for either of them
-/// to disagree about. That is **still owed**, and this doc is no longer the
-/// only place it is recorded: the note now sits at both create doors' own
-/// `created_at: now` line, which is the write in question, so the debt is
-/// beside the code that would pay it rather than only beside the renderer that
-/// cannot. Until it is paid a Postgres-stored `created_at` can disagree with a
-/// `SQLite`-stored one in the sixth digit.
+/// to disagree about. **That is paid** (P-D-82): every handler stamps its
+/// instant through [`write_instant`] beside this function, so this
+/// truncation is defense in depth rather than the only line, and both
+/// engines store identical bytes.
 #[must_use]
 pub fn render_instant(instant: DateTime<Utc>) -> String {
     instant.format("%Y-%m-%dT%H:%M:%S%.6fZ").to_string()

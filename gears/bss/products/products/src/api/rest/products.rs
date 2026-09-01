@@ -1182,7 +1182,7 @@ async fn create_product(
 ) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(extension_ctx)?;
     let tenant_id = ctx.subject_tenant_id();
-    let now = Utc::now();
+    let now = canonical::write_instant(Utc::now());
 
     // The digest is taken from the parsed request before it is destructured,
     // so the operand is what the caller sent rather than what the steps
@@ -1361,18 +1361,11 @@ async fn create_product(
         region_scope: region_scope.unwrap_or_default(),
         brand_scope: brand_scope.unwrap_or_default(),
         created_by: actor_ref.to_string(),
-        // `now` is written with everything `Utc::now()` gave it, nanoseconds
-        // included, and **that is a debt this line owes**, carried here from
-        // `canonical::render_instant`'s own doc so it sits where it can be
-        // paid. `created_at` is on the frozen-content roster; `SQLite` stores
-        // all nine digits while Postgres `timestamptz` rounds to six, and the
-        // renderer truncates, so one engine can freeze `.123456` where the
-        // other freezes `.123457` for the same entity and the two
-        // `content_digest` values differ. Truncating the instant to
-        // microseconds **at this write** is what actually closes it -- neither
-        // engine would then hold a digit the other could round differently --
-        // and it is not done here because it moves a value on a live column
-        // and is owed a decision of its own rather than a drive-by change.
+        // `now` arrives already truncated to microseconds — the handler
+        // stamps it through `canonical::write_instant` (P-D-82), which is
+        // what closed the cross-engine digest hazard this comment used to
+        // carry as a debt: neither engine now holds a fractional digit the
+        // other could round differently.
         created_at: now,
         // An ordinary create has no lineage; the clone door is the pair's
         // only writer (P-D-76).
@@ -2025,7 +2018,7 @@ async fn open_head_door(
     act: &HeadAct,
 ) -> Result<OpenedHeadDoor, CanonicalError> {
     let tenant_id = ctx.subject_tenant_id();
-    let now = Utc::now();
+    let now = canonical::write_instant(Utc::now());
 
     // -- 1. actor_ref resolution: its own transaction, ahead of the gate. --
     let actor_ref =
@@ -5407,7 +5400,7 @@ async fn clone_product(
 ) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(extension_ctx)?;
     let tenant_id = ctx.subject_tenant_id();
-    let now = Utc::now();
+    let now = canonical::write_instant(Utc::now());
     let payload_hash = clone_payload_digest(&body);
 
     let name_override = body.name.as_deref().map(str::trim).map(str::to_owned);

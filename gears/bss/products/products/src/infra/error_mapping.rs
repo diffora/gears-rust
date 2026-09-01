@@ -214,6 +214,18 @@ impl From<DomainError> for CanonicalError {
             // ENTITY_TERMINAL's meaning is a head write and the clone writes
             // nothing to the source.
             D::CloneSourceDiscarded(detail) => aborted(detail, "CLONE_SOURCE_DISCARDED"),
+
+            // -- FailedPrecondition (400) under the consumer's discriminator.
+            // The violation TYPE is `CATALOG_VERSION_REJECTED` — the string
+            // pricing's `Rejected` arm matches on (P-D-52) — while the audit
+            // row records the domain code `REQUEST_SOURCE_UNKNOWN`; a 403
+            // here would land on the consumer projection's `Other` arm and
+            // leave `Rejected` unreachable.
+            D::RequestSourceUnknown(detail) => precondition(
+                "source",
+                &detail,
+                bss_products_sdk::increments::CATALOG_VERSION_REJECTED,
+            ),
             D::IllegalTransition { from, to } => {
                 aborted(format!("from {from} to {to}"), "ILLEGAL_TRANSITION")
             }

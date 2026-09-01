@@ -25,6 +25,7 @@
 #![forbid(unsafe_code)]
 
 pub mod api;
+pub mod increments;
 pub mod models;
 
 pub use api::ProductsClient;

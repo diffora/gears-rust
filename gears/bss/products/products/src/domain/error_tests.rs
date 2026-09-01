@@ -62,6 +62,10 @@ fn every_variant_carries_its_design_set_wire_code() {
             DomainError::CloneSourceDiscarded("s".into()),
             "CLONE_SOURCE_DISCARDED",
         ),
+        (
+            DomainError::RequestSourceUnknown("s".into()),
+            "REQUEST_SOURCE_UNKNOWN",
+        ),
     ];
     for (error, expected) in &cases {
         assert_eq!(error.code(), *expected, "wrong code for {error:?}");
@@ -70,10 +74,11 @@ fn every_variant_carries_its_design_set_wire_code() {
     // roster short, and the roster is what the response map is built from.
     assert_eq!(
         cases.len(),
-        16,
-        "the Foundation owns fourteen raiseable codes and hosts two guests: \
+        17,
+        "the Foundation owns fifteen raiseable codes and hosts two guests: \
          retention-erasure's ERASURE_UNKNOWN_ACTOR (P-D-64 keeps that roster \
          at one) and the clone door's CLONE_SOURCE_DISCARDED (P-D-75's mint); \
+         the fifteenth is the request door's REQUEST_SOURCE_UNKNOWN (P-D-52); \
          PARENT_NOT_PUBLISHED is registered by the lifecycle feature and \
          RETIREMENT_PENDING is declared by it"
     );

@@ -332,6 +332,24 @@ impl Gear for BssProductsGear {
             (sink, OutboxLifetime::Interim(handle))
         };
 
+        // The increment-request contract's default in-process binding
+        // (P-D-15, `design/06` §2 rule 1): registered here so a sibling gear
+        // resolves `dyn IncrementRequests` from the hub without knowing the
+        // implementation package. The out-of-process binding is the REST
+        // door `register_rest` merges; both run the identical
+        // `catalog_version x request` gate.
+        ctx.client_hub()
+            .register::<dyn bss_products_sdk::increments::IncrementRequests>(Arc::new(
+                crate::api::rest::catalog_version::InProcessIncrementRequests {
+                    state: Arc::new(crate::api::rest::ApiState {
+                        db: db_provider.clone(),
+                        sink: sink.clone(),
+                        idempotency_retention_hours,
+                    }),
+                    enforcer: (*enforcer).clone(),
+                },
+            ));
+
         self.runtime.store(Some(Arc::new(ProductsRuntime {
             enforcer,
             sink,
@@ -388,6 +406,10 @@ impl RestApiCapability for BssProductsGear {
                 openapi,
             ))
             .merge(crate::api::rest::skus::router(
+                Arc::clone(&api_state),
+                openapi,
+            ))
+            .merge(crate::api::rest::catalog_version::router(
                 Arc::clone(&api_state),
                 openapi,
             ))

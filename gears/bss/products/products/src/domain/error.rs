@@ -116,6 +116,16 @@ pub enum DomainError {
     /// 409: the source's state refuses the act.
     #[error("clone source is discarded: {0}")]
     CloneSourceDiscarded(String),
+
+    /// An increment request whose `source` is outside the registered
+    /// trigger set (P-D-52; `design/06` §2 rule 1). Raised **after** the
+    /// `catalog_version x request` grant passes — a precondition on the
+    /// request's content, not an authorization fact — and mapped to a
+    /// `FailedPrecondition` carrying a violation of type
+    /// `CATALOG_VERSION_REJECTED`, the discriminator the consumer's
+    /// `Rejected` arm matches on.
+    #[error("unregistered increment source: {0}")]
+    RequestSourceUnknown(String),
 }
 
 impl DomainError {
@@ -144,6 +154,7 @@ impl DomainError {
             Self::ApprovalRequired(_) => "APPROVAL_REQUIRED",
             Self::ErasureUnknownActor(_) => "ERASURE_UNKNOWN_ACTOR",
             Self::CloneSourceDiscarded(_) => "CLONE_SOURCE_DISCARDED",
+            Self::RequestSourceUnknown(_) => "REQUEST_SOURCE_UNKNOWN",
         }
     }
 }
