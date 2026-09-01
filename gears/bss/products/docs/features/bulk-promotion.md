@@ -1058,7 +1058,7 @@ eighteen and agrees with both the split and the transcribed rows. A final subsec
 owed to other documents; those are not rows.
 
 **Thirty rows now: the twenty-nine below plus row 30, raised by the group 13a build when it reached
-the wall.** **Twelve of the thirty block no DoD**: row 1, plus rows 8, 9, 18 and 26 (resolved on
+the wall.** **Thirteen of the thirty block no DoD**: row 1, plus rows 8, 9, 18 and 26 (resolved on
 **2026-08-31**: **P-D-54** answered row 26, freeing `cpt-cf-bss-products-dod-stage-phase` and
 promoting row 18 to sole blocker of `dod-coalesced-event`; **P-D-61** answered rows 8, 9 and 18,
 freeing `dod-bulk-errors`, `dod-bulk-tables` and `dod-coalesced-event`), and rows 5, 15, 19, 20, 24,
@@ -1066,8 +1066,8 @@ freeing `dod-bulk-errors`, `dod-bulk-tables` and `dod-coalesced-event`), and row
 `dod-promotion-resolver`, `dod-idempotency-lane` and `dod-bulk-lifecycle`. All are kept in place
 rather than struck. `dod-batch-state-machine` remains blocked by rows 6 and 7 — the never-approved
 batch's tenant slot and the commit-phase trigger, neither answered here — and
-`dod-stage-phase`, freed by P-D-54, is **re-blocked by row 30**: the phase has an executor and no
-payload to execute over.
+`dod-stage-phase`, freed by P-D-54 and re-blocked by row 30, is **freed again by P-D-86**, which
+gives the phase the payload column its executor had nothing to execute over.
 
 **Carried, not answered**, and registered against **its owner's** register. **Three departures from
 verbatim, declared so the claim is checkable.** First, the slice's inline `Owner:` sentence and any
@@ -1375,8 +1375,16 @@ whether DECOMPOSITION's entity field is a listing convention or an ontological c
     **Blocks**: `cpt-cf-bss-products-dod-bulk-override-ceremony`.
     **Owner**: `05-governance`'s owner.
 
-30. **Where does a Product or SKU row's staged payload live between the import door and the
-    worker?** `design/09` §4's ledger columns are `entity_kind`, `entity_id`, `pinned_revision`,
+30. ~~**Where does a Product or SKU row's staged payload live between the import door and the
+    worker?**~~
+    **Answered (owner call, 2026-09-01 — P-D-86): a `staged_payload` column on the ledger
+    row**, nullable, carrying the canonical serialization of the row's imported content — written
+    by the import door, read by the worker, appended by an in-place edit of
+    `m20260901_000014` and shape-CHECKed against the row class. The synchronous-door alternative
+    is measurably wrong: it would put a whole batch's validation inside one HTTP call, against
+    the 202, the sizing fixture and the executor `dod-stage-phase` and P-D-54 both name.
+    `governed_live_op` keeps its stated meaning; folding the two would rewrite a gloss.
+    Original text: `design/09` §4's ledger columns are `entity_kind`, `entity_id`, `pinned_revision`,
     `disposition`, `code`, `reason`, `governed_live_op`, `override_acknowledged` and `terminal_at` —
     and `governed_live_op` is scoped by its own gloss to *"the pending payload a **live-entity** row
     stages"*. So a Product or SKU row has **no column carrying the content it was imported with**,
@@ -1389,8 +1397,8 @@ whether DECOMPOSITION's entity field is a listing convention or an ontological c
     symmetric with `governed_live_op` and appended by the same in-place edit the chain uses; or a
     door that stages synchronously, which contradicts the worker `dod-stage-phase` and **P-D-54**
     both name as the phase's executor. *(Raised by the group 13a build, which reached the wall.)*
-    **Blocks**: `cpt-cf-bss-products-dod-stage-phase`.
-    **Owner**: this feature with `01-foundation`'s storage owner.
+    **Blocks**: no DoD — **resolved by P-D-86**; `cpt-cf-bss-products-dod-stage-phase` is freed again.
+    **Owner**: was this feature with `01-foundation`'s storage owner; **closed**.
 
 ### Owed to other documents, recorded and deliberately not edited
 

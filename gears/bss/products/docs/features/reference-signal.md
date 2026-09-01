@@ -1114,10 +1114,14 @@ here is ticked by inspection.
 **The arithmetic of this section.** Thirty-three rows: **sixteen carried verbatim** from
 [`../design/07-reference-signal.md`](../design/07-reference-signal.md) §6 — the slice's full count,
 not a selection — and **seventeen raised here**: five while authoring, from reading the crate, and
-twelve by the three-lens review of this document. Of the thirty-three, **fourteen block no DoD in this
-document** (rows 3, 4, 17, 31, 32 and 33, plus row 27, which **P-D-59 resolved on 2026-08-31**, and
-rows 1, 13, 25, 26, 28, 29 and 30, which **P-D-71 resolved on 2026-09-01** — all kept in place
-rather than struck); the other nineteen each name the DoD they block.
+twelve by the three-lens review of this document. Of the thirty-three, **eighteen block no DoD in this
+document** (rows 3, 4, 17, 31 and 33, plus row 27, which **P-D-59 resolved on 2026-08-31**, and
+rows 1, 13, 25, 26, 28, 29 and 30, which **P-D-71 resolved on 2026-09-01**, and rows 7, 12, 16, 19
+and 32, which **P-D-87 resolved** the same day, freeing `cpt-cf-bss-products-dod-reference-config`,
+`dod-producer-table` and `dod-watermark-door` — all kept in place
+rather than struck; row 32 was listed here before its own `Blocks` field named a DoD, and P-D-87
+made the listing true rather than leaving the two at odds); the other fifteen each name the DoD they
+block.
 
 **Carried, not answered.** A question is registered against **its owner's** register. Where the
 owner is another document, the row carries a one-line pointer and nothing more.
@@ -1229,14 +1233,16 @@ leaves the specific ones looking open:
    `cpt-cf-bss-products-dod-correction-republish`.
    **Owner**: this feature.
 
-7. **The `WATERMARK_FUTURE` skew tolerance has no config home.** `inst-ws-not-future` introduces a
+7. ~~**The `WATERMARK_FUTURE` skew tolerance has no config home.**~~
+    **Answered (owner call, 2026-09-01 — P-D-87 arm 1): `watermark_skew_tolerance_minutes` on
+   `ProductsConfig`, interim 5** — per-deployment and boot-time, P-D-84 arm 5's posture, now
+   precedent rather than invention; row 19 takes the other three the same way.
+    Original text: `inst-ws-not-future` introduces a
    "configured tolerance, interim 5 min"; `PRD` §17.1 has no row for it, and §1.4's reference line
    claims only the freshness and tripwire interims. It is the one configurable in this slice with no
    home. *(Two lenses raised it independently.)*
-   **Blocks**: `cpt-cf-bss-products-dod-reference-config`,
-   `cpt-cf-bss-products-dod-watermark-door`.
-   **Owner**: the §17.1 policy owner. *See row 19: measured at `19a81a406`, three of this feature's
-   four knobs are in the same position, not one.*
+    **Blocks**: no DoD — **resolved by P-D-87**.
+    **Owner**: was the §17.1 policy owner. *See row 19: measured at `19a81a406`, three of this feature's; **closed**.
 
 8. **What population does the tripwire count?** C6 counts break-glass corrections per window, and the
    unresolvable-target arm "increments the same `TripwireCounter`" — but that arm is admissible while
@@ -1271,14 +1277,18 @@ leaves the specific ones looking open:
     **Blocks**: `cpt-cf-bss-products-dod-correction-republish`.
     **Owner**: `05-governance`'s owner.
 
-12. **What happens to a retired producer's watermark and member rows, and to one that re-registers?**
+12. ~~**What happens to a retired producer's watermark and member rows, and to one that re-registers?**~~
+    **Answered (owner call, 2026-09-01 — P-D-87 arm 2): the watermark and member rows are
+    DELETED in the retirement transaction**, the producer row staying with `state = retired`, so a
+    re-registering producer starts `never-received` — which is what makes the DoD's own
+    onboarding-can-only-tighten clause true rather than merely stated.
+    Original text:
     `design/07` §4's producer row carries only a state, a registration instant, a ceremony ref and
     the declaration payload, with no clearing rule. If the rows survive, retire-then-re-register inside the freshness window makes the
     producer read **fresh** against a stale member set and frees every SKU that has since gained a
     reference — the opposite of "onboarding can only tighten, never free".
-    **Blocks**: `cpt-cf-bss-products-dod-producer-table`,
-    `cpt-cf-bss-products-dod-producer-registration`.
-    **Owner**: `fr-reference-producer-registration`'s owner.
+    **Blocks**: no DoD — **resolved by P-D-87**; `cpt-cf-bss-products-dod-producer-registration` keeps rows 2, 5, 15 and 16.
+    **Owner**: was `fr-reference-producer-registration`'s owner; **closed**.
 
 13. ~~**Where does `inst-ws-monotonic`'s set hash come from?**~~
     **Answered in the slice (owner call, 2026-09-01 — P-D-71 arm 3): a `set_hash` column on
@@ -1308,15 +1318,18 @@ leaves the specific ones looking open:
     `cpt-cf-bss-products-dod-reference-authz`.
     **Owner**: this feature with `05-governance`.
 
-16. **What transport and success responses do this slice's three doors have?** Only the watermark
+16. ~~**What transport and success responses do this slice's three doors have?**~~
+    **Answered (owner call, 2026-09-01 — P-D-87 arm 3): four routes and their 2xx**, each from
+    the set's nearest precedent — the watermark post 200, `POST /reference-producers` 201, `POST
+    /reference-producers/{producer}/retirements` 200, and the correction door **adopting the shape
+    the shipped crate already announces** (row 20), `POST /skus/{skuId}/corrections`, 202 (the
+    write happens at approval).
+    Original text: Only the watermark
     door is bound to one; the correction door and the membership ops name no route and no 2xx, and
     `design/07` §3.2 gives only refusals. Every comparable operator door in the set names both — 02 added its
     path and pair expressly because without them 12's lint could not see the door.
-    **Blocks**: `cpt-cf-bss-products-dod-correction-door`,
-    `cpt-cf-bss-products-dod-producer-registration`,
-    `cpt-cf-bss-products-dod-watermark-door`.
-    **Owner**: the design-set owner. *See row 20: the shipped crate already announces one of the
-    three routes.*
+    **Blocks**: no DoD — **resolved by P-D-87**; `dod-correction-door` and `dod-producer-registration` keep their other rows.
+    **Owner**: was the design-set owner. *See row 20: the shipped crate already announces one of the; **closed**.
 
 ### Raised here rather than carried
 
@@ -1346,7 +1359,13 @@ Five, all from reading the crate at `19a81a406`. Every quotation was byte-verifi
     **Blocks**: `cpt-cf-bss-products-dod-reference-error-taxonomy`.
     **Owner**: `02-taxonomy-attributes`, which declares the code.
 
-19. **Three of this feature's four config knobs have no home, not one.** Row 7 records the skew
+19. ~~**Three of this feature's four config knobs have no home, not one.**~~
+    **Answered (owner call, 2026-09-01 — P-D-87 arm 1): all four knobs land on
+    `ProductsConfig`** — `reference_freshness_minutes` (15), `watermark_skew_tolerance_minutes`
+    (5), `tripwire_max_overrides_per_30_days` (5) and `breakglass_correction_enabled` (`false`) —
+    the freshness threshold exported through a getter, the shape
+    `resolved_idempotency_retention_hours` already has, since `04-lifecycle`'s runner polls on it.
+    Original text: Row 7 records the skew
     tolerance. Measured at `19a81a406`, `ProductsConfig` ships **exactly two fields** —
     `idempotency_retention_hours` and `require_broker` — and the words *freshness*, *watermark*,
     *tripwire* and *break-glass* appear in `config.rs` **zero times**. So the tripwire rate and the
@@ -1354,8 +1373,8 @@ Five, all from reading the crate at `19a81a406`. Every quotation was byte-verifi
     threshold** has an owner already named — `features/lifecycle.md` §7 row 8, which needs it
     exported. This is the mirror image of `06-catalog-version`, whose export `config.rs` names
     **twice** with the `clamp` shaped for it.
-    **Blocks**: `cpt-cf-bss-products-dod-reference-config`, `cpt-cf-bss-products-dod-tripwire`.
-    **Owner**: this gear's config owner with the §17.1 policy owner.
+    **Blocks**: no DoD — **resolved by P-D-87**; `cpt-cf-bss-products-dod-tripwire` keeps rows 8 and 9.
+    **Owner**: was this gear's config owner with the §17.1 policy owner; **closed**.
 
 20. **The shipped crate already announces one of the three routes the design set declines to pin.**
     `api/rest/products.rs`'s `correctable_after_publish` builds a refusal reading *"writable only
@@ -1502,11 +1521,15 @@ Five, all from reading the crate at `19a81a406`. Every quotation was byte-verifi
     **Blocks**: no DoD; it decides which of rows 7 and 19 is restated.
     **Owner**: the §17.1 policy owner with this gear's config owner.
 
-32. **May `cpt-cf-bss-products-dod-reference-config` pin "default OFF" while row 1 calls that phrase
-    ambiguous?** The DoD states the default in exactly the words row 1 says read both ways, so it
+32. ~~**May `cpt-cf-bss-products-dod-reference-config` pin "default OFF" while row 1 calls that phrase
+    ambiguous?**~~
+    **Answered (owner call, 2026-09-01 — P-D-87 arm 1): it may, and the question dissolves** —
+    **P-D-71 arm 1** already named the flag enable-positive, so "default OFF" and `false` are one
+    fact; the DoD pins what row 1 deferred rather than against it.
+    Original text: The DoD states the default in exactly the words row 1 says read both ways, so it
     both pins and defers the same fact. Naming the constant and its polarity settles both at once.
-    **Blocks**: `cpt-cf-bss-products-dod-reference-config`.
-    **Owner**: row 1's owner — this feature.
+    **Blocks**: no DoD — **resolved by P-D-87**.
+    **Owner**: was row 1's owner — this feature; **closed**.
 
 33. **Can a `p2` deliverable carry a `p1` arm's obligation?** `cpt-cf-bss-products-dod-tripwire` is
     `p2` while the `p1` arm-(b) DoD obliges *"It **MUST** increment the same `TripwireCounter`"*. The

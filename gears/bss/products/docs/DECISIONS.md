@@ -1569,6 +1569,97 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   (the re-publish step).
 
 
+#### P-D-87 — Reference-signal's five: four config knobs at home, a retired producer's rows cleared, and the three doors' routes
+
+- **Date**: 2026-09-01 (owner call, autonomous under the standing instruction —
+  `features/reference-signal.md` §7 rows 7, 12, 16, 19 and 32)
+
+**1. The four knobs land on `ProductsConfig`, per-deployment and boot-time** (rows 7, 19, 32):
+`reference_freshness_minutes` (interim 15), `watermark_skew_tolerance_minutes` (interim 5),
+`tripwire_max_overrides_per_30_days` (interim 5) and `breakglass_correction_enabled: bool`
+(default `false`). The posture is **P-D-84 arm 5's, now precedent rather than invention**: the gear's
+config struct is where a per-deployment number lives, hours or minutes being the unit the knob's own
+design states. The freshness threshold is **exported through a getter**, the shape
+`resolved_idempotency_retention_hours` already has, because `04-lifecycle`'s `ActivationRunner`
+polls on it. Row 32 dissolves rather than needing a ruling: **P-D-71 arm 1 already named the flag
+enable-positive**, so "default OFF" and `false` are the same fact and the DoD pins what row 1
+deferred, not against it.
+
+**2. A retired producer's watermark and member rows are DELETED in the retirement transaction**
+(row 12), and a re-registering producer starts `never-received`. That is what makes the DoD's own
+*"a registering producer's first watermark MUST start `never-received`, so onboarding can only
+tighten"* true: surviving rows let retire-then-re-register inside the freshness window read
+**fresh** against a stale member set and free every SKU that has since gained a reference — the
+exact inversion the row names. The producer row itself stays, its `state` moving to `retired`, so
+the registration history is not lost.
+
+**3. The three doors' routes and success responses** (row 16), each from the set's nearest
+precedent rather than invented:
+
+| door | route | success |
+|---|---|---|
+| watermark post | `POST /bss-products/v1/reference-watermarks` (already bound) | **200** — state, not a minted resource; an idempotent replay answers the same |
+| producer registration | `POST /bss-products/v1/reference-producers` | **201** — a row is minted |
+| producer retirement | `POST /bss-products/v1/reference-producers/{producer}/retirements` | **200** |
+| correction | `POST /bss-products/v1/skus/{skuId}/corrections` | **202** — the door accepts, the write happens at approval |
+
+The correction route **adopts the shape the shipped crate already announces** (row 20's
+measurement): `correctable_after_publish` tells callers *"writable only through the correction door
+(POST .../corrections, slice 07)"*, and of the two ways to stop that message being a lie —
+adopt the shape, or change a shipped sentence — adopting costs nothing and changing costs the
+sentence. The two membership routes take the freeze-participant door's own shape (P-D-67): a plural
+collection for the act, a sub-collection for the act on one member.
+
+- **The arguments against, stated**: arm 1 puts four policy numbers in a per-deployment struct where
+  §17.1 may later want them per-tenant — the same argument P-D-84 arm 5 took and the same answer,
+  nothing per-tenant exists to range over; arm 2 discards what a retired producer last claimed —
+  accepted, a watermark is **state, not history** (the slice's own reason for it emitting no event),
+  and the retirement's audit row records the act; arm 3 fixes routes ahead of the doors that serve
+  them, which is exactly what `12-consumer-contracts`' lint needs to see them at all.
+- **Not changed**: the refusal codes and their statuses, P-D-71's flag polarity, P-D-59's gauge, the
+  correction door's own open rows (6, 10, 14, 20, 22, 23, 24) and producer registration's (2, 5) —
+  neither door is freed by this entry.
+- **Propagated**: `features/reference-signal.md` (rows 7, 12, 16, 19, 32 struck; §7 arithmetic;
+  `dod-reference-config`, `dod-producer-table` and `dod-watermark-door` freed),
+  `design/07-reference-signal.md` (§6 twins where the rows are carried), `ProductsConfig` and the
+  producer/watermark doors when they build.
+
+#### P-D-86 — The bulk row's staged payload is a column, appended to the ledger by an in-place edit
+
+- **Date**: 2026-09-01 (owner call, autonomous under the standing instruction —
+  `features/bulk-promotion.md` §7 row 30, raised by the group 13a build when it reached the wall)
+- **Context**: `design/09` §4's ledger row carries `governed_live_op`, glossed as *"the pending
+  payload a **live-entity** row stages"*, and nothing for a Product or SKU row's imported content —
+  while `dod-stage-phase` has those rows *"parse, then the same registered validators"* and P-D-69
+  arm 5 digests *"the bulk row's staged payload"*.
+
+**`products_bulk_row` gains `staged_payload`, nullable, holding the canonical serialization of the
+row's imported content**, written by the import door and read by the worker — appended by editing
+`m20260901_000014_create_products_bulk.rs` **in place**, this chain's own convention. A shape CHECK
+pairs it with the row class the way the table's other pairs are pinned: a `product` or `sku` row
+carries a payload, since a row the worker cannot stage is a row that should never have been
+recorded.
+
+**The synchronous-door alternative is measurably wrong, not merely less tidy.** It would put a whole
+batch's validation inside one HTTP call — against the 202 the import door answers, against the
+ten-thousand-row sizing fixture, and against `dod-stage-phase` and **P-D-54**, which both name the
+**worker** as the phase's executor. A design whose executor exists and whose payload does not is
+missing the column, not the worker.
+
+**`governed_live_op` keeps its stated meaning.** Folding both row classes onto one column would read
+tidier and would require rewriting a gloss the design set states; two nullable payload columns, one
+per row class, changes no existing sentence. A later slice may fold them, and that fold is then a
+decision with its own entry.
+
+- **The arguments against, stated**: two payload columns on one table is redundant shape, and the
+  canonical serialization means the door must render the row's content before it can record it —
+  which is what makes P-D-69 arm 5's digest rule computable at all, so the cost buys the answer that
+  row already relies on.
+- **Not changed**: P-D-69 arm 5 (this supplies its operand), P-D-54's executor, the ledger's
+  append-only-after-terminal guard, the row keys' batch scope.
+- **Propagated**: `features/bulk-promotion.md` (row 30 struck; `dod-stage-phase` freed),
+  `m20260901_000014` and the import door when the worker builds.
+
 #### P-D-85 — The revalidation guard's shipped shape: staged outside the transaction, committed under the fence's own retry loop
 
 - **Date**: 2026-09-01 (owner call, autonomous under the standing instruction — recorded at the
