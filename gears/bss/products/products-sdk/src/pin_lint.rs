@@ -83,6 +83,16 @@ fn read_pin() -> Vec<PinMember> {
 /// table by its own header, so a second table in the document cannot be
 /// mistaken for the register.
 fn read_operand_cells() -> Vec<String> {
+    read_register_rows().into_iter().map(|row| row.0).collect()
+}
+
+/// One register row's `(Operand, Status)` pair.
+type RegisterRow = (String, String);
+
+/// The register's rows, in order — the roster **and** its status column, so
+/// the census `dod-obligation-register` states in prose can be asserted
+/// rather than read.
+fn read_register_rows() -> Vec<RegisterRow> {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../docs/design/12-consumer-contracts.md")
         .canonicalize()
@@ -90,7 +100,7 @@ fn read_operand_cells() -> Vec<String> {
     let raw = std::fs::read_to_string(&path)
         .unwrap_or_else(|e| panic!("design/12 must be readable at {}: {e}", path.display()));
 
-    let mut cells = Vec::new();
+    let mut cells: Vec<RegisterRow> = Vec::new();
     let mut in_table = false;
     for line in raw.lines() {
         if line.starts_with('|') && line.contains("Operand (what its guard reads") {
@@ -108,7 +118,7 @@ fn read_operand_cells() -> Vec<String> {
         if columns.len() < 5 || columns[0].trim().starts_with('-') {
             continue; // the separator row
         }
-        cells.push(columns[3].trim().to_owned());
+        cells.push((columns[3].trim().to_owned(), columns[4].trim().to_owned()));
     }
     assert!(
         !cells.is_empty(),
@@ -222,5 +232,70 @@ fn every_register_operand_and_every_pin_member_couple() {
         pin_fields.len(),
         "every pinned field is named by the register today; a shrink here is a parse \
          regression or a real decoupling, and both deserve a look"
+    );
+}
+
+/// The register's own census, executable (`dod-obligation-register`).
+///
+/// `design/12` §2.2 is the **normative roster**, and the FEATURE states its
+/// shape in prose: fourteen rows, of which twelve are `owed` in some form,
+/// one is `assertable now` and one is `deferred with post-v1 EOL`. Prose
+/// counts drift — this crate's own history has several — so the roster is
+/// asserted here, beside the lint that reads the same table. A row added,
+/// removed, or moved between statuses fails **in the change that moves it**,
+/// which is what makes the register a roster rather than a list.
+///
+/// It also re-asserts P-D-63's outcome: after the four `+` cells were
+/// normalized, **all fourteen cells parse** — so no cell may reintroduce a
+/// separator the grammar refuses.
+///
+/// @cpt-dod:cpt-cf-bss-products-dod-obligation-register:p1
+#[test]
+fn the_obligation_register_carries_its_stated_roster() {
+    let rows = read_register_rows();
+    assert_eq!(
+        rows.len(),
+        14,
+        "the ObligationRegister is fourteen rows; design/12 section 6 row 15 still says \
+         thirteen and that is recorded against its owner, not repaired here"
+    );
+
+    let mut owed = 0_usize;
+    let mut assertable = 0_usize;
+    let mut deferred = 0_usize;
+    for (cell, status) in &rows {
+        // P-D-63: `+` is not admitted to the grammar. A cell that reintroduces
+        // it is a decoupling the lint above would not necessarily see, because
+        // what `+` joined was a field and a PHRASE — the phrase's pin members
+        // simply vanish from the token stream.
+        assert!(
+            !cell.contains('+'),
+            "operand cell {cell:?} carries `+`, which P-D-63 normalized out: rewrite it to \
+             comma-separated pin tokens"
+        );
+        // The status is classified by its LEADING class, never by a substring
+        // anywhere in the cell. One row's prose quotes pricing's own document
+        // calling a binding "deferred" while the row itself is `owed`, so a
+        // `contains` test reads prose and miscounts — which is the very defect
+        // the `Operand` column exists to avoid, committed one column over.
+        let leading = status.replace('*', "").trim().to_ascii_lowercase();
+        if leading.starts_with("assertable now") {
+            assertable += 1;
+        } else if leading.starts_with("deferred") {
+            deferred += 1;
+        } else {
+            assert!(
+                leading.starts_with("owed"),
+                "row {cell:?} carries status {status:?}, whose leading class is none of the \
+                 register's three"
+            );
+            owed += 1;
+        }
+    }
+
+    assert_eq!(
+        (owed, assertable, deferred),
+        (12, 1, 1),
+        "the register's stated distribution is twelve owed, one assertable now, one deferred"
     );
 }

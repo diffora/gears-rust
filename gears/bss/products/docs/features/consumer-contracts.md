@@ -492,7 +492,7 @@ otherwise the row stays OWED and the fixture is not written.
 
 ### The obligation register, with the `Operand` column lint 9 reads
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-obligation-register`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-obligation-register`
 
 `design/12` §2.2's register is the normative roster: **fourteen rows**, each carrying the obligation,
 its owing consumer, its source, its **`Operand`** and its status. Twelve are `owed` in some form; one
@@ -508,8 +508,10 @@ or one of three non-field markers: `(surface)`, `none in v1`, `payload`. **That 
 comma-separated is `design/12` §3.2 lint 9's addition**, not P-D-43's — arm 3 states the token rule
 and that *"Prose beside the tokens is ignored"*, and names no separator.
 
-**At HEAD the cells do not follow that grammar, and this DoD is where they are made to.** Measured
-cell by cell over all **fourteen**, which is the register's own row count:
+**The cells did not follow that grammar when this DoD was written, and this DoD is where they were
+made to.** Measured cell by cell over all **fourteen**, which is the register's own row count —
+**this census is the pre-repair state**, kept because the repair paragraph below is only readable
+against it:
 
 | the cell is… | count |
 |---|---|
@@ -529,6 +531,15 @@ normalized to comma-separated pin tokens — so **all fourteen cells parse**. Th
 grammar had not settled land with it: **a backticked catalog field name is a token, never the
 ignorable prose** (the census's own conforming class assumed it), and **a `none in v1` cell is
 outside lint 9's coupling population by construction**, the marker rule already carrying that.
+
+**And the roster is now asserted rather than stated.** `products-sdk/src/pin_lint.rs` reads §2.2's
+table by its own header and pins the census this DoD states: **fourteen rows**, twelve `owed` in
+some form, one `assertable now`, one `deferred` — plus P-D-63's outcome, that no cell reintroduces
+the `+` the grammar refuses. A row added, removed or moved between statuses fails in the change
+that moves it, which is what makes the register a roster rather than a list. The status is
+classified by its **leading class**, never by a substring: one row's prose quotes pricing's own
+document calling a binding *"deferred"* while the row itself is `owed`, so a `contains` test reads
+prose and miscounts — the very defect the `Operand` column exists to avoid, one column over.
 
 **Implements**: `cpt-cf-bss-products-flow-seam-suite`
 
