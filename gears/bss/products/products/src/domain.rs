@@ -9,6 +9,7 @@ pub mod disposition;
 pub mod error;
 pub mod governance;
 pub mod idempotency;
+pub mod live_op;
 pub mod name;
 pub mod rules;
 pub mod states;

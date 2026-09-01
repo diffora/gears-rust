@@ -94,6 +94,17 @@ pub enum DomainError {
     #[error("incomplete entity: {0}")]
     IncompleteEntity(String),
 
+    /// A `GovernedLiveOp`'s pinned state no longer matches the live row
+    /// (`inst-gl-envelope`).
+    ///
+    /// **Not [`Self::StaleRevision`]**, and 02 §3.5 draws the line: a live
+    /// row has no `internal_revision` to be stale against, so the envelope
+    /// pins the target's **state** and this code names that mismatch. A third
+    /// code — `STALE_CATEGORY_TOKEN` — belongs to the category live-value
+    /// door's own precondition and is neither of these two.
+    #[error("stale live op: {0}")]
+    StaleLiveOp(String),
+
     /// A Product reaching `published` carries no primary category
     /// (`inst-tx-primary-at-publish`).
     ///
@@ -270,6 +281,7 @@ impl DomainError {
             Self::ScopeNotContained(_) => "SCOPE_NOT_CONTAINED",
             Self::ParentTerminal(_) => "PARENT_TERMINAL",
             Self::IncompleteEntity(_) => "INCOMPLETE_ENTITY",
+            Self::StaleLiveOp(_) => "STALE_LIVE_OP",
             Self::PrimaryCategoryRequired(_) => "PRIMARY_CATEGORY_REQUIRED",
             Self::ApprovalRequired(_) => "APPROVAL_REQUIRED",
             Self::ErasureUnknownActor(_) => "ERASURE_UNKNOWN_ACTOR",

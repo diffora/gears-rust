@@ -616,6 +616,23 @@ apply re-validate the expected state against the live row, refusing `STALE_LIVE_
 mismatch. The mutation and its event **MUST** land in one transaction. The type **MUST** be
 exported for `03-sku-classification` to reuse without redefinition.
 
+**Three of the four halves ship and the fourth is measurably unbuildable, so this stays unticked.**
+`domain::live_op::GovernedLiveOp` is the envelope — kind, target, payload and the target's expected
+state, generic over that state so `03` passes its own rather than every slice's operations landing
+in this type; `check_still_current` refuses `STALE_LIVE_OP` (409, `design/02` §3.5's own code, and
+**not** `STALE_REVISION`, which a live row cannot be stale against, nor `STALE_CATEGORY_TOKEN`,
+which is the live-value door's precondition); and `apply` runs the check immediately before the
+mutation closure, so a stale op **cannot** write — asserted by observing the closure, because a
+check placed after the write would pass a naive test while having already written.
+
+**What is not built is submission to the `05` gate, and the reason was written down before this
+code existed.** `GovernanceGate::evaluate` takes an `EntityRef` and an `InternalRevision`; a
+category, a definition and a set member have neither — that absence is the very reason the envelope
+pins a *state* — so submitting one through today's contract means inventing a mapping from a live
+target to an entity ref. **P-D-93** recorded exactly this as its first residue: *"a live op whose
+subject is not an entity would need a second contract and this decision does not grant one"*. The
+half waits on `05`'s submit door (its §7 row 12, no route declared) or on that second contract.
+
 **Implements**: `cpt-cf-bss-products-algo-governed-live`
 
 **Constraints**: `cpt-cf-bss-products-constraint-tenant-isolation`

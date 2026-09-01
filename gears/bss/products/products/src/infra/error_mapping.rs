@@ -206,6 +206,11 @@ impl From<DomainError> for CanonicalError {
                 format!("expected {expected}, found {found}"),
                 "STALE_REVISION",
             ),
+            // The live-entity analogue of `STALE_REVISION`, and the same 409
+            // class: `design/02` §3.5 lists it among that slice's conflict
+            // codes, and a precondition that no longer holds is an aborted
+            // act rather than a malformed request.
+            D::StaleLiveOp(detail) => aborted(detail, "STALE_LIVE_OP"),
             D::IdempotencyConflict(detail) => aborted(detail, "IDEMPOTENCY_CONFLICT"),
             D::IdempotencyKeyInFlight(detail) => aborted(detail, "IDEMPOTENCY_KEY_IN_FLIGHT"),
             D::EntityTerminal(detail) => aborted(detail, "ENTITY_TERMINAL"),
