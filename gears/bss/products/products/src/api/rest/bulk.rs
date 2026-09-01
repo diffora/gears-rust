@@ -336,19 +336,21 @@ fn validate_import_shape(body: &ImportBatchRequest, max_rows: u32) -> Validation
         // only keeps the shape pass from walking a set it will refuse.
         return report;
     }
-    let mut seen: Vec<&str> = Vec::with_capacity(body.rows.len());
+    // A HashSet, not a Vec scan: the batch admits up to max_rows
+    // caller-controlled keys, and a linear `contains` inside the loop is
+    // O(n²) string comparisons on the request path.
+    let mut seen: std::collections::HashSet<&str> =
+        std::collections::HashSet::with_capacity(body.rows.len());
     for row in &body.rows {
         let key = row.row_key.trim();
         if key.is_empty() {
             report.violate("VALIDATION", "rows.row_key", "row_key must not be blank");
-        } else if seen.contains(&key) {
+        } else if !seen.insert(key) {
             report.violate(
                 "VALIDATION",
                 "rows.row_key",
                 "row keys are batch-scoped and must be unique within the batch",
             );
-        } else {
-            seen.push(key);
         }
         if !matches!(row.entity_kind.trim(), "product" | "sku") {
             report.violate(

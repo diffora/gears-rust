@@ -68,6 +68,21 @@ use crate::domain::validation::ValidationReport;
 use crate::infra::storage::RepoError;
 use crate::infra::storage::repo::{self, BulkRowOutcome, NewProduct, NewSku};
 
+/// Why one row's staging failed — the branch operand the row loop needs: a
+/// refusal is the row's own terminal disposition, a storage failure is the
+/// pass's and never a verdict on the row.
+enum StageRowError {
+    /// The create path refused the row: terminal, recorded on the ledger
+    /// with the owning feature's code verbatim.
+    Refused(DomainError),
+    /// The insert failed below the domain — transient or structural
+    /// storage trouble. The pass propagates it, the row keeps
+    /// `disposition NULL`, and the ledger resume retries it on a later
+    /// attempt instead of terminally failing it for a fault it did not
+    /// cause.
+    Storage(RepoError),
+}
+
 /// What one pass over one batch did.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum StageOutcome {
@@ -108,7 +123,7 @@ async fn stage_product(
     actor_ref: Uuid,
     payload: &JsonValue,
     now: DateTime<Utc>,
-) -> Result<Uuid, DomainError> {
+) -> Result<Uuid, StageRowError> {
     let mut report = ValidationReport::new();
     let name_value = field(payload, "name");
     let brand = field(payload, "brand_id").and_then(|raw| Uuid::parse_str(&raw).ok());
@@ -119,7 +134,7 @@ async fn stage_product(
         report.violate("VALIDATION", "brand_id", "brand_id must be a uuid");
     }
     if !report.is_empty() {
-        return Err(DomainError::Validation(report));
+        return Err(StageRowError::Refused(DomainError::Validation(report)));
     }
     let (name_value, brand_id) = (
         name_value.unwrap_or_default(),
@@ -152,7 +167,7 @@ async fn stage_product(
     .await
     {
         Ok(_) => Ok(product_id),
-        Err(db_error) => Err(insert_failure(&db_error.to_string(), "product")),
+        Err(db_error) => Err(insert_failure(&db_error, "product")),
     }
 }
 
@@ -164,7 +179,7 @@ async fn stage_sku(
     actor_ref: Uuid,
     payload: &JsonValue,
     now: DateTime<Utc>,
-) -> Result<Uuid, DomainError> {
+) -> Result<Uuid, StageRowError> {
     let mut report = ValidationReport::new();
     let code = field(payload, "sku_code");
     let parent = field(payload, "product_id").and_then(|raw| Uuid::parse_str(&raw).ok());
@@ -175,7 +190,7 @@ async fn stage_sku(
         report.violate("VALIDATION", "product_id", "product_id must be a uuid");
     }
     if !report.is_empty() {
-        return Err(DomainError::Validation(report));
+        return Err(StageRowError::Refused(DomainError::Validation(report)));
     }
 
     let sku_id = Uuid::new_v4();
@@ -195,28 +210,150 @@ async fn stage_sku(
         .await
     {
         Ok(_) => Ok(sku_id),
-        Err(db_error) => Err(insert_failure(&db_error.to_string(), "sku")),
+        Err(db_error) => Err(insert_failure(&db_error, "sku")),
     }
 }
 
 /// Classify an insert failure into the **owning feature's** code — bulk
 /// introduces no parallel taxonomy, so a duplicate is the Foundation's own
-/// `DUPLICATE_NAME`/`DUPLICATE_CODE` and everything else stays a storage
-/// failure the pass reports as such.
-fn insert_failure(message: &str, kind: &str) -> DomainError {
-    let lower = message.to_ascii_lowercase();
-    let unique = lower.contains("unique constraint") || lower.contains("duplicate key");
-    if unique && lower.contains("name") {
-        return DomainError::DuplicateName(format!("{kind} name is already reserved"));
+/// `DUPLICATE_NAME`/`DUPLICATE_CODE`.
+///
+/// The classification is on the driver's own typed [`sea_orm::SqlErr`],
+/// never on a stringified message: only a typed unique-constraint violation
+/// is a row verdict, and everything else — a dropped connection, a
+/// serialization failure, an enqueue fault — is a storage failure the pass
+/// propagates with its cause preserved, instead of collapsing it into a
+/// terminal "the row could not be staged" the operator cannot tell from
+/// bad data.
+fn insert_failure(db_error: &toolkit_db::DbError, kind: &str) -> StageRowError {
+    if let toolkit_db::DbError::Sea(sea) = db_error
+        && let Some(sea_orm::SqlErr::UniqueConstraintViolation(detail)) = sea.sql_err()
+    {
+        // The constraint name inside a TYPED unique violation tells the
+        // two reservation indexes apart.
+        if detail.to_ascii_lowercase().contains("name") {
+            return StageRowError::Refused(DomainError::DuplicateName(format!(
+                "{kind} name is already reserved"
+            )));
+        }
+        return StageRowError::Refused(DomainError::DuplicateCode(format!(
+            "{kind} code is already reserved"
+        )));
     }
-    if unique {
-        return DomainError::DuplicateCode(format!("{kind} code is already reserved"));
+    StageRowError::Storage(RepoError::Db(format!("stage one {kind}: {db_error}")))
+}
+
+/// The stored payload, parsed — or the pass's own refusal: the door stored
+/// a canonically serialized object, so a present-but-unparseable payload is
+/// store corruption, never operator data. Failed CLOSED with the row named,
+/// not coerced to Null and refused as a misleading blank-field validation.
+fn parse_staged_payload(
+    tenant_id: Uuid,
+    batch_id: Uuid,
+    row: &repo::BulkRowRecord,
+) -> Result<JsonValue, RepoError> {
+    match row.staged_payload.as_deref() {
+        None => Ok(JsonValue::Null),
+        Some(raw) => serde_json::from_str(raw).map_err(|parse_err| {
+            tracing::error!(
+                %tenant_id,
+                %batch_id,
+                row_id = %row.row_id,
+                error = %parse_err,
+                "bss-products: staged_payload failed to parse; the stored row is corrupt"
+            );
+            RepoError::CorruptRow(format!(
+                "staged_payload of row {} in batch {batch_id} is not valid JSON: {parse_err}",
+                row.row_id
+            ))
+        }),
     }
-    DomainError::Validation({
-        let mut report = ValidationReport::new();
-        report.violate("VALIDATION", "row", "the row could not be staged");
-        report
-    })
+}
+
+/// Stage one in-flight row and record its ledger outcome: `true` when the
+/// row landed as a draft, `false` when the create path refused it
+/// terminally.
+///
+/// # Errors
+///
+/// [`RepoError`] on a storage failure — never a verdict on the row: the row
+/// keeps `disposition NULL` and the ledger resume retries it on the next
+/// claim.
+async fn stage_one_row(
+    state: &Arc<ApiState>,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    actor_ref: Uuid,
+    batch_id: Uuid,
+    row: &repo::BulkRowRecord,
+    now: DateTime<Utc>,
+) -> Result<bool, RepoError> {
+    let payload = parse_staged_payload(tenant_id, batch_id, row)?;
+    let outcome = match row.entity_kind.as_str() {
+        "product" => stage_product(state, scope, tenant_id, actor_ref, &payload, now).await,
+        "sku" => stage_sku(state, scope, tenant_id, actor_ref, &payload, now).await,
+        other => Err(StageRowError::Refused(DomainError::Validation({
+            let mut report = ValidationReport::new();
+            report.violate(
+                "VALIDATION",
+                "entity_kind",
+                format!("no staging path for entity_kind {other}"),
+            );
+            report
+        }))),
+    };
+
+    let conn = state
+        .db
+        .conn()
+        .map_err(|e| RepoError::Db(format!("row outcome connection: {e}")))?;
+    match outcome {
+        Ok(entity_id) => {
+            repo::record_bulk_row_outcome(
+                &conn,
+                scope,
+                tenant_id,
+                batch_id,
+                &row.row_key,
+                BulkRowOutcome {
+                    entity_id: Some(entity_id),
+                    disposition: None,
+                    code: None,
+                    now,
+                },
+            )
+            .await?;
+            Ok(true)
+        }
+        Err(StageRowError::Refused(refusal)) => {
+            repo::record_bulk_row_outcome(
+                &conn,
+                scope,
+                tenant_id,
+                batch_id,
+                &row.row_key,
+                BulkRowOutcome {
+                    entity_id: None,
+                    disposition: Some("failed"),
+                    code: Some(refusal.code()),
+                    now,
+                },
+            )
+            .await?;
+            Ok(false)
+        }
+        Err(StageRowError::Storage(storage)) => {
+            // Not a row verdict: the pass aborts with the cause named.
+            tracing::error!(
+                %tenant_id,
+                %batch_id,
+                row_id = %row.row_id,
+                error = %storage,
+                "bss-products: staging a row failed below the domain; the pass aborts"
+            );
+            Err(storage)
+        }
+    }
 }
 
 /// One pass over one tenant's oldest `staging` batch.
@@ -229,6 +366,7 @@ pub(crate) async fn stage_next_batch(
     tenant_id: Uuid,
     actor_ref: Uuid,
     now: DateTime<Utc>,
+    cancel: &tokio_util::sync::CancellationToken,
 ) -> Result<StageOutcome, RepoError> {
     let scope = AccessScope::for_tenant(tenant_id);
     let (batch, rows) = {
@@ -266,6 +404,14 @@ pub(crate) async fn stage_next_batch(
     let mut staged = 0usize;
     let mut failed = 0usize;
     for row in rows {
+        // The shutdown seam: a batch can carry tens of thousands of rows,
+        // and the gear's stop_timeout must not have to wait for all of
+        // them. The ledger is the record, so a pass cut here costs
+        // nothing — the next claim resumes from the rows it had not
+        // reached.
+        if cancel.is_cancelled() {
+            return Ok(StageOutcome::ClaimLost);
+        }
         // The resume operand: a row already carrying an entity or a
         // terminal disposition was staged by an earlier attempt.
         if row.entity_id.is_some() || row.disposition.is_some() {
@@ -276,65 +422,20 @@ pub(crate) async fn stage_next_batch(
             }
             continue;
         }
-        let payload: JsonValue = row
-            .staged_payload
-            .as_deref()
-            .and_then(|raw| serde_json::from_str(raw).ok())
-            .unwrap_or(JsonValue::Null);
-
-        let outcome = match row.entity_kind.as_str() {
-            "product" => stage_product(state, &scope, tenant_id, actor_ref, &payload, now).await,
-            "sku" => stage_sku(state, &scope, tenant_id, actor_ref, &payload, now).await,
-            other => Err(DomainError::Validation({
-                let mut report = ValidationReport::new();
-                report.violate(
-                    "VALIDATION",
-                    "entity_kind",
-                    format!("no staging path for entity_kind {other}"),
-                );
-                report
-            })),
-        };
-
-        let conn = state
-            .db
-            .conn()
-            .map_err(|e| RepoError::Db(format!("row outcome connection: {e}")))?;
-        match outcome {
-            Ok(entity_id) => {
-                staged += 1;
-                repo::record_bulk_row_outcome(
-                    &conn,
-                    &scope,
-                    tenant_id,
-                    batch.batch_id,
-                    &row.row_key,
-                    BulkRowOutcome {
-                        entity_id: Some(entity_id),
-                        disposition: None,
-                        code: None,
-                        now,
-                    },
-                )
-                .await?;
-            }
-            Err(refusal) => {
-                failed += 1;
-                repo::record_bulk_row_outcome(
-                    &conn,
-                    &scope,
-                    tenant_id,
-                    batch.batch_id,
-                    &row.row_key,
-                    BulkRowOutcome {
-                        entity_id: None,
-                        disposition: Some("failed"),
-                        code: Some(refusal.code()),
-                        now,
-                    },
-                )
-                .await?;
-            }
+        if stage_one_row(
+            state,
+            &scope,
+            tenant_id,
+            actor_ref,
+            batch.batch_id,
+            &row,
+            now,
+        )
+        .await?
+        {
+            staged += 1;
+        } else {
+            failed += 1;
         }
     }
 
@@ -362,14 +463,20 @@ pub(crate) async fn stage_next_batch(
 
 /// One sweep over every tenant holding a `staging` batch.
 ///
+/// One tenant's failure is logged and the loop continues: tenants iterate
+/// in sorted order, so propagating the first error would let one tenant
+/// with a deterministic fault (a corrupt staged row, say) permanently
+/// block every tenant that sorts after it.
+///
 /// # Errors
 ///
-/// The first [`RepoError`] a tenant's pass raises; later tenants run next
-/// tick.
+/// The last [`RepoError`] raised — only when EVERY tenant's pass failed,
+/// which is a whole-sweep fault rather than one tenant's.
 pub(crate) async fn sweep(
     state: &Arc<ApiState>,
     actor_ref: Uuid,
     now: DateTime<Utc>,
+    cancel: &tokio_util::sync::CancellationToken,
 ) -> Result<(), RepoError> {
     let tenants = {
         let conn = state
@@ -378,10 +485,27 @@ pub(crate) async fn sweep(
             .map_err(|e| RepoError::Db(format!("batch sweep connection: {e}")))?;
         repo::tenants_with_staging_batches(&conn, &AccessScope::allow_all()).await?
     };
+    let total = tenants.len();
+    let mut failed = 0_usize;
+    let mut last_err: Option<RepoError> = None;
     for tenant in tenants {
-        stage_next_batch(state, tenant, actor_ref, now).await?;
+        if cancel.is_cancelled() {
+            return Ok(());
+        }
+        if let Err(e) = stage_next_batch(state, tenant, actor_ref, now, cancel).await {
+            failed += 1;
+            tracing::error!(
+                %tenant,
+                error = %e,
+                "bss-products: batch staging pass failed; later tenants continue"
+            );
+            last_err = Some(e);
+        }
     }
-    Ok(())
+    match last_err {
+        Some(e) if failed == total => Err(e),
+        _ => Ok(()),
+    }
 }
 
 #[cfg(test)]

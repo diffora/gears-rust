@@ -451,6 +451,96 @@ async fn the_predicate_answers_four_verdicts() {
     );
 }
 
+/// The in-process binding is the default deployment mode (P-D-15), so this
+/// is the case that proves "identical gate and core" is more than the
+/// module doc's claim: a post through the trait lands in the store the
+/// wire door replays from, a duplicated id is deduplicated by the shared
+/// core, the configured set bound refuses through the same path, and an
+/// unregistered producer is refused by the same gate.
+#[tokio::test]
+async fn the_in_process_binding_shares_the_gate_and_the_store() {
+    use bss_products_sdk::watermarks::{WatermarkPost, WatermarkPosts as _};
+
+    let harness = harness().await;
+    register(&harness, "pricing").await;
+
+    let defaults = ProductsConfig::default();
+    let binding = super::InProcessWatermarkPosts {
+        state: Arc::new(ApiState {
+            db: harness.db.clone(),
+            sink: crate::infra::broker::EventSink::Interim(Arc::clone(&harness.outbox)),
+            idempotency_retention_hours: defaults.idempotency_retention_hours,
+            // Small on purpose: the set bound must be provable through the
+            // binding, which no HTTP body limit covers.
+            bulk_max_rows_per_batch: 2,
+            bulk_max_concurrent_batches_per_tenant: defaults.bulk_max_concurrent_batches_per_tenant,
+            watermark_skew_tolerance: defaults.watermark_skew_tolerance(),
+        }),
+        enforcer: flat_in_enforcer(TENANT),
+    };
+    let ctx = authed_ctx(TENANT);
+
+    // A duplicated id is deduplicated at the shared core, so the hash, the
+    // stored rows and the acked member_count all describe the same set.
+    let at = anchor();
+    let ack = binding
+        .post(
+            &ctx,
+            TENANT,
+            WatermarkPost {
+                producer: "pricing".to_owned(),
+                watermark_at: at,
+                sku_ids: vec![SKU, SKU],
+            },
+        )
+        .await
+        .expect("the binding's post lands");
+    assert_eq!(ack.member_count, 1, "the duplicated id is one member");
+    assert!(!ack.replayed);
+
+    // One contract, one store: the WIRE door's re-post of the binding's
+    // watermark is the admitted idempotent replay.
+    let replay = post_json(
+        app(&harness),
+        "/bss-products/v1/reference-watermarks",
+        &watermark_body("pricing", at, &[SKU]),
+    )
+    .await;
+    assert_eq!(replay.status(), StatusCode::OK);
+    assert_eq!(body_json(replay).await["replayed"], json!(true));
+
+    // The set bound refuses through the binding — the path an HTTP-layer
+    // body limit never sees.
+    let oversized = binding
+        .post(
+            &ctx,
+            TENANT,
+            WatermarkPost {
+                producer: "pricing".to_owned(),
+                watermark_at: at + ChronoDuration::seconds(30),
+                sku_ids: vec![SKU, OTHER_SKU, Uuid::from_u128(0xfe_04)],
+            },
+        )
+        .await
+        .expect_err("three ids are above the ceiling of two");
+    assert_eq!(oversized.status_code(), 400);
+
+    // The gate is spent on the binding's path too.
+    let unregistered = binding
+        .post(
+            &ctx,
+            TENANT,
+            WatermarkPost {
+                producer: "billing".to_owned(),
+                watermark_at: at,
+                sku_ids: vec![SKU],
+            },
+        )
+        .await
+        .expect_err("an unregistered producer is refused");
+    assert_eq!(unregistered.status_code(), 403);
+}
+
 /// A stale watermark holds the SKU under the stale flag — the condition
 /// the alarm fires on, this evaluation emitting nothing (P-D-59).
 #[tokio::test]

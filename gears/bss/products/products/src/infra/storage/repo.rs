@@ -75,7 +75,7 @@
 use chrono::{DateTime, Utc};
 use sea_orm::ActiveValue::Set;
 use sea_orm::sea_query::{Expr, ExprTrait, OnConflict, SimpleExpr};
-use sea_orm::{ColumnTrait, Condition, DbErr, EntityTrait};
+use sea_orm::{ColumnTrait, Condition, DbErr, EntityTrait, FromQueryResult, QuerySelect};
 use serde_json::Value as JsonValue;
 use toolkit_db::secure::{
     AccessScope, DBRunner, ScopeError, SecureDeleteExt, SecureEntityExt, SecureInsertExt,
@@ -1693,11 +1693,20 @@ pub async fn tenants_with_pending_requests(
     runner: &impl DBRunner,
     scope: &AccessScope,
 ) -> Result<Vec<Uuid>, RepoError> {
-    let rows = catalog_version_request::Entity::find()
+    // A DISTINCT projection, not a full-queue fetch: this discovery read
+    // runs once per coalescer tick, and during a bulk window one tenant can
+    // hold thousands of pending rows — the sweep needs the handful of
+    // distinct tenant ids, never the rows themselves.
+    let rows: Vec<TenantIdRow> = catalog_version_request::Entity::find()
         .secure()
         .scope_with(scope)
         .filter(Condition::all().add(catalog_version_request::Column::State.eq("pending")))
-        .all(runner)
+        .project_all(runner, |q| {
+            q.select_only()
+                .column(catalog_version_request::Column::TenantId)
+                .distinct()
+                .into_model::<TenantIdRow>()
+        })
         .await
         .map_err(|e| {
             driver_failure(
@@ -1707,8 +1716,15 @@ pub async fn tenants_with_pending_requests(
         })?;
     let mut tenants: Vec<Uuid> = rows.into_iter().map(|row| row.tenant_id).collect();
     tenants.sort();
-    tenants.dedup();
     Ok(tenants)
+}
+
+/// One `tenant_id` from a DISTINCT discovery projection — the sweeps'
+/// shared row shape.
+#[derive(FromQueryResult)]
+struct TenantIdRow {
+    /// The discovered tenant.
+    tenant_id: Uuid,
 }
 
 /// One tenant's `pending` demand, oldest first — the coalescer's window
@@ -1971,26 +1987,31 @@ pub async fn insert_catalog_version_entries(
     catalog_version_id: i64,
     entries: &[SnapshotEntityRef],
 ) -> Result<(), RepoError> {
-    for entry in entries {
-        let model = catalog_version_entry::ActiveModel {
+    // One statement per bind-budget chunk rather than one round-trip per
+    // entry: the manifest carries every published/deprecated head of the
+    // tenant, and per-row INSERTs inside the lease-guarded serializable
+    // increment transaction stretch it toward the lease TTL.
+    let rows: Vec<catalog_version_entry::ActiveModel> = entries
+        .iter()
+        .map(|entry| catalog_version_entry::ActiveModel {
             tenant_id: Set(tenant_id),
             catalog_version_id: Set(catalog_version_id),
             entity_kind: Set(entry.entity_kind.clone()),
             entity_id: Set(entry.entity_id),
             published_version: Set(entry.published_version),
-        };
-        catalog_version_entry::Entity::insert(model.clone())
-            .secure()
-            .scope_with_model(scope, &model)
-            .map_err(|e| driver_failure(format!("entry scope of {tenant_id}"), e))?
-            .exec(runner)
-            .await
-            .map_err(|e| {
-                driver_failure(
-                    format!("insert manifest entry {} of {tenant_id}", entry.entity_id),
-                    e,
-                )
-            })?;
+        })
+        .collect();
+    if !rows.is_empty() {
+        toolkit_db::secure::secure_insert_many::<catalog_version_entry::Entity>(
+            rows, scope, runner,
+        )
+        .await
+        .map_err(|e| {
+            driver_failure(
+                format!("insert the manifest entries of {catalog_version_id} of {tenant_id}"),
+                e,
+            )
+        })?;
     }
     Ok(())
 }
@@ -2528,7 +2549,7 @@ pub async fn count_live_batches(
     scope: &AccessScope,
     tenant_id: Uuid,
 ) -> Result<u64, RepoError> {
-    let rows = bulk_batch::Entity::find()
+    bulk_batch::Entity::find()
         .secure()
         .scope_with(scope)
         .filter(
@@ -2536,10 +2557,9 @@ pub async fn count_live_batches(
                 .add(bulk_batch::Column::TenantId.eq(tenant_id))
                 .add(bulk_batch::Column::State.is_not_in(["completed", "failed", "abandoned"])),
         )
-        .all(runner)
+        .count(runner)
         .await
-        .map_err(|e| driver_failure(format!("count live batches of {tenant_id}"), e))?;
-    Ok(rows.len() as u64)
+        .map_err(|e| driver_failure(format!("count live batches of {tenant_id}"), e))
 }
 
 /// Read one batch head by its key — the import door's replay operand.
@@ -2721,16 +2741,23 @@ pub async fn tenants_with_staging_batches(
     runner: &impl DBRunner,
     scope: &AccessScope,
 ) -> Result<Vec<Uuid>, RepoError> {
-    let rows = bulk_batch::Entity::find()
+    // A DISTINCT projection for the same reason as
+    // [`tenants_with_pending_requests`]: the per-second discovery read must
+    // scale with distinct tenants, not with total staging batches.
+    let rows: Vec<TenantIdRow> = bulk_batch::Entity::find()
         .secure()
         .scope_with(scope)
         .filter(Condition::all().add(bulk_batch::Column::State.eq("staging")))
-        .all(runner)
+        .project_all(runner, |q| {
+            q.select_only()
+                .column(bulk_batch::Column::TenantId)
+                .distinct()
+                .into_model::<TenantIdRow>()
+        })
         .await
         .map_err(|e| driver_failure("discover staging batches".to_owned(), e))?;
     let mut tenants: Vec<Uuid> = rows.into_iter().map(|row| row.tenant_id).collect();
     tenants.sort();
-    tenants.dedup();
     Ok(tenants)
 }
 
@@ -3147,19 +3174,22 @@ pub async fn post_reference_watermark(
         .exec(runner)
         .await
         .map_err(|e| driver_failure(format!("post the watermark of {producer}"), e))?;
-    for sku_id in members {
-        let model = reference_member::ActiveModel {
+    // One statement per bind-budget chunk rather than one round-trip per
+    // SKU: the contract mandates the producer's complete set, so a
+    // realistic post carries thousands of ids, and per-row INSERTs would
+    // stretch the door's transaction with N sequential round-trips.
+    let rows: Vec<reference_member::ActiveModel> = members
+        .iter()
+        .map(|sku_id| reference_member::ActiveModel {
             tenant_id: Set(tenant_id),
             producer: Set(producer.to_owned()),
             sku_id: Set(*sku_id),
-        };
-        reference_member::Entity::insert(model.clone())
-            .secure()
-            .scope_with_model(scope, &model)
-            .map_err(|e| driver_failure(format!("member scope of {tenant_id}"), e))?
-            .exec(runner)
+        })
+        .collect();
+    if !rows.is_empty() {
+        toolkit_db::secure::secure_insert_many::<reference_member::Entity>(rows, scope, runner)
             .await
-            .map_err(|e| driver_failure(format!("post member {sku_id} of {producer}"), e))?;
+            .map_err(|e| driver_failure(format!("post the members of {producer}"), e))?;
     }
     Ok(())
 }

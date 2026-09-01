@@ -501,16 +501,25 @@ pub async fn commit_increment(
         )
         .await;
 
-    let outcome = match outcome {
-        Ok(outcome) => outcome,
-        Err(coord::AckError::LeaseLost) => DrainOutcome::LeaseHeld,
-        Err(coord::AckError::Work(e)) => return Err(e),
-        Err(coord::AckError::Db(e)) => {
-            return Err(RepoError::Db(format!("increment transaction: {e}")));
-        }
-    };
-    guard.release_with_retry().await.ok();
-    Ok(outcome)
+    // Release on EVERY path before the outcome is interpreted: the guard
+    // has no Drop-based release, so an early return on a failed transaction
+    // would hold the tenant's cv-increment lease until the TTL and block
+    // every coalescer pass for that tenant in the window. A failed release
+    // is the same TTL wait — named in the log rather than swallowed.
+    if let Err(release_err) = guard.release_with_retry().await {
+        tracing::warn!(
+            %tenant_id,
+            error = %release_err,
+            "bss-products: cv-increment lease release failed; the lease holds until its TTL"
+        );
+    }
+
+    match outcome {
+        Ok(outcome) => Ok(outcome),
+        Err(coord::AckError::LeaseLost) => Ok(DrainOutcome::LeaseHeld),
+        Err(coord::AckError::Work(e)) => Err(e),
+        Err(coord::AckError::Db(e)) => Err(RepoError::Db(format!("increment transaction: {e}"))),
+    }
 }
 
 /// One overdue `open` version and the participants still silent on it —
@@ -568,23 +577,94 @@ const LEASE_TTL: Duration = Duration::from_secs(30);
 
 /// One sweep over every tenant with pending demand — the ticker's body.
 ///
+/// One tenant's failure is logged and the loop continues: tenants iterate
+/// in sorted order, so propagating the first error would let one tenant
+/// with a persistent fault (a corrupt row, a bad counter) permanently
+/// starve every tenant that sorts after it. The discovery read runs under
+/// the system scope and every per-tenant pass narrows to `for_tenant`
+/// (the sibling pricing jobs' documented pattern).
+///
 /// # Errors
 ///
-/// The first [`RepoError`] a tenant's pass raises; later tenants run next
-/// tick. The discovery read runs under the system scope and every
-/// per-tenant pass narrows to `for_tenant` (the sibling pricing jobs'
-/// documented pattern).
-pub async fn sweep(db: &DBProvider<DbError>, now: DateTime<Utc>) -> Result<(), RepoError> {
+/// The last [`RepoError`] raised — only when EVERY tenant's pass failed,
+/// which is the whole-sweep fault (a dead database) rather than one
+/// tenant's.
+pub async fn sweep(
+    db: &DBProvider<DbError>,
+    now: DateTime<Utc>,
+    cancel: &tokio_util::sync::CancellationToken,
+) -> Result<(), RepoError> {
     let tenants = {
         let conn = db
             .conn()
             .map_err(|e| RepoError::Db(format!("coalescer sweep connection: {e}")))?;
         repo::tenants_with_pending_requests(&conn, &AccessScope::allow_all()).await?
     };
+    let total = tenants.len();
+    let mut failed = 0_usize;
+    let mut last_err: Option<RepoError> = None;
     for tenant in tenants {
-        drain_tenant(db, tenant, now).await?;
+        // The shutdown seam: one pass commits at most one version and is
+        // left to finish, but the sweep stops taking new tenants the
+        // moment the gear is asked to stop.
+        if cancel.is_cancelled() {
+            return Ok(());
+        }
+        match drain_tenant(db, tenant, now).await {
+            Ok(outcome) => log_drain_outcome(tenant, &outcome),
+            Err(e) => {
+                failed += 1;
+                tracing::error!(
+                    %tenant,
+                    error = %e,
+                    "bss-products: increment pass failed; later tenants continue"
+                );
+                last_err = Some(e);
+            }
+        }
     }
-    Ok(())
+    match last_err {
+        Some(e) if failed == total => Err(e),
+        _ => Ok(()),
+    }
+}
+
+/// The outcome telemetry: allocating gapless version ids is this gear's
+/// most operationally significant act, so a committed pass, a fail-closed
+/// restage and persistent lease contention must all be visible to an
+/// operator, not discarded.
+// The tracing macros inflate the metric; the function is one flat match
+// (the api-gateway's `log_authn_error` carries the same allow for the
+// same shape).
+#[allow(clippy::cognitive_complexity)]
+fn log_drain_outcome(tenant: Uuid, outcome: &DrainOutcome) {
+    match outcome {
+        DrainOutcome::Committed {
+            catalog_version_id,
+            satisfied,
+        } => {
+            tracing::info!(
+                %tenant,
+                catalog_version_id,
+                satisfied,
+                "bss-products: catalog version committed"
+            );
+        }
+        DrainOutcome::Restaged => {
+            tracing::warn!(
+                %tenant,
+                "bss-products: increment pass failed closed (stage-vs-commit moved); \
+                 requests stay pending"
+            );
+        }
+        DrainOutcome::LeaseHeld => {
+            tracing::debug!(
+                %tenant,
+                "bss-products: cv-increment lease held by a peer; pass skipped"
+            );
+        }
+        DrainOutcome::NoDemand | DrainOutcome::WindowOpen => {}
+    }
 }
 
 #[cfg(test)]

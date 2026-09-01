@@ -4710,8 +4710,19 @@ async fn resolve_clone_source(
         brand_id,
         name,
         product_code: frozen_str(&content, "product_code"),
-        region_scope: frozen_str(&content, "region_scope").unwrap_or_default(),
-        brand_scope: frozen_str(&content, "brand_scope").unwrap_or_default(),
+        // The scope keys are always rendered by this gear's own freeze, so
+        // their absence is the same corruption class the brand_id/name
+        // checks above refuse — never a silent empty scope on the clone.
+        region_scope: frozen_str(&content, "region_scope").ok_or_else(|| {
+            repo_error_to_canonical(&RepoError::CorruptRow(format!(
+                "frozen content of product {product_id} v{version} carries no region_scope"
+            )))
+        })?,
+        brand_scope: frozen_str(&content, "brand_scope").ok_or_else(|| {
+            repo_error_to_canonical(&RepoError::CorruptRow(format!(
+                "frozen content of product {product_id} v{version} carries no brand_scope"
+            )))
+        })?,
         read_at_version: Some(version),
         retired: head.lifecycle_state == LifecycleState::Retired,
     }))
@@ -5097,8 +5108,20 @@ async fn resolve_child_source(
     Ok(SkuCloneSource {
         product_id: parent_id,
         sku_code,
-        region_scope: frozen_str(&content, "region_scope").unwrap_or_default(),
-        brand_scope: frozen_str(&content, "brand_scope").unwrap_or_default(),
+        // The same corruption class as the sku_code check above: the scope
+        // keys are always rendered by this gear's own freeze.
+        region_scope: frozen_str(&content, "region_scope").ok_or_else(|| {
+            repo_error_to_canonical(&RepoError::CorruptRow(format!(
+                "frozen content of sku {} v{version} carries no region_scope",
+                child.sku_id
+            )))
+        })?,
+        brand_scope: frozen_str(&content, "brand_scope").ok_or_else(|| {
+            repo_error_to_canonical(&RepoError::CorruptRow(format!(
+                "frozen content of sku {} v{version} carries no brand_scope",
+                child.sku_id
+            )))
+        })?,
         read_at_version: Some(version),
     })
 }
@@ -5457,10 +5480,10 @@ async fn clone_product(
             .await);
         }
     };
-    let endpoint: &'static str = Box::leak(clone_endpoint(source_id).into_boxed_str());
+    let endpoint = clone_endpoint(source_id);
     let claim = client_key.map(|key| {
         IdempotencyClaimInput::new(
-            endpoint,
+            endpoint.clone(),
             key,
             payload_hash,
             now,
@@ -5541,7 +5564,7 @@ async fn clone_product(
                 // The committed-but-unanswered claim (P-D-72): the parent
                 // exists; re-enter the children phase against it.
                 let parent =
-                    resumed_parent(&state, &product_scope, tenant_id, endpoint, parent_id).await?;
+                    resumed_parent(&state, &product_scope, tenant_id, &endpoint, parent_id).await?;
                 return finish_family_act(
                     &state,
                     &product_scope,

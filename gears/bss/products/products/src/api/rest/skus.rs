@@ -1610,8 +1610,19 @@ async fn resolve_sku_clone_source(
         // one the carve-out overrides.
         product_id: head.product_id,
         sku_code,
-        region_scope: sku_frozen_str(&content, "region_scope").unwrap_or_default(),
-        brand_scope: sku_frozen_str(&content, "brand_scope").unwrap_or_default(),
+        // The scope keys are always rendered by this gear's own freeze, so
+        // their absence is the same corruption class the sku_code check
+        // above refuses — never a silent empty scope on the clone.
+        region_scope: sku_frozen_str(&content, "region_scope").ok_or_else(|| {
+            repo_error_to_canonical(&RepoError::CorruptRow(format!(
+                "frozen content of sku {sku_id} v{version} carries no region_scope"
+            )))
+        })?,
+        brand_scope: sku_frozen_str(&content, "brand_scope").ok_or_else(|| {
+            repo_error_to_canonical(&RepoError::CorruptRow(format!(
+                "frozen content of sku {sku_id} v{version} carries no brand_scope"
+            )))
+        })?,
         read_at_version: Some(version),
     }))
 }
@@ -1720,7 +1731,7 @@ async fn clone_sku(
             .await);
         }
     };
-    let endpoint: &'static str = Box::leak(clone_sku_endpoint(source_id).into_boxed_str());
+    let endpoint = clone_sku_endpoint(source_id);
     let claim = client_key.map(|key| {
         IdempotencyClaimInput::new(
             endpoint,

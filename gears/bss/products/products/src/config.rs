@@ -216,10 +216,6 @@ impl ProductsConfig {
         )
     }
 
-    /// Boot-time validation (P-D-84 arm 6): a `freeze_timeout_hours` above
-    /// the ten-year retention ceiling would invert the clamp above into a
-    /// panic, so it is refused before anything runs.
-    ///
     /// The freshness threshold as a `Duration` — the export
     /// `features/lifecycle.md` §7 row 8 needs, since `04`'s activation
     /// runner polls a deferred flip on exactly this interval (no event
@@ -235,6 +231,11 @@ impl ProductsConfig {
         std::time::Duration::from_secs(u64::from(self.watermark_skew_tolerance_minutes) * 60)
     }
 
+    /// Boot-time validation (P-D-84 arm 6): a `freeze_timeout_hours` above
+    /// the ten-year retention ceiling would invert the retention clamp into
+    /// a panic, so it is refused before anything runs — alongside the
+    /// zero-value checks whose fields admit no working zero.
+    ///
     /// # Errors
     ///
     /// A sentence naming the field, the configured value and the ceiling.

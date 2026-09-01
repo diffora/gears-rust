@@ -120,3 +120,7 @@ pub fn suggested_sku_code(source: &SkuCloneSource, n: u32) -> String {
 /// for a reason that is not a name collision at all. Past it, the last
 /// conflict is surfaced as the ordinary refusal.
 pub const CLONE_SUGGESTION_ATTEMPTS: u32 = 100;
+
+#[cfg(test)]
+#[path = "disposition_tests.rs"]
+mod disposition_tests;

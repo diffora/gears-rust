@@ -849,12 +849,24 @@ async fn drive_freeze_edge(
             let version = repo::find_catalog_version(&conn, &scope, tenant_id, catalog_version_id)
                 .await
                 .map_err(|e| repo_error_to_canonical(&e))?;
+            // The edge just matched this version's ledger row, so a missing
+            // version row is the store contradicting itself — refused as
+            // corruption, never papered over with a fabricated empty
+            // freeze_state.
+            let Some(version) = version else {
+                return Err(repo_error_to_canonical(
+                    &crate::infra::storage::RepoError::CorruptRow(format!(
+                        "catalog version {catalog_version_id} of {tenant_id} has a freeze-ack \
+                         row but no version row"
+                    )),
+                ));
+            };
             Ok((
                 StatusCode::OK,
                 Json(FreezeEdgeView {
                     participant,
                     state: edge.target().to_owned(),
-                    freeze_state: version.map(|v| v.freeze_state).unwrap_or_default(),
+                    freeze_state: version.freeze_state,
                 }),
             )
                 .into_response())

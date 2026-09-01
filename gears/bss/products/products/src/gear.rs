@@ -218,13 +218,23 @@ impl BssProductsGear {
         let sdk_state = Arc::clone(&rt.sdk_state);
         let mut interval = tokio::time::interval(COALESCER_TICK);
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        // The overdue-freeze scan runs on its own coarser cadence: an
+        // overdue version stays overdue for hours, so a per-second re-scan
+        // and re-warn is ~3,600 identical lines per hour per version, and
+        // the answer only changes on ledger writes.
+        let mut tick_count: u64 = 0;
         loop {
             tokio::select! {
                 biased;
                 () = cancel.cancelled() => break,
                 _ = interval.tick() => {
-                    coalescer_tick(&db, rt.freeze_timeout_hours).await;
-                    batch_tick(&sdk_state, rt.system_actor_ref).await;
+                    coalescer_tick(&db, &cancel).await;
+                    batch_tick(&sdk_state, rt.system_actor_ref, &cancel).await;
+                    if tick_count.is_multiple_of(OVERDUE_SCAN_EVERY_TICKS) {
+                        let now = crate::domain::canonical::write_instant(chrono::Utc::now());
+                        report_overdue_freezes(&db, now, rt.freeze_timeout_hours).await;
+                    }
+                    tick_count += 1;
                 }
             }
         }
@@ -235,9 +245,13 @@ impl BssProductsGear {
 /// One batch-worker tick: stage every tenant's oldest `staging` batch
 /// (`dod-stage-phase`). A failed sweep is logged and retried next tick —
 /// the ledger is the record, so nothing is lost.
-async fn batch_tick(state: &Arc<crate::api::rest::ApiState>, actor_ref: uuid::Uuid) {
+async fn batch_tick(
+    state: &Arc<crate::api::rest::ApiState>,
+    actor_ref: uuid::Uuid,
+    cancel: &tokio_util::sync::CancellationToken,
+) {
     let now = crate::domain::canonical::write_instant(chrono::Utc::now());
-    if let Err(error) = crate::infra::bulk_worker::sweep(state, actor_ref, now).await {
+    if let Err(error) = crate::infra::bulk_worker::sweep(state, actor_ref, now, cancel).await {
         tracing::warn!(%error, "bss-products: batch worker sweep failed");
     }
 }
@@ -249,13 +263,12 @@ async fn batch_tick(state: &Arc<crate::api::rest::ApiState>, actor_ref: uuid::Uu
 /// signal.
 async fn coalescer_tick(
     db: &toolkit_db::DBProvider<toolkit_db::DbError>,
-    freeze_timeout_hours: u32,
+    cancel: &tokio_util::sync::CancellationToken,
 ) {
     let now = crate::domain::canonical::write_instant(chrono::Utc::now());
-    if let Err(error) = crate::infra::increment::sweep(db, now).await {
+    if let Err(error) = crate::infra::increment::sweep(db, now, cancel).await {
         tracing::warn!(%error, "bss-products: coalescer sweep failed");
     }
-    report_overdue_freezes(db, now, freeze_timeout_hours).await;
 }
 
 /// The freeze-timeout telemetry (`dod-freeze-timeout`): fail-closed is the
@@ -286,6 +299,11 @@ async fn report_overdue_freezes(
 /// The coalescer's tick — well inside the interactive window so a lone
 /// request still lands within ≤ 5 s of itself.
 const COALESCER_TICK: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// How many coalescer ticks between overdue-freeze scans — roughly once a
+/// minute at the one-second tick, which is telemetry cadence for a state
+/// that changes on the scale of hours.
+const OVERDUE_SCAN_EVERY_TICKS: u64 = 60;
 
 /// Whichever running pipeline the gear started, held only so its background
 /// tasks are not cancelled.

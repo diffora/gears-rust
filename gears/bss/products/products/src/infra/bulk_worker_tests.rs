@@ -141,9 +141,15 @@ async fn a_batch_stages_its_rows_and_reports() {
     )
     .await;
 
-    let outcome = stage_next_batch(&harness.state, TENANT, ACTOR, Utc::now())
-        .await
-        .expect("stage");
+    let outcome = stage_next_batch(
+        &harness.state,
+        TENANT,
+        ACTOR,
+        Utc::now(),
+        &tokio_util::sync::CancellationToken::new(),
+    )
+    .await
+    .expect("stage");
     assert_eq!(
         outcome,
         StageOutcome::Reported {
@@ -196,9 +202,15 @@ async fn a_failing_row_fails_alone_with_the_owning_code() {
     bad.staged_payload = Some(json!({ "brand_id": BRAND }).to_string());
     let batch_id = seed_batch(&harness, "b-2", vec![bad, product_row("r-ok", "Delta")]).await;
 
-    let outcome = stage_next_batch(&harness.state, TENANT, ACTOR, Utc::now())
-        .await
-        .expect("stage");
+    let outcome = stage_next_batch(
+        &harness.state,
+        TENANT,
+        ACTOR,
+        Utc::now(),
+        &tokio_util::sync::CancellationToken::new(),
+    )
+    .await
+    .expect("stage");
     assert_eq!(
         outcome,
         StageOutcome::Reported {
@@ -225,14 +237,26 @@ async fn a_failing_row_fails_alone_with_the_owning_code() {
 async fn a_collision_carries_the_foundations_own_code() {
     let harness = harness().await;
     seed_batch(&harness, "b-3", vec![product_row("r-1", "Epsilon")]).await;
-    stage_next_batch(&harness.state, TENANT, ACTOR, Utc::now())
-        .await
-        .expect("stage");
+    stage_next_batch(
+        &harness.state,
+        TENANT,
+        ACTOR,
+        Utc::now(),
+        &tokio_util::sync::CancellationToken::new(),
+    )
+    .await
+    .expect("stage");
 
     let batch_id = seed_batch(&harness, "b-4", vec![product_row("r-2", "Epsilon")]).await;
-    stage_next_batch(&harness.state, TENANT, ACTOR, Utc::now())
-        .await
-        .expect("stage");
+    stage_next_batch(
+        &harness.state,
+        TENANT,
+        ACTOR,
+        Utc::now(),
+        &tokio_util::sync::CancellationToken::new(),
+    )
+    .await
+    .expect("stage");
 
     let conn = harness.state.db.conn().expect("conn");
     let rows = repo::find_batch_rows(&conn, &scope(), TENANT, batch_id)
@@ -248,9 +272,15 @@ async fn a_collision_carries_the_foundations_own_code() {
 async fn a_resumed_batch_skips_the_rows_it_already_staged() {
     let harness = harness().await;
     let batch_id = seed_batch(&harness, "b-5", vec![product_row("r-1", "Zeta")]).await;
-    stage_next_batch(&harness.state, TENANT, ACTOR, Utc::now())
-        .await
-        .expect("stage");
+    stage_next_batch(
+        &harness.state,
+        TENANT,
+        ACTOR,
+        Utc::now(),
+        &tokio_util::sync::CancellationToken::new(),
+    )
+    .await
+    .expect("stage");
 
     let conn = harness.state.db.conn().expect("conn");
     let first = repo::find_batch_rows(&conn, &scope(), TENANT, batch_id)
@@ -264,9 +294,15 @@ async fn a_resumed_batch_skips_the_rows_it_already_staged() {
     let conn2 = harness.state.db.conn().expect("conn");
     return_pinned(conn);
 
-    stage_next_batch(&harness.state, TENANT, ACTOR, Utc::now())
-        .await
-        .expect("resume");
+    stage_next_batch(
+        &harness.state,
+        TENANT,
+        ACTOR,
+        Utc::now(),
+        &tokio_util::sync::CancellationToken::new(),
+    )
+    .await
+    .expect("resume");
     let again = repo::find_batch_rows(&conn2, &scope(), TENANT, batch_id)
         .await
         .expect("read")[0]
@@ -299,8 +335,14 @@ async fn a_stale_claim_loses() {
 #[tokio::test]
 async fn an_empty_queue_is_a_quiet_pass() {
     let harness = harness().await;
-    let outcome = stage_next_batch(&harness.state, TENANT, ACTOR, Utc::now())
-        .await
-        .expect("stage");
+    let outcome = stage_next_batch(
+        &harness.state,
+        TENANT,
+        ACTOR,
+        Utc::now(),
+        &tokio_util::sync::CancellationToken::new(),
+    )
+    .await
+    .expect("stage");
     assert_eq!(outcome, StageOutcome::NoBatch);
 }

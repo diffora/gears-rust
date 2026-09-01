@@ -427,7 +427,12 @@ async fn record_watermark(
     now: DateTime<Utc>,
     skew: std::time::Duration,
 ) -> Result<WatermarkAck, CanonicalError> {
-    let producer = post.producer.trim().to_owned();
+    let WatermarkPost {
+        producer,
+        watermark_at,
+        sku_ids,
+    } = post;
+    let producer = producer.trim().to_owned();
     let subject = producer.clone();
     if producer.is_empty() {
         let mut report = ValidationReport::new();
@@ -443,6 +448,40 @@ async fn record_watermark(
         )
         .await);
     }
+
+    // The set bound, shared by both bindings so the in-process one cannot
+    // bypass an HTTP-layer body limit: a single post above the operator's
+    // own row ceiling is an accident, not a catalog — refused before
+    // anything is hashed or written.
+    let max_set_size = state.bulk_max_rows_per_batch as usize;
+    if sku_ids.len() > max_set_size {
+        let mut report = ValidationReport::new();
+        report.violate(
+            "VALIDATION",
+            "sku_ids",
+            format!(
+                "sku_ids carries {} entries, above the configured ceiling of {max_set_size}",
+                sku_ids.len()
+            ),
+        );
+        return Err(refuse_reference(
+            state,
+            scope,
+            tenant_id,
+            actor_ref,
+            crate::authz::labels::REFERENCE_SIGNAL,
+            subject,
+            DomainError::Validation(report),
+        )
+        .await);
+    }
+
+    // The contract is a set: a duplicated id is deduplicated once at the
+    // door, so the hash, the stored rows and the acked member_count all
+    // describe the same set instead of three different readings of one Vec.
+    let mut members = sku_ids;
+    members.sort_unstable();
+    members.dedup();
 
     let conn = state.db.conn().map_err(|e| {
         repo_error_to_canonical(&crate::infra::storage::RepoError::Db(format!(
@@ -474,15 +513,14 @@ async fn record_watermark(
     // The future bound, alerted as well as refused.
     let ceiling =
         now + chrono::Duration::from_std(skew).unwrap_or_else(|_| chrono::Duration::zero());
-    if post.watermark_at > ceiling {
+    if watermark_at > ceiling {
         tracing::warn!(
             %producer,
-            watermark_at = %post.watermark_at,
+            %watermark_at,
             "bss-products: watermark_future"
         );
         let refusal = DomainError::WatermarkFuture(format!(
-            "watermark_at {} is above the receiving clock plus the configured skew",
-            post.watermark_at
+            "watermark_at {watermark_at} is above the receiving clock plus the configured skew"
         ));
         return Err(refuse_reference(
             state,
@@ -496,72 +534,50 @@ async fn record_watermark(
         .await);
     }
 
-    let hash = set_hash(&post.sku_ids);
-    let stored = repo::find_reference_watermark(&conn, scope, tenant_id, &producer)
-        .await
-        .map_err(|e| repo_error_to_canonical(&e))?;
-    if let Some(stored) = stored {
-        if post.watermark_at < stored.watermark_at {
-            let refusal = DomainError::WatermarkRegression(format!(
-                "watermark_at {} is older than the stored {}",
-                post.watermark_at, stored.watermark_at
-            ));
-            return Err(refuse_reference(
-                state,
-                scope,
-                tenant_id,
-                actor_ref,
-                crate::authz::labels::REFERENCE_SIGNAL,
-                subject,
-                refusal,
-            )
-            .await);
-        }
-        if post.watermark_at == stored.watermark_at {
-            // P-D-71: the stored hash is what tells the admitted replay
-            // from the conflict.
-            if stored.set_hash == hash {
-                return Ok(WatermarkAck {
-                    watermark_at: stored.watermark_at,
-                    member_count: post.sku_ids.len(),
-                    replayed: true,
-                });
-            }
-            let refusal = DomainError::WatermarkConflict(format!(
-                "watermark_at {} was already posted with a different set",
-                post.watermark_at
-            ));
-            return Err(refuse_reference(
-                state,
-                scope,
-                tenant_id,
-                actor_ref,
-                crate::authz::labels::REFERENCE_SIGNAL,
-                subject,
-                refusal,
-            )
-            .await);
-        }
-    }
     return_pinned(conn);
 
+    // The regression/conflict/replay verdict and the replacing write run in
+    // ONE serializable transaction: an older post that loses the race to a
+    // newer one re-reads the winner's row on retry and is refused
+    // WATERMARK_REGRESSION, instead of silently regressing the head the way
+    // a check on a plain connection allowed.
+    let hash = set_hash(&members);
+    let member_count = members.len();
     let scope_for_tx = scope.clone();
     let producer_for_tx = producer.clone();
-    let members = post.sku_ids.clone();
+    let members_for_tx = members;
     let hash_for_tx = hash.clone();
-    let watermark_at = post.watermark_at;
-    state
+    let verdict = state
         .db
         .db()
-        .transaction_with_retry::<(), toolkit_db::DbError, _, _>(
-            toolkit_db::secure::TxConfig::default(),
+        .transaction_with_retry::<WatermarkTxVerdict, toolkit_db::DbError, _, _>(
+            toolkit_db::secure::TxConfig::serializable(),
             crate::api::rest::contention_db_err,
             move |tx| {
                 let scope = scope_for_tx.clone();
                 let producer = producer_for_tx.clone();
-                let members = members.clone();
+                let members = members_for_tx.clone();
                 let hash = hash_for_tx.clone();
                 Box::pin(async move {
+                    let stored = repo::find_reference_watermark(tx, &scope, tenant_id, &producer)
+                        .await
+                        .map_err(|e| toolkit_db::DbError::Sea(e.to_db_err()))?;
+                    if let Some(stored) = stored {
+                        if watermark_at < stored.watermark_at {
+                            return Ok(WatermarkTxVerdict::Regression {
+                                stored_at: stored.watermark_at,
+                            });
+                        }
+                        if watermark_at == stored.watermark_at {
+                            // P-D-71: the stored hash is what tells the
+                            // admitted replay from the conflict.
+                            return Ok(if stored.set_hash == hash {
+                                WatermarkTxVerdict::Replayed
+                            } else {
+                                WatermarkTxVerdict::Conflict
+                            });
+                        }
+                    }
                     repo::post_reference_watermark(
                         tx,
                         &scope,
@@ -576,7 +592,7 @@ async fn record_watermark(
                     )
                     .await
                     .map_err(|e| toolkit_db::DbError::Sea(e.to_db_err()))?;
-                    Ok(())
+                    Ok(WatermarkTxVerdict::Written)
                 })
             },
         )
@@ -585,11 +601,65 @@ async fn record_watermark(
             repo_error_to_canonical(&crate::infra::storage::RepoError::Db(e.to_string()))
         })?;
 
-    Ok(WatermarkAck {
-        watermark_at,
-        member_count: post.sku_ids.len(),
-        replayed: false,
-    })
+    match verdict {
+        WatermarkTxVerdict::Written => Ok(WatermarkAck {
+            watermark_at,
+            member_count,
+            replayed: false,
+        }),
+        WatermarkTxVerdict::Replayed => Ok(WatermarkAck {
+            watermark_at,
+            member_count,
+            replayed: true,
+        }),
+        WatermarkTxVerdict::Regression { stored_at } => {
+            let refusal = DomainError::WatermarkRegression(format!(
+                "watermark_at {watermark_at} is older than the stored {stored_at}"
+            ));
+            Err(refuse_reference(
+                state,
+                scope,
+                tenant_id,
+                actor_ref,
+                crate::authz::labels::REFERENCE_SIGNAL,
+                subject,
+                refusal,
+            )
+            .await)
+        }
+        WatermarkTxVerdict::Conflict => {
+            let refusal = DomainError::WatermarkConflict(format!(
+                "watermark_at {watermark_at} was already posted with a different set"
+            ));
+            Err(refuse_reference(
+                state,
+                scope,
+                tenant_id,
+                actor_ref,
+                crate::authz::labels::REFERENCE_SIGNAL,
+                subject,
+                refusal,
+            )
+            .await)
+        }
+    }
+}
+
+/// What the watermark transaction decided — carried out of the closure so
+/// the audited refusals (which want the door's state and scope) run outside
+/// the retry loop rather than auditing once per attempt.
+enum WatermarkTxVerdict {
+    /// The head and its member set were replaced.
+    Written,
+    /// The admitted idempotent replay: equal instant, equal set hash.
+    Replayed,
+    /// The posted instant is older than the stored head.
+    Regression {
+        /// The stored head's instant, named in the refusal.
+        stored_at: DateTime<Utc>,
+    },
+    /// Equal instant, different set hash.
+    Conflict,
 }
 
 /// `POST /bss-products/v1/reference-watermarks`.
