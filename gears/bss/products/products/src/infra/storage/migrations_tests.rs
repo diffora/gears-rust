@@ -5218,3 +5218,429 @@ mod cloned_from_guard_tests {
         }
     }
 }
+
+/// Governance's three stores, probed on every guard and every CHECK the
+/// design's §4 states — and on the schema oracle `dod-approval-store`
+/// requires, with its perturbation case.
+///
+/// @cpt-dod:cpt-cf-bss-products-dod-approval-store:p1
+/// @cpt-dod:cpt-cf-bss-products-dod-decision-store:p1
+/// @cpt-dod:cpt-cf-bss-products-dod-breakglass-store:p1
+mod governance_store_guard_tests {
+    use sea_orm::ConnectionTrait;
+    use sea_orm_migration::MigratorTrait;
+
+    use super::Migrator;
+
+    async fn harness() -> sea_orm::DatabaseConnection {
+        let mut opts = sea_orm::ConnectOptions::new("sqlite::memory:");
+        opts.max_connections(1).min_connections(1);
+        let db = sea_orm::Database::connect(opts)
+            .await
+            .expect("connect in-memory sqlite");
+        Migrator::up(&db, None).await.expect("boot the chain");
+        db
+    }
+
+    async fn exec(db: &sea_orm::DatabaseConnection, sql: &str) -> Result<(), sea_orm::DbErr> {
+        db.execute_raw(sea_orm::Statement::from_string(
+            sea_orm::DatabaseBackend::Sqlite,
+            sql.to_owned(),
+        ))
+        .await
+        .map(|_| ())
+    }
+
+    /// One `pending` approval, the shape every probe below starts from.
+    async fn seed_approval(db: &sea_orm::DatabaseConnection, id: &str, subject: &str) {
+        exec(
+            db,
+            &format!(
+                "INSERT INTO products_approval \
+                 (tenant_id, approval_id, subject_kind, subject_ref, internal_revision, \
+                  content_snapshot, quorum_descriptor, state, submitter, submitted_at) \
+                 VALUES ('t-a', '{id}', 'entity_publish', '{subject}', 3, '{{}}', '{{}}', \
+                  'pending', 'actor-1', '2026-09-01T00:00:00Z')"
+            ),
+        )
+        .await
+        .expect("a pending approval lands");
+    }
+
+    /// The partial UNIQUE admits one OPEN approval per subject and any number
+    /// of finalized ones — L-4's supersession made physical rather than
+    /// enforced by a door's read-then-write.
+    #[tokio::test]
+    async fn one_open_approval_per_subject_and_any_number_of_closed_ones() {
+        let db = harness().await;
+        seed_approval(&db, "a-1", "prod-1").await;
+
+        let err = exec(
+            &db,
+            "INSERT INTO products_approval \
+             (tenant_id, approval_id, subject_kind, subject_ref, internal_revision, \
+              content_snapshot, quorum_descriptor, state, submitter, submitted_at) \
+             VALUES ('t-a', 'a-2', 'entity_publish', 'prod-1', 4, '{}', '{}', 'satisfied', \
+              'actor-1', '2026-09-01T00:00:00Z')",
+        )
+        .await
+        .expect_err("a second OPEN approval on one subject must be refused");
+        // The two engines word this differently — `SQLite` names the COLUMNS
+        // and Postgres names the INDEX — so the matcher reads what this
+        // harness's engine reports. A Postgres twin must match
+        // `uq_products_approval_open` instead, not copy this line.
+        let text = err.to_string();
+        assert!(
+            text.contains("UNIQUE constraint failed") && text.contains("subject_ref"),
+            "the refusal must come from the partial UNIQUE: {err}"
+        );
+
+        // Supersede the first, then the second lands: the index counts open
+        // rows only.
+        exec(
+            &db,
+            "UPDATE products_approval SET state = 'superseded', \
+             finalized_at = '2026-09-01T01:00:00Z' WHERE approval_id = 'a-1'",
+        )
+        .await
+        .expect("pending -> superseded is admitted");
+        exec(
+            &db,
+            "INSERT INTO products_approval \
+             (tenant_id, approval_id, subject_kind, subject_ref, internal_revision, \
+              content_snapshot, quorum_descriptor, state, submitter, submitted_at) \
+             VALUES ('t-a', 'a-2', 'entity_publish', 'prod-1', 4, '{}', '{}', 'pending', \
+              'actor-1', '2026-09-01T00:00:00Z')",
+        )
+        .await
+        .expect("the subject may hold a new open approval once the old one closed");
+    }
+
+    /// A finalized approval is immutable; `satisfied` is NOT finalized,
+    /// because `satisfied -> consumed` is the one-shot consumption edge.
+    #[tokio::test]
+    async fn a_finalized_approval_freezes_and_satisfied_does_not() {
+        let db = harness().await;
+        seed_approval(&db, "a-1", "prod-1").await;
+        exec(
+            &db,
+            "UPDATE products_approval SET state = 'satisfied' WHERE approval_id = 'a-1'",
+        )
+        .await
+        .expect("pending -> satisfied is admitted");
+        exec(
+            &db,
+            "UPDATE products_approval SET state = 'consumed', \
+             finalized_at = '2026-09-01T02:00:00Z' WHERE approval_id = 'a-1'",
+        )
+        .await
+        .expect("satisfied -> consumed is the consumption edge, still mutable");
+
+        let err = exec(
+            &db,
+            "UPDATE products_approval SET state = 'pending', finalized_at = NULL \
+             WHERE approval_id = 'a-1'",
+        )
+        .await
+        .expect_err("a consumed approval must be immutable");
+        assert!(
+            err.to_string()
+                .contains("a finalized approval is immutable"),
+            "the refusal must be the freeze guard's: {err}"
+        );
+
+        let err = exec(
+            &db,
+            "DELETE FROM products_approval WHERE approval_id = 'a-1'",
+        )
+        .await
+        .expect_err("DELETE must be refused");
+        assert!(err.to_string().contains("append-only evidence"), "{err}");
+    }
+
+    /// The finalized-at pairing holds both directions: an open state carries
+    /// no instant and a terminal one always does.
+    #[tokio::test]
+    async fn the_finalized_instant_pairs_with_the_state() {
+        let db = harness().await;
+        let err = exec(
+            &db,
+            "INSERT INTO products_approval \
+             (tenant_id, approval_id, subject_kind, subject_ref, internal_revision, \
+              content_snapshot, quorum_descriptor, state, submitter, submitted_at, finalized_at) \
+             VALUES ('t-a', 'a-9', 'entity_publish', 'p-9', 1, '{}', '{}', 'pending', \
+              'actor-1', '2026-09-01T00:00:00Z', '2026-09-01T00:00:00Z')",
+        )
+        .await
+        .expect_err("a pending approval carrying a finalized instant must be refused");
+        assert!(
+            err.to_string().contains("chk_products_approval_finalized"),
+            "{err}"
+        );
+
+        let err = exec(
+            &db,
+            "INSERT INTO products_approval \
+             (tenant_id, approval_id, subject_kind, subject_ref, internal_revision, \
+              content_snapshot, quorum_descriptor, state, submitter, submitted_at) \
+             VALUES ('t-a', 'a-10', 'entity_publish', 'p-10', 1, '{}', '{}', 'rejected', \
+              'actor-1', '2026-09-01T00:00:00Z')",
+        )
+        .await
+        .expect_err("a rejected approval with no finalized instant must be refused");
+        assert!(
+            err.to_string().contains("chk_products_approval_finalized"),
+            "{err}"
+        );
+    }
+
+    /// P-D-68 arm 1's pair: both override columns or neither.
+    #[tokio::test]
+    async fn the_zero_quorum_acknowledgment_is_a_pair() {
+        let db = harness().await;
+        let err = exec(
+            &db,
+            "INSERT INTO products_approval \
+             (tenant_id, approval_id, subject_kind, subject_ref, internal_revision, \
+              content_snapshot, quorum_descriptor, state, submitter, submitted_at, \
+              author_override_ack) \
+             VALUES ('t-a', 'a-11', 'entity_publish', 'p-11', 1, '{}', '{}', 'pending', \
+              'actor-1', '2026-09-01T00:00:00Z', 'finding-1')",
+        )
+        .await
+        .expect_err("an acknowledgment with no instant must be refused");
+        assert!(
+            err.to_string()
+                .contains("chk_products_approval_override_pair"),
+            "{err}"
+        );
+    }
+
+    /// One principal, one decision — whatever roles they hold. This is C2's
+    /// physical floor, and a cast verdict is not editable.
+    #[tokio::test]
+    async fn one_principal_decides_once_and_the_verdict_freezes() {
+        let db = harness().await;
+        seed_approval(&db, "a-1", "prod-1").await;
+        exec(
+            &db,
+            "INSERT INTO products_approval_decision \
+             (tenant_id, approval_id, approver_principal, verdict, decided_at) \
+             VALUES ('t-a', 'a-1', 'actor-7', 'approved', '2026-09-01T01:00:00Z')",
+        )
+        .await
+        .expect("one decision lands");
+
+        let err = exec(
+            &db,
+            "INSERT INTO products_approval_decision \
+             (tenant_id, approval_id, approver_principal, verdict, decided_at) \
+             VALUES ('t-a', 'a-1', 'actor-7', 'rejected', '2026-09-01T02:00:00Z')",
+        )
+        .await
+        .expect_err("the same principal must not decide twice");
+        assert!(
+            err.to_string().to_ascii_uppercase().contains("UNIQUE"),
+            "the refusal must be the primary key's: {err}"
+        );
+
+        let err = exec(
+            &db,
+            "UPDATE products_approval_decision SET verdict = 'rejected' \
+             WHERE approval_id = 'a-1'",
+        )
+        .await
+        .expect_err("a cast verdict must not be editable");
+        assert!(err.to_string().contains("not editable"), "{err}");
+    }
+
+    /// The break-glass paths are exclusive, the window is ordered, and the
+    /// review's columns arrive exactly with `reviewed`.
+    #[tokio::test]
+    async fn the_elevation_session_pins_its_path_window_and_review() {
+        let db = harness().await;
+        let base = "INSERT INTO products_breakglass_session \
+             (session_id, principal, target_tenant, reason, valid_from, valid_until, opened_at";
+
+        // Neither path.
+        let err = exec(
+            &db,
+            &format!(
+                "{base}) VALUES ('s-1', 'actor-1', 't-a', 'incident', \
+                 '2026-09-01T00:00:00Z', '2026-09-01T01:00:00Z', '2026-09-01T00:00:00Z')"
+            ),
+        )
+        .await
+        .expect_err("a session with neither approval path must be refused");
+        assert!(
+            err.to_string().contains("chk_products_breakglass_path"),
+            "{err}"
+        );
+
+        // Both paths.
+        let err = exec(
+            &db,
+            &format!(
+                "{base}, two_person_approval_ref, posthoc_state) \
+                 VALUES ('s-2', 'actor-1', 't-a', 'incident', '2026-09-01T00:00:00Z', \
+                 '2026-09-01T01:00:00Z', '2026-09-01T00:00:00Z', 'a-1', 'pending')"
+            ),
+        )
+        .await
+        .expect_err("a session carrying both paths must be refused");
+        assert!(
+            err.to_string().contains("chk_products_breakglass_path"),
+            "{err}"
+        );
+
+        // A window that ends before it starts.
+        let err = exec(
+            &db,
+            &format!(
+                "{base}, posthoc_state) VALUES ('s-3', 'actor-1', 't-a', 'incident', \
+                 '2026-09-01T02:00:00Z', '2026-09-01T01:00:00Z', '2026-09-01T00:00:00Z', 'pending')"
+            ),
+        )
+        .await
+        .expect_err("an inverted window must be refused");
+        assert!(
+            err.to_string().contains("chk_products_breakglass_window"),
+            "{err}"
+        );
+
+        // `reviewed` without its reviewer.
+        let err = exec(
+            &db,
+            &format!(
+                "{base}, posthoc_state) VALUES ('s-4', 'actor-1', 't-a', 'incident', \
+                 '2026-09-01T00:00:00Z', '2026-09-01T01:00:00Z', '2026-09-01T00:00:00Z', 'reviewed')"
+            ),
+        )
+        .await
+        .expect_err("a reviewed obligation with no reviewer must be refused");
+        assert!(
+            err.to_string().contains("chk_products_breakglass_review"),
+            "{err}"
+        );
+
+        // The positive control, and the terms then freeze.
+        exec(
+            &db,
+            &format!(
+                "{base}, posthoc_state) VALUES ('s-5', 'actor-1', 't-a', 'incident', \
+                 '2026-09-01T00:00:00Z', '2026-09-01T01:00:00Z', '2026-09-01T00:00:00Z', 'pending')"
+            ),
+        )
+        .await
+        .expect("a post-hoc session opens");
+        exec(
+            &db,
+            "UPDATE products_breakglass_session SET expired_emitted = 1 WHERE session_id = 's-5'",
+        )
+        .await
+        .expect("the CAS stamp is the one thing an expiry flips");
+        let err = exec(
+            &db,
+            "UPDATE products_breakglass_session SET valid_until = '2026-09-09T00:00:00Z' \
+             WHERE session_id = 's-5'",
+        )
+        .await
+        .expect_err("extending an opened session's window must be refused");
+        assert!(err.to_string().contains("terms are immutable"), "{err}");
+    }
+
+    /// The schema oracle `dod-approval-store` requires, **with the
+    /// perturbation case that proves it can fail**: a golden column roster
+    /// per table, compared against what the engine reports.
+    async fn columns(db: &sea_orm::DatabaseConnection, table: &str) -> Vec<String> {
+        let rows = db
+            .query_all_raw(sea_orm::Statement::from_string(
+                sea_orm::DatabaseBackend::Sqlite,
+                format!("SELECT name FROM pragma_table_info('{table}') ORDER BY name"),
+            ))
+            .await
+            .expect("the engine reports its own columns");
+        rows.iter()
+            .map(|row| {
+                row.try_get::<String>("", "name")
+                    .expect("pragma_table_info carries a name column")
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn the_schema_oracle_pins_all_three_rosters_and_can_fail() {
+        let db = harness().await;
+
+        let approval = columns(&db, "products_approval").await;
+        assert_eq!(
+            approval,
+            vec![
+                "approval_id",
+                "author_override_ack",
+                "author_override_ack_at",
+                "content_snapshot",
+                "diff_basis",
+                "finalized_at",
+                "internal_revision",
+                "quorum_descriptor",
+                "state",
+                "subject_kind",
+                "subject_ref",
+                "submitted_at",
+                "submitter",
+                "tenant_id",
+            ],
+            "the approval record's roster is design/05 section 4's, and a column added or dropped \
+             here is a schema change that must be deliberate"
+        );
+
+        let decision = columns(&db, "products_approval_decision").await;
+        assert_eq!(
+            decision,
+            vec![
+                "approval_id",
+                "approver_principal",
+                "decided_at",
+                "override_acknowledgments",
+                "reason",
+                "tenant_id",
+                "verdict",
+            ]
+        );
+
+        let session = columns(&db, "products_breakglass_session").await;
+        assert_eq!(
+            session,
+            vec![
+                "expired_emitted",
+                "opened_at",
+                "posthoc_state",
+                "principal",
+                "reason",
+                "reviewed_at",
+                "reviewed_by",
+                "session_id",
+                "target_tenant",
+                "two_person_approval_ref",
+                "valid_from",
+                "valid_until",
+            ]
+        );
+
+        // The perturbation: the oracle must FAIL on a table it was not
+        // written against, which is what proves the comparison is real and
+        // not a tautology over whatever the engine happens to report.
+        let perturbed = columns(&db, "products_approval_decision").await;
+        assert_ne!(
+            perturbed, approval,
+            "two different tables must not compare equal, or the oracle asserts nothing"
+        );
+        assert!(
+            columns(&db, "products_approval_no_such_table")
+                .await
+                .is_empty(),
+            "the oracle reads the real catalog: an absent table has no columns"
+        );
+    }
+}

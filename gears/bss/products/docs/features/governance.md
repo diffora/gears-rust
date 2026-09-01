@@ -453,7 +453,7 @@ shipped rows, and each pair resolving to a door or being marked unspent — is t
 
 ### Approval record store
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-approval-store`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-approval-store`
 
 The system **MUST** create `products_approval` on both engines with the subject kind and ref, the
 pinned `internal_revision`, the **stored** `content_snapshot`, the `diff_basis`, the **stored**
@@ -473,7 +473,7 @@ schema-oracle golden **MUST** exist on both engines with a perturbation case pro
 
 ### Decision store and the one-principal-one-decision floor
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-decision-store`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-decision-store`
 
 The system **MUST** create `products_approval_decision` carrying the approver principal **as an
 `actor_ref` — pseudonymous, never a raw identifier**, these rows being append-only, so one raw
@@ -489,7 +489,7 @@ distinctness-by-principal**: one principal, one decision, whatever roles they ho
 
 ### Break-glass session store
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-breakglass-store`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-breakglass-store`
 
 The system **MUST** create `products_breakglass_session` carrying the session id, the principal as
 an `actor_ref` — pseudonymous, never a raw identifier — the target tenant, the reason, the window as a half-open interval, and the
@@ -497,8 +497,17 @@ approval path — a two-person reference or a post-hoc obligation **state ∈ {p
 with `reviewed_by (actor_ref)` / `reviewed_at`, discharged by the **second platform principal's**
 late decision (**P-D-68** — one ceremony, two timings; no new door) — plus the **`expired_emitted`**
 CAS stamp the expiry event's one emitter flips (P-D-68). Elevated audit rows **MUST**
-carry the session id. **The post-hoc obligation's state set is enumerated nowhere and no door
-discharges it** (open item 20).
+carry the session id.
+
+**Open item 20's half is answered and the other half is not, and the table separates them.**
+P-D-68 arm 3 enumerated the state set (`{pending, reviewed}`) and named the discharger (the second
+platform principal's late decision — one ceremony, two timings, no new door), so this DoD's earlier
+claim that neither existed no longer holds. What P-D-68
+**deliberately did not** presuppose is whether that decision's record is an `ApprovalRecord`: so
+`two_person_approval_ref` is a nullable reference carrying **no FK**, and a CHECK makes the two
+paths exclusive rather than asserting what the reference points at. The precedent is this gear's
+own — `products_bulk_batch.approval_ref` shipped without an FK for the same reason, one slice
+earlier.
 
 **Implements**: `cpt-cf-bss-products-flow-breakglass`
 
