@@ -19,7 +19,7 @@ use uuid::Uuid;
 use bss_products_sdk::models::EntityKind;
 
 use super::{
-    ApprovalDisposition, ApprovalId, EntityRef, GateMode, GateVerdict, GovernanceGate,
+    ApprovalDisposition, ApprovalId, EntityRef, GateMode, GateSubject, GateVerdict, GovernanceGate,
     NoMaterialityPolicyGate,
 };
 use crate::domain::concurrency::InternalRevision;
@@ -27,12 +27,18 @@ use crate::domain::error::DomainError;
 
 /// A fixed subject, so no case has to invent one and no two cases differ by
 /// an identity that is not what they are measuring.
-fn subject() -> EntityRef {
+fn entity() -> EntityRef {
     EntityRef {
         tenant_id: Uuid::from_u128(0x11),
         entity_kind: EntityKind::Sku,
         entity_id: Uuid::from_u128(0x22),
     }
+}
+
+/// The same subject as the seam now expresses it (P-D-67 arm 4), built
+/// through the entity constructor the arm keeps.
+fn subject() -> GateSubject {
+    GateSubject::entity_publish(entity())
 }
 
 /// The revision a door would have pinned through its `If-Match`.
@@ -52,7 +58,7 @@ struct AlwaysRefusesGate;
 impl GovernanceGate for AlwaysRefusesGate {
     fn evaluate(
         &self,
-        _subject: EntityRef,
+        _subject: GateSubject,
         _expected_revision: InternalRevision,
         _mode: GateMode,
     ) -> Result<GateVerdict, DomainError> {
@@ -72,7 +78,7 @@ struct AuthorizesAndNamesARecord {
 impl GovernanceGate for AuthorizesAndNamesARecord {
     fn evaluate(
         &self,
-        _subject: EntityRef,
+        _subject: GateSubject,
         _expected_revision: InternalRevision,
         mode: GateMode,
     ) -> Result<GateVerdict, DomainError> {

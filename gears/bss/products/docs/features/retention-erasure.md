@@ -610,7 +610,7 @@ a trigger cannot read configuration.
 
 ### The retention gate, and the pair it evaluates
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-retention-gate`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-retention-gate`
 
 For a `catalogVersionId` the gate **MUST** range over **that version's `participant_set_snapshot`**
 (**P-D-49**) and **MUST NOT** range over whatever registration rows exist. Over that domain it
@@ -632,6 +632,29 @@ closed, skipped and never forced (C4).
 **This gate's operand is `06-catalog-version`'s** `inst-fz-liveness`, and that feature's §7 rows 6,
 11 and 33 hold the open half — whether `freezeComplete`'s formula is restated to match this
 predicate, the ledger's transition table, and who writes `released_at`. **Cited, not re-raised.**
+
+**Built as `domain::retention`, and every case is armed as the failure rather than as its fix.** The
+predicate takes the version's snapshot members and the ledger rows and answers `Collectable` or
+`Held(..)`; it deletes nothing, and every hold carries C4's single reason so a caller cannot read
+one as a soft warning. Six of the eight probes are the `DoD`'s own named failures:
+
+- an **empty ledger** against a non-empty snapshot **holds** — the vacuity that collected a version
+  nobody had frozen;
+- an **empty snapshot** is **collectable** — the other vacuity, admitted, and the two differ in
+  which store is empty;
+- a **stamp beside a live state** (`acked` with `released_at` set — the recovered forced
+  participant) **holds**, which is the failure the pair exists for;
+- a **door-released** row satisfies the gate **with the stamp NULL**, so a gate reading the
+  timestamp would have refused every ordinary release — the same defect from the other side;
+- the **forced arm without its stamp** holds, and that arm reports a row that reached the table past
+  its own shape `CHECK`;
+- **every** hold is reported rather than the first, because an operator repairing one and re-running
+  would otherwise meet the rest one pass at a time.
+
+`FreezeRegistration` carries the state and the stamp **separately** rather than deriving one from
+the other, and that is the shape the two arms force: a door-released row is `released` with a NULL
+stamp while a forced row carries both (**P-D-67** — *"the state moving is what makes the stamp
+inert"*).
 
 **Implements**: `cpt-cf-bss-products-flow-retention`
 

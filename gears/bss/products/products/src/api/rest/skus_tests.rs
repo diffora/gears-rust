@@ -1273,7 +1273,7 @@ struct RefusingGate;
 impl crate::domain::governance::GovernanceGate for RefusingGate {
     fn evaluate(
         &self,
-        _subject: crate::domain::governance::EntityRef,
+        _subject: crate::domain::governance::GateSubject,
         _expected_revision: crate::domain::concurrency::InternalRevision,
         _mode: crate::domain::governance::GateMode,
     ) -> Result<crate::domain::governance::GateVerdict, crate::domain::error::DomainError> {
@@ -2722,7 +2722,7 @@ impl RecordingGate {
 impl crate::domain::governance::GovernanceGate for RecordingGate {
     fn evaluate(
         &self,
-        _subject: crate::domain::governance::EntityRef,
+        _subject: crate::domain::governance::GateSubject,
         _expected_revision: crate::domain::concurrency::InternalRevision,
         mode: crate::domain::governance::GateMode,
     ) -> Result<crate::domain::governance::GateVerdict, crate::domain::error::DomainError> {
@@ -2805,11 +2805,13 @@ async fn a_preauthorized_publish_reaches_the_host_in_that_mode_and_consumes_noth
 
     let verdict = recorder
         .evaluate(
-            crate::domain::governance::EntityRef {
-                tenant_id: TENANT,
-                entity_kind: bss_products_sdk::models::EntityKind::Sku,
-                entity_id: sku_id,
-            },
+            crate::domain::governance::GateSubject::entity_publish(
+                crate::domain::governance::EntityRef {
+                    tenant_id: TENANT,
+                    entity_kind: bss_products_sdk::models::EntityKind::Sku,
+                    entity_id: sku_id,
+                },
+            ),
             crate::domain::concurrency::InternalRevision::new(1),
             GateMode::PreAuthorized(approval),
         )
@@ -3110,7 +3112,7 @@ struct OverridingGate;
 impl crate::domain::governance::GovernanceGate for OverridingGate {
     fn evaluate(
         &self,
-        _subject: crate::domain::governance::EntityRef,
+        _subject: crate::domain::governance::GateSubject,
         _expected_revision: crate::domain::concurrency::InternalRevision,
         _mode: crate::domain::governance::GateMode,
     ) -> Result<crate::domain::governance::GateVerdict, crate::domain::error::DomainError> {

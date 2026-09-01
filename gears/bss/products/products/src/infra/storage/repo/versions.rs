@@ -164,6 +164,72 @@ pub async fn freeze_ack_rows(
         .collect()
 }
 
+/// One registration row as the **retention gate** reads it: the participant,
+/// its state, and whether `released_at` is stamped
+/// (`dod-retention-gate`).
+///
+/// The stamp is carried separately from the state because the gate's two arms
+/// need both and they are not derivable from one another: a door-released row
+/// is `state = released` with the stamp **NULL**, while force-completion
+/// stamps it in the same transaction as `not_frozen(forced)` and a recovered
+/// participant's later ack leaves the stamp behind (P-D-67).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FreezeRegistration {
+    /// The participant the row is for.
+    pub participant: String,
+    /// Its state in the ledger.
+    pub state: FreezeAckState,
+    /// Whether `released_at` carries a value.
+    pub released_at_stamped: bool,
+}
+
+/// Every registration row of one version, with the release stamp
+/// (`dod-retention-gate`'s operand).
+///
+/// # Errors
+///
+/// [`RepoError::CorruptRow`] where a stored state is outside the roster, and
+/// [`RepoError`] as the read raises it.
+pub async fn freeze_registrations(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    catalog_version_id: i64,
+) -> Result<Vec<FreezeRegistration>, RepoError> {
+    let rows = freeze_ack::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(freeze_ack::Column::TenantId.eq(tenant_id))
+                .add(freeze_ack::Column::CatalogVersionId.eq(catalog_version_id)),
+        )
+        .all(runner)
+        .await
+        .map_err(|e| {
+            driver_failure(
+                format!("read the freeze registrations of {catalog_version_id}"),
+                e,
+            )
+        })?;
+    rows.into_iter()
+        .map(|row| {
+            let state = FreezeAckState::parse(&row.state).ok_or_else(|| {
+                RepoError::CorruptRow(format!(
+                    "freeze-ack row of {} on {catalog_version_id} carries state {:?} \
+                     outside the roster",
+                    row.participant, row.state
+                ))
+            })?;
+            Ok(FreezeRegistration {
+                participant: row.participant,
+                state,
+                released_at_stamped: row.released_at.is_some(),
+            })
+        })
+        .collect()
+}
+
 /// A ledger edge's outcome, for the ack and release doors to classify.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum FreezeEdgeOutcome {

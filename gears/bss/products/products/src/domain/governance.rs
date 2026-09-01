@@ -167,6 +167,126 @@ pub struct EntityRef {
     pub entity_id: Uuid,
 }
 
+/// The five subject kinds `products_approval` records, as the **seam** now
+/// expresses them (**P-D-67** arm 4).
+///
+/// The store fixed this vocabulary first — `kind ∈ {entity_publish,
+/// governed_live_op, system_signal, sku_correction, bulk_batch}` — and arm 4's
+/// finding was that *"the seam expressing less than the store records was the
+/// defect: the store is the authority, the seam conforms"*. Before it, four of
+/// the five kinds had no representation to hand `evaluate`.
+///
+/// An enum rather than a bare string, so a host that grows a policy for one
+/// kind is forced by the compiler to say what it does with the rest. That is
+/// the property the alternative — a second trait method a host could leave
+/// defaulted — would have thrown away: a subject nobody wrote policy for would
+/// then be authorized silently.
+#[domain_model]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SubjectKind {
+    /// A Product or SKU publish — the kind the Foundation's own doors carry.
+    EntityPublish,
+    /// `02`/`03`'s live-entity operation envelope.
+    GovernedLiveOp,
+    /// `06`'s inbound composition clear (**P-D-14**).
+    SystemSignal,
+    /// `07`'s immutable-field correction.
+    SkuCorrection,
+    /// `09`'s batch.
+    BulkBatch,
+}
+
+impl SubjectKind {
+    /// The token `products_approval.subject_kind` stores.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::EntityPublish => "entity_publish",
+            Self::GovernedLiveOp => "governed_live_op",
+            Self::SystemSignal => "system_signal",
+            Self::SkuCorrection => "sku_correction",
+            Self::BulkBatch => "bulk_batch",
+        }
+    }
+}
+
+/// What a gate question is about: the approval store's own
+/// `(subject_kind, subject_ref)` pair (**P-D-67** arm 4).
+///
+/// `subject_ref` is textual because the five kinds do not share an id type —
+/// the same reason the column is — and [`EntityRef`] remains the **constructor**
+/// for the entity kinds, which is arm 4's own wording rather than a
+/// convenience: a door holding a head row must not have to render an id by
+/// hand and risk transposing the two `Uuid`s.
+///
+/// **What this type deliberately does not carry is the pinned revision.**
+/// `governance` §7 row 14 asks what the entity-shaped columns — the pinned
+/// revision, the content snapshot, the diff basis — hold for a subject that is
+/// not an entity, and that row is live. So the revision stays a separate
+/// argument of [`GovernanceGate::evaluate`], supplied by the entity doors that
+/// have one; folding it in here would answer row 14 from a type definition.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct GateSubject {
+    /// The tenant every subject is scoped to.
+    pub tenant_id: Uuid,
+    /// Which of the five the subject is.
+    pub kind: SubjectKind,
+    /// The subject's own identifier, rendered as the store stores it.
+    pub reference: String,
+}
+
+impl GateSubject {
+    /// The entity constructor arm 4 keeps.
+    #[must_use]
+    pub fn entity_publish(entity: EntityRef) -> Self {
+        Self {
+            tenant_id: entity.tenant_id,
+            kind: SubjectKind::EntityPublish,
+            reference: format!("{}/{}", entity.entity_kind.as_str(), entity.entity_id),
+        }
+    }
+
+    /// A live-entity operation's subject — `02`'s envelope target.
+    #[must_use]
+    pub fn governed_live_op(tenant_id: Uuid, target: &str) -> Self {
+        Self {
+            tenant_id,
+            kind: SubjectKind::GovernedLiveOp,
+            reference: target.to_owned(),
+        }
+    }
+
+    /// An inbound system signal's subject (**P-D-14**).
+    #[must_use]
+    pub fn system_signal(tenant_id: Uuid, signal_ref: &str) -> Self {
+        Self {
+            tenant_id,
+            kind: SubjectKind::SystemSignal,
+            reference: signal_ref.to_owned(),
+        }
+    }
+
+    /// A SKU correction's subject.
+    #[must_use]
+    pub fn sku_correction(tenant_id: Uuid, sku_id: Uuid) -> Self {
+        Self {
+            tenant_id,
+            kind: SubjectKind::SkuCorrection,
+            reference: sku_id.to_string(),
+        }
+    }
+
+    /// A bulk batch's subject.
+    #[must_use]
+    pub fn bulk_batch(tenant_id: Uuid, batch_id: Uuid) -> Self {
+        Self {
+            tenant_id,
+            kind: SubjectKind::BulkBatch,
+            reference: batch_id.to_string(),
+        }
+    }
+}
+
 /// The door's authorization mode (`inst-fd-gate-mode`).
 ///
 /// **Never a wire-visible parameter.** See the module doc: the `REST` and
@@ -368,7 +488,7 @@ pub trait GovernanceGate {
     /// looked at.
     fn evaluate(
         &self,
-        subject: EntityRef,
+        subject: GateSubject,
         expected_revision: InternalRevision,
         mode: GateMode,
     ) -> Result<GateVerdict, DomainError>;
@@ -440,7 +560,7 @@ impl GovernanceGate for NoMaterialityPolicyGate {
     /// failure.
     fn evaluate(
         &self,
-        _subject: EntityRef,
+        _subject: GateSubject,
         _expected_revision: InternalRevision,
         mode: GateMode,
     ) -> Result<GateVerdict, DomainError> {

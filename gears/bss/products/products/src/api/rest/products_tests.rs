@@ -83,7 +83,7 @@ use crate::domain::canonical;
 use crate::domain::concurrency::InternalRevision;
 use crate::domain::error::DomainError;
 use crate::domain::governance::{
-    ApprovalDisposition, ApprovalId, EntityRef, GateMode, GateVerdict, GovernanceGate,
+    ApprovalDisposition, ApprovalId, EntityRef, GateMode, GateSubject, GateVerdict, GovernanceGate,
 };
 use crate::infra::events;
 use crate::infra::storage::migrations::Migrator;
@@ -1790,7 +1790,7 @@ struct RefusingGate;
 impl GovernanceGate for RefusingGate {
     fn evaluate(
         &self,
-        _subject: EntityRef,
+        _subject: GateSubject,
         _expected_revision: InternalRevision,
         _mode: GateMode,
     ) -> Result<GateVerdict, DomainError> {
@@ -2321,7 +2321,7 @@ struct FailingGate;
 impl GovernanceGate for FailingGate {
     fn evaluate(
         &self,
-        _subject: EntityRef,
+        _subject: GateSubject,
         _expected_revision: InternalRevision,
         _mode: GateMode,
     ) -> Result<GateVerdict, DomainError> {
@@ -3091,7 +3091,7 @@ impl RecordingGate {
 impl GovernanceGate for RecordingGate {
     fn evaluate(
         &self,
-        _subject: EntityRef,
+        _subject: GateSubject,
         _expected_revision: InternalRevision,
         mode: GateMode,
     ) -> Result<GateVerdict, DomainError> {
@@ -3191,11 +3191,11 @@ async fn a_preauthorized_publish_reaches_the_host_in_that_mode_and_consumes_noth
     // nothing to spend.
     let verdict = recorder
         .evaluate(
-            EntityRef {
+            GateSubject::entity_publish(EntityRef {
                 tenant_id: TENANT,
                 entity_kind: bss_products_sdk::models::EntityKind::Product,
                 entity_id: product_id,
-            },
+            }),
             InternalRevision::new(1),
             GateMode::PreAuthorized(approval),
         )
@@ -3361,7 +3361,7 @@ impl CountingRefusingGate {
 impl GovernanceGate for CountingRefusingGate {
     fn evaluate(
         &self,
-        _subject: EntityRef,
+        _subject: GateSubject,
         _expected_revision: InternalRevision,
         _mode: GateMode,
     ) -> Result<GateVerdict, DomainError> {
@@ -5972,4 +5972,167 @@ async fn a_publish_needs_a_primary_category_and_a_draft_does_not() {
     );
     let head = head_of(&harness, product_id).await;
     assert_eq!(head.published_version, 1, "the version moved by one");
+}
+
+/// Seed one open approval against a Product publish subject, so the
+/// invalidation hook has something to supersede.
+async fn seed_open_approval(harness: &TestHarness, product_id: Uuid, state: &str) -> Uuid {
+    let conn = Database::connect(&harness.dsn)
+        .await
+        .expect("open an auxiliary connection to seed the approval");
+    let approval_id = Uuid::now_v7();
+    let subject = format!("product/{product_id}");
+    let finalized = if state == "pending" || state == "satisfied" {
+        "NULL".to_owned()
+    } else {
+        "'2026-09-01T00:00:00Z'".to_owned()
+    };
+    conn.execute_unprepared(&format!(
+        "INSERT INTO products_approval \
+         (tenant_id, approval_id, subject_kind, subject_ref, internal_revision, \
+          content_snapshot, quorum_descriptor, state, submitter, submitted_at, finalized_at) \
+         VALUES (X'{tenant}', X'{aid}', 'entity_publish', '{subject}', 1, '{{}}', '{{}}', \
+          '{state}', X'{tenant}', '2026-09-01T00:00:00Z', {finalized})",
+        tenant = TENANT.simple(),
+        aid = approval_id.simple(),
+    ))
+    .await
+    .expect("seed the approval record");
+    approval_id
+}
+
+/// Read one approval's state back.
+async fn approval_state(harness: &TestHarness, approval_id: Uuid) -> String {
+    let conn = Database::connect(&harness.dsn)
+        .await
+        .expect("open an auxiliary connection to read the approval");
+    let rows = conn
+        .query_all_raw(sea_orm::Statement::from_string(
+            sea_orm::DatabaseBackend::Sqlite,
+            format!(
+                "SELECT state FROM products_approval WHERE approval_id = X'{}'",
+                approval_id.simple()
+            ),
+        ))
+        .await
+        .expect("read the approval");
+    rows.first()
+        .expect("the row is there")
+        .try_get::<String>("", "state")
+        .expect("state is text")
+}
+
+/// `dod-supersede`: a frozen-content write to the subject supersedes its open
+/// record, and **nothing is re-submitted** — `inst-gv-supersede` requires
+/// re-submission to be an explicit human act, so the hook writes one row and
+/// creates none.
+///
+/// @cpt-dod:cpt-cf-bss-products-dod-supersede:p1
+#[tokio::test]
+async fn a_frozen_content_write_supersedes_the_open_approval_and_resubmits_nothing() {
+    let harness = harness().await;
+    let product_id = Uuid::now_v7();
+    seed_draft(&harness, product_id).await;
+    assign_primary_category(&harness, product_id).await;
+    let approval = seed_open_approval(&harness, product_id, "pending").await;
+
+    // A save is a frozen-content write: the floor fires the hook on it.
+    let saved = save_at(
+        &harness,
+        product_id,
+        1,
+        &serde_json::json!({ "name": "Renamed after approval" }),
+    )
+    .await;
+    assert_eq!(saved.status(), StatusCode::OK, "the save is admitted");
+
+    assert_eq!(
+        approval_state(&harness, approval).await,
+        "superseded",
+        "the open record no longer describes the row the approver read"
+    );
+
+    let conn = Database::connect(&harness.dsn)
+        .await
+        .expect("open an auxiliary connection to count");
+    let rows = conn
+        .query_all_raw(sea_orm::Statement::from_string(
+            sea_orm::DatabaseBackend::Sqlite,
+            "SELECT COUNT(*) AS n FROM products_approval".to_owned(),
+        ))
+        .await
+        .expect("count the records");
+    let n: i64 = rows
+        .first()
+        .expect("one row")
+        .try_get("", "n")
+        .expect("count is an integer");
+    assert_eq!(
+        n, 1,
+        "no re-submission is created: auto-resubmit would pin content nobody re-read"
+    );
+}
+
+/// The hook does **not** fire where the act consumes an approval in the same
+/// transaction — the publish edge. That is the floor's answer
+/// (`ApprovalInvalidation::Skip`), and this case proves the door reads it
+/// rather than superseding the very record it is spending.
+#[tokio::test]
+async fn a_publish_does_not_supersede_the_record_it_consumes() {
+    let harness = harness().await;
+    let product_id = Uuid::now_v7();
+    seed_draft(&harness, product_id).await;
+    assign_primary_category(&harness, product_id).await;
+    let approval = seed_open_approval(&harness, product_id, "satisfied").await;
+
+    let published = post_head_act(
+        app_for(&harness, TENANT),
+        TENANT,
+        product_id,
+        "publish",
+        &[("If-Match", &if_match(1))],
+    )
+    .await;
+    assert_eq!(
+        published.status(),
+        StatusCode::OK,
+        "the publish is admitted"
+    );
+
+    assert_eq!(
+        approval_state(&harness, approval).await,
+        "satisfied",
+        "the publish consumes rather than supersedes: a hook firing against the record the act \
+         is spending has no defined ordering (05 C3)"
+    );
+}
+
+/// A subject with no open record is a no-op, not an error: the frozen-content
+/// write is legal whether or not a ceremony was open against it. And a
+/// **finalized** record is not reopened — the partial UNIQUE the supersede
+/// reads over admits only `pending` and `satisfied`.
+#[tokio::test]
+async fn a_write_with_no_open_record_is_admitted_and_a_finalized_one_is_untouched() {
+    let harness = harness().await;
+    let product_id = Uuid::now_v7();
+    seed_draft(&harness, product_id).await;
+    let consumed = seed_open_approval(&harness, product_id, "consumed").await;
+
+    let saved = save_at(
+        &harness,
+        product_id,
+        1,
+        &serde_json::json!({ "name": "Renamed with nothing open" }),
+    )
+    .await;
+    assert_eq!(
+        saved.status(),
+        StatusCode::OK,
+        "the write is legal with no ceremony open against it"
+    );
+    assert_eq!(
+        approval_state(&harness, consumed).await,
+        "consumed",
+        "a finalized record is outside the open predicate and is never reopened"
+    );
 }

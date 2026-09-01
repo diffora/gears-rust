@@ -446,7 +446,8 @@ use crate::domain::disposition::{
 };
 use crate::domain::error::DomainError;
 use crate::domain::governance::{
-    ApprovalId, EntityRef, GateAuthorization, GateMode, GovernanceGate, NoMaterialityPolicyGate,
+    ApprovalId, EntityRef, GateAuthorization, GateMode, GateSubject, GovernanceGate,
+    NoMaterialityPolicyGate,
 };
 use crate::domain::idempotency;
 use crate::domain::name;
@@ -2655,32 +2656,66 @@ fn revalidation_refusal(report: &ValidationReport) -> DomainError {
 }
 
 /// Fire the approval-invalidation hook where the transition floor says this
-/// act's edge fires one, inside the act's own transaction.
+/// act's edge fires one, inside the act's own transaction
+/// (`dod-supersede`).
 ///
-/// The hook runs on the transaction rather than after it because
-/// [`transition::ApprovalInvalidationHook`]'s own contract says so: a failure
-/// fails the transition rather than leaving an approval standing against a
-/// head that has moved. The host is
-/// [`transition::NoApprovalStoreHook`] until slice 05 supplies a record
-/// store — a no-op that **succeeds**, because there is no store and therefore
-/// no record that could be stale.
+/// # The store-backed write lives here rather than behind the domain trait
 ///
-/// A hook failure travels as [`HeadActError::Refused`]: it is the domain's
-/// own refusal of the transition, and it rolls the act back like every other
-/// refusal decided inside the transaction.
-fn fire_invalidation_hook(
+/// [`transition::ApprovalInvalidationHook`] is **synchronous and storeless**
+/// — `invalidate(&self, subject)` has no runner — which was right while there
+/// was no approval store to reach. There is one now, and the trait's shape
+/// cannot carry a transactional write. Changing that signature is
+/// `01-foundation`'s own act (`dod-approval-hook`) and a different one from
+/// this, so the trait stays as the domain seam and the write happens here, on
+/// the transaction the act already holds. `NoApprovalStoreHook` therefore
+/// remains the trait's only impl, and it is no longer the whole behaviour.
+///
+/// # The hook does not fire where the act consumes an approval
+///
+/// That is not a condition this function re-derives: the floor returns
+/// [`ApprovalInvalidation::Skip`] for exactly those edges, because *"a hook
+/// firing against the record the act is spending has no defined ordering"*
+/// (05 C3, and **P-D-30** reproduced the same collision on
+/// `deprecated -> published`). This function reads the floor's answer.
+///
+/// # Nothing is re-submitted
+///
+/// `inst-gv-supersede` requires re-submission to be an explicit human act,
+/// *"never automatic — auto-resubmit would pin content nobody re-read"*. So a
+/// fired hook writes one row and creates none, and a subject with no open
+/// record is a no-op rather than an error: the frozen-content write is legal
+/// whether or not a ceremony was open against it.
+async fn fire_invalidation_hook(
+    runner: &impl DBRunner,
     inputs: &HeadActInputs,
     invalidation: ApprovalInvalidation,
 ) -> Result<(), HeadActError> {
-    if invalidation == ApprovalInvalidation::Fire {
-        NoApprovalStoreHook
-            .invalidate(EntityRef {
-                tenant_id: inputs.tenant_id,
-                entity_kind: CatalogEntityKind::Product,
-                entity_id: inputs.product_id,
-            })
-            .map_err(HeadActError::Refused)?;
+    if invalidation != ApprovalInvalidation::Fire {
+        return Ok(());
     }
+    let subject = GateSubject::entity_publish(EntityRef {
+        tenant_id: inputs.tenant_id,
+        entity_kind: CatalogEntityKind::Product,
+        entity_id: inputs.product_id,
+    });
+    // The domain seam still runs: it is the pure part of the act, and a host
+    // that ever refuses is a refusal of the transition.
+    NoApprovalStoreHook
+        .invalidate(EntityRef {
+            tenant_id: inputs.tenant_id,
+            entity_kind: CatalogEntityKind::Product,
+            entity_id: inputs.product_id,
+        })
+        .map_err(HeadActError::Refused)?;
+    repo::supersede_open_approval(
+        runner,
+        &inputs.scope,
+        inputs.tenant_id,
+        &subject,
+        inputs.now,
+    )
+    .await
+    .map_err(|e| HeadActError::Db(toolkit_db::DbError::Sea(e.to_db_err())))?;
     Ok(())
 }
 
@@ -2954,7 +2989,11 @@ async fn run_publish(
         entity_id: inputs.product_id,
     };
     let verdict = gate
-        .evaluate(subject, InternalRevision::new(inputs.expected), mode)
+        .evaluate(
+            GateSubject::entity_publish(subject),
+            InternalRevision::new(inputs.expected),
+            mode,
+        )
         .map_err(|e| {
             HeadActError::Db(DbError::Sea(DbErr::Custom(format!(
                 "bss-products: the governance gate host failed: {e}"
@@ -3001,7 +3040,7 @@ async fn run_publish(
     // copies of this fold were owed: `ADMITTED_EDGES` and `GATED_EDGES`
     // already live there, and the `NotATransition` arm is a case of the same
     // rule rather than a case outside it. --
-    fire_invalidation_hook(inputs, transition::invalidation_for(decision))?;
+    fire_invalidation_hook(runner, inputs, transition::invalidation_for(decision)).await?;
 
     // -- d. Then the event, and the stored answer. --
     announce_and_answer(runner, outbox, inputs, Announcement::Published).await
@@ -3089,11 +3128,11 @@ async fn run_discard(
     // `APPROVAL_REQUIRED`. --
     let verdict = gate
         .evaluate(
-            EntityRef {
+            GateSubject::entity_publish(EntityRef {
                 tenant_id: inputs.tenant_id,
                 entity_kind: CatalogEntityKind::Product,
                 entity_id: inputs.product_id,
-            },
+            }),
             InternalRevision::new(inputs.expected),
             GateMode::Gate,
         )
@@ -3128,7 +3167,7 @@ async fn run_discard(
 
     // A discard consumes no approval, so the floor says its edge fires the
     // hook — read off `transition::guard`'s own answer, not decided here.
-    fire_invalidation_hook(inputs, transition::invalidation_for(decision))?;
+    fire_invalidation_hook(runner, inputs, transition::invalidation_for(decision)).await?;
 
     announce_and_answer(runner, outbox, inputs, Announcement::Discarded).await
 }
@@ -4284,11 +4323,11 @@ async fn run_save(
     // `no` is `APPROVAL_REQUIRED`. --
     let verdict = gate
         .evaluate(
-            EntityRef {
+            GateSubject::entity_publish(EntityRef {
                 tenant_id: inputs.tenant_id,
                 entity_kind: CatalogEntityKind::Product,
                 entity_id: inputs.product_id,
-            },
+            }),
             InternalRevision::new(inputs.expected),
             GateMode::Gate,
         )
@@ -4326,7 +4365,7 @@ async fn run_save(
     // -- The approval-invalidation hook, which a save **fires**: see this
     // function's own doc for why the answer is not read off
     // `transition::invalidation_for`. --
-    fire_invalidation_hook(inputs, ApprovalInvalidation::Fire)?;
+    fire_invalidation_hook(runner, inputs, ApprovalInvalidation::Fire).await?;
 
     // -- Then the event, and the stored answer. --
     announce_and_answer(runner, outbox, inputs, Announcement::HeadSaved).await

@@ -87,7 +87,7 @@ use bss_products_sdk::models::LifecycleState;
 use crate::domain::error::DomainError;
 use crate::infra::storage::RepoError;
 use crate::infra::storage::entity::{
-    audit_log, entity_version, idempotency, identity_ref, product, product_category, sku,
+    approval, audit_log, entity_version, idempotency, identity_ref, product, product_category, sku,
 };
 
 /// A statement's failure, with `sea-orm`'s own error kept unchanged.
@@ -1567,6 +1567,66 @@ pub async fn has_primary_category(
             )
         })?;
     Ok(found.is_some())
+}
+
+/// Flip the subject's **open** approval record to `superseded`, returning its
+/// id where one was open (`dod-supersede`).
+///
+/// The partial `UNIQUE (tenant_id, subject_kind, subject_ref) WHERE state IN
+/// ('pending','satisfied')` admits at most one, so this is an `UPDATE` over a
+/// predicate rather than a read-then-write: two concurrent frozen-content
+/// writes cannot both believe they superseded it, because the second finds no
+/// open row.
+///
+/// **Nothing is re-submitted.** `inst-gv-supersede` requires re-submission to
+/// be *"an explicit human act ... never automatic — auto-resubmit would pin
+/// content nobody re-read"*, so this function writes exactly one row and
+/// creates none.
+///
+/// # Errors
+///
+/// [`RepoError`] as the statement raises it.
+pub async fn supersede_open_approval(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    subject: &crate::domain::governance::GateSubject,
+    now: DateTime<Utc>,
+) -> Result<Option<Uuid>, RepoError> {
+    let open = approval::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(approval::Column::TenantId.eq(tenant_id))
+                .add(approval::Column::SubjectKind.eq(subject.kind.as_str()))
+                .add(approval::Column::SubjectRef.eq(subject.reference.clone()))
+                .add(approval::Column::State.is_in(["pending", "satisfied"])),
+        )
+        .one(runner)
+        .await
+        .map_err(|e| driver_failure(format!("read the open approval of {tenant_id}"), e))?;
+    let Some(open) = open else {
+        return Ok(None);
+    };
+    let approval_id = open.approval_id;
+    approval::Entity::update_many()
+        .secure()
+        .scope_with(scope)
+        .col_expr(
+            approval::Column::State,
+            Expr::value("superseded".to_owned()),
+        )
+        .col_expr(approval::Column::FinalizedAt, Expr::value(now))
+        .filter(
+            Condition::all()
+                .add(approval::Column::TenantId.eq(tenant_id))
+                .add(approval::Column::ApprovalId.eq(approval_id)),
+        )
+        .exec(runner)
+        .await
+        .map_err(|e| driver_failure(format!("supersede approval {approval_id}"), e))?;
+    Ok(Some(approval_id))
 }
 
 mod bulk;

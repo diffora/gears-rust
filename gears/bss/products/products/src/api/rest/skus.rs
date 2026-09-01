@@ -246,7 +246,7 @@ use crate::domain::containment::{
 use crate::domain::disposition::{self, CLONE_SUGGESTION_ATTEMPTS, SkuCloneSource};
 use crate::domain::error::DomainError;
 use crate::domain::governance::{
-    ApprovalId, EntityRef, GateMode, GovernanceGate, NoMaterialityPolicyGate,
+    ApprovalId, EntityRef, GateMode, GateSubject, GovernanceGate, NoMaterialityPolicyGate,
 };
 use crate::domain::idempotency;
 use crate::domain::rules::{
@@ -2616,19 +2616,33 @@ async fn claim_for_head_act(
 /// [`HeadActError::Refused`]: a hook failure is the domain's own refusal of
 /// the transition, and it rolls the act back like every other refusal decided
 /// inside the transaction.
-fn fire_invalidation_hook(
+async fn fire_invalidation_hook(
+    runner: &impl toolkit_db::secure::DBRunner,
     inputs: &HeadActInputs,
     invalidation: ApprovalInvalidation,
 ) -> Result<(), HeadActError> {
-    if invalidation == ApprovalInvalidation::Fire {
-        transition::NoApprovalStoreHook
-            .invalidate(EntityRef {
-                tenant_id: inputs.tenant_id,
-                entity_kind: EntityKind::Sku,
-                entity_id: inputs.sku_id,
-            })
-            .map_err(HeadActError::Refused)?;
+    if invalidation != ApprovalInvalidation::Fire {
+        return Ok(());
     }
+    let entity = EntityRef {
+        tenant_id: inputs.tenant_id,
+        entity_kind: EntityKind::Sku,
+        entity_id: inputs.sku_id,
+    };
+    // The domain seam still runs: it is the pure half of the act, and a host
+    // that ever refuses is a refusal of the transition.
+    transition::NoApprovalStoreHook
+        .invalidate(entity)
+        .map_err(HeadActError::Refused)?;
+    repo::supersede_open_approval(
+        runner,
+        &inputs.scope,
+        inputs.tenant_id,
+        &GateSubject::entity_publish(entity),
+        inputs.now,
+    )
+    .await
+    .map_err(|e| HeadActError::Db(toolkit_db::DbError::Sea(e.to_db_err())))?;
     Ok(())
 }
 
@@ -3058,11 +3072,11 @@ async fn run_publish(
     // `PreAuthorized` only from an in-process caller. --
     let verdict = gate
         .evaluate(
-            EntityRef {
+            GateSubject::entity_publish(EntityRef {
                 tenant_id: inputs.tenant_id,
                 entity_kind: EntityKind::Sku,
                 entity_id: inputs.sku_id,
-            },
+            }),
             InternalRevision::new(inputs.expected),
             mode,
         )
@@ -3129,7 +3143,7 @@ async fn run_publish(
     // -- c. The approval-invalidation hook, where the floor says this edge
     // fires one. It does not on `draft -> published`, nor on a re-publish;
     // the answer is read off `transition::guard` rather than hard-coded. --
-    fire_invalidation_hook(inputs, transition::invalidation_for(decision))?;
+    fire_invalidation_hook(runner, inputs, transition::invalidation_for(decision)).await?;
 
     // -- d. Then the event, and the stored answer. --
     announce_and_answer(
@@ -3246,11 +3260,11 @@ async fn run_discard(
     // and carry its reasoning. --
     let verdict = gate
         .evaluate(
-            EntityRef {
+            GateSubject::entity_publish(EntityRef {
                 tenant_id: inputs.tenant_id,
                 entity_kind: EntityKind::Sku,
                 entity_id: inputs.sku_id,
-            },
+            }),
             InternalRevision::new(inputs.expected),
             GateMode::Gate,
         )
@@ -3287,7 +3301,7 @@ async fn run_discard(
 
     // A discard consumes no approval, so the floor says its edge fires the
     // hook — read off `transition::guard`'s own answer, not decided here.
-    fire_invalidation_hook(inputs, transition::invalidation_for(decision))?;
+    fire_invalidation_hook(runner, inputs, transition::invalidation_for(decision)).await?;
 
     announce_and_answer(
         runner,
@@ -4408,11 +4422,11 @@ async fn run_save(
     // `run_publish`'s and carry its reasoning. --
     let verdict = gate
         .evaluate(
-            EntityRef {
+            GateSubject::entity_publish(EntityRef {
                 tenant_id: inputs.tenant_id,
                 entity_kind: EntityKind::Sku,
                 entity_id: inputs.sku_id,
-            },
+            }),
             InternalRevision::new(inputs.expected),
             GateMode::Gate,
         )
@@ -4450,7 +4464,7 @@ async fn run_save(
     // -- The approval-invalidation hook, which a save **fires**: see this
     // function's own doc for why the answer is not read off
     // `transition::invalidation_for`. --
-    fire_invalidation_hook(inputs, ApprovalInvalidation::Fire)?;
+    fire_invalidation_hook(runner, inputs, ApprovalInvalidation::Fire).await?;
 
     // The committed row, re-read rather than reconstructed. The publish and
     // discard acts hand `announce_and_answer` an image they computed, which

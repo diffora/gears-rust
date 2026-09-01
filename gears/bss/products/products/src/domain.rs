@@ -11,6 +11,7 @@ pub mod governance;
 pub mod idempotency;
 pub mod live_op;
 pub mod name;
+pub mod retention;
 pub mod rules;
 pub mod states;
 pub mod transition;

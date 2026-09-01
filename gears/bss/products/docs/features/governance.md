@@ -615,7 +615,7 @@ designated no FinanceReviewer simply has an unapprovable change.
 
 ### Supersession on frozen-content write
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-supersede`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-supersede`
 
 The system **MUST** flip an open record `superseded` when the Foundation's approval-invalidation
 hook fires on a frozen-content write to the subject, and **MUST** require an explicit human
@@ -624,6 +624,28 @@ re-submission with the new diff re-presented. Re-submission **MUST NOT** be auto
 publish edge and every gated edge alike — because a hook firing against the record the act is
 consuming has no defined ordering. That is the slice's C3 as it now stands, re-measured
 2026-08-31; see open item 23 for the stale §6 bullet that said otherwise.
+
+**Built, and the third clause needed no code because the floor already carries it.**
+`transition::invalidation_for` returns `ApprovalInvalidation::Skip` for exactly the consuming
+edges — *"a hook firing against the record the act is consuming has no defined ordering"* — so the
+doors read the floor's answer rather than re-deriving the condition, and a probe holds it closed:
+a publish against a `satisfied` record leaves it `satisfied`, not `superseded`.
+
+**The store-backed write lives in the door's transaction, not behind the domain trait, and the
+reason is the trait's shape.** `ApprovalInvalidationHook::invalidate(&self, subject)` is
+**synchronous and storeless** — right while there was no store to reach, and unable to carry a
+transactional write now that there is one. Changing that signature is `01-foundation`'s act
+(`dod-approval-hook`) and a different one from this, so the seam still runs as the pure half and
+`repo::supersede_open_approval` runs beside it on the transaction the act already holds.
+
+**The supersede is an `UPDATE` over a predicate, not a read-then-write**: the partial
+`UNIQUE (tenant_id, subject_kind, subject_ref) WHERE state IN ('pending','satisfied')` admits at
+most one open record, so two concurrent frozen-content writes cannot both believe they superseded
+it — the second finds nothing open. A subject with no open record is a **no-op rather than an
+error**, because the write is legal whether or not a ceremony was open against it, and a finalized
+record is outside the predicate and never reopened. Three probes: the supersede itself with a
+record count proving **nothing was re-submitted**, the consuming edge, and the no-open-record and
+finalized cases together.
 
 **Implements**: `cpt-cf-bss-products-flow-submit`,
 `cpt-cf-bss-products-state-approval-record`
