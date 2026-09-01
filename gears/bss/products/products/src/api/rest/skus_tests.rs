@@ -2066,11 +2066,25 @@ async fn a_replayed_publish_returns_the_stored_answer_and_does_not_publish_twice
 /// moves only where a version row is written. `inst-fd-publish-freeze` names
 /// it in the frozen content outright. Adding it to this array would make the
 /// case below assert the opposite of the design set.
-const EXCLUDED_FROM_FROZEN_CONTENT: [&str; 4] = [
+/// The columns a frozen row's content leaves out.
+///
+/// **`design/01` §4.3 names four and this list holds 6, and the difference is
+/// stated rather than silent.** §4.3's four are `lifecycle_state`,
+/// `deprecation_provenance`, `replaced_by_sku_id` and `internal_revision`
+/// (**P-D-24** as **P-D-35** extended it: *"those four move on transitions,
+/// which write no version row, so freezing them would need the digest to
+/// change on a write that produces no row to digest"*). `published_version`
+/// and `updated_at` are excluded on the same criterion by the roster's own
+/// argument — the first IS the row's key and the second moves on every write
+/// — and §4.3 does not name them because it enumerates the columns whose
+/// exclusion was contested, not every column outside the content.
+const EXCLUDED_FROM_FROZEN_CONTENT: [&str; 6] = [
     "internal_revision",
     "lifecycle_state",
     "published_version",
     "updated_at",
+    "deprecation_provenance",
+    "replaced_by_sku_id",
 ];
 
 /// **[`super::SKU_VERSION_CONTENT_ROSTER`] is `products_sku`'s own columns

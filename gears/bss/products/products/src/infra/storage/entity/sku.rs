@@ -58,6 +58,14 @@ pub struct Model {
     /// non-`NULL` `cloned_from` means the source was read at its head — a
     /// draft (P-D-76's representable sentinel).
     pub cloned_from_version: Option<i64>,
+    /// `direct` (an operator act) or `cascaded` (parent-driven) — slice 04's
+    /// stamp, written on terminal rows by design (`dod-lifecycle-columns`).
+    pub deprecation_provenance: Option<String>,
+    /// The successor a retirement names. **Write-once per RETIREMENT, not per
+    /// row** (P-D-49): the governed cancel clears it in the same statement as
+    /// its state change, which the head guard admits because that guard names
+    /// the immutable columns rather than the writable ones.
+    pub replaced_by_sku_id: Option<Uuid>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

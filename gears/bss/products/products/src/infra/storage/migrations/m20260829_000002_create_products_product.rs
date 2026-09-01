@@ -108,8 +108,14 @@
 //!   reason — none of the four is ever supplied by an admitted `UPDATE`, only
 //!   by the `INSERT`.
 //!
-//! **Bucket-ii and bucket-iv have no members among today's columns.** Slice 03
-//! brings `cloned_from`, `deprecation_provenance` and `replaced_by_sku_id`;
+//! **Bucket-ii and bucket-iv have no members among today's columns.**
+//! `cloned_from` landed with slice **11** (**P-D-76**) and
+//! `deprecation_provenance` with slice **04** (`dod-lifecycle-columns`);
+//! `replaced_by_sku_id` is a `products_sku` column and never reaches this
+//! table. *(An earlier revision of this doc attributed all three to slice 03
+//! — `design/03-sku-classification.md` names none of them, and `design/04`
+//! §4.2 owns the pair, so the attribution was wrong rather than merely
+//! stale.)*
 //! `composition_pending` is **this slice's own** (§1.5 **In**: *"the
 //! `PublishDoor`'s `composition_pending` write"*, with only the composition
 //! semantics left to 06) and is a `products_sku` column, so it never reaches
@@ -179,6 +185,7 @@ const PG_UP_STATEMENTS: &[&str] = &[
             created_at        timestamptz NOT NULL,
             cloned_from       uuid,
             cloned_from_version bigint,
+            deprecation_provenance text,
             updated_at        timestamptz NOT NULL,
             CONSTRAINT products_product_pkey PRIMARY KEY (product_id),
             CONSTRAINT chk_products_product_lifecycle_state CHECK (lifecycle_state IN ('draft', 'published', 'deprecated', 'retired', 'discarded')),
@@ -288,6 +295,7 @@ const SQLITE_UP_STATEMENTS: &[&str] = &[
             created_at        text   NOT NULL,
             cloned_from       text,
             cloned_from_version integer,
+            deprecation_provenance text,
             updated_at        text   NOT NULL,
             PRIMARY KEY (product_id),
             CONSTRAINT chk_products_product_lifecycle_state CHECK (lifecycle_state IN ('draft', 'published', 'deprecated', 'retired', 'discarded')),

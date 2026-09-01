@@ -96,10 +96,12 @@
 //!   in **no** update at all (P-D-34); neither is `created_at`.
 //!
 //! **Bucket-ii and bucket-iv have no members among today's columns.** The
-//! remaining three not-yet-existing columns the sibling table's doc names are
-//! owed here too, and they are **not all owed by the same slice**:
-//! `cloned_from`, `deprecation_provenance` and `replaced_by_sku_id` arrive
-//! with slice 03, while **`composition_pending` is this slice's own** — §1.5's
+//! columns the sibling table's doc names are all here now, and they are **not
+//! all owed by the same slice**: `cloned_from` arrived with slice **11**
+//! (**P-D-76**), `deprecation_provenance` and `replaced_by_sku_id` with slice
+//! **04** (`dod-lifecycle-columns`; `design/04` §4.2 owns the pair, and
+//! `design/03` names neither — an earlier revision of this doc credited 03
+//! with all three), while **`composition_pending` is this slice's own** — §1.5's
 //! **In** list names *"the `PublishDoor`'s `composition_pending` write"* among
 //! the guards that *"ride this slice's first migration and publish door"*, and
 //! assigns only the composition *semantics* to slice 06.
@@ -169,6 +171,8 @@ const PG_UP_STATEMENTS: &[&str] = &[
             created_at          timestamptz NOT NULL,
             cloned_from         uuid,
             cloned_from_version bigint,
+            deprecation_provenance text,
+            replaced_by_sku_id  uuid,
             updated_at          timestamptz NOT NULL,
             CONSTRAINT products_sku_pkey PRIMARY KEY (sku_id),
             CONSTRAINT fk_products_sku_product FOREIGN KEY (product_id) REFERENCES bss.products_product (product_id),
@@ -282,6 +286,8 @@ const SQLITE_UP_STATEMENTS: &[&str] = &[
             created_at          text    NOT NULL,
             cloned_from         text,
             cloned_from_version integer,
+            deprecation_provenance text,
+            replaced_by_sku_id  text,
             updated_at          text    NOT NULL,
             PRIMARY KEY (sku_id),
             CONSTRAINT fk_products_sku_product FOREIGN KEY (product_id) REFERENCES products_product (product_id),

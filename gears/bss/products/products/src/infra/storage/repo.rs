@@ -305,6 +305,8 @@ pub async fn insert_product(
         updated_at: Set(new.created_at),
         cloned_from: Set(new.cloned_from),
         cloned_from_version: Set(new.cloned_from_version),
+        // Slice 04's columns: a create never names them.
+        deprecation_provenance: Set(None),
     };
 
     let row = product::Entity::insert(model.clone())
@@ -415,6 +417,9 @@ pub async fn insert_sku(
         updated_at: Set(new.created_at),
         cloned_from: Set(new.cloned_from),
         cloned_from_version: Set(new.cloned_from_version),
+        // Slice 04's columns: a create never names them.
+        deprecation_provenance: Set(None),
+        replaced_by_sku_id: Set(None),
     };
 
     let row = sku::Entity::insert(model.clone())

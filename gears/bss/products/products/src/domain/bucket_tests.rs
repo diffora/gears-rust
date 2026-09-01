@@ -243,8 +243,12 @@ fn a_row_identity_column_is_outside_the_scheme_and_is_not_a_bucket() {
 /// pipeline's own posture rather than routing to a default bucket"*.
 ///
 /// The samples are real future columns — §4.2's `sellable`, `plan_tier`,
-/// `metering_unit` and `type`, none of which exists today — plus `name` on a
-/// SKU, which is a Product column and not a SKU one. Would catch a catch-all
+/// `metering_unit` and `type`, none of which exists today, all four owed by
+/// slice `03` — plus `name` on a SKU, which is a Product column and not a SKU
+/// one. `deprecation_provenance` and `replaced_by_sku_id` were on this list
+/// until slice `04`'s columns landed (`dod-lifecycle-columns`); they are
+/// registered `Mechanical` now, and a test asserting their absence would be
+/// asserting the opposite of what ships. Would catch a catch-all
 /// arm that answered bucket-iv for anything it did not recognise: every one of
 /// these would then be an operator-writable field the trigger goes on to
 /// refuse with a database error.
@@ -255,8 +259,6 @@ fn an_unregistered_column_fails_closed_rather_than_defaulting() {
         (EntityKind::Sku, "plan_tier"),
         (EntityKind::Sku, "metering_unit"),
         (EntityKind::Sku, "type"),
-        (EntityKind::Sku, "deprecation_provenance"),
-        (EntityKind::Sku, "replaced_by_sku_id"),
         (EntityKind::Sku, "name"),
         (EntityKind::Product, "sku_code"),
         (EntityKind::Product, "composition_pending"),
@@ -382,25 +384,25 @@ fn the_class_counts_are_pinned_per_entity() {
         (FieldClass::Bucket(FieldBucket::Structural), 2),
         (FieldClass::Bucket(FieldBucket::MaterialMutable), 4),
         (FieldClass::CreateOnly, 2),
-        (FieldClass::Outside(OutsideTheScheme::Mechanical), 4),
+        (FieldClass::Outside(OutsideTheScheme::Mechanical), 5),
         (FieldClass::Outside(OutsideTheScheme::RowIdentity), 4),
     ];
     for (class, expected) in product_counts {
         assert_eq!(count_of(EntityKind::Product, class), expected);
     }
-    assert_eq!(columns(EntityKind::Product).len(), 16);
+    assert_eq!(columns(EntityKind::Product).len(), 17);
 
     let sku_counts = [
         (FieldClass::Bucket(FieldBucket::Structural), 2),
         (FieldClass::Bucket(FieldBucket::MaterialMutable), 2),
         (FieldClass::CreateOnly, 2),
-        (FieldClass::Outside(OutsideTheScheme::Mechanical), 5),
+        (FieldClass::Outside(OutsideTheScheme::Mechanical), 7),
         (FieldClass::Outside(OutsideTheScheme::RowIdentity), 4),
     ];
     for (class, expected) in sku_counts {
         assert_eq!(count_of(EntityKind::Sku, class), expected);
     }
-    assert_eq!(columns(EntityKind::Sku).len(), 15);
+    assert_eq!(columns(EntityKind::Sku).len(), 17);
 }
 
 /// No column is named twice in one entity's registry.

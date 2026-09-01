@@ -439,6 +439,7 @@ fn an_unparseable_product_lifecycle_state_is_a_corrupt_row() {
         updated_at: at(9),
         cloned_from: None,
         cloned_from_version: None,
+        deprecation_provenance: None,
     };
 
     let err = into_product_record(row).expect_err("an unrecognised token must be refused");
@@ -464,6 +465,8 @@ fn an_unparseable_sku_lifecycle_state_is_a_corrupt_row() {
         updated_at: at(9),
         cloned_from: None,
         cloned_from_version: None,
+        deprecation_provenance: None,
+        replaced_by_sku_id: None,
     };
 
     let err = into_sku_record(row).expect_err("an unrecognised token must be refused");

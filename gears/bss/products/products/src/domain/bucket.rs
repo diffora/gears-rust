@@ -274,7 +274,7 @@ pub struct ColumnTag {
 /// P-D-50's fail-closed rule is made of. `bucket_tests` asserts this against
 /// the entity model, so a column added to the table without a row here is a
 /// red test rather than a runtime refusal.
-const PRODUCT_COLUMNS: [ColumnTag; 16] = [
+const PRODUCT_COLUMNS: [ColumnTag; 17] = [
     // Row identity (§4.2, P-D-34): admitted in no UPDATE at all.
     ColumnTag {
         column: "product_id",
@@ -362,16 +362,28 @@ const PRODUCT_COLUMNS: [ColumnTag; 16] = [
         column: "updated_at",
         class: FieldClass::Outside(OutsideTheScheme::Mechanical),
     },
+    ColumnTag {
+        // Slice 04's stamp (`dod-lifecycle-columns`). `Mechanical` is
+        // measured rather than chosen: `design/01` §4.3 groups
+        // `deprecation_provenance` with `lifecycle_state`,
+        // `replaced_by_sku_id` and `internal_revision` as the four that
+        // *"move on transitions, which write no version row"* (P-D-24 as
+        // P-D-35 extended it), and two of that four are registered
+        // `Mechanical` right here. The gear stamps it on its own behalf under
+        // the deprecate transition's predicate, and no save may name it.
+        column: "deprecation_provenance",
+        class: FieldClass::Outside(OutsideTheScheme::Mechanical),
+    },
 ];
 
-/// `products_sku`'s columns, all thirteen (§4.2).
+/// `products_sku`'s columns (§4.2).
 ///
 /// Two differences from [`PRODUCT_COLUMNS`] are the ones worth reading twice:
 /// `product_id` is the **parent link** and bucket-i here, where on the Product
 /// it is the primary key; and the table carries **no `name`**, so a `name`
 /// field arriving for a SKU is a miss and is refused rather than routed to the
 /// Product's tag.
-const SKU_COLUMNS: [ColumnTag; 15] = [
+const SKU_COLUMNS: [ColumnTag; 17] = [
     // Row identity (§4.2, P-D-34).
     ColumnTag {
         column: "sku_id",
@@ -435,6 +447,25 @@ const SKU_COLUMNS: [ColumnTag; 15] = [
     },
     ColumnTag {
         column: "published_version",
+        class: FieldClass::Outside(OutsideTheScheme::Mechanical),
+    },
+    ColumnTag {
+        // Slice 04's stamp (`dod-lifecycle-columns`). `Mechanical` is
+        // measured rather than chosen: `design/01` §4.3 groups
+        // `deprecation_provenance` with `lifecycle_state`,
+        // `replaced_by_sku_id` and `internal_revision` as the four that
+        // *"move on transitions, which write no version row"* (P-D-24 as
+        // P-D-35 extended it), and two of that four are registered
+        // `Mechanical` right here. The gear stamps it on its own behalf under
+        // the deprecate transition's predicate, and no save may name it.
+        column: "deprecation_provenance",
+        class: FieldClass::Outside(OutsideTheScheme::Mechanical),
+    },
+    ColumnTag {
+        // The successor a retirement names — written by that act from its own
+        // optional input, never by a save, and cleared by the governed cancel
+        // (P-D-49). Same grouping argument as the column above.
+        column: "replaced_by_sku_id",
         class: FieldClass::Outside(OutsideTheScheme::Mechanical),
     },
     ColumnTag {

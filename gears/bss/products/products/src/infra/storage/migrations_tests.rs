@@ -6246,3 +6246,120 @@ mod attribute_store_guard_tests {
         assert_ne!(value, metadata, "two rosters must not compare equal");
     }
 }
+
+/// Slice 04's two head columns, probed on the property their `DoD` names:
+/// both are writable on a **terminal** row, and `replaced_by_sku_id` takes a
+/// second write — the governed cancel's clearing one (P-D-49's *"write-once
+/// per retirement, not per row"*).
+///
+/// The head guard names the **immutable** columns rather than the writable
+/// ones, so these two are admitted by construction; that is precisely why the
+/// probe exists. A future revision that turned the guard into a whitelist
+/// would silently make the cancel unperformable, and this case is what fails.
+///
+/// @cpt-dod:cpt-cf-bss-products-dod-lifecycle-columns:p1
+mod lifecycle_column_guard_tests {
+    use sea_orm::ConnectionTrait;
+    use sea_orm_migration::MigratorTrait;
+
+    use super::Migrator;
+
+    async fn harness() -> sea_orm::DatabaseConnection {
+        let mut opts = sea_orm::ConnectOptions::new("sqlite::memory:");
+        opts.max_connections(1).min_connections(1);
+        let db = sea_orm::Database::connect(opts)
+            .await
+            .expect("connect in-memory sqlite");
+        Migrator::up(&db, None).await.expect("boot the chain");
+        db
+    }
+
+    async fn exec(db: &sea_orm::DatabaseConnection, sql: &str) -> Result<(), sea_orm::DbErr> {
+        db.execute_raw(sea_orm::Statement::from_string(
+            sea_orm::DatabaseBackend::Sqlite,
+            sql.to_owned(),
+        ))
+        .await
+        .map(|_| ())
+    }
+
+    /// A `retired` SKU takes both stamps and then gives `replaced_by_sku_id`
+    /// back — three admitted writes on a terminal row.
+    #[tokio::test]
+    async fn a_terminal_sku_takes_both_stamps_and_the_cancel_clears_the_successor() {
+        let db = harness().await;
+        // The SKU table's parent FK is real, so the Product comes first.
+        exec(
+            &db,
+            "INSERT INTO products_product \
+             (product_id, tenant_id, brand_id, name, name_normalized, region_scope, \
+              brand_scope, lifecycle_state, internal_revision, published_version, \
+              created_by, created_at, updated_at) \
+             VALUES ('p-1', 't-a', 'b-1', 'Parent', 'parent', 'eu', 'acme', 'published', \
+              1, 1, 'actor-1', '2026-09-01T00:00:00Z', '2026-09-01T00:00:00Z')",
+        )
+        .await
+        .expect("seed the parent Product");
+        for (id, code, state) in [("s-1", "SKU-1", "retired"), ("s-2", "SKU-2", "published")] {
+            exec(
+                &db,
+                &format!(
+                    "INSERT INTO products_sku \
+                     (sku_id, tenant_id, product_id, sku_code, region_scope, brand_scope, \
+                      lifecycle_state, internal_revision, published_version, created_by, \
+                      created_at, updated_at) \
+                     VALUES ('{id}', 't-a', 'p-1', '{code}', 'eu', 'acme', '{state}', 1, 1, \
+                      'actor-1', '2026-09-01T00:00:00Z', '2026-09-01T00:00:00Z')"
+                ),
+            )
+            .await
+            .expect("seed the SKU");
+        }
+
+        exec(
+            &db,
+            "UPDATE products_sku SET deprecation_provenance = 'direct', \
+             replaced_by_sku_id = 's-2', internal_revision = internal_revision + 1 \
+             WHERE sku_id = 's-1'",
+        )
+        .await
+        .expect("slice 04 stamps both columns on a terminal row by design");
+
+        // The governed cancel's second write: the successor is cleared.
+        exec(
+            &db,
+            "UPDATE products_sku SET replaced_by_sku_id = NULL, \
+             internal_revision = internal_revision + 1 WHERE sku_id = 's-1'",
+        )
+        .await
+        .expect("the cancel clears it: write-once per retirement, not per row");
+
+        // And the immutable columns are still refused, so the guard has not
+        // been loosened into admitting everything.
+        let err = exec(
+            &db,
+            "UPDATE products_sku SET created_by = 'someone-else', \
+             internal_revision = internal_revision + 1 WHERE sku_id = 's-1'",
+        )
+        .await
+        .expect_err("the row-identity columns stay refused");
+        assert!(err.to_string().contains("immutable"), "{err}");
+    }
+
+    /// The Product side carries `deprecation_provenance` and **not**
+    /// `replaced_by_sku_id` — the column names a SKU, so it exists on one
+    /// table only.
+    #[tokio::test]
+    async fn the_product_table_carries_the_provenance_and_not_the_successor() {
+        let db = harness().await;
+        let product = super::governance_store_guard_tests::columns(&db, "products_product").await;
+        assert!(product.contains(&"deprecation_provenance".to_owned()));
+        assert!(
+            !product.contains(&"replaced_by_sku_id".to_owned()),
+            "the successor column names a SKU and belongs to products_sku alone"
+        );
+        let sku = super::governance_store_guard_tests::columns(&db, "products_sku").await;
+        assert!(sku.contains(&"deprecation_provenance".to_owned()));
+        assert!(sku.contains(&"replaced_by_sku_id".to_owned()));
+    }
+}

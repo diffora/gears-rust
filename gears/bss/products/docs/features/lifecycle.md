@@ -561,7 +561,7 @@ Product collided.
 
 ### Lifecycle columns on the entity tables
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-lifecycle-columns`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-lifecycle-columns`
 
 The system **MUST** carry `deprecation_provenance` on **both** entity tables and
 `replaced_by_sku_id` on **`products_sku` only** — the column names a SKU. Both are created by
@@ -569,6 +569,24 @@ The system **MUST** carry `deprecation_provenance` on **both** entity tables and
 be write-once **per retirement, not per row**: the head-row whitelist admits the governed cancel's
 clearing write, and without it a cancelled, un-deprecated SKU stays `published` while permanently
 naming a successor no admitted write could clear.
+
+**Both columns ship, and the write-once property is the head guard's existing shape rather than a
+new clause.** That guard names the columns that may **not** change — `tenant_id`, the key,
+`created_by`, `created_at` and the `cloned_from` pair — and admits everything else, so the cancel's
+clearing write needs no arm of its own; a probe asserts all three writes on a **terminal** row and
+that the row-identity columns are still refused, so a future revision turning the guard into a
+whitelist fails here instead of silently making the cancel unperformable.
+
+Both are registered `Outside(Mechanical)` in the bucket registry, and that is **measured, not
+chosen**: `design/01` §4.3 groups `deprecation_provenance` and `replaced_by_sku_id` with
+`lifecycle_state` and `internal_revision` as the four that *"move on transitions, which write no
+version row"* (**P-D-24** as **P-D-35** extended it), and the other two of that four were already
+registered `Mechanical`. Two shipped censuses moved with them — the class counts, and the
+fail-closed list that had been asserting these two columns' **absence**.
+
+*(The Foundation migrations' own docs credited slice **03** with these columns. `design/03` names
+neither and `design/04` §4.2 owns the pair, so that attribution was wrong rather than stale; it is
+corrected in the same change, along with a count that predated `cloned_from` landing.)*
 
 **Implements**: `cpt-cf-bss-products-flow-retire-sku`, `cpt-cf-bss-products-flow-deprecation`
 
