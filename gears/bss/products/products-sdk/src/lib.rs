@@ -27,6 +27,11 @@
 pub mod api;
 pub mod increments;
 pub mod models;
+
+// Lint 9's executable half (`dod-lint-pin-coupling`); test-only, and under
+// `src/` because the gate scans no `-sdk/tests` root.
+#[cfg(test)]
+mod pin_lint;
 pub mod watermarks;
 
 pub use api::ProductsClient;

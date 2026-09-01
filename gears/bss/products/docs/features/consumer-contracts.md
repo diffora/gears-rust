@@ -931,7 +931,7 @@ being declared structurally, which couples it to
 
 ### Lint 9: the pin against the register
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-lint-pin-coupling`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-lint-pin-coupling`
 
 Every `ObligationRegister` row whose guard reads a **catalog field** has that field in the
 `SchemaPin`, and every pinned field is either an obligation operand or carries a recorded exclusion
@@ -946,14 +946,22 @@ preceding backticked identifier as its annotation, which the lint never looks up
 not a separator): a field token must appear in the pin; a marker token is outside the
 **field-comparison population** by construction (**P-D-65** narrowed this from "outside the pin"): a
 `` `CatalogVersion` (surface) `` token couples to the pin's `surface` entry in both directions, while
-`payload` and `none in v1` couple to nothinn and carries its exclusion
+`payload` and `none in v1` couple to nothing — each carries its exclusion
 reason in the row's prose. **Any prose beside the tokens is ignored, so a cell is never judged by
 being read.**
 
-**Two things block this lint at `0771f15ae`, and both are named work rather than caveats.** The
-`SchemaPin` does not exist, so one side of the comparison is absent; and three of **fourteen**
-operand cells follow the grammar while **eleven** do not —
-`cpt-cf-bss-products-dod-obligation-register` is where the cells are made to.
+**The two things that blocked this lint at `0771f15ae` are both gone, and the lint runs.** The
+`SchemaPin` ships (`products-sdk/schema-pin.toml`, `dod-schema-pin`), the fourteen operand cells
+parse under P-D-63's grammar, and the lint itself is
+`products-sdk/src/pin_lint.rs` — it rides `cargo test`, so it fails **in the change**
+that decouples the two sides rather than waiting for the nine-lint CI job (`dod-lint-gate`, still
+owed outside the gear). It sits under `src/` behind `#[cfg(test)]` rather than in `tests/` because
+the traceability scanner's registered roots for a BSS gear are `src`, `tests`, `<crate>/src`,
+`<crate>/tests` and `<crate>-sdk/src`: **there is no `<crate>-sdk/tests` root**, so a marker in
+this crate's `tests/` directory is invisible to the gate and this `DoD` could never be satisfied
+from there. Its RED was probed in both directions: an unnamed pin member fails the
+second direction with `PlanTier`'s own history in the message, and dropping a member the register
+names fails the first.
 
 **Why the coupling exists at all.** The FR the pin derives from stated three obligations — the
 `deprecated` adoption block, the `compositionPending` adoption block, and usage binding — while
