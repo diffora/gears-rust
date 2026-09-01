@@ -148,7 +148,9 @@ pub enum FieldBucket {
     /// slice 07's correction door — which the head door's refusal names rather
     /// than forwarding to (`inst-fd-bucket-ii-refusal`: one door, one effect).
     ///
-    /// **No column today**; see the module doc.
+    /// **Two members, both on `products_sku`** since 03's meter pair landed:
+    /// `metering_unit` and `usage_type_ref`. The Product table still has
+    /// none.
     Correctable,
     /// **iii, material-mutable.** Governed content: an ordinary head-row save
     /// while `lifecycle_state` is non-terminal, coming out as version N+1
@@ -383,7 +385,7 @@ const PRODUCT_COLUMNS: [ColumnTag; 17] = [
 /// it is the primary key; and the table carries **no `name`**, so a `name`
 /// field arriving for a SKU is a miss and is refused rather than routed to the
 /// Product's tag.
-const SKU_COLUMNS: [ColumnTag; 17] = [
+const SKU_COLUMNS: [ColumnTag; 19] = [
     // Row identity (§4.2, P-D-34).
     ColumnTag {
         column: "sku_id",
@@ -475,6 +477,20 @@ const SKU_COLUMNS: [ColumnTag; 17] = [
     ColumnTag {
         column: "updated_at",
         class: FieldClass::Outside(OutsideTheScheme::Mechanical),
+    },
+    // Bucket ii's first members — 03's atomic `MeterDeclaration` pair
+    // (`05` §3.1 tags the metering-unit field bucket ii; the pair travels
+    // together, `inst-mt-atomic-pair`). The save door admits them while
+    // `published_version = 0` (P-D-41); after first publish the write is
+    // slice 07's correction act, and the head guard's interim row-image
+    // predicate (P-D-34) enforces the same-statement-as-a-bump floor.
+    ColumnTag {
+        column: "metering_unit",
+        class: FieldClass::Bucket(FieldBucket::Correctable),
+    },
+    ColumnTag {
+        column: "usage_type_ref",
+        class: FieldClass::Bucket(FieldBucket::Correctable),
     },
 ];
 

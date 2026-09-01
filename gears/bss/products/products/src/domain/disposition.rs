@@ -15,10 +15,16 @@
 //! probe; a suggestion computed here is only a candidate until the store
 //! admits it.
 //!
-//! The re-validate rows are registered over **nothing at this commit** —
-//! `dod-disposition-rules` measures that their five field classes have no
-//! shipped store — so the matrix's executable content today is the
-//! copy/reset half these structs carry and the identity/parent rows the
+//! The re-validate rows are registered over **almost nothing at this
+//! commit**. Four of their five field classes still have no shipped store;
+//! the exception is the meter pair (`metering_unit`/`usage_type_ref`,
+//! landed with 03), and it is one the clone cannot yet exercise: the clone
+//! materializes through the ordinary create door, the create door writes no
+//! content (01 §6 open item 11), and [`SkuCloneSource`] carries no meter
+//! fields — so **a cloned SKU starts with no declaration**, whatever its
+//! source declared, and the re-validate row for the pair stays unregistered
+//! until the clone can carry it. The matrix's executable content today is
+//! the copy/reset half these structs carry and the identity/parent rows the
 //! doors enforce through the ordinary create path.
 //!
 //! # The suggestion rules (P-D-62)

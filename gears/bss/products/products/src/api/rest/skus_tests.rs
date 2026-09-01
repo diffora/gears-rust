@@ -2201,6 +2201,12 @@ fn the_sku_content_builder_writes_exactly_the_roster() {
         // content too, so a provenance beside a `draft` state costs the
         // roster assertion nothing and buys the exclusion its probe.
         deprecation_provenance: Some(crate::domain::deprecation::Provenance::Cascaded),
+        // Populated to arm their INCLUSION: the meter pair is version
+        // content (03's declaration freezes at publish), so a `None` here
+        // would let a builder that dropped both names pass the roster
+        // equality — the same premise as `cloned_from` above.
+        metering_unit: Some("gib_month".to_owned()),
+        usage_type_ref: Some("usage:storage".to_owned()),
     };
 
     let content = super::sku_version_content(&record);
@@ -4511,6 +4517,236 @@ mod clone_door_tests {
             head.cloned_from,
             Some(source_id),
             "lineage still names the source SKU, not the parent act"
+        );
+    }
+}
+
+/// The meter declaration at the doors — `dod-meter-atomic` and
+/// `dod-unit-recognition`, both halves of each: the pair rule at the save
+/// door with the `CHECK` behind it, and the recognition rules with the
+/// clean-path positive control the `DoD` demands (a stub refusing every
+/// string would otherwise satisfy the refusal cases).
+mod meter_declaration_tests {
+    use sea_orm::{ConnectionTrait, Database};
+
+    use super::*;
+
+    /// Put `code` into the metering-unit set in `state`, over SQL — the set
+    /// doors live in their own router, and what is under test here is the
+    /// SKU door's read of the set, not the set's own machine.
+    async fn seed_unit(harness: &TestHarness, code: &str, state: &str) {
+        let conn = Database::connect(&harness.dsn)
+            .await
+            .expect("open an auxiliary connection");
+        conn.execute_unprepared(&format!(
+            "INSERT INTO products_recognized_set (tenant_id, set_kind, member_code, \
+             display_label, state, seeded_by, created_at, updated_at) VALUES (X'{tenant}', \
+             'metering_unit', '{code}', NULL, '{state}', NULL, \
+             '2026-08-29 09:00:00.000000 +00:00', '2026-08-29 09:00:00.000000 +00:00')",
+            tenant = TENANT.simple(),
+        ))
+        .await
+        .expect("seed the member");
+    }
+
+    async fn draft_with_etag(harness: &TestHarness) -> (Uuid, String) {
+        let parent_id = seed_parent(harness, new_parent_product(Uuid::now_v7(), TENANT)).await;
+        seed_draft_sku(
+            harness,
+            parent_id,
+            &format!("SKU-M{}", Uuid::now_v7().simple()),
+        )
+        .await
+    }
+
+    /// **The atomic pair**: half a declaration is refused with the code the
+    /// taxonomy names, and the paired `CHECK` refuses the same shape at the
+    /// physical layer — probed on the resulting ROW, so a save completing a
+    /// standing half is admitted.
+    #[tokio::test]
+    async fn half_a_declaration_is_refused_and_the_whole_pair_lands() {
+        let harness = harness().await;
+        seed_unit(&harness, "gib_month", "active").await;
+        let (sku_id, etag) = draft_with_etag(&harness).await;
+
+        let half = patch_sku(
+            app_for(&harness, TENANT),
+            TENANT,
+            sku_id,
+            &json!({ "metering_unit": "gib_month" }),
+            &[("If-Match", &etag)],
+        )
+        .await;
+        assert_eq!(half.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            body_json(half).await["context"]["violations"][0]["type"],
+            json!("METER_DECLARATION_INCOMPLETE")
+        );
+
+        let whole = patch_sku(
+            app_for(&harness, TENANT),
+            TENANT,
+            sku_id,
+            &json!({ "metering_unit": "gib_month", "usage_type_ref": "usage:storage" }),
+            &[("If-Match", &etag)],
+        )
+        .await;
+        assert_eq!(
+            whole.status(),
+            StatusCode::OK,
+            "the clean-path positive control"
+        );
+        let view = body_json(whole).await;
+        assert_eq!(view["metering_unit"], json!("gib_month"));
+        assert_eq!(view["usage_type_ref"], json!("usage:storage"));
+
+        // The physical floor, probed directly: the CHECK refuses the same
+        // half-pair shape this door just refused.
+        let conn = Database::connect(&harness.dsn)
+            .await
+            .expect("open an auxiliary connection");
+        let poisoned = conn
+            .execute_unprepared(&format!(
+                "UPDATE products_sku SET usage_type_ref = NULL, \
+                 internal_revision = internal_revision + 1 WHERE sku_id = X'{}'",
+                sku_id.simple()
+            ))
+            .await;
+        assert!(
+            poisoned.is_err(),
+            "chk_products_sku_meter_pair must refuse a half-pair whatever door writes it"
+        );
+    }
+
+    /// **Recognition, all three verdicts** — unknown and `removed` are one
+    /// refusal (outside the set), `deprecated` its own, `active` admitted.
+    #[tokio::test]
+    async fn a_new_declaration_is_judged_against_the_set() {
+        let harness = harness().await;
+        seed_unit(&harness, "old_unit", "deprecated").await;
+        seed_unit(&harness, "gone_unit", "removed").await;
+        let (sku_id, etag) = draft_with_etag(&harness).await;
+
+        let unknown = patch_sku(
+            app_for(&harness, TENANT),
+            TENANT,
+            sku_id,
+            &json!({ "metering_unit": "never_seen", "usage_type_ref": "usage:x" }),
+            &[("If-Match", &etag)],
+        )
+        .await;
+        assert_eq!(unknown.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            body_json(unknown).await["context"]["violations"][0]["type"],
+            json!("UNRECOGNIZED_UNIT")
+        );
+
+        let tombstone = patch_sku(
+            app_for(&harness, TENANT),
+            TENANT,
+            sku_id,
+            &json!({ "metering_unit": "gone_unit", "usage_type_ref": "usage:x" }),
+            &[("If-Match", &etag)],
+        )
+        .await;
+        assert_eq!(
+            body_json(tombstone).await["context"]["violations"][0]["type"],
+            json!("UNRECOGNIZED_UNIT"),
+            "a removed member is outside the set exactly like a code that never existed"
+        );
+
+        let deprecated = patch_sku(
+            app_for(&harness, TENANT),
+            TENANT,
+            sku_id,
+            &json!({ "metering_unit": "old_unit", "usage_type_ref": "usage:x" }),
+            &[("If-Match", &etag)],
+        )
+        .await;
+        assert_eq!(deprecated.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            body_json(deprecated).await["context"]["violations"][0]["type"],
+            json!("UNIT_DEPRECATED")
+        );
+    }
+
+    /// **A draft whose unit was deprecated after authoring is refused at its
+    /// first publish** — the PRD treats it as a new declaration, and the
+    /// publish door is where it bites.
+    #[tokio::test]
+    async fn a_first_publish_rejudges_the_drafts_unit() {
+        let harness = harness().await;
+        seed_unit(&harness, "gib_month", "active").await;
+        let (sku_id, etag) = draft_with_etag(&harness).await;
+
+        let declared = patch_sku(
+            app_for(&harness, TENANT),
+            TENANT,
+            sku_id,
+            &json!({ "metering_unit": "gib_month", "usage_type_ref": "usage:storage" }),
+            &[("If-Match", &etag)],
+        )
+        .await;
+        assert_eq!(declared.status(), StatusCode::OK);
+        let after = body_json(declared).await;
+        let fresh = format!(
+            "\"{}\"",
+            after["internal_revision"].as_i64().expect("a revision")
+        );
+
+        // The unit deprecates AFTER the declaration and BEFORE the publish —
+        // one statement, the member guard's admitted pair.
+        let conn = Database::connect(&harness.dsn)
+            .await
+            .expect("open an auxiliary connection");
+        conn.execute_unprepared(&format!(
+            "UPDATE products_recognized_set SET state = 'deprecated' WHERE member_code = \
+             'gib_month' AND tenant_id = X'{}'",
+            TENANT.simple()
+        ))
+        .await
+        .expect("the member guard admits a state flip");
+
+        let refused = post_publish(app_for(&harness, TENANT), TENANT, sku_id, Some(&fresh)).await;
+        assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            body_json(refused).await["context"]["violations"][0]["type"],
+            json!("UNIT_DEPRECATED"),
+            "a first publish re-judges the draft's declaration as new"
+        );
+    }
+
+    /// **After first publish the pair is the correction door's** — the
+    /// bucket-ii refusal arm, reachable for the first time now that the
+    /// class has members.
+    #[tokio::test]
+    async fn the_pair_is_refused_at_the_save_door_after_first_publish() {
+        let harness = harness().await;
+        seed_unit(&harness, "gib_month", "active").await;
+        let (sku_id, etag) = draft_with_etag(&harness).await;
+        let published = post_publish(app_for(&harness, TENANT), TENANT, sku_id, Some(&etag)).await;
+        assert_eq!(published.status(), StatusCode::OK);
+        let fresh = format!(
+            "\"{}\"",
+            body_json(published).await["internal_revision"]
+                .as_i64()
+                .expect("a revision")
+        );
+
+        let refused = patch_sku(
+            app_for(&harness, TENANT),
+            TENANT,
+            sku_id,
+            &json!({ "metering_unit": "gib_month", "usage_type_ref": "usage:storage" }),
+            &[("If-Match", &fresh)],
+        )
+        .await;
+        assert_eq!(refused.status(), StatusCode::CONFLICT);
+        let body = body_json(refused).await;
+        assert_eq!(body["context"]["reason"], json!("ILLEGAL_FIELD_MUTATION"));
+        assert!(
+            body.to_string().contains("correction door"),
+            "the refusal names slice 07's correction door rather than forwarding: {body}"
         );
     }
 }

@@ -115,7 +115,7 @@ use serde::{Deserialize, Serialize};
 use toolkit_security::SecurityContext;
 use uuid::Uuid;
 
-/// The one topic all ten events publish onto.
+/// The one topic every event of this gear publishes onto.
 pub(crate) const TOPIC: &str = "gts.cf.core.events.topic.v1~cf.bss.products.catalog.v1";
 
 /// The `source` every event of this gear carries: the gear's own name, the
@@ -128,6 +128,15 @@ pub(crate) const PRODUCT_SUBJECT_TYPE: &str =
 
 /// The subject type for an event about a SKU.
 pub(crate) const SKU_SUBJECT_TYPE: &str = "gts.cf.core.events.subject.v1~cf.bss.products.sku.v1";
+
+/// The subject type for an event about a recognized set — the subject is the
+/// `set_kind`, which is P-D-27's ordering read for these events: `design/03`
+/// §4 keys them `(tenant, set_kind)`, and tenant plus subject is exactly that
+/// pair. The domain type it derives from is `cf.bss.products.recognized_set.v1~`,
+/// declared by 05 §3.2's authz catalog and doored by P-D-90 (P-D-94 records
+/// the derivation).
+pub(crate) const RECOGNIZED_SET_SUBJECT_TYPE: &str =
+    "gts.cf.core.events.subject.v1~cf.bss.products.recognized_set.v1";
 
 /// §4.5's five body-core fields plus P-D-01's two payload-borne obligations, owned.
 ///
@@ -163,7 +172,7 @@ impl CatalogEventCore {
     /// Owned copy of the interim envelope's borrowed core, plus the two
     /// obligations the broker's `Event` has no field for.
     ///
-    /// `causation_id` is `None` for all ten: an operator request causes them,
+    /// `causation_id` is `None` for every one: an operator request causes them,
     /// and a request is not an event. The field exists so a later slice that
     /// emits an event *caused by* another has somewhere to put it.
     pub(crate) fn from_core(core: &crate::infra::events::EventBodyCore, actor_ref: Uuid) -> Self {
@@ -310,6 +319,72 @@ macro_rules! catalog_deprecation_event {
     };
 }
 
+/// A recognized-set membership event: which set, which member, which state
+/// it now carries (`design/03` §4's roster — `RecognizedUnitUpdated`,
+/// `RecognizedCodeUpdated`, `PlanTierUpdated`).
+///
+/// Its own macro because the body is set-shaped, not entity-shaped: there is
+/// no entity id, no revision and no lifecycle state — the subject is the
+/// `set_kind` and the payload names the member. `actor_ref` rides the
+/// payload for [`CatalogEventCore`]'s reason: the broker's `Event` has no
+/// field for an actor.
+macro_rules! set_event {
+    ($(#[$doc:meta])* $name:ident, $type_id:literal) => {
+        $(#[$doc])*
+        #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        pub(crate) struct $name {
+            /// The owning tenant — the ordering key's first half.
+            pub tenant_id: Uuid,
+            /// The set — the ordering key's second half and the subject.
+            pub set_kind: String,
+            /// The member the mutation touched.
+            pub member_code: String,
+            /// The member's state as this mutation committed it.
+            pub state: String,
+            /// The acting principal, pseudonymously.
+            pub actor_ref: Uuid,
+        }
+
+        impl TypedEvent for $name {
+            const TYPE_ID: &'static str = $type_id;
+            const TOPIC: &'static str = TOPIC;
+            const SUBJECT_TYPE: &'static str = RECOGNIZED_SET_SUBJECT_TYPE;
+            const SOURCE: &'static str = SOURCE;
+
+            fn subject(&self) -> Cow<'_, str> {
+                Cow::Borrowed(&self.set_kind)
+            }
+
+            /// The entity's tenant, not the producer's — the catalog events'
+            /// own override, for the same partitioning reason.
+            fn tenant_id(&self) -> Option<Uuid> {
+                Some(self.tenant_id)
+            }
+
+            fn trace_parent(&self) -> Option<Cow<'_, str>> {
+                crate::infra::events::traceparent().map(Cow::Owned)
+            }
+        }
+    };
+}
+
+set_event! {
+    /// The metering-unit set moved (`design/03` §4).
+    RecognizedUnitUpdated,
+    "gts.cf.core.events.event_type.v1~cf.bss.products.recognized_unit_updated.v1"
+}
+set_event! {
+    /// A tax-category or GL-code set moved.
+    RecognizedCodeUpdated,
+    "gts.cf.core.events.event_type.v1~cf.bss.products.recognized_code_updated.v1"
+}
+set_event! {
+    /// The plan-tier taxonomy moved — PRD-named, its own event by design.
+    PlanTierUpdated,
+    "gts.cf.core.events.event_type.v1~cf.bss.products.plan_tier_updated.v1"
+}
+
 catalog_event! {
     /// A Product row was created.
     ProductCreated,
@@ -436,16 +511,17 @@ pub(crate) enum EventSink {
     Interim(Arc<toolkit_db::outbox::Outbox>),
 }
 
-/// Prepare each of the ten event types by name, so a registration missing any
+/// Prepare each declared event type by name, so a registration missing any
 /// one of them fails the boot rather than a door's transaction.
 ///
 /// `DbProducer::prepare_all` resolves the declared *patterns* and errors only on
-/// an empty match, which is a different claim. This asks the ten questions the
+/// an empty match, which is a different claim. This asks, one per declared
+/// event, exactly the questions the
 /// gear actually needs answered.
 ///
 /// # Errors
 /// `EventBrokerError::SchemaNotPrepared` (or the SDK's own lookup error) naming
-/// the first of the ten the broker does not carry.
+/// the first declared event the broker does not carry.
 async fn prepare_every_event_type(
     producer: &event_broker_sdk::DbProducer,
 ) -> Result<(), event_broker_sdk::EventBrokerError> {
@@ -459,6 +535,9 @@ async fn prepare_every_event_type(
     producer.prepare::<SkuDiscarded>().await?;
     producer.prepare::<ProductDeprecated>().await?;
     producer.prepare::<SkuDeprecated>().await?;
+    producer.prepare::<RecognizedUnitUpdated>().await?;
+    producer.prepare::<RecognizedCodeUpdated>().await?;
+    producer.prepare::<PlanTierUpdated>().await?;
     Ok(())
 }
 

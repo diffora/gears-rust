@@ -160,6 +160,7 @@ pub mod catalog_version;
 pub mod dto;
 pub mod preconditions;
 pub mod products;
+pub mod recognized_sets;
 pub mod reference;
 pub mod skus;
 

@@ -190,6 +190,8 @@ fn rescope(to: &str) -> SkuHeadSave {
         product_id: None,
         region_scope: Some(to.to_owned()),
         brand_scope: None,
+        metering_unit: None,
+        usage_type_ref: None,
     }
 }
 

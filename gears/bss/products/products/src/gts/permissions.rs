@@ -21,10 +21,11 @@
 //! `materiality_policy × write`, `breakglass × elevate`,
 //! `audit × read|export`.
 //!
-//! The rows owned by `02`, `03` and `04` (`category`,
-//! `attribute_definition`, `recognized_set`, `plan_tier`,
+//! The rows owned by `02` and `04` (`category`, `attribute_definition`,
 //! `scheduled_transition`, `metadata`) are **deliberately absent**: they
-//! belong to the slices that build those doors. `10`'s three — `erasure × execute`,
+//! belong to the slices that build those doors. `03`'s pair —
+//! `recognized_set × write` and `plan_tier × write` — arrived with the
+//! P-D-90 membership doors, on exactly that rule. `10`'s three — `erasure × execute`,
 //! `compliance × export`, `pii_allowlist × write` — arrived with
 //! `dod-retention-authz`, that feature's own `DoD` declaring them. See `crate::authz`'s module doc for why `discard`
 //! is not a permission of its own either.
@@ -259,6 +260,22 @@ gts_instance! {
 }
 gts_instance! {
     AuthzPermissionV1 {
+        id: gts_id!("cf.toolkit.authz.permission.v1~cf.bss.products.recognized_set_write.v1"),
+        resource_type: labels::RECOGNIZED_SET.to_owned(),
+        action: actions::WRITE.to_owned(),
+        display_name: "Change a recognized set's membership".to_owned(),
+    }
+}
+gts_instance! {
+    AuthzPermissionV1 {
+        id: gts_id!("cf.toolkit.authz.permission.v1~cf.bss.products.plan_tier_write.v1"),
+        resource_type: labels::PLAN_TIER.to_owned(),
+        action: actions::WRITE.to_owned(),
+        display_name: "Change the plan-tier taxonomy".to_owned(),
+    }
+}
+gts_instance! {
+    AuthzPermissionV1 {
         id: gts_id!("cf.toolkit.authz.permission.v1~cf.bss.products.audit_read.v1"),
         resource_type: labels::AUDIT.to_owned(),
         action: actions::READ.to_owned(),
@@ -309,6 +326,8 @@ mod tests {
         gts_id!("cf.toolkit.authz.permission.v1~cf.bss.products.erasure_execute.v1"),
         gts_id!("cf.toolkit.authz.permission.v1~cf.bss.products.compliance_export.v1"),
         gts_id!("cf.toolkit.authz.permission.v1~cf.bss.products.pii_allowlist_write.v1"),
+        gts_id!("cf.toolkit.authz.permission.v1~cf.bss.products.recognized_set_write.v1"),
+        gts_id!("cf.toolkit.authz.permission.v1~cf.bss.products.plan_tier_write.v1"),
     ];
 
     fn products_permission_instances() -> Vec<&'static InventoryInstance> {

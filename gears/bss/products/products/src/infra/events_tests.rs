@@ -54,6 +54,14 @@ const THE_EIGHT: &[&str] = &[
 /// at face value.
 const THE_LIFECYCLE_PAIR: &[&str] = &["ProductDeprecated", "SkuDeprecated"];
 
+/// `03-sku-classification`'s set events, transcribed from **its** §4 roster —
+/// the third declared list, separate for the same reason as the second.
+const THE_SET_TRIO: &[&str] = &[
+    "RecognizedUnitUpdated",
+    "RecognizedCodeUpdated",
+    "PlanTierUpdated",
+];
+
 fn core() -> EventBodyCore {
     EventBodyCore {
         tenant_id: Uuid::from_u128(0x7e_42),
@@ -77,8 +85,8 @@ fn rendered<B: serde::Serialize>(body: &B, payload_type: &str) -> Value {
     serde_json::to_value(&envelope).expect("the envelope renders as JSON")
 }
 
-/// **Every declared event has a versioned schema reference — §4.5's eight
-/// and 04's announced pair — and nothing else does.**
+/// **Every declared event has a versioned schema reference — §4.5's eight,
+/// 04's announced pair and 03's set trio — and nothing else does.**
 ///
 /// Both directions matter. A missing entry is an event that would be refused
 /// at its first enqueue; a *surplus* entry is a schema reference announced for
@@ -100,16 +108,24 @@ fn the_schema_roster_names_exactly_the_declared_events() {
             "{event} is announced by 04 and carries no schema reference"
         );
     }
+    for event in THE_SET_TRIO {
+        assert!(
+            registered.contains(event),
+            "{event} is 03's set event and carries no schema reference"
+        );
+    }
     for token in &registered {
         assert!(
-            THE_EIGHT.contains(token) || THE_LIFECYCLE_PAIR.contains(token),
-            "{token} carries a schema reference and belongs to neither declared roster: an \
+            THE_EIGHT.contains(token)
+                || THE_LIFECYCLE_PAIR.contains(token)
+                || THE_SET_TRIO.contains(token),
+            "{token} carries a schema reference and belongs to no declared roster: an \
              event no design document announces is a promise nothing backs"
         );
     }
     assert_eq!(
         registered.len(),
-        THE_EIGHT.len() + THE_LIFECYCLE_PAIR.len(),
+        THE_EIGHT.len() + THE_LIFECYCLE_PAIR.len() + THE_SET_TRIO.len(),
         "the roster must carry each declared event exactly once"
     );
 }

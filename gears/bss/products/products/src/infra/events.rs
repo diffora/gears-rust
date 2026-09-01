@@ -241,6 +241,21 @@ pub(crate) const PRODUCT_DEPRECATED_PAYLOAD_TYPE: &str = "ProductDeprecated";
 /// according to who drove the act.
 pub(crate) const SKU_DEPRECATED_PAYLOAD_TYPE: &str = "SkuDeprecated";
 
+/// `RecognizedUnitUpdated`'s payload type token — `design/03` §4's roster,
+/// the metering-unit set's own event, emitted **in the same transaction** as
+/// the membership mutation (`inst-rs-shape`). Not one of §4.5's eight and
+/// not 04's pair: a third declared roster, 03's, and `events_tests` names it
+/// separately for the same reason as the other two.
+pub(crate) const RECOGNIZED_UNIT_UPDATED_PAYLOAD_TYPE: &str = "RecognizedUnitUpdated";
+
+/// `RecognizedCodeUpdated`'s payload type token — the tax-category and
+/// GL-code sets share it (`design/03` §4).
+pub(crate) const RECOGNIZED_CODE_UPDATED_PAYLOAD_TYPE: &str = "RecognizedCodeUpdated";
+
+/// `PlanTierUpdated`'s payload type token — PRD-named; the tier set's own
+/// event by design.
+pub(crate) const PLAN_TIER_UPDATED_PAYLOAD_TYPE: &str = "PlanTierUpdated";
+
 /// Every payload type this gear emits, paired with the **versioned schema
 /// reference** its envelope carries (P-D-01: *"versioned (semver) schema
 /// references — the broker-native equivalent of `dataschema`"*).
@@ -301,6 +316,18 @@ pub(crate) const SCHEMA_REFS: &[(&str, &str)] = &[
     (
         SKU_DEPRECATED_PAYLOAD_TYPE,
         "bss-products.SkuDeprecated.v1.0.0",
+    ),
+    (
+        RECOGNIZED_UNIT_UPDATED_PAYLOAD_TYPE,
+        "bss-products.RecognizedUnitUpdated.v1.0.0",
+    ),
+    (
+        RECOGNIZED_CODE_UPDATED_PAYLOAD_TYPE,
+        "bss-products.RecognizedCodeUpdated.v1.0.0",
+    ),
+    (
+        PLAN_TIER_UPDATED_PAYLOAD_TYPE,
+        "bss-products.PlanTierUpdated.v1.0.0",
     ),
 ];
 
@@ -498,6 +525,13 @@ pub(crate) enum EventsError {
     /// sink's.
     #[error("{0} carries a provenance and must be enqueued through enqueue_deprecated")]
     DeprecationNeedsProvenance(String),
+    /// A token outside the three set events reached [`enqueue_set_event`],
+    /// whose set-shaped body no other event carries — the fourth arm of the
+    /// entry points' fail-closed rule.
+    #[error(
+        "{0} is not a recognized-set event and belongs to the entry point owning its body shape"
+    )]
+    NotASetEvent(String),
     /// The broker arm has no [`crate::infra::broker`] typed event for this
     /// payload type.
     ///
@@ -884,6 +918,128 @@ pub(crate) async fn enqueue_deprecated(
                 // total so a third `*Deprecated` token added to that guard and
                 // forgotten here is a refusal, not a body published under
                 // `sku_deprecated.v1`'s id with the wrong subject.
+                other => return Err(EventsError::NoTypedEvent(other.to_owned())),
+            }
+            .map(|_| ())
+            .map_err(EventsError::Broker)
+        }
+    }
+}
+
+/// A recognized-set event's body: which set, which member, which state it
+/// now carries. Set-shaped, not entity-shaped — no id, no revision, no
+/// lifecycle state — so it is its own type rather than a
+/// [`EventBodyCore`] wearing blanks.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SetEventBody<'a> {
+    /// The owning tenant — the ordering key's first half.
+    pub tenant_id: Uuid,
+    /// The set — the ordering key's second half.
+    pub set_kind: &'a str,
+    /// The member the mutation touched.
+    pub member_code: &'a str,
+    /// The member's state as this mutation committed it.
+    pub state: &'a str,
+}
+
+/// Enqueue a recognized-set event — the fourth entry point, owning the
+/// set-shaped body the same way [`enqueue_deprecated`] owns the
+/// provenance-carrying one.
+///
+/// # The interim aggregate id is derived, and the derivation is the ordering
+///
+/// `design/03` §4 keys these events `(tenant, set_kind)`, and the interim
+/// outbox partitions by `(tenant, aggregate_id)` — so the aggregate id is a
+/// **v5 UUID of the set kind in the tenant's namespace**: deterministic, one
+/// per `(tenant, set_kind)`, which makes the outbox's ordering exactly the
+/// declared key. The broker arm needs no such derivation — its typed events
+/// carry the set kind as the subject.
+///
+/// # Errors
+///
+/// [`EventsError::NotASetEvent`] for any token outside the three; otherwise
+/// as [`enqueue`].
+pub(crate) async fn enqueue_set_event(
+    sink: &EventSink,
+    runner: &(impl DBRunner + Sync),
+    payload_type: &str,
+    body: SetEventBody<'_>,
+    actor_ref: Uuid,
+) -> Result<(), EventsError> {
+    if !matches!(
+        payload_type,
+        RECOGNIZED_UNIT_UPDATED_PAYLOAD_TYPE
+            | RECOGNIZED_CODE_UPDATED_PAYLOAD_TYPE
+            | PLAN_TIER_UPDATED_PAYLOAD_TYPE
+    ) {
+        return Err(EventsError::NotASetEvent(payload_type.to_owned()));
+    }
+    match sink {
+        EventSink::Interim(outbox) => {
+            let aggregate_id = Uuid::new_v5(&body.tenant_id, body.set_kind.as_bytes());
+            enqueue_body(
+                outbox,
+                runner,
+                body.tenant_id,
+                aggregate_id,
+                payload_type,
+                &body,
+                actor_ref,
+            )
+            .await
+        }
+        EventSink::Broker(producer) => {
+            let tenant_id = body.tenant_id;
+            let set_kind = body.set_kind.to_owned();
+            let member_code = body.member_code.to_owned();
+            let state = body.state.to_owned();
+            match payload_type {
+                RECOGNIZED_UNIT_UPDATED_PAYLOAD_TYPE => {
+                    producer
+                        .enqueue(
+                            runner,
+                            broker::RecognizedUnitUpdated {
+                                tenant_id,
+                                set_kind,
+                                member_code,
+                                state,
+                                actor_ref,
+                            },
+                        )
+                        .await
+                }
+                RECOGNIZED_CODE_UPDATED_PAYLOAD_TYPE => {
+                    producer
+                        .enqueue(
+                            runner,
+                            broker::RecognizedCodeUpdated {
+                                tenant_id,
+                                set_kind,
+                                member_code,
+                                state,
+                                actor_ref,
+                            },
+                        )
+                        .await
+                }
+                PLAN_TIER_UPDATED_PAYLOAD_TYPE => {
+                    producer
+                        .enqueue(
+                            runner,
+                            broker::PlanTierUpdated {
+                                tenant_id,
+                                set_kind,
+                                member_code,
+                                state,
+                                actor_ref,
+                            },
+                        )
+                        .await
+                }
+                // Total for the guard's own reason: a fourth set event added
+                // to the guard and forgotten here is a refusal, not a body
+                // published under another event's type id.
                 other => return Err(EventsError::NoTypedEvent(other.to_owned())),
             }
             .map(|_| ())

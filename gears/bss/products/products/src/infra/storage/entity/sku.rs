@@ -66,6 +66,16 @@ pub struct Model {
     /// its state change, which the head guard admits because that guard names
     /// the immutable columns rather than the writable ones.
     pub replaced_by_sku_id: Option<Uuid>,
+    /// The declared metering unit — slice 03's `MeterDeclaration`, atomic
+    /// with `usage_type_ref` (the paired `CHECK`: both null or both
+    /// non-null). **Bucket-ii**, the registry's first member: writable via
+    /// the save door only while `published_version = 0`, and after first
+    /// publish only in the same statement as a `published_version` bump —
+    /// the interim row-image predicate design/01 §4.2 pins (P-D-41, P-D-34).
+    pub metering_unit: Option<String>,
+    /// The usage-type reference of the same declaration — the pair's other
+    /// half, same bucket, same predicate.
+    pub usage_type_ref: Option<String>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

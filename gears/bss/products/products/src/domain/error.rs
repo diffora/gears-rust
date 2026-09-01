@@ -104,6 +104,39 @@ pub enum DomainError {
     /// door's own precondition and is neither of these two.
     #[error("stale live op: {0}")]
     StaleLiveOp(String),
+    /// A `MeterDeclaration` arrived with one half of its atomic pair —
+    /// `metering_unit` and `usage_type_ref` together or not at all
+    /// (`03 inst-mt-atomic-pair`; the paired `CHECK` refuses the same shape
+    /// at the physical layer).
+    #[error("incomplete meter declaration: {0}")]
+    MeterDeclarationIncomplete(String),
+    /// A declaration named a unit the recognized set does not carry —
+    /// unknown, or `removed`, which is a tombstone outside the set
+    /// (`03 inst-mt-recognized`). The path to a new unit is the recognized-set
+    /// door's governed add, never an inline mint.
+    #[error("unrecognized metering unit: {0}")]
+    UnrecognizedUnit(String),
+    /// A **new** declaration named a `deprecated` unit — including a draft
+    /// whose unit was deprecated before its first publish, which the PRD
+    /// treats as a new declaration (`03 inst-mt-recognized`). Existing
+    /// published carriers keep resolving.
+    #[error("deprecated metering unit: {0}")]
+    UnitDeprecated(String),
+    /// A unit removal was refused while a non-terminal published head still
+    /// declares it, with the holders sampled in the detail
+    /// (`03 inst-us-delist`). The admitted path is deprecate first, remove
+    /// once unreferenced.
+    #[error("unit delist blocked: {0}")]
+    UnitDelistBlocked(String),
+    /// [`Self::UnitDelistBlocked`]'s `plan_tier` sibling — the tier set has
+    /// its own refusal code by design (`03 inst-pt-governed`), the retire
+    /// being the set's `removed` state.
+    #[error("plan tier retire blocked: {0}")]
+    PlanTierRetireBlocked(String),
+    /// [`Self::UnitDelistBlocked`]'s accounting-code sibling, covering the
+    /// `tax_category` and `gl_code` sets (`03` §3.3's taxonomy).
+    #[error("accounting code delist blocked: {0}")]
+    AccountingCodeDelistBlocked(String),
 
     /// A Product reaching `published` carries no primary category
     /// (`inst-tx-primary-at-publish`).
@@ -282,6 +315,12 @@ impl DomainError {
             Self::ParentTerminal(_) => "PARENT_TERMINAL",
             Self::IncompleteEntity(_) => "INCOMPLETE_ENTITY",
             Self::StaleLiveOp(_) => "STALE_LIVE_OP",
+            Self::MeterDeclarationIncomplete(_) => "METER_DECLARATION_INCOMPLETE",
+            Self::UnrecognizedUnit(_) => "UNRECOGNIZED_UNIT",
+            Self::UnitDeprecated(_) => "UNIT_DEPRECATED",
+            Self::UnitDelistBlocked(_) => "UNIT_DELIST_BLOCKED",
+            Self::PlanTierRetireBlocked(_) => "PLAN_TIER_RETIRE_BLOCKED",
+            Self::AccountingCodeDelistBlocked(_) => "ACCOUNTING_CODE_DELIST_BLOCKED",
             Self::PrimaryCategoryRequired(_) => "PRIMARY_CATEGORY_REQUIRED",
             Self::ApprovalRequired(_) => "APPROVAL_REQUIRED",
             Self::ErasureUnknownActor(_) => "ERASURE_UNKNOWN_ACTOR",

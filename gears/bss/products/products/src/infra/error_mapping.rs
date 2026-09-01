@@ -211,6 +211,16 @@ impl From<DomainError> for CanonicalError {
             // codes, and a precondition that no longer holds is an aborted
             // act rather than a malformed request.
             D::StaleLiveOp(detail) => aborted(detail, "STALE_LIVE_OP"),
+            D::MeterDeclarationIncomplete(detail) => {
+                precondition("meter", &detail, "METER_DECLARATION_INCOMPLETE")
+            }
+            D::UnrecognizedUnit(detail) => precondition("meter", &detail, "UNRECOGNIZED_UNIT"),
+            D::UnitDeprecated(detail) => precondition("meter", &detail, "UNIT_DEPRECATED"),
+            D::UnitDelistBlocked(detail) => aborted(detail, "UNIT_DELIST_BLOCKED"),
+            D::PlanTierRetireBlocked(detail) => aborted(detail, "PLAN_TIER_RETIRE_BLOCKED"),
+            D::AccountingCodeDelistBlocked(detail) => {
+                aborted(detail, "ACCOUNTING_CODE_DELIST_BLOCKED")
+            }
             D::IdempotencyConflict(detail) => aborted(detail, "IDEMPOTENCY_CONFLICT"),
             D::IdempotencyKeyInFlight(detail) => aborted(detail, "IDEMPOTENCY_KEY_IN_FLIGHT"),
             D::EntityTerminal(detail) => aborted(detail, "ENTITY_TERMINAL"),

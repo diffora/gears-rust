@@ -243,7 +243,9 @@ actor, the scenarios and the boundary.
   Append-only discipline: no UPDATE of `member_code` ever and no DELETE (trigger whitelist admits `state`
   and `display_label` only).
 - **Events**: `PlanTierUpdated` (PRD-named), `RecognizedUnitUpdated`, `RecognizedCodeUpdated` —
-  broker-native, ordering key `(tenant, set_kind)`; classification edits on a SKU ride the
+  broker-native, ordering key `(tenant, set_kind)`; the broker identity — derived type ids, the
+  `recognized_set` subject type with the set kind as the subject, the interim outbox's derived
+  aggregate id — is **P-D-94**'s; classification edits on a SKU ride the
   Foundation entity events (explicit "no event" for per-field changes).
 
 ## 5. Testing posture (slice-local)

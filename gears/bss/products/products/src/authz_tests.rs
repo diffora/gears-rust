@@ -44,6 +44,8 @@ fn labels_all_carries_every_declared_label_in_order() {
             labels::ERASURE,
             labels::COMPLIANCE,
             labels::PII_ALLOWLIST,
+            labels::RECOGNIZED_SET,
+            labels::PLAN_TIER,
         ]
     );
 }
@@ -377,6 +379,11 @@ fn the_catalog_carries_the_built_slices_rows_and_withholds_the_rest() {
         labels::ERASURE,
         labels::COMPLIANCE,
         labels::PII_ALLOWLIST,
+        // 03's pair, arrived with the P-D-90 membership doors — the rows
+        // rotate off the withheld list below the day their door lands, this
+        // census's own maintenance rule.
+        labels::RECOGNIZED_SET,
+        labels::PLAN_TIER,
     ];
     for label in declared {
         assert!(
@@ -398,8 +405,6 @@ fn the_catalog_carries_the_built_slices_rows_and_withholds_the_rest() {
         "cf.bss.products.category.v1~",             // 02
         "cf.bss.products.attribute_definition.v1~", // 02
         "cf.bss.products.metadata.v1~",             // 02
-        "cf.bss.products.recognized_set.v1~",       // 03
-        "cf.bss.products.plan_tier.v1~",            // 03
         "cf.bss.products.scheduled_transition.v1~", // 04
         "cf.bss.products.freeze_participant.v1~",   // 06, with its governed-set door
     ] {

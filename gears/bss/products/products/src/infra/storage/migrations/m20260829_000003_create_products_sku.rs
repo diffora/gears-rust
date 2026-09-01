@@ -150,6 +150,7 @@
 //! @cpt-dod:cpt-cf-bss-products-dod-code-reservation:p1
 //! @cpt-dod:cpt-cf-bss-products-dod-append-only-guard:p1
 //! @cpt-dod:cpt-cf-bss-products-dod-lifecycle-columns:p1
+//! @cpt-dod:cpt-cf-bss-products-dod-meter-atomic:p1
 
 use sea_orm_migration::prelude::*;
 
@@ -174,13 +175,16 @@ const PG_UP_STATEMENTS: &[&str] = &[
             cloned_from_version bigint,
             deprecation_provenance text,
             replaced_by_sku_id  uuid,
+            metering_unit       text,
+            usage_type_ref      text,
             updated_at          timestamptz NOT NULL,
             CONSTRAINT products_sku_pkey PRIMARY KEY (sku_id),
             CONSTRAINT fk_products_sku_product FOREIGN KEY (product_id) REFERENCES bss.products_product (product_id),
             CONSTRAINT chk_products_sku_lifecycle_state CHECK (lifecycle_state IN ('draft', 'published', 'deprecated', 'retired', 'discarded')),
             CONSTRAINT chk_products_sku_internal_revision CHECK (internal_revision >= 1),
             CONSTRAINT chk_products_sku_published_version CHECK (published_version >= 0),
-            CONSTRAINT chk_products_sku_cloned_from_shape CHECK (cloned_from IS NOT NULL OR cloned_from_version IS NULL)
+            CONSTRAINT chk_products_sku_cloned_from_shape CHECK (cloned_from IS NOT NULL OR cloned_from_version IS NULL),
+            CONSTRAINT chk_products_sku_meter_pair CHECK ((metering_unit IS NULL) = (usage_type_ref IS NULL))
         )",
     "CREATE INDEX idx_products_sku_tenant ON bss.products_sku USING btree (tenant_id, sku_id)",
     "CREATE INDEX idx_products_sku_parent ON bss.products_sku USING btree (tenant_id, product_id)",
@@ -254,6 +258,14 @@ const PG_UP_STATEMENTS: &[&str] = &[
             RAISE EXCEPTION 'products_sku: bucket-iii columns are admitted only while the head is non-terminal';
           END IF;
 
+          IF (NEW.metering_unit IS DISTINCT FROM OLD.metering_unit
+              OR NEW.usage_type_ref IS DISTINCT FROM OLD.usage_type_ref)
+             AND NOT (OLD.published_version = 0 AND OLD.lifecycle_state NOT IN ('retired', 'discarded'))
+             AND NEW.published_version IS NOT DISTINCT FROM OLD.published_version
+          THEN
+            RAISE EXCEPTION 'products_sku: bucket-ii columns are admitted before first publish, or after it only in the same statement as a published_version bump';
+          END IF;
+
           IF NEW.composition_pending IS DISTINCT FROM OLD.composition_pending
              AND NEW.published_version IS NOT DISTINCT FROM OLD.published_version
           THEN
@@ -300,13 +312,16 @@ const SQLITE_UP_STATEMENTS: &[&str] = &[
             cloned_from_version integer,
             deprecation_provenance text,
             replaced_by_sku_id  text,
+            metering_unit       text,
+            usage_type_ref      text,
             updated_at          text    NOT NULL,
             PRIMARY KEY (sku_id),
             CONSTRAINT fk_products_sku_product FOREIGN KEY (product_id) REFERENCES products_product (product_id),
             CONSTRAINT chk_products_sku_lifecycle_state CHECK (lifecycle_state IN ('draft', 'published', 'deprecated', 'retired', 'discarded')),
             CONSTRAINT chk_products_sku_internal_revision CHECK (internal_revision >= 1),
             CONSTRAINT chk_products_sku_published_version CHECK (published_version >= 0),
-            CONSTRAINT chk_products_sku_cloned_from_shape CHECK (cloned_from IS NOT NULL OR cloned_from_version IS NULL)
+            CONSTRAINT chk_products_sku_cloned_from_shape CHECK (cloned_from IS NOT NULL OR cloned_from_version IS NULL),
+            CONSTRAINT chk_products_sku_meter_pair CHECK ((metering_unit IS NULL) = (usage_type_ref IS NULL))
         )",
     "CREATE INDEX idx_products_sku_tenant ON products_sku (tenant_id, sku_id)",
     "CREATE INDEX idx_products_sku_parent ON products_sku (tenant_id, product_id)",
@@ -361,6 +376,13 @@ const SQLITE_UP_STATEMENTS: &[&str] = &[
             OR NEW.brand_scope IS NOT OLD.brand_scope
         ) AND OLD.lifecycle_state IN ('retired', 'discarded')
         BEGIN SELECT RAISE(ABORT, 'products_sku: bucket-iii columns are admitted only while the head is non-terminal'); END",
+    "CREATE TRIGGER trg_products_sku_bucket_ii BEFORE UPDATE ON products_sku FOR EACH ROW WHEN (
+            NEW.metering_unit IS NOT OLD.metering_unit
+            OR NEW.usage_type_ref IS NOT OLD.usage_type_ref
+        ) AND NOT (
+            OLD.published_version = 0 AND OLD.lifecycle_state NOT IN ('retired', 'discarded')
+        ) AND NEW.published_version IS OLD.published_version
+        BEGIN SELECT RAISE(ABORT, 'products_sku: bucket-ii columns are admitted before first publish, or after it only in the same statement as a published_version bump'); END",
     "CREATE TRIGGER trg_products_sku_deprecation_provenance BEFORE UPDATE ON products_sku FOR EACH ROW WHEN
             NEW.deprecation_provenance IS NOT OLD.deprecation_provenance
             AND NEW.lifecycle_state IS OLD.lifecycle_state

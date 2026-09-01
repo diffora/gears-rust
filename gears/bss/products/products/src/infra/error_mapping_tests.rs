@@ -54,6 +54,15 @@ fn declared_status_and_code(err: &DomainError) -> (u16, Option<&'static str>) {
         D::IncompleteEntity(_) => (400, Some("INCOMPLETE_ENTITY")),
         D::PrimaryCategoryRequired(_) => (400, Some("PRIMARY_CATEGORY_REQUIRED")),
         D::StaleLiveOp(_) => (409, Some("STALE_LIVE_OP")),
+        // 03's meter refusals: 422 architectural, 400 on the wire (the slice's
+        // own Problem-responses note) — the precondition shape.
+        D::MeterDeclarationIncomplete(_) => (400, Some("METER_DECLARATION_INCOMPLETE")),
+        D::UnrecognizedUnit(_) => (400, Some("UNRECOGNIZED_UNIT")),
+        D::UnitDeprecated(_) => (400, Some("UNIT_DEPRECATED")),
+        // The three delist blocks are 409s in the same note.
+        D::UnitDelistBlocked(_) => (409, Some("UNIT_DELIST_BLOCKED")),
+        D::PlanTierRetireBlocked(_) => (409, Some("PLAN_TIER_RETIRE_BLOCKED")),
+        D::AccountingCodeDelistBlocked(_) => (409, Some("ACCOUNTING_CODE_DELIST_BLOCKED")),
         D::ApprovalRequired(_) => (403, Some("APPROVAL_REQUIRED")),
         D::ErasureUnknownActor(_) => (400, Some("ERASURE_UNKNOWN_ACTOR")),
         D::CloneSourceDiscarded(_) => (409, Some("CLONE_SOURCE_DISCARDED")),

@@ -1569,6 +1569,46 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   (the re-publish step).
 
 
+#### P-D-94 — The recognized-set events' broker identity: derived ids, the set kind as the subject
+
+- **Date**: 2026-09-01 (owner call, autonomous under the standing instruction —
+  P-D-90's doors ship and `inst-rs-shape` requires every mutation to emit *"the set's event in the
+  same transaction"*, while `design/03` §4 declares only the event **names** and the ordering key)
+- **Context**: `design/03` §4 declares `RecognizedUnitUpdated`, `RecognizedCodeUpdated` and
+  `PlanTierUpdated` as *"broker-native, ordering key `(tenant, set_kind)`"* — and nothing more. A
+  broker-native event needs a type id and a subject type, and the gear's ten existing events derive
+  both from one naming rule (`gts.cf.core.events.event_type.v1~cf.bss.products.<snake>.v1`;
+  `gts.cf.core.events.subject.v1~cf.bss.products.<domain type>.v1`). The set events' domain type is
+  not among `DESIGN.md`'s six API-resource types, but `cf.bss.products.recognized_set.v1~` is
+  already a declared GTS type — `design/05` §3.2's authz catalog carries it, and P-D-90 doored it.
+- **Decision**, three arms:
+  1. **The type ids follow the gear's own derivation**:
+     `…~cf.bss.products.recognized_unit_updated.v1`, `…recognized_code_updated.v1`,
+     `…plan_tier_updated.v1` — the same rule every shipped event uses, applied rather than
+     re-invented.
+  2. **The subject type is `gts.cf.core.events.subject.v1~cf.bss.products.recognized_set.v1` and
+     the subject is the `set_kind`** — tenant plus subject is then exactly the declared ordering
+     key, with no second mechanism. All four kinds ride the one subject type, the tier set
+     included: its separateness is carried by its own event name and grant, not by a fourth
+     subject type.
+  3. **On the interim (non-broker) outbox the aggregate id is a v5 UUID of the set kind in the
+     tenant's namespace** — deterministic, one per `(tenant, set_kind)`, so the interim
+     partitioning reproduces the declared ordering rather than approximating it.
+- **The arguments against, stated**: arm 2 gives events about four *sets* one subject type, so a
+  consumer filtering by subject type alone cannot separate the tier stream from the unit stream —
+  it must read the subject value. The alternative (a subject type per kind) was rejected because
+  it mints three more GTS names no document declares, for a distinction the subject value already
+  carries. Arm 3 buries the ordering rule in a UUID derivation a reader cannot see on the wire;
+  the alternative — a synthetic per-set row id — would need a store to keep it stable, which is a
+  table for a partitioning detail.
+- **Not changed**: `design/03` §4's roster and ordering key; the events' payload fields (the body
+  carries `tenant_id`, `set_kind`, `member_code`, `state`, `actor_ref` — the mutation's own
+  operands and nothing invented); slice 12's completeness check, which gains three rows to count
+  when it lands.
+- **Propagated**: `design/03-sku-classification.md` §4 (the roster line now cites this entry);
+  the crate's `infra/broker.rs` (the subject-type constant's doc) and `infra/events.rs` (the
+  entry point) implement it.
+
 #### P-D-93 — Open item 3's premise is stale and its own remedy ships, so the envelope is buildable
 
 - **Date**: 2026-09-01 (owner call, autonomous under the standing instruction —

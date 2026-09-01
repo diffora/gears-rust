@@ -121,6 +121,15 @@ pub mod labels {
     /// across every subject, which no entity-scoped grant implies.
     pub const AUDIT: &str = gts_id!("cf.bss.products.audit.v1~");
 
+    /// The recognized sets — the three non-tier families behind
+    /// `POST /recognized-sets/{setKind}/members` (P-D-90 arm 2: the tier set
+    /// spends its own grant below).
+    pub const RECOGNIZED_SET: &str = gts_id!("cf.bss.products.recognized_set.v1~");
+
+    /// The plan-tier taxonomy — its own grant, event and refusal code by
+    /// design (`03` §3.4, P-D-90).
+    pub const PLAN_TIER: &str = gts_id!("cf.bss.products.plan_tier.v1~");
+
     /// Every authz label this module declares, stable order. The single
     /// canonical list driving [`super::authz_label_type_schemas`]'s stub
     /// registration. MUST match the permission catalog's distinct
@@ -140,6 +149,8 @@ pub mod labels {
         ERASURE,
         COMPLIANCE,
         PII_ALLOWLIST,
+        RECOGNIZED_SET,
+        PLAN_TIER,
     ];
 }
 
@@ -238,6 +249,12 @@ pub mod resource_types {
         ResourceType::from_static(labels::BREAKGLASS, SUPPORTED_PROPERTIES);
     /// The audit plane — `read`, `export`.
     pub const AUDIT: ResourceType = ResourceType::from_static(labels::AUDIT, SUPPORTED_PROPERTIES);
+    /// The recognized sets — `write` (P-D-90 arm 2: the non-tier families).
+    pub const RECOGNIZED_SET: ResourceType =
+        ResourceType::from_static(labels::RECOGNIZED_SET, SUPPORTED_PROPERTIES);
+    /// The plan-tier taxonomy — `write`, its own grant by design.
+    pub const PLAN_TIER: ResourceType =
+        ResourceType::from_static(labels::PLAN_TIER, SUPPORTED_PROPERTIES);
     /// Bulk lifecycle — `execute`.
     pub const BULK_LIFECYCLE: ResourceType =
         ResourceType::from_static(labels::BULK_LIFECYCLE, SUPPORTED_PROPERTIES);

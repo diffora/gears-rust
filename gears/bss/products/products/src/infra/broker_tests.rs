@@ -6,9 +6,10 @@ use serde_json::Value;
 use uuid::Uuid;
 
 use super::{
-    CatalogEventCore, PRODUCT_SUBJECT_TYPE, ProductCreated, ProductDeprecated, ProductDiscarded,
-    ProductHeadSaved, ProductPublished, SKU_SUBJECT_TYPE, SOURCE, SkuCreated, SkuDeprecated,
-    SkuDiscarded, SkuHeadSaved, SkuPublished, TOPIC,
+    CatalogEventCore, PRODUCT_SUBJECT_TYPE, PlanTierUpdated, ProductCreated, ProductDeprecated,
+    ProductDiscarded, ProductHeadSaved, ProductPublished, RecognizedCodeUpdated,
+    RecognizedUnitUpdated, SKU_SUBJECT_TYPE, SOURCE, SkuCreated, SkuDeprecated, SkuDiscarded,
+    SkuHeadSaved, SkuPublished, TOPIC,
 };
 
 const TENANT: Uuid = Uuid::from_u128(0x7e_42);
@@ -111,11 +112,36 @@ const THE_LIFECYCLE_PAIR: &[(&str, &str, &str)] = &[
     ),
 ];
 
-/// Every event this gear declares: §4.5's eight and 04's pair.
+/// The subject type every set event carries, transcribed.
+const TRANSCRIBED_SET_SUBJECT: &str =
+    "gts.cf.core.events.subject.v1~cf.bss.products.recognized_set.v1";
+
+/// `03`'s set events — names from its §4 roster, ids and subject derived by
+/// this module's naming rule (P-D-94), a third list for the second's reason.
+const THE_SET_TRIO: &[(&str, &str, &str)] = &[
+    (
+        "RecognizedUnitUpdated",
+        "gts.cf.core.events.event_type.v1~cf.bss.products.recognized_unit_updated.v1",
+        TRANSCRIBED_SET_SUBJECT,
+    ),
+    (
+        "RecognizedCodeUpdated",
+        "gts.cf.core.events.event_type.v1~cf.bss.products.recognized_code_updated.v1",
+        TRANSCRIBED_SET_SUBJECT,
+    ),
+    (
+        "PlanTierUpdated",
+        "gts.cf.core.events.event_type.v1~cf.bss.products.plan_tier_updated.v1",
+        TRANSCRIBED_SET_SUBJECT,
+    ),
+];
+
+/// Every event this gear declares: §4.5's eight, 04's pair, 03's trio.
 fn every_declared_event() -> Vec<(&'static str, &'static str, &'static str)> {
     THE_EIGHT
         .iter()
         .chain(THE_LIFECYCLE_PAIR)
+        .chain(THE_SET_TRIO)
         .copied()
         .collect()
 }
@@ -173,6 +199,21 @@ fn declared() -> Vec<(&'static str, &'static str, &'static str)> {
             SkuDeprecated::SUBJECT_TYPE,
             SkuDeprecated::TOPIC,
         ),
+        (
+            RecognizedUnitUpdated::TYPE_ID,
+            RecognizedUnitUpdated::SUBJECT_TYPE,
+            RecognizedUnitUpdated::TOPIC,
+        ),
+        (
+            RecognizedCodeUpdated::TYPE_ID,
+            RecognizedCodeUpdated::SUBJECT_TYPE,
+            RecognizedCodeUpdated::TOPIC,
+        ),
+        (
+            PlanTierUpdated::TYPE_ID,
+            PlanTierUpdated::SUBJECT_TYPE,
+            PlanTierUpdated::TOPIC,
+        ),
     ]
 }
 
@@ -192,7 +233,7 @@ fn each_event_declares_its_derived_type_id_and_subject_type() {
     assert_eq!(
         declared.len(),
         transcribed.len(),
-        "ten events, ten rows: 4.5's eight and 04's announced pair"
+        "thirteen events, thirteen rows: 4.5's eight, 04's pair and 03's trio"
     );
 
     for ((type_id, subject_type, _), (token, want_type, want_subject)) in
@@ -257,8 +298,19 @@ fn the_subject_type_follows_the_entity_the_event_is_about() {
     // asymmetry is deliberate is 04's own **open item** — not settled design
     // — so a half-of-them assertion would silently absorb whichever way it
     // resolves.
-    assert_eq!(product_events, 5, "five of the ten are about a Product");
-    assert_eq!(sku_events, 5, "five of the ten are about a SKU");
+    assert_eq!(
+        product_events, 5,
+        "five of the thirteen are about a Product"
+    );
+    assert_eq!(sku_events, 5, "five of the thirteen are about a SKU");
+    let set_events = declared()
+        .iter()
+        .filter(|(_, subject, _)| *subject == TRANSCRIBED_SET_SUBJECT)
+        .count();
+    assert_eq!(
+        set_events, 3,
+        "three are about a recognized set, and about no entity at all"
+    );
 
     for (type_id, subject, _) in declared() {
         let names_sku = type_id.contains("sku_");
@@ -561,7 +613,11 @@ async fn every_event_reaches_the_broker_under_its_own_type_id() {
     let provider = toolkit_db::DBProvider::<toolkit_db::DbError>::new(db);
     let conn = provider.conn().expect("checkout a connection");
 
-    let mut expected: Vec<(Uuid, &str)> = Vec::new();
+    // Each entry is (the subject the event will carry, its type id): an
+    // entity event's subject is the minted entity id, a set event's is its
+    // set kind — one distinct kind per trio member, so the read-back below
+    // resolves each event unambiguously.
+    let mut expected: Vec<(String, &str)> = Vec::new();
     let roster = every_declared_event();
     for (token, type_id, _) in &roster {
         let entity_id = Uuid::now_v7();
@@ -581,6 +637,33 @@ async fn every_event_reaches_the_broker_under_its_own_type_id() {
             events::enqueue_published(&sink, &conn, entity_id, token, &core, 7, ACTOR)
                 .await
                 .unwrap_or_else(|e| panic!("{token} must enqueue through enqueue_published: {e}"));
+        } else if token.ends_with("Updated") {
+            // The fourth entry point: a set event's body is set-shaped, and
+            // routing it through any other enqueue is refused by the token
+            // guards — so the round-trip proves the whole family reaches the
+            // broker through the one door that owns its shape. One distinct
+            // kind per member, because the subject IS the kind.
+            let set_kind = match *token {
+                "RecognizedUnitUpdated" => "metering_unit",
+                "RecognizedCodeUpdated" => "tax_category",
+                _ => "plan_tier",
+            };
+            events::enqueue_set_event(
+                &sink,
+                &conn,
+                token,
+                events::SetEventBody {
+                    tenant_id: TENANT,
+                    set_kind,
+                    member_code: "gib_month",
+                    state: "active",
+                },
+                ACTOR,
+            )
+            .await
+            .unwrap_or_else(|e| panic!("{token} must enqueue through enqueue_set_event: {e}"));
+            expected.push((set_kind.to_owned(), type_id));
+            continue;
         } else if token.ends_with("Deprecated") {
             // The third entry point, and the branch is what proves the
             // token guard is not decorative: routing a `*Deprecated`
@@ -595,7 +678,7 @@ async fn every_event_reaches_the_broker_under_its_own_type_id() {
                 .await
                 .unwrap_or_else(|e| panic!("{token} must enqueue through enqueue: {e}"));
         }
-        expected.push((entity_id, type_id));
+        expected.push((entity_id.to_string(), type_id));
     }
 
     // The leased processor delivers asynchronously, so the read-back polls
@@ -617,15 +700,14 @@ async fn every_event_reaches_the_broker_under_its_own_type_id() {
     assert_eq!(
         delivered.len(),
         roster.len(),
-        "all ten must have reached the broker; a token mapped to the wrong type would be \\
-         refused at ingest and never arrive"
+        "every declared event must have reached the broker; a token mapped to the wrong type \\
+         would be refused at ingest and never arrive"
     );
 
     // Each event is found by the entity id its enqueue minted, so a dispatch
     // row wired to the wrong type shows up as a type-id mismatch on **that**
     // token rather than as a count that happens to add up.
-    for (entity_id, want_type_id) in expected {
-        let subject = entity_id.to_string();
+    for (subject, want_type_id) in expected {
         let got = delivered
             .iter()
             .map(|stored| &stored.event)

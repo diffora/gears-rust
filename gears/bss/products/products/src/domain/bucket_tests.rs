@@ -242,13 +242,12 @@ fn a_row_identity_column_is_outside_the_scheme_and_is_not_a_bucket() {
 /// without registering one, and the head door refuses the write under the
 /// pipeline's own posture rather than routing to a default bucket"*.
 ///
-/// The samples are real future columns — §4.2's `sellable`, `plan_tier`,
-/// `metering_unit` and `type`, none of which exists today, all four owed by
-/// slice `03` — plus `name` on a SKU, which is a Product column and not a SKU
-/// one. `deprecation_provenance` and `replaced_by_sku_id` were on this list
-/// until slice `04`'s columns landed (`dod-lifecycle-columns`); they are
-/// registered `Mechanical` now, and a test asserting their absence would be
-/// asserting the opposite of what ships. Would catch a catch-all
+/// The samples are real future columns — §4.2's `sellable`, `plan_tier` and
+/// `type`, all owed by slice `03` — plus `name` on a SKU, which is a Product
+/// column and not a SKU one. Two 04 columns and then 03's `metering_unit`
+/// have each rotated OFF this list as they landed and registered: a sample
+/// that ships is asserting the opposite of what ships, and the rotation is
+/// this test's own maintenance rule. Would catch a catch-all
 /// arm that answered bucket-iv for anything it did not recognise: every one of
 /// these would then be an operator-writable field the trigger goes on to
 /// refuse with a database error.
@@ -257,7 +256,6 @@ fn an_unregistered_column_fails_closed_rather_than_defaulting() {
     let unregistered = [
         (EntityKind::Sku, "sellable"),
         (EntityKind::Sku, "plan_tier"),
-        (EntityKind::Sku, "metering_unit"),
         (EntityKind::Sku, "type"),
         (EntityKind::Sku, "name"),
         (EntityKind::Product, "sku_code"),
@@ -347,25 +345,38 @@ fn the_create_only_class_carries_exactly_the_cloned_from_pair() {
 }
 
 /// `inst-fd-bucket-tags` names four buckets; today's columns populate two of
-/// them. Buckets ii and iv are encoded and empty, and a member appearing in
-/// either without a decision behind it fails here.
+/// them. Bucket iv is encoded and empty, and a member appearing in it
+/// without a decision behind it fails here; bucket ii filled with 03's meter
+/// pair, on the SKU side only.
 ///
-/// Bucket ii is slice 07's correctable set and bucket iv the descriptive
-/// catch-all `fr-field-mutability-matrix` words as *"other descriptive
-/// fields"*; §4.1 assigns no Foundation column to either.
+/// Bucket ii is the correctable set — admitted at the save door while
+/// `published_version = 0`, slice 07's correction door after first publish —
+/// and bucket iv the descriptive catch-all `fr-field-mutability-matrix`
+/// words as *"other descriptive fields"*; §4.1 assigns no Foundation column
+/// to either, and the bucket-ii members are 03's, on `products_sku`.
 #[test]
-fn buckets_ii_and_iv_have_no_members_today() {
+fn bucket_ii_is_the_meter_pair_and_bucket_iv_is_empty() {
+    assert_eq!(
+        count_of(
+            EntityKind::Product,
+            FieldClass::Bucket(FieldBucket::Correctable)
+        ),
+        0,
+        "product: no Product column carries the bucket-ii tag",
+    );
+    assert_eq!(
+        count_of(
+            EntityKind::Sku,
+            FieldClass::Bucket(FieldBucket::Correctable)
+        ),
+        2,
+        "sku: bucket-ii is exactly 03's meter pair",
+    );
     for kind in BOTH_KINDS {
-        assert_eq!(
-            count_of(kind, FieldClass::Bucket(FieldBucket::Correctable)),
-            0,
-            "{}: bucket-ii columns arrive with slice 07",
-            kind.as_str(),
-        );
         assert_eq!(
             count_of(kind, FieldClass::Bucket(FieldBucket::Descriptive)),
             0,
-            "{}: no Foundation column is bucket-iv",
+            "{}: no column is bucket-iv",
             kind.as_str(),
         );
     }
@@ -394,6 +405,7 @@ fn the_class_counts_are_pinned_per_entity() {
 
     let sku_counts = [
         (FieldClass::Bucket(FieldBucket::Structural), 2),
+        (FieldClass::Bucket(FieldBucket::Correctable), 2),
         (FieldClass::Bucket(FieldBucket::MaterialMutable), 2),
         (FieldClass::CreateOnly, 2),
         (FieldClass::Outside(OutsideTheScheme::Mechanical), 7),
@@ -402,7 +414,7 @@ fn the_class_counts_are_pinned_per_entity() {
     for (class, expected) in sku_counts {
         assert_eq!(count_of(EntityKind::Sku, class), expected);
     }
-    assert_eq!(columns(EntityKind::Sku).len(), 17);
+    assert_eq!(columns(EntityKind::Sku).len(), 19);
 }
 
 /// No column is named twice in one entity's registry.

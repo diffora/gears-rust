@@ -516,7 +516,7 @@ column whose FK claim was struck; the argument holds for all four and §4 govern
 
 ### Recognized-set mechanics
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-recognized-set-mechanics`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-recognized-set-mechanics`
 
 The system **MUST** implement one generic membership lookup treating `active` and `deprecated`
 rows as the set and a `removed` row as a tombstone outside it, with every mutation riding
@@ -594,7 +594,7 @@ slice (open item 14)**.
 
 ### Meter declaration atomicity
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-meter-atomic`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-meter-atomic`
 
 The system **MUST** refuse a partial `MeterDeclaration` with `METER_DECLARATION_INCOMPLETE` at the
 door and refuse it again at the physical layer through the paired `CHECK`, admitting exactly one
@@ -608,7 +608,7 @@ unit per declaration. A composite meter declares its **output** unit.
 
 ### Unit recognition
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-unit-recognition`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-unit-recognition`
 
 The system **MUST** refuse a declaration naming a unit that is unknown or `removed` with
 `UNRECOGNIZED_UNIT`, and a **new** declaration naming a `deprecated` unit with `UNIT_DEPRECATED`
@@ -669,7 +669,7 @@ transaction.
 
 ### Unit de-listing guard
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-unit-delist`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-unit-delist`
 
 The system **MUST** refuse a unit removal while a non-terminal published head declares it, raising
 `UNIT_DELIST_BLOCKED` with the holders sampled, and **MUST** admit it once only frozen version

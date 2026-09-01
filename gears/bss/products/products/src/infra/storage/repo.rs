@@ -285,6 +285,13 @@ pub struct SkuRecord {
     /// row this gear deprecated through neither path, and the reversal rule
     /// leaves it alone rather than guessing.
     pub deprecation_provenance: Option<Provenance>,
+    /// The declared metering unit — 03's `MeterDeclaration`, atomic with
+    /// `usage_type_ref` (the paired `CHECK`). Bucket-ii: written by the save
+    /// door only while `published_version = 0`, frozen into version content
+    /// at publish.
+    pub metering_unit: Option<String>,
+    /// The declaration's usage-type reference — the pair's other half.
+    pub usage_type_ref: Option<String>,
 }
 
 /// Insert one `products_product` row and read it back as authored
@@ -459,6 +466,12 @@ pub async fn insert_sku(
         // Slice 04's columns: a create never names them.
         deprecation_provenance: Set(None),
         replaced_by_sku_id: Set(None),
+        // The meter pair arrives through the save door (bucket-ii, admitted
+        // while `published_version = 0`), never at create — open item 11's
+        // create-writes-no-content reading, and `inst-mt-atomic-pair`'s door
+        // is the save.
+        metering_unit: Set(None),
+        usage_type_ref: Set(None),
     };
 
     let row = sku::Entity::insert(model.clone())
@@ -617,6 +630,8 @@ fn into_sku_record(row: sku::Model) -> Result<SkuRecord, RepoError> {
             "products_sku",
             row.sku_id,
         )?,
+        metering_unit: row.metering_unit,
+        usage_type_ref: row.usage_type_ref,
     })
 }
 
@@ -1689,11 +1704,13 @@ pub async fn supersede_open_approval(
 
 mod bulk;
 mod increment;
+mod recognized;
 mod reference;
 mod versions;
 
 pub use bulk::*;
 pub use increment::*;
+pub use recognized::*;
 pub use reference::*;
 pub use versions::*;
 
@@ -2606,6 +2623,12 @@ pub struct SkuHeadSave {
     pub region_scope: Option<String>,
     /// Bucket iii, in both directions.
     pub brand_scope: Option<String>,
+    /// Bucket ii: half of the atomic `MeterDeclaration` — admitted via this
+    /// door only while `published_version = 0` (P-D-41); after first publish
+    /// the write belongs to slice 07's correction act.
+    pub metering_unit: Option<String>,
+    /// Bucket ii: the declaration's other half, on identical terms.
+    pub usage_type_ref: Option<String>,
 }
 
 impl SkuHeadSave {
@@ -2614,12 +2637,22 @@ impl SkuHeadSave {
         self.sku_code.is_some() || self.product_id.is_some()
     }
 
+    /// Whether the save touches the correctable bucket — which shares
+    /// bucket-i's `published_version = 0` admission window at this door
+    /// (`design/01` §4.2, P-D-41), so the filter arm below is one predicate
+    /// with two member sets.
+    const fn touches_correctable(&self) -> bool {
+        self.metering_unit.is_some() || self.usage_type_ref.is_some()
+    }
+
     /// See [`ProductHeadSave::is_empty`].
     const fn is_empty(&self) -> bool {
         self.sku_code.is_none()
             && self.product_id.is_none()
             && self.region_scope.is_none()
             && self.brand_scope.is_none()
+            && self.metering_unit.is_none()
+            && self.usage_type_ref.is_none()
     }
 }
 
@@ -2819,13 +2852,25 @@ pub async fn save_sku_head(
     if let Some(brand_scope) = save.brand_scope.as_ref() {
         statement = statement.col_expr(sku::Column::BrandScope, Expr::value(brand_scope.clone()));
     }
+    if let Some(metering_unit) = save.metering_unit.as_ref() {
+        statement = statement.col_expr(
+            sku::Column::MeteringUnit,
+            Expr::value(metering_unit.clone()),
+        );
+    }
+    if let Some(usage_type_ref) = save.usage_type_ref.as_ref() {
+        statement = statement.col_expr(
+            sku::Column::UsageTypeRef,
+            Expr::value(usage_type_ref.clone()),
+        );
+    }
 
     let mut filter = Condition::all()
         .add(sku::Column::TenantId.eq(tenant_id))
         .add(sku::Column::SkuId.eq(sku_id))
         .add(sku::Column::InternalRevision.eq(expected_internal_revision))
         .add(sku::Column::LifecycleState.is_not_in(TERMINAL_HEAD_STATES));
-    if save.touches_structural() {
+    if save.touches_structural() || save.touches_correctable() {
         filter = filter.add(sku::Column::PublishedVersion.eq(0_i64));
     }
 

@@ -201,6 +201,8 @@
 //! whose tables do not exist at this commit, so `dod-save-door` reads as
 //! **partial** rather than met. [`save_sku_gated`]'s own doc names each.
 //!
+//! @cpt-dod:cpt-cf-bss-products-dod-meter-atomic:p1
+//! @cpt-dod:cpt-cf-bss-products-dod-unit-recognition:p1
 //! @cpt-dod:cpt-cf-bss-products-dod-read-door:p1
 //! @cpt-dod:cpt-cf-bss-products-dod-create-doors:p1
 //! @cpt-dod:cpt-cf-bss-products-dod-code-reservation:p1
@@ -319,6 +321,11 @@ pub struct SkuView {
     pub created_at: DateTime<Utc>,
     /// The instant of the row's last admitted write.
     pub updated_at: DateTime<Utc>,
+    /// The declared metering unit, or absent where no declaration stands.
+    pub metering_unit: Option<String>,
+    /// The declaration's usage-type reference — present exactly when the
+    /// unit is (the paired `CHECK`).
+    pub usage_type_ref: Option<String>,
 }
 
 impl From<SkuRecord> for SkuView {
@@ -336,6 +343,8 @@ impl From<SkuRecord> for SkuView {
             created_by: record.created_by,
             created_at: record.created_at,
             updated_at: record.updated_at,
+            metering_unit: record.metering_unit,
+            usage_type_ref: record.usage_type_ref,
         }
     }
 }
@@ -1865,18 +1874,20 @@ const ACT_RESPONSE_STATUS: StatusCode = StatusCode::OK;
 /// name `updated_at` and `published_version` beside `internal_revision` as
 /// columns the original enumeration missed. Until it does, this doc and its
 /// Product twin are where the reading is recorded.
-const SKU_VERSION_CONTENT_ROSTER: [&str; 11] = [
+const SKU_VERSION_CONTENT_ROSTER: [&str; 13] = [
     "brand_scope",
     "cloned_from",
     "cloned_from_version",
     "composition_pending",
     "created_at",
     "created_by",
+    "metering_unit",
     "product_id",
     "region_scope",
     "sku_code",
     "sku_id",
     "tenant_id",
+    "usage_type_ref",
 ];
 
 /// The operands every step of a head act shares: who is acting, in which
@@ -2344,6 +2355,19 @@ fn sku_version_content(image: &SkuRecord) -> JsonValue {
         fields.insert(
             "cloned_from_version".to_owned(),
             JsonValue::Number(version.into()),
+        );
+    }
+    // The meter pair is content — 03's declaration freezes at publish like
+    // every other content class — on the lineage pair's omit-when-absent
+    // terms, so every version frozen before the pair existed keeps its bytes
+    // and its digest.
+    if let Some(unit) = image.metering_unit.as_ref() {
+        fields.insert("metering_unit".to_owned(), JsonValue::String(unit.clone()));
+    }
+    if let Some(usage) = image.usage_type_ref.as_ref() {
+        fields.insert(
+            "usage_type_ref".to_owned(),
+            JsonValue::String(usage.clone()),
         );
     }
     JsonValue::Object(fields)
@@ -3059,6 +3083,11 @@ async fn run_publish(
     // so it is a read rather than a registered rule; `recheck_parent_
     // containment`'s own doc argues both. --
     recheck_parent_containment(runner, inputs, &head).await?;
+    // The meter recognition re-runs at publish with the head as its own
+    // image: a first publish of a draft whose unit was deprecated since it
+    // was authored is a NEW declaration by the PRD's reading, and this is
+    // the door that catches it (`inst-mt-recognized`).
+    recheck_meter_declaration(runner, inputs, &head, &head).await?;
 
     // -- The edge, and what the floor says it costs. `post_publish_state`
     // decides the `to` side from the row image, the same way the head-row
@@ -3902,6 +3931,10 @@ enum SkuSaveField {
     RegionScope,
     /// Bucket iii, in both directions.
     BrandScope,
+    /// Bucket ii: half of 03's atomic `MeterDeclaration`.
+    MeteringUnit,
+    /// Bucket ii: the declaration's other half.
+    UsageTypeRef,
 }
 
 impl SkuSaveField {
@@ -3914,6 +3947,8 @@ impl SkuSaveField {
             "product_id" => Some(Self::ProductId),
             "region_scope" => Some(Self::RegionScope),
             "brand_scope" => Some(Self::BrandScope),
+            "metering_unit" => Some(Self::MeteringUnit),
+            "usage_type_ref" => Some(Self::UsageTypeRef),
             _ => None,
         }
     }
@@ -3926,6 +3961,8 @@ impl SkuSaveField {
             Self::ProductId => "product_id",
             Self::RegionScope => "region_scope",
             Self::BrandScope => "brand_scope",
+            Self::MeteringUnit => "metering_unit",
+            Self::UsageTypeRef => "usage_type_ref",
         }
     }
 }
@@ -3946,6 +3983,10 @@ enum SkuSaveValue {
     RegionScope(String),
     /// A `brand_scope` that parses under [`ResolvedScope::parse`].
     BrandScope(String),
+    /// A non-blank metering unit code, membership judged at the door.
+    MeteringUnit(String),
+    /// A non-blank usage-type reference — the pair's other half.
+    UsageTypeRef(String),
 }
 
 /// The `Shape` phase's output — `products::ProductSaveFields`'s twin, and a
@@ -4012,6 +4053,20 @@ fn parse_sku_value(
             Uuid::parse_str(&raw)
                 .map(SkuSaveValue::ProductId)
                 .map_err(|_| (wire.to_owned(), "product_id must be a UUID".to_owned()))
+        }
+        SkuSaveField::MeteringUnit | SkuSaveField::UsageTypeRef => {
+            let raw = expect_sku_string(wire, value)?;
+            let trimmed = raw.trim();
+            if trimmed.is_empty() {
+                return Err((
+                    wire.to_owned(),
+                    format!("{wire} must contain at least one non-whitespace character"),
+                ));
+            }
+            Ok(match field {
+                SkuSaveField::MeteringUnit => SkuSaveValue::MeteringUnit(trimmed.to_owned()),
+                _ => SkuSaveValue::UsageTypeRef(trimmed.to_owned()),
+            })
         }
         SkuSaveField::RegionScope | SkuSaveField::BrandScope => {
             let raw = expect_sku_string(wire, value)?;
@@ -4128,6 +4183,8 @@ fn route_sku_field(
         SkuSaveValue::ProductId(product_id) => save.product_id = Some(product_id),
         SkuSaveValue::RegionScope(scope) => save.region_scope = Some(scope),
         SkuSaveValue::BrandScope(scope) => save.brand_scope = Some(scope),
+        SkuSaveValue::MeteringUnit(unit) => save.metering_unit = Some(unit),
+        SkuSaveValue::UsageTypeRef(usage) => save.usage_type_ref = Some(usage),
     }
     Ok(())
 }
@@ -4200,6 +4257,58 @@ fn route_sku_save(
 /// the operand of the door's *answer*: that is re-read off the committed row
 /// ([`run_save`]), so the client is told what the database holds rather than
 /// what this door believes it wrote.
+/// The meter rules over the row a save would produce, and over a first
+/// publish — 03's `inst-mt-atomic-pair` and `inst-mt-recognized`
+/// (`dod-meter-atomic`, `dod-unit-recognition`).
+///
+/// # What counts as a NEW declaration
+///
+/// The recognition rules bite on a **new** declaration only: an existing
+/// published carrier keeps resolving against a `deprecated` unit. New means
+/// the image's unit differs from the head's — a save that names the unit the
+/// row already carries re-declares nothing — and, at first publish, a
+/// `draft` whose unit was deprecated after it was authored, which the PRD
+/// treats as a new declaration and rejects. The publish caller passes the
+/// head as both arguments and `first_publish = true` for exactly that arm.
+///
+/// The atomic-pair rule reads the **resulting row**, so a save supplying one
+/// half onto a row already carrying the other completes a declaration rather
+/// than being refused for arriving alone; the paired `CHECK` refuses the
+/// same shape at the physical layer, this door's answer carrying the code.
+async fn recheck_meter_declaration(
+    runner: &(impl toolkit_db::secure::DBRunner + Sync),
+    inputs: &HeadActInputs,
+    head: &SkuRecord,
+    image: &SkuRecord,
+) -> Result<(), HeadActError> {
+    crate::domain::recognized::meter_pair_complete(
+        image.metering_unit.as_deref(),
+        image.usage_type_ref.as_deref(),
+    )
+    .map_err(HeadActError::Refused)?;
+
+    let Some(unit) = image.metering_unit.as_deref() else {
+        return Ok(());
+    };
+    let newly_declared = head.metering_unit.as_deref() != Some(unit);
+    let first_publish = head.published_version == 0;
+    if !(newly_declared || first_publish) {
+        return Ok(());
+    }
+
+    let member = repo::recognized_member(
+        runner,
+        &inputs.scope,
+        inputs.tenant_id,
+        crate::domain::recognized::SetKind::MeteringUnit,
+        unit,
+    )
+    .await
+    .map_err(|e| HeadActError::from_repo(&e))?;
+    crate::domain::recognized::declaration_verdict(unit, member.map(|m| m.state))
+        .map_err(HeadActError::Refused)
+}
+
 fn post_save_image(head: &SkuRecord, save: &repo::SkuHeadSave, now: DateTime<Utc>) -> SkuRecord {
     let mut image = head.clone();
     if let Some(sku_code) = save.sku_code.clone() {
@@ -4213,6 +4322,12 @@ fn post_save_image(head: &SkuRecord, save: &repo::SkuHeadSave, now: DateTime<Utc
     }
     if let Some(brand_scope) = save.brand_scope.clone() {
         image.brand_scope = brand_scope;
+    }
+    if let Some(metering_unit) = save.metering_unit.clone() {
+        image.metering_unit = Some(metering_unit);
+    }
+    if let Some(usage_type_ref) = save.usage_type_ref.clone() {
+        image.usage_type_ref = Some(usage_type_ref);
     }
     image.internal_revision = head.internal_revision + 1;
     image.updated_at = now;
@@ -4415,6 +4530,7 @@ async fn run_save(
     // judged over the image this save would leave. --
     let image = post_save_image(&head, &save, inputs.now);
     recheck_parent_containment(runner, inputs, &image).await?;
+    recheck_meter_declaration(runner, inputs, &head, &image).await?;
 
     // -- Phase 7, the governance gate, in `Gate` mode: asked at every
     // mutating door and passing trivially where the act is ungated
