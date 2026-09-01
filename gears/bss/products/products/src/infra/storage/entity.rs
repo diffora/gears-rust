@@ -22,6 +22,7 @@ pub mod identity_ref;
 pub mod metadata;
 pub mod product;
 pub mod product_category;
+pub mod recognized_set;
 pub mod reference_member;
 pub mod reference_producer;
 pub mod reference_watermark;

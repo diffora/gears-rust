@@ -457,7 +457,7 @@ measured.
 
 ### Recognized-set table and its append-only guard
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-recognized-set-table`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-recognized-set-table`
 
 The system **MUST** create `products_recognized_set` on both engines with primary key
 `(tenant_id, set_kind, member_code)` where `set_kind` is one of
@@ -467,6 +467,20 @@ whitelist **MUST** admit updates to `state` and `display_label` **only**, refusi
 and every `member_code` update, with a `CorruptRow` probe per guarded column class on both
 engines. A schema-oracle golden **MUST** exist together with a perturbation case proving it can
 fail.
+
+**Built, with `set_kind` pinned non-empty only** (**P-D-92**): the four kinds above are the stated
+domain and neither this DoD nor `design/03` §4 demands a `CHECK` over them, which is what let the
+table ship while §7 row 5 stays open — a `CHECK` enumerating the four would be that row's answer
+written by a migration. A probe asserts the consequence directly: an unlisted kind is admitted and
+the blank is refused.
+
+**The whitelist here is a whitelist, unlike the head tables'.** Those guards name the columns that
+may not change and admit the rest; §4 states this one from the other side, so `member_code`,
+`set_kind`, `tenant_id`, `seeded_by` and `created_at` are each refused by name — one case per
+guarded column class on **both** engines, plus the unconditional `DELETE` refusal that makes
+`removed` a tombstone (**P-D-47**). The two engines express the guard differently — a `plpgsql`
+`RAISE EXCEPTION` against a `WHEN`-clause `RAISE(ABORT)` — so a divergence between them is invisible
+to either suite alone, which is why both halves exist.
 
 **Implements**: `cpt-cf-bss-products-algo-recognized-set`,
 `cpt-cf-bss-products-state-recognized-set`

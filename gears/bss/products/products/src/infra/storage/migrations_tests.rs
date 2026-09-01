@@ -6365,3 +6365,197 @@ mod lifecycle_column_guard_tests {
         assert!(sku.contains(&"replaced_by_sku_id".to_owned()));
     }
 }
+
+/// The generic set table, probed per **guarded column class** as §4 requires
+/// (`01` §5's posture), plus the DELETE refusal, the state roster, and the
+/// schema oracle with its perturbation case.
+///
+/// @cpt-dod:cpt-cf-bss-products-dod-recognized-set-table:p1
+mod recognized_set_guard_tests {
+    use sea_orm::ConnectionTrait;
+    use sea_orm_migration::MigratorTrait;
+
+    use super::Migrator;
+
+    async fn harness() -> sea_orm::DatabaseConnection {
+        let mut opts = sea_orm::ConnectOptions::new("sqlite::memory:");
+        opts.max_connections(1).min_connections(1);
+        let db = sea_orm::Database::connect(opts)
+            .await
+            .expect("connect in-memory sqlite");
+        Migrator::up(&db, None).await.expect("boot the chain");
+        db
+    }
+
+    async fn exec(db: &sea_orm::DatabaseConnection, sql: &str) -> Result<(), sea_orm::DbErr> {
+        db.execute_raw(sea_orm::Statement::from_string(
+            sea_orm::DatabaseBackend::Sqlite,
+            sql.to_owned(),
+        ))
+        .await
+        .map(|_| ())
+    }
+
+    async fn seed(db: &sea_orm::DatabaseConnection, kind: &str, code: &str) {
+        exec(
+            db,
+            &format!(
+                "INSERT INTO products_recognized_set \
+                 (tenant_id, set_kind, member_code, state, seeded_by, created_at, updated_at) \
+                 VALUES ('t-a', '{kind}', '{code}', 'active', 'registry', \
+                  '2026-09-01T00:00:00Z', '2026-09-01T00:00:00Z')"
+            ),
+        )
+        .await
+        .expect("seed the member");
+    }
+
+    /// The whitelist admits `state` and `display_label` and nothing else —
+    /// one case per guarded column class, which is what §4 asks for.
+    #[tokio::test]
+    async fn only_state_and_display_label_are_writable() {
+        let db = harness().await;
+        seed(&db, "metering_unit", "vCPU-hour").await;
+
+        exec(
+            &db,
+            "UPDATE products_recognized_set SET state = 'deprecated' \
+             WHERE member_code = 'vCPU-hour'",
+        )
+        .await
+        .expect("state is writable");
+        exec(
+            &db,
+            "UPDATE products_recognized_set SET display_label = 'vCPU hour' \
+             WHERE member_code = 'vCPU-hour'",
+        )
+        .await
+        .expect("display_label is writable");
+
+        // One case per guarded column class: the key's three parts, the
+        // seeded marker, and the creation instant.
+        for (column, value) in [
+            ("member_code", "'vCPU-minute'"),
+            ("set_kind", "'plan_tier'"),
+            ("tenant_id", "'t-b'"),
+            ("seeded_by", "'operator'"),
+            ("created_at", "'2026-09-02T00:00:00Z'"),
+        ] {
+            let err = exec(
+                &db,
+                &format!(
+                    "UPDATE products_recognized_set SET {column} = {value} \
+                     WHERE member_code = 'vCPU-hour'"
+                ),
+            )
+            .await
+            .expect_err(&format!(
+                "{column} is outside the whitelist and must be refused"
+            ));
+            assert!(
+                err.to_string()
+                    .contains("only state and display_label are writable"),
+                "{column}: the refusal must be the whitelist's, not an incidental failure: {err}"
+            );
+        }
+    }
+
+    /// A removal is the `removed` state and never a DELETE (P-D-47), and the
+    /// state roster is closed.
+    #[tokio::test]
+    async fn a_member_is_removed_by_a_flip_and_never_deleted() {
+        let db = harness().await;
+        seed(&db, "metering_unit", "vCPU-hour").await;
+
+        let err = exec(
+            &db,
+            "DELETE FROM products_recognized_set WHERE member_code = 'vCPU-hour'",
+        )
+        .await
+        .expect_err("a DELETE must be refused unconditionally");
+        assert!(
+            err.to_string()
+                .contains("a removal is the removed state, never a DELETE"),
+            "{err}"
+        );
+
+        for state in ["deprecated", "removed", "active"] {
+            exec(
+                &db,
+                &format!(
+                    "UPDATE products_recognized_set SET state = '{state}' \
+                     WHERE member_code = 'vCPU-hour'"
+                ),
+            )
+            .await
+            .unwrap_or_else(|e| panic!("the flip to {state} is admitted: {e}"));
+        }
+        let err = exec(
+            &db,
+            "UPDATE products_recognized_set SET state = 'retired' \
+             WHERE member_code = 'vCPU-hour'",
+        )
+        .await
+        .expect_err("a state outside the roster must be refused");
+        assert!(
+            err.to_string()
+                .contains("chk_products_recognized_set_state"),
+            "{err}"
+        );
+    }
+
+    /// P-D-92: `set_kind` is pinned **non-empty only**, so a kind outside the
+    /// four the `DoD` names is admitted and the blank is refused. A `CHECK`
+    /// enumerating the four would be §7 row 5's answer written here.
+    #[tokio::test]
+    async fn the_set_kind_roster_is_the_doors_and_not_the_ddls() {
+        let db = harness().await;
+        seed(&db, "metering_unit", "vCPU-hour").await;
+        seed(&db, "some_future_kind", "member-1").await;
+
+        let err = exec(
+            &db,
+            "INSERT INTO products_recognized_set \
+             (tenant_id, set_kind, member_code, state, created_at, updated_at) \
+             VALUES ('t-a', '', 'member-2', 'active', \
+              '2026-09-01T00:00:00Z', '2026-09-01T00:00:00Z')",
+        )
+        .await
+        .expect_err("a blank kind must be refused");
+        assert!(
+            err.to_string().contains("chk_products_recognized_set_kind"),
+            "{err}"
+        );
+    }
+
+    /// The schema oracle, with its perturbation case.
+    #[tokio::test]
+    async fn the_recognized_set_oracle_pins_its_roster_and_can_fail() {
+        let db = harness().await;
+        let roster =
+            super::governance_store_guard_tests::columns(&db, "products_recognized_set").await;
+        assert_eq!(
+            roster,
+            vec![
+                "created_at",
+                "display_label",
+                "member_code",
+                "seeded_by",
+                "set_kind",
+                "state",
+                "tenant_id",
+                "updated_at",
+            ]
+        );
+        assert_ne!(
+            roster,
+            super::governance_store_guard_tests::columns(&db, "products_metadata").await,
+            "two different tables must not compare equal"
+        );
+        assert!(
+            super::governance_store_guard_tests::columns(&db, "products_recognized_set_nope")
+                .await
+                .is_empty()
+        );
+    }
+}
