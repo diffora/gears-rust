@@ -156,7 +156,7 @@ pub(crate) struct ProductsRuntime {
 }
 
 /// The products gear.
-#[toolkit::gear(name = "bss-products", deps = [authz_resolver], capabilities = [db, rest])]
+#[toolkit::gear(name = "bss-products", deps = [authz_resolver], capabilities = [db, rest, stateful], lifecycle(entry = "serve", stop_timeout = "30s"))]
 pub struct BssProductsGear {
     /// `None` until `init()` completes, and on a boot where the gear is
     /// compiled in but not configured.
@@ -170,6 +170,55 @@ impl Default for BssProductsGear {
         }
     }
 }
+
+impl BssProductsGear {
+    /// The lifecycle entry: one ticker, the increment coalescer's sweep
+    /// (`dod-coalescer`). Each tick discovers tenants with pending demand
+    /// and runs one [`crate::infra::increment::drain_tenant`] pass per
+    /// tenant; the per-tenant lease inside the pass is what makes
+    /// concurrent deployments safe, so the tick itself needs no lease. The
+    /// sibling pricing gear's `serve` is the shape this follows.
+    pub(crate) async fn serve(
+        self: std::sync::Arc<Self>,
+        cancel: tokio_util::sync::CancellationToken,
+    ) -> anyhow::Result<()> {
+        let Some(rt) = self.runtime.load_full() else {
+            cancel.cancelled().await;
+            return Ok(());
+        };
+        tracing::info!(
+            coalescer_tick_secs = COALESCER_TICK.as_secs(),
+            "bss-products: lifecycle started"
+        );
+        let db = rt.db.clone();
+        let mut interval = tokio::time::interval(COALESCER_TICK);
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            tokio::select! {
+                biased;
+                () = cancel.cancelled() => break,
+                _ = interval.tick() => coalescer_tick(&db).await,
+            }
+        }
+        Ok(())
+    }
+}
+
+/// One coalescer tick: sweep every tenant with pending demand at a
+/// truncated now (P-D-82). A failed sweep is logged and retried next tick —
+/// demand rows are never lost (the queue is the ledger), and a persistent
+/// failure repeats this line at tick cadence, which is the operator's
+/// signal.
+async fn coalescer_tick(db: &toolkit_db::DBProvider<toolkit_db::DbError>) {
+    let now = crate::domain::canonical::write_instant(chrono::Utc::now());
+    if let Err(error) = crate::infra::increment::sweep(db, now).await {
+        tracing::warn!(%error, "bss-products: coalescer sweep failed");
+    }
+}
+
+/// The coalescer's tick — well inside the interactive window so a lone
+/// request still lands within ≤ 5 s of itself.
+const COALESCER_TICK: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// Whichever running pipeline the gear started, held only so its background
 /// tasks are not cancelled.

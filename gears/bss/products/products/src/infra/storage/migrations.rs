@@ -89,6 +89,15 @@ pub struct Migrator;
 impl MigratorTrait for Migrator {
     fn migrations() -> Vec<Box<dyn MigrationTrait>> {
         vec![
+            // `coord_leases` — the per-tenant increment lease's table
+            // (`dod-coalescer`). Owned by the `coord` crate, qualified into
+            // `bss` like the gear's own DDL. NOTE: the toolkit migration
+            // runner applies migrations in NAME order, so coord's `m0001_…`
+            // name sorts FIRST — before `…000001_create_bss_schema`; coord's
+            // `in_schema` `up` therefore runs `CREATE SCHEMA IF NOT EXISTS
+            // bss` itself, so the qualification is safe despite running
+            // first (and idempotent with the schema migration that follows).
+            Box::new(coord::migration::Migration::in_schema("bss")),
             Box::new(m20260829_000001_create_bss_schema::Migration),
             Box::new(m20260829_000002_create_products_product::Migration),
             Box::new(m20260829_000003_create_products_sku::Migration),

@@ -927,7 +927,7 @@ unreachable, which is the asymmetry this code was minted to close.
 
 ### The coalescer and its per-tenant lease
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-coalescer`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-coalescer`
 
 The system **MUST** drain the queue with **one worker per tenant**, coalescing interactive requests
 within ≤ 5 s of the earliest pending, and holding a **keyed bulk batch open** until the
@@ -969,7 +969,7 @@ gets its own probe.
 
 ### The snapshot builder and the first row collection through the canonical pin
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-snapshot-builder`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-snapshot-builder`
 
 **`inst-sn-collect`'s "serialized transaction" is the coalescer's serialization, not a database
 isolation level** (**P-D-53**): one worker per tenant is what serializes, and the transaction itself
@@ -985,9 +985,10 @@ symmetric ride, for which the capture store declares its own `capture_kind`.
 
 **Seven, and the seventh is §4's.** `design/06` §4's capture-store bullet carries `category values`
 as a kind of its own; the normative instruction steps `inst-sn-collect` and `inst-df-diff` both list
-**six** and omit it. §4 governs on a column-level fact and a `capture_kind` value is one, so the
-roster here is seven — and the divergence is registered in §7 as owed to those two steps rather than
-resolved here.
+**six** and omit it. §4 governs on a storage-shape fact — columns and admitted row populations
+alike (**P-D-83**, §7 rows 40 and 49) — so the roster here is seven, the builder the enforcement
+site, the two six-value lists behavioral enumerations of the kinds whose sources ship or are named
+today.
 
 **Every live capture MUST be a stored copy, never a reference.** Category values, metadata,
 recognized sets and both set snapshots have no frozen versions of their own, so a reference to
@@ -1011,10 +1012,10 @@ and, on the complete-set mode:
 > first row collection, and is owed with the collection sort."*
 
 So the **location** of both arms is already settled by shipped code, and **MUST NOT** be
-re-litigated at the builder. What is **not** settled is the sort **key** — **P-D-28** orders
-*fields, not rows*, and **P-D-29**'s row rule is scoped to the category-assignment and
-attribute-value sets *inside the content*, so the manifest's entry rows and capture rows have no
-named key. Until one exists, two runs or two engines may hash the same snapshot differently. §7.
+re-litigated at the builder. The sort **key** is settled too (**P-D-80** — §7 rows 15 and 43): a
+keyed collection sorts by its own key rendering — entry rows by `(entity_kind, entity_id)`,
+capture rows by `capture_kind` — and the manifest renders complete-set against the roster pinned
+beside the builder, so two runs and two engines hash one snapshot to one digest.
 
 **Implements**: `cpt-cf-bss-products-flow-snapshot`
 

@@ -117,13 +117,25 @@ fn vec_order_matches_name_order() {
 }
 
 #[test]
-fn the_schema_migration_sorts_first() {
+fn coord_sorts_first_and_the_schema_migration_second() {
+    // The runner applies migrations in NAME order, and coord's `m0001_…`
+    // name sorts before every date-named migration of this gear's own —
+    // safe because coord's `in_schema` `up` runs `CREATE SCHEMA IF NOT
+    // EXISTS bss` itself (the migrator vec's own comment, the ledger's
+    // precedent), and the gear's schema migration stays idempotent behind
+    // it.
     let names: Vec<String> = Migrator::migrations()
         .iter()
         .map(|m| m.name().to_owned())
         .collect();
-    let first = names.first().map(String::as_str);
-    assert_eq!(first, Some("m20260829_000001_create_bss_schema"));
+    assert_eq!(
+        names.first().map(String::as_str),
+        Some("m0001_create_coord_leases")
+    );
+    assert_eq!(
+        names.get(1).map(String::as_str),
+        Some("m20260829_000001_create_bss_schema")
+    );
 }
 
 /// A local, test-only `SeaORM` entity for `products_audit_log`.

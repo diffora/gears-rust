@@ -11,6 +11,14 @@ name = "bss_products"
 workspace = true
 
 [dependencies]
+# Shared BSS coordination primitive (`coord_leases` + `LeaseManager`). The
+# per-tenant increment coalescer is a singleton drain (design/06 sec 2 rule 2,
+# P-D-56), so this gear splices coord's migration into its own `Migrator`
+# exactly as the sibling pricing and ledger gears do for their sweeps.
+coord = { workspace = true }
+tokio-util = { workspace = true }
+tokio = { workspace = true }
+
 bss-products-sdk = { workspace = true }
 
 anyhow = { workspace = true }

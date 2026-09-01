@@ -3,4 +3,5 @@
 pub mod broker;
 pub mod error_mapping;
 pub mod events;
+pub mod increment;
 pub mod storage;
