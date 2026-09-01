@@ -272,7 +272,7 @@ pub struct ColumnTag {
 /// P-D-50's fail-closed rule is made of. `bucket_tests` asserts this against
 /// the entity model, so a column added to the table without a row here is a
 /// red test rather than a runtime refusal.
-const PRODUCT_COLUMNS: [ColumnTag; 14] = [
+const PRODUCT_COLUMNS: [ColumnTag; 16] = [
     // Row identity (§4.2, P-D-34): admitted in no UPDATE at all.
     ColumnTag {
         column: "product_id",
@@ -285,6 +285,17 @@ const PRODUCT_COLUMNS: [ColumnTag; 14] = [
     ColumnTag {
         column: "created_by",
         class: FieldClass::Outside(OutsideTheScheme::RowIdentity),
+    },
+    ColumnTag {
+        column: "cloned_from",
+        // The class built waiting for this column (its own doc named it):
+        // writable in the creating statement and in no UPDATE at all
+        // (P-D-76; the head guard enforces the same pair physically).
+        class: FieldClass::CreateOnly,
+    },
+    ColumnTag {
+        column: "cloned_from_version",
+        class: FieldClass::CreateOnly,
     },
     ColumnTag {
         column: "created_at",
@@ -358,7 +369,7 @@ const PRODUCT_COLUMNS: [ColumnTag; 14] = [
 /// it is the primary key; and the table carries **no `name`**, so a `name`
 /// field arriving for a SKU is a miss and is refused rather than routed to the
 /// Product's tag.
-const SKU_COLUMNS: [ColumnTag; 13] = [
+const SKU_COLUMNS: [ColumnTag; 15] = [
     // Row identity (§4.2, P-D-34).
     ColumnTag {
         column: "sku_id",
@@ -371,6 +382,17 @@ const SKU_COLUMNS: [ColumnTag; 13] = [
     ColumnTag {
         column: "created_by",
         class: FieldClass::Outside(OutsideTheScheme::RowIdentity),
+    },
+    ColumnTag {
+        column: "cloned_from",
+        // The class built waiting for this column (its own doc named it):
+        // writable in the creating statement and in no UPDATE at all
+        // (P-D-76; the head guard enforces the same pair physically).
+        class: FieldClass::CreateOnly,
+    },
+    ColumnTag {
+        column: "cloned_from_version",
+        class: FieldClass::CreateOnly,
     },
     ColumnTag {
         column: "created_at",

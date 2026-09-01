@@ -149,6 +149,12 @@ pub struct NewProduct {
     pub created_by: String,
     /// The commit instant; `updated_at` starts equal to it.
     pub created_at: DateTime<Utc>,
+    /// The clone's immediate source and the frozen version its content was
+    /// read at (`None` for an ordinary create; version `None` under a set
+    /// source means the source was read at its head — P-D-76). Create-only:
+    /// the head guard refuses any later write of the pair.
+    pub cloned_from: Option<Uuid>,
+    pub cloned_from_version: Option<i64>,
 }
 
 /// A Product as this repository hands it back.
@@ -188,6 +194,10 @@ pub struct ProductRecord {
     pub created_at: DateTime<Utc>,
     /// The instant of the row's last admitted write.
     pub updated_at: DateTime<Utc>,
+    /// The clone's immediate source and the frozen version its content was
+    /// read at (P-D-76; `None`/`None` for a non-clone).
+    pub cloned_from: Option<Uuid>,
+    pub cloned_from_version: Option<i64>,
 }
 
 /// The row an insert of `products_sku` supplies.
@@ -213,6 +223,12 @@ pub struct NewSku {
     pub created_by: String,
     /// The commit instant; `updated_at` starts equal to it.
     pub created_at: DateTime<Utc>,
+    /// The clone's immediate source and the frozen version its content was
+    /// read at (`None` for an ordinary create; version `None` under a set
+    /// source means the source was read at its head — P-D-76). Create-only:
+    /// the head guard refuses any later write of the pair.
+    pub cloned_from: Option<Uuid>,
+    pub cloned_from_version: Option<i64>,
 }
 
 /// A SKU as this repository hands it back.
@@ -252,6 +268,10 @@ pub struct SkuRecord {
     pub created_at: DateTime<Utc>,
     /// The instant of the row's last admitted write.
     pub updated_at: DateTime<Utc>,
+    /// The clone's immediate source and the frozen version its content was
+    /// read at (P-D-76; `None`/`None` for a non-clone).
+    pub cloned_from: Option<Uuid>,
+    pub cloned_from_version: Option<i64>,
 }
 
 /// Insert one `products_product` row and read it back as authored
@@ -283,6 +303,8 @@ pub async fn insert_product(
         created_by: Set(new.created_by),
         created_at: Set(new.created_at),
         updated_at: Set(new.created_at),
+        cloned_from: Set(new.cloned_from),
+        cloned_from_version: Set(new.cloned_from_version),
     };
 
     let row = product::Entity::insert(model.clone())
@@ -354,6 +376,8 @@ fn into_product_record(row: product::Model) -> Result<ProductRecord, RepoError> 
         created_by: row.created_by,
         created_at: row.created_at,
         updated_at: row.updated_at,
+        cloned_from: row.cloned_from,
+        cloned_from_version: row.cloned_from_version,
     })
 }
 
@@ -389,6 +413,8 @@ pub async fn insert_sku(
         created_by: Set(new.created_by),
         created_at: Set(new.created_at),
         updated_at: Set(new.created_at),
+        cloned_from: Set(new.cloned_from),
+        cloned_from_version: Set(new.cloned_from_version),
     };
 
     let row = sku::Entity::insert(model.clone())
@@ -510,6 +536,8 @@ fn into_sku_record(row: sku::Model) -> Result<SkuRecord, RepoError> {
         created_by: row.created_by,
         created_at: row.created_at,
         updated_at: row.updated_at,
+        cloned_from: row.cloned_from,
+        cloned_from_version: row.cloned_from_version,
     })
 }
 

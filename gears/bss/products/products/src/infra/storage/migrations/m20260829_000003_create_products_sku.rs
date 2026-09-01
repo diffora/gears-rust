@@ -167,12 +167,15 @@ const PG_UP_STATEMENTS: &[&str] = &[
             brand_scope         text        NOT NULL DEFAULT '',
             created_by          text        NOT NULL,
             created_at          timestamptz NOT NULL,
+            cloned_from         uuid,
+            cloned_from_version bigint,
             updated_at          timestamptz NOT NULL,
             CONSTRAINT products_sku_pkey PRIMARY KEY (sku_id),
             CONSTRAINT fk_products_sku_product FOREIGN KEY (product_id) REFERENCES bss.products_product (product_id),
             CONSTRAINT chk_products_sku_lifecycle_state CHECK (lifecycle_state IN ('draft', 'published', 'deprecated', 'retired', 'discarded')),
             CONSTRAINT chk_products_sku_internal_revision CHECK (internal_revision >= 1),
-            CONSTRAINT chk_products_sku_published_version CHECK (published_version >= 0)
+            CONSTRAINT chk_products_sku_published_version CHECK (published_version >= 0),
+            CONSTRAINT chk_products_sku_cloned_from_shape CHECK (cloned_from IS NOT NULL OR cloned_from_version IS NULL)
         )",
     "CREATE INDEX idx_products_sku_tenant ON bss.products_sku USING btree (tenant_id, sku_id)",
     "CREATE INDEX idx_products_sku_parent ON bss.products_sku USING btree (tenant_id, product_id)",
@@ -187,8 +190,10 @@ const PG_UP_STATEMENTS: &[&str] = &[
              OR NEW.sku_id IS DISTINCT FROM OLD.sku_id
              OR NEW.created_by IS DISTINCT FROM OLD.created_by
              OR NEW.created_at IS DISTINCT FROM OLD.created_at
+             OR NEW.cloned_from IS DISTINCT FROM OLD.cloned_from
+             OR NEW.cloned_from_version IS DISTINCT FROM OLD.cloned_from_version
           THEN
-            RAISE EXCEPTION 'products_sku: tenant_id, sku_id, created_by and created_at are immutable';
+            RAISE EXCEPTION 'products_sku: tenant_id, sku_id, created_by, created_at and the cloned_from pair are immutable';
           END IF;
 
           IF NEW.internal_revision IS DISTINCT FROM OLD.internal_revision + 1 THEN
@@ -275,12 +280,15 @@ const SQLITE_UP_STATEMENTS: &[&str] = &[
             brand_scope         text    NOT NULL DEFAULT '',
             created_by          text    NOT NULL,
             created_at          text    NOT NULL,
+            cloned_from         text,
+            cloned_from_version integer,
             updated_at          text    NOT NULL,
             PRIMARY KEY (sku_id),
             CONSTRAINT fk_products_sku_product FOREIGN KEY (product_id) REFERENCES products_product (product_id),
             CONSTRAINT chk_products_sku_lifecycle_state CHECK (lifecycle_state IN ('draft', 'published', 'deprecated', 'retired', 'discarded')),
             CONSTRAINT chk_products_sku_internal_revision CHECK (internal_revision >= 1),
-            CONSTRAINT chk_products_sku_published_version CHECK (published_version >= 0)
+            CONSTRAINT chk_products_sku_published_version CHECK (published_version >= 0),
+            CONSTRAINT chk_products_sku_cloned_from_shape CHECK (cloned_from IS NOT NULL OR cloned_from_version IS NULL)
         )",
     "CREATE INDEX idx_products_sku_tenant ON products_sku (tenant_id, sku_id)",
     "CREATE INDEX idx_products_sku_parent ON products_sku (tenant_id, product_id)",
@@ -291,7 +299,9 @@ const SQLITE_UP_STATEMENTS: &[&str] = &[
             OR NEW.sku_id IS NOT OLD.sku_id
             OR NEW.created_by IS NOT OLD.created_by
             OR NEW.created_at IS NOT OLD.created_at
-        BEGIN SELECT RAISE(ABORT, 'products_sku: tenant_id, sku_id, created_by and created_at are immutable'); END",
+            OR NEW.cloned_from IS NOT OLD.cloned_from
+            OR NEW.cloned_from_version IS NOT OLD.cloned_from_version
+        BEGIN SELECT RAISE(ABORT, 'products_sku: tenant_id, sku_id, created_by, created_at and the cloned_from pair are immutable'); END",
     "CREATE TRIGGER trg_products_sku_internal_revision BEFORE UPDATE ON products_sku FOR EACH ROW WHEN
             NEW.internal_revision IS NOT (OLD.internal_revision + 1)
         BEGIN SELECT RAISE(ABORT, 'products_sku: internal_revision must move by exactly one on every admitted update'); END",

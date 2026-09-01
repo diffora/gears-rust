@@ -309,25 +309,38 @@ fn a_miss_yields_no_bucket_through_the_public_path() {
 }
 
 /// §4.1: `cloned_from` is *"stricter than bucket-i — writable only in the
-/// creating statement and never again"*. The class exists; **no column carries
-/// it today**, the column itself arriving with slice 11.
-///
-/// Derived from the registry, not from a literal list, so slice 11 registering
-/// the column makes this case red and forces the count to be restated
-/// deliberately. The second half measures the consequence: a `cloned_from`
-/// write is refused today too, by the fail-closed miss rather than by the
-/// create-only rule.
+/// creating statement and never again"*. The class was built waiting for the
+/// column, and this case asserted zero carriers until 2026-09-01, its own doc
+/// saying slice 11's registration "makes this case red and forces the count
+/// to be restated deliberately". P-D-76 landed the pair, so this is that
+/// deliberate restatement: both entities carry exactly the two create-only
+/// columns, and `classify` routes them to the class rather than to the
+/// fail-closed miss.
 #[test]
-fn no_column_carries_the_create_only_class_today() {
+fn the_create_only_class_carries_exactly_the_cloned_from_pair() {
     for kind in BOTH_KINDS {
         assert_eq!(
             count_of(kind, FieldClass::CreateOnly),
-            0,
-            "{}: slice 11 brings the first create-only column",
+            2,
+            "{}: P-D-76's pair is the class's whole population",
             kind.as_str(),
         );
-        classify(kind, "cloned_from")
-            .expect_err("`cloned_from` has no column today and must be refused");
+        for column in ["cloned_from", "cloned_from_version"] {
+            let class = classify(kind, column)
+                .unwrap_or_else(|_| panic!("{column} carries the registry tag now"));
+            assert_eq!(
+                class,
+                FieldClass::CreateOnly,
+                "{}: {column} is create-only, not a bucket",
+                kind.as_str(),
+            );
+            assert_eq!(
+                class.bucket(),
+                None,
+                "create-only routes to no bucket: the refusal is its own rule, \
+                 not a bucket door's",
+            );
+        }
     }
 }
 
@@ -368,24 +381,26 @@ fn the_class_counts_are_pinned_per_entity() {
     let product_counts = [
         (FieldClass::Bucket(FieldBucket::Structural), 2),
         (FieldClass::Bucket(FieldBucket::MaterialMutable), 4),
+        (FieldClass::CreateOnly, 2),
         (FieldClass::Outside(OutsideTheScheme::Mechanical), 4),
         (FieldClass::Outside(OutsideTheScheme::RowIdentity), 4),
     ];
     for (class, expected) in product_counts {
         assert_eq!(count_of(EntityKind::Product, class), expected);
     }
-    assert_eq!(columns(EntityKind::Product).len(), 14);
+    assert_eq!(columns(EntityKind::Product).len(), 16);
 
     let sku_counts = [
         (FieldClass::Bucket(FieldBucket::Structural), 2),
         (FieldClass::Bucket(FieldBucket::MaterialMutable), 2),
+        (FieldClass::CreateOnly, 2),
         (FieldClass::Outside(OutsideTheScheme::Mechanical), 5),
         (FieldClass::Outside(OutsideTheScheme::RowIdentity), 4),
     ];
     for (class, expected) in sku_counts {
         assert_eq!(count_of(EntityKind::Sku, class), expected);
     }
-    assert_eq!(columns(EntityKind::Sku).len(), 13);
+    assert_eq!(columns(EntityKind::Sku).len(), 15);
 }
 
 /// No column is named twice in one entity's registry.

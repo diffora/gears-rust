@@ -214,6 +214,8 @@ async fn seed_draft(pg: &Pg) {
                         brand_scope: String::new(),
                         created_by: "principal:author-1".to_owned(),
                         created_at: at(9),
+                        cloned_from: None,
+                        cloned_from_version: None,
                     },
                 )
                 .await
@@ -268,6 +270,8 @@ async fn seed_sku_draft(pg: &Pg) {
                         brand_scope: String::new(),
                         created_by: "principal:author-1".to_owned(),
                         created_at: at(9),
+                        cloned_from: None,
+                        cloned_from_version: None,
                     },
                 )
                 .await

@@ -281,6 +281,8 @@ fn new_parent_product(product_id: Uuid, tenant_id: Uuid) -> NewProduct {
         brand_scope: String::new(),
         created_by: "principal:author-1".to_owned(),
         created_at: Utc.with_ymd_and_hms(2026, 8, 29, 9, 0, 0).unwrap(),
+        cloned_from: None,
+        cloned_from_version: None,
     }
 }
 
@@ -2166,6 +2168,12 @@ fn the_sku_content_builder_writes_exactly_the_roster() {
         created_by: "principal:author-1".to_owned(),
         created_at: Utc.with_ymd_and_hms(2026, 8, 29, 9, 0, 0).unwrap(),
         updated_at: Utc.with_ymd_and_hms(2026, 8, 29, 9, 0, 0).unwrap(),
+        // Populated on the roster test's own premise (P-D-76 added the pair):
+        // the builder legitimately omits an absent optional, so against a
+        // bare fixture the equality would hold for a builder that dropped
+        // both names.
+        cloned_from: Some(Uuid::from_u128(0xd1_13)),
+        cloned_from_version: Some(2),
     };
 
     let content = super::sku_version_content(&record);

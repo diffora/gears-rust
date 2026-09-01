@@ -118,6 +118,8 @@ fn new_product(product_id: Uuid, tenant_id: Uuid) -> NewProduct {
         brand_scope: String::new(),
         created_by: "principal:author-1".to_owned(),
         created_at: at(9),
+        cloned_from: None,
+        cloned_from_version: None,
     }
 }
 
@@ -131,6 +133,8 @@ fn new_sku(sku_id: Uuid, tenant_id: Uuid, product_id: Uuid) -> NewSku {
         brand_scope: String::new(),
         created_by: "principal:author-1".to_owned(),
         created_at: at(9),
+        cloned_from: None,
+        cloned_from_version: None,
     }
 }
 
@@ -433,6 +437,8 @@ fn an_unparseable_product_lifecycle_state_is_a_corrupt_row() {
         created_by: "principal:author-1".to_owned(),
         created_at: at(9),
         updated_at: at(9),
+        cloned_from: None,
+        cloned_from_version: None,
     };
 
     let err = into_product_record(row).expect_err("an unrecognised token must be refused");
@@ -456,6 +462,8 @@ fn an_unparseable_sku_lifecycle_state_is_a_corrupt_row() {
         created_by: "principal:author-1".to_owned(),
         created_at: at(9),
         updated_at: at(9),
+        cloned_from: None,
+        cloned_from_version: None,
     };
 
     let err = into_sku_record(row).expect_err("an unrecognised token must be refused");

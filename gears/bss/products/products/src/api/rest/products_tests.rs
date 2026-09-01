@@ -220,6 +220,8 @@ fn new_product(product_id: Uuid, tenant_id: Uuid) -> NewProduct {
         brand_scope: String::new(),
         created_by: "principal:author-1".to_owned(),
         created_at: Utc.with_ymd_and_hms(2026, 8, 29, 9, 0, 0).unwrap(),
+        cloned_from: None,
+        cloned_from_version: None,
     }
 }
 
@@ -1905,6 +1907,7 @@ async fn the_frozen_rows_digest_is_the_digest_of_the_rendering_the_row_stores() 
         stored_content,
         format!(
             "{{\"brand_id\":\"{}\",\"brand_scope\":\"\",\
+             \"cloned_from\":null,\"cloned_from_version\":null,\
              \"created_at\":\"2026-08-29T09:00:00.000000Z\",\"created_by\":\"{}\",\
              \"name\":\"{}\",\"name_normalized\":\"{}\",\"product_code\":\"{}\",\
              \"product_id\":\"{product_id}\",\
@@ -2810,12 +2813,19 @@ async fn the_product_content_roster_is_the_head_table_minus_the_excluded_columns
 async fn the_product_content_builder_writes_exactly_the_roster() {
     let harness = harness().await;
     let product_id = Uuid::now_v7();
-    let head = seed_draft(&harness, product_id).await;
+    let mut head = seed_draft(&harness, product_id).await;
     assert!(
         head.product_code.is_some(),
         "this case's own premise: the optional roster field is present, or the equality below \
          would hold for a builder that had dropped it"
     );
+    // The lineage pair joined the roster with P-D-76 and is optional on the
+    // same terms as `product_code`, so the same premise applies: populate it
+    // here, or the equality would hold for a builder that dropped both names.
+    // The builder is a pure function over the record, so setting the pair on
+    // the read-back copy is the fixture, not a bypass.
+    head.cloned_from = Some(Uuid::now_v7());
+    head.cloned_from_version = Some(3);
 
     let content = super::product_content(&head);
     let mut written: Vec<&str> = content

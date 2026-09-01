@@ -147,6 +147,8 @@ fn contender(product_id: Uuid, name: &str, name_normalized: &str) -> NewProduct 
         brand_scope: String::new(),
         created_by: "principal:author-1".to_owned(),
         created_at: at(9),
+        cloned_from: None,
+        cloned_from_version: None,
     }
 }
 
@@ -303,6 +305,8 @@ fn sku_contender(sku_id: Uuid) -> NewSku {
         brand_scope: String::new(),
         created_by: "principal:author-1".to_owned(),
         created_at: at(9),
+        cloned_from: None,
+        cloned_from_version: None,
     }
 }
 

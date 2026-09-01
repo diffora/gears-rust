@@ -1360,6 +1360,10 @@ async fn create_sku(
         // and it is not done here because it moves a value on a live column
         // and is owed a decision of its own rather than a drive-by change.
         created_at: now,
+        // An ordinary create has no lineage; the clone door is the pair's
+        // only writer (P-D-76).
+        cloned_from: None,
+        cloned_from_version: None,
     };
 
     let insert_outcome = insert_sku_with_event(&state, scope.clone(), new, claim, actor_ref).await;
@@ -1614,8 +1618,10 @@ const ACT_RESPONSE_STATUS: StatusCode = StatusCode::OK;
 /// name `updated_at` and `published_version` beside `internal_revision` as
 /// columns the original enumeration missed. Until it does, this doc and its
 /// Product twin are where the reading is recorded.
-const SKU_VERSION_CONTENT_ROSTER: [&str; 9] = [
+const SKU_VERSION_CONTENT_ROSTER: [&str; 11] = [
     "brand_scope",
+    "cloned_from",
+    "cloned_from_version",
     "composition_pending",
     "created_at",
     "created_by",
@@ -2078,6 +2084,21 @@ fn sku_version_content(image: &SkuRecord) -> JsonValue {
         "created_at".to_owned(),
         JsonValue::String(canonical::render_instant(image.created_at)),
     );
+    // Lineage joins the roster by its own membership rule — publish does not
+    // move it (P-D-76). Omit-when-absent exercises `Absence::Null`, the
+    // `product_code` precedent one door over.
+    if let Some(source) = image.cloned_from {
+        fields.insert(
+            "cloned_from".to_owned(),
+            JsonValue::String(source.to_string()),
+        );
+    }
+    if let Some(version) = image.cloned_from_version {
+        fields.insert(
+            "cloned_from_version".to_owned(),
+            JsonValue::Number(version.into()),
+        );
+    }
     JsonValue::Object(fields)
 }
 

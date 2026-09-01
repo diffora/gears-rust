@@ -1330,6 +1330,10 @@ async fn create_product(
         // and it is not done here because it moves a value on a live column
         // and is owed a decision of its own rather than a drive-by change.
         created_at: now,
+        // An ordinary create has no lineage; the clone door is the pair's
+        // only writer (P-D-76).
+        cloned_from: None,
+        cloned_from_version: None,
     };
 
     // -- 6. The mutation: the idempotency claim, the entity row, its
@@ -1601,9 +1605,11 @@ const HEAD_ACT_RESPONSE_STATUS: StatusCode = StatusCode::OK;
 /// columns the original enumeration missed; until it does, this doc is where
 /// the reading is recorded, and `skus::SKU_VERSION_CONTENT_ROSTER`'s twin
 /// says the same.
-const PRODUCT_CONTENT_ROSTER: [&str; 10] = [
+const PRODUCT_CONTENT_ROSTER: [&str; 12] = [
     "brand_id",
     "brand_scope",
+    "cloned_from",
+    "cloned_from_version",
     "created_at",
     "created_by",
     "name",
@@ -1697,6 +1703,21 @@ fn product_content(record: &ProductRecord) -> JsonValue {
         "brand_scope".to_owned(),
         JsonValue::String(record.brand_scope.clone()),
     );
+    if let Some(source) = record.cloned_from {
+        // Lineage joins the roster by its own membership rule — publish does
+        // not move it (P-D-76). Omit-when-absent exercises `Absence::Null`,
+        // the `product_code` precedent.
+        content.insert(
+            "cloned_from".to_owned(),
+            JsonValue::String(source.to_string()),
+        );
+    }
+    if let Some(version) = record.cloned_from_version {
+        content.insert(
+            "cloned_from_version".to_owned(),
+            JsonValue::Number(version.into()),
+        );
+    }
     content.insert(
         "created_at".to_owned(),
         JsonValue::String(canonical::render_instant(record.created_at)),

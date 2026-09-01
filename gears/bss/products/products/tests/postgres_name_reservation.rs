@@ -92,6 +92,8 @@ fn contender(product_id: Uuid, code: &str) -> NewProduct {
         brand_scope: String::new(),
         created_by: "principal:author-1".to_owned(),
         created_at: at(9),
+        cloned_from: None,
+        cloned_from_version: None,
     }
 }
 

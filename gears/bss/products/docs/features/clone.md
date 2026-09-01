@@ -331,7 +331,7 @@ the column that reaches it.
 
 ### `cloned_from` lands on both entity tables, in the migrations that already name it
 
-- [ ] `p3` - **ID**: `cpt-cf-bss-products-dod-cloned-from-column`
+- [x] `p3` - **ID**: `cpt-cf-bss-products-dod-cloned-from-column`
 
 Both entity tables gain `cloned_from`, **nullable**, holding the immediate source's identity and the
 version it was read from. Neither table has it today.
@@ -914,10 +914,10 @@ assertion on the first code passes on a build that short-circuits, which is the 
 [`../design/11-clone.md`](../design/11-clone.md) §6 — the slice's full count, not a selection — and
 **seventeen raised here**: twelve while authoring and five by the three-lens review of this
 document. Eight of the seventeen (rows 11, 12, 13, 14, 17, 20, 23 and 25) come from reading the
-crate and nine from the design set. Of the twenty-seven, **fourteen block
+crate and nine from the design set. Of the twenty-seven, **fifteen block
 no DoD in this document** (rows 9, 10, 21 and 24, plus rows 13 and 4, resolved by **P-D-55 and
-P-D-62 on 2026-08-31**, and rows 7, 19, 26 — **P-D-72** — and 1, 2, 5, 12, 14 — **P-D-75** — on
-2026-09-01, all kept in place rather than struck); the other thirteen each name the DoD they block. A
+P-D-62 on 2026-08-31**, and rows 7, 19, 26 — **P-D-72** — 1, 2, 5, 12, 14 — **P-D-75** — and 18 — **P-D-76** —
+on 2026-09-01, all kept in place rather than struck); the other twelve each name the DoD they block. A
 third subsection carries defects owed to other documents, recorded and not repaired here; those are
 not rows. The two register pointers are in this preamble, not there.
 
@@ -1141,13 +1141,20 @@ duplicating it.
     **Blocks**: `cpt-cf-bss-products-dod-revalidation-codes`.
     **Owner**: the design-set owner, with `02`, `03` and `04`.
 
-18. **Is `cloned_from` one column or two?** `design/11` §4 says *"One column (`cloned_from`,
+18. ~~**Is `cloned_from` one column or two?**~~
+   **Answered (owner call, 2026-09-01 — P-D-76): two columns**, the P-D-50 convention a third
+    time — `cloned_from` (nullable uuid) and `cloned_from_version` (nullable bigint; NULL under a set
+    source = read at the head, the `'draft'` sentinel made representable), shape-CHECKed, both in the
+    head guards' immutable set and **landed the same day**: `m20260829_000002`/`000003` edited in
+    place, the registry's waiting `FieldClass::CreateOnly` populated, and the pair joined the content
+    rosters by their own membership rule.
+   Original text: `design/11` §4 says *"One column (`cloned_from`,
     nullable ...) on both entity tables"*, while `inst-cn-lineage` records
     `(entity id, published_version | 'draft')` — a pair. Whether that is one composite column, a
     column plus a nullable version integer, or an encoded string is unstated, and it decides whether
     the `'draft'` sentinel is representable.
-    **Blocks**: `cpt-cf-bss-products-dod-cloned-from-column`, `cpt-cf-bss-products-dod-clone-lineage`.
-    **Owner**: `01-foundation`'s schema owner, whose §6 already carries the storage half.
+   **Blocks**: no DoD — **resolved by P-D-76**; `cpt-cf-bss-products-dod-cloned-from-column` is built and ticked.
+   **Owner**: was `01-foundation`'s schema owner, whose §6 already carries the storage half; **closed**.
 
 19. ~~**Does `cloned_from` point across tables?**~~
    **Answered (owner call, 2026-09-01 — P-D-72 arm 1): a child's `cloned_from` names its own source

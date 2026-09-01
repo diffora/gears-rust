@@ -58,6 +58,13 @@ pub struct Model {
     pub created_by: String,
     pub created_at: ChronoDateTimeUtc,
     pub updated_at: ChronoDateTimeUtc,
+    /// The clone's immediate source (P-D-72: for a SKU child, its own source
+    /// SKU) — create-only, guarded immutable by the head trigger (P-D-76).
+    pub cloned_from: Option<Uuid>,
+    /// The frozen version the source's content was read at; `NULL` under a
+    /// non-`NULL` `cloned_from` means the source was read at its head — a
+    /// draft (P-D-76's representable sentinel).
+    pub cloned_from_version: Option<i64>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

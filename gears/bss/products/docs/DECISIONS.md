@@ -1569,6 +1569,28 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   (the re-publish step).
 
 
+#### P-D-76 — `cloned_from` is two columns, immutable after create, and inside the content roster
+
+- **Date**: 2026-09-01 (owner call, autonomous under the standing instruction — row 18 of
+  `features/clone.md` §7, plus the roster placement its build forces)
+- **Context**: `design/11` §4 says one nullable column while `inst-cn-lineage` records
+  `(entity id, published_version | 'draft')` — a pair — and the head tables ship neither.
+- **Decision**: **two columns**, the P-D-50 convention the set has now chosen three times —
+  `cloned_from` (nullable uuid, the immediate source; for a SKU child its own source SKU, P-D-72) and
+  `cloned_from_version` (nullable bigint; **NULL under a non-NULL `cloned_from` means the source was
+  read at its head — a draft**, the `'draft'` sentinel made representable without a sentinel), with
+  the shape CHECK `cloned_from IS NULL ⇒ cloned_from_version IS NULL`. Both join the head guards'
+  **immutable set** — writable only in the creating statement, exactly `inst-cn-lineage`'s create-only
+  rule — and both are added by editing `m20260829_000002`/`000003` **in place**. **They join the
+  content roster**, by the roster's own membership rule: excluded is exactly what the publish act
+  moves, and lineage is not moved by publish. No shipped data carries a digest, so the inclusion
+  costs nothing today and never again; `digest_version` stays 1.
+- **The argument against, stated**: content now differs between a clone and a hand-created twin — it
+  already did, `product_id` being a roster member, so no byte-identity anyone relies on changes; and
+  an encoded string was declined as the anti-pattern the set has struck twice.
+- **Propagated**: `design/11-clone.md` (§4's one-column sentence corrected, §6 twin), `features/clone.md`
+  (`dod-cloned-from-column`, §7 row 18 answered and its arithmetic).
+
 #### P-D-75 — The clone door's five: its body, its side-table write, its discarded answer, C4's scope, its key
 
 - **Date**: 2026-09-01 (owner call, autonomous under the standing instruction — the five rows holding

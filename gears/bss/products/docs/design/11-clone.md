@@ -143,7 +143,7 @@ minted takes its place when it is.
 
 ## 4. Data / Storage
 
-One column (`cloned_from`, nullable — now in 01's §4.1/§4.2 rosters, create-only, a later write
+**Two columns (P-D-76)** — `cloned_from` and `cloned_from_version`, the P-D-50 convention (`NULL` version under a set source = read at the head), shape-CHECKed, in 01's §4.1/§4.2 rosters, create-only, a later write
 fails `ILLEGAL_FIELD_MUTATION` (M3)) on both entity tables; no new tables; no new events.
 Errors reuse the owning slices' codes — the per-field map (L6): unit → `UNRECOGNIZED_UNIT`/
 `UNIT_DEPRECATED`; tier → `PLAN_TIER_UNKNOWN`/`PLAN_TIER_DEPRECATED`; category →

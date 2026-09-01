@@ -5075,3 +5075,100 @@ mod bulk_ledger_guard_tests {
         );
     }
 }
+
+/// P-D-76's pair on both head tables: create-only made physical.
+///
+/// @cpt-dod:cpt-cf-bss-products-dod-cloned-from-column:p1
+mod cloned_from_guard_tests {
+    use sea_orm::ConnectionTrait;
+    use sea_orm_migration::MigratorTrait;
+
+    use super::Migrator;
+
+    async fn harness() -> sea_orm::DatabaseConnection {
+        let mut opts = sea_orm::ConnectOptions::new("sqlite::memory:");
+        opts.max_connections(1).min_connections(1);
+        let db = sea_orm::Database::connect(opts)
+            .await
+            .expect("connect in-memory sqlite");
+        Migrator::up(&db, None).await.expect("boot the chain");
+        db
+    }
+
+    async fn exec(db: &sea_orm::DatabaseConnection, sql: &str) -> Result<(), sea_orm::DbErr> {
+        db.execute_raw(sea_orm::Statement::from_string(
+            sea_orm::DatabaseBackend::Sqlite,
+            sql.to_owned(),
+        ))
+        .await
+        .map(|_| ())
+    }
+
+    /// A lineage written in the creating statement stands; any later write of
+    /// either half is refused by the immutable arm, whose message now names
+    /// the pair.
+    #[tokio::test]
+    async fn the_pair_is_writable_at_create_and_never_again() {
+        let db = harness().await;
+        exec(
+            &db,
+            "INSERT INTO products_product \
+             (product_id, tenant_id, brand_id, name, name_normalized, lifecycle_state, \
+              internal_revision, published_version, region_scope, brand_scope, created_by, \
+              created_at, updated_at, cloned_from, cloned_from_version) \
+             VALUES ('p-clone', 't-a', 'b-1', 'Copy', 'copy', 'draft', 1, 0, '', '', 'a', \
+                     '2026-09-01T00:00:00Z', '2026-09-01T00:00:00Z', 'p-source', 3)",
+        )
+        .await
+        .expect("the creating statement is the pair's one admitted write");
+
+        let err = exec(
+            &db,
+            "UPDATE products_product SET cloned_from = NULL, \
+             internal_revision = internal_revision + 1, updated_at = '2026-09-01T01:00:00Z' \
+             WHERE product_id = 'p-clone'",
+        )
+        .await
+        .expect_err("the pair is immutable after create");
+        assert!(
+            err.to_string()
+                .contains("the cloned_from pair are immutable"),
+            "the refusal must be the immutable arm's, naming the pair: {err}"
+        );
+    }
+
+    /// The shape CHECK: a version under no source is the poison pair.
+    #[tokio::test]
+    async fn a_version_under_no_source_is_refused_on_both_tables() {
+        let db = harness().await;
+        for (table, cols, vals) in [
+            (
+                "products_product",
+                "product_id, tenant_id, brand_id, name, name_normalized, lifecycle_state, \
+                 internal_revision, published_version, region_scope, brand_scope, created_by, \
+                 created_at, updated_at, cloned_from_version",
+                "'p-bad', 't-a', 'b-1', 'X', 'x', 'draft', 1, 0, '', '', 'a', \
+                 '2026-09-01T00:00:00Z', '2026-09-01T00:00:00Z', 1",
+            ),
+            (
+                "products_sku",
+                "sku_id, tenant_id, product_id, sku_code, lifecycle_state, internal_revision, \
+                 published_version, composition_pending, region_scope, brand_scope, created_by, \
+                 created_at, updated_at, cloned_from_version",
+                "'s-bad', 't-a', 'p-1', 'C-1', 'draft', 1, 0, 0, '', '', 'a', \
+                 '2026-09-01T00:00:00Z', '2026-09-01T00:00:00Z', 1",
+            ),
+        ] {
+            let err = exec(
+                &db,
+                &format!("INSERT INTO {table} ({cols}) VALUES ({vals})"),
+            )
+            .await
+            .expect_err("a cloned_from_version under no cloned_from must be refused");
+            assert!(
+                err.to_string().contains("cloned_from_shape"),
+                "{table}: the refusal must come from the shape CHECK: {err}"
+            );
+        }
+    }
+}
