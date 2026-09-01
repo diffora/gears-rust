@@ -40,6 +40,7 @@ fn labels_all_carries_every_declared_label_in_order() {
             labels::MATERIALITY_POLICY,
             labels::BREAKGLASS,
             labels::AUDIT,
+            labels::BULK_LIFECYCLE,
         ]
     );
 }
@@ -60,6 +61,10 @@ fn resource_types_carry_their_labels() {
     );
     assert_eq!(resource_types::BREAKGLASS.name(), labels::BREAKGLASS);
     assert_eq!(resource_types::AUDIT.name(), labels::AUDIT);
+    assert_eq!(
+        resource_types::BULK_LIFECYCLE.name(),
+        labels::BULK_LIFECYCLE
+    );
     assert_eq!(
         resource_types::REFERENCE_SIGNAL.name(),
         labels::REFERENCE_SIGNAL
@@ -336,7 +341,12 @@ async fn read_path_returns_pdp_scope_without_membership_check() {
 /// a future pass quietly declare `category × write` on 02's behalf, and the
 /// grant would then exist with no door and no owner.
 ///
-/// @cpt-dod:cpt-cf-bss-products-dod-rbac-catalog:p1
+/// No marker: `dod-rbac-catalog` waits on seven live §7 rows (1, 2, 3, 7, 12,
+/// 18 and 24), so this census is coverage without a tick. One row IS declared
+/// though its door does not ship — `bulk_lifecycle × execute`, because
+/// **P-D-69** arm 7 assigns *"all four of this feature's grant instances"* to
+/// this catalog, the roster being *"one closed set under a two-way
+/// set-equality assertion, and a closed set takes one writer"*.
 #[test]
 fn the_catalog_carries_the_built_slices_rows_and_withholds_the_rest() {
     // The rows owned by slices whose doors ship (01, 06, 07, 09) plus 05's own.
@@ -351,6 +361,7 @@ fn the_catalog_carries_the_built_slices_rows_and_withholds_the_rest() {
         labels::MATERIALITY_POLICY,
         labels::BREAKGLASS,
         labels::AUDIT,
+        labels::BULK_LIFECYCLE,
     ];
     for label in declared {
         assert!(
@@ -376,7 +387,6 @@ fn the_catalog_carries_the_built_slices_rows_and_withholds_the_rest() {
         "cf.bss.products.plan_tier.v1~",            // 03
         "cf.bss.products.scheduled_transition.v1~", // 04
         "cf.bss.products.freeze_participant.v1~",   // 06, with its governed-set door
-        "cf.bss.products.bulk_lifecycle.v1~",       // 09, with the lifecycle door
         "cf.bss.products.compliance.v1~",           // 10
         "cf.bss.products.erasure.v1~",              // 10
         "cf.bss.products.pii_allowlist.v1~",        // 10

@@ -453,7 +453,7 @@ shipped rows, and each pair resolving to a door or being marked unspent — is t
 
 ### Approval record store
 
-- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-approval-store`
+- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-approval-store`
 
 The system **MUST** create `products_approval` on both engines with the subject kind and ref, the
 pinned `internal_revision`, the **stored** `content_snapshot`, the `diff_basis`, the **stored**
@@ -461,6 +461,15 @@ pinned `internal_revision`, the **stored** `content_snapshot`, the `diff_basis`,
 `UNIQUE (tenant_id, subject_kind, subject_ref) WHERE state IN ('pending','satisfied')` **MUST**
 admit one open approval per subject. The row **MUST** be append-only after finalization. A
 schema-oracle golden **MUST** exist on both engines with a perturbation case proving it can fail.
+
+**The table ships and the tick does not: rows 9, 11 and 14 are live and are about this table's own
+columns.** Row 11 asks which transaction writes `state = satisfied` — every other value has a named
+writer and this one has only an evaluator, *"and nothing says whether a record at `required = 0` is
+born satisfied"*; row 14 asks what the **entity-shaped** columns (pinned revision, content snapshot,
+diff basis) hold for the subject kinds that are **not entities**, which is at least three of the
+five; row 9 asks whether a break-glass two-person approval is an `ApprovalRecord` at all. The DDL
+admits all five kinds and pins the shapes it can, and the three questions are about what the columns
+MEAN rather than what they permit — so the table is usable and the DoD is not met.
 
 **Implements**: `cpt-cf-bss-products-flow-submit`,
 `cpt-cf-bss-products-state-approval-record`
@@ -473,13 +482,19 @@ schema-oracle golden **MUST** exist on both engines with a perturbation case pro
 
 ### Decision store and the one-principal-one-decision floor
 
-- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-decision-store`
+- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-decision-store`
 
 The system **MUST** create `products_approval_decision` carrying the approver principal **as an
 `actor_ref` — pseudonymous, never a raw identifier**, these rows being append-only, so one raw
 identifier written is unreachable by erasure forever — the verdict, the reason, the override acknowledgments and the instant, with
 `UNIQUE (approval_id, approver_principal)`. **That index is the physical floor under
 distinctness-by-principal**: one principal, one decision, whatever roles they hold.
+
+**The table ships and the tick does not: row 6 is live**, routing the approval retention-and-erasure
+interplay to `10-retention-erasure` while this feature guarantees only that approver refs are
+pseudonymous from birth. That guarantee is built — the column is an `actor_ref` and the rows are
+append-only, so one raw identifier written would be unreachable by erasure forever — but the
+interplay the row names is `10`'s to state.
 
 **Implements**: `cpt-cf-bss-products-flow-decide`
 
@@ -780,7 +795,7 @@ that half is `12-consumer-contracts`' to assert.
 
 ### RBAC catalog registration
 
-- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-rbac-catalog`
+- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-rbac-catalog`
 
 The system **MUST** declare the GTS-typed resource-and-action catalog deny-by-default and check the
 pair at every door. `01-foundation`'s `authz.rs` already ships three rows and states that the rest
@@ -789,6 +804,13 @@ it. **Nine rows carry no route** (open item 1 — eleven when it was raised; **P
 **P-D-67** doored two) and the `discard` grant question is unresolved in
 the code comment as well as the design (open item 2); this DoD obliges the catalog, not the
 routes.
+
+**The catalog ships and the tick does not: seven live §7 rows name this DoD** — 1, 2, 3, 7, 12, 18
+and 24. Row 12 is the sharpest of them, asking *"what door carries submit, decide and break-glass
+elevation?"*, and this DoD's own scope sentence (*"obliges the catalog, not the routes"*) does not
+dispose of it — a catalog whose grants no door spends is exactly what rows 1 and 12 are about. An
+earlier pass ticked this on the strength of that scope sentence alone, having read this §7 — **a
+table** — as empty; it is 23 rows.
 
 **Built as an extension, and the withholding is asserted too.** `authz.rs` now carries **ten**
 labels: `01`'s `product`/`sku`, `06`'s `catalog_version`, `09`'s `bulk`, `07`'s

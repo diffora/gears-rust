@@ -71,8 +71,11 @@
 //! Both partial indexes, every CHECK, both keys and both guards are preserved
 //! on both sides; `SQLite` splits each guard into per-op triggers.
 //!
-//! @cpt-dod:cpt-cf-bss-products-dod-approval-store:p1
-//! @cpt-dod:cpt-cf-bss-products-dod-decision-store:p1
+//! **Neither `DoD` carries a marker here.** `dod-approval-store` waits on §7
+//! rows 9, 11 and 14 and `dod-decision-store` on row 6 — all four about what
+//! these columns MEAN for a non-entity subject, who writes `satisfied`, and
+//! how approver refs meet `10`'s erasure path. The tables are complete and
+//! usable; the questions are not this migration's to answer.
 
 use sea_orm_migration::prelude::*;
 

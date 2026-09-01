@@ -9,7 +9,6 @@
 //! Run under `make test-products-pg`; skipped when no engine is reachable.
 //!
 //! @cpt-dod:cpt-cf-bss-products-dod-category-table:p1
-//! @cpt-dod:cpt-cf-bss-products-dod-category-assignment-table:p1
 
 // The integration-test posture every `tests/` file here takes: a probe that
 // cannot reach its engine must panic loudly.

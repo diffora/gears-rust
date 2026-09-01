@@ -22,8 +22,11 @@
 //! Run under `make test-products-pg`; skipped like every other file here when
 //! no engine is reachable.
 //!
-//! @cpt-dod:cpt-cf-bss-products-dod-approval-store:p1
-//! @cpt-dod:cpt-cf-bss-products-dod-decision-store:p1
+//! Of the three tables this oracle pins, only `dod-breakglass-store` is
+//! ticked: `dod-approval-store` waits on §7 rows 9, 11 and 14 and
+//! `dod-decision-store` on row 6, so their halves of this file are coverage
+//! without a tick.
+//!
 //! @cpt-dod:cpt-cf-bss-products-dod-breakglass-store:p1
 
 // The integration-test posture every `tests/` file here takes: a probe that

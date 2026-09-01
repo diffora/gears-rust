@@ -224,6 +224,14 @@ gts_instance! {
 }
 gts_instance! {
     AuthzPermissionV1 {
+        id: gts_id!("cf.toolkit.authz.permission.v1~cf.bss.products.bulk_lifecycle_execute.v1"),
+        resource_type: labels::BULK_LIFECYCLE.to_owned(),
+        action: actions::EXECUTE.to_owned(),
+        display_name: "Run a bulk lifecycle batch".to_owned(),
+    }
+}
+gts_instance! {
+    AuthzPermissionV1 {
         id: gts_id!("cf.toolkit.authz.permission.v1~cf.bss.products.audit_read.v1"),
         resource_type: labels::AUDIT.to_owned(),
         action: actions::READ.to_owned(),
@@ -270,6 +278,7 @@ mod tests {
         gts_id!("cf.toolkit.authz.permission.v1~cf.bss.products.breakglass_elevate.v1"),
         gts_id!("cf.toolkit.authz.permission.v1~cf.bss.products.audit_read.v1"),
         gts_id!("cf.toolkit.authz.permission.v1~cf.bss.products.audit_export.v1"),
+        gts_id!("cf.toolkit.authz.permission.v1~cf.bss.products.bulk_lifecycle_execute.v1"),
     ];
 
     fn products_permission_instances() -> Vec<&'static InventoryInstance> {

@@ -94,6 +94,14 @@ pub mod labels {
     /// principal holding it is **outside** the tenant entirely, so it can
     /// never be folded into a tenant-scoped grant.
     pub const BREAKGLASS: &str = gts_id!("cf.bss.products.breakglass.v1~");
+    /// Bulk **lifecycle** — `execute`, and a resource of its own rather than an
+    /// action on [`BULK`]: §3.2 gives it its own row so the gear's most
+    /// destructive batch act cannot be reached with the import pair. Declared
+    /// here though its door does not ship, because **P-D-69** arm 7 assigns
+    /// all four of `09`'s grant instances to this catalog — the roster being
+    /// one closed set under a two-way set-equality assertion, and a closed
+    /// set takes one writer.
+    pub const BULK_LIFECYCLE: &str = gts_id!("cf.bss.products.bulk_lifecycle.v1~");
     /// The audit plane — `read` and `export` (M-4's fix). Split from the
     /// entity grants deliberately: an audit reader sees refusals and actors
     /// across every subject, which no entity-scoped grant implies.
@@ -114,6 +122,7 @@ pub mod labels {
         MATERIALITY_POLICY,
         BREAKGLASS,
         AUDIT,
+        BULK_LIFECYCLE,
     ];
 }
 
@@ -208,6 +217,9 @@ pub mod resource_types {
         ResourceType::from_static(labels::BREAKGLASS, SUPPORTED_PROPERTIES);
     /// The audit plane — `read`, `export`.
     pub const AUDIT: ResourceType = ResourceType::from_static(labels::AUDIT, SUPPORTED_PROPERTIES);
+    /// Bulk lifecycle — `execute`.
+    pub const BULK_LIFECYCLE: ResourceType =
+        ResourceType::from_static(labels::BULK_LIFECYCLE, SUPPORTED_PROPERTIES);
 }
 
 /// Error from the registry's PEP gate.

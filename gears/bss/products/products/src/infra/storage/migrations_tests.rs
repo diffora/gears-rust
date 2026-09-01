@@ -5223,8 +5223,10 @@ mod cloned_from_guard_tests {
 /// design's §4 states — and on the schema oracle `dod-approval-store`
 /// requires, with its perturbation case.
 ///
-/// @cpt-dod:cpt-cf-bss-products-dod-approval-store:p1
-/// @cpt-dod:cpt-cf-bss-products-dod-decision-store:p1
+/// Only `dod-breakglass-store` is ticked of the three: the other two wait on
+/// live §7 rows (9, 11, 14 and 6), so their probes are coverage without a
+/// tick.
+///
 /// @cpt-dod:cpt-cf-bss-products-dod-breakglass-store:p1
 mod governance_store_guard_tests {
     use sea_orm::ConnectionTrait;
