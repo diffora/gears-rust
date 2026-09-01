@@ -1569,6 +1569,36 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   (the re-publish step).
 
 
+#### P-D-85 — The revalidation guard's shipped shape: staged outside the transaction, committed under the fence's own retry loop
+
+- **Date**: 2026-09-01 (owner call, autonomous under the standing instruction — recorded at the
+  tick of `cpt-cf-bss-products-dod-stage-commit-revalidation`, whose isolation clause the shipped
+  build does not match to the letter)
+- **Context**: the DoD mandates *"the transaction opens at the engine default"* and argues that
+  under `SERIALIZABLE` *"the transaction aborts rather than raising the code §6 requires"*, while
+  `dod-coalescer` mandates `LeaseGuard::with_ack_in_tx` — whose internal loop runs
+  `SERIALIZABLE` with transparent retries. Both clauses cannot hold in one build.
+
+**The shipped guard stages OUTSIDE the transaction and commits under the fence, and that shape
+delivers both of the DoD's arms.** The staged view predates the transaction, so the in-transaction
+re-read compares across the whole collect-to-commit window — a moved `published_version` and a
+moved `lifecycle_state` alike, appearance and disappearance included, which the suite asserts. A
+serialization abort inside the fence is absorbed by its retry loop, which re-runs the compare on a
+fresh snapshot and still surfaces the **refusal** — `Restaged` on the mechanical lanes, the
+operator arm's `STAGED_ENTITY_CHANGED` when that door lands — so the abort-instead-of-refusal
+failure the DoD's clause guarded against cannot reach a caller. The isolation clause was scoped to
+a build that collected and committed in one transaction; the DoD is restated to record the shipped
+shape rather than the hypothetical one.
+
+- **The arguments against, stated**: the serializable retries spend transaction attempts a
+  read-committed build would not — bounded by the fence's own retry policy, and the increment is a
+  background drain with no caller waiting on the attempt count.
+- **Not changed**: P-D-53 (its reason holds for a bare transaction: nothing here re-litigates the
+  isolation of any door's own writes), the compare's two arms, the lane split (P-D-09), the
+  request-never-lost posture.
+- **Propagated**: `features/catalog-version.md` (`dod-stage-commit-revalidation`'s opening
+  paragraph restated), `infra/increment.rs` (the module doc already records the reading).
+
 #### P-D-84 — The freeze protocol's seven: settled-not-acked, the seeded ledger, the strict flag, the resolver's shape, and the timeout's field
 
 - **Date**: 2026-09-01 (owner call, autonomous under the standing instruction —

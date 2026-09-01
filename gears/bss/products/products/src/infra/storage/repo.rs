@@ -781,6 +781,15 @@ pub enum AuditEntry {
         /// has one to give.
         subject_revision: Option<i64>,
     },
+    /// A committed eventless act whose subject has no minted uuid — the
+    /// freeze ledger's `(catalog_version_id, participant)` pair is the
+    /// first: the pair rides `attempted_key` exactly as a pre-mint
+    /// refusal's subject does, and `subject_id` stays `NULL`. Carries
+    /// neither `error_code` nor `session_id`.
+    KeyedAct {
+        /// The act's subject, rendered as the door's own key string.
+        attempted_key: String,
+    },
     /// A read served under break-glass elevation. Carries the elevation's
     /// `session_id` — 05 audits every elevated access with it. Carries no
     /// `error_code`.
@@ -893,6 +902,7 @@ async fn insert_audit_row(
             subject_id,
             subject_revision,
         } => (Some(subject_id), subject_revision, None, None, None),
+        AuditEntry::KeyedAct { attempted_key } => (None, None, None, Some(attempted_key), None),
         AuditEntry::ElevatedRead {
             session_id,
             subject_id,
@@ -1006,6 +1016,28 @@ pub async fn write_eventless_act_audit(
             subject_id,
             subject_revision,
         },
+    )
+    .await
+}
+
+/// Write a keyed eventless act's audit row — the ack and release doors'
+/// record (`dod-clone-audit`'s inverse posture: these acts emit no broker
+/// event by design, so the audit row IS the record — `dod-ack-door`).
+///
+/// # Errors
+///
+/// [`RepoError`] as [`insert_audit_row`] raises it.
+pub async fn write_keyed_act_audit(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    common: AuditCommon,
+    attempted_key: String,
+) -> Result<(), RepoError> {
+    insert_audit_row(
+        runner,
+        scope,
+        common,
+        AuditEntry::KeyedAct { attempted_key },
     )
     .await
 }
@@ -2071,6 +2103,338 @@ pub async fn mark_requests_coalesced(
         }
     }
     Ok(())
+}
+
+/// One committed version row, in this repository's vocabulary.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CatalogVersionRecord {
+    /// The gapless id.
+    pub catalog_version_id: i64,
+    /// Hex digest over the canonical manifest rendering.
+    pub checksum: String,
+    /// The digest rule the checksum was computed under.
+    pub digest_version: i32,
+    /// The commit instant.
+    pub published_at: DateTime<Utc>,
+    /// The derived participant cache (P-D-67).
+    pub participant_set_snapshot: String,
+    /// `open`, `complete` or `complete(forced)`.
+    pub freeze_state: String,
+}
+
+/// Read one version row.
+///
+/// # Errors
+///
+/// [`RepoError`] on a storage or scope failure.
+pub async fn find_catalog_version(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    catalog_version_id: i64,
+) -> Result<Option<CatalogVersionRecord>, RepoError> {
+    let row = catalog_version::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(catalog_version::Column::TenantId.eq(tenant_id))
+                .add(catalog_version::Column::CatalogVersionId.eq(catalog_version_id)),
+        )
+        .one(runner)
+        .await
+        .map_err(|e| driver_failure(format!("read catalog version {catalog_version_id}"), e))?;
+    Ok(row.map(|row| CatalogVersionRecord {
+        catalog_version_id: row.catalog_version_id,
+        checksum: row.checksum,
+        digest_version: row.digest_version,
+        published_at: row.published_at,
+        participant_set_snapshot: row.participant_set_snapshot,
+        freeze_state: row.freeze_state,
+    }))
+}
+
+/// The stored manifest halves of one version — the resolver's re-render
+/// operands (`inst-rv-bytes`: never a re-collect).
+///
+/// # Errors
+///
+/// [`RepoError`] on a storage or scope failure.
+pub async fn catalog_version_manifest_rows(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    catalog_version_id: i64,
+) -> Result<(Vec<SnapshotEntityRef>, Vec<(String, String)>), RepoError> {
+    let entries = catalog_version_entry::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(catalog_version_entry::Column::TenantId.eq(tenant_id))
+                .add(catalog_version_entry::Column::CatalogVersionId.eq(catalog_version_id)),
+        )
+        .all(runner)
+        .await
+        .map_err(|e| driver_failure(format!("read entries of {catalog_version_id}"), e))?
+        .into_iter()
+        .map(|row| SnapshotEntityRef {
+            entity_kind: row.entity_kind,
+            entity_id: row.entity_id,
+            published_version: row.published_version,
+            // Not part of the rendering; the revalidation operand only.
+            lifecycle_state: String::new(),
+        })
+        .collect();
+    let captures = catalog_version_capture::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(catalog_version_capture::Column::TenantId.eq(tenant_id))
+                .add(catalog_version_capture::Column::CatalogVersionId.eq(catalog_version_id)),
+        )
+        .all(runner)
+        .await
+        .map_err(|e| driver_failure(format!("read captures of {catalog_version_id}"), e))?
+        .into_iter()
+        .map(|row| (row.capture_kind, row.content))
+        .collect();
+    Ok((entries, captures))
+}
+
+/// Every ledger row of one version, participant order.
+///
+/// # Errors
+///
+/// [`RepoError`] on a storage or scope failure.
+pub async fn freeze_ack_rows(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    catalog_version_id: i64,
+) -> Result<Vec<(String, String)>, RepoError> {
+    let rows = freeze_ack::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(freeze_ack::Column::TenantId.eq(tenant_id))
+                .add(freeze_ack::Column::CatalogVersionId.eq(catalog_version_id)),
+        )
+        .order_by(freeze_ack::Column::Participant, sea_orm::Order::Asc)
+        .all(runner)
+        .await
+        .map_err(|e| driver_failure(format!("read the ledger of {catalog_version_id}"), e))?;
+    Ok(rows
+        .into_iter()
+        .map(|row| (row.participant, row.state))
+        .collect())
+}
+
+/// A ledger edge's outcome, for the ack and release doors to classify.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum FreezeEdgeOutcome {
+    /// The edge was taken.
+    Flipped,
+    /// The row already sits in the target state — the idempotent replay.
+    AlreadyThere,
+    /// The row exists but its state admits no such edge.
+    IllegalFrom(String),
+    /// No row: the participant is outside the version's snapshotted set.
+    NoRow,
+}
+
+/// `pending -> acked`, stamping `acked_at` — the ack door's write, an
+/// UPDATE and never an upsert (the row's existence IS the membership
+/// check, P-D-67). A recovered forced participant's ack rides the same
+/// edge list (`not_frozen(forced) -> acked`, P-D-60).
+///
+/// # Errors
+///
+/// [`RepoError`] on a storage or scope failure.
+pub async fn ack_freeze_row(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    catalog_version_id: i64,
+    participant: &str,
+    now: DateTime<Utc>,
+) -> Result<FreezeEdgeOutcome, RepoError> {
+    let result = freeze_ack::Entity::update_many()
+        .secure()
+        .scope_with(scope)
+        .col_expr(freeze_ack::Column::State, Expr::value("acked".to_owned()))
+        .col_expr(freeze_ack::Column::AckedAt, Expr::value(Some(now)))
+        .filter(
+            Condition::all()
+                .add(freeze_ack::Column::TenantId.eq(tenant_id))
+                .add(freeze_ack::Column::CatalogVersionId.eq(catalog_version_id))
+                .add(freeze_ack::Column::Participant.eq(participant))
+                .add(freeze_ack::Column::State.is_in(["pending", "not_frozen(forced)"])),
+        )
+        .exec(runner)
+        .await
+        .map_err(|e| driver_failure(format!("ack {participant} on {catalog_version_id}"), e))?;
+    if result.rows_affected > 0 {
+        return Ok(FreezeEdgeOutcome::Flipped);
+    }
+    classify_missed_edge(
+        runner,
+        scope,
+        tenant_id,
+        catalog_version_id,
+        participant,
+        "acked",
+    )
+    .await
+}
+
+/// `pending|acked -> released` — the release door's write. The door does
+/// **not** stamp `released_at`: that column is the ceremony's alone
+/// (P-D-67), and the write-once trigger holds it.
+///
+/// # Errors
+///
+/// [`RepoError`] on a storage or scope failure.
+pub async fn release_freeze_row(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    catalog_version_id: i64,
+    participant: &str,
+) -> Result<FreezeEdgeOutcome, RepoError> {
+    let result = freeze_ack::Entity::update_many()
+        .secure()
+        .scope_with(scope)
+        .col_expr(
+            freeze_ack::Column::State,
+            Expr::value("released".to_owned()),
+        )
+        .filter(
+            Condition::all()
+                .add(freeze_ack::Column::TenantId.eq(tenant_id))
+                .add(freeze_ack::Column::CatalogVersionId.eq(catalog_version_id))
+                .add(freeze_ack::Column::Participant.eq(participant))
+                .add(freeze_ack::Column::State.is_in(["pending", "acked", "not_frozen(forced)"])),
+        )
+        .exec(runner)
+        .await
+        .map_err(|e| driver_failure(format!("release {participant} on {catalog_version_id}"), e))?;
+    if result.rows_affected > 0 {
+        return Ok(FreezeEdgeOutcome::Flipped);
+    }
+    classify_missed_edge(
+        runner,
+        scope,
+        tenant_id,
+        catalog_version_id,
+        participant,
+        "released",
+    )
+    .await
+}
+
+/// Why a guarded ledger UPDATE matched nothing: the idempotent replay, an
+/// inadmissible source state, or no row at all.
+async fn classify_missed_edge(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    catalog_version_id: i64,
+    participant: &str,
+    target: &str,
+) -> Result<FreezeEdgeOutcome, RepoError> {
+    let row = freeze_ack::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(freeze_ack::Column::TenantId.eq(tenant_id))
+                .add(freeze_ack::Column::CatalogVersionId.eq(catalog_version_id))
+                .add(freeze_ack::Column::Participant.eq(participant)),
+        )
+        .one(runner)
+        .await
+        .map_err(|e| {
+            driver_failure(format!("classify {participant} on {catalog_version_id}"), e)
+        })?;
+    Ok(match row {
+        None => FreezeEdgeOutcome::NoRow,
+        Some(row) if row.state == target => FreezeEdgeOutcome::AlreadyThere,
+        Some(row) => FreezeEdgeOutcome::IllegalFrom(row.state),
+    })
+}
+
+/// Recompute and store `freeze_state`'s derived cache from the ledger it
+/// derives from — the P-D-49 snapshot-driven summary, written by the three
+/// acts that change the ledger (P-D-73) under P-D-84's settled predicate:
+/// any `not_frozen(forced)` row -> `complete(forced)`; else any `pending`
+/// -> `open`; else `complete` (a release settles exactly as an ack).
+///
+/// # Errors
+///
+/// [`RepoError`] on a storage or scope failure.
+pub async fn refresh_freeze_state(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    catalog_version_id: i64,
+) -> Result<String, RepoError> {
+    let rows = freeze_ack_rows(runner, scope, tenant_id, catalog_version_id).await?;
+    let state = if rows.iter().any(|(_, s)| s == "not_frozen(forced)") {
+        "complete(forced)"
+    } else if rows.iter().any(|(_, s)| s == "pending") {
+        "open"
+    } else {
+        "complete"
+    };
+    catalog_version::Entity::update_many()
+        .secure()
+        .scope_with(scope)
+        .col_expr(
+            catalog_version::Column::FreezeState,
+            Expr::value(state.to_owned()),
+        )
+        .filter(
+            Condition::all()
+                .add(catalog_version::Column::TenantId.eq(tenant_id))
+                .add(catalog_version::Column::CatalogVersionId.eq(catalog_version_id)),
+        )
+        .exec(runner)
+        .await
+        .map_err(|e| driver_failure(format!("refresh freeze_state of {catalog_version_id}"), e))?;
+    Ok(state.to_owned())
+}
+
+/// Every `open` version older than the timeout, with its still-pending
+/// participants — the `freeze_overdue` telemetry's operand
+/// (`dod-freeze-timeout`; the timeout fails closed, so this read only
+/// names the silence).
+///
+/// # Errors
+///
+/// [`RepoError`] on a storage or scope failure.
+pub async fn overdue_open_versions(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    published_before: DateTime<Utc>,
+) -> Result<Vec<(Uuid, i64)>, RepoError> {
+    let rows = catalog_version::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(catalog_version::Column::FreezeState.eq("open"))
+                .add(catalog_version::Column::PublishedAt.lt(published_before)),
+        )
+        .all(runner)
+        .await
+        .map_err(|e| driver_failure("scan for overdue open versions".to_owned(), e))?;
+    Ok(rows
+        .into_iter()
+        .map(|row| (row.tenant_id, row.catalog_version_id))
+        .collect())
 }
 
 /// Stamp the composite act's parent handle onto a `claimed` key (P-D-79).

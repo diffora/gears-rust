@@ -90,6 +90,12 @@ pub mod actions {
     /// (`POST /bss-products/v1/catalog-version-requests` and the in-process
     /// binding alike — `design/06` §2 rule 1's one gate for both).
     pub const REQUEST: &str = "request";
+    /// Ack action — a freeze participant confirming a version
+    /// (`POST /bss-products/v1/catalog-versions/{id}/acks`, P-D-67).
+    pub const ACK: &str = "ack";
+    /// Release action — a participant ending its version liveness
+    /// (`POST /bss-products/v1/catalog-versions/{id}/releases`, P-D-18/67).
+    pub const RELEASE: &str = "release";
 }
 
 /// Properties the PEP may compile from PDP constraints for registry rows.

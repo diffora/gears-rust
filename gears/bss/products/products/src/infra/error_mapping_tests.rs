@@ -60,6 +60,14 @@ fn declared_status_and_code(err: &DomainError) -> (u16, Option<&'static str>) {
         // asserted by its own case below, while the audit channel carries the
         // domain code.
         D::RequestSourceUnknown(_) => (400, Some("CATALOG_VERSION_REJECTED")),
+        D::IntentRequired(_) => (400, Some("INTENT_REQUIRED")),
+        D::FreezeIncomplete(_) => (409, Some("FREEZE_INCOMPLETE")),
+        D::VersionForcedIncomplete(_) => (409, Some("VERSION_FORCED_INCOMPLETE")),
+        D::StagedEntityChanged(_) => (409, Some("STAGED_ENTITY_CHANGED")),
+        // The 404 shape carries no code channel on the wire; the code rides
+        // the audit row through `DomainError::code()`.
+        D::CatalogVersionUnknown(_) => (404, None),
+        D::ParticipantUnknown(_) => (403, Some("PARTICIPANT_UNKNOWN")),
     }
 }
 
@@ -97,6 +105,12 @@ fn one_of_every_variant() -> Vec<DomainError> {
         D::ErasureUnknownActor(d()),
         D::CloneSourceDiscarded(d()),
         D::RequestSourceUnknown(d()),
+        D::IntentRequired(d()),
+        D::FreezeIncomplete(d()),
+        D::VersionForcedIncomplete(d()),
+        D::StagedEntityChanged(d()),
+        D::CatalogVersionUnknown(d()),
+        D::ParticipantUnknown(d()),
     ]
 }
 
@@ -107,7 +121,7 @@ fn one_of_every_variant() -> Vec<DomainError> {
 /// new variant makes that match fail to compile, and this makes the roster
 /// that is *missing* the value fail the case. Bump it in the same edit that
 /// adds the variant to both.
-const DOMAIN_ERROR_VARIANTS: usize = 17;
+const DOMAIN_ERROR_VARIANTS: usize = 23;
 
 /// Covers all 14 variants (§3.3's own count, `DomainError::code`'s own
 /// exhaustiveness note): every one lands on the status the design ladder

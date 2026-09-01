@@ -356,3 +356,363 @@ async fn stored_instants_carry_no_sub_microsecond_digits() {
         "no sub-microsecond digit survives the write: {stored}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// The freeze doors and the resolver (P-D-84; dod-ack-door,
+// dod-liveness-and-release, dod-intentful-resolver, dod-version-binding)
+
+mod freeze_and_resolve_tests {
+    use chrono::Duration as ChronoDuration;
+    use sea_orm::ActiveValue::Set;
+    use sea_orm::EntityTrait as _;
+    use toolkit_db::secure::SecureInsertExt as _;
+
+    use super::*;
+    use crate::infra::increment::{DrainOutcome, drain_tenant};
+    use crate::infra::storage::entity::freeze_participant;
+    use crate::infra::storage::repo::{self, NewIncrementRequest};
+
+    fn scope() -> toolkit_db::secure::AccessScope {
+        toolkit_db::secure::AccessScope::for_tenant(TENANT)
+    }
+
+    /// Return the pinned production connection before the drain checks one
+    /// out again (`DbConn` is not `Drop`; the named fn keeps clippy's
+    /// mem-drop lint quiet without a scope pyramid).
+    fn drop_pinned<T>(conn: T) {
+        let _returned = conn;
+    }
+
+    /// Register participants, enqueue aged demand and drain: one committed
+    /// `open` version with one `pending` ledger row per participant.
+    async fn seed_open_version(harness: &TestHarness, participants: &[&str]) -> i64 {
+        let conn = harness.db.conn().expect("conn");
+        for participant in participants {
+            let model = freeze_participant::ActiveModel {
+                tenant_id: Set(TENANT),
+                participant: Set((*participant).to_owned()),
+                registered_at: Set(chrono::Utc::now() - ChronoDuration::hours(1)),
+            };
+            freeze_participant::Entity::insert(model.clone())
+                .secure()
+                .scope_with_model(&scope(), &model)
+                .expect("scope")
+                .exec(&conn)
+                .await
+                .expect("register the participant");
+        }
+        repo::enqueue_increment_request(
+            &conn,
+            &scope(),
+            TENANT,
+            NewIncrementRequest {
+                source: "pricing",
+                request_key: "fz-seed",
+                lane: "interactive",
+                operation_key: None,
+                requested_at: chrono::Utc::now() - ChronoDuration::seconds(10),
+            },
+        )
+        .await
+        .expect("enqueue");
+        drop_pinned(conn);
+        let outcome = drain_tenant(&harness.db, TENANT, chrono::Utc::now())
+            .await
+            .expect("drain");
+        match outcome {
+            DrainOutcome::Committed {
+                catalog_version_id, ..
+            } => catalog_version_id,
+            other => panic!("the seed drain must commit, got {other:?}"),
+        }
+    }
+
+    async fn post_edge(
+        app: Router,
+        version: i64,
+        act: &str,
+        participant: &str,
+    ) -> axum::http::Response<Body> {
+        app.oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/bss-products/v1/catalog-versions/{version}/{act}"))
+                .header("content-type", "application/json")
+                .extension(authed_ctx(TENANT))
+                .body(Body::from(
+                    json!({ "participant": participant }).to_string(),
+                ))
+                .expect("build the request"),
+        )
+        .await
+        .expect("the router answers")
+    }
+
+    async fn get_resolve(app: Router, version: i64, query: &str) -> axum::http::Response<Body> {
+        app.oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!(
+                    "/bss-products/v1/catalog-versions/{version}{query}"
+                ))
+                .extension(authed_ctx(TENANT))
+                .body(Body::empty())
+                .expect("build the request"),
+        )
+        .await
+        .expect("the router answers")
+    }
+
+    /// The ack door flips the seeded row and the LAST member's ack lands
+    /// `complete` in the same transaction (P-D-73); each committed act
+    /// writes its audit row and no broker event.
+    #[tokio::test]
+    async fn an_ack_flips_the_row_and_the_last_ack_completes() {
+        let harness = harness().await;
+        let version = seed_open_version(&harness, &["billing", "pricing"]).await;
+
+        let first = post_edge(app_for(&harness, TENANT), version, "acks", "pricing").await;
+        assert_eq!(first.status(), StatusCode::OK);
+        let view = body_json(first).await;
+        assert_eq!(view["state"], json!("acked"));
+        assert_eq!(
+            view["freeze_state"],
+            json!("open"),
+            "one of two members acked: still open"
+        );
+
+        let second = post_edge(app_for(&harness, TENANT), version, "acks", "billing").await;
+        let view = body_json(second).await;
+        assert_eq!(
+            view["freeze_state"],
+            json!("complete"),
+            "the last member's ack lands complete"
+        );
+
+        let audits = crate::test_support::raw_i64(
+            &harness.dsn,
+            "SELECT COUNT(*) AS v FROM products_audit_log WHERE action = \
+             'catalog_version.freeze.ack'",
+        )
+        .await;
+        assert_eq!(audits, 2, "each committed ack is audit-plane");
+    }
+
+    /// A release settles exactly as an ack under P-D-84's predicate — and
+    /// the door stamps NOTHING into `released_at`, that column being the
+    /// force ceremony's alone (P-D-67).
+    #[tokio::test]
+    async fn a_release_settles_like_an_ack_and_stamps_nothing() {
+        let harness = harness().await;
+        let version = seed_open_version(&harness, &["billing", "pricing"]).await;
+
+        post_edge(app_for(&harness, TENANT), version, "acks", "pricing").await;
+        let release = post_edge(app_for(&harness, TENANT), version, "releases", "billing").await;
+        assert_eq!(release.status(), StatusCode::OK);
+        let view = body_json(release).await;
+        assert_eq!(view["state"], json!("released"));
+        assert_eq!(
+            view["freeze_state"],
+            json!("complete"),
+            "released settles: no pending row remains"
+        );
+
+        let released_at = crate::test_support::raw_string_opt(
+            &harness.dsn,
+            "SELECT released_at AS v FROM products_freeze_ack WHERE participant = 'billing'",
+        )
+        .await;
+        assert_eq!(
+            released_at, None,
+            "the release door never stamps released_at"
+        );
+    }
+
+    /// A re-ack replays idempotently; an ack after a release is the state
+    /// machine's own refusal.
+    #[tokio::test]
+    async fn a_re_ack_replays_and_a_released_participant_cannot_ack() {
+        let harness = harness().await;
+        let version = seed_open_version(&harness, &["pricing"]).await;
+
+        post_edge(app_for(&harness, TENANT), version, "acks", "pricing").await;
+        let replay = post_edge(app_for(&harness, TENANT), version, "acks", "pricing").await;
+        assert_eq!(replay.status(), StatusCode::OK, "idempotent per the PK");
+
+        post_edge(app_for(&harness, TENANT), version, "releases", "pricing").await;
+        let after_release = post_edge(app_for(&harness, TENANT), version, "acks", "pricing").await;
+        assert_eq!(
+            after_release.status(),
+            StatusCode::CONFLICT,
+            "released is terminal for the ack edge"
+        );
+        let view = body_json(after_release).await;
+        assert_eq!(view["context"]["reason"], json!("ILLEGAL_TRANSITION"));
+    }
+
+    /// A principal outside the version's snapshotted set is refused 403
+    /// `PARTICIPANT_UNKNOWN` — membership is the seeded row's existence, and
+    /// a 404 would leak whether the version exists.
+    #[tokio::test]
+    async fn a_non_member_is_refused_participant_unknown() {
+        let harness = harness().await;
+        let version = seed_open_version(&harness, &["pricing"]).await;
+
+        let refused = post_edge(app_for(&harness, TENANT), version, "acks", "billing").await;
+        assert_eq!(refused.status(), StatusCode::FORBIDDEN);
+        let view = body_json(refused).await;
+        assert_eq!(view["context"]["reason"], json!("PARTICIPANT_UNKNOWN"));
+
+        let bogus = post_edge(app_for(&harness, TENANT), 999, "acks", "pricing").await;
+        assert_eq!(
+            bogus.status(),
+            StatusCode::FORBIDDEN,
+            "an unknown version answers the same 403: no existence leak"
+        );
+    }
+
+    /// The resolver requires intent, serves browse at once, and serves the
+    /// same bytes on every re-resolution (inst-rv-bytes) — from the stored
+    /// manifest, checksum re-verified before serving.
+    #[tokio::test]
+    async fn the_resolver_requires_intent_and_serves_stable_bytes() {
+        let harness = harness().await;
+        let version = seed_open_version(&harness, &["pricing"]).await;
+
+        let missing = get_resolve(app_for(&harness, TENANT), version, "").await;
+        assert_eq!(missing.status(), StatusCode::BAD_REQUEST);
+        let view = body_json(missing).await;
+        assert_eq!(
+            view["context"]["violations"][0]["type"],
+            json!("INTENT_REQUIRED")
+        );
+
+        let first = get_resolve(app_for(&harness, TENANT), version, "?intent=browse").await;
+        assert_eq!(first.status(), StatusCode::OK);
+        let first_view = body_json(first).await;
+        assert_eq!(first_view["freeze_complete"], json!(false));
+        assert!(
+            first_view["checksum"]
+                .as_str()
+                .is_some_and(|c| c.len() == 64),
+            "the hex checksum is returned and verifiable"
+        );
+
+        let second = get_resolve(app_for(&harness, TENANT), version, "?intent=browse").await;
+        assert_eq!(
+            body_json(second).await,
+            first_view,
+            "re-resolution is byte-identical, rendered from the stored manifest"
+        );
+    }
+
+    /// `posted` fails closed while the ledger holds a pending row and
+    /// serves once the last member settles — the strict flag flipping with
+    /// it (P-D-84 arm 3).
+    #[tokio::test]
+    async fn posted_is_fail_closed_until_the_ledger_settles() {
+        let harness = harness().await;
+        let version = seed_open_version(&harness, &["pricing"]).await;
+
+        let early = get_resolve(app_for(&harness, TENANT), version, "?intent=posted").await;
+        assert_eq!(early.status(), StatusCode::CONFLICT);
+        assert_eq!(
+            body_json(early).await["context"]["reason"],
+            json!("FREEZE_INCOMPLETE")
+        );
+
+        post_edge(app_for(&harness, TENANT), version, "acks", "pricing").await;
+        let served = get_resolve(app_for(&harness, TENANT), version, "?intent=posted").await;
+        assert_eq!(served.status(), StatusCode::OK);
+        assert_eq!(body_json(served).await["freeze_complete"], json!(true));
+    }
+
+    /// A force-completed version refuses `posted` naming each still-forced
+    /// participant, and the strict flag stays false (P-D-84 arm 3; the
+    /// forced rows seeded the way the ceremony writes them — state, both
+    /// stamps and the ceremony ref together, the shape CHECK's own pairing).
+    #[tokio::test]
+    async fn a_forced_version_refuses_posted_naming_the_silent() {
+        let harness = harness().await;
+        let version = seed_open_version(&harness, &["pricing"]).await;
+
+        let conn = sea_orm::Database::connect(&harness.dsn)
+            .await
+            .expect("aux connection");
+        // The stamps copy an instant sea-orm itself wrote, so the driver's
+        // own text format is preserved (the harness's uuid trap, for dates).
+        conn.execute_unprepared(&format!(
+            "UPDATE products_freeze_ack SET state = 'not_frozen(forced)', forced_at = \
+             (SELECT published_at FROM products_catalog_version WHERE catalog_version_id = \
+             {version}), ceremony_ref = X'00000000000000000000000000000001', \
+             released_at = (SELECT published_at FROM products_catalog_version WHERE \
+             catalog_version_id = {version}) WHERE participant = 'pricing'"
+        ))
+        .await
+        .expect("force the row as the ceremony will");
+        conn.execute_unprepared(&format!(
+            "UPDATE products_catalog_version SET freeze_state = 'complete(forced)' WHERE \
+             catalog_version_id = {version}"
+        ))
+        .await
+        .expect("flip the cache as the ceremony will");
+
+        let refused = get_resolve(app_for(&harness, TENANT), version, "?intent=posted").await;
+        assert_eq!(refused.status(), StatusCode::CONFLICT);
+        let view = body_json(refused).await;
+        assert_eq!(
+            view["context"]["reason"],
+            json!("VERSION_FORCED_INCOMPLETE")
+        );
+        assert!(
+            view["detail"]
+                .as_str()
+                .is_some_and(|d| d.contains("pricing")),
+            "the refusal names each not_frozen(forced) participant"
+        );
+
+        let browse = get_resolve(app_for(&harness, TENANT), version, "?intent=browse").await;
+        let view = body_json(browse).await;
+        assert_eq!(
+            view["freeze_complete"],
+            json!(false),
+            "the strict flag never reads complete(forced) as complete"
+        );
+    }
+
+    /// An unknown id is the resolver's own 404 — the single raising door of
+    /// `CATALOG_VERSION_UNKNOWN`.
+    #[tokio::test]
+    async fn an_unknown_version_is_the_resolvers_404() {
+        let harness = harness().await;
+        let missing = get_resolve(app_for(&harness, TENANT), 99, "?intent=browse").await;
+        assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+    }
+
+    /// A differing `bound_version` surfaces the re-binding triple
+    /// (`dod-version-binding`): the diff is handed TO the module.
+    #[tokio::test]
+    async fn a_differing_bound_version_surfaces_the_rebinding_triple() {
+        let harness = harness().await;
+        let version = seed_open_version(&harness, &["pricing"]).await;
+
+        let same = get_resolve(
+            app_for(&harness, TENANT),
+            version,
+            &format!("?intent=browse&bound_version={version}"),
+        )
+        .await;
+        assert_eq!(body_json(same).await["diff_ref"], json!(null));
+
+        let moved = get_resolve(
+            app_for(&harness, TENANT),
+            version,
+            "?intent=browse&bound_version=7",
+        )
+        .await;
+        let view = body_json(moved).await;
+        assert_eq!(view["bound_version"], json!(7));
+        assert_eq!(view["resolved_version"], json!(version));
+        assert_eq!(view["diff_ref"], json!(format!("7..{version}")));
+    }
+}

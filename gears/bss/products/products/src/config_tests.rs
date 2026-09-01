@@ -115,3 +115,34 @@ fn the_default_configuration_resolves_to_itself() {
         IDEMPOTENCY_RETENTION_FLOOR_HOURS
     );
 }
+
+/// P-D-84 arm 5: the freeze timeout floors the idempotency retention —
+/// `max(24h, max_freeze_timeout)` finally has both operands — and the
+/// default contributes nothing beyond the shipped constant.
+#[test]
+fn the_freeze_timeout_floors_the_retention() {
+    let mut cfg = ProductsConfig::default();
+    assert_eq!(
+        cfg.resolved_idempotency_retention_hours(),
+        IDEMPOTENCY_RETENTION_FLOOR_HOURS,
+        "the default timeout leaves the floor at the constant"
+    );
+    cfg.freeze_timeout_hours = 100;
+    assert_eq!(
+        cfg.resolved_idempotency_retention_hours(),
+        100,
+        "a configured timeout above 24h raises the floor with it"
+    );
+}
+
+/// P-D-84 arm 6: a timeout above the ten-year ceiling is refused at boot,
+/// which is what keeps the clamp's `min <= max` precondition an invariant
+/// rather than a panic on the first keyed request.
+#[test]
+fn a_timeout_above_the_ceiling_is_a_boot_refusal() {
+    let mut cfg = ProductsConfig::default();
+    assert!(cfg.validate().is_ok());
+    cfg.freeze_timeout_hours = IDEMPOTENCY_RETENTION_CEILING_HOURS + 1;
+    let refused = cfg.validate().expect_err("the ceiling refuses");
+    assert!(refused.contains("freeze_timeout_hours"));
+}

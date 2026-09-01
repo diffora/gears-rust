@@ -65,6 +65,7 @@
 //!
 //! @cpt-dod:cpt-cf-bss-products-dod-coalescer:p1
 //! @cpt-dod:cpt-cf-bss-products-dod-snapshot-builder:p1
+//! @cpt-dod:cpt-cf-bss-products-dod-stage-commit-revalidation:p1
 
 use std::time::Duration;
 
@@ -491,6 +492,56 @@ pub async fn commit_increment(
     };
     guard.release_with_retry().await.ok();
     Ok(outcome)
+}
+
+/// One overdue `open` version and the participants still silent on it —
+/// `freeze_overdue`'s operand (`dod-freeze-timeout`). The timeout fails
+/// closed (the resolver keeps refusing `posted`), so this scan only names
+/// the silence; in v1 the named set is pricing, the registered set's one
+/// member, which is what makes the PRD §15 open visible in this gear's own
+/// telemetry from day one.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OverdueFreeze {
+    /// The version's tenant.
+    pub tenant_id: Uuid,
+    /// The overdue version.
+    pub catalog_version_id: i64,
+    /// The snapshot members whose ledger rows still read `pending`.
+    pub silent_participants: Vec<String>,
+}
+
+/// Scan for `open` versions older than the configured freeze timeout.
+///
+/// # Errors
+///
+/// [`RepoError`] as the reads raise it.
+pub async fn overdue_freezes(
+    db: &DBProvider<DbError>,
+    now: DateTime<Utc>,
+    freeze_timeout_hours: u32,
+) -> Result<Vec<OverdueFreeze>, RepoError> {
+    let conn = db
+        .conn()
+        .map_err(|e| RepoError::Db(format!("overdue scan connection: {e}")))?;
+    let cutoff = now - chrono::Duration::hours(i64::from(freeze_timeout_hours));
+    let versions = repo::overdue_open_versions(&conn, &AccessScope::allow_all(), cutoff).await?;
+    let mut overdue = Vec::with_capacity(versions.len());
+    for (tenant_id, catalog_version_id) in versions {
+        let scope = AccessScope::for_tenant(tenant_id);
+        let silent: Vec<String> =
+            repo::freeze_ack_rows(&conn, &scope, tenant_id, catalog_version_id)
+                .await?
+                .into_iter()
+                .filter(|(_, state)| state == "pending")
+                .map(|(participant, _)| participant)
+                .collect();
+        overdue.push(OverdueFreeze {
+            tenant_id,
+            catalog_version_id,
+            silent_participants: silent,
+        });
+    }
+    Ok(overdue)
 }
 
 /// The lease TTL: generous against a slow transaction, far above the tick.

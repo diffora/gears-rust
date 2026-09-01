@@ -118,6 +118,10 @@ pub(crate) struct ProductsRuntime {
     /// `api::rest::ApiState` so a door can enqueue inside its own transaction.
     pub sink: crate::infra::broker::EventSink,
 
+    /// The configured freeze timeout (P-D-84), read by the coalescer's
+    /// overdue scan.
+    pub freeze_timeout_hours: u32,
+
     /// Whichever handle keeps the running pipeline's background tasks alive.
     ///
     /// Held for its `Drop`, never read: dropping either handle drops its
@@ -197,7 +201,7 @@ impl BssProductsGear {
             tokio::select! {
                 biased;
                 () = cancel.cancelled() => break,
-                _ = interval.tick() => coalescer_tick(&db).await,
+                _ = interval.tick() => coalescer_tick(&db, rt.freeze_timeout_hours).await,
             }
         }
         Ok(())
@@ -209,10 +213,39 @@ impl BssProductsGear {
 /// demand rows are never lost (the queue is the ledger), and a persistent
 /// failure repeats this line at tick cadence, which is the operator's
 /// signal.
-async fn coalescer_tick(db: &toolkit_db::DBProvider<toolkit_db::DbError>) {
+async fn coalescer_tick(
+    db: &toolkit_db::DBProvider<toolkit_db::DbError>,
+    freeze_timeout_hours: u32,
+) {
     let now = crate::domain::canonical::write_instant(chrono::Utc::now());
     if let Err(error) = crate::infra::increment::sweep(db, now).await {
         tracing::warn!(%error, "bss-products: coalescer sweep failed");
+    }
+    report_overdue_freezes(db, now, freeze_timeout_hours).await;
+}
+
+/// The freeze-timeout telemetry (`dod-freeze-timeout`): fail-closed is the
+/// resolver's own posture, so the scan only names the silence, one warning
+/// per overdue version.
+async fn report_overdue_freezes(
+    db: &toolkit_db::DBProvider<toolkit_db::DbError>,
+    now: chrono::DateTime<chrono::Utc>,
+    freeze_timeout_hours: u32,
+) {
+    match crate::infra::increment::overdue_freezes(db, now, freeze_timeout_hours).await {
+        Ok(overdue) => {
+            for entry in overdue {
+                tracing::warn!(
+                    tenant_id = %entry.tenant_id,
+                    catalog_version_id = entry.catalog_version_id,
+                    silent_participants = entry.silent_participants.join(","),
+                    "bss-products: freeze_overdue"
+                );
+            }
+        }
+        Err(error) => {
+            tracing::warn!(%error, "bss-products: freeze-overdue scan failed");
+        }
     }
 }
 
@@ -276,6 +309,10 @@ impl Gear for BssProductsGear {
         // the boot here rather than at the first request that happens to need
         // a field from it.
         let cfg: ProductsConfig = ctx.config_or_default()?;
+        // P-D-84 arm 6: an inverted retention clamp is refused at boot, not
+        // discovered as a panic on the first keyed request.
+        cfg.validate()
+            .map_err(|reason| anyhow::anyhow!("bss-products: invalid config: {reason}"))?;
         // The retention window is resolved once, here, and only the resolved
         // value ever leaves this function. `ProductsConfig::
         // resolved_idempotency_retention_hours` states why a bad value is
@@ -402,6 +439,7 @@ impl Gear for BssProductsGear {
         self.runtime.store(Some(Arc::new(ProductsRuntime {
             enforcer,
             sink,
+            freeze_timeout_hours: cfg.freeze_timeout_hours,
             pipeline,
             db: db_provider,
             idempotency_retention_hours,

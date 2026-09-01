@@ -1025,14 +1025,14 @@ beside the builder, so two runs and two engines hash one snapshot to one digest.
 
 ### Stage-vs-commit re-validation, both arms
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-stage-commit-revalidation`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-stage-commit-revalidation`
 
-**The transaction opens at the engine default — `READ COMMITTED` on Postgres** (**P-D-53**), and the
-guard below is what closes the race, not the isolation level. The builder records each collected
-entity's `(id, published_version, lifecycle_state)` and re-reads the heads before commit; any
-difference refuses `STAGED_ENTITY_CHANGED`. A build relying on the snapshot instead has no detector:
-under a snapshot-isolating level the re-read returns the collect-time view and the guard cannot fire,
-and under `SERIALIZABLE` the transaction aborts rather than raising the code §6 requires.
+**The guard is what closes the race, not the isolation level** (**P-D-53**), and the shipped
+shape is **P-D-85**'s: the builder stages `(id, published_version, lifecycle_state)` **outside**
+the transaction and commits under `LeaseGuard::with_ack_in_tx`'s own serializable retry loop — the
+staged view predates the transaction, so the in-transaction re-read compares across the whole
+collect-to-commit window, and a serialization abort is absorbed by the fence's retry, which
+re-runs the compare and still surfaces the refusal. Any difference fails the run closed.
 
 The builder **MUST** record each collected entity's `(id, published_version, lifecycle_state)` and,
 before commit, re-read the heads. Any entity whose published version **or lifecycle state** moved
@@ -1054,7 +1054,7 @@ lost**.
 
 ### Version binding at freeze
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-version-binding`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-version-binding`
 
 When a bound-not-yet-frozen reference re-resolves to a newer version, the **resolve or finalize
 response itself MUST carry `(boundVersion, resolvedVersion, diffRef)`** — the diff is surfaced
@@ -1071,7 +1071,7 @@ The consuming module's **duty to act** on the diff is booked in `12-consumer-con
 
 ### The intentful resolver and byte-identity
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-intentful-resolver`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-intentful-resolver`
 
 The system **MUST** serve resolution through one component spending **`catalog_version × read`**
 (the pair `design/06` §2 puts on `IntentfulResolver`) that requires `intent`, and that component
@@ -1082,12 +1082,11 @@ Re-resolution **MUST** be byte-identical forever: content renders from the **sto
 the frozen entity versions and is **never re-collected**, and the checksum is returned and
 verifiable.
 
-**This resolver is now the one door of this feature with no route declared anywhere in the design
-set.** It was one of five: **P-D-67** declared the other four — the ack, release, force-completion
-and freeze-participant doors — and `05-governance` §3.2's `Doors` column carries their spellings. The
-increment door and the diff carry one each; `08-read-models` puts this surface out of its own scope,
-and `01-foundation` hands this feature the intent clause without a surface. §7 row 12 is the slice's
-own carry about this one, and its route stays **owed and not invented here** — §7.
+**The route is declared** (**P-D-84** arm 4, §7 row 12): the request door's dual shape —
+`GET /bss-products/v1/catalog-versions/{catalogVersionId}` with a **required** `intent` query,
+`catalog_version × read`, an SDK surface beside the increment contract when a machine consumer
+needs one. It had been the one door of this feature with no route anywhere in the design set;
+**P-D-67** had declared the other four.
 
 **Implements**: `cpt-cf-bss-products-flow-resolve`
 
@@ -1097,7 +1096,7 @@ own carry about this one, and its route stays **owed and not invented here** —
 
 ### The ack door
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-ack-door`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-ack-door`
 
 The system **MUST** record participant acks in `products_freeze_ack`, idempotently per
 **`(tenant_id, catalog_version_id, participant)`** — the table's own primary key at `design/06`
@@ -1126,13 +1125,11 @@ a **membership** check, not authentication.
 Acks and re-triggers are **audit-plane**: this DoD obliges an audit row and **explicitly no broker
 event**, the ack door being inbound.
 
-**Two vacuity problems are open and are not closed by this DoD.** Nothing in the design set creates
-the ledger rows other than consumption of `CatalogVersionPublished`, which is emitted **after** the
-increment transaction commits — so in that window an entirely unfrozen version's `posted`
-resolution succeeds, against C5 and AC #21. And `freezeComplete` defined over the ledger's
-**current** value **regresses** when a participant releases, flipping a version back out of
-posting-safe. Both are §7's; the operand for the first exists (**P-D-49** gave
-`10-retention-erasure` this version's `participant_set_snapshot` for the same vacuity).
+**The two vacuity problems this paragraph used to carry are closed** (**P-D-84**, §7 rows 6 and
+7): the ledger's creation point is the **increment transaction** — one `pending` row per
+snapshotted participant, seeded before any resolution can see the version, the empty-set case
+deliberately `complete` at insert — and the completeness predicate ranges over **settled**, not
+acked, so a release settles exactly as an ack and completeness is monotone.
 
 **Implements**: `cpt-cf-bss-products-flow-freeze`
 
@@ -1142,7 +1139,7 @@ posting-safe. Both are §7's; the operand for the first exists (**P-D-49** gave
 
 ### The bounded timeout, and the export it owes `01-foundation`'s config
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-freeze-timeout`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-freeze-timeout`
 
 The timeout **MUST** be configured, **MUST** fail **closed** — past it the version stays
 non-posting-safe — and `freeze_overdue` **MUST** name the silent participants. In v1 that is
@@ -1252,7 +1249,7 @@ The gate-subject problem from the DoD above applies here identically.
 
 ### Liveness records and the release door
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-liveness-and-release`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-liveness-and-release`
 
 The per-`(catalogVersionId, participant)` registration and ack rows **MUST** be the
 **version-liveness source** (AC #44) — never the per-SKU reference count, which carries no version
@@ -1268,16 +1265,14 @@ Version-liveness **MUST** be evaluated over the version's `participant_set_snaps
 snapshot member with **no registration row** still holds the version (**P-D-49**).
 
 **The honest v1 posture MUST be recorded rather than glossed.** The v1 set's one participant,
-pricing, is §15-silent, so every version's registration, **where one exists at all**, sits
-`pending` — a state the summary formula *"acked-and-not-yet-released"* does not classify, since it
-presumes an ack. (§7 row 7 records that nothing in the design set creates the row in the first
-place, so the two facts are separate and both open.) **The operative
-predicate is the retention gate's**: `inst-rt-gc` and the PRD require every registration to read
-`released`, or `not_frozen(forced)` with `released_at` stamped, so a `pending` registration holds
-the version. The gate therefore over-retains and never over-collects — the fail-safe direction —
-and **MUST** be read as *designed and not yet exercised* rather than as a working reclamation path.
-Whether the formula here and in P-D-18 should be restated to match the gate's predicate is the
-owner's.
+pricing, is §15-silent, so every version's registration sits `pending` — the row now created by
+the **increment transaction** (§7 row 7, **P-D-84**), and the completeness formula settled as
+**settled-not-acked** (P-D-84 arm 1), which classifies every state the ledger can hold. **The
+operative predicate for retention stays the gate's**: `inst-rt-gc` and the PRD require every
+registration to read `released`, or `not_frozen(forced)` with `released_at` stamped, so a
+`pending` registration holds the version. The gate therefore over-retains and never over-collects
+— the fail-safe direction — and **MUST** be read as *designed and not yet exercised* rather than
+as a working reclamation path.
 
 **Implements**: `cpt-cf-bss-products-flow-freeze`, `cpt-cf-bss-products-flow-grandfathering`
 
@@ -1373,15 +1368,18 @@ given pair, and **MUST** have **no retention effect**.
 
 ### The error taxonomy, wired into `DomainError`
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-cv-error-taxonomy`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-cv-error-taxonomy`
 
 The system **MUST** add a `DomainError` variant for each of the **seven** codes in §3, and each
 **MUST** carry its wire code through `DomainError::code`.
 
-**The extension is compile-gated, and that is the good news measured here.** `DomainError` ships
-14 variants and `code()` is *"deliberately exhaustive rather than a catch-all: a variant added
+**The extension is compile-gated, and that is the good news measured here.** `code()` is
+*"deliberately exhaustive rather than a catch-all: a variant added
 without a code is a compile error here, which is the only thing that keeps the taxonomy and the
-vocabulary from drifting."* **None of the seven exists today.**
+vocabulary from drifting."* **All seven ship**: `DomainError` carries 23 variants, the roster and
+census tests pin the count, and `STAGED_ENTITY_CHANGED`'s raiser is the operator lane's — the
+mechanical lanes restage internally — so that variant ships raiser-pending by this DoD's own
+mandate.
 
 Each **MUST** carry an RFC 9457 problem response at the status §3 states, following the sibling
 pricing gear's mapping code by code: **422** for content the door cannot process, **409** where the

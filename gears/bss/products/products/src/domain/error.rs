@@ -126,6 +126,50 @@ pub enum DomainError {
     /// `Rejected` arm matches on.
     #[error("unregistered increment source: {0}")]
     RequestSourceUnknown(String),
+
+    /// A resolution request with no `intent` (`inst-rv-intent`). 422
+    /// architectural, 400 on the wire, carrying its code — the registry
+    /// declares no transport override (`dod-cv-error-taxonomy`).
+    #[error("intent is required: {0}")]
+    IntentRequired(String),
+
+    /// `posted` resolution of a version whose freeze ledger still holds a
+    /// `pending` row (C5's fail-closed default). 409: the version's state
+    /// refuses the act.
+    #[error("freeze incomplete: {0}")]
+    FreezeIncomplete(String),
+
+    /// `posted` resolution of a force-completed version, naming each
+    /// `not_frozen(forced)` participant until every one has since frozen or
+    /// released through its own door (`inst-rv-intent`, P-D-19). 409.
+    #[error("version forced incomplete: {0}")]
+    VersionForcedIncomplete(String),
+
+    /// The operator lane's stage-vs-commit refusal (`inst-sn-revalidate`,
+    /// P-D-09): an entity moved between collect and commit, named. The
+    /// mechanical lanes restage internally and never raise it; the variant
+    /// ships now because `dod-cv-error-taxonomy` pins the whole seven, and
+    /// its raiser arrives with the operator catalog-publish door. 409.
+    #[error("staged entity changed: {0}")]
+    StagedEntityChanged(String),
+
+    /// A path segment names a catalog version this tenant has none of —
+    /// raised by the shared version lookup, resolve and diff alike
+    /// (`dod-intentful-resolver`). 404.
+    #[error("catalog version unknown: {0}")]
+    CatalogVersionUnknown(String),
+
+    /// An ack or release from a principal outside the version's snapshotted
+    /// set (`inst-fz-ack`) — a membership check, not authentication. 403
+    /// rather than 404, because the caller's identity is the subject of the
+    /// refusal and a 404 would leak whether the version exists.
+    ///
+    /// With the six variants above this completes the catalog-version
+    /// seven, `REQUEST_SOURCE_UNKNOWN` included.
+    ///
+    /// @cpt-dod:cpt-cf-bss-products-dod-cv-error-taxonomy:p1
+    #[error("participant unknown: {0}")]
+    ParticipantUnknown(String),
 }
 
 impl DomainError {
@@ -155,6 +199,12 @@ impl DomainError {
             Self::ErasureUnknownActor(_) => "ERASURE_UNKNOWN_ACTOR",
             Self::CloneSourceDiscarded(_) => "CLONE_SOURCE_DISCARDED",
             Self::RequestSourceUnknown(_) => "REQUEST_SOURCE_UNKNOWN",
+            Self::IntentRequired(_) => "INTENT_REQUIRED",
+            Self::FreezeIncomplete(_) => "FREEZE_INCOMPLETE",
+            Self::VersionForcedIncomplete(_) => "VERSION_FORCED_INCOMPLETE",
+            Self::StagedEntityChanged(_) => "STAGED_ENTITY_CHANGED",
+            Self::CatalogVersionUnknown(_) => "CATALOG_VERSION_UNKNOWN",
+            Self::ParticipantUnknown(_) => "PARTICIPANT_UNKNOWN",
         }
     }
 }

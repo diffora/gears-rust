@@ -529,3 +529,46 @@ async fn a_held_lease_skips_the_pass() {
         "the next pass after release drains normally"
     );
 }
+
+/// `freeze_overdue`'s operand (dod-freeze-timeout): an `open` version older
+/// than the timeout is named together with its still-pending participants;
+/// a settled or young version is not. The timeout fails closed — nothing
+/// here flips any state.
+#[tokio::test]
+async fn the_overdue_scan_names_the_silent_participants() {
+    let harness = harness().await;
+    {
+        let conn = harness.db.conn().expect("conn");
+        let model = freeze_participant::ActiveModel {
+            tenant_id: Set(TENANT),
+            participant: Set("pricing".to_owned()),
+            registered_at: Set(t0() - ChronoDuration::hours(3)),
+        };
+        freeze_participant::Entity::insert(model.clone())
+            .secure()
+            .scope_with_model(&scope(), &model)
+            .expect("scope")
+            .exec(&conn)
+            .await
+            .expect("register");
+    }
+    enqueue(&harness, "od-1", "interactive", None, 6).await;
+    drain_tenant(&harness.db, TENANT, t0())
+        .await
+        .expect("drain");
+
+    let young = super::overdue_freezes(&harness.db, t0(), 24)
+        .await
+        .expect("scan");
+    assert!(
+        young.is_empty(),
+        "a version inside the timeout is not named"
+    );
+
+    let overdue = super::overdue_freezes(&harness.db, t0() + ChronoDuration::hours(25), 24)
+        .await
+        .expect("scan");
+    assert_eq!(overdue.len(), 1);
+    assert_eq!(overdue[0].catalog_version_id, 1);
+    assert_eq!(overdue[0].silent_participants, vec!["pricing".to_owned()]);
+}

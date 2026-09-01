@@ -226,6 +226,24 @@ impl From<DomainError> for CanonicalError {
                 &detail,
                 bss_products_sdk::increments::CATALOG_VERSION_REJECTED,
             ),
+
+            // -- The catalog-version seven (`dod-cv-error-taxonomy`), minus
+            // the one above: statuses per the FEATURE's own table, each code
+            // through `DomainError::code`'s spelling.
+            D::IntentRequired(detail) => precondition("intent", &detail, "INTENT_REQUIRED"),
+            D::FreezeIncomplete(detail) => aborted(detail, "FREEZE_INCOMPLETE"),
+            D::VersionForcedIncomplete(detail) => aborted(detail, "VERSION_FORCED_INCOMPLETE"),
+            D::StagedEntityChanged(detail) => aborted(detail, "STAGED_ENTITY_CHANGED"),
+            // 404: the path segment names a resource this tenant has none
+            // of. The 404 shape carries no code channel; the code rides
+            // `DomainError::code()` into the audit row, which is the
+            // channel the taxonomy DoD binds.
+            D::CatalogVersionUnknown(detail) => ProductResource::not_found(&detail)
+                .with_resource("catalog-version".to_owned())
+                .create(),
+            // 403 rather than 404 (`dod-cv-error-taxonomy`): the identity is
+            // the refusal's subject and a 404 would leak version existence.
+            D::ParticipantUnknown(_detail) => denied("PARTICIPANT_UNKNOWN"),
             D::IllegalTransition { from, to } => {
                 aborted(format!("from {from} to {to}"), "ILLEGAL_TRANSITION")
             }

@@ -71,6 +71,31 @@ gts_instance! {
     }
 }
 
+gts_instance! {
+    AuthzPermissionV1 {
+        id: gts_id!("cf.toolkit.authz.permission.v1~cf.bss.products.catalog_version_ack.v1"),
+        resource_type: labels::CATALOG_VERSION.to_owned(),
+        action: actions::ACK.to_owned(),
+        display_name: "Acknowledge a catalog version's freeze".to_owned(),
+    }
+}
+gts_instance! {
+    AuthzPermissionV1 {
+        id: gts_id!("cf.toolkit.authz.permission.v1~cf.bss.products.catalog_version_release.v1"),
+        resource_type: labels::CATALOG_VERSION.to_owned(),
+        action: actions::RELEASE.to_owned(),
+        display_name: "Release a catalog version's freeze liveness".to_owned(),
+    }
+}
+gts_instance! {
+    AuthzPermissionV1 {
+        id: gts_id!("cf.toolkit.authz.permission.v1~cf.bss.products.catalog_version_read.v1"),
+        resource_type: labels::CATALOG_VERSION.to_owned(),
+        action: actions::READ.to_owned(),
+        display_name: "Resolve or diff a catalog version".to_owned(),
+    }
+}
+
 // -- sku -- the authoring data plane ------------------------------------------
 
 gts_instance! {
@@ -115,6 +140,9 @@ mod tests {
         gts_id!("cf.toolkit.authz.permission.v1~cf.bss.products.sku_publish.v1"),
         gts_id!("cf.toolkit.authz.permission.v1~cf.bss.products.sku_read.v1"),
         gts_id!("cf.toolkit.authz.permission.v1~cf.bss.products.catalog_version_request.v1"),
+        gts_id!("cf.toolkit.authz.permission.v1~cf.bss.products.catalog_version_ack.v1"),
+        gts_id!("cf.toolkit.authz.permission.v1~cf.bss.products.catalog_version_release.v1"),
+        gts_id!("cf.toolkit.authz.permission.v1~cf.bss.products.catalog_version_read.v1"),
     ];
 
     fn products_permission_instances() -> Vec<&'static InventoryInstance> {
@@ -208,6 +236,8 @@ mod tests {
             crate::authz::actions::WRITE,
             crate::authz::actions::PUBLISH,
             crate::authz::actions::REQUEST,
+            crate::authz::actions::ACK,
+            crate::authz::actions::RELEASE,
         ];
         for entry in products_permission_instances() {
             let action = (entry.payload_fn)()["action"]

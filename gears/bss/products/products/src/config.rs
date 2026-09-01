@@ -53,6 +53,23 @@ pub struct ProductsConfig {
     /// stamping an expiry must use.
     pub idempotency_retention_hours: u32,
 
+    /// The freeze timeout, in hours (**P-D-84** — the field `design/01`'s
+    /// retention floor and `inst-fz-timeout` both presupposed): past it an
+    /// `open` version stays non-posting-safe — the timeout fails **closed**
+    /// — and the coalescer's sweep raises `freeze_overdue` naming the
+    /// silent participants. Per-deployment, so `max_freeze_timeout` IS this
+    /// value; it floors the idempotency retention through
+    /// [`Self::resolved_idempotency_retention_hours`], and
+    /// [`Self::validate`] refuses a value above the retention ceiling at
+    /// boot so that clamp stays total (P-D-84 arm 6).
+    ///
+    /// The default equals the shipped 24-hour floor constant: the timeout's
+    /// floor contribution changes nothing until an operator configures
+    /// more.
+    ///
+    /// @cpt-dod:cpt-cf-bss-products-dod-freeze-timeout:p1
+    pub freeze_timeout_hours: u32,
+
     /// Whether a boot without a reachable event-broker is a **failure**.
     ///
     /// `Gear::init` binds the broker SDK's producer when `ClientHub` carries an
@@ -79,6 +96,7 @@ impl Default for ProductsConfig {
     fn default() -> Self {
         Self {
             idempotency_retention_hours: IDEMPOTENCY_RETENTION_FLOOR_HOURS,
+            freeze_timeout_hours: IDEMPOTENCY_RETENTION_FLOOR_HOURS,
             require_broker: false,
         }
     }
@@ -110,10 +128,34 @@ impl ProductsConfig {
     /// and it is the outcome both other options exist to rule out.
     #[must_use]
     pub fn resolved_idempotency_retention_hours(&self) -> u32 {
+        // The design's floor is `max(24h, max_freeze_timeout)`
+        // (`inst-fd-idem-retention`, C6); the second operand's source is the
+        // catalog-version feature's export — this field, per-deployment
+        // (P-D-84 arm 5). `validate` holds the floor at or under the
+        // ceiling, so the clamp's `min <= max` precondition is a boot
+        // invariant rather than a runtime hope.
         self.idempotency_retention_hours.clamp(
-            IDEMPOTENCY_RETENTION_FLOOR_HOURS,
+            IDEMPOTENCY_RETENTION_FLOOR_HOURS.max(self.freeze_timeout_hours),
             IDEMPOTENCY_RETENTION_CEILING_HOURS,
         )
+    }
+
+    /// Boot-time validation (P-D-84 arm 6): a `freeze_timeout_hours` above
+    /// the ten-year retention ceiling would invert the clamp above into a
+    /// panic, so it is refused before anything runs.
+    ///
+    /// # Errors
+    ///
+    /// A sentence naming the field, the configured value and the ceiling.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.freeze_timeout_hours > IDEMPOTENCY_RETENTION_CEILING_HOURS {
+            return Err(format!(
+                "freeze_timeout_hours = {} exceeds the retention ceiling of {} hours; \
+                 the idempotency retention clamp would be inverted",
+                self.freeze_timeout_hours, IDEMPOTENCY_RETENTION_CEILING_HOURS
+            ));
+        }
+        Ok(())
     }
 }
 

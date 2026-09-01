@@ -66,6 +66,27 @@ fn every_variant_carries_its_design_set_wire_code() {
             DomainError::RequestSourceUnknown("s".into()),
             "REQUEST_SOURCE_UNKNOWN",
         ),
+        (DomainError::IntentRequired("s".into()), "INTENT_REQUIRED"),
+        (
+            DomainError::FreezeIncomplete("s".into()),
+            "FREEZE_INCOMPLETE",
+        ),
+        (
+            DomainError::VersionForcedIncomplete("s".into()),
+            "VERSION_FORCED_INCOMPLETE",
+        ),
+        (
+            DomainError::StagedEntityChanged("s".into()),
+            "STAGED_ENTITY_CHANGED",
+        ),
+        (
+            DomainError::CatalogVersionUnknown("s".into()),
+            "CATALOG_VERSION_UNKNOWN",
+        ),
+        (
+            DomainError::ParticipantUnknown("s".into()),
+            "PARTICIPANT_UNKNOWN",
+        ),
     ];
     for (error, expected) in &cases {
         assert_eq!(error.code(), *expected, "wrong code for {error:?}");
@@ -74,11 +95,14 @@ fn every_variant_carries_its_design_set_wire_code() {
     // roster short, and the roster is what the response map is built from.
     assert_eq!(
         cases.len(),
-        17,
-        "the Foundation owns fifteen raiseable codes and hosts two guests: \
-         retention-erasure's ERASURE_UNKNOWN_ACTOR (P-D-64 keeps that roster \
-         at one) and the clone door's CLONE_SOURCE_DISCARDED (P-D-75's mint); \
-         the fifteenth is the request door's REQUEST_SOURCE_UNKNOWN (P-D-52); \
+        23,
+        "the Foundation owns fourteen raiseable codes and hosts two guests \
+         (retention-erasure's ERASURE_UNKNOWN_ACTOR, P-D-64 keeping that \
+         roster at one, and the clone door's CLONE_SOURCE_DISCARDED, \
+         P-D-75's mint), and the catalog-version feature declares its seven \
+         (dod-cv-error-taxonomy): REQUEST_SOURCE_UNKNOWN, INTENT_REQUIRED, \
+         FREEZE_INCOMPLETE, VERSION_FORCED_INCOMPLETE, STAGED_ENTITY_CHANGED, \
+         CATALOG_VERSION_UNKNOWN and PARTICIPANT_UNKNOWN; \
          PARENT_NOT_PUBLISHED is registered by the lifecycle feature and \
          RETIREMENT_PENDING is declared by it"
     );
