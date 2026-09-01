@@ -278,7 +278,8 @@ without a fourth clock.
   but because 01's `products_entity_version` retention DELETE is admitted only when no entry
   references the row (01 **P-D-40**), and the PK above leads with `catalog_version_id`.
 - **`products_catalog_version_capture`** — the **capture store**, a table of its own
-  (**P-D-60**): `(tenant_id, catalog_version_id, capture_kind)` → the **stored canonical copy** of
+  (**P-D-60**; its DDL pins no `capture_kind` roster — **P-D-74**, the set staying the snapshot
+  builder's until the seven-vs-six item resolves): `(tenant_id, catalog_version_id, capture_kind)` → the **stored canonical copy** of
   the category tree and display values / attribute definitions / category values / metadata maps /
   recognized sets / freeze-participant set / reference-producer set (07's symmetric-snapshot ride)
   as-of the snapshot (H3 fix: live content is copied, never referenced). Append-only. **It is

@@ -312,13 +312,57 @@ async fn a_frozen_version_row_admits_neither_update_nor_delete() {
         "the UPDATE arm must answer, not the delete fall-through: {update}"
     );
 
+    // The DELETE arm is P-D-40's referential predicate since the in-place
+    // edit of 2026-09-01: a *referenced* row is held with the predicate's own
+    // message, and the unreferenced row is the one DELETE §4.3 admits.
+    admitted(
+        &conn,
+        &format!(
+            "INSERT INTO bss.products_catalog_version
+               (tenant_id, catalog_version_id, checksum, digest_version, published_at,
+                participant_set_snapshot, freeze_state)
+             VALUES ('{TENANT}', 1, 'c1', 1, now(), '[]', 'open')"
+        ),
+    )
+    .await;
+    admitted(
+        &conn,
+        &format!(
+            "INSERT INTO bss.products_catalog_version_entry
+               (tenant_id, catalog_version_id, entity_kind, entity_id, published_version)
+             VALUES ('{TENANT}', 1, 'product', '{SUBJECT}', 1)"
+        ),
+    )
+    .await;
+
     let delete = refusal(
         &conn,
         &format!("DELETE FROM bss.products_entity_version WHERE entity_id = '{SUBJECT}'"),
     )
     .await;
     assert!(
-        delete.contains("frozen: DELETE is not permitted"),
-        "the DELETE arm must answer with its own message: {delete}"
+        delete.contains("no products_catalog_version_entry references the row (P-D-40)"),
+        "a referenced row must be held by the predicate's own message: {delete}"
     );
+
+    // Drop the reference by collecting the whole manifest scaffolding is not
+    // admitted (the entry table is frozen), so the admitted arm is probed on
+    // an unreferenced sibling row instead.
+    admitted(
+        &conn,
+        &format!(
+            "INSERT INTO bss.products_entity_version
+               (tenant_id, entity_kind, entity_id, published_version, content,
+                content_digest, digest_version, approval_ref, actor_ref, published_at)
+             VALUES ('{TENANT}', 'product', '00000000-0000-0000-0000-000000002222', 1, '{{}}',
+                '\\x00'::bytea, 1, NULL, '{ACTOR}', now())"
+        ),
+    )
+    .await;
+    admitted(
+        &conn,
+        "DELETE FROM bss.products_entity_version \
+         WHERE entity_id = '00000000-0000-0000-0000-000000002222'",
+    )
+    .await;
 }

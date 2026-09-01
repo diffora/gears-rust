@@ -666,7 +666,7 @@ argument forbids.
 
 ### The manifest body: entries, captures and the P-D-40 index
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-version-entry-table`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-version-entry-table`
 
 The system **MUST** create `products_catalog_version_entry`, keyed
 `(tenant_id, catalog_version_id, entity_kind, entity_id)` → `published_version`, holding
@@ -684,7 +684,10 @@ The system **MUST** additionally index `(tenant_id, entity_kind, entity_id, publ
 must look a row up by its entity coordinates. Without this index the predicate is a scan of every
 version of every tenant.
 
-**The capture store is its own table** (**P-D-60**), and that is what keeps this index honest: one
+**The capture store is its own table** (**P-D-60**), and **its DDL pins no `capture_kind` roster**
+(**P-D-74** — the seven-vs-six question is §7 row 49's and the set is the snapshot builder's to
+enforce once it resolves; a later pin is an in-place migration edit). That split is what keeps this
+index honest: one
 PK cannot express both keys, a shared table would make every column of both halves nullable —
 admitting a row that is neither a valid entry nor a valid capture — and **P-D-40 needs no
 re-aiming**, its predicate being written over `products_catalog_version_entry`, whose every row now
@@ -699,7 +702,7 @@ predicate.
 
 ### The P-D-40 referential predicate, by editing `m20260829_000007` in place
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-referential-delete-predicate`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-referential-delete-predicate`
 
 The system **MUST** replace `products_entity_version`'s **unconditional** `DELETE` refusal with
 **P-D-40**'s referential predicate: a frozen row may be deleted only when **no
@@ -711,13 +714,17 @@ migrations in place and does not chase them with tightening ones — and **MUST*
 engines: the Postgres `PL/pgSQL` `TG_OP` arm and the SQLite `trg_products_entity_version_no_delete`
 trigger.
 
-This DoD is the reason this feature was built sixth. The shipped migration names it in five places,
-including the refusal message itself on both engines — a plain SQL string literal reading
-`products_entity_version is frozen: DELETE is not permitted until the referential predicate lands with products_catalog_version_entry`
-— and its own module doc:
-*"the referential arm is **owed to slice 06**"*.
+This DoD is the reason this feature was built sixth — **and the owed arm was paid on 2026-09-01**:
+`m20260901_000013` landed the entry and capture tables, `m20260829_000007` was edited in place, and
+the predicate now rides `idx_products_catalog_version_entry_ref` on both engines. The interim
+refusal message and the module doc's *"owed to slice 06"* are gone from the file, replaced by the
+predicate's own refusal:
+`products_entity_version: DELETE is admitted only when no products_catalog_version_entry references the row (P-D-40)`.
 
-Two shipped **green** tests assert the interim rule and **MUST** be amended, not deleted:
+Two shipped **green** tests asserted the interim rule and **were amended, not deleted** — the
+SQLite one now proves the admitted arm on the original entity path, the Postgres one proves both
+arms with the reference seeded and the unreferenced sibling collected; the stronger held-row probe
+lives in `referential_predicate_guard_tests`:
 
 | test | tier |
 |---|---|
@@ -2384,7 +2391,9 @@ against source at `41d1baa5e`.
     precedence for a set of admitted row values rather than a column is stated nowhere. Either
     answer edits a document this feature does not own.
     **Blocks**: `cpt-cf-bss-products-dod-snapshot-builder`,
-    `cpt-cf-bss-products-dod-diff-door`, `cpt-cf-bss-products-dod-version-entry-table`.
+    `cpt-cf-bss-products-dod-diff-door` — **`dod-version-entry-table` was narrowed out by P-D-74**:
+    the capture DDL pins no `capture_kind` roster, the admitted set being the builder's to enforce
+    once this row resolves, so the table does not carry the answer either way.
     **Owner**: the design-set owner — row 40's owner.
 
 50. **Is §6 owed one criterion per DoD, or is it a deliberately selected set?** §6 states its own

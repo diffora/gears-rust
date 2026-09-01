@@ -3419,14 +3419,15 @@ mod entity_version_guard_tests {
         assert!(result.is_err(), "the no-UPDATE rule has no no-op carve-out");
     }
 
-    /// `DELETE` is refused unconditionally at this commit.
+    /// `DELETE` runs under P-D-40's referential predicate — amended from the
+    /// interim unconditional refusal when `m20260901_000013` landed the entry
+    /// table and `m20260829_000007` was edited in place (this `DoD`'s own
+    /// instruction: amended, not deleted).
     ///
-    /// §4.3 admits exactly one `DELETE`, under P-D-40's referential
-    /// predicate against `products_catalog_version_entry`. That table is
-    /// slice 06's; a literal predicate today would find nothing referencing
-    /// any row and therefore admit **every** delete, which is fail-open. The
-    /// interim rule this asserts is the strictly stronger one, and it is what
-    /// slice 06 replaces in this migration file in place.
+    /// The stronger arm — a *referenced* row held with the predicate's own
+    /// message — is `referential_predicate_guard_tests`'; this one keeps the
+    /// original entity-path shape and asserts the admitted arm: an
+    /// unreferenced frozen row is exactly the one DELETE §4.3 admits.
     #[tokio::test]
     async fn a_delete_of_a_frozen_row_is_refused() {
         let provider = harness().await;
@@ -3445,8 +3446,8 @@ mod entity_version_guard_tests {
             .await;
 
         assert!(
-            result.is_err(),
-            "no DELETE is admitted here until slice 06 supplies the referential predicate"
+            result.is_ok(),
+            "an unreferenced frozen row is the one DELETE P-D-40 admits: {result:?}"
         );
     }
 
@@ -4759,6 +4760,168 @@ mod request_queue_and_freeze_ledger_guard_tests {
             err.to_string()
                 .contains("chk_products_freeze_ack_forced_shape"),
             "the refusal must come from the forced-shape CHECK: {err}"
+        );
+    }
+}
+
+/// P-D-40's referential predicate — the flagship this feature was built
+/// sixth for — probed on both arms, plus the manifest-body guards installed
+/// beside it.
+///
+/// @cpt-dod:cpt-cf-bss-products-dod-referential-delete-predicate:p1
+/// @cpt-dod:cpt-cf-bss-products-dod-version-entry-table:p1
+mod referential_predicate_guard_tests {
+    use sea_orm::ConnectionTrait;
+    use sea_orm_migration::MigratorTrait;
+
+    use super::Migrator;
+
+    async fn harness() -> sea_orm::DatabaseConnection {
+        let mut opts = sea_orm::ConnectOptions::new("sqlite::memory:");
+        opts.max_connections(1).min_connections(1);
+        let db = sea_orm::Database::connect(opts)
+            .await
+            .expect("connect in-memory sqlite");
+        Migrator::up(&db, None).await.expect("boot the chain");
+        db
+    }
+
+    async fn exec(db: &sea_orm::DatabaseConnection, sql: &str) -> Result<(), sea_orm::DbErr> {
+        db.execute_raw(sea_orm::Statement::from_string(
+            sea_orm::DatabaseBackend::Sqlite,
+            sql.to_owned(),
+        ))
+        .await
+        .map(|_| ())
+    }
+
+    async fn seed_frozen_row(db: &sea_orm::DatabaseConnection, entity: &str, version: i64) {
+        exec(
+            db,
+            &format!(
+                "INSERT INTO products_entity_version \
+                 (tenant_id, entity_kind, entity_id, published_version, content, content_digest, \
+                  digest_version, approval_ref, actor_ref, published_at) \
+                 VALUES ('t-a', 'sku', '{entity}', {version}, '{{}}', 'd', 1, 'a', 'p', \
+                         '2026-09-01T00:00:00Z')"
+            ),
+        )
+        .await
+        .expect("seed a frozen version row");
+    }
+
+    /// Both arms of the predicate: a referenced row's DELETE is refused with
+    /// P-D-40's own message, and the unreferenced sibling's DELETE — the one
+    /// act §4.3 admits — goes through.
+    #[tokio::test]
+    async fn a_referenced_row_is_held_and_an_unreferenced_one_is_collectable() {
+        let db = harness().await;
+        seed_frozen_row(&db, "s-held", 1).await;
+        seed_frozen_row(&db, "s-free", 1).await;
+
+        exec(
+            &db,
+            "INSERT INTO products_catalog_version \
+             (tenant_id, catalog_version_id, checksum, digest_version, published_at, \
+              participant_set_snapshot, freeze_state) \
+             VALUES ('t-a', 1, 'c1', 1, '2026-09-01T00:00:00Z', '[]', 'open')",
+        )
+        .await
+        .expect("seed a version row");
+        exec(
+            &db,
+            "INSERT INTO products_catalog_version_entry \
+             (tenant_id, catalog_version_id, entity_kind, entity_id, published_version) \
+             VALUES ('t-a', 1, 'sku', 's-held', 1)",
+        )
+        .await
+        .expect("reference one of the two frozen rows");
+
+        let err = exec(
+            &db,
+            "DELETE FROM products_entity_version \
+             WHERE tenant_id = 't-a' AND entity_id = 's-held' AND published_version = 1",
+        )
+        .await
+        .expect_err("a referenced row must be held");
+        assert!(
+            err.to_string()
+                .contains("no products_catalog_version_entry references the row (P-D-40)"),
+            "the refusal must be the predicate's own message: {err}"
+        );
+
+        exec(
+            &db,
+            "DELETE FROM products_entity_version \
+             WHERE tenant_id = 't-a' AND entity_id = 's-free' AND published_version = 1",
+        )
+        .await
+        .expect("the unreferenced sibling is the one DELETE sec 4.3 admits");
+    }
+
+    /// The UPDATE arm survives the in-place edit untouched: frozen means
+    /// frozen, and the message is the update arm's, not the predicate's.
+    #[tokio::test]
+    async fn update_stays_refused_after_the_in_place_edit() {
+        let db = harness().await;
+        seed_frozen_row(&db, "s-upd", 1).await;
+        let err = exec(
+            &db,
+            "UPDATE products_entity_version SET content = '{\"x\":1}' \
+             WHERE tenant_id = 't-a' AND entity_id = 's-upd'",
+        )
+        .await
+        .expect_err("a frozen row admits no UPDATE");
+        assert!(
+            err.to_string().contains("UPDATE is not permitted"),
+            "the refusal must be the update arm's: {err}"
+        );
+    }
+
+    /// The manifest body is immutable: both halves refuse UPDATE and refuse
+    /// DELETE with the interim message naming slice 10's retention — the
+    /// same landing 000007 gave this predicate until it landed.
+    #[tokio::test]
+    async fn the_manifest_body_is_frozen_with_the_interim_delete_text() {
+        let db = harness().await;
+        exec(
+            &db,
+            "INSERT INTO products_catalog_version \
+             (tenant_id, catalog_version_id, checksum, digest_version, published_at, \
+              participant_set_snapshot, freeze_state) \
+             VALUES ('t-a', 1, 'c1', 1, '2026-09-01T00:00:00Z', '[]', 'open')",
+        )
+        .await
+        .expect("seed a version row");
+        exec(
+            &db,
+            "INSERT INTO products_catalog_version_capture \
+             (tenant_id, catalog_version_id, capture_kind, content) \
+             VALUES ('t-a', 1, 'category-tree', '{}')",
+        )
+        .await
+        .expect("a capture row lands");
+
+        let err = exec(
+            &db,
+            "UPDATE products_catalog_version_capture SET content = '[]' \
+             WHERE tenant_id = 't-a' AND catalog_version_id = 1",
+        )
+        .await
+        .expect_err("a capture row admits no UPDATE");
+        assert!(err.to_string().contains("UPDATE is not permitted"), "{err}");
+
+        let err = exec(
+            &db,
+            "DELETE FROM products_catalog_version_capture \
+             WHERE tenant_id = 't-a' AND catalog_version_id = 1",
+        )
+        .await
+        .expect_err("a capture row's DELETE waits for slice 10");
+        assert!(
+            err.to_string()
+                .contains("until slice 10's manifest retention lands"),
+            "the refusal must be the interim message: {err}"
         );
     }
 }

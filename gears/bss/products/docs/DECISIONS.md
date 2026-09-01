@@ -1569,6 +1569,27 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   (the re-publish step).
 
 
+#### P-D-74 — The capture DDL pins no `capture_kind` roster, so row 49 stops holding the entry table
+
+- **Date**: 2026-09-01 (owner call, autonomous under the standing instruction — a **scoping**
+  decision, not an answer to row 49's question)
+- **Context**: `features/catalog-version.md` §7 row 49 asks whether a §2 instruction or a §4 storage
+  bullet governs a **row-value roster** — the capture-kind set, where §4 carries seven values and
+  `inst-sn-collect`/`inst-df-diff` list six, omitting `category values`. Its owner is the design-set
+  owner (row 40's), and it named `dod-version-entry-table` among its Blocks.
+- **Decision**: the hold on the entry table rested on an assumption the DDL need not make. **The
+  capture table's DDL pins no `capture_kind` roster** — `capture_kind` is a non-empty text column,
+  and the admitted set is the **snapshot builder's** to enforce once rows 49/40 resolve, which is
+  where the question actually lives. So row 49 keeps blocking `dod-snapshot-builder` and
+  `dod-diff-door` and stops blocking the table. The freeze ledger's state roster *is* CHECK-pinned
+  because its set is decided (P-D-60); this one is not, and pinning either count would author the
+  answer — a later pin is an in-place migration edit, this chain's own convention.
+- **The argument against, stated**: an unpinned roster admits a typo'd kind at the storage layer
+  until the builder lands — accepted because the builder is the only writer the design admits, and
+  the alternative authored a contested set into a CHECK.
+- **Propagated**: `features/catalog-version.md` (row 49's Blocks narrowed, `dod-version-entry-table`
+  noting the unpinned roster), `design/06-catalog-version.md` (the capture bullet's note).
+
 #### P-D-73 — The version row unblocked: a digest companion, three cache writers, and a header that never existed
 
 - **Date**: 2026-09-01 (owner call, autonomous under the standing instruction — the three rows

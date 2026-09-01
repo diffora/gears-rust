@@ -140,24 +140,28 @@
 //! unlike the head tables one migration over, where the whitelist exists
 //! precisely because some updates are legitimate.
 //!
-//! # `DELETE` is refused unconditionally today, and the referential arm is
-//! owed to slice 06
+//! # `DELETE` runs under P-D-40's referential predicate — the owed arm, paid
 //!
 //! §4.3 admits **exactly one** `DELETE`, under a referential predicate
 //! (**P-D-40**): a row may be deleted only when **no
-//! `products_catalog_version_entry` references it**. That table does not
-//! exist — **it is slice 06's**. Writing the predicate literally today would be
-//! **fail-open**, and measurably so: the subquery would find nothing
-//! referencing any row, because there is no table for it to look in, so the
-//! predicate would admit **every** `DELETE` on this table. Nor is there a
-//! caller that would legitimately issue one — the garbage-collection act
-//! behind P-D-40 is slice 10's `inst-rt-gc`.
+//! `products_catalog_version_entry` references it**. Until `2026-09-01` this
+//! file refused `DELETE` unconditionally, because writing the predicate
+//! before that table existed would have been **fail-open** — the subquery
+//! would have found nothing referencing any row and admitted every `DELETE`.
+//! `m20260901_000013` landed the table, and this same file was edited **in
+//! place** — this chain's own convention, no tightening chase — so the guard
+//! below now carries the predicate on both engines, riding
+//! `idx_products_catalog_version_entry_ref`, the index P-D-40 booked for
+//! exactly this lookup. The only caller that legitimately issues the `DELETE`
+//! is still slice 10's `inst-rt-gc`, which has no code yet; until it does,
+//! nothing exercises the admitted arm in production, and the guard tests
+//! exercise both arms in its stead.
 //!
-//! So this migration refuses `DELETE` **unconditionally**, and the referential
-//! arm is **owed to slice 06**: when `products_catalog_version_entry` lands,
-//! the unconditional refusal here is replaced by P-D-40's predicate **by
-//! editing this same migration file in place**. This chain edits migrations in
-//! place and does not chase them with tightening ones.
+//! On `SQLite` the trigger references the entry table by name at fire time
+//! (its `CREATE TRIGGER` does not resolve the name — measured), and every
+//! fire happens after full-chain boot, so the reference always resolves.
+//!
+//! @cpt-dod:cpt-cf-bss-products-dod-referential-delete-predicate:p1
 //!
 //! This is the discipline the head-row guard used one migration over: ship the
 //! half that is checkable today, name the owed half and name the slice that
@@ -228,7 +232,16 @@ const PG_UP_STATEMENTS: &[&str] = &[
           IF TG_OP = 'UPDATE' THEN
             RAISE EXCEPTION 'products_entity_version is frozen: UPDATE is not permitted';
           END IF;
-          RAISE EXCEPTION 'products_entity_version is frozen: DELETE is not permitted until the referential predicate lands with products_catalog_version_entry';
+          IF EXISTS (
+               SELECT 1 FROM bss.products_catalog_version_entry e
+               WHERE e.tenant_id = OLD.tenant_id
+                 AND e.entity_kind = OLD.entity_kind
+                 AND e.entity_id = OLD.entity_id
+                 AND e.published_version = OLD.published_version
+             ) THEN
+            RAISE EXCEPTION 'products_entity_version: DELETE is admitted only when no products_catalog_version_entry references the row (P-D-40)';
+          END IF;
+          RETURN OLD;
         END;
      $$ LANGUAGE plpgsql",
     "CREATE TRIGGER trg_products_entity_version_frozen BEFORE DELETE OR UPDATE ON bss.products_entity_version FOR EACH ROW EXECUTE FUNCTION bss.products_entity_version_frozen()",
@@ -257,7 +270,7 @@ const SQLITE_UP_STATEMENTS: &[&str] = &[
             CONSTRAINT chk_products_entity_version_digest_version CHECK (digest_version >= 1)
         )",
     "CREATE TRIGGER trg_products_entity_version_no_update BEFORE UPDATE ON products_entity_version FOR EACH ROW BEGIN SELECT RAISE(ABORT, 'products_entity_version is frozen: UPDATE is not permitted'); END",
-    "CREATE TRIGGER trg_products_entity_version_no_delete BEFORE DELETE ON products_entity_version FOR EACH ROW BEGIN SELECT RAISE(ABORT, 'products_entity_version is frozen: DELETE is not permitted until the referential predicate lands with products_catalog_version_entry'); END",
+    "CREATE TRIGGER trg_products_entity_version_no_delete BEFORE DELETE ON products_entity_version FOR EACH ROW WHEN EXISTS (SELECT 1 FROM products_catalog_version_entry e WHERE e.tenant_id = OLD.tenant_id AND e.entity_kind = OLD.entity_kind AND e.entity_id = OLD.entity_id AND e.published_version = OLD.published_version) BEGIN SELECT RAISE(ABORT, 'products_entity_version: DELETE is admitted only when no products_catalog_version_entry references the row (P-D-40)'); END",
 ];
 
 const SQLITE_DOWN_STATEMENTS: &[&str] = &["DROP TABLE IF EXISTS products_entity_version"];
