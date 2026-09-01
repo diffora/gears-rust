@@ -313,10 +313,14 @@ events per §1.8. All tenant-scoped, append-only where evidential.
   slice carries no such item. Until it is supplied, door identity for bucket-ii head-row writes is
   an application guarantee only, and any publish carrying the third argument passes the guard.
   Owner: this slice. *(Raised by the slice-07 first lens pass.)*
-- **The `WATERMARK_FUTURE` skew tolerance has no config home.** `inst-ws-not-future` introduces a
+- ~~**The `WATERMARK_FUTURE` skew tolerance has no config home.**~~
+  **Answered (owner call, 2026-09-01 — P-D-87 arm 1): `watermark_skew_tolerance_minutes` on
+  `ProductsConfig`** (interim 5), per-deployment and boot-time, landing beside the freshness,
+  tripwire and break-glass knobs — P-D-84 arm 5's posture as precedent rather than invention.
+  Original text: `inst-ws-not-future` introduces a
   "configured tolerance, interim 5 min"; `PRD` §17.1 has no row for it, and §1.4's reference line
   claims only the freshness and tripwire interims. It is the one configurable in this slice with no
-  home. Owner: the §17.1 policy owner. *(Two lenses raised it independently.)*
+  home. Owner: was the §17.1 policy owner; **closed**. *(Two lenses raised it independently.)*
 - **What population does the tripwire count?** C6 counts break-glass corrections per window, and the
   unresolvable-target arm "increments the same `TripwireCounter`" — but that arm is admissible while
   the signal is fully available, and `fr-failsafe-tripwire` scopes the requirement to operating "in
@@ -339,12 +343,17 @@ events per §1.8. All tenant-scoped, append-only where evidential.
   removes the metering-unit field from the evaluator's view, while `sku_correction` is not a
   `GovernedLiveOp` kind. As it stands the evaluator returns non-material and the correction closes on
   `min(N, 1)`. Owner: 05's owner. *(Raised by the slice-07 first lens pass.)*
-- **What happens to a retired producer's watermark and member rows, and to one that re-registers?**
-  §4's producer row carries only a state, a registration instant and a ceremony ref, with no clearing
+- ~~**What happens to a retired producer's watermark and member rows, and to one that
+  re-registers?**~~
+  **Answered (owner call, 2026-09-01 — P-D-87 arm 2): the retirement transaction DELETES the
+  producer's watermark and member rows**, and a re-registering producer starts `never-received` —
+  which is what makes "onboarding can only tighten" true. The producer row itself stays, its
+  `state` moving to `retired`, so the registration history is not lost.
+  Original text: §4's producer row carries only a state, a registration instant and a ceremony ref, with no clearing
   rule. If the rows survive, retire-then-re-register inside the freshness window makes the producer
   read **fresh** against a stale member set and frees every SKU that has since gained a reference —
   the opposite of "onboarding can only tighten, never free". Owner:
-  `fr-reference-producer-registration`'s owner. *(Raised by the slice-07 first lens pass.)*
+  was `fr-reference-producer-registration`'s owner; **closed**. *(Raised by the slice-07 first lens pass.)*
 - ~~**Where does `inst-ws-monotonic`'s set hash come from?**~~
   **Answered (owner call, 2026-09-01 — P-D-71): a `set_hash` column on `products_reference_watermark`, stored at ingestion** — `SHA-256` over the member `sku_id`s sorted bytewise; recomputing from 10K member rows per comparison is the declined arm. Original text: An equal `watermark_at` with an identical
   set hash is an idempotent success and with a different set a refusal, while §4 declares no hash
@@ -357,8 +366,16 @@ events per §1.8. All tenant-scoped, append-only where evidential.
   retirement to nobody: the producer actors "register at their own build", which reads either as the
   service registering itself or as an operator registering it — incompatible with a material governed
   op requiring a tenant quorum. Owner: this slice with 05. *(Raised by the slice-07 first lens pass.)*
-- **What transport and success responses do this slice's three doors have?** Only the watermark door
+- ~~**What transport and success responses do this slice's three doors have?**~~
+  **Answered (owner call, 2026-09-01 — P-D-87 arm 3): the routes and success responses are
+  fixed**, each from the set's nearest precedent — watermark post
+  `POST /bss-products/v1/reference-watermarks` (**200**: state, not a minted resource); producer
+  registration `POST /bss-products/v1/reference-producers` (**201**); retirement
+  `POST /bss-products/v1/reference-producers/{producer}/retirements` (**200**); correction
+  `POST /bss-products/v1/skus/{skuId}/corrections` (**202**: the door accepts, the write happens
+  at approval).
+  Original text: Only the watermark door
   is bound to one; the correction door and the membership ops name no route and no 2xx, and §3.2
   gives only refusals. Every comparable operator door in the set names both — 02 added its path and
-  pair expressly because without them 12's lint could not see the door. Owner: the design-set owner.
-  *(Raised by the slice-07 first lens pass.)*
+  pair expressly because without them 12's lint could not see the door. Owner: was the design-set
+  owner; **closed**. *(Raised by the slice-07 first lens pass.)*

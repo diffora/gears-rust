@@ -150,3 +150,8 @@ event-broker-sdk = { workspace = true, features = ["outbox", "test-util"] }
 # whose traceparent test builds the same three pieces the same way.
 tracing-subscriber = { workspace = true, features = ["registry"] }
 opentelemetry_sdk = { workspace = true, features = ["trace"] }
+# `Stream::poll_next` on the SDK's `FrameStream`, so the dedup/ordering
+# fixture (`dod-dedup-ordering`) consumes a real delivery stream instead of
+# copying the stored log. Dev-only: production code never polls a stream —
+# the leased processor is the SDK's own.
+futures-core = { workspace = true }

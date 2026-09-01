@@ -75,7 +75,8 @@
 //!
 //! # The idempotency phase, and why its parts sit here
 //!
-//! [`idempotency_key`], [`idempotency_expiry`], [`IdempotencyClaimInput`],
+//! [`idempotency_key`], `idempotency_expiry` (now
+//! `crate::infra::idempotency`'s own), [`IdempotencyClaimInput`],
 //! [`claim_idempotency`], [`ClaimVerdict`], [`CreateOutcome`] and
 //! [`replay_response`] are shared by both create doors for this module's own
 //! stated reason: not one of them reads which entity is being served. The

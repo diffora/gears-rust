@@ -314,9 +314,22 @@ impl EntityKind {
 /// The body core every Foundation event carries (§4.5, P-D-27):
 /// `{tenantId, entityKind, entityId, internalRevision, lifecycleState}`.
 ///
-/// `internal_revision` is the value **as committed by the act** (P-D-29) —
-/// for a create, that is always the freshly inserted row's own `1`, since
-/// nothing before this event could have moved it.
+/// # The consumer contract, stated (`dod-body-core`)
+///
+/// Two sentences a consumer can get wrong while every field is present:
+///
+/// - **`internalRevision` is the value AS COMMITTED by the act** (P-D-29),
+///   never the pre-act number. A consumer correlating an event to an `ETag`
+///   compares the two **directly** — adjusting by one re-introduces exactly
+///   the off-by-one this sentence exists to rule out. For a create, that is
+///   always the freshly inserted row's own `1`, since nothing before this
+///   event could have moved it.
+/// - **`lifecycleState` is the discriminator on
+///   `ProductHeadSaved`/`SkuHeadSaved`**: one event type covers a save on a
+///   `draft`, `published` or `deprecated` head alike, and this field — not
+///   the event type — is what tells them apart.
+///
+/// @cpt-dod:cpt-cf-bss-products-dod-body-core:p1
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct EventBodyCore {

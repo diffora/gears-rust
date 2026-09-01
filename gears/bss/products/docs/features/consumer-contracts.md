@@ -541,16 +541,22 @@ outside lint 9's coupling population by construction**, the marker rule already 
 
 `products-sdk` mirrors `PRD.md` §9. `inst-sdk-surface` names eight things it must carry:
 
-| # | Surface | Ships at `0771f15ae` |
+| # | Surface | Ships at `71450e924` |
 |---|---|---|
 | 1 | The authoring/publish client — idempotency keys, `If-Match` and intent semantics **part of the contract**, breaking = major | no |
 | 2 | The read-model client | **partly** — `ProductsClient::{get_product, get_sku}` |
-| 3 | The increment-request client, with its three-way error taxonomy (not wired / unreachable / unusable) | no |
-| 4 | The watermark client (`contract-sku-reference-count`) | no |
-| 5 | The freeze-acknowledgment client **with its release half** (**P-D-18**) | no |
+| 3 | The increment-request client, with its three-way error taxonomy (not wired / unreachable / unusable) | **yes** — `increments::IncrementRequests`, both bindings |
+| 4 | The watermark client (`contract-sku-reference-count`) | **yes** — `watermarks::WatermarkPosts`, both bindings |
+| 5 | The freeze-acknowledgment client **with its release half** (**P-D-18**) | no — the ack/release **doors** ship; the typed client does not |
 | 6 | The bundle composition-completed signal | no |
 | 7 | The event payload types | no |
 | 8 | The error-code enum — `design/01` §3.3 plus every slice's registered codes, renames breaking | no |
+
+The table was first measured at `0771f15ae`, which predates the build groups; re-measured at
+`71450e924` rows 3 and 4 ship as `ClientHub`-resolved traits with their REST/S2S doors as the
+out-of-process bindings, which is two of §9.2's four inbound machine contracts. Row 5's doors
+exist (`06`'s ack and release), so what it still owes is the **client** — the trait and its
+in-process binding — not the wire.
 
 **Four of them are the whole of §9.2's inbound machine contracts** (**P-D-15**) — rows 3, 4, 5 and 6
 — and all four are typed clients resolved from `ClientHub`, with the REST and S2S doors as their
@@ -682,7 +688,7 @@ no-broker deployment would have emitted it."* Two green test rosters and a runti
 
 ### Dedup and ordering, over a `sequence` the gear does not assign
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-dedup-ordering`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-dedup-ordering`
 
 The consumer contract states both keys and the suite fixtures both cases — a duplicate delivery and
 an out-of-order one. **Both are assertable now** (**P-D-58**): `MockBroker` exports `StoredEvent` and
@@ -708,7 +714,7 @@ on healthy traffic. The contract says so explicitly.
 
 ### The replay body core, which already ships
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-body-core`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-body-core`
 
 Replay reads the body core every Foundation event carries:
 `{tenantId, entityKind, entityId, internalRevision, lifecycleState}`, with `publishedVersion`

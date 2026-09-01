@@ -2012,6 +2012,7 @@ dependencies = [
  "cf-gears-toolkit-macros",
  "cf-gears-toolkit-security",
  "chrono",
+ "futures-core",
  "gts",
  "opentelemetry",
  "opentelemetry_sdk",

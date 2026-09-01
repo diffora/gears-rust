@@ -764,3 +764,365 @@ async fn the_outbox_half_of_the_propagation_budget_is_measured() {
         elapsed.as_secs_f64() * 1000.0
     );
 }
+
+/// The redelivery fixture's own harness: a `MockBroker` carrying the topic
+/// and all eight event types, the outbox mirror, and the bound SDK producer.
+/// Extracted so the fixture body stays within the line bar; the two sibling
+/// cases above keep their inline copies deliberately (each documents a
+/// different seam of the same setup).
+async fn redelivery_harness(
+    tag: &str,
+) -> (
+    std::sync::Arc<event_broker_sdk::mock::MockBroker>,
+    event_broker_sdk::mock::MockBrokerHandle,
+    crate::infra::broker::EventSink,
+    toolkit_db::DBProvider<toolkit_db::DbError>,
+    event_broker_sdk::ProducerOutboxHandle,
+    TempDbGuard,
+) {
+    use std::sync::Arc;
+
+    use event_broker_sdk::EventBrokerApi;
+    use event_broker_sdk::mock::MockBroker;
+    use toolkit_db::outbox::Partitions;
+    use toolkit_db::{ConnectOpts, connect_db};
+
+    use crate::infra::broker::bind_producer;
+    use crate::infra::events;
+
+    let broker = Arc::new(MockBroker::new());
+    let control = broker.handle();
+    control
+        .register_topic(TRANSCRIBED_TOPIC, u32::from(events::PARTITIONS))
+        .await;
+    for (_, type_id, subject_type) in THE_EIGHT {
+        control
+            .register_event_type(
+                TRANSCRIBED_TOPIC,
+                type_id,
+                serde_json::json!({}),
+                &[subject_type],
+            )
+            .await;
+    }
+    let hub = toolkit::client_hub::ClientHub::new();
+    hub.register::<dyn EventBrokerApi>(Arc::clone(&broker) as Arc<_>);
+
+    let temp = TempDbGuard(
+        std::env::temp_dir().join(format!("bss-products-{tag}-{}.sqlite3", Uuid::new_v4())),
+    );
+    let dsn = format!("sqlite://{}?mode=rwc", temp.0.display());
+    let db = connect_db(
+        &dsn,
+        ConnectOpts {
+            max_conns: Some(1),
+            min_conns: Some(1),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("connect the file-backed sqlite mirror");
+    toolkit_db::migration_runner::run_migrations_for_testing(
+        &db,
+        toolkit_db::outbox::outbox_migrations_with_prefix(events::OUTBOX_TABLE_PREFIX)
+            .expect("a fixed identifier"),
+    )
+    .await
+    .expect("run the outbox facility's migrator");
+    toolkit_db::migration_runner::run_migrations_for_testing(
+        &db,
+        event_broker_sdk::producer_registration_migrations(),
+    )
+    .await
+    .expect("run the producer registration migrator");
+
+    let (sink, handle) = bind_producer(
+        &hub,
+        db.clone(),
+        events::OUTBOX_TABLE_PREFIX,
+        Partitions::of(events::PARTITIONS),
+    )
+    .await
+    .expect("the producer must bind")
+    .expect("a ClientHub carrying an EventBrokerApi must not answer None");
+
+    let provider = toolkit_db::DBProvider::<toolkit_db::DbError>::new(db);
+    (broker, control, sink, provider, handle, temp)
+}
+
+/// [`redelivery_harness`]'s cleanup guard - survives a panic, and takes the
+/// `-wal`/`-shm` companions with the file.
+struct TempDbGuard(std::path::PathBuf);
+impl Drop for TempDbGuard {
+    fn drop(&mut self) {
+        for suffix in ["", "-wal", "-shm"] {
+            let mut p = self.0.clone().into_os_string();
+            p.push(suffix);
+            std::fs::remove_file(std::path::PathBuf::from(p)).ok();
+        }
+    }
+}
+
+/// `dod-dedup-ordering`'s two fixtures — a duplicate delivery and an
+/// out-of-order one — on the surface the contract names (**P-D-58**): the
+/// stored log and the per-partition cursors `MockBroker` exports.
+///
+/// # The two keys, both asserted against a REAL redelivery
+///
+/// The duplicate delivery is produced by the mechanism that produces it in
+/// production — the consumer's cursor rewound (SEEK) and the stream read
+/// again — never by copying a list, which could only prove a list equals
+/// itself. The second delivery of every event must repeat the **event `id`**
+/// (the within-window key, minted once at enqueue) and the
+/// **`(tenant, aggregate, sequence)`** triple (the beyond-window key, whose
+/// `sequence` is the broker's server-assigned per-`(topic, partition)` value
+/// — P-D-47, never a gear-assigned one).
+///
+/// # Monotonicity, not density
+///
+/// The gear sets no `partition_key`, so ADR-0002's default puts every event
+/// of one tenant on ONE partition and `sequence` is monotonic across them.
+/// The fixture interleaves a second aggregate between one aggregate's two
+/// acts, so the first aggregate's neighbouring events carry a **gap** — and
+/// the out-of-order detector (last-seen comparison) passes the gapped
+/// in-order delivery while firing on any reversed pair. A consumer treating
+/// the gap as loss would re-bootstrap on healthy traffic; this is the case
+/// that proves the contract's sentence.
+///
+/// @cpt-dod:cpt-cf-bss-products-dod-dedup-ordering:p1
+#[tokio::test]
+async fn the_dedup_and_ordering_keys_hold_across_a_real_redelivery() {
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use event_broker_sdk::api::{
+        BarrierMode, JoinRequest, SeekPosition, SubscriptionInterest, TenantTraversalDepth,
+        WireFrame,
+    };
+    use event_broker_sdk::mock::stubs::test_ctx_for_tenant;
+    use event_broker_sdk::models::CreateConsumerGroupRequest;
+    use event_broker_sdk::{EventBrokerApi, ResolvedPosition};
+
+    use crate::infra::events;
+
+    let (broker, control, sink, provider, _processor, _temp) = redelivery_harness("dedup").await;
+    let conn = provider.conn().expect("checkout a connection");
+
+    // Three acts, two aggregates, ONE tenant — each awaited to the broker
+    // before the next enqueues, so the stored order is [A1, B1, A2] by
+    // construction and aggregate A's neighbours are provably gapped.
+    let aggregate_a = Uuid::now_v7();
+    let aggregate_b = Uuid::now_v7();
+    let acts: &[(Uuid, &str, i64)] = &[
+        (aggregate_a, "ProductCreated", 1),
+        (aggregate_b, "ProductCreated", 1),
+        (aggregate_a, "ProductHeadSaved", 2),
+    ];
+    for (arrived, (entity_id, token, revision)) in (1..=acts.len()).zip(acts) {
+        let core = events::EventBodyCore {
+            tenant_id: TENANT,
+            entity_kind: "product",
+            entity_id: *entity_id,
+            internal_revision: *revision,
+            lifecycle_state: "draft",
+        };
+        events::enqueue(&sink, &conn, *entity_id, token, &core, ACTOR)
+            .await
+            .unwrap_or_else(|e| panic!("{token} must enqueue: {e}"));
+        let mut seen = 0;
+        for _ in 0..200_u32 {
+            seen = 0;
+            for partition in 0..u32::from(events::PARTITIONS) {
+                seen += control.stored(TRANSCRIBED_TOPIC, partition).await.len();
+            }
+            if seen >= arrived {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        assert_eq!(seen, arrived, "act {arrived} must reach the broker");
+    }
+
+    // --- The ordering half, on the stored log. ---
+    let mut tenant_partition = None;
+    let mut stored = Vec::new();
+    for partition in 0..u32::from(events::PARTITIONS) {
+        let log = control.stored(TRANSCRIBED_TOPIC, partition).await;
+        if !log.is_empty() {
+            assert!(
+                tenant_partition.is_none(),
+                "no partition_key is set, so ADR-0002's default must put every event of one \
+                 tenant on ONE partition; a second non-empty partition breaks the ordering key"
+            );
+            tenant_partition = Some(partition);
+            stored = log;
+        }
+    }
+    let tenant_partition = tenant_partition.expect("one partition holds the tenant's events");
+    let sequences: Vec<i64> = stored
+        .iter()
+        .map(|s| {
+            s.event
+                .sequence
+                .expect("the broker stamps sequence at ingest")
+        })
+        .collect();
+    assert!(
+        sequences.windows(2).all(|w| w[0] < w[1]),
+        "sequence must be strictly monotonic across ONE tenant's events, whatever the \
+         aggregate: {sequences:?}"
+    );
+    let a_seqs: Vec<i64> = stored
+        .iter()
+        .filter(|s| s.event.subject == aggregate_a.to_string())
+        .map(|s| s.event.sequence.expect("stamped"))
+        .collect();
+    assert_eq!(a_seqs.len(), 2, "aggregate A carries two acts");
+    assert!(
+        a_seqs[1] - a_seqs[0] > 1,
+        "aggregate A's neighbouring events must carry a GAP (aggregate B sits between them): \
+         detection needs monotonicity, not density, and a consumer treating this gap as loss \
+         would re-bootstrap on healthy traffic"
+    );
+
+    // --- The consumer, and the REAL redelivery. ---
+    let ctx = test_ctx_for_tenant(TENANT);
+    let group = broker
+        .create_consumer_group(
+            &ctx,
+            CreateConsumerGroupRequest {
+                client_agent: "bss-products-dedup-fixture/1.0".to_owned(),
+                description: None,
+            },
+        )
+        .await
+        .expect("create the consumer group")
+        .id;
+    // One consumer session: join the group, seek, stream until three
+    // events, leave. The duplicate below is produced by the mechanism that
+    // produces it in production — a consumer session ends (a crash, a
+    // deploy) and its successor re-reads from the rewound cursor. The
+    // mock's per-subscription scan frontier only moves forward, exactly so
+    // that a duplicate can only come from a session boundary, never from
+    // one session re-reading itself.
+    let join = || async {
+        broker
+            .join(
+                &ctx,
+                JoinRequest {
+                    group,
+                    client_agent: "bss-products-dedup-fixture/1.0".to_owned(),
+                    interests: vec![
+                        SubscriptionInterest::builder()
+                            .topic(TRANSCRIBED_TOPIC)
+                            .tenant_id(Uuid::nil())
+                            .tenant_depth(TenantTraversalDepth::CurrentTenant)
+                            .barrier_mode(BarrierMode::Respect)
+                            .types(["*"])
+                            .build()
+                            .expect("a well-formed interest"),
+                    ],
+                    session_timeout: Some(Duration::from_secs(30)),
+                },
+            )
+            .await
+            .expect("join the group")
+            .subscription_id
+    };
+
+    // One delivery attempt: seek to Earliest, stream until three events.
+    let deliver = |label: &'static str, sub_id| {
+        let broker = Arc::clone(&broker);
+        let ctx = ctx.clone();
+        async move {
+            // The mock refuses a stream over any unseeded assigned
+            // partition, so every one is seeked — the rewind that matters
+            // is the tenant partition's.
+            let positions: Vec<SeekPosition> = (0..u32::from(events::PARTITIONS))
+                .map(|partition| SeekPosition {
+                    topic: TRANSCRIBED_TOPIC.to_owned(),
+                    partition,
+                    value: ResolvedPosition::Earliest,
+                })
+                .collect();
+            broker
+                .seek(&ctx, sub_id, &positions)
+                .await
+                .expect("seek every assigned partition to the earliest offset");
+            let mut stream = broker.stream(&ctx, sub_id).await.expect("open the stream");
+            let mut events = Vec::new();
+            let budget = tokio::time::Instant::now() + Duration::from_secs(5);
+            while events.len() < 3 {
+                let frame = tokio::time::timeout_at(
+                    budget,
+                    std::future::poll_fn(|cx| stream.as_mut().poll_next(cx)),
+                )
+                .await
+                .unwrap_or_else(|_| panic!("{label}: the stream must deliver three events"))
+                .unwrap_or_else(|| panic!("{label}: the stream must not end early"))
+                .unwrap_or_else(|e| panic!("{label}: the stream must not fail: {e}"));
+                if let WireFrame::Event(event) = frame {
+                    events.push(event);
+                }
+            }
+            events
+        }
+    };
+
+    let first_session = join().await;
+    let first = deliver("first delivery", first_session).await;
+    // The cursor surface the contract names, both halves readable: the
+    // session `offset` is where SEEK anchored it (0 — the broker emits from
+    // offset+1), and `last_examined` has scanned through the third stored
+    // event. The rewind that produces the duplicate below is exactly this
+    // anchor being set again.
+    assert_eq!(
+        control
+            .cursor(&group, TRANSCRIBED_TOPIC, tenant_partition)
+            .await,
+        Some(0),
+        "the session cursor must be readable and sit where SEEK anchored it"
+    );
+    assert_eq!(
+        control
+            .last_examined(&group, TRANSCRIBED_TOPIC, tenant_partition)
+            .await,
+        Some(3),
+        "last_examined must be readable and have scanned through the third delivery"
+    );
+    // The session boundary: the first consumer leaves, its successor joins
+    // the same group and rewinds — the at-least-once duplicate's own shape.
+    broker
+        .leave(&ctx, first_session)
+        .await
+        .expect("the first session leaves");
+    let second_session = join().await;
+    let second = deliver("second delivery (the duplicate)", second_session).await;
+
+    for (a, b) in first.iter().zip(&second) {
+        // Within the idempotency window: the event id, minted once at
+        // enqueue, repeated by every delivery attempt.
+        assert_eq!(a.id, b.id, "a redelivery must repeat the event id");
+        // Beyond the window: (tenant, aggregate, sequence) — the broker's
+        // server-assigned sequence, identical on every attempt.
+        assert_eq!(
+            (a.tenant_id, &a.subject, a.sequence),
+            (b.tenant_id, &b.subject, b.sequence),
+            "a redelivery must repeat the (tenant, aggregate, sequence) triple"
+        );
+    }
+
+    // The out-of-order detector: last-seen comparison per partition. The
+    // gapped in-order delivery passes; ANY reversed pair fires it.
+    let in_order = first.windows(2).all(|w| w[0].sequence < w[1].sequence);
+    assert!(
+        in_order,
+        "the delivered order must already satisfy the monotonic detector"
+    );
+    let reversed_fires = first[2].sequence >= first[1].sequence;
+    assert!(
+        reversed_fires,
+        "delivering event 3 before event 2 must fail the last-seen comparison; the \
+         out-of-order case is detected on the sequence key alone"
+    );
+}
