@@ -806,8 +806,8 @@ the code comment as well as the design (open item 2); this DoD obliges the catal
 routes.
 
 **The catalog ships and the tick does not: seven live §7 rows name this DoD** — 1, 2, 3, 7, 12, 18
-and 24. Row 12 is the sharpest of them, asking *"what door carries submit, decide and break-glass
-elevation?"*, and this DoD's own scope sentence (*"obliges the catalog, not the routes"*) does not
+and 24. Row 12 is the sharpest of them, asking which door carries submit, decide and
+break-glass elevation, and this DoD's own scope sentence (*"obliges the catalog, not the routes"*) does not
 dispose of it — a catalog whose grants no door spends is exactly what rows 1 and 12 are about. An
 earlier pass ticked this on the strength of that scope sentence alone, having read this §7 — **a
 table** — as empty; it is 23 rows.
