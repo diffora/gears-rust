@@ -13,6 +13,9 @@ use toolkit_db::secure::{
 };
 use uuid::Uuid;
 
+use bss_products_sdk::increments::IncrementLane;
+
+use crate::domain::states::{FreezeAckState, FreezeState, RequestState};
 use crate::infra::storage::RepoError;
 use crate::infra::storage::entity::{
     catalog_version, catalog_version_capture, catalog_version_counter, catalog_version_entry,
@@ -29,8 +32,8 @@ pub struct NewIncrementRequest<'a> {
     pub source: &'a str,
     /// The caller's idempotency handle.
     pub request_key: &'a str,
-    /// `interactive` or `bulk`.
-    pub lane: &'a str,
+    /// The demand lane, typed at the boundary.
+    pub lane: IncrementLane,
     /// The bulk batch key, absent on the interactive lane.
     pub operation_key: Option<&'a str>,
     /// The door's ingress stamp.
@@ -40,8 +43,8 @@ pub struct NewIncrementRequest<'a> {
 /// One row of the increment queue, in this repository's vocabulary.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct IncrementRequestRecord {
-    /// `pending` or `coalesced`.
-    pub state: String,
+    /// The queue's own state, typed at the storage boundary.
+    pub state: RequestState,
     /// The satisfying version, present exactly when `coalesced`.
     pub satisfied_by_version_id: Option<i64>,
 }
@@ -74,10 +77,10 @@ pub async fn enqueue_increment_request(
         tenant_id: Set(tenant_id),
         source: Set(source.to_owned()),
         request_key: Set(request_key.to_owned()),
-        lane: Set(lane.to_owned()),
+        lane: Set(lane.as_str().to_owned()),
         operation_key: Set(operation_key.map(str::to_owned)),
         requested_at: Set(requested_at),
-        state: Set("pending".to_owned()),
+        state: Set(RequestState::Pending.as_str().to_owned()),
         satisfied_by_version_id: Set(None),
     };
 
@@ -104,7 +107,7 @@ pub async fn enqueue_increment_request(
     {
         Ok(_) => {
             return Ok(IncrementRequestRecord {
-                state: "pending".to_owned(),
+                state: RequestState::Pending,
                 satisfied_by_version_id: None,
             });
         }
@@ -158,10 +161,20 @@ pub async fn find_increment_request(
                 e,
             )
         })?;
-    Ok(row.map(|row| IncrementRequestRecord {
-        state: row.state,
-        satisfied_by_version_id: row.satisfied_by_version_id,
-    }))
+    row.map(|row| {
+        let state = RequestState::parse(&row.state).ok_or_else(|| {
+            RepoError::CorruptRow(format!(
+                "increment request {tenant_id}/{source}/{request_key} carries state {:?} \
+                 outside the roster",
+                row.state
+            ))
+        })?;
+        Ok(IncrementRequestRecord {
+            state,
+            satisfied_by_version_id: row.satisfied_by_version_id,
+        })
+    })
+    .transpose()
 }
 
 /// One pending demand row, as the coalescer reads it.
@@ -171,8 +184,8 @@ pub struct PendingIncrementRequest {
     pub source: String,
     /// The caller's idempotency handle.
     pub request_key: String,
-    /// `interactive` or `bulk`.
-    pub lane: String,
+    /// The demand lane, typed at the storage boundary.
+    pub lane: IncrementLane,
     /// The bulk batch key.
     pub operation_key: Option<String>,
     /// The door's ingress stamp — the window arithmetic's zero point.
@@ -198,7 +211,10 @@ pub async fn tenants_with_pending_requests(
     let rows: Vec<TenantIdRow> = catalog_version_request::Entity::find()
         .secure()
         .scope_with(scope)
-        .filter(Condition::all().add(catalog_version_request::Column::State.eq("pending")))
+        .filter(
+            Condition::all()
+                .add(catalog_version_request::Column::State.eq(RequestState::Pending.as_str())),
+        )
         .project_all(runner, |q| {
             q.select_only()
                 .column(catalog_version_request::Column::TenantId)
@@ -234,7 +250,7 @@ pub async fn pending_increment_requests(
         .filter(
             Condition::all()
                 .add(catalog_version_request::Column::TenantId.eq(tenant_id))
-                .add(catalog_version_request::Column::State.eq("pending")),
+                .add(catalog_version_request::Column::State.eq(RequestState::Pending.as_str())),
         )
         .order_by(
             catalog_version_request::Column::RequestedAt,
@@ -243,16 +259,23 @@ pub async fn pending_increment_requests(
         .all(runner)
         .await
         .map_err(|e| driver_failure(format!("read pending demand of {tenant_id}"), e))?;
-    Ok(rows
-        .into_iter()
-        .map(|row| PendingIncrementRequest {
-            source: row.source,
-            request_key: row.request_key,
-            lane: row.lane,
-            operation_key: row.operation_key,
-            requested_at: row.requested_at,
+    rows.into_iter()
+        .map(|row| {
+            let lane = IncrementLane::parse(&row.lane).ok_or_else(|| {
+                RepoError::CorruptRow(format!(
+                    "increment request {}/{} carries lane {:?} outside the roster",
+                    row.source, row.request_key, row.lane
+                ))
+            })?;
+            Ok(PendingIncrementRequest {
+                source: row.source,
+                request_key: row.request_key,
+                lane,
+                operation_key: row.operation_key,
+                requested_at: row.requested_at,
+            })
         })
-        .collect())
+        .collect()
 }
 
 /// Allocate the next `catalog_version_id` for `tenant_id` — gapless
@@ -430,8 +453,8 @@ pub struct NewCatalogVersion {
     pub published_at: DateTime<Utc>,
     /// The participant cache column's rendering (P-D-67).
     pub participant_set_snapshot: String,
-    /// `open`, or `complete` for an empty participant set.
-    pub freeze_state: String,
+    /// `Open`, or `Complete` for an empty participant set.
+    pub freeze_state: FreezeState,
 }
 
 /// Insert the version row.
@@ -453,7 +476,7 @@ pub async fn insert_catalog_version(
         digest_version: Set(new.digest_version),
         published_at: Set(new.published_at),
         participant_set_snapshot: Set(new.participant_set_snapshot),
-        freeze_state: Set(new.freeze_state),
+        freeze_state: Set(new.freeze_state.as_str().to_owned()),
     };
     catalog_version::Entity::insert(model.clone())
         .secure()
@@ -552,7 +575,7 @@ pub async fn seed_freeze_acks(
             tenant_id: Set(tenant_id),
             catalog_version_id: Set(catalog_version_id),
             participant: Set(participant.clone()),
-            state: Set("pending".to_owned()),
+            state: Set(FreezeAckState::Pending.as_str().to_owned()),
             acked_at: Set(None),
             released_at: Set(None),
             forced_at: Set(None),
@@ -592,7 +615,7 @@ pub async fn mark_requests_coalesced(
             .scope_with(scope)
             .col_expr(
                 catalog_version_request::Column::State,
-                Expr::value("coalesced".to_owned()),
+                Expr::value(RequestState::Coalesced.as_str().to_owned()),
             )
             .col_expr(
                 catalog_version_request::Column::SatisfiedByVersionId,
@@ -603,7 +626,7 @@ pub async fn mark_requests_coalesced(
                     .add(catalog_version_request::Column::TenantId.eq(tenant_id))
                     .add(catalog_version_request::Column::Source.eq(source.clone()))
                     .add(catalog_version_request::Column::RequestKey.eq(request_key.clone()))
-                    .add(catalog_version_request::Column::State.eq("pending")),
+                    .add(catalog_version_request::Column::State.eq(RequestState::Pending.as_str())),
             )
             .exec(runner)
             .await

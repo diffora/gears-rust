@@ -22,6 +22,7 @@ use crate::infra::storage::entity::{
 };
 use crate::infra::storage::migrations::Migrator;
 use crate::infra::storage::repo::{self, NewIncrementRequest, NewProduct};
+use bss_products_sdk::increments::IncrementLane;
 
 const TENANT: Uuid = Uuid::from_u128(0x1c_01);
 const BRAND: Uuid = Uuid::from_u128(0x1c_02);
@@ -129,7 +130,13 @@ async fn seed_published_product(harness: &Harness, name: &str) -> Uuid {
     product_id
 }
 
-async fn enqueue(harness: &Harness, key: &str, lane: &str, op: Option<&str>, age_secs: i64) {
+async fn enqueue(
+    harness: &Harness,
+    key: &str,
+    lane: IncrementLane,
+    op: Option<&str>,
+    age_secs: i64,
+) {
     let conn = harness.db.conn().expect("conn");
     repo::enqueue_increment_request(
         &conn,
@@ -156,8 +163,8 @@ async fn a_closed_interactive_window_commits_one_version() {
     let harness = harness().await;
     let product_a = seed_published_product(&harness, "Alpha Line").await;
     let product_b = seed_published_product(&harness, "Beta Line").await;
-    enqueue(&harness, "r-1", "interactive", None, 6).await;
-    enqueue(&harness, "r-2", "interactive", None, 3).await;
+    enqueue(&harness, "r-1", IncrementLane::Interactive, None, 6).await;
+    enqueue(&harness, "r-2", IncrementLane::Interactive, None, 3).await;
 
     let outcome = drain_tenant(&harness.db, TENANT, t0())
         .await
@@ -176,7 +183,7 @@ async fn a_closed_interactive_window_commits_one_version() {
         .await
         .expect("read")
         .expect("the row exists");
-    assert_eq!(row.state, "coalesced");
+    assert_eq!(row.state, crate::domain::states::RequestState::Coalesced);
     assert_eq!(row.satisfied_by_version_id, Some(1));
 
     let version = catalog_version::Entity::find()
@@ -227,7 +234,7 @@ async fn a_closed_interactive_window_commits_one_version() {
 #[tokio::test]
 async fn an_open_window_waits() {
     let harness = harness().await;
-    enqueue(&harness, "young", "interactive", None, 1).await;
+    enqueue(&harness, "young", IncrementLane::Interactive, None, 1).await;
     let outcome = drain_tenant(&harness.db, TENANT, t0())
         .await
         .expect("drain");
@@ -240,7 +247,7 @@ async fn an_open_window_waits() {
 #[tokio::test]
 async fn the_allocator_is_gapless_across_drains() {
     let harness = harness().await;
-    enqueue(&harness, "g-1", "interactive", None, 6).await;
+    enqueue(&harness, "g-1", IncrementLane::Interactive, None, 6).await;
     let first = drain_tenant(&harness.db, TENANT, t0())
         .await
         .expect("drain");
@@ -251,7 +258,7 @@ async fn the_allocator_is_gapless_across_drains() {
             satisfied: 1
         }
     );
-    enqueue(&harness, "g-2", "interactive", None, 6).await;
+    enqueue(&harness, "g-2", IncrementLane::Interactive, None, 6).await;
     let second = drain_tenant(&harness.db, TENANT, t0())
         .await
         .expect("drain");
@@ -272,9 +279,9 @@ async fn the_allocator_is_gapless_across_drains() {
 async fn a_steady_interactive_trickle_does_not_defer_a_closed_bulk_window() {
     let harness = harness().await;
     let max = i64::try_from(BULK_WINDOW_MAX.as_secs()).expect("fits");
-    enqueue(&harness, "b-1", "bulk", Some("op-1"), max + 10).await;
-    enqueue(&harness, "b-2", "bulk", Some("op-1"), max - 60).await;
-    enqueue(&harness, "i-1", "interactive", None, 6).await;
+    enqueue(&harness, "b-1", IncrementLane::Bulk, Some("op-1"), max + 10).await;
+    enqueue(&harness, "b-2", IncrementLane::Bulk, Some("op-1"), max - 60).await;
+    enqueue(&harness, "i-1", IncrementLane::Interactive, None, 6).await;
 
     let first = drain_tenant(&harness.db, TENANT, t0())
         .await
@@ -295,7 +302,8 @@ async fn a_steady_interactive_trickle_does_not_defer_a_closed_bulk_window() {
             .expect("read")
             .expect("exists");
         assert_eq!(
-            interactive.state, "pending",
+            interactive.state,
+            crate::domain::states::RequestState::Pending,
             "the interactive batch was not shredded into the bulk version"
         );
     }
@@ -317,7 +325,7 @@ async fn a_steady_interactive_trickle_does_not_defer_a_closed_bulk_window() {
 #[tokio::test]
 async fn an_open_bulk_window_waits_for_its_hard_max() {
     let harness = harness().await;
-    enqueue(&harness, "b-only", "bulk", Some("op-2"), 100).await;
+    enqueue(&harness, "b-only", IncrementLane::Bulk, Some("op-2"), 100).await;
     let outcome = drain_tenant(&harness.db, TENANT, t0())
         .await
         .expect("drain");
@@ -345,7 +353,7 @@ async fn the_participant_snapshot_seeds_the_ledger() {
             .await
             .expect("register the participant");
     }
-    enqueue(&harness, "p-1", "interactive", None, 6).await;
+    enqueue(&harness, "p-1", IncrementLane::Interactive, None, 6).await;
 
     let outcome = drain_tenant(&harness.db, TENANT, t0())
         .await
@@ -388,7 +396,7 @@ async fn the_participant_snapshot_seeds_the_ledger() {
 async fn re_rendering_the_stored_manifest_reproduces_the_checksum() {
     let harness = harness().await;
     seed_published_product(&harness, "Gamma Line").await;
-    enqueue(&harness, "c-1", "interactive", None, 6).await;
+    enqueue(&harness, "c-1", IncrementLane::Interactive, None, 6).await;
     drain_tenant(&harness.db, TENANT, t0())
         .await
         .expect("drain");
@@ -458,7 +466,7 @@ async fn re_rendering_the_stored_manifest_reproduces_the_checksum() {
 async fn a_moved_head_between_stage_and_commit_restages_the_pass() {
     let harness = harness().await;
     seed_published_product(&harness, "Delta Line").await;
-    enqueue(&harness, "s-1", "interactive", None, 6).await;
+    enqueue(&harness, "s-1", IncrementLane::Interactive, None, 6).await;
 
     let staged = {
         let conn = harness.db.conn().expect("conn");
@@ -500,7 +508,11 @@ async fn a_moved_head_between_stage_and_commit_restages_the_pass() {
         .await
         .expect("read")
         .expect("exists");
-    assert_eq!(row.state, "pending", "the request is never lost");
+    assert_eq!(
+        row.state,
+        crate::domain::states::RequestState::Pending,
+        "the request is never lost"
+    );
 }
 
 /// A held lease skips the pass: single-activeness is the drain worker's,
@@ -508,7 +520,7 @@ async fn a_moved_head_between_stage_and_commit_restages_the_pass() {
 #[tokio::test]
 async fn a_held_lease_skips_the_pass() {
     let harness = harness().await;
-    enqueue(&harness, "l-1", "interactive", None, 6).await;
+    enqueue(&harness, "l-1", IncrementLane::Interactive, None, 6).await;
 
     let lease = coord::LeaseManager::new(harness.db.db());
     let guard = lease
@@ -556,7 +568,7 @@ async fn the_overdue_scan_names_the_silent_participants() {
             .await
             .expect("register");
     }
-    enqueue(&harness, "od-1", "interactive", None, 6).await;
+    enqueue(&harness, "od-1", IncrementLane::Interactive, None, 6).await;
     drain_tenant(&harness.db, TENANT, t0())
         .await
         .expect("drain");
@@ -597,7 +609,7 @@ async fn the_registered_producer_set_rides_the_capture_store() {
         .await
         .expect("register");
     }
-    enqueue(&harness, "ps-1", "interactive", None, 6).await;
+    enqueue(&harness, "ps-1", IncrementLane::Interactive, None, 6).await;
     drain_tenant(&harness.db, TENANT, t0())
         .await
         .expect("drain");

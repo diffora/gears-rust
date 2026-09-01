@@ -76,7 +76,10 @@ use toolkit_db::secure::AccessScope;
 use toolkit_db::{DBProvider, DbError};
 use uuid::Uuid;
 
+use bss_products_sdk::increments::IncrementLane;
+
 use crate::domain::canonical;
+use crate::domain::states::{FreezeAckState, FreezeState, ProducerState};
 use crate::infra::storage::RepoError;
 use crate::infra::storage::repo::{
     self, NewCatalogVersion, PendingIncrementRequest, SnapshotEntityRef,
@@ -139,7 +142,7 @@ fn ready_batch(pending: &[PendingIncrementRequest], now: DateTime<Utc>) -> Optio
     // request has aged past the hard max. `pending` arrives oldest-first,
     // so the first ready group found is the longest-waiting one.
     let mut seen: Vec<&str> = Vec::new();
-    for request in pending.iter().filter(|r| r.lane == "bulk") {
+    for request in pending.iter().filter(|r| r.lane == IncrementLane::Bulk) {
         let Some(op) = request.operation_key.as_deref() else {
             continue;
         };
@@ -149,7 +152,7 @@ fn ready_batch(pending: &[PendingIncrementRequest], now: DateTime<Utc>) -> Optio
         seen.push(op);
         let group: Vec<&PendingIncrementRequest> = pending
             .iter()
-            .filter(|r| r.lane == "bulk" && r.operation_key.as_deref() == Some(op))
+            .filter(|r| r.lane == IncrementLane::Bulk && r.operation_key.as_deref() == Some(op))
             .collect();
         let earliest = group
             .iter()
@@ -171,8 +174,10 @@ fn ready_batch(pending: &[PendingIncrementRequest], now: DateTime<Utc>) -> Optio
 
     // The interactive batch: every pending interactive request, ready when
     // the earliest is INTERACTIVE_WINDOW old.
-    let interactive: Vec<&PendingIncrementRequest> =
-        pending.iter().filter(|r| r.lane == "interactive").collect();
+    let interactive: Vec<&PendingIncrementRequest> = pending
+        .iter()
+        .filter(|r| r.lane == IncrementLane::Interactive)
+        .collect();
     let earliest = interactive.iter().map(|r| r.requested_at).min()?;
     if now
         >= earliest
@@ -312,7 +317,7 @@ impl SnapshotBuilder {
             repo::reference_producers(runner, scope, tenant_id)
                 .await?
                 .into_iter()
-                .filter(|row| row.state == "registered")
+                .filter(|row| row.state == ProducerState::Registered)
                 .map(|row| JsonValue::String(row.producer))
                 .collect(),
         );
@@ -445,9 +450,9 @@ pub async fn commit_increment(
                         canonical::Absence::Omit,
                     );
                     let freeze_state = if manifest.participant_set.is_empty() {
-                        "complete"
+                        FreezeState::Complete
                     } else {
-                        "open"
+                        FreezeState::Open
                     };
                     repo::insert_catalog_version(
                         tx,
@@ -459,7 +464,7 @@ pub async fn commit_increment(
                             digest_version: canonical::DIGEST_VERSION,
                             published_at: now,
                             participant_set_snapshot: participants_rendering,
-                            freeze_state: freeze_state.to_owned(),
+                            freeze_state,
                         },
                     )
                     .await?;
@@ -560,7 +565,7 @@ pub async fn overdue_freezes(
             repo::freeze_ack_rows(&conn, &scope, tenant_id, catalog_version_id)
                 .await?
                 .into_iter()
-                .filter(|(_, state)| state == "pending")
+                .filter(|(_, state)| *state == FreezeAckState::Pending)
                 .map(|(participant, _)| participant)
                 .collect();
         overdue.push(OverdueFreeze {

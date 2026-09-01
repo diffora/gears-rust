@@ -412,7 +412,7 @@ mod freeze_and_resolve_tests {
             NewIncrementRequest {
                 source: "pricing",
                 request_key: "fz-seed",
-                lane: "interactive",
+                lane: bss_products_sdk::increments::IncrementLane::Interactive,
                 operation_key: None,
                 requested_at: chrono::Utc::now() - ChronoDuration::seconds(10),
             },

@@ -63,6 +63,20 @@ impl IncrementLane {
             Self::Bulk => "bulk",
         }
     }
+
+    /// Parse a stored or wire value.
+    ///
+    /// Returns `None` for anything outside the roster rather than
+    /// defaulting — `LifecycleState::parse`'s own fail-closed posture: an
+    /// unrecognised lane is a corrupt row, not interactive demand.
+    #[must_use]
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "interactive" => Some(Self::Interactive),
+            "bulk" => Some(Self::Bulk),
+            _ => None,
+        }
+    }
 }
 
 /// One increment request, exactly the entity `design/06` §1.7 declares minus

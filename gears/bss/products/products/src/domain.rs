@@ -11,5 +11,6 @@ pub mod governance;
 pub mod idempotency;
 pub mod name;
 pub mod rules;
+pub mod states;
 pub mod transition;
 pub mod validation;

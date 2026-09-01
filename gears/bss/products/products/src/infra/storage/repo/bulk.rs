@@ -12,6 +12,7 @@ use toolkit_db::secure::{
 };
 use uuid::Uuid;
 
+use crate::domain::states::BatchState;
 use crate::infra::storage::RepoError;
 use crate::infra::storage::entity::{bulk_batch, bulk_row};
 
@@ -63,8 +64,8 @@ pub struct BulkBatchRecord {
     pub mode: String,
     /// `import` or `lifecycle`.
     pub lane: String,
-    /// The state machine's current value.
-    pub state: String,
+    /// The state machine's current value, typed at the storage boundary.
+    pub state: BatchState,
     /// The worker's attempt counter.
     pub attempt: i64,
     /// The creation instant.
@@ -112,7 +113,10 @@ pub async fn count_live_batches(
         .filter(
             Condition::all()
                 .add(bulk_batch::Column::TenantId.eq(tenant_id))
-                .add(bulk_batch::Column::State.is_not_in(["completed", "failed", "abandoned"])),
+                .add(
+                    bulk_batch::Column::State
+                        .is_not_in(BatchState::TERMINAL.map(BatchState::as_str)),
+                ),
         )
         .count(runner)
         .await
@@ -141,7 +145,7 @@ pub async fn find_batch_by_key(
         .one(runner)
         .await
         .map_err(|e| driver_failure(format!("read batch {batch_key}"), e))?;
-    Ok(row.map(into_batch_record))
+    row.map(into_batch_record).transpose()
 }
 
 /// Read one batch head by its id — the ledger reader's operand.
@@ -166,19 +170,27 @@ pub async fn find_batch(
         .one(runner)
         .await
         .map_err(|e| driver_failure(format!("read batch {batch_id}"), e))?;
-    Ok(row.map(into_batch_record))
+    row.map(into_batch_record).transpose()
 }
 
-fn into_batch_record(row: bulk_batch::Model) -> BulkBatchRecord {
-    BulkBatchRecord {
+fn into_batch_record(row: bulk_batch::Model) -> Result<BulkBatchRecord, RepoError> {
+    // The CHECK constraint admits only the roster, so a value outside it
+    // is a corrupt row, never a default.
+    let state = BatchState::parse(&row.state).ok_or_else(|| {
+        RepoError::CorruptRow(format!(
+            "bulk batch {} carries state {:?} outside the roster",
+            row.batch_id, row.state
+        ))
+    })?;
+    Ok(BulkBatchRecord {
         batch_id: row.batch_id,
         batch_key: row.batch_key,
         mode: row.mode,
         lane: row.lane,
-        state: row.state,
+        state,
         attempt: row.attempt,
         created_at: row.created_at,
-    }
+    })
 }
 
 /// Every ledger row of one batch, in row-key order.
@@ -248,7 +260,7 @@ pub async fn claim_bulk_batch(
             Condition::all()
                 .add(bulk_batch::Column::TenantId.eq(tenant_id))
                 .add(bulk_batch::Column::BatchId.eq(batch_id))
-                .add(bulk_batch::Column::State.eq("staging"))
+                .add(bulk_batch::Column::State.eq(BatchState::Staging.as_str()))
                 .add(bulk_batch::Column::Attempt.eq(attempt)),
         )
         .exec(runner)
@@ -269,22 +281,30 @@ pub async fn move_bulk_batch_state(
     scope: &AccessScope,
     tenant_id: Uuid,
     batch_id: Uuid,
-    from: &str,
-    to: &str,
+    from: BatchState,
+    to: BatchState,
 ) -> Result<bool, RepoError> {
     let result = bulk_batch::Entity::update_many()
         .secure()
         .scope_with(scope)
-        .col_expr(bulk_batch::Column::State, Expr::value(to.to_owned()))
+        .col_expr(
+            bulk_batch::Column::State,
+            Expr::value(to.as_str().to_owned()),
+        )
         .filter(
             Condition::all()
                 .add(bulk_batch::Column::TenantId.eq(tenant_id))
                 .add(bulk_batch::Column::BatchId.eq(batch_id))
-                .add(bulk_batch::Column::State.eq(from)),
+                .add(bulk_batch::Column::State.eq(from.as_str())),
         )
         .exec(runner)
         .await
-        .map_err(|e| driver_failure(format!("move batch {batch_id} {from} -> {to}"), e))?;
+        .map_err(|e| {
+            driver_failure(
+                format!("move batch {batch_id} {} -> {}", from.as_str(), to.as_str()),
+                e,
+            )
+        })?;
     Ok(result.rows_affected > 0)
 }
 
@@ -304,7 +324,7 @@ pub async fn tenants_with_staging_batches(
     let rows: Vec<TenantIdRow> = bulk_batch::Entity::find()
         .secure()
         .scope_with(scope)
-        .filter(Condition::all().add(bulk_batch::Column::State.eq("staging")))
+        .filter(Condition::all().add(bulk_batch::Column::State.eq(BatchState::Staging.as_str())))
         .project_all(runner, |q| {
             q.select_only()
                 .column(bulk_batch::Column::TenantId)
@@ -334,13 +354,13 @@ pub async fn staging_batches(
         .filter(
             Condition::all()
                 .add(bulk_batch::Column::TenantId.eq(tenant_id))
-                .add(bulk_batch::Column::State.eq("staging")),
+                .add(bulk_batch::Column::State.eq(BatchState::Staging.as_str())),
         )
         .order_by(bulk_batch::Column::CreatedAt, sea_orm::Order::Asc)
         .all(runner)
         .await
         .map_err(|e| driver_failure(format!("read staging batches of {tenant_id}"), e))?;
-    Ok(rows.into_iter().map(into_batch_record).collect())
+    rows.into_iter().map(into_batch_record).collect()
 }
 
 /// Record one row's staging outcome: the minted entity on a success, or the
@@ -426,7 +446,7 @@ pub async fn insert_bulk_batch(
         batch_key: Set(new.batch_key),
         mode: Set(new.mode),
         lane: Set(new.lane),
-        state: Set("staging".to_owned()),
+        state: Set(BatchState::Staging.as_str().to_owned()),
         operation_key: Set(new.operation_key),
         approval_ref: Set(None),
         claimed_at: Set(None),

@@ -431,7 +431,7 @@ async fn import_batch(
                 batch_id: existing.batch_id,
                 batch_key: existing.batch_key,
                 mode: existing.mode,
-                state: existing.state,
+                state: existing.state.as_str().to_owned(),
                 row_count: rows.len(),
                 replayed: true,
             }),
@@ -585,7 +585,7 @@ async fn read_batch(
             batch_key: batch.batch_key,
             mode: batch.mode,
             lane: batch.lane,
-            state: batch.state,
+            state: batch.state.as_str().to_owned(),
             rows: rows
                 .into_iter()
                 .map(|row| RowLedgerEntryView {

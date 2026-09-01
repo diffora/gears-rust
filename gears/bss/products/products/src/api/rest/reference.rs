@@ -117,7 +117,7 @@ pub async fn evaluate_reference(
     let producers: Vec<String> = repo::reference_producers(runner, scope, tenant_id)
         .await?
         .into_iter()
-        .filter(|row| row.state == "registered")
+        .filter(|row| row.state == crate::domain::states::ProducerState::Registered)
         .map(|row| row.producer)
         .collect();
 
@@ -493,7 +493,10 @@ async fn record_watermark(
         .await
         .map_err(|e| repo_error_to_canonical(&e))?
         .into_iter()
-        .any(|row| row.producer == producer && row.state == "registered");
+        .any(|row| {
+            row.producer == producer
+                && row.state == crate::domain::states::ProducerState::Registered
+        });
     if !registered {
         let refusal = DomainError::ProducerUnregistered(format!(
             "\"{producer}\" is not in this tenant's registered producer set"

@@ -12,6 +12,7 @@ use toolkit_db::secure::{
 };
 use uuid::Uuid;
 
+use crate::domain::states::ProducerState;
 use crate::infra::storage::RepoError;
 use crate::infra::storage::entity::{reference_member, reference_producer, reference_watermark};
 
@@ -22,8 +23,8 @@ use super::driver_failure;
 pub struct ReferenceProducerRecord {
     /// The producer's own name.
     pub producer: String,
-    /// `registered` or `retired`.
-    pub state: String,
+    /// The registry's state, typed at the storage boundary.
+    pub state: ProducerState,
 }
 
 /// Every producer of one tenant, name order — the predicate quantifies over
@@ -45,13 +46,20 @@ pub async fn reference_producers(
         .all(runner)
         .await
         .map_err(|e| driver_failure(format!("read the producer set of {tenant_id}"), e))?;
-    Ok(rows
-        .into_iter()
-        .map(|row| ReferenceProducerRecord {
-            producer: row.producer,
-            state: row.state,
+    rows.into_iter()
+        .map(|row| {
+            let state = ProducerState::parse(&row.state).ok_or_else(|| {
+                RepoError::CorruptRow(format!(
+                    "producer {:?} of {tenant_id} carries state {:?} outside the roster",
+                    row.producer, row.state
+                ))
+            })?;
+            Ok(ReferenceProducerRecord {
+                producer: row.producer,
+                state,
+            })
         })
-        .collect())
+        .collect()
 }
 
 /// Register a producer, or report that the name is already held. A
@@ -88,7 +96,7 @@ pub async fn register_reference_producer(
             .scope_with(scope)
             .col_expr(
                 reference_producer::Column::State,
-                Expr::value("registered".to_owned()),
+                Expr::value(ProducerState::Registered.as_str().to_owned()),
             )
             .col_expr(
                 reference_producer::Column::RegisteredAt,
@@ -108,7 +116,7 @@ pub async fn register_reference_producer(
     let model = reference_producer::ActiveModel {
         tenant_id: Set(tenant_id),
         producer: Set(producer.to_owned()),
-        state: Set("registered".to_owned()),
+        state: Set(ProducerState::Registered.as_str().to_owned()),
         registered_at: Set(registered_at),
         ceremony_ref: Set(ceremony_ref),
         declaration_payload: Set(None),
@@ -142,7 +150,7 @@ pub async fn retire_reference_producer(
         .scope_with(scope)
         .col_expr(
             reference_producer::Column::State,
-            Expr::value("retired".to_owned()),
+            Expr::value(ProducerState::Retired.as_str().to_owned()),
         )
         .filter(
             Condition::all()

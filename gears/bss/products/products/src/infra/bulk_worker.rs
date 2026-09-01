@@ -449,8 +449,8 @@ pub(crate) async fn stage_next_batch(
         &scope,
         tenant_id,
         batch.batch_id,
-        "staging",
-        "reported",
+        crate::domain::states::BatchState::Staging,
+        crate::domain::states::BatchState::Reported,
     )
     .await?;
 

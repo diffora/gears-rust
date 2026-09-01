@@ -402,7 +402,7 @@ async fn enqueue_increment(
         repo::NewIncrementRequest {
             source: &source,
             request_key: &request_key,
-            lane: request.lane.as_str(),
+            lane: request.lane,
             operation_key: operation_key.as_deref().filter(|key| !key.is_empty()),
             requested_at: now,
         },
@@ -411,7 +411,7 @@ async fn enqueue_increment(
     .map_err(|e| repo_error_to_canonical(&e))?;
 
     Ok(IncrementAck {
-        coalesced: record.state == "coalesced",
+        coalesced: record.state == crate::domain::states::RequestState::Coalesced,
         catalog_version_id: record.satisfied_by_version_id,
     })
 }
@@ -760,7 +760,10 @@ async fn drive_freeze_edge(
     let outcome = state
         .db
         .db()
-        .transaction_with_retry::<(repo::FreezeEdgeOutcome, String), toolkit_db::DbError, _, _>(
+        .transaction_with_retry::<(
+            repo::FreezeEdgeOutcome,
+            Option<crate::domain::states::FreezeState>,
+        ), toolkit_db::DbError, _, _>(
             toolkit_db::secure::TxConfig::default(),
             crate::api::rest::contention_db_err,
             move |tx| {
@@ -814,9 +817,9 @@ async fn drive_freeze_edge(
                         )
                         .await
                         .map_err(|e| toolkit_db::DbError::Sea(e.to_db_err()))?;
-                        refreshed
+                        Some(refreshed)
                     } else {
-                        String::new()
+                        None
                     };
                     Ok((outcome, freeze_state))
                 })
@@ -834,7 +837,12 @@ async fn drive_freeze_edge(
             Json(FreezeEdgeView {
                 participant,
                 state: edge.target().to_owned(),
-                freeze_state,
+                // Flipped is the arm that refreshed, so the state is
+                // always present here; rendered through the enum's own
+                // spelling.
+                freeze_state: freeze_state
+                    .map(|state| state.as_str().to_owned())
+                    .unwrap_or_default(),
             }),
         )
             .into_response()),
@@ -866,7 +874,7 @@ async fn drive_freeze_edge(
                 Json(FreezeEdgeView {
                     participant,
                     state: edge.target().to_owned(),
-                    freeze_state: version.freeze_state,
+                    freeze_state: version.freeze_state.as_str().to_owned(),
                 }),
             )
                 .into_response())
@@ -1011,7 +1019,9 @@ async fn resolve_catalog_version(
                         .await
                         .map_err(|e| repo_error_to_canonical(&e))?
                         .into_iter()
-                        .filter(|(_, s)| s == "not_frozen(forced)")
+                        .filter(|(_, s)| {
+                            *s == crate::domain::states::FreezeAckState::NotFrozenForced
+                        })
                         .map(|(p, _)| p)
                         .collect();
                 let refusal = DomainError::VersionForcedIncomplete(format!(
@@ -1087,8 +1097,8 @@ async fn resolve_catalog_version(
             checksum: version.checksum,
             digest_version: version.digest_version,
             published_at: version.published_at,
-            freeze_complete: version.freeze_state == "complete",
-            freeze_state: version.freeze_state,
+            freeze_complete: version.freeze_state == crate::domain::states::FreezeState::Complete,
+            freeze_state: version.freeze_state.as_str().to_owned(),
             entries: entries
                 .into_iter()
                 .map(|entry| ManifestEntryView {

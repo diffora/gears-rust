@@ -10,6 +10,7 @@ use sea_orm::{ColumnTrait, Condition, EntityTrait};
 use toolkit_db::secure::{AccessScope, DBRunner, SecureEntityExt, SecureUpdateExt};
 use uuid::Uuid;
 
+use crate::domain::states::{FreezeAckState, FreezeState};
 use crate::infra::storage::RepoError;
 use crate::infra::storage::entity::{
     catalog_version, catalog_version_capture, catalog_version_entry, freeze_ack,
@@ -30,8 +31,8 @@ pub struct CatalogVersionRecord {
     pub published_at: DateTime<Utc>,
     /// The derived participant cache (P-D-67).
     pub participant_set_snapshot: String,
-    /// `open`, `complete` or `complete(forced)`.
-    pub freeze_state: String,
+    /// The ledger's derived cache, typed at the storage boundary.
+    pub freeze_state: FreezeState,
 }
 
 /// Read one version row.
@@ -56,14 +57,25 @@ pub async fn find_catalog_version(
         .one(runner)
         .await
         .map_err(|e| driver_failure(format!("read catalog version {catalog_version_id}"), e))?;
-    Ok(row.map(|row| CatalogVersionRecord {
-        catalog_version_id: row.catalog_version_id,
-        checksum: row.checksum,
-        digest_version: row.digest_version,
-        published_at: row.published_at,
-        participant_set_snapshot: row.participant_set_snapshot,
-        freeze_state: row.freeze_state,
-    }))
+    row.map(|row| {
+        // The CHECK constraint admits only the roster, so a value outside
+        // it is a corrupt row, never a default.
+        let freeze_state = FreezeState::parse(&row.freeze_state).ok_or_else(|| {
+            RepoError::CorruptRow(format!(
+                "catalog version {catalog_version_id} carries freeze_state {:?} outside the roster",
+                row.freeze_state
+            ))
+        })?;
+        Ok(CatalogVersionRecord {
+            catalog_version_id: row.catalog_version_id,
+            checksum: row.checksum,
+            digest_version: row.digest_version,
+            published_at: row.published_at,
+            participant_set_snapshot: row.participant_set_snapshot,
+            freeze_state,
+        })
+    })
+    .transpose()
 }
 
 /// The stored manifest halves of one version — the resolver's re-render
@@ -125,7 +137,7 @@ pub async fn freeze_ack_rows(
     scope: &AccessScope,
     tenant_id: Uuid,
     catalog_version_id: i64,
-) -> Result<Vec<(String, String)>, RepoError> {
+) -> Result<Vec<(String, FreezeAckState)>, RepoError> {
     let rows = freeze_ack::Entity::find()
         .secure()
         .scope_with(scope)
@@ -138,10 +150,18 @@ pub async fn freeze_ack_rows(
         .all(runner)
         .await
         .map_err(|e| driver_failure(format!("read the ledger of {catalog_version_id}"), e))?;
-    Ok(rows
-        .into_iter()
-        .map(|row| (row.participant, row.state))
-        .collect())
+    rows.into_iter()
+        .map(|row| {
+            let state = FreezeAckState::parse(&row.state).ok_or_else(|| {
+                RepoError::CorruptRow(format!(
+                    "freeze-ack row of {} on {catalog_version_id} carries state {:?} \
+                     outside the roster",
+                    row.participant, row.state
+                ))
+            })?;
+            Ok((row.participant, state))
+        })
+        .collect()
 }
 
 /// A ledger edge's outcome, for the ack and release doors to classify.
@@ -176,14 +196,20 @@ pub async fn ack_freeze_row(
     let result = freeze_ack::Entity::update_many()
         .secure()
         .scope_with(scope)
-        .col_expr(freeze_ack::Column::State, Expr::value("acked".to_owned()))
+        .col_expr(
+            freeze_ack::Column::State,
+            Expr::value(FreezeAckState::Acked.as_str().to_owned()),
+        )
         .col_expr(freeze_ack::Column::AckedAt, Expr::value(Some(now)))
         .filter(
             Condition::all()
                 .add(freeze_ack::Column::TenantId.eq(tenant_id))
                 .add(freeze_ack::Column::CatalogVersionId.eq(catalog_version_id))
                 .add(freeze_ack::Column::Participant.eq(participant))
-                .add(freeze_ack::Column::State.is_in(["pending", "not_frozen(forced)"])),
+                .add(freeze_ack::Column::State.is_in([
+                    FreezeAckState::Pending.as_str(),
+                    FreezeAckState::NotFrozenForced.as_str(),
+                ])),
         )
         .exec(runner)
         .await
@@ -197,7 +223,7 @@ pub async fn ack_freeze_row(
         tenant_id,
         catalog_version_id,
         participant,
-        "acked",
+        FreezeAckState::Acked,
     )
     .await
 }
@@ -221,14 +247,18 @@ pub async fn release_freeze_row(
         .scope_with(scope)
         .col_expr(
             freeze_ack::Column::State,
-            Expr::value("released".to_owned()),
+            Expr::value(FreezeAckState::Released.as_str().to_owned()),
         )
         .filter(
             Condition::all()
                 .add(freeze_ack::Column::TenantId.eq(tenant_id))
                 .add(freeze_ack::Column::CatalogVersionId.eq(catalog_version_id))
                 .add(freeze_ack::Column::Participant.eq(participant))
-                .add(freeze_ack::Column::State.is_in(["pending", "acked", "not_frozen(forced)"])),
+                .add(freeze_ack::Column::State.is_in([
+                    FreezeAckState::Pending.as_str(),
+                    FreezeAckState::Acked.as_str(),
+                    FreezeAckState::NotFrozenForced.as_str(),
+                ])),
         )
         .exec(runner)
         .await
@@ -242,7 +272,7 @@ pub async fn release_freeze_row(
         tenant_id,
         catalog_version_id,
         participant,
-        "released",
+        FreezeAckState::Released,
     )
     .await
 }
@@ -255,7 +285,7 @@ async fn classify_missed_edge(
     tenant_id: Uuid,
     catalog_version_id: i64,
     participant: &str,
-    target: &str,
+    target: FreezeAckState,
 ) -> Result<FreezeEdgeOutcome, RepoError> {
     let row = freeze_ack::Entity::find()
         .secure()
@@ -273,7 +303,7 @@ async fn classify_missed_edge(
         })?;
     Ok(match row {
         None => FreezeEdgeOutcome::NoRow,
-        Some(row) if row.state == target => FreezeEdgeOutcome::AlreadyThere,
+        Some(row) if row.state == target.as_str() => FreezeEdgeOutcome::AlreadyThere,
         Some(row) => FreezeEdgeOutcome::IllegalFrom(row.state),
     })
 }
@@ -292,21 +322,24 @@ pub async fn refresh_freeze_state(
     scope: &AccessScope,
     tenant_id: Uuid,
     catalog_version_id: i64,
-) -> Result<String, RepoError> {
+) -> Result<FreezeState, RepoError> {
     let rows = freeze_ack_rows(runner, scope, tenant_id, catalog_version_id).await?;
-    let state = if rows.iter().any(|(_, s)| s == "not_frozen(forced)") {
-        "complete(forced)"
-    } else if rows.iter().any(|(_, s)| s == "pending") {
-        "open"
+    let state = if rows
+        .iter()
+        .any(|(_, s)| *s == FreezeAckState::NotFrozenForced)
+    {
+        FreezeState::CompleteForced
+    } else if rows.iter().any(|(_, s)| *s == FreezeAckState::Pending) {
+        FreezeState::Open
     } else {
-        "complete"
+        FreezeState::Complete
     };
     catalog_version::Entity::update_many()
         .secure()
         .scope_with(scope)
         .col_expr(
             catalog_version::Column::FreezeState,
-            Expr::value(state.to_owned()),
+            Expr::value(state.as_str().to_owned()),
         )
         .filter(
             Condition::all()
@@ -316,7 +349,7 @@ pub async fn refresh_freeze_state(
         .exec(runner)
         .await
         .map_err(|e| driver_failure(format!("refresh freeze_state of {catalog_version_id}"), e))?;
-    Ok(state.to_owned())
+    Ok(state)
 }
 
 /// Every `open` version older than the timeout, with its still-pending
@@ -337,7 +370,7 @@ pub async fn overdue_open_versions(
         .scope_with(scope)
         .filter(
             Condition::all()
-                .add(catalog_version::Column::FreezeState.eq("open"))
+                .add(catalog_version::Column::FreezeState.eq(FreezeState::Open.as_str()))
                 .add(catalog_version::Column::PublishedAt.lt(published_before)),
         )
         .all(runner)

@@ -164,7 +164,11 @@ async fn a_batch_stages_its_rows_and_reports() {
         .await
         .expect("read")
         .expect("the batch");
-    assert_eq!(batch.state, "reported", "edge 1 fires with the last row");
+    assert_eq!(
+        batch.state,
+        crate::domain::states::BatchState::Reported,
+        "edge 1 fires with the last row"
+    );
     assert_eq!(batch.attempt, 1, "the claim bumped the attempt");
 
     let rows = repo::find_batch_rows(&conn, &scope(), TENANT, batch_id)
@@ -288,9 +292,16 @@ async fn a_resumed_batch_skips_the_rows_it_already_staged() {
         .expect("read")[0]
         .entity_id;
     // Put the batch back in staging as a crashed attempt would have left it.
-    repo::move_bulk_batch_state(&conn, &scope(), TENANT, batch_id, "reported", "staging")
-        .await
-        .expect("rewind");
+    repo::move_bulk_batch_state(
+        &conn,
+        &scope(),
+        TENANT,
+        batch_id,
+        crate::domain::states::BatchState::Reported,
+        crate::domain::states::BatchState::Staging,
+    )
+    .await
+    .expect("rewind");
     let conn2 = harness.state.db.conn().expect("conn");
     return_pinned(conn);
 
