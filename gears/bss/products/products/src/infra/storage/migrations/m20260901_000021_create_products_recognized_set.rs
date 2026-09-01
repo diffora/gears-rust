@@ -22,16 +22,17 @@
 //! re-listing of *the same identity* rather than a new member. A `DELETE`
 //! would break both, so the guard refuses it unconditionally.
 //!
-//! # The whitelist admits exactly two columns, and this one IS a whitelist
+//! # The guard freezes five columns, and the design asks for a whitelist
 //!
-//! Unlike the head tables — whose guards name the **immutable** columns and
-//! admit the rest — §4 states this one from the other side: *"trigger
-//! whitelist admits `state` and `display_label` only"*. So `member_code`,
-//! `set_kind`, `tenant_id` and `seeded_by` are refused on every `UPDATE`,
-//! and a column added later is refused until someone adds it here
-//! deliberately. The asymmetry is the design's, and it fits: a head row is
-//! an authoring surface, while a set member is a governed identity whose
-//! only mutable facts are its lifecycle and its label.
+//! §4 asks for a whitelist — *"trigger whitelist admits `state` and
+//! `display_label` only"* — and what ships is a **complement enumeration**:
+//! `tenant_id`, `set_kind`, `member_code`, `seeded_by` and `created_at` are
+//! refused on every `UPDATE`, and everything else is admitted. The difference
+//! is not cosmetic and is stated here rather than smoothed: **`updated_at` is
+//! writable**, which §4's roster does not mention at all, and a column a
+//! later migration adds is admitted by default rather than refused.
+//! Tightening it to the literal whitelist would freeze `updated_at`, which no
+//! document rules on — `design/03` §6 carries the question.
 //!
 //! # `display_label` is `plan_tier`'s and ignored elsewhere
 //!

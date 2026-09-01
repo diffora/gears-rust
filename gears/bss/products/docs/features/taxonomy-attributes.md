@@ -740,9 +740,11 @@ vacuous. Three properties made the wiring non-obvious and each is built delibera
   `PRIMARY_CATEGORY_REQUIRED` is this slice's declared code (P-D-36). Only codes this crate declares
   are surfaced, so a future rule cannot leak an unmapped one onto the wire.
 
-**Twelve shipped fixtures published a Product with no primary assignment and went red**, which is
-the rule working: each was asserting a publish the design forbids. All twelve seed the assignment
-now; none of them relaxed the rule.
+**Sixteen shipped fixtures published a Product with no primary assignment and went red**, which is
+the rule working: each was asserting a publish the design forbids. All sixteen seed the assignment
+now; none relaxed the rule. *(Two earlier counts of this same population — "twelve" here and "six"
+in the helper's own doc — were both written in the commit that landed the rule and neither
+reproduced against the crate; the number is the `assign_primary_category` call census.)*
 
 **Implements**: `cpt-cf-bss-products-flow-assign-categories`
 
@@ -939,8 +941,11 @@ The system **MUST** keep the metadata map outside frozen published-version conte
 mutate the map after a snapshot and prove the old snapshot's checksum does not move.
 
 The snapshot builder now writes the `metadata_maps` capture beside the freeze-participant and
-reference-producer sets — **three of the seven kinds have shipped sources**, and the builder's own
-rule is that a kind is written exactly when its store ships. Each row renders as an object so the
+reference-producer sets — **three of the seven kinds have readers**. The sentence this paragraph
+first carried claimed three of the seven kinds had shipped **sources**, which is false: all seven
+source stores ship, and the four uncaptured kinds are owed to their slices' **doors**, not waiting
+on a table. A consumer reading a frozen version must not take a missing capture for a missing
+store. Each row renders as an object so the
 entity coordinate travels with its key, and the rows arrive sorted by
 `(entity_kind, entity_id, key)` **from SQL**, because the rendering is checksummed and two engines
 must order it identically. The probe writes `team-a`, snapshots, writes `team-b`, and asserts both

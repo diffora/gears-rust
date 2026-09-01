@@ -50,10 +50,17 @@
 //! `(entity_kind, entity_id)`, capture rows by `capture_kind`. The admitted
 //! capture set is [`CAPTURE_KINDS`] — §4's seven, the builder being the
 //! enforcement site P-D-74 left it to — and a kind is written exactly when
-//! its source store ships: today that is the freeze-participant set, the
+//! its **reader** is built — and that is a weaker rule than an earlier
+//! revision of this doc stated. It said *"exactly when its source store
+//! ships"*, which is false at this commit: `products_category`,
+//! `products_attribute_definition`, `products_attribute_value` and
+//! `products_recognized_set` all ship, and none of the four kinds they source
+//! is captured. Three kinds have readers — the freeze-participant set, the
 //! **reference-producer set** (`07`, `dod-producer-snapshot`) and the
-//! **metadata maps** (`02`, `dod-metadata-placement`), with the remaining
-//! four arriving as `02`/`03`'s doors land. The checksum is
+//! **metadata maps** (`02`, `dod-metadata-placement`) — and the other four
+//! are **owed to their slices' doors**, not waiting on a store. A consumer
+//! reading a frozen version must not take a missing capture for a missing
+//! store. The checksum is
 //! [`canonical::content_digest`] over the rendering, hex, with
 //! [`canonical::DIGEST_VERSION`] stored beside it (P-D-73).
 //!

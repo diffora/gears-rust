@@ -781,7 +781,7 @@ pub(crate) async fn insert_sku_with_event(
         &state.sink,
         scope,
         new,
-        claim,
+        crate::infra::create::JoinedRecords { claim, stamp: None },
         actor_ref,
         render_created_sku,
     )

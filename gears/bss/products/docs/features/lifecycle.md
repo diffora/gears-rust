@@ -561,7 +561,7 @@ Product collided.
 
 ### Lifecycle columns on the entity tables
 
-- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-lifecycle-columns`
+- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-lifecycle-columns`
 
 The system **MUST** carry `deprecation_provenance` on **both** entity tables and
 `replaced_by_sku_id` on **`products_sku` only** — the column names a SKU. Both are created by
@@ -570,12 +570,23 @@ be write-once **per retirement, not per row**: the head-row whitelist admits the
 clearing write, and without it a cancelled, un-deprecated SKU stays `published` while permanently
 naming a successor no admitted write could clear.
 
-**Both columns ship, and the write-once property is the head guard's existing shape rather than a
-new clause.** That guard names the columns that may **not** change — `tenant_id`, the key,
-`created_by`, `created_at` and the `cloned_from` pair — and admits everything else, so the cancel's
-clearing write needs no arm of its own; a probe asserts all three writes on a **terminal** row and
-that the row-identity columns are still refused, so a future revision turning the guard into a
-whitelist fails here instead of silently making the cancel unperformable.
+**Both columns ship with the row-image predicates P-D-34 pins, and an earlier revision of this
+paragraph had it backwards.** It said the write-once property was the head guard's existing shape
+rather than a new clause, because that guard admits everything else — but a guard admitting
+everything else has **no** write-once property, and **P-D-34** lists these two among *"Four row-image predicates the first migration's trigger was missing"*. Both are installed now, in the
+shape `composition_pending`'s predicate already had seven lines above them: `deprecation_provenance`
+only in the same statement as a `lifecycle_state` change, and `replaced_by_sku_id` admitting
+`null → non-null` and `non-null → null` and refusing between two non-nulls.
+
+The probe moved with them. It stamped both columns on an **already-`retired`** row and called that
+"by design"; `design/04` says the successor is *"written by that act in the same statement as its
+`lifecycle_state` change"*, so the write rides the statement that **makes** the row terminal, and
+the old probe asserted a write three normative texts refuse.
+
+**The tick is withdrawn** — not because the columns are unbuilt, but because this `DoD`'s own
+paragraph asserted a property the code did not have, and a tick resting on a false sentence is the
+one thing the register must not carry. It returns when `dod-append-only-guard`'s roster and this
+feature's §7 row 33 are reconciled against the predicates as they now ship.
 
 Both are registered `Outside(Mechanical)` in the bucket registry, and that is **measured, not
 chosen**: `design/01` §4.3 groups `deprecation_provenance` and `replaced_by_sku_id` with

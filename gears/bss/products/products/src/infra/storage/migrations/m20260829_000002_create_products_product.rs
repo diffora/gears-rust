@@ -266,6 +266,11 @@ const PG_UP_STATEMENTS: &[&str] = &[
           THEN
             RAISE EXCEPTION 'products_product: bucket-iii columns are admitted only while the head is non-terminal';
           END IF;
+          IF NEW.deprecation_provenance IS DISTINCT FROM OLD.deprecation_provenance
+             AND NEW.lifecycle_state IS NOT DISTINCT FROM OLD.lifecycle_state
+          THEN
+            RAISE EXCEPTION 'products_product: deprecation_provenance is admitted only in the same statement as a lifecycle_state change';
+          END IF;
 
           RETURN NEW;
         END;
@@ -307,6 +312,10 @@ const SQLITE_UP_STATEMENTS: &[&str] = &[
     "CREATE UNIQUE INDEX uq_products_product_name ON products_product (tenant_id, brand_id, name_normalized) WHERE lifecycle_state <> 'discarded'",
     "CREATE UNIQUE INDEX uq_products_product_code ON products_product (tenant_id, product_code) WHERE product_code IS NOT NULL AND lifecycle_state <> 'discarded'",
     "CREATE TRIGGER trg_products_product_no_delete BEFORE DELETE ON products_product FOR EACH ROW BEGIN SELECT RAISE(ABORT, 'products_product is append-only: DELETE is not permitted'); END",
+    "CREATE TRIGGER trg_products_product_deprecation_provenance BEFORE UPDATE ON products_product FOR EACH ROW WHEN
+            NEW.deprecation_provenance IS NOT OLD.deprecation_provenance
+            AND NEW.lifecycle_state IS OLD.lifecycle_state
+        BEGIN SELECT RAISE(ABORT, 'products_product: deprecation_provenance is admitted only in the same statement as a lifecycle_state change'); END",
     "CREATE TRIGGER trg_products_product_immutable_columns BEFORE UPDATE ON products_product FOR EACH ROW WHEN
             NEW.tenant_id IS NOT OLD.tenant_id
             OR NEW.product_id IS NOT OLD.product_id

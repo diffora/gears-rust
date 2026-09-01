@@ -938,7 +938,7 @@ pub(crate) async fn insert_product_with_event(
         &state.sink,
         scope,
         new,
-        claim,
+        crate::infra::create::JoinedRecords { claim, stamp: None },
         actor_ref,
         render_created_product,
     )
@@ -2911,17 +2911,6 @@ async fn run_publish(
     // pipeline because `ValidationRule::evaluate` is synchronous: the
     // assignment lives in `products_product_category`, which is 02's table
     // and not this row. --
-    let has_primary =
-        repo::has_primary_category(runner, &inputs.scope, head.tenant_id, head.product_id)
-            .await
-            .map_err(|e| HeadActError::Db(toolkit_db::DbError::Sea(e.to_db_err())))?;
-    if let Some((_phase, report)) =
-        published_transition_pipeline().run(&PublishedTransitionSubject {
-            has_primary_category: has_primary,
-        })
-    {
-        return Err(HeadActError::Refused(transition_refusal(&report)));
-    }
 
     // -- Phases 3 to 5 continued, the state phase: the edge, and what the
     // floor says it costs. `published_state_after` decides the `to` side from
@@ -2953,6 +2942,26 @@ async fn run_publish(
         published_state_after(head.lifecycle_state),
     )
     .map_err(HeadActError::Refused)?;
+
+    // -- Phase 6, the registered validators — AFTER the state phase, which is
+    // `Phase::ordered()`'s own sequence (shape, state, identity, registered
+    // validators, gate). This door made the same argument in the other
+    // direction when it put the gate after the state check: an act that is
+    // not legal at all must be refused as illegal rather than answered with a
+    // question about categories. An earlier revision ran this block BEFORE
+    // `transition::guard`, inverting the order for the first registered
+    // validator this gear ever had. --
+    let has_primary =
+        repo::has_primary_category(runner, &inputs.scope, head.tenant_id, head.product_id)
+            .await
+            .map_err(|e| HeadActError::Db(toolkit_db::DbError::Sea(e.to_db_err())))?;
+    if let Some((_phase, report)) =
+        published_transition_pipeline().run(&PublishedTransitionSubject {
+            has_primary_category: has_primary,
+        })
+    {
+        return Err(HeadActError::Refused(transition_refusal(&report)));
+    }
 
     // -- Phase 7, the governance gate, inside the door, in the mode this
     // act was entered under (`inst-fd-gate-mode`). `Gate` from every wire

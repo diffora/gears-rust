@@ -21,11 +21,10 @@
 //! `materiality_policy × write`, `breakglass × elevate`,
 //! `audit × read|export`.
 //!
-//! The rows owned by `02`, `03`, `04` and `10` (`category`,
+//! The rows owned by `02`, `03` and `04` (`category`,
 //! `attribute_definition`, `recognized_set`, `plan_tier`,
-//! `scheduled_transition`, `metadata`, `compliance`, `erasure`,
-//! ) are **deliberately absent**: they belong to the slices
-//! that build those doors. `10`'s three — `erasure × execute`,
+//! `scheduled_transition`, `metadata`) are **deliberately absent**: they
+//! belong to the slices that build those doors. `10`'s three — `erasure × execute`,
 //! `compliance × export`, `pii_allowlist × write` — arrived with
 //! `dod-retention-authz`, that feature's own `DoD` declaring them. See `crate::authz`'s module doc for why `discard`
 //! is not a permission of its own either.

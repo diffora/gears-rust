@@ -360,6 +360,14 @@ actor, the scenarios and the boundary.
   and AC #2a say only that the flip is governed. P-D-11 rewrote the count in that sentence and left the
   field list untouched. Owner: the PRD owner with 05 — either the enumeration is closed and the flip is a
   non-material `min(N, 1)` act, or `sellable` joins it. *(Raised by the slice-03 second lens pass.)*
+- **Is `updated_at` inside `products_recognized_set`'s whitelist?** §4 words the guard as a
+  whitelist — *"trigger whitelist admits `state` and `display_label` only"* — and the shipped
+  trigger is a **complement enumeration** refusing five named columns, so `updated_at` is writable
+  and a column a later migration adds is admitted by default. §4's own shape bullet lists no
+  timestamps at all, so no document states `updated_at`'s write rule: freezing it per the literal
+  whitelist and blessing it (as `design/01`'s head guard blesses its own timestamp) are both
+  authored choices. Owner: this slice with the schema owner. *(Raised by the three-lens review of
+  2026-09-01; recorded in the migration's own doc.)*
 - **Is a PlanTier display-label rename material?** `inst-pt-stable-code` makes the rename display-only
   by construction, and 05 registers this slice's `PlanTier` taxonomy ops as material without excepting
   it — while 02 `inst-ad-governed` calls the identical edit on its own vocabulary non-material at

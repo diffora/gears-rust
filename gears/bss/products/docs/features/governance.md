@@ -638,12 +638,15 @@ transactional write now that there is one. Changing that signature is `01-founda
 (`dod-approval-hook`) and a different one from this, so the seam still runs as the pure half and
 `repo::supersede_open_approval` runs beside it on the transaction the act already holds.
 
-**The supersede is an `UPDATE` over a predicate, not a read-then-write**: the partial
-`UNIQUE (tenant_id, subject_kind, subject_ref) WHERE state IN ('pending','satisfied')` admits at
-most one open record, so two concurrent frozen-content writes cannot both believe they superseded
-it — the second finds nothing open. A subject with no open record is a **no-op rather than an
+**The supersede carries the open-state predicate on its `UPDATE`, and that is what makes the
+concurrency claim true rather than merely stated.** The first build filtered the write by id alone
+— the predicate sat on the preceding read — so two concurrent frozen-content writes both saw the
+open record, the winner finalized it, and the loser's write met
+`'products_approval: a finalized approval is immutable'`: a **legal** act answering 500. Three
+independent review lenses found it. With the predicate on the write the loser matches zero rows and
+reports nothing superseded, which is the same answer as "nothing was open". A subject with no open record is a **no-op rather than an
 error**, because the write is legal whether or not a ceremony was open against it, and a finalized
-record is outside the predicate and never reopened. Three probes: the supersede itself with a
+record is outside the predicate — on the read **and** on the write — and never reopened. Three probes: the supersede itself with a
 record count proving **nothing was re-submitted**, the consuming edge, and the no-open-record and
 finalized cases together.
 
@@ -834,7 +837,7 @@ dispose of it — a catalog whose grants no door spends is exactly what rows 1 a
 earlier pass ticked this on the strength of that scope sentence alone, having read this §7 — **a
 table** — as empty; it is 23 rows.
 
-**Built as an extension, and the withholding is asserted too.** `authz.rs` now carries **ten**
+**Built as an extension, and the withholding is asserted too.** `authz.rs` now carries **fourteen**
 labels: `01`'s `product`/`sku`, `06`'s `catalog_version`, `09`'s `bulk`, `07`'s
 `reference_signal`/`reference_producer`, and this slice's four — `approval × submit|read|decide`,
 `materiality_policy × write`, `breakglass × elevate`, `audit × read|export`. The eleven rows owned

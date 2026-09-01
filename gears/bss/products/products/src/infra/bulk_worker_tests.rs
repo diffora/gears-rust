@@ -341,15 +341,31 @@ async fn a_stale_claim_loses() {
     let batch_id = seed_batch(&harness, "b-6", vec![product_row("r-1", "Eta")]).await;
     let conn = harness.state.db.conn().expect("conn");
     assert!(
-        repo::claim_bulk_batch(&conn, &scope(), TENANT, batch_id, 0, Utc::now())
-            .await
-            .expect("claim"),
+        repo::claim_bulk_batch(
+            &conn,
+            &scope(),
+            TENANT,
+            batch_id,
+            0,
+            Utc::now(),
+            chrono::Duration::minutes(10),
+        )
+        .await
+        .expect("claim"),
         "the first claim at attempt 0 wins"
     );
     assert!(
-        !repo::claim_bulk_batch(&conn, &scope(), TENANT, batch_id, 0, Utc::now())
-            .await
-            .expect("claim"),
+        !repo::claim_bulk_batch(
+            &conn,
+            &scope(),
+            TENANT,
+            batch_id,
+            0,
+            Utc::now(),
+            chrono::Duration::minutes(10),
+        )
+        .await
+        .expect("claim"),
         "a second claim at the same attempt finds the row moved"
     );
 }

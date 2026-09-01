@@ -258,6 +258,17 @@ const PG_UP_STATEMENTS: &[&str] = &[
           THEN
             RAISE EXCEPTION 'products_sku: composition_pending is admitted only in the same statement as a published_version bump';
           END IF;
+          IF NEW.deprecation_provenance IS DISTINCT FROM OLD.deprecation_provenance
+             AND NEW.lifecycle_state IS NOT DISTINCT FROM OLD.lifecycle_state
+          THEN
+            RAISE EXCEPTION 'products_sku: deprecation_provenance is admitted only in the same statement as a lifecycle_state change';
+          END IF;
+          IF NEW.replaced_by_sku_id IS DISTINCT FROM OLD.replaced_by_sku_id
+             AND OLD.replaced_by_sku_id IS NOT NULL
+             AND NEW.replaced_by_sku_id IS NOT NULL
+          THEN
+            RAISE EXCEPTION 'products_sku: replaced_by_sku_id is write-once per retirement: null to non-null at initiation, non-null to null at the governed cancel, never any other change';
+          END IF;
 
           RETURN NEW;
         END;
@@ -349,6 +360,15 @@ const SQLITE_UP_STATEMENTS: &[&str] = &[
             OR NEW.brand_scope IS NOT OLD.brand_scope
         ) AND OLD.lifecycle_state IN ('retired', 'discarded')
         BEGIN SELECT RAISE(ABORT, 'products_sku: bucket-iii columns are admitted only while the head is non-terminal'); END",
+    "CREATE TRIGGER trg_products_sku_deprecation_provenance BEFORE UPDATE ON products_sku FOR EACH ROW WHEN
+            NEW.deprecation_provenance IS NOT OLD.deprecation_provenance
+            AND NEW.lifecycle_state IS OLD.lifecycle_state
+        BEGIN SELECT RAISE(ABORT, 'products_sku: deprecation_provenance is admitted only in the same statement as a lifecycle_state change'); END",
+    "CREATE TRIGGER trg_products_sku_replaced_by BEFORE UPDATE ON products_sku FOR EACH ROW WHEN
+            NEW.replaced_by_sku_id IS NOT OLD.replaced_by_sku_id
+            AND OLD.replaced_by_sku_id IS NOT NULL
+            AND NEW.replaced_by_sku_id IS NOT NULL
+        BEGIN SELECT RAISE(ABORT, 'products_sku: replaced_by_sku_id is write-once per retirement: null to non-null at initiation, non-null to null at the governed cancel, never any other change'); END",
     "CREATE TRIGGER trg_products_sku_composition_pending BEFORE UPDATE ON products_sku FOR EACH ROW WHEN
             NEW.composition_pending IS NOT OLD.composition_pending
             AND NEW.published_version IS OLD.published_version

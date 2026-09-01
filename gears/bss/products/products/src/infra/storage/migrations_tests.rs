@@ -6259,7 +6259,9 @@ mod attribute_store_guard_tests {
 /// probe exists. A future revision that turned the guard into a whitelist
 /// would silently make the cancel unperformable, and this case is what fails.
 ///
-/// @cpt-dod:cpt-cf-bss-products-dod-lifecycle-columns:p1
+/// No marker: `dod-lifecycle-columns`' tick is withdrawn until its own
+/// paragraph and `dod-append-only-guard`'s roster are reconciled against the
+/// predicates as they now ship. The probes below are coverage without a tick.
 mod lifecycle_column_guard_tests {
     use sea_orm::ConnectionTrait;
     use sea_orm_migration::MigratorTrait;
@@ -6285,12 +6287,20 @@ mod lifecycle_column_guard_tests {
         .map(|_| ())
     }
 
-    /// A `retired` SKU takes both stamps and then gives `replaced_by_sku_id`
-    /// back — three admitted writes on a terminal row.
+    /// **P-D-34's two row-image predicates**, probed as the design states them
+    /// rather than as an earlier revision of this file assumed.
+    ///
+    /// That revision stamped both columns on an **already-`retired`** row with
+    /// no state change and called it "by design". It is not: `design/04`
+    /// says `replaced_by_sku_id` is *"written by that act in the same
+    /// statement as its `lifecycle_state` change"*, so the write happens in
+    /// the statement that MAKES the row terminal, and **P-D-34** pins
+    /// `deprecation_provenance` to *"only in the same statement as a
+    /// `lifecycle_state` change"*. The probe that admitted the bare stamp was
+    /// asserting a write three normative texts refuse.
     #[tokio::test]
-    async fn a_terminal_sku_takes_both_stamps_and_the_cancel_clears_the_successor() {
+    async fn the_two_lifecycle_columns_ride_their_lifecycle_change() {
         let db = harness().await;
-        // The SKU table's parent FK is real, so the Product comes first.
         exec(
             &db,
             "INSERT INTO products_product \
@@ -6302,7 +6312,7 @@ mod lifecycle_column_guard_tests {
         )
         .await
         .expect("seed the parent Product");
-        for (id, code, state) in [("s-1", "SKU-1", "retired"), ("s-2", "SKU-2", "published")] {
+        for (id, code) in [("s-1", "SKU-1"), ("s-2", "SKU-2")] {
             exec(
                 &db,
                 &format!(
@@ -6310,7 +6320,7 @@ mod lifecycle_column_guard_tests {
                      (sku_id, tenant_id, product_id, sku_code, region_scope, brand_scope, \
                       lifecycle_state, internal_revision, published_version, created_by, \
                       created_at, updated_at) \
-                     VALUES ('{id}', 't-a', 'p-1', '{code}', 'eu', 'acme', '{state}', 1, 1, \
+                     VALUES ('{id}', 't-a', 'p-1', '{code}', 'eu', 'acme', 'published', 1, 1, \
                       'actor-1', '2026-09-01T00:00:00Z', '2026-09-01T00:00:00Z')"
                 ),
             )
@@ -6318,25 +6328,53 @@ mod lifecycle_column_guard_tests {
             .expect("seed the SKU");
         }
 
+        // A bare stamp with no lifecycle change is refused — the predicate.
+        let err = exec(
+            &db,
+            "UPDATE products_sku SET deprecation_provenance = 'direct', \
+             internal_revision = internal_revision + 1 WHERE sku_id = 's-1'",
+        )
+        .await
+        .expect_err("a provenance stamp outside a lifecycle change must be refused");
+        assert!(
+            err.to_string()
+                .contains("deprecation_provenance is admitted only in the same statement"),
+            "{err}"
+        );
+
+        // Riding the transition is admitted, and the successor lands with it.
         exec(
             &db,
             "UPDATE products_sku SET deprecation_provenance = 'direct', \
-             replaced_by_sku_id = 's-2', internal_revision = internal_revision + 1 \
-             WHERE sku_id = 's-1'",
+             replaced_by_sku_id = 's-2', lifecycle_state = 'deprecated', \
+             internal_revision = internal_revision + 1 WHERE sku_id = 's-1'",
         )
         .await
-        .expect("slice 04 stamps both columns on a terminal row by design");
+        .expect("both columns ride the statement that changes the lifecycle state");
 
-        // The governed cancel's second write: the successor is cleared.
+        // Re-pointing the successor is refused: write-once per retirement.
+        let err = exec(
+            &db,
+            "UPDATE products_sku SET replaced_by_sku_id = 's-3', \
+             internal_revision = internal_revision + 1 WHERE sku_id = 's-1'",
+        )
+        .await
+        .expect_err("non-null to a different non-null must be refused");
+        assert!(
+            err.to_string().contains("write-once per retirement"),
+            "{err}"
+        );
+
+        // The governed cancel's clearing write is the second admitted arm.
         exec(
             &db,
             "UPDATE products_sku SET replaced_by_sku_id = NULL, \
              internal_revision = internal_revision + 1 WHERE sku_id = 's-1'",
         )
         .await
-        .expect("the cancel clears it: write-once per retirement, not per row");
+        .expect("non-null to null is the cancel's admitted write");
 
-        // And the immutable columns are still refused, so the guard has not
+        // And the row-identity columns stay refused, so the guard has not
         // been loosened into admitting everything.
         let err = exec(
             &db,

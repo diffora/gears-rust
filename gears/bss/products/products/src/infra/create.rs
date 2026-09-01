@@ -162,16 +162,57 @@ pub(crate) const CREATE_RESPONSE_STATUS: StatusCode = StatusCode::CREATED;
 /// the prior one rolled back, so the prior id was never committed and reached
 /// no consumer. It would stop being harmless if an id were ever minted
 /// *outside* the transaction and carried in.
+/// The records that **must join the guarded mutation's transaction**, carried
+/// as one value because they travel for one reason.
+///
+/// P-D-42's shape — *"The claim `INSERT` **is** the gate and **MUST** join the
+/// guarded mutation's transaction"* — is what puts the idempotency claim
+/// here, and `design/09` §4 puts the bulk ledger's row beside it for the same
+/// reason: a record that is the act's own outcome cannot commit separately
+/// from the act. Both are optional; a plain wire create carries neither.
+#[derive(Clone, Default)]
+pub(crate) struct JoinedRecords {
+    /// The idempotency claim, where the request carried a key.
+    pub claim: Option<IdempotencyClaimInput>,
+    /// The bulk ledger's row, where the caller is the batch worker.
+    pub stamp: Option<BulkRowStamp>,
+}
+
+/// A bulk-ledger row to stamp **inside the create transaction**.
+///
+/// The batch worker used to stamp its ledger row on a second connection after
+/// the create had committed, and a crash in that window left the entity
+/// created and the row unstamped — the resume then re-staged it, hit the name
+/// or code reservation, and recorded a **terminal `DUPLICATE_NAME` on a row
+/// that had in fact succeeded**, with its draft unreachable from the ledger.
+///
+/// `design/09` §4 makes the ledger row the lane's stored outcome record, and
+/// P-D-42's shape for such a record is that it *"**MUST** join the guarded
+/// mutation's transaction"*. So the stamp travels with the create rather than
+/// after it. The coupling is deliberate and narrow: `infra::create` learns one
+/// optional ledger coordinate, and the alternative is the two-transaction
+/// window above.
+#[derive(Clone, Debug)]
+pub(crate) struct BulkRowStamp {
+    /// The batch the row belongs to.
+    pub batch_id: uuid::Uuid,
+    /// The row's key within it.
+    pub row_key: String,
+    /// The act's instant.
+    pub now: chrono::DateTime<chrono::Utc>,
+}
+
 pub(crate) async fn insert_product_with_event(
     db: &DBProvider<DbError>,
     sink: &EventSink,
     scope: AccessScope,
     new: NewProduct,
-    claim: Option<IdempotencyClaimInput>,
+    joined: JoinedRecords,
     actor_ref: Uuid,
     render: fn(ProductRecord) -> Result<JsonValue, serde_json::Error>,
 ) -> Result<CreateOutcome, DbError> {
     let outbox = sink.clone();
+    let JoinedRecords { claim, stamp } = joined;
     let tenant_id = new.tenant_id;
     db.db()
         .transaction_with_retry::<CreateOutcome, DbError, _, _>(
@@ -189,6 +230,7 @@ pub(crate) async fn insert_product_with_event(
                 let scope = scope.clone();
                 let new = new.clone();
                 let claim = claim.clone();
+                let stamp = stamp.clone();
                 Box::pin(async move {
                     if let Some(input) = claim.as_ref() {
                         match claim_idempotency(tx, &scope, tenant_id, input)
@@ -208,6 +250,7 @@ pub(crate) async fn insert_product_with_event(
                     let record = repo::insert_product(tx, &scope, new)
                         .await
                         .map_err(|e| DbError::Sea(e.to_db_err()))?;
+                    let stamped_id = record.product_id;
 
                     let core = events::EventBodyCore {
                         tenant_id: record.tenant_id,
@@ -242,6 +285,26 @@ pub(crate) async fn insert_product_with_event(
                             input,
                             CREATE_RESPONSE_STATUS,
                             &body,
+                        )
+                        .await
+                        .map_err(|e| DbError::Sea(e.to_db_err()))?;
+                    }
+
+                    // The bulk ledger's stamp, on this transaction: the row
+                    // and the entity commit together or not at all.
+                    if let Some(stamp) = stamp.as_ref() {
+                        repo::record_bulk_row_outcome(
+                            tx,
+                            &scope,
+                            tenant_id,
+                            stamp.batch_id,
+                            &stamp.row_key,
+                            repo::BulkRowOutcome {
+                                entity_id: Some(stamped_id),
+                                disposition: None,
+                                code: None,
+                                now: stamp.now,
+                            },
                         )
                         .await
                         .map_err(|e| DbError::Sea(e.to_db_err()))?;
@@ -337,11 +400,12 @@ pub(crate) async fn insert_sku_with_event(
     sink: &EventSink,
     scope: AccessScope,
     new: NewSku,
-    claim: Option<IdempotencyClaimInput>,
+    joined: JoinedRecords,
     actor_ref: Uuid,
     render: fn(SkuRecord) -> Result<JsonValue, serde_json::Error>,
 ) -> Result<CreateOutcome, DbError> {
     let outbox = sink.clone();
+    let JoinedRecords { claim, stamp } = joined;
     let tenant_id = new.tenant_id;
     db.db()
         .transaction_with_retry::<CreateOutcome, DbError, _, _>(
@@ -359,6 +423,7 @@ pub(crate) async fn insert_sku_with_event(
                 let scope = scope.clone();
                 let new = new.clone();
                 let claim = claim.clone();
+                let stamp = stamp.clone();
                 Box::pin(async move {
                     if let Some(input) = claim.as_ref() {
                         match claim_idempotency(tx, &scope, tenant_id, input)
@@ -378,6 +443,7 @@ pub(crate) async fn insert_sku_with_event(
                     let record = repo::insert_sku(tx, &scope, new)
                         .await
                         .map_err(|e| DbError::Sea(e.to_db_err()))?;
+                    let stamped_id = record.sku_id;
 
                     let core = events::EventBodyCore {
                         tenant_id: record.tenant_id,
@@ -410,6 +476,26 @@ pub(crate) async fn insert_sku_with_event(
                             input,
                             CREATE_RESPONSE_STATUS,
                             &body,
+                        )
+                        .await
+                        .map_err(|e| DbError::Sea(e.to_db_err()))?;
+                    }
+
+                    // The bulk ledger's stamp, on this transaction: the row
+                    // and the entity commit together or not at all.
+                    if let Some(stamp) = stamp.as_ref() {
+                        repo::record_bulk_row_outcome(
+                            tx,
+                            &scope,
+                            tenant_id,
+                            stamp.batch_id,
+                            &stamp.row_key,
+                            repo::BulkRowOutcome {
+                                entity_id: Some(stamped_id),
+                                disposition: None,
+                                code: None,
+                                now: stamp.now,
+                            },
                         )
                         .await
                         .map_err(|e| DbError::Sea(e.to_db_err()))?;

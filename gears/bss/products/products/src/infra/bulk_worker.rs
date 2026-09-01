@@ -52,7 +52,26 @@
 //! (P-D-54's edge 1). The remaining six edges belong to the approval and
 //! the commit phase and are not walked here.
 //!
+//! # The claim's lease is what makes it a claim
+//!
+//! `(state, attempt)` alone excludes only a racer reading the **same**
+//! attempt. A peer starting a second later reads the bumped attempt and its
+//! compare succeeds — **inside** the first pass, two workers staging one
+//! batch from two snapshots. P-D-54 calls `claimed_at` the claim's *lease*,
+//! and [`STAGE_LEASE`] is what makes that column readable rather than
+//! merely written: a batch claimed within the lease is not re-claimable,
+//! and one whose worker died becomes claimable when the lease lapses.
+//!
 //! @cpt-dod:cpt-cf-bss-products-dod-stage-phase:p1
+
+/// How long a claim holds a batch against a peer.
+///
+/// Ten minutes: long enough for a large batch's pass to finish inside it
+/// (the sizing fixture is 10 000 rows), short enough that a worker killed
+/// mid-pass releases the batch without an operator. A pass that outruns it
+/// meets the case the resume operand exists for — the ledger records what
+/// landed.
+const STAGE_LEASE: chrono::Duration = chrono::Duration::minutes(10);
 
 use chrono::{DateTime, Utc};
 use serde_json::Value as JsonValue;
@@ -133,6 +152,7 @@ async fn stage_product(
     actor_ref: Uuid,
     payload: &JsonValue,
     now: DateTime<Utc>,
+    stamp: Option<crate::infra::create::BulkRowStamp>,
 ) -> Result<Uuid, StageRowError> {
     let mut report = ValidationReport::new();
     let name_value = field(payload, "name");
@@ -172,7 +192,7 @@ async fn stage_product(
         &ctx.sink,
         scope.clone(),
         new,
-        None,
+        crate::infra::create::JoinedRecords { claim: None, stamp },
         actor_ref,
         discard_render,
     )
@@ -201,6 +221,7 @@ async fn stage_sku(
     actor_ref: Uuid,
     payload: &JsonValue,
     now: DateTime<Utc>,
+    stamp: Option<crate::infra::create::BulkRowStamp>,
 ) -> Result<Uuid, StageRowError> {
     let mut report = ValidationReport::new();
     let code = field(payload, "sku_code");
@@ -233,7 +254,7 @@ async fn stage_sku(
         &ctx.sink,
         scope.clone(),
         new,
-        None,
+        crate::infra::create::JoinedRecords { claim: None, stamp },
         actor_ref,
         discard_render,
     )
@@ -319,9 +340,17 @@ async fn stage_one_row(
     now: DateTime<Utc>,
 ) -> Result<bool, RepoError> {
     let payload = parse_staged_payload(tenant_id, batch_id, row)?;
+    // The ledger stamp rides the create's own transaction (P-D-42's shape):
+    // the entity and its ledger row commit together, so a crash between them
+    // is not a state.
+    let stamp = Some(crate::infra::create::BulkRowStamp {
+        batch_id,
+        row_key: row.row_key.clone(),
+        now,
+    });
     let outcome = match row.entity_kind.as_str() {
-        "product" => stage_product(ctx, scope, tenant_id, actor_ref, &payload, now).await,
-        "sku" => stage_sku(ctx, scope, tenant_id, actor_ref, &payload, now).await,
+        "product" => stage_product(ctx, scope, tenant_id, actor_ref, &payload, now, stamp).await,
+        "sku" => stage_sku(ctx, scope, tenant_id, actor_ref, &payload, now, stamp).await,
         other => Err(StageRowError::Refused(DomainError::Validation({
             let mut report = ValidationReport::new();
             report.violate(
@@ -338,21 +367,10 @@ async fn stage_one_row(
         .conn()
         .map_err(|e| RepoError::Db(format!("row outcome connection: {e}")))?;
     match outcome {
-        Ok(entity_id) => {
-            repo::record_bulk_row_outcome(
-                &conn,
-                scope,
-                tenant_id,
-                batch_id,
-                &row.row_key,
-                BulkRowOutcome {
-                    entity_id: Some(entity_id),
-                    disposition: None,
-                    code: None,
-                    now,
-                },
-            )
-            .await?;
+        Ok(_entity_id) => {
+            // The success stamp already landed, inside the create's own
+            // transaction (`BulkRowStamp`). Writing it again here would be
+            // the second transaction this fix removed.
             Ok(true)
         }
         Err(StageRowError::Refused(refusal)) => {
@@ -424,8 +442,16 @@ pub(crate) async fn stage_next_batch(
             .db
             .conn()
             .map_err(|e| RepoError::Db(format!("batch claim connection: {e}")))?;
-        if !repo::claim_bulk_batch(&conn, &scope, tenant_id, batch.batch_id, batch.attempt, now)
-            .await?
+        if !repo::claim_bulk_batch(
+            &conn,
+            &scope,
+            tenant_id,
+            batch.batch_id,
+            batch.attempt,
+            now,
+            STAGE_LEASE,
+        )
+        .await?
         {
             return Ok(StageOutcome::ClaimLost);
         }

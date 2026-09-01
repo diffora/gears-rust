@@ -23,11 +23,16 @@
 //! # Apply is atomic, and the currency check is inside that atomicity
 //!
 //! `inst-gl-atomic`: *"mutation + event in one transaction (P-D-21); there is
-//! no partially-applied taxonomy op"*. [`GovernedLiveOp::apply`] takes the
-//! mutation as a closure and runs the currency check **immediately before**
-//! it, so a caller holding a transaction cannot interleave a commit between
-//! the two — the check and the write are one step from the caller's side.
-//! Enqueueing the event belongs to the same closure for the same reason.
+//! no partially-applied taxonomy op"*. [`GovernedLiveOp::apply`] runs the
+//! currency check **immediately before** the closure, so a stale op cannot
+//! write — that much is structural.
+//!
+//! **What is NOT structural, and an earlier revision of this doc claimed was:**
+//! that the closure holds both the row write and the event enqueue. `apply`
+//! accepts any `FnOnce() -> Result<T, DomainError>` and cannot see what it
+//! contains; a closure that writes and never enqueues compiles and passes.
+//! Putting both on one transaction is the **caller's obligation** under
+//! `inst-gl-atomic`, and the type enforces only check-before-mutate.
 //!
 //! # Slice 03 reuses this type without redefining it
 //!
@@ -41,23 +46,27 @@
 //!
 //! # What is absent, and why the `DoD` is NOT ticked
 //!
-//! `dod-governed-live-op` also requires that the envelope be **submitted to
-//! the `05-governance` gate**, and that half is **not built** — for a reason
-//! **P-D-93** wrote down as its own first residue before this module existed:
-//! `GovernanceGate::evaluate` takes an `EntityRef` and an
-//! `InternalRevision`, and *"a live op whose subject is **not** an entity
-//! would need a second contract and this decision does not grant one"*. A
-//! category, a definition and a set member have no revision — that absence is
-//! the very reason this envelope pins a **state** instead — so submitting one
-//! through today's contract would mean inventing a mapping from a live target
-//! to an entity ref, which is that second contract written here rather than
-//! decided.
+//! `dod-governed-live-op` also requires the envelope be **submitted to the
+//! `05-governance` gate**, and that half is not built — but **not** for the
+//! reason an earlier revision of this paragraph gave. It said a non-entity
+//! subject *"would need a second contract and this decision does not grant
+//! one"*; **P-D-67 arm 4 had granted it** the day before
+//! (*"the gate's subject widens to the approval store's own pair,
+//! `(subject_kind, subject_ref)`"*), and
+//! [`crate::domain::governance::GateSubject::governed_live_op`] is the
+//! constructor, forty lines from here. A reader steered by that sentence
+//! would mint the parallel vocabulary `dod-gate-host` forbids.
 //!
-//! So this module ships the three halves that need no gate: the envelope, the
-//! currency check with its own code, and the atomic apply. The submission
-//! half waits on either 05's own submit door (05 §7 row 12 — no route
-//! declared) or a gate contract for non-entity subjects, and **no reading of
-//! the green suite here should be taken for it.**
+//! What actually remains is two things, both narrower:
+//!
+//! - **`evaluate`'s `expected_revision` operand.** The subject crosses the
+//!   seam; the pinned revision beside it does not, because a live row has
+//!   none — which is why this envelope pins a *state*. What a non-entity
+//!   subject supplies there is `governance` §7 row 14, live.
+//! - **`05`'s submit door**, whose route is undeclared (05 §7 row 12).
+//!
+//! So no test drives an envelope through a real approval record, and no
+//! reading of the green suite here should be taken for one.
 
 use crate::domain::error::DomainError;
 

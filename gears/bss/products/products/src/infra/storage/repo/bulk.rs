@@ -3,7 +3,7 @@
 //!
 //! Split out of the foundation repository move-only; every item re-exports
 //! through `super` (`crate::infra::storage::repo`) unchanged.
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration, Utc};
 use sea_orm::ActiveValue::Set;
 use sea_orm::sea_query::Expr;
 use sea_orm::{ColumnTrait, Condition, EntityTrait, QuerySelect};
@@ -232,7 +232,8 @@ pub async fn find_batch_rows(
         .collect())
 }
 
-/// Claim one `staging` batch for the worker: stamp `claimed_at` and bump
+/// Claim one `staging` batch for the worker under a **lease**: stamp
+/// `claimed_at` and bump
 /// `attempt`, under a predicate matching the state the caller read — so two
 /// workers racing one batch cannot both believe they hold it (the
 /// compare-and-swap the idempotency takeover uses, applied to the batch
@@ -250,7 +251,14 @@ pub async fn claim_bulk_batch(
     batch_id: Uuid,
     attempt: i64,
     now: DateTime<Utc>,
+    lease: Duration,
 ) -> Result<bool, RepoError> {
+    // The lease predicate. `(state, attempt)` alone excludes only a racer that
+    // reads the SAME attempt: a peer starting a second after the claim reads
+    // the bumped attempt and its compare succeeds, mid-pass. `claimed_at` is
+    // what P-D-54 calls the claim's lease, and until this predicate read it
+    // the column was written and never read by anything.
+    let expiry = now - lease;
     let result = bulk_batch::Entity::update_many()
         .secure()
         .scope_with(scope)
@@ -261,7 +269,12 @@ pub async fn claim_bulk_batch(
                 .add(bulk_batch::Column::TenantId.eq(tenant_id))
                 .add(bulk_batch::Column::BatchId.eq(batch_id))
                 .add(bulk_batch::Column::State.eq(BatchState::Staging.as_str()))
-                .add(bulk_batch::Column::Attempt.eq(attempt)),
+                .add(bulk_batch::Column::Attempt.eq(attempt))
+                .add(
+                    Condition::any()
+                        .add(bulk_batch::Column::ClaimedAt.is_null())
+                        .add(bulk_batch::Column::ClaimedAt.lt(expiry)),
+                ),
         )
         .exec(runner)
         .await
@@ -379,10 +392,13 @@ pub async fn record_bulk_row_outcome(
     row_key: &str,
     outcome: BulkRowOutcome<'_>,
 ) -> Result<(), RepoError> {
-    let mut update = bulk_row::Entity::update_many()
-        .secure()
-        .scope_with(scope)
-        .col_expr(bulk_row::Column::EntityId, Expr::value(outcome.entity_id));
+    let mut update = bulk_row::Entity::update_many().secure().scope_with(scope);
+    // Only a stamping outcome writes the id. A `failed` outcome carries
+    // `None`, and writing it would NULL an id an earlier pass had stamped —
+    // erasing the ledger's only pointer to a draft that exists.
+    if outcome.entity_id.is_some() {
+        update = update.col_expr(bulk_row::Column::EntityId, Expr::value(outcome.entity_id));
+    }
     if let Some(disposition) = outcome.disposition {
         update = update
             .col_expr(
@@ -400,7 +416,12 @@ pub async fn record_bulk_row_outcome(
             Condition::all()
                 .add(bulk_row::Column::TenantId.eq(tenant_id))
                 .add(bulk_row::Column::BatchId.eq(batch_id))
-                .add(bulk_row::Column::RowKey.eq(row_key)),
+                .add(bulk_row::Column::RowKey.eq(row_key))
+                // The ledger's trigger freezes a row only once its disposition
+                // lands, so a staged-but-undisposed row is NOT frozen and this
+                // statement is not automatically its last write. The predicate
+                // is what makes it one.
+                .add(bulk_row::Column::Disposition.is_null()),
         )
         .exec(runner)
         .await

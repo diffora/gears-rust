@@ -1573,10 +1573,13 @@ pub async fn has_primary_category(
 /// id where one was open (`dod-supersede`).
 ///
 /// The partial `UNIQUE (tenant_id, subject_kind, subject_ref) WHERE state IN
-/// ('pending','satisfied')` admits at most one, so this is an `UPDATE` over a
-/// predicate rather than a read-then-write: two concurrent frozen-content
-/// writes cannot both believe they superseded it, because the second finds no
-/// open row.
+/// ('pending','satisfied')` admits at most one open record, and the read below
+/// names it — but the **`UPDATE` carries the open-state predicate too**, and
+/// that is the part that makes the concurrency claim true rather than merely
+/// stated. An earlier revision filtered the write by id alone: two concurrent
+/// frozen-content writes both read the open row, the winner finalized it, and
+/// the loser's write hit the append-only trigger, so a **legal** act answered
+/// 500. With the predicate the loser matches zero rows and reports `None`.
 ///
 /// **Nothing is re-submitted.** `inst-gv-supersede` requires re-submission to
 /// be *"an explicit human act ... never automatic — auto-resubmit would pin
@@ -1610,7 +1613,7 @@ pub async fn supersede_open_approval(
         return Ok(None);
     };
     let approval_id = open.approval_id;
-    approval::Entity::update_many()
+    let outcome = approval::Entity::update_many()
         .secure()
         .scope_with(scope)
         .col_expr(
@@ -1621,11 +1624,22 @@ pub async fn supersede_open_approval(
         .filter(
             Condition::all()
                 .add(approval::Column::TenantId.eq(tenant_id))
-                .add(approval::Column::ApprovalId.eq(approval_id)),
+                .add(approval::Column::ApprovalId.eq(approval_id))
+                // The open-state predicate belongs HERE, not only on the read
+                // above: without it a racer that finalized the record between
+                // the two statements is overwritten, and the append-only
+                // trigger refuses the write — a legal act dying on a 500.
+                .add(approval::Column::State.is_in(["pending", "satisfied"])),
         )
         .exec(runner)
         .await
         .map_err(|e| driver_failure(format!("supersede approval {approval_id}"), e))?;
+    if outcome.rows_affected == 0 {
+        // A peer finalized it first. Superseding is idempotent from the
+        // caller's side: the record is closed either way, and the frozen
+        // -content write that triggered this is legal regardless.
+        return Ok(None);
+    }
     Ok(Some(approval_id))
 }
 

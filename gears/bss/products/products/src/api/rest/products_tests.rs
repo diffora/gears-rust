@@ -1673,7 +1673,7 @@ async fn seed_draft(harness: &TestHarness, product_id: Uuid) -> repo::ProductRec
 /// Assign the primary category `inst-tx-primary-at-publish` requires, so a
 /// case whose subject is something else can reach `published`.
 ///
-/// **These fixtures needed it added, and that is the rule working.** Six
+/// **These fixtures needed it added, and that is the rule working.** Sixteen
 /// shipped cases published a Product carrying no primary assignment; the
 /// PRD makes one *"optional at draft, required at publish"*, so each of them
 /// was asserting a publish the design forbids. The helper seeds the
