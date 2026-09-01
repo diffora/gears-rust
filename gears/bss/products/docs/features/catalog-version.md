@@ -1729,7 +1729,7 @@ here is ticked by inspection.
 [`../design/06-catalog-version.md`](../design/06-catalog-version.md) §6 — the slice's full count,
 not a selection — and **thirty-three raised here**, across two review passes: eleven while
 authoring, **twelve by the first three-lens pass** and **ten by the second**. Of the fifty-one,
-**thirty-six block no DoD in this document**: rows 3, 4, 5, 14, 34, 50 and 51 (row 49 was listed
+**forty-three block no DoD in this document**: rows 3, 4, 5, 14, 34, 50 and 51 (row 49 was listed
 here by mistake — its own `Blocks` field named two DoDs until P-D-83 resolved it; the split
 before this correction was truly 27/24, not 28/23), plus the
 seventeen resolved on **2026-08-31** — rows 22 and 41 by **P-D-52**, row 37 by **P-D-53**, row 30 by
@@ -1740,8 +1740,10 @@ and 42 by **P-D-73** on 2026-09-01, which unblocked `dod-catalog-version-table` 
 the nine of the increment wave — 15 and 43 by **P-D-80** (row 15 carried, `design/06` §6 answered
 first), 19, 20, 21 and 28 by **P-D-81**, 25 by **P-D-82**, 40 and 49 by **P-D-83** — on 2026-09-01,
 which freed `dod-increment-request-port`, `dod-coalescer` and `dod-snapshot-builder`
-(`dod-request-door` was already free via row 30). The
-other **fifteen** each name the DoD they block.
+(`dod-request-door` was already free via row 30), and the seven of the freeze wave — 6, 7, 12, 18,
+36, 44 and 45 by **P-D-84**, freeing `dod-ack-door`, `dod-intentful-resolver` and
+`dod-freeze-timeout`. The
+other **eight** each name the DoD they block (rows 2, 13, 17, 27, 35, 39, 47, 48).
 
 **A resolved row is kept in place rather than struck from the register**, because rows 41 and 45 cite
 row 22 and a deleted record would break the citations. Of the four DoDs row 30 named,
@@ -1812,23 +1814,34 @@ resolved record elsewhere can retract a decision's propagation, so none was touc
    `cpt-cf-bss-products-dod-coalescer` and asserted in §6.
    **Owner**: this feature.
 
-6. **`freezeComplete` = "all acked" regresses when a participant releases.** `inst-fz-ack` defines
+6. ~~**`freezeComplete` = "all acked" regresses when a participant releases.**~~
+    **Answered (owner call, 2026-09-01 — P-D-84 arm 1): the predicate ranges over SETTLED** —
+   complete ⇔ no `pending` and no `not_frozen(forced)` row, a release settling exactly as an ack,
+   so completeness is monotone and the regression cannot be expressed; slice 10's pair already
+   reads released as released.
+    Original text: `inst-fz-ack` defines
    the predicate over the ledger's current value, and §4 makes `state` "four values, one column" —
    so the release door overwrites `acked` with `released` and the version flips back out of
    posting-safe. §4 already stores `acked_at` / `released_at`, so a timestamp-keyed predicate is
    available, but choosing it also moves slice 10's `version-liveness` pair.
-   **Blocks**: `cpt-cf-bss-products-dod-ack-door`.
-   **Owner**: this feature, with `10-retention-erasure`.
+    **Blocks**: no DoD — **resolved by P-D-84**.
+    **Owner**: was this feature, with `10-retention-erasure`; **closed**.
 
-7. **Nothing creates the ledger rows, and an empty ledger satisfies "all acked".** The only stated
+7. ~~**Nothing creates the ledger rows, and an empty ledger satisfies "all acked".**~~
+    **Answered (owner call, 2026-09-01 — P-D-84 arm 2): the creation point is the increment
+   transaction** — P-D-67's seeding is built, one `pending` row per snapshotted participant in
+   the version's own transaction; the empty-set vacuity is deliberate (`freeze_state` seeded
+   `complete` at insert — an empty registered set has nobody to wait for, C5 governing versions
+   with participants).
+    Original text: The only stated
    creation point is consumption of `CatalogVersionPublished`, which is emitted after the increment
    transaction commits; `freeze_state` is a "derived cache of the ledger". In that window `posted`
    resolution of an entirely unfrozen version succeeds — the fail-closed default C5 and AC #21
    require, open by construction, and no `design/06` §5 probe looks at it. The operand exists: **P-D-49** gave
    slice 10's retention gate this version's `participant_set_snapshot` for the same vacuity, and
    `freezeComplete` can range over it too — but that is this feature's rule to change, not 10's.
-   **Blocks**: `cpt-cf-bss-products-dod-ack-door`.
-   **Owner**: this feature.
+    **Blocks**: no DoD — **resolved by P-D-84**.
+    **Owner**: was this feature; **closed**.
 
 8. ~~**`participant_set_snapshot` is stored twice and only one copy is inside the checksum.**~~
     **Answered in the slice (owner call, 2026-08-31 — P-D-67 arm 1): the capture-store copy is
@@ -1907,13 +1920,18 @@ resolved record elsewhere can retract a decision's propagation, so none was touc
     invention.
     **Owner**: was this feature with `10-retention-erasure`; **closed** for the edges.
 
-12. **What is the resolution API's transport and route?** `IntentfulResolver` is the only door in
+12. ~~**What is the resolution API's transport and route?**~~
+    **Answered (owner call, 2026-09-01 — P-D-84 arm 4): the request door's dual shape** — an SDK
+    client surface (P-D-15) plus `GET /bss-products/v1/catalog-versions/{id}` with a required
+    `intent` query, both passing `catalog_version x read`; the surface is this slice's door, not a
+    new contract id, so 01's unqualified claim is untouched.
+    Original text: `IntentfulResolver` is the only door in
     this slice with no route: the increment door and the diff both carry one, 08 explicitly puts the
     surface out of its scope, and 01 hands this slice the intent clause without a surface. 12's
     qualifier grammar means this slice cannot simply add the authoring-publish contract id while 01
     claims it unqualified.
-    **Blocks**: `cpt-cf-bss-products-dod-intentful-resolver`.
-    **Owner**: this feature, with `01-foundation`.
+    **Blocks**: no DoD — **resolved by P-D-84**.
+    **Owner**: was this feature, with `01-foundation`; **closed**.
 
 13. **What door consumes `catalog_version × publish`?** 05's RBAC roster grants six actions on this
     slice's resource; this slice names doors for five, and its operator lane goes through the request
@@ -1979,7 +1997,12 @@ resolved record elsewhere can retract a decision's propagation, so none was touc
     **Blocks**: `cpt-cf-bss-products-dod-posting-safe-observability`.
     **Owner**: this feature, with `01-foundation` and `08-read-models`.
 
-18. **`freezeComplete` and `freeze_state` are one concept with two names and two shapes.** `PRD` §3
+18. ~~**`freezeComplete` and `freeze_state` are one concept with two names and two shapes.**~~
+    **Answered (owner call, 2026-09-01 — P-D-84 arm 3): the exposed flag derives strictly** —
+    wire `freezeComplete = (freeze_state = 'complete')`; `complete(forced)` reads false (the
+    resolver's `VERSION_FORCED_INCOMPLETE` carries the why); the column stays the storage truth
+    and P-D-19's phrasing stands under the state reading, unamended.
+    Original text: `PRD` §3
     defines `freezeComplete` as "A per-`CatalogVersion` **flag**" and §6.6 makes it a **MUST expose**
     obligation per `catalogVersionId`; §4 of this slice stores `freeze_state ∈ {open, complete,
     complete(forced)}`; and **P-D-19** writes `freezeComplete = complete(forced)`, which is coherent
@@ -1988,9 +2011,8 @@ resolved record elsewhere can retract a decision's propagation, so none was touc
     column — which surfaced the divergence rather than settling it. Owed: whether the exposed flag
     is derived from the column (and what the resolution API returns at `complete(forced)`), and
     whether P-D-19's phrasing is amended.
-    **Blocks**: `cpt-cf-bss-products-dod-intentful-resolver`,
-    `cpt-cf-bss-products-dod-ack-door`.
-    **Owner**: this feature, with the PRD owner.
+    **Blocks**: no DoD — **resolved by P-D-84**.
+    **Owner**: was this feature, with the PRD owner; **closed**.
 
 ### Raised here rather than carried
 
@@ -2265,15 +2287,20 @@ against source at `41d1baa5e`.
     **Blocks**: `cpt-cf-bss-products-dod-cv-events`.
     **Owner**: the events/audit consumer owner, with `08-read-models` — the same pair row 1 names.
 
-36. **What is the freeze timeout's config field, its owner and its unit, so the export has a
-    destination?** `cpt-cf-bss-products-dod-freeze-timeout` obliges
+36. ~~**What is the freeze timeout's config field, its owner and its unit, so the export has a
+    destination?**~~
+    **Answered (owner call, 2026-09-01 — P-D-84 arm 5): `freeze_timeout_hours: u32` on
+    `ProductsConfig`** — hours, the unit the retention resolution already speaks, per-deployment;
+    `max_freeze_timeout` IS the configured value, nothing per-tenant or per-lane existing to range
+    over in v1.
+    Original text: `cpt-cf-bss-products-dod-freeze-timeout` obliges
     `resolved_idempotency_retention_hours`'s clamp to take `max_freeze_timeout` as its lower bound.
     `design/01-foundation.md` says only that slice 06 exports the number and the store reads it as
     config; `design/06` says only *"config (coalescing windows, freeze timeout…)"*. No document
     names a field, a type, a unit, or what the **maximum** ranges over — tenants, lanes, or
     configured values. `ProductsConfig` carries hours as `u32`.
-    **Blocks**: `cpt-cf-bss-products-dod-freeze-timeout`.
-    **Owner**: this gear's config owner, with `01-foundation`'s.
+    **Blocks**: no DoD — **resolved by P-D-84**.
+    **Owner**: was this gear's config owner, with `01-foundation`'s; **closed**.
 
 37. ~~**At what isolation level does the increment transaction run?**~~
     **Answered (owner call, 2026-08-31 — P-D-53): the engine default, `READ COMMITTED` on
@@ -2377,24 +2404,32 @@ against source at `41d1baa5e`.
     **Blocks**: no DoD — **resolved by P-D-80**.
     **Owner**: was whoever owns 01 §4.3's canonicalization pin, with this feature; **closed**.
 
-44. **Is `09-bulk-promotion`'s export door a third consumer of the shared version lookup, and who
-    refuses an unknown id there?** `cpt-cf-bss-products-dod-intentful-resolver` obliges one component
+44. ~~**Is `09-bulk-promotion`'s export door a third consumer of the shared version lookup, and who
+    refuses an unknown id there?**~~
+    **Answered (owner call, 2026-09-01 — P-D-84 arm 7): through the shared lookup** — `09`'s
+    export door takes the `IntentfulResolver` component like resolve and diff, keeping the
+    single-raising-door clause true as written.
+    Original text: `cpt-cf-bss-products-dod-intentful-resolver` obliges one component
     to be *"the single raising door of `CATALOG_VERSION_UNKNOWN` for both resolve and diff"*, while
     `05-governance` §3.2 records a third route taking a `catalogVersionId` and spending the same
     `× read` grant — 09's export door. Either that door resolves through this feature's component,
     keeping the single-door clause true, or it raises its own refusal and the clause is false as
     written.
-    **Blocks**: `cpt-cf-bss-products-dod-intentful-resolver`, `cpt-cf-bss-products-dod-cv-authz`.
-    **Owner**: this feature, with `09-bulk-promotion`'s owner and 05's roster owner.
+    **Blocks**: no DoD — **resolved by P-D-84**; `cpt-cf-bss-products-dod-cv-authz` keeps rows 13 and 48.
+    **Owner**: was this feature, with `09-bulk-promotion`'s owner and 05's roster owner; **closed**.
 
-45. **What bounds `max_freeze_timeout` against the retention ceiling?**
+45. ~~**What bounds `max_freeze_timeout` against the retention ceiling?**~~
+    **Answered (owner call, 2026-09-01 — P-D-84 arm 6): a boot refusal** — config validation
+    refuses `freeze_timeout_hours` above the ten-year ceiling the clamp encodes, so the
+    resolution stays total by construction.
+    Original text:
     `cpt-cf-bss-products-dod-freeze-timeout` obliges the export into
     `resolved_idempotency_retention_hours`'s clamp, and the shipped call is **two-sided**: its upper
     bound exists so *"the resolution stays total"*. `u32::clamp` requires `min <= max`, so a
     `max_freeze_timeout` above the ten-year ceiling turns every expiry stamp into a panic. Row 36
     asks for the field, its owner and its unit and does not reach this interaction.
-    **Blocks**: `cpt-cf-bss-products-dod-freeze-timeout`.
-    **Owner**: this gear's config owner with `01-foundation`'s — the pairing row 36 names.
+    **Blocks**: no DoD — **resolved by P-D-84**.
+    **Owner**: was this gear's config owner with `01-foundation`'s — the pairing row 36 names; **closed**.
 
 46. ~~**Who writes `products_freeze_ack.state = pending`, and is the value live or dead?**~~
     **Answered (owner call, 2026-08-31 — P-D-67 arm 9): the increment transaction seeds the rows** —

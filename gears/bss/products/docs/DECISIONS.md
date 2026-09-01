@@ -1569,6 +1569,63 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   (the re-publish step).
 
 
+#### P-D-84 — The freeze protocol's seven: settled-not-acked, the seeded ledger, the strict flag, the resolver's shape, and the timeout's field
+
+- **Date**: 2026-09-01 (owner call, autonomous under the standing instruction —
+  `features/catalog-version.md` §7 rows 6, 7, 12, 18, 36, 44 and 45, the set holding the freeze
+  chain's doors)
+
+**1. `freezeComplete` ranges over SETTLED, not acked** (row 6): complete ⇔ the ledger holds no
+`pending` row and no `not_frozen(forced)` row — a release settles exactly as an ack does, so
+completeness is **monotone** and the regression the row names cannot be expressed. The predicate
+reads `state`, whose six admitted edges (P-D-60) leave `released` terminal; slice 10's
+version-liveness pair already reads a released registration as released, so nothing there moves.
+
+**2. The ledger's creation point is the increment transaction, and the empty-set vacuity is
+deliberate** (row 7): P-D-67's seeding is built — one `pending` row per snapshotted participant,
+written in the same transaction as the version row, so no resolution can see a version whose
+ledger does not yet exist. An **empty registered set** has nobody to wait for: `freeze_state` is
+seeded `complete` at insert (shipped), and C5's fail-closed default governs versions **with**
+participants — a tenant that registers none has declined the ceremony, not evaded it.
+
+**3. The exposed flag derives strictly** (row 18): wire `freezeComplete = (freeze_state =
+'complete')`. `complete(forced)` reads **false** on the flag — the flag's PRD purpose is
+posting-safety and a forced version is not posting-safe (`inst-rv-intent` refuses it
+`VERSION_FORCED_INCOMPLETE`, which carries the why) — the column stays the storage truth, and
+P-D-19's `freezeComplete = complete(forced)` phrasing stands under the state reading, unamended.
+
+**4. The resolver takes the request door's dual shape** (row 12): an SDK client surface beside the
+increment contract (P-D-15's rule for machine consumers) and
+`GET /bss-products/v1/catalog-versions/{id}` with a **required** `intent` query as the
+out-of-process binding, both passing `catalog_version x read`. The route is the slice's own
+prefix; 01's unqualified contract claim is untouched because the surface is this slice's door, not
+a new contract id.
+
+**5. The timeout's field is `freeze_timeout_hours: u32` on `ProductsConfig`** (row 36) — hours,
+the unit the retention resolution already speaks (*"retention **is** `max(24h,
+max_freeze_timeout)`"*), per-deployment like every field of that struct; so `max_freeze_timeout`
+IS the configured value — in v1 nothing per-tenant or per-lane exists to take a maximum over.
+
+**6. The ceiling is a boot refusal** (row 45): config validation refuses `freeze_timeout_hours`
+above the ten-year ceiling the clamp's upper bound encodes, so `u32::clamp`'s `min <= max`
+precondition holds by construction and the resolution stays total.
+
+**7. The export door resolves through the shared lookup** (row 44): when `09`'s export door
+builds, it takes the `IntentfulResolver` component like resolve and diff do, keeping *"the single
+raising door of `CATALOG_VERSION_UNKNOWN`"* true as written; raising its own refusal was declined
+as falsifying a shipped clause to save a function call.
+
+- **The arguments against, stated**: arm 1 lets a version report complete though every participant
+  released without consuming — accepted, release is the participant's own declaration; arm 3 makes
+  the flag blind to the forced-vs-open distinction — deliberate, the refusal codes carry it; arm 5
+  fixes the maximum to one deployment value, which a future per-tenant config would have to
+  revisit together with its own row.
+- **Not changed**: P-D-60's edge list, P-D-67's seeding and snapshot columns, P-D-19, C5, the
+  resolver's refusal codes, rows 13 and 48 (cv-authz's remaining holders).
+- **Propagated**: `features/catalog-version.md` (rows 6, 7, 12, 18, 36, 44, 45 struck; §7
+  arithmetic; `dod-ack-door`, `dod-intentful-resolver` and `dod-freeze-timeout` freed),
+  `ProductsConfig` when `dod-freeze-timeout` builds.
+
 #### P-D-83 — §4 governs the storage shape whole: columns and admitted row populations alike
 
 - **Date**: 2026-09-01 (owner call, autonomous under the standing instruction —
