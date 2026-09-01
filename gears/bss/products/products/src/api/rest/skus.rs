@@ -243,6 +243,7 @@ use crate::domain::concurrency::InternalRevision;
 use crate::domain::containment::{
     EmptyScopeToken, ResolvedScope, ScopeContainment, ScopeInput, ScopePair,
 };
+use crate::domain::disposition::{self, CLONE_SUGGESTION_ATTEMPTS, SkuCloneSource};
 use crate::domain::error::DomainError;
 use crate::domain::governance::{
     ApprovalId, EntityRef, GateMode, GovernanceGate, NoMaterialityPolicyGate,
@@ -401,6 +402,7 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
         .error_503(openapi)
         .register(router, openapi);
 
+    let router = register_clone_route(router, openapi);
     register_head_act_routes(router, openapi).layer(Extension(state))
 }
 
@@ -626,7 +628,7 @@ pub struct CreateSkuRequest {
 /// empty token (`","`, `"eu,,us"`, `",eu"`) — see
 /// [`crate::domain::containment::ResolvedScope::parse`]'s own doc for why
 /// this is rejected rather than silently filtered.
-fn scope_input_from_payload(raw: Option<String>) -> Result<ScopeInput, EmptyScopeToken> {
+pub(super) fn scope_input_from_payload(raw: Option<String>) -> Result<ScopeInput, EmptyScopeToken> {
     match raw {
         None => Ok(ScopeInput::Omitted),
         Some(value) => match ResolvedScope::parse(&value)? {
@@ -840,7 +842,7 @@ fn payload_digest(request: &CreateSkuRequest) -> Vec<u8> {
 /// the prior one rolled back, so the prior id was never committed and reached
 /// no consumer. It would stop being harmless if an id were ever minted
 /// *outside* the transaction and carried in.
-async fn insert_sku_with_event(
+pub(super) async fn insert_sku_with_event(
     state: &ApiState,
     scope: AccessScope,
     new: NewSku,
@@ -1423,7 +1425,7 @@ async fn create_sku(
 /// See `products::classify_insert_conflict`'s own doc for
 /// the cost this substring match over driver text carries, which applies
 /// identically here.
-fn classify_sku_insert_conflict(message: &str) -> bool {
+pub(super) fn classify_sku_insert_conflict(message: &str) -> bool {
     let lower = message.to_ascii_lowercase();
     let looks_like_a_unique_violation =
         lower.contains("unique constraint") || lower.contains("duplicate key");
@@ -1464,6 +1466,388 @@ async fn refuse_sku_insert_conflict(
         CanonicalError::from(domain_err),
     )
     .await
+}
+
+/// Register `POST .../{id}/clone` onto `router` — its own function for
+/// [`register_head_act_routes`]'s reason: one door, one place.
+fn register_clone_route(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
+    OperationBuilder::post("/bss-products/v1/skus/{id}/clone")
+        .operation_id("bss_products.clone_sku")
+        .summary("Clone a SKU")
+        .description(
+            "Mints a new draft SKU from the named source (`CloneDoor`, lone-SKU shape): a \
+             `draft` source is read at its head, a `published`, `deprecated` or `retired` one \
+             at its last frozen version, and a `discarded` one is refused \
+             `CLONE_SOURCE_DISCARDED` (409). The parent link copies from the source unless \
+             `new_parent_id` overrides it; either way the ordinary create-door checks run \
+             (`PARENT_TERMINAL`, `SCOPE_NOT_CONTAINED`), so a lone clone of a retired \
+             parent's SKU must name a new parent. The code is suggested `{source}-copy-N`, N \
+             the first free integer decided by the reservation; an overridden code's \
+             collision is the ordinary `DUPLICATE_CODE`. Gates on `sku x write`. An optional \
+             `Idempotency-Key` header claims the clone's own concrete path; a keyed retry \
+             replays the first clone.",
+        )
+        .tag(TAG)
+        .authenticated()
+        .no_license_required()
+        .path_param("id", "The source SKU.")
+        .json_request::<CloneSkuRequest>(openapi, "The optional overrides.")
+        .handler(clone_sku)
+        .json_response_with_schema::<SkuView>(
+            openapi,
+            StatusCode::CREATED,
+            "The cloned SKU head, a draft.",
+        )
+        .error_400(openapi)
+        .error_401(openapi)
+        .error_403(openapi)
+        .error_404(openapi)
+        .error_409(openapi)
+        .error_500(openapi)
+        .error_503(openapi)
+        .register(router, openapi)
+}
+
+/// The lone-SKU clone's body: the overrides and nothing else (**P-D-75**).
+#[derive(Debug, Clone)]
+#[toolkit_macros::api_dto(request)]
+pub struct CloneSkuRequest {
+    /// Overrides the suggested code. A collision on it is the ordinary
+    /// `DUPLICATE_CODE` — only the *suggested* code walks first-free.
+    pub code: Option<String>,
+    /// Replaces the copied parent link (§3.1's lone-SKU carve-out): the
+    /// create-door checks then run against this parent instead.
+    pub new_parent_id: Option<Uuid>,
+}
+
+/// The clone body's idempotency digest, over the parsed request
+/// (`payload_digest`'s twin for this door's own DTO).
+fn clone_sku_payload_digest(request: &CloneSkuRequest) -> Vec<u8> {
+    let mut fields = serde_json::Map::new();
+    if let Some(code) = request.code.as_ref() {
+        fields.insert("code".to_owned(), serde_json::Value::String(code.clone()));
+    }
+    if let Some(parent) = request.new_parent_id.as_ref() {
+        fields.insert(
+            "new_parent_id".to_owned(),
+            serde_json::Value::String(parent.to_string()),
+        );
+    }
+    crate::domain::idempotency::payload_digest(&serde_json::Value::Object(fields))
+}
+
+/// The concrete resource path a SKU clone claims its idempotency key under
+/// (**P-D-42**'s rule).
+fn clone_sku_endpoint(sku_id: Uuid) -> String {
+    format!("/bss-products/v1/skus/{sku_id}/clone")
+}
+
+/// One string field out of a decoded frozen rendering (the Product door's
+/// `frozen_str`, against the SKU roster's keys).
+fn sku_frozen_str(
+    content: &serde_json::Map<String, serde_json::Value>,
+    key: &str,
+) -> Option<String> {
+    content
+        .get(key)
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned)
+}
+
+/// Read the SKU clone's source per `inst-cn-door`: a `draft` at its head,
+/// everything else at the last frozen version through
+/// [`canonical::decode_rendering`] (**P-D-77**), a `discarded` source
+/// refused `CLONE_SOURCE_DISCARDED` (P-D-75).
+async fn resolve_sku_clone_source(
+    state: &ApiState,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    sku_id: Uuid,
+) -> Result<Option<SkuCloneSource>, CanonicalError> {
+    let conn = state.db.conn().map_err(|e| {
+        repo_error_to_canonical(&RepoError::Db(format!("clone source connection: {e}")))
+    })?;
+    let head = repo::find_sku(&conn, scope, tenant_id, sku_id)
+        .await
+        .map_err(|e| repo_error_to_canonical(&e))?;
+    let Some(head) = head else {
+        return Ok(None);
+    };
+
+    if head.lifecycle_state == LifecycleState::Discarded {
+        return Err(CanonicalError::from(DomainError::CloneSourceDiscarded(
+            format!("sku {sku_id} is discarded and admits no clone"),
+        )));
+    }
+
+    if head.lifecycle_state == LifecycleState::Draft {
+        return Ok(Some(SkuCloneSource {
+            product_id: head.product_id,
+            sku_code: head.sku_code,
+            region_scope: head.region_scope,
+            brand_scope: head.brand_scope,
+            read_at_version: None,
+        }));
+    }
+
+    let frozen =
+        repo::latest_entity_version(&conn, scope, tenant_id, VersionedEntityKind::Sku, sku_id)
+            .await
+            .map_err(|e| repo_error_to_canonical(&e))?;
+    let Some((version, content)) = frozen else {
+        return Err(repo_error_to_canonical(&RepoError::CorruptRow(format!(
+            "sku {sku_id} is {} with no frozen version row",
+            head.lifecycle_state.as_str()
+        ))));
+    };
+    let content = canonical::decode_rendering(&content).map_err(|e| {
+        repo_error_to_canonical(&RepoError::CorruptRow(format!(
+            "frozen content of sku {sku_id} v{version}: {e}"
+        )))
+    })?;
+    let sku_code = sku_frozen_str(&content, "sku_code").ok_or_else(|| {
+        repo_error_to_canonical(&RepoError::CorruptRow(format!(
+            "frozen content of sku {sku_id} v{version} carries no sku_code"
+        )))
+    })?;
+
+    Ok(Some(SkuCloneSource {
+        // The parent link is identity, not content: the head's column and
+        // the frozen rendering agree by construction, and the head's is the
+        // one the carve-out overrides.
+        product_id: head.product_id,
+        sku_code,
+        region_scope: sku_frozen_str(&content, "region_scope").unwrap_or_default(),
+        brand_scope: sku_frozen_str(&content, "brand_scope").unwrap_or_default(),
+        read_at_version: Some(version),
+    }))
+}
+
+/// `POST /bss-products/v1/skus/{id}/clone` — the lone-SKU shape of
+/// `inst-cn-door` (`CloneDoor`), P-D-75's body, P-D-62's walk.
+///
+/// The act mirrors [`clone_sku`]'s Product twin minus the family phase: a
+/// lone SKU is a single-entity act, so its keyed claim keeps the create
+/// door's in-transaction answer, and the parent — copied or overridden — is
+/// judged by [`resolve_parent_scope`], the ordinary create-door checks.
+async fn clone_sku(
+    Extension(state): Extension<Arc<ApiState>>,
+    Extension(enforcer): Extension<authz_resolver_sdk::PolicyEnforcer>,
+    extension_ctx: Option<Extension<SecurityContext>>,
+    headers: HeaderMap,
+    Path(source_id): Path<Uuid>,
+    Json(body): Json<CloneSkuRequest>,
+) -> Result<Response, CanonicalError> {
+    let ctx = require_authenticated(extension_ctx)?;
+    let tenant_id = ctx.subject_tenant_id();
+    let now = Utc::now();
+    let payload_hash = clone_sku_payload_digest(&body);
+
+    let code_override = body.code.as_deref().map(str::trim).map(str::to_owned);
+    let new_parent_id = body.new_parent_id;
+
+    let actor_ref =
+        crate::api::rest::resolve_creator_actor_ref(&state, tenant_id, ctx.subject_id(), now)
+            .await?;
+    let scope = match crate::authz::access_scope(
+        &enforcer,
+        &ctx,
+        &crate::authz::resource_types::SKU,
+        crate::authz::actions::WRITE,
+        Some(tenant_id),
+        None,
+        true,
+    )
+    .await
+    {
+        Ok(scope) => scope,
+        Err(crate::authz::AuthzError::Denied(reason)) => {
+            let self_scope = AccessScope::for_tenant(tenant_id);
+            return Err(crate::api::rest::audit_refusal_and_report(
+                &state,
+                &self_scope,
+                crate::api::rest::RefusalAuditContext {
+                    tenant_id,
+                    actor_ref,
+                    subject_kind: crate::authz::labels::SKU,
+                    error_code: "PERMISSION_DENIED",
+                },
+                RefusalSubject::Attempted(source_id.to_string()),
+                SkuResource::permission_denied()
+                    .with_reason(reason)
+                    .create(),
+            )
+            .await);
+        }
+        Err(err @ crate::authz::AuthzError::Unavailable(_)) => {
+            return Err(authz_error_to_canonical(err, |reason| {
+                SkuResource::permission_denied()
+                    .with_reason(reason)
+                    .create()
+            }));
+        }
+    };
+
+    // -- shape: a supplied override must survive its own trim. --
+    let mut report = ValidationReport::new();
+    if code_override.as_deref() == Some("") {
+        report.violate("VALIDATION", "code", "code override must not be blank");
+    }
+    if new_parent_id == Some(Uuid::nil()) {
+        report.violate(
+            "VALIDATION",
+            "new_parent_id",
+            "new_parent_id must name a Product",
+        );
+    }
+    if !report.is_empty() {
+        return Err(audit_sku_refusal(
+            &state,
+            &scope,
+            tenant_id,
+            actor_ref,
+            &source_id.to_string(),
+            DomainError::Validation(report),
+        )
+        .await);
+    }
+
+    // -- the idempotency claim, on the clone's own concrete path. --
+    let client_key = match idempotency_key(&headers) {
+        Ok(key) => key,
+        Err(domain_err) => {
+            return Err(audit_sku_refusal(
+                &state,
+                &scope,
+                tenant_id,
+                actor_ref,
+                &source_id.to_string(),
+                domain_err,
+            )
+            .await);
+        }
+    };
+    let endpoint: &'static str = Box::leak(clone_sku_endpoint(source_id).into_boxed_str());
+    let claim = client_key.map(|key| {
+        IdempotencyClaimInput::new(
+            endpoint,
+            key,
+            payload_hash,
+            now,
+            state.idempotency_retention_hours,
+        )
+    });
+
+    // -- the source, read where its state says. --
+    let source = match resolve_sku_clone_source(&state, &scope, tenant_id, source_id).await {
+        Ok(Some(source)) => source,
+        Ok(None) => {
+            return Err(sku_not_found(source_id));
+        }
+        Err(canonical) => {
+            if canonical.status_code() == 409 {
+                return Err(crate::api::rest::audit_refusal_and_report(
+                    &state,
+                    &scope,
+                    crate::api::rest::RefusalAuditContext {
+                        tenant_id,
+                        actor_ref,
+                        subject_kind: crate::authz::labels::SKU,
+                        error_code: "CLONE_SOURCE_DISCARDED",
+                    },
+                    RefusalSubject::Attempted(source_id.to_string()),
+                    canonical,
+                )
+                .await);
+            }
+            return Err(canonical);
+        }
+    };
+
+    // -- the parent, copied or overridden, judged by the ordinary
+    // create-door checks (the carve-out's own rule). --
+    let parent_id = new_parent_id.unwrap_or(source.product_id);
+    let child_scope = resolve_parent_scope(
+        &state,
+        &scope,
+        tenant_id,
+        actor_ref,
+        parent_id,
+        &source.sku_code,
+        PayloadScopes {
+            region: Some(source.region_scope.clone()),
+            brand: Some(source.brand_scope.clone()),
+        },
+    )
+    .await?;
+
+    // -- the first-free walk (P-D-62). --
+    let mut code_n: u32 = 1;
+    for _attempt in 0..CLONE_SUGGESTION_ATTEMPTS {
+        let code = code_override
+            .clone()
+            .unwrap_or_else(|| disposition::suggested_sku_code(&source, code_n));
+        let new = NewSku {
+            sku_id: Uuid::new_v4(),
+            tenant_id,
+            product_id: parent_id,
+            sku_code: code.clone(),
+            region_scope: child_scope.region.render(),
+            brand_scope: child_scope.brand.render(),
+            created_by: actor_ref.to_string(),
+            created_at: now,
+            cloned_from: Some(source_id),
+            cloned_from_version: source.read_at_version,
+        };
+        match insert_sku_with_event(&state, scope.clone(), new, claim.clone(), actor_ref).await {
+            Ok(CreateOutcome::Created {
+                internal_revision,
+                body,
+            }) => {
+                let tag = preconditions::etag(InternalRevision::new(internal_revision));
+                return Ok((CREATE_RESPONSE_STATUS, [(ETAG, tag)], Json(body)).into_response());
+            }
+            Ok(CreateOutcome::Replay { status, body }) => {
+                return Ok(replay_response(status, body));
+            }
+            Ok(CreateOutcome::Refused(domain_err)) => {
+                return Err(audit_sku_refusal(
+                    &state, &scope, tenant_id, actor_ref, &code, domain_err,
+                )
+                .await);
+            }
+            Err(db_error) => {
+                let message = db_error.to_string();
+                if classify_sku_insert_conflict(&message) {
+                    if code_override.is_none() {
+                        // The suggested candidate lost its reservation: that
+                        // is the walk, not a refusal (P-D-62).
+                        code_n += 1;
+                    } else {
+                        // The operator's own collision: the ordinary
+                        // audited refusal.
+                        return Err(refuse_sku_insert_conflict(
+                            &state, &scope, tenant_id, actor_ref, code,
+                        )
+                        .await);
+                    }
+                } else {
+                    return Err(repo_error_to_canonical(&RepoError::Db(message)));
+                }
+            }
+        }
+    }
+
+    // The cap is operational, not semantic (P-D-62): surface the family's
+    // own conflict rather than invent a new refusal for it.
+    Err(refuse_sku_insert_conflict(
+        &state,
+        &scope,
+        tenant_id,
+        actor_ref,
+        disposition::suggested_sku_code(&source, code_n),
+    )
+    .await)
 }
 
 // ---------------------------------------------------------------------------

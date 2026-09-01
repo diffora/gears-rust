@@ -21,7 +21,7 @@ use std::fmt::Write as _;
 
 use serde_json::json;
 
-use super::{Absence, DIGEST_VERSION, canonical_rendering, content_digest};
+use super::{Absence, DIGEST_VERSION, canonical_rendering, content_digest, decode_rendering};
 
 /// The roster the complete-set cases render against — a stand-in for a
 /// frozen version row's content columns, wide enough that one of its names
@@ -273,5 +273,43 @@ fn an_array_is_rendered_in_the_order_received_today() {
         canonical_rendering(&value, Absence::Omit),
         r#"{"tags":["z","a","m"]}"#,
         "no collection sort is applied yet and none is owed until a collection exists"
+    );
+}
+
+/// [`decode_rendering`] is [`canonical_rendering`]'s inverse (P-D-77): a
+/// rendered object decodes back to a map whose re-rendering is
+/// byte-identical, roster-written `null` members included — and the two
+/// non-object shapes a corrupt store could hold are reported, not admitted.
+#[test]
+fn decode_rendering_round_trips_the_renderer() {
+    let roster: &[&str] = &["absent_member", "name", "nested"];
+    let value = serde_json::json!({
+        "name": "Fibre 500",
+        "nested": { "b": 2, "a": 1 },
+    });
+    let rendered = canonical_rendering(&value, Absence::Null { roster });
+
+    let decoded = decode_rendering(&rendered).expect("a rendering decodes");
+    assert_eq!(
+        decoded.get("absent_member"),
+        Some(&serde_json::Value::Null),
+        "a roster name written null comes back as a null member, not as absence"
+    );
+    assert_eq!(
+        canonical_rendering(
+            &serde_json::Value::Object(decoded),
+            Absence::Null { roster }
+        ),
+        rendered,
+        "decode then render reproduces the stored bytes exactly"
+    );
+
+    assert!(
+        decode_rendering("not json at all").is_err(),
+        "a parse failure is reported"
+    );
+    assert!(
+        decode_rendering("[1,2]").is_err(),
+        "a non-object rendering is a store this gear wrote wrong"
     );
 }

@@ -195,6 +195,43 @@ pub fn canonical_rendering(value: &JsonValue, absence: Absence<'_>) -> String {
     rendered
 }
 
+/// Decode one stored canonical rendering back into its object — the inverse
+/// of [`canonical_rendering`], and deliberately beside it (**P-D-77**,
+/// `features/clone.md` §7 row 23): a parse written at a consumer would be
+/// the second serialization rule this module exists to prevent.
+///
+/// The rendering is JSON, so the decode is a JSON parse plus the one check
+/// the contract adds: a version row's content is always the rendering of an
+/// **object** (the roster describes exactly one object — the outermost one),
+/// so anything else is a store this gear wrote wrong, reported in the
+/// message rather than admitted. Roster names written `null` by
+/// [`Absence::Null`] come back as JSON `null` members — the decoder does
+/// not drop them, because "absent" and "absent from the map" are the very
+/// distinction the rendering mode exists to keep.
+///
+/// # Errors
+///
+/// The parse failure's own text, or the non-object's JSON kind — the caller
+/// (a frozen-content reader) wraps either into its `CorruptRow` alarm.
+pub fn decode_rendering(canonical: &str) -> Result<serde_json::Map<String, JsonValue>, String> {
+    let value: JsonValue =
+        serde_json::from_str(canonical).map_err(|e| format!("not valid JSON: {e}"))?;
+    match value {
+        JsonValue::Object(map) => Ok(map),
+        other => Err(format!(
+            "a canonical rendering is always an object; found {}",
+            match other {
+                JsonValue::Null => "null",
+                JsonValue::Bool(_) => "a boolean",
+                JsonValue::Number(_) => "a number",
+                JsonValue::String(_) => "a string",
+                JsonValue::Array(_) => "an array",
+                JsonValue::Object(_) => "an object",
+            }
+        )),
+    }
+}
+
 /// Append the complete-set rendering of one object to `out`: every roster
 /// name the map does not carry is written `null`.
 ///

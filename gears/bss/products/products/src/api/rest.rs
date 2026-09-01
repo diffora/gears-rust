@@ -810,7 +810,7 @@ pub(crate) async fn claim_idempotency(
                 )))
             }
         }
-        IdempotencyClaim::InFlight { payload_hash } if payload_hash != input.payload_hash => {
+        IdempotencyClaim::InFlight { payload_hash, .. } if payload_hash != input.payload_hash => {
             ClaimVerdict::Refused(DomainError::IdempotencyConflict(format!(
                 "{} is held by an act still in flight under a different payload on {}",
                 input.client_key, input.endpoint
@@ -818,6 +818,102 @@ pub(crate) async fn claim_idempotency(
         }
         IdempotencyClaim::InFlight { .. } | IdempotencyClaim::TakeoverRaceLost => {
             ClaimVerdict::Refused(DomainError::IdempotencyKeyInFlight(format!(
+                "{} is held by an act still in flight on {}",
+                input.client_key, input.endpoint
+            )))
+        }
+    })
+}
+
+/// [`ClaimVerdict`] for a **composite** door (P-D-79): identical in every
+/// arm but one — a live `claimed` row whose digest matches and whose
+/// `entity_ref` is stamped is not a refusal but the resume signal.
+///
+/// The single-entity doors keep [`claim_idempotency`]'s reading: there, a
+/// visible `claimed` row can only be a concurrent duplicate, because claim
+/// and mutation commit together and the answer is recorded in the same
+/// transaction. A composite act commits its claim with the *first* entity
+/// and answers only at completion (P-D-72), so its committed-and-unanswered
+/// claim means *in progress* — and the matching retry re-enters instead of
+/// being told in flight.
+pub(crate) enum CompositeClaimVerdict {
+    /// Fresh claim: proceed with the composite's first transaction.
+    Proceed,
+    /// The act completed earlier; this is its stored answer.
+    Replay {
+        /// The stored status.
+        status: i32,
+        /// The stored body.
+        body: JsonValue,
+    },
+    /// The idempotency phase refused; nothing was written.
+    Refused(DomainError),
+    /// A committed-but-unanswered claim with a matching digest: the act is
+    /// in progress or crashed mid-composite. Resume from its parent.
+    Resume {
+        /// The stamped parent handle the re-entry scans from.
+        entity_ref: Uuid,
+    },
+}
+
+/// Take or read the claim for a composite door, classifying a matching
+/// live claim as [`CompositeClaimVerdict::Resume`] (P-D-79).
+///
+/// The same `runner`-is-the-mutation's-transaction obligation as
+/// [`claim_idempotency`]; the digest comparisons are the same ones. A
+/// matching live claim with **no** stamp is refused in flight rather than
+/// resumed: this door stamps `entity_ref` in the claim's own transaction,
+/// so a visible claim without one was written by something else and resuming
+/// from it would scan a parent this act never created.
+pub(crate) async fn claim_composite_idempotency(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    input: &IdempotencyClaimInput,
+) -> Result<CompositeClaimVerdict, RepoError> {
+    let claim = repo::claim_idempotency_key(
+        runner,
+        scope,
+        tenant_id,
+        &input.endpoint,
+        &input.client_key,
+        &input.payload_hash,
+        input.now,
+        input.expires_at,
+    )
+    .await?;
+
+    Ok(match claim {
+        IdempotencyClaim::Claimed => CompositeClaimVerdict::Proceed,
+        IdempotencyClaim::Answered {
+            payload_hash,
+            response_status,
+            response_body,
+        } => {
+            if payload_hash == input.payload_hash {
+                CompositeClaimVerdict::Replay {
+                    status: response_status,
+                    body: response_body,
+                }
+            } else {
+                CompositeClaimVerdict::Refused(DomainError::IdempotencyConflict(format!(
+                    "{} was already answered for a different payload on {}",
+                    input.client_key, input.endpoint
+                )))
+            }
+        }
+        IdempotencyClaim::InFlight { payload_hash, .. } if payload_hash != input.payload_hash => {
+            CompositeClaimVerdict::Refused(DomainError::IdempotencyConflict(format!(
+                "{} is held by an act still in flight under a different payload on {}",
+                input.client_key, input.endpoint
+            )))
+        }
+        IdempotencyClaim::InFlight {
+            entity_ref: Some(entity_ref),
+            ..
+        } => CompositeClaimVerdict::Resume { entity_ref },
+        IdempotencyClaim::InFlight { .. } | IdempotencyClaim::TakeoverRaceLost => {
+            CompositeClaimVerdict::Refused(DomainError::IdempotencyKeyInFlight(format!(
                 "{} is held by an act still in flight on {}",
                 input.client_key, input.endpoint
             )))

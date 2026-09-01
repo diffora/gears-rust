@@ -101,6 +101,20 @@
 //! becomes `text` for `expires_at`; and the `bss.` qualification is dropped.
 //! Both `CHECK`s and the primary key are preserved on both sides.
 //!
+//! # `entity_ref` — the composite act's parent handle (P-D-79)
+//!
+//! Nullable, `NULL` for every single-entity door, and outside both `CHECK`s
+//! deliberately: the response pair's shape is the answer's contract, while
+//! `entity_ref` is working state a composite act stamps in its **first**
+//! transaction (claim `INSERT`, parent row, stamp — together or not at all)
+//! and reads back on a same-key retry to resume from. The family clone is
+//! the first such act: its claim stays `claimed` after the parent's
+//! transaction commits — committed-but-unanswered means *in progress*
+//! (P-D-72) — and `entity_ref` is how the re-entry finds the parent whose
+//! children it scans, since several family acts over one source make
+//! `cloned_from` alone ambiguous. The expired-claim takeover resets it
+//! beside the response pair.
+//!
 //! @cpt-dod:cpt-cf-bss-products-dod-idempotency-store:p1
 
 use sea_orm_migration::prelude::*;
@@ -118,6 +132,7 @@ const PG_UP_STATEMENTS: &[&str] = &[
             response_status integer,
             response_body   jsonb,
             expires_at      timestamptz NOT NULL,
+            entity_ref      uuid,
             CONSTRAINT products_idempotency_pkey PRIMARY KEY (tenant_id, endpoint, client_key),
             CONSTRAINT chk_products_idempotency_state CHECK (state IN ('claimed', 'answered')),
             CONSTRAINT chk_products_idempotency_response_group CHECK (
@@ -141,6 +156,7 @@ const SQLITE_UP_STATEMENTS: &[&str] = &[
             response_status integer,
             response_body   text,
             expires_at      text    NOT NULL,
+            entity_ref      text,
             PRIMARY KEY (tenant_id, endpoint, client_key),
             CONSTRAINT chk_products_idempotency_state CHECK (state IN ('claimed', 'answered')),
             CONSTRAINT chk_products_idempotency_response_group CHECK (

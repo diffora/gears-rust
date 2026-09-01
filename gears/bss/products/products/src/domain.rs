@@ -5,6 +5,7 @@ pub mod bucket;
 pub mod canonical;
 pub mod concurrency;
 pub mod containment;
+pub mod disposition;
 pub mod error;
 pub mod governance;
 pub mod idempotency;

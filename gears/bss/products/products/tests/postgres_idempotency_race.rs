@@ -192,7 +192,7 @@ async fn two_duplicates_claiming_one_fresh_key_admit_exactly_one() {
         .expect("its task must not panic")
         .expect("losing the insert is an outcome, not an error");
     match loser_outcome {
-        IdempotencyClaim::InFlight { payload_hash } => {
+        IdempotencyClaim::InFlight { payload_hash, .. } => {
             assert_eq!(
                 payload_hash, HASH_A,
                 "the in-flight refusal must carry the digest the *winner* recorded, since that \
@@ -322,7 +322,7 @@ async fn two_duplicates_taking_over_one_expired_key_admit_exactly_one() {
     // — see this case's own doc — so both admissible shapes are named, and a
     // second `Claimed` is what this assertion is really guarding against.
     match loser_outcome {
-        IdempotencyClaim::InFlight { payload_hash } => {
+        IdempotencyClaim::InFlight { payload_hash, .. } => {
             assert_eq!(
                 payload_hash, HASH_A,
                 "the refusal must be measured against the row the loser actually read, which \

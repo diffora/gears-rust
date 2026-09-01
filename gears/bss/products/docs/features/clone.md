@@ -407,7 +407,7 @@ column no table has.
 
 ### The clone door
 
-- [ ] `p3` - **ID**: `cpt-cf-bss-products-dod-clone-door`
+- [x] `p3` - **ID**: `cpt-cf-bss-products-dod-clone-door`
 
 `POST /bss-products/v1/{products|skus}/{id}/clone` exists for both kinds, answering **201** with the
 new draft. For a Product the act is always the family act — the body carries no selector and no
@@ -484,7 +484,7 @@ the renderer (**P-D-77** — §7 row 23), and this read surface is its first con
 
 ### Identity: minted ids, a suggested code, and one reservation
 
-- [ ] `p3` - **ID**: `cpt-cf-bss-products-dod-clone-identity`
+- [x] `p3` - **ID**: `cpt-cf-bss-products-dod-clone-identity`
 
 New `productId`/`skuId` are minted. The code is **suggested** as `{source}-copy-N`,
 **operator-overridable**, and reserved atomically through the same index the create door uses —
@@ -683,7 +683,7 @@ surface. §7 routes it to `08`'s and `12`'s owners: expose it, or withdraw the j
 
 ### The product-with-SKUs clone, and its honestly-reported partial
 
-- [ ] `p3` - **ID**: `cpt-cf-bss-products-dod-clone-children`
+- [x] `p3` - **ID**: `cpt-cf-bss-products-dod-clone-children`
 
 A product-with-SKUs clone clones each child — the source's non-discarded SKUs, in any of C1's
 four states (**P-D-79**: a `discarded` child is neither attempted nor receipted) — through the
@@ -756,7 +756,7 @@ and not pre-empted.
 
 ### The clone is audited as a refusal and as nothing else
 
-- [ ] `p3` - **ID**: `cpt-cf-bss-products-dod-clone-audit`
+- [x] `p3` - **ID**: `cpt-cf-bss-products-dod-clone-audit`
 
 A **committed** clone writes no audit row — its `ProductCreated`/`SkuCreated` is the record
 (**P-D-21**). A **refused** clone writes one, carrying a single `error_code`.
@@ -790,7 +790,7 @@ a routed call would not discriminate.
 
 ### `design/11` §1.7's two design-introduced names exist as named seams
 
-- [ ] `p3` - **ID**: `cpt-cf-bss-products-dod-clone-seams`
+- [x] `p3` - **ID**: `cpt-cf-bss-products-dod-clone-seams`
 
 `design/11` §1.7 introduces exactly two names, and both are addressable in the implementation rather
 than being prose:

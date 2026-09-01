@@ -1412,7 +1412,8 @@ async fn a_second_claim_on_a_live_unexpired_key_answers_in_flight_and_writes_not
     assert_eq!(
         outcome,
         IdempotencyClaim::InFlight {
-            payload_hash: b"hash-1".to_vec()
+            payload_hash: b"hash-1".to_vec(),
+            entity_ref: None,
         },
         "the outcome carries the held digest, which is what lets the door tell this \
          duplicate from one that merely reuses the key"
@@ -1482,7 +1483,8 @@ async fn a_second_claim_under_a_different_payload_reports_the_held_digest_unchan
     assert_eq!(
         outcome,
         IdempotencyClaim::InFlight {
-            payload_hash: b"hash-1".to_vec()
+            payload_hash: b"hash-1".to_vec(),
+            entity_ref: None,
         },
         "the digest reported is the one the row holds, never the one that just arrived"
     );

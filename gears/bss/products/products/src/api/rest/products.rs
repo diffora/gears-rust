@@ -427,15 +427,23 @@ use uuid::Uuid;
 use bss_products_sdk::models::{EntityKind as CatalogEntityKind, LifecycleState};
 
 use crate::api::rest::preconditions;
+use crate::api::rest::skus::{
+    classify_sku_insert_conflict, insert_sku_with_event, parent_scope_pair,
+    scope_input_from_payload, scope_not_contained_domain_err,
+};
 use crate::api::rest::{
-    ApiState, CREATE_RESPONSE_STATUS, ClaimVerdict, CreateOutcome, IdempotencyClaimInput,
-    authz_error_to_canonical, claim_idempotency, contention_db_err, idempotency_key,
-    record_idempotency_answer, replay_response, repo_error_to_canonical, require_authenticated,
+    ApiState, CREATE_RESPONSE_STATUS, ClaimVerdict, CompositeClaimVerdict, CreateOutcome,
+    IdempotencyClaimInput, authz_error_to_canonical, claim_composite_idempotency,
+    claim_idempotency, contention_db_err, idempotency_key, record_idempotency_answer,
+    replay_response, repo_error_to_canonical, require_authenticated,
 };
 use crate::domain::bucket;
 use crate::domain::canonical;
 use crate::domain::concurrency::InternalRevision;
 use crate::domain::containment::ResolvedScope;
+use crate::domain::disposition::{
+    self, CLONE_SUGGESTION_ATTEMPTS, ProductCloneSource, SkuCloneSource,
+};
 use crate::domain::error::DomainError;
 use crate::domain::governance::{
     ApprovalId, EntityRef, GateAuthorization, GateMode, GovernanceGate, NoMaterialityPolicyGate,
@@ -450,8 +458,8 @@ use crate::domain::validation::{ValidationPipeline, ValidationReport};
 use crate::infra::events;
 use crate::infra::storage::RepoError;
 use crate::infra::storage::repo::{
-    self, HeadWrite, NewEntityVersion, NewProduct, NullableText, ProductRecord, RefusalSubject,
-    SavedName, VersionedEntityKind,
+    self, HeadWrite, NewEntityVersion, NewProduct, NewSku, NullableText, ProductRecord,
+    RefusalSubject, SavedName, SkuRecord, VersionedEntityKind,
 };
 
 /// `OpenAPI` tag for the Product surface's operations.
@@ -4617,39 +4625,25 @@ fn clone_endpoint(product_id: Uuid) -> String {
     format!("/bss-products/v1/products/{product_id}/clone")
 }
 
-/// The clone's source fields, read from wherever `inst-cn-door` says the
-/// source's state is read: a `draft` at its head, everything else at its
-/// **last frozen version** — never a head's pending edits.
-struct CloneSource {
-    brand_id: Uuid,
-    name: String,
-    product_code: Option<String>,
-    region_scope: String,
-    brand_scope: String,
-    /// `None` = read at the head (a draft source) — P-D-76's representable
-    /// sentinel; `Some(v)` = read at frozen version `v`.
-    read_at_version: Option<i64>,
-    /// Whether the source is `retired`, which flavors the name suggestion
-    /// `-revived` rather than `-copy-N` (`inst-cn-rename`).
-    retired: bool,
-}
-
-/// One string field out of a frozen rendering, which wrote roster names the
-/// value lacked as JSON `null` (`canonical::Absence::Null`).
-fn frozen_str(content: &JsonValue, key: &str) -> Option<String> {
+/// One string field out of a decoded frozen rendering, whose writer put
+/// JSON `null` where a roster name had no value (`canonical::Absence::Null`).
+fn frozen_str(content: &JsonMap<String, JsonValue>, key: &str) -> Option<String> {
     content
         .get(key)
         .and_then(JsonValue::as_str)
         .map(str::to_owned)
 }
 
-/// Read the clone's source per `inst-cn-door`, or the refusal the state owes.
+/// Read the Product clone's source per `inst-cn-door`, or the refusal the
+/// state owes. The frozen half decodes through
+/// [`canonical::decode_rendering`] — the renderer's own inverse, never a
+/// parse of this door's own (**P-D-77**).
 async fn resolve_clone_source(
     state: &ApiState,
     scope: &AccessScope,
     tenant_id: Uuid,
     product_id: Uuid,
-) -> Result<Option<CloneSource>, CanonicalError> {
+) -> Result<Option<ProductCloneSource>, CanonicalError> {
     let conn = state.db.conn().map_err(|e| {
         repo_error_to_canonical(&RepoError::Db(format!("clone source connection: {e}")))
     })?;
@@ -4670,7 +4664,7 @@ async fn resolve_clone_source(
     }
 
     if head.lifecycle_state == LifecycleState::Draft {
-        return Ok(Some(CloneSource {
+        return Ok(Some(ProductCloneSource {
             brand_id: head.brand_id,
             name: head.name,
             product_code: head.product_code,
@@ -4682,8 +4676,9 @@ async fn resolve_clone_source(
     }
 
     // Published, deprecated or retired: the last frozen version is the read
-    // surface. A head with `published_version >= 1` and no frozen row is a
-    // store this gear wrote wrong, and the alarm is ours, not the caller's.
+    // surface — even where the head moved after deprecation (P-D-78). A
+    // head with `published_version >= 1` and no frozen row is a store this
+    // gear wrote wrong, and the alarm is ours, not the caller's.
     let frozen = repo::latest_entity_version(
         &conn,
         scope,
@@ -4699,9 +4694,9 @@ async fn resolve_clone_source(
             head.lifecycle_state.as_str()
         ))));
     };
-    let content: JsonValue = serde_json::from_str(&content).map_err(|e| {
+    let content = canonical::decode_rendering(&content).map_err(|e| {
         repo_error_to_canonical(&RepoError::CorruptRow(format!(
-            "frozen content of product {product_id} v{version} is not JSON: {e}"
+            "frozen content of product {product_id} v{version}: {e}"
         )))
     })?;
 
@@ -4718,7 +4713,7 @@ async fn resolve_clone_source(
         )))
     })?;
 
-    Ok(Some(CloneSource {
+    Ok(Some(ProductCloneSource {
         brand_id,
         name,
         product_code: frozen_str(&content, "product_code"),
@@ -4729,52 +4724,22 @@ async fn resolve_clone_source(
     }))
 }
 
-/// The suggested name for attempt `n` (1-based), per `inst-cn-rename` and
-/// **P-D-62**: `{name}-copy-N` for a live-lineage source, `-revived` flavored
-/// for a retired one — and a second revival of the lineage `-revived-N`, the
-/// same first-free rule over the flavored family.
-fn suggested_name(source: &CloneSource, n: u32) -> String {
-    if source.retired {
-        if n == 1 {
-            format!("{}-revived", source.name)
-        } else {
-            format!("{}-revived-{n}", source.name)
-        }
-    } else {
-        format!("{}-copy-{n}", source.name)
-    }
-}
-
-/// The suggested code for attempt `n`: `{source}-copy-N`, and none where the
-/// source carries none (the clone's stays null — `inst-cn-identity`, L5).
-fn suggested_code(source: &CloneSource, n: u32) -> Option<String> {
-    source
-        .product_code
-        .as_ref()
-        .map(|code| format!("{code}-copy-{n}"))
-}
-
-/// The operational cap on the first-free walk. Not a semantic bound — the
-/// walk's length is the lineage's own clone count (P-D-62) — but an insert
-/// loop with no ceiling would spin on a store that refuses every candidate
-/// for a reason that is not a name collision at all. Past it, the last
-/// conflict is surfaced as the ordinary refusal.
-const CLONE_SUGGESTION_ATTEMPTS: u32 = 100;
-
-/// The clone door's `product x write` gate: the create door's own gate,
-/// refused with the same audited `PERMISSION_DENIED` shape.
-async fn clone_write_scope(
+/// One `write` scope for the clone door, against one resource type —
+/// [`clone_write_scopes`]' per-resource half, refused with the create
+/// door's own audited `PERMISSION_DENIED` shape.
+async fn clone_scope_for(
     state: &ApiState,
     enforcer: &authz_resolver_sdk::PolicyEnforcer,
     ctx: &SecurityContext,
     tenant_id: Uuid,
     actor_ref: Uuid,
     source_id: Uuid,
+    resource: &authz_resolver_sdk::ResourceType,
 ) -> Result<AccessScope, CanonicalError> {
     match crate::authz::access_scope(
         enforcer,
         ctx,
-        &crate::authz::resource_types::PRODUCT,
+        resource,
         crate::authz::actions::WRITE,
         Some(tenant_id),
         None,
@@ -4808,8 +4773,52 @@ async fn clone_write_scope(
     }
 }
 
+/// The clone door's gate: `product x write` **and** `sku x write`, both
+/// unconditionally (**P-D-79**) — every product clone is the family act,
+/// and authorization precedes the child count the door has not yet been
+/// authorized to read (P-D-30).
+///
+/// Returns `(product_scope, sku_scope)`: the first governs the parent's
+/// reads and writes, the second the children's.
+async fn clone_write_scopes(
+    state: &ApiState,
+    enforcer: &authz_resolver_sdk::PolicyEnforcer,
+    ctx: &SecurityContext,
+    tenant_id: Uuid,
+    actor_ref: Uuid,
+    source_id: Uuid,
+) -> Result<(AccessScope, AccessScope), CanonicalError> {
+    let product_scope = clone_scope_for(
+        state,
+        enforcer,
+        ctx,
+        tenant_id,
+        actor_ref,
+        source_id,
+        &crate::authz::resource_types::PRODUCT,
+    )
+    .await?;
+    let sku_scope = clone_scope_for(
+        state,
+        enforcer,
+        ctx,
+        tenant_id,
+        actor_ref,
+        source_id,
+        &crate::authz::resource_types::SKU,
+    )
+    .await?;
+    Ok((product_scope, sku_scope))
+}
+
 /// One audited refusal of the clone door, PRODUCT-labelled — the shape every
-/// arm of [`clone_product`] refuses in.
+/// arm of [`clone_product`] refuses in. With [`audit_failed_child`]'s
+/// SKU-labelled twin it is the whole of the clone's audit posture: a
+/// **committed** clone writes no audit row — its `ProductCreated`/
+/// `SkuCreated` is the record (P-D-21) — and a **refused** one writes one,
+/// carrying a single `error_code`.
+///
+/// @cpt-dod:cpt-cf-bss-products-dod-clone-audit:p1
 async fn refuse_clone(
     state: &ApiState,
     scope: &AccessScope,
@@ -4834,13 +4843,559 @@ async fn refuse_clone(
     .await
 }
 
+/// The parent's creating transaction for the family act (**P-D-79**):
+/// [`insert_product_with_event`]'s twin with the three composite
+/// differences, kept as its own function so the create door's single-entity
+/// contract stays exactly what its doc states.
+///
+/// 1. The claim is read through [`claim_composite_idempotency`], whose
+///    matching-live-claim arm is the **resume signal**, not a refusal.
+/// 2. The claim's `entity_ref` is stamped with the minted parent id, in
+///    this same transaction — claim, parent row, outbox row and stamp
+///    commit together or not at all.
+/// 3. **No answer is recorded here.** The claim stays
+///    committed-and-unanswered — P-D-72's *in progress* — until the
+///    children phase completes; [`clone_product`] stores the receipt then.
+async fn insert_clone_parent(
+    state: &ApiState,
+    scope: AccessScope,
+    new: NewProduct,
+    claim: Option<IdempotencyClaimInput>,
+    actor_ref: Uuid,
+) -> Result<CloneParentOutcome, DbError> {
+    let outbox = state.sink.clone();
+    let tenant_id = new.tenant_id;
+    state
+        .db
+        .db()
+        .transaction_with_retry::<CloneParentOutcome, DbError, _, _>(
+            TxConfig::default(),
+            contention_db_err,
+            move |tx| {
+                let outbox = outbox.clone();
+                let scope = scope.clone();
+                let new = new.clone();
+                let claim = claim.clone();
+                Box::pin(async move {
+                    if let Some(input) = claim.as_ref() {
+                        match claim_composite_idempotency(tx, &scope, tenant_id, input)
+                            .await
+                            .map_err(|e| DbError::Sea(e.to_db_err()))?
+                        {
+                            CompositeClaimVerdict::Proceed => {}
+                            CompositeClaimVerdict::Replay { status, body } => {
+                                return Ok(CloneParentOutcome::Replay { status, body });
+                            }
+                            CompositeClaimVerdict::Refused(refusal) => {
+                                return Ok(CloneParentOutcome::Refused(refusal));
+                            }
+                            CompositeClaimVerdict::Resume { entity_ref } => {
+                                return Ok(CloneParentOutcome::Resume {
+                                    parent_id: entity_ref,
+                                });
+                            }
+                        }
+                    }
+
+                    let record = repo::insert_product(tx, &scope, new)
+                        .await
+                        .map_err(|e| DbError::Sea(e.to_db_err()))?;
+
+                    if let Some(input) = claim.as_ref() {
+                        repo::stamp_idempotency_entity_ref(
+                            tx,
+                            &scope,
+                            tenant_id,
+                            &input.endpoint,
+                            &input.client_key,
+                            record.product_id,
+                        )
+                        .await
+                        .map_err(|e| DbError::Sea(e.to_db_err()))?;
+                    }
+
+                    let core = events::EventBodyCore {
+                        tenant_id: record.tenant_id,
+                        entity_kind: events::EntityKind::Product.as_str(),
+                        entity_id: record.product_id,
+                        internal_revision: record.internal_revision,
+                        lifecycle_state: record.lifecycle_state.as_str(),
+                    };
+                    events::enqueue(
+                        &outbox,
+                        tx,
+                        record.product_id,
+                        events::PRODUCT_CREATED_PAYLOAD_TYPE,
+                        &core,
+                        actor_ref,
+                    )
+                    .await
+                    .map_err(|e| {
+                        DbError::Sea(DbErr::Custom(format!("enqueue ProductCreated: {e}")))
+                    })?;
+
+                    Ok(CloneParentOutcome::Created {
+                        record: Box::new(record),
+                    })
+                })
+            },
+        )
+        .await
+}
+
+/// [`insert_clone_parent`]'s outcome — [`CreateOutcome`]'s shape plus the
+/// composite door's fourth arm.
+enum CloneParentOutcome {
+    /// The parent landed; the children phase runs next.
+    Created {
+        /// The created head, the children phase's remap target. Boxed so
+        /// this variant does not dwarf its siblings (`large_enum_variant`).
+        record: Box<ProductRecord>,
+    },
+    /// The act completed earlier; this is its stored receipt.
+    Replay {
+        /// The stored status.
+        status: i32,
+        /// The stored body.
+        body: JsonValue,
+    },
+    /// The idempotency phase refused; nothing was written.
+    Refused(DomainError),
+    /// A committed-but-unanswered claim: resume the children phase against
+    /// the stamped parent (P-D-72, P-D-79).
+    Resume {
+        /// The parent the crashed or in-flight act already created.
+        parent_id: Uuid,
+    },
+}
+
+/// One receipt entry for a child that landed.
+fn child_created_entry(source_sku_id: Uuid, new_sku_id: Uuid, sku_code: &str) -> JsonValue {
+    serde_json::json!({
+        "source_sku_id": source_sku_id,
+        "disposition": "created",
+        "new_sku_id": new_sku_id,
+        "sku_code": sku_code,
+    })
+}
+
+/// One receipt entry for a child that failed alone: the owning door's code
+/// verbatim, plus the collected violations where the failure carried a
+/// report (P-D-72 arm 3 — no parallel taxonomy).
+fn child_failed_entry(source_sku_id: Uuid, refusal: &DomainError) -> JsonValue {
+    let violations: Vec<JsonValue> = match refusal {
+        DomainError::Validation(report) => report
+            .violations()
+            .iter()
+            .map(|violation| {
+                serde_json::json!({
+                    "code": violation.code,
+                    "subject": violation.subject,
+                    "detail": violation.detail,
+                })
+            })
+            .collect(),
+        other => vec![serde_json::json!({
+            "code": other.code(),
+            "subject": "sku",
+            "detail": other.to_string(),
+        })],
+    };
+    serde_json::json!({
+        "source_sku_id": source_sku_id,
+        "disposition": "failed",
+        "code": refusal.code(),
+        "violations": violations,
+    })
+}
+
+/// Audit one failed child as the refusal it is, and keep going: the family
+/// act is not refused by a failing child (`inst-cn-children` — siblings
+/// land), but the child's own refusal is still the audited kind
+/// (`dod-clone-audit`), SKU-labelled like every SKU-door refusal.
+/// The act-wide operands every family step shares: the tenant, the acting
+/// principal and the act's one instant — bundled so the family functions
+/// stay under the argument bar without threading three scalars each.
+#[derive(Clone, Copy)]
+struct ActStamp {
+    tenant_id: Uuid,
+    actor_ref: Uuid,
+    now: DateTime<Utc>,
+}
+
+async fn audit_failed_child(
+    state: &ApiState,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    actor_ref: Uuid,
+    subject: String,
+    refusal: DomainError,
+) {
+    let code = refusal.code();
+    // The built CanonicalError is the receipt's business, not the wire's —
+    // the family act still answers 201 — so the report half is dropped.
+    let _refused_answer = crate::api::rest::audit_refusal_and_report(
+        state,
+        scope,
+        crate::api::rest::RefusalAuditContext {
+            tenant_id,
+            actor_ref,
+            subject_kind: crate::authz::labels::SKU,
+            error_code: code,
+        },
+        RefusalSubject::Attempted(subject),
+        CanonicalError::from(refusal),
+    )
+    .await;
+}
+
+/// The SKU-side source fields of one family child, read where its state
+/// says ([`resolve_clone_source`]'s rule, per child).
+async fn resolve_child_source(
+    state: &ApiState,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    parent_id: Uuid,
+    child: &SkuRecord,
+) -> Result<SkuCloneSource, CanonicalError> {
+    if child.lifecycle_state == LifecycleState::Draft {
+        return Ok(SkuCloneSource {
+            product_id: parent_id,
+            sku_code: child.sku_code.clone(),
+            region_scope: child.region_scope.clone(),
+            brand_scope: child.brand_scope.clone(),
+            read_at_version: None,
+        });
+    }
+
+    let conn = state.db.conn().map_err(|e| {
+        repo_error_to_canonical(&RepoError::Db(format!(
+            "child clone source connection: {e}"
+        )))
+    })?;
+    let frozen = repo::latest_entity_version(
+        &conn,
+        scope,
+        tenant_id,
+        VersionedEntityKind::Sku,
+        child.sku_id,
+    )
+    .await
+    .map_err(|e| repo_error_to_canonical(&e))?;
+    let Some((version, content)) = frozen else {
+        return Err(repo_error_to_canonical(&RepoError::CorruptRow(format!(
+            "sku {} is {} with no frozen version row",
+            child.sku_id,
+            child.lifecycle_state.as_str()
+        ))));
+    };
+    let content = canonical::decode_rendering(&content).map_err(|e| {
+        repo_error_to_canonical(&RepoError::CorruptRow(format!(
+            "frozen content of sku {} v{version}: {e}",
+            child.sku_id
+        )))
+    })?;
+    let sku_code = frozen_str(&content, "sku_code").ok_or_else(|| {
+        repo_error_to_canonical(&RepoError::CorruptRow(format!(
+            "frozen content of sku {} v{version} carries no sku_code",
+            child.sku_id
+        )))
+    })?;
+    Ok(SkuCloneSource {
+        product_id: parent_id,
+        sku_code,
+        region_scope: frozen_str(&content, "region_scope").unwrap_or_default(),
+        brand_scope: frozen_str(&content, "brand_scope").unwrap_or_default(),
+        read_at_version: Some(version),
+    })
+}
+
+/// Clone one family child through the disposition table, answering its
+/// receipt entry. A `Some(existing)` short-circuits to the `created` entry
+/// the resume re-entry owes for work already done (P-D-72).
+async fn clone_family_child(
+    state: &ApiState,
+    sku_scope: &AccessScope,
+    stamp: ActStamp,
+    parent: &ProductRecord,
+    parent_pair: &crate::domain::containment::ScopePair,
+    child: &SkuRecord,
+) -> Result<JsonValue, CanonicalError> {
+    let ActStamp {
+        tenant_id,
+        actor_ref,
+        now,
+    } = stamp;
+    let source =
+        resolve_child_source(state, sku_scope, tenant_id, parent.product_id, child).await?;
+
+    // The ordinary containment validator, against the NEW parent (§3.1's
+    // remap row). The new parent is a fresh draft, so the create door's
+    // PARENT_TERMINAL arm cannot fire; containment can — a retired child's
+    // frozen scopes are exempt from the parent save door's sweep and may
+    // genuinely exceed what the parent's frozen read now carries.
+    let region_input = scope_input_from_payload(Some(source.region_scope.clone()));
+    let brand_input = scope_input_from_payload(Some(source.brand_scope.clone()));
+    let (Ok(region_input), Ok(brand_input)) = (region_input, brand_input) else {
+        return Err(repo_error_to_canonical(&RepoError::CorruptRow(format!(
+            "stored scopes of sku {} contain an empty token",
+            child.sku_id
+        ))));
+    };
+    let child_pair = parent_pair.resolve_child(region_input, brand_input);
+    if let Err(failure) = parent_pair.check_containment(&child_pair) {
+        let refusal = scope_not_contained_domain_err(failure)?;
+        let entry = child_failed_entry(child.sku_id, &refusal);
+        audit_failed_child(
+            state,
+            sku_scope,
+            tenant_id,
+            actor_ref,
+            source.sku_code.clone(),
+            refusal,
+        )
+        .await;
+        return Ok(entry);
+    }
+
+    // The first-free walk (P-D-62), unflavored: SKU codes have no -revived.
+    let mut code_n: u32 = 1;
+    for _attempt in 0..CLONE_SUGGESTION_ATTEMPTS {
+        let code = disposition::suggested_sku_code(&source, code_n);
+        let new = NewSku {
+            sku_id: Uuid::new_v4(),
+            tenant_id,
+            product_id: parent.product_id,
+            sku_code: code.clone(),
+            region_scope: child_pair.region.render(),
+            brand_scope: child_pair.brand.render(),
+            created_by: actor_ref.to_string(),
+            created_at: now,
+            cloned_from: Some(child.sku_id),
+            cloned_from_version: source.read_at_version,
+        };
+        match insert_sku_with_event(state, sku_scope.clone(), new, None, actor_ref).await {
+            Ok(CreateOutcome::Created { body, .. }) => {
+                let new_sku_id = body
+                    .get("sku_id")
+                    .and_then(JsonValue::as_str)
+                    .and_then(|s| Uuid::parse_str(s).ok())
+                    .ok_or_else(|| {
+                        repo_error_to_canonical(&RepoError::Db(
+                            "a created SKU rendered without its sku_id".to_owned(),
+                        ))
+                    })?;
+                return Ok(child_created_entry(child.sku_id, new_sku_id, &code));
+            }
+            // Unkeyed inserts have no idempotency phase: neither arm is
+            // reachable, and saying so beats absorbing them silently.
+            Ok(CreateOutcome::Replay { .. } | CreateOutcome::Refused(_)) => {
+                return Err(repo_error_to_canonical(&RepoError::Db(
+                    "an unkeyed child insert answered an idempotency outcome".to_owned(),
+                )));
+            }
+            Err(db_error) => {
+                let message = db_error.to_string();
+                if classify_sku_insert_conflict(&message) {
+                    code_n += 1;
+                } else {
+                    return Err(repo_error_to_canonical(&RepoError::Db(message)));
+                }
+            }
+        }
+    }
+
+    // Cap exhausted: the child fails alone with the family's own conflict,
+    // the same honesty as the lone door's cap (P-D-62).
+    let refusal = DomainError::DuplicateCode(format!(
+        "sku_code \"{}\" and its first {} -copy-N successors are all reserved",
+        source.sku_code, CLONE_SUGGESTION_ATTEMPTS
+    ));
+    let entry = child_failed_entry(child.sku_id, &refusal);
+    audit_failed_child(
+        state,
+        sku_scope,
+        tenant_id,
+        actor_ref,
+        source.sku_code.clone(),
+        refusal,
+    )
+    .await;
+    Ok(entry)
+}
+
+/// The family act's children phase (`inst-cn-children`, P-D-72, P-D-79):
+/// clone every non-`discarded` child of `source_id` under `parent`, one
+/// transaction per child, skipping sources the parent's own children
+/// already name — the resume re-entry and the fresh act are the same walk,
+/// the fresh act's skip set merely empty.
+async fn clone_family_children(
+    state: &ApiState,
+    sku_scope: &AccessScope,
+    stamp: ActStamp,
+    source_id: Uuid,
+    parent: &ProductRecord,
+) -> Result<Vec<JsonValue>, CanonicalError> {
+    let tenant_id = stamp.tenant_id;
+    let conn = state.db.conn().map_err(|e| {
+        repo_error_to_canonical(&RepoError::Db(format!("family children connection: {e}")))
+    })?;
+    let source_children = repo::find_skus_of_product(&conn, sku_scope, tenant_id, source_id)
+        .await
+        .map_err(|e| repo_error_to_canonical(&e))?;
+    let already_cloned = repo::find_skus_of_product(&conn, sku_scope, tenant_id, parent.product_id)
+        .await
+        .map_err(|e| repo_error_to_canonical(&e))?;
+    let mut cloned_by_source: std::collections::HashMap<Uuid, &SkuRecord> =
+        std::collections::HashMap::new();
+    for row in &already_cloned {
+        if let Some(from) = row.cloned_from {
+            cloned_by_source.entry(from).or_insert(row);
+        }
+    }
+
+    let parent_pair = parent_scope_pair(parent).map_err(|column| {
+        CanonicalError::internal(format!(
+            "bss-products: the new parent's stored {column} contains an empty token"
+        ))
+        .create()
+    })?;
+
+    let mut receipt = Vec::with_capacity(source_children.len());
+    for child in &source_children {
+        if let Some(existing) = cloned_by_source.get(&child.sku_id) {
+            receipt.push(child_created_entry(
+                child.sku_id,
+                existing.sku_id,
+                &existing.sku_code,
+            ));
+            continue;
+        }
+        receipt
+            .push(clone_family_child(state, sku_scope, stamp, parent, &parent_pair, child).await?);
+    }
+    Ok(receipt)
+}
+
+/// Store the family act's answer at completion — tolerant of `NotHeld`,
+/// unlike the create door's in-transaction write: a concurrent same-key
+/// resumer may have answered first (P-D-79 states the race), and the first
+/// stored receipt is then the honest one for every later replay.
+async fn answer_family_act(
+    state: &ApiState,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    claim: &IdempotencyClaimInput,
+    body: &JsonValue,
+) -> Result<(), CanonicalError> {
+    let conn = state.db.conn().map_err(|e| {
+        repo_error_to_canonical(&RepoError::Db(format!("family answer connection: {e}")))
+    })?;
+    repo::answer_idempotency_key(
+        &conn,
+        scope,
+        tenant_id,
+        &claim.endpoint,
+        &claim.client_key,
+        i32::from(CREATE_RESPONSE_STATUS.as_u16()),
+        body.clone(),
+    )
+    .await
+    .map(|_recorded_or_not_held| ())
+    .map_err(|e| repo_error_to_canonical(&e))
+}
+
+/// Finish the family act from a landed or resumed parent: the children
+/// phase, the receipt, the stored answer, the response.
+/// The parent a committed-but-unanswered claim names (P-D-72): read back
+/// for the resume re-entry, a missing row being a store that contradicts
+/// its own stamp.
+async fn resumed_parent(
+    state: &ApiState,
+    product_scope: &AccessScope,
+    tenant_id: Uuid,
+    endpoint: &str,
+    parent_id: Uuid,
+) -> Result<ProductRecord, CanonicalError> {
+    let conn = state
+        .db
+        .conn()
+        .map_err(|e| repo_error_to_canonical(&RepoError::Db(format!("resume connection: {e}"))))?;
+    repo::find_product(&conn, product_scope, tenant_id, parent_id)
+        .await
+        .map_err(|e| repo_error_to_canonical(&e))?
+        .ok_or_else(|| {
+            repo_error_to_canonical(&RepoError::CorruptRow(format!(
+                "the claim on {endpoint} names parent {parent_id}, which does not \
+                 resolve in this tenant"
+            )))
+        })
+}
+
+/// [`finish_family_act`] behind a boxed parent — the walk hands the
+/// [`CloneParentOutcome::Created`] box straight through.
+async fn finish_family_act_boxed(
+    state: &ApiState,
+    product_scope: &AccessScope,
+    sku_scope: &AccessScope,
+    stamp: ActStamp,
+    source_id: Uuid,
+    parent: Box<ProductRecord>,
+    claim: Option<&IdempotencyClaimInput>,
+) -> Result<Response, CanonicalError> {
+    finish_family_act(
+        state,
+        product_scope,
+        sku_scope,
+        stamp,
+        source_id,
+        *parent,
+        claim,
+    )
+    .await
+}
+
+async fn finish_family_act(
+    state: &ApiState,
+    product_scope: &AccessScope,
+    sku_scope: &AccessScope,
+    stamp: ActStamp,
+    source_id: Uuid,
+    parent: ProductRecord,
+    claim: Option<&IdempotencyClaimInput>,
+) -> Result<Response, CanonicalError> {
+    let tenant_id = stamp.tenant_id;
+    let children = clone_family_children(state, sku_scope, stamp, source_id, &parent).await?;
+
+    let internal_revision = parent.internal_revision;
+    let mut body = serde_json::to_value(ProductView::from(parent)).map_err(|e| {
+        repo_error_to_canonical(&RepoError::Db(format!("render the cloned Product: {e}")))
+    })?;
+    if let Some(map) = body.as_object_mut() {
+        map.insert("children".to_owned(), JsonValue::Array(children));
+    }
+
+    if let Some(input) = claim {
+        answer_family_act(state, product_scope, tenant_id, input, &body).await?;
+    }
+
+    let tag = preconditions::etag(InternalRevision::new(internal_revision));
+    Ok((CREATE_RESPONSE_STATUS, [(ETAG, tag)], Json(body)).into_response())
+}
+
 /// `POST /bss-products/v1/products/{id}/clone` — the door `inst-cn-door`
-/// states and P-D-75 shaped.
+/// states, P-D-75 shaped, and P-D-79 made the family act (`CloneDoor`,
+/// `design/11` §1.7).
 ///
-/// Delivers the Product half of `dod-clone-door` and `dod-clone-identity`
-/// (their markers arrive with the SKU half) and the whole of the
-/// Product-only rename rule:
+/// The act: both gates, the keyed claim on the concrete path, the source
+/// read where its state says, the parent's first-free walk (P-D-62), the
+/// parent's transaction (claim + row + `entity_ref` stamp + outbox), then
+/// one transaction per child and the receipt stored as the answer at
+/// completion (P-D-72). A committed-but-unanswered claim on a keyed retry
+/// resumes the children phase instead of replaying or refusing.
 ///
+/// @cpt-dod:cpt-cf-bss-products-dod-clone-door:p1
+/// @cpt-dod:cpt-cf-bss-products-dod-clone-children:p1
 /// @cpt-dod:cpt-cf-bss-products-dod-rename-rule:p1
 async fn clone_product(
     Extension(state): Extension<Arc<ApiState>>,
@@ -4858,11 +5413,18 @@ async fn clone_product(
     let name_override = body.name.as_deref().map(str::trim).map(str::to_owned);
     let code_override = body.code.as_deref().map(str::trim).map(str::to_owned);
 
-    // -- actor_ref, then the gate: the create door's own order. --
+    // -- actor_ref, then the two gates: the create door's own order,
+    // spent against both resources unconditionally (P-D-79). --
     let actor_ref =
         crate::api::rest::resolve_creator_actor_ref(&state, tenant_id, ctx.subject_id(), now)
             .await?;
-    let scope = clone_write_scope(&state, &enforcer, &ctx, tenant_id, actor_ref, source_id).await?;
+    let (product_scope, sku_scope) =
+        clone_write_scopes(&state, &enforcer, &ctx, tenant_id, actor_ref, source_id).await?;
+    let stamp = ActStamp {
+        tenant_id,
+        actor_ref,
+        now,
+    };
 
     // -- shape: a supplied override must survive its own trim. --
     let mut report = ValidationReport::new();
@@ -4876,7 +5438,7 @@ async fn clone_product(
         let domain_err = DomainError::Validation(report);
         return Err(refuse_clone(
             &state,
-            &scope,
+            &product_scope,
             tenant_id,
             actor_ref,
             domain_err.code(),
@@ -4892,7 +5454,7 @@ async fn clone_product(
         Err(domain_err) => {
             return Err(refuse_clone(
                 &state,
-                &scope,
+                &product_scope,
                 tenant_id,
                 actor_ref,
                 domain_err.code(),
@@ -4915,7 +5477,7 @@ async fn clone_product(
 
     // -- the source, read where its state says (a refused state answers
     // here). --
-    let source = match resolve_clone_source(&state, &scope, tenant_id, source_id).await {
+    let source = match resolve_clone_source(&state, &product_scope, tenant_id, source_id).await {
         Ok(Some(source)) => source,
         Ok(None) => {
             return Err(product_not_found(source_id));
@@ -4926,7 +5488,7 @@ async fn clone_product(
             if canonical.status_code() == 409 {
                 return Err(refuse_clone(
                     &state,
-                    &scope,
+                    &product_scope,
                     tenant_id,
                     actor_ref,
                     "CLONE_SOURCE_DISCARDED",
@@ -4939,17 +5501,18 @@ async fn clone_product(
         }
     };
 
-    // -- the first-free walk (P-D-62): the index arbitrates, the loop only
-    // moves to the next candidate on the exact conflict its candidate owns. --
+    // -- the parent's first-free walk (P-D-62): the index arbitrates, the
+    // loop only moves to the next candidate on the exact conflict its
+    // candidate owns. --
     let mut name_n: u32 = 1;
     let mut code_n: u32 = 1;
     for _attempt in 0..CLONE_SUGGESTION_ATTEMPTS {
         let name = name_override
             .clone()
-            .unwrap_or_else(|| suggested_name(&source, name_n));
+            .unwrap_or_else(|| disposition::suggested_product_name(&source, name_n));
         let code = code_override
             .clone()
-            .or_else(|| suggested_code(&source, code_n));
+            .or_else(|| disposition::suggested_product_code(&source, code_n));
 
         let new = NewProduct {
             product_id: Uuid::new_v4(),
@@ -4966,22 +5529,44 @@ async fn clone_product(
             cloned_from_version: source.read_at_version,
         };
 
-        match insert_product_with_event(&state, scope.clone(), new, claim.clone(), actor_ref).await
+        match insert_clone_parent(&state, product_scope.clone(), new, claim.clone(), actor_ref)
+            .await
         {
-            Ok(CreateOutcome::Created {
-                internal_revision,
-                body,
-            }) => {
-                let tag = preconditions::etag(InternalRevision::new(internal_revision));
-                return Ok((CREATE_RESPONSE_STATUS, [(ETAG, tag)], Json(body)).into_response());
+            Ok(CloneParentOutcome::Created { record }) => {
+                return finish_family_act_boxed(
+                    &state,
+                    &product_scope,
+                    &sku_scope,
+                    stamp,
+                    source_id,
+                    record,
+                    claim.as_ref(),
+                )
+                .await;
             }
-            Ok(CreateOutcome::Replay { status, body }) => {
+            Ok(CloneParentOutcome::Resume { parent_id }) => {
+                // The committed-but-unanswered claim (P-D-72): the parent
+                // exists; re-enter the children phase against it.
+                let parent =
+                    resumed_parent(&state, &product_scope, tenant_id, endpoint, parent_id).await?;
+                return finish_family_act(
+                    &state,
+                    &product_scope,
+                    &sku_scope,
+                    stamp,
+                    source_id,
+                    parent,
+                    claim.as_ref(),
+                )
+                .await;
+            }
+            Ok(CloneParentOutcome::Replay { status, body }) => {
                 return Ok(replay_response(status, body));
             }
-            Ok(CreateOutcome::Refused(domain_err)) => {
+            Ok(CloneParentOutcome::Refused(domain_err)) => {
                 return Err(refuse_clone(
                     &state,
-                    &scope,
+                    &product_scope,
                     tenant_id,
                     actor_ref,
                     domain_err.code(),
@@ -5006,7 +5591,7 @@ async fn clone_product(
                     Some(conflict) => {
                         return Err(refuse_insert_conflict(
                             &state,
-                            &scope,
+                            &product_scope,
                             tenant_id,
                             actor_ref,
                             conflict,
@@ -5032,12 +5617,12 @@ async fn clone_product(
     };
     Err(refuse_insert_conflict(
         &state,
-        &scope,
+        &product_scope,
         tenant_id,
         actor_ref,
         exhausted,
-        &suggested_name(&source, name_n),
-        suggested_code(&source, code_n).as_deref(),
+        &disposition::suggested_product_name(&source, name_n),
+        disposition::suggested_product_code(&source, code_n).as_deref(),
     )
     .await)
 }

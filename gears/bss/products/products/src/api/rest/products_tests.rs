@@ -5110,7 +5110,7 @@ async fn a_created_events_envelope_carries_the_four_obligations_from_the_door() 
 mod clone_door_tests {
     use super::*;
 
-    async fn post_clone(
+    pub(super) async fn post_clone(
         app: Router,
         tenant: Uuid,
         product_id: Uuid,
@@ -5134,7 +5134,7 @@ mod clone_door_tests {
         .expect("the router answers")
     }
 
-    async fn view_of(response: axum::http::Response<Body>) -> serde_json::Value {
+    pub(super) async fn view_of(response: axum::http::Response<Body>) -> serde_json::Value {
         let body = axum::body::to_bytes(response.into_body(), 64 * 1024)
             .await
             .expect("read the response body");
@@ -5413,6 +5413,341 @@ mod clone_door_tests {
         assert_eq!(
             retry_view["product_id"], first_view["product_id"],
             "one key, one clone: the retry is the first answer, not a second act"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The family act (`inst-cn-children`, P-D-72, P-D-79)
+
+mod family_clone_tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use async_trait::async_trait;
+    use authz_resolver_sdk::constraints::{Constraint, InPredicate, Predicate};
+    use authz_resolver_sdk::models::{
+        DenyReason, EvaluationRequest, EvaluationResponse, EvaluationResponseContext,
+    };
+    use authz_resolver_sdk::{AuthZResolverClient, AuthZResolverError, PolicyEnforcer};
+    use toolkit_security::pep_properties;
+
+    use crate::infra::storage::repo::NewSku;
+
+    use super::clone_door_tests::{post_clone, view_of};
+
+    use super::*;
+
+    /// Seed one SKU under `parent_id` through the repository, contained in
+    /// the parent's `eu` region scope.
+    async fn seed_child(harness: &TestHarness, parent_id: Uuid, sku_code: &str) -> Uuid {
+        let conn = harness
+            .db
+            .conn()
+            .expect("checkout the pinned production connection");
+        let scope = toolkit_db::secure::AccessScope::for_tenant(TENANT);
+        let sku_id = Uuid::now_v7();
+        repo::insert_sku(
+            &conn,
+            &scope,
+            NewSku {
+                sku_id,
+                tenant_id: TENANT,
+                product_id: parent_id,
+                sku_code: sku_code.to_owned(),
+                region_scope: "eu".to_owned(),
+                brand_scope: String::new(),
+                created_by: "principal:author-1".to_owned(),
+                created_at: Utc.with_ymd_and_hms(2026, 8, 29, 9, 30, 0).unwrap(),
+                cloned_from: None,
+                cloned_from_version: None,
+            },
+        )
+        .await
+        .expect("seed the child SKU");
+        sku_id
+    }
+
+    /// The SKU rows of one Product, keyed by their `cloned_from`.
+    async fn children_of(harness: &TestHarness, product_id: Uuid) -> Vec<repo::SkuRecord> {
+        let conn = harness
+            .db
+            .conn()
+            .expect("checkout the pinned production connection");
+        let scope = toolkit_db::secure::AccessScope::for_tenant(TENANT);
+        repo::find_skus_of_product(&conn, &scope, TENANT, product_id)
+            .await
+            .expect("read the new parent's children")
+    }
+
+    /// A product clone is the family act (P-D-79): every non-discarded
+    /// child clones under the new parent — one per state read rule — the
+    /// receipt carries one `created` entry per child, and each clone's
+    /// lineage names its own source SKU, never the parent act (P-D-72).
+    #[tokio::test]
+    async fn a_family_clone_lands_with_a_per_child_receipt() {
+        let harness = harness().await;
+        let source_id = Uuid::now_v7();
+        seed_draft(&harness, source_id).await;
+        let child_a = seed_child(&harness, source_id, "FAM-A").await;
+        let child_b = seed_child(&harness, source_id, "FAM-B").await;
+
+        let response = post_clone(
+            app_for(&harness, TENANT),
+            TENANT,
+            source_id,
+            serde_json::json!({}),
+            &[],
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let view = view_of(response).await;
+        let receipt = view["children"]
+            .as_array()
+            .expect("the family act answers a per-child receipt");
+        assert_eq!(receipt.len(), 2, "one entry per attempted child");
+        for entry in receipt {
+            assert_eq!(
+                entry["disposition"],
+                serde_json::json!("created"),
+                "both children land"
+            );
+        }
+
+        let new_parent = Uuid::parse_str(view["product_id"].as_str().expect("id"))
+            .expect("the clone's id is a uuid");
+        let clones = children_of(&harness, new_parent).await;
+        assert_eq!(clones.len(), 2, "both clones hang off the new parent");
+        let mut sources: Vec<Option<Uuid>> = clones.iter().map(|row| row.cloned_from).collect();
+        sources.sort();
+        let mut expected = vec![Some(child_a), Some(child_b)];
+        expected.sort();
+        assert_eq!(
+            sources, expected,
+            "each child's lineage names its own source SKU (P-D-72)"
+        );
+        for row in &clones {
+            assert_eq!(
+                row.product_id, new_parent,
+                "the parent link is remapped, never copied"
+            );
+        }
+    }
+
+    /// A childless source degenerates to a family of zero: the receipt is
+    /// present and empty (P-D-79).
+    #[tokio::test]
+    async fn a_childless_source_answers_an_empty_receipt() {
+        let harness = harness().await;
+        let source_id = Uuid::now_v7();
+        seed_draft(&harness, source_id).await;
+
+        let response = post_clone(
+            app_for(&harness, TENANT),
+            TENANT,
+            source_id,
+            serde_json::json!({}),
+            &[],
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let view = view_of(response).await;
+        assert_eq!(
+            view["children"],
+            serde_json::json!([]),
+            "the receipt field is the act's shape, not a children-only extra"
+        );
+    }
+
+    /// A resolver that answers `true` once and denies every later
+    /// evaluation: the door's first gate (product x write) passes, the
+    /// second (sku x write) is refused.
+    struct SecondCallDenied {
+        calls: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl AuthZResolverClient for SecondCallDenied {
+        async fn evaluate(
+            &self,
+            _req: EvaluationRequest,
+        ) -> Result<EvaluationResponse, AuthZResolverError> {
+            let call = self.calls.fetch_add(1, Ordering::SeqCst);
+            Ok(EvaluationResponse {
+                decision: call == 0,
+                context: EvaluationResponseContext {
+                    constraints: vec![Constraint {
+                        predicates: vec![Predicate::In(InPredicate::new(
+                            pep_properties::OWNER_TENANT_ID,
+                            vec![TENANT],
+                        ))],
+                    }],
+                    deny_reason: (call > 0).then(|| DenyReason {
+                        error_code: "no-sku-grant".to_owned(),
+                        details: None,
+                    }),
+                },
+            })
+        }
+    }
+
+    /// The product clone door spends BOTH grants unconditionally (P-D-79):
+    /// a caller holding `product x write` but not `sku x write` is refused
+    /// before anything is read or written — even for a childless source.
+    #[tokio::test]
+    async fn the_family_act_spends_both_grants() {
+        let harness = harness().await;
+        let source_id = Uuid::now_v7();
+        seed_draft(&harness, source_id).await;
+
+        let state = api_state(&harness);
+        let openapi = OpenApiRegistryImpl::new();
+        let enforcer = PolicyEnforcer::new(Arc::new(SecondCallDenied {
+            calls: AtomicUsize::new(0),
+        }));
+        let app = router(state, &openapi).layer(axum::Extension(enforcer));
+
+        let response = post_clone(app, TENANT, source_id, serde_json::json!({}), &[]).await;
+        assert_eq!(
+            response.status(),
+            StatusCode::FORBIDDEN,
+            "the second gate is spent at the door, ahead of the child count"
+        );
+    }
+
+    /// The crash window (P-D-72, P-D-79): a committed-but-unanswered claim
+    /// whose `entity_ref` names the parent resumes the children phase on
+    /// the same-key retry — already-cloned sources are skipped and
+    /// receipted `created` with their existing ids, the remainder is
+    /// cloned, and the answer is stored at completion.
+    #[tokio::test]
+    async fn a_committed_unanswered_claim_resumes_the_family() {
+        let harness = harness().await;
+        let source_id = Uuid::now_v7();
+        seed_draft(&harness, source_id).await;
+        let child_a = seed_child(&harness, source_id, "RES-A").await;
+        let child_b = seed_child(&harness, source_id, "RES-B").await;
+
+        // The crashed first attempt, reconstructed exactly as its parent
+        // transaction committed it: the claim, the parent with its lineage,
+        // the entity_ref stamp — plus one of the two children, cloned
+        // before the crash.
+        let conn = harness
+            .db
+            .conn()
+            .expect("checkout the pinned production connection");
+        let scope = toolkit_db::secure::AccessScope::for_tenant(TENANT);
+        let endpoint = format!("/bss-products/v1/products/{source_id}/clone");
+        let digest = crate::domain::idempotency::payload_digest(&serde_json::json!({}));
+        let now = Utc::now();
+        let claimed = repo::claim_idempotency_key(
+            &conn,
+            &scope,
+            TENANT,
+            &endpoint,
+            "resume-key",
+            &digest,
+            now,
+            now + chrono::Duration::hours(24),
+        )
+        .await
+        .expect("seed the crashed claim");
+        assert_eq!(claimed, repo::IdempotencyClaim::Claimed, "premise");
+
+        let parent_id = Uuid::now_v7();
+        let mut parent = new_product(parent_id, TENANT);
+        parent.name = "Fibre 500-copy-1".to_owned();
+        parent.name_normalized = "fibre 500-copy-1".to_owned();
+        parent.product_code = Some("FIBRE-500-copy-1".to_owned());
+        parent.cloned_from = Some(source_id);
+        repo::insert_product(&conn, &scope, parent)
+            .await
+            .expect("seed the crashed act's parent");
+        repo::stamp_idempotency_entity_ref(
+            &conn,
+            &scope,
+            TENANT,
+            &endpoint,
+            "resume-key",
+            parent_id,
+        )
+        .await
+        .expect("stamp the parent handle as the crashed transaction did");
+
+        let conn2 = harness
+            .db
+            .conn()
+            .expect("checkout the pinned production connection");
+        let already_cloned = Uuid::now_v7();
+        repo::insert_sku(
+            &conn2,
+            &scope,
+            NewSku {
+                sku_id: already_cloned,
+                tenant_id: TENANT,
+                product_id: parent_id,
+                sku_code: "RES-A-copy-1".to_owned(),
+                region_scope: "eu".to_owned(),
+                brand_scope: String::new(),
+                created_by: "principal:author-1".to_owned(),
+                created_at: now,
+                cloned_from: Some(child_a),
+                cloned_from_version: None,
+            },
+        )
+        .await
+        .expect("seed the child the crashed attempt already cloned");
+
+        // The same-key retry re-enters.
+        let response = post_clone(
+            app_for(&harness, TENANT),
+            TENANT,
+            source_id,
+            serde_json::json!({}),
+            &[("Idempotency-Key", "resume-key")],
+        )
+        .await;
+        assert_eq!(
+            response.status(),
+            StatusCode::CREATED,
+            "the resume answers the act, never IDEMPOTENCY_KEY_IN_FLIGHT"
+        );
+        let view = view_of(response).await;
+        assert_eq!(
+            view["product_id"],
+            serde_json::json!(parent_id),
+            "the resume finished the crashed act's own parent, not a second one"
+        );
+        let receipt = view["children"].as_array().expect("the receipt");
+        assert_eq!(receipt.len(), 2, "the receipt covers the whole family");
+        let entry_a = receipt
+            .iter()
+            .find(|entry| entry["source_sku_id"] == serde_json::json!(child_a))
+            .expect("child A is receipted");
+        assert_eq!(
+            entry_a["new_sku_id"],
+            serde_json::json!(already_cloned),
+            "the already-cloned source is skipped and reported with its existing id"
+        );
+        let entry_b = receipt
+            .iter()
+            .find(|entry| entry["source_sku_id"] == serde_json::json!(child_b))
+            .expect("child B is receipted");
+        assert_eq!(entry_b["disposition"], serde_json::json!("created"));
+
+        // The claim is answered at completion: the same key now replays.
+        let replay = post_clone(
+            app_for(&harness, TENANT),
+            TENANT,
+            source_id,
+            serde_json::json!({}),
+            &[("Idempotency-Key", "resume-key")],
+        )
+        .await;
+        assert_eq!(replay.status(), StatusCode::CREATED);
+        let replay_view = view_of(replay).await;
+        assert_eq!(
+            replay_view, view,
+            "the stored receipt is the answer every later retry gets"
         );
     }
 }

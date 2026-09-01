@@ -490,6 +490,36 @@ pub async fn find_sku(
 /// [`RepoError::Driver`] on a storage failure; [`RepoError::CorruptRow`] when
 /// a stored `lifecycle_state` is outside the enumeration [`LifecycleState`]
 /// parses.
+/// Every non-`discarded` SKU of one Product, in `sku_code` order — the
+/// family clone's child census (P-D-79): children in any of C1's four
+/// states clone, and a `discarded` child is not part of the family at all.
+///
+/// [`find_non_terminal_skus_of_product`]'s filter is deliberately not
+/// reused: that one also drops `retired` rows, and a retired child is
+/// exactly the revival case the clone exists for.
+pub async fn find_skus_of_product(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    product_id: Uuid,
+) -> Result<Vec<SkuRecord>, RepoError> {
+    let rows = sku::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(sku::Column::TenantId.eq(tenant_id))
+                .add(sku::Column::ProductId.eq(product_id))
+                .add(sku::Column::LifecycleState.ne(LifecycleState::Discarded.as_str())),
+        )
+        .order_by(sku::Column::SkuCode, sea_orm::Order::Asc)
+        .all(runner)
+        .await
+        .map_err(|e| driver_failure(format!("read the SKUs of product {product_id}"), e))?;
+
+    rows.into_iter().map(into_sku_record).collect()
+}
+
 pub async fn find_non_terminal_skus_of_product(
     runner: &impl DBRunner,
     scope: &AccessScope,
@@ -1065,6 +1095,11 @@ pub enum IdempotencyClaim {
     InFlight {
         /// The digest the live `claimed` row was recorded against.
         payload_hash: Vec<u8>,
+        /// The composite act's parent handle, if the holding act stamped one
+        /// (P-D-79): the family clone's committed-but-unanswered claim
+        /// carries its new parent here, and the same-key retry resumes from
+        /// it. `None` for every single-entity door's claim.
+        entity_ref: Option<Uuid>,
     },
     /// This call lost the expired-key takeover race (**P-D-49**): another
     /// caller's compare-and-swap moved the row off the stamp this one read.
@@ -1172,6 +1207,9 @@ pub async fn claim_idempotency_key(
         response_status: Set(None),
         response_body: Set(None),
         expires_at: Set(expires_at),
+        // A fresh claim carries no parent handle; a composite door stamps
+        // one afterwards, in this same transaction (P-D-79).
+        entity_ref: Set(None),
     };
 
     let on_conflict = OnConflict::columns([
@@ -1248,6 +1286,7 @@ pub async fn claim_idempotency_key(
         }
         "claimed" => Ok(IdempotencyClaim::InFlight {
             payload_hash: held.payload_hash,
+            entity_ref: held.entity_ref,
         }),
         other => Err(RepoError::CorruptRow(format!(
             "products_idempotency.state `{other}` on {tenant_id}/{endpoint}/{client_key}"
@@ -1301,6 +1340,9 @@ async fn take_over_expired_idempotency_claim(
             Expr::value(None::<JsonValue>),
         )
         .col_expr(idempotency::Column::ExpiresAt, Expr::value(new_expires_at))
+        // The taken-over claim is a fresh act's: a stale parent handle from
+        // the crashed holder must not leak into it (P-D-79).
+        .col_expr(idempotency::Column::EntityRef, Expr::value(None::<Uuid>))
         .filter(
             idempotency_key_of(held.tenant_id, &held.endpoint, &held.client_key)
                 .add(idempotency::Column::ExpiresAt.eq(held.expires_at)),
@@ -1443,6 +1485,60 @@ pub async fn answer_idempotency_key(
         return Ok(IdempotencyAnswer::NotHeld);
     }
     Ok(IdempotencyAnswer::Recorded)
+}
+
+/// Stamp the composite act's parent handle onto a `claimed` key (P-D-79).
+///
+/// # `runner` MUST be the transaction that took the claim
+///
+/// The stamp shares the claim's atomicity contract: claim `INSERT`, parent
+/// row and stamp commit together or not at all, which is what lets a
+/// same-key retry read a committed-but-unanswered claim as *in progress —
+/// resume from `entity_ref`* rather than as a half-written record. Stamping
+/// on a runner of its own would open the window this column exists to
+/// close.
+///
+/// # Errors
+///
+/// [`RepoError::Db`] when no `claimed` row matched — the caller took the
+/// claim on this very transaction, so a missing row means the store
+/// contradicts itself, exactly [`answer_idempotency_key`]'s `NotHeld`
+/// posture at that call site.
+pub async fn stamp_idempotency_entity_ref(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    endpoint: &str,
+    client_key: &str,
+    entity_ref: Uuid,
+) -> Result<(), RepoError> {
+    let result = idempotency::Entity::update_many()
+        .secure()
+        .scope_with(scope)
+        .col_expr(
+            idempotency::Column::EntityRef,
+            Expr::value(Some(entity_ref)),
+        )
+        .filter(
+            idempotency_key_of(tenant_id, endpoint, client_key)
+                .add(idempotency::Column::State.eq("claimed")),
+        )
+        .exec(runner)
+        .await
+        .map_err(|e| {
+            driver_failure(
+                format!("stamp idempotency entity_ref {tenant_id}/{endpoint}/{client_key}"),
+                e,
+            )
+        })?;
+
+    if result.rows_affected == 0 {
+        return Err(RepoError::Db(format!(
+            "idempotency key {client_key} on {endpoint} was claimed by this transaction but no \
+             claimed row remained to stamp"
+        )));
+    }
+    Ok(())
 }
 
 /// Which head table a frozen row belongs to.

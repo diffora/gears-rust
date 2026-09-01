@@ -4169,3 +4169,319 @@ async fn a_created_events_envelope_carries_the_four_obligations_from_the_door() 
     assert_eq!(envelope["data"]["internalRevision"], 1);
     assert_eq!(envelope["data"]["lifecycleState"], "draft");
 }
+
+// ---------------------------------------------------------------------------
+// The lone-SKU clone door (`inst-cn-door`, P-D-75, P-D-62, P-D-76)
+
+mod clone_door_tests {
+    use super::*;
+
+    /// `POST /bss-products/v1/skus/{id}/clone` with `body`.
+    async fn post_clone(
+        app: Router,
+        tenant: Uuid,
+        sku_id: Uuid,
+        body: &serde_json::Value,
+        headers: &[(&str, &str)],
+    ) -> axum::http::Response<Body> {
+        let mut request = Request::builder()
+            .method("POST")
+            .uri(format!("/bss-products/v1/skus/{sku_id}/clone"))
+            .header("content-type", "application/json")
+            .extension(authed_ctx(tenant));
+        for (name, value) in headers {
+            request = request.header(*name, *value);
+        }
+        app.oneshot(
+            request
+                .body(Body::from(body.to_string()))
+                .expect("build the clone request"),
+        )
+        .await
+        .expect("the router answers")
+    }
+
+    /// The stored head of one SKU, read back for lineage assertions.
+    async fn sku_head_of(harness: &TestHarness, sku_id: Uuid) -> repo::SkuRecord {
+        let conn = harness
+            .db
+            .conn()
+            .expect("checkout the pinned production connection");
+        let scope = toolkit_db::secure::AccessScope::for_tenant(TENANT);
+        repo::find_sku(&conn, &scope, TENANT, sku_id)
+            .await
+            .expect("read the SKU head")
+            .expect("the SKU exists")
+    }
+
+    /// A draft source clones with the first-free code suggestion
+    /// (`{source}-copy-1`), the parent link copied, and the lineage pair
+    /// written with the head-read sentinel (P-D-76).
+    #[tokio::test]
+    async fn a_draft_source_clones_with_the_first_free_code() {
+        let harness = harness().await;
+        let parent_id = seed_parent(&harness, new_parent_product(Uuid::now_v7(), TENANT)).await;
+        let (source_id, _etag) = seed_draft_sku(&harness, parent_id, "LINE-1").await;
+
+        let response = post_clone(
+            app_for(&harness, TENANT),
+            TENANT,
+            source_id,
+            &json!({}),
+            &[],
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::CREATED, "a clone is a 201");
+        let view = body_json(response).await;
+        assert_eq!(
+            view["sku_code"],
+            json!("LINE-1-copy-1"),
+            "the suggested code is the first free of the -copy family"
+        );
+        assert_eq!(
+            view["product_id"],
+            json!(parent_id),
+            "a lone clone copies the parent link"
+        );
+        assert_eq!(view["lifecycle_state"], json!("draft"));
+
+        let clone_id = Uuid::parse_str(view["sku_id"].as_str().expect("sku_id"))
+            .expect("the clone's id is a uuid");
+        let head = sku_head_of(&harness, clone_id).await;
+        assert_eq!(head.cloned_from, Some(source_id), "the immediate source");
+        assert_eq!(
+            head.cloned_from_version, None,
+            "a draft source is read at its head, and NULL is that sentinel"
+        );
+    }
+
+    /// A second clone of the same source walks to `-copy-2`: the first free
+    /// integer is decided by the reservation, not by a counter (P-D-62).
+    #[tokio::test]
+    async fn a_second_clone_walks_to_copy_two() {
+        let harness = harness().await;
+        let parent_id = seed_parent(&harness, new_parent_product(Uuid::now_v7(), TENANT)).await;
+        let (source_id, _etag) = seed_draft_sku(&harness, parent_id, "LINE-2").await;
+
+        let first = post_clone(
+            app_for(&harness, TENANT),
+            TENANT,
+            source_id,
+            &json!({}),
+            &[],
+        )
+        .await;
+        assert_eq!(first.status(), StatusCode::CREATED);
+        let second = post_clone(
+            app_for(&harness, TENANT),
+            TENANT,
+            source_id,
+            &json!({}),
+            &[],
+        )
+        .await;
+        assert_eq!(second.status(), StatusCode::CREATED);
+        let view = body_json(second).await;
+        assert_eq!(
+            view["sku_code"],
+            json!("LINE-2-copy-2"),
+            "the walk moved to the next free integer under the reservation"
+        );
+    }
+
+    /// A published source is read at its last frozen version: the clone pins
+    /// `cloned_from_version = 1` and suggests from the frozen code — the
+    /// read went through the version row and the canonical decoder
+    /// (P-D-77), not the head.
+    #[tokio::test]
+    async fn a_published_source_clones_at_its_frozen_version() {
+        let harness = harness().await;
+        let parent_id = seed_parent(&harness, new_parent_product(Uuid::now_v7(), TENANT)).await;
+        let (source_id, etag) = seed_draft_sku(&harness, parent_id, "LINE-3").await;
+
+        let publish = post_head_act(
+            app_for(&harness, TENANT),
+            TENANT,
+            source_id,
+            "publish",
+            Some(&etag),
+            None,
+        )
+        .await;
+        assert_eq!(
+            publish.status(),
+            StatusCode::OK,
+            "premise: the source publishes"
+        );
+
+        let response = post_clone(
+            app_for(&harness, TENANT),
+            TENANT,
+            source_id,
+            &json!({}),
+            &[],
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let view = body_json(response).await;
+        assert_eq!(
+            view["sku_code"],
+            json!("LINE-3-copy-1"),
+            "the suggestion derives from the frozen code"
+        );
+        let clone_id = Uuid::parse_str(view["sku_id"].as_str().expect("sku_id"))
+            .expect("the clone's id is a uuid");
+        let head = sku_head_of(&harness, clone_id).await;
+        assert_eq!(
+            head.cloned_from_version,
+            Some(1),
+            "the lineage pins exactly the frozen version the content was read at"
+        );
+    }
+
+    /// A `discarded` source is refused with the minted code (P-D-75): 409,
+    /// `CLONE_SOURCE_DISCARDED` in the canonical context, nothing created.
+    #[tokio::test]
+    async fn a_discarded_source_is_refused_with_the_minted_code() {
+        let harness = harness().await;
+        let parent_id = seed_parent(&harness, new_parent_product(Uuid::now_v7(), TENANT)).await;
+        let (source_id, etag) = seed_draft_sku(&harness, parent_id, "LINE-4").await;
+
+        let discard = post_head_act(
+            app_for(&harness, TENANT),
+            TENANT,
+            source_id,
+            "discard",
+            Some(&etag),
+            None,
+        )
+        .await;
+        assert_eq!(
+            discard.status(),
+            StatusCode::OK,
+            "premise: the source discards"
+        );
+
+        let response = post_clone(
+            app_for(&harness, TENANT),
+            TENANT,
+            source_id,
+            &json!({}),
+            &[],
+        )
+        .await;
+        assert_eq!(
+            response.status(),
+            StatusCode::CONFLICT,
+            "the state refuses the act, not the address"
+        );
+        let body = body_json(response).await;
+        assert_eq!(
+            body["context"]["reason"],
+            json!("CLONE_SOURCE_DISCARDED"),
+            "the caller learns exactly what stands in the way"
+        );
+    }
+
+    /// A collision on an operator-supplied code is the ordinary
+    /// `DUPLICATE_CODE` — only the *suggested* code walks first-free.
+    #[tokio::test]
+    async fn an_overridden_code_collision_is_the_ordinary_refusal() {
+        let harness = harness().await;
+        let parent_id = seed_parent(&harness, new_parent_product(Uuid::now_v7(), TENANT)).await;
+        let (source_id, _etag) = seed_draft_sku(&harness, parent_id, "LINE-5").await;
+        let (_holder, _etag2) = seed_draft_sku(&harness, parent_id, "TAKEN-5").await;
+
+        let response = post_clone(
+            app_for(&harness, TENANT),
+            TENANT,
+            source_id,
+            &json!({ "code": "TAKEN-5" }),
+            &[],
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let body = body_json(response).await;
+        assert_eq!(
+            body["context"]["reason"],
+            json!("DUPLICATE_CODE"),
+            "the operator's own collision is never walked past"
+        );
+    }
+
+    /// A keyed retry replays the first clone rather than minting a second
+    /// (P-D-75 arm 5): same id, same code, one row.
+    #[tokio::test]
+    async fn a_keyed_retry_replays_the_first_clone() {
+        let harness = harness().await;
+        let parent_id = seed_parent(&harness, new_parent_product(Uuid::now_v7(), TENANT)).await;
+        let (source_id, _etag) = seed_draft_sku(&harness, parent_id, "LINE-6").await;
+
+        let first = post_clone(
+            app_for(&harness, TENANT),
+            TENANT,
+            source_id,
+            &json!({}),
+            &[("Idempotency-Key", "clone-once")],
+        )
+        .await;
+        assert_eq!(first.status(), StatusCode::CREATED);
+        let first_view = body_json(first).await;
+
+        let retry = post_clone(
+            app_for(&harness, TENANT),
+            TENANT,
+            source_id,
+            &json!({}),
+            &[("Idempotency-Key", "clone-once")],
+        )
+        .await;
+        assert_eq!(
+            retry.status(),
+            StatusCode::CREATED,
+            "a replay is the original answer"
+        );
+        let retry_view = body_json(retry).await;
+        assert_eq!(
+            retry_view["sku_id"], first_view["sku_id"],
+            "the retry replays the first clone, never a second mint"
+        );
+    }
+
+    /// `new_parent_id` remaps the parent link (§3.1's lone-SKU carve-out),
+    /// judged by the ordinary create-door checks against the *new* parent.
+    #[tokio::test]
+    async fn a_new_parent_override_remaps_the_link() {
+        let harness = harness().await;
+        let parent_id = seed_parent(&harness, new_parent_product(Uuid::now_v7(), TENANT)).await;
+        let mut other = new_parent_product(Uuid::now_v7(), TENANT);
+        other.name = "Fibre Line Second".to_owned();
+        other.name_normalized = "fibre line second".to_owned();
+        let other_parent_id = seed_parent(&harness, other).await;
+        let (source_id, _etag) = seed_draft_sku(&harness, parent_id, "LINE-7").await;
+
+        let response = post_clone(
+            app_for(&harness, TENANT),
+            TENANT,
+            source_id,
+            &json!({ "new_parent_id": other_parent_id }),
+            &[],
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let view = body_json(response).await;
+        assert_eq!(
+            view["product_id"],
+            json!(other_parent_id),
+            "the override replaces the copied link"
+        );
+        let clone_id = Uuid::parse_str(view["sku_id"].as_str().expect("sku_id"))
+            .expect("the clone's id is a uuid");
+        let head = sku_head_of(&harness, clone_id).await;
+        assert_eq!(
+            head.cloned_from,
+            Some(source_id),
+            "lineage still names the source SKU, not the parent act"
+        );
+    }
+}
