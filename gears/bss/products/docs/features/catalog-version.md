@@ -2145,11 +2145,11 @@ against source at `41d1baa5e`.
     **Owner**: this feature, with the events/audit owner and the PRD §4.5 owner.
 
 28. ~~**This feature adds the SDK's first write method, and the trait's shape is undecided.**~~
-    **Answered (owner call, 2026-09-01 — P-D-81 arm 4): no new trait in either SDK** — the write
-    contract already exists as the consumer's own port, and the platform fixes the direction
-    (measured: `rate-provider` implements `bss_ledger_sdk::RateProviderV1`, the consumer's trait
-    from the consumer's crate); the products crate implements `pricing-sdk`'s trait and
-    `ProductsClient` is not widened.
+    **Answered (owner call, 2026-09-01 — P-D-81 arm 4, corrected the same session): a second
+    trait beside `ProductsClient`, in `bss-products-sdk`** — the DoD's own binding text mandates
+    it, and `pricing-sdk`'s port doc pre-agreed the edge (*"when the registry publishes its own
+    SDK this trait becomes an adapter over it"*); `ProductsClient` is not widened, and no
+    dependency from products to `pricing-sdk` arrives — the adapter is pricing's pre-agreed work.
     Original text:
     `bss_products_sdk::api::ProductsClient` ships `get_product` and `get_sku` and calls itself *"the
     in-process contract for **reading** registry entities"*. Whether the increment contract widens

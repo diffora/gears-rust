@@ -1649,17 +1649,27 @@ the version `satisfied_by_version_id` names. No HTTP door is owed; the resolver 
 `catalogVersionId`, and *"one of its two methods with no surface"* dissolves — an in-process port
 method is a surface.
 
-**4. No new trait, in either SDK** (row 28): the write contract already exists as the consumer's
-own port, and the platform fixes the direction — measured: `rate-provider` implements
-`bss_ledger_sdk::RateProviderV1`, the consumer's trait from the consumer's crate. So the products
-crate implements `pricing-sdk`'s trait (gaining that dependency), `bss-products-sdk` stays the
-read contract it calls itself, and `ProductsClient` is not widened.
+**4. A second trait beside `ProductsClient`, in `bss-products-sdk`** (row 28 — corrected in the
+same session, before anything built on the first answer): the first draft of this arm reached for
+the `rate-provider` precedent (the provider implements the consumer's trait) and had products
+depend on `pricing-sdk`. **That measured the wrong donor**: the DoD's own normative text mandates
+the contract *"as a client trait in `bss-products-sdk`"*, and `pricing-sdk`'s port doc had already
+pre-agreed the opposite edge — *"when the registry publishes its own SDK this trait becomes an
+adapter over it"*, the contract living in pricing *"only so the registry gear can implement it
+without depending on `bss-pricing`"*. So: `bss-products-sdk` gains a **second trait** carrying the
+whole `IncrementRequest` (typed `(source, lane, request_key, operation_key?)`) plus the poll, with
+the not-wired / unreachable / unusable-answer error axis; `ProductsClient` is not widened (its own
+doc scopes it to reading); the products crate ships the in-process binding; and pricing's port
+becoming an adapter over it is **pricing's own pre-agreed work**, not this gear's — no dependency
+edge from products to pricing-sdk exists or arrives.
 
 - **The arguments against, stated**: arm 1 leaves the two-lane split unexpressed at the SDK seam —
-  deliberately, until a second external producer exists to need it; arm 2 makes the ref parseable
-  and a consumer may come to depend on its shape — the shape is therefore declared in the adapter's
-  doc as the contract; arm 4 points the dependency products → pricing-sdk, which reads backwards
-  until measured against the rate-provider precedent.
+  deliberately, until a second external producer exists to need it (the products-sdk trait carries
+  the lane, so the seam is the pricing adapter's, not the contract's); arm 2 makes the ref
+  parseable and a consumer may come to depend on its shape — the shape is therefore declared as
+  the contract where the ref is minted; arm 4's first draft is kept struck-through in the register's
+  history as the lesson: a §7 row can re-ask a question the DoD's own body already answered, and
+  the row must be read against that body before a precedent is reached for.
 - **Not changed**: the port's shipped signature, P-D-52's refusal discriminator, the request
   queue's key, `ProductsClient`.
 - **Propagated**: `features/catalog-version.md` (rows 19, 20, 21, 28 struck; §7 arithmetic),
