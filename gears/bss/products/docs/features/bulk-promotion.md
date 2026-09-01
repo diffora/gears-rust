@@ -601,7 +601,7 @@ payload digest are is §7 rows 24 and 25's**, a row having no request body to di
 
 ### The stage phase, over two row kinds with different natures
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-stage-phase`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-stage-phase`
 
 **Product and SKU rows** run the ordinary per-row pipeline — parse, then **the same registered
 validators as interactive authoring** — and land as `draft` through the Foundation doors.
@@ -610,11 +610,14 @@ validators as interactive authoring** — and land as `draft` through the Founda
 attribute definitions and recognized-set members validate at stage as a **dry run** against the live
 tree and sets, and are recorded as **pending `GovernedLiveOp`s** applied at commit under the batch
 approval. Their promotion identities are stated: a category by `(parent path, normalized name)`, a
-set member by `(set kind, member code)`, a definition by its key.
+set member by `(set kind, member code)`, a definition by its key. **Their half is built when their
+stores are**: `02`/`03` own the tree, the definitions and the sets, and the shipped worker refuses a
+row of any kind it cannot stage rather than queueing it silently.
 
 **Dependency order is normative**: categories and vocabularies, then Products, then SKUs — at stage
 **and** at commit. A dependent row whose in-batch dependency failed fails `BULK_DEPENDENCY_FAILED`
-**without touching the store**.
+**without touching the store**. *(With one stageable class today there is nothing to order; the
+code ships and its raiser arrives with the classes that make an order observable.)*
 
 **Never a parallel rule set.** This is the sentence the whole feature's correctness rests on: a bulk
 row that skipped a validator interactive authoring runs would make bulk a governance bypass by

@@ -2453,6 +2453,8 @@ pub struct NewBulkRow {
     pub entity_id: Option<Uuid>,
     /// The revision the row pins, for an update-as-draft row.
     pub pinned_revision: Option<i64>,
+    /// The row's imported content, canonically serialized (**P-D-86**).
+    pub staged_payload: Option<String>,
 }
 
 /// One batch as the import door writes it.
@@ -2508,6 +2510,10 @@ pub struct BulkRowRecord {
     pub code: Option<String>,
     /// A closed-set literal.
     pub reason: Option<String>,
+    /// The row's imported content, as the worker reads it back.
+    pub staged_payload: Option<String>,
+    /// `product` or `sku`.
+    pub pinned_revision: Option<i64>,
 }
 
 /// How many batches this tenant holds outside a terminal state — the
@@ -2631,8 +2637,185 @@ pub async fn find_batch_rows(
             disposition: row.disposition,
             code: row.code,
             reason: row.reason,
+            staged_payload: row.staged_payload,
+            pinned_revision: row.pinned_revision,
         })
         .collect())
+}
+
+/// Claim one `staging` batch for the worker: stamp `claimed_at` and bump
+/// `attempt`, under a predicate matching the state the caller read — so two
+/// workers racing one batch cannot both believe they hold it (the
+/// compare-and-swap the idempotency takeover uses, applied to the batch
+/// head).
+///
+/// Answers `false` when the row moved under the caller.
+///
+/// # Errors
+///
+/// [`RepoError`] on a storage or scope failure.
+pub async fn claim_bulk_batch(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    batch_id: Uuid,
+    attempt: i64,
+    now: DateTime<Utc>,
+) -> Result<bool, RepoError> {
+    let result = bulk_batch::Entity::update_many()
+        .secure()
+        .scope_with(scope)
+        .col_expr(bulk_batch::Column::ClaimedAt, Expr::value(Some(now)))
+        .col_expr(bulk_batch::Column::Attempt, Expr::value(attempt + 1))
+        .filter(
+            Condition::all()
+                .add(bulk_batch::Column::TenantId.eq(tenant_id))
+                .add(bulk_batch::Column::BatchId.eq(batch_id))
+                .add(bulk_batch::Column::State.eq("staging"))
+                .add(bulk_batch::Column::Attempt.eq(attempt)),
+        )
+        .exec(runner)
+        .await
+        .map_err(|e| driver_failure(format!("claim batch {batch_id}"), e))?;
+    Ok(result.rows_affected > 0)
+}
+
+/// Move a batch's state, under a predicate naming the state it must be in
+/// — the machine's edges are the worker's to walk and the guard's to
+/// refuse.
+///
+/// # Errors
+///
+/// [`RepoError`] on a storage or scope failure.
+pub async fn move_bulk_batch_state(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    batch_id: Uuid,
+    from: &str,
+    to: &str,
+) -> Result<bool, RepoError> {
+    let result = bulk_batch::Entity::update_many()
+        .secure()
+        .scope_with(scope)
+        .col_expr(bulk_batch::Column::State, Expr::value(to.to_owned()))
+        .filter(
+            Condition::all()
+                .add(bulk_batch::Column::TenantId.eq(tenant_id))
+                .add(bulk_batch::Column::BatchId.eq(batch_id))
+                .add(bulk_batch::Column::State.eq(from)),
+        )
+        .exec(runner)
+        .await
+        .map_err(|e| driver_failure(format!("move batch {batch_id} {from} -> {to}"), e))?;
+    Ok(result.rows_affected > 0)
+}
+
+/// Every tenant holding at least one `staging` batch — the worker's
+/// discovery read, under the system scope.
+///
+/// # Errors
+///
+/// [`RepoError`] on a storage or scope failure.
+pub async fn tenants_with_staging_batches(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+) -> Result<Vec<Uuid>, RepoError> {
+    let rows = bulk_batch::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(Condition::all().add(bulk_batch::Column::State.eq("staging")))
+        .all(runner)
+        .await
+        .map_err(|e| driver_failure("discover staging batches".to_owned(), e))?;
+    let mut tenants: Vec<Uuid> = rows.into_iter().map(|row| row.tenant_id).collect();
+    tenants.sort();
+    tenants.dedup();
+    Ok(tenants)
+}
+
+/// One tenant's `staging` batches, oldest first.
+///
+/// # Errors
+///
+/// [`RepoError`] on a storage or scope failure.
+pub async fn staging_batches(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+) -> Result<Vec<BulkBatchRecord>, RepoError> {
+    let rows = bulk_batch::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(bulk_batch::Column::TenantId.eq(tenant_id))
+                .add(bulk_batch::Column::State.eq("staging")),
+        )
+        .order_by(bulk_batch::Column::CreatedAt, sea_orm::Order::Asc)
+        .all(runner)
+        .await
+        .map_err(|e| driver_failure(format!("read staging batches of {tenant_id}"), e))?;
+    Ok(rows.into_iter().map(into_batch_record).collect())
+}
+
+/// Record one row's staging outcome: the minted entity on a success, or the
+/// terminal `failed` disposition with the owning feature's code on a
+/// refusal. The ledger's trigger freezes a row once its disposition lands,
+/// so this statement is the row's last write.
+///
+/// # Errors
+///
+/// [`RepoError`] on a storage or scope failure.
+pub async fn record_bulk_row_outcome(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    batch_id: Uuid,
+    row_key: &str,
+    outcome: BulkRowOutcome<'_>,
+) -> Result<(), RepoError> {
+    let mut update = bulk_row::Entity::update_many()
+        .secure()
+        .scope_with(scope)
+        .col_expr(bulk_row::Column::EntityId, Expr::value(outcome.entity_id));
+    if let Some(disposition) = outcome.disposition {
+        update = update
+            .col_expr(
+                bulk_row::Column::Disposition,
+                Expr::value(Some(disposition.to_owned())),
+            )
+            .col_expr(bulk_row::Column::TerminalAt, Expr::value(Some(outcome.now)))
+            .col_expr(
+                bulk_row::Column::Code,
+                Expr::value(outcome.code.map(str::to_owned)),
+            );
+    }
+    update
+        .filter(
+            Condition::all()
+                .add(bulk_row::Column::TenantId.eq(tenant_id))
+                .add(bulk_row::Column::BatchId.eq(batch_id))
+                .add(bulk_row::Column::RowKey.eq(row_key)),
+        )
+        .exec(runner)
+        .await
+        .map_err(|e| driver_failure(format!("record row {row_key} of {batch_id}"), e))?;
+    Ok(())
+}
+
+/// What one staged row became.
+#[derive(Clone, Copy, Debug)]
+pub struct BulkRowOutcome<'a> {
+    /// The entity the row minted, where it did.
+    pub entity_id: Option<Uuid>,
+    /// `failed` at stage, or `None` while the row stays in flight for the
+    /// commit phase to dispose of.
+    pub disposition: Option<&'a str>,
+    /// The owning feature's code, on a failure.
+    pub code: Option<&'a str>,
+    /// The instant the disposition landed.
+    pub now: DateTime<Utc>,
 }
 
 /// Write the batch head and its whole ledger, one transaction's worth
@@ -2684,6 +2867,7 @@ pub async fn insert_bulk_batch(
             entity_kind: Set(row.entity_kind.clone()),
             entity_id: Set(row.entity_id),
             pinned_revision: Set(row.pinned_revision),
+            staged_payload: Set(row.staged_payload.clone()),
             disposition: Set(None),
             code: Set(None),
             reason: Set(None),

@@ -132,6 +132,16 @@ pub(crate) struct ProductsRuntime {
     /// threshold, resolved once from `ProductsConfig` (P-D-87 arm 1).
     pub watermark_skew_tolerance: std::time::Duration,
 
+    /// The `ApiState` the in-process SDK bindings and the batch worker
+    /// share — built once at `init` so the lifecycle's own passes reach
+    /// the same database, outbox and bounds a door does.
+    pub sdk_state: Arc<crate::api::rest::ApiState>,
+
+    /// The pseudonymous ref the gear's own background acts attribute to.
+    /// Server-minted per boot: the batch worker is not a person, and an
+    /// audit row that named one would be a lie.
+    pub system_actor_ref: uuid::Uuid,
+
     /// Whichever handle keeps the running pipeline's background tasks alive.
     ///
     /// Held for its `Drop`, never read: dropping either handle drops its
@@ -205,16 +215,30 @@ impl BssProductsGear {
             "bss-products: lifecycle started"
         );
         let db = rt.db.clone();
+        let sdk_state = Arc::clone(&rt.sdk_state);
         let mut interval = tokio::time::interval(COALESCER_TICK);
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             tokio::select! {
                 biased;
                 () = cancel.cancelled() => break,
-                _ = interval.tick() => coalescer_tick(&db, rt.freeze_timeout_hours).await,
+                _ = interval.tick() => {
+                    coalescer_tick(&db, rt.freeze_timeout_hours).await;
+                    batch_tick(&sdk_state, rt.system_actor_ref).await;
+                }
             }
         }
         Ok(())
+    }
+}
+
+/// One batch-worker tick: stage every tenant's oldest `staging` batch
+/// (`dod-stage-phase`). A failed sweep is logged and retried next tick —
+/// the ledger is the record, so nothing is lost.
+async fn batch_tick(state: &Arc<crate::api::rest::ApiState>, actor_ref: uuid::Uuid) {
+    let now = crate::domain::canonical::write_instant(chrono::Utc::now());
+    if let Err(error) = crate::infra::bulk_worker::sweep(state, actor_ref, now).await {
+        tracing::warn!(%error, "bss-products: batch worker sweep failed");
     }
 }
 
@@ -472,6 +496,8 @@ impl Gear for BssProductsGear {
             bulk_max_rows_per_batch: cfg.bulk_max_rows_per_batch,
             bulk_max_concurrent_batches_per_tenant: cfg.bulk_max_concurrent_batches_per_tenant,
             watermark_skew_tolerance: cfg.watermark_skew_tolerance(),
+            sdk_state: Arc::clone(&sdk_state),
+            system_actor_ref: uuid::Uuid::new_v4(),
             pipeline,
             db: db_provider,
             idempotency_retention_hours,

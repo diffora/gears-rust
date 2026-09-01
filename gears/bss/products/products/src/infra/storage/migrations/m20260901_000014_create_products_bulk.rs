@@ -28,6 +28,15 @@
 //! §1.7's terminal mix once written; **a row with a disposition is immutable**
 //! — the guard refuses any UPDATE whose `OLD.disposition` is non-NULL, which
 //! is `inst-bm-tables`' "immutable after their terminal state" made physical.
+//! `staged_payload` is the row's imported content, canonically serialized
+//! (**P-D-86**, `features/bulk-promotion.md` §7 row 30): the import door
+//! writes it, the worker parses it, and `governed_live_op` keeps its own
+//! stated meaning — a **live-entity** row's pending payload — so the two
+//! row classes carry one column each rather than one column carrying an
+//! overloaded meaning. A shape `CHECK` pins the pairing: a `product` or
+//! `sku` row carries a payload, since a row the worker cannot stage should
+//! never have been recorded.
+//!
 //! `reason` is a literal from a closed set, never operator text (**P-D-50**),
 //! so the CHECK pins the one constant the design names today
 //! (`batch-abandoned`); widening it is an in-place edit when a slice names a
@@ -84,6 +93,7 @@ const PG_UP_STATEMENTS: &[&str] = &[
             entity_kind     text   NOT NULL,
             entity_id       uuid,
             pinned_revision bigint,
+            staged_payload  text,
             disposition     text,
             code            text,
             reason          text,
@@ -96,6 +106,7 @@ const PG_UP_STATEMENTS: &[&str] = &[
             CONSTRAINT chk_products_bulk_row_disposition CHECK (disposition IS NULL OR disposition IN ('published', 'applied', 'no_op', 'failed')),
             CONSTRAINT chk_products_bulk_row_reason CHECK (reason IS NULL OR reason IN ('batch-abandoned')),
             CONSTRAINT chk_products_bulk_row_terminal CHECK ((disposition IS NULL) = (terminal_at IS NULL)),
+            CONSTRAINT chk_products_bulk_row_payload CHECK (entity_kind NOT IN ('product', 'sku') OR staged_payload IS NOT NULL),
             CONSTRAINT fk_products_bulk_row_batch FOREIGN KEY (tenant_id, batch_id)
                 REFERENCES bss.products_bulk_batch (tenant_id, batch_id)
         )",
@@ -151,6 +162,7 @@ const SQLITE_UP_STATEMENTS: &[&str] = &[
             entity_kind     text    NOT NULL,
             entity_id       text,
             pinned_revision integer,
+            staged_payload  text,
             disposition     text,
             code            text,
             reason          text,
@@ -163,6 +175,7 @@ const SQLITE_UP_STATEMENTS: &[&str] = &[
             CONSTRAINT chk_products_bulk_row_disposition CHECK (disposition IS NULL OR disposition IN ('published', 'applied', 'no_op', 'failed')),
             CONSTRAINT chk_products_bulk_row_reason CHECK (reason IS NULL OR reason IN ('batch-abandoned')),
             CONSTRAINT chk_products_bulk_row_terminal CHECK ((disposition IS NULL) = (terminal_at IS NULL)),
+            CONSTRAINT chk_products_bulk_row_payload CHECK (entity_kind NOT IN ('product', 'sku') OR staged_payload IS NOT NULL),
             CONSTRAINT fk_products_bulk_row_batch FOREIGN KEY (tenant_id, batch_id)
                 REFERENCES products_bulk_batch (tenant_id, batch_id)
         )",

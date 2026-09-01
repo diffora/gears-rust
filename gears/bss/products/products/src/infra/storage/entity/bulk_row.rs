@@ -27,6 +27,10 @@ pub struct Model {
     pub entity_id: Option<Uuid>,
     /// The revision the row pinned, for an update-as-draft row.
     pub pinned_revision: Option<i64>,
+    /// The row's imported content, canonically serialized (**P-D-86**) —
+    /// what the worker parses and stages. `NULL` only for a live-entity
+    /// row, whose payload is `governed_live_op`'s.
+    pub staged_payload: Option<String>,
     /// `published`, `applied`, `no_op` or `failed` — NULL while in flight.
     pub disposition: Option<String>,
     /// The owning feature's code verbatim on a failure (no parallel

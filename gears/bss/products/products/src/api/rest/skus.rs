@@ -842,7 +842,7 @@ fn payload_digest(request: &CreateSkuRequest) -> Vec<u8> {
 /// the prior one rolled back, so the prior id was never committed and reached
 /// no consumer. It would stop being harmless if an id were ever minted
 /// *outside* the transaction and carried in.
-pub(super) async fn insert_sku_with_event(
+pub(crate) async fn insert_sku_with_event(
     state: &ApiState,
     scope: AccessScope,
     new: NewSku,

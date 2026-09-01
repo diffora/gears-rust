@@ -5015,8 +5015,8 @@ mod bulk_ledger_guard_tests {
         exec(
             &db,
             "INSERT INTO products_bulk_row \
-             (tenant_id, batch_id, row_key, row_id, entity_kind) \
-             VALUES ('t-a', 'b-1', 'r-1', 'rid-1', 'sku')",
+             (tenant_id, batch_id, row_key, row_id, entity_kind, staged_payload) \
+             VALUES ('t-a', 'b-1', 'r-1', 'rid-1', 'sku', '{}')",
         )
         .await
         .expect("an in-flight row lands with no disposition");
@@ -5075,9 +5075,13 @@ mod bulk_ledger_guard_tests {
         seed_batch(&db).await;
         let err = exec(
             &db,
+            // The payload rides along so the refusal this case proves is
+            // the `reason` roster's and not the payload shape CHECK's
+            // (P-D-86 added the second, and a probe that failed on it
+            // would assert nothing about free text).
             "INSERT INTO products_bulk_row \
-             (tenant_id, batch_id, row_key, row_id, entity_kind, reason) \
-             VALUES ('t-a', 'b-1', 'r-2', 'rid-2', 'sku', 'operator typed this')",
+             (tenant_id, batch_id, row_key, row_id, entity_kind, staged_payload, reason) \
+             VALUES ('t-a', 'b-1', 'r-2', 'rid-2', 'sku', '{}', 'operator typed this')",
         )
         .await
         .expect_err("free text in reason must be refused");
@@ -5085,6 +5089,36 @@ mod bulk_ledger_guard_tests {
             err.to_string().contains("chk_products_bulk_row_reason"),
             "the refusal must come from the reason CHECK: {err}"
         );
+    }
+    /// P-D-86's payload shape CHECK: a Product or SKU row must carry the
+    /// content the worker stages, and a live-entity row need not — the pairing
+    /// that keeps a row the worker cannot stage from being recorded at all.
+    #[tokio::test]
+    async fn a_product_row_without_a_staged_payload_is_refused() {
+        let db = harness().await;
+        seed_batch(&db).await;
+
+        let err = exec(
+            &db,
+            "INSERT INTO products_bulk_row \
+             (tenant_id, batch_id, row_key, row_id, entity_kind) \
+             VALUES ('t-a', 'b-1', 'r-9', 'rid-9', 'product')",
+        )
+        .await
+        .expect_err("a product row with no payload must be refused");
+        assert!(
+            err.to_string().contains("chk_products_bulk_row_payload"),
+            "the refusal must come from the payload CHECK: {err}"
+        );
+
+        exec(
+            &db,
+            "INSERT INTO products_bulk_row \
+             (tenant_id, batch_id, row_key, row_id, entity_kind) \
+             VALUES ('t-a', 'b-1', 'r-10', 'rid-10', 'category')",
+        )
+        .await
+        .expect("a live-entity row carries its payload in governed_live_op, not here");
     }
 }
 

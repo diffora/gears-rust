@@ -138,10 +138,18 @@ async fn body_json(response: axum::http::Response<Body>) -> serde_json::Value {
     serde_json::from_slice(&bytes).expect("the response body is JSON")
 }
 
+const BRAND: Uuid = Uuid::from_u128(0xb0_02);
+
 fn two_rows() -> serde_json::Value {
     json!([
-        { "row_key": "r-1", "entity_kind": "product" },
-        { "row_key": "r-2", "entity_kind": "sku" },
+        {
+            "row_key": "r-1", "entity_kind": "product",
+            "content": { "name": "Imported Line", "brand_id": BRAND },
+        },
+        {
+            "row_key": "r-2", "entity_kind": "sku",
+            "content": { "product_id": Uuid::from_u128(0xb0_03), "sku_code": "IMP-1" },
+        },
     ])
 }
 
@@ -288,9 +296,9 @@ async fn the_row_shape_is_judged_in_one_report() {
         &json!({
             "batch_key": "shape-1",
             "rows": [
-                { "row_key": "dup", "entity_kind": "product" },
-                { "row_key": "dup", "entity_kind": "product" },
-                { "row_key": "cat", "entity_kind": "category" },
+                { "row_key": "dup", "entity_kind": "product", "content": {} },
+                { "row_key": "dup", "entity_kind": "product", "content": {} },
+                { "row_key": "cat", "entity_kind": "category", "content": {} },
             ]
         }),
     )

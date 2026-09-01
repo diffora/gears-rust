@@ -39,6 +39,15 @@
 //! change report and the promotion resolver are their own `DoD`s and their
 //! own §7 rows.
 //!
+//! # The row's content, and who parses it
+//!
+//! Each row carries a `content` object the door records **canonically
+//! serialized** into the ledger's `staged_payload` (**P-D-86**) and judges
+//! only for objecthood. The field names are the **worker's** to parse,
+//! through the same shape rules interactive authoring runs — a door that
+//! parsed them here would be the second validator this feature's whole
+//! correctness argument forbids.
+//!
 //! @cpt-dod:cpt-cf-bss-products-dod-import-door:p1
 //! @cpt-dod:cpt-cf-bss-products-dod-bulk-seams:p1
 
@@ -154,6 +163,15 @@ pub struct ImportRowRequest {
     pub entity_id: Option<Uuid>,
     /// The revision this row pins, for an update-as-draft row.
     pub pinned_revision: Option<i64>,
+    /// The row's content — what the worker parses and stages
+    /// (**P-D-86**). A `product` row carries `{name, brand_id,
+    /// product_code?, region_scope?, brand_scope?}`; a `sku` row
+    /// `{product_id, sku_code, region_scope?, brand_scope?}`. The door
+    /// records it canonically serialized and judges only that it is an
+    /// object: **the field names are the worker's to parse**, through the
+    /// same shape rules interactive authoring runs, which is what keeps
+    /// bulk from becoming a second validator.
+    pub content: serde_json::Value,
 }
 
 /// The import door's body.
@@ -313,6 +331,11 @@ fn validate_import_shape(body: &ImportBatchRequest, max_rows: u32) -> Validation
             report.violate("VALIDATION", "mode", "mode must be import or promote");
         }
     }
+    if body.rows.len() > max_rows as usize {
+        // The bound's own refusal is BULK_LIMIT, raised by the caller; this
+        // only keeps the shape pass from walking a set it will refuse.
+        return report;
+    }
     let mut seen: Vec<&str> = Vec::with_capacity(body.rows.len());
     for row in &body.rows {
         let key = row.row_key.trim();
@@ -335,8 +358,14 @@ fn validate_import_shape(body: &ImportBatchRequest, max_rows: u32) -> Validation
                  own stores",
             );
         }
+        if !row.content.is_object() {
+            report.violate(
+                "VALIDATION",
+                "rows.content",
+                "content must be an object carrying the row's fields",
+            );
+        }
     }
-    let _ = max_rows;
     report
 }
 
@@ -444,6 +473,14 @@ async fn import_batch(
             entity_kind: row.entity_kind.trim().to_owned(),
             entity_id: row.entity_id,
             pinned_revision: row.pinned_revision,
+            // Canonically serialized through the gear's one rendering rule,
+            // so P-D-69 arm 5's digest over "the row's staged payload" is
+            // computable and one row hashes alike however its fields
+            // arrived ordered (P-D-86).
+            staged_payload: Some(canonical::canonical_rendering(
+                &row.content,
+                canonical::Absence::Omit,
+            )),
         })
         .collect();
 
