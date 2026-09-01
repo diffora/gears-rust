@@ -1569,6 +1569,40 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   (the re-publish step).
 
 
+#### P-D-93 — Open item 3's premise is stale and its own remedy ships, so the envelope is buildable
+
+- **Date**: 2026-09-01 (owner call, autonomous under the standing instruction —
+  `features/taxonomy-attributes.md` §7 row 3, the first of that feature's two "seams")
+- **Context**: the row holds `dod-governed-live-op`, and its text gives the reason in full: the
+  envelope *"is consumed by `05-governance`. That slice's **design exists**; what does not exist is
+  its FEATURE artifact and its code. So this feature can define, submit and re-validate an
+  envelope, and no test can drive one through an approval — an **in-test approval double** is
+  therefore an obligation on `dod-governed-live-op`, without which every apply-path DoD and
+  acceptance criteria 1 and 31 go green on a gate that approves nothing."*
+- **Decision**: **the row stops holding the DoD**, on three measurements rather than on a
+  re-reading:
+  | What the row says | What is true at this commit |
+  |---|---|
+  | 05's **FEATURE artifact** does not exist | `features/governance.md` ships — 27 DoDs, a 23-row §7 |
+  | 05's **code** does not exist | `products_approval`, `products_approval_decision` and `products_breakglass_session` ship with their guards and both-engine oracles; `domain::governance::GovernanceGate` is the gate contract with a host |
+  | the remedy is an **in-test approval double**, and without it the apply-path DoDs go green on nothing | **four** doubles ship — `RefusingGate`, `FailingGate`, `RecordingGate` and `CountingRefusingGate` — and the door tests already turn on which one is passed |
+  The row's own conclusion is therefore satisfied: the obligation it placed on the DoD is met, and
+  what it warned against — a gate that approves nothing going green — is what those four doubles
+  exist to prevent.
+- **The arguments against, stated**: the doubles are the *door's* fakes, written for the publish
+  gate, and reusing them for a live-op apply is an assumption that one gate contract serves both —
+  true today because `GovernanceGate::evaluate` takes an `EntityRef` and a revision, which a live
+  op has to supply anyway, but a live op whose subject is **not** an entity would need a second
+  contract and this decision does not grant one. The second residue: **no test drives a live op
+  through a *real* approval record**, because the submit door has no route (05 §7 row 12) — so the
+  apply path is proven against a double and the record store is proven separately, and the join of
+  the two is owed to 05's own door.
+- **Not changed**: row 3's sibling (open item 4, the PII detector's stub) — a different slice, a
+  different absence, untouched; §7 row 12 of `governance`, which still holds the submit door; the
+  envelope's own obligations, which `dod-governed-live-op` states and this decision does not edit.
+- **Propagated**: `features/taxonomy-attributes.md` §7 row 3 and its seam prose,
+  `features/sku-classification.md` (03 reuses the type per its own DoD, no redefinition).
+
 #### P-D-92 — `set_kind` pins no roster, so row 5 stops holding the recognized-set table
 
 - **Date**: 2026-09-01 (owner call, autonomous under the standing instruction — a **scoping**

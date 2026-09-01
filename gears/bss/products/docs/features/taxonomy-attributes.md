@@ -1019,14 +1019,19 @@ false, and the three-lens review of 2026-08-31 measured it so. Every item below 
 Definition of Done in §5, and the DoD it blocks is stated so an implementer meets the question
 before the code rather than after.
 
-**None of these is answered here.** A FEATURE artifact records what its design set leaves open;
+**Two of the twenty-four are now answered and struck in place — 3 and 7 — leaving twenty-two
+open.** **P-D-88** answered row 7 (the nullable-`UNIQUE` gap) and **P-D-93** row 3 (the
+`GovernedLiveOp` seam, whose premise had gone stale on three counts). Each was answered by a
+register entry, not here; the struck rows point at it.
+
+**Nothing else here is answered.** A FEATURE artifact records what its design set leaves open;
 it does not decide it.
 
 | # | The question | Blocks | Owner |
 |---|---|---|---|
 | 1 | **Does a brand-less global value survive the scope check on a brand-scoped entity?** Under the gear's stated containment reading an unrestricted coordinate under a restricted entity is *not* contained — so the write `dod-default-locale` demands is the write `dod-value-validators` refuses, and a brand-scoped entity can never publish | `dod-value-validators`, `dod-default-locale` | this feature with 05 |
 | 2 | **The taxonomy *and metadata* limits have no interim default anywhere.** `nfr-scale-extensibility` defers the values to the NFR workshop and PRD §17.1 carries neither a taxonomy-limits row nor a metadata-caps row. Both `TAXONOMY_LIMIT` and `METADATA_LIMIT` are rules with no number | `dod-taxonomy-walk`, `dod-metadata-door` | the §17.1 policy owner |
-| 3 | *(seam — see below)* | `dod-governed-live-op` | this feature with 05 |
+| 3 | ~~*(seam — see below)*~~ **Answered (owner call, 2026-09-01 — P-D-93): the row's premise is stale on three counts — 05's FEATURE artifact ships, its approval and decision stores ship with their guards, and the in-test approval double the row names as its obligation ships four times over. The envelope is buildable; what stays owed to 05's own door is a test that drives a live op through a REAL approval record.** | no DoD — resolved by P-D-93 | was this feature with 05; **closed** |
 | 4 | *(seam — see below)* | `dod-pii-write-block` | `10-retention-erasure` |
 | 5 | **Do 02 and 03 admit a `draft` head as a blocking reference?** This feature's removal operand is the non-terminal head, `03-sku-classification`'s is the non-terminal *published* head. **03's half is answered (P-D-89): its operand excludes `draft`, and the row is not a joint decision after all — each slice states its own operand and the divergence is registered on both sides. What is still open is THIS feature's half**: whether the wider operand is right for attribute definitions, whose values have no unit-style publish-time re-recognition to fall back on | `dod-definition-lifecycle` | this feature |
 | 6 | **The coordinate model admits combinations the resolver never visits, and the per-brand default locale has no store.** The chain's third step needs one; the only store named is the tenant default | `dod-locale-resolver` | this feature |
@@ -1051,7 +1056,7 @@ it does not decide it.
 
 ### The two seams, in full
 
-- **Open item 3** — the `GovernedLiveOp` envelope is consumed by `05-governance`. That slice's
+- ~~**Open item 3**~~ **— answered 2026-09-01 by P-D-93: at this commit 05's FEATURE artifact ships, its approval and decision stores ship, and four in-test approval doubles ship, so the remedy below is an obligation the DoD carries rather than a reason to wait.** Original text: the `GovernedLiveOp` envelope is consumed by `05-governance`. That slice's
   **design exists** (`design/05-governance.md`, whose `inst-gv-scope` §1.4 cites); what does not
   exist is its FEATURE artifact and its code. So this feature can define, submit and re-validate
   an envelope, and **no test can drive one through an approval** — an in-test approval double is
