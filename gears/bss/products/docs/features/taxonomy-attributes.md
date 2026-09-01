@@ -482,7 +482,7 @@ need no justification beyond being reproducible.
 
 ### Category table and its guards
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-category-table`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-category-table`
 
 The system **MUST** create `products_category` on both engines with `category_id`, `tenant_id`,
 `parent_id` as a nullable self-referencing foreign key, `name` and `name_normalized`, `state`,
@@ -491,6 +491,12 @@ then full casefold, then trim and collapse, computed application-side. The table
 `UNIQUE (tenant_id, parent_id, name_normalized)` and a foreign-key children guard on delete. A
 schema-oracle golden **MUST** exist for both engines together with a perturbation case proving
 the oracle can fail.
+
+**Shipped with the root half the declared UNIQUE cannot hold** (**P-D-88** arm 1): both engines
+treat NULLs as distinct, so root categories carry their own partial
+`UNIQUE (tenant_id, name_normalized) WHERE parent_id IS NULL`, probed on both engines — the
+Postgres case asserts the refusal by the index's name. A sentinel parent cannot satisfy the
+self-referencing FK, and `NULLS NOT DISTINCT` has no `SQLite` twin.
 
 **Implements**: `cpt-cf-bss-products-flow-manage-taxonomy`
 
@@ -502,7 +508,7 @@ the oracle can fail.
 
 ### Category assignment table
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-category-assignment-table`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-category-assignment-table`
 
 The system **MUST** create `products_product_category` as the single source of truth for
 assignments, keyed `(tenant_id, product_id, category_id, role)` with `role` in

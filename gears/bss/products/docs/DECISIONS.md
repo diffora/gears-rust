@@ -1569,6 +1569,44 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   (the re-publish step).
 
 
+#### P-D-88 — The nullable-UNIQUE gap: roots get a partial index, coordinates get P-D-39's stated absence
+
+- **Date**: 2026-09-01 (owner call, autonomous under the standing instruction — `design/02` §6's
+  *"Both uniqueness guarantees are UNIQUE over nullable columns"*, decided at the moment its first
+  half became DDL)
+- **Context**: both engines treat NULLs as distinct in a UNIQUE, so §4.1's declared
+  `UNIQUE (tenant_id, parent_id, name_normalized)` does not constrain **root** categories, and the
+  attribute-value coordinate tuple does not constrain the **global** coordinate — the one
+  `inst-av-default-locale` makes mandatory. The item names three candidates: sentinels,
+  `NULLS NOT DISTINCT`, extra partial indexes.
+- **Decision**, two arms, one per half:
+  1. **Root categories: a partial unique index**,
+     `UNIQUE (tenant_id, name_normalized) WHERE parent_id IS NULL`, beside the declared UNIQUE —
+     because for THIS column the other two candidates are measurably impossible, not merely worse.
+     A sentinel cannot satisfy a **self-referencing FK** without minting a fake category row per
+     tenant, which every tree walk would then have to skip; and `NULLS NOT DISTINCT` is Postgres 15
+     syntax with **no `SQLite` equivalent**, so it cannot hold on both engines and cross-engine
+     parity is one of this chain's gates. Partial indexes hold identically on both.
+  2. **The attribute-value coordinates: P-D-39's own convention** — `locale`, `region` and `brand`
+     ship `NOT NULL` with the empty string as the **stated absence value**, making the declared
+     UNIQUE total with no index tricks. These are text columns with no FK, so the sentinel
+     objection from arm 1 does not arise, and the gear already answers absence this way elsewhere
+     (the item says so itself). The `global` coordinate is then spelled `('', '', '')` —
+     **which deliberately answers only the SPELLING**: what "global" means to the resolver, which
+     combinations a door admits, and where a brand-scoped default lives stay §6's open items,
+     untouched.
+- **The arguments against, stated**: arm 1 adds a second index whose predicate a reader must know
+  to understand the guarantee (the alternative — no root constraint — ships the defect the item
+  measured). Arm 2 makes `''` load-bearing in a UNIQUE, and a door that ever writes a real empty
+  string would collide with absence — accepted because the coordinate values are identifiers a
+  door validates non-empty anyway, and the third reader of a two-spelling absence is this gear's
+  own recorded lesson.
+- **Not changed**: §4.1's declared UNIQUE constraints (both ship as written); the resolver's
+  coordinate semantics (three §6 items stay open); `inst-av-default-locale`'s wording.
+- **Propagated**: `design/02-taxonomy-attributes.md` §4.1 (both table rows) and §6 (the item,
+  struck); `features/taxonomy-attributes.md` `dod-category-table` (the root index rides it);
+  the value-table arm lands with that table's migration.
+
 #### P-D-87 — Reference-signal's five: four config knobs at home, a retired producer's rows cleared, and the three doors' routes
 
 - **Date**: 2026-09-01 (owner call, autonomous under the standing instruction —

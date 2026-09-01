@@ -250,7 +250,11 @@ actor, the scenarios and the boundary.
   `pricing_price_window.mutation_seq` (D-190/D-191): the category door spends a `GovernedLiveOp`,
   and an approval subject built from an act identity has to render the same subject on the
   approved retry, which a counter advanced by non-operator writes would break) · timestamps. Indexes:
-  `UNIQUE (tenant_id, parent_id, name_normalized)`; FK children guard on delete. Deletion is
+  `UNIQUE (tenant_id, parent_id, name_normalized)`, **plus the root half that UNIQUE cannot hold**
+  (**P-D-88** arm 1): both engines treat NULLs as distinct, so root categories carry their own
+  partial `UNIQUE (tenant_id, name_normalized) WHERE parent_id IS NULL` — a sentinel cannot
+  satisfy a self-referencing FK and `NULLS NOT DISTINCT` has no `SQLite` equivalent; FK children
+  guard on delete. Deletion is
   physical **only** through `inst-tx-retire-guard` (retired + empty + unreferenced); everything
   else is state flips, audited.
 - **`products_product_category`** — the **single source of truth** for category assignments
@@ -264,7 +268,10 @@ actor, the scenarios and the boundary.
   (`active|deprecated|removed` — a removal is a state flip to the tombstone, never a DELETE, **P-D-47**) · `seeded_by` (nullable — well-known marker) · timestamps.
 - **`products_attribute_value`** — owned entity coordinates `(tenant_id, entity_kind,
   entity_id)` + `definition_id` + locale coordinates `(locale?, region?, brand?)` + `value`;
-  `UNIQUE` over the full coordinate tuple. For Product/SKU rows: at publish the values are **copied into the frozen
+  `UNIQUE` over the full coordinate tuple — the three coordinates stored `NOT NULL` with the
+  empty string as the **stated absence value** (**P-D-88** arm 2, P-D-39's convention), so the
+  UNIQUE is total and the `global` coordinate is spelled `('', '', '')`; what "global" means to
+  the resolver stays §6's. For Product/SKU rows: at publish the values are **copied into the frozen
   `products_entity_version` content** (01 §4.3) — the table always holds the current head
   state, history lives in the version rows. For **category** rows the table IS the live state —
   no freeze-copy (H2 fix).
@@ -355,12 +362,17 @@ no event of their own (category display values emit `CategoryDisplayUpdated`, ab
   propagation named 01 and 04 only, and §4.1 gives the definition's visibility scope neither
   nullability nor an empty-set meaning. Owner: this slice with 05, whose `inst-gv-scope` reads the
   same rule. *(Raised by the slice-02 first lens pass.)*
-- **Both uniqueness guarantees are UNIQUE over nullable columns.** `(tenant_id, parent_id,
-  name_normalized)` over a nullable `parent_id` does not constrain **root** categories, and the
-  attribute-value coordinate tuple does not constrain the **global** coordinate — the one
-  `inst-av-default-locale` makes mandatory — because both engines treat NULLs as distinct. The
-  gear's answer elsewhere is a NOT NULL column with a stated absence value (P-D-39). Owner: this
-  slice with the schema owner — sentinels, `NULLS NOT DISTINCT`, or extra partial indexes. *(Raised by the slice-02 first lens pass.)*
+- ~~**Both uniqueness guarantees are UNIQUE over nullable columns.**~~
+  **Answered (owner call, 2026-09-01 — P-D-88): roots get a partial
+  `UNIQUE (tenant_id, name_normalized) WHERE parent_id IS NULL` (a sentinel cannot satisfy the
+  self-FK, `NULLS NOT DISTINCT` has no `SQLite` twin); the value coordinates ship `NOT NULL` with
+  `''` as the stated absence (P-D-39's convention), the resolver's semantics untouched.** Original
+  text: `(tenant_id, parent_id, name_normalized)` over a nullable `parent_id` does not constrain
+  **root** categories, and the attribute-value coordinate tuple does not constrain the **global**
+  coordinate — the one `inst-av-default-locale` makes mandatory — because both engines treat NULLs
+  as distinct. The gear's answer elsewhere is a NOT NULL column with a stated absence value
+  (P-D-39). Owner: was this slice with the schema owner; **closed**. *(Raised by the slice-02 first
+  lens pass.)*
 - **The frozen-content sort key is not total for attribute values.** §4.1's ordering note sorts by
   "the attribute id", while row identity is the full coordinate tuple — so the key orders groups,
   not rows, and two engines can serialize one content two ways, which is the failure the note exists

@@ -5552,7 +5552,7 @@ mod governance_store_guard_tests {
     /// The schema oracle `dod-approval-store` requires, **with the
     /// perturbation case that proves it can fail**: a golden column roster
     /// per table, compared against what the engine reports.
-    async fn columns(db: &sea_orm::DatabaseConnection, table: &str) -> Vec<String> {
+    pub(super) async fn columns(db: &sea_orm::DatabaseConnection, table: &str) -> Vec<String> {
         let rows = db
             .query_all_raw(sea_orm::Statement::from_string(
                 sea_orm::DatabaseBackend::Sqlite,
@@ -5641,6 +5641,271 @@ mod governance_store_guard_tests {
                 .await
                 .is_empty(),
             "the oracle reads the real catalog: an absent table has no columns"
+        );
+    }
+}
+
+/// The governed tree and the assignment table, probed on the two-index
+/// uniqueness (P-D-88 arm 1), the at-most-one-primary index, the role
+/// roster, and the FK children guard.
+///
+/// @cpt-dod:cpt-cf-bss-products-dod-category-table:p1
+/// @cpt-dod:cpt-cf-bss-products-dod-category-assignment-table:p1
+mod taxonomy_store_guard_tests {
+    use sea_orm::ConnectionTrait;
+    use sea_orm_migration::MigratorTrait;
+
+    use super::Migrator;
+
+    async fn harness() -> sea_orm::DatabaseConnection {
+        let mut opts = sea_orm::ConnectOptions::new("sqlite::memory:");
+        opts.max_connections(1).min_connections(1);
+        let db = sea_orm::Database::connect(opts)
+            .await
+            .expect("connect in-memory sqlite");
+        Migrator::up(&db, None).await.expect("boot the chain");
+        db
+    }
+
+    async fn exec(db: &sea_orm::DatabaseConnection, sql: &str) -> Result<(), sea_orm::DbErr> {
+        db.execute_raw(sea_orm::Statement::from_string(
+            sea_orm::DatabaseBackend::Sqlite,
+            sql.to_owned(),
+        ))
+        .await
+        .map(|_| ())
+    }
+
+    async fn seed_category(
+        db: &sea_orm::DatabaseConnection,
+        id: &str,
+        parent: Option<&str>,
+        name: &str,
+    ) -> Result<(), sea_orm::DbErr> {
+        let parent_sql = parent.map_or("NULL".to_owned(), |p| format!("'{p}'"));
+        exec(
+            db,
+            &format!(
+                "INSERT INTO products_category \
+                 (tenant_id, category_id, parent_id, name, name_normalized, state, \
+                  created_at, updated_at) \
+                 VALUES ('t-a', '{id}', {parent_sql}, '{name}', '{name}', 'active', \
+                  '2026-09-01T00:00:00Z', '2026-09-01T00:00:00Z')"
+            ),
+        )
+        .await
+    }
+
+    /// The declared UNIQUE constrains siblings under one parent; P-D-88's
+    /// partial index constrains the roots that UNIQUE cannot see. Both
+    /// directions probed, plus the positive control the item's defect
+    /// depends on: the same name under two DIFFERENT parents is legal.
+    #[tokio::test]
+    async fn the_tree_name_uniqueness_holds_for_siblings_and_for_roots() {
+        let db = harness().await;
+        seed_category(&db, "c-root", None, "hardware")
+            .await
+            .expect("a root lands");
+        seed_category(&db, "c-a", Some("c-root"), "servers")
+            .await
+            .expect("a child lands");
+
+        let err = seed_category(&db, "c-b", Some("c-root"), "servers")
+            .await
+            .expect_err("a same-name sibling must be refused");
+        assert!(
+            err.to_string().contains("UNIQUE constraint failed"),
+            "the refusal is the in-parent index's: {err}"
+        );
+
+        // P-D-88 arm 1: without the partial index this second root is
+        // admitted, because NULL != NULL in a UNIQUE on both engines.
+        let err = seed_category(&db, "c-root-2", None, "hardware")
+            .await
+            .expect_err("a same-name ROOT must be refused too");
+        assert!(
+            err.to_string().contains("UNIQUE constraint failed"),
+            "the refusal is the root index's: {err}"
+        );
+
+        seed_category(&db, "c-c", Some("c-a"), "hardware")
+            .await
+            .expect("the same name under a different parent is legal");
+    }
+
+    /// The FK children guard: a parent with children cannot be deleted, and
+    /// a category assigned to a product cannot be deleted either — the
+    /// physical thirds of `inst-tx-retire-guard`.
+    #[tokio::test]
+    async fn a_referenced_category_cannot_be_deleted() {
+        let db = harness().await;
+        seed_category(&db, "c-root", None, "hardware")
+            .await
+            .expect("root");
+        seed_category(&db, "c-a", Some("c-root"), "servers")
+            .await
+            .expect("child");
+
+        let err = exec(
+            &db,
+            "DELETE FROM products_category WHERE category_id = 'c-root'",
+        )
+        .await
+        .expect_err("a parent with children must be refused");
+        assert!(
+            err.to_string().contains("FOREIGN KEY constraint failed"),
+            "{err}"
+        );
+
+        exec(
+            &db,
+            "DELETE FROM products_category WHERE category_id = 'c-a'",
+        )
+        .await
+        .expect("a leaf deletes once nothing references it");
+    }
+
+    /// One product holds one category in at most one role, and at most one
+    /// PRIMARY across all categories — the second as an index, never a
+    /// convention.
+    #[tokio::test]
+    async fn the_assignment_keys_hold_both_uniqueness_guarantees() {
+        let db = harness().await;
+        seed_category(&db, "c-1", None, "hardware")
+            .await
+            .expect("c-1");
+        seed_category(&db, "c-2", None, "software")
+            .await
+            .expect("c-2");
+        exec(
+            &db,
+            "INSERT INTO products_product \
+             (product_id, tenant_id, brand_id, name, name_normalized, region_scope, brand_scope, \
+              lifecycle_state, internal_revision, published_version, created_by, created_at, updated_at) \
+             VALUES ('p-1', 't-a', 'b-1', 'Widget', 'widget', 'eu', 'acme', 'draft', 1, 0, \
+              'actor-1', '2026-09-01T00:00:00Z', '2026-09-01T00:00:00Z')",
+        )
+        .await
+        .expect("a product to assign");
+
+        let assign = |cat: &str, role: &str| {
+            format!(
+                "INSERT INTO products_product_category \
+                 (tenant_id, product_id, category_id, role, assigned_at) \
+                 VALUES ('t-a', 'p-1', '{cat}', '{role}', '2026-09-01T00:00:00Z')"
+            )
+        };
+        exec(&db, &assign("c-1", "primary"))
+            .await
+            .expect("the primary lands");
+
+        let err = exec(&db, &assign("c-1", "secondary"))
+            .await
+            .expect_err("one category in two roles must be refused");
+        assert!(
+            err.to_string().contains("UNIQUE constraint failed"),
+            "{err}"
+        );
+
+        let err = exec(&db, &assign("c-2", "primary"))
+            .await
+            .expect_err("a second primary must be refused by the partial index");
+        assert!(
+            err.to_string().contains("UNIQUE constraint failed"),
+            "{err}"
+        );
+
+        exec(&db, &assign("c-2", "secondary"))
+            .await
+            .expect("a secondary beside the primary");
+
+        let err = exec(
+            &db,
+            "INSERT INTO products_product_category \
+             (tenant_id, product_id, category_id, role, assigned_at) \
+             VALUES ('t-a', 'p-1', 'c-2', 'tertiary', '2026-09-01T00:00:00Z')",
+        )
+        .await
+        .expect_err("a role outside the roster must be refused");
+        assert!(
+            err.to_string()
+                .contains("chk_products_product_category_role"),
+            "{err}"
+        );
+    }
+
+    /// A category may not be its own parent, and the state roster holds.
+    #[tokio::test]
+    async fn the_tree_rejects_self_parenting_and_unknown_states() {
+        let db = harness().await;
+        let err = exec(
+            &db,
+            "INSERT INTO products_category \
+             (tenant_id, category_id, parent_id, name, name_normalized, state, created_at, updated_at) \
+             VALUES ('t-a', 'c-x', 'c-x', 'loop', 'loop', 'active', \
+              '2026-09-01T00:00:00Z', '2026-09-01T00:00:00Z')",
+        )
+        .await
+        .expect_err("self-parenting must be refused");
+        assert!(
+            err.to_string()
+                .contains("chk_products_category_not_own_parent"),
+            "{err}"
+        );
+
+        seed_category(&db, "c-1", None, "hardware")
+            .await
+            .expect("control");
+        let err = exec(
+            &db,
+            "UPDATE products_category SET state = 'archived' WHERE category_id = 'c-1'",
+        )
+        .await
+        .expect_err("a state outside the roster must be refused");
+        assert!(
+            err.to_string().contains("chk_products_category_state"),
+            "{err}"
+        );
+    }
+
+    /// The schema oracle for both tables, with its perturbation case.
+    #[tokio::test]
+    async fn the_taxonomy_schema_oracle_pins_both_rosters_and_can_fail() {
+        let db = harness().await;
+
+        let category = super::governance_store_guard_tests::columns(&db, "products_category").await;
+        assert_eq!(
+            category,
+            vec![
+                "category_id",
+                "created_at",
+                "mutation_seq",
+                "name",
+                "name_normalized",
+                "parent_id",
+                "state",
+                "tenant_id",
+                "updated_at",
+            ],
+            "products_category's roster is design/02 section 4.1's"
+        );
+
+        let assignment =
+            super::governance_store_guard_tests::columns(&db, "products_product_category").await;
+        assert_eq!(
+            assignment,
+            vec![
+                "assigned_at",
+                "category_id",
+                "product_id",
+                "role",
+                "tenant_id"
+            ]
+        );
+
+        assert_ne!(
+            category, assignment,
+            "two different tables must not compare equal, or the oracle asserts nothing"
         );
     }
 }
