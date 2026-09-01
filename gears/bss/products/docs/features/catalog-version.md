@@ -1282,7 +1282,7 @@ as a working reclamation path.
 
 ### The grandfathering invariant, made auditable
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-grandfathering`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-grandfathering`
 
 A frozen snapshot referenced by a grandfathered consumer **MUST** never be mutated, and the system
 **MUST** hold this **by construction** rather than by a check: entity versions are append-only

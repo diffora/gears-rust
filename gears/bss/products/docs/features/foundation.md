@@ -429,7 +429,7 @@ exist from this first migration, together with a perturbation case proving the o
 
 ### Published-version history table
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-version-history-table`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-version-history-table`
 
 The system **MUST** create `products_entity_version` carrying the frozen content of each published
 version together with its `digest_version` constant and its content digest, on both engines. The

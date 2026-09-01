@@ -48,7 +48,20 @@
 //! `SQLite`; every CHECK, both FKs, both PKs and the P-D-40 index are
 //! preserved on both sides.
 //!
+//! # Grandfathering holds by construction, and this table is half of it
+//!
+//! `dod-grandfathering` obliges that a frozen snapshot a grandfathered
+//! consumer references is never mutated, **by construction rather than by a
+//! check**. All three constructions ship: entity versions are append-only
+//! under `m20260829_000007`'s guard, manifests are append-only under this
+//! migration's own, and retirement and deprecation touch **head rows only**
+//! (the head tables' lifecycle guards, whose edges never reach a version or
+//! a manifest row). Eligibility policy stays plan-price's and
+//! subscriptions-lifecycle's; the immutability is this gear's, and it is
+//! these guards.
+//!
 //! @cpt-dod:cpt-cf-bss-products-dod-version-entry-table:p1
+//! @cpt-dod:cpt-cf-bss-products-dod-grandfathering:p1
 
 use sea_orm_migration::prelude::*;
 
