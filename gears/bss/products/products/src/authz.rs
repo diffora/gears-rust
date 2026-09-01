@@ -102,6 +102,20 @@ pub mod labels {
     /// one closed set under a two-way set-equality assertion, and a closed
     /// set takes one writer.
     pub const BULK_LIFECYCLE: &str = gts_id!("cf.bss.products.bulk_lifecycle.v1~");
+    /// Erasure — `execute`. `10-retention-erasure`'s own grant
+    /// (`dod-retention-authz`), and a resource of its own because erasure is
+    /// not a write to any one entity: it updates the pseudonym map, and every
+    /// record that carries only refs completes erasure by that update alone.
+    pub const ERASURE: &str = gts_id!("cf.bss.products.erasure.v1~");
+    /// Compliance — `export`. The identity-export door's pair: a read that
+    /// resolves pseudonyms is a different act from reading an entity, and no
+    /// entity grant implies it.
+    pub const COMPLIANCE: &str = gts_id!("cf.bss.products.compliance.v1~");
+    /// The PII allow-list — `write`. Declared with **no route**: `design/05`
+    /// §3.2 records the gap and `features/governance.md` §7 row 1 holds it
+    /// open across eleven grants, so this declares the grant and invents no
+    /// door.
+    pub const PII_ALLOWLIST: &str = gts_id!("cf.bss.products.pii_allowlist.v1~");
     /// The audit plane — `read` and `export` (M-4's fix). Split from the
     /// entity grants deliberately: an audit reader sees refusals and actors
     /// across every subject, which no entity-scoped grant implies.
@@ -123,6 +137,9 @@ pub mod labels {
         BREAKGLASS,
         AUDIT,
         BULK_LIFECYCLE,
+        ERASURE,
+        COMPLIANCE,
+        PII_ALLOWLIST,
     ];
 }
 
@@ -171,6 +188,10 @@ pub mod actions {
     /// Export action — taking audit content out of the gear, as opposed to
     /// reading it in place.
     pub const EXPORT: &str = "export";
+
+    // `EXECUTE` is declared above, by `09`'s import door — `10`'s erasure
+    // request spends the same action name on its own resource, which is what
+    // makes the action vocabulary shared and the resource the discriminator.
 }
 
 /// Properties the PEP may compile from PDP constraints for registry rows.
@@ -220,6 +241,15 @@ pub mod resource_types {
     /// Bulk lifecycle — `execute`.
     pub const BULK_LIFECYCLE: ResourceType =
         ResourceType::from_static(labels::BULK_LIFECYCLE, SUPPORTED_PROPERTIES);
+    /// Erasure — `execute`.
+    pub const ERASURE: ResourceType =
+        ResourceType::from_static(labels::ERASURE, SUPPORTED_PROPERTIES);
+    /// Compliance — `export`.
+    pub const COMPLIANCE: ResourceType =
+        ResourceType::from_static(labels::COMPLIANCE, SUPPORTED_PROPERTIES);
+    /// The PII allow-list — `write`.
+    pub const PII_ALLOWLIST: ResourceType =
+        ResourceType::from_static(labels::PII_ALLOWLIST, SUPPORTED_PROPERTIES);
 }
 
 /// Error from the registry's PEP gate.

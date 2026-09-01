@@ -24,8 +24,10 @@
 //! The rows owned by `02`, `03`, `04` and `10` (`category`,
 //! `attribute_definition`, `recognized_set`, `plan_tier`,
 //! `scheduled_transition`, `metadata`, `compliance`, `erasure`,
-//! `pii_allowlist`) are **deliberately absent**: they belong to the slices
-//! that build those doors. See `crate::authz`'s module doc for why `discard`
+//! ) are **deliberately absent**: they belong to the slices
+//! that build those doors. `10`'s three — `erasure × execute`,
+//! `compliance × export`, `pii_allowlist × write` — arrived with
+//! `dod-retention-authz`, that feature's own `DoD` declaring them. See `crate::authz`'s module doc for why `discard`
 //! is not a permission of its own either.
 //!
 //! **A declared pair with no route is intentional here, and is the point.**
@@ -230,6 +232,32 @@ gts_instance! {
         display_name: "Run a bulk lifecycle batch".to_owned(),
     }
 }
+// -- retention & erasure -- `10`'s three grants (`dod-retention-authz`)
+
+gts_instance! {
+    AuthzPermissionV1 {
+        id: gts_id!("cf.toolkit.authz.permission.v1~cf.bss.products.erasure_execute.v1"),
+        resource_type: labels::ERASURE.to_owned(),
+        action: actions::EXECUTE.to_owned(),
+        display_name: "Execute an erasure request".to_owned(),
+    }
+}
+gts_instance! {
+    AuthzPermissionV1 {
+        id: gts_id!("cf.toolkit.authz.permission.v1~cf.bss.products.compliance_export.v1"),
+        resource_type: labels::COMPLIANCE.to_owned(),
+        action: actions::EXPORT.to_owned(),
+        display_name: "Export the identity map for a compliance request".to_owned(),
+    }
+}
+gts_instance! {
+    AuthzPermissionV1 {
+        id: gts_id!("cf.toolkit.authz.permission.v1~cf.bss.products.pii_allowlist_write.v1"),
+        resource_type: labels::PII_ALLOWLIST.to_owned(),
+        action: actions::WRITE.to_owned(),
+        display_name: "Change the PII allow-list".to_owned(),
+    }
+}
 gts_instance! {
     AuthzPermissionV1 {
         id: gts_id!("cf.toolkit.authz.permission.v1~cf.bss.products.audit_read.v1"),
@@ -279,6 +307,9 @@ mod tests {
         gts_id!("cf.toolkit.authz.permission.v1~cf.bss.products.audit_read.v1"),
         gts_id!("cf.toolkit.authz.permission.v1~cf.bss.products.audit_export.v1"),
         gts_id!("cf.toolkit.authz.permission.v1~cf.bss.products.bulk_lifecycle_execute.v1"),
+        gts_id!("cf.toolkit.authz.permission.v1~cf.bss.products.erasure_execute.v1"),
+        gts_id!("cf.toolkit.authz.permission.v1~cf.bss.products.compliance_export.v1"),
+        gts_id!("cf.toolkit.authz.permission.v1~cf.bss.products.pii_allowlist_write.v1"),
     ];
 
     fn products_permission_instances() -> Vec<&'static InventoryInstance> {
@@ -381,6 +412,9 @@ mod tests {
             crate::authz::actions::ELEVATE,
             crate::authz::actions::EXPORT,
         ];
+        // `10`'s three grants reuse EXECUTE, EXPORT and WRITE on their own
+        // resources, so the action vocabulary does not grow with them — the
+        // resource is the discriminator.
         for entry in products_permission_instances() {
             let action = (entry.payload_fn)()["action"]
                 .as_str()

@@ -727,7 +727,7 @@ day someone attaches a 422 transport override to it every test stays green.
 
 ### The authz surface, and the four rosters it reddens
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-retention-authz`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-retention-authz`
 
 The system **MUST** declare the labels and actions this feature's three grants spend — `erasure ×
 execute`, `compliance × export` and `pii_allowlist × write` — **MUST** declare one
@@ -754,6 +754,20 @@ descriptor test asserts only the two labels that exist.
 **`pii_allowlist × write` carries "no route declared"** in `design/05-governance.md` §3.2, and
 `features/governance.md` §7 row 1 holds that gap open across eleven grants. **Cited, not decided
 here** — so this DoD declares the grant and does not invent the door.
+
+**Built, and the four roster tests were four different shapes of census.** Each of the four
+sentences above quoted the roster as it stood when this DoD was authored, and every one of those
+numbers had moved before this change landed — `labels::ALL` held **eleven** entries, not two;
+`EXPECTED_PERMISSION_IDS` held **twenty-one** ids, not six; `known` held **eight** actions, not
+three. The obligation the sentences carry survived the drift intact, because it names the *sites*
+rather than the counts: the positional equality, the two-way set comparison, the
+resource-types-match assertion and the hard-coded action array. All four are updated here, and none
+of the three grants needed a new action — `execute`, `export` and `write` already exist, so the
+**resource is the discriminator** and the action vocabulary does not grow.
+
+Three lines also left the catalog census's **absence** list, where an earlier group had asserted
+them missing with `10` named as the owing slice. That was the right assertion then and is the wrong
+one now: this feature's own `DoD` declares them, which is exactly the rule the census encodes.
 
 **Implements**: `cpt-cf-bss-products-flow-erasure`, `cpt-cf-bss-products-flow-pii-policy`
 

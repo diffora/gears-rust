@@ -41,6 +41,9 @@ fn labels_all_carries_every_declared_label_in_order() {
             labels::BREAKGLASS,
             labels::AUDIT,
             labels::BULK_LIFECYCLE,
+            labels::ERASURE,
+            labels::COMPLIANCE,
+            labels::PII_ALLOWLIST,
         ]
     );
 }
@@ -65,6 +68,9 @@ fn resource_types_carry_their_labels() {
         resource_types::BULK_LIFECYCLE.name(),
         labels::BULK_LIFECYCLE
     );
+    assert_eq!(resource_types::ERASURE.name(), labels::ERASURE);
+    assert_eq!(resource_types::COMPLIANCE.name(), labels::COMPLIANCE);
+    assert_eq!(resource_types::PII_ALLOWLIST.name(), labels::PII_ALLOWLIST);
     assert_eq!(
         resource_types::REFERENCE_SIGNAL.name(),
         labels::REFERENCE_SIGNAL
@@ -341,7 +347,13 @@ async fn read_path_returns_pdp_scope_without_membership_check() {
 /// a future pass quietly declare `category × write` on 02's behalf, and the
 /// grant would then exist with no door and no owner.
 ///
-/// No marker: `dod-rbac-catalog` waits on seven live §7 rows (1, 2, 3, 7, 12,
+/// `10`'s three grants are ticked here (`dod-retention-authz`): that `DoD`
+/// obliges the labels, the descriptors, the instances and these four roster
+/// sites, and names its own routeless grant as cited rather than decided.
+///
+/// @cpt-dod:cpt-cf-bss-products-dod-retention-authz:p1
+///
+/// No marker for `dod-rbac-catalog`: it waits on seven live §7 rows (1, 2, 3, 7, 12,
 /// 18 and 24), so this census is coverage without a tick. One row IS declared
 /// though its door does not ship — `bulk_lifecycle × execute`, because
 /// **P-D-69** arm 7 assigns *"all four of this feature's grant instances"* to
@@ -362,6 +374,9 @@ fn the_catalog_carries_the_built_slices_rows_and_withholds_the_rest() {
         labels::BREAKGLASS,
         labels::AUDIT,
         labels::BULK_LIFECYCLE,
+        labels::ERASURE,
+        labels::COMPLIANCE,
+        labels::PII_ALLOWLIST,
     ];
     for label in declared {
         assert!(
@@ -387,9 +402,6 @@ fn the_catalog_carries_the_built_slices_rows_and_withholds_the_rest() {
         "cf.bss.products.plan_tier.v1~",            // 03
         "cf.bss.products.scheduled_transition.v1~", // 04
         "cf.bss.products.freeze_participant.v1~",   // 06, with its governed-set door
-        "cf.bss.products.compliance.v1~",           // 10
-        "cf.bss.products.erasure.v1~",              // 10
-        "cf.bss.products.pii_allowlist.v1~",        // 10
     ] {
         assert!(
             !labels::ALL.iter().any(|label| label.contains(owed)),
