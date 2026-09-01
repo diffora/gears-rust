@@ -1725,13 +1725,19 @@ here is ticked by inspection.
 [`../design/06-catalog-version.md`](../design/06-catalog-version.md) §6 — the slice's full count,
 not a selection — and **thirty-three raised here**, across two review passes: eleven while
 authoring, **twelve by the first three-lens pass** and **ten by the second**. Of the fifty-one,
-**twenty-eight block no DoD in this document**: rows 3, 4, 5, 14, 34, 49, 50 and 51, plus the
+**thirty-six block no DoD in this document**: rows 3, 4, 5, 14, 34, 50 and 51 (row 49 was listed
+here by mistake — its own `Blocks` field named two DoDs until P-D-83 resolved it; the split
+before this correction was truly 27/24, not 28/23), plus the
 seventeen resolved on **2026-08-31** — rows 22 and 41 by **P-D-52**, row 37 by **P-D-53**, row 30 by
 **P-D-56**, rows 1, 9, 10 and 11 by **P-D-60** (the first round over *carried* rows, answered in
 `design/06` §6 first with the carry following), and rows 8, 16, 23, 26, 29, 31, 32, 33 and 46 by
 **P-D-67**, the nine-arm sweep that freed this document's last five sole-held DoDs, and rows 24, 38
-and 42 by **P-D-73** on 2026-09-01, which unblocked `dod-catalog-version-table` for the build. The
-other **twenty-three** each name the DoD they block.
+and 42 by **P-D-73** on 2026-09-01, which unblocked `dod-catalog-version-table` for the build, and
+the nine of the increment wave — 15 and 43 by **P-D-80** (row 15 carried, `design/06` §6 answered
+first), 19, 20, 21 and 28 by **P-D-81**, 25 by **P-D-82**, 40 and 49 by **P-D-83** — on 2026-09-01,
+which freed `dod-increment-request-port`, `dod-coalescer` and `dod-snapshot-builder`
+(`dod-request-door` was already free via row 30). The
+other **fifteen** each name the DoD they block.
 
 **A resolved row is kept in place rather than struck from the register**, because rows 41 and 45 cite
 row 22 and a deleted record would break the citations. Of the four DoDs row 30 named,
@@ -1742,7 +1748,7 @@ and `dod-posting-safe-observability` stay blocked by their own other rows; P-D-6
 
 Rows 14 and 34 block nothing for a reason that is itself the finding:
 **no DoD in §5 declares the `validate(lint)` door**, because nothing in the design set specifies it,
-and none names the archival or scale halves. Rows 49-51 block nothing because each asks what a
+and none names the archival or scale halves. Rows 50 and 51 block nothing because each asks what a
 convention **means**, not what a door does.
 
 **Carried, not answered.** A question is registered against **its owner's** register. Where the
@@ -1926,7 +1932,12 @@ resolved record elsewhere can retract a decision's propagation, so none was touc
     specify.
     **Owner**: the design-set owner, with this feature and `09-bulk-promotion`.
 
-15. **The manifest's row collections have no named sort key.** `inst-sn-checksum` rested on
+15. ~~**The manifest's row collections have no named sort key.**~~
+    **Answered (owner call, 2026-09-01 — P-D-80; `design/06` §6 answered first): a keyed
+    collection sorts by its own key rendering** — entry rows by `(entity_kind, entity_id)`, capture
+    rows by `capture_kind` (their stores' primary keys under the fixed tenant and version), the
+    manifest rendering under `Absence::Null` against a roster pinned beside the builder.
+    Original text: `inst-sn-checksum` rested on
     **P-D-28**, which states in terms that it orders fields and *not* rows; **P-D-29** supplies a row
     rule but scopes it to the category-assignment and attribute-value sets "inside the content". The
     manifest's entry rows and capture rows are neither, so two runs or two engines may hash the same
@@ -1938,8 +1949,9 @@ resolved record elsewhere can retract a decision's propagation, so none was touc
     identifier"*. What is open is therefore narrower than "no named key": it is whether that rule
     reaches the manifest's **entry** and **capture** rows, which are neither of P-D-29's two sets
     and carry no collection identifier of the same kind.*
-    **Blocks**: `cpt-cf-bss-products-dod-snapshot-builder`.
-    **Owner**: whoever owns 01 §4.3's canonicalization pin (P-D-29), with this feature.
+    **Blocks**: no DoD — **resolved by P-D-80**; `cpt-cf-bss-products-dod-snapshot-builder` keeps row 25
+    until P-D-82's truncation is built.
+    **Owner**: was whoever owns 01 §4.3's canonicalization pin (P-D-29), with this feature; **closed**.
 
 16. ~~**`staged_at` has no admitted writer.**~~
     **Answered in the slice (owner call, 2026-08-31 — P-D-67 arm 2): `staged_at` is struck** — no
@@ -1982,36 +1994,49 @@ Four came from the counterpart gear's shipped port, one from that gear's dev reg
 `gears/bss/libs/coord`, and five from this gear's own crate. Every quotation below was byte-verified
 against source at `41d1baa5e`.
 
-19. **The shipped port carries no `source`, `lane` or `operation_key`.**
+19. ~~**The shipped port carries no `source`, `lane` or `operation_key`.**~~
+    **Answered (owner call, 2026-09-01 — P-D-81 arm 1): the adapter supplies the operands and the
+    port does not widen in v1** — `source` = the binding's registered producer name (`pricing`),
+    `lane` = `interactive` (the SDK port is the interactive surface; the bulk lane's requester is
+    this gear's own worker, in-crate), `request_key = request_id`, `operation_key` absent.
+    Original text:
     `CatalogVersionRegistryV1::request_version` takes `request_id: &str` and nothing else, while
     this feature's `IncrementRequest` is `(source, lane ∈ {interactive, bulk}, request_key,
     operation_key?, requested_at)` and its uniqueness is on `(tenant_id, source, request_key)`. So **D-47's
     two-lane split and the `operation_key` coalescing have no operand on the only shipped caller**:
     pricing, the v1 registered set's one member, can express one lane. Whether the adapter supplies
     defaults, or the port widens, is not this document's to decide.
-    **Blocks**: `cpt-cf-bss-products-dod-increment-request-port`.
-    **Owner**: this feature, with pricing's SDK owner.
+    **Blocks**: no DoD — **resolved by P-D-81**.
+    **Owner**: was this feature, with pricing's SDK owner; **closed**.
 
-20. **`pending_ref` is issued by the registry and never echoed back.**
+20. ~~**`pending_ref` is issued by the registry and never echoed back.**~~
+    **Answered (owner call, 2026-09-01 — P-D-81 arm 2): `pending_ref` is the request's own
+    coordinates rendered** — `"{source}/{request_key}"` — so a consumer row keyed on the ref is keyed
+    on what `satisfiedRequests` carries and the event closes it with no mapping anywhere; the
+    stated retry-idempotency holds by construction.
+    Original text:
     `PendingVersionRef { request_id, pending_ref }` gives the caller a registry-minted handle that
     `PlanPublished` carries, while `CatalogVersionPublished` carries `satisfiedRequests` keyed on
     `(source, request_key)`. A pricing row keyed on `pending_ref` alone therefore cannot be closed
     from the event. Whether `satisfiedRequests` should carry the pending ref too, or the adapter is
     obliged to keep the mapping, is open.
-    **Blocks**: `cpt-cf-bss-products-dod-increment-request-port`,
-    `cpt-cf-bss-products-dod-cv-events`.
-    **Owner**: this feature, with pricing's SDK owner.
+    **Blocks**: no DoD — **resolved by P-D-81**; `cpt-cf-bss-products-dod-cv-events` keeps its other rows.
+    **Owner**: was this feature, with pricing's SDK owner; **closed**.
 
-21. **`committed_version` is a poll and this feature declares no door for it.** The shipped port's
+21. ~~**`committed_version` is a poll and this feature declares no door for it.**~~
+    **Answered (owner call, 2026-09-01 — P-D-81 arm 3): the poll's surface is the port method
+    itself** — `committed_version` parses the ref and reads the request row (`pending` answers
+    `None`, `coalesced` the version `satisfied_by_version_id` names); no HTTP door is owed, and the
+    resolver door stays keyed on `catalogVersionId`.
+    Original text: The shipped port's
     second method resolves a pending ref to its committed version, and pricing has **exactly one**
     caller of it — the `ReadModelWarmJob` sweep, which `infra::registry_deadline`'s own doc records
     as *"awaited once, from the read-model warm sweep"*. `module.rs`'s *"One requester, two readers"*
     counts **holders of the registry**, not callers of this method. This feature's doors are request, read, ack,
     release and force_complete, and its resolver is keyed on `catalogVersionId`. **Implementing the
     port today leaves one of its two methods with no surface.**
-    **Blocks**: `cpt-cf-bss-products-dod-increment-request-port`,
-    `cpt-cf-bss-products-dod-intentful-resolver`.
-    **Owner**: this feature, with pricing's SDK owner.
+    **Blocks**: no DoD — **resolved by P-D-81**; `cpt-cf-bss-products-dod-intentful-resolver` keeps its other rows.
+    **Owner**: was this feature, with pricing's SDK owner; **closed**.
 
 22. ~~**The shipped port has a fourth error arm this feature's roster cannot produce.**~~
     **Answered (owner call, 2026-08-31 — P-D-52): the request door owes the code.**
@@ -2072,7 +2097,13 @@ against source at `41d1baa5e`.
     **Blocks**: no DoD — **resolved by P-D-73**; `cpt-cf-bss-products-dod-catalog-version-table` carries the column.
     **Owner**: was this feature, with `10-retention-erasure`; **closed**.
 
-25. **An unpaid cross-engine truncation stands under this feature's byte-identity flagship.**
+25. ~~**An unpaid cross-engine truncation stands under this feature's byte-identity flagship.**~~
+    **Answered (owner call, 2026-09-01 — P-D-82): instants truncate to microseconds at every
+    head-row write** — the five creating sites, through one helper beside `render_instant`, so
+    neither engine holds a digit the other could round; the golden vector's whole-second fixtures
+    do not move, and the cross-engine golden clause of `dod-version-history-table` becomes
+    buildable.
+    Original text:
     `canonical::render_instant` truncates to microseconds, and its own doc states the residual
     hazard: `Utc::now()` carries nanoseconds, SQLite stores nine digits, Postgres `timestamptz`
     **rounds** to six, so `...:00.123456789Z` renders `.123456` on one engine and `.123457` on the
@@ -2080,10 +2111,8 @@ against source at `41d1baa5e`.
     different `content_digest` values on the two engines."* The fix is named — truncate the instant
     **where it is written**, at the head-row insert — and is recorded **only in code doc comments**,
     in no plan and no artifact.
-    **Blocks**: `cpt-cf-bss-products-dod-snapshot-builder`, and the second open clause of
-    `cpt-cf-bss-products-dod-version-history-table` (the golden vector *asserted byte-identical
-    across engines*), which is why **this feature does not tick that DoD**.
-    **Owner**: `01-foundation` — the create doors are where the write is. One-line pointer only.
+    **Blocks**: no DoD — **resolved by P-D-82**.
+    **Owner**: was `01-foundation` — the create doors are where the write is. One-line pointer only; **closed**.
 
 26. ~~**`GovernanceGate`'s subject cannot name a catalog version or a participant set.**~~
     **Answered (owner call, 2026-08-31 — P-D-67 arm 4): the gate's subject widens to the approval
@@ -2115,13 +2144,19 @@ against source at `41d1baa5e`.
     **Blocks**: `cpt-cf-bss-products-dod-cv-events`.
     **Owner**: this feature, with the events/audit owner and the PRD §4.5 owner.
 
-28. **This feature adds the SDK's first write method, and the trait's shape is undecided.**
+28. ~~**This feature adds the SDK's first write method, and the trait's shape is undecided.**~~
+    **Answered (owner call, 2026-09-01 — P-D-81 arm 4): no new trait in either SDK** — the write
+    contract already exists as the consumer's own port, and the platform fixes the direction
+    (measured: `rate-provider` implements `bss_ledger_sdk::RateProviderV1`, the consumer's trait
+    from the consumer's crate); the products crate implements `pricing-sdk`'s trait and
+    `ProductsClient` is not widened.
+    Original text:
     `bss_products_sdk::api::ProductsClient` ships `get_product` and `get_sku` and calls itself *"the
     in-process contract for **reading** registry entities"*. Whether the increment contract widens
     that trait — changing what every existing implementor must provide — or arrives as a second
     trait beside it, is a contract decision this document declines to take.
-    **Blocks**: `cpt-cf-bss-products-dod-increment-request-port`.
-    **Owner**: this feature, with `12-consumer-contracts`, which owns the SDK type's audience.
+    **Blocks**: no DoD — **resolved by P-D-81**.
+    **Owner**: was this feature, with `12-consumer-contracts`, which owns the SDK type's audience; **closed**.
 
 29. ~~**What is the cardinality cost of a per-tenant increment lease?**~~
     **Answered (owner call, 2026-08-31 — P-D-67 arm 5): accepted on the precedent.** `bss-ledger`
@@ -2280,16 +2315,21 @@ against source at `41d1baa5e`.
     **Blocks**: `cpt-cf-bss-products-dod-cv-events`.
     **Owner**: the events/audit owner, with `01-foundation`'s.
 
-40. **Does a slice's §2 instruction step or its §4 storage shape govern a column-level fact?** This
+40. ~~**Does a slice's §2 instruction step or its §4 storage shape govern a column-level fact?**~~
+    **Answered (owner call, 2026-09-01 — P-D-83): §4 governs every storage-shape fact and §2 stays
+    normative for behavior** — a §2 step naming a storage fact is a shorthand reading of §4,
+    correct while it is a projection of §4's shape (fewer axes, same members); `inst-fz-ack` needs
+    no edit.
+    Original text: This
     document states both that the slice's instruction steps *"stay normative"* and that
     `design/06` §4 *"governs on any column-level fact"*, and then applies the second against a §2
     step — `inst-fz-ack`'s `(version, participant)` — in
     `cpt-cf-bss-products-dod-ack-door`. The sibling FEATUREs state the precedence only over §5
     versus §4, never over §2 versus §4. The answer decides whether `inst-fz-ack` needs editing or is
     correct as a shorthand.
-    **Blocks**: `cpt-cf-bss-products-dod-ack-door`,
-    `cpt-cf-bss-products-dod-increment-request-port`.
-    **Owner**: the design-set owner.
+    **Blocks**: no DoD — **resolved by P-D-83**; `cpt-cf-bss-products-dod-ack-door` and
+    `cpt-cf-bss-products-dod-increment-request-port` keep their other rows.
+    **Owner**: was the design-set owner; **closed**.
 
 41. ~~**Does the request door owe a refusal code, or is the error algo's Input clause scoped?**~~
     **Answered with row 22 (owner call, 2026-08-31 — P-D-52): a seventh code is owed, and the
@@ -2317,7 +2357,12 @@ against source at `41d1baa5e`.
     **Blocks**: no DoD — **resolved by P-D-73**; `cpt-cf-bss-products-dod-catalog-version-table` is freed, `dod-snapshot-builder` staying with its other rows.
     **Owner**: was this feature, with whoever owns `design/06` §4; **closed**.
 
-43. **Under which absence mode, and against which roster, is the manifest rendered?**
+43. ~~**Under which absence mode, and against which roster, is the manifest rendered?**~~
+    **Answered (owner call, 2026-09-01 — P-D-80): `Absence::Null`, against the manifest's own
+    pinned roster** — the envelope's field names as a `const` beside the builder, `DIGEST_VERSION`
+    governing changes; the parsed-request arm was declined because slice 10's drill needs the
+    roster in code, not inferred from the value.
+    Original text:
     `domain::canonical`'s entry point takes the mode as a **required** argument precisely because the
     wrong choice is undetectable — *"a caller that picked the wrong one would produce a plausible
     string and a wrong digest, and nothing downstream could tell"* — and the complete-set arm
@@ -2325,8 +2370,8 @@ against source at `41d1baa5e`.
     roster, so the roster travels with the mode rather than being inferred from the value"*. No
     document says which arm the manifest takes, or what its roster is. This is the same pairing row
     15 names and belongs beside it.
-    **Blocks**: `cpt-cf-bss-products-dod-snapshot-builder`.
-    **Owner**: whoever owns 01 §4.3's canonicalization pin, with this feature.
+    **Blocks**: no DoD — **resolved by P-D-80**.
+    **Owner**: was whoever owns 01 §4.3's canonicalization pin, with this feature; **closed**.
 
 44. **Is `09-bulk-promotion`'s export door a third consumer of the shared version lookup, and who
     refuses an unknown id there?** `cpt-cf-bss-products-dod-intentful-resolver` obliges one component
@@ -2383,18 +2428,20 @@ against source at `41d1baa5e`.
     **Blocks**: `cpt-cf-bss-products-dod-cv-authz`, `cpt-cf-bss-products-dod-diff-door`.
     **Owner**: 05's roster owner, with the P-D-45/P-D-50 owner.
 
-49. **Does "column-level fact" reach a row population?** Row 40 asks whether a slice's §2
+49. ~~**Does "column-level fact" reach a row population?**~~
+    **Answered (owner call, 2026-09-01 — P-D-83): "storage shape" reaches row populations** — the
+    capture roster is §4's seven values, the builder the enforcement site (P-D-74 unchanged); the
+    two six-value lists are behavioral enumerations of the kinds whose sources ship or are named
+    today, not a competing roster.
+    Original text: Row 40 asks whether a slice's §2
     instruction step or its §4 storage shape governs a **column-level fact**, and applies it to a
     key. The capture-store roster is a different shape of the same question: §4's bullet carries
     **seven** `capture_kind` values and `inst-sn-collect` and `inst-df-diff` each list **six**,
     omitting `category values`. This document takes §4 as governing and says so at the site, but the
     precedence for a set of admitted row values rather than a column is stated nowhere. Either
     answer edits a document this feature does not own.
-    **Blocks**: `cpt-cf-bss-products-dod-snapshot-builder`,
-    `cpt-cf-bss-products-dod-diff-door` — **`dod-version-entry-table` was narrowed out by P-D-74**:
-    the capture DDL pins no `capture_kind` roster, the admitted set being the builder's to enforce
-    once this row resolves, so the table does not carry the answer either way.
-    **Owner**: the design-set owner — row 40's owner.
+    **Blocks**: no DoD — **resolved by P-D-83**; `cpt-cf-bss-products-dod-diff-door` keeps its other rows.
+    **Owner**: was the design-set owner — row 40's owner; **closed**.
 
 50. **Is §6 owed one criterion per DoD, or is it a deliberately selected set?** §6 states its own
     completeness only for the positive controls — *"seven codes, seven lines"* — while several DoDs have

@@ -1569,6 +1569,134 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   (the re-publish step).
 
 
+#### P-D-83 — §4 governs the storage shape whole: columns and admitted row populations alike
+
+- **Date**: 2026-09-01 (owner call, autonomous under the standing instruction —
+  `features/catalog-version.md` §7 rows 40 and 49, the design-set owner's precedence pair)
+- **Context**: the set states §4-over-§5 precedence explicitly and `features/catalog-version.md`
+  applies §4 against a §2 step (`inst-fz-ack`'s key) and against a row-value set (the
+  `capture_kind` roster) without a stated rule covering either.
+
+**The precedence rule, stated once**: a slice's **§4 storage section governs every storage-shape
+fact** — column sets, key shapes, and the admitted value population of a roster column — while §2's
+instruction steps stay normative for **behavior**: who writes, when, in which transaction, refusing
+what. A §2 step that names a storage fact is a shorthand reading of §4, correct while it agrees and
+yielding where it does not. Consequences: `inst-fz-ack`'s `(version, participant)` needs no edit —
+it is §4's `(tenant_id, catalog_version_id, participant)` read as the shorthand it is (row 40); the
+capture-store roster is **§4's seven `capture_kind` values**, and the snapshot builder enforces
+seven — `inst-sn-collect`'s and `inst-df-diff`'s six-value lists are behavioral enumerations of the
+six whose source stores ship or are named today, not a competing roster (row 49). P-D-74's DDL
+posture is unchanged: the builder is the enforcement site, and a later in-place DDL pin stays open
+to whoever wants the CHECK.
+
+- **The arguments against, stated**: reading a §2/§4 disagreement as shorthand can hide a real
+  contradiction; the guard is that the shorthand ruling applies only where the §2 form is a
+  projection of §4's (fewer axes, same members), never where the two name different members.
+- **Not changed**: §2's normativity over behavior, P-D-74, the §5-versus-§4 precedence the siblings
+  state.
+- **Propagated**: `features/catalog-version.md` (rows 40 and 49 struck; §7 arithmetic — row 49's
+  "blocks nothing" preamble line was stale against the row's own `Blocks` field and is corrected).
+
+#### P-D-82 — Instants truncate to microseconds at every head-row write
+
+- **Date**: 2026-09-01 (owner call, autonomous under the standing instruction —
+  `features/catalog-version.md` §7 row 25, the fix `canonical::render_instant`'s own doc names,
+  owed to `01-foundation`'s create doors)
+- **Context**: `Utc::now()` carries nanoseconds; `SQLite` stores all nine digits while Postgres
+  `timestamptz` **rounds** to six, so the same logical entity can freeze under two `content`
+  strings and two digests across engines — under the byte-identity flagship.
+
+**Every instant a head row stores is truncated to microseconds at the write** — the five creating
+sites (`create_product`, `create_sku`, the product clone parent, the family child, the lone-SKU
+clone) and any later site that mints a stored instant — through one named helper beside
+`render_instant`, so neither engine holds a digit the other could round differently. Postgres's
+rounding (versus truncation) can still differ on the half-microsecond boundary for a *rounded*
+value; truncation at the write removes the digits before the engine sees them, which is why the
+helper truncates rather than rounds — after it, both engines store the identical six digits.
+
+- **The arguments against, stated**: sub-microsecond precision is lost — measured, nothing reads
+  it; existing rows keep their stored values (dev data, no migration owed).
+- **Not changed**: `render_instant`'s own truncation (defense in depth at the render), the golden
+  vector (its fixture instants are whole seconds and its bytes do not move).
+- **Propagated**: `features/catalog-version.md` (row 25 struck), the five write sites and the
+  helper in `domain/canonical.rs`; the second open clause of `dod-version-history-table` (the
+  cross-engine golden assertion) becomes buildable.
+
+#### P-D-81 — The port stays the consumer's: adapter-supplied operands, a self-describing pending ref, the poll as its own surface, and no new trait
+
+- **Date**: 2026-09-01 (owner call, autonomous under the standing instruction —
+  `features/catalog-version.md` §7 rows 19, 20, 21 and 28, the increment port cluster)
+- **Context**: `pricing-sdk` ships `CatalogVersionRegistryV1 { request_version(ctx, request_id) ->
+  PendingVersionRef, committed_version(ctx, pending_ref) -> Option<CatalogVersion> }` with one
+  consumer; this feature's request entity carries `(source, lane, request_key, operation_key?)`.
+
+**1. The adapter supplies the operands; the port does not widen in v1** (row 19): `source` is the
+port binding's registered producer name (`pricing`, the v1 set's one member — P-D-03), `lane` is
+`interactive` (the SDK port *is* the interactive surface; the bulk lane's requester is this gear's
+own bulk worker, in-crate, never crossing the SDK), `request_key = request_id`, `operation_key`
+absent. Widening a shipped consumer trait for operands only the provider's own internal caller
+needs would move the seam for nothing.
+
+**2. `pending_ref` is the request's own coordinates, rendered** (row 20): the adapter answers
+`pending_ref = "{source}/{request_key}"`. A consumer row keyed on the ref is thereby keyed on
+exactly what `CatalogVersionPublished.satisfiedRequests` carries, so the event closes it with no
+mapping table anywhere; and `request_version`'s stated idempotency — *"a retry after a crash
+returns the same pending ref"* — holds by construction, the same key rendering the same ref.
+
+**3. The poll's surface is the port method itself** (row 21): `committed_version` parses the ref
+and reads the request row under the caller's scope — `pending` answers `None`, `coalesced` answers
+the version `satisfied_by_version_id` names. No HTTP door is owed; the resolver door stays keyed on
+`catalogVersionId`, and *"one of its two methods with no surface"* dissolves — an in-process port
+method is a surface.
+
+**4. No new trait, in either SDK** (row 28): the write contract already exists as the consumer's
+own port, and the platform fixes the direction — measured: `rate-provider` implements
+`bss_ledger_sdk::RateProviderV1`, the consumer's trait from the consumer's crate. So the products
+crate implements `pricing-sdk`'s trait (gaining that dependency), `bss-products-sdk` stays the
+read contract it calls itself, and `ProductsClient` is not widened.
+
+- **The arguments against, stated**: arm 1 leaves the two-lane split unexpressed at the SDK seam —
+  deliberately, until a second external producer exists to need it; arm 2 makes the ref parseable
+  and a consumer may come to depend on its shape — the shape is therefore declared in the adapter's
+  doc as the contract; arm 4 points the dependency products → pricing-sdk, which reads backwards
+  until measured against the rate-provider precedent.
+- **Not changed**: the port's shipped signature, P-D-52's refusal discriminator, the request
+  queue's key, `ProductsClient`.
+- **Propagated**: `features/catalog-version.md` (rows 19, 20, 21, 28 struck; §7 arithmetic),
+  the adapter when `dod-increment-request-port` builds.
+
+#### P-D-80 — The manifest renders complete-set against its own pinned roster, and keyed collections sort by their key
+
+- **Date**: 2026-09-01 (owner call, autonomous under the standing instruction —
+  `features/catalog-version.md` §7 rows 15 (carried; `design/06` §6 answered first) and 43, the
+  canonicalization pair, ours with 01's pin)
+- **Context**: P-D-28 orders fields, not rows; P-D-29 names a row rule for two content sets only;
+  `domain::canonical` requires the absence mode as an argument and a complete set requires a
+  declared roster. The manifest's entry and capture rows are neither of P-D-29's sets, and no
+  document said which `Absence` arm the manifest takes.
+
+**1. The sort rule extends to every keyed row collection**: *"by the collection's own identifier"*
+generalizes to **a keyed collection sorts by its own key rendering** — the manifest's entry rows by
+`(entity_kind, entity_id)`, its capture rows by `capture_kind`, both being their stores' primary
+keys under the fixed tenant and version. Two engines and two runs then hash one snapshot to one
+digest, which is the flagship's own requirement.
+
+**2. The manifest renders under `Absence::Null` against a pinned manifest roster** — the envelope's
+own field names, declared as a `const` beside the snapshot builder, `DIGEST_VERSION` governing any
+change. The parsed-request arm was declined: the checksum exists so slice 10's drill can re-verify
+a stored manifest years later, and a drill needs the roster pinned in code rather than inferred
+from the value — inference is a no-op exactly in the forgotten-field case the mode exists for,
+`canonical`'s own words.
+
+- **The arguments against, stated**: the builder constructs every field, so `Omit` could never
+  actually omit one today — but "today" is the premise that rots, and the complete-set arm costs
+  one const.
+- **Not changed**: P-D-28, P-D-29's two named sets, `render_instant`, the checksum's coverage
+  (both halves plus the participant snapshot — P-D-67).
+- **Propagated**: `design/06-catalog-version.md` (§6's sort-key item answered; `inst-sn-checksum`'s
+  parenthetical updated), `features/catalog-version.md` (rows 15 and 43 struck; §7 arithmetic),
+  the roster const when `dod-snapshot-builder` builds.
+
 #### P-D-79 — The product clone act is the family act, and the claim row carries its parent handle
 
 - **Date**: 2026-09-01 (owner call, autonomous under the standing instruction — the three operands
