@@ -6136,3 +6136,378 @@ async fn a_write_with_no_open_record_is_admitted_and_a_finalized_one_is_untouche
         "a finalized record is outside the open predicate and is never reopened"
     );
 }
+
+/// The deprecate door and its cascade (`dod-deprecation-provenance`,
+/// `dod-deprecation-cascade`).
+///
+/// # Why the cascade case seeds all four child states at once
+///
+/// The design records a defect this suite has to be able to catch: an earlier
+/// revision keyed the cascade on *"non-terminal children"*, which folded
+/// `draft` in with `published` and made deprecating a Product with one draft
+/// SKU fail `ILLEGAL_TRANSITION` with no remedy. A case with one `published`
+/// child would pass against that revision. So the fixture carries a
+/// `published` child, an already-`deprecated` one stamped `direct`, and a
+/// `draft` one, and asserts all three dispositions from one act.
+mod deprecate_door_tests {
+    use serde_json::Value as JsonValue;
+
+    use crate::domain::deprecation::Provenance;
+    use crate::infra::storage::repo::NewSku;
+
+    use super::*;
+
+    /// Seed one SKU under `parent_id`, contained in the parent's `eu` scope.
+    async fn seed_child(harness: &TestHarness, parent_id: Uuid, sku_code: &str) -> Uuid {
+        let conn = harness
+            .db
+            .conn()
+            .expect("checkout the pinned production connection");
+        let scope = toolkit_db::secure::AccessScope::for_tenant(TENANT);
+        let sku_id = Uuid::now_v7();
+        repo::insert_sku(
+            &conn,
+            &scope,
+            NewSku {
+                sku_id,
+                tenant_id: TENANT,
+                product_id: parent_id,
+                sku_code: sku_code.to_owned(),
+                region_scope: "eu".to_owned(),
+                brand_scope: String::new(),
+                created_by: "principal:author-1".to_owned(),
+                created_at: Utc.with_ymd_and_hms(2026, 8, 29, 9, 30, 0).unwrap(),
+                cloned_from: None,
+                cloned_from_version: None,
+            },
+        )
+        .await
+        .expect("seed the child SKU");
+        sku_id
+    }
+
+    /// Move a seeded child straight to a state the fixture needs, through the
+    /// engine rather than through a door.
+    ///
+    /// **The head guard runs on this too**, which is the point: the
+    /// `deprecated` fixture below writes `lifecycle_state` and
+    /// `deprecation_provenance` in **one** `UPDATE`, because the row-image
+    /// predicate P-D-34 pins admits it on no other terms. A fixture that
+    /// wrote them in two statements would be refused by the trigger — so
+    /// this helper is itself a probe of the pairing the door has to honour.
+    async fn force_child_state(harness: &TestHarness, sku_id: Uuid, sql_set: &str) {
+        let conn = Database::connect(&harness.dsn)
+            .await
+            .expect("open an auxiliary connection to shape the fixture");
+        conn.execute_unprepared(&format!(
+            "UPDATE products_sku SET {sql_set}, internal_revision = internal_revision + 1 \
+             WHERE sku_id = X'{sku}'",
+            sku = sku_id.simple()
+        ))
+        .await
+        .expect("the head guard admits this fixture write");
+    }
+
+    /// Publish a seeded child so the cascade has a `published` one to move.
+    async fn publish_child(harness: &TestHarness, sku_id: Uuid) {
+        let conn = Database::connect(&harness.dsn)
+            .await
+            .expect("open an auxiliary connection to shape the fixture");
+        // The frozen version row the head guard's `published_version` bump
+        // predicate requires to exist — the same obligation the publish door
+        // discharges, done here directly because the subject under test is
+        // the deprecation and not the publish.
+        conn.execute_unprepared(&format!(
+            "INSERT INTO products_entity_version \
+             (tenant_id, entity_kind, entity_id, published_version, content, \
+              content_digest, digest_version, actor_ref, published_at) \
+             VALUES (X'{tenant}', 'sku', X'{sku}', 1, '{{}}', X'00', 1, X'{tenant}', \
+              (SELECT created_at FROM products_sku WHERE sku_id = X'{sku}'))",
+            tenant = TENANT.simple(),
+            sku = sku_id.simple()
+        ))
+        .await
+        .expect("freeze the child's version row");
+        force_child_state(
+            harness,
+            sku_id,
+            "lifecycle_state = 'published', published_version = 1",
+        )
+        .await;
+    }
+
+    async fn child_of(harness: &TestHarness, sku_id: Uuid) -> repo::SkuRecord {
+        let conn = harness
+            .db
+            .conn()
+            .expect("checkout the pinned production connection");
+        let scope = toolkit_db::secure::AccessScope::for_tenant(TENANT);
+        repo::find_sku(&conn, &scope, TENANT, sku_id)
+            .await
+            .expect("read the child back")
+            .expect("the child this case acted on exists")
+    }
+
+    /// Publish a seeded draft Product through its own door, so the
+    /// deprecation acts on a head the gear itself produced.
+    async fn published_product(harness: &TestHarness) -> Uuid {
+        let product_id = Uuid::now_v7();
+        seed_draft(harness, product_id).await;
+        assign_primary_category(harness, product_id).await;
+        let published = post_head_act(
+            app_for(harness, TENANT),
+            TENANT,
+            product_id,
+            "publish",
+            &[("If-Match", &if_match(1))],
+        )
+        .await;
+        assert_eq!(published.status(), StatusCode::OK, "the fixture publishes");
+        product_id
+    }
+
+    /// **A published Product deprecates, stamped `direct`, and announces the
+    /// provenance on the wire.**
+    ///
+    /// The stamp is the assertion that matters: the column and the state move
+    /// in one statement, and the event carries the same value the row took —
+    /// a consumer keying on the cause reads the same answer as an operator
+    /// reading the row.
+    #[tokio::test]
+    async fn a_published_product_deprecates_directly_and_says_so() {
+        let harness = harness().await;
+        let product_id = published_product(&harness).await;
+
+        let response = post_head_act(
+            app_for(&harness, TENANT),
+            TENANT,
+            product_id,
+            "deprecate",
+            &[("If-Match", &if_match(2))],
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let head = head_of(&harness, product_id).await;
+        assert_eq!(head.lifecycle_state.as_str(), "deprecated");
+        assert_eq!(
+            head.deprecation_provenance,
+            Some(Provenance::Direct),
+            "an operator act stamps `direct`, in the same statement as the state change"
+        );
+        assert_eq!(
+            head.internal_revision, 3,
+            "the transition bumps the revision exactly once"
+        );
+        assert_eq!(
+            head.published_version, 1,
+            "a deprecation moves no version: the content the consumer reads is unchanged"
+        );
+
+        let body_table = format!("{}_body", events::OUTBOX_TABLE_PREFIX);
+        let payload_type = raw_string_opt(
+            &harness.dsn,
+            &format!(
+                "SELECT payload_type AS v FROM {body_table} \
+                 WHERE payload_type = 'ProductDeprecated'"
+            ),
+        )
+        .await;
+        assert_eq!(
+            payload_type.as_deref(),
+            Some("ProductDeprecated"),
+            "the act enqueues the event 04 announces, not one of section 4.5's eight"
+        );
+        let body = raw_string_opt(
+            &harness.dsn,
+            &format!(
+                "SELECT CAST(payload AS TEXT) AS v FROM {body_table} \
+                 WHERE payload_type = 'ProductDeprecated'"
+            ),
+        )
+        .await
+        .expect("the announcement carries a body");
+        assert!(
+            body.contains("\"provenance\":\"direct\""),
+            "`dod-deprecation-provenance` requires the provenance in the payload; got {body}"
+        );
+    }
+
+    /// **All three cascade dispositions, from one act.**
+    ///
+    /// A `published` child moves and is announced; an already-`deprecated`
+    /// child keeps its `direct` provenance and its revision; a `draft` child
+    /// is untouched and appears in the response's listing rather than
+    /// failing the mutation.
+    #[tokio::test]
+    async fn the_cascade_states_a_disposition_per_child_state() {
+        let harness = harness().await;
+        let product_id = published_product(&harness).await;
+
+        let live = seed_child(&harness, product_id, "SKU-LIVE").await;
+        publish_child(&harness, live).await;
+
+        let already = seed_child(&harness, product_id, "SKU-ALREADY").await;
+        publish_child(&harness, already).await;
+        // One statement, both columns — the predicate admits no other shape.
+        force_child_state(
+            &harness,
+            already,
+            "lifecycle_state = 'deprecated', deprecation_provenance = 'direct'",
+        )
+        .await;
+        let before = child_of(&harness, already).await.internal_revision;
+
+        let draft = seed_child(&harness, product_id, "SKU-DRAFT").await;
+
+        let response = post_head_act(
+            app_for(&harness, TENANT),
+            TENANT,
+            product_id,
+            "deprecate",
+            &[("If-Match", &if_match(2))],
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body: JsonValue = serde_json::from_slice(
+            &axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .expect("read the response body"),
+        )
+        .expect("the response is JSON");
+
+        assert_eq!(
+            body["cascadedSkus"],
+            JsonValue::Array(vec![JsonValue::String(live.to_string())]),
+            "only the published child cascades"
+        );
+        assert_eq!(
+            body["alreadyDeprecatedSkus"],
+            JsonValue::Array(vec![JsonValue::String(already.to_string())])
+        );
+        assert_eq!(
+            body["skippedDraftSkus"],
+            JsonValue::Array(vec![JsonValue::String(draft.to_string())]),
+            "the draft is listed for the operator, not transitioned"
+        );
+
+        let moved = child_of(&harness, live).await;
+        assert_eq!(moved.lifecycle_state.as_str(), "deprecated");
+        assert_eq!(
+            moved.deprecation_provenance,
+            Some(Provenance::Cascaded),
+            "a parent-driven deprecation stamps `cascaded`"
+        );
+
+        let untouched = child_of(&harness, already).await;
+        assert_eq!(
+            untouched.deprecation_provenance,
+            Some(Provenance::Direct),
+            "the already-deprecated child is NOT re-stamped: a `direct` turned `cascaded` \
+             would be revived by this parent's later un-deprecation"
+        );
+        assert_eq!(
+            untouched.internal_revision, before,
+            "left untouched means no write at all, not a write with the same value"
+        );
+
+        let untransitioned = child_of(&harness, draft).await;
+        assert_eq!(untransitioned.lifecycle_state.as_str(), "draft");
+        assert_eq!(
+            untransitioned.deprecation_provenance, None,
+            "a skipped draft takes no stamp"
+        );
+
+        let body_table = format!("{}_body", events::OUTBOX_TABLE_PREFIX);
+        let announced = raw_i64(
+            &harness.dsn,
+            &format!("SELECT COUNT(*) AS v FROM {body_table} WHERE payload_type = 'SkuDeprecated'"),
+        )
+        .await;
+        assert_eq!(
+            announced, 1,
+            "one SkuDeprecated per row actually moved, not one per child read"
+        );
+    }
+
+    /// A `draft` parent is refused `ILLEGAL_TRANSITION`, and nothing moves.
+    ///
+    /// The floor admits `published → deprecated` and no other entry to the
+    /// state, so this is the edge list's refusal rather than a validation
+    /// failure — and the child, which the cascade would have touched, is
+    /// still a draft.
+    #[tokio::test]
+    async fn a_draft_parent_cannot_be_deprecated_and_its_children_stand_still() {
+        let harness = harness().await;
+        let product_id = Uuid::now_v7();
+        seed_draft(&harness, product_id).await;
+        let child = seed_child(&harness, product_id, "SKU-UNDER-DRAFT").await;
+
+        let refused = post_head_act(
+            app_for(&harness, TENANT),
+            TENANT,
+            product_id,
+            "deprecate",
+            &[("If-Match", &if_match(1))],
+        )
+        .await;
+        assert_eq!(refused.status(), StatusCode::CONFLICT);
+
+        assert_eq!(
+            head_of(&harness, product_id).await.lifecycle_state.as_str(),
+            "draft"
+        );
+        assert_eq!(
+            child_of(&harness, child).await.lifecycle_state.as_str(),
+            "draft"
+        );
+        let body_table = format!("{}_body", events::OUTBOX_TABLE_PREFIX);
+        assert_eq!(
+            raw_i64(
+                &harness.dsn,
+                &format!(
+                    "SELECT COUNT(*) AS v FROM {body_table} WHERE payload_type LIKE '%Deprecated'"
+                )
+            )
+            .await,
+            0,
+            "a refused act announces nothing"
+        );
+    }
+
+    /// A second deprecation of the same head is refused, and the first
+    /// stamp survives — the re-stamp refusal at the door rather than only in
+    /// the domain.
+    #[tokio::test]
+    async fn an_already_deprecated_head_takes_no_second_stamp() {
+        let harness = harness().await;
+        let product_id = published_product(&harness).await;
+
+        let first = post_head_act(
+            app_for(&harness, TENANT),
+            TENANT,
+            product_id,
+            "deprecate",
+            &[("If-Match", &if_match(2))],
+        )
+        .await;
+        assert_eq!(first.status(), StatusCode::OK);
+
+        let second = post_head_act(
+            app_for(&harness, TENANT),
+            TENANT,
+            product_id,
+            "deprecate",
+            &[("If-Match", &if_match(3))],
+        )
+        .await;
+        assert_eq!(
+            second.status(),
+            StatusCode::CONFLICT,
+            "the floor admits no deprecated -> deprecated self-edge"
+        );
+        let head = head_of(&harness, product_id).await;
+        assert_eq!(head.internal_revision, 3, "the refused act wrote nothing");
+        assert_eq!(head.deprecation_provenance, Some(Provenance::Direct));
+    }
+}

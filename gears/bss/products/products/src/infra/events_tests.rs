@@ -38,6 +38,21 @@ const THE_EIGHT: &[&str] = &[
     "SkuDiscarded",
 ];
 
+/// `04-lifecycle`'s announced pair, transcribed from **its** Events roster —
+/// a second list, deliberately not folded into [`THE_EIGHT`].
+///
+/// `01` §4.5 says the `published→deprecated` edge carries *"no event here"*
+/// and that 04 announces it. Adding these two names to `THE_EIGHT` would
+/// make that document's own completeness claim untestable: the list would no
+/// longer be a transcription of one sentence, and a Foundation event dropped
+/// from §4.5 could be replaced by a lifecycle one with the count unchanged.
+///
+/// `SkuUndeprecated`/`ProductUndeprecated` and `SkuRetirementEffective` are
+/// on 04's roster too and are **not** here, because no act emits them yet —
+/// a schema reference for an event this gear does not emit is a promise a
+/// consumer contract would take at face value.
+const THE_LIFECYCLE_PAIR: &[&str] = &["ProductDeprecated", "SkuDeprecated"];
+
 fn core() -> EventBodyCore {
     EventBodyCore {
         tenant_id: Uuid::from_u128(0x7e_42),
@@ -75,19 +90,26 @@ fn the_schema_roster_names_exactly_the_eight_foundation_events() {
     for event in THE_EIGHT {
         assert!(
             registered.contains(event),
-            "{event} is one of the eight and carries no schema reference"
+            "{event} is one of §4.5's eight and carries no schema reference"
+        );
+    }
+    for event in THE_LIFECYCLE_PAIR {
+        assert!(
+            registered.contains(event),
+            "{event} is announced by 04 and carries no schema reference"
         );
     }
     for token in &registered {
         assert!(
-            THE_EIGHT.contains(token),
-            "{token} carries a schema reference but is not one of the eight"
+            THE_EIGHT.contains(token) || THE_LIFECYCLE_PAIR.contains(token),
+            "{token} carries a schema reference and belongs to neither declared roster: an \
+             event no design document announces is a promise nothing backs"
         );
     }
     assert_eq!(
         registered.len(),
-        THE_EIGHT.len(),
-        "the roster must carry each of the eight exactly once"
+        THE_EIGHT.len() + THE_LIFECYCLE_PAIR.len(),
+        "the roster must carry each declared event exactly once"
     );
 }
 

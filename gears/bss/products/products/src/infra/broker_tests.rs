@@ -6,9 +6,9 @@ use serde_json::Value;
 use uuid::Uuid;
 
 use super::{
-    CatalogEventCore, PRODUCT_SUBJECT_TYPE, ProductCreated, ProductDiscarded, ProductHeadSaved,
-    ProductPublished, SKU_SUBJECT_TYPE, SOURCE, SkuCreated, SkuDiscarded, SkuHeadSaved,
-    SkuPublished, TOPIC,
+    CatalogEventCore, PRODUCT_SUBJECT_TYPE, ProductCreated, ProductDeprecated, ProductDiscarded,
+    ProductHeadSaved, ProductPublished, SKU_SUBJECT_TYPE, SOURCE, SkuCreated, SkuDeprecated,
+    SkuDiscarded, SkuHeadSaved, SkuPublished, TOPIC,
 };
 
 const TENANT: Uuid = Uuid::from_u128(0x7e_42);
@@ -89,6 +89,36 @@ const THE_EIGHT: &[(&str, &str, &str)] = &[
     ),
 ];
 
+/// `04-lifecycle`'s announced pair, transcribed from its own Events roster —
+/// a second list beside [`THE_EIGHT`], for `events_tests`' reason exactly.
+///
+/// `01` §4.5 leaves the `published → deprecated` edge eventless and records
+/// that 04 announces it, so folding these two into `THE_EIGHT` would stop
+/// that list being a transcription of one sentence: a Foundation event
+/// dropped from §4.5 could then be replaced by a lifecycle one with the count
+/// unchanged.
+const THE_LIFECYCLE_PAIR: &[(&str, &str, &str)] = &[
+    (
+        "ProductDeprecated",
+        "gts.cf.core.events.event_type.v1~cf.bss.products.product_deprecated.v1",
+        TRANSCRIBED_PRODUCT_SUBJECT,
+    ),
+    (
+        "SkuDeprecated",
+        "gts.cf.core.events.event_type.v1~cf.bss.products.sku_deprecated.v1",
+        TRANSCRIBED_SKU_SUBJECT,
+    ),
+];
+
+/// Every event this gear declares: §4.5's eight and 04's pair.
+fn every_declared_event() -> Vec<(&'static str, &'static str, &'static str)> {
+    THE_EIGHT
+        .iter()
+        .chain(THE_LIFECYCLE_PAIR)
+        .copied()
+        .collect()
+}
+
 /// The `TYPE_ID` each of the eight types actually declares, in the same order.
 fn declared() -> Vec<(&'static str, &'static str, &'static str)> {
     vec![
@@ -132,6 +162,16 @@ fn declared() -> Vec<(&'static str, &'static str, &'static str)> {
             SkuDiscarded::SUBJECT_TYPE,
             SkuDiscarded::TOPIC,
         ),
+        (
+            ProductDeprecated::TYPE_ID,
+            ProductDeprecated::SUBJECT_TYPE,
+            ProductDeprecated::TOPIC,
+        ),
+        (
+            SkuDeprecated::TYPE_ID,
+            SkuDeprecated::SUBJECT_TYPE,
+            SkuDeprecated::TOPIC,
+        ),
     ]
 }
 
@@ -147,10 +187,15 @@ fn declared() -> Vec<(&'static str, &'static str, &'static str)> {
 #[test]
 fn each_event_declares_its_derived_type_id_and_subject_type() {
     let declared = declared();
-    assert_eq!(declared.len(), THE_EIGHT.len(), "eight events, eight rows");
+    let transcribed = every_declared_event();
+    assert_eq!(
+        declared.len(),
+        transcribed.len(),
+        "ten events, ten rows: 4.5's eight and 04's announced pair"
+    );
 
     for ((type_id, subject_type, _), (token, want_type, want_subject)) in
-        declared.iter().zip(THE_EIGHT)
+        declared.iter().zip(&transcribed)
     {
         assert_eq!(type_id, want_type, "{token}'s type id moved");
         assert_eq!(subject_type, want_subject, "{token}'s subject type moved");
@@ -204,8 +249,14 @@ fn the_subject_type_follows_the_entity_the_event_is_about() {
         .iter()
         .filter(|(_, subject, _)| *subject == SKU_SUBJECT_TYPE)
         .count();
-    assert_eq!(product_events, 4, "four of the eight are about a Product");
-    assert_eq!(sku_events, 4, "four of the eight are about a SKU");
+    // Five and five: §4.5's four-and-four, plus 04's announced pair, one per
+    // entity kind. The split is asserted as two numbers rather than as
+    // "half of them", because a pair added on one side only is exactly the
+    // asymmetry `design/04`'s own Events roster records for
+    // `SkuRetirementEffective` — a SKU event with no Product analogue — and a
+    // half-of-them assertion would read that as balanced.
+    assert_eq!(product_events, 5, "five of the ten are about a Product");
+    assert_eq!(sku_events, 5, "five of the ten are about a SKU");
 
     for (type_id, subject, _) in declared() {
         let names_sku = type_id.contains("sku_");
@@ -446,7 +497,7 @@ async fn every_event_reaches_the_broker_under_its_own_type_id() {
     control
         .register_topic(TRANSCRIBED_TOPIC, u32::from(events::PARTITIONS))
         .await;
-    for (_, type_id, subject_type) in THE_EIGHT {
+    for (_, type_id, subject_type) in every_declared_event() {
         control
             .register_event_type(
                 TRANSCRIBED_TOPIC,
@@ -509,7 +560,8 @@ async fn every_event_reaches_the_broker_under_its_own_type_id() {
     let conn = provider.conn().expect("checkout a connection");
 
     let mut expected: Vec<(Uuid, &str)> = Vec::new();
-    for (token, type_id, _) in THE_EIGHT {
+    let roster = every_declared_event();
+    for (token, type_id, _) in &roster {
         let entity_id = Uuid::now_v7();
         let kind = if token.starts_with("Sku") {
             "sku"
@@ -527,6 +579,15 @@ async fn every_event_reaches_the_broker_under_its_own_type_id() {
             events::enqueue_published(&sink, &conn, entity_id, token, &core, 7, ACTOR)
                 .await
                 .unwrap_or_else(|e| panic!("{token} must enqueue through enqueue_published: {e}"));
+        } else if token.ends_with("Deprecated") {
+            // The third entry point, and the branch is what proves the
+            // token guard is not decorative: routing a `*Deprecated`
+            // through `enqueue` above is refused, so a body reaching the
+            // broker without its provenance cannot arrive by a
+            // mis-routed call.
+            events::enqueue_deprecated(&sink, &conn, entity_id, token, &core, "direct", ACTOR)
+                .await
+                .unwrap_or_else(|e| panic!("{token} must enqueue through enqueue_deprecated: {e}"));
         } else {
             events::enqueue(&sink, &conn, entity_id, token, &core, ACTOR)
                 .await
@@ -545,7 +606,7 @@ async fn every_event_reaches_the_broker_under_its_own_type_id() {
         for partition in 0..u32::from(events::PARTITIONS) {
             delivered.extend(control.stored(TRANSCRIBED_TOPIC, partition).await);
         }
-        if delivered.len() >= THE_EIGHT.len() {
+        if delivered.len() >= roster.len() {
             break;
         }
         tokio::time::sleep(std::time::Duration::from_millis(25)).await;
@@ -553,8 +614,8 @@ async fn every_event_reaches_the_broker_under_its_own_type_id() {
 
     assert_eq!(
         delivered.len(),
-        THE_EIGHT.len(),
-        "all eight must have reached the broker; a token mapped to the wrong type would be \\
+        roster.len(),
+        "all ten must have reached the broker; a token mapped to the wrong type would be \\
          refused at ingest and never arrive"
     );
 
@@ -656,7 +717,7 @@ async fn the_outbox_half_of_the_propagation_budget_is_measured() {
     control
         .register_topic(TRANSCRIBED_TOPIC, u32::from(events::PARTITIONS))
         .await;
-    for (_, type_id, subject_type) in THE_EIGHT {
+    for (_, type_id, subject_type) in every_declared_event() {
         control
             .register_event_type(
                 TRANSCRIBED_TOPIC,
@@ -795,7 +856,7 @@ async fn redelivery_harness(
     control
         .register_topic(TRANSCRIBED_TOPIC, u32::from(events::PARTITIONS))
         .await;
-    for (_, type_id, subject_type) in THE_EIGHT {
+    for (_, type_id, subject_type) in every_declared_event() {
         control
             .register_event_type(
                 TRANSCRIBED_TOPIC,

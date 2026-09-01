@@ -263,6 +263,52 @@ macro_rules! catalog_publish_event {
     };
 }
 
+/// A `*Deprecated` event: the core plus the deprecation's **cause**.
+///
+/// A third macro rather than a field on [`catalog_event`]'s expansion,
+/// because the cause is not a field every event of this gear carries —
+/// exactly the argument [`catalog_publish_event`] makes for
+/// `published_version`. `dod-deprecation-provenance` requires the provenance
+/// *"in its payload"*, and `design/04` makes the consumer's own reaction
+/// depend on it (pricing AC #82's new-adoption block), so it rides the
+/// announcement rather than obliging a consumer to re-read a head that may
+/// have moved again.
+macro_rules! catalog_deprecation_event {
+    ($(#[$doc:meta])* $name:ident, $type_id:literal, $subject_type:expr) => {
+        $(#[$doc])*
+        #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        pub(crate) struct $name {
+            /// §4.5's five fields plus P-D-01's two payload-borne obligations.
+            #[serde(flatten)]
+            pub core: CatalogEventCore,
+            /// `direct` or `cascaded` — written to the row in the very
+            /// statement this event announces.
+            pub provenance: String,
+        }
+
+        impl TypedEvent for $name {
+            const TYPE_ID: &'static str = $type_id;
+            const TOPIC: &'static str = TOPIC;
+            const SUBJECT_TYPE: &'static str = $subject_type;
+            const SOURCE: &'static str = SOURCE;
+
+            fn subject(&self) -> Cow<'_, str> {
+                Cow::Owned(self.core.entity_id.to_string())
+            }
+
+            /// See the core-only twin: the entity's tenant, not the producer's.
+            fn tenant_id(&self) -> Option<Uuid> {
+                Some(self.core.tenant_id)
+            }
+
+            fn trace_parent(&self) -> Option<Cow<'_, str>> {
+                crate::infra::events::traceparent().map(Cow::Owned)
+            }
+        }
+    };
+}
+
 catalog_event! {
     /// A Product row was created.
     ProductCreated,
@@ -297,6 +343,18 @@ catalog_event! {
     /// A SKU was discarded.
     SkuDiscarded,
     "gts.cf.core.events.event_type.v1~cf.bss.products.sku_discarded.v1",
+    SKU_SUBJECT_TYPE
+}
+catalog_deprecation_event! {
+    /// A Product was deprecated, with [`Self::provenance`] naming the cause.
+    ProductDeprecated,
+    "gts.cf.core.events.event_type.v1~cf.bss.products.product_deprecated.v1",
+    PRODUCT_SUBJECT_TYPE
+}
+catalog_deprecation_event! {
+    /// A SKU was deprecated — the event pricing AC #82 keys on.
+    SkuDeprecated,
+    "gts.cf.core.events.event_type.v1~cf.bss.products.sku_deprecated.v1",
     SKU_SUBJECT_TYPE
 }
 catalog_publish_event! {
@@ -398,6 +456,8 @@ async fn prepare_every_event_type(
     producer.prepare::<SkuPublished>().await?;
     producer.prepare::<ProductDiscarded>().await?;
     producer.prepare::<SkuDiscarded>().await?;
+    producer.prepare::<ProductDeprecated>().await?;
+    producer.prepare::<SkuDeprecated>().await?;
     Ok(())
 }
 

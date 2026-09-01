@@ -2192,6 +2192,15 @@ fn the_sku_content_builder_writes_exactly_the_roster() {
         // both names.
         cloned_from: Some(Uuid::from_u128(0xd1_13)),
         cloned_from_version: Some(2),
+        // Populated for the same reason, and it arms a different clause:
+        // `deprecation_provenance` is one of the four columns §4.3
+        // **excludes** from frozen version content, and an exclusion a bare
+        // `None` fixture cannot test — the builder would pass by omitting an
+        // absent optional. The fixture is deliberately over-populated rather
+        // than state-consistent: `lifecycle_state` is excluded from the
+        // content too, so a provenance beside a `draft` state costs the
+        // roster assertion nothing and buys the exclusion its probe.
+        deprecation_provenance: Some(crate::domain::deprecation::Provenance::Cascaded),
     };
 
     let content = super::sku_version_content(&record);

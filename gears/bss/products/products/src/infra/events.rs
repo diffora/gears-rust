@@ -215,21 +215,54 @@ pub(crate) const PRODUCT_HEAD_SAVED_PAYLOAD_TYPE: &str = "ProductHeadSaved";
 /// SKU sibling, carrying the bare core.
 pub(crate) const SKU_HEAD_SAVED_PAYLOAD_TYPE: &str = "SkuHeadSaved";
 
+/// `ProductDeprecated`'s payload type token — and **not one of §4.5's
+/// eight**.
+///
+/// `design/01` §4.5 records that the floor's three remaining edges —
+/// `published→deprecated`, `deprecated→published`, `deprecated→retired` —
+/// carry *"no event here"*, and that **04 announces them**
+/// (`design/04-lifecycle.md` §3 `inst-lc-deprecate`, its Events roster).
+/// So this token and its SKU twin widen the gear's roster past the
+/// Foundation's eight rather than filling a gap in it, and `events_tests`
+/// names the two rosters separately for exactly that reason: a token
+/// wrongly attributed to §4.5 would make the Foundation's own completeness
+/// check unfalsifiable.
+///
+/// Its body is [`DeprecatedEventBody`] — the core plus `provenance`, which
+/// `dod-deprecation-provenance` requires *"in its payload"*.
+pub(crate) const PRODUCT_DEPRECATED_PAYLOAD_TYPE: &str = "ProductDeprecated";
+
+/// `SkuDeprecated`'s payload type token — [`PRODUCT_DEPRECATED_PAYLOAD_TYPE`]'s
+/// SKU sibling, on the same body shape.
+///
+/// This is the one pricing AC #82 keys on, and `design/04` has the
+/// retirement arm emit it too, with `direct` or `cascaded` provenance
+/// according to who drove the act.
+pub(crate) const SKU_DEPRECATED_PAYLOAD_TYPE: &str = "SkuDeprecated";
+
 /// Every payload type this gear emits, paired with the **versioned schema
 /// reference** its envelope carries (P-D-01: *"versioned (semver) schema
 /// references — the broker-native equivalent of `dataschema`"*).
 ///
 /// One list rather than a constant beside each token, because the property
-/// that matters is *coverage*: a ninth event, or a renamed token, must not be
-/// able to reach the wire with no schema reference. [`schema_ref_for`] is
-/// total over this array and nothing else, and `events_tests` asserts the
-/// array names exactly the eight of §4.5.
+/// that matters is *coverage*: an added event, or a renamed token, must not
+/// be able to reach the wire with no schema reference. [`schema_ref_for`] is
+/// total over this array and nothing else.
+///
+/// **This array is the gear's roster, not the Foundation's.** It carries
+/// `01` §4.5's **eight** and, since `04-lifecycle`'s deprecation act landed,
+/// the **two** that slice announces on the edges §4.5 leaves eventless
+/// ([`PRODUCT_DEPRECATED_PAYLOAD_TYPE`] and its twin). `events_tests` checks
+/// the two rosters separately — §4.5's eight must all be here, and every
+/// token here must belong to one of the two named rosters — because a single
+/// "exactly eight" assertion would either refuse a legitimate addition or,
+/// once widened, stop testing §4.5's completeness at all.
 ///
 /// **The version is per event, not per gear.** §4.5's own rule makes an added
 /// optional field a minor bump, so one event's schema may move while the
-/// other seven stand still; a single gear-wide version would force seven
-/// false bumps or hide one real one. All eight read `1.0.0` today because
-/// none has shipped a second shape.
+/// others stand still; a single gear-wide version would force false bumps or
+/// hide a real one. All ten read `1.0.0` today because none has shipped a
+/// second shape.
 pub(crate) const SCHEMA_REFS: &[(&str, &str)] = &[
     (
         PRODUCT_CREATED_PAYLOAD_TYPE,
@@ -259,6 +292,14 @@ pub(crate) const SCHEMA_REFS: &[(&str, &str)] = &[
     (
         SKU_DISCARDED_PAYLOAD_TYPE,
         "bss-products.SkuDiscarded.v1.0.0",
+    ),
+    (
+        PRODUCT_DEPRECATED_PAYLOAD_TYPE,
+        "bss-products.ProductDeprecated.v1.0.0",
+    ),
+    (
+        SKU_DEPRECATED_PAYLOAD_TYPE,
+        "bss-products.SkuDeprecated.v1.0.0",
     ),
 ];
 
@@ -368,6 +409,32 @@ pub(crate) struct PublishedEventBody<'core> {
     pub published_version: i64,
 }
 
+/// A `*Deprecated` body: the shared [`EventBodyCore`], **plus** the
+/// provenance `dod-deprecation-provenance` requires *"in its payload"*.
+///
+/// [`PublishedEventBody`]'s shape and for its reasons — flattened, so a
+/// consumer reads one object, and the core borrowed because the act already
+/// built one.
+///
+/// # Why the provenance is on the wire and not only on the row
+///
+/// A consumer's own reaction differs by cause. `design/04` has the registry
+/// *"mark and expose"* while the new-adoption block is the consumer's
+/// (pricing AC #82), and a consumer that had to re-read the head to learn
+/// whether a deprecation was the operator's or a parent's would be reading a
+/// row that may have moved again by then. The cause travels with the
+/// announcement or it is not reliably knowable.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DeprecatedEventBody<'core> {
+    /// The five fields every event of this gear carries.
+    #[serde(flatten)]
+    pub core: &'core EventBodyCore,
+    /// `direct` or `cascaded` — the value written to the row in the very
+    /// statement this event announces, so the two cannot disagree.
+    pub provenance: &'static str,
+}
+
 /// Failures constructing or enqueuing an event. Never a `DomainError`: an
 /// event that cannot be serialized or enqueued is an infrastructure fault of
 /// this door's own mutation, not a business refusal of the caller's request
@@ -410,6 +477,16 @@ pub(crate) enum EventsError {
     /// `publishedVersion` §4.5 does not put on it.
     #[error("{0} carries no publishedVersion and must be enqueued through enqueue")]
     NotAPublishEvent(String),
+    /// A token that is not one of the two `*Deprecated` events reached
+    /// [`enqueue_deprecated`], which would attach a `provenance` no design
+    /// document puts on it.
+    ///
+    /// The third arm of the same fail-closed rule as the two above: each
+    /// entry point admits exactly the tokens whose body shape it builds, so a
+    /// mis-routed call is a refusal rather than a wire body with a surplus
+    /// field.
+    #[error("{0} carries no provenance and must be enqueued through enqueue")]
+    NotADeprecationEvent(String),
     /// The broker arm has no [`crate::infra::broker`] typed event for this
     /// payload type.
     ///
@@ -727,6 +804,89 @@ pub(crate) async fn enqueue(
 /// # Errors
 /// [`EventsError::Serialize`] and [`EventsError::Outbox`], exactly as
 /// [`enqueue`] raises them.
+/// Enqueue a `*Deprecated` event — [`enqueue`]'s twin for the one body shape
+/// that carries a cause ([`DeprecatedEventBody`]).
+///
+/// # Why a third function and not a `provenance: Option<&str>` on [`enqueue`]
+///
+/// [`enqueue_published`]'s own argument, unchanged: an `Option` would make
+/// every one of the other nine call sites pass a `None` that means nothing to
+/// them, and would let a `*Deprecated` event reach the wire with no
+/// provenance — the one field `dod-deprecation-provenance` requires it to
+/// carry. The token guard below is the same fail-closed shape: this function
+/// refuses any payload type that is not one of the two, so a caller cannot
+/// route a `ProductCreated` through the provenance-carrying body.
+///
+/// # Errors
+///
+/// [`EventsError::NotADeprecationEvent`] for any other token;
+/// otherwise as [`enqueue`].
+pub(crate) async fn enqueue_deprecated(
+    sink: &EventSink,
+    runner: &(impl DBRunner + Sync),
+    aggregate_id: Uuid,
+    payload_type: &str,
+    core: &EventBodyCore,
+    provenance: &'static str,
+    actor_ref: Uuid,
+) -> Result<(), EventsError> {
+    if !matches!(
+        payload_type,
+        PRODUCT_DEPRECATED_PAYLOAD_TYPE | SKU_DEPRECATED_PAYLOAD_TYPE
+    ) {
+        return Err(EventsError::NotADeprecationEvent(payload_type.to_owned()));
+    }
+    match sink {
+        EventSink::Interim(outbox) => {
+            let body = DeprecatedEventBody { core, provenance };
+            enqueue_body(
+                outbox,
+                runner,
+                core.tenant_id,
+                aggregate_id,
+                payload_type,
+                &body,
+                actor_ref,
+            )
+            .await
+        }
+        EventSink::Broker(producer) => {
+            let body = broker::CatalogEventCore::from_core(core, actor_ref);
+            let provenance = provenance.to_owned();
+            match payload_type {
+                PRODUCT_DEPRECATED_PAYLOAD_TYPE => {
+                    producer
+                        .enqueue(
+                            runner,
+                            broker::ProductDeprecated {
+                                core: body,
+                                provenance,
+                            },
+                        )
+                        .await
+                }
+                // The token guard at the top of this function admits exactly
+                // the two, so the second is the only remaining case — no
+                // `NoTypedEvent` arm, because a token that could reach it was
+                // already refused as `NotADeprecationEvent`.
+                _ => {
+                    producer
+                        .enqueue(
+                            runner,
+                            broker::SkuDeprecated {
+                                core: body,
+                                provenance,
+                            },
+                        )
+                        .await
+                }
+            }
+            .map(|_| ())
+            .map_err(EventsError::Broker)
+        }
+    }
+}
+
 pub(crate) async fn enqueue_published(
     sink: &EventSink,
     runner: &(impl DBRunner + Sync),

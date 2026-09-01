@@ -84,6 +84,7 @@ use uuid::Uuid;
 
 use bss_products_sdk::models::LifecycleState;
 
+use crate::domain::deprecation::Provenance;
 use crate::domain::error::DomainError;
 use crate::infra::storage::RepoError;
 use crate::infra::storage::entity::{
@@ -198,6 +199,12 @@ pub struct ProductRecord {
     /// read at (P-D-76; `None`/`None` for a non-clone).
     pub cloned_from: Option<Uuid>,
     pub cloned_from_version: Option<i64>,
+    /// Why this entity is `deprecated`, or `None` where it is not — the
+    /// operand `dod-provenance-reversal` reads to decide which children a
+    /// parent's un-deprecation revives. `None` on a `deprecated` row is a
+    /// row this gear deprecated through neither path, and the reversal rule
+    /// leaves it alone rather than guessing.
+    pub deprecation_provenance: Option<Provenance>,
 }
 
 /// The row an insert of `products_sku` supplies.
@@ -272,6 +279,12 @@ pub struct SkuRecord {
     /// read at (P-D-76; `None`/`None` for a non-clone).
     pub cloned_from: Option<Uuid>,
     pub cloned_from_version: Option<i64>,
+    /// Why this entity is `deprecated`, or `None` where it is not — the
+    /// operand `dod-provenance-reversal` reads to decide which children a
+    /// parent's un-deprecation revives. `None` on a `deprecated` row is a
+    /// row this gear deprecated through neither path, and the reversal rule
+    /// leaves it alone rather than guessing.
+    pub deprecation_provenance: Option<Provenance>,
 }
 
 /// Insert one `products_product` row and read it back as authored
@@ -380,7 +393,33 @@ fn into_product_record(row: product::Model) -> Result<ProductRecord, RepoError> 
         updated_at: row.updated_at,
         cloned_from: row.cloned_from,
         cloned_from_version: row.cloned_from_version,
+        deprecation_provenance: parse_provenance(
+            row.deprecation_provenance.as_deref(),
+            "products_product",
+            row.product_id,
+        )?,
     })
+}
+
+/// Parse a stored `deprecation_provenance`, or refuse the row.
+///
+/// A value outside `direct|cascaded` is a [`RepoError::CorruptRow`] on the
+/// same terms as an unparseable `lifecycle_state`: the column is the operand
+/// `dod-provenance-reversal` reads, and defaulting it would decide a
+/// reversal from a value nothing wrote.
+fn parse_provenance(
+    stored: Option<&str>,
+    table: &str,
+    entity_id: Uuid,
+) -> Result<Option<Provenance>, RepoError> {
+    match stored {
+        None => Ok(None),
+        Some(raw) => Provenance::parse(raw).map(Some).ok_or_else(|| {
+            RepoError::CorruptRow(format!(
+                "{table}.deprecation_provenance `{raw}` on entity {entity_id}"
+            ))
+        }),
+    }
 }
 
 /// Insert one `products_sku` row and read it back as authored
@@ -573,6 +612,11 @@ fn into_sku_record(row: sku::Model) -> Result<SkuRecord, RepoError> {
         updated_at: row.updated_at,
         cloned_from: row.cloned_from,
         cloned_from_version: row.cloned_from_version,
+        deprecation_provenance: parse_provenance(
+            row.deprecation_provenance.as_deref(),
+            "products_sku",
+            row.sku_id,
+        )?,
     })
 }
 
@@ -2171,6 +2215,203 @@ pub async fn publish_sku_head(
         return Ok(HeadWrite::Unmatched);
     }
     Ok(HeadWrite::Applied)
+}
+
+/// Deprecate one Product head — `published → deprecated`, stamping
+/// `deprecation_provenance` in the **same statement**
+/// (`inst-lc-deprecate`, `dod-deprecation-provenance`).
+///
+/// # The stamp and the transition are one `UPDATE`, and that is not a choice
+///
+/// The head guard's row-image predicate admits
+/// `deprecation_provenance` *only* where `lifecycle_state` changes in the
+/// same statement (**P-D-34**, installed in `m20260829_000002`/`000003`), so
+/// two statements would be refused by the trigger — the second one, with a
+/// message about the provenance, on a row the first had already moved. The
+/// pairing is therefore physical, not conventional.
+///
+/// # Filters, and what each one refuses
+///
+/// `lifecycle_state = 'published'` is the edge's own precondition, and it is
+/// what makes an already-`deprecated` head answer [`HeadWrite::Unmatched`]
+/// rather than taking a second stamp — `domain::deprecation::stamp_for`
+/// gives the same answer application-side, and this filter is why a caller
+/// that skipped it still cannot re-stamp. `internal_revision` is the
+/// caller's `If-Match` pin (**P-D-33**).
+///
+/// # Errors
+///
+/// [`RepoError::Driver`] on a storage failure. An inadmissible deprecation
+/// is [`HeadWrite::Unmatched`], not an error — the door has already read the
+/// head and can name which precondition failed.
+pub async fn deprecate_product_head(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    product_id: Uuid,
+    expected_internal_revision: i64,
+    provenance: Provenance,
+    now: DateTime<Utc>,
+) -> Result<HeadWrite, RepoError> {
+    let result = product::Entity::update_many()
+        .secure()
+        .scope_with(scope)
+        .col_expr(
+            product::Column::LifecycleState,
+            Expr::value(LifecycleState::Deprecated.as_str()),
+        )
+        .col_expr(
+            product::Column::DeprecationProvenance,
+            Expr::value(provenance.as_str()),
+        )
+        .col_expr(
+            product::Column::InternalRevision,
+            Expr::col(product::Column::InternalRevision).add(Expr::val(1_i64)),
+        )
+        .col_expr(product::Column::UpdatedAt, Expr::value(now))
+        .filter(
+            Condition::all()
+                .add(product::Column::TenantId.eq(tenant_id))
+                .add(product::Column::ProductId.eq(product_id))
+                .add(product::Column::InternalRevision.eq(expected_internal_revision))
+                .add(product::Column::LifecycleState.eq(LifecycleState::Published.as_str())),
+        )
+        .exec(runner)
+        .await
+        .map_err(|e| driver_failure(format!("deprecate product {product_id}"), e))?;
+
+    if result.rows_affected == 0 {
+        return Ok(HeadWrite::Unmatched);
+    }
+    Ok(HeadWrite::Applied)
+}
+
+/// [`deprecate_product_head`]'s SKU twin, on identical terms.
+///
+/// Used by the operator act on a SKU (`direct`) and by the retirement arm,
+/// which passes its own provenance through — never by the parent cascade,
+/// which pins no per-child revision and has [`cascade_deprecate_children`].
+///
+/// # Errors
+///
+/// As [`deprecate_product_head`].
+pub async fn deprecate_sku_head(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    sku_id: Uuid,
+    expected_internal_revision: i64,
+    provenance: Provenance,
+    now: DateTime<Utc>,
+) -> Result<HeadWrite, RepoError> {
+    let result = sku::Entity::update_many()
+        .secure()
+        .scope_with(scope)
+        .col_expr(
+            sku::Column::LifecycleState,
+            Expr::value(LifecycleState::Deprecated.as_str()),
+        )
+        .col_expr(
+            sku::Column::DeprecationProvenance,
+            Expr::value(provenance.as_str()),
+        )
+        .col_expr(
+            sku::Column::InternalRevision,
+            Expr::col(sku::Column::InternalRevision).add(Expr::val(1_i64)),
+        )
+        .col_expr(sku::Column::UpdatedAt, Expr::value(now))
+        .filter(
+            Condition::all()
+                .add(sku::Column::TenantId.eq(tenant_id))
+                .add(sku::Column::SkuId.eq(sku_id))
+                .add(sku::Column::InternalRevision.eq(expected_internal_revision))
+                .add(sku::Column::LifecycleState.eq(LifecycleState::Published.as_str())),
+        )
+        .exec(runner)
+        .await
+        .map_err(|e| driver_failure(format!("deprecate sku {sku_id}"), e))?;
+
+    if result.rows_affected == 0 {
+        return Ok(HeadWrite::Unmatched);
+    }
+    Ok(HeadWrite::Applied)
+}
+
+/// Cascade a parent Product's deprecation onto the named children — the
+/// `published` ones only, stamped [`Provenance::Cascaded`]
+/// (`inst-lc-deprecate`, `dod-deprecation-cascade`).
+///
+/// # Why the caller names the children rather than this reading them
+///
+/// The disposition per child state is `domain::deprecation::disposition_for`'s
+/// to decide, and the **listing** of skipped drafts is what the operator
+/// sees — so the caller reads the children inside its own transaction,
+/// classifies them, and passes the `Deprecate` set here. A function that
+/// re-read and re-classified would answer from a second read of the same
+/// rows and could disagree with the listing the operator was shown.
+///
+/// # Why the state filter is here as well
+///
+/// It is the same argument [`deprecate_product_head`]'s makes: an
+/// already-`deprecated` child must not take a second stamp, and a filter is
+/// the only thing that holds if the classification and the write are ever
+/// separated by an edit. `rows_affected` is compared against the set's own
+/// length so a child that moved between the two reports as a mismatch
+/// instead of being silently dropped.
+///
+/// # Errors
+///
+/// [`RepoError::Driver`] on a storage failure.
+/// [`RepoError::Db`] where fewer rows matched than were named — a concurrent
+/// writer moved a child under the cascade, and the caller's whole mutation
+/// must fail closed rather than commit a partial cascade
+/// (`01 inst-fd-fail-closed`).
+pub async fn cascade_deprecate_children(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    children: &[Uuid],
+    now: DateTime<Utc>,
+) -> Result<u64, RepoError> {
+    if children.is_empty() {
+        return Ok(0);
+    }
+
+    let result = sku::Entity::update_many()
+        .secure()
+        .scope_with(scope)
+        .col_expr(
+            sku::Column::LifecycleState,
+            Expr::value(LifecycleState::Deprecated.as_str()),
+        )
+        .col_expr(
+            sku::Column::DeprecationProvenance,
+            Expr::value(Provenance::Cascaded.as_str()),
+        )
+        .col_expr(
+            sku::Column::InternalRevision,
+            Expr::col(sku::Column::InternalRevision).add(Expr::val(1_i64)),
+        )
+        .col_expr(sku::Column::UpdatedAt, Expr::value(now))
+        .filter(
+            Condition::all()
+                .add(sku::Column::TenantId.eq(tenant_id))
+                .add(sku::Column::SkuId.is_in(children.to_vec()))
+                .add(sku::Column::LifecycleState.eq(LifecycleState::Published.as_str())),
+        )
+        .exec(runner)
+        .await
+        .map_err(|e| driver_failure("cascade the deprecation onto the child SKUs".to_owned(), e))?;
+
+    let named = children.len() as u64;
+    if result.rows_affected != named {
+        return Err(RepoError::Db(format!(
+            "the cascade named {named} published child SKU(s) and matched {}: a concurrent \
+             writer moved one, and a partial cascade is not admitted",
+            result.rows_affected
+        )));
+    }
+    Ok(result.rows_affected)
 }
 
 /// Discard a never-published draft Product: `lifecycle_state = 'discarded'`,
