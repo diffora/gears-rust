@@ -87,7 +87,7 @@ use bss_products_sdk::models::LifecycleState;
 use crate::domain::error::DomainError;
 use crate::infra::storage::RepoError;
 use crate::infra::storage::entity::{
-    audit_log, entity_version, idempotency, identity_ref, product, sku,
+    audit_log, entity_version, idempotency, identity_ref, product, product_category, sku,
 };
 
 /// A statement's failure, with `sea-orm`'s own error kept unchanged.
@@ -1529,6 +1529,41 @@ struct TenantIdRow {
 
 // The four non-foundation aggregates live in per-aggregate submodules,
 // re-exported flat so every caller keeps addressing `repo::*` unchanged.
+/// Whether a Product holds a `primary` category assignment
+/// (`inst-tx-primary-at-publish`'s operand).
+///
+/// The publish door reads this before its pipeline opens, because
+/// `ValidationRule::evaluate` is synchronous and cannot reach another table.
+///
+/// # Errors
+///
+/// [`RepoError`] as the read raises it.
+pub async fn has_primary_category(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    product_id: Uuid,
+) -> Result<bool, RepoError> {
+    let found = product_category::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(product_category::Column::TenantId.eq(tenant_id))
+                .add(product_category::Column::ProductId.eq(product_id))
+                .add(product_category::Column::Role.eq("primary")),
+        )
+        .one(runner)
+        .await
+        .map_err(|e| {
+            driver_failure(
+                format!("read the primary category assignment of product {product_id}"),
+                e,
+            )
+        })?;
+    Ok(found.is_some())
+}
+
 mod bulk;
 mod increment;
 mod reference;

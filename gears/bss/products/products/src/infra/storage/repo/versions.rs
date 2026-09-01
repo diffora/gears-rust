@@ -13,7 +13,7 @@ use uuid::Uuid;
 use crate::domain::states::{FreezeAckState, FreezeState};
 use crate::infra::storage::RepoError;
 use crate::infra::storage::entity::{
-    catalog_version, catalog_version_capture, catalog_version_entry, freeze_ack,
+    catalog_version, catalog_version_capture, catalog_version_entry, freeze_ack, metadata,
 };
 
 use super::{SnapshotEntityRef, driver_failure};
@@ -379,5 +379,38 @@ pub async fn overdue_open_versions(
     Ok(rows
         .into_iter()
         .map(|row| (row.tenant_id, row.catalog_version_id))
+        .collect())
+}
+
+/// Every metadata row of the tenant, as `(entity_kind, entity_id, key,
+/// value)` sorted by that tuple — the `metadata_maps` capture's source
+/// (`dod-metadata-placement`).
+///
+/// Sorted in SQL rather than in the caller: the rendering is checksummed, so
+/// the order must be the same on both engines and on every read, and an
+/// `ORDER BY` over the key columns is the only ordering both engines agree
+/// on without a locale.
+///
+/// # Errors
+///
+/// [`RepoError`] as the read raises it.
+pub async fn metadata_rows(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+) -> Result<Vec<(String, Uuid, String, String)>, RepoError> {
+    let rows = metadata::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(Condition::all().add(metadata::Column::TenantId.eq(tenant_id)))
+        .order_by(metadata::Column::EntityKind, sea_orm::Order::Asc)
+        .order_by(metadata::Column::EntityId, sea_orm::Order::Asc)
+        .order_by(metadata::Column::Key, sea_orm::Order::Asc)
+        .all(runner)
+        .await
+        .map_err(|e| driver_failure(format!("read the metadata maps of {tenant_id}"), e))?;
+    Ok(rows
+        .into_iter()
+        .map(|row| (row.entity_kind, row.entity_id, row.key, row.value))
         .collect())
 }

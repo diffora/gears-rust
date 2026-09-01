@@ -291,6 +291,9 @@ impl From<DomainError> for CanonicalError {
                 .with_precondition_violation("scope", &detail, "SCOPE_NOT_CONTAINED")
                 .create(),
             D::IncompleteEntity(detail) => precondition("entity", &detail, "INCOMPLETE_ENTITY"),
+            D::PrimaryCategoryRequired(detail) => {
+                precondition("categories", &detail, "PRIMARY_CATEGORY_REQUIRED")
+            }
             // The erasure door's unknown-principal refusal is the same
             // architectural-422 class: the request's content cannot be
             // processed, and the wire renders it 400 with no transport

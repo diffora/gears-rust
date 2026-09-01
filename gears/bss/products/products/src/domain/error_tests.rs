@@ -51,6 +51,10 @@ fn every_variant_carries_its_design_set_wire_code() {
             "INCOMPLETE_ENTITY",
         ),
         (
+            DomainError::PrimaryCategoryRequired("p".into()),
+            "PRIMARY_CATEGORY_REQUIRED",
+        ),
+        (
             DomainError::ApprovalRequired("a".into()),
             "APPROVAL_REQUIRED",
         ),
@@ -125,7 +129,7 @@ fn every_variant_carries_its_design_set_wire_code() {
     // roster short, and the roster is what the response map is built from.
     assert_eq!(
         cases.len(),
-        32,
+        33,
         "the Foundation owns fourteen raiseable codes and hosts two guests \
          (retention-erasure's ERASURE_UNKNOWN_ACTOR, P-D-64 keeping that \
          roster at one, and the clone door's CLONE_SOURCE_DISCARDED, \
@@ -139,6 +143,8 @@ fn every_variant_carries_its_design_set_wire_code() {
          the watermark door's four: PRODUCER_UNREGISTERED, \
          WATERMARK_REGRESSION, WATERMARK_CONFLICT and WATERMARK_FUTURE; \
          PARENT_NOT_PUBLISHED is registered by the lifecycle feature and \
-         RETIREMENT_PENDING is declared by it"
+         RETIREMENT_PENDING is declared by it; taxonomy-attributes declares \
+         PRIMARY_CATEGORY_REQUIRED, the first registered publish validator \
+         that belongs to neither 04 nor 05"
     );
 }

@@ -450,7 +450,9 @@ use crate::domain::governance::{
 };
 use crate::domain::idempotency;
 use crate::domain::name;
-use crate::domain::rules::{CreateEntityCandidate, NameShapeRule};
+use crate::domain::rules::{
+    CreateEntityCandidate, NameShapeRule, PrimaryCategoryRequired, PublishedTransitionSubject,
+};
 use crate::domain::transition::{
     self, ApprovalInvalidation, ApprovalInvalidationHook as _, NoApprovalStoreHook,
 };
@@ -2558,6 +2560,54 @@ fn publish_revalidation_pipeline() -> ValidationPipeline<CreateEntityCandidate> 
     ValidationPipeline::new().with_rule(Box::new(NameShapeRule))
 }
 
+/// The `→ published` edge's own pipeline — the registered validators that
+/// judge the **transition** rather than the row's shape
+/// (`inst-tx-primary-at-publish`; `dod-primary-at-publish`).
+///
+/// **Separate from the pipeline above, and the separation is the rule.** The
+/// PRD makes a primary category *"optional at draft, required at publish"*,
+/// and the pipeline above runs on **both** the publish edge and the save
+/// door's re-validation — so a rule registered there would refuse a save on
+/// a draft that carries no primary, which is the case the design explicitly
+/// admits. This pipeline runs only from [`run_publish`].
+///
+/// The `Phase::RegisteredValidators` note on the SKU door says that phase is
+/// *"empty, and that is a real gap"* because the validators it named were
+/// `04`'s and `05`'s. This is the first one that is neither: `02` declares
+/// it, `02` declares its code, and the phase is no longer vacuous on the
+/// Product publish path.
+fn published_transition_pipeline() -> ValidationPipeline<PublishedTransitionSubject> {
+    ValidationPipeline::new().with_rule(Box::new(PrimaryCategoryRequired))
+}
+
+/// Turn a failing `→ published` registered validator into the door's refusal,
+/// carrying the **rule's own code** rather than the generic one.
+///
+/// [`revalidation_refusal`] answers `INCOMPLETE_ENTITY` because the rules it
+/// folds are the Foundation's shape rules, which have no codes of their own.
+/// `inst-fd-publish-revalidate` names *"`INCOMPLETE_ENTITY`/**rule-named
+/// code**"* — two alternatives — and a registered validator that declares one
+/// is the second case. A consumer matches on the code to know what to repair,
+/// and *"assign a primary category"* is a different repair from every other
+/// reason a publish can be incomplete.
+///
+/// Only the codes this crate declares are surfaced; anything else falls back,
+/// so a future rule cannot leak an unmapped code onto the wire by forgetting
+/// to add a ladder arm.
+fn transition_refusal(report: &ValidationReport) -> DomainError {
+    let detail = report
+        .violations()
+        .iter()
+        .map(|violation| format!("{}: {}", violation.subject, violation.detail))
+        .collect::<Vec<_>>()
+        .join("; ");
+    let only = report.violations().first().map(|v| v.code);
+    if only == Some(PrimaryCategoryRequired::CODE) && report.violations().len() == 1 {
+        return DomainError::PrimaryCategoryRequired(detail);
+    }
+    revalidation_refusal(report)
+}
+
 /// The candidate the re-run judges: the head **as it now stands**, not the
 /// payload that created it.
 ///
@@ -2820,6 +2870,22 @@ async fn run_publish(
     // one code (P-D-37). --
     if let Some((_phase, report)) = publish_revalidation_pipeline().run(&publish_candidate(&head)) {
         return Err(HeadActError::Refused(revalidation_refusal(&report)));
+    }
+
+    // -- The `→ published` edge's registered validators. Read outside the
+    // pipeline because `ValidationRule::evaluate` is synchronous: the
+    // assignment lives in `products_product_category`, which is 02's table
+    // and not this row. --
+    let has_primary =
+        repo::has_primary_category(runner, &inputs.scope, head.tenant_id, head.product_id)
+            .await
+            .map_err(|e| HeadActError::Db(toolkit_db::DbError::Sea(e.to_db_err())))?;
+    if let Some((_phase, report)) =
+        published_transition_pipeline().run(&PublishedTransitionSubject {
+            has_primary_category: has_primary,
+        })
+    {
+        return Err(HeadActError::Refused(transition_refusal(&report)));
     }
 
     // -- Phases 3 to 5 continued, the state phase: the edge, and what the

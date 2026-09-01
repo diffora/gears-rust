@@ -220,14 +220,15 @@ async fn a_closed_interactive_window_commits_one_version() {
         .expect("read captures");
     assert_eq!(
         captures.len(),
-        2,
-        "two capture kinds have shipped sources: the freeze-participant set and the \
-         reference-producer set (dod-producer-snapshot); the other five arrive with the \
-         stores 02 and 03 own"
+        3,
+        "three capture kinds have shipped sources: the freeze-participant set, the \
+         reference-producer set (dod-producer-snapshot) and the metadata maps \
+         (dod-metadata-placement); the remaining four arrive as 02's and 03's doors land"
     );
     let kinds: Vec<&str> = captures.iter().map(|c| c.capture_kind.as_str()).collect();
     assert!(kinds.contains(&"freeze_participant_set"));
     assert!(kinds.contains(&"reference_producer_set"));
+    assert!(kinds.contains(&"metadata_maps"));
 }
 
 /// Demand younger than the window waits; the pass commits nothing.
@@ -656,4 +657,111 @@ async fn the_registered_producer_set_rides_the_capture_store() {
         !producers.content.contains("contracts"),
         "onboarding never retro-flips a past version's snapshot"
     );
+}
+
+/// `dod-metadata-placement`: the map is outside frozen version content, and a
+/// `CatalogVersion` captures it **as of its own snapshot instant** — so
+/// mutating the map afterwards must leave the old snapshot's checksum
+/// unmoved. That byte-identity probe is the `DoD`'s own requirement, and it
+/// what distinguishes a captured copy from a reference.
+///
+/// @cpt-dod:cpt-cf-bss-products-dod-metadata-placement:p2
+#[tokio::test]
+async fn a_metadata_mutation_after_a_snapshot_does_not_move_its_checksum() {
+    let harness = harness().await;
+    write_metadata(&harness, "internalOwner", "team-a").await;
+
+    enqueue(&harness, "md-1", IncrementLane::Interactive, None, 6).await;
+    drain_tenant(&harness.db, TENANT, t0())
+        .await
+        .expect("drain");
+
+    let conn = harness.db.conn().expect("conn");
+    let first = catalog_version::Entity::find()
+        .secure()
+        .scope_with(&scope())
+        .all(&conn)
+        .await
+        .expect("read the versions");
+    assert_eq!(first.len(), 1, "one version so far");
+    let pinned_checksum = first[0].checksum.clone();
+    let rows = catalog_version_capture::Entity::find()
+        .secure()
+        .scope_with(&scope())
+        .all(&conn)
+        .await
+        .expect("read the captures");
+    let captured = rows
+        .iter()
+        .find(|c| c.capture_kind == "metadata_maps")
+        .expect("the metadata map is captured");
+    assert!(
+        captured.content.contains("team-a"),
+        "the capture holds the map as of the snapshot: {}",
+        captured.content
+    );
+    let pinned_content = captured.content.clone();
+    return_pinned(conn);
+
+    // Mutate the live map, then re-read the FROZEN version.
+    write_metadata(&harness, "internalOwner", "team-b").await;
+
+    let conn = harness.db.conn().expect("conn");
+    let after = catalog_version::Entity::find()
+        .secure()
+        .scope_with(&scope())
+        .all(&conn)
+        .await
+        .expect("re-read the versions");
+    assert_eq!(
+        after[0].checksum, pinned_checksum,
+        "a metadata write after the snapshot must not move the frozen checksum"
+    );
+    let rows = catalog_version_capture::Entity::find()
+        .secure()
+        .scope_with(&scope())
+        .all(&conn)
+        .await
+        .expect("re-read the captures");
+    let captured = rows
+        .iter()
+        .find(|c| c.capture_kind == "metadata_maps")
+        .expect("the capture survives");
+    assert_eq!(
+        captured.content, pinned_content,
+        "the captured copy is a copy: it says team-a after the live map says team-b"
+    );
+    assert!(
+        !captured.content.contains("team-b"),
+        "the capture is not a reference to the live row"
+    );
+}
+
+/// Write one metadata row through raw SQL — the metadata door is
+/// `dod-metadata-door`'s and waits on §7 rows 2 and 14, so this seeds the
+/// store the capture reads.
+/// Return the pinned connection before the next checkout, the harness
+/// holding exactly one.
+fn return_pinned<T>(conn: T) {
+    let _returned = conn;
+}
+
+async fn write_metadata(harness: &Harness, key: &str, value: &str) {
+    use sea_orm::ConnectionTrait as _;
+
+    let conn = sea_orm::Database::connect(&harness.dsn)
+        .await
+        .expect("open an auxiliary connection to seed the metadata row");
+    let sql = format!(
+        "INSERT INTO products_metadata \
+         (tenant_id, entity_kind, entity_id, key, value, created_at, updated_at) \
+         VALUES (X'{tenant}', 'product', X'{entity}', '{key}', '{value}', \
+          '2026-09-01T00:00:00Z', '2026-09-01T00:00:00Z') \
+         ON CONFLICT (tenant_id, entity_kind, entity_id, key) DO UPDATE SET value = '{value}'",
+        tenant = TENANT.simple(),
+        entity = uuid::Uuid::from_u128(0x0e_01).simple(),
+    );
+    conn.execute_unprepared(&sql)
+        .await
+        .expect("seed the metadata row");
 }

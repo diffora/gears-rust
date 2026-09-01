@@ -702,11 +702,30 @@ head update nor the assignment rows.
 
 ### Primary category at publish
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-primary-at-publish`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-primary-at-publish`
 
 The system **MUST** register a `→ published` validator requiring the primary category, refusing
 `PRIMARY_CATEGORY_REQUIRED`, and **MUST** admit a draft that carries none. A paired positive
 control **MUST** prove the publish succeeds once a primary is assigned.
+
+**It is the first registered validator on this gear that is neither `04`'s nor `05`'s.** The
+Foundation's own note said `Phase::RegisteredValidators` was *"empty, and that is a real gap"*
+because the validators it named belonged to those two slices; the Product publish path is no longer
+vacuous. Three properties made the wiring non-obvious and each is built deliberately:
+
+- **Its own pipeline.** The shared re-validation pipeline runs on the publish edge **and** on the
+  save door, so a rule registered there would refuse a save on a draft carrying no primary — the
+  case the PRD explicitly admits. The `→ published` pipeline runs only from `run_publish`.
+- **The operand is read outside the pipeline.** `ValidationRule::evaluate` is synchronous and the
+  assignment lives in another table, so the door reads the fact and the subject carries it.
+- **The refusal carries the rule's own code**, not the generic `INCOMPLETE_ENTITY`.
+  `inst-fd-publish-revalidate` names *"`INCOMPLETE_ENTITY`/rule-named code"* — a disjunction — and
+  `PRIMARY_CATEGORY_REQUIRED` is this slice's declared code (P-D-36). Only codes this crate declares
+  are surfaced, so a future rule cannot leak an unmapped one onto the wire.
+
+**Twelve shipped fixtures published a Product with no primary assignment and went red**, which is
+the rule working: each was asserting a publish the design forbids. All twelve seed the assignment
+now; none of them relaxed the rule.
 
 **Implements**: `cpt-cf-bss-products-flow-assign-categories`
 
@@ -896,11 +915,20 @@ identifier, each element following the Foundation's field-ordering rule (P-D-29)
 
 ### Metadata outside version content
 
-- [ ] `p2` - **ID**: `cpt-cf-bss-products-dod-metadata-placement`
+- [x] `p2` - **ID**: `cpt-cf-bss-products-dod-metadata-placement`
 
 The system **MUST** keep the metadata map outside frozen published-version content, and a
 `CatalogVersion` **MUST** capture it as of its own snapshot instant. A byte-identity probe **MUST**
 mutate the map after a snapshot and prove the old snapshot's checksum does not move.
+
+The snapshot builder now writes the `metadata_maps` capture beside the freeze-participant and
+reference-producer sets — **three of the seven kinds have shipped sources**, and the builder's own
+rule is that a kind is written exactly when its store ships. Each row renders as an object so the
+entity coordinate travels with its key, and the rows arrive sorted by
+`(entity_kind, entity_id, key)` **from SQL**, because the rendering is checksummed and two engines
+must order it identically. The probe writes `team-a`, snapshots, writes `team-b`, and asserts both
+the version's checksum and the captured bytes are unmoved — a capture that were a reference would
+fail on the second assertion while passing the first.
 
 **Implements**: `cpt-cf-bss-products-flow-metadata`
 

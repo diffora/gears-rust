@@ -94,6 +94,20 @@ pub enum DomainError {
     #[error("incomplete entity: {0}")]
     IncompleteEntity(String),
 
+    /// A Product reaching `published` carries no primary category
+    /// (`inst-tx-primary-at-publish`).
+    ///
+    /// **A variant of its own rather than an [`Self::IncompleteEntity`]
+    /// message.** `inst-fd-publish-revalidate` names
+    /// *"`INCOMPLETE_ENTITY`/rule-named code"* — a disjunction, not one code
+    /// — and `design/02` §3.3 declares `PRIMARY_CATEGORY_REQUIRED` as this
+    /// slice's own under 01 §3.3's code-to-declaring-slice rule (**P-D-36**).
+    /// Folding it into the generic message would lose the code a consumer
+    /// matches on, which is the half of the refusal that is actionable: the
+    /// caller assigns a primary category, and no other repair fixes it.
+    #[error("primary category required: {0}")]
+    PrimaryCategoryRequired(String),
+
     /// No satisfied, non-superseded approval record pinned to the door's
     /// expected revision. The door evaluates no materiality; that judgement is
     /// the governance feature's and reaches the door as a record's presence.
@@ -256,6 +270,7 @@ impl DomainError {
             Self::ScopeNotContained(_) => "SCOPE_NOT_CONTAINED",
             Self::ParentTerminal(_) => "PARENT_TERMINAL",
             Self::IncompleteEntity(_) => "INCOMPLETE_ENTITY",
+            Self::PrimaryCategoryRequired(_) => "PRIMARY_CATEGORY_REQUIRED",
             Self::ApprovalRequired(_) => "APPROVAL_REQUIRED",
             Self::ErasureUnknownActor(_) => "ERASURE_UNKNOWN_ACTOR",
             Self::CloneSourceDiscarded(_) => "CLONE_SOURCE_DISCARDED",

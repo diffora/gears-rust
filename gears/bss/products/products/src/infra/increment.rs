@@ -50,8 +50,10 @@
 //! `(entity_kind, entity_id)`, capture rows by `capture_kind`. The admitted
 //! capture set is [`CAPTURE_KINDS`] — §4's seven, the builder being the
 //! enforcement site P-D-74 left it to — and a kind is written exactly when
-//! its source store ships: today that is the freeze-participant set alone,
-//! the other six arriving with `02`/`03`/`07`'s stores. The checksum is
+//! its source store ships: today that is the freeze-participant set, the
+//! **reference-producer set** (`07`, `dod-producer-snapshot`) and the
+//! **metadata maps** (`02`, `dod-metadata-placement`), with the remaining
+//! four arriving as `02`/`03`'s doors land. The checksum is
 //! [`canonical::content_digest`] over the rendering, hex, with
 //! [`canonical::DIGEST_VERSION`] stored beside it (P-D-73).
 //!
@@ -321,10 +323,39 @@ impl SnapshotBuilder {
                 .map(|row| JsonValue::String(row.producer))
                 .collect(),
         );
+        // The metadata maps (`dod-metadata-placement`): the map lives OUTSIDE
+        // frozen version content (P-D-06), so the only way a version can
+        // render it is a capture taken **as of the snapshot instant** — and
+        // that is what makes the placement observable rather than merely
+        // stated. Each row renders as an object so the entity coordinate
+        // travels with its key, and the rows arrive sorted by
+        // `(entity_kind, entity_id, key)` from SQL, because the rendering is
+        // checksummed and two engines must order it identically.
+        let metadata_value = JsonValue::Array(
+            repo::metadata_rows(runner, scope, tenant_id)
+                .await?
+                .into_iter()
+                .map(|(entity_kind, entity_id, key, value)| {
+                    let mut row = serde_json::Map::new();
+                    row.insert("entityKind".to_owned(), JsonValue::String(entity_kind));
+                    row.insert(
+                        "entityId".to_owned(),
+                        JsonValue::String(entity_id.to_string()),
+                    );
+                    row.insert("key".to_owned(), JsonValue::String(key));
+                    row.insert("value".to_owned(), JsonValue::String(value));
+                    JsonValue::Object(row)
+                })
+                .collect(),
+        );
         let captures = vec![
             (
                 "freeze_participant_set".to_owned(),
                 canonical::canonical_rendering(&participants_value, canonical::Absence::Omit),
+            ),
+            (
+                "metadata_maps".to_owned(),
+                canonical::canonical_rendering(&metadata_value, canonical::Absence::Omit),
             ),
             (
                 "reference_producer_set".to_owned(),

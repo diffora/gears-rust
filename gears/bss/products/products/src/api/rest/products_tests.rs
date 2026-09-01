@@ -1670,6 +1670,52 @@ async fn seed_draft(harness: &TestHarness, product_id: Uuid) -> repo::ProductRec
         .expect("seed the draft this case acts on")
 }
 
+/// Assign the primary category `inst-tx-primary-at-publish` requires, so a
+/// case whose subject is something else can reach `published`.
+///
+/// **These fixtures needed it added, and that is the rule working.** Six
+/// shipped cases published a Product carrying no primary assignment; the
+/// PRD makes one *"optional at draft, required at publish"*, so each of them
+/// was asserting a publish the design forbids. The helper seeds the
+/// assignment rather than the rule being relaxed.
+///
+/// The category's name carries its own id because P-D-88's root index is
+/// `UNIQUE (tenant_id, name_normalized) WHERE parent_id IS NULL` — a fixed
+/// name collides the second time a case calls this, which is exactly what
+/// that index is for.
+async fn assign_primary_category(harness: &TestHarness, product_id: Uuid) {
+    let conn = Database::connect(&harness.dsn)
+        .await
+        .expect("open an auxiliary connection to seed the assignment");
+    let category_id = Uuid::now_v7();
+    for sql in [
+        format!(
+            "INSERT INTO products_category \
+             (tenant_id, category_id, parent_id, name, name_normalized, state, \
+              created_at, updated_at) \
+             VALUES (X'{tenant}', X'{cat}', NULL, 'Fixtures {cat}', 'fixtures {cat}', 'active', \
+              (SELECT created_at FROM products_product WHERE product_id = X'{prod}'), \
+              (SELECT created_at FROM products_product WHERE product_id = X'{prod}'))",
+            tenant = TENANT.simple(),
+            cat = category_id.simple(),
+            prod = product_id.simple(),
+        ),
+        format!(
+            "INSERT INTO products_product_category \
+             (tenant_id, product_id, category_id, role, assigned_at) \
+             VALUES (X'{tenant}', X'{prod}', X'{cat}', 'primary', \
+              (SELECT created_at FROM products_product WHERE product_id = X'{prod}'))",
+            tenant = TENANT.simple(),
+            prod = product_id.simple(),
+            cat = category_id.simple(),
+        ),
+    ] {
+        conn.execute_unprepared(&sql)
+            .await
+            .expect("seed the primary assignment this publish needs");
+    }
+}
+
 /// Read one Product head back through the repository.
 ///
 /// Through `find_product` rather than through this file's `raw_i64`: the
@@ -1770,6 +1816,8 @@ async fn a_first_publish_freezes_one_version_row_and_moves_both_counters_by_exac
     let harness = harness().await;
     let product_id = Uuid::now_v7();
     let seeded = seed_draft(&harness, product_id).await;
+    // `inst-tx-primary-at-publish`: a publish needs one.
+    assign_primary_category(&harness, product_id).await;
     assert_eq!(
         (seeded.internal_revision, seeded.published_version),
         (1, 0),
@@ -1862,6 +1910,7 @@ async fn the_frozen_rows_digest_is_the_digest_of_the_rendering_the_row_stores() 
     let harness = harness().await;
     let product_id = Uuid::now_v7();
     seed_draft(&harness, product_id).await;
+    assign_primary_category(&harness, product_id).await;
 
     let response = post_head_act(
         app_for(&harness, TENANT),
@@ -1968,6 +2017,7 @@ async fn a_republish_moves_the_version_again_and_leaves_the_state_published() {
     let harness = harness().await;
     let product_id = Uuid::now_v7();
     seed_draft(&harness, product_id).await;
+    assign_primary_category(&harness, product_id).await;
 
     let first = post_head_act(
         app_for(&harness, TENANT),
@@ -2191,6 +2241,9 @@ async fn a_gate_that_answers_no_refuses_approval_required_and_writes_nothing() {
     let harness = harness().await;
     let product_id = Uuid::now_v7();
     seed_draft(&harness, product_id).await;
+    // The primary-category validator runs BEFORE the gate (the phase
+    // order), so a case about the gate must get past it first.
+    assign_primary_category(&harness, product_id).await;
 
     let state = api_state(&harness);
     let enforcer = flat_in_enforcer(TENANT);
@@ -2305,6 +2358,9 @@ async fn a_gate_host_that_fails_is_an_internal_failure_not_a_refusal() {
     let harness = harness().await;
     let product_id = Uuid::now_v7();
     seed_draft(&harness, product_id).await;
+    // The primary-category validator runs BEFORE the gate (the phase
+    // order), so a case about the gate must get past it first.
+    assign_primary_category(&harness, product_id).await;
 
     let state = api_state(&harness);
     let enforcer = flat_in_enforcer(TENANT);
@@ -2471,6 +2527,8 @@ async fn a_draft_discards_and_a_published_head_does_not() {
     let harness = harness().await;
     let draft_id = Uuid::now_v7();
     seed_draft(&harness, draft_id).await;
+    // `inst-tx-primary-at-publish`: a publish needs one.
+    assign_primary_category(&harness, draft_id).await;
 
     let discarded = post_head_act(
         app_for(&harness, TENANT),
@@ -2524,6 +2582,7 @@ async fn a_draft_discards_and_a_published_head_does_not() {
             .await
             .expect("seed the second draft");
     }
+    assign_primary_category(&harness, published_id).await;
     let published = post_head_act(
         app_for(&harness, TENANT),
         TENANT,
@@ -2630,6 +2689,7 @@ async fn a_replayed_publish_serves_the_stored_answer_and_does_not_publish_twice(
     let harness = harness().await;
     let product_id = Uuid::now_v7();
     seed_draft(&harness, product_id).await;
+    assign_primary_category(&harness, product_id).await;
 
     let first = post_head_act(
         app_for(&harness, TENANT),
@@ -2899,6 +2959,7 @@ async fn the_published_event_carries_the_post_act_published_version() {
     let harness = harness().await;
     let product_id = Uuid::now_v7();
     seed_draft(&harness, product_id).await;
+    assign_primary_category(&harness, product_id).await;
 
     let first = post_head_act(
         app_for(&harness, TENANT),
@@ -3068,6 +3129,9 @@ async fn a_preauthorized_publish_reaches_the_host_in_that_mode_and_consumes_noth
     let harness = harness().await;
     let product_id = Uuid::now_v7();
     seed_draft(&harness, product_id).await;
+    // The primary-category validator runs BEFORE the gate (the phase
+    // order), so a case about the gate must get past it first.
+    assign_primary_category(&harness, product_id).await;
 
     let approval = ApprovalId::new(Uuid::now_v7());
     let recorder = Arc::new(RecordingGate::new(approval));
@@ -3516,6 +3580,8 @@ async fn a_bucket_iii_save_on_a_published_head_writes_no_version_row() {
     let harness = harness().await;
     let product_id = Uuid::now_v7();
     seed_draft(&harness, product_id).await;
+    // `inst-tx-primary-at-publish`: a publish needs one.
+    assign_primary_category(&harness, product_id).await;
 
     let published = post_head_act(
         app_for(&harness, TENANT),
@@ -3583,6 +3649,8 @@ async fn a_bucket_i_save_is_admitted_before_first_publish_and_refused_after_it()
     let harness = harness().await;
     let product_id = Uuid::now_v7();
     seed_draft(&harness, product_id).await;
+    // `inst-tx-primary-at-publish`: a publish needs one.
+    assign_primary_category(&harness, product_id).await;
 
     let admitted = save_at(
         &harness,
@@ -3711,6 +3779,7 @@ async fn a_save_with_one_refused_field_applies_none_of_the_others() {
     let harness = harness().await;
     let product_id = Uuid::now_v7();
     seed_draft(&harness, product_id).await;
+    assign_primary_category(&harness, product_id).await;
 
     let published = post_head_act(
         app_for(&harness, TENANT),
@@ -4683,6 +4752,8 @@ async fn a_blank_name_beside_a_bucket_i_column_stops_at_the_shape_phase() {
     let harness = harness().await;
     let product_id = Uuid::now_v7();
     seed_draft(&harness, product_id).await;
+    // `inst-tx-primary-at-publish`: a publish needs one.
+    assign_primary_category(&harness, product_id).await;
 
     let published = post_head_act(
         app_for(&harness, TENANT),
@@ -4920,6 +4991,7 @@ async fn a_save_enqueues_one_product_head_saved_carrying_the_committed_revision_
     let harness = harness().await;
     let product_id = Uuid::now_v7();
     seed_draft(&harness, product_id).await;
+    assign_primary_category(&harness, product_id).await;
 
     let first = save_at(&harness, product_id, 1, &json!({ "name": "Fibre 900" })).await;
     assert_eq!(
@@ -5247,6 +5319,7 @@ mod clone_door_tests {
         let harness = harness().await;
         let source_id = Uuid::now_v7();
         let source = seed_draft(&harness, source_id).await;
+        assign_primary_category(&harness, source_id).await;
 
         let publish = post_head_act(
             app_for(&harness, TENANT),
@@ -5807,4 +5880,83 @@ async fn a_save_naming_the_lineage_pair_is_refused_by_the_create_only_rule() {
             "{column}: the refusal is the field-mutation rule's"
         );
     }
+}
+
+/// `dod-primary-at-publish`: the `→ published` validator refuses
+/// `PRIMARY_CATEGORY_REQUIRED` when no primary assignment exists, **admits a
+/// draft that carries none**, and the paired positive control proves the
+/// publish succeeds once one is assigned.
+///
+/// The three assertions are one case on purpose: the refusal alone would
+/// pass against a door that refuses every publish, and the admission alone
+/// against a door with no rule at all.
+///
+/// @cpt-dod:cpt-cf-bss-products-dod-primary-at-publish:p1
+#[tokio::test]
+async fn a_publish_needs_a_primary_category_and_a_draft_does_not() {
+    let harness = harness().await;
+    let product_id = Uuid::now_v7();
+    seed_draft(&harness, product_id).await;
+
+    // A save on a draft carrying no primary is legal — "optional at draft".
+    let saved = save_at(
+        &harness,
+        product_id,
+        1,
+        &serde_json::json!({ "name": "Renamed" }),
+    )
+    .await;
+    assert_eq!(
+        saved.status(),
+        StatusCode::OK,
+        "a draft with no primary category still saves"
+    );
+
+    let refused = post_head_act(
+        app_for(&harness, TENANT),
+        TENANT,
+        product_id,
+        "publish",
+        &[("If-Match", &if_match(2))],
+    )
+    .await;
+    assert_eq!(
+        refused.status(),
+        StatusCode::BAD_REQUEST,
+        "a publish with no primary category is refused"
+    );
+    let body = axum::body::to_bytes(refused.into_body(), 64 * 1024)
+        .await
+        .expect("read the refusal");
+    let view: serde_json::Value = serde_json::from_slice(&body).expect("json");
+    assert!(
+        view.to_string().contains("PRIMARY_CATEGORY_REQUIRED"),
+        "the refusal carries this slice's own code: {view}"
+    );
+
+    // The positive control: the same publish succeeds once a primary lands,
+    // and the head is unchanged in between — the refusal wrote nothing.
+    let unchanged = head_of(&harness, product_id).await;
+    assert_eq!(
+        (unchanged.internal_revision, unchanged.published_version),
+        (2, 0),
+        "the refused publish moved no counter"
+    );
+
+    assign_primary_category(&harness, product_id).await;
+    let published = post_head_act(
+        app_for(&harness, TENANT),
+        TENANT,
+        product_id,
+        "publish",
+        &[("If-Match", &if_match(2))],
+    )
+    .await;
+    assert_eq!(
+        published.status(),
+        StatusCode::OK,
+        "the publish succeeds once the primary category is assigned"
+    );
+    let head = head_of(&harness, product_id).await;
+    assert_eq!(head.published_version, 1, "the version moved by one");
 }

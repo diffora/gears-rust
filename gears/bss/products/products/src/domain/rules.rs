@@ -93,6 +93,62 @@ impl ValidationRule<CreateEntityCandidate> for NameShapeRule {
     }
 }
 
+/// The subject a `-> published` transition presents to the registered
+/// validators: the head as it stands, plus the facts a rule cannot read for
+/// itself.
+///
+/// [`ValidationRule::evaluate`] is synchronous, so a rule whose operand lives
+/// in another table cannot fetch it — the door reads the fact and the subject
+/// carries it. That is why this type exists beside
+/// [`CreateEntityCandidate`] rather than extending it: a create has no
+/// assignments to read, and a field that is meaningless at one door is a
+/// field the next reader has to reason about.
+#[derive(Clone, Debug)]
+pub struct PublishedTransitionSubject {
+    /// Whether the Product holds a `primary` category assignment
+    /// (`products_product_category`, the single source of truth).
+    pub has_primary_category: bool,
+}
+
+/// A Product reaching `published` must carry its primary category
+/// (`inst-tx-primary-at-publish`).
+///
+/// **Optional at draft, required at publish** — the PRD's own words, and the
+/// reason this rule lives in the publish edge's pipeline and not in the
+/// Foundation's shared re-validation one: a save on a draft carrying no
+/// primary is legal, and a rule registered in the shared pipeline would
+/// refuse it. The *at-most-one* half is not here at all, being a partial
+/// unique index on the assignment table rather than a rule.
+///
+/// The code is **this slice's**, declared by `design/02` §3.3 under 01 §3.3's
+/// code-to-declaring-slice rule (**P-D-36**).
+pub struct PrimaryCategoryRequired;
+
+impl PrimaryCategoryRequired {
+    /// The refusal code, 422 architectural (`design/02` §3.3).
+    pub const CODE: &'static str = "PRIMARY_CATEGORY_REQUIRED";
+}
+
+impl ValidationRule<PublishedTransitionSubject> for PrimaryCategoryRequired {
+    fn name(&self) -> &'static str {
+        "inst-tx-primary-at-publish"
+    }
+
+    fn phase(&self) -> Phase {
+        Phase::RegisteredValidators
+    }
+
+    fn evaluate(&self, subject: &PublishedTransitionSubject, report: &mut ValidationReport) {
+        if !subject.has_primary_category {
+            report.violate(
+                Self::CODE,
+                "categories",
+                "a Product must carry a primary category assignment to be published",
+            );
+        }
+    }
+}
+
 /// The candidate the SKU publish door's re-validation re-run judges: the head
 /// **as it now stands**, reduced to the columns the re-run's rules read.
 ///
