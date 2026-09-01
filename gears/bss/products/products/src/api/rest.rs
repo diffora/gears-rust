@@ -156,6 +156,7 @@ use crate::infra::storage::repo::{self, AuditCommon, IdempotencyClaim, RefusalSu
 
 pub mod bulk;
 pub mod catalog_version;
+pub mod dto;
 pub mod preconditions;
 pub mod products;
 pub mod reference;

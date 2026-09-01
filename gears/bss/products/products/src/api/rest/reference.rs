@@ -63,6 +63,9 @@ use uuid::Uuid;
 
 use bss_products_sdk::watermarks::{WatermarkAck, WatermarkPost, WatermarkPosts};
 
+use crate::api::rest::dto::{
+    PostWatermarkRequest, ProducerView, RegisterProducerRequest, WatermarkAckView,
+};
 use crate::api::rest::{ApiState, repo_error_to_canonical, require_authenticated};
 use crate::domain::canonical;
 use crate::domain::error::DomainError;
@@ -276,48 +279,6 @@ fn register_producer_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Ro
         .error_500(openapi)
         .error_503(openapi)
         .register(router, openapi)
-}
-
-/// The watermark door's body.
-#[derive(Debug, Clone)]
-#[toolkit_macros::api_dto(request)]
-pub struct PostWatermarkRequest {
-    /// The posting producer.
-    pub producer: String,
-    /// The instant the set is complete as of.
-    pub watermark_at: DateTime<Utc>,
-    /// The complete SKU set — never a delta.
-    pub sku_ids: Vec<Uuid>,
-}
-
-/// What the watermark door answers.
-#[derive(Debug, Clone)]
-#[toolkit_macros::api_dto(response)]
-pub struct WatermarkAckView {
-    /// The stored instant after the post.
-    pub watermark_at: DateTime<Utc>,
-    /// How many SKUs the stored set holds.
-    pub member_count: usize,
-    /// Whether this was the admitted idempotent replay.
-    pub replayed: bool,
-}
-
-/// The registration door's body.
-#[derive(Debug, Clone)]
-#[toolkit_macros::api_dto(request)]
-pub struct RegisterProducerRequest {
-    /// The producer's name.
-    pub producer: String,
-}
-
-/// What both membership ops answer.
-#[derive(Debug, Clone)]
-#[toolkit_macros::api_dto(response)]
-pub struct ProducerView {
-    /// The producer.
-    pub producer: String,
-    /// `registered` or `retired`.
-    pub state: String,
 }
 
 /// Which of the surface's two labels a call spends, and for what — one

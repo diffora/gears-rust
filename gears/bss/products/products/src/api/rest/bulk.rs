@@ -66,6 +66,9 @@ use toolkit_db::secure::AccessScope;
 use toolkit_security::SecurityContext;
 use uuid::Uuid;
 
+use crate::api::rest::dto::{
+    BatchAcceptedView, BatchLedgerView, ImportBatchRequest, RowLedgerEntryView,
+};
 use crate::api::rest::{ApiState, repo_error_to_canonical, require_authenticated};
 use crate::domain::canonical;
 use crate::domain::error::DomainError;
@@ -149,99 +152,6 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
         .error_503(openapi)
         .register(router, openapi)
         .layer(Extension(state))
-}
-
-/// One row of an import request.
-#[derive(Debug, Clone)]
-#[toolkit_macros::api_dto(request)]
-pub struct ImportRowRequest {
-    /// The caller's own key for this row, unique **within the batch**.
-    pub row_key: String,
-    /// `product` or `sku`.
-    pub entity_kind: String,
-    /// The entity this row targets, for an update-as-draft row.
-    pub entity_id: Option<Uuid>,
-    /// The revision this row pins, for an update-as-draft row.
-    pub pinned_revision: Option<i64>,
-    /// The row's content — what the worker parses and stages
-    /// (**P-D-86**). A `product` row carries `{name, brand_id,
-    /// product_code?, region_scope?, brand_scope?}`; a `sku` row
-    /// `{product_id, sku_code, region_scope?, brand_scope?}`. The door
-    /// records it canonically serialized and judges only that it is an
-    /// object: **the field names are the worker's to parse**, through the
-    /// same shape rules interactive authoring runs, which is what keeps
-    /// bulk from becoming a second validator.
-    pub content: serde_json::Value,
-}
-
-/// The import door's body.
-#[derive(Debug, Clone)]
-#[toolkit_macros::api_dto(request)]
-pub struct ImportBatchRequest {
-    /// The batch's idempotency key, unique per tenant.
-    pub batch_key: String,
-    /// `import` (default) or `promote`.
-    pub mode: Option<String>,
-    /// The rows, in dependency order.
-    pub rows: Vec<ImportRowRequest>,
-}
-
-/// What the import door answers.
-#[derive(Debug, Clone)]
-#[toolkit_macros::api_dto(response)]
-pub struct BatchAcceptedView {
-    /// The batch's server-minted id.
-    pub batch_id: Uuid,
-    /// The caller's key, echoed.
-    pub batch_key: String,
-    /// The mode the batch runs under.
-    pub mode: String,
-    /// The batch's state — `staging` on a fresh batch, whatever the worker
-    /// has made of it on a replay.
-    pub state: String,
-    /// How many rows the ledger holds.
-    pub row_count: usize,
-    /// Whether this answer replayed an existing batch rather than minting
-    /// one.
-    pub replayed: bool,
-}
-
-/// One ledger entry, as the reader reports it.
-#[derive(Debug, Clone)]
-#[toolkit_macros::api_dto(response)]
-pub struct RowLedgerEntryView {
-    /// The caller's own key.
-    pub row_key: String,
-    /// The lane's client key.
-    pub row_id: Uuid,
-    /// `product` or `sku`.
-    pub entity_kind: String,
-    /// The entity, once minted.
-    pub entity_id: Option<Uuid>,
-    /// NULL while the row is in flight.
-    pub disposition: Option<String>,
-    /// The owning feature's code on a failure.
-    pub code: Option<String>,
-    /// A closed-set literal, never operator text.
-    pub reason: Option<String>,
-}
-
-/// The ledger reader's answer.
-#[derive(Debug, Clone)]
-#[toolkit_macros::api_dto(response)]
-pub struct BatchLedgerView {
-    /// The batch.
-    pub batch_id: Uuid,
-    /// The caller's key.
-    pub batch_key: String,
-    /// The mode.
-    pub mode: String,
-    /// The lane.
-    pub lane: String,
-    /// The state machine's current value.
-    pub state: String,
-    /// One entry per row — the no-hidden-partial-failure surface.
-    pub rows: Vec<RowLedgerEntryView>,
 }
 
 /// The bulk surface's gate, one action per door.

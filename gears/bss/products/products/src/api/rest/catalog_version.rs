@@ -261,31 +261,6 @@ fn register_resolver_route(router: Router, openapi: &dyn OpenApiRegistry) -> Rou
         .register(router, openapi)
 }
 
-/// The request body: the entity minus `requested_at`, which is the door's.
-#[derive(Debug, Clone)]
-#[toolkit_macros::api_dto(request)]
-pub struct CreateIncrementRequestBody {
-    /// The registered requester this demand belongs to.
-    pub source: String,
-    /// `interactive` or `bulk`.
-    pub lane: String,
-    /// The caller's idempotency handle.
-    pub request_key: String,
-    /// The bulk batch this request coalesces under; required exactly when
-    /// `lane` is `bulk`.
-    pub operation_key: Option<String>,
-}
-
-/// The acknowledgement body.
-#[derive(Debug, Clone)]
-#[toolkit_macros::api_dto(response)]
-pub struct IncrementAckView {
-    /// `true` once the request's version has committed.
-    pub coalesced: bool,
-    /// The committed version, present exactly when `coalesced`.
-    pub catalog_version_id: Option<i64>,
-}
-
 impl From<IncrementAck> for IncrementAckView {
     fn from(ack: IncrementAck) -> Self {
         Self {
@@ -465,6 +440,10 @@ async fn request_scope(
     }
 }
 
+use crate::api::rest::dto::{
+    CreateIncrementRequestBody, FreezeEdgeView, FreezeParticipantRequest, IncrementAckView,
+    ManifestCaptureView, ManifestEntryView, ResolvedVersionView,
+};
 use toolkit::api::canonical_prelude::resource_error;
 
 /// The canonical-error identity of this door's own refusals.
@@ -525,85 +504,6 @@ async fn request_catalog_version(
     .await?;
 
     Ok((StatusCode::ACCEPTED, Json(IncrementAckView::from(ack))).into_response())
-}
-
-/// The ack and release doors' body: the participant, and nothing else.
-#[derive(Debug, Clone)]
-#[toolkit_macros::api_dto(request)]
-pub struct FreezeParticipantRequest {
-    /// The participant whose ledger row the door flips. Membership is the
-    /// row's existence (P-D-67); the identity-binding half is owed (see
-    /// the module doc).
-    pub participant: String,
-}
-
-/// What the two participant doors answer.
-#[derive(Debug, Clone)]
-#[toolkit_macros::api_dto(response)]
-pub struct FreezeEdgeView {
-    /// The participant acted on.
-    pub participant: String,
-    /// The participant's ledger state after the act.
-    pub state: String,
-    /// The version's refreshed derived cache.
-    pub freeze_state: String,
-}
-
-/// One manifest entry, as the resolver serves it.
-#[derive(Debug, Clone)]
-#[toolkit_macros::api_dto(response)]
-pub struct ManifestEntryView {
-    /// `product` or `sku`.
-    pub entity_kind: String,
-    /// The entity.
-    pub entity_id: Uuid,
-    /// The frozen version the manifest pins.
-    pub published_version: i64,
-}
-
-/// One stored capture, as the resolver serves it.
-#[derive(Debug, Clone)]
-#[toolkit_macros::api_dto(response)]
-pub struct ManifestCaptureView {
-    /// The capture kind.
-    pub capture_kind: String,
-    /// The stored canonical copy.
-    pub content: String,
-}
-
-/// The resolver's answer: metadata, the stored manifest, the verifiable
-/// checksum, and — when the caller named a differing `bound_version` — the
-/// re-binding triple (`dod-version-binding`).
-#[derive(Debug, Clone)]
-#[toolkit_macros::api_dto(response)]
-pub struct ResolvedVersionView {
-    /// The resolved version.
-    pub catalog_version_id: i64,
-    /// Hex digest over the canonical manifest rendering — returned so the
-    /// caller can re-verify (`inst-rv-bytes`).
-    pub checksum: String,
-    /// The digest rule the checksum was computed under.
-    pub digest_version: i32,
-    /// The commit instant.
-    pub published_at: chrono::DateTime<Utc>,
-    /// The strict flag (P-D-84 arm 3): `freeze_state = 'complete'` and
-    /// nothing else.
-    pub freeze_complete: bool,
-    /// The storage truth behind the flag.
-    pub freeze_state: String,
-    /// The manifest's entry half.
-    pub entries: Vec<ManifestEntryView>,
-    /// The manifest's capture half.
-    pub captures: Vec<ManifestCaptureView>,
-    /// The participant snapshot, parsed from its own capture.
-    pub participant_set: Vec<String>,
-    /// The caller's bound version, echoed when it differed.
-    pub bound_version: Option<i64>,
-    /// The resolved version, repeated beside the bound one when they
-    /// differed.
-    pub resolved_version: Option<i64>,
-    /// The diff door's ref grammar for the span, when the two differed.
-    pub diff_ref: Option<String>,
 }
 
 /// The shared gate for the freeze doors and the resolver, one action each.
