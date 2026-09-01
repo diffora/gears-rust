@@ -36,6 +36,10 @@ fn labels_all_carries_every_declared_label_in_order() {
             labels::BULK,
             labels::REFERENCE_SIGNAL,
             labels::REFERENCE_PRODUCER,
+            labels::APPROVAL,
+            labels::MATERIALITY_POLICY,
+            labels::BREAKGLASS,
+            labels::AUDIT,
         ]
     );
 }
@@ -49,6 +53,13 @@ fn resource_types_carry_their_labels() {
         labels::CATALOG_VERSION
     );
     assert_eq!(resource_types::BULK.name(), labels::BULK);
+    assert_eq!(resource_types::APPROVAL.name(), labels::APPROVAL);
+    assert_eq!(
+        resource_types::MATERIALITY_POLICY.name(),
+        labels::MATERIALITY_POLICY
+    );
+    assert_eq!(resource_types::BREAKGLASS.name(), labels::BREAKGLASS);
+    assert_eq!(resource_types::AUDIT.name(), labels::AUDIT);
     assert_eq!(
         resource_types::REFERENCE_SIGNAL.name(),
         labels::REFERENCE_SIGNAL
@@ -312,4 +323,98 @@ async fn read_path_returns_pdp_scope_without_membership_check() {
         scope.contains_uuid(pep_properties::OWNER_TENANT_ID, tenant),
         "the read scope must carry the tenant filter"
     );
+}
+
+/// `dod-rbac-catalog`'s census: the catalog carries **this slice's own rows**
+/// and, deliberately, not the rows another slice owns.
+///
+/// `design/05-governance.md` §3.2 is twenty-four rows, each naming its owning
+/// slice. The `DoD` obliges governance to *"extend rather than replace"* what
+/// `01-foundation` shipped, so the shape of correctness here is a pair of
+/// claims — every row owned by a **built** slice is declared, and every row
+/// owned by an **unbuilt** one is absent. Asserting only the first would let
+/// a future pass quietly declare `category × write` on 02's behalf, and the
+/// grant would then exist with no door and no owner.
+///
+/// @cpt-dod:cpt-cf-bss-products-dod-rbac-catalog:p1
+#[test]
+fn the_catalog_carries_the_built_slices_rows_and_withholds_the_rest() {
+    // The rows owned by slices whose doors ship (01, 06, 07, 09) plus 05's own.
+    let declared = [
+        labels::PRODUCT,
+        labels::SKU,
+        labels::CATALOG_VERSION,
+        labels::BULK,
+        labels::REFERENCE_SIGNAL,
+        labels::REFERENCE_PRODUCER,
+        labels::APPROVAL,
+        labels::MATERIALITY_POLICY,
+        labels::BREAKGLASS,
+        labels::AUDIT,
+    ];
+    for label in declared {
+        assert!(
+            labels::ALL.contains(&label),
+            "{label} is owned by a slice whose rows this catalog carries"
+        );
+    }
+    assert_eq!(
+        labels::ALL.len(),
+        declared.len(),
+        "a label appeared that this census does not account for: adding one is a change to the \
+         authorization surface and must be deliberate"
+    );
+
+    // The deliberate absences, each with the slice that owes it. These are
+    // not oversights: §3.2 assigns them, and a grant declared here with no
+    // owning door is a grant nobody can review.
+    for owed in [
+        "cf.bss.products.category.v1~",             // 02
+        "cf.bss.products.attribute_definition.v1~", // 02
+        "cf.bss.products.metadata.v1~",             // 02
+        "cf.bss.products.recognized_set.v1~",       // 03
+        "cf.bss.products.plan_tier.v1~",            // 03
+        "cf.bss.products.scheduled_transition.v1~", // 04
+        "cf.bss.products.freeze_participant.v1~",   // 06, with its governed-set door
+        "cf.bss.products.bulk_lifecycle.v1~",       // 09, with the lifecycle door
+        "cf.bss.products.compliance.v1~",           // 10
+        "cf.bss.products.erasure.v1~",              // 10
+        "cf.bss.products.pii_allowlist.v1~",        // 10
+    ] {
+        assert!(
+            !labels::ALL.iter().any(|label| label.contains(owed)),
+            "{owed} is another slice's row and must arrive with that slice's door"
+        );
+    }
+}
+
+/// Governance's actions are distinct grants, not aliases of `write`.
+///
+/// `submit` and `decide` are separate because C2's self-approval refusal
+/// depends on it: an author who may open a ceremony must not thereby be able
+/// to close it. `elevate` is separate because its holder is outside the
+/// tenant entirely, and `export` because taking audit content out of the gear
+/// is not the same act as reading it in place.
+#[test]
+fn the_governance_actions_are_not_aliases() {
+    use crate::authz::actions;
+
+    let governance = [
+        actions::SUBMIT,
+        actions::DECIDE,
+        actions::ELEVATE,
+        actions::EXPORT,
+    ];
+    for action in governance {
+        assert_ne!(
+            action,
+            actions::WRITE,
+            "{action} must not collapse to write"
+        );
+        assert_ne!(action, actions::READ, "{action} must not collapse to read");
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    for action in governance {
+        assert!(seen.insert(action), "{action} is declared twice");
+    }
 }

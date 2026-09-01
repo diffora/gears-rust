@@ -10,14 +10,33 @@
 //! once Phase 4 wires the authoring doors through it, so the catalog and the
 //! (future) enforcement path share one source of truth.
 //!
-//! **Only the Foundation's two entities.** `product` and `sku`, each with
-//! `read`, `write` and `publish` — the roster `design/01-foundation.md` §2
-//! names on the gear's doors and `design/05-governance.md` §3.2's RBAC catalog
-//! rows for those two resources. The wider governance catalog (`category`,
-//! `attribute_definition`, `approval`, `audit`, `breakglass`, and the rest of
-//! §3.2's twenty-three rows) belongs to the slices that build those doors and
-//! is not declared here; see `crate::authz`'s module doc for why `discard` is
-//! not a permission of its own either.
+//! **Each slice's own rows, as its doors arrive.** `design/05-governance.md`
+//! §3.2's catalog is **twenty-four** rows (it was twenty-three until
+//! **P-D-61** added `bulk × read` and **P-D-67** the freeze routes), each
+//! carrying the slice that owns it, and `dod-rbac-catalog` obliges this
+//! feature to *"extend rather than replace"* what `01-foundation` shipped.
+//! So this file grows one slice at a time: `01`'s `product`/`sku` triples,
+//! then `06`'s catalog-version actions, `09`'s bulk pair and `07`'s reference
+//! pairs, and now **`05`'s own four rows** — `approval × submit|read|decide`,
+//! `materiality_policy × write`, `breakglass × elevate`,
+//! `audit × read|export`.
+//!
+//! The rows owned by `02`, `03`, `04` and `10` (`category`,
+//! `attribute_definition`, `recognized_set`, `plan_tier`,
+//! `scheduled_transition`, `metadata`, `compliance`, `erasure`,
+//! `pii_allowlist`) are **deliberately absent**: they belong to the slices
+//! that build those doors. See `crate::authz`'s module doc for why `discard`
+//! is not a permission of its own either.
+//!
+//! **A declared pair with no route is intentional here, and is the point.**
+//! Of governance's four rows only `approval × read` names a door in §3.2;
+//! `× submit`, `× decide`, `materiality_policy × write` and
+//! `breakglass × elevate` are among the nine routeless rows §6 records. The
+//! `DoD` is explicit that it *"obliges the catalog, not the routes"*, and §6's
+//! reason is the argument for declaring them anyway: *"an authorization
+//! surface nobody can enumerate is one nobody can review"*. Declared, they
+//! are countable; withheld, they are invisible until a door invents its own
+//! pair.
 //!
 //! Instance id layout (instance suffix needs >= 5 dot-separated tokens):
 //! `gts.cf.toolkit.authz.permission.v1~cf.bss.products.<entity>_<action>.v1`.
@@ -161,6 +180,65 @@ gts_instance! {
     }
 }
 
+// -- governance -- the ceremony plane (`design/05` §3.2, the rows owned by 05)
+
+gts_instance! {
+    AuthzPermissionV1 {
+        id: gts_id!("cf.toolkit.authz.permission.v1~cf.bss.products.approval_submit.v1"),
+        resource_type: labels::APPROVAL.to_owned(),
+        action: actions::SUBMIT.to_owned(),
+        display_name: "Submit a change set for approval".to_owned(),
+    }
+}
+gts_instance! {
+    AuthzPermissionV1 {
+        id: gts_id!("cf.toolkit.authz.permission.v1~cf.bss.products.approval_read.v1"),
+        resource_type: labels::APPROVAL.to_owned(),
+        action: actions::READ.to_owned(),
+        display_name: "Read the pending-approval queue".to_owned(),
+    }
+}
+gts_instance! {
+    AuthzPermissionV1 {
+        id: gts_id!("cf.toolkit.authz.permission.v1~cf.bss.products.approval_decide.v1"),
+        resource_type: labels::APPROVAL.to_owned(),
+        action: actions::DECIDE.to_owned(),
+        display_name: "Approve or reject a submitted change set".to_owned(),
+    }
+}
+gts_instance! {
+    AuthzPermissionV1 {
+        id: gts_id!("cf.toolkit.authz.permission.v1~cf.bss.products.materiality_policy_write.v1"),
+        resource_type: labels::MATERIALITY_POLICY.to_owned(),
+        action: actions::WRITE.to_owned(),
+        display_name: "Change the materiality policy and its approver count".to_owned(),
+    }
+}
+gts_instance! {
+    AuthzPermissionV1 {
+        id: gts_id!("cf.toolkit.authz.permission.v1~cf.bss.products.breakglass_elevate.v1"),
+        resource_type: labels::BREAKGLASS.to_owned(),
+        action: actions::ELEVATE.to_owned(),
+        display_name: "Open a break-glass elevation session".to_owned(),
+    }
+}
+gts_instance! {
+    AuthzPermissionV1 {
+        id: gts_id!("cf.toolkit.authz.permission.v1~cf.bss.products.audit_read.v1"),
+        resource_type: labels::AUDIT.to_owned(),
+        action: actions::READ.to_owned(),
+        display_name: "Read the registry's audit plane".to_owned(),
+    }
+}
+gts_instance! {
+    AuthzPermissionV1 {
+        id: gts_id!("cf.toolkit.authz.permission.v1~cf.bss.products.audit_export.v1"),
+        resource_type: labels::AUDIT.to_owned(),
+        action: actions::EXPORT.to_owned(),
+        display_name: "Export audit content out of the gear".to_owned(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use toolkit_gts::{InventoryInstance, gts_id};
@@ -185,6 +263,13 @@ mod tests {
         gts_id!("cf.toolkit.authz.permission.v1~cf.bss.products.bulk_read.v1"),
         gts_id!("cf.toolkit.authz.permission.v1~cf.bss.products.reference_signal_post.v1"),
         gts_id!("cf.toolkit.authz.permission.v1~cf.bss.products.reference_producer_write.v1"),
+        gts_id!("cf.toolkit.authz.permission.v1~cf.bss.products.approval_submit.v1"),
+        gts_id!("cf.toolkit.authz.permission.v1~cf.bss.products.approval_read.v1"),
+        gts_id!("cf.toolkit.authz.permission.v1~cf.bss.products.approval_decide.v1"),
+        gts_id!("cf.toolkit.authz.permission.v1~cf.bss.products.materiality_policy_write.v1"),
+        gts_id!("cf.toolkit.authz.permission.v1~cf.bss.products.breakglass_elevate.v1"),
+        gts_id!("cf.toolkit.authz.permission.v1~cf.bss.products.audit_read.v1"),
+        gts_id!("cf.toolkit.authz.permission.v1~cf.bss.products.audit_export.v1"),
     ];
 
     fn products_permission_instances() -> Vec<&'static InventoryInstance> {
@@ -282,6 +367,10 @@ mod tests {
             crate::authz::actions::RELEASE,
             crate::authz::actions::EXECUTE,
             crate::authz::actions::POST,
+            crate::authz::actions::SUBMIT,
+            crate::authz::actions::DECIDE,
+            crate::authz::actions::ELEVATE,
+            crate::authz::actions::EXPORT,
         ];
         for entry in products_permission_instances() {
             let action = (entry.payload_fn)()["action"]

@@ -79,6 +79,26 @@ pub mod labels {
     /// governed pair.
     pub const REFERENCE_PRODUCER: &str = gts_id!("cf.bss.products.reference_producer.v1~");
 
+    /// The approval record — `submit`, `read`, `decide`
+    /// (`design/05-governance.md` §3.2, the rows this slice owns). Three
+    /// actions on one resource rather than three resources: the subject of
+    /// all three is the same record, and a tenant that may read the pending
+    /// queue is not thereby able to decide on it.
+    pub const APPROVAL: &str = gts_id!("cf.bss.products.approval.v1~");
+    /// The materiality policy — `write`, and **its own resource on purpose**:
+    /// §3.1 step 2 makes the policy object a `GovernedLiveOp` subject on this
+    /// pair *"never a config-admin's general grant, so that the holder of a
+    /// config grant cannot weaken the threshold that governs them"*.
+    pub const MATERIALITY_POLICY: &str = gts_id!("cf.bss.products.materiality_policy.v1~");
+    /// Break-glass elevation — `elevate`. A resource of its own because the
+    /// principal holding it is **outside** the tenant entirely, so it can
+    /// never be folded into a tenant-scoped grant.
+    pub const BREAKGLASS: &str = gts_id!("cf.bss.products.breakglass.v1~");
+    /// The audit plane — `read` and `export` (M-4's fix). Split from the
+    /// entity grants deliberately: an audit reader sees refusals and actors
+    /// across every subject, which no entity-scoped grant implies.
+    pub const AUDIT: &str = gts_id!("cf.bss.products.audit.v1~");
+
     /// Every authz label this module declares, stable order. The single
     /// canonical list driving [`super::authz_label_type_schemas`]'s stub
     /// registration. MUST match the permission catalog's distinct
@@ -90,6 +110,10 @@ pub mod labels {
         BULK,
         REFERENCE_SIGNAL,
         REFERENCE_PRODUCER,
+        APPROVAL,
+        MATERIALITY_POLICY,
+        BREAKGLASS,
+        AUDIT,
     ];
 }
 
@@ -122,6 +146,22 @@ pub mod actions {
     /// Post action — a producer posting its reference watermark
     /// (`POST /bss-products/v1/reference-watermarks`).
     pub const POST: &str = "post";
+
+    /// Submit action — offering a change set for approval
+    /// (`inst-gv-materiality`'s entry act). Distinct from `write`: the
+    /// content is already authored, and what this grant admits is starting
+    /// the ceremony over it.
+    pub const SUBMIT: &str = "submit";
+    /// Decide action — casting one principal's verdict on an approval
+    /// (`inst-gv-decide`). Never implied by `submit`: an author who may open
+    /// a ceremony must not thereby be able to close it, which is the whole
+    /// point of C2's self-approval refusal.
+    pub const DECIDE: &str = "decide";
+    /// Elevate action — opening a break-glass session (`inst-bg-open`).
+    pub const ELEVATE: &str = "elevate";
+    /// Export action — taking audit content out of the gear, as opposed to
+    /// reading it in place.
+    pub const EXPORT: &str = "export";
 }
 
 /// Properties the PEP may compile from PDP constraints for registry rows.
@@ -157,6 +197,17 @@ pub mod resource_types {
     /// The reference-producer registry — `write`.
     pub const REFERENCE_PRODUCER: ResourceType =
         ResourceType::from_static(labels::REFERENCE_PRODUCER, SUPPORTED_PROPERTIES);
+    /// The approval record — `submit`, `read`, `decide`.
+    pub const APPROVAL: ResourceType =
+        ResourceType::from_static(labels::APPROVAL, SUPPORTED_PROPERTIES);
+    /// The materiality policy — `write`.
+    pub const MATERIALITY_POLICY: ResourceType =
+        ResourceType::from_static(labels::MATERIALITY_POLICY, SUPPORTED_PROPERTIES);
+    /// Break-glass elevation — `elevate`.
+    pub const BREAKGLASS: ResourceType =
+        ResourceType::from_static(labels::BREAKGLASS, SUPPORTED_PROPERTIES);
+    /// The audit plane — `read`, `export`.
+    pub const AUDIT: ResourceType = ResourceType::from_static(labels::AUDIT, SUPPORTED_PROPERTIES);
 }
 
 /// Error from the registry's PEP gate.

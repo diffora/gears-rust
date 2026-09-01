@@ -780,14 +780,24 @@ that half is `12-consumer-contracts`' to assert.
 
 ### RBAC catalog registration
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-rbac-catalog`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-rbac-catalog`
 
 The system **MUST** declare the GTS-typed resource-and-action catalog deny-by-default and check the
 pair at every door. `01-foundation`'s `authz.rs` already ships three rows and states that the rest
 belong to the features that build those doors, so this feature **MUST** extend rather than replace
-it. **Eleven rows carry no route** (open item 1) and the `discard` grant question is unresolved in
+it. **Nine rows carry no route** (open item 1 — eleven when it was raised; **P-D-61** and
+**P-D-67** doored two) and the `discard` grant question is unresolved in
 the code comment as well as the design (open item 2); this DoD obliges the catalog, not the
 routes.
+
+**Built as an extension, and the withholding is asserted too.** `authz.rs` now carries **ten**
+labels: `01`'s `product`/`sku`, `06`'s `catalog_version`, `09`'s `bulk`, `07`'s
+`reference_signal`/`reference_producer`, and this slice's four — `approval × submit|read|decide`,
+`materiality_policy × write`, `breakglass × elevate`, `audit × read|export`. The eleven rows owned
+by `02`, `03`, `04` and `10` are **absent by assertion**, not by omission: a test names each one
+with its owing slice and fails if it appears, because a grant declared with no owning door is a
+grant nobody can review — §6's own reason for counting them. Four of governance's own seven pairs
+are themselves routeless, and that is the DoD's stated scope: declared, they are countable.
 
 **Implements**: `cpt-cf-bss-products-algo-rbac-catalog`
 
