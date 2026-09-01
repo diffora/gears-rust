@@ -475,10 +475,12 @@ else this feature is made of is absent, so the rest create.
 
 ### The two tables and the ledger's append-only discipline
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-bulk-tables`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-bulk-tables`
 
-`products_bulk_batch` and `products_bulk_row` exist, tenant-scoped, the second being the `RowLedger`.
-**Neither ships** — zero occurrences across `products/src`.
+`products_bulk_batch` and `products_bulk_row` exist, tenant-scoped, the second being the `RowLedger`
+— **landed 2026-09-01 as `m20260901_000014`**, with the seven-state roster, P-D-69's `mode`, the
+worker's claim columns, the row-freeze trigger and P-D-50's closed reason set, all CHECK- and
+trigger-pinned on both engines.
 
 **Rows are immutable after their terminal state**, which makes the ledger append-only evidence rather
 than working state. That is what lets a crash resume from it and what makes "no hidden partial

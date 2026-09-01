@@ -4925,3 +4925,153 @@ mod referential_predicate_guard_tests {
         );
     }
 }
+
+/// The batch and its ledger, probed on the row-freeze rule and the batch's
+/// decided rosters.
+///
+/// @cpt-dod:cpt-cf-bss-products-dod-bulk-tables:p1
+mod bulk_ledger_guard_tests {
+    use sea_orm::ConnectionTrait;
+    use sea_orm_migration::MigratorTrait;
+
+    use super::Migrator;
+
+    async fn harness() -> sea_orm::DatabaseConnection {
+        let mut opts = sea_orm::ConnectOptions::new("sqlite::memory:");
+        opts.max_connections(1).min_connections(1);
+        let db = sea_orm::Database::connect(opts)
+            .await
+            .expect("connect in-memory sqlite");
+        Migrator::up(&db, None).await.expect("boot the chain");
+        db
+    }
+
+    async fn exec(db: &sea_orm::DatabaseConnection, sql: &str) -> Result<(), sea_orm::DbErr> {
+        db.execute_raw(sea_orm::Statement::from_string(
+            sea_orm::DatabaseBackend::Sqlite,
+            sql.to_owned(),
+        ))
+        .await
+        .map(|_| ())
+    }
+
+    async fn seed_batch(db: &sea_orm::DatabaseConnection) {
+        exec(
+            db,
+            "INSERT INTO products_bulk_batch \
+             (tenant_id, batch_id, batch_key, mode, lane, state, created_at) \
+             VALUES ('t-a', 'b-1', 'k-1', 'import', 'import', 'staging', '2026-09-01T00:00:00Z')",
+        )
+        .await
+        .expect("seed a staging batch");
+    }
+
+    /// `P-D-69`'s `abandoned` is in the roster and the struck-by-nobody value
+    /// `rejected` is not — the machine's set is exactly the seven.
+    #[tokio::test]
+    async fn the_batch_state_roster_is_the_decided_seven() {
+        let db = harness().await;
+        seed_batch(&db).await;
+        exec(
+            &db,
+            "UPDATE products_bulk_batch SET state = 'abandoned' \
+             WHERE tenant_id = 't-a' AND batch_id = 'b-1'",
+        )
+        .await
+        .expect("abandoned is P-D-69's terminal state");
+
+        let err = exec(
+            &db,
+            "UPDATE products_bulk_batch SET state = 'rejected' \
+             WHERE tenant_id = 't-a' AND batch_id = 'b-1'",
+        )
+        .await
+        .expect_err("a state outside the seven must be refused");
+        assert!(
+            err.to_string().contains("chk_products_bulk_batch_state"),
+            "the refusal must come from the state roster: {err}"
+        );
+    }
+
+    /// A ledger row in flight is writable; the instant it carries a
+    /// disposition it freezes — `inst-bm-tables`' append-only evidence rule,
+    /// with the `disposition`⇔`terminal_at` shape CHECK holding both directions.
+    #[tokio::test]
+    async fn a_ledger_row_freezes_at_its_terminal_state() {
+        let db = harness().await;
+        seed_batch(&db).await;
+        exec(
+            &db,
+            "INSERT INTO products_bulk_row \
+             (tenant_id, batch_id, row_key, row_id, entity_kind) \
+             VALUES ('t-a', 'b-1', 'r-1', 'rid-1', 'sku')",
+        )
+        .await
+        .expect("an in-flight row lands with no disposition");
+
+        let err = exec(
+            &db,
+            "UPDATE products_bulk_row SET disposition = 'published' \
+             WHERE tenant_id = 't-a' AND row_key = 'r-1'",
+        )
+        .await
+        .expect_err("a disposition without its terminal_at is refused by the shape CHECK");
+        assert!(
+            err.to_string().contains("chk_products_bulk_row_terminal"),
+            "{err}"
+        );
+
+        exec(
+            &db,
+            "UPDATE products_bulk_row \
+             SET disposition = 'published', terminal_at = '2026-09-01T01:00:00Z' \
+             WHERE tenant_id = 't-a' AND row_key = 'r-1'",
+        )
+        .await
+        .expect("the paired terminal write is the admitted flip");
+
+        let err = exec(
+            &db,
+            "UPDATE products_bulk_row SET code = 'ANYTHING' \
+             WHERE tenant_id = 't-a' AND row_key = 'r-1'",
+        )
+        .await
+        .expect_err("a terminal row is immutable");
+        assert!(
+            err.to_string()
+                .contains("immutable after its terminal state"),
+            "the refusal must be the freeze trigger's: {err}"
+        );
+
+        let err = exec(
+            &db,
+            "DELETE FROM products_bulk_row WHERE tenant_id = 't-a' AND row_key = 'r-1'",
+        )
+        .await
+        .expect_err("the ledger is append-only evidence");
+        assert!(
+            err.to_string().contains("append-only evidence"),
+            "the refusal must be the no-delete trigger's: {err}"
+        );
+    }
+
+    /// P-D-50's closed reason set: the one named constant is admitted and
+    /// operator free text is refused by the CHECK's name.
+    #[tokio::test]
+    async fn the_reason_column_admits_only_the_named_constant() {
+        let db = harness().await;
+        seed_batch(&db).await;
+        let err = exec(
+            &db,
+            "INSERT INTO products_bulk_row \
+             (tenant_id, batch_id, row_key, row_id, entity_kind, reason) \
+             VALUES ('t-a', 'b-1', 'r-2', 'rid-2', 'sku', 'operator typed this')",
+        )
+        .await
+        .expect_err("free text in reason must be refused");
+        assert!(
+            err.to_string().contains("chk_products_bulk_row_reason"),
+            "the refusal must come from the reason CHECK: {err}"
+        );
+    }
+}
