@@ -914,10 +914,10 @@ assertion on the first code passes on a build that short-circuits, which is the 
 [`../design/11-clone.md`](../design/11-clone.md) §6 — the slice's full count, not a selection — and
 **seventeen raised here**: twelve while authoring and five by the three-lens review of this
 document. Eight of the seventeen (rows 11, 12, 13, 14, 17, 20, 23 and 25) come from reading the
-crate and nine from the design set. Of the twenty-seven, **nine block
+crate and nine from the design set. Of the twenty-seven, **fourteen block
 no DoD in this document** (rows 9, 10, 21 and 24, plus rows 13 and 4, resolved by **P-D-55 and
-P-D-62 on 2026-08-31**, and rows 7, 19 and 26, resolved by **P-D-72 on 2026-09-01** — kept in place
-rather than struck); the other eighteen each name the DoD they block. A
+P-D-62 on 2026-08-31**, and rows 7, 19, 26 — **P-D-72** — and 1, 2, 5, 12, 14 — **P-D-75** — on
+2026-09-01, all kept in place rather than struck); the other thirteen each name the DoD they block. A
 third subsection carries defects owed to other documents, recorded and not repaired here; those are
 not rows. The two register pointers are in this preamble, not there.
 
@@ -944,15 +944,25 @@ duplicating it.
 
 ### Carried verbatim from `design/11` §6
 
-1. **What is the clone door's request body?** Three rules require operator input — an overridable
+1. ~~**What is the clone door's request body?**~~
+   **Answered in the slice (owner call, 2026-09-01 — P-D-75 arm 1): the overrides and nothing else** —
+   `{code?, name?, newParentId?, optional replacement values for the five re-validated classes}`,
+   absent meaning copy/reset per the table; the replacement slots exist because a refused
+   re-validation on an immutable source must be answerable in the retry.
+   Original text: Three rules require operator input — an overridable
    code, an overridable name, a replacement parent — and a fourth ("forces re-selection") may require
    re-selected values. No slice declares a clone payload, and whether those arrive in the clone
    request or in a follow-up save changes the door's shape, its validator order and whether it can
    refuse for a vocabulary reason at all.
-   **Blocks**: `cpt-cf-bss-products-dod-clone-door`.
-   **Owner**: this feature with `12-consumer-contracts`.
+   **Blocks**: no DoD — **resolved by P-D-75**; `cpt-cf-bss-products-dod-clone-door` carries the body.
+   **Owner**: was this feature with `12-consumer-contracts`; **closed**.
 
-2. **What writes the clone's category assignments, attribute values and metadata map?** All three
+2. ~~**What writes the clone's category assignments, attribute values and metadata map?**~~
+   **Answered in the slice (owner call, 2026-09-01 — P-D-75 arm 2): the clone door itself, in its
+   creating transaction** — P-D-46's precedent extended to the second composite creator: entity row,
+   side rows, `internal_revision = 1`, no side-door events, no second grant. The tables do not ship
+   yet; the rule binds when they land.
+   Original text: All three
    live in side tables whose only stated writers are the save door and the metadata door — both of
    which bump `internal_revision` (defeating C3's `= 1`), emit their own events (defeating
    `inst-cn-lineage`'s "no new events") and spend a grant this door does not name. 01's create flow
@@ -960,9 +970,9 @@ duplicating it.
    for the **save** door — `inst-fd-save-txn` now writes content in its own transaction — but the clone
    lands through the **create** door, which that arm did not reach, so this slice's atomicity claim
    still has no writer; 01 §6 carries the narrowed question.
-   **Blocks**: `cpt-cf-bss-products-dod-disposition-rules`, `cpt-cf-bss-products-dod-clone-door`.
-   **Owner**: `01-foundation`'s door owner with `02-taxonomy-attributes`', plus `05-governance` for
-   the grant.
+   **Blocks**: no DoD — **resolved by P-D-75**; `dod-clone-door` and `dod-disposition-rules` carry the writer.
+   **Owner**: was `01-foundation`'s door owner with `02-taxonomy-attributes`', plus `05-governance` for
+   the grant; **closed**.
 
 3. **Does the clone door need `metadata × write` beside `product|sku × write`?** 05 split that grant
    because the map is mutable in place on a **published** entity; the clone writes a new draft's map,
@@ -986,12 +996,16 @@ duplicating it.
    `cpt-cf-bss-products-dod-rename-rule` are both freed — the only row that freed two.
    **Owner**: was this feature; **closed**.
 
-5. **What does the door answer for a `discarded` source?** C1 admits four states and `discarded` is
+5. ~~**What does the door answer for a `discarded` source?**~~
+   **Answered in the slice (owner call, 2026-09-01 — P-D-75 arm 3): refused
+   `CLONE_SOURCE_DISCARDED`, 409, minted on P-D-52's test** — `ENTITY_TERMINAL` means a head *write*
+   while the clone writes nothing to the source, and the bare 404 carries no code channel.
+   Original text: C1 admits four states and `discarded` is
    the fifth, reachable and addressable; nothing says whether it is a 404-class miss, a state refusal
    or admitted, and `ENTITY_TERMINAL` cannot be reused as-is because the clone writes nothing to the
    source while a `retired` source is explicitly allowed.
-   **Blocks**: `cpt-cf-bss-products-dod-clone-door`.
-   **Owner**: the taxonomy owner with this feature.
+   **Blocks**: no DoD — **resolved by P-D-75**; `cpt-cf-bss-products-dod-clone-door` carries the refusal.
+   **Owner**: was the taxonomy owner with this feature; **closed**.
 
 6. **Which surface answers the reverse lineage lookup — what was cloned from a given entity?** The
    absence of a clone event is justified by the lineage field being "queryable", and the field appears
@@ -1046,15 +1060,19 @@ duplicating it.
     **Blocks**: `cpt-cf-bss-products-dod-disposition-rules`.
     **Owner**: this feature with `01-foundation`'s pipeline owner.
 
-12. **Is C4's "every field class that failed" scoped to the vocabulary classes or to the whole act?**
+12. ~~**Is C4's "every field class that failed" scoped to the vocabulary classes or to the whole act?**~~
+   **Answered (owner call, 2026-09-01 — P-D-75 arm 4): C4 is scoped to the re-validated classes** —
+    the row's own closing arm. Identity collisions stay P-D-37's phase rules; the pre-flight probe was
+    declined as a read racing the reservation it predicts.
+   Original text:
     `DUPLICATE_NAME` and `DUPLICATE_CODE` are `Identity`-phase and, per **P-D-37**, are decided under
     the write and cannot collect a second code at all. So a clone failing both a re-validation and an
     operator-supplied name collision reports only the earlier phase, and the operator learns of the
     collision on the retry. Either C4 is scoped to the re-validated classes — in which case saying so
     closes it — or the door owes a pre-flight uniqueness probe, which introduces a TOCTOU window the
     index exists to avoid.
-    **Blocks**: `cpt-cf-bss-products-dod-disposition-rules`, `cpt-cf-bss-products-dod-clone-door`.
-    **Owner**: this feature with `01-foundation`'s.
+   **Blocks**: no DoD — **resolved by P-D-75**.
+   **Owner**: was this feature with `01-foundation`'s; **closed**.
 
 13. ~~**Which of the disposition rules registers first?**~~
     **Answered (owner call, 2026-08-31 — P-D-55): in `design/11` §3.1's own row order.** The table is
@@ -1079,14 +1097,18 @@ duplicating it.
     **Owner**: was this feature with `01-foundation`'s; **closed**, the observability half staying
     with `01`.
 
-14. **What is the clone's idempotency key, and does a retried clone return the first clone or make a
-    second?** The pipeline's first phase is `Idempotency` and the door is a mutation, so a key is
+14. ~~**What is the clone's idempotency key, and does a retried clone return the first clone or make a
+    second?**~~
+   **Answered (owner call, 2026-09-01 — P-D-75 arm 5): keyed, ordinary semantics** — P-D-72's family
+    resume already presupposed the key; keyless skips the phase, a keyed retry replays the first
+    clone, which is what a crash-retrying caller needs to not double-clone.
+   Original text: The pipeline's first phase is `Idempotency` and the door is a mutation, so a key is
     admitted; but a clone is a create with **minted** ids, so replaying one cannot be the same
     request in the sense the create door means — two identical clone requests are two legitimate
     clones. Nothing states whether the clone door is keyless (`Phase::Idempotency` being *"skipped,
     never failed, on a keyless request"*) or keyed with the ordinary semantics.
-    **Blocks**: `cpt-cf-bss-products-dod-clone-door`.
-    **Owner**: this feature with `01-foundation`'s.
+   **Blocks**: no DoD — **resolved by P-D-75**; `cpt-cf-bss-products-dod-clone-door` carries the key.
+   **Owner**: was this feature with `01-foundation`'s; **closed**.
 
 15. **Does a `deprecated` source clone as `published` content or as its deprecated head?**
     `01-foundation` §4.3 excludes `lifecycle_state` and `deprecation_provenance` from frozen content

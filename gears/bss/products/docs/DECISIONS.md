@@ -1569,6 +1569,55 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   (the re-publish step).
 
 
+#### P-D-75 — The clone door's five: its body, its side-table write, its discarded answer, C4's scope, its key
+
+- **Date**: 2026-09-01 (owner call, autonomous under the standing instruction — the five rows holding
+  `dod-clone-door`, taken together so the door can be built; rows 1, 2 and 5 carried, answered in
+  `design/11` §6 first)
+
+**1. The request body is the overrides and nothing else** (row 1):
+`{code?, name?, newParentId?, and optional replacement values for the five re-validated classes}` —
+anything absent copies or resets per the disposition table. The replacement slots exist because the
+alternative dead-ends: a retired source with a deprecated attribute definition is refused naming the
+field, the source is immutable, and without a re-select slot in the retry that lineage could never be
+cloned — C4's own words are that the refusal names the field and the verdict *"so the operator
+re-selects rather than guesses"*, and the only place a re-selection can land is the retry.
+
+**2. The clone door writes the side tables in its own creating transaction** (row 2) — **P-D-46's
+precedent extended to the second composite creator**: entity row, side rows, `internal_revision = 1`,
+no side-door events, no second grant. The side tables do not ship yet (`02`/`03`), so the buildable
+clone today copies the entity-row classes and this arm binds the side-table write the day they land.
+
+**3. A `discarded` source is refused `CLONE_SOURCE_DISCARDED`, 409** (row 5) — minted on **P-D-52**'s
+own test: the door owes a classified refusal and nothing existing fits. `ENTITY_TERMINAL` is
+measured-wrong (it means a head **write**, and the clone writes nothing to the source, while a
+`retired` source is explicitly admitted); the bare 404 is measured-wrong (the row is addressable and
+the 404 convention carries no code channel). Declared by `design/11` §3.2; 409 by the
+state-refuses-the-act mapping.
+
+**4. C4's "every field class that failed" is scoped to the re-validated classes** (row 12) — the
+row's own closing arm. Identity collisions are decided under the write (P-D-37) and surface per the
+ordinary phase rules; an operator can learn of a name collision on the retry, exactly as on every
+create. The pre-flight uniqueness probe was declined: it is a read racing the reservation it
+predicts.
+
+**5. The door is keyed, with the ordinary semantics** (row 14) — **P-D-72 already presupposed it**:
+the family clone's resume is *"the same-key retry"* finding a committed-but-unanswered claim. Two
+identical keyless clone requests are two legitimate clones (`Phase::Idempotency` is skipped, never
+failed, on a keyless request); a keyed retry replays the first clone, which is what a crash-retrying
+caller needs to not double-clone.
+
+- **The arguments against, stated**: arm 1 widens the body with replacement slots for classes whose
+  stores do not ship — declared now so the SDK shape (row 1's co-owner is `12`) is stable when they
+  do; arm 3 is the day's only code mint, taken on precedent rather than taste; arm 5 gives a
+  minted-id create replay semantics, which is unusual but exactly P-D-72's contract.
+- **Not changed**: the disposition table, P-D-62's suggestion mechanics, P-D-72's family resume, and
+  rows 3, 6, 8, 11, 18, 20, 25, 27 of `features/clone.md` §7 — the authz roster, lineage surface and
+  test-scope questions stay open.
+- **Propagated**: `design/11-clone.md` (§2 rule 1 the body and the key, §2 rule 2 the side-table
+  write, §3.2 the minted code, §6 twins for rows 1, 2, 5), `features/clone.md` (`dod-clone-door`,
+  `dod-disposition-rules`, §7's arithmetic and the five rows answered).
+
 #### P-D-74 — The capture DDL pins no `capture_kind` roster, so row 49 stops holding the entry table
 
 - **Date**: 2026-09-01 (owner call, autonomous under the standing instruction — a **scoping**
