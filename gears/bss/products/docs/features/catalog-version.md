@@ -643,7 +643,7 @@ operand every predicate reads. Admitting its write is a storage permission, not 
 
 ### The gapless allocator
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-version-counter`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-version-counter`
 
 The system **MUST** create `products_catalog_version_counter`, keyed `(tenant_id)`, holding the
 next id **starting at `1`** (**P-D-67** — pinned so the dev-space ordering argument has a stated

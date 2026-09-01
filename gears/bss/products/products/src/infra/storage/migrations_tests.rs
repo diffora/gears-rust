@@ -4178,3 +4178,155 @@ mod bucket_agreement_tests {
         }
     }
 }
+
+/// The two `2026-09-01` tables, probed the way every guard suite above probes
+/// its own: boot the chain on a pinned in-memory `SQLite`, then arm each raw
+/// probe against the exact CHECK it exists to prove.
+///
+/// @cpt-dod:cpt-cf-bss-products-dod-version-counter:p1
+/// @cpt-dod:cpt-cf-bss-products-dod-watermark-tables:p1
+mod counter_and_watermark_guard_tests {
+    use sea_orm::ConnectionTrait;
+    use sea_orm_migration::MigratorTrait;
+
+    use super::Migrator;
+
+    /// A pinned in-memory `SQLite` database with the whole chain applied —
+    /// the identical idiom every other guard-test module in this file uses,
+    /// raw because these tables have no entity models yet.
+    async fn harness() -> sea_orm::DatabaseConnection {
+        let mut opts = sea_orm::ConnectOptions::new("sqlite::memory:");
+        opts.max_connections(1).min_connections(1);
+        let db = sea_orm::Database::connect(opts)
+            .await
+            .expect("connect in-memory sqlite");
+        Migrator::up(&db, None).await.expect("boot the chain");
+        db
+    }
+
+    async fn exec(db: &sea_orm::DatabaseConnection, sql: &str) -> Result<(), sea_orm::DbErr> {
+        db.execute_raw(sea_orm::Statement::from_string(
+            sea_orm::DatabaseBackend::Sqlite,
+            sql.to_owned(),
+        ))
+        .await
+        .map(|_| ())
+    }
+
+    /// The counter's floor CHECK: `next_id` at the pinned start of `1` is
+    /// admitted, and the poison value `0` — an id below the P-D-67 start —
+    /// is refused by name.
+    #[tokio::test]
+    async fn the_counter_floor_admits_one_and_refuses_zero() {
+        let db = harness().await;
+        exec(
+            &db,
+            "INSERT INTO products_catalog_version_counter (tenant_id, next_id) VALUES ('t-a', 1)",
+        )
+        .await
+        .expect("next_id = 1 is the pinned start and must be admitted");
+
+        let err = exec(
+            &db,
+            "INSERT INTO products_catalog_version_counter (tenant_id, next_id) VALUES ('t-b', 0)",
+        )
+        .await
+        .expect_err("next_id = 0 sits below the pinned start and must be refused");
+        assert!(
+            err.to_string()
+                .contains("chk_products_catalog_version_counter_floor"),
+            "the refusal must come from the floor CHECK, not from some other guard: {err}"
+        );
+    }
+
+    /// The watermark's hash CHECK: a 64-char lowercase hex digest is
+    /// admitted; a truncated digest — the value that would silently never
+    /// match again at the idempotence comparison — is refused by name.
+    #[tokio::test]
+    async fn the_watermark_hash_check_pins_sixty_four_lowercase_hex() {
+        let db = harness().await;
+        let good = "a".repeat(64);
+        exec(
+            &db,
+            &format!(
+                "INSERT INTO products_reference_watermark \
+                 (tenant_id, producer, watermark_at, posted_at, set_hash) \
+                 VALUES ('t-a', 'plan-price', '2026-09-01T00:00:00Z', '2026-09-01T00:00:01Z', '{good}')"
+            ),
+        )
+        .await
+        .expect("a 64-char lowercase hex digest is the stored shape");
+
+        for (label, bad) in [
+            ("truncated", "a".repeat(63)),
+            ("upper-cased", "A".repeat(64)),
+        ] {
+            let err = exec(
+                &db,
+                &format!(
+                    "INSERT INTO products_reference_watermark \
+                     (tenant_id, producer, watermark_at, posted_at, set_hash) \
+                     VALUES ('t-b', 'plan-price', '2026-09-01T00:00:00Z', '2026-09-01T00:00:01Z', '{bad}')"
+                ),
+            )
+            .await
+            .expect_err("a digest outside the pinned shape must be refused");
+            assert!(
+                err.to_string()
+                    .contains("chk_products_reference_watermark_hash_len"),
+                "{label}: the refusal must come from the hash CHECK: {err}"
+            );
+        }
+    }
+
+    /// `never-received` is the absence of the watermark row (`P-D-71`): the
+    /// chain seeds nothing into either watermark table, so a freshly booted
+    /// database has zero rows — a sentinel row here would be the poison-value
+    /// arm the decision declined.
+    #[tokio::test]
+    async fn the_chain_seeds_no_watermark_rows() {
+        let db = harness().await;
+        for table in ["products_reference_watermark", "products_reference_member"] {
+            let rows = db
+                .query_all_raw(sea_orm::Statement::from_string(
+                    sea_orm::DatabaseBackend::Sqlite,
+                    format!("SELECT count(*) AS v FROM {table}"),
+                ))
+                .await
+                .expect("count the table");
+            let n: i64 = rows.first().expect("one row").try_get("", "v").expect("v");
+            assert_eq!(n, 0, "{table} must be born empty");
+        }
+    }
+
+    /// The member table's empty-producer CHECK holds on both tables' shared
+    /// convention, and its per-SKU index exists — the membership lookup the
+    /// `DoD` requires to be an index hit rides it.
+    #[tokio::test]
+    async fn the_member_table_refuses_an_empty_producer_and_carries_the_sku_index() {
+        let db = harness().await;
+        let err = exec(
+            &db,
+            "INSERT INTO products_reference_member (tenant_id, producer, sku_id) \
+             VALUES ('t-a', '', 's-1')",
+        )
+        .await
+        .expect_err("an empty producer name must be refused");
+        assert!(
+            err.to_string()
+                .contains("chk_products_reference_member_producer"),
+            "the refusal must come from the producer CHECK: {err}"
+        );
+
+        let rows = db
+            .query_all_raw(sea_orm::Statement::from_string(
+                sea_orm::DatabaseBackend::Sqlite,
+                "SELECT name AS v FROM sqlite_master WHERE type = 'index' \
+                 AND name = 'idx_products_reference_member_sku'"
+                    .to_owned(),
+            ))
+            .await
+            .expect("query sqlite_master");
+        assert_eq!(rows.len(), 1, "the per-SKU membership index must exist");
+    }
+}

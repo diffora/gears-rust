@@ -467,7 +467,7 @@ the DoD says so and §7 carries the question.
 
 ### The watermark store
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-watermark-tables`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-watermark-tables`
 
 The system **MUST** create `products_reference_watermark`, keyed `(tenant_id, producer)`, carrying
 `watermark_at`, `posted_at` and **`set_hash`** (**P-D-71**: `SHA-256` over the member `sku_id`s
