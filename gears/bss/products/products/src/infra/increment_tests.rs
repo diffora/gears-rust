@@ -460,6 +460,44 @@ async fn re_rendering_the_stored_manifest_reproduces_the_checksum() {
     );
 }
 
+/// The collect must sit **under** the lease, and that is an order property
+/// nothing in this file can observe at runtime: both orders answer
+/// `LeaseHeld` on a contended tenant and the same manifest on an uncontended
+/// one. The difference is visible only to two workers running at once, which
+/// is the one case a single-threaded probe cannot stage.
+///
+/// So it is pinned at the source. `drain_tenant`'s body must reach
+/// `acquire_increment_lease` before it reaches `SnapshotBuilder::collect`;
+/// swapping the two fails this test. What it defends is `inst-sn-collect`'s
+/// serialization under P-D-53: with the collect outside the lease, two
+/// workers can each collect, and the one that commits the LATER version can
+/// be carrying the EARLIER `reference_producer_set` or `metadata_maps` —
+/// against `dod-producer-snapshot`, which obliges a historical verdict to be
+/// evaluated against the **then-registered** set. The in-transaction
+/// compare below cannot close that window: it re-reads the entity entries,
+/// and a capture-only change moves no entry.
+#[test]
+fn the_collect_sits_under_the_increment_lease() {
+    const SOURCE: &str = include_str!("increment.rs");
+    let body = SOURCE
+        .split_once("pub async fn drain_tenant(")
+        .expect("drain_tenant is declared in the file under test")
+        .1
+        .split_once("\n}\n")
+        .expect("its body is brace-terminated at column zero")
+        .0;
+    let lease = body
+        .find("acquire_increment_lease(")
+        .expect("drain_tenant takes the tenant's increment lease");
+    let collect = body
+        .find("SnapshotBuilder::collect(")
+        .expect("drain_tenant collects the snapshot");
+    assert!(
+        lease < collect,
+        "the snapshot collect must run under the increment lease, not before it"
+    );
+}
+
 /// `inst-sn-revalidate` through the seam: stage, move a head, commit — the
 /// pass fails closed as `Restaged`, nothing is written, and the requests
 /// stay pending for the next tick's fresh collect.
@@ -479,8 +517,15 @@ async fn a_moved_head_between_stage_and_commit_restages_the_pass() {
     // The race the AC names: a publish lands between collect and commit.
     seed_published_product(&harness, "Delta Line Second").await;
 
+    // The lease is the worker's, so the test takes it the same way
+    // `drain_tenant` does — what is under test here is the compare, not the
+    // acquisition.
+    let guard = super::acquire_increment_lease(&harness.db, TENANT)
+        .await
+        .expect("lease store reachable")
+        .expect("no peer holds the tenant's lease");
     let outcome = commit_increment(
-        &harness.db,
+        guard,
         TENANT,
         staged,
         vec![("pricing".to_owned(), "s-1".to_owned())],

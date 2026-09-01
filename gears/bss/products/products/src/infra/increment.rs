@@ -31,15 +31,24 @@
 //!
 //! # Stage vs commit (`inst-sn-revalidate`)
 //!
-//! The heads are collected **before** the lease is taken; inside the
-//! transaction they are re-read and compared — any entity whose
-//! `published_version` **or** `lifecycle_state` moved, appeared or vanished
-//! between collect and commit fails the pass closed. Every requester on
-//! these lanes today is mechanical, so the failure is
-//! [`DrainOutcome::Restaged`]: the requests stay `pending`, the next tick
-//! re-collects fresh, and the request is never lost. (The operator
-//! catalog-publish door, when it lands, owns the wire-visible
-//! `STAGED_ENTITY_CHANGED` arm of the same compare.)
+//! The heads are collected **under the lease**, and inside the transaction
+//! they are re-read and compared — any entity whose `published_version`
+//! **or** `lifecycle_state` moved, appeared or vanished between collect and
+//! commit fails the pass closed. Every requester on these lanes today is
+//! mechanical, so the failure is [`DrainOutcome::Restaged`]: the requests
+//! stay `pending`, the next tick re-collects fresh, and the request is never
+//! lost. (The operator catalog-publish door, when it lands, owns the
+//! wire-visible `STAGED_ENTITY_CHANGED` arm of the same compare.)
+//!
+//! **Both mechanisms are load-bearing, and they close different windows.**
+//! The lease serializes *workers*: with the collect outside it, two workers
+//! could each collect and the one committing the LATER version could be
+//! carrying the EARLIER capture set, since the compare re-reads entity
+//! entries and a capture-only change moves no entry. The compare handles
+//! what the lease cannot — an entity **door** is not a worker and takes no
+//! lease, so it can publish between this collect and the commit. Only the
+//! demand read runs outside the lease, because a tenant with nothing pending
+//! must not queue behind one.
 //!
 //! # The manifest (P-D-80, P-D-83)
 //!
@@ -202,8 +211,8 @@ fn ready_batch(pending: &[PendingIncrementRequest], now: DateTime<Utc>) -> Optio
     None
 }
 
-/// The staged snapshot — everything collected before the lease, compared
-/// and written inside the transaction.
+/// The staged snapshot — everything collected under the lease, compared and
+/// written inside the transaction.
 pub struct VersionManifest {
     /// The entry half: references into immutable `products_entity_version`.
     pub entries: Vec<SnapshotEntityRef>,
@@ -397,9 +406,10 @@ pub async fn drain_tenant(
     now: DateTime<Utc>,
 ) -> Result<DrainOutcome, RepoError> {
     let scope = AccessScope::for_tenant(tenant_id);
-    // The read connection lives in its own block so it is returned before
-    // the lease work below checks one out again.
-    let (staged, batch) = {
+    // Demand first, on a plain connection: a tenant with nothing pending must
+    // not take the lease at all, or one idle tenant per tick would serialize
+    // against every other worker for nothing.
+    let batch = {
         let conn = db
             .conn()
             .map_err(|e| RepoError::Db(format!("coalescer connection: {e}")))?;
@@ -410,13 +420,62 @@ pub async fn drain_tenant(
         let Some(batch) = ready_batch(&pending, now) else {
             return Ok(DrainOutcome::WindowOpen);
         };
-        // Stage: collect outside the lease (inst-sn-collect's serialization
-        // is the coalescer's own, P-D-53).
-        let staged = SnapshotBuilder::collect(&conn, &scope, tenant_id).await?;
-        (staged, batch)
+        batch
     };
 
-    commit_increment(db, tenant_id, staged, batch.keys, now).await
+    // The lease, THEN the collect. An earlier revision collected before
+    // acquiring it, and only the entity *entries* were re-read inside the
+    // transaction — so two workers could each collect, one commit version N
+    // with a newer capture set and the other commit N+1 with an older one: a
+    // later version carrying an earlier `reference_producer_set` or
+    // `metadata_maps`, which is exactly the property `dod-producer-snapshot`
+    // exists to give. `features/catalog-version.md`'s `dod-snapshot-builder`
+    // obliges the collect to happen inside the serialized transaction, and
+    // P-D-53 reads that serialization as the coalescer's one worker per
+    // tenant — which is this lease.
+    //
+    // The entry compare inside the transaction still earns its place: the
+    // lease serializes WORKERS, and an entity door is not a worker. It can
+    // publish between this collect and the commit, and that is the race
+    // `inst-sn-revalidate` names.
+    let Some(guard) = acquire_increment_lease(db, tenant_id).await? else {
+        return Ok(DrainOutcome::LeaseHeld);
+    };
+    let staged = {
+        let conn = db
+            .conn()
+            .map_err(|e| RepoError::Db(format!("coalescer connection: {e}")))?;
+        SnapshotBuilder::collect(&conn, &scope, tenant_id).await?
+    };
+
+    commit_increment(guard, tenant_id, staged, batch.keys, now).await
+}
+
+/// Take the tenant's increment lease, or report that a peer holds it.
+///
+/// Split out of [`commit_increment`] so the **collect happens under it**: the
+/// lease is the one-worker-per-tenant serialization P-D-53 identifies with
+/// `inst-sn-collect`'s *serialized*, and a collect outside it is one two
+/// workers can both perform.
+///
+/// # Errors
+///
+/// [`RepoError`] where the lease store could not be reached — not the same
+/// thing as a peer holding it, which answers `None`.
+async fn acquire_increment_lease(
+    db: &DBProvider<DbError>,
+    tenant_id: Uuid,
+) -> Result<Option<coord::LeaseGuard>, RepoError> {
+    let lease = coord::LeaseManager::new(db.db());
+    match lease
+        .acquire(&format!("cv-increment:{tenant_id}"), LEASE_TTL)
+        .await
+    {
+        Ok(guard) => Ok(Some(guard)),
+        Err(coord::CoordError::LeaseHeld) => Ok(None),
+        Err(coord::CoordError::Db(e)) => Err(RepoError::Db(format!("increment lease: {e}"))),
+        Err(other) => Err(RepoError::Db(format!("increment lease: {other}"))),
+    }
 }
 
 /// The staged half handed to the committing half — split from
@@ -424,32 +483,23 @@ pub async fn drain_tenant(
 /// stages, moves a head, then commits, which is the exact window
 /// `inst-sn-revalidate` guards.
 ///
+/// The `guard` arrives **already held**, and every parameter after it was
+/// read under it: `drain_tenant` acquires the lease before collecting, so a
+/// caller cannot construct this call without the serialization P-D-53
+/// requires. The guard carries the transaction runner too, which is why the
+/// provider is no longer a parameter here.
+///
 /// # Errors
 ///
 /// As [`drain_tenant`].
 pub async fn commit_increment(
-    db: &DBProvider<DbError>,
+    guard: coord::LeaseGuard,
     tenant_id: Uuid,
     staged: VersionManifest,
     keys: Vec<(String, String)>,
     now: DateTime<Utc>,
 ) -> Result<DrainOutcome, RepoError> {
     let scope = AccessScope::for_tenant(tenant_id);
-    // The per-tenant lease, then the transaction under its write fence.
-    let lease = coord::LeaseManager::new(db.db());
-    let guard = match lease
-        .acquire(&format!("cv-increment:{tenant_id}"), LEASE_TTL)
-        .await
-    {
-        Ok(guard) => guard,
-        Err(coord::CoordError::LeaseHeld) => return Ok(DrainOutcome::LeaseHeld),
-        Err(coord::CoordError::Db(e)) => {
-            return Err(RepoError::Db(format!("increment lease: {e}")));
-        }
-        Err(other) => {
-            return Err(RepoError::Db(format!("increment lease: {other}")));
-        }
-    };
 
     let staged_entries = staged.entries.clone();
     let staged_manifest = std::sync::Arc::new(staged);
