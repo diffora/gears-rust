@@ -410,7 +410,9 @@ column no table has.
 - [ ] `p3` - **ID**: `cpt-cf-bss-products-dod-clone-door`
 
 `POST /bss-products/v1/{products|skus}/{id}/clone` exists for both kinds, answering **201** with the
-new draft. No such route ships today.
+new draft. For a Product the act is always the family act — the body carries no selector and no
+document names a lone-product clone (**P-D-79**) — the per-child receipt riding the 201, empty
+for a childless source.
 
 The door **MUST** drive the ordinary Foundation create door rather than a parallel insert path —
 `design/11` §1.7 words it *"internally it drives the ordinary 01 create door"* — so the validators,
@@ -445,7 +447,10 @@ because it sits outside frozen content and therefore survives retirement.
 
 **The rule exists for a specific leak.** A published entity's head carries pending, unapproved
 edits; reading it would copy them into a new draft and thereby publish them by a side door. The
-frozen read is what makes a clone reproduce what consumers actually saw.
+frozen read is what makes a clone reproduce what consumers actually saw. A `deprecated`
+source whose head has moved since deprecation reads the **newer** frozen version (**P-D-78** —
+§7 row 15): the retirement design keeps the head open and re-announces consumers onto the latest
+frozen bytes, and no store records which version was current at deprecation.
 
 `clonedFrom` records **exactly the version read** — `(entity id, published_version)` for a frozen
 read and `(entity id, 'draft')` for a head read — so the lineage names a byte-identical source
@@ -468,8 +473,8 @@ So this DoD adds a **tombstone-free read of `products_entity_version` by
 `(tenant, entity_kind, entity_id, published_version)` and a decoder for the canonical rendering** —
 the decoder being the half nothing in the crate supplies. It **MUST** be the inverse of
 `canonical_rendering` and live beside it, not a second serialization rule invented at the clone door;
-`domain/canonical.rs` exists to keep that in one place. Whether the decoder is this feature's or
-`01-foundation`'s is §7 row 23's.
+`domain/canonical.rs` exists to keep that in one place. The decoder is `01-foundation`'s, beside
+the renderer (**P-D-77** — §7 row 23), and this read surface is its first consumer.
 
 **Implements**: `cpt-cf-bss-products-algo-disposition`
 
@@ -680,8 +685,10 @@ surface. §7 routes it to `08`'s and `12`'s owners: expose it, or withdraw the j
 
 - [ ] `p3` - **ID**: `cpt-cf-bss-products-dod-clone-children`
 
-A product-with-SKUs clone clones each child through the same disposition table, **remapping the
-parent link to the new parent** rather than copying the source's.
+A product-with-SKUs clone clones each child — the source's non-discarded SKUs, in any of C1's
+four states (**P-D-79**: a `discarded` child is neither attempted nor receipted) — through the
+same disposition table, **remapping the parent link to the new parent** rather than copying the
+source's.
 
 - A **failing parent** creates nothing and children are never attempted.
 - A **failing child fails alone**; siblings land.
@@ -702,7 +709,8 @@ about different entities and both hold.
 itself — the new parent's children carry their own `cloned_from` pointers — and the **same-key retry
 resumes the family act**, the door's claim joining the *parent's* transaction, a
 committed-but-unanswered claim meaning *in progress*, the re-entry skipping already-cloned sources
-and storing the answer at completion. **The family act answers `201` with a per-child receipt** —
+and storing the answer at completion — the parent found by the claim row's own `entity_ref`
+stamp, since several family acts over one source make `cloned_from` alone ambiguous (**P-D-79**). **The family act answers `201` with a per-child receipt** —
 `{source sku_id, disposition, new sku_id | code + violations}`, codes the owning doors' verbatim — a
 failing parent staying the ordinary refusal of the whole act.
 
@@ -716,7 +724,9 @@ failing parent staying the ordinary refusal of the whole act.
 - [ ] `p3` - **ID**: `cpt-cf-bss-products-dod-clone-authz`
 
 The clone door spends `product × write` for a Product and `sku × write` for a SKU. A
-product-with-SKUs clone requires **both**.
+product-with-SKUs clone requires **both** — and every product clone is the family act
+(**P-D-79**), so the product door spends both unconditionally: authorization precedes the child
+count it has not yet been authorized to read (P-D-30).
 
 **Both permissions already ship.** `gts/permissions.rs`'s `EXPECTED_PERMISSION_IDS` is exactly
 six — `{product,sku} × {read,write,publish}` — and the door passes a `ResourceType` from
@@ -914,10 +924,11 @@ assertion on the first code passes on a build that short-circuits, which is the 
 [`../design/11-clone.md`](../design/11-clone.md) §6 — the slice's full count, not a selection — and
 **seventeen raised here**: twelve while authoring and five by the three-lens review of this
 document. Eight of the seventeen (rows 11, 12, 13, 14, 17, 20, 23 and 25) come from reading the
-crate and nine from the design set. Of the twenty-seven, **fifteen block
+crate and nine from the design set. Of the twenty-seven, **seventeen block
 no DoD in this document** (rows 9, 10, 21 and 24, plus rows 13 and 4, resolved by **P-D-55 and
-P-D-62 on 2026-08-31**, and rows 7, 19, 26 — **P-D-72** — 1, 2, 5, 12, 14 — **P-D-75** — and 18 — **P-D-76** —
-on 2026-09-01, all kept in place rather than struck); the other twelve each name the DoD they block. A
+P-D-62 on 2026-08-31**, and rows 7, 19, 26 — **P-D-72** — 1, 2, 5, 12, 14 — **P-D-75** — 18 — **P-D-76** —
+15 — **P-D-78** — and 23 — **P-D-77** —
+on 2026-09-01, all kept in place rather than struck); the other ten each name the DoD they block. A
 third subsection carries defects owed to other documents, recorded and not repaired here; those are
 not rows. The two register pointers are in this preamble, not there.
 
@@ -1110,14 +1121,21 @@ duplicating it.
    **Blocks**: no DoD — **resolved by P-D-75**; `cpt-cf-bss-products-dod-clone-door` carries the key.
    **Owner**: was this feature with `01-foundation`'s; **closed**.
 
-15. **Does a `deprecated` source clone as `published` content or as its deprecated head?**
-    `01-foundation` §4.3 excludes `lifecycle_state` and `deprecation_provenance` from frozen content
+15. ~~**Does a `deprecated` source clone as `published` content or as its deprecated head?**~~
+    **Answered (owner call, 2026-09-01 — P-D-78): the last frozen version, uniformly** — the
+    retirement design keeps the head open and re-announces consumers onto every moved version
+    (`design/04` `inst-rt-initiate`: *"consumers key on `(skuId, effectiveAt)` and take the
+    latest"*), and nothing records which version was current at deprecation
+    (`deprecation_provenance` is `direct|cascaded`, not a bookmark), so the other read has no
+    operand. `cloned_from_version` records exactly the version read.
+    Original text: `01-foundation` §4.3 excludes `lifecycle_state` and `deprecation_provenance` from frozen content
     (**P-D-24**, extended by **P-D-35**), so a `deprecated` entity's last frozen version is
     indistinguishable from its published one — which is correct for content and leaves the read
     surface unambiguous. What is unstated is whether a `deprecated` source whose head has moved
     **since** deprecation clones the newer frozen version or the one current at deprecation.
-    **Blocks**: `cpt-cf-bss-products-dod-clone-read-surface`.
-    **Owner**: `04-lifecycle`'s owner with this feature.
+    **Blocks**: no DoD — **resolved by P-D-78**; `cpt-cf-bss-products-dod-clone-read-surface`
+    keeps rows 16, 20 and 22.
+    **Owner**: was `04-lifecycle`'s owner with this feature; **closed**.
 
 16. **What does a clone of a source with no frozen version at all do?** C1 admits a `published`
     source, and `01-foundation`'s publish door writes the version row, so the case should not arise —
@@ -1197,16 +1215,22 @@ duplicating it.
     **Blocks**: `cpt-cf-bss-products-dod-clone-read-surface`.
     **Owner**: `06-catalog-version`'s owner.
 
-23. **Who owns the decoder for a frozen version's canonical rendering?**
-    `products_entity_version.content` is a single `String` — *"the canonical rendering itself …
+23. ~~**Who owns the decoder for a frozen version's canonical rendering?**~~
+    **Answered (owner call, 2026-09-01 — P-D-77): `01-foundation`'s, beside the renderer** —
+    `domain::canonical` gains the inverse of `canonical_rendering`, the round-trip test beside the
+    renderer's own, and the clone read surface is its first consumer; the row's own closing arm
+    (a parse at the door is the second serialization rule the module exists to prevent) decides
+    the placement.
+    Original text: `products_entity_version.content` is a single `String` — *"the canonical rendering itself …
     rather than one column per content field"* — `repo.rs` has no reader for the table, and
     `domain::canonical` renders without parsing while `repo.rs` *"deliberately imports no
     canonicalizer"*. The clone's read surface needs both halves. Whether the decoder is
     `01-foundation`'s (beside `canonical_rendering`, which is where a round-trip belongs) or this
     feature's is unstated, and building it at the clone door would create the second serialization
     rule `domain/canonical.rs` exists to prevent.
-    **Blocks**: `cpt-cf-bss-products-dod-clone-read-surface`.
-    **Owner**: `01-foundation`'s canonical-rendering owner, with this feature.
+    **Blocks**: no DoD — **resolved by P-D-77**; `cpt-cf-bss-products-dod-clone-read-surface`
+    keeps rows 16, 20 and 22.
+    **Owner**: was `01-foundation`'s canonical-rendering owner, with this feature; **closed**.
 
 24. **Is DECOMPOSITION's `Domain Model Entities` field a listing convention or an ontological
     claim?** This pass listed `DispositionTable` and `CloneDoor` there on §2.7's and §2.10's

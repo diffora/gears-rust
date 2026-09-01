@@ -1569,6 +1569,110 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   (the re-publish step).
 
 
+#### P-D-79 — The product clone act is the family act, and the claim row carries its parent handle
+
+- **Date**: 2026-09-01 (owner call, autonomous under the standing instruction — the three operands
+  `dod-clone-children`'s build needs that P-D-72 and P-D-75 presupposed without naming)
+- **Context**: no §7 row asks how a caller requests the product-with-SKUs act. P-D-75 closed the
+  body as *"the overrides and nothing else"* with no flag in it, no document in the set names a
+  lone-product clone, and the only two clone shapes named anywhere are the lone-SKU clone and the
+  product-with-SKUs clone.
+
+**1. Every product clone is the family act.** The closed body carries no selector, so there is
+nothing for a caller to choose with; a childless product degenerates to a family of zero, the
+per-child receipt present and empty. The remedy for an operator wanting the shell alone is
+discarding the unwanted child drafts — the set's own *"drafts are cheap"*.
+
+**2. The product door spends both grants unconditionally.** L4's *"a product-with-SKUs clone
+requires **both**"* becomes the door's own gate: authorization is a pre-pipeline gate (**P-D-30**)
+and cannot depend on a child count the door has not yet been authorized to read.
+
+**3. The claim row gains `entity_ref` — the composite act's parent handle.** P-D-72's resume
+*"scans the new parent's children"*, which presupposes the parent is findable; with several family
+acts over one source, `cloned_from = source` selects several parents, and the claim row stores
+nothing else. So `products_idempotency` gains one nullable id column, written in the parent's
+transaction (claim `INSERT`, parent row, `entity_ref` stamp — one transaction), `NULL` for every
+single-entity door; `IdempotencyClaim::InFlight` carries it out to the door, and the expired-claim
+takeover resets it beside the response pair. **The family act's answer is not stored in the
+parent's transaction**: the claim stays committed-and-unanswered — P-D-72's *"in progress"* —
+until the children phase completes and the receipt is stored, which is what makes the crash window
+resumable instead of replaying a parent-only answer.
+
+**4. The family's children are the source's non-discarded SKUs**, each in any of C1's four states.
+A `discarded` child is not attempted and not receipted — it is outside the family C1 admits —
+where the lone door refuses it by name because there the caller addressed it by name.
+
+**5. The concurrent same-key retry race is accepted and stated.** Two concurrent retries of one
+unanswered key can both read committed-and-unanswered and both clone a remainder child, leaving
+duplicate child drafts; the stored answer is the last completer's honest receipt. The fence was
+declined: a per-parent uniqueness over `cloned_from` would refuse the legitimate second clone of
+one source under one parent.
+
+- **The arguments against, stated**: arm 1 makes cloning a fifty-SKU product unavoidable at this
+  door; arm 2 demands `sku × write` of a caller cloning a childless product; arm 3 widens 01's
+  P-D-42 table for one door's semantics — taken because the claim already joins the parent's
+  transaction by P-D-72's own words, which made it the composite act's record.
+- **Not changed**: P-D-42's single-entity semantics at every other door (the column stays `NULL`
+  there), P-D-72's per-child transactions and receipt shape, the lone-SKU carve-out, P-D-75's body.
+- **Propagated**: `design/11-clone.md` (§2 rules 1 and 6), `features/clone.md`
+  (`dod-clone-door`, `dod-clone-children`, `dod-clone-authz`),
+  `m20260829_000006_create_products_idempotency.rs` edited in place per the chain's convention.
+
+#### P-D-78 — A frozen-state source reads its last frozen version; nothing bookmarks the version at deprecation
+
+- **Date**: 2026-09-01 (owner call, autonomous under the standing instruction —
+  `features/clone.md` §7 row 15)
+- **Context**: §4.3's exclusions make a `deprecated` entity's last frozen version content-identical
+  to a published one, but a `deprecated` head that moved *after* deprecation leaves two candidate
+  reads, and the row asked which one the clone takes.
+
+**The read is uniform — the last frozen version for `published`, `deprecated` and `retired`
+alike, including a `deprecated` source whose head has moved since deprecation.** Two measurements
+force it. First, the retirement design itself keeps the head open through the lead window and
+re-announces every move — `design/04` `inst-rt-initiate`: a publish that moves the version
+re-emits `SkuRetired` with the new `fromVersion` and *"consumers key on `(skuId, effectiveAt)` and
+take the latest"* — so the latest frozen bytes are what consumers see under deprecation, and a
+clone of the version current at deprecation would clone content consumers were already
+re-announced away from. Second, the alternative has no operand: no store records which version was
+current at deprecation — `deprecation_provenance` carries `direct|cascaded`, not a version, and
+no other column or table holds the bookmark — so the "version at deprecation" read is unbuildable
+without authoring a new column no document asks for.
+
+- **The arguments against, stated**: an operator deprecating at version N may have meant "N is the
+  last good one", and later frozen edits may be exactly what deprecation was meant to fence. But
+  `cloned_from_version` records exactly the version read, the clone is a draft an operator reviews
+  before publishing, and a version selector in the body was closed off by P-D-75's *"overrides and
+  nothing else"*.
+- **Not changed**: the head read for a `draft` source, §4.3's frozen-content exclusions, P-D-76's
+  lineage pair.
+- **Propagated**: `features/clone.md` (row 15 struck; one sentence in
+  `cpt-cf-bss-products-dod-clone-read-surface`).
+
+#### P-D-77 — The canonical decoder is `01-foundation`'s, beside the renderer
+
+- **Date**: 2026-09-01 (owner call, autonomous under the standing instruction —
+  `features/clone.md` §7 row 23)
+- **Context**: `products_entity_version.content` is the canonical rendering as one string; the
+  clone read surface needs the inverse, and the row asked which slice owns it.
+
+**`domain::canonical` gains the decoder, beside `canonical_rendering`, owned by `01-foundation`.**
+The row's own measurement decides it: building the parse at the clone door *"would create the
+second serialization rule `domain/canonical.rs` exists to prevent"*, and
+`dod-clone-read-surface` already binds the mechanism — *"MUST be the inverse of
+`canonical_rendering` and live beside it"*. The decoder is 01's export like the renderer, the
+clone read surface is its first consumer, and the round-trip test lives beside the renderer's own
+tests. The interim parse the product clone door shipped with is replaced by the call.
+
+- **The arguments against, stated**: the clone is today the decoder's only consumer, so placing it
+  with the consumer would keep 01's surface one function smaller — declined for the row's own
+  reason, and because a second consumer (the family act's child reads) arrives with the same
+  build.
+- **Not changed**: `canonical_rendering`, `content_digest` and `render_instant`; `repo.rs`'s
+  "deliberately imports no canonicalizer" posture (the decoder's callers are the doors, not the
+  repo).
+- **Propagated**: `features/clone.md` (row 23 struck; the read-surface DoD's ownership sentence),
+  `domain/canonical.rs`, `api/rest/products.rs`.
+
 #### P-D-76 — `cloned_from` is two columns, immutable after create, and inside the content roster
 
 - **Date**: 2026-09-01 (owner call, autonomous under the standing instruction — row 18 of
