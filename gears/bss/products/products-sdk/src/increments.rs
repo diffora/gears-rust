@@ -212,6 +212,17 @@ impl IncrementRequests for UnconfiguredIncrementRequests {
     }
 }
 
+/// The watermark contract's fail-closed error, built under this module's
+/// resource identity because the two contracts are one gear's surface seen
+/// from two sides — the sibling `pricing-sdk` files its two registry ports
+/// under one identity for the same reason.
+pub(crate) fn unconfigured_watermarks() -> CanonicalError {
+    IncrementResource::unimplemented(
+        "bss-products: no WatermarkPosts binding is registered in ClientHub",
+    )
+    .create()
+}
+
 fn unconfigured() -> CanonicalError {
     IncrementResource::unimplemented(
         "bss-products: no IncrementRequests binding is registered in ClientHub",

@@ -71,12 +71,26 @@ pub mod labels {
     /// most destructive batch act must not be reachable with the import
     /// pair, and it arrives with its own door.
     pub const BULK: &str = gts_id!("cf.bss.products.bulk.v1~");
+    /// The reference signal — `post`, the watermark door's own pair
+    /// (`design/07` §2). A label of its own rather than an action on
+    /// `sku`: the subject is a producer's complete set, not one entity.
+    pub const REFERENCE_SIGNAL: &str = gts_id!("cf.bss.products.reference_signal.v1~");
+    /// The reference-producer registry — `write`, the membership ops'
+    /// governed pair.
+    pub const REFERENCE_PRODUCER: &str = gts_id!("cf.bss.products.reference_producer.v1~");
 
     /// Every authz label this module declares, stable order. The single
     /// canonical list driving [`super::authz_label_type_schemas`]'s stub
     /// registration. MUST match the permission catalog's distinct
     /// `resource_type`s (`crate::gts::permissions`); a drift test enforces it.
-    pub const ALL: &[&str] = &[PRODUCT, SKU, CATALOG_VERSION, BULK];
+    pub const ALL: &[&str] = &[
+        PRODUCT,
+        SKU,
+        CATALOG_VERSION,
+        BULK,
+        REFERENCE_SIGNAL,
+        REFERENCE_PRODUCER,
+    ];
 }
 
 /// PEP action names for the labels above.
@@ -105,6 +119,9 @@ pub mod actions {
     /// Execute action — running a batch
     /// (`POST /bss-products/v1/bulk/imports`).
     pub const EXECUTE: &str = "execute";
+    /// Post action — a producer posting its reference watermark
+    /// (`POST /bss-products/v1/reference-watermarks`).
+    pub const POST: &str = "post";
 }
 
 /// Properties the PEP may compile from PDP constraints for registry rows.
@@ -134,6 +151,12 @@ pub mod resource_types {
         ResourceType::from_static(labels::CATALOG_VERSION, SUPPORTED_PROPERTIES);
     /// Bulk — `execute`, `read`.
     pub const BULK: ResourceType = ResourceType::from_static(labels::BULK, SUPPORTED_PROPERTIES);
+    /// The reference signal — `post`.
+    pub const REFERENCE_SIGNAL: ResourceType =
+        ResourceType::from_static(labels::REFERENCE_SIGNAL, SUPPORTED_PROPERTIES);
+    /// The reference-producer registry — `write`.
+    pub const REFERENCE_PRODUCER: ResourceType =
+        ResourceType::from_static(labels::REFERENCE_PRODUCER, SUPPORTED_PROPERTIES);
 }
 
 /// Error from the registry's PEP gate.

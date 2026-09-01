@@ -158,6 +158,7 @@ pub mod bulk;
 pub mod catalog_version;
 pub mod preconditions;
 pub mod products;
+pub mod reference;
 pub mod skus;
 
 /// The gear's reserved service prefix.
@@ -223,6 +224,9 @@ pub(crate) struct ApiState {
     /// `inst-bm-limits`' second operand — the tenant's concurrent-batch
     /// ceiling, checked here and re-checked by the worker at claim.
     pub(crate) bulk_max_concurrent_batches_per_tenant: u32,
+    /// The watermark door's own bound (P-D-87 arm 1), resolved once at
+    /// `init` from `ProductsConfig::watermark_skew_tolerance`.
+    pub(crate) watermark_skew_tolerance: std::time::Duration,
 }
 
 /// Extract the authenticated [`SecurityContext`] from the request

@@ -128,6 +128,10 @@ pub(crate) struct ProductsRuntime {
     /// The tenant's concurrent-batch ceiling.
     pub bulk_max_concurrent_batches_per_tenant: u32,
 
+    /// The watermark door's skew bound and the predicate's freshness
+    /// threshold, resolved once from `ProductsConfig` (P-D-87 arm 1).
+    pub watermark_skew_tolerance: std::time::Duration,
+
     /// Whichever handle keeps the running pipeline's background tasks alive.
     ///
     /// Held for its `Drop`, never read: dropping either handle drops its
@@ -430,6 +434,21 @@ impl Gear for BssProductsGear {
         // implementation package. The out-of-process binding is the REST
         // door `register_rest` merges; both run the identical
         // `catalog_version x request` gate.
+        let sdk_state = Arc::new(crate::api::rest::ApiState {
+            db: db_provider.clone(),
+            sink: sink.clone(),
+            idempotency_retention_hours,
+            bulk_max_rows_per_batch: cfg.bulk_max_rows_per_batch,
+            bulk_max_concurrent_batches_per_tenant: cfg.bulk_max_concurrent_batches_per_tenant,
+            watermark_skew_tolerance: cfg.watermark_skew_tolerance(),
+        });
+        ctx.client_hub()
+            .register::<dyn bss_products_sdk::watermarks::WatermarkPosts>(Arc::new(
+                crate::api::rest::reference::InProcessWatermarkPosts {
+                    state: Arc::clone(&sdk_state),
+                    enforcer: (*enforcer).clone(),
+                },
+            ));
         ctx.client_hub()
             .register::<dyn bss_products_sdk::increments::IncrementRequests>(Arc::new(
                 crate::api::rest::catalog_version::InProcessIncrementRequests {
@@ -440,6 +459,7 @@ impl Gear for BssProductsGear {
                         bulk_max_rows_per_batch: cfg.bulk_max_rows_per_batch,
                         bulk_max_concurrent_batches_per_tenant: cfg
                             .bulk_max_concurrent_batches_per_tenant,
+                        watermark_skew_tolerance: cfg.watermark_skew_tolerance(),
                     }),
                     enforcer: (*enforcer).clone(),
                 },
@@ -451,6 +471,7 @@ impl Gear for BssProductsGear {
             freeze_timeout_hours: cfg.freeze_timeout_hours,
             bulk_max_rows_per_batch: cfg.bulk_max_rows_per_batch,
             bulk_max_concurrent_batches_per_tenant: cfg.bulk_max_concurrent_batches_per_tenant,
+            watermark_skew_tolerance: cfg.watermark_skew_tolerance(),
             pipeline,
             db: db_provider,
             idempotency_retention_hours,
@@ -499,6 +520,7 @@ impl RestApiCapability for BssProductsGear {
             idempotency_retention_hours: rt.idempotency_retention_hours,
             bulk_max_rows_per_batch: rt.bulk_max_rows_per_batch,
             bulk_max_concurrent_batches_per_tenant: rt.bulk_max_concurrent_batches_per_tenant,
+            watermark_skew_tolerance: rt.watermark_skew_tolerance,
         });
         Ok(router
             .merge(crate::api::rest::products::router(
@@ -514,6 +536,10 @@ impl RestApiCapability for BssProductsGear {
                 openapi,
             ))
             .merge(crate::api::rest::bulk::router(
+                Arc::clone(&api_state),
+                openapi,
+            ))
+            .merge(crate::api::rest::reference::router(
                 Arc::clone(&api_state),
                 openapi,
             ))

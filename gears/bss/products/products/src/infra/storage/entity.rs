@@ -14,4 +14,7 @@ pub mod freeze_participant;
 pub mod idempotency;
 pub mod identity_ref;
 pub mod product;
+pub mod reference_member;
+pub mod reference_producer;
+pub mod reference_watermark;
 pub mod sku;

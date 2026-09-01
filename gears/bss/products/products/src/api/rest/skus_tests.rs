@@ -1295,6 +1295,7 @@ fn api_state(harness: &TestHarness) -> ApiState {
         bulk_max_rows_per_batch: ProductsConfig::default().bulk_max_rows_per_batch,
         bulk_max_concurrent_batches_per_tenant: ProductsConfig::default()
             .bulk_max_concurrent_batches_per_tenant,
+        watermark_skew_tolerance: ProductsConfig::default().watermark_skew_tolerance(),
     }
 }
 

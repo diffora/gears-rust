@@ -88,6 +88,7 @@ fn app_for(harness: &TestHarness, tenant: Uuid, max_rows: u32, max_batches: u32)
         idempotency_retention_hours: ProductsConfig::default().idempotency_retention_hours,
         bulk_max_rows_per_batch: max_rows,
         bulk_max_concurrent_batches_per_tenant: max_batches,
+        watermark_skew_tolerance: ProductsConfig::default().watermark_skew_tolerance(),
     });
     let openapi = OpenApiRegistryImpl::new();
     router(state, &openapi).layer(axum::Extension(flat_in_enforcer(tenant)))

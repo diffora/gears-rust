@@ -27,6 +27,7 @@
 pub mod api;
 pub mod increments;
 pub mod models;
+pub mod watermarks;
 
 pub use api::ProductsClient;
 pub use models::{EntityKind, LifecycleState, Product, Sku};

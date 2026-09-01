@@ -27,3 +27,6 @@ uuid = { workspace = true }
 toolkit-security = { workspace = true }
 # The resource-error identity is a GTS id, the platform's own naming.
 toolkit-gts = { workspace = true }
+# The watermark contract carries the instant its set is complete as of; a
+# string would move the parse to every consumer.
+chrono = { workspace = true }

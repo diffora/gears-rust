@@ -32,6 +32,16 @@ pub const IDEMPOTENCY_RETENTION_CEILING_HOURS: u32 = 24 * 365 * 10;
 /// leaves headroom rather than making the fixture the bound.
 pub const BULK_MAX_ROWS_DEFAULT: u32 = 50_000;
 
+/// `design/07` §17.1's interim freshness threshold, in minutes.
+pub const REFERENCE_FRESHNESS_MINUTES_DEFAULT: u32 = 15;
+
+/// `inst-ws-not-future`'s interim clock-skew tolerance, in minutes.
+pub const WATERMARK_SKEW_MINUTES_DEFAULT: u32 = 5;
+
+/// §17.1's interim tripwire rate: more than five break-glass corrections
+/// in a rolling thirty days fires it.
+pub const TRIPWIRE_MAX_OVERRIDES_DEFAULT: u32 = 5;
+
 /// The default per-tenant concurrent-batch ceiling. Small on purpose: a
 /// batch is an operator act with an approval attached, and a tenant holding
 /// many at once is the accident the ceiling exists to catch.
@@ -96,6 +106,40 @@ pub struct ProductsConfig {
     /// refusal they produce is obliged.
     pub bulk_max_concurrent_batches_per_tenant: u32,
 
+    /// How long a posted reference watermark stays **fresh**, in minutes
+    /// (interim 15 — **P-D-87** arm 1). Past it a producer's verdict is
+    /// `conservatively_referenced(stale)` rather than a fresh zero, which
+    /// is the direction that never falsely frees a referenced SKU.
+    ///
+    /// Read through [`Self::reference_freshness`] rather than directly:
+    /// `04-lifecycle`'s activation runner polls on this interval and needs
+    /// it as a `Duration`.
+    pub reference_freshness_minutes: u32,
+
+    /// How far above the receiving clock a posted `watermark_at` may sit
+    /// before it is refused `WATERMARK_FUTURE` and alerted, in minutes
+    /// (interim 5 — **P-D-87** arm 1). The bound is `p1` rather than
+    /// hygiene: one accepted future-dated post makes its producer read
+    /// permanently fresh, freezes its member set behind
+    /// `WATERMARK_REGRESSION`, and leaves every SKU outside that frozen
+    /// set reading fresh-zero — the never-falsely-free invariant inverted
+    /// by one timestamp.
+    pub watermark_skew_tolerance_minutes: u32,
+
+    /// How many break-glass corrections in a rolling thirty days the
+    /// tripwire admits before it fires (interim 5 — **P-D-87** arm 1).
+    pub tripwire_max_overrides_per_30_days: u32,
+
+    /// Whether the break-glass correction arm is available at all
+    /// (**P-D-71** arm 1 named the flag **enable-positive**, so `false`
+    /// means the arm is disabled and `BREAKGLASS_CORRECTION_DISABLED` is
+    /// what the door answers). Per-deployment and boot-time: a policy
+    /// gate, not an incident tool — the emergency surface is `05`'s read
+    /// elevation.
+    ///
+    /// @cpt-dod:cpt-cf-bss-products-dod-reference-config:p1
+    pub breakglass_correction_enabled: bool,
+
     /// Whether a boot without a reachable event-broker is a **failure**.
     ///
     /// `Gear::init` binds the broker SDK's producer when `ClientHub` carries an
@@ -125,6 +169,10 @@ impl Default for ProductsConfig {
             freeze_timeout_hours: IDEMPOTENCY_RETENTION_FLOOR_HOURS,
             bulk_max_rows_per_batch: BULK_MAX_ROWS_DEFAULT,
             bulk_max_concurrent_batches_per_tenant: BULK_MAX_CONCURRENT_DEFAULT,
+            reference_freshness_minutes: REFERENCE_FRESHNESS_MINUTES_DEFAULT,
+            watermark_skew_tolerance_minutes: WATERMARK_SKEW_MINUTES_DEFAULT,
+            tripwire_max_overrides_per_30_days: TRIPWIRE_MAX_OVERRIDES_DEFAULT,
+            breakglass_correction_enabled: false,
             require_broker: false,
         }
     }
@@ -172,10 +220,30 @@ impl ProductsConfig {
     /// the ten-year retention ceiling would invert the clamp above into a
     /// panic, so it is refused before anything runs.
     ///
+    /// The freshness threshold as a `Duration` — the export
+    /// `features/lifecycle.md` §7 row 8 needs, since `04`'s activation
+    /// runner polls a deferred flip on exactly this interval (no event
+    /// exists for a watermark, which is state rather than history).
+    #[must_use]
+    pub fn reference_freshness(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(u64::from(self.reference_freshness_minutes) * 60)
+    }
+
+    /// The skew tolerance as a `Duration`, the watermark door's own bound.
+    #[must_use]
+    pub fn watermark_skew_tolerance(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(u64::from(self.watermark_skew_tolerance_minutes) * 60)
+    }
+
     /// # Errors
     ///
     /// A sentence naming the field, the configured value and the ceiling.
     pub fn validate(&self) -> Result<(), String> {
+        if self.reference_freshness_minutes == 0 {
+            return Err(
+                "reference_freshness_minutes = 0 makes every watermark stale on arrival".to_owned(),
+            );
+        }
         if self.bulk_max_rows_per_batch == 0 {
             return Err("bulk_max_rows_per_batch = 0 admits no batch at all".to_owned());
         }

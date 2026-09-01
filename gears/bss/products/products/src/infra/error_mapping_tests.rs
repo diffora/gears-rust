@@ -73,6 +73,10 @@ fn declared_status_and_code(err: &DomainError) -> (u16, Option<&'static str>) {
         D::PromotionDirtyHead(_) => (409, Some("PROMOTION_DIRTY_HEAD")),
         D::BulkOverrideUnacknowledged(_) => (400, Some("BULK_OVERRIDE_UNACKNOWLEDGED")),
         D::BulkLimit(_) => (409, Some("BULK_LIMIT")),
+        D::ProducerUnregistered(_) => (403, Some("PRODUCER_UNREGISTERED")),
+        D::WatermarkRegression(_) => (409, Some("WATERMARK_REGRESSION")),
+        D::WatermarkConflict(_) => (409, Some("WATERMARK_CONFLICT")),
+        D::WatermarkFuture(_) => (400, Some("WATERMARK_FUTURE")),
     }
 }
 
@@ -121,6 +125,10 @@ fn one_of_every_variant() -> Vec<DomainError> {
         D::PromotionDirtyHead(d()),
         D::BulkOverrideUnacknowledged(d()),
         D::BulkLimit(d()),
+        D::ProducerUnregistered(d()),
+        D::WatermarkRegression(d()),
+        D::WatermarkConflict(d()),
+        D::WatermarkFuture(d()),
     ]
 }
 
@@ -131,7 +139,7 @@ fn one_of_every_variant() -> Vec<DomainError> {
 /// new variant makes that match fail to compile, and this makes the roster
 /// that is *missing* the value fail the case. Bump it in the same edit that
 /// adds the variant to both.
-const DOMAIN_ERROR_VARIANTS: usize = 28;
+const DOMAIN_ERROR_VARIANTS: usize = 32;
 
 /// Covers all 14 variants (§3.3's own count, `DomainError::code`'s own
 /// exhaustiveness note): every one lands on the status the design ladder

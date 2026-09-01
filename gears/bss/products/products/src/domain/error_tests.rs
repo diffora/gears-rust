@@ -104,6 +104,19 @@ fn every_variant_carries_its_design_set_wire_code() {
             "BULK_OVERRIDE_UNACKNOWLEDGED",
         ),
         (DomainError::BulkLimit("s".into()), "BULK_LIMIT"),
+        (
+            DomainError::ProducerUnregistered("s".into()),
+            "PRODUCER_UNREGISTERED",
+        ),
+        (
+            DomainError::WatermarkRegression("s".into()),
+            "WATERMARK_REGRESSION",
+        ),
+        (
+            DomainError::WatermarkConflict("s".into()),
+            "WATERMARK_CONFLICT",
+        ),
+        (DomainError::WatermarkFuture("s".into()), "WATERMARK_FUTURE"),
     ];
     for (error, expected) in &cases {
         assert_eq!(error.code(), *expected, "wrong code for {error:?}");
@@ -112,7 +125,7 @@ fn every_variant_carries_its_design_set_wire_code() {
     // roster short, and the roster is what the response map is built from.
     assert_eq!(
         cases.len(),
-        28,
+        32,
         "the Foundation owns fourteen raiseable codes and hosts two guests \
          (retention-erasure's ERASURE_UNKNOWN_ACTOR, P-D-64 keeping that \
          roster at one, and the clone door's CLONE_SOURCE_DISCARDED, \
@@ -122,7 +135,9 @@ fn every_variant_carries_its_design_set_wire_code() {
          CATALOG_VERSION_UNKNOWN and PARTICIPANT_UNKNOWN, and bulk-promotion \
          its five (dod-bulk-errors): BULK_DEPENDENCY_FAILED, \
          PROMOTION_IDENTITY_CONFLICT, PROMOTION_DIRTY_HEAD, \
-         BULK_OVERRIDE_UNACKNOWLEDGED and BULK_LIMIT; \
+         BULK_OVERRIDE_UNACKNOWLEDGED and BULK_LIMIT, and reference-signal \
+         the watermark door's four: PRODUCER_UNREGISTERED, \
+         WATERMARK_REGRESSION, WATERMARK_CONFLICT and WATERMARK_FUTURE; \
          PARENT_NOT_PUBLISHED is registered by the lifecycle feature and \
          RETIREMENT_PENDING is declared by it"
     );

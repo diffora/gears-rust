@@ -115,6 +115,25 @@ gts_instance! {
     }
 }
 
+// -- reference signal -- the producers' plane ----------------------------------
+
+gts_instance! {
+    AuthzPermissionV1 {
+        id: gts_id!("cf.toolkit.authz.permission.v1~cf.bss.products.reference_signal_post.v1"),
+        resource_type: labels::REFERENCE_SIGNAL.to_owned(),
+        action: actions::POST.to_owned(),
+        display_name: "Post a reference watermark".to_owned(),
+    }
+}
+gts_instance! {
+    AuthzPermissionV1 {
+        id: gts_id!("cf.toolkit.authz.permission.v1~cf.bss.products.reference_producer_write.v1"),
+        resource_type: labels::REFERENCE_PRODUCER.to_owned(),
+        action: actions::WRITE.to_owned(),
+        display_name: "Register or retire a reference producer".to_owned(),
+    }
+}
+
 // -- sku -- the authoring data plane ------------------------------------------
 
 gts_instance! {
@@ -164,6 +183,8 @@ mod tests {
         gts_id!("cf.toolkit.authz.permission.v1~cf.bss.products.catalog_version_read.v1"),
         gts_id!("cf.toolkit.authz.permission.v1~cf.bss.products.bulk_execute.v1"),
         gts_id!("cf.toolkit.authz.permission.v1~cf.bss.products.bulk_read.v1"),
+        gts_id!("cf.toolkit.authz.permission.v1~cf.bss.products.reference_signal_post.v1"),
+        gts_id!("cf.toolkit.authz.permission.v1~cf.bss.products.reference_producer_write.v1"),
     ];
 
     fn products_permission_instances() -> Vec<&'static InventoryInstance> {
@@ -260,6 +281,7 @@ mod tests {
             crate::authz::actions::ACK,
             crate::authz::actions::RELEASE,
             crate::authz::actions::EXECUTE,
+            crate::authz::actions::POST,
         ];
         for entry in products_permission_instances() {
             let action = (entry.payload_fn)()["action"]

@@ -30,6 +30,7 @@ pub mod m20260901_000011_create_products_catalog_version_request;
 pub mod m20260901_000012_create_products_freeze_ledger;
 pub mod m20260901_000013_create_products_catalog_version_entry;
 pub mod m20260901_000014_create_products_bulk;
+mod m20260901_000015_create_products_reference_producer;
 
 use sea_orm::{ConnectionTrait, Statement};
 use sea_orm_migration::prelude::*;
@@ -112,6 +113,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20260901_000012_create_products_freeze_ledger::Migration),
             Box::new(m20260901_000013_create_products_catalog_version_entry::Migration),
             Box::new(m20260901_000014_create_products_bulk::Migration),
+            Box::new(m20260901_000015_create_products_reference_producer::Migration),
         ]
     }
 }

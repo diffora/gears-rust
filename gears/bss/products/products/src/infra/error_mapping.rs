@@ -259,6 +259,14 @@ impl From<DomainError> for CanonicalError {
                 precondition("override", &detail, "BULK_OVERRIDE_UNACKNOWLEDGED")
             }
             D::BulkLimit(detail) => aborted(detail, "BULK_LIMIT"),
+
+            // -- The watermark door's four (`design/07` §3.2). The future
+            // bound is the architectural 422; the other three follow the
+            // ladder's ordinary reading of identity and state.
+            D::ProducerUnregistered(_detail) => denied("PRODUCER_UNREGISTERED"),
+            D::WatermarkRegression(detail) => aborted(detail, "WATERMARK_REGRESSION"),
+            D::WatermarkConflict(detail) => aborted(detail, "WATERMARK_CONFLICT"),
+            D::WatermarkFuture(detail) => precondition("watermark_at", &detail, "WATERMARK_FUTURE"),
             D::IllegalTransition { from, to } => {
                 aborted(format!("from {from} to {to}"), "ILLEGAL_TRANSITION")
             }

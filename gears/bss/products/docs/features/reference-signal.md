@@ -497,7 +497,7 @@ the future bound was evaluated against.
 
 ### The producer registry
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-producer-table`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-producer-table`
 
 The system **MUST** create `products_reference_producer`, keyed `(tenant_id, producer)`, carrying
 `state ∈ {registered, retired}`, `registered_at`, the ceremony reference, and the **declaration
@@ -533,20 +533,18 @@ separate counter column or row. There is no second piece of state to drift from 
 
 ### The watermark contract, in `bss-products-sdk`
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-watermark-port`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-watermark-port`
 
 The system **MUST** publish the watermark contract as a **client trait in `bss-products-sdk`**, a
 typed contract a producer resolves from `ClientHub` rather than an implementation package, with the
 in-process binding as the default deployment mode. The contract **MUST** carry
 `(producer, watermark_at, complete skuId set)`.
 
-**This is the second write method this design set puts on that SDK**, and the shape question is
-**already registered**: `features/catalog-version.md` §7 row 28 asks whether
-`bss_products_sdk::api::ProductsClient` — which ships two methods, both reads, and calls itself
-*"the in-process contract for reading registry entities"* — widens, or whether a second trait
-arrives beside it. **This DoD cites that row and does not duplicate it**; whichever way it is
-answered governs both features, and a second row would leave the general question looking open when
-the specific ones close.
+**This is the second write method this design set puts on that SDK**, and the shape question was
+**answered once for both** (**P-D-81** arm 4, `features/catalog-version.md` §7 row 28): a **trait
+of its own** beside `ProductsClient`, which stays the read contract its own doc scopes it to. This
+DoD cited that row rather than duplicating it, and the answer governs both features — the
+increment contract and this one — as it was meant to.
 
 **Implements**: `cpt-cf-bss-products-flow-watermark`
 
@@ -555,7 +553,7 @@ the specific ones close.
 
 ### The watermark door and its four refusals
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-watermark-door`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-watermark-door`
 
 The door **MUST** be the out-of-process binding of the contract above and the authz door **both**
 bindings pass (S2S). It **MUST** refuse an unregistered poster `PRODUCER_UNREGISTERED`, an older
@@ -582,7 +580,7 @@ An idempotent replay — the same `watermark_at` with the same set — **MUST** 
 
 ### The reference predicate, with its per-producer detail
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-reference-predicate`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-reference-predicate`
 
 The system **MUST** evaluate over every **registered** producer and return **both** the OR verdict
 and the **per-producer detail**. A fresh watermark containing the SKU gives `referenced`; a fresh
@@ -901,7 +899,7 @@ and this feature's doors would have no `ResourceType` to hand the gate.
 
 ### The four config knobs, and the clock this feature owes `04-lifecycle`
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-reference-config`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-reference-config`
 
 `ProductsConfig` **MUST** gain four fields: the **freshness threshold** (interim 15 min), the
 **ingestion clock-skew tolerance** (interim 5 min), the **tripwire rate** (interim > 5 per 30 days),
@@ -910,10 +908,10 @@ enable-positive; **per-deployment and boot-time** — a policy gate, not an inci
 emergency surface being `05`'s read elevation, and a runtime or per-tenant toggle needing machinery
 no slice declares).
 
-**Measured at `19a81a406`: `ProductsConfig` ships exactly two fields** —
-`idempotency_retention_hours` and `require_broker` — and the words *freshness*, *watermark*,
-*tripwire* and *break-glass* appear in `config.rs` **zero times**. There is no shaped hole here, in
-contrast to `06-catalog-version`, which that file names twice as the owner of a missing export.
+*(Measured at `19a81a406`, `ProductsConfig` shipped exactly two fields and the words* freshness,
+watermark, tripwire *and* break-glass *appeared in `config.rs` zero times — there was no shaped
+hole here, in contrast to `06-catalog-version`, which that file named twice as the owner of a
+missing export. **P-D-87** arm 1 settled the four homes and they ship.)*
 
 **The freshness threshold MUST be exported, because another feature already depends on reading it.**
 `04-lifecycle`'s `ActivationRunner` re-evaluates a deferred flip by **polling on that interval** —

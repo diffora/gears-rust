@@ -205,6 +205,32 @@ pub enum DomainError {
     /// @cpt-dod:cpt-cf-bss-products-dod-bulk-errors:p1
     #[error("bulk limit: {0}")]
     BulkLimit(String),
+
+    /// A watermark posted by a name outside the tenant's registered
+    /// producer set. **403**: the caller's identity is the refusal's
+    /// subject.
+    #[error("producer unregistered: {0}")]
+    ProducerUnregistered(String),
+
+    /// A watermark older than the one stored — the set would move
+    /// backwards, and a producer's completeness claim is monotone. 409.
+    #[error("watermark regression: {0}")]
+    WatermarkRegression(String),
+
+    /// An equal `watermark_at` carrying a **different** set, told apart
+    /// from the admitted idempotent replay by the stored `set_hash`
+    /// (**P-D-71**). 409.
+    #[error("watermark conflict: {0}")]
+    WatermarkConflict(String),
+
+    /// A `watermark_at` above the receiving clock plus the configured
+    /// skew, refused **and alerted**. 422 architectural, 400 on the wire.
+    /// The bound is `p1` rather than hygiene: one accepted future-dated
+    /// post makes its producer read permanently fresh, freezes its member
+    /// set behind `WATERMARK_REGRESSION`, and leaves every SKU outside
+    /// that frozen set reading fresh-zero.
+    #[error("watermark in the future: {0}")]
+    WatermarkFuture(String),
 }
 
 impl DomainError {
@@ -245,6 +271,10 @@ impl DomainError {
             Self::PromotionDirtyHead(_) => "PROMOTION_DIRTY_HEAD",
             Self::BulkOverrideUnacknowledged(_) => "BULK_OVERRIDE_UNACKNOWLEDGED",
             Self::BulkLimit(_) => "BULK_LIMIT",
+            Self::ProducerUnregistered(_) => "PRODUCER_UNREGISTERED",
+            Self::WatermarkRegression(_) => "WATERMARK_REGRESSION",
+            Self::WatermarkConflict(_) => "WATERMARK_CONFLICT",
+            Self::WatermarkFuture(_) => "WATERMARK_FUTURE",
         }
     }
 }
