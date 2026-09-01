@@ -1561,6 +1561,41 @@ pub enum HeadWrite {
 /// `chk_products_entity_version_digest_version` lower bounds. The table is
 /// append-only with no `UPDATE` path at all, so a re-freeze is a refusal
 /// rather than an overwrite.
+/// Read the newest frozen version row of one entity, or `None` for a
+/// never-published one.
+///
+/// The clone door's read (`inst-cn-door`): a `retired`, `published` or
+/// `deprecated` source reads its entity content from the **last frozen
+/// version** — never a head's pending edits, which would leak in-flight
+/// unapproved content — and `cloned_from_version` records exactly the version
+/// this returned (P-D-76).
+pub async fn latest_entity_version(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    entity_kind: VersionedEntityKind,
+    entity_id: Uuid,
+) -> Result<Option<(i64, String)>, RepoError> {
+    let row = entity_version::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(entity_version::Column::TenantId.eq(tenant_id))
+                .add(entity_version::Column::EntityKind.eq(entity_kind.as_str()))
+                .add(entity_version::Column::EntityId.eq(entity_id)),
+        )
+        .order_by(
+            entity_version::Column::PublishedVersion,
+            sea_orm::Order::Desc,
+        )
+        .one(runner)
+        .await
+        .map_err(|e| driver_failure(format!("read latest frozen version of {entity_id}"), e))?;
+
+    Ok(row.map(|row| (row.published_version, row.content)))
+}
+
 pub async fn insert_entity_version(
     runner: &impl DBRunner,
     scope: &AccessScope,

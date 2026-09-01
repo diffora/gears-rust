@@ -209,6 +209,11 @@ impl From<DomainError> for CanonicalError {
             D::IdempotencyConflict(detail) => aborted(detail, "IDEMPOTENCY_CONFLICT"),
             D::IdempotencyKeyInFlight(detail) => aborted(detail, "IDEMPOTENCY_KEY_IN_FLIGHT"),
             D::EntityTerminal(detail) => aborted(detail, "ENTITY_TERMINAL"),
+            // The clone door's state refusal (P-D-75): the same 409 class —
+            // the source's state refuses the act — with its own code, because
+            // ENTITY_TERMINAL's meaning is a head write and the clone writes
+            // nothing to the source.
+            D::CloneSourceDiscarded(detail) => aborted(detail, "CLONE_SOURCE_DISCARDED"),
             D::IllegalTransition { from, to } => {
                 aborted(format!("from {from} to {to}"), "ILLEGAL_TRANSITION")
             }

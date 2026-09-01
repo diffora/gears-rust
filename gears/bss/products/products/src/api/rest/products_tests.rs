@@ -5102,3 +5102,317 @@ async fn a_created_events_envelope_carries_the_four_obligations_from_the_door() 
     assert_eq!(envelope["data"]["internalRevision"], 1);
     assert_eq!(envelope["data"]["lifecycleState"], "draft");
 }
+
+/// The clone door (`inst-cn-door`, P-D-62/75/76), driven through the real
+/// router like every other door case in this file.
+///
+/// (`dod-clone-tests`' marker arrives when its blocking row resolves.)
+mod clone_door_tests {
+    use super::*;
+
+    async fn post_clone(
+        app: Router,
+        tenant: Uuid,
+        product_id: Uuid,
+        body: serde_json::Value,
+        headers: &[(&str, &str)],
+    ) -> axum::http::Response<Body> {
+        let mut request = Request::builder()
+            .method("POST")
+            .uri(format!("/bss-products/v1/products/{product_id}/clone"))
+            .header("content-type", "application/json")
+            .extension(authed_ctx(tenant));
+        for (name, value) in headers {
+            request = request.header(*name, *value);
+        }
+        app.oneshot(
+            request
+                .body(Body::from(body.to_string()))
+                .expect("build the clone request"),
+        )
+        .await
+        .expect("the router answers")
+    }
+
+    async fn view_of(response: axum::http::Response<Body>) -> serde_json::Value {
+        let body = axum::body::to_bytes(response.into_body(), 64 * 1024)
+            .await
+            .expect("read the response body");
+        serde_json::from_slice(&body).expect("the response body is JSON")
+    }
+
+    /// A draft source clones with the first-free suggestions: `-copy-1` on
+    /// both the name and the code, a fresh id, `draft` at revision 1, and
+    /// the lineage pair written in the creating statement with the
+    /// head-read sentinel (`cloned_from_version` NULL — P-D-76).
+    #[tokio::test]
+    async fn a_draft_source_clones_with_first_free_suggestions() {
+        let harness = harness().await;
+        let source_id = Uuid::now_v7();
+        let source = seed_draft(&harness, source_id).await;
+
+        let response = post_clone(
+            app_for(&harness, TENANT),
+            TENANT,
+            source_id,
+            serde_json::json!({}),
+            &[],
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::CREATED, "a clone is a 201");
+        let view = view_of(response).await;
+        assert_eq!(
+            view["name"],
+            serde_json::json!(format!("{}-copy-1", source.name)),
+            "the suggested name is the first free of the -copy family"
+        );
+        assert_eq!(
+            view["product_code"],
+            serde_json::json!(format!(
+                "{}-copy-1",
+                source
+                    .product_code
+                    .as_deref()
+                    .expect("the seed carries a code")
+            )),
+            "the suggested code walks the same family"
+        );
+        assert_eq!(view["lifecycle_state"], serde_json::json!("draft"));
+        assert_eq!(view["internal_revision"], serde_json::json!(1));
+        assert_eq!(view["published_version"], serde_json::json!(0));
+
+        let clone_id = Uuid::parse_str(view["product_id"].as_str().expect("id"))
+            .expect("the clone's id is a uuid");
+        let clone_head = head_of(&harness, clone_id).await;
+        assert_eq!(
+            clone_head.cloned_from,
+            Some(source_id),
+            "lineage names the immediate source, written in the creating statement"
+        );
+        assert_eq!(
+            clone_head.cloned_from_version, None,
+            "a draft source is read at its head: the version sentinel is NULL (P-D-76)"
+        );
+    }
+
+    /// The walk: with `-copy-1` taken, the next clone lands `-copy-2` — the
+    /// index arbitrates and the loop moves only on the exact conflict its
+    /// candidate owns (P-D-62).
+    #[tokio::test]
+    async fn a_second_clone_walks_to_copy_two() {
+        let harness = harness().await;
+        let source_id = Uuid::now_v7();
+        let source = seed_draft(&harness, source_id).await;
+
+        let first = post_clone(
+            app_for(&harness, TENANT),
+            TENANT,
+            source_id,
+            serde_json::json!({}),
+            &[],
+        )
+        .await;
+        assert_eq!(first.status(), StatusCode::CREATED);
+
+        let second = post_clone(
+            app_for(&harness, TENANT),
+            TENANT,
+            source_id,
+            serde_json::json!({}),
+            &[],
+        )
+        .await;
+        assert_eq!(
+            second.status(),
+            StatusCode::CREATED,
+            "the walk finds the next free"
+        );
+        let view = view_of(second).await;
+        assert_eq!(
+            view["name"],
+            serde_json::json!(format!("{}-copy-2", source.name)),
+            "the second clone of one source suggests -copy-2, not a refusal"
+        );
+    }
+
+    /// A published source is read from its **frozen version**, never the
+    /// head's pending edits: after a publish and a head rename, the clone
+    /// carries the frozen name and pins `cloned_from_version = 1`.
+    #[tokio::test]
+    async fn a_published_source_clones_from_its_frozen_version() {
+        let harness = harness().await;
+        let source_id = Uuid::now_v7();
+        let source = seed_draft(&harness, source_id).await;
+
+        let publish = post_head_act(
+            app_for(&harness, TENANT),
+            TENANT,
+            source_id,
+            "publish",
+            &[("If-Match", &if_match(1))],
+        )
+        .await;
+        assert_eq!(
+            publish.status(),
+            StatusCode::OK,
+            "premise: the source publishes"
+        );
+
+        // Rename the head after the freeze: the clone must not see this.
+        let save = app_for(&harness, TENANT)
+            .oneshot(
+                Request::builder()
+                    .method("PATCH")
+                    .uri(format!("/bss-products/v1/products/{source_id}"))
+                    .header("content-type", "application/json")
+                    .header("If-Match", if_match(2))
+                    .extension(authed_ctx(TENANT))
+                    .body(Body::from(
+                        serde_json::json!({"name": "Renamed After Freeze"}).to_string(),
+                    ))
+                    .expect("build the save request"),
+            )
+            .await
+            .expect("the router answers");
+        assert_eq!(
+            save.status(),
+            StatusCode::OK,
+            "premise: the head rename lands"
+        );
+
+        let response = post_clone(
+            app_for(&harness, TENANT),
+            TENANT,
+            source_id,
+            serde_json::json!({}),
+            &[],
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let view = view_of(response).await;
+        assert_eq!(
+            view["name"],
+            serde_json::json!(format!("{}-copy-1", source.name)),
+            "the clone reads the frozen name, never the head's pending edit"
+        );
+
+        let clone_id = Uuid::parse_str(view["product_id"].as_str().expect("id"))
+            .expect("the clone's id is a uuid");
+        let clone_head = head_of(&harness, clone_id).await;
+        assert_eq!(
+            clone_head.cloned_from_version,
+            Some(1),
+            "the lineage pins exactly the frozen version the content was read at"
+        );
+    }
+
+    /// A `discarded` source is refused `CLONE_SOURCE_DISCARDED` (P-D-75) —
+    /// not `ENTITY_TERMINAL` (the clone writes nothing to the source) and
+    /// not a 404 (the row is addressable).
+    #[tokio::test]
+    async fn a_discarded_source_is_refused_with_the_minted_code() {
+        let harness = harness().await;
+        let source_id = Uuid::now_v7();
+        seed_draft(&harness, source_id).await;
+        let discard = post_head_act(
+            app_for(&harness, TENANT),
+            TENANT,
+            source_id,
+            "discard",
+            &[("If-Match", &if_match(1))],
+        )
+        .await;
+        assert_eq!(
+            discard.status(),
+            StatusCode::OK,
+            "premise: the draft discards"
+        );
+
+        let response = post_clone(
+            app_for(&harness, TENANT),
+            TENANT,
+            source_id,
+            serde_json::json!({}),
+            &[],
+        )
+        .await;
+        assert_eq!(
+            response.status(),
+            StatusCode::CONFLICT,
+            "the source's state refuses the act"
+        );
+        let view = view_of(response).await;
+        assert_eq!(
+            view["context"]["reason"],
+            serde_json::json!("CLONE_SOURCE_DISCARDED"),
+            "the refusal is the minted code, not ENTITY_TERMINAL and not a 404"
+        );
+    }
+
+    /// An operator-supplied name that collides is the ordinary
+    /// `DUPLICATE_NAME` — only the *suggested* name walks (P-D-62).
+    #[tokio::test]
+    async fn an_overridden_name_collision_is_the_ordinary_refusal() {
+        let harness = harness().await;
+        let source_id = Uuid::now_v7();
+        let source = seed_draft(&harness, source_id).await;
+
+        let response = post_clone(
+            app_for(&harness, TENANT),
+            TENANT,
+            source_id,
+            serde_json::json!({ "name": source.name }),
+            &[],
+        )
+        .await;
+        assert_eq!(
+            response.status(),
+            StatusCode::CONFLICT,
+            "an overridden collision does not walk"
+        );
+        let view = view_of(response).await;
+        assert_eq!(
+            view["context"]["reason"],
+            serde_json::json!("DUPLICATE_NAME")
+        );
+    }
+
+    /// A keyed retry replays the first clone rather than making a second
+    /// (P-D-75: what a crash-retrying caller needs to not double-clone).
+    #[tokio::test]
+    async fn a_keyed_retry_replays_the_first_clone() {
+        let harness = harness().await;
+        let source_id = Uuid::now_v7();
+        seed_draft(&harness, source_id).await;
+
+        let first = post_clone(
+            app_for(&harness, TENANT),
+            TENANT,
+            source_id,
+            serde_json::json!({}),
+            &[("Idempotency-Key", "clone-retry-1")],
+        )
+        .await;
+        assert_eq!(first.status(), StatusCode::CREATED);
+        let first_view = view_of(first).await;
+
+        let retry = post_clone(
+            app_for(&harness, TENANT),
+            TENANT,
+            source_id,
+            serde_json::json!({}),
+            &[("Idempotency-Key", "clone-retry-1")],
+        )
+        .await;
+        assert_eq!(
+            retry.status(),
+            StatusCode::CREATED,
+            "the replay reproduces the stored status"
+        );
+        let retry_view = view_of(retry).await;
+        assert_eq!(
+            retry_view["product_id"], first_view["product_id"],
+            "one key, one clone: the retry is the first answer, not a second act"
+        );
+    }
+}

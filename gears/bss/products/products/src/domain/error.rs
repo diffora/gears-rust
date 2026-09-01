@@ -108,6 +108,14 @@ pub enum DomainError {
     /// @cpt-dod:cpt-cf-bss-products-dod-retention-error-taxonomy:p1
     #[error("erasure names an unknown actor: {0}")]
     ErasureUnknownActor(String),
+
+    /// The clone door's own refusal: the source is `discarded`. Minted by
+    /// **P-D-75** on P-D-52's test — `ENTITY_TERMINAL` means a head *write*
+    /// and the clone writes nothing to the source (a `retired` source is
+    /// explicitly admitted), while the bare 404 carries no code channel.
+    /// 409: the source's state refuses the act.
+    #[error("clone source is discarded: {0}")]
+    CloneSourceDiscarded(String),
 }
 
 impl DomainError {
@@ -135,6 +143,7 @@ impl DomainError {
             Self::IncompleteEntity(_) => "INCOMPLETE_ENTITY",
             Self::ApprovalRequired(_) => "APPROVAL_REQUIRED",
             Self::ErasureUnknownActor(_) => "ERASURE_UNKNOWN_ACTOR",
+            Self::CloneSourceDiscarded(_) => "CLONE_SOURCE_DISCARDED",
         }
     }
 }

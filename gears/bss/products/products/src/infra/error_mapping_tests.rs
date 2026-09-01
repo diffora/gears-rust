@@ -54,6 +54,7 @@ fn declared_status_and_code(err: &DomainError) -> (u16, Option<&'static str>) {
         D::IncompleteEntity(_) => (400, Some("INCOMPLETE_ENTITY")),
         D::ApprovalRequired(_) => (403, Some("APPROVAL_REQUIRED")),
         D::ErasureUnknownActor(_) => (400, Some("ERASURE_UNKNOWN_ACTOR")),
+        D::CloneSourceDiscarded(_) => (409, Some("CLONE_SOURCE_DISCARDED")),
     }
 }
 
@@ -89,6 +90,7 @@ fn one_of_every_variant() -> Vec<DomainError> {
         D::IncompleteEntity(d()),
         D::ApprovalRequired(d()),
         D::ErasureUnknownActor(d()),
+        D::CloneSourceDiscarded(d()),
     ]
 }
 
@@ -99,7 +101,7 @@ fn one_of_every_variant() -> Vec<DomainError> {
 /// new variant makes that match fail to compile, and this makes the roster
 /// that is *missing* the value fail the case. Bump it in the same edit that
 /// adds the variant to both.
-const DOMAIN_ERROR_VARIANTS: usize = 15;
+const DOMAIN_ERROR_VARIANTS: usize = 16;
 
 /// Covers all 14 variants (§3.3's own count, `DomainError::code`'s own
 /// exhaustiveness note): every one lands on the status the design ladder

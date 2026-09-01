@@ -517,7 +517,7 @@ rule is supplied**, not by inventing one here.
 
 ### The rename rule, and why it is not revival-only
 
-- [ ] `p3` - **ID**: `cpt-cf-bss-products-dod-rename-rule`
+- [x] `p3` - **ID**: `cpt-cf-bss-products-dod-rename-rule`
 
 **Every same-brand Product clone renames.** The suggestion is `{name}-copy-N` — `N` the first free
 integer under the reservation (**P-D-62**) — flavoured `{name}-revived` for a `retired` source, **and
