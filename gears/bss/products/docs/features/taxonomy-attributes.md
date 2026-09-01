@@ -508,7 +508,7 @@ self-referencing FK, and `NULLS NOT DISTINCT` has no `SQLite` twin.
 
 ### Category assignment table
 
-- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-category-assignment-table`
+- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-category-assignment-table`
 
 The system **MUST** create `products_product_category` as the single source of truth for
 assignments, keyed `(tenant_id, product_id, category_id, role)` with `role` in
@@ -516,6 +516,15 @@ assignments, keyed `(tenant_id, product_id, category_id, role)` with `role` in
 `UNIQUE (tenant_id, product_id) WHERE role = 'primary'`. At-most-one-primary **MUST** be an index
 rather than an application convention. The Foundation's entity tables **MUST NOT** gain inline
 category columns.
+
+**The table ships and the tick does not, because §7 row 21 is about this FK.** Both keys, both
+uniqueness guarantees and the role roster are built and probed on both engines. What is unbuilt is
+the row's own subject: *"no referential action is stated"*. The shipped FK takes the default, which
+refuses a category's deletion while **any** link row exists — including rows held by discarded and
+retired Products, which `inst-tx-retire-guard`'s "unreferenced" test does not count, reading the
+Product's lifecycle state and never the link row. So the DDL as written makes the guard's stated
+semantics unreachable in one direction, and the choice between a cascade, a restrict, and the guard
+clearing link rows in its own transaction is row 21's, co-owned with the schema owner.
 
 **Implements**: `cpt-cf-bss-products-flow-assign-categories`
 
@@ -993,7 +1002,7 @@ it does not decide it.
 | 4 | *(seam — see below)* | `dod-pii-write-block` | `10-retention-erasure` |
 | 5 | **Do 02 and 03 admit a `draft` head as a blocking reference?** This feature's removal operand is the non-terminal head, `03-sku-classification`'s is the non-terminal *published* head. Slice 03 §6 registers the divergence as unanswered and jointly owned | `dod-definition-lifecycle` | this feature with 03 |
 | 6 | **The coordinate model admits combinations the resolver never visits, and the per-brand default locale has no store.** The chain's third step needs one; the only store named is the tenant default | `dod-locale-resolver` | this feature |
-| 7 | **Both uniqueness guarantees are `UNIQUE` over nullable columns.** `(tenant_id, parent_id, name_normalized)` does not constrain **root** categories, and the attribute-value tuple does not constrain the **global** coordinate — the one row `dod-default-locale` makes mandatory. The gear's answer elsewhere is NOT NULL with a stated absence value (P-D-39) | `dod-category-table`, `dod-attribute-value-table`, `dod-name-in-parent` | this feature with the schema owner |
+| 7 | ~~**Both uniqueness guarantees are `UNIQUE` over nullable columns.**~~ **Answered (owner call, 2026-09-01 — P-D-88): roots take a partial `UNIQUE (tenant_id, name_normalized) WHERE parent_id IS NULL`, since a sentinel cannot satisfy the self-FK and `NULLS NOT DISTINCT` has no `SQLite` twin; the value coordinates ship `NOT NULL` with `''` as the stated absence (P-D-39's convention). Both probed on both engines.** Original text: `(tenant_id, parent_id, name_normalized)` does not constrain **root** categories, and the attribute-value tuple does not constrain the **global** coordinate — the one row `dod-default-locale` makes mandatory. The gear's answer elsewhere is NOT NULL with a stated absence value (P-D-39) | no DoD — resolved by P-D-88 | was this feature with the schema owner; **closed** |
 | 8 | **What is the `global` coordinate's key?** If it is keyed on the default locale it is anchored on the config value the §2 boundary argues against; if it means all three coordinates absent, "a default-locale value at the global coordinate" names a coordinate that carries no locale | `dod-default-locale`, `dod-locale-resolver` | this feature |
 | 9 | **The frozen-content sort key is not total for attribute values.** Sorting by the attribute id orders groups, not rows, so two engines can serialize one content two ways — the failure the rule exists to prevent. Amending it is a register change: P-D-29 and `01-foundation` §4.3 state it in the same words | `dod-version-content-rendering` | P-D-29's owner |
 | 10 | **Is definition removal a material op?** Removal is absent from the material-op enumeration while deprecation, the step before it, is in it. So §4's `inst-de-edge-remove` carries no approval condition while the re-listing edge does — the destructive edge is cheaper than the restorative one | `dod-definition-lifecycle`, `cpt-cf-bss-products-state-attribute-definition` | this feature |

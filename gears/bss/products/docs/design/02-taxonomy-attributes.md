@@ -373,6 +373,16 @@ no event of their own (category display values emit `CategoryDisplayUpdated`, ab
   as distinct. The gear's answer elsewhere is a NOT NULL column with a stated absence value
   (P-D-39). Owner: was this slice with the schema owner; **closed**. *(Raised by the slice-02 first
   lens pass.)*
+- **`value_type`'s admitted set is enumerated nowhere.** §4.1 names the column and §4.2's seeds
+  imply three shapes (a localized string, a URI string, a localized string list), but no document
+  in the set declares a closed roster — so `inst-ad-deprecate-then-remove`'s *"a type change on a
+  definition with live values is refused"* has a rule with no vocabulary to compare against, and
+  the door that validates a create has nothing to validate. The shipped DDL pins **non-emptiness
+  only**, following `products_catalog_version_capture`'s own convention for a contested set
+  (**P-D-74**, which pins no `capture_kind` roster and leaves the admitted set to the snapshot
+  builder once its own rows resolve), so a later pin is an in-place edit rather than a redesign. Owner: this slice — the roster, and whether a type is a
+  closed set at all or an open vocabulary the seeds merely populate. *(Raised while building the
+  table, 2026-09-01.)*
 - **The frozen-content sort key is not total for attribute values.** §4.1's ordering note sorts by
   "the attribute id", while row identity is the full coordinate tuple — so the key orders groups,
   not rows, and two engines can serialize one content two ways, which is the failure the note exists

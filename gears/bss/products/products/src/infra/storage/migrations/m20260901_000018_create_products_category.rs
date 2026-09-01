@@ -57,8 +57,19 @@
 //! Both partial indexes, every CHECK, both FKs and both keys are preserved
 //! on both sides.
 //!
+//! **`dod-category-assignment-table` carries no marker here, deliberately.**
+//! The table ships complete, but §7 row 21 is live and is about exactly this
+//! FK: *"no referential action is stated"*. This migration's FK takes the
+//! default (no action), which refuses a category's deletion while ANY link
+//! row exists — **including rows held by discarded and retired Products**,
+//! which `inst-tx-retire-guard`'s *"unreferenced"* test does not count,
+//! since it reads the Product's lifecycle state and never the link row. So
+//! the DDL as written makes the guard's stated semantics unreachable in one
+//! direction, and choosing between a cascade, a restrict, and the guard
+//! clearing link rows in its own transaction is that row's call, co-owned
+//! with the schema owner. The tick waits for it.
+//!
 //! @cpt-dod:cpt-cf-bss-products-dod-category-table:p1
-//! @cpt-dod:cpt-cf-bss-products-dod-category-assignment-table:p1
 
 use sea_orm_migration::prelude::*;
 

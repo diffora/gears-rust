@@ -2,6 +2,8 @@
 
 pub mod approval;
 pub mod approval_decision;
+pub mod attribute_definition;
+pub mod attribute_value;
 pub mod audit_log;
 pub mod breakglass_session;
 pub mod bulk_batch;
@@ -17,6 +19,7 @@ pub mod freeze_ack;
 pub mod freeze_participant;
 pub mod idempotency;
 pub mod identity_ref;
+pub mod metadata;
 pub mod product;
 pub mod product_category;
 pub mod reference_member;

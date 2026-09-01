@@ -5650,7 +5650,6 @@ mod governance_store_guard_tests {
 /// roster, and the FK children guard.
 ///
 /// @cpt-dod:cpt-cf-bss-products-dod-category-table:p1
-/// @cpt-dod:cpt-cf-bss-products-dod-category-assignment-table:p1
 mod taxonomy_store_guard_tests {
     use sea_orm::ConnectionTrait;
     use sea_orm_migration::MigratorTrait;
@@ -5907,5 +5906,343 @@ mod taxonomy_store_guard_tests {
             category, assignment,
             "two different tables must not compare equal, or the oracle asserts nothing"
         );
+    }
+}
+
+/// The attribute plane and the metadata map, probed on the no-delete guard
+/// (P-D-47), the total coordinate key (P-D-88 arm 2), the two entity-kind
+/// rosters and the definition FK.
+///
+/// No marker: all three of these tables' `DoD`s wait on live §7 rows (13 and
+/// 20), so the probes below are coverage without a tick.
+mod attribute_store_guard_tests {
+    use sea_orm::ConnectionTrait;
+    use sea_orm_migration::MigratorTrait;
+
+    use super::Migrator;
+
+    async fn harness() -> sea_orm::DatabaseConnection {
+        let mut opts = sea_orm::ConnectOptions::new("sqlite::memory:");
+        opts.max_connections(1).min_connections(1);
+        let db = sea_orm::Database::connect(opts)
+            .await
+            .expect("connect in-memory sqlite");
+        Migrator::up(&db, None).await.expect("boot the chain");
+        db
+    }
+
+    async fn exec(db: &sea_orm::DatabaseConnection, sql: &str) -> Result<(), sea_orm::DbErr> {
+        db.execute_raw(sea_orm::Statement::from_string(
+            sea_orm::DatabaseBackend::Sqlite,
+            sql.to_owned(),
+        ))
+        .await
+        .map(|_| ())
+    }
+
+    async fn seed_definition(db: &sea_orm::DatabaseConnection, id: &str, key: &str) {
+        exec(
+            db,
+            &format!(
+                "INSERT INTO products_attribute_definition \
+                 (tenant_id, definition_id, key, value_type, state, created_at, updated_at) \
+                 VALUES ('t-a', '{id}', '{key}', 'localized_string', 'active', \
+                  '2026-09-01T00:00:00Z', '2026-09-01T00:00:00Z')"
+            ),
+        )
+        .await
+        .expect("a definition lands");
+    }
+
+    /// A removal is the `removed` state and never a DELETE — the guard, not
+    /// the door, is what makes that true (P-D-47). The flip itself is
+    /// admitted, and so is the re-listing flip back.
+    #[tokio::test]
+    async fn a_definition_is_removed_by_a_flip_and_never_deleted() {
+        let db = harness().await;
+        seed_definition(&db, "d-1", "displayName").await;
+
+        let err = exec(
+            &db,
+            "DELETE FROM products_attribute_definition WHERE definition_id = 'd-1'",
+        )
+        .await
+        .expect_err("a DELETE must be refused unconditionally");
+        assert!(
+            err.to_string()
+                .contains("a removal is the removed state, never a DELETE"),
+            "{err}"
+        );
+
+        for state in ["deprecated", "removed", "active"] {
+            exec(
+                &db,
+                &format!(
+                    "UPDATE products_attribute_definition SET state = '{state}' \
+                     WHERE definition_id = 'd-1'"
+                ),
+            )
+            .await
+            .unwrap_or_else(|e| panic!("the flip to {state} is admitted: {e}"));
+        }
+
+        let err = exec(
+            &db,
+            "UPDATE products_attribute_definition SET state = 'archived' \
+             WHERE definition_id = 'd-1'",
+        )
+        .await
+        .expect_err("a state outside the roster must be refused");
+        assert!(
+            err.to_string()
+                .contains("chk_products_attribute_definition_state"),
+            "{err}"
+        );
+    }
+
+    /// The key is unique per tenant, and `value_type` is pinned only
+    /// non-empty — the roster is undeclared and stays the door's (P-D-74's
+    /// shape). Both halves asserted, because an empty type would make the
+    /// column meaningless while a rostered one would author the answer.
+    #[tokio::test]
+    async fn the_definition_key_is_unique_and_the_type_is_only_non_empty() {
+        let db = harness().await;
+        seed_definition(&db, "d-1", "displayName").await;
+
+        let err = exec(
+            &db,
+            "INSERT INTO products_attribute_definition \
+             (tenant_id, definition_id, key, value_type, state, created_at, updated_at) \
+             VALUES ('t-a', 'd-2', 'displayName', 'localized_string', 'active', \
+              '2026-09-01T00:00:00Z', '2026-09-01T00:00:00Z')",
+        )
+        .await
+        .expect_err("a duplicate key must be refused");
+        assert!(
+            err.to_string().contains("UNIQUE constraint failed"),
+            "{err}"
+        );
+
+        // Any non-empty type is admitted: the closed set is not declared
+        // anywhere in the design set, so the DDL must not invent one.
+        exec(
+            &db,
+            "INSERT INTO products_attribute_definition \
+             (tenant_id, definition_id, key, value_type, state, created_at, updated_at) \
+             VALUES ('t-a', 'd-3', 'imageUri', 'uri_string', 'active', \
+              '2026-09-01T00:00:00Z', '2026-09-01T00:00:00Z')",
+        )
+        .await
+        .expect("an undeclared-but-non-empty type is admitted by design");
+
+        let err = exec(
+            &db,
+            "INSERT INTO products_attribute_definition \
+             (tenant_id, definition_id, key, value_type, state, created_at, updated_at) \
+             VALUES ('t-a', 'd-4', 'blank', '', 'active', \
+              '2026-09-01T00:00:00Z', '2026-09-01T00:00:00Z')",
+        )
+        .await
+        .expect_err("an empty type must be refused");
+        assert!(
+            err.to_string()
+                .contains("chk_products_attribute_definition_value_type"),
+            "{err}"
+        );
+    }
+
+    /// P-D-88 arm 2: the coordinate key is TOTAL. The global coordinate
+    /// `('', '', '')` collides with itself — which a nullable tuple would
+    /// not, on either engine — and the definition FK holds.
+    #[tokio::test]
+    async fn the_coordinate_key_constrains_the_global_coordinate() {
+        let db = harness().await;
+        seed_definition(&db, "d-1", "displayName").await;
+
+        let insert = |locale: &str, region: &str, brand: &str, value: &str| {
+            format!(
+                "INSERT INTO products_attribute_value \
+                 (tenant_id, entity_kind, entity_id, definition_id, locale, region, brand, \
+                  value, updated_at) \
+                 VALUES ('t-a', 'product', 'p-1', 'd-1', '{locale}', '{region}', '{brand}', \
+                  '{value}', '2026-09-01T00:00:00Z')"
+            )
+        };
+        exec(&db, &insert("", "", "", "Widget"))
+            .await
+            .expect("the global value lands");
+
+        let err = exec(&db, &insert("", "", "", "Gadget"))
+            .await
+            .expect_err("a second GLOBAL value must be refused: the whole point of arm 2");
+        assert!(
+            err.to_string().contains("UNIQUE constraint failed"),
+            "{err}"
+        );
+
+        exec(&db, &insert("de-DE", "", "", "Widgetchen"))
+            .await
+            .expect("a locale-scoped value beside the global one is a different coordinate");
+
+        // Category rows are admitted: for those this table IS the live state.
+        exec(
+            &db,
+            "INSERT INTO products_attribute_value \
+             (tenant_id, entity_kind, entity_id, definition_id, locale, region, brand, value, updated_at) \
+             VALUES ('t-a', 'category', 'c-1', 'd-1', '', '', '', 'Hardware', '2026-09-01T00:00:00Z')",
+        )
+        .await
+        .expect("a category value is live state, not frozen content");
+
+        exec(
+            &db,
+            "INSERT INTO products_attribute_value \
+             (tenant_id, entity_kind, entity_id, definition_id, locale, region, brand, value, updated_at) \
+             VALUES ('t-a', 'brand', 'b-1', 'd-1', '', '', '', 'x', '2026-09-01T00:00:00Z')",
+        )
+        .await
+        .expect("an unrostered kind is admitted until row 20 decides the set");
+        // §7 row 20 owns the roster, so the DDL pins non-emptiness only: an
+        // unlisted kind is ADMITTED by design and the blank is what is
+        // refused, being the one value that makes the coordinate
+        // unaddressable.
+        let err = exec(
+            &db,
+            "INSERT INTO products_attribute_value \
+             (tenant_id, entity_kind, entity_id, definition_id, locale, region, brand, value, updated_at) \
+             VALUES ('t-a', '', 'b-2', 'd-1', '', '', '', 'x', '2026-09-01T00:00:00Z')",
+        )
+        .await
+        .expect_err("a blank kind must be refused");
+        assert!(
+            err.to_string()
+                .contains("chk_products_attribute_value_entity_kind"),
+            "{err}"
+        );
+
+        let err = exec(
+            &db,
+            "INSERT INTO products_attribute_value \
+             (tenant_id, entity_kind, entity_id, definition_id, locale, region, brand, value, updated_at) \
+             VALUES ('t-a', 'product', 'p-2', 'd-nope', '', '', '', 'x', '2026-09-01T00:00:00Z')",
+        )
+        .await
+        .expect_err("a value on an unknown definition must be refused");
+        assert!(
+            err.to_string().contains("FOREIGN KEY constraint failed"),
+            "{err}"
+        );
+    }
+
+    /// The metadata map: keyed per entity, non-empty keys, and an
+    /// **undecided** `entity_kind` roster — §7 row 20's, not this
+    /// migration's.
+    #[tokio::test]
+    async fn the_metadata_map_is_keyed_per_entity_with_an_undecided_roster() {
+        let db = harness().await;
+        let insert = |kind: &str, key: &str| {
+            format!(
+                "INSERT INTO products_metadata \
+                 (tenant_id, entity_kind, entity_id, key, value, created_at, updated_at) \
+                 VALUES ('t-a', '{kind}', 'p-1', '{key}', 'v', \
+                  '2026-09-01T00:00:00Z', '2026-09-01T00:00:00Z')"
+            )
+        };
+        exec(&db, &insert("product", "internalOwner"))
+            .await
+            .expect("a metadata row lands");
+
+        let err = exec(&db, &insert("product", "internalOwner"))
+            .await
+            .expect_err("one key per entity");
+        assert!(
+            err.to_string().contains("UNIQUE constraint failed"),
+            "{err}"
+        );
+
+        exec(&db, &insert("sku", "internalOwner"))
+            .await
+            .expect("the same key on a SKU");
+
+        // Row 20 again: the roster is undecided, so `category` is admitted
+        // here rather than refused, and the blank is what the DDL pins.
+        exec(&db, &insert("category", "internalOwner"))
+            .await
+            .expect("an unrostered kind is admitted until row 20 decides the set");
+        let err = exec(&db, &insert("", "internalOwner"))
+            .await
+            .expect_err("a blank kind must be refused");
+        assert!(
+            err.to_string()
+                .contains("chk_products_metadata_entity_kind"),
+            "{err}"
+        );
+
+        let err = exec(&db, &insert("product", ""))
+            .await
+            .expect_err("a keyless row is addressable by nothing");
+        assert!(
+            err.to_string().contains("chk_products_metadata_key"),
+            "{err}"
+        );
+    }
+
+    /// The schema oracle for all three, with its perturbation case.
+    #[tokio::test]
+    async fn the_attribute_schema_oracle_pins_three_rosters_and_can_fail() {
+        let db = harness().await;
+        let definition =
+            super::governance_store_guard_tests::columns(&db, "products_attribute_definition")
+                .await;
+        assert_eq!(
+            definition,
+            vec![
+                "brand_scope",
+                "created_at",
+                "definition_id",
+                "key",
+                "localized",
+                "region_scope",
+                "seeded_by",
+                "state",
+                "tenant_id",
+                "updated_at",
+                "value_type",
+            ]
+        );
+
+        let value =
+            super::governance_store_guard_tests::columns(&db, "products_attribute_value").await;
+        assert_eq!(
+            value,
+            vec![
+                "brand",
+                "definition_id",
+                "entity_id",
+                "entity_kind",
+                "locale",
+                "region",
+                "tenant_id",
+                "updated_at",
+                "value",
+            ]
+        );
+
+        let metadata = super::governance_store_guard_tests::columns(&db, "products_metadata").await;
+        assert_eq!(
+            metadata,
+            vec![
+                "created_at",
+                "entity_id",
+                "entity_kind",
+                "key",
+                "tenant_id",
+                "updated_at",
+                "value",
+            ]
+        );
+
+        assert_ne!(definition, value, "two rosters must not compare equal");
+        assert_ne!(value, metadata, "two rosters must not compare equal");
     }
 }

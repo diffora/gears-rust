@@ -34,6 +34,8 @@ mod m20260901_000015_create_products_reference_producer;
 mod m20260901_000016_create_products_approval;
 mod m20260901_000017_create_products_breakglass_session;
 mod m20260901_000018_create_products_category;
+mod m20260901_000019_create_products_attribute;
+mod m20260901_000020_create_products_metadata;
 
 use sea_orm::{ConnectionTrait, Statement};
 use sea_orm_migration::prelude::*;
@@ -120,6 +122,8 @@ impl MigratorTrait for Migrator {
             Box::new(m20260901_000016_create_products_approval::Migration),
             Box::new(m20260901_000017_create_products_breakglass_session::Migration),
             Box::new(m20260901_000018_create_products_category::Migration),
+            Box::new(m20260901_000019_create_products_attribute::Migration),
+            Box::new(m20260901_000020_create_products_metadata::Migration),
         ]
     }
 }
