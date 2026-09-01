@@ -352,6 +352,21 @@
 //! reach the question.
 //!
 //!
+//! # The deprecate door — the one span this module registers that the set
+//! # does not declare
+//!
+//! `POST /bss-products/v1/products/{id}/deprecate` performs `design/04` §2
+//! `inst-lc-deprecate`: `published → deprecated` with the `direct` stamp in
+//! the same statement, then the cascade onto the children with a stated
+//! disposition per state, each moved child written **pinned at the revision
+//! the classification read** and announced as `SkuDeprecated`, the whole act
+//! one transaction. The set declares no entity-scoped span for it — its one
+//! declared carrier is `09`'s batch lane — so the route, and the choice to
+//! gate it on `product × write` plus a SKU-scoped `sku × write` for the
+//! child half, are the crate's own; `features/lifecycle.md` §7 row 36
+//! carries that question, and the two `DoD`s this door reaches stay unticked
+//! until it resolves. `dod-deprecation-provenance`, `dod-deprecation-cascade`.
+//!
 //! # The save door
 //!
 //! `PATCH /bss-products/v1/products/{id}` (`cpt-cf-bss-products-dod-save-door`,
@@ -541,6 +556,78 @@ pub struct ProductView {
     pub created_at: DateTime<Utc>,
     /// The instant of the row's last admitted write.
     pub updated_at: DateTime<Utc>,
+}
+
+/// `POST /products/{id}/deprecate`'s `200` body: the head as
+/// [`ProductView`] answers it, plus the cascade's three listings.
+///
+/// A type of its own — never three keys grafted onto a rendered
+/// [`ProductView`] — for two reasons that already cost a review finding
+/// each: the `OpenAPI` schema must carry the listings a generated client can
+/// read (a schema of `ProductView` alone advertises a body without the
+/// operator-visible half of `dod-deprecation-cascade`), and the field names
+/// must follow the same `snake_case` rule `api_dto` stamps on every other
+/// response of this gear, which hand-inserted map keys silently did not.
+#[toolkit_macros::api_dto(response)]
+pub struct DeprecatedProductView {
+    /// The row's own id.
+    pub product_id: Uuid,
+    /// Owning tenant.
+    pub tenant_id: Uuid,
+    /// The brand the Product belongs to.
+    pub brand_id: Uuid,
+    /// The operator-facing name, as authored.
+    pub name: String,
+    /// The optional external mapping code.
+    pub product_code: Option<String>,
+    /// Where the entity sits in the lifecycle machine — `deprecated`, on
+    /// every success this door answers.
+    pub lifecycle_state: String,
+    /// Moves on every admitted write. The operand of this door's `ETag`.
+    pub internal_revision: i64,
+    /// Moves only on publish; a deprecation never touches it.
+    pub published_version: i64,
+    /// The region value set. Empty means unrestricted.
+    pub region_scope: String,
+    /// The brand value set. Empty means unrestricted.
+    pub brand_scope: String,
+    /// The pseudonymous ref of whoever created the row.
+    pub created_by: String,
+    /// The commit instant.
+    pub created_at: DateTime<Utc>,
+    /// The instant of the row's last admitted write.
+    pub updated_at: DateTime<Utc>,
+    /// The children this act moved to `deprecated` with a `cascaded` stamp.
+    pub cascaded_skus: Vec<Uuid>,
+    /// The children left untouched because they were already `deprecated` —
+    /// their provenance is never re-stamped.
+    pub already_deprecated_skus: Vec<Uuid>,
+    /// The `draft` children skipped and listed, never transitioned. This
+    /// listing is the operator-visible half of `dod-deprecation-cascade`.
+    pub skipped_draft_skus: Vec<Uuid>,
+}
+
+impl DeprecatedProductView {
+    fn from_parts(record: ProductRecord, report: CascadeReport) -> Self {
+        Self {
+            product_id: record.product_id,
+            tenant_id: record.tenant_id,
+            brand_id: record.brand_id,
+            name: record.name,
+            product_code: record.product_code,
+            lifecycle_state: record.lifecycle_state.as_str().to_owned(),
+            internal_revision: record.internal_revision,
+            published_version: record.published_version,
+            region_scope: record.region_scope,
+            brand_scope: record.brand_scope,
+            created_by: record.created_by,
+            created_at: record.created_at,
+            updated_at: record.updated_at,
+            cascaded_skus: report.deprecated,
+            already_deprecated_skus: report.left_untouched,
+            skipped_draft_skus: report.skipped_drafts,
+        }
+    }
 }
 
 impl From<ProductRecord> for ProductView {
@@ -780,14 +867,28 @@ fn register_deprecate_door(router: Router, openapi: &dyn OpenApiRegistry) -> Rou
         .operation_id("bss_products.deprecate_product")
         .summary("Deprecate a published Product and cascade onto its SKUs")
         .description(
-            "Moves a `published` Product to `deprecated`, stamping              `deprecation_provenance = 'direct'` in the same statement as the state change,              bumping `internal_revision` and enqueuing `ProductDeprecated` with the              provenance in its payload. In the same transaction the deprecation **cascades              onto the Product's SKUs**, with a stated disposition per child state: a              `published` child is deprecated `cascaded` and announced as `SkuDeprecated`; an              already-`deprecated` child is left untouched and its provenance is never              re-stamped; a `draft` child is skipped and listed, the transition floor              admitting no `draft -> deprecated` edge; `retired` and `discarded` children are              outside the population. The response carries the head plus the three listings              (`cascadedSkus`, `alreadyDeprecatedSkus`, `skippedDraftSkus`). Any other              starting state is refused `ILLEGAL_TRANSITION`, and a `retired` or `discarded`              head is refused `ENTITY_TERMINAL`. Gates on `product x write` and requires              `If-Match` on the head's internal revision. Accepts an optional              `Idempotency-Key`.",
+            "Moves a `published` Product to `deprecated`, stamping \
+             `deprecation_provenance = 'direct'` in the same statement as the state change, \
+             bumping `internal_revision` and enqueuing `ProductDeprecated` with the \
+             provenance in its payload. In the same transaction the deprecation cascades \
+             onto the Product's SKUs, with a stated disposition per child state: a \
+             `published` child is deprecated `cascaded` and announced as `SkuDeprecated`; an \
+             already-`deprecated` child is left untouched and its provenance is never \
+             re-stamped; a `draft` child is skipped and listed, the transition floor \
+             admitting no `draft -> deprecated` edge; `retired` and `discarded` children are \
+             outside the population. The response carries the head plus the three listings \
+             (`cascaded_skus`, `already_deprecated_skus`, `skipped_draft_skus`). Any other \
+             starting state is refused `ILLEGAL_TRANSITION`, and a `retired` or `discarded` \
+             head is refused `ENTITY_TERMINAL`. Gates on `product x write` and, for the \
+             child reads and writes, `sku x write`. Requires `If-Match` on the head's \
+             internal revision. Accepts an optional `Idempotency-Key`.",
         )
         .tag(TAG)
         .authenticated()
         .no_license_required()
         .path_param("id", "The Product to deprecate.")
         .handler(deprecate_product)
-        .json_response_with_schema::<ProductView>(
+        .json_response_with_schema::<DeprecatedProductView>(
             openapi,
             StatusCode::OK,
             "The deprecated Product head, plus the cascade's three listings.",
@@ -2273,21 +2374,20 @@ enum Announcement {
     /// since a save lands on a `draft`, `published` or `deprecated` head
     /// alike"*, and that field is already in the core.
     HeadSaved,
-    /// `ProductDeprecated` — the core plus the **cause**
-    /// (`events::DeprecatedEventBody`). `design/01` §4.5 leaves this edge
-    /// eventless and records that `04-lifecycle` announces it, so this arm's
-    /// token is not one of §4.5's eight.
-    Deprecated(Provenance),
 }
 
 impl Announcement {
     /// The `payload_type` token the outbox row carries.
+    ///
+    /// `ProductDeprecated` is deliberately not an arm: the deprecate act's
+    /// body is [`DeprecatedProductView`], not [`ProductView`], so it has its
+    /// own tail (`deprecate_announce_and_answer`) rather than a fourth case
+    /// in [`announce_and_answer`]'s.
     const fn payload_type(self) -> &'static str {
         match self {
             Self::Published => events::PRODUCT_PUBLISHED_PAYLOAD_TYPE,
             Self::Discarded => events::PRODUCT_DISCARDED_PAYLOAD_TYPE,
             Self::HeadSaved => events::PRODUCT_HEAD_SAVED_PAYLOAD_TYPE,
-            Self::Deprecated(_) => events::PRODUCT_DEPRECATED_PAYLOAD_TYPE,
         }
     }
 }
@@ -2338,18 +2438,6 @@ async fn announce_and_answer(
                 payload_type,
                 &core,
                 head.published_version,
-                inputs.actor_ref,
-            )
-            .await
-        }
-        Announcement::Deprecated(provenance) => {
-            events::enqueue_deprecated(
-                outbox,
-                runner,
-                head.product_id,
-                payload_type,
-                &core,
-                provenance.as_str(),
                 inputs.actor_ref,
             )
             .await
@@ -2564,10 +2652,11 @@ async fn discard_in_one_transaction(
 
 /// Turn one head act's transaction result into the response the caller gets.
 ///
-/// Shared by both doors: the success, the replay, the audited refusal, the
-/// vanished head and the storage failure are answered identically whichever
-/// act produced them, and the only thing that differs is the `action` token
-/// a refusal's audit row records.
+/// Shared by the head-act doors — publish, discard, deprecate and save: the
+/// success, the replay, the audited refusal, the vanished head and the
+/// storage failure are answered identically whichever act produced them, and
+/// the only thing that differs is the `action` token a refusal's audit row
+/// records.
 async fn answer_head_act(
     state: &ApiState,
     opened: &OpenedHeadDoor,
@@ -2844,14 +2933,32 @@ async fn deprecate_product_under_gate(
         // `write`, not a `deprecate` action of its own: the discard door's
         // argument unchanged — the authorization vocabulary is not
         // one-to-one with the act vocabulary, and the audit token beside
-        // this is what tells the trail apart.
+        // this is what tells the trail apart. Whether the act deserves a
+        // dedicated grant the way publish has `product × publish` is part of
+        // `features/lifecycle.md` §7 row 36.
         authz_action: crate::authz::actions::WRITE,
         audit_action: DEPRECATE_AUDIT_ACTION,
         endpoint: deprecate_endpoint(product_id),
         payload_digest: bodiless_payload_digest(),
     };
     let opened = open_head_door(state, enforcer, ctx, product_id, headers, &act).await?;
-    let result = deprecate_in_one_transaction(state, &opened, gate).await;
+    // The cascade reads and writes `products_sku`, and the opened door's
+    // scope is compiled for the PRODUCT resource — on the SKU table its
+    // `resource_id` constraints would filter `sku_id` by *product* ids, so a
+    // constrained grant would silently cascade nothing. The clone door is
+    // the precedent: a Product act that touches child rows compiles a second
+    // scope for the SKU resource and spends both grants.
+    let sku_scope = clone_scope_for(
+        state,
+        enforcer,
+        ctx,
+        opened.tenant_id,
+        opened.actor_ref,
+        product_id,
+        &crate::authz::resource_types::SKU,
+    )
+    .await?;
+    let result = deprecate_in_one_transaction(state, &opened, &sku_scope, gate).await;
     answer_head_act(state, &opened, DEPRECATE_AUDIT_ACTION, result).await
 }
 
@@ -2859,11 +2966,13 @@ async fn deprecate_product_under_gate(
 async fn deprecate_in_one_transaction(
     state: &ApiState,
     opened: &OpenedHeadDoor,
+    sku_scope: &AccessScope,
     gate: &Arc<dyn GovernanceGate + Send + Sync>,
 ) -> Result<HeadActOutcome, HeadActError> {
     let outbox = state.sink.clone();
     let gate = Arc::clone(gate);
     let inputs = opened.act_inputs();
+    let sku_scope = sku_scope.clone();
     state
         .db
         .db()
@@ -2874,7 +2983,10 @@ async fn deprecate_in_one_transaction(
                 let outbox = outbox.clone();
                 let gate = Arc::clone(&gate);
                 let inputs = inputs.clone();
-                Box::pin(async move { run_deprecate(tx, &inputs, gate.as_ref(), &outbox).await })
+                let sku_scope = sku_scope.clone();
+                Box::pin(async move {
+                    run_deprecate(tx, &inputs, &sku_scope, gate.as_ref(), &outbox).await
+                })
             },
         )
         .await
@@ -2882,19 +2994,26 @@ async fn deprecate_in_one_transaction(
 
 /// The deprecation act's whole transaction: the parent's `published →
 /// deprecated` with its `direct` stamp, then the cascade onto the children,
-/// then one announcement per row actually moved.
+/// then one announcement per row actually moved — and the idempotency answer
+/// stored **after** the listings are merged, so a keyed replay reproduces
+/// the same body this call answered.
 ///
-/// # The cascade's population is decided once and written once
+/// # The cascade's population is decided once, and each write is pinned
 ///
-/// The children are read here, inside this transaction, and classified by
-/// `domain::deprecation::disposition_for` — `published` ones cascade,
-/// already-`deprecated` ones are left untouched with their provenance
-/// intact, `draft` ones are **skipped and listed**, and terminal ones are
-/// outside the population. `repo::cascade_deprecate_children` then writes
-/// exactly the classified set in one statement and refuses if fewer rows
-/// matched than were named, so a concurrent writer that moved a child fails
-/// the whole mutation rather than committing half a cascade
-/// (`01 inst-fd-fail-closed`).
+/// The children are read here, inside this transaction and under the SKU
+/// scope, and classified by `domain::deprecation::disposition_for` —
+/// `published` ones cascade, already-`deprecated` ones are left untouched
+/// with their provenance intact, `draft` ones are **skipped and listed**,
+/// and terminal ones are outside the population. Each classified child is
+/// then written by `repo::cascade_deprecate_child`, **pinned at the revision
+/// the classification read**: a child a concurrent writer moved between the
+/// read and the write answers `Unmatched`, and the whole mutation is refused
+/// `STALE_REVISION` rather than committing a half-cascade or announcing a
+/// revision the row never held (`01 inst-fd-fail-closed`; P-D-29's "the
+/// value as committed by the act" is then the pin plus one, proven by the
+/// pinned write itself). Each moved child also runs the approval-invalidation
+/// hook: `published → deprecated` is an ungated edge, so the floor gives it
+/// `ApprovalInvalidation::Fire`, for the children exactly as for the parent.
 ///
 /// # Why the drafts are listed rather than refused
 ///
@@ -2902,7 +3021,7 @@ async fn deprecate_in_one_transaction(
 /// the design keyed the cascade on *"non-terminal children"* — which made
 /// deprecating a Product with one draft SKU fail `ILLEGAL_TRANSITION` with no
 /// remedy an operator could take. The listing is what the operator sees; it
-/// rides the response's `skippedDrafts`.
+/// rides the response's `skipped_draft_skus`.
 ///
 /// # Errors
 ///
@@ -2910,6 +3029,7 @@ async fn deprecate_in_one_transaction(
 async fn run_deprecate(
     runner: &(impl DBRunner + Sync),
     inputs: &HeadActInputs,
+    sku_scope: &AccessScope,
     gate: &(dyn GovernanceGate + Send + Sync),
     outbox: &crate::infra::broker::EventSink,
 ) -> Result<HeadActOutcome, HeadActError> {
@@ -2940,10 +3060,10 @@ async fn run_deprecate(
         .map_err(HeadActError::Refused)?;
 
     // The stamp the parent takes. `stamp_for` answers `None` on an
-    // already-`deprecated` head — but `transition::guard` above has already
-    // refused that head, the floor admitting no self-edge, so reaching this
-    // line with `None` would mean the two rules disagreed. Asserting it
-    // rather than folding it away is what would catch that.
+    // already-`deprecated` head, and `transition::guard` does NOT refuse
+    // that head — the diagonal is `NotATransition` by the floor's own rule 3
+    // — so this `else` arm is the door's live refusal of a second
+    // deprecation, not an assertion about an unreachable state.
     let Some(parent_stamp) =
         stamp_for(head.lifecycle_state, Provenance::Direct).map_err(HeadActError::Refused)?
     else {
@@ -2987,18 +3107,81 @@ async fn run_deprecate(
         return Err(classify_unmatched_deprecate(runner, inputs).await);
     }
 
-    let cascade = cascade_onto_children(runner, outbox, inputs).await?;
+    let report = cascade_onto_children(runner, outbox, inputs, sku_scope).await?;
 
     fire_invalidation_hook(runner, inputs, transition::invalidation_for(decision)).await?;
 
-    let outcome = announce_and_answer(
-        runner,
+    deprecate_announce_and_answer(runner, outbox, inputs, report).await
+}
+
+/// Render the deprecated head with its three listings, enqueue
+/// `ProductDeprecated`, and — where the request carried a key — store **that
+/// merged body** as the idempotency answer.
+///
+/// [`announce_and_answer`]'s deprecate twin rather than a fourth arm on it:
+/// this act's answered body is [`DeprecatedProductView`], not
+/// [`ProductView`], and the stored answer must be the same value — an
+/// earlier revision merged the listings after the store, so a keyed replay
+/// reproduced the head alone.
+async fn deprecate_announce_and_answer(
+    runner: &(impl DBRunner + Sync),
+    outbox: &crate::infra::broker::EventSink,
+    inputs: &HeadActInputs,
+    report: CascadeReport,
+) -> Result<HeadActOutcome, HeadActError> {
+    let head = repo::find_product(runner, &inputs.scope, inputs.tenant_id, inputs.product_id)
+        .await
+        .map_err(|e| HeadActError::from_repo(&e))?
+        .ok_or(HeadActError::Vanished)?;
+
+    let core = events::EventBodyCore {
+        tenant_id: head.tenant_id,
+        entity_kind: events::EntityKind::Product.as_str(),
+        entity_id: head.product_id,
+        internal_revision: head.internal_revision,
+        lifecycle_state: head.lifecycle_state.as_str(),
+    };
+    let provenance = head
+        .deprecation_provenance
+        .unwrap_or(Provenance::Direct)
+        .as_str();
+    events::enqueue_deprecated(
         outbox,
-        inputs,
-        Announcement::Deprecated(parent_stamp),
+        runner,
+        head.product_id,
+        events::PRODUCT_DEPRECATED_PAYLOAD_TYPE,
+        &core,
+        provenance,
+        inputs.actor_ref,
     )
-    .await?;
-    Ok(cascade.attach_to(outcome))
+    .await
+    .map_err(|e| HeadActError::from_storage(&e))?;
+
+    let internal_revision = head.internal_revision;
+    let body =
+        serde_json::to_value(DeprecatedProductView::from_parts(head, report)).map_err(|e| {
+            HeadActError::Db(DbError::Sea(DbErr::Custom(format!(
+                "render the deprecated Product: {e}"
+            ))))
+        })?;
+
+    if let Some(input) = inputs.claim.as_ref() {
+        record_idempotency_answer(
+            runner,
+            &inputs.scope,
+            inputs.tenant_id,
+            input,
+            HEAD_ACT_RESPONSE_STATUS,
+            &body,
+        )
+        .await
+        .map_err(|e| HeadActError::from_repo(&e))?;
+    }
+
+    Ok(HeadActOutcome::Applied {
+        internal_revision,
+        body,
+    })
 }
 
 /// What the cascade did, in the three readings the operator is owed.
@@ -3015,56 +3198,21 @@ struct CascadeReport {
     skipped_drafts: Vec<Uuid>,
 }
 
-impl CascadeReport {
-    /// Fold the three listings into the act's response body.
-    ///
-    /// Attached to the rendered head rather than replacing it, so the
-    /// response is still the `ProductView` every other head act answers plus
-    /// this act's own three lists — and a replay reproduces both halves,
-    /// because the merged value is what the idempotency answer stored.
-    fn attach_to(self, outcome: HeadActOutcome) -> HeadActOutcome {
-        let HeadActOutcome::Applied {
-            internal_revision,
-            mut body,
-        } = outcome
-        else {
-            return outcome;
-        };
-        if let Some(map) = body.as_object_mut() {
-            map.insert("cascadedSkus".to_owned(), ids(&self.deprecated));
-            map.insert(
-                "alreadyDeprecatedSkus".to_owned(),
-                ids(&self.left_untouched),
-            );
-            map.insert("skippedDraftSkus".to_owned(), ids(&self.skipped_drafts));
-        }
-        HeadActOutcome::Applied {
-            internal_revision,
-            body,
-        }
-    }
-}
-
-/// Render a listing of entity ids for the response.
-fn ids(values: &[Uuid]) -> JsonValue {
-    JsonValue::Array(
-        values
-            .iter()
-            .map(|id| JsonValue::String(id.to_string()))
-            .collect(),
-    )
-}
-
-/// Classify, write and announce the cascade — the second half of
+/// Classify, write, supersede and announce the cascade — the second half of
 /// [`run_deprecate`], on the same runner and therefore in the same
 /// transaction.
+///
+/// Reads and writes `products_sku` under the **SKU** scope, never the opened
+/// door's Product one — see `deprecate_product_under_gate` for why the
+/// Product scope's constraints would misfilter the child table.
 async fn cascade_onto_children(
     runner: &(impl DBRunner + Sync),
     outbox: &crate::infra::broker::EventSink,
     inputs: &HeadActInputs,
+    sku_scope: &AccessScope,
 ) -> Result<CascadeReport, HeadActError> {
     let children =
-        repo::find_skus_of_product(runner, &inputs.scope, inputs.tenant_id, inputs.product_id)
+        repo::find_skus_of_product(runner, sku_scope, inputs.tenant_id, inputs.product_id)
             .await
             .map_err(|e| HeadActError::from_repo(&e))?;
 
@@ -3073,12 +3221,12 @@ async fn cascade_onto_children(
         left_untouched: Vec::new(),
         skipped_drafts: Vec::new(),
     };
-    let mut revisions: Vec<(Uuid, i64)> = Vec::new();
+    let mut moved: Vec<(Uuid, i64)> = Vec::new();
     for child in &children {
         match disposition_for(child.lifecycle_state) {
             ChildDisposition::Deprecate => {
                 report.deprecated.push(child.sku_id);
-                revisions.push((child.sku_id, child.internal_revision));
+                moved.push((child.sku_id, child.internal_revision));
             }
             ChildDisposition::LeaveUntouched => report.left_untouched.push(child.sku_id),
             ChildDisposition::SkipAndList => report.skipped_drafts.push(child.sku_id),
@@ -3089,26 +3237,60 @@ async fn cascade_onto_children(
         }
     }
 
-    repo::cascade_deprecate_children(
-        runner,
-        &inputs.scope,
-        inputs.tenant_id,
-        &report.deprecated,
-        inputs.now,
-    )
-    .await
-    .map_err(|e| HeadActError::from_repo(&e))?;
+    for (sku_id, pinned) in moved {
+        let write = repo::cascade_deprecate_child(
+            runner,
+            sku_scope,
+            inputs.tenant_id,
+            sku_id,
+            pinned,
+            inputs.now,
+        )
+        .await
+        .map_err(|e| HeadActError::from_repo(&e))?;
+        if write == HeadWrite::Unmatched {
+            // The child moved between the classification and its pinned
+            // write. Refusing the whole mutation is `inst-fd-fail-closed`;
+            // STALE_REVISION is the honest class — the operator re-reads and
+            // retries, exactly as for the head's own pin — and the found
+            // value is read off the committed row so the refusal names what
+            // actually moved.
+            let found = repo::find_sku(runner, sku_scope, inputs.tenant_id, sku_id)
+                .await
+                .map_err(|e| HeadActError::from_repo(&e))?
+                .map_or(0, |row| row.internal_revision);
+            return Err(HeadActError::Refused(DomainError::StaleRevision {
+                expected: pinned,
+                found,
+            }));
+        }
 
-    // One `SkuDeprecated` per row actually moved, each carrying the child's
-    // post-act revision — `internal_revision + 1`, computed from the image
-    // the classification read rather than re-read, because the write above
-    // already proved that image was the one it updated.
-    for (sku_id, before) in revisions {
+        // Each moved child crossed `published → deprecated`, an ungated edge,
+        // so the floor's own answer for it is `Fire` — the same supersede the
+        // parent's hook runs, aimed at the child's subject.
+        repo::supersede_open_approval(
+            runner,
+            sku_scope,
+            inputs.tenant_id,
+            &GateSubject::entity_publish(EntityRef {
+                tenant_id: inputs.tenant_id,
+                entity_kind: CatalogEntityKind::Sku,
+                entity_id: sku_id,
+            }),
+            inputs.now,
+        )
+        .await
+        .map_err(|e| HeadActError::Db(toolkit_db::DbError::Sea(e.to_db_err())))?;
+
+        // The pinned write is what makes this arithmetic the committed value
+        // (P-D-29): the UPDATE matched `internal_revision = pinned`, so the
+        // row it wrote is at `pinned + 1` — never a guess over an image a
+        // concurrent save may have moved.
         let core = events::EventBodyCore {
             tenant_id: inputs.tenant_id,
             entity_kind: events::EntityKind::Sku.as_str(),
             entity_id: sku_id,
-            internal_revision: before + 1,
+            internal_revision: pinned + 1,
             lifecycle_state: LifecycleState::Deprecated.as_str(),
         };
         events::enqueue_deprecated(

@@ -3,11 +3,12 @@
 //!
 //! # One home for the body core, so `SkuCreated` does not duplicate it
 //!
-//! §4.5 fixes one body core across all eight Foundation events —
+//! §4.5 fixes one body core across all eight Foundation events — and 04's
+//! announced pair rides the same core —
 //! `{tenantId, entityKind, entityId, internalRevision, lifecycleState}` — and
 //! names anything beyond it where the act that adds it is specified (only
 //! `*Published`, with `publishedVersion`). [`EventBodyCore`] is that shape;
-//! six of the eight carry **only** the core, built through this same type,
+//! six of the Foundation's eight carry **only** the core, built through this same type,
 //! rather than each redeclaring the five fields a second time.
 //!
 //! # `publishedVersion` sits **outside** the core, not inside it
@@ -419,7 +420,7 @@ pub(crate) struct PublishedEventBody<'core> {
 /// # Why the provenance is on the wire and not only on the row
 ///
 /// A consumer's own reaction differs by cause. `design/04` has the registry
-/// *"mark and expose"* while the new-adoption block is the consumer's
+/// marks and exposes while the new-adoption block is the consumer's
 /// (pricing AC #82), and a consumer that had to re-read the head to learn
 /// whether a deprecation was the operator's or a parent's would be reading a
 /// row that may have moved again by then. The cause travels with the
@@ -456,10 +457,10 @@ pub(crate) enum EventsError {
     /// has no versioned schema reference to announce.
     ///
     /// Refused rather than defaulted: see [`schema_ref_for`]'s own doc. It is
-    /// unreachable while every caller passes one of [`SCHEMA_REFS`]' eight
-    /// tokens, and `events_tests` holds that roster equal to §4.5's — but a
-    /// ninth event added without an entry lands here, at its first enqueue,
-    /// instead of on a consumer.
+    /// unreachable while every caller passes one of [`SCHEMA_REFS`]' ten
+    /// tokens, and `events_tests` holds that roster equal to the union of the
+    /// two declared ones — but an eleventh event added without an entry lands
+    /// here, at its first enqueue, instead of on a consumer.
     #[error("no versioned schema reference registered for payload type {0}")]
     UnregisteredSchema(String),
     /// A `*Published` token reached [`enqueue`], whose body has no
@@ -485,16 +486,26 @@ pub(crate) enum EventsError {
     /// entry point admits exactly the tokens whose body shape it builds, so a
     /// mis-routed call is a refusal rather than a wire body with a surplus
     /// field.
-    #[error("{0} carries no provenance and must be enqueued through enqueue")]
+    #[error("{0} carries no provenance and belongs to the entry point owning its body shape")]
     NotADeprecationEvent(String),
+    /// A `*Deprecated` token reached [`enqueue`], whose core-only body would
+    /// drop the one field `dod-deprecation-provenance` requires on the wire.
+    ///
+    /// [`Self::PublishNeedsVersion`]'s reciprocal for the deprecation pair:
+    /// without it the broker arm's typed-event `match` refuses the mis-route
+    /// while the interim arm writes the bare core straight through — the two
+    /// sinks disagreeing about a rule that is the body shape's, not the
+    /// sink's.
+    #[error("{0} carries a provenance and must be enqueued through enqueue_deprecated")]
+    DeprecationNeedsProvenance(String),
     /// The broker arm has no [`crate::infra::broker`] typed event for this
     /// payload type.
     ///
     /// Distinct from [`Self::UnregisteredSchema`], which is the interim arm's
     /// roster miss: the two arms resolve a token through two different rosters
-    /// — `SCHEMA_REFS` there, a `match` over the eight typed events here — and
+    /// — `SCHEMA_REFS` there, a `match` over the ten typed events here — and
     /// naming both misses the same thing would send a reader to the wrong one.
-    /// A ninth event registered in `SCHEMA_REFS` but not wired here reaches
+    /// An eleventh event registered in `SCHEMA_REFS` but not wired here reaches
     /// this variant, and a no-broker deployment would have emitted it.
     #[error("no typed event is declared for payload type {0} on the broker arm")]
     NoTypedEvent(String),
@@ -590,7 +601,7 @@ pub(crate) struct EventEnvelope<'body, B: Serialize> {
     pub correlation_id: Option<String>,
     /// The event that caused this one.
     ///
-    /// **`None` for all eight Foundation events, and that is the measurement
+    /// **`None` for every event this gear emits, and that is the measurement
     /// rather than an omission**: every one of them is caused by an operator
     /// request, not by another event, so there is no event id to name. It
     /// becomes populated the first time a slice emits an event *in reaction
@@ -729,6 +740,14 @@ pub(crate) async fn enqueue(
     ) {
         return Err(EventsError::PublishNeedsVersion(payload_type.to_owned()));
     }
+    if matches!(
+        payload_type,
+        PRODUCT_DEPRECATED_PAYLOAD_TYPE | SKU_DEPRECATED_PAYLOAD_TYPE
+    ) {
+        return Err(EventsError::DeprecationNeedsProvenance(
+            payload_type.to_owned(),
+        ));
+    }
     match sink {
         EventSink::Interim(outbox) => {
             enqueue_body(
@@ -779,7 +798,7 @@ pub(crate) async fn enqueue(
                 // `schema_ref_for` did not recognise the token, and on this arm
                 // `schema_ref_for` was never called. The condition here is "no
                 // `TypedEvent` is declared for this token", which is a different
-                // repair — the two rosters are equal today and a ninth event
+                // repair — the two rosters are equal today and an eleventh event
                 // would have to be added to both.
                 other => return Err(EventsError::NoTypedEvent(other.to_owned())),
             }
@@ -789,28 +808,13 @@ pub(crate) async fn enqueue(
     }
 }
 
-/// [`enqueue`] for the two `*Published` events, whose body is the core
-/// **plus** `publishedVersion` (§4.5, [`PublishedEventBody`]).
-///
-/// A separate entry point rather than an `Option<i64>` on [`enqueue`]: the
-/// six core-only events have no version to pass and would each have to write
-/// a `None` that means nothing, and a publish that passed `None` by mistake
-/// would silently emit a body §4.5 says is incomplete. Here the field is a
-/// plain `i64` the caller cannot omit.
-///
-/// `published_version` MUST be the **post-act** version — the key the frozen
-/// row was written at; see [`PublishedEventBody::published_version`].
-///
-/// # Errors
-/// [`EventsError::Serialize`] and [`EventsError::Outbox`], exactly as
-/// [`enqueue`] raises them.
 /// Enqueue a `*Deprecated` event — [`enqueue`]'s twin for the one body shape
 /// that carries a cause ([`DeprecatedEventBody`]).
 ///
 /// # Why a third function and not a `provenance: Option<&str>` on [`enqueue`]
 ///
 /// [`enqueue_published`]'s own argument, unchanged: an `Option` would make
-/// every one of the other nine call sites pass a `None` that means nothing to
+/// every other `enqueue` call site pass a `None` that means nothing to
 /// them, and would let a `*Deprecated` event reach the wire with no
 /// provenance — the one field `dod-deprecation-provenance` requires it to
 /// carry. The token guard below is the same fail-closed shape: this function
@@ -865,11 +869,7 @@ pub(crate) async fn enqueue_deprecated(
                         )
                         .await
                 }
-                // The token guard at the top of this function admits exactly
-                // the two, so the second is the only remaining case — no
-                // `NoTypedEvent` arm, because a token that could reach it was
-                // already refused as `NotADeprecationEvent`.
-                _ => {
+                SKU_DEPRECATED_PAYLOAD_TYPE => {
                     producer
                         .enqueue(
                             runner,
@@ -880,6 +880,11 @@ pub(crate) async fn enqueue_deprecated(
                         )
                         .await
                 }
+                // Unreachable while the guard above owns the condition; kept
+                // total so a third `*Deprecated` token added to that guard and
+                // forgotten here is a refusal, not a body published under
+                // `sku_deprecated.v1`'s id with the wrong subject.
+                other => return Err(EventsError::NoTypedEvent(other.to_owned())),
             }
             .map(|_| ())
             .map_err(EventsError::Broker)
@@ -887,6 +892,21 @@ pub(crate) async fn enqueue_deprecated(
     }
 }
 
+/// [`enqueue`] for the two `*Published` events, whose body is the core
+/// **plus** `publishedVersion` (§4.5, [`PublishedEventBody`]).
+///
+/// A separate entry point rather than an `Option<i64>` on [`enqueue`]: the
+/// six core-only events have no version to pass and would each have to write
+/// a `None` that means nothing, and a publish that passed `None` by mistake
+/// would silently emit a body §4.5 says is incomplete. Here the field is a
+/// plain `i64` the caller cannot omit.
+///
+/// `published_version` MUST be the **post-act** version — the key the frozen
+/// row was written at; see [`PublishedEventBody::published_version`].
+///
+/// # Errors
+/// [`EventsError::Serialize`] and [`EventsError::Outbox`], exactly as
+/// [`enqueue`] raises them.
 pub(crate) async fn enqueue_published(
     sink: &EventSink,
     runner: &(impl DBRunner + Sync),
@@ -898,7 +918,7 @@ pub(crate) async fn enqueue_published(
 ) -> Result<(), EventsError> {
     // Hoisted above the match, like [`enqueue`]'s twin guard. It used to sit
     // inside the `Interim` arm while the `Broker` arm relied on its own
-    // fallthrough — two copies of one rule, so a ninth publish event added to
+    // fallthrough — two copies of one rule, so a third publish event added to
     // the broker's match and forgotten in this list would have been accepted on
     // one arm and refused on the other.
     if !matches!(
@@ -994,7 +1014,7 @@ async fn enqueue_body(
         event_id: Uuid::new_v4(),
         schema_ref,
         correlation_id: correlation_id(),
-        // See the field's own doc: an operator request causes these eight,
+        // See the field's own doc: an operator request causes every one,
         // and a request is not an event.
         causation_id: None,
         actor_ref,

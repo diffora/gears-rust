@@ -1,4 +1,5 @@
-//! The eight Foundation events as the broker SDK's own typed events (P-D-47).
+//! The gear's events as the broker SDK's own typed events (P-D-47): `01`
+//! §4.5's eight, and `04-lifecycle`'s announced deprecation pair.
 //!
 //! `infra::events` writes the interim envelope this gear controls; this module
 //! is what replaces it once a broker is reachable. The two coexist on purpose:
@@ -57,9 +58,9 @@
 //! - the **names** are this set's own. `DESIGN.md` declares six domain GTS
 //!   types, two of which are the entities these events are about —
 //!   `gts.cf.bss.products.product.v1~` and `gts.cf.bss.products.sku.v1~` — so
-//!   the subject types carry those names, and the event types carry §4.5's own
-//!   eight tokens;
-//! - **one topic, not eight.** P-D-27's ordering key is `(tenant, aggregate)`,
+//!   the subject types carry those names, and the event types carry the
+//!   gear's own tokens — §4.5's eight and 04's pair;
+//! - **one topic, not one per event.** P-D-27's ordering key is `(tenant, aggregate)`,
 //!   not `(tenant, aggregate, entity_kind)`; splitting the topic would not
 //!   change the partitioning, only what a consumer subscribes to. This is the
 //!   same argument [`crate::infra::events::QUEUE_NAME`] already carries for the
@@ -114,7 +115,7 @@ use serde::{Deserialize, Serialize};
 use toolkit_security::SecurityContext;
 use uuid::Uuid;
 
-/// The one topic all eight events publish onto.
+/// The one topic all ten events publish onto.
 pub(crate) const TOPIC: &str = "gts.cf.core.events.topic.v1~cf.bss.products.catalog.v1";
 
 /// The `source` every event of this gear carries: the gear's own name, the
@@ -149,8 +150,8 @@ pub(crate) struct CatalogEventCore {
     /// The head's state after the act.
     pub lifecycle_state: String,
     /// P-D-01's causation half. Absent rather than null, and never an echo of
-    /// the correlation id: an operator request causes these eight, and a
-    /// request is not an event.
+    /// the correlation id: an operator request causes every one of these, and
+    /// a request is not an event.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub causation_id: Option<String>,
     /// The acting principal, pseudonymously. The broker's `Event` has no field
@@ -162,7 +163,7 @@ impl CatalogEventCore {
     /// Owned copy of the interim envelope's borrowed core, plus the two
     /// obligations the broker's `Event` has no field for.
     ///
-    /// `causation_id` is `None` for all eight: an operator request causes them,
+    /// `causation_id` is `None` for all ten: an operator request causes them,
     /// and a request is not an event. The field exists so a later slice that
     /// emits an event *caused by* another has somewhere to put it.
     pub(crate) fn from_core(core: &crate::infra::events::EventBodyCore, actor_ref: Uuid) -> Self {
@@ -435,16 +436,16 @@ pub(crate) enum EventSink {
     Interim(Arc<toolkit_db::outbox::Outbox>),
 }
 
-/// Prepare each of the eight event types by name, so a registration missing any
+/// Prepare each of the ten event types by name, so a registration missing any
 /// one of them fails the boot rather than a door's transaction.
 ///
 /// `DbProducer::prepare_all` resolves the declared *patterns* and errors only on
-/// an empty match, which is a different claim. This asks the eight questions the
+/// an empty match, which is a different claim. This asks the ten questions the
 /// gear actually needs answered.
 ///
 /// # Errors
 /// `EventBrokerError::SchemaNotPrepared` (or the SDK's own lookup error) naming
-/// the first of the eight the broker does not carry.
+/// the first of the ten the broker does not carry.
 async fn prepare_every_event_type(
     producer: &event_broker_sdk::DbProducer,
 ) -> Result<(), event_broker_sdk::EventBrokerError> {
@@ -526,11 +527,11 @@ pub(crate) async fn bind_producer(
         .prepare_all()
         .await?;
 
-    // **`prepare_all` is not "all eight".** Its schema cache errors only when the
+    // **`prepare_all` is not "every event".** Its schema cache errors only when the
     // declared patterns match **zero** event types
     // (`producer/schema_cache.rs`: `if selected.is_empty()`), so a broker
-    // carrying one of this gear's eight lets the boot succeed and log
-    // "publishing through the event-broker SDK producer" — and the other seven
+    // carrying one of this gear's ten lets the boot succeed and log
+    // "publishing through the event-broker SDK producer" — and the other nine
     // then fail at `outbox_envelope`'s `validate_prepared`, inside a door's own
     // transaction, on a live request. That is the "half-configured broker" case
     // this module's doc says is loud at bind time; it was not, until here.

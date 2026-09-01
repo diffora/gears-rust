@@ -47,10 +47,11 @@ const THE_EIGHT: &[&str] = &[
 /// longer be a transcription of one sentence, and a Foundation event dropped
 /// from §4.5 could be replaced by a lifecycle one with the count unchanged.
 ///
-/// `SkuUndeprecated`/`ProductUndeprecated` and `SkuRetirementEffective` are
-/// on 04's roster too and are **not** here, because no act emits them yet —
-/// a schema reference for an event this gear does not emit is a promise a
-/// consumer contract would take at face value.
+/// The rest of 04's roster — `SkuUndeprecated`/`ProductUndeprecated`,
+/// `SkuRetired`/`ProductRetired` and `SkuRetirementEffective` — is **not**
+/// here, because no act emits any of them yet, and a schema reference for an
+/// event this gear does not emit is a promise a consumer contract would take
+/// at face value.
 const THE_LIFECYCLE_PAIR: &[&str] = &["ProductDeprecated", "SkuDeprecated"];
 
 fn core() -> EventBodyCore {
@@ -76,15 +77,15 @@ fn rendered<B: serde::Serialize>(body: &B, payload_type: &str) -> Value {
     serde_json::to_value(&envelope).expect("the envelope renders as JSON")
 }
 
-/// **Every one of §4.5's eight has a versioned schema reference, and nothing
-/// else does.**
+/// **Every declared event has a versioned schema reference — §4.5's eight
+/// and 04's announced pair — and nothing else does.**
 ///
 /// Both directions matter. A missing entry is an event that would be refused
 /// at its first enqueue; a *surplus* entry is a schema reference announced for
 /// an event this gear does not emit, which a consumer contract would take for
 /// a promise.
 #[test]
-fn the_schema_roster_names_exactly_the_eight_foundation_events() {
+fn the_schema_roster_names_exactly_the_declared_events() {
     let registered: Vec<&str> = SCHEMA_REFS.iter().map(|(token, _)| *token).collect();
 
     for event in THE_EIGHT {

@@ -2903,6 +2903,11 @@ async fn the_product_content_builder_writes_exactly_the_roster() {
     // the read-back copy is the fixture, not a bypass.
     head.cloned_from = Some(Uuid::now_v7());
     head.cloned_from_version = Some(3);
+    // And the exclusion arm, the SKU roster test's premise exactly:
+    // `deprecation_provenance` is one of the four columns §4.3 excludes from
+    // frozen version content, and a `None` here could not test the exclusion
+    // — the builder would pass by omitting an absent optional.
+    head.deprecation_provenance = Some(crate::domain::deprecation::Provenance::Direct);
 
     let content = super::product_content(&head);
     let mut written: Vec<&str> = content
@@ -6305,17 +6310,16 @@ mod deprecate_door_tests {
         );
 
         let body_table = format!("{}_body", events::OUTBOX_TABLE_PREFIX);
-        let payload_type = raw_string_opt(
+        let announced = raw_i64(
             &harness.dsn,
             &format!(
-                "SELECT payload_type AS v FROM {body_table} \
+                "SELECT COUNT(*) AS v FROM {body_table} \
                  WHERE payload_type = 'ProductDeprecated'"
             ),
         )
         .await;
         assert_eq!(
-            payload_type.as_deref(),
-            Some("ProductDeprecated"),
+            announced, 1,
             "the act enqueues the event 04 announces, not one of section 4.5's eight"
         );
         let body = raw_string_opt(
@@ -6377,16 +6381,16 @@ mod deprecate_door_tests {
         .expect("the response is JSON");
 
         assert_eq!(
-            body["cascadedSkus"],
+            body["cascaded_skus"],
             JsonValue::Array(vec![JsonValue::String(live.to_string())]),
             "only the published child cascades"
         );
         assert_eq!(
-            body["alreadyDeprecatedSkus"],
+            body["already_deprecated_skus"],
             JsonValue::Array(vec![JsonValue::String(already.to_string())])
         );
         assert_eq!(
-            body["skippedDraftSkus"],
+            body["skipped_draft_skus"],
             JsonValue::Array(vec![JsonValue::String(draft.to_string())]),
             "the draft is listed for the operator, not transitioned"
         );
@@ -6504,10 +6508,130 @@ mod deprecate_door_tests {
         assert_eq!(
             second.status(),
             StatusCode::CONFLICT,
-            "the floor admits no deprecated -> deprecated self-edge"
+            "a second deprecation is refused by the door's own no-re-stamp arm: the floor \
+             answers NotATransition on the diagonal, and stamp_for's None is what this door \
+             turns into the refusal"
         );
         let head = head_of(&harness, product_id).await;
         assert_eq!(head.internal_revision, 3, "the refused act wrote nothing");
         assert_eq!(head.deprecation_provenance, Some(Provenance::Direct));
+    }
+
+    /// **A keyed replay reproduces the listings, not only the head.**
+    ///
+    /// The first revision of this door stored the idempotency answer before
+    /// the three listings were merged, so a retry answered a bare
+    /// `ProductView` — the operator's second call reported no cascade at
+    /// all. The stored answer is now the merged body, and this probe is what
+    /// keeps it that way.
+    #[tokio::test]
+    async fn a_keyed_replay_reproduces_the_cascade_listings() {
+        let harness = harness().await;
+        let product_id = published_product(&harness).await;
+        let live = seed_child(&harness, product_id, "SKU-REPLAY").await;
+        publish_child(&harness, live).await;
+
+        let before = child_of(&harness, live).await.internal_revision;
+        let headers = [
+            ("If-Match", if_match(2)),
+            ("Idempotency-Key", "dep-replay-1".to_owned()),
+        ];
+        let borrowed: Vec<(&str, &str)> = headers.iter().map(|(n, v)| (*n, v.as_str())).collect();
+        let first = post_head_act(
+            app_for(&harness, TENANT),
+            TENANT,
+            product_id,
+            "deprecate",
+            &borrowed,
+        )
+        .await;
+        assert_eq!(first.status(), StatusCode::OK);
+
+        let retry = post_head_act(
+            app_for(&harness, TENANT),
+            TENANT,
+            product_id,
+            "deprecate",
+            &borrowed,
+        )
+        .await;
+        assert_eq!(
+            retry.status(),
+            StatusCode::OK,
+            "a replay answers the stored 200"
+        );
+        let body: JsonValue = serde_json::from_slice(
+            &axum::body::to_bytes(retry.into_body(), usize::MAX)
+                .await
+                .expect("read the replayed body"),
+        )
+        .expect("the replay is JSON");
+        assert_eq!(
+            body["cascaded_skus"],
+            JsonValue::Array(vec![JsonValue::String(live.to_string())]),
+            "the replay carries the same listings the first answer carried"
+        );
+
+        let moved = child_of(&harness, live).await;
+        assert_eq!(
+            moved.internal_revision,
+            before + 1,
+            "the replay executed nothing: the child moved exactly once"
+        );
+    }
+
+    /// **Each cascade write is pinned at the revision the classification
+    /// read**, so a child that moved in between answers `Unmatched` and
+    /// nothing is written — the repository half of the fail-closed refusal.
+    #[tokio::test]
+    async fn a_moved_child_fails_the_pinned_cascade_write() {
+        let harness = harness().await;
+        let product_id = published_product(&harness).await;
+        let live = seed_child(&harness, product_id, "SKU-PIN").await;
+        publish_child(&harness, live).await;
+
+        let conn = harness.db.conn().expect("conn");
+        let scope = toolkit_db::secure::AccessScope::for_tenant(TENANT);
+        let stale = repo::cascade_deprecate_child(
+            &conn,
+            &scope,
+            TENANT,
+            live,
+            99,
+            Utc.with_ymd_and_hms(2026, 8, 29, 10, 0, 0).unwrap(),
+        )
+        .await
+        .expect("the write itself runs");
+        assert_eq!(
+            stale,
+            repo::HeadWrite::Unmatched,
+            "a pin the row no longer carries matches nothing"
+        );
+        let row = child_of(&harness, live).await;
+        assert_eq!(
+            row.lifecycle_state.as_str(),
+            "published",
+            "nothing was written"
+        );
+        assert_eq!(row.deprecation_provenance, None);
+
+        let pinned = repo::cascade_deprecate_child(
+            &conn,
+            &scope,
+            TENANT,
+            live,
+            row.internal_revision,
+            Utc.with_ymd_and_hms(2026, 8, 29, 10, 0, 0).unwrap(),
+        )
+        .await
+        .expect("the write itself runs");
+        assert_eq!(pinned, repo::HeadWrite::Applied);
+        let moved = child_of(&harness, live).await;
+        assert_eq!(moved.deprecation_provenance, Some(Provenance::Cascaded));
+        assert_eq!(
+            moved.internal_revision,
+            row.internal_revision + 1,
+            "the pinned write is what makes pin-plus-one the committed value"
+        );
     }
 }

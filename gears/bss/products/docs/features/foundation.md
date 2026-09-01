@@ -487,8 +487,8 @@ predicate P-D-41 and P-D-34 pin, standing in for the tighter one `07-reference-s
 timestamp. `cloned_from` is admitted in no update at all, and neither are `tenant_id`, the
 primary key or `created_by` (P-D-34).
 
-**Two of those clauses have no column to govern, and the roster says so rather than reading as
-built.** No Foundation column carries the **bucket-ii** tag, so the trigger installs no clause for
+**One of those clauses has no column to govern — and bucket-iv, which shares its clause with
+bucket-iii, has none of its own to be empty. The roster says both rather than reading as built.** No Foundation column carries the **bucket-ii** tag, so the trigger installs no clause for
 the class and the interim predicate has nothing to say about this gear's columns yet; that
 emptiness is what `design/01` §5's agreement test asserts on **both** sides — a registry row with
 no clause and a clause with no registry row are opposite failures and both silent — and the arm is

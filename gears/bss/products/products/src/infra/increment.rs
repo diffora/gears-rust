@@ -430,9 +430,12 @@ pub async fn drain_tenant(
     // later version carrying an earlier `reference_producer_set` or
     // `metadata_maps`, which is exactly the property `dod-producer-snapshot`
     // exists to give. `features/catalog-version.md`'s `dod-snapshot-builder`
-    // obliges the collect to happen inside the serialized transaction, and
-    // P-D-53 reads that serialization as the coalescer's one worker per
-    // tenant — which is this lease.
+    // obliges the collect to happen inside the serialized transaction; P-D-53
+    // reads the word *serialized* as the coalescer's one worker per tenant —
+    // this lease — and that half is now honoured. The collect still runs on
+    // its own connection rather than the increment transaction's runner, so
+    // the *transaction* half rests on the in-transaction entry compare
+    // below, not on this ordering.
     //
     // The entry compare inside the transaction still earns its place: the
     // lease serializes WORKERS, and an entity door is not a worker. It can
@@ -441,14 +444,42 @@ pub async fn drain_tenant(
     let Some(guard) = acquire_increment_lease(db, tenant_id).await? else {
         return Ok(DrainOutcome::LeaseHeld);
     };
-    let staged = {
-        let conn = db
-            .conn()
-            .map_err(|e| RepoError::Db(format!("coalescer connection: {e}")))?;
-        SnapshotBuilder::collect(&conn, &scope, tenant_id).await?
+    // The lease now spans the collect as well as the transaction, and the
+    // collect is unbounded whole-tenant reads — so the guard's heartbeat
+    // runs for the whole window, the way ledger's period close holds its
+    // lease across the tie-out. Without it, a tenant whose collect outgrew
+    // the TTL would lapse, fail the in-transaction fence as `LeaseHeld`, and
+    // re-collect forever, every log line blaming a peer.
+    let renewal = guard.spawn_renewal(LEASE_TTL / 3);
+    // The guard has no Drop-based release, so an error between the acquire
+    // and the commit must release explicitly or the tenant's coalescer is
+    // dead for the whole TTL — the same rule `commit_increment`'s own
+    // release site states.
+    let collected = {
+        match db.conn() {
+            Ok(conn) => SnapshotBuilder::collect(&conn, &scope, tenant_id).await,
+            Err(e) => Err(RepoError::Db(format!("coalescer connection: {e}"))),
+        }
+    };
+    let staged = match collected {
+        Ok(staged) => staged,
+        Err(e) => {
+            renewal.shutdown().await;
+            if let Err(release_err) = guard.release_with_retry().await {
+                tracing::warn!(
+                    %tenant_id,
+                    error = %release_err,
+                    "bss-products: cv-increment lease release failed after a collect \
+                     error; the lease holds until its TTL"
+                );
+            }
+            return Err(e);
+        }
     };
 
-    commit_increment(guard, tenant_id, staged, batch.keys, now).await
+    let outcome = commit_increment(guard, tenant_id, staged, batch.keys, now).await;
+    renewal.shutdown().await;
+    outcome
 }
 
 /// Take the tenant's increment lease, or report that a peer holds it.
@@ -483,11 +514,13 @@ async fn acquire_increment_lease(
 /// stages, moves a head, then commits, which is the exact window
 /// `inst-sn-revalidate` guards.
 ///
-/// The `guard` arrives **already held**, and every parameter after it was
-/// read under it: `drain_tenant` acquires the lease before collecting, so a
-/// caller cannot construct this call without the serialization P-D-53
-/// requires. The guard carries the transaction runner too, which is why the
-/// provider is no longer a parameter here.
+/// The `guard` arrives **already held**. `drain_tenant` collects `staged`
+/// under it; `keys` is the pre-lease demand read, re-validated by the
+/// in-transaction row recheck rather than by the lease. The signature
+/// enforces holding *a* guard, not where the inputs were read —
+/// `increment_tests` deliberately hands this a stale snapshot to exercise
+/// `inst-sn-revalidate`'s compare. The guard carries the transaction runner
+/// too, which is why the provider is no longer a parameter here.
 ///
 /// # Errors
 ///
@@ -665,7 +698,10 @@ pub async fn overdue_freezes(
     Ok(overdue)
 }
 
-/// The lease TTL: generous against a slow transaction, far above the tick.
+/// The lease TTL: generous against a slow collect-plus-transaction, far
+/// above the tick — and since the collect moved under the lease, the guard's
+/// renewal heartbeat (`drain_tenant`) is what actually carries a slow tenant
+/// past this number, not the number itself.
 const LEASE_TTL: Duration = Duration::from_secs(30);
 
 /// One sweep over every tenant with pending demand — the ticker's body.

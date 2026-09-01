@@ -2286,97 +2286,41 @@ pub async fn deprecate_product_head(
     Ok(HeadWrite::Applied)
 }
 
-/// [`deprecate_product_head`]'s SKU twin, on identical terms.
+/// Cascade one child SKU of a deprecating parent — `published → deprecated`
+/// stamped [`Provenance::Cascaded`], **pinned at the revision the
+/// classification read** (`inst-lc-deprecate`, `dod-deprecation-cascade`).
 ///
-/// Used by the operator act on a SKU (`direct`) and by the retirement arm,
-/// which passes its own provenance through — never by the parent cascade,
-/// which pins no per-child revision and has [`cascade_deprecate_children`].
+/// # Why per child, and why the revision is pinned
+///
+/// The disposition per child state is `domain::deprecation::disposition_for`'s
+/// to decide, and the listing of skipped drafts is what the operator sees —
+/// so the door reads the children inside its own transaction, classifies
+/// them, and calls this once per child classified `Deprecate`. The pin
+/// mirrors the parent's own semantics (**P-D-33**: an act runs against the
+/// image it was decided on): with it, the `SkuDeprecated` event's
+/// `internal_revision` is the pinned value plus one **as committed by this
+/// write**, never arithmetic on a row a concurrent save may have moved — and
+/// a child that moved between the classification and this statement answers
+/// [`HeadWrite::Unmatched`], failing the whole mutation closed
+/// (`01 inst-fd-fail-closed`) as a retryable refusal rather than committing
+/// a half-cascade or announcing a revision the row never held.
+///
+/// The state filter stays as well, for [`deprecate_product_head`]'s reason:
+/// an already-`deprecated` child must never take a second stamp, whatever
+/// the caller classified.
 ///
 /// # Errors
 ///
-/// As [`deprecate_product_head`].
-pub async fn deprecate_sku_head(
+/// [`RepoError::Driver`] on a storage failure. A moved child is
+/// [`HeadWrite::Unmatched`], the caller's to refuse.
+pub async fn cascade_deprecate_child(
     runner: &impl DBRunner,
     scope: &AccessScope,
     tenant_id: Uuid,
     sku_id: Uuid,
     expected_internal_revision: i64,
-    provenance: Provenance,
     now: DateTime<Utc>,
 ) -> Result<HeadWrite, RepoError> {
-    let result = sku::Entity::update_many()
-        .secure()
-        .scope_with(scope)
-        .col_expr(
-            sku::Column::LifecycleState,
-            Expr::value(LifecycleState::Deprecated.as_str()),
-        )
-        .col_expr(
-            sku::Column::DeprecationProvenance,
-            Expr::value(provenance.as_str()),
-        )
-        .col_expr(
-            sku::Column::InternalRevision,
-            Expr::col(sku::Column::InternalRevision).add(Expr::val(1_i64)),
-        )
-        .col_expr(sku::Column::UpdatedAt, Expr::value(now))
-        .filter(
-            Condition::all()
-                .add(sku::Column::TenantId.eq(tenant_id))
-                .add(sku::Column::SkuId.eq(sku_id))
-                .add(sku::Column::InternalRevision.eq(expected_internal_revision))
-                .add(sku::Column::LifecycleState.eq(LifecycleState::Published.as_str())),
-        )
-        .exec(runner)
-        .await
-        .map_err(|e| driver_failure(format!("deprecate sku {sku_id}"), e))?;
-
-    if result.rows_affected == 0 {
-        return Ok(HeadWrite::Unmatched);
-    }
-    Ok(HeadWrite::Applied)
-}
-
-/// Cascade a parent Product's deprecation onto the named children — the
-/// `published` ones only, stamped [`Provenance::Cascaded`]
-/// (`inst-lc-deprecate`, `dod-deprecation-cascade`).
-///
-/// # Why the caller names the children rather than this reading them
-///
-/// The disposition per child state is `domain::deprecation::disposition_for`'s
-/// to decide, and the **listing** of skipped drafts is what the operator
-/// sees — so the caller reads the children inside its own transaction,
-/// classifies them, and passes the `Deprecate` set here. A function that
-/// re-read and re-classified would answer from a second read of the same
-/// rows and could disagree with the listing the operator was shown.
-///
-/// # Why the state filter is here as well
-///
-/// It is the same argument [`deprecate_product_head`]'s makes: an
-/// already-`deprecated` child must not take a second stamp, and a filter is
-/// the only thing that holds if the classification and the write are ever
-/// separated by an edit. `rows_affected` is compared against the set's own
-/// length so a child that moved between the two reports as a mismatch
-/// instead of being silently dropped.
-///
-/// # Errors
-///
-/// [`RepoError::Driver`] on a storage failure.
-/// [`RepoError::Db`] where fewer rows matched than were named — a concurrent
-/// writer moved a child under the cascade, and the caller's whole mutation
-/// must fail closed rather than commit a partial cascade
-/// (`01 inst-fd-fail-closed`).
-pub async fn cascade_deprecate_children(
-    runner: &impl DBRunner,
-    scope: &AccessScope,
-    tenant_id: Uuid,
-    children: &[Uuid],
-    now: DateTime<Utc>,
-) -> Result<u64, RepoError> {
-    if children.is_empty() {
-        return Ok(0);
-    }
-
     let result = sku::Entity::update_many()
         .secure()
         .scope_with(scope)
@@ -2396,22 +2340,18 @@ pub async fn cascade_deprecate_children(
         .filter(
             Condition::all()
                 .add(sku::Column::TenantId.eq(tenant_id))
-                .add(sku::Column::SkuId.is_in(children.to_vec()))
+                .add(sku::Column::SkuId.eq(sku_id))
+                .add(sku::Column::InternalRevision.eq(expected_internal_revision))
                 .add(sku::Column::LifecycleState.eq(LifecycleState::Published.as_str())),
         )
         .exec(runner)
         .await
-        .map_err(|e| driver_failure("cascade the deprecation onto the child SKUs".to_owned(), e))?;
+        .map_err(|e| driver_failure(format!("cascade the deprecation onto sku {sku_id}"), e))?;
 
-    let named = children.len() as u64;
-    if result.rows_affected != named {
-        return Err(RepoError::Db(format!(
-            "the cascade named {named} published child SKU(s) and matched {}: a concurrent \
-             writer moved one, and a partial cascade is not admitted",
-            result.rows_affected
-        )));
+    if result.rows_affected == 0 {
+        return Ok(HeadWrite::Unmatched);
     }
-    Ok(result.rows_affected)
+    Ok(HeadWrite::Applied)
 }
 
 /// Discard a never-published draft Product: `lifecycle_state = 'discarded'`,

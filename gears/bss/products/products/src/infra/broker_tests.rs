@@ -89,8 +89,9 @@ const THE_EIGHT: &[(&str, &str, &str)] = &[
     ),
 ];
 
-/// `04-lifecycle`'s announced pair, transcribed from its own Events roster —
-/// a second list beside [`THE_EIGHT`], for `events_tests`' reason exactly.
+/// `04-lifecycle`'s announced pair — the names from its Events roster, the
+/// ids and subject types derived by this module's own naming rule — a second
+/// list beside [`THE_EIGHT`], for `events_tests`' reason exactly.
 ///
 /// `01` §4.5 leaves the `published → deprecated` edge eventless and records
 /// that 04 announces it, so folding these two into `THE_EIGHT` would stop
@@ -251,10 +252,11 @@ fn the_subject_type_follows_the_entity_the_event_is_about() {
         .count();
     // Five and five: §4.5's four-and-four, plus 04's announced pair, one per
     // entity kind. The split is asserted as two numbers rather than as
-    // "half of them", because a pair added on one side only is exactly the
-    // asymmetry `design/04`'s own Events roster records for
-    // `SkuRetirementEffective` — a SKU event with no Product analogue — and a
-    // half-of-them assertion would read that as balanced.
+    // "half of them", because a one-sided event is a real shape here:
+    // `SkuRetirementEffective` has no Product analogue, and whether that
+    // asymmetry is deliberate is 04's own **open item** — not settled design
+    // — so a half-of-them assertion would silently absorb whichever way it
+    // resolves.
     assert_eq!(product_events, 5, "five of the ten are about a Product");
     assert_eq!(sku_events, 5, "five of the ten are about a SKU");
 

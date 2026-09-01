@@ -1,6 +1,6 @@
 //! The deprecation act's rules — provenance, the cascade's per-child
 //! disposition, and what an un-deprecation may reverse
-//! (`design/04-lifecycle.md` §3 `inst-lc-deprecate` and
+//! (`design/04-lifecycle.md` §2 `inst-lc-deprecate` and
 //! `inst-lc-provenance-reversal`).
 //!
 //! # Why provenance is a type and not a `bool`
@@ -24,9 +24,10 @@
 //!
 //! **An already-`deprecated` entity is never re-stamped.** That is not a
 //! tidiness rule. `direct` re-stamped as `cascaded` would make a parent's
-//! un-deprecation revive exactly the child AC #17 says it must not, and the
-//! floor admits no `deprecated → deprecated` self-edge for it to ride
-//! anyway.
+//! un-deprecation revive exactly the child AC #17 says it must not. The
+//! floor does not refuse the diagonal — `transition::guard` answers
+//! `NotATransition` on `deprecated → deprecated`, its own rule 3 — so this
+//! module's `None` is what a door turns into its refusal.
 //!
 //! # What this module does not decide
 //!
@@ -44,14 +45,15 @@
 //! Two reasons, one per pair:
 //!
 //! - The cascade and the provenance stamp are performed, but **no design
-//!   document declares the door the operator act arrives through**. Three
-//!   entity-scoped act spans are declared across the set —
-//!   `.../{id}/publish`, `.../{id}/discard` and `.../{id}/clone` — and
-//!   `deprecate` is not among them, though `design/04` §3
-//!   `inst-lc-deprecate` is a `p1` instruction describing the act. The route
-//!   the crate registers is therefore the crate's own, and a tick asserting
-//!   it would assert a wire contract nothing in the set backs.
-//!   `features/lifecycle.md` §7 carries the question.
+//!   document declares an entity-scoped door for the operator act**. Three
+//!   `{products|skus}/{id}/<act>` spans are declared across the set —
+//!   `publish`, `discard` and `clone` — and `deprecate` is not among them,
+//!   though `design/04` §2 `inst-lc-deprecate` is a `p1` instruction
+//!   describing the act; the one declared carrier, `09`'s
+//!   `POST .../bulk/lifecycle`, is batch-only. The route the crate registers
+//!   is therefore the crate's own, and a tick asserting it would assert a
+//!   wire contract nothing in the set backs. `features/lifecycle.md` §7
+//!   carries the question.
 //! - The reversal and the no-orphan invariant are **rules with no act**:
 //!   un-deprecation's door is `dod-undeprecation`'s, blocked on §7 row 32,
 //!   and the retirement flip needs `products_scheduled_transition`, which
@@ -68,7 +70,10 @@ use bss_products_sdk::models::LifecycleState;
 use super::error::DomainError;
 
 /// Why an entity is `deprecated` — the `deprecation_provenance` column's two
-/// admitted values (`design/04` §4.2, the `CHECK` in `m20260829_000002`).
+/// admitted values. `design/01` annotates the column `direct|cascaded` in
+/// both of its table shapes (§4.1 and §4.2); **no `CHECK` pins it**, so the
+/// pair is application-enforced — this parse, and the repository's
+/// `parse_provenance` on every read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Provenance {
     /// An operator deprecated this entity itself.
@@ -78,8 +83,9 @@ pub enum Provenance {
 }
 
 impl Provenance {
-    /// The stored spelling, which is also the wire spelling and the value the
-    /// column's `CHECK` admits.
+    /// The stored spelling, which is also the wire spelling. No database
+    /// constraint backs it; the repository's read-side parse is what refuses
+    /// a stored value outside the pair.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
@@ -103,7 +109,7 @@ impl Provenance {
 }
 
 /// What a parent's cascade does to one child, by the child's own state
-/// (`design/04` §3 `inst-lc-deprecate`).
+/// (`design/04` §2 `inst-lc-deprecate`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChildDisposition {
     /// `published` — deprecate it, stamping [`Provenance::Cascaded`].
@@ -145,14 +151,9 @@ pub const fn disposition_for(child: LifecycleState) -> ChildDisposition {
 /// [`DomainError::EntityTerminal`] on a terminal head, naming the state —
 /// the same answer `transition::check_head_write` gives, raised here so a
 /// caller that asks this question first cannot get a provenance for a row no
-/// write is admitted on.
+/// write is admitted on. [`DomainError::IllegalTransition`] on a `draft`
+/// head, the floor admitting no `draft → deprecated` edge.
 pub fn stamp_for(from: LifecycleState, act: Provenance) -> Result<Option<Provenance>, DomainError> {
-    if from.is_terminal() {
-        return Err(DomainError::EntityTerminal(format!(
-            "no deprecation is admitted on a {} entity",
-            from.as_str()
-        )));
-    }
     match from {
         LifecycleState::Deprecated => Ok(None),
         LifecycleState::Published => Ok(Some(act)),
@@ -164,9 +165,14 @@ pub fn stamp_for(from: LifecycleState, act: Provenance) -> Result<Option<Provena
             from: LifecycleState::Draft.as_str().to_owned(),
             to: LifecycleState::Deprecated.as_str().to_owned(),
         }),
-        LifecycleState::Retired | LifecycleState::Discarded => {
-            unreachable!("terminal, refused above")
-        }
+        // The terminal arm answers directly rather than via an
+        // `is_terminal()` prelude and a panic on the leftover states: two
+        // sibling doors document `unreachable!` as a posture this crate
+        // avoids, and an arm that returns is one a refactor cannot turn into
+        // a panic path.
+        LifecycleState::Retired | LifecycleState::Discarded => Err(DomainError::EntityTerminal(
+            format!("no deprecation is admitted on a {} entity", from.as_str()),
+        )),
     }
 }
 
@@ -202,9 +208,12 @@ pub const fn reversal_admits(stored: Option<Provenance>) -> bool {
 /// # Errors
 ///
 /// [`DomainError::ParentTerminal`] naming the count, where any child is
-/// `published`. The code is `PARENT_TERMINAL`, registered by `04-lifecycle`
-/// on the `→ published` target state (P-D-32) and named by `01`'s response
-/// map; the refusal here is its retirement-side raiser.
+/// `published`. **The code choice is provisional and its question is
+/// registered** (`features/lifecycle.md` §7 row 37): `04`'s own error roster
+/// carries no code for this refusal, and `PARENT_TERMINAL`'s declared
+/// direction is the reverse — `design/01` §3.3 scopes it to *"the parent's
+/// own state"* refusing a child's write, while this refusal is the parent's
+/// act refused because children are live. The flip's slice settles it.
 pub fn no_orphan_at_flip(children: &[LifecycleState]) -> Result<(), DomainError> {
     let live = children
         .iter()
