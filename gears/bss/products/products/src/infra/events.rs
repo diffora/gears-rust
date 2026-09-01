@@ -75,6 +75,8 @@
 //! `crate::infra::broker` owns that fork and records why the second arm exists
 //! at all. This module writes the interim envelope the second arm carries; the
 //! first carries the SDK's, built from `broker`'s typed events.
+//!
+//! @cpt-dod:cpt-cf-bss-products-dod-outbox-eventing:p1
 
 use serde::Serialize;
 use toolkit_db::outbox::{Outbox, OutboxError};

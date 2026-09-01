@@ -742,7 +742,7 @@ publish-versus-edit, the claim insert of the idempotency store, and the expired-
 
 ### Outbox eventing through the toolkit
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-outbox-eventing`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-outbox-eventing`
 
 The system **MUST** enqueue events through `toolkit_db::outbox` rather than a gear-private outbox
 table (P-D-22), publish through the event-broker SDK's outbox-backed producer (P-D-47), carry the
@@ -780,6 +780,20 @@ disk beyond the local `SQLite` outbox and no ingest work. What it establishes is
 three orders of magnitude below the whole budget under zero-latency transport, so the split's
 difficulty is on the broker side rather than here — which is the input the split needs and which
 no measurement previously supplied.
+
+**Ticked on a measurement, with no new code, and here is what was measured** (2026-09-01): the
+pipeline is `toolkit_db::outbox` with the SDK's outbox-backed producer when an `EventBrokerApi` is
+in the hub, and the holding processor only otherwise — `require_broker` refuses to boot into that
+mode rather than accumulating undelivered catalog events; the queue takes `Partitions::of`, which is
+where per-tenant ordering comes from; all **eight** payload tokens carry versioned schema references
+in one `SCHEMA_REFS` roster, which `events_tests` checks for coverage against a hand-written list
+precisely so a ninth event cannot reach the wire without one; `EventBodyCore` is the five fields and
+`publishedVersion` sits **outside** it, which is §4.5's own reading; the envelope carries the
+correlation id as `trace_parent` and the schema reference as the `type_id`, with the causation id
+and `actor_ref` in the payload where the transport has no slot (**P-D-51**); and
+`infra::broker::the_outbox_half_of_the_propagation_budget_is_measured` exists, reports a number and
+asserts no threshold. The DoD's one remaining sentence — the 01/06 split of the budget — is the PRD
+owner's and is not this DoD's obligation.
 
 **Implements**: `cpt-cf-bss-products-flow-create-product`,
 `cpt-cf-bss-products-flow-define-sku`, `cpt-cf-bss-products-flow-save-draft`,
