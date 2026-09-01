@@ -66,12 +66,14 @@
 //!
 //! # What this module ships less of than the design describes
 //!
-//! - **Buckets ii and iv have no members.** §4.1 assigns no Foundation column
-//!   to either, and the two absences are owed by different slices. Bucket ii's
-//!   columns are **slice 03's**: `design/03-sku-classification.md` §C6
-//!   registers *"`type`, metering-unit declaration (incl. `usageTypeRef`) →
-//!   bucket ii (immutable-but-correctable, slice 07)"*, so 03 owns the columns
-//!   and their registration while slice 07 owns the correction door that
+//! - **Bucket iv has no members; bucket ii's arrived with slice 03.** §4.1
+//!   assigns no Foundation column to either, and the two absences were owed
+//!   by different slices — 03 has since paid its half. Bucket ii's columns
+//!   are **slice 03's**: `design/03-sku-classification.md` §C6 registers
+//!   *"`type`, metering-unit declaration (incl. `usageTypeRef`) →
+//!   bucket ii (immutable-but-correctable, slice 07)"*, and the declaration
+//!   pair now ships on `products_sku`; 03 owns the columns and their
+//!   registration while slice 07 still owns the correction door that
 //!   writes them after first publish — which is the door
 //!   `inst-fd-bucket-ii-refusal` has this gear name rather than forward to.
 //!   Bucket iv is `fr-field-mutability-matrix`'s *"other descriptive fields"*

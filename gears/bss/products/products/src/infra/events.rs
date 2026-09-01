@@ -277,7 +277,7 @@ pub(crate) const PLAN_TIER_UPDATED_PAYLOAD_TYPE: &str = "PlanTierUpdated";
 /// **The version is per event, not per gear.** §4.5's own rule makes an added
 /// optional field a minor bump, so one event's schema may move while the
 /// others stand still; a single gear-wide version would force false bumps or
-/// hide a real one. All ten read `1.0.0` today because none has shipped a
+/// hide a real one. All thirteen read `1.0.0` today because none has shipped a
 /// second shape.
 pub(crate) const SCHEMA_REFS: &[(&str, &str)] = &[
     (
@@ -484,10 +484,10 @@ pub(crate) enum EventsError {
     /// has no versioned schema reference to announce.
     ///
     /// Refused rather than defaulted: see [`schema_ref_for`]'s own doc. It is
-    /// unreachable while every caller passes one of [`SCHEMA_REFS`]' ten
+    /// unreachable while every caller passes one of [`SCHEMA_REFS`]' thirteen
     /// tokens, and `events_tests` holds that roster equal to the union of the
-    /// two declared ones — but an eleventh event added without an entry lands
-    /// here, at its first enqueue, instead of on a consumer.
+    /// three declared ones — but a fourteenth event added without an entry
+    /// lands here, at its first enqueue, instead of on a consumer.
     #[error("no versioned schema reference registered for payload type {0}")]
     UnregisteredSchema(String),
     /// A `*Published` token reached [`enqueue`], whose body has no
@@ -532,14 +532,24 @@ pub(crate) enum EventsError {
         "{0} is not a recognized-set event and belongs to the entry point owning its body shape"
     )]
     NotASetEvent(String),
+    /// A set token reached [`enqueue`], whose entity-shaped
+    /// [`EventBodyCore`] carries none of the set's operands.
+    ///
+    /// The reciprocal the deprecation pair already had, and its absence
+    /// was the same sink divergence: the broker arm refused a mis-routed
+    /// set token as [`Self::NoTypedEvent`] while the interim arm wrote the
+    /// entity core straight through under the set event's schema
+    /// reference.
+    #[error("{0} carries a set body and must be enqueued through enqueue_set_event")]
+    SetEventNeedsSetBody(String),
     /// The broker arm has no [`crate::infra::broker`] typed event for this
     /// payload type.
     ///
     /// Distinct from [`Self::UnregisteredSchema`], which is the interim arm's
     /// roster miss: the two arms resolve a token through two different rosters
-    /// — `SCHEMA_REFS` there, a `match` over the ten typed events here — and
+    /// — `SCHEMA_REFS` there, a `match` over the thirteen typed events here — and
     /// naming both misses the same thing would send a reader to the wrong one.
-    /// An eleventh event registered in `SCHEMA_REFS` but not wired here reaches
+    /// A fourteenth event registered in `SCHEMA_REFS` but not wired here reaches
     /// this variant, and a no-broker deployment would have emitted it.
     #[error("no typed event is declared for payload type {0} on the broker arm")]
     NoTypedEvent(String),
@@ -782,6 +792,14 @@ pub(crate) async fn enqueue(
             payload_type.to_owned(),
         ));
     }
+    if matches!(
+        payload_type,
+        RECOGNIZED_UNIT_UPDATED_PAYLOAD_TYPE
+            | RECOGNIZED_CODE_UPDATED_PAYLOAD_TYPE
+            | PLAN_TIER_UPDATED_PAYLOAD_TYPE
+    ) {
+        return Err(EventsError::SetEventNeedsSetBody(payload_type.to_owned()));
+    }
     match sink {
         EventSink::Interim(outbox) => {
             enqueue_body(
@@ -832,7 +850,7 @@ pub(crate) async fn enqueue(
                 // `schema_ref_for` did not recognise the token, and on this arm
                 // `schema_ref_for` was never called. The condition here is "no
                 // `TypedEvent` is declared for this token", which is a different
-                // repair — the two rosters are equal today and an eleventh event
+                // repair — the rosters are equal today and a fourteenth event
                 // would have to be added to both.
                 other => return Err(EventsError::NoTypedEvent(other.to_owned())),
             }

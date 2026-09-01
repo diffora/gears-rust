@@ -639,10 +639,11 @@ async fn every_event_reaches_the_broker_under_its_own_type_id() {
                 .unwrap_or_else(|e| panic!("{token} must enqueue through enqueue_published: {e}"));
         } else if token.ends_with("Updated") {
             // The fourth entry point: a set event's body is set-shaped, and
-            // routing it through any other enqueue is refused by the token
-            // guards — so the round-trip proves the whole family reaches the
-            // broker through the one door that owns its shape. One distinct
-            // kind per member, because the subject IS the kind.
+            // every other `enqueue*` refuses these tokens by name — including
+            // `enqueue` itself, whose reciprocal guard landed with this
+            // review, so the interim sink can no longer take an entity core
+            // under a set token while the broker sink refuses it. One
+            // distinct kind per member, because the subject IS the kind.
             let set_kind = match *token {
                 "RecognizedUnitUpdated" => "metering_unit",
                 "RecognizedCodeUpdated" => "tax_category",
@@ -704,7 +705,8 @@ async fn every_event_reaches_the_broker_under_its_own_type_id() {
          would be refused at ingest and never arrive"
     );
 
-    // Each event is found by the entity id its enqueue minted, so a dispatch
+    // Each event is found by the subject its enqueue carried — a minted
+    // entity id, or the set kind for the trio — so a dispatch
     // row wired to the wrong type shows up as a type-id mismatch on **that**
     // token rather than as a count that happens to add up.
     for (subject, want_type_id) in expected {

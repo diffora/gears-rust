@@ -134,7 +134,7 @@ pub enum DomainError {
     #[error("plan tier retire blocked: {0}")]
     PlanTierRetireBlocked(String),
     /// [`Self::UnitDelistBlocked`]'s accounting-code sibling, covering the
-    /// `tax_category` and `gl_code` sets (`03` §3.3's taxonomy).
+    /// `tax_category` and `gl_code` sets (`03` §3.2's taxonomy).
     #[error("accounting code delist blocked: {0}")]
     AccountingCodeDelistBlocked(String),
 

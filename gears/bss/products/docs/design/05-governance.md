@@ -230,7 +230,7 @@ multi-action row would otherwise read as if the whole row were doored.
 | `catalog_version × publish` | **none** — 06 §6 records that no door consumes it | 06 |
 | `category × read\|write` | `GET /bss-products/v1/browse…` (08's browse door, which names `category × read` explicitly) spends **`× read`** (**P-D-50**); **`× write` has no route declared** — 02's live-value door, named in prose | 02 |
 | `attribute_definition × write` | **no route declared** | 02 |
-| `recognized_set × write`, `plan_tier × write` | `POST /bss-products/v1/recognized-sets/{setKind}/members` and `…/members/{memberCode}/transitions` (**P-D-90** — one route family, the grant chosen by `setKind`) | 03 |
+| `recognized_set × write`, `plan_tier × write` | `POST /bss-products/v1/recognized-sets/{setKind}/members` and `POST /bss-products/v1/recognized-sets/{setKind}/members/{memberCode}/transitions` (**P-D-90** — one route family, the grant chosen by `setKind`; both spelled in full because an elided span is invisible to a route census) | 03 |
 | `approval × submit\|read\|decide` | `GET /bss-products/v1/approvals?state=pending` (this slice's own pending-queue door) spends **`× read`** (**P-D-50**); **`× submit` and `× decide` have no route declared** | 05 |
 | `materiality_policy × write` | **no route declared** | 05 |
 | `breakglass × elevate` | **no route declared** | 05 |

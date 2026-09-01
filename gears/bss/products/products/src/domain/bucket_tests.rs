@@ -344,8 +344,8 @@ fn the_create_only_class_carries_exactly_the_cloned_from_pair() {
     }
 }
 
-/// `inst-fd-bucket-tags` names four buckets; today's columns populate two of
-/// them. Bucket iv is encoded and empty, and a member appearing in it
+/// `inst-fd-bucket-tags` names four buckets; today's columns populate three
+/// of them. Bucket iv is encoded and empty, and a member appearing in it
 /// without a decision behind it fails here; bucket ii filled with 03's meter
 /// pair, on the SKU side only.
 ///

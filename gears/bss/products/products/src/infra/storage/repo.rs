@@ -2607,7 +2607,7 @@ impl ProductHeadSave {
     }
 }
 
-/// [`ProductHeadSave`]'s SKU twin. Two differences, both the schema's: there
+/// [`ProductHeadSave`]'s SKU twin. Three differences, all the schema's: there
 /// is no `name` — `products_sku` has no such column, which is why a `name`
 /// field arriving for a SKU is a registry miss rather than a routed save —
 /// and `product_id` is the **parent link** and bucket-i (§4.1, the owner's

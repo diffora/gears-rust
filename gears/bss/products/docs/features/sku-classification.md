@@ -516,7 +516,7 @@ column whose FK claim was struck; the argument holds for all four and §4 govern
 
 ### Recognized-set mechanics
 
-- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-recognized-set-mechanics`
+- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-recognized-set-mechanics`
 
 The system **MUST** implement one generic membership lookup treating `active` and `deprecated`
 rows as the set and a `removed` row as a tombstone outside it, with every mutation riding
@@ -897,13 +897,15 @@ The system **MUST** expose `type`, `sellable`, `plan_tier`, `metering_unit`, `us
 
 ## 7. Known unknowns
 
-[`../design/03-sku-classification.md`](../design/03-sku-classification.md) §6 carries **20 open
-items**, and all twenty bind implementation — every one of them lands on a Definition of Done in
-§5. They are carried in full, with the DoD each blocks and its owner, because the sibling feature
+[`../design/03-sku-classification.md`](../design/03-sku-classification.md) §6 carries **21 open
+items**, and all twenty-one bind implementation — every one of them lands on a Definition of Done
+in §5. The twenty-first arrived with the doors themselves: the three-lens review of the shipped
+membership doors found the de-list window write-skew-open on Postgres, and the mechanism that
+closes it is 01's isolation posture rather than this slice's to pick. They are carried in full, with the DoD each blocks and its owner, because the sibling feature
 authored on 2026-08-30 carried four of twenty-three and the three-lens review measured that as its
 single most costly defect.
 
-**Three of the twenty are now answered and struck in place — 7, 9 and 15 — leaving seventeen
+**Three of the twenty-one are now answered and struck in place — 7, 9 and 15 — leaving eighteen
 open.** Each was answered by a register entry rather than here: **P-D-91** (no FK on any of the four
 code columns), **P-D-90** (the membership door's route family and its grant split) and **P-D-89**
 (the removal operand, which the three DoDs row 15 blocks had each already stated). Row **5** stays
@@ -936,6 +938,7 @@ does not decide it — the struck rows above point at the register entry that di
 | 18 | **Which code refuses the removal of a seeded, unreferenced member?** All three de-list codes are predicated on holders, so none fits; `02-taxonomy-attributes` carries the identical silence for its own seeds | `dod-seeded-members`; a sixteenth code would also break `dod-classification-errors` and its acceptance criterion, both of which say fifteen | this feature with 02 and the error-contract owner |
 | 19 | **Does the registered-validators phase run before the publish transaction, or inside it?** This feature and `01-foundation` say before; `07-reference-signal` says inside and its own fix depends on that. **The costs are not symmetric**: on 07's reading a cross-gear call with a short timeout and no retry sits inside a transaction that has already written the frozen version row, holding the head-row lock and a pooled connection for the timeout on Postgres and serializing every other publish in the database on SQLite — a collector stall becomes a gear-wide publish stall. **And §5 as written builds that reading**, because `dod-usage-type-resolution` names no phase while `dod-binding-snapshot` pulls the resolve toward the transaction that consumes its value | `dod-usage-type-resolution`, `dod-binding-snapshot` | 01 as the pipeline owner, with 07 and this feature |
 | 20 | **What operand tells a composed bundle from an uncomposed one?** The only registry-side record is `composition_pending`, whose default is `false` on an uncomposed draft, so it cannot distinguish never-composed from composed. Read literally, an ordinary bucket-iii re-publish of a composed bundle demands the override again and re-raises the flag | `dod-bundle-override` | this feature with 01 and 06 |
+| 21 | **What closes the de-list window between the holder census and the flip?** `inst-us-delist` states the invariant and names no mechanism for enforcing it across two transactions. The shipped doors read the holder population and the member on separate transactions at the engine's default isolation, so on Postgres they are **write-skew-open**: a first publish declaring the unit and a `deprecated → removed` flip can both commit, leaving a `published` head declaring a `removed` member. SQLite's single writer hides it, so the interim tier cannot probe it. Four remedies exist — a shared row lock on the member in the recognition read, both doors at `SERIALIZABLE` with a contention classifier, accepting the window and reconciling, or a dedicated Postgres race suite on the `postgres_head_race.rs` precedent — and the isolation posture is the Foundation's | `dod-unit-delist`, `dod-recognized-set-mechanics` | this feature with 01 |
 
 ### Raised here rather than carried
 

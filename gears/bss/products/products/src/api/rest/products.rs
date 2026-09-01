@@ -4313,10 +4313,12 @@ fn structural_after_publish(kind: &str, field: &str) -> DomainError {
 /// re-sends it there, rather than having this door quietly perform a
 /// differently-governed act on its behalf.
 ///
-/// **No column carries bucket ii today** (`bucket.rs`'s own module doc: §4.1
-/// assigns none, and the columns are slice 03's to register — its §C6 — while
-/// the correction door that writes them is slice 07's), so this arm is
-/// unreachable at this commit. It is built rather than deferred because the
+/// **No Product column carries bucket ii**, so this arm is unreachable on
+/// this door. Bucket ii is no longer empty gear-wide — 03 registered
+/// `metering_unit` and `usage_type_ref` on `products_sku`, where the SKU
+/// door's twin of this arm is now reachable and probed — but the Product
+/// table has no member and the correction door that would write one is
+/// still slice 07's. It is built rather than deferred because the
 /// door routes by tag: an arm that appeared only when its first column landed
 /// would be a second change to this door on the day slice 07 arrives, and the
 /// reason string it needs is this instruction's, not that slice's.

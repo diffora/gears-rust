@@ -6259,129 +6259,6 @@ mod attribute_store_guard_tests {
 /// this case is what fails.
 ///
 /// @cpt-dod:cpt-cf-bss-products-dod-lifecycle-columns:p1
-/// The bucket-ii interim predicate, poisoned directly — the per-class
-/// `CorruptRow`-style probe `design/01` §5 obliges for every guarded column
-/// class, on the class that gained its first members with 03's meter pair.
-///
-/// The door's own refusal is probed in `skus_tests`; this one bypasses the
-/// application entirely, because the predicate's whole point is to hold
-/// against a writer that never consulted the registry.
-///
-/// @cpt-dod:cpt-cf-bss-products-dod-meter-atomic:p1
-mod bucket_ii_guard_tests {
-    use sea_orm::ConnectionTrait;
-    use sea_orm_migration::MigratorTrait;
-
-    use super::Migrator;
-
-    async fn harness() -> sea_orm::DatabaseConnection {
-        let mut opts = sea_orm::ConnectOptions::new("sqlite::memory:");
-        opts.max_connections(1).min_connections(1);
-        let db = sea_orm::Database::connect(opts)
-            .await
-            .expect("connect in-memory sqlite");
-        Migrator::up(&db, None).await.expect("boot the chain");
-        db
-    }
-
-    async fn exec(db: &sea_orm::DatabaseConnection, sql: &str) -> Result<(), sea_orm::DbErr> {
-        db.execute_raw(sea_orm::Statement::from_string(
-            sea_orm::DatabaseBackend::Sqlite,
-            sql.to_owned(),
-        ))
-        .await
-        .map(|_| ())
-    }
-
-    const TENANT: &str = "7e420000000000000000000000000000";
-    const PRODUCT: &str = "aaaa0000000000000000000000000001";
-    const SKU: &str = "bbbb0000000000000000000000000001";
-
-    async fn seed_published_sku(db: &sea_orm::DatabaseConnection) {
-        for sql in [
-            format!(
-                "INSERT INTO products_product (product_id, tenant_id, brand_id, name, \
-                 name_normalized, product_code, lifecycle_state, internal_revision, \
-                 published_version, region_scope, brand_scope, created_by, created_at, \
-                 updated_at) VALUES (X'{PRODUCT}', X'{TENANT}', X'{PRODUCT}', 'P', 'p', NULL, \
-                 'draft', 1, 0, '', '', 'principal:a', '2026-08-29', '2026-08-29')"
-            ),
-            format!(
-                "INSERT INTO products_sku (sku_id, tenant_id, product_id, sku_code, \
-                 lifecycle_state, internal_revision, published_version, composition_pending, \
-                 region_scope, brand_scope, created_by, created_at, updated_at, metering_unit, \
-                 usage_type_ref) VALUES (X'{SKU}', X'{TENANT}', X'{PRODUCT}', 'S-1', 'draft', \
-                 1, 0, 0, '', '', 'principal:a', '2026-08-29', '2026-08-29', 'gib_month', \
-                 'usage:storage')"
-            ),
-            format!(
-                "INSERT INTO products_entity_version (tenant_id, entity_kind, entity_id, \
-                 published_version, content, content_digest, digest_version, actor_ref, \
-                 published_at) VALUES (X'{TENANT}', 'sku', X'{SKU}', 1, '{{}}', X'00', 1, \
-                 X'{TENANT}', '2026-08-29')"
-            ),
-            format!(
-                "UPDATE products_sku SET lifecycle_state = 'published', published_version = 1, \
-                 internal_revision = internal_revision + 1 WHERE sku_id = X'{SKU}'"
-            ),
-        ] {
-            exec(db, &sql)
-                .await
-                .expect("the fixture writes are admitted");
-        }
-    }
-
-    /// A bare bucket-ii write on a published head — no `published_version`
-    /// bump in the statement — is refused by the trigger, whoever writes it.
-    #[tokio::test]
-    async fn a_bare_bucket_ii_write_after_publish_is_refused_by_the_trigger() {
-        let db = harness().await;
-        seed_published_sku(&db).await;
-
-        let err = exec(
-            &db,
-            &format!(
-                "UPDATE products_sku SET metering_unit = 'other_unit', \
-                 internal_revision = internal_revision + 1 WHERE sku_id = X'{SKU}'"
-            ),
-        )
-        .await
-        .expect_err("the interim predicate refuses a bucket-ii write outside a bump");
-        assert!(err.to_string().contains("bucket-ii columns"), "got {err}");
-    }
-
-    /// The admitted after-publish shape: the same statement bumps
-    /// `published_version` — 07's correction door's re-publish, exactly the
-    /// pairing `composition_pending`'s predicate already has.
-    #[tokio::test]
-    async fn a_bucket_ii_write_riding_a_bump_is_admitted() {
-        let db = harness().await;
-        seed_published_sku(&db).await;
-        exec(
-            &db,
-            &format!(
-                "INSERT INTO products_entity_version (tenant_id, entity_kind, entity_id, \
-                 published_version, content, content_digest, digest_version, actor_ref, \
-                 published_at) VALUES (X'{TENANT}', 'sku', X'{SKU}', 2, '{{}}', X'00', 1, \
-                 X'{TENANT}', '2026-08-29')"
-            ),
-        )
-        .await
-        .expect("the next frozen row exists for the bump");
-
-        exec(
-            &db,
-            &format!(
-                "UPDATE products_sku SET metering_unit = 'other_unit', \
-                 usage_type_ref = 'usage:other', published_version = 2, \
-                 internal_revision = internal_revision + 1 WHERE sku_id = X'{SKU}'"
-            ),
-        )
-        .await
-        .expect("the same-statement-as-a-bump write is the admitted shape");
-    }
-}
-
 mod lifecycle_column_guard_tests {
     use sea_orm::ConnectionTrait;
     use sea_orm_migration::MigratorTrait;
@@ -6521,6 +6398,129 @@ mod lifecycle_column_guard_tests {
         let sku = super::governance_store_guard_tests::columns(&db, "products_sku").await;
         assert!(sku.contains(&"deprecation_provenance".to_owned()));
         assert!(sku.contains(&"replaced_by_sku_id".to_owned()));
+    }
+}
+
+/// The bucket-ii interim predicate, poisoned directly — the per-class
+/// `CorruptRow`-style probe `design/01` §5 obliges for every guarded column
+/// class, on the class that gained its first members with 03's meter pair.
+///
+/// The door's own refusal is probed in `skus_tests`; this one bypasses the
+/// application entirely, because the predicate's whole point is to hold
+/// against a writer that never consulted the registry.
+///
+/// @cpt-dod:cpt-cf-bss-products-dod-meter-atomic:p1
+mod bucket_ii_guard_tests {
+    use sea_orm::ConnectionTrait;
+    use sea_orm_migration::MigratorTrait;
+
+    use super::Migrator;
+
+    async fn harness() -> sea_orm::DatabaseConnection {
+        let mut opts = sea_orm::ConnectOptions::new("sqlite::memory:");
+        opts.max_connections(1).min_connections(1);
+        let db = sea_orm::Database::connect(opts)
+            .await
+            .expect("connect in-memory sqlite");
+        Migrator::up(&db, None).await.expect("boot the chain");
+        db
+    }
+
+    async fn exec(db: &sea_orm::DatabaseConnection, sql: &str) -> Result<(), sea_orm::DbErr> {
+        db.execute_raw(sea_orm::Statement::from_string(
+            sea_orm::DatabaseBackend::Sqlite,
+            sql.to_owned(),
+        ))
+        .await
+        .map(|_| ())
+    }
+
+    const TENANT: &str = "7e420000000000000000000000000000";
+    const PRODUCT: &str = "aaaa0000000000000000000000000001";
+    const SKU: &str = "bbbb0000000000000000000000000001";
+
+    async fn seed_published_sku(db: &sea_orm::DatabaseConnection) {
+        for sql in [
+            format!(
+                "INSERT INTO products_product (product_id, tenant_id, brand_id, name, \
+                 name_normalized, product_code, lifecycle_state, internal_revision, \
+                 published_version, region_scope, brand_scope, created_by, created_at, \
+                 updated_at) VALUES (X'{PRODUCT}', X'{TENANT}', X'{PRODUCT}', 'P', 'p', NULL, \
+                 'draft', 1, 0, '', '', 'principal:a', '2026-08-29', '2026-08-29')"
+            ),
+            format!(
+                "INSERT INTO products_sku (sku_id, tenant_id, product_id, sku_code, \
+                 lifecycle_state, internal_revision, published_version, composition_pending, \
+                 region_scope, brand_scope, created_by, created_at, updated_at, metering_unit, \
+                 usage_type_ref) VALUES (X'{SKU}', X'{TENANT}', X'{PRODUCT}', 'S-1', 'draft', \
+                 1, 0, 0, '', '', 'principal:a', '2026-08-29', '2026-08-29', 'gib_month', \
+                 'usage:storage')"
+            ),
+            format!(
+                "INSERT INTO products_entity_version (tenant_id, entity_kind, entity_id, \
+                 published_version, content, content_digest, digest_version, actor_ref, \
+                 published_at) VALUES (X'{TENANT}', 'sku', X'{SKU}', 1, '{{}}', X'00', 1, \
+                 X'{TENANT}', '2026-08-29')"
+            ),
+            format!(
+                "UPDATE products_sku SET lifecycle_state = 'published', published_version = 1, \
+                 internal_revision = internal_revision + 1 WHERE sku_id = X'{SKU}'"
+            ),
+        ] {
+            exec(db, &sql)
+                .await
+                .expect("the fixture writes are admitted");
+        }
+    }
+
+    /// A bare bucket-ii write on a published head — no `published_version`
+    /// bump in the statement — is refused by the trigger, whoever writes it.
+    #[tokio::test]
+    async fn a_bare_bucket_ii_write_after_publish_is_refused_by_the_trigger() {
+        let db = harness().await;
+        seed_published_sku(&db).await;
+
+        let err = exec(
+            &db,
+            &format!(
+                "UPDATE products_sku SET metering_unit = 'other_unit', \
+                 internal_revision = internal_revision + 1 WHERE sku_id = X'{SKU}'"
+            ),
+        )
+        .await
+        .expect_err("the interim predicate refuses a bucket-ii write outside a bump");
+        assert!(err.to_string().contains("bucket-ii columns"), "got {err}");
+    }
+
+    /// The admitted after-publish shape: the same statement bumps
+    /// `published_version` — 07's correction door's re-publish, exactly the
+    /// pairing `composition_pending`'s predicate already has.
+    #[tokio::test]
+    async fn a_bucket_ii_write_riding_a_bump_is_admitted() {
+        let db = harness().await;
+        seed_published_sku(&db).await;
+        exec(
+            &db,
+            &format!(
+                "INSERT INTO products_entity_version (tenant_id, entity_kind, entity_id, \
+                 published_version, content, content_digest, digest_version, actor_ref, \
+                 published_at) VALUES (X'{TENANT}', 'sku', X'{SKU}', 2, '{{}}', X'00', 1, \
+                 X'{TENANT}', '2026-08-29')"
+            ),
+        )
+        .await
+        .expect("the next frozen row exists for the bump");
+
+        exec(
+            &db,
+            &format!(
+                "UPDATE products_sku SET metering_unit = 'other_unit', \
+                 usage_type_ref = 'usage:other', published_version = 2, \
+                 internal_revision = internal_revision + 1 WHERE sku_id = X'{SKU}'"
+            ),
+        )
+        .await
+        .expect("the same-statement-as-a-bump write is the admitted shape");
     }
 }
 

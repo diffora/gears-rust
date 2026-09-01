@@ -4716,6 +4716,64 @@ mod meter_declaration_tests {
         );
     }
 
+    /// **A draft carrying a standing deprecated unit still edits freely.**
+    ///
+    /// The rule bites on a **new** declaration; a save that re-declares
+    /// nothing makes none. An earlier revision derived `first_publish` from
+    /// `published_version == 0` instead of taking it as a parameter, so every
+    /// draft save re-judged the member and a `sku_code` edit came back
+    /// `UNIT_DEPRECATED` — naming a declaration the caller never made, and
+    /// freezing the draft plane `03` §1.6 says edits freely. Three lenses
+    /// found it independently; this is what would have caught it.
+    #[tokio::test]
+    async fn an_unrelated_draft_save_does_not_rejudge_a_standing_unit() {
+        let harness = harness().await;
+        seed_unit(&harness, "gib_month", "active").await;
+        let (sku_id, etag) = draft_with_etag(&harness).await;
+
+        let declared = patch_sku(
+            app_for(&harness, TENANT),
+            TENANT,
+            sku_id,
+            &json!({ "metering_unit": "gib_month", "usage_type_ref": "usage:storage" }),
+            &[("If-Match", &etag)],
+        )
+        .await;
+        assert_eq!(declared.status(), StatusCode::OK);
+        let fresh = format!(
+            "\"{}\"",
+            body_json(declared).await["internal_revision"]
+                .as_i64()
+                .expect("a revision")
+        );
+
+        let conn = Database::connect(&harness.dsn)
+            .await
+            .expect("open an auxiliary connection");
+        conn.execute_unprepared(&format!(
+            "UPDATE products_recognized_set SET state = 'deprecated' WHERE member_code = \
+             'gib_month' AND tenant_id = X'{}'",
+            TENANT.simple()
+        ))
+        .await
+        .expect("the member guard admits a state flip");
+
+        let unrelated = patch_sku(
+            app_for(&harness, TENANT),
+            TENANT,
+            sku_id,
+            &json!({ "region_scope": "eu" }),
+            &[("If-Match", &fresh)],
+        )
+        .await;
+        assert_eq!(
+            unrelated.status(),
+            StatusCode::OK,
+            "a save touching neither meter field re-declares nothing, so the deprecated unit \
+             it merely carries must not refuse it"
+        );
+    }
+
     /// **After first publish the pair is the correction door's** — the
     /// bucket-ii refusal arm, reachable for the first time now that the
     /// class has members.

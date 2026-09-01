@@ -71,7 +71,9 @@ pub struct Model {
     /// non-null). **Bucket-ii**, the registry's first member: writable via
     /// the save door only while `published_version = 0`, and after first
     /// publish only in the same statement as a `published_version` bump —
-    /// the interim row-image predicate design/01 §4.2 pins (P-D-41, P-D-34).
+    /// the interim row-image predicate design/01 §4.2 pins (P-D-41, P-D-34)
+    /// — and, in both windows, only while the head is **non-terminal**, the
+    /// conjunct §4.2 states and the shipped trigger carries.
     pub metering_unit: Option<String>,
     /// The usage-type reference of the same declaration — the pair's other
     /// half, same bucket, same predicate.

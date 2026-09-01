@@ -127,7 +127,7 @@ pub mod labels {
     pub const RECOGNIZED_SET: &str = gts_id!("cf.bss.products.recognized_set.v1~");
 
     /// The plan-tier taxonomy — its own grant, event and refusal code by
-    /// design (`03` §3.4, P-D-90).
+    /// design (`03` §3.2's taxonomy and P-D-90 arm 2).
     pub const PLAN_TIER: &str = gts_id!("cf.bss.products.plan_tier.v1~");
 
     /// Every authz label this module declares, stable order. The single

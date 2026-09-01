@@ -11,8 +11,14 @@
 //! set spends `plan_tier × write` and the other three `recognized_set ×
 //! write` (P-D-90 arm 2: the only reading under which both declared grants
 //! have a spender). Behind both routes sits **one generic membership
-//! implementation** (arm 3) — the kind decides the grant, the event token
-//! and the blocked-removal code, and nothing else branches on it.
+//! implementation** (arm 3), and the kind decides exactly four things: the
+//! grant, the event token, the blocked-removal code, and **which holder
+//! population the removal counts** — the fourth being a branch today only
+//! because `metering_unit` is the one kind with a shipped carrier column.
+//! When `plan_tier`, `tax_category_ref` or `gl_code_ref` lands on
+//! `products_sku`, its holder lookup joins that branch; a follower who wires
+//! the column and not the lookup ships that set's delist guard permanently
+//! off.
 //!
 //! # Every mutation rides `GovernedLiveOp` and emits in the same transaction
 //!
@@ -26,9 +32,13 @@
 //!
 //! There is no rename, no redefine, no DELETE and no `member_code` update —
 //! `dod-unit-immutable`'s *"the absence of the door is the enforcement"*,
-//! with the migration's trigger whitelist (`state` and `display_label` only)
-//! as the floor. A correction is a new member plus a deprecation of the old,
-//! tied through the `GovernedLiveOp` payload.
+//! with the migration's guard as the floor: it refuses `member_code` by
+//! name, along with `tenant_id`, `set_kind`, `seeded_by` and `created_at`.
+//! That is a **complement enumeration**, not the whitelist §4 words —
+//! `updated_at` is writable and a later column is admitted by default,
+//! which `design/03` §6 carries as an open question. A correction is a new
+//! member plus a deprecation of the old, tied through the `GovernedLiveOp`
+//! payload.
 //!
 //! # The removal operand, uniform across the four kinds
 //!
@@ -52,7 +62,21 @@
 //! A tick would claim the pairing; the bare marker below claims only the
 //! reach.
 //!
-//! @cpt-dod:cpt-cf-bss-products-dod-recognized-set-mechanics:p1
+//! # Why `dod-recognized-set-mechanics` is reached and not claimed
+//!
+//! Its lookup half ships — one generic implementation, the tombstone outside
+//! the set, the removal operand uniform across the four kinds — but the `DoD`
+//! also obliges *"every mutation riding `GovernedLiveOp`"*, and what these
+//! doors carry is the envelope's **staleness pin only**: the transitions
+//! body names the expected current state, the add body names nothing, and
+//! neither door reaches an approval. The feature's own §5 prices that
+//! exactly — this `DoD` spends *"a `05-governance` approval that has no
+//! runnable gate"* and therefore owes an **in-test approval double**,
+//! *"without which its probe goes green against a gate that approves
+//! nothing"*. No double ships here. The tick returns with the envelope and
+//! that double, not before.
+//!
+//! @cpt-cf-bss-products-dod-recognized-set-mechanics
 //! @cpt-dod:cpt-cf-bss-products-dod-unit-delist:p1
 //! @cpt-cf-bss-products-dod-unit-immutable
 
@@ -383,7 +407,7 @@ async fn add_member(
         .db()
         .transaction_with_retry::<repo::RecognizedMember, TxError, _, _>(
             toolkit_db::secure::TxConfig::default(),
-            |_e: &TxError| None,
+            member_contention_db_err,
             move |tx| {
                 let outbox = outbox.clone();
                 let scope = scope_tx.clone();
@@ -413,7 +437,7 @@ async fn add_member(
                         now,
                     )
                     .await
-                    .map_err(TxError::Repo)?;
+                    .map_err(|e| classify_member_insert(&member_code, kind, e))?;
                     events::enqueue_set_event(
                         &outbox,
                         tx,
@@ -518,7 +542,7 @@ async fn transition_member(
         .db()
         .transaction_with_retry::<repo::RecognizedMember, TxError, _, _>(
             toolkit_db::secure::TxConfig::default(),
-            |_e: &TxError| None,
+            member_contention_db_err,
             move |tx| {
                 let outbox = outbox.clone();
                 let scope = scope_tx.clone();
@@ -547,10 +571,27 @@ async fn transition_member(
 
                     if to == MemberState::Removed {
                         if let Some(seeder) = stored.seeded_by.as_deref() {
-                            return Err(TxError::Refused(kind.delist_blocked(format!(
-                                "`{member_code}` is a seeded member (seeded by {seeder}): seeded \
-                             members are deprecatable and never removed"
-                            ))));
+                            // NOT one of the three delist codes: §7 row 18
+                            // asks which code refuses the removal of a
+                            // seeded, unreferenced member and answers itself
+                            // that "all three de-list codes are predicated on
+                            // holders, so none fits". Picking one anyway would
+                            // decide that row from the crate and hand
+                            // consumers a wire contract its owner has not
+                            // agreed. The generic validation channel carries
+                            // the refusal until they do.
+                            let mut report = ValidationReport::new();
+                            report.violate(
+                                "VALIDATION",
+                                "member_code",
+                                format!(
+                                    "`{member_code}` is a seeded member (seeded by {seeder}): \
+                                     seeded members are deprecatable and never removed. This \
+                                     refusal's own code is open - features/sku-classification.md \
+                                     section 7 row 18"
+                                ),
+                            );
+                            return Err(TxError::Refused(DomainError::Validation(report)));
                         }
                         // The removal operand, `inst-us-delist`'s exactly: only
                         // the metering-unit set has a shipped carrier column, so
@@ -558,16 +599,33 @@ async fn transition_member(
                         // populations are empty by construction until their
                         // columns land.
                         if kind == SetKind::MeteringUnit {
-                            let (total, sample) =
-                                repo::metering_unit_holders(tx, &scope, tenant_id, &member_code, 5)
-                                    .await
-                                    .map_err(TxError::Repo)?;
-                            if total > 0 {
+                            const SAMPLE: usize = 5;
+                            let holders = repo::metering_unit_holders(
+                                tx,
+                                &scope,
+                                tenant_id,
+                                &member_code,
+                                SAMPLE as u64,
+                            )
+                            .await
+                            .map_err(TxError::Repo)?;
+                            if !holders.is_empty() {
+                                // One read answers both halves: a count and a
+                                // sample taken separately could disagree, and
+                                // the message would name a total with no
+                                // exemplar. Over the bound the count is
+                                // honest about being a floor.
+                                let shown = holders.len().min(SAMPLE);
+                                let count = if holders.len() > SAMPLE {
+                                    format!("at least {}", SAMPLE + 1)
+                                } else {
+                                    holders.len().to_string()
+                                };
                                 return Err(TxError::Refused(kind.delist_blocked(format!(
-                                    "{total} non-terminal published head(s) still declare \
-                                 `{member_code}` (e.g. {}): deprecate first, remove once \
-                                 unreferenced",
-                                    sample.join(", ")
+                                    "{count} non-terminal published head(s) still declare \
+                                     `{member_code}` ({}): deprecate first, remove once \
+                                     unreferenced",
+                                    holders[..shown].join(", ")
                                 ))));
                             }
                         }
@@ -642,6 +700,53 @@ async fn transition_member(
         )
         .await),
         Err(TxError::Repo(e)) => Err(repo_error_to_canonical(&e)),
+    }
+}
+
+/// The PK conflict two concurrent adds of one code produce, classified the
+/// way the create doors classify theirs.
+///
+/// The pre-read inside the transaction closes only the sequential case: the
+/// arbiter is `(tenant_id, set_kind, member_code)`, and a racer that
+/// committed between that read and this insert reaches the driver. Left
+/// unclassified it answered a `500` for an ordinary race the winner just
+/// made true — while the door's own description promises `DUPLICATE_CODE`
+/// in any state, the tombstone included, since the key never frees.
+fn classify_member_insert(
+    member_code: &str,
+    kind: SetKind,
+    error: crate::infra::storage::RepoError,
+) -> TxError {
+    let message = error.to_string().to_ascii_lowercase();
+    if message.contains("unique constraint")
+        || message.contains("duplicate key")
+        || message.contains("primary key")
+    {
+        return TxError::Refused(DomainError::DuplicateCode(format!(
+            "the {} set already carries `{member_code}`: a peer added it between this door's \
+             read and its insert, and a removed member re-enters through the transitions door's \
+             re-listing, never a second add",
+            kind.as_str()
+        )));
+    }
+    TxError::Repo(error)
+}
+
+/// The retryable-contention extractor both transactions pass, mirroring
+/// `products::head_act_contention_db_err`.
+///
+/// Only [`TxError::Repo`] can carry a driver error, and only a driver error
+/// can be contention: a refusal is a business answer and `NotFound` is a
+/// read. Without this both doors passed `None` unconditionally, so a
+/// `database is locked` on the interim engine — which every sibling door
+/// retries — answered `500`.
+fn member_contention_db_err(error: &TxError) -> Option<&sea_orm::DbErr> {
+    match error {
+        // `RepoError::Driver` carries `sea-orm`'s own error, which is what the
+        // retry loop classifies — the sibling doors reach it through
+        // `DbError::Sea`, and this one already holds the inner value.
+        TxError::Repo(crate::infra::storage::RepoError::Driver { source, .. }) => Some(source),
+        TxError::Repo(_) | TxError::Refused(_) | TxError::NotFound => None,
     }
 }
 

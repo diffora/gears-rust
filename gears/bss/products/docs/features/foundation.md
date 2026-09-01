@@ -487,16 +487,18 @@ predicate P-D-41 and P-D-34 pin, standing in for the tighter one `07-reference-s
 timestamp. `cloned_from` is admitted in no update at all, and neither are `tenant_id`, the
 primary key or `created_by` (P-D-34).
 
-**One of those clauses has no column to govern — and bucket-iv, which shares its clause with
-bucket-iii, has none of its own to be empty. The roster says both rather than reading as built.** No Foundation column carries the **bucket-ii** tag, so the trigger installs no clause for
-the class and the interim predicate has nothing to say about this gear's columns yet; that
-emptiness is what `design/01` §5's agreement test asserts on **both** sides — a registry row with
-no clause and a clause with no registry row are opposite failures and both silent — and the arm is
-re-pointed when 07 supplies the tighter predicate. **Bucket-iv** likewise carries no column, and
-needs none of its own: §4.2's whitelist admits iii and iv **together**, which is why the same §5
-test compares them as one class. `composition_pending`'s same-statement-as-a-bump predicate is
-**not** the bucket-ii clause — the column is registered outside the bucket scheme as mechanical,
-and it earns its place in the row-image trio above on its own account.
+**Bucket-ii has members and bucket-iv has none, and the roster says which rather than reading as
+uniformly built.** **Bucket-ii's first members arrived with `03-sku-classification`'s meter pair**
+— `metering_unit` and `usage_type_ref`, on **`products_sku` only** — so that table's trigger now
+installs the interim predicate and `products_product` still installs none. `design/01` §5's
+agreement test moved with them, as its own text said it would: it is a **membership comparison**
+for the SKU table and stays the **emptiness assertion** for the Product table, and it is
+re-pointed again when 07 supplies the tighter predicate. **Bucket-iv** carries no column on either
+table and needs no clause of its own: §4.2's whitelist admits iii and iv **together**, which is
+why the same §5 test compares them as one class. `composition_pending`'s
+same-statement-as-a-bump predicate is **not** the bucket-ii clause — the column is registered
+outside the bucket scheme as mechanical, and it earns its place in the row-image trio above on
+its own account.
 
 **The guard judges the data, never the door** (P-D-31). A `CorruptRow`-style probe **MUST** exist
 per guarded column class, proving the whitelist refuses a write outside that column's admitted

@@ -397,3 +397,18 @@ actor, the scenarios and the boundary.
   lane that publishes a `bundle` carries it") an ordinary bucket-iii re-publish of a composed bundle
   demands the override again and re-raises `compositionPending`; 06 exempts only its own `system_signal`
   re-publish. Owner: this slice with 01 and 06. *(Raised by the slice-03 second lens pass.)*
+- **What closes the de-list window between the holder census and the flip?** `inst-us-delist`
+  states the invariant — a removal is refused while a non-terminal published head still declares
+  the unit — and names no mechanism for enforcing it across two transactions. The shipped doors read
+  the holder population and the member on separate transactions at the engine's default isolation,
+  so on Postgres (READ COMMITTED) they are **write-skew-open**: a first publish of a draft
+  declaring the unit and a `deprecated → removed` flip can each see a world in which the other has
+  not happened, and both commit, leaving a `published` head declaring a `removed` member. SQLite's
+  single writer hides it, so no probe in the interim tier can see it. Three fixes are available and
+  none is this slice's to pick unilaterally: a shared row lock on the member taken by the
+  publish/save recognition read (so the flip blocks behind an in-flight publish), both doors at
+  `SERIALIZABLE` with a real contention classifier, or accepting the window and reconciling. The
+  gear's precedent for a cross-transaction invariant is a dedicated Postgres race suite
+  (`tests/postgres_head_race.rs`), which is a fourth option and costs a tier. Owner: this slice
+  with 01 (the isolation posture is the Foundation's to set). *(Raised by the three-lens review of
+  the recognized-set doors, 2026-09-02.)*

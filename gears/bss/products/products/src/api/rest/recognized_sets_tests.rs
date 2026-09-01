@@ -154,6 +154,41 @@ async fn transition(
     .await
 }
 
+/// `PATCH /skus/{id}` declaring `unit` — the save door, whose recognition
+/// check is what a removed member must refuse.
+async fn patch_sku_meter(
+    harness: &TestHarness,
+    sku_id: Uuid,
+    etag: &str,
+    unit: &str,
+) -> axum::http::Response<Body> {
+    let state = std::sync::Arc::new(ApiState {
+        db: harness.db.clone(),
+        sink: crate::infra::broker::EventSink::Interim(Arc::clone(&harness.outbox)),
+        idempotency_retention_hours: ProductsConfig::default().idempotency_retention_hours,
+        bulk_max_rows_per_batch: ProductsConfig::default().bulk_max_rows_per_batch,
+        bulk_max_concurrent_batches_per_tenant: ProductsConfig::default()
+            .bulk_max_concurrent_batches_per_tenant,
+        watermark_skew_tolerance: ProductsConfig::default().watermark_skew_tolerance(),
+    });
+    let openapi = OpenApiRegistryImpl::new();
+    let app = crate::api::rest::skus::router(state, &openapi)
+        .layer(axum::Extension(flat_in_enforcer(TENANT)));
+    let body = json!({ "metering_unit": unit, "usage_type_ref": "usage:storage" });
+    app.oneshot(
+        Request::builder()
+            .method("PATCH")
+            .uri(format!("/bss-products/v1/skus/{sku_id}"))
+            .header(axum::http::header::CONTENT_TYPE, "application/json")
+            .header(axum::http::header::IF_MATCH, etag)
+            .extension(authed_ctx(TENANT))
+            .body(Body::from(body.to_string()))
+            .expect("build the save request"),
+    )
+    .await
+    .expect("the router answers")
+}
+
 async fn body_json(response: axum::http::Response<Body>) -> JsonValue {
     serde_json::from_slice(
         &axum::body::to_bytes(response.into_body(), usize::MAX)
@@ -206,8 +241,9 @@ async fn seed_holder(harness: &TestHarness, sku_code: &str, unit: &str) -> Uuid 
         format!(
             "INSERT INTO products_entity_version (tenant_id, entity_kind, entity_id, \
              published_version, content, content_digest, digest_version, actor_ref, \
-             published_at) VALUES (X'{tenant}', 'sku', X'{sku}', 1, '{{}}', X'00', 1, \
-             X'{tenant}', '{now}')",
+             published_at) VALUES (X'{tenant}', 'sku', X'{sku}', 1, \
+             '{{\"metering_unit\":\"{unit}\",\"usage_type_ref\":\"usage:storage\"}}', X'00', \
+             1, X'{tenant}', '{now}')",
             tenant = TENANT.simple(),
             sku = sku_id.simple(),
         ),
@@ -222,6 +258,60 @@ async fn seed_holder(harness: &TestHarness, sku_code: &str, unit: &str) -> Uuid 
             .expect("the head guard admits this fixture write");
     }
     sku_id
+}
+
+/// Move a published holder to `deprecated` — an admitted edge, and the
+/// state the `DoD`'s blocked arm names.
+async fn deprecate_holder(harness: &TestHarness, sku_id: Uuid) {
+    let conn = Database::connect(&harness.dsn)
+        .await
+        .expect("open an auxiliary connection");
+    conn.execute_unprepared(&format!(
+        "UPDATE products_sku SET lifecycle_state = 'deprecated', \
+         deprecation_provenance = 'direct', internal_revision = internal_revision + 1 \
+         WHERE sku_id = X'{sku}'",
+        sku = sku_id.simple(),
+    ))
+    .await
+    .expect("the head guard admits the admitted edge");
+}
+
+/// A fresh draft SKU and its `ETag`, for the post-removal declaration.
+async fn draft_for_declaration(harness: &TestHarness) -> (Uuid, String) {
+    let conn = Database::connect(&harness.dsn)
+        .await
+        .expect("open an auxiliary connection");
+    let product_id = Uuid::now_v7();
+    let sku_id = Uuid::now_v7();
+    let now = "2026-08-29 09:00:00.000000 +00:00";
+    for sql in [
+        format!(
+            "INSERT INTO products_product (product_id, tenant_id, brand_id, name, \
+             name_normalized, product_code, lifecycle_state, internal_revision, \
+             published_version, region_scope, brand_scope, created_by, created_at, updated_at) \
+             VALUES (X'{prod}', X'{tenant}', X'{brand}', 'Decl {prod}', 'decl {prod}', NULL, \
+             'draft', 1, 0, '', '', 'principal:author-1', '{now}', '{now}')",
+            prod = product_id.simple(),
+            tenant = TENANT.simple(),
+            brand = Uuid::from_u128(0xb2).simple(),
+        ),
+        format!(
+            "INSERT INTO products_sku (sku_id, tenant_id, product_id, sku_code, \
+             lifecycle_state, internal_revision, published_version, composition_pending, \
+             region_scope, brand_scope, created_by, created_at, updated_at) \
+             VALUES (X'{sku}', X'{tenant}', X'{prod}', 'SKU-DECL-{short}', 'draft', 1, 0, 0, \
+             '', '', 'principal:author-1', '{now}', '{now}')",
+            sku = sku_id.simple(),
+            tenant = TENANT.simple(),
+            prod = product_id.simple(),
+            short = &sku_id.simple().to_string()[..8],
+        ),
+    ] {
+        conn.execute_unprepared(&sql)
+            .await
+            .expect("the fixture writes are admitted");
+    }
+    (sku_id, "\"1\"".to_owned())
 }
 
 async fn retire_holder(harness: &TestHarness, sku_id: Uuid) {
@@ -379,11 +469,23 @@ async fn a_stale_expected_state_is_refused_stale_live_op() {
     assert_eq!(error_code(stale).await, "STALE_LIVE_OP");
 }
 
-/// **The delist refusal, armed both ways** (`dod-recognized-set-mechanics`'s
-/// own wording): refused while a non-terminal published head declares the
-/// unit — the holders sampled into the refusal — and admitted once only
-/// frozen version content does, the old snapshot still rendering and a new
-/// declaration naming the removed member failing at the save door.
+/// **The delist refusal, armed on every arm the `DoD` names.**
+///
+/// `dod-recognized-set-mechanics` words the probe precisely — *"removal
+/// refused while a `deprecated` head references the member, and removal
+/// **admitted** while only frozen version content does — the old snapshot
+/// still rendering afterwards, and a new declaration naming the removed
+/// member failing `UNRECOGNIZED_UNIT`"* — and an earlier revision of this
+/// case armed none of the three as stated: it blocked with a **published**
+/// holder, admitted against a head that was merely terminal while its
+/// column still named the unit, and never re-declared afterwards. Narrowing
+/// the holder filter to `published` alone would have stayed green.
+///
+/// Now: blocked with the holder `published`, blocked again with it
+/// `deprecated` (the `DoD`'s own arm), admitted once the holder is `retired`
+/// and only the frozen row names the unit, the frozen bytes re-read
+/// afterwards, and a fresh declaration of the removed member refused
+/// `UNRECOGNIZED_UNIT` at the save door.
 #[tokio::test]
 async fn a_removal_is_blocked_by_live_holders_and_admitted_after_them() {
     let harness = harness().await;
@@ -415,6 +517,28 @@ async fn a_removal_is_blocked_by_live_holders_and_admitted_after_them() {
         "the refusal samples the holders: {body}"
     );
 
+    // The DoD's own arm: a **deprecated** head still references the member.
+    // Without this the holder filter could narrow to `published` alone and
+    // every assertion above would still pass.
+    deprecate_holder(&harness, holder).await;
+    let still_blocked = transition(
+        app_for(&harness, TENANT),
+        "metering_unit",
+        "gib_month",
+        "deprecated",
+        "removed",
+    )
+    .await;
+    assert_eq!(
+        still_blocked.status(),
+        axum::http::StatusCode::CONFLICT,
+        "a deprecated head is non-terminal and still references the member"
+    );
+    assert_eq!(
+        body_json(still_blocked).await["context"]["reason"],
+        json!("UNIT_DELIST_BLOCKED")
+    );
+
     retire_holder(&harness, holder).await;
     let admitted = transition(
         app_for(&harness, TENANT),
@@ -438,14 +562,31 @@ async fn a_removal_is_blocked_by_live_holders_and_admitted_after_them() {
             holder.simple()
         ),
     )
-    .await;
+    .await
+    .expect("the frozen row survives its member's removal");
     assert!(
-        frozen.is_some(),
-        "the old snapshot still renders after the member's removal"
+        frozen.contains("gib_month"),
+        "the frozen content NAMES the removed unit and still renders byte-for-byte — which is \
+         what makes 'only frozen content names it' the admitted case rather than 'the head is \
+         terminal': {frozen}"
+    );
+
+    // And the third arm: the member is out of the set, so a fresh
+    // declaration naming it is refused at the save door.
+    let (sku_id, etag) = draft_for_declaration(&harness).await;
+    let refused = patch_sku_meter(&harness, sku_id, &etag, "gib_month").await;
+    assert_eq!(refused.status(), axum::http::StatusCode::BAD_REQUEST);
+    assert_eq!(
+        body_json(refused).await["context"]["violations"][0]["type"],
+        json!("UNRECOGNIZED_UNIT"),
+        "a removed member is outside the set, so declaring it is refused"
     );
 }
 
-/// **A seeded member is deprecatable and never removed.**
+/// **A seeded member is deprecatable and never removed** — and the refusal
+/// deliberately carries no delist code, because §7 row 18 has not decided
+/// which code refuses it and all three delist codes are predicated on
+/// holders a seeded member need not have.
 #[tokio::test]
 async fn a_seeded_member_deprecates_and_never_removes() {
     let harness = harness().await;
@@ -480,8 +621,21 @@ async fn a_seeded_member_deprecates_and_never_removes() {
         "removed",
     )
     .await;
-    assert_eq!(removal.status(), axum::http::StatusCode::CONFLICT);
-    assert_eq!(error_code(removal).await, "UNIT_DELIST_BLOCKED");
+    assert_eq!(removal.status(), axum::http::StatusCode::BAD_REQUEST);
+    let body = body_json(removal).await;
+    // NOT one of the three delist codes, deliberately: §7 row 18 asks which
+    // code refuses this and answers that none of the three fits, since they
+    // are all predicated on holders and a seeded member is refused for being
+    // seeded. Answering it from the crate would decide the row.
+    assert_eq!(
+        body["context"]["violations"][0]["type"],
+        json!("VALIDATION"),
+        "the refusal carries the generic channel until row 18 resolves: {body}"
+    );
+    assert!(
+        body.to_string().contains("row 18"),
+        "and names the open item, so the next reader sees the code is provisional: {body}"
+    );
 }
 
 /// **The kind roster is closed at the path**: an unknown `setKind` is a

@@ -85,6 +85,45 @@ fn rendered<B: serde::Serialize>(body: &B, payload_type: &str) -> Value {
     serde_json::to_value(&envelope).expect("the envelope renders as JSON")
 }
 
+/// **Every declared token belongs to exactly one entry point** — the
+/// partition the four `enqueue*` guards implement, asserted as a partition
+/// rather than arm by arm.
+///
+/// Each entry point owns one body shape and refuses every token it does not
+/// build. Checking that partition here catches the failure the guards were
+/// each added for: a token no guard claims falls through to the entry point
+/// it was passed to, and on the interim sink writes a body of the wrong
+/// shape while the broker sink refuses it. Two of the four arms were added
+/// by review passes after exactly that divergence shipped — the deprecation
+/// pair's, then the set trio's — so the invariant is stated once, over the
+/// whole roster, instead of once per arm.
+#[test]
+fn every_declared_token_belongs_to_exactly_one_entry_point() {
+    let published = ["ProductPublished", "SkuPublished"];
+    let deprecated = THE_LIFECYCLE_PAIR;
+    let set_events = THE_SET_TRIO;
+
+    for (token, _) in SCHEMA_REFS {
+        let owners = usize::from(published.contains(token))
+            + usize::from(deprecated.contains(token))
+            + usize::from(set_events.contains(token));
+        assert!(
+            owners <= 1,
+            "{token} is claimed by more than one entry point's guard"
+        );
+        // Zero owners is the core-only default: `enqueue` builds that shape,
+        // so a token no specialised guard claims is legitimately its own.
+        let core_only = owners == 0;
+        assert_eq!(
+            core_only,
+            THE_EIGHT.contains(token) && !published.contains(token),
+            "{token}: the core-only set must be exactly §4.5's eight minus the publish pair — \
+             a declared token outside that partition reaches an entry point whose body shape it \
+             does not have"
+        );
+    }
+}
+
 /// **Every declared event has a versioned schema reference — §4.5's eight,
 /// 04's announced pair and 03's set trio — and nothing else does.**
 ///

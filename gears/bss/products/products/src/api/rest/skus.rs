@@ -3087,7 +3087,7 @@ async fn run_publish(
     // image: a first publish of a draft whose unit was deprecated since it
     // was authored is a NEW declaration by the PRD's reading, and this is
     // the door that catches it (`inst-mt-recognized`).
-    recheck_meter_declaration(runner, inputs, &head, &head).await?;
+    recheck_meter_declaration(runner, inputs, &head, &head, head.published_version == 0).await?;
 
     // -- The edge, and what the floor says it costs. `post_publish_state`
     // decides the `to` side from the row image, the same way the head-row
@@ -4140,7 +4140,7 @@ fn unroutable_sku_field(field: &str) -> DomainError {
 /// [`HeadActError::Refused`] for every bucket refusal, and
 /// [`HeadActError::Db`] — the gear's internal channel, a `500` — for
 /// [`bucket::FieldClass::Outside`], which is **structurally unreachable**:
-/// [`SkuSaveField::from_wire`] admits four wire names and every one of their
+/// [`SkuSaveField::from_wire`] admits six wire names and every one of their
 /// columns is bucket-tagged, so a value reaching that arm means this door's
 /// own field table and the registry disagree. The provenance is the gear's
 /// rather than the caller's, which is what decides the channel.
@@ -4197,10 +4197,11 @@ fn route_sku_field(
 /// instruction is explicit that the head door refuses rather than forwards —
 /// one door, one effect — so a caller is told where the act belongs rather
 /// than having this door quietly perform a differently-governed act on its
-/// behalf. **No column carries bucket ii today** (§4.1 assigns none), so the
-/// arm is unreachable at this commit; it is built because the door routes by
-/// tag, and an arm that appeared only when its first column landed would be a
-/// second change to this door on the day slice 07 arrives.
+/// behalf. **The arm became reachable with 03's meter pair** — bucket ii's
+/// first membership, `metering_unit` and `usage_type_ref` — and is probed at
+/// this door. It was built before it had a member, because the door routes
+/// by tag; that foresight is why the pair's arrival needed no second change
+/// here.
 fn sku_correctable_after_publish(field: &str) -> DomainError {
     let tag = bucket::FieldBucket::Correctable.tag();
     DomainError::IllegalFieldMutation(format!(
@@ -4248,15 +4249,6 @@ fn route_sku_save(
     Ok(save)
 }
 
-/// The head as this save would leave it — the operand the identity phase
-/// judges.
-///
-/// Built rather than re-read because the row this describes has not been
-/// written yet: the containment re-check below has to judge the scope the
-/// save **would** store, not the one it is replacing. It is deliberately not
-/// the operand of the door's *answer*: that is re-read off the committed row
-/// ([`run_save`]), so the client is told what the database holds rather than
-/// what this door believes it wrote.
 /// The meter rules over the row a save would produce, and over a first
 /// publish — 03's `inst-mt-atomic-pair` and `inst-mt-recognized`
 /// (`dod-meter-atomic`, `dod-unit-recognition`).
@@ -4271,6 +4263,13 @@ fn route_sku_save(
 /// treats as a new declaration and rejects. The publish caller passes the
 /// head as both arguments and `first_publish = true` for exactly that arm.
 ///
+/// **`first_publish` is a parameter, not `head.published_version == 0`.**
+/// Deriving it made every draft save re-judge, so a draft whose unit was
+/// deprecated after it was authored could not be edited at all — a
+/// `sku_code` change came back `UNIT_DEPRECATED`, naming a declaration the
+/// caller never made, while `03` §1.6 has the draft plane editing freely.
+/// Only the publish door raises the flag.
+///
 /// The atomic-pair rule reads the **resulting row**, so a save supplying one
 /// half onto a row already carrying the other completes a declaration rather
 /// than being refused for arriving alone; the paired `CHECK` refuses the
@@ -4280,6 +4279,7 @@ async fn recheck_meter_declaration(
     inputs: &HeadActInputs,
     head: &SkuRecord,
     image: &SkuRecord,
+    first_publish: bool,
 ) -> Result<(), HeadActError> {
     crate::domain::recognized::meter_pair_complete(
         image.metering_unit.as_deref(),
@@ -4291,7 +4291,6 @@ async fn recheck_meter_declaration(
         return Ok(());
     };
     let newly_declared = head.metering_unit.as_deref() != Some(unit);
-    let first_publish = head.published_version == 0;
     if !(newly_declared || first_publish) {
         return Ok(());
     }
@@ -4309,6 +4308,15 @@ async fn recheck_meter_declaration(
         .map_err(HeadActError::Refused)
 }
 
+/// The head as this save would leave it — the operand the identity phase
+/// judges.
+///
+/// Built rather than re-read because the row this describes has not been
+/// written yet: the containment re-check below has to judge the scope the
+/// save **would** store, not the one it is replacing. It is deliberately not
+/// the operand of the door's *answer*: that is re-read off the committed row
+/// ([`run_save`]), so the client is told what the database holds rather than
+/// what this door believes it wrote.
 fn post_save_image(head: &SkuRecord, save: &repo::SkuHeadSave, now: DateTime<Utc>) -> SkuRecord {
     let mut image = head.clone();
     if let Some(sku_code) = save.sku_code.clone() {
@@ -4530,7 +4538,7 @@ async fn run_save(
     // judged over the image this save would leave. --
     let image = post_save_image(&head, &save, inputs.now);
     recheck_parent_containment(runner, inputs, &image).await?;
-    recheck_meter_declaration(runner, inputs, &head, &image).await?;
+    recheck_meter_declaration(runner, inputs, &head, &image, false).await?;
 
     // -- Phase 7, the governance gate, in `Gate` mode: asked at every
     // mutating door and passing trivially where the act is ungated

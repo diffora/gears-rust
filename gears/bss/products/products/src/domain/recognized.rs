@@ -23,10 +23,13 @@
 //! **`active → removed` is refused**: the whole safety property of
 //! de-listing is that deprecation blocks new declarations first
 //! (`inst-rm-append-only`). There is no DELETE and no `member_code` UPDATE
-//! in any state — the migration's trigger whitelist admits `state` and
-//! `display_label` only, which makes semantic immutability a schema property
-//! and `dod-unit-immutable`'s "the absence of the door is the enforcement"
-//! literally true.
+//! in any state — the shipped guard refuses `member_code` by name (with
+//! `tenant_id`, `set_kind`, `seeded_by` and `created_at`), which makes
+//! semantic immutability a schema property and `dod-unit-immutable`'s "the
+//! absence of the door is the enforcement" literally true. §4 words that
+//! guard as a whitelist admitting two columns; what ships is the complement
+//! enumeration, so `updated_at` is writable and a later column is admitted
+//! by default — `design/03` §6's open question, not a settled reading.
 
 use super::error::DomainError;
 

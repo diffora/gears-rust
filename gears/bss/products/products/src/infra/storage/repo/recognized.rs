@@ -5,8 +5,12 @@
 //!
 //! # One implementation, four sets
 //!
-//! Every function here keys on `(tenant_id, set_kind, member_code)` and none
-//! branches on the kind: P-D-90 arm 3 makes the membership machinery one
+//! The three **membership** functions key on `(tenant_id, set_kind,
+//! member_code)` and none branches on the kind — [`metering_unit_holders`]
+//! is the module's one kind-specific surface, and deliberately so: a holder
+//! sample reads the carrier column, and only the metering-unit set has one
+//! on `products_sku` today. The other three kinds' samples arrive with their
+//! own columns. So: P-D-90 arm 3 makes the membership machinery one
 //! generic implementation, the kind deciding only the grant at the door and
 //! the refusal code the delist raises. **The set is the `active` and
 //! `deprecated` rows; a `removed` row is a tombstone outside it** — which is
@@ -157,9 +161,16 @@ pub async fn insert_recognized_member(
 ///
 /// The pin is the live-op's own staleness rule made physical: a peer's flip
 /// between the door's read and this statement leaves `rows_affected = 0`,
-/// and the door answers `STALE_LIVE_OP` rather than absorbing the race. The
-/// trigger whitelist admits `state` and `display_label` only, so this
-/// statement touches nothing else.
+/// and the door answers `STALE_LIVE_OP` rather than absorbing the race.
+///
+/// **The guard is a complement enumeration, not the whitelist §4 words.**
+/// The shipped trigger refuses five named columns — `tenant_id`, `set_kind`,
+/// `member_code`, `seeded_by`, `created_at` — and admits everything else, so
+/// `updated_at` is writable (this statement writes it) and a column a later
+/// migration adds is admitted by default. `design/03` §6 carries that
+/// difference as an open question; the migration's own doc states it. What
+/// keeps this statement to `state` and the timestamp is therefore the
+/// statement, not the guard.
 ///
 /// # Errors
 ///
@@ -200,12 +211,14 @@ pub async fn flip_recognized_member(
 
 /// The non-terminal published heads still declaring `member_code` as their
 /// metering unit — the delist refusal's operand and its sample
-/// (`inst-us-delist`: *"referenced" means non-terminal published heads*, and
+/// (`inst-us-delist`: "referenced" means **non-terminal published heads**, and
 /// frozen version content never blocks a removal).
 ///
-/// Answers the total count plus up to `sample` codes, ordered, so the
-/// refusal can name holders without shipping a tenant's whole catalog in an
-/// error message.
+/// Answers up to `sample + 1` codes, ordered, so the refusal can name
+/// holders without shipping a tenant's whole catalog in an error message —
+/// and so the caller can say *"at least N"* honestly when the bound is hit,
+/// rather than quoting a total read by a second statement that may disagree
+/// with the sample.
 ///
 /// # Errors
 ///
@@ -216,31 +229,29 @@ pub async fn metering_unit_holders(
     tenant_id: Uuid,
     member_code: &str,
     sample: u64,
-) -> Result<(u64, Vec<String>), RepoError> {
+) -> Result<Vec<String>, RepoError> {
     let filter = Condition::all()
         .add(sku::Column::TenantId.eq(tenant_id))
         .add(sku::Column::MeteringUnit.eq(member_code))
         .add(sku::Column::LifecycleState.is_in(["published", "deprecated"]));
 
-    let total = sku::Entity::find()
-        .secure()
-        .scope_with(scope)
-        .filter(filter.clone())
-        .count(runner)
-        .await
-        .map_err(|e| driver_failure(format!("count holders of unit {member_code}"), e))?;
-
+    // ONE statement, not a count plus a sample: two reads under READ
+    // COMMITTED can disagree — a holder retiring between them left the
+    // refusal rendering a non-zero total with an empty exemplar, on the one
+    // message whose whole point is *"with the holders sampled"*. The sample
+    // bound is `sample + 1` so the caller can tell "this many" from "at
+    // least this many" without a second query.
     let rows: Vec<String> = sku::Entity::find()
         .secure()
         .scope_with(scope)
         .filter(filter)
         .order_by(sku::Column::SkuCode, sea_orm::Order::Asc)
-        .limit(sample)
+        .limit(sample + 1)
         .all(runner)
         .await
         .map_err(|e| driver_failure(format!("sample holders of unit {member_code}"), e))?
         .into_iter()
         .map(|row| row.sku_code)
         .collect();
-    Ok((total, rows))
+    Ok(rows)
 }

@@ -95,7 +95,13 @@
 //! - **`tenant_id`, the primary key (`sku_id`) and `created_by`** are admitted
 //!   in **no** update at all (P-D-34); neither is `created_at`.
 //!
-//! **Bucket-ii and bucket-iv have no members among today's columns.** The
+//! **Bucket-ii's members are this table's, and bucket-iv has none.**
+//! `metering_unit` and `usage_type_ref` — 03's atomic `MeterDeclaration` —
+//! are the class's first membership anywhere in the gear, which is why the
+//! clause below exists on this table and on no other: admitted while
+//! `published_version = 0` on a non-terminal head, and after first publish
+//! only in the same statement as a `published_version` bump (P-D-41,
+//! P-D-34's interim row-image predicate, the tighter one still owed by 07). The
 //! columns the sibling table's doc names are all here now, and they are **not
 //! all owed by the same slice**: `cloned_from` arrived with slice **11**
 //! (**P-D-76**), `deprecation_provenance` and `replaced_by_sku_id` with slice
@@ -263,7 +269,7 @@ const PG_UP_STATEMENTS: &[&str] = &[
              AND NOT (OLD.published_version = 0 AND OLD.lifecycle_state NOT IN ('retired', 'discarded'))
              AND NEW.published_version IS NOT DISTINCT FROM OLD.published_version
           THEN
-            RAISE EXCEPTION 'products_sku: bucket-ii columns are admitted before first publish, or after it only in the same statement as a published_version bump';
+            RAISE EXCEPTION 'products_sku: bucket-ii columns are admitted on a non-terminal head before first publish, or after it only in the same statement as a published_version bump';
           END IF;
 
           IF NEW.composition_pending IS DISTINCT FROM OLD.composition_pending
@@ -382,7 +388,7 @@ const SQLITE_UP_STATEMENTS: &[&str] = &[
         ) AND NOT (
             OLD.published_version = 0 AND OLD.lifecycle_state NOT IN ('retired', 'discarded')
         ) AND NEW.published_version IS OLD.published_version
-        BEGIN SELECT RAISE(ABORT, 'products_sku: bucket-ii columns are admitted before first publish, or after it only in the same statement as a published_version bump'); END",
+        BEGIN SELECT RAISE(ABORT, 'products_sku: bucket-ii columns are admitted on a non-terminal head before first publish, or after it only in the same statement as a published_version bump'); END",
     "CREATE TRIGGER trg_products_sku_deprecation_provenance BEFORE UPDATE ON products_sku FOR EACH ROW WHEN
             NEW.deprecation_provenance IS NOT OLD.deprecation_provenance
             AND NEW.lifecycle_state IS OLD.lifecycle_state

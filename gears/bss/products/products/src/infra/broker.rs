@@ -1,5 +1,6 @@
 //! The gear's events as the broker SDK's own typed events (P-D-47): `01`
-//! §4.5's eight, and `04-lifecycle`'s announced deprecation pair.
+//! §4.5's eight, `04-lifecycle`'s announced deprecation pair, and
+//! `03-sku-classification`'s set trio (P-D-94's broker identity).
 //!
 //! `infra::events` writes the interim envelope this gear controls; this module
 //! is what replaces it once a broker is reachable. The two coexist on purpose:
@@ -59,7 +60,9 @@
 //!   types, two of which are the entities these events are about —
 //!   `gts.cf.bss.products.product.v1~` and `gts.cf.bss.products.sku.v1~` — so
 //!   the subject types carry those names, and the event types carry the
-//!   gear's own tokens — §4.5's eight and 04's pair;
+//!   gear's own tokens — §4.5's eight, 04's pair and 03's trio, the last
+//!   deriving its subject from `cf.bss.products.recognized_set.v1~`, a GTS
+//!   type `05` §3.2's authz catalog declares (P-D-94 arm 2);
 //! - **one topic, not one per event.** P-D-27's ordering key is `(tenant, aggregate)`,
 //!   not `(tenant, aggregate, entity_kind)`; splitting the topic would not
 //!   change the partitioning, only what a consumer subscribes to. This is the
@@ -609,8 +612,8 @@ pub(crate) async fn bind_producer(
     // **`prepare_all` is not "every event".** Its schema cache errors only when the
     // declared patterns match **zero** event types
     // (`producer/schema_cache.rs`: `if selected.is_empty()`), so a broker
-    // carrying one of this gear's ten lets the boot succeed and log
-    // "publishing through the event-broker SDK producer" — and the other nine
+    // carrying one of this gear's thirteen lets the boot succeed and log
+    // "publishing through the event-broker SDK producer" — and the other twelve
     // then fail at `outbox_envelope`'s `validate_prepared`, inside a door's own
     // transaction, on a live request. That is the "half-configured broker" case
     // this module's doc says is loud at bind time; it was not, until here.
