@@ -230,7 +230,7 @@ multi-action row would otherwise read as if the whole row were doored.
 | `catalog_version × publish` | **none** — 06 §6 records that no door consumes it | 06 |
 | `category × read\|write` | `GET /bss-products/v1/browse…` (08's browse door, which names `category × read` explicitly) spends **`× read`** (**P-D-50**); **`× write` has no route declared** — 02's live-value door, named in prose | 02 |
 | `attribute_definition × write` | **no route declared** | 02 |
-| `recognized_set × write`, `plan_tier × write` | **no route declared** | 03 |
+| `recognized_set × write`, `plan_tier × write` | `POST /bss-products/v1/recognized-sets/{setKind}/members` and `…/members/{memberCode}/transitions` (**P-D-90** — one route family, the grant chosen by `setKind`) | 03 |
 | `approval × submit\|read\|decide` | `GET /bss-products/v1/approvals?state=pending` (this slice's own pending-queue door) spends **`× read`** (**P-D-50**); **`× submit` and `× decide` have no route declared** | 05 |
 | `materiality_policy × write` | **no route declared** | 05 |
 | `breakglass × elevate` | **no route declared** | 05 |
@@ -346,11 +346,12 @@ finance fields), 04 (un-deprecation, retirement confirmation, scheduled-approval
 **Risks & open items**:
 - **Eleven of the twenty-three grant rows carry no route in the `Doors` column.** P-D-45's `Doors` column made this countable for the first time, and **P-D-50** then took the three contradictions the propagation audit found — `approval × read`, `category × read` and `catalog_version × read` each had a route declared elsewhere in the set while their own cell read "no route declared". *Re-measured 2026-08-31 after **P-D-61** (the `bulk × read` row) and **P-D-67** (routes for
   `catalog_version × ack`/`× release`, `× force_complete` and `freeze_participant × write`):* the
-  roster is **twenty-four** rows, **fifteen** name a route, and the `Doors` column declares
-  **twenty-two** routes. The rows still without one are **nine**: `category × write` (its row doored
-  on `× read` alone), `attribute_definition`, `recognized_set`+`plan_tier` (one row),
+  roster is **twenty-four** rows, **sixteen** name a route, and the `Doors` column declares
+  **twenty-four** routes (**P-D-90** doored `recognized_set`/`plan_tier`, whose row had none). The rows still without one are **eight**: `category × write` (its row doored
+  on `× read` alone), `attribute_definition`,
   `approval × submit|decide`, `materiality_policy`, `breakglass`, 07's three (one row),
-  `pii_allowlist` and `audit × read` — plus the two known absences spelled differently
+  `pii_allowlist` and `audit × read` — the `recognized_set`+`plan_tier` row left this list with
+  **P-D-90** — plus the two known absences spelled differently
   (`scheduled_transition`, and `catalog_version × publish`, which no door consumes). An authorization
   surface nobody can enumerate is one nobody can review. Whether the fix is declaring the routes or admitting the grants are unspent is not a review's call. Owner: this slice with each door's owner. *(Raised by the P-D-45 round; re-measured by the P-D-43…49 propagation audit; the three contradictions closed by **P-D-50**.)*
 - **Does the discard door get its own grant, or inherit `product|sku × write`?** 01 §2 declares

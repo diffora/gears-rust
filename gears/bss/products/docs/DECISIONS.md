@@ -1569,6 +1569,131 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   (the re-publish step).
 
 
+#### P-D-92 — `set_kind` pins no roster, so row 5 stops holding the recognized-set table
+
+- **Date**: 2026-09-01 (owner call, autonomous under the standing instruction — a **scoping**
+  decision in **P-D-74**'s form, not an answer to `features/sku-classification.md` §7 row 5)
+- **Context**: row 5 asks whether `tax_category_ref` and `gl_code_ref` belong to this registry at
+  all, and its answer *"may delete this feature's validators, its two `set_kind` values and its
+  publish-blocking requirement together"*. Its owner is **the PRD owner** and it stays open. But it
+  names `dod-recognized-set-table` among its Blocks, and it is that table's **only** live blocker —
+  so a question about two of four row-value kinds is holding a table whose DDL need not know how
+  many kinds there are.
+- **Decision**: the hold on the table is released, exactly as P-D-74 released the capture table's.
+  **`products_recognized_set`'s DDL pins no `set_kind` roster** — a non-empty text column — and the
+  admitted set is the **membership door's** to enforce once row 5 resolves. This is the third
+  application of that form in this chain (`capture_kind`, `entity_kind`, `value_type`), and the
+  reason is the same each time: a `CHECK` enumerating the kinds would BE row 5's answer, written by
+  a migration instead of by its owner.
+- **The arguments against, stated**: a table that admits any kind admits a typo, and the first
+  reader of the DDL learns nothing about the four kinds from it. Both are true and both are the
+  price of not authoring; the door's roster and this feature's own §1.7 carry the four, and a later
+  pin is an in-place edit rather than a redesign.
+- **Not changed**: row 5 keeps its grip on `dod-classification-columns` (the two contingent
+  columns are two of its seven `MUST`s), on `dod-accounting-validators`, `dod-finance-materiality`,
+  `dod-sdk-read-shape`, `dod-recognized-set-events` and `dod-type-profile`. The question itself is
+  untouched and stays with the PRD owner.
+- **Propagated**: `features/sku-classification.md` §7 row 5 (its Blocks list loses the table),
+  `design/03-sku-classification.md` §4 (the column's shape).
+
+#### P-D-91 — None of the four code columns is a database foreign key, and two measurements say so
+
+- **Date**: 2026-09-01 (owner call, autonomous under the standing instruction —
+  `features/sku-classification.md` §7 row 7, `design/03` §4's own question)
+- **Context**: row 7 asks whether `plan_tier` is a real FK. `dod-classification-columns` already
+  carries the whole argument and applies it to four columns rather than one: `plan_tier`,
+  `tax_category_ref`, `gl_code_ref` and `metering_unit` are all **single code columns** into
+  `products_recognized_set`'s **three-column** primary key.
+- **Decision**: **no FK on any of the four.** The answer is not a preference between two workable
+  shapes — two independent measurements rule the FK out:
+  | Measurement | What it rules out |
+  |---|---|
+  | A referencing side cannot supply `set_kind` as a **literal**. Neither engine admits a constant in a foreign key's column list, so the only real FK is one over a redundant `set_kind` column added per reference — four columns whose only value is to satisfy a constraint | the FK as written |
+  | **Each of the four has a de-list code a raw violation would pre-empt**: `PLAN_TIER_RETIRE_BLOCKED`, `UNIT_DELIST_BLOCKED` and row 5's two. A real FK raises the driver's own error, and the design requires the coded refusal | the FK on any of them, even if the first were solved |
+  The referential guarantee is the **membership door's**, which is where the codes live.
+- **The arguments against, stated**: the columns can then hold a code no set member carries, and
+  nothing physical stops it — a real cost, accepted because the alternative buys the guarantee at
+  the price of the refusal the design specifies. The mitigation is the door plus the publish
+  validators, and `dod-unit-recognition` requires exactly that refusal for a unit *"unknown or
+  `removed`"*.
+- **Not changed**: the atomic-pair `CHECK` on `metering_unit`/`usage_type_ref` (both null or both
+  non-null) is a **shape** constraint, not referential, and stands; `dod-classification-columns`
+  keeps its other blocker (row 5's two contingent columns).
+- **Propagated**: `design/03-sku-classification.md` §4 and §6 (the question, struck),
+  `features/sku-classification.md` §7 row 7 and `dod-classification-columns`.
+
+#### P-D-90 — The recognized-set membership door: one route family, the grant chosen by set kind
+
+- **Date**: 2026-09-01 (owner call, autonomous under the standing instruction —
+  `features/sku-classification.md` §7 row 9)
+- **Context**: the only stated write mechanism is `GovernedLiveOp` and this feature names no route,
+  while `design/05` §3.2 already carries **`recognized_set × write`** and **`plan_tier × write`**
+  with *"no route declared"* — two grants with nothing to spend them.
+- **Decision**, three arms:
+  1. **`POST /bss-products/v1/recognized-sets/{setKind}/members`** for a membership add, and
+     **`POST /bss-products/v1/recognized-sets/{setKind}/members/{memberCode}/transitions`** for the
+     `active → deprecated → removed` flips and the re-listing. The shape is this corpus's own,
+     set twice by decision already: **P-D-67**'s `POST /bss-products/v1/freeze-participants` and
+     **P-D-87**'s `POST /bss-products/v1/reference-producers` plus
+     `…/reference-producers/{producer}/retirements`. A third application is uniformity rather than
+     invention.
+  2. **The grant is chosen by `setKind`, not by the route**: the tier set spends
+     `plan_tier × write` and the other three spend `recognized_set × write`. That is the only
+     reading under which **both** grants have a spender, and the design separates the tier set
+     everywhere else too — its own `DoD`, its own event (`PlanTierUpdated`), its own refusal code
+     (`PLAN_TIER_RETIRE_BLOCKED`).
+  3. **One door, four sets, one generic membership implementation** — `dod-recognized-set-mechanics`
+     requires *"one generic membership lookup"*, and a door per set kind would be four doors
+     spending two grants with one rule set behind them.
+- **The arguments against, stated**: arm 2 puts an authorization decision on a **path segment**,
+  so a reader of the route table cannot see which grant a call spends without reading `setKind`'s
+  roster — the alternative (two route families) was rejected because it duplicates one rule set
+  across two doors and leaves the generic lookup with two callers to keep aligned. Arm 1's second
+  route models a state flip as a subresource, which is `…/retirements`' shape rather than a `PATCH`
+  on the member.
+- **Not changed**: the mechanism (`GovernedLiveOp`), the removal operand (**P-D-89**), the four
+  events, `05`'s catalog rows — the grants exist and this decision gives them a spender rather than
+  minting anything.
+- **Propagated**: `design/03-sku-classification.md` §2 (the flow's route) and §6,
+  `features/sku-classification.md` §7 row 9, `design/05-governance.md` §3.2's `Doors` column (the
+  row loses *"no route declared"*).
+
+#### P-D-89 — The removal operand is the non-terminal published head, and the row's own DoDs say so three times
+
+- **Date**: 2026-09-01 (owner call, autonomous under the standing instruction —
+  `features/sku-classification.md` §7 row 15, `design/03` §6's own item)
+- **Context**: the row asks whether `02` and `03` admit a **`draft`** head as a blocking reference,
+  noting three texts that differ — `03` `inst-rs-removal-operand` says *"non-terminal **published**
+  heads"*, `02` `inst-ad-deprecate-then-remove` says *"non-terminal head
+  (`draft`/`published`/`deprecated` Product or SKU, active category)"*, and the PRD is narrower
+  than both.
+- **Decision**: **`03`'s operand is the non-terminal *published* head, uniform across its four
+  sets, and a `draft` head does NOT block.** This is a measurement, not a choice between readings:
+  the three `DoD`s the row itself blocks each state it independently and identically —
+  `dod-recognized-set-mechanics` (*"the non-terminal published head, uniform across all four
+  `set_kind` values"*), `dod-plantier-governance` (*"while a non-terminal published head carries the
+  value"*) and `dod-unit-delist` (*"while a non-terminal published head declares it"*). A fourth
+  document closes it: **`dod-unit-recognition` requires refusing a declaration on *"a draft whose
+  unit was deprecated before its first publish"*** — a case that is **unreachable** if a draft
+  blocks the deprecation, which would leave that `DoD` requiring a refusal no state could produce.
+  A draft's protection is therefore the **publish-time** refusal, never the de-listing guard.
+- **`02` keeps its own wider operand, and the divergence is already registered.** The row's premise
+  — that the two must agree — was retired when `02`'s uniformity claim was struck: `02` §6 records
+  the divergence in its own words, and the subjects differ (an attribute value on a draft head has
+  no unit-style publish-time re-recognition to fall back on). So this is not the joint decision the
+  row's Owner field expects; each slice's operand is stated in its own documents and both now say
+  so.
+- **The arguments against, stated**: an operator can remove a unit that a hundred drafts declare,
+  and every one of those drafts then fails at publish — noisy, and discovered late. The mitigation
+  is the design's own: the pre-publish lint (**P-D-02**, informational) *"surfaces `deprecated`-member
+  usage so operators see debt before refusal teaches them"*, and deprecation precedes removal in
+  the state machine.
+- **Not changed**: `02`'s operand; the PRD's narrower wording, which is a subset of this reading and
+  not in conflict with it; the tombstone mechanics (**P-D-47**).
+- **Propagated**: `design/03-sku-classification.md` §6 (the item, struck),
+  `features/sku-classification.md` §7 row 15, and a one-line pointer in
+  `features/taxonomy-attributes.md` §7's mirror row.
+
 #### P-D-88 — The nullable-UNIQUE gap: roots get a partial index, coordinates get P-D-39's stated absence
 
 - **Date**: 2026-09-01 (owner call, autonomous under the standing instruction — `design/02` §6's

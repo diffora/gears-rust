@@ -182,8 +182,8 @@ Declared by [`../features/sku-classification.md`](../features/sku-classification
 The steps below are this slice's and are the normative ones; the FEATURE carries the
 actor, the scenarios and the boundary.
 
-1. [ ] - `p1` - One generic shape: `(tenant_id, set_kind, member_code, display_label?, state ∈ {active, deprecated, removed}, seeded_by?)`; mutations ride `GovernedLiveOp` (02 §3.1), and every admitted mutation emits the set's event in the same transaction (§4); membership checks are the classification validators' single lookup — **the set is the `active` and `deprecated` rows; a `removed` row is a tombstone outside it** (**P-D-47**: a removal is a state flip, never a DELETE — the donor's taxonomy values are `Active|Retired` and its repository refuses to delete one for the reason that holds here, that a value a published row names has to keep existing; the PK therefore never frees, which makes C3 a schema property rather than a convention) - `inst-rs-shape`
-2. [ ] - `p1` - Removal operand is uniform **across this slice's four sets**: **non-terminal published heads** — a member is removable — flipped to `removed` — when no non-terminal published head references it; frozen versions are self-contained copies, neither blocking removal nor touched by it (M2 fix); the transitions are `active → deprecated → removed`, and `removed → active` (as `deprecated → active`) re-lists the same identity through the same `GovernedLiveOp`, which is safe because the identity never changed (**P-D-47**, the donor's re-add re-activating a retired value); the pre-publish lint (P-D-02: informational) surfaces `deprecated`-member usage so operators see debt before refusal teaches them - `inst-rs-removal-operand`
+1. [ ] - `p1` - One generic shape: `(tenant_id, set_kind, member_code, display_label?, state ∈ {active, deprecated, removed}, seeded_by?)`; mutations ride `GovernedLiveOp` (02 §3.1) **through `POST /bss-products/v1/recognized-sets/{setKind}/members` and `…/members/{memberCode}/transitions`, the grant chosen by `setKind` — the tier set spending `plan_tier × write` and the other three `recognized_set × write` (**P-D-90**)**, and every admitted mutation emits the set's event in the same transaction (§4); membership checks are the classification validators' single lookup — **the set is the `active` and `deprecated` rows; a `removed` row is a tombstone outside it** (**P-D-47**: a removal is a state flip, never a DELETE — the donor's taxonomy values are `Active|Retired` and its repository refuses to delete one for the reason that holds here, that a value a published row names has to keep existing; the PK therefore never frees, which makes C3 a schema property rather than a convention) - `inst-rs-shape`
+2. [ ] - `p1` - Removal operand is uniform **across this slice's four sets**: **non-terminal published heads** (**P-D-89** confirms the reading and settles that a `draft` head does not block) — a member is removable — flipped to `removed` — when no non-terminal published head references it; frozen versions are self-contained copies, neither blocking removal nor touched by it (M2 fix); the transitions are `active → deprecated → removed`, and `removed → active` (as `deprecated → active`) re-lists the same identity through the same `GovernedLiveOp`, which is safe because the identity never changed (**P-D-47**, the donor's re-add re-activating a retired value); the pre-publish lint (P-D-02: informational) surfaces `deprecated`-member usage so operators see debt before refusal teaches them - `inst-rs-removal-operand`
 3. [ ] - `p2` - Seeded members (`seeded_by` set) are deprecatable but not removable — the platform baseline survives tenant edits, mirroring slice 02's `WellKnownSeed` rule - `inst-rs-seeded`
 
 ### 3.2 Error taxonomy (slice-owned codes)
@@ -294,7 +294,10 @@ actor, the scenarios and the boundary.
   and the freeze inside the transaction, with no carrier named across that boundary. P-D-21 handed the
   choice here and **P-D-23** took it — the version row; the column, its digest membership and the
   carrier are what stay open. Owner: this slice with 01. *(Two lenses raised it independently.)*
-- **Is `plan_tier` a real database FK?** The column was described as an FK by code into the tier set
+- ~~**Is `plan_tier` a real database FK?**~~ **Answered (owner call, 2026-09-01 — P-D-91): no,
+  and not on any of the four code columns — a referencing side cannot supply `set_kind` as a
+  literal on either engine, and each column has a de-list code a raw driver violation would
+  pre-empt. The guarantee is the membership door's.** Original text: The column was described as an FK by code into the tier set
   against a three-column PK `(tenant_id, set_kind, member_code)`; a single code column cannot
   reference it without `set_kind` supplied as a literal, and a real constraint would refuse a removal
   that this slice's own operand admits (a `draft` head still referencing it), raising a raw violation
@@ -339,7 +342,11 @@ actor, the scenarios and the boundary.
   registers the gate condition whose ceremony 05 performs by acknowledging lint findings **by name**,
   and 06 §6 records that no instruction, store, RBAC pair, error code or probe in that slice delivers
   the report. Owner: the design-set owner with 06. *(Raised by the slice-03 first lens pass.)*
-- **Do 02 and 03 admit a `draft` head as a blocking reference, or not?** `inst-rs-removal-operand`
+- ~~**Do 02 and 03 admit a `draft` head as a blocking reference, or not?**~~
+  **Answered (owner call, 2026-09-01 — P-D-89): this slice's operand is the non-terminal
+  *published* head, uniform across its four sets, and a `draft` head does not block; a draft's
+  protection is the publish-time refusal `dod-unit-recognition` requires by name. 02 keeps its own
+  wider operand and both sides now record the divergence.** Original text: `inst-rs-removal-operand`
   says "non-terminal **published** heads", and this slice's own FK item turns on that reading ("a
   `draft` head still referencing it"); 02 `inst-ad-deprecate-then-remove` says "non-terminal head
   (`draft`/`published`/`deprecated` Product or SKU, active category)". The PRD is narrower than
