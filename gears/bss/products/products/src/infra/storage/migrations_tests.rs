@@ -4495,3 +4495,270 @@ mod catalog_version_guard_tests {
         }
     }
 }
+
+/// The request queue's shape CHECK and the freeze ledger's edge guard,
+/// probed like every suite above: each poison against its CHECK or trigger
+/// by name.
+///
+/// @cpt-dod:cpt-cf-bss-products-dod-request-queue:p1
+/// @cpt-dod:cpt-cf-bss-products-dod-freeze-ledger-tables:p1
+mod request_queue_and_freeze_ledger_guard_tests {
+    use sea_orm::ConnectionTrait;
+    use sea_orm_migration::MigratorTrait;
+
+    use super::Migrator;
+
+    async fn harness() -> sea_orm::DatabaseConnection {
+        let mut opts = sea_orm::ConnectOptions::new("sqlite::memory:");
+        opts.max_connections(1).min_connections(1);
+        let db = sea_orm::Database::connect(opts)
+            .await
+            .expect("connect in-memory sqlite");
+        Migrator::up(&db, None).await.expect("boot the chain");
+        db
+    }
+
+    async fn exec(db: &sea_orm::DatabaseConnection, sql: &str) -> Result<(), sea_orm::DbErr> {
+        db.execute_raw(sea_orm::Statement::from_string(
+            sea_orm::DatabaseBackend::Sqlite,
+            sql.to_owned(),
+        ))
+        .await
+        .map(|_| ())
+    }
+
+    async fn seed_version(db: &sea_orm::DatabaseConnection) {
+        exec(
+            db,
+            "INSERT INTO products_catalog_version \
+             (tenant_id, catalog_version_id, checksum, digest_version, published_at, \
+              participant_set_snapshot, freeze_state) \
+             VALUES ('t-a', 1, 'c1', 1, '2026-09-01T00:00:00Z', '[]', 'open')",
+        )
+        .await
+        .expect("seed a version row");
+    }
+
+    /// P-D-60's pairing, physical: a `pending` row carries no version, a
+    /// `coalesced` row always carries one, and each crossed pair is refused
+    /// by the shape CHECK's name.
+    #[tokio::test]
+    async fn the_request_shape_check_ties_coalesced_to_its_version() {
+        let db = harness().await;
+        seed_version(&db).await;
+
+        exec(
+            &db,
+            "INSERT INTO products_catalog_version_request \
+             (tenant_id, source, request_key, lane, requested_at, state, satisfied_by_version_id) \
+             VALUES ('t-a', 'plan-price', 'r-1', 'interactive', '2026-09-01T00:00:00Z', 'pending', NULL)",
+        )
+        .await
+        .expect("a pending row with no version is the admitted shape");
+
+        exec(
+            &db,
+            "UPDATE products_catalog_version_request \
+             SET state = 'coalesced', satisfied_by_version_id = 1 \
+             WHERE tenant_id = 't-a' AND source = 'plan-price' AND request_key = 'r-1'",
+        )
+        .await
+        .expect("the increment transaction's paired write is the admitted flip");
+
+        for (label, sql) in [
+            (
+                "pending with a version",
+                "INSERT INTO products_catalog_version_request \
+                 (tenant_id, source, request_key, lane, requested_at, state, satisfied_by_version_id) \
+                 VALUES ('t-a', 'plan-price', 'r-2', 'interactive', '2026-09-01T00:00:00Z', 'pending', 1)",
+            ),
+            (
+                "coalesced without one",
+                "INSERT INTO products_catalog_version_request \
+                 (tenant_id, source, request_key, lane, requested_at, state, satisfied_by_version_id) \
+                 VALUES ('t-a', 'plan-price', 'r-3', 'interactive', '2026-09-01T00:00:00Z', 'coalesced', NULL)",
+            ),
+        ] {
+            let err = exec(&db, sql).await.expect_err(label);
+            assert!(
+                err.to_string()
+                    .contains("chk_products_catalog_version_request_shape"),
+                "{label}: the refusal must come from the shape CHECK: {err}"
+            );
+        }
+    }
+
+    /// The struck value stays struck: `superseded` is refused by the state
+    /// roster's own CHECK, which is what makes P-D-60's strike physical.
+    #[tokio::test]
+    async fn the_request_state_roster_refuses_superseded() {
+        let db = harness().await;
+        let err = exec(
+            &db,
+            "INSERT INTO products_catalog_version_request \
+             (tenant_id, source, request_key, lane, requested_at, state, satisfied_by_version_id) \
+             VALUES ('t-a', 'plan-price', 'r-4', 'interactive', '2026-09-01T00:00:00Z', 'superseded', NULL)",
+        )
+        .await
+        .expect_err("the struck value must be refused");
+        assert!(
+            err.to_string()
+                .contains("chk_products_catalog_version_request_state"),
+            "the refusal must come from the state roster: {err}"
+        );
+    }
+
+    async fn seed_ack(db: &sea_orm::DatabaseConnection, participant: &str, state: &str) {
+        let extra = match state {
+            "acked" => ", acked_at = '2026-09-01T01:00:00Z'",
+            _ => "",
+        };
+        exec(
+            db,
+            &format!(
+                "INSERT INTO products_freeze_ack \
+                 (tenant_id, catalog_version_id, participant, state) \
+                 VALUES ('t-a', 1, '{participant}', 'pending')"
+            ),
+        )
+        .await
+        .expect("seed a pending registration (the increment transaction's write)");
+        if state != "pending" {
+            exec(
+                db,
+                &format!(
+                    "UPDATE products_freeze_ack SET state = '{state}'{extra} \
+                     WHERE tenant_id = 't-a' AND catalog_version_id = 1 \
+                     AND participant = '{participant}'"
+                ),
+            )
+            .await
+            .expect("walk the seeded row to the requested state");
+        }
+    }
+
+    /// The six admitted edges walk; `released` is terminal and the two
+    /// inadmissible walks are refused by the edge trigger's own message.
+    #[tokio::test]
+    async fn the_freeze_ack_edges_hold_and_released_is_terminal() {
+        let db = harness().await;
+        seed_version(&db).await;
+
+        // pending -> acked -> released: two admitted edges in sequence.
+        seed_ack(&db, "p-ack", "acked").await;
+        exec(
+            &db,
+            "UPDATE products_freeze_ack SET state = 'released' \
+             WHERE tenant_id = 't-a' AND catalog_version_id = 1 AND participant = 'p-ack'",
+        )
+        .await
+        .expect("acked -> released is the ordinary release");
+
+        let err = exec(
+            &db,
+            "UPDATE products_freeze_ack SET state = 'pending' \
+             WHERE tenant_id = 't-a' AND catalog_version_id = 1 AND participant = 'p-ack'",
+        )
+        .await
+        .expect_err("released is terminal");
+        assert!(
+            err.to_string().contains("six admitted edges"),
+            "the refusal must be the edge trigger's: {err}"
+        );
+
+        // acked -> not_frozen(forced) is not an edge: force-completion
+        // records missing participants only (P-D-67).
+        seed_ack(&db, "p-forced", "acked").await;
+        let err = exec(
+            &db,
+            "UPDATE products_freeze_ack \
+             SET state = 'not_frozen(forced)', forced_at = '2026-09-01T02:00:00Z', \
+                 ceremony_ref = 'c-1', released_at = '2026-09-01T02:00:00Z' \
+             WHERE tenant_id = 't-a' AND catalog_version_id = 1 AND participant = 'p-forced'",
+        )
+        .await
+        .expect_err("force-completion never overwrites an acked row");
+        assert!(
+            err.to_string().contains("six admitted edges"),
+            "the refusal must be the edge trigger's: {err}"
+        );
+    }
+
+    /// The ceremony's stamp is write-once (P-D-67): a recovered
+    /// participant's ack keeps the stale stamp, and any attempt to move a
+    /// non-NULL `released_at` is refused by the write-once trigger's name.
+    #[tokio::test]
+    async fn released_at_is_write_once_and_survives_the_recovered_ack() {
+        let db = harness().await;
+        seed_version(&db).await;
+        seed_ack(&db, "p-late", "pending").await;
+
+        exec(
+            &db,
+            "UPDATE products_freeze_ack \
+             SET state = 'not_frozen(forced)', forced_at = '2026-09-01T02:00:00Z', \
+                 ceremony_ref = 'c-1', released_at = '2026-09-01T02:00:00Z' \
+             WHERE tenant_id = 't-a' AND catalog_version_id = 1 AND participant = 'p-late'",
+        )
+        .await
+        .expect("the ceremony records the missing participant and stamps released_at");
+
+        exec(
+            &db,
+            "UPDATE products_freeze_ack \
+             SET state = 'acked', acked_at = '2026-09-01T03:00:00Z', \
+                 forced_at = NULL, ceremony_ref = NULL \
+             WHERE tenant_id = 't-a' AND catalog_version_id = 1 AND participant = 'p-late'",
+        )
+        .await
+        .expect("a recovered participant's ack is an admitted edge, the stamp untouched");
+
+        let err = exec(
+            &db,
+            "UPDATE products_freeze_ack SET released_at = NULL \
+             WHERE tenant_id = 't-a' AND catalog_version_id = 1 AND participant = 'p-late'",
+        )
+        .await
+        .expect_err("the stale stamp is never cleared");
+        assert!(
+            err.to_string().contains("released_at is write-once"),
+            "the refusal must be the write-once trigger's: {err}"
+        );
+    }
+
+    /// The forced shape CHECK: `not_frozen(forced)` demands all three of its
+    /// companions, and any other state refuses the ceremony columns.
+    #[tokio::test]
+    async fn the_forced_shape_check_binds_the_ceremony_columns_to_the_state() {
+        let db = harness().await;
+        seed_version(&db).await;
+
+        let err = exec(
+            &db,
+            "INSERT INTO products_freeze_ack \
+             (tenant_id, catalog_version_id, participant, state, forced_at) \
+             VALUES ('t-a', 1, 'p-shape', 'pending', '2026-09-01T02:00:00Z')",
+        )
+        .await
+        .expect_err("a pending row must not carry ceremony columns");
+        assert!(
+            err.to_string()
+                .contains("chk_products_freeze_ack_forced_shape"),
+            "the refusal must come from the forced-shape CHECK: {err}"
+        );
+
+        let err = exec(
+            &db,
+            "INSERT INTO products_freeze_ack \
+             (tenant_id, catalog_version_id, participant, state, forced_at, ceremony_ref) \
+             VALUES ('t-a', 1, 'p-shape', 'not_frozen(forced)', '2026-09-01T02:00:00Z', 'c-1')",
+        )
+        .await
+        .expect_err("the forced state without its released_at stamp is refused");
+        assert!(
+            err.to_string()
+                .contains("chk_products_freeze_ack_forced_shape"),
+            "the refusal must come from the forced-shape CHECK: {err}"
+        );
+    }
+}

@@ -753,7 +753,7 @@ triggers *by reading*. After this edit the Postgres arm's only execution remains
 
 ### The request queue
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-request-queue`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-request-queue`
 
 The system **MUST** create `products_catalog_version_request` carrying `tenant_id`, `source`,
 `lane ∈ {interactive, bulk}`, `request_key`, `operation_key` (**nullable** — the bulk batch
@@ -792,7 +792,7 @@ UNIQUE above.
 
 ### The freeze ledger and the participant set
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-freeze-ledger-tables`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-freeze-ledger-tables`
 
 The system **MUST** create `products_freeze_participant`, the governed **live** registered set;
 and `products_freeze_ack`, keyed `(tenant_id, catalog_version_id, participant)` →
