@@ -132,6 +132,29 @@ impl LifecycleRefusal {
             detail: "mustMigrateBy is refused while EOL is disabled".to_owned(),
         }
     }
+
+    /// Raise the matching [`DomainError`] arm. The six lifecycle arms are
+    /// constructed here so a door never matches the wire code as a string.
+    #[must_use]
+    pub fn into_domain_error(self) -> crate::domain::error::DomainError {
+        use crate::domain::error::DomainError;
+        match self.code {
+            Self::PARENT_NOT_PUBLISHED => DomainError::ParentNotPublished(self.detail),
+            Self::RETIREMENT_PENDING => DomainError::RetirementPending(self.detail),
+            Self::SCHEDULE_STALE_APPROVAL => DomainError::ScheduleStaleApproval(self.detail),
+            Self::REPLACED_BY_NOT_PUBLISHED => DomainError::ReplacedByNotPublished(self.detail),
+            Self::RETIREMENT_LEAD_TIME => DomainError::RetirementLeadTime(self.detail),
+            Self::CASCADE_CONFIRMATION_REQUIRED => {
+                DomainError::CascadeConfirmationRequired(self.detail)
+            }
+            Self::EOL_DISABLED => DomainError::EolDisabled(self.detail),
+            other => {
+                let mut report = crate::domain::validation::ValidationReport::new();
+                report.violate(other, "code", self.detail);
+                DomainError::Validation(report)
+            }
+        }
+    }
 }
 
 /// The prefetch fact the publish-ordering rule reads (**P-D-97** registered

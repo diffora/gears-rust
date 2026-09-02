@@ -443,8 +443,9 @@ use bss_products_sdk::models::{EntityKind as CatalogEntityKind, LifecycleState};
 
 use crate::api::rest::preconditions;
 use crate::api::rest::skus::{
-    classify_sku_insert_conflict, insert_sku_with_event, parent_scope_pair,
-    scope_input_from_payload, scope_not_contained_domain_err,
+    CancelRetirementRequest, cancel_payload_digest, classify_sku_insert_conflict,
+    confirmation_must_hold, insert_sku_with_event, interim_retirement_lead, no_live_retire_intent,
+    parent_scope_pair, scope_input_from_payload, scope_not_contained_domain_err,
 };
 use crate::api::rest::{
     ApiState, CREATE_RESPONSE_STATUS, ClaimVerdict, CompositeClaimVerdict, CreateOutcome,
@@ -454,6 +455,9 @@ use crate::api::rest::{
 };
 use crate::domain::bucket;
 use crate::domain::canonical;
+use crate::domain::cascade::{
+    CascadePlan, arm_for, parent_flip_clears, require_cascade_confirmation,
+};
 use crate::domain::concurrency::InternalRevision;
 use crate::domain::containment::ResolvedScope;
 use crate::domain::deprecation::{ChildDisposition, Provenance, disposition_for, stamp_for};
@@ -466,19 +470,24 @@ use crate::domain::governance::{
     NoMaterialityPolicyGate,
 };
 use crate::domain::idempotency;
+use crate::domain::live_op::GovernedLiveOp;
 use crate::domain::name;
+use crate::domain::retirement::{effective_at, eol_lockout};
 use crate::domain::rules::{
     CreateEntityCandidate, NameShapeRule, PrimaryCategoryRequired, PublishedTransitionSubject,
 };
 use crate::domain::transition::{
     self, ApprovalInvalidation, ApprovalInvalidationHook as _, NoApprovalStoreHook,
 };
+use crate::domain::undeprecation::{
+    BlockingIntent, children_the_reversal_touches, refuse_if_live_retire_intents,
+};
 use crate::domain::validation::{ValidationPipeline, ValidationReport};
 use crate::infra::events;
 use crate::infra::storage::RepoError;
 use crate::infra::storage::repo::{
-    self, HeadWrite, NewEntityVersion, NewProduct, NewSku, NullableText, ProductRecord,
-    RefusalSubject, SavedName, SkuRecord, VersionedEntityKind,
+    self, HeadWrite, NewEntityVersion, NewProduct, NewScheduledTransition, NewSku, NullableText,
+    ProductRecord, RefusalSubject, SavedName, SkuRecord, VersionedEntityKind,
 };
 
 /// `OpenAPI` tag for the Product surface's operations.
@@ -850,6 +859,9 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
         .register(router, openapi);
 
     let router = register_deprecate_door(router, openapi);
+    let router = register_undeprecate_door(router, openapi);
+    let router = register_retire_door(router, openapi);
+    let router = register_cancel_retire_door(router, openapi);
 
     router.layer(Extension(state))
 }
@@ -893,6 +905,115 @@ fn register_deprecate_door(router: Router, openapi: &dyn OpenApiRegistry) -> Rou
             StatusCode::OK,
             "The deprecated Product head, plus the cascade's three listings.",
         )
+        .error_400(openapi)
+        .error_401(openapi)
+        .error_403(openapi)
+        .error_404(openapi)
+        .error_409(openapi)
+        .error_500(openapi)
+        .error_503(openapi)
+        .register(router, openapi)
+}
+
+/// Register the un-deprecate door on `router`.
+fn register_undeprecate_door(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
+    OperationBuilder::post("/bss-products/v1/products/{id}/undeprecate")
+        .operation_id("bss_products.undeprecate_product")
+        .summary("Un-deprecate a Product and reverse cascaded child deprecations")
+        .description(
+            "Moves a `deprecated` Product to `published` and, in the same transaction, \
+             reverses only those child SKUs whose `deprecation_provenance` is `cascaded`. \
+             A child's `direct` deprecation survives. Empty body; the two-person ceremony \
+             is the governance gate (`Gate` mode), not a payload. Refused `RETIREMENT_PENDING` \
+             while a live retire intent exists on the Product or on any child this reversal \
+             would revive. Gates on `product x write` and, for the child writes, `sku x write`. \
+             Requires `If-Match`. Accepts an optional `Idempotency-Key`.",
+        )
+        .tag(TAG)
+        .authenticated()
+        .no_license_required()
+        .path_param("id", "The Product to un-deprecate.")
+        .handler(undeprecate_product)
+        .json_response_with_schema::<ProductView>(
+            openapi,
+            StatusCode::OK,
+            "The published Product head.",
+        )
+        .error_400(openapi)
+        .error_401(openapi)
+        .error_403(openapi)
+        .error_404(openapi)
+        .error_409(openapi)
+        .error_500(openapi)
+        .error_503(openapi)
+        .register(router, openapi)
+}
+
+/// `POST …/products/{id}/retire` request — §3.3. Same fields as the SKU
+/// door plus `cascadeConfirmed`. `replacedBy` has no Product column and is
+/// accepted so the wire shape matches; it is not persisted.
+#[derive(Debug, Clone)]
+#[toolkit_macros::api_dto(request)]
+pub struct RetireProductRequest {
+    /// Operator reason. 02's PII hook is not in this crate.
+    pub reason: String,
+    /// Optional successor. No Product column; accepted, not written.
+    pub replaced_by: Option<Uuid>,
+    /// Optional operator instant. Absent: now + interim lead (30 days).
+    pub effective_at: Option<DateTime<Utc>>,
+    /// Accepted so a supplied value raises `EOL_DISABLED`.
+    pub must_migrate_by: Option<DateTime<Utc>>,
+    /// Narrowest confirmation that lets the door exist.
+    pub confirmed: bool,
+    /// Absent or false over live children is `CASCADE_CONFIRMATION_REQUIRED`.
+    pub cascade_confirmed: Option<bool>,
+}
+
+fn register_retire_door(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
+    OperationBuilder::post("/bss-products/v1/products/{id}/retire")
+        .operation_id("bss_products.retire_product")
+        .summary("Initiate Product retirement")
+        .description(
+            "Forces the Product `deprecated` if it is `published`, records a retire \
+             `ScheduledTransition`, and applies the cascade plan in the same transaction. \
+             `confirmed` is required. `cascadeConfirmed` is required when live children \
+             exist. `mustMigrateBy` is refused `EOL_DISABLED`. Gates on `product x write` \
+             and, for child writes, `sku x write`. Requires `If-Match`.",
+        )
+        .tag(TAG)
+        .authenticated()
+        .no_license_required()
+        .path_param("id", "The Product to retire.")
+        .json_request::<RetireProductRequest>(openapi, "Retirement initiation.")
+        .handler(retire_product)
+        .json_response_with_schema::<ProductView>(openapi, StatusCode::OK, "The Product head.")
+        .error_400(openapi)
+        .error_401(openapi)
+        .error_403(openapi)
+        .error_404(openapi)
+        .error_409(openapi)
+        .error_500(openapi)
+        .error_503(openapi)
+        .register(router, openapi)
+}
+
+fn register_cancel_retire_door(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
+    OperationBuilder::post("/bss-products/v1/products/{id}/retire/cancel")
+        .operation_id("bss_products.cancel_product_retirement")
+        .summary("Cancel a live Product retirement")
+        .description(
+            "Accepts 02's `GovernedLiveOp` envelope. The write lands at approval. \
+             Success is 202 with no body. Supersedes the live retire intent on the \
+             Product and every child leg, and clears `replaced_by_sku_id` on those \
+             legs. Gates on `product x write`. Requires `If-Match`.",
+        )
+        .tag(TAG)
+        .authenticated()
+        .no_license_required()
+        .path_param("id", "The Product whose retirement to cancel.")
+        .json_request::<CancelRetirementRequest>(openapi, "The live-op envelope.")
+        .handler(cancel_product_retirement)
+        .no_content_response(StatusCode::ACCEPTED, "Accepted; no body.")
         .error_400(openapi)
         .error_401(openapi)
         .error_403(openapi)
@@ -1670,6 +1791,18 @@ fn deprecate_endpoint(product_id: Uuid) -> String {
     format!("/bss-products/v1/products/{product_id}/deprecate")
 }
 
+fn undeprecate_endpoint(product_id: Uuid) -> String {
+    format!("/bss-products/v1/products/{product_id}/undeprecate")
+}
+
+fn retire_endpoint(product_id: Uuid) -> String {
+    format!("/bss-products/v1/products/{product_id}/retire")
+}
+
+fn cancel_retire_endpoint(product_id: Uuid) -> String {
+    format!("/bss-products/v1/products/{product_id}/retire/cancel")
+}
+
 /// The idempotency digest of a **bodiless** head act (`crate::domain::
 /// idempotency`, **P-D-34**).
 ///
@@ -2374,6 +2507,9 @@ enum Announcement {
     /// since a save lands on a `draft`, `published` or `deprecated` head
     /// alike"*, and that field is already in the core.
     HeadSaved,
+    /// `ProductUndeprecated` — the bare core. Un-deprecation writes no
+    /// version row.
+    Undeprecated,
 }
 
 impl Announcement {
@@ -2388,6 +2524,7 @@ impl Announcement {
             Self::Published => events::PRODUCT_PUBLISHED_PAYLOAD_TYPE,
             Self::Discarded => events::PRODUCT_DISCARDED_PAYLOAD_TYPE,
             Self::HeadSaved => events::PRODUCT_HEAD_SAVED_PAYLOAD_TYPE,
+            Self::Undeprecated => events::PRODUCT_UNDEPRECATED_PAYLOAD_TYPE,
         }
     }
 }
@@ -2442,7 +2579,7 @@ async fn announce_and_answer(
             )
             .await
         }
-        Announcement::Discarded | Announcement::HeadSaved => {
+        Announcement::Discarded | Announcement::HeadSaved | Announcement::Undeprecated => {
             events::enqueue(
                 outbox,
                 runner,
@@ -2679,6 +2816,28 @@ async fn answer_head_act(
         // and the act it reproduces was audited — or, being a success,
         // deliberately not (P-D-21) — when it originally ran.
         Ok(HeadActOutcome::Replay { status, body }) => Ok(replay_response(status, body)),
+        Err(HeadActError::Refused(domain_err)) => {
+            Err(audit_and_refuse(state, opened, audit_action, domain_err).await)
+        }
+        Err(HeadActError::Vanished) => Err(product_not_found(opened.record.product_id)),
+        Err(HeadActError::Db(db_error)) => Err(repo_error_to_canonical(&RepoError::Db(
+            db_error.to_string(),
+        ))),
+    }
+}
+
+/// Cancel answers **202** with no body. [`answer_head_act`] always
+/// answers 200 + JSON for [`HeadActOutcome::Applied`].
+async fn answer_cancel_act(
+    state: &ApiState,
+    opened: &OpenedHeadDoor,
+    audit_action: &str,
+    result: Result<HeadActOutcome, HeadActError>,
+) -> Result<Response, CanonicalError> {
+    match result {
+        Ok(HeadActOutcome::Applied { .. } | HeadActOutcome::Replay { .. }) => {
+            Ok(StatusCode::ACCEPTED.into_response())
+        }
         Err(HeadActError::Refused(domain_err)) => {
             Err(audit_and_refuse(state, opened, audit_action, domain_err).await)
         }
@@ -3337,6 +3496,923 @@ async fn classify_unmatched_deprecate(
     }
 }
 
+/// `POST /bss-products/v1/products/{id}/undeprecate` — empty body,
+/// `inst-lc-undeprecate` / `inst-lc-provenance-reversal`.
+///
+/// Gate call (report this exactly): `gate.evaluate(
+/// GateSubject::entity_publish(EntityRef { tenant_id, entity_kind: Product,
+/// entity_id }), InternalRevision::new(expected), GateMode::Gate )` after
+/// the edge and the live-intent guard, before the write.
+/// `NoMaterialityPolicyGate` authorizes under `Gate` and cannot produce
+/// the two-person refusal.
+///
+/// # Errors
+///
+/// Every refusal the door raises, each audited; the bare `404`; the `500` a
+/// storage or gate-host failure raises.
+async fn undeprecate_product(
+    Extension(state): Extension<Arc<ApiState>>,
+    Extension(enforcer): Extension<authz_resolver_sdk::PolicyEnforcer>,
+    extension_ctx: Option<Extension<SecurityContext>>,
+    Path(product_id): Path<Uuid>,
+    headers: HeaderMap,
+) -> Result<Response, CanonicalError> {
+    let ctx = require_authenticated(extension_ctx)?;
+    undeprecate_product_under_gate(
+        &state,
+        &enforcer,
+        &ctx,
+        product_id,
+        &headers,
+        &(Arc::new(NoMaterialityPolicyGate) as Arc<dyn GovernanceGate + Send + Sync>),
+    )
+    .await
+}
+
+/// The un-deprecate door with its governance host explicit.
+///
+/// # Errors
+///
+/// As [`undeprecate_product`].
+async fn undeprecate_product_under_gate(
+    state: &ApiState,
+    enforcer: &authz_resolver_sdk::PolicyEnforcer,
+    ctx: &SecurityContext,
+    product_id: Uuid,
+    headers: &HeaderMap,
+    gate: &Arc<dyn GovernanceGate + Send + Sync>,
+) -> Result<Response, CanonicalError> {
+    let act = HeadAct {
+        authz_action: crate::authz::actions::WRITE,
+        audit_action: UNDEPRECATE_AUDIT_ACTION,
+        endpoint: undeprecate_endpoint(product_id),
+        payload_digest: bodiless_payload_digest(),
+    };
+    let opened = open_head_door(state, enforcer, ctx, product_id, headers, &act).await?;
+    let sku_scope = clone_scope_for(
+        state,
+        enforcer,
+        ctx,
+        opened.tenant_id,
+        opened.actor_ref,
+        product_id,
+        &crate::authz::resource_types::SKU,
+    )
+    .await?;
+    let result = undeprecate_in_one_transaction(state, &opened, &sku_scope, gate).await;
+    answer_head_act(state, &opened, UNDEPRECATE_AUDIT_ACTION, result).await
+}
+
+async fn undeprecate_in_one_transaction(
+    state: &ApiState,
+    opened: &OpenedHeadDoor,
+    sku_scope: &AccessScope,
+    gate: &Arc<dyn GovernanceGate + Send + Sync>,
+) -> Result<HeadActOutcome, HeadActError> {
+    let outbox = state.sink.clone();
+    let gate = Arc::clone(gate);
+    let inputs = opened.act_inputs();
+    let sku_scope = sku_scope.clone();
+    state
+        .db
+        .db()
+        .transaction_with_retry::<HeadActOutcome, HeadActError, _, _>(
+            TxConfig::default(),
+            head_act_contention_db_err,
+            move |tx| {
+                let outbox = outbox.clone();
+                let gate = Arc::clone(&gate);
+                let inputs = inputs.clone();
+                let sku_scope = sku_scope.clone();
+                Box::pin(async move {
+                    run_undeprecate(tx, &inputs, &sku_scope, gate.as_ref(), &outbox).await
+                })
+            },
+        )
+        .await
+}
+
+async fn run_undeprecate(
+    runner: &(impl DBRunner + Sync),
+    inputs: &HeadActInputs,
+    sku_scope: &AccessScope,
+    gate: &(dyn GovernanceGate + Send + Sync),
+    outbox: &crate::infra::broker::EventSink,
+) -> Result<HeadActOutcome, HeadActError> {
+    if let Some(replay) = claim_for_head_act(
+        runner,
+        &inputs.scope,
+        inputs.tenant_id,
+        inputs.claim.as_ref(),
+    )
+    .await?
+    {
+        return Ok(replay);
+    }
+
+    let head = repo::find_product(runner, &inputs.scope, inputs.tenant_id, inputs.product_id)
+        .await
+        .map_err(|e| HeadActError::from_repo(&e))?
+        .ok_or(HeadActError::Vanished)?;
+
+    if head.internal_revision != inputs.expected {
+        return Err(HeadActError::Refused(DomainError::StaleRevision {
+            expected: inputs.expected,
+            found: head.internal_revision,
+        }));
+    }
+
+    let decision = transition::guard(head.lifecycle_state, LifecycleState::Published)
+        .map_err(HeadActError::Refused)?;
+
+    let children =
+        repo::find_skus_of_product(runner, sku_scope, inputs.tenant_id, inputs.product_id)
+            .await
+            .map_err(|e| HeadActError::from_repo(&e))?;
+    let stored: Vec<(Uuid, Option<Provenance>)> = children
+        .iter()
+        .map(|child| (child.sku_id, child.deprecation_provenance))
+        .collect();
+    let revived = children_the_reversal_touches(&stored);
+
+    let mut intents = Vec::new();
+    collect_live_retire_intents(
+        runner,
+        &inputs.scope,
+        inputs.tenant_id,
+        inputs.product_id,
+        &mut intents,
+    )
+    .await?;
+    for child_id in &revived {
+        collect_live_retire_intents(runner, sku_scope, inputs.tenant_id, *child_id, &mut intents)
+            .await?;
+    }
+    refuse_if_live_retire_intents(inputs.product_id, &revived, &intents)
+        .map_err(|refusal| HeadActError::Refused(refusal.into_domain_error()))?;
+
+    let verdict = gate
+        .evaluate(
+            GateSubject::entity_publish(EntityRef {
+                tenant_id: inputs.tenant_id,
+                entity_kind: CatalogEntityKind::Product,
+                entity_id: inputs.product_id,
+            }),
+            InternalRevision::new(inputs.expected),
+            GateMode::Gate,
+        )
+        .map_err(|e| {
+            HeadActError::Db(DbError::Sea(DbErr::Custom(format!(
+                "bss-products: the governance gate host failed: {e}"
+            ))))
+        })?;
+    verdict
+        .into_authorization()
+        .map_err(HeadActError::Refused)?;
+
+    let write = repo::undeprecate_product_head(
+        runner,
+        &inputs.scope,
+        inputs.tenant_id,
+        inputs.product_id,
+        inputs.expected,
+        inputs.now,
+    )
+    .await
+    .map_err(|e| HeadActError::from_repo(&e))?;
+    if write == HeadWrite::Unmatched {
+        return Err(classify_unmatched_undeprecate(runner, inputs).await);
+    }
+
+    reverse_cascaded_children(runner, outbox, inputs, sku_scope, &children, &revived).await?;
+
+    fire_invalidation_hook(runner, inputs, transition::invalidation_for(decision)).await?;
+
+    announce_and_answer(runner, outbox, inputs, Announcement::Undeprecated).await
+}
+
+async fn collect_live_retire_intents(
+    runner: &(impl DBRunner + Sync),
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    entity_id: Uuid,
+    into: &mut Vec<BlockingIntent>,
+) -> Result<(), HeadActError> {
+    let rows = repo::find_live_retire_intents(runner, scope, tenant_id, entity_id)
+        .await
+        .map_err(|e| HeadActError::from_repo(&e))?;
+    into.extend(rows.into_iter().map(|row| BlockingIntent {
+        entity_id: row.entity_id,
+    }));
+    Ok(())
+}
+
+async fn reverse_cascaded_children(
+    runner: &(impl DBRunner + Sync),
+    outbox: &crate::infra::broker::EventSink,
+    inputs: &HeadActInputs,
+    sku_scope: &AccessScope,
+    children: &[SkuRecord],
+    revived: &[Uuid],
+) -> Result<(), HeadActError> {
+    for child in children {
+        if !revived.contains(&child.sku_id) {
+            continue;
+        }
+        let write = repo::undeprecate_sku_head(
+            runner,
+            sku_scope,
+            inputs.tenant_id,
+            child.sku_id,
+            child.internal_revision,
+            Some(Provenance::Cascaded),
+            inputs.now,
+        )
+        .await
+        .map_err(|e| HeadActError::from_repo(&e))?;
+        if write == HeadWrite::Unmatched {
+            return Err(HeadActError::Refused(DomainError::StaleRevision {
+                expected: child.internal_revision,
+                found: child.internal_revision,
+            }));
+        }
+        let after = repo::find_sku(runner, sku_scope, inputs.tenant_id, child.sku_id)
+            .await
+            .map_err(|e| HeadActError::from_repo(&e))?
+            .ok_or(HeadActError::Vanished)?;
+        let core = events::EventBodyCore {
+            tenant_id: after.tenant_id,
+            entity_kind: events::EntityKind::Sku.as_str(),
+            entity_id: after.sku_id,
+            internal_revision: after.internal_revision,
+            lifecycle_state: after.lifecycle_state.as_str(),
+        };
+        events::enqueue(
+            outbox,
+            runner,
+            after.sku_id,
+            events::SKU_UNDEPRECATED_PAYLOAD_TYPE,
+            &core,
+            inputs.actor_ref,
+        )
+        .await
+        .map_err(|e| HeadActError::from_storage(&e))?;
+    }
+    Ok(())
+}
+
+async fn classify_unmatched_undeprecate(
+    runner: &impl DBRunner,
+    inputs: &HeadActInputs,
+) -> HeadActError {
+    match repo::find_product(runner, &inputs.scope, inputs.tenant_id, inputs.product_id).await {
+        Ok(Some(head)) if head.internal_revision != inputs.expected => {
+            HeadActError::Refused(DomainError::StaleRevision {
+                expected: inputs.expected,
+                found: head.internal_revision,
+            })
+        }
+        Ok(Some(head)) if head.lifecycle_state.is_terminal() => {
+            HeadActError::Refused(DomainError::EntityTerminal(format!(
+                "no head write is admitted on a {} entity",
+                head.lifecycle_state.as_str()
+            )))
+        }
+        Ok(Some(head)) => HeadActError::Refused(DomainError::IllegalTransition {
+            from: head.lifecycle_state.as_str().to_owned(),
+            to: LifecycleState::Published.as_str().to_owned(),
+        }),
+        Ok(None) => HeadActError::Vanished,
+        Err(error) => HeadActError::from_repo(&error),
+    }
+}
+
+fn retire_product_payload_digest(request: &RetireProductRequest) -> Vec<u8> {
+    let mut map = JsonMap::new();
+    map.insert(
+        "reason".to_owned(),
+        JsonValue::String(request.reason.clone()),
+    );
+    map.insert("confirmed".to_owned(), JsonValue::Bool(request.confirmed));
+    if let Some(id) = request.replaced_by {
+        map.insert("replacedBy".to_owned(), JsonValue::String(id.to_string()));
+    }
+    if let Some(at) = request.effective_at {
+        map.insert("effectiveAt".to_owned(), JsonValue::String(at.to_rfc3339()));
+    }
+    if let Some(at) = request.must_migrate_by {
+        map.insert(
+            "mustMigrateBy".to_owned(),
+            JsonValue::String(at.to_rfc3339()),
+        );
+    }
+    if let Some(confirmed) = request.cascade_confirmed {
+        map.insert("cascadeConfirmed".to_owned(), JsonValue::Bool(confirmed));
+    }
+    idempotency::payload_digest(&JsonValue::Object(map))
+}
+
+/// `POST /bss-products/v1/products/{id}/retire` — §3.3 body.
+///
+/// Gate call: `gate.evaluate(GateSubject::entity_publish(EntityRef {
+/// tenant_id, entity_kind: Product, entity_id }), InternalRevision::new(expected),
+/// GateMode::Gate)` after the edge and domain refusals, before the write.
+///
+/// 07's reference predicate is not a live operand; children are classified
+/// with `referenced = false`. `enqueue_retired` is absent; the row persists
+/// without a broker event.
+///
+/// # Errors
+///
+/// See [`retire_product_under_gate`].
+async fn retire_product(
+    Extension(state): Extension<Arc<ApiState>>,
+    Extension(enforcer): Extension<authz_resolver_sdk::PolicyEnforcer>,
+    extension_ctx: Option<Extension<SecurityContext>>,
+    Path(product_id): Path<Uuid>,
+    headers: HeaderMap,
+    Json(request): Json<RetireProductRequest>,
+) -> Result<Response, CanonicalError> {
+    let ctx = require_authenticated(extension_ctx)?;
+    retire_product_under_gate(
+        &state,
+        &enforcer,
+        &ctx,
+        product_id,
+        &headers,
+        request,
+        &(Arc::new(NoMaterialityPolicyGate) as Arc<dyn GovernanceGate + Send + Sync>),
+    )
+    .await
+}
+
+/// # Errors
+///
+/// As [`retire_product`].
+async fn retire_product_under_gate(
+    state: &ApiState,
+    enforcer: &authz_resolver_sdk::PolicyEnforcer,
+    ctx: &SecurityContext,
+    product_id: Uuid,
+    headers: &HeaderMap,
+    request: RetireProductRequest,
+    gate: &Arc<dyn GovernanceGate + Send + Sync>,
+) -> Result<Response, CanonicalError> {
+    let act = HeadAct {
+        authz_action: crate::authz::actions::WRITE,
+        audit_action: RETIRE_AUDIT_ACTION,
+        endpoint: retire_endpoint(product_id),
+        payload_digest: retire_product_payload_digest(&request),
+    };
+    let opened = open_head_door(state, enforcer, ctx, product_id, headers, &act).await?;
+    let sku_scope = clone_scope_for(
+        state,
+        enforcer,
+        ctx,
+        opened.tenant_id,
+        opened.actor_ref,
+        product_id,
+        &crate::authz::resource_types::SKU,
+    )
+    .await?;
+    let result = retire_in_one_transaction(state, &opened, &sku_scope, gate, request).await;
+    answer_head_act(state, &opened, RETIRE_AUDIT_ACTION, result).await
+}
+
+async fn retire_in_one_transaction(
+    state: &ApiState,
+    opened: &OpenedHeadDoor,
+    sku_scope: &AccessScope,
+    gate: &Arc<dyn GovernanceGate + Send + Sync>,
+    request: RetireProductRequest,
+) -> Result<HeadActOutcome, HeadActError> {
+    let gate = Arc::clone(gate);
+    let inputs = opened.act_inputs();
+    let sku_scope = sku_scope.clone();
+    state
+        .db
+        .db()
+        .transaction_with_retry::<HeadActOutcome, HeadActError, _, _>(
+            TxConfig::default(),
+            head_act_contention_db_err,
+            move |tx| {
+                let gate = Arc::clone(&gate);
+                let inputs = inputs.clone();
+                let sku_scope = sku_scope.clone();
+                let request = request.clone();
+                Box::pin(async move {
+                    run_retire(tx, &inputs, &sku_scope, gate.as_ref(), &request).await
+                })
+            },
+        )
+        .await
+}
+
+async fn run_retire(
+    runner: &(impl DBRunner + Sync),
+    inputs: &HeadActInputs,
+    sku_scope: &AccessScope,
+    gate: &(dyn GovernanceGate + Send + Sync),
+    request: &RetireProductRequest,
+) -> Result<HeadActOutcome, HeadActError> {
+    if let Some(replay) = claim_for_head_act(
+        runner,
+        &inputs.scope,
+        inputs.tenant_id,
+        inputs.claim.as_ref(),
+    )
+    .await?
+    {
+        return Ok(replay);
+    }
+
+    let head = repo::find_product(runner, &inputs.scope, inputs.tenant_id, inputs.product_id)
+        .await
+        .map_err(|e| HeadActError::from_repo(&e))?
+        .ok_or(HeadActError::Vanished)?;
+
+    if head.internal_revision != inputs.expected {
+        return Err(HeadActError::Refused(DomainError::StaleRevision {
+            expected: inputs.expected,
+            found: head.internal_revision,
+        }));
+    }
+
+    confirmation_must_hold(request.confirmed).map_err(HeadActError::Refused)?;
+
+    eol_lockout(false, request.must_migrate_by.is_some())
+        .map_err(|refusal| HeadActError::Refused(refusal.into_domain_error()))?;
+
+    let at = effective_at(inputs.now, interim_retirement_lead(), request.effective_at)
+        .map_err(|refusal| HeadActError::Refused(refusal.into_domain_error()))?;
+
+    let children =
+        repo::find_skus_of_product(runner, sku_scope, inputs.tenant_id, inputs.product_id)
+            .await
+            .map_err(|e| HeadActError::from_repo(&e))?;
+
+    let live_children = children
+        .iter()
+        .filter(|child| {
+            !matches!(
+                child.lifecycle_state,
+                LifecycleState::Retired | LifecycleState::Discarded
+            )
+        })
+        .count();
+    require_cascade_confirmation(request.cascade_confirmed.unwrap_or(false), live_children)
+        .map_err(|refusal| HeadActError::Refused(refusal.into_domain_error()))?;
+
+    // 07's predicate is not a live operand. `referenced = false` classifies
+    // published/deprecated children as Retire and drafts as AutoDiscard.
+    let operands: Vec<(LifecycleState, bool)> = children
+        .iter()
+        .map(|child| (child.lifecycle_state, false))
+        .collect();
+    let plan = CascadePlan::compute(&operands);
+    let child_states: Vec<LifecycleState> =
+        children.iter().map(|child| child.lifecycle_state).collect();
+    let _cascade_posture = (plan.defers_parent_flip(), parent_flip_clears(&child_states));
+
+    let mut intents = Vec::new();
+    collect_live_retire_intents(
+        runner,
+        &inputs.scope,
+        inputs.tenant_id,
+        inputs.product_id,
+        &mut intents,
+    )
+    .await?;
+    refuse_if_live_retire_intents(inputs.product_id, &[], &intents)
+        .map_err(|refusal| HeadActError::Refused(refusal.into_domain_error()))?;
+
+    let decision = transition::guard(head.lifecycle_state, LifecycleState::Deprecated)
+        .map_err(HeadActError::Refused)?;
+    let stamp =
+        stamp_for(head.lifecycle_state, Provenance::Direct).map_err(HeadActError::Refused)?;
+
+    let verdict = gate
+        .evaluate(
+            GateSubject::entity_publish(EntityRef {
+                tenant_id: inputs.tenant_id,
+                entity_kind: CatalogEntityKind::Product,
+                entity_id: inputs.product_id,
+            }),
+            InternalRevision::new(inputs.expected),
+            GateMode::Gate,
+        )
+        .map_err(|e| {
+            HeadActError::Db(DbError::Sea(DbErr::Custom(format!(
+                "bss-products: the governance gate host failed: {e}"
+            ))))
+        })?;
+    verdict
+        .into_authorization()
+        .map_err(HeadActError::Refused)?;
+
+    apply_cascade_plan(runner, inputs, sku_scope, &children, &request.reason, at).await?;
+
+    if let Some(provenance) = stamp {
+        let write = repo::deprecate_product_head(
+            runner,
+            &inputs.scope,
+            inputs.tenant_id,
+            inputs.product_id,
+            inputs.expected,
+            provenance,
+            inputs.now,
+        )
+        .await
+        .map_err(|e| HeadActError::from_repo(&e))?;
+        if write == HeadWrite::Unmatched {
+            return Err(classify_unmatched_deprecate(runner, inputs).await);
+        }
+    }
+
+    repo::insert_scheduled_transition(
+        runner,
+        &inputs.scope,
+        &NewScheduledTransition {
+            transition_id: Uuid::now_v7(),
+            tenant_id: inputs.tenant_id,
+            entity_kind: "product".to_owned(),
+            entity_id: inputs.product_id,
+            kind: "retire".to_owned(),
+            at,
+            approval_ref: Uuid::now_v7(),
+            retirement_reason: Some(request.reason.clone()),
+            now: inputs.now,
+        },
+    )
+    .await
+    .map_err(|e| HeadActError::from_repo(&e))?;
+
+    fire_invalidation_hook(runner, inputs, transition::invalidation_for(decision)).await?;
+
+    answer_product_without_event(runner, inputs).await
+}
+
+async fn apply_cascade_plan(
+    runner: &(impl DBRunner + Sync),
+    inputs: &HeadActInputs,
+    sku_scope: &AccessScope,
+    children: &[SkuRecord],
+    reason: &str,
+    at: DateTime<Utc>,
+) -> Result<(), HeadActError> {
+    for child in children {
+        let Some(arm) = arm_for(child.lifecycle_state, false) else {
+            continue;
+        };
+        repo::supersede_live_intents(
+            runner,
+            sku_scope,
+            inputs.tenant_id,
+            child.sku_id,
+            "publish",
+            inputs.now,
+        )
+        .await
+        .map_err(|e| HeadActError::from_repo(&e))?;
+        repo::supersede_live_intents(
+            runner,
+            sku_scope,
+            inputs.tenant_id,
+            child.sku_id,
+            "retire",
+            inputs.now,
+        )
+        .await
+        .map_err(|e| HeadActError::from_repo(&e))?;
+
+        match arm {
+            crate::domain::cascade::CascadeArm::Retire => {
+                if child.lifecycle_state == LifecycleState::Published {
+                    let write = repo::cascade_deprecate_child(
+                        runner,
+                        sku_scope,
+                        inputs.tenant_id,
+                        child.sku_id,
+                        child.internal_revision,
+                        inputs.now,
+                    )
+                    .await
+                    .map_err(|e| HeadActError::from_repo(&e))?;
+                    if write == HeadWrite::Unmatched {
+                        return Err(HeadActError::Refused(DomainError::StaleRevision {
+                            expected: child.internal_revision,
+                            found: child.internal_revision,
+                        }));
+                    }
+                }
+                repo::insert_scheduled_transition(
+                    runner,
+                    sku_scope,
+                    &NewScheduledTransition {
+                        transition_id: Uuid::now_v7(),
+                        tenant_id: inputs.tenant_id,
+                        entity_kind: "sku".to_owned(),
+                        entity_id: child.sku_id,
+                        kind: "retire".to_owned(),
+                        at,
+                        approval_ref: Uuid::now_v7(),
+                        retirement_reason: Some(reason.to_owned()),
+                        now: inputs.now,
+                    },
+                )
+                .await
+                .map_err(|e| HeadActError::from_repo(&e))?;
+            }
+            crate::domain::cascade::CascadeArm::AutoDiscard => {
+                let write = repo::discard_sku_head(
+                    runner,
+                    sku_scope,
+                    inputs.tenant_id,
+                    child.sku_id,
+                    child.internal_revision,
+                    inputs.now,
+                )
+                .await
+                .map_err(|e| HeadActError::from_repo(&e))?;
+                if write == HeadWrite::Unmatched {
+                    return Err(HeadActError::Refused(DomainError::StaleRevision {
+                        expected: child.internal_revision,
+                        found: child.internal_revision,
+                    }));
+                }
+            }
+            crate::domain::cascade::CascadeArm::LeaveAndList => {}
+        }
+    }
+    Ok(())
+}
+
+async fn answer_product_without_event(
+    runner: &(impl DBRunner + Sync),
+    inputs: &HeadActInputs,
+) -> Result<HeadActOutcome, HeadActError> {
+    let head = repo::find_product(runner, &inputs.scope, inputs.tenant_id, inputs.product_id)
+        .await
+        .map_err(|e| HeadActError::from_repo(&e))?
+        .ok_or(HeadActError::Vanished)?;
+    let internal_revision = head.internal_revision;
+    let body = serde_json::to_value(ProductView::from(head)).map_err(|e| {
+        HeadActError::Db(DbError::Sea(DbErr::Custom(format!(
+            "render the retired Product: {e}"
+        ))))
+    })?;
+    if let Some(input) = inputs.claim.as_ref() {
+        record_idempotency_answer(
+            runner,
+            &inputs.scope,
+            inputs.tenant_id,
+            input,
+            HEAD_ACT_RESPONSE_STATUS,
+            &body,
+        )
+        .await
+        .map_err(|e| HeadActError::from_repo(&e))?;
+    }
+    Ok(HeadActOutcome::Applied {
+        internal_revision,
+        body,
+    })
+}
+
+/// `POST /bss-products/v1/products/{id}/retire/cancel`.
+///
+/// Gate call: `gate.evaluate(GateSubject::entity_publish(EntityRef {
+/// tenant_id, entity_kind: Product, entity_id }), InternalRevision::new(expected),
+/// GateMode::Gate)` after the live-op pin, before the write.
+///
+/// # Errors
+///
+/// See [`cancel_product_retirement_under_gate`].
+async fn cancel_product_retirement(
+    Extension(state): Extension<Arc<ApiState>>,
+    Extension(enforcer): Extension<authz_resolver_sdk::PolicyEnforcer>,
+    extension_ctx: Option<Extension<SecurityContext>>,
+    Path(product_id): Path<Uuid>,
+    headers: HeaderMap,
+    Json(request): Json<CancelRetirementRequest>,
+) -> Result<Response, CanonicalError> {
+    let ctx = require_authenticated(extension_ctx)?;
+    cancel_product_retirement_under_gate(
+        &state,
+        &enforcer,
+        &ctx,
+        product_id,
+        &headers,
+        request,
+        &(Arc::new(NoMaterialityPolicyGate) as Arc<dyn GovernanceGate + Send + Sync>),
+    )
+    .await
+}
+
+/// # Errors
+///
+/// As [`cancel_product_retirement`].
+async fn cancel_product_retirement_under_gate(
+    state: &ApiState,
+    enforcer: &authz_resolver_sdk::PolicyEnforcer,
+    ctx: &SecurityContext,
+    product_id: Uuid,
+    headers: &HeaderMap,
+    request: CancelRetirementRequest,
+    gate: &Arc<dyn GovernanceGate + Send + Sync>,
+) -> Result<Response, CanonicalError> {
+    let act = HeadAct {
+        authz_action: crate::authz::actions::WRITE,
+        audit_action: CANCEL_RETIRE_AUDIT_ACTION,
+        endpoint: cancel_retire_endpoint(product_id),
+        payload_digest: cancel_payload_digest(&request),
+    };
+    let opened = open_head_door(state, enforcer, ctx, product_id, headers, &act).await?;
+    let sku_scope = clone_scope_for(
+        state,
+        enforcer,
+        ctx,
+        opened.tenant_id,
+        opened.actor_ref,
+        product_id,
+        &crate::authz::resource_types::SKU,
+    )
+    .await?;
+    let result = cancel_retire_in_one_transaction(state, &opened, &sku_scope, gate, request).await;
+    answer_cancel_act(state, &opened, CANCEL_RETIRE_AUDIT_ACTION, result).await
+}
+
+async fn cancel_retire_in_one_transaction(
+    state: &ApiState,
+    opened: &OpenedHeadDoor,
+    sku_scope: &AccessScope,
+    gate: &Arc<dyn GovernanceGate + Send + Sync>,
+    request: CancelRetirementRequest,
+) -> Result<HeadActOutcome, HeadActError> {
+    let gate = Arc::clone(gate);
+    let inputs = opened.act_inputs();
+    let sku_scope = sku_scope.clone();
+    state
+        .db
+        .db()
+        .transaction_with_retry::<HeadActOutcome, HeadActError, _, _>(
+            TxConfig::default(),
+            head_act_contention_db_err,
+            move |tx| {
+                let gate = Arc::clone(&gate);
+                let inputs = inputs.clone();
+                let sku_scope = sku_scope.clone();
+                let request = request.clone();
+                Box::pin(async move {
+                    run_cancel_retire(tx, &inputs, &sku_scope, gate.as_ref(), &request).await
+                })
+            },
+        )
+        .await
+}
+
+async fn run_cancel_retire(
+    runner: &(impl DBRunner + Sync),
+    inputs: &HeadActInputs,
+    sku_scope: &AccessScope,
+    gate: &(dyn GovernanceGate + Send + Sync),
+    request: &CancelRetirementRequest,
+) -> Result<HeadActOutcome, HeadActError> {
+    if let Some(replay) = claim_for_head_act(
+        runner,
+        &inputs.scope,
+        inputs.tenant_id,
+        inputs.claim.as_ref(),
+    )
+    .await?
+    {
+        return Ok(replay);
+    }
+
+    let head = repo::find_product(runner, &inputs.scope, inputs.tenant_id, inputs.product_id)
+        .await
+        .map_err(|e| HeadActError::from_repo(&e))?
+        .ok_or(HeadActError::Vanished)?;
+
+    if head.internal_revision != inputs.expected {
+        return Err(HeadActError::Refused(DomainError::StaleRevision {
+            expected: inputs.expected,
+            found: head.internal_revision,
+        }));
+    }
+
+    let rows =
+        repo::find_live_retire_intents(runner, &inputs.scope, inputs.tenant_id, inputs.product_id)
+            .await
+            .map_err(|e| HeadActError::from_repo(&e))?;
+    let Some(intent) = rows.into_iter().next() else {
+        return Err(HeadActError::Refused(no_live_retire_intent()));
+    };
+
+    let op = GovernedLiveOp {
+        kind: request.kind.clone(),
+        target: request.target.clone(),
+        payload: request.payload.clone(),
+        expected_state: request.expected_state.clone(),
+    };
+    op.apply(&intent.state, || Ok(()))
+        .map_err(HeadActError::Refused)?;
+
+    let verdict = gate
+        .evaluate(
+            GateSubject::entity_publish(EntityRef {
+                tenant_id: inputs.tenant_id,
+                entity_kind: CatalogEntityKind::Product,
+                entity_id: inputs.product_id,
+            }),
+            InternalRevision::new(inputs.expected),
+            GateMode::Gate,
+        )
+        .map_err(|e| {
+            HeadActError::Db(DbError::Sea(DbErr::Custom(format!(
+                "bss-products: the governance gate host failed: {e}"
+            ))))
+        })?;
+    verdict
+        .into_authorization()
+        .map_err(HeadActError::Refused)?;
+
+    repo::supersede_live_intents(
+        runner,
+        &inputs.scope,
+        inputs.tenant_id,
+        inputs.product_id,
+        "retire",
+        inputs.now,
+    )
+    .await
+    .map_err(|e| HeadActError::from_repo(&e))?;
+
+    let children =
+        repo::find_skus_of_product(runner, sku_scope, inputs.tenant_id, inputs.product_id)
+            .await
+            .map_err(|e| HeadActError::from_repo(&e))?;
+    for child in children {
+        repo::supersede_live_intents(
+            runner,
+            sku_scope,
+            inputs.tenant_id,
+            child.sku_id,
+            "retire",
+            inputs.now,
+        )
+        .await
+        .map_err(|e| HeadActError::from_repo(&e))?;
+        let _cleared = repo::clear_replaced_by(
+            runner,
+            sku_scope,
+            inputs.tenant_id,
+            child.sku_id,
+            child.internal_revision,
+            inputs.now,
+        )
+        .await
+        .map_err(|e| HeadActError::from_repo(&e))?;
+    }
+
+    repo::write_eventless_act_audit(
+        runner,
+        &inputs.scope,
+        repo::AuditCommon {
+            audit_id: Uuid::now_v7(),
+            tenant_id: inputs.tenant_id,
+            actor_ref: inputs.actor_ref,
+            action: CANCEL_RETIRE_AUDIT_ACTION.to_owned(),
+            subject_kind: crate::authz::labels::PRODUCT.to_owned(),
+            reason: None,
+            correlation_id: None,
+            written_at: inputs.now,
+        },
+        inputs.product_id,
+        Some(head.internal_revision),
+    )
+    .await
+    .map_err(|e| HeadActError::from_repo(&e))?;
+
+    if let Some(input) = inputs.claim.as_ref() {
+        record_idempotency_answer(
+            runner,
+            &inputs.scope,
+            inputs.tenant_id,
+            input,
+            StatusCode::ACCEPTED,
+            &JsonValue::Null,
+        )
+        .await
+        .map_err(|e| HeadActError::from_repo(&e))?;
+    }
+
+    Ok(HeadActOutcome::Applied {
+        internal_revision: head.internal_revision,
+        body: JsonValue::Null,
+    })
+}
+
 /// The `products_audit_log.action` token every publish refusal is recorded
 /// under. Named, not spelled at each call site, so the trail is greppable by
 /// one string.
@@ -3347,6 +4423,13 @@ const DISCARD_AUDIT_ACTION: &str = "discard";
 
 /// [`PUBLISH_AUDIT_ACTION`]'s deprecate twin.
 const DEPRECATE_AUDIT_ACTION: &str = "deprecate";
+
+/// [`DEPRECATE_AUDIT_ACTION`]'s reversal twin.
+const UNDEPRECATE_AUDIT_ACTION: &str = "undeprecate";
+
+const RETIRE_AUDIT_ACTION: &str = "retire";
+
+const CANCEL_RETIRE_AUDIT_ACTION: &str = "retire.cancel";
 
 /// The version row this publish freezes: the act's own image, rendered
 /// canonically and digested (`inst-fd-publish-freeze`, §4.3, **P-D-33**).

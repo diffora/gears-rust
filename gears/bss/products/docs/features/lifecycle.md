@@ -626,6 +626,7 @@ the child the requirement says it must not.
 **Touches**:
 - DB Table: `products_product`, `products_sku`
 - Entities: `Product`, `SKU`
+- API: `POST /bss-products/v1/skus/{id}/deprecate`
 
 ### Deprecation cascade dispositions
 
@@ -647,7 +648,7 @@ children are terminal and outside the population. The listing **MUST** be what t
 
 ### Un-deprecation
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-undeprecation`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-undeprecation`
 
 The system **MUST** put `deprecated → published` behind the governance gate as an `N`-governed
 two-person ceremony, recording `quorumReduced` below the default, and **MUST** refuse it
@@ -666,10 +667,11 @@ for the parent and every child leg the reversal touches.
 **Touches**:
 - DB Table: `products_product`, `products_sku`, `products_scheduled_transition`
 - Entities: `Product`, `SKU`, `ScheduledTransition`
+- API: `POST /bss-products/v1/{products|skus}/{id}/undeprecate`, `POST /bss-products/v1/{products|skus}/{id}/retire/cancel`
 
 ### Provenance reversal
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-provenance-reversal`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-provenance-reversal`
 
 The system **MUST** reverse **only `cascaded`** child deprecations when a Product is un-deprecated;
 a child's `direct` deprecation **MUST** survive its parent's reversal, the provenance column being
@@ -682,6 +684,7 @@ the operand.
 **Touches**:
 - DB Table: `products_sku`
 - Entities: `SKU`
+- API: `POST /bss-products/v1/{products|skus}/{id}/undeprecate`
 
 ### Scheduled-publish approval pin
 
@@ -762,6 +765,7 @@ touch the head, which no consumer reads.
 **Touches**:
 - DB Table: `products_sku`, `products_scheduled_transition`
 - Entities: `SKU`, `ScheduledTransition`
+- API: `POST /bss-products/v1/{products|skus}/{id}/retire`
 
 ### Lead-window re-announcement
 

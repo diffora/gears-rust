@@ -4909,3 +4909,614 @@ mod meter_declaration_tests {
         );
     }
 }
+
+mod deprecate_door_tests {
+    use super::*;
+    use crate::domain::deprecation::Provenance;
+
+    async fn sku_of(harness: &TestHarness, sku_id: Uuid) -> repo::SkuRecord {
+        let conn = harness
+            .db
+            .conn()
+            .expect("checkout the pinned production connection");
+        let scope = toolkit_db::secure::AccessScope::for_tenant(TENANT);
+        repo::find_sku(&conn, &scope, TENANT, sku_id)
+            .await
+            .expect("read the SKU")
+            .expect("the SKU exists")
+    }
+
+    #[tokio::test]
+    async fn a_published_sku_deprecates_directly_and_says_so() {
+        let harness = harness().await;
+        let parent_id = seed_parent(&harness, new_parent_product(Uuid::now_v7(), TENANT)).await;
+        let (sku_id, etag) = seed_draft_sku(&harness, parent_id, "SKU-DEP").await;
+        let published = post_publish(app_for(&harness, TENANT), TENANT, sku_id, Some(&etag)).await;
+        assert_eq!(published.status(), StatusCode::OK);
+        let published_rev = body_json(published).await["internal_revision"]
+            .as_i64()
+            .expect("revision");
+
+        let response = post_head_act(
+            app_for(&harness, TENANT),
+            TENANT,
+            sku_id,
+            "deprecate",
+            Some(&if_match_for(published_rev)),
+            None,
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let head = sku_of(&harness, sku_id).await;
+        assert_eq!(head.lifecycle_state.as_str(), "deprecated");
+        assert_eq!(head.deprecation_provenance, Some(Provenance::Direct));
+
+        let body = raw_string_opt(
+            &harness.dsn,
+            &format!(
+                "SELECT CAST(payload AS TEXT) AS v FROM {}_body \
+                 WHERE payload_type = 'SkuDeprecated'",
+                events::OUTBOX_TABLE_PREFIX
+            ),
+        )
+        .await
+        .expect("the announcement carries a body");
+        assert!(
+            body.contains("\"provenance\":\"direct\""),
+            "provenance on the wire; got {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_draft_sku_is_illegal_transition() {
+        let harness = harness().await;
+        let parent_id = seed_parent(&harness, new_parent_product(Uuid::now_v7(), TENANT)).await;
+        let (sku_id, etag) = seed_draft_sku(&harness, parent_id, "SKU-DRAFT-DEP").await;
+        let refused = post_head_act(
+            app_for(&harness, TENANT),
+            TENANT,
+            sku_id,
+            "deprecate",
+            Some(&etag),
+            None,
+        )
+        .await;
+        assert_eq!(refused.status(), StatusCode::CONFLICT);
+    }
+}
+
+mod undeprecate_door_tests {
+    use super::*;
+    use crate::domain::deprecation::Provenance;
+    use crate::infra::storage::repo::NewScheduledTransition;
+
+    async fn force_deprecated(harness: &TestHarness, sku_id: Uuid) {
+        let conn = Database::connect(&harness.dsn)
+            .await
+            .expect("open an auxiliary connection to shape the fixture");
+        conn.execute_unprepared(&format!(
+            "UPDATE products_sku SET lifecycle_state = 'deprecated', \
+             deprecation_provenance = 'direct', \
+             internal_revision = internal_revision + 1 \
+             WHERE sku_id = X'{sku}'",
+            sku = sku_id.simple()
+        ))
+        .await
+        .expect("the head guard admits this fixture write");
+    }
+
+    async fn sku_of(harness: &TestHarness, sku_id: Uuid) -> repo::SkuRecord {
+        let conn = harness
+            .db
+            .conn()
+            .expect("checkout the pinned production connection");
+        let scope = toolkit_db::secure::AccessScope::for_tenant(TENANT);
+        repo::find_sku(&conn, &scope, TENANT, sku_id)
+            .await
+            .expect("read the SKU")
+            .expect("the SKU exists")
+    }
+
+    async fn seed_retire_intent(harness: &TestHarness, sku_id: Uuid) {
+        let conn = harness
+            .db
+            .conn()
+            .expect("checkout the pinned production connection");
+        let scope = toolkit_db::secure::AccessScope::for_tenant(TENANT);
+        repo::insert_scheduled_transition(
+            &conn,
+            &scope,
+            &NewScheduledTransition {
+                transition_id: Uuid::now_v7(),
+                tenant_id: TENANT,
+                entity_kind: "sku".to_owned(),
+                entity_id: sku_id,
+                kind: "retire".to_owned(),
+                at: Utc.with_ymd_and_hms(2026, 12, 1, 0, 0, 0).unwrap(),
+                approval_ref: Uuid::now_v7(),
+                retirement_reason: Some("fixture".to_owned()),
+                now: Utc.with_ymd_and_hms(2026, 9, 2, 12, 0, 0).unwrap(),
+            },
+        )
+        .await
+        .expect("seed a live retire intent");
+    }
+
+    #[tokio::test]
+    async fn a_deprecated_sku_undeprecates_and_announces() {
+        let harness = harness().await;
+        let parent_id = seed_parent(&harness, new_parent_product(Uuid::now_v7(), TENANT)).await;
+        let (sku_id, etag) = seed_draft_sku(&harness, parent_id, "SKU-UNDEP").await;
+        let published = post_publish(app_for(&harness, TENANT), TENANT, sku_id, Some(&etag)).await;
+        assert_eq!(published.status(), StatusCode::OK);
+        let published_rev = body_json(published).await["internal_revision"]
+            .as_i64()
+            .expect("revision");
+        force_deprecated(&harness, sku_id).await;
+
+        let response = post_head_act(
+            app_for(&harness, TENANT),
+            TENANT,
+            sku_id,
+            "undeprecate",
+            Some(&if_match_for(published_rev + 1)),
+            None,
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let head = sku_of(&harness, sku_id).await;
+        assert_eq!(head.lifecycle_state.as_str(), "published");
+        assert_eq!(head.deprecation_provenance, None::<Provenance>);
+
+        let announced = raw_i64(
+            &harness.dsn,
+            &format!(
+                "SELECT COUNT(*) AS v FROM {}_body WHERE payload_type = 'SkuUndeprecated'",
+                events::OUTBOX_TABLE_PREFIX
+            ),
+        )
+        .await;
+        assert_eq!(announced, 1);
+    }
+
+    #[tokio::test]
+    async fn a_live_retire_intent_is_retirement_pending() {
+        let harness = harness().await;
+        let parent_id = seed_parent(&harness, new_parent_product(Uuid::now_v7(), TENANT)).await;
+        let (sku_id, etag) = seed_draft_sku(&harness, parent_id, "SKU-HELD").await;
+        let published = post_publish(app_for(&harness, TENANT), TENANT, sku_id, Some(&etag)).await;
+        assert_eq!(published.status(), StatusCode::OK);
+        let published_rev = body_json(published).await["internal_revision"]
+            .as_i64()
+            .expect("revision");
+        force_deprecated(&harness, sku_id).await;
+        seed_retire_intent(&harness, sku_id).await;
+
+        let refused = post_head_act(
+            app_for(&harness, TENANT),
+            TENANT,
+            sku_id,
+            "undeprecate",
+            Some(&if_match_for(published_rev + 1)),
+            None,
+        )
+        .await;
+        assert_eq!(refused.status(), StatusCode::CONFLICT);
+        assert_eq!(
+            audit_error_code(&harness.dsn).await.as_deref(),
+            Some("RETIREMENT_PENDING")
+        );
+    }
+}
+
+mod retire_door_tests {
+    use super::*;
+    use crate::domain::deprecation::Provenance;
+
+    async fn sku_of(harness: &TestHarness, sku_id: Uuid) -> repo::SkuRecord {
+        let conn = harness
+            .db
+            .conn()
+            .expect("checkout the pinned production connection");
+        let scope = toolkit_db::secure::AccessScope::for_tenant(TENANT);
+        repo::find_sku(&conn, &scope, TENANT, sku_id)
+            .await
+            .expect("read the SKU")
+            .expect("the SKU exists")
+    }
+
+    async fn force_deprecated(harness: &TestHarness, sku_id: Uuid) {
+        let conn = Database::connect(&harness.dsn)
+            .await
+            .expect("open an auxiliary connection to shape the fixture");
+        conn.execute_unprepared(&format!(
+            "UPDATE products_sku SET lifecycle_state = 'deprecated', \
+             deprecation_provenance = 'direct', \
+             internal_revision = internal_revision + 1 \
+             WHERE sku_id = X'{sku}'",
+            sku = sku_id.simple()
+        ))
+        .await
+        .expect("the head guard admits this fixture write");
+    }
+
+    async fn post_retire(
+        app: Router,
+        tenant: Uuid,
+        sku_id: Uuid,
+        if_match: &str,
+        body: &serde_json::Value,
+    ) -> axum::http::Response<Body> {
+        app.oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/bss-products/v1/skus/{sku_id}/retire"))
+                .header(axum::http::header::CONTENT_TYPE, "application/json")
+                .header(axum::http::header::IF_MATCH, if_match)
+                .extension(authed_ctx(tenant))
+                .body(Body::from(body.to_string()))
+                .expect("build the retire request"),
+        )
+        .await
+        .expect("the router answers")
+    }
+
+    async fn live_intent_count(harness: &TestHarness, sku_id: Uuid) -> i64 {
+        raw_i64(
+            &harness.dsn,
+            &format!(
+                "SELECT COUNT(*) AS v FROM products_scheduled_transition \
+                 WHERE {} AND kind = 'retire' AND state IN ('pending','running','deferred')",
+                id_matches("entity_id", sku_id)
+            ),
+        )
+        .await
+    }
+
+    async fn published_sku(harness: &TestHarness, code: &str) -> (Uuid, i64) {
+        let parent_id = seed_parent(harness, new_parent_product(Uuid::now_v7(), TENANT)).await;
+        let (sku_id, etag) = seed_draft_sku(harness, parent_id, code).await;
+        let published = post_publish(app_for(harness, TENANT), TENANT, sku_id, Some(&etag)).await;
+        assert_eq!(published.status(), StatusCode::OK);
+        let rev = body_json(published).await["internal_revision"]
+            .as_i64()
+            .expect("revision");
+        (sku_id, rev)
+    }
+
+    fn retire_body() -> serde_json::Value {
+        json!({ "reason": "end of sale", "confirmed": true })
+    }
+
+    #[tokio::test]
+    async fn a_published_sku_retires_and_schedules() {
+        let harness = harness().await;
+        let (sku_id, rev) = published_sku(&harness, "SKU-RETIRE").await;
+
+        let response = post_retire(
+            app_for(&harness, TENANT),
+            TENANT,
+            sku_id,
+            &if_match_for(rev),
+            &retire_body(),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let head = sku_of(&harness, sku_id).await;
+        assert_eq!(head.lifecycle_state.as_str(), "deprecated");
+        assert_eq!(head.deprecation_provenance, Some(Provenance::Direct));
+        assert_eq!(live_intent_count(&harness, sku_id).await, 1);
+    }
+
+    #[tokio::test]
+    async fn already_deprecated_takes_no_re_stamp() {
+        let harness = harness().await;
+        let (sku_id, rev) = published_sku(&harness, "SKU-ALREADY").await;
+        force_deprecated(&harness, sku_id).await;
+
+        let response = post_retire(
+            app_for(&harness, TENANT),
+            TENANT,
+            sku_id,
+            &if_match_for(rev + 1),
+            &retire_body(),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let head = sku_of(&harness, sku_id).await;
+        assert_eq!(head.lifecycle_state.as_str(), "deprecated");
+        assert_eq!(head.deprecation_provenance, Some(Provenance::Direct));
+        assert_eq!(live_intent_count(&harness, sku_id).await, 1);
+    }
+
+    #[tokio::test]
+    async fn early_effective_at_is_retirement_lead_time() {
+        let harness = harness().await;
+        let (sku_id, rev) = published_sku(&harness, "SKU-LEAD").await;
+        let refused = post_retire(
+            app_for(&harness, TENANT),
+            TENANT,
+            sku_id,
+            &if_match_for(rev),
+            &json!({
+                "reason": "end of sale",
+                "confirmed": true,
+                "effective_at": "2020-01-01T00:00:00Z"
+            }),
+        )
+        .await;
+        assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            audit_error_code(&harness.dsn).await.as_deref(),
+            Some("RETIREMENT_LEAD_TIME")
+        );
+    }
+
+    #[tokio::test]
+    async fn must_migrate_by_is_eol_disabled() {
+        let harness = harness().await;
+        let (sku_id, rev) = published_sku(&harness, "SKU-EOL").await;
+        let refused = post_retire(
+            app_for(&harness, TENANT),
+            TENANT,
+            sku_id,
+            &if_match_for(rev),
+            &json!({
+                "reason": "end of sale",
+                "confirmed": true,
+                "must_migrate_by": "2099-01-01T00:00:00Z"
+            }),
+        )
+        .await;
+        assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            audit_error_code(&harness.dsn).await.as_deref(),
+            Some("EOL_DISABLED")
+        );
+    }
+
+    #[tokio::test]
+    async fn unpublished_replaced_by_is_refused() {
+        let harness = harness().await;
+        let parent_id = seed_parent(&harness, new_parent_product(Uuid::now_v7(), TENANT)).await;
+        let (sku_id, etag) = seed_draft_sku(&harness, parent_id, "SKU-OLD").await;
+        let published = post_publish(app_for(&harness, TENANT), TENANT, sku_id, Some(&etag)).await;
+        let rev = body_json(published).await["internal_revision"]
+            .as_i64()
+            .expect("revision");
+        let (draft_id, _) = seed_draft_sku(&harness, parent_id, "SKU-NEW").await;
+
+        let refused = post_retire(
+            app_for(&harness, TENANT),
+            TENANT,
+            sku_id,
+            &if_match_for(rev),
+            &json!({
+                "reason": "end of sale",
+                "confirmed": true,
+                "replaced_by": draft_id
+            }),
+        )
+        .await;
+        assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            audit_error_code(&harness.dsn).await.as_deref(),
+            Some("REPLACED_BY_NOT_PUBLISHED")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_second_live_intent_is_retirement_pending() {
+        let harness = harness().await;
+        let (sku_id, rev) = published_sku(&harness, "SKU-DUP").await;
+        let first = post_retire(
+            app_for(&harness, TENANT),
+            TENANT,
+            sku_id,
+            &if_match_for(rev),
+            &retire_body(),
+        )
+        .await;
+        assert_eq!(first.status(), StatusCode::OK);
+        let next = body_json(first).await["internal_revision"]
+            .as_i64()
+            .expect("revision");
+
+        let refused = post_retire(
+            app_for(&harness, TENANT),
+            TENANT,
+            sku_id,
+            &if_match_for(next),
+            &retire_body(),
+        )
+        .await;
+        assert_eq!(refused.status(), StatusCode::CONFLICT);
+        assert_eq!(
+            audit_error_code(&harness.dsn).await.as_deref(),
+            Some("RETIREMENT_PENDING")
+        );
+    }
+
+    #[tokio::test]
+    async fn unconfirmed_is_validation() {
+        let harness = harness().await;
+        let (sku_id, rev) = published_sku(&harness, "SKU-NOCONF").await;
+        let refused = post_retire(
+            app_for(&harness, TENANT),
+            TENANT,
+            sku_id,
+            &if_match_for(rev),
+            &json!({ "reason": "end of sale", "confirmed": false }),
+        )
+        .await;
+        assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
+    }
+}
+
+mod cancel_retire_door_tests {
+    use super::*;
+
+    async fn post_retire(
+        app: Router,
+        tenant: Uuid,
+        sku_id: Uuid,
+        if_match: &str,
+        body: &serde_json::Value,
+    ) -> axum::http::Response<Body> {
+        app.oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/bss-products/v1/skus/{sku_id}/retire"))
+                .header(axum::http::header::CONTENT_TYPE, "application/json")
+                .header(axum::http::header::IF_MATCH, if_match)
+                .extension(authed_ctx(tenant))
+                .body(Body::from(body.to_string()))
+                .expect("build the retire request"),
+        )
+        .await
+        .expect("the router answers")
+    }
+
+    async fn post_cancel(
+        app: Router,
+        tenant: Uuid,
+        sku_id: Uuid,
+        if_match: &str,
+        body: &serde_json::Value,
+    ) -> axum::http::Response<Body> {
+        app.oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/bss-products/v1/skus/{sku_id}/retire/cancel"))
+                .header(axum::http::header::CONTENT_TYPE, "application/json")
+                .header(axum::http::header::IF_MATCH, if_match)
+                .extension(authed_ctx(tenant))
+                .body(Body::from(body.to_string()))
+                .expect("build the cancel request"),
+        )
+        .await
+        .expect("the router answers")
+    }
+
+    fn cancel_body() -> serde_json::Value {
+        json!({
+            "kind": "sku.retire.cancel",
+            "target": "sku",
+            "payload": "{}",
+            "expected_state": "pending"
+        })
+    }
+
+    #[tokio::test]
+    async fn cancel_supersedes_and_lets_undeprecate_run() {
+        let harness = harness().await;
+        let parent_id = seed_parent(&harness, new_parent_product(Uuid::now_v7(), TENANT)).await;
+        let (sku_id, etag) = seed_draft_sku(&harness, parent_id, "SKU-CANCEL").await;
+        let published = post_publish(app_for(&harness, TENANT), TENANT, sku_id, Some(&etag)).await;
+        let rev = body_json(published).await["internal_revision"]
+            .as_i64()
+            .expect("revision");
+
+        let retired = post_retire(
+            app_for(&harness, TENANT),
+            TENANT,
+            sku_id,
+            &if_match_for(rev),
+            &json!({ "reason": "end of sale", "confirmed": true }),
+        )
+        .await;
+        assert_eq!(retired.status(), StatusCode::OK);
+        let retired_rev = body_json(retired).await["internal_revision"]
+            .as_i64()
+            .expect("revision");
+
+        let cancelled = post_cancel(
+            app_for(&harness, TENANT),
+            TENANT,
+            sku_id,
+            &if_match_for(retired_rev),
+            &cancel_body(),
+        )
+        .await;
+        assert_eq!(cancelled.status(), StatusCode::ACCEPTED);
+
+        let live = raw_i64(
+            &harness.dsn,
+            &format!(
+                "SELECT COUNT(*) AS v FROM products_scheduled_transition \
+                 WHERE {} AND kind = 'retire' AND state IN ('pending','running','deferred')",
+                id_matches("entity_id", sku_id)
+            ),
+        )
+        .await;
+        assert_eq!(live, 0);
+        assert_eq!(
+            audit_action(&harness.dsn).await.as_deref(),
+            Some("retire.cancel")
+        );
+
+        let after = raw_i64(
+            &harness.dsn,
+            &format!(
+                "SELECT internal_revision AS v FROM products_sku WHERE {}",
+                id_matches("sku_id", sku_id)
+            ),
+        )
+        .await;
+        let revived = post_head_act(
+            app_for(&harness, TENANT),
+            TENANT,
+            sku_id,
+            "undeprecate",
+            Some(&if_match_for(after)),
+            None,
+        )
+        .await;
+        assert_eq!(revived.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn a_stale_live_op_pin_is_refused() {
+        let harness = harness().await;
+        let parent_id = seed_parent(&harness, new_parent_product(Uuid::now_v7(), TENANT)).await;
+        let (sku_id, etag) = seed_draft_sku(&harness, parent_id, "SKU-STALEOP").await;
+        let published = post_publish(app_for(&harness, TENANT), TENANT, sku_id, Some(&etag)).await;
+        let rev = body_json(published).await["internal_revision"]
+            .as_i64()
+            .expect("revision");
+        let retired = post_retire(
+            app_for(&harness, TENANT),
+            TENANT,
+            sku_id,
+            &if_match_for(rev),
+            &json!({ "reason": "end of sale", "confirmed": true }),
+        )
+        .await;
+        let retired_rev = body_json(retired).await["internal_revision"]
+            .as_i64()
+            .expect("revision");
+
+        let refused = post_cancel(
+            app_for(&harness, TENANT),
+            TENANT,
+            sku_id,
+            &if_match_for(retired_rev),
+            &json!({
+                "kind": "sku.retire.cancel",
+                "target": "sku",
+                "payload": "{}",
+                "expected_state": "running"
+            }),
+        )
+        .await;
+        assert_eq!(refused.status(), StatusCode::CONFLICT);
+        assert_eq!(
+            audit_error_code(&harness.dsn).await.as_deref(),
+            Some("STALE_LIVE_OP")
+        );
+    }
+}

@@ -160,9 +160,14 @@ pub mod actions {
     /// (`GET /bss-products/v1/{products|skus}/{id}`,
     /// `GET /bss-products/v1/{products|skus}/{id}/versions`).
     pub const READ: &str = "read";
-    /// Write action — authoring mutations: create, update, clone and discard
-    /// (`05-governance.md` §3.2 rows the discard door under this action; see
-    /// this module's doc for why `discard` is not declared separately).
+    /// Write action — authoring mutations: create, update, clone, discard,
+    /// deprecate, un-deprecate, retire and retire/cancel
+    /// (`POST /bss-products/v1/{products|skus}/{id}/undeprecate`,
+    /// `POST /bss-products/v1/skus/{id}/deprecate`,
+    /// `POST /bss-products/v1/{products|skus}/{id}/retire`,
+    /// `POST /bss-products/v1/{products|skus}/{id}/retire/cancel`;
+    /// `05-governance.md` §3.2 rows the discard door under this action; see
+    /// this module's doc for why those acts are not declared separately).
     pub const WRITE: &str = "write";
     /// Publish action — turning an approved draft into a published version
     /// (`POST /bss-products/v1/{products|skus}/{id}/publish`).
