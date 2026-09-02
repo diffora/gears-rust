@@ -1569,6 +1569,45 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   (the re-publish step).
 
 
+#### P-D-99 — `04-lifecycle`'s four door shapes, each from the set's nearest precedent
+
+- **Date**: 2026-09-02 (owner call, the interface **P-D-98** deliberately left owed)
+- **Context**: P-D-98 settled that the slice owns doors for its acts and named the acts; it left
+  the paths, verbs and success responses open because fixing them there would have authored the
+  interface inside a scoping decision. `design/04` carried no interfaces section at all. The set
+  already has a precedent for closing exactly this gap: **P-D-87** arm 3 fixed slice 07's three
+  door shapes *"each from the set's nearest precedent"*. Two precedents compete here — this gear's
+  own verb-suffixed act doors (`/publish`, `/discard`, `/deprecate`), and 07's sub-resource
+  retirement (`/reference-producers/{producer}/retirements`, **200**).
+- **Decision**, recorded normatively in `design/04` §3.3:
+  1. **Verb form, four routes**: `POST …/{products|skus}/{id}/undeprecate` (**200**, the head);
+     `POST …/skus/{id}/deprecate` (**200**, the head — the Product already has this door and the
+     SKU's absence is why `provenance = direct` had no operator path);
+     `POST …/{products|skus}/{id}/retire` (**200**, the head);
+     `POST …/{products|skus}/{id}/retire/cancel` (**202**, no body).
+  2. **The cancel is 202 because the ceremony is governed**, not for transport reasons:
+     `design/05` §3.2 `inst-mt-inputs` (d) registers 04's `ScheduledTransition` cancel ops material
+     and §3.3 makes the cancel a `GovernedLiveOp` subject kind, so the door accepts and the write
+     lands at approval — the shape and the status of 07's correction door.
+  3. **All four spend `product|sku × write`** (`crate::authz::actions::WRITE`), which is what the
+     shipped `/deprecate` and `/discard` spend; `/publish` keeps its own `actions::PUBLISH`. No
+     action is minted.
+  4. **`publishAt` gets no door**, per P-D-98.
+- **The arguments against, stated**: the sub-resource form would expose the minted
+  `ScheduledTransition` id, which the verb form does not — declined because the cancel addresses the
+  *entity*, whose one live retire intent per kind is already the §4 partial unique's guarantee, so
+  the id buys nothing the route needs, and a `/retirements` collection beside a `/deprecate` verb
+  would make the act set inconsistent. On arm 3: reusing `write` means a tenant's write grant now
+  also carries an irreversible act, and minting `actions::RETIRE` would let that grant be issued
+  narrowly — declined because irreversibility is guarded by the 05 gate's quorum, which is the
+  barrier the design set assigns to it, and because minting one action forces the same question of
+  `undeprecate` and of the cancel, so the decision multiplies where the reuse does not.
+- **Propagated**: `design/04-lifecycle.md` **new §3.3** with the table and both arguments.
+  **Owed**: each act's request shape — the retirement's `{reason, replacedBy?, effectiveAt,
+  confirmation}` against §2's own enumeration, and the cancel's, jointly with `02` whose
+  `GovernedLiveOp` envelope it rides; and the `API:` lines on the affected DoDs, which belong to
+  `features/lifecycle.md` and are that document's to write, not this register's.
+
 #### P-D-98 — `04-lifecycle` owns wire doors after all; `DECOMPOSITION` §2.4's "None of its own" is withdrawn
 
 - **Date**: 2026-09-02 (owner call, on the lead's measurement below)
