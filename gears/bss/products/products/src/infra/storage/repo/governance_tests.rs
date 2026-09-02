@@ -60,7 +60,7 @@ use chrono::{TimeZone as _, Utc};
 use sea_orm::sea_query::Expr;
 use sea_orm::{ColumnTrait as _, Condition, EntityTrait as _};
 use sea_orm_migration::MigratorTrait as _;
-use toolkit_db::secure::{AccessScope, DBRunner, SecureUpdateExt as _};
+use toolkit_db::secure::{AccessScope, DBRunner, SecureEntityExt as _, SecureUpdateExt as _};
 use toolkit_db::{ConnectOpts, DBProvider, DbError, connect_db};
 use uuid::Uuid;
 
@@ -70,15 +70,16 @@ use super::super::{
     supersede_open_approval,
 };
 use super::{
-    Consumption, DecisionOutcome, DecisionVerdict, NewApproval, NewDecision, consume_approval,
-    gate_candidates, read_approval, record_decision, submit_approval,
+    ApprovalPath, Consumption, DecisionOutcome, DecisionVerdict, Elevation, NewApproval,
+    NewDecision, NewElevation, admit_elevated_call, consume_approval, discharge_posthoc_review,
+    gate_candidates, open_breakglass_session, read_approval, record_decision, submit_approval,
 };
 use crate::domain::approval::{ApprovalState, ApproverDiff, diff_basis_for, render_diff};
 use crate::domain::governance::{ApprovalId, EntityRef, GateSubject};
 use crate::domain::materiality::{
     MaterialAct, MaterialityEvaluator, MaterialityPolicy, Resolution,
 };
-use crate::infra::storage::entity::approval;
+use crate::infra::storage::entity::{approval, breakglass_session};
 use crate::infra::storage::migrations::Migrator;
 
 const TENANT: Uuid = Uuid::from_u128(0x9e_11);
@@ -823,5 +824,282 @@ async fn a_decision_rows_acknowledgment_reaches_the_operand() {
             .iter()
             .any(|c| c.approval_id == id && c.override_acknowledged),
         "the acknowledgment on the decision row must reach the verdict's operand"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Break-glass (`dod-breakglass-open`, `dod-breakglass-expiry`).
+// ---------------------------------------------------------------------------
+
+const SESSION: Uuid = Uuid::from_u128(0x9e_5e);
+const OPERATOR: Uuid = Uuid::from_u128(0x9e_09);
+const TARGET: Uuid = Uuid::from_u128(0x9e_ff);
+const SECOND_PRINCIPAL: Uuid = Uuid::from_u128(0x9e_0a);
+
+/// The session is scoped by **`target_tenant`**, not by an owning tenant: the
+/// acting principal is outside the tenant entirely and the thing the session
+/// reaches is one tenant's data.
+fn elevation_scope() -> AccessScope {
+    AccessScope::for_tenant(TARGET)
+}
+
+fn elevation(path: ApprovalPath) -> NewElevation {
+    NewElevation {
+        session_id: SESSION,
+        principal: OPERATOR,
+        target_tenant: TARGET,
+        valid_from: at(10),
+        valid_until: at(14),
+        path,
+        opened_at: at(10),
+    }
+}
+
+/// **A session opens with its reason, window, target and one path**, and the
+/// two paths are exclusive by construction.
+///
+/// `ApprovalPath` makes the wrong shape unrepresentable rather than guarded:
+/// there is no value of it that sets both columns or neither, which is what
+/// `chk_products_breakglass_path` enforces at the engine on both dialects.
+/// Both arms are opened so the assertion covers the enum and not one variant.
+#[tokio::test]
+async fn a_session_opens_on_either_path_and_never_on_both() {
+    let provider = harness().await;
+    let conn = provider.conn().expect("scoped connection");
+    let scope = elevation_scope();
+
+    open_breakglass_session(
+        &conn,
+        &scope,
+        elevation(ApprovalPath::PostHoc),
+        "cross-tenant incident 4711",
+    )
+    .await
+    .expect("the post-hoc session opens");
+
+    let row = breakglass_session::Entity::find()
+        .secure()
+        .scope_with(&scope)
+        .filter(Condition::all().add(breakglass_session::Column::SessionId.eq(SESSION)))
+        .one(&conn)
+        .await
+        .expect("read runs")
+        .expect("the session exists");
+    assert_eq!(row.reason, "cross-tenant incident 4711");
+    assert_eq!(row.target_tenant, TARGET);
+    assert_eq!(row.valid_from, at(10));
+    assert_eq!(row.valid_until, at(14));
+    assert_eq!(row.posthoc_state.as_deref(), Some("pending"));
+    assert_eq!(row.two_person_approval_ref, None, "the paths are exclusive");
+    assert!(!row.expired_emitted, "the CAS stamp starts unflipped");
+
+    // The other arm, on its own session id.
+    let reference = Uuid::from_u128(0xa9_77);
+    let mut two_person = elevation(ApprovalPath::TwoPerson(reference));
+    two_person.session_id = Uuid::from_u128(0x9e_5f);
+    open_breakglass_session(&conn, &scope, two_person, "planned drill")
+        .await
+        .expect("the two-person session opens");
+    let row = breakglass_session::Entity::find()
+        .secure()
+        .scope_with(&scope)
+        .filter(
+            Condition::all()
+                .add(breakglass_session::Column::SessionId.eq(Uuid::from_u128(0x9e_5f))),
+        )
+        .one(&conn)
+        .await
+        .expect("read runs")
+        .expect("the session exists");
+    assert_eq!(row.two_person_approval_ref, Some(reference));
+    assert_eq!(row.posthoc_state, None, "the paths are exclusive");
+}
+
+/// An empty reason is refused by the engine, on both dialects.
+///
+/// The probe exists because this module deliberately does **not** restate the
+/// `CHECK` in Rust: a second guard could drift from the schema, so the claim
+/// under test is that the schema is the guard.
+#[tokio::test]
+async fn a_session_with_no_reason_is_refused_by_the_engine() {
+    let provider = harness().await;
+    let conn = provider.conn().expect("scoped connection");
+    let scope = elevation_scope();
+    let err = open_breakglass_session(&conn, &scope, elevation(ApprovalPath::PostHoc), "")
+        .await
+        .expect_err("a mandatory reason is mandatory");
+    assert!(
+        err.to_string().contains("chk_products_breakglass_reason"),
+        "{err}"
+    );
+}
+
+/// **Ten calls after expiry emit exactly one event** — P-D-68 arm 2's whole
+/// point, and the answer to item 19's *"a session called ten times after
+/// expiry emits ten"*.
+///
+/// The count is asserted over ten calls rather than two, because two cannot
+/// tell a CAS from a read-then-write that happened not to race.
+#[tokio::test]
+async fn ten_calls_past_the_window_emit_exactly_one_expiry() {
+    let provider = harness().await;
+    let conn = provider.conn().expect("scoped connection");
+    let scope = elevation_scope();
+    open_breakglass_session(&conn, &scope, elevation(ApprovalPath::PostHoc), "incident")
+        .await
+        .expect("the session opens");
+
+    let mut emissions = 0_u32;
+    for _ in 0..10 {
+        match admit_elevated_call(&conn, &scope, SESSION, at(15))
+            .await
+            .expect("the judgement runs")
+        {
+            Elevation::Expired { emit_expired } => emissions += u32::from(emit_expired),
+            other => panic!("past the window every call is refused, got {other:?}"),
+        }
+    }
+    assert_eq!(
+        emissions, 1,
+        "the winner emits and every replay emits nothing (P-D-68 arm 2)"
+    );
+    assert!(
+        breakglass_session::Entity::find()
+            .secure()
+            .scope_with(&scope)
+            .filter(Condition::all().add(breakglass_session::Column::SessionId.eq(SESSION)))
+            .one(&conn)
+            .await
+            .expect("read runs")
+            .expect("the session exists")
+            .expired_emitted,
+        "the stamp is flipped and stays flipped"
+    );
+}
+
+/// **A read inside the window is admitted** — the positive control on
+/// `BREAKGLASS_EXPIRED`, without which an inverted comparison passes every
+/// other criterion.
+///
+/// The boundaries are swept rather than sampled: `valid_from` itself is
+/// inside, `valid_until` itself is **outside** (the interval is half-open),
+/// and an instant before the window is its own answer rather than an expiry.
+#[tokio::test]
+async fn the_window_is_half_open_and_both_boundaries_are_probed() {
+    let provider = harness().await;
+    let conn = provider.conn().expect("scoped connection");
+    let scope = elevation_scope();
+    open_breakglass_session(&conn, &scope, elevation(ApprovalPath::PostHoc), "incident")
+        .await
+        .expect("the session opens");
+
+    assert_eq!(
+        admit_elevated_call(&conn, &scope, SESSION, at(9))
+            .await
+            .expect("judged"),
+        Elevation::NotYetValid,
+        "before valid_from is not an expiry, and folding it into one would emit \
+         BreakGlassExpired for a session that has not begun"
+    );
+    assert_eq!(
+        admit_elevated_call(&conn, &scope, SESSION, at(10))
+            .await
+            .expect("judged"),
+        Elevation::Admitted,
+        "valid_from itself is inside: the interval is [from, until)"
+    );
+    assert_eq!(
+        admit_elevated_call(&conn, &scope, SESSION, at(13))
+            .await
+            .expect("judged"),
+        Elevation::Admitted,
+        "the positive control: a read inside the window is admitted"
+    );
+    assert!(
+        matches!(
+            admit_elevated_call(&conn, &scope, SESSION, at(14))
+                .await
+                .expect("judged"),
+            Elevation::Expired { .. }
+        ),
+        "valid_until itself is outside: the interval is half-open, and a closed one would \
+         admit one call too many"
+    );
+}
+
+/// A caller naming a session outside its scope gets the same answer as one
+/// naming a session that does not exist.
+#[tokio::test]
+async fn a_session_of_another_tenant_is_not_visible() {
+    let provider = harness().await;
+    let conn = provider.conn().expect("scoped connection");
+    open_breakglass_session(
+        &conn,
+        &elevation_scope(),
+        elevation(ApprovalPath::PostHoc),
+        "incident",
+    )
+    .await
+    .expect("the session opens");
+
+    let err = admit_elevated_call(&conn, &AccessScope::for_tenant(TENANT), SESSION, at(13))
+        .await
+        .expect_err("another tenant's scope sees no session");
+    assert!(err.to_string().contains("no elevation session"), "{err}");
+}
+
+/// **The post-hoc obligation is discharged once**, by the second platform
+/// principal's late decision (P-D-68 arm 3) — and a two-person session has
+/// nothing to discharge.
+#[tokio::test]
+async fn the_posthoc_obligation_discharges_once_and_only_where_it_exists() {
+    let provider = harness().await;
+    let conn = provider.conn().expect("scoped connection");
+    let scope = elevation_scope();
+    open_breakglass_session(&conn, &scope, elevation(ApprovalPath::PostHoc), "incident")
+        .await
+        .expect("the session opens");
+
+    assert!(
+        discharge_posthoc_review(&conn, &scope, SESSION, SECOND_PRINCIPAL, at(16))
+            .await
+            .expect("the discharge runs"),
+        "the second platform principal's late decision closes the obligation"
+    );
+    assert!(
+        !discharge_posthoc_review(&conn, &scope, SESSION, SECOND_PRINCIPAL, at(17))
+            .await
+            .expect("the second discharge runs"),
+        "two reviewers racing produce one discharge, and the loser is told so"
+    );
+    let row = breakglass_session::Entity::find()
+        .secure()
+        .scope_with(&scope)
+        .filter(Condition::all().add(breakglass_session::Column::SessionId.eq(SESSION)))
+        .one(&conn)
+        .await
+        .expect("read runs")
+        .expect("the session exists");
+    assert_eq!(row.posthoc_state.as_deref(), Some("reviewed"));
+    assert_eq!(row.reviewed_by, Some(SECOND_PRINCIPAL));
+    assert_eq!(row.reviewed_at, Some(at(16)));
+
+    // A two-person session has no obligation, so there is nothing to close.
+    let mut two_person = elevation(ApprovalPath::TwoPerson(Uuid::from_u128(0xa9_78)));
+    two_person.session_id = Uuid::from_u128(0x9e_60);
+    open_breakglass_session(&conn, &scope, two_person, "drill")
+        .await
+        .expect("opens");
+    assert!(
+        !discharge_posthoc_review(
+            &conn,
+            &scope,
+            Uuid::from_u128(0x9e_60),
+            SECOND_PRINCIPAL,
+            at(16)
+        )
+        .await
+        .expect("the discharge runs"),
+        "a session approved before it opened has no post-hoc obligation to discharge"
     );
 }

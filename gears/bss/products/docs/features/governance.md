@@ -1079,6 +1079,28 @@ prevent. **The fixed floor of two platform
 principals has no writer** (open item 9), and **the window's interim value and its no-renewal rule
 live only in the PRD's interim-policy table** (open item 22).
 
+**The session's writer is built, and the floor's descriptor writer landed with B2.**
+`repo::open_breakglass_session` writes the reason, the half-open window, the target tenant and
+exactly **one** approval path. The exclusivity is unrepresentable rather than guarded: `ApprovalPath`
+has no value that sets both columns or neither, which is what `chk_products_breakglass_path` enforces
+at the engine on both dialects — and the module deliberately restates **none** of the four `CHECK`s
+in Rust, because a second guard drifts from the schema. The probe that an empty reason is refused is
+therefore a probe that the schema *is* the guard. `describe_platform_quorum` (B2) supplies the fixed
+floor of two platform principals that row 9 said no writer could produce; row 9's other halves —
+whether that approval's record is an `ApprovalRecord`, and which row holds it — are untouched.
+
+**`discharge_posthoc_review`** closes P-D-68 arm 3's obligation with the second platform principal's
+late decision: no new door, no new grant, the `pending` predicate on the `UPDATE` so two reviewers
+racing produce one discharge, and nothing to discharge on a session that took the two-person path.
+
+**Three clauses have no operand.** *"MUST emit `BreakGlassElevated` alongside a distinct alert
+channel"* — neither the event type nor an alert channel exists in the gear. *"A failed alert
+emission MUST NOT leave a silent session"* — the remedy it names is a **recorded undelivered-alert
+obligation**, and `products_breakglass_session` has no column for one, so this cannot be built
+without a migration (which is not this slice's) or an invented stub. And the window's value is left
+to the caller rather than defaulted: its interim 4 hours and the no-renewal rule live only in the
+PRD's §17.1 table (row 22) and `inst-bg-open` states neither.
+
 **Implements**: `cpt-cf-bss-products-flow-breakglass`
 
 **Touches**:
@@ -1093,6 +1115,20 @@ with no exception in v1, and **MUST** individually audit every elevated access w
 the reason and the correlation id — **the count asserted, not sampled**. **What an elevation
 changes about the authorization decision and the repository's tenant scoping is open item 18**: no
 rule states how a live session widens either.
+
+**Nothing was built for the refusal, and row 18 is why.** The refusal needs an enforcement point
+that reads a live session, and no rule says where in the pre-pipeline gate that operand is read or
+what it changes about `authz::access_scope`'s answer or `SecureORM`'s tenant scoping. Building one
+would author row 18 from a call site. `BREAKGLASS_WRITE_FORBIDDEN` is also absent from
+`domain::error` (`dod-governance-errors`' patch), so the refusal has no code even once it has a
+place to be raised.
+
+**The audit half has its writer and no caller.** `repo::write_elevated_read_audit` takes the session
+id and is probed at the row; the DoD's *"the count asserted, not sampled"* needs a lane that makes
+several elevated reads, and no door opens one. What this group can say is the scoping boundary it
+does exercise: the session is scoped by **`target_tenant`**, so a caller in another tenant's scope
+gets the same answer as one naming a session that does not exist — which is a probe, not a rule
+about how a live session widens anything.
 
 **Implements**: `cpt-cf-bss-products-flow-breakglass`
 
@@ -1113,6 +1149,27 @@ has no such shape. **Item 19 was the producer question and P-D-68 closed it**: t
 previously named was a refused call, so an uncalled session never emits it and a session called ten times after expiry
 emits ten.
 
+**The CAS is built and the count is asserted over ten calls, not two.** `repo::admit_elevated_call`
+carries `expired_emitted = false` on the **`UPDATE`**, so ten post-expiry calls produce exactly one
+`emit_expired: true` — item 19's own number, answered. Two calls could not tell a CAS from a
+read-then-write that happened not to race, which is why the probe runs ten. **Expiry gates admission,
+not completion**: the judgement is a function of the window and the instant and touches nothing the
+call goes on to do.
+
+**The window's boundaries are swept rather than sampled.** `valid_from` itself is inside,
+`valid_until` itself is **outside** — the interval is `[from, until)`, and a closed one admits one
+call too many — and a call *before* `valid_from` is its own answer rather than an expiry, since
+folding it in would emit `BreakGlassExpired` for a session that has not begun. The
+inside-the-window admission is the positive control the acceptance criteria require, without which
+an inverted comparison passes every other criterion.
+
+**Two clauses remain.** `BREAKGLASS_EXPIRED` is not in `domain::error` and `BreakGlassExpired` is not
+in `infra/events.rs`, so the refusal's code and the emission itself are both `dod-governance-errors`'
+and `dod-governance-events`' patches — this function answers **who** emits and the emission has
+nothing to emit yet. And *"in the same transaction as that refusal"* is the caller's: this function
+opens none, and a committed flip beside a rolled-back refusal is the exactly-once guarantee
+inverted.
+
 **Implements**: `cpt-cf-bss-products-flow-breakglass`
 
 **Touches**:
@@ -1129,6 +1186,19 @@ edited and erasure is a map-only tombstone, so personal data typed into one is u
 erasure forever; failing closed at the door is the only reach erasure has over them. The detector
 does not exist, so a **clean-text positive control is part of this obligation** — a stub that
 refuses every string would otherwise satisfy it.
+
+**Nothing was built, and both halves of the blocker are re-measured at `HEAD` (2026-09-02).** No PII
+detector, hook or stub exists anywhere in the crate — `CONTENT_PII_BLOCKED` appears only in
+`infra/error_mapping.rs`'s prose and is **not a declared code** — and the detector is
+`02-taxonomy-attributes`'/`10-retention-erasure`'s to ship. Writing a local stub would satisfy the
+obligation's letter while proving nothing, which is the trap this DoD already names.
+
+**And §7 row 35's premise is confirmed rather than merely carried.** The DoD obliges the hook on
+*"the submission reason, the rejection reason and the break-glass session reason"*, and
+`products_approval`'s column roster is fourteen wide with **no `reason` among them** — only
+`products_approval_decision.reason` and `products_breakglass_session.reason` exist. So this DoD names
+three reasons where two are storable. Which way that resolves — the submission carries no operator
+text, or the approval row owes a column — is row 35's owner call and is **not** taken here.
 
 **Implements**: `cpt-cf-bss-products-flow-submit`,
 `cpt-cf-bss-products-flow-decide`, `cpt-cf-bss-products-flow-breakglass`

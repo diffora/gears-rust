@@ -59,7 +59,7 @@ use crate::domain::materiality::{
     MaterialAct, Materiality, MaterialityEvaluator, MaterialityRefusal,
 };
 use crate::infra::storage::RepoError;
-use crate::infra::storage::entity::{approval, approval_decision};
+use crate::infra::storage::entity::{approval, approval_decision, breakglass_session};
 
 /// What a governance store write can answer.
 ///
@@ -782,6 +782,267 @@ async fn decision_ack_exists(
         .await
         .map_err(|e| driver_failure(format!("override acknowledgments of {approval_id}"), e))?;
     Ok(found.is_some())
+}
+
+// ---------------------------------------------------------------------------
+// Break-glass: the elevation session's open, and the expiry that emits once
+// (`design/05` `inst-bg-open`, `inst-bg-expiry`; **P-D-68** arms 2 and 3).
+// ---------------------------------------------------------------------------
+
+/// Which of `inst-bg-open`'s two approval paths an elevation took.
+///
+/// **One ceremony, two timings** (**P-D-68** arm 3): rule 1's
+/// *"two-person-approved **or** post-hoc-reviewed"* is not two ceremonies but
+/// one whose second principal may arrive late. So the two arms are exclusive
+/// — `chk_products_breakglass_path` enforces that with
+/// `(two_person_approval_ref IS NULL) <> (posthoc_state IS NULL)` — and the
+/// post-hoc arm is discharged by that second principal's decision rather than
+/// by a new door.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum ApprovalPath {
+    /// The second platform principal approved **before** the session opened.
+    ///
+    /// The reference carries **no FK**: whether its referent is an
+    /// `ApprovalRecord` is `features/governance.md` §7 row 9, which P-D-68
+    /// arm 3 deliberately did not presuppose, and the precedent is this
+    /// gear's own `products_bulk_batch.approval_ref`.
+    TwoPerson(Uuid),
+    /// The obligation is recorded `pending` and the second principal reviews
+    /// after the fact.
+    PostHoc,
+}
+
+/// One elevation, as the store needs it.
+///
+/// A struct rather than six arguments because two pairs are mutually
+/// assignable and a transposition would compile: the `Uuid`s `session_id`,
+/// `principal` and `target_tenant`, and the two instants bounding the window.
+#[derive(Copy, Clone, Debug)]
+pub struct NewElevation {
+    /// The session's own id.
+    pub session_id: Uuid,
+    /// The acting platform principal, pseudonymous from birth.
+    pub principal: Uuid,
+    /// The tenant whose data the session reaches.
+    pub target_tenant: Uuid,
+    /// The window's start, inclusive.
+    pub valid_from: DateTime<Utc>,
+    /// The window's end, **exclusive** — the interval is half-open, because
+    /// expiry gates admission and an act admitted inside it finishes
+    /// (P-D-68 arm 2).
+    pub valid_until: DateTime<Utc>,
+    /// Which approval path was taken.
+    pub path: ApprovalPath,
+    /// When the session opened.
+    pub opened_at: DateTime<Utc>,
+}
+
+/// Open an elevation session (`inst-bg-open`).
+///
+/// # What the engine refuses, so this function does not restate it
+///
+/// The reason's presence is `chk_products_breakglass_reason` (`reason <> ''`),
+/// the window's ordering is `chk_products_breakglass_window`
+/// (`valid_until > valid_from`), the two paths' exclusivity is
+/// `chk_products_breakglass_path`, and the reviewed triple is
+/// `chk_products_breakglass_review` — all on **both** dialects. A guard here
+/// would be a second answer to a question the schema already answers, and the
+/// two could drift; what this function does is make the paths unrepresentable
+/// wrongly in the first place, via [`ApprovalPath`].
+///
+/// # What is deliberately absent
+///
+/// **The alert.** `dod-breakglass-open` requires `BreakGlassElevated` *"and a
+/// distinct alert channel"*, and *"a failed alert emission MUST NOT leave a
+/// silent session"* — either the elevation is refused or it opens carrying a
+/// recorded undelivered-alert obligation. Neither the event type nor an alert
+/// channel exists in the gear, and no column holds an undelivered-alert
+/// obligation, so this function opens the session and the obligation is
+/// `dod-governance-events`' patch plus a missing artifact. **The window's
+/// value is the caller's**: its interim 4 hours and the no-renewal rule live
+/// only in the PRD's §17.1 interim-policy table (§7 row 22), and
+/// `inst-bg-open` states neither, so nothing is defaulted here.
+///
+/// # Errors
+///
+/// [`RepoError`] on a storage or scope failure, including a `CHECK` this
+/// function does not pre-empt.
+pub async fn open_breakglass_session(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    new: NewElevation,
+    reason: &str,
+) -> Result<(), RepoError> {
+    let (two_person_approval_ref, posthoc_state) = match new.path {
+        ApprovalPath::TwoPerson(reference) => (Some(reference), None),
+        ApprovalPath::PostHoc => (None, Some("pending".to_owned())),
+    };
+    let model = breakglass_session::ActiveModel {
+        session_id: Set(new.session_id),
+        principal: Set(new.principal),
+        target_tenant: Set(new.target_tenant),
+        reason: Set(reason.to_owned()),
+        valid_from: Set(new.valid_from),
+        valid_until: Set(new.valid_until),
+        two_person_approval_ref: Set(two_person_approval_ref),
+        posthoc_state: Set(posthoc_state),
+        reviewed_by: Set(None),
+        reviewed_at: Set(None),
+        expired_emitted: Set(false),
+        opened_at: Set(new.opened_at),
+    };
+    breakglass_session::Entity::insert(model.clone())
+        .secure()
+        .scope_with_model(scope, &model)
+        .map_err(|e| driver_failure(format!("elevation scope of {}", new.target_tenant), e))?
+        .exec(runner)
+        .await
+        .map_err(|e| driver_failure(format!("open elevation {}", new.session_id), e))?;
+    Ok(())
+}
+
+/// Whether an elevated call is admitted, and who emits `BreakGlassExpired`.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum Elevation {
+    /// Inside the window. **Expiry gates admission, not completion**
+    /// (P-D-68 arm 2), so a call admitted here finishes even if the window
+    /// closes under it.
+    Admitted,
+    /// Before `valid_from`.
+    ///
+    /// Its own arm rather than folded into [`Self::Expired`], which would
+    /// emit `BreakGlassExpired` for a session that has not begun. Unreachable
+    /// while every caller opens with `valid_from = opened_at`, but the column
+    /// admits a future instant and a **total** function over the interval is
+    /// what stops a `<` silently becoming a `<=` at the other boundary.
+    NotYetValid,
+    /// Past the window: the call is refused `BREAKGLASS_EXPIRED`.
+    Expired {
+        /// `true` for **exactly one** caller per session — the winner of the
+        /// CAS on `expired_emitted`. A replay emits nothing, and a session
+        /// never called after expiry emits no event at all, its expiry being
+        /// a stored fact a gauge observes (P-D-68 arm 2, on P-D-54's and
+        /// P-D-59's mechanisms).
+        emit_expired: bool,
+    },
+}
+
+/// Judge an elevated call against its session's window, flipping the
+/// `expired_emitted` stamp for the one caller that emits (`inst-bg-expiry`,
+/// **P-D-68** arm 2).
+///
+/// # This function opens no transaction — `runner` MUST be the refusal's own
+///
+/// P-D-68 puts the CAS *"in the same transaction as that refusal"*. The flip
+/// here is one statement; only the caller's transaction makes it atomic with
+/// the refusal it accompanies, and a committed flip beside a rolled-back
+/// refusal is the exactly-once guarantee inverted — the event announced and
+/// the refusal never delivered.
+///
+/// # The CAS is the `UPDATE`'s own predicate
+///
+/// `expired_emitted = false` sits on the write. Ten calls after expiry
+/// therefore produce one `emit_expired: true` and nine `false`, whatever
+/// order they arrive in — which is the whole of what item 19 asked and P-D-68
+/// answered. Reading the column and then writing it would give ten emissions
+/// under contention, the defect the item names in its own words.
+///
+/// # Errors
+///
+/// [`RepoError`] on a storage or scope failure, and [`RepoError::Db`] when no
+/// session with that id is visible under `scope` — a caller naming a session
+/// of another tenant sees the same answer as one naming a session that does
+/// not exist, which is the tenant-scoping boundary and not an accident.
+pub async fn admit_elevated_call(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    session_id: Uuid,
+    now: DateTime<Utc>,
+) -> Result<Elevation, RepoError> {
+    let session = breakglass_session::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(Condition::all().add(breakglass_session::Column::SessionId.eq(session_id)))
+        .one(runner)
+        .await
+        .map_err(|e| driver_failure(format!("read elevation {session_id}"), e))?
+        .ok_or_else(|| RepoError::Db(format!("no elevation session {session_id} in scope")))?;
+
+    if now < session.valid_from {
+        return Ok(Elevation::NotYetValid);
+    }
+    // Half-open `[from, until)`: the instant `valid_until` is already outside.
+    if now < session.valid_until {
+        return Ok(Elevation::Admitted);
+    }
+
+    let flipped = breakglass_session::Entity::update_many()
+        .secure()
+        .scope_with(scope)
+        .col_expr(
+            breakglass_session::Column::ExpiredEmitted,
+            Expr::value(true),
+        )
+        .filter(
+            Condition::all()
+                .add(breakglass_session::Column::SessionId.eq(session_id))
+                // The CAS, and it belongs on the write.
+                .add(breakglass_session::Column::ExpiredEmitted.eq(false)),
+        )
+        .exec(runner)
+        .await
+        .map_err(|e| driver_failure(format!("expiry stamp of {session_id}"), e))?;
+    Ok(Elevation::Expired {
+        emit_expired: flipped.rows_affected == 1,
+    })
+}
+
+/// Discharge a `pending` post-hoc obligation with the second platform
+/// principal's late decision (**P-D-68** arm 3).
+///
+/// No new door and no new grant: this is the second principal of the *same*
+/// ceremony, arriving after the fact. The `pending` predicate is on the
+/// `UPDATE`, so two reviewers racing produce one discharge; zero rows means
+/// the obligation was already discharged or the session took the two-person
+/// path, and both are the caller's to interpret rather than errors.
+///
+/// `reviewed_by` and `reviewed_at` are written with the state because
+/// `chk_products_breakglass_review` pins the triple on both dialects.
+///
+/// # Errors
+///
+/// [`RepoError`] on a storage or scope failure.
+pub async fn discharge_posthoc_review(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    session_id: Uuid,
+    reviewed_by: Uuid,
+    reviewed_at: DateTime<Utc>,
+) -> Result<bool, RepoError> {
+    let outcome = breakglass_session::Entity::update_many()
+        .secure()
+        .scope_with(scope)
+        .col_expr(
+            breakglass_session::Column::PosthocState,
+            Expr::value("reviewed".to_owned()),
+        )
+        .col_expr(
+            breakglass_session::Column::ReviewedBy,
+            Expr::value(reviewed_by),
+        )
+        .col_expr(
+            breakglass_session::Column::ReviewedAt,
+            Expr::value(reviewed_at),
+        )
+        .filter(
+            Condition::all()
+                .add(breakglass_session::Column::SessionId.eq(session_id))
+                .add(breakglass_session::Column::PosthocState.eq("pending")),
+        )
+        .exec(runner)
+        .await
+        .map_err(|e| driver_failure(format!("discharge review of {session_id}"), e))?;
+    Ok(outcome.rows_affected == 1)
 }
 
 /// The pending queue, oldest first — the operand behind
