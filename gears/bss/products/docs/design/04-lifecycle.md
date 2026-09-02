@@ -168,7 +168,7 @@ actor, the scenarios and the boundary.
 
 1. [ ] - `p1` - A SKU publish under a non-`published` parent fails `PARENT_NOT_PUBLISHED` (the validator registered on the SKU's `→ published` **target state**, not on the edge — **P-D-32**, so a re-publish re-runs it fail-closed, which is the re-run 01 §2's publish path relies on; the code was named in 01 §3.3 for AC #38 completeness) - `inst-pc-ordering`
 2. [ ] - `p1` - **Containment (C5, final rule)**: a SKU's brand/region scope must be a subset of its parent's — flat value-set subset, evaluated on save and re-evaluated on publish; anything not provably a subset fails `SCOPE_NOT_CONTAINED`; the empty set is *unrestricted*, so an unrestricted parent contains every child and an unrestricted child needs an unrestricted parent (01 **P-D-39**, C5) - `inst-pc-containment`
-3. [ ] - `p1` - A **scope-narrowing Product publish** fails closed (`SCOPE_NARROWING_BLOCKED` — L1 fix) while any **non-terminal** child (`draft`/`published`/`deprecated`) would fall outside the narrowed scope — the validator names the falling-out children; widening is always admissible. **Non-terminal, not "non-`retired`"** (item 17 of the review): `discarded` is terminal at the physical layer (01 `inst-fd-terminal`) and is the routine output of the cascade's auto-discard arm, so the old operand let one discarded draft block that Product's narrowing permanently - `inst-pc-narrowing`
+3. [ ] - `p1` - A **scope-narrowing Product publish** fails closed (`SCOPE_NOT_CONTAINED` — **P-D-96** withdrew the narrowing-specific `SCOPE_NARROWING_BLOCKED`; L1 fix) while any **non-terminal** child (`draft`/`published`/`deprecated`) would fall outside the narrowed scope — the validator names the falling-out children; widening is always admissible. **Non-terminal, not "non-`retired`"** (item 17 of the review): `discarded` is terminal at the physical layer (01 `inst-fd-terminal`) and is the routine output of the cascade's auto-discard arm, so the old operand let one discarded draft block that Product's narrowing permanently - `inst-pc-narrowing`
 
 ## 3. Processes / Business Logic
 
@@ -190,7 +190,7 @@ The roster below is this slice's and is the normative one; the FEATURE carries t
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-contract-lifecycle-errors`
 
 `PARENT_NOT_PUBLISHED` (named in 01, registered here), `SCOPE_NOT_CONTAINED` (**named in 01, its final semantics registered here** — P-D-34 reads C5's "the final form of 01's interim check" literally: this slice replaces the operand inside 01's `identity` phase rather than registering a validator, so the code stays declared in 01 — **P-D-36** withdrew the phase unit and the declaring slice is now the unit),
-`SCOPE_NARROWING_BLOCKED`, `RETIREMENT_LEAD_TIME`, `REPLACED_BY_NOT_PUBLISHED`,
+`RETIREMENT_LEAD_TIME`, `REPLACED_BY_NOT_PUBLISHED`,
 `SCHEDULE_STALE_APPROVAL` (raised by the `ActivationRunner` — its own door), `CASCADE_CONFIRMATION_REQUIRED`, `RETIREMENT_PENDING` (**declared here**; both arms are this slice's validators — P-D-30; 01 lists it for its response map only, P-D-34: the
 un-deprecation edge, and **this slice's validator registered on 01's create door**, whose operand
 is the live retire intent in `products_scheduled_transition`, a table this slice owns. P-D-20
@@ -204,7 +204,15 @@ against §1.1; both arms are therefore this slice's, and this slice declares the
 indeterminacy; and the post-v1 EOL row stays **outside** lint 2's universe, `EOL_DISABLED`
 refusing the feature rather than the named condition. The map is 12 §4.1).
 
-**Problem responses (RFC 9457):** `SCOPE_NARROWING_BLOCKED`, `SCHEDULE_STALE_APPROVAL`, `RETIREMENT_PENDING`, `PARENT_NOT_PUBLISHED` (409); `CASCADE_CONFIRMATION_REQUIRED`, `EOL_DISABLED`, `SCOPE_NOT_CONTAINED`, `RETIREMENT_LEAD_TIME`, `REPLACED_BY_NOT_PUBLISHED` (422 architectural; 400 on the wire — see the note below).
+**Problem responses (RFC 9457):** `SCHEDULE_STALE_APPROVAL`, `RETIREMENT_PENDING`, `PARENT_NOT_PUBLISHED` (409); `CASCADE_CONFIRMATION_REQUIRED`, `EOL_DISABLED`, `SCOPE_NOT_CONTAINED`, `RETIREMENT_LEAD_TIME`, `REPLACED_BY_NOT_PUBLISHED` (422 architectural; 400 on the wire — see the note below).
+
+*`SCOPE_NARROWING_BLOCKED` was **withdrawn by P-D-96** and is not in either list above. A narrowing
+refusal rides `SCOPE_NOT_CONTAINED`, which is declared in `01-foundation` and whose final operand
+this slice registers. The reason is in the shipped code rather than in a cost estimate: both the
+parent-narrowing and the child-creation directions reach one refusal builder,
+`skus::scope_not_contained_domain_err`, "so the two directions cannot word one refusal two ways" —
+a second code is the divergence that arrangement exists to prevent, and a caller already learns the
+direction from which door answered.*
 
 *`PARENT_NOT_PUBLISHED` moved 422 → 409 by **P-D-24**: it is a refusal by the
 parent's current state, which is the class §3.3's discriminator assigns to 409 — the same reading
@@ -329,10 +337,22 @@ pricing D-47 (joint contract), P-D-04 (containment residue).
   trigger population and fits none of the three plan arms. The PRD carries the wider wording, so
   narrowing it is a deliberate deviation that owes a register entry. Owner: this slice with the PRD
   owner. *(Two lenses raised it independently.)*
-- **Is `SCOPE_NARROWING_BLOCKED`'s operand a PRD deviation that owes an entry?** `inst-pc-narrowing`
+- **Is `inst-pc-narrowing`'s operand a PRD deviation that owes an entry?** The instruction
   reads **non-terminal**, `fr-parent-child-integrity` reads non-`retired`, and the reasoning here is
   sound — but no `DECISIONS.md` entry records the change, the way P-D-20 recorded the struck freeze.
-  Owner: the PRD owner. *(Raised by the slice-04 first lens pass.)*
+  **P-D-96 did not settle this**: it withdrew the narrowing-specific *code*, leaving the *operand*
+  question exactly as it stood. Owner: the PRD owner. *(Raised by the slice-04 first lens pass.)*
+- **Does the narrowing refusal name the falling-out children, now that it rides
+  `SCOPE_NOT_CONTAINED`?** `inst-pc-narrowing` says *"the validator names the falling-out
+  children"*, and **P-D-96 leaves that requirement untouched** — but the code it now rides does not
+  meet it: `skus::scope_not_contained_domain_err` builds its detail from the **dimension and the two
+  scope value sets**, never from child ids, and the create door's standing choice not to name
+  offending children (§7 row 27 of `../features/lifecycle.md`) is what keeps both directions
+  disclosing the same amount. So one of three things must give: the instruction's naming clause, the
+  shared refusal builder's discipline, or the single-code decision. **Registered, not answered** —
+  answering it here would be authoring, and the lead's P-D-96 mandate was the roster edit only.
+  Owner: the lifecycle owner with `01-foundation` (the builder is 01's). *(Raised by the lead's
+  2026-09-02 roster edit.)*
 - **Does a deferred cascade complete automatically or by an operator act, and who writes
   `resolution = children_cleared`?** Three mechanics are in play for one act: `inst-ar-failure` says
   `deferred` re-evaluates automatically, `inst-cp-deferred` says the parent is "resumable by an
