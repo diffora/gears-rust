@@ -1569,6 +1569,87 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   (the re-publish step).
 
 
+#### P-D-106 — `02`'s three doorless doors get one route family each, and the grant arrives with the door
+
+- **Date**: 2026-09-03 (owner call, answering `features/taxonomy-attributes.md` §7 **row 16** and
+  the metadata half of **row 2**; `design/02` §6 carries the same note)
+- **Context**: three of this slice's doors name no REST path — the taxonomy-op door, the
+  attribute-definition door and the category live-value door — and `design/05` §3.2's grant
+  catalog carries their pairs with *"no route declared"*. Measured at `cccf18e67`, this is why
+  strand A had no code work at all: **the taxonomy has zero routes** — no `OperationBuilder`
+  registration in the crate names a category, attribute or metadata path — `resolve_localized`,
+  `write_category_display_value` and `upsert_metadata` all have no production caller, and thirteen
+  of A's sixteen unticked `DoD`s sit behind rows that need this one answered first.
+  **The grants are not in question.** `design/02` `inst-tx-governed-op` names `category × write`,
+  `inst-ad-governed` names `attribute_definition × write`, and `design/05` §3.2 carries
+  `metadata × write` with its path already declared. Only the routes are missing, and §3.2's own
+  §6 counts this as two of the **eight** rows still without one — a tracked programme with
+  precedents in **P-D-67**, **P-D-87** and **P-D-90**, not a fresh question.
+- **Decision**, one route family per door, following that corpus shape rather than inventing one:
+  1. **The taxonomy-op door**: `POST /bss-products/v1/categories` for the create, and
+     **`POST /bss-products/v1/categories/{categoryId}/operations`** for rename, re-parent, retire
+     and delete. One door for the four because the design already makes them one thing: they ride
+     **one** `GovernedLiveOp` envelope, queue through one gate, share one apply path — step 2
+     re-validates name uniqueness *"on rename **and** re-parent"* in one clause — and step 5 has
+     *"the op envelope id ride the event"*, so the envelope is the unit and the verb is its
+     payload.
+  2. **The attribute-definition door**: `POST /bss-products/v1/attribute-definitions` for the
+     create, and **`POST /bss-products/v1/attribute-definitions/{key}/operations`** for the
+     material changes and the state flips — deprecate, remove, and the `removed → active`
+     re-listing that `inst-ad-deprecate-then-remove` routes *"through the same `GovernedLiveOp`"*.
+     The **non-material display-label edit rides the same door**: `inst-ad-governed` makes it a
+     registered op kind at `min(N, 1)`, so materiality is judged by the envelope's kind through
+     `05 inst-mt-inputs` and never by which path was called.
+  3. **The category live-value door**: **`PATCH /bss-products/v1/categories/{categoryId}/attribute-values`**.
+     A `PATCH` and not an envelope, because `inst-av-category-branch` makes this door
+     **non-material** with its own precondition — `If-Match` on `products_category.mutation_seq`,
+     a mismatch raising `STALE_CATEGORY_TOKEN` (**P-D-50**) — so it is the metadata door's shape
+     (`PATCH /bss-products/v1/{products|skus}/{id}/metadata`) applied to the one entity whose
+     content is live rather than versioned, and not the governed-op shape of arms 1 and 2.
+- **The grant arrives with the door, and that is the code's own rule.** `authz_tests.rs` carries a
+  census with a **withheld list** naming `category`, `attribute_definition` and `metadata` as
+  absent on purpose, each annotated with the slice that owes it, under its own maintenance rule:
+  *"the rows rotate off the withheld list the day their door lands"*, and *"a grant declared here
+  with no owning door is a grant nobody can review"*. **P-D-90**'s pair did exactly that — measured:
+  `RECOGNIZED_SET` and `PLAN_TIER` entered `labels::ALL`, `resource_types`, `gts/permissions.rs`
+  and the census in the **same commit** as their doors (`a77d0f0d5`).
+  So this decision does **not** pre-declare the three grants. Declaring them ahead of their doors
+  would break the rule the census exists to state.
+- **Consequence for the ownership table, stated rather than left implicit**: the doors are strand
+  A's and the grant declarations are the lead's, and the census forbids splitting them across
+  commits. A therefore gets a **scoped, one-time grant** over `authz.rs`'s label /
+  `resource_types` block and `gts/permissions.rs`' three `02` rows, for this set only, in the same
+  commit as the doors. `catalog_resource_types_match_authz_labels_all` asserts the two sides equal,
+  so a half-landing cannot pass.
+- **The arguments against, stated.**
+  1. **Arms 1 and 2 put the act in the payload, not the path**, so a reader of the route table
+     cannot see which of four or five acts a call performs. This is the same objection **P-D-90**
+     accepted for its arm 2, and it is accepted here for the same reason: the alternative is four
+     or five act-named subresources — `…/{id}/renames`, `…/{id}/reparentings` — which would be
+     several spellings of one implementation, since the design states one envelope, one gate and
+     one apply path. It also departs from `…/retirements`' act-named shape, which is the strongest
+     argument the other way.
+  2. **Arm 3's `attribute-values` names the content, not the door's mode.** *"Live-value door"* is
+     the design's phrase and a path segment reading `live-values` would encode a mechanism a
+     consumer has no reason to know. The counter is that the design's own vocabulary is then not
+     findable from the route.
+  3. **The scoped ownership grant weakens the store-disjoint split** that has produced only two
+     conflicts in the whole programme. It is bounded to one set of rows in two files and expires
+     with the commit; the alternative — the lead declaring grants the census forbids declaring —
+     breaks a rule the code states about itself.
+- **Not changed**: the grants themselves, the materiality of each op, `GovernedLiveOp` as the
+  mechanism for arms 1 and 2, `STALE_CATEGORY_TOKEN` as arm 3's precondition code, and the eight
+  `DoD`s' own clauses. This gives existing grants a spender and existing doors a path.
+- **Propagated**: `features/taxonomy-attributes.md` §7 row 16 and the metadata half of row 2's
+  door question, `design/02-taxonomy-attributes.md` §6's matching note, and
+  `design/05-governance.md` §3.2's `Doors` column — three cells lose *"no route declared"* and its
+  §6 count of eight drops to five.
+- **Owed**: `design/05` §3.2's §6 paragraph states the count as **eight** and re-measures it after
+  each doring decision; that arithmetic is this entry's to update and is done in the same commit.
+  Row 2's **`METADATA_LIMIT` number** is *not* settled here — this entry gives the metadata door its
+  grant story, not its cap, and the cap remains the §17.1 policy owner's.
+
+
 #### P-D-105 — `PreAuthorized` verifies the pin the row carries, not the subject the record names
 
 - **Date**: 2026-09-02 (owner call, answering `features/lifecycle.md` §7 **row 22** and
@@ -1656,10 +1737,11 @@ per-decision anchors, and it was corrected by running the command it prescribed.
 - **Owed**: the writer-count guard (discharged here, not registered). `inst-gv-one-shot` and
   `inst-fd-gate-mode-preauthorized` keep their wording — both speak of verifying without
   consuming, which is exactly what this predicate does — but `inst-fd-gate-mode-preauthorized`'s
-  *"this subject at this revision"* clause now needs its scheduled-flip exception written in, and
-  that clause is `design/01-foundation.md`'s. **That is the one propagation this entry does not
-  discharge**, because 01 is the foundation slice and its §3 is not a strand's; it is the lead's
-  next documentation debt and is recorded here rather than left to be noticed.
+  *"this subject at this revision"* clause needed its scheduled-flip exception written in, and that
+  clause is `design/01-foundation.md`'s. **Discharged 2026-09-02**: `inst-fd-gate-mode-preauthorized`
+  now states what *"verifies"* means in two arms — the subject/revision one for an act whose subject
+  is the record's own, and the consumed-plus-row-pin one for a scheduled flip — with the
+  one-table scope written in beside it.
 
 
 #### P-D-104 — The well-known seeds are written on a tenant's **first write**, and P-D-100's migration arm is withdrawn

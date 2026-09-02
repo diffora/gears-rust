@@ -413,13 +413,17 @@ no event of their own (category display values emit `CategoryDisplayUpdated`, ab
   the tree key claims a serialization the door does not provide, while a per-category key leaves a
   rename and a display edit on one category mutually unordered. Owner: this slice with 12.
   *(Two lenses raised it independently.)*
-- **Three doors name no REST path, and one names no grant pair.** The taxonomy-op door, the
-  attribute-definition door and the category live-value door all go unnamed, against this slice's
-  own precedent — the metadata door
-  carries its path and pair explicitly because without them 12's lint could not see it. The pair is
-  a real choice, not an omission: 05 minted a separate `metadata × write` precisely because that map
-  is mutable on a published entity, and the category display value has the same property. Owner:
-  this slice with 05. *(Two lenses raised it independently.)*
+- ~~**Three doors name no REST path, and one names no grant pair.**~~ **Answered (owner call,
+  2026-09-03 — P-D-106): each gets one route family** — `POST /bss-products/v1/categories` and
+  `…/{categoryId}/operations`; `POST /bss-products/v1/attribute-definitions` and
+  `…/{key}/operations`; `PATCH /bss-products/v1/categories/{categoryId}/attribute-values`. The
+  first two are one door per resource rather than one per act, because this slice already states
+  one `GovernedLiveOp` envelope, one gate and one apply path for the set, and step 5 has the
+  envelope id ride the event; the third takes the metadata door's `PATCH` shape because
+  `inst-av-category-branch` makes it non-material with its own `mutation_seq` precondition. **The
+  pair was never the open half** — `inst-tx-governed-op` and `inst-ad-governed` name their grants
+  and §3.2 carries all three; the note read the missing routes as a missing decision about grants.
+  The three labels arrive **with** the doors, per `authz_tests.rs`' own census rule.
 - **Four refusals in this slice have no code.** "target category exists" and "duplicates between
   primary/secondary" in `inst-tx-assign`, the seeded-definition removal refusal, and the removal
   refusal on a non-terminal head carrying a value all lack one (the type-change arm of that same

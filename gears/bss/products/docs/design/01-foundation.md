@@ -308,12 +308,23 @@ verbs, and 04's crash-replay of a scheduled activation (04 `inst-sp-idempotent`)
      pinned to the door's expected revision fails `APPROVAL_REQUIRED` (05 `inst-gv-gate`: "The gate
      never re-evaluates materiality at publish") - `inst-fd-gate-mode-gate`
    - [ ] - `p1` - **Under `PreAuthorized`** the gate does not look for a `satisfied` record and does
-     not consume one; it **verifies** that the named record authorized *this* subject and that its
-     pinned revision still matches, raising `APPROVAL_REQUIRED` only when it did not. Without the
-     mode the two readings collide and every scheduled publish fails terminally: the runner drives
-     "the ordinary Foundation publish door" (04 `inst-sp-activate`), the gate inside it would see a
-     `consumed` record, and 04 `inst-ar-failure` wraps that into a terminal
-     `SCHEDULE_STALE_APPROVAL` - `inst-fd-gate-mode-preauthorized`
+     not consume one; it **verifies** the named record, raising `APPROVAL_REQUIRED` only when the
+     verification fails. Without the mode the two readings collide and every scheduled publish
+     fails terminally: the runner drives "the ordinary Foundation publish door" (04
+     `inst-sp-activate`), the gate inside it would see a `consumed` record, and 04
+     `inst-ar-failure` wraps that into a terminal `SCHEDULE_STALE_APPROVAL`.
+     **What "verifies" means has two arms (P-D-105).** For an act whose subject is the record's own
+     subject, it is *"the record authorized **this** subject and its pinned revision still
+     matches"*. For a **scheduled flip** it is *"the record is `consumed`, **and** the row being
+     flipped names it in its own `approval_ref`"*, and subject/revision equality is **not** asked —
+     because a cascade leg's subject is a **child** entity with its own revision while the record
+     names the parent, and `products_approval` stores one subject and one revision per record, so
+     the first arm fails for every leg by construction. The second arm is not a weakening: its
+     operand is a stored column on a row no caller can write, every writer of
+     `products_scheduled_transition` running the gate first, and that writer count is guarded in
+     code. The arm is **scoped to that table** — `products_bulk_batch.approval_ref` has the same
+     shape and different writers, so extending it to a bulk row is a separate
+     decision - `inst-fd-gate-mode-preauthorized`
    - [ ] - `p1` - **Re-validation stays fail-closed in both modes** — the mode governs *who
      approved*, never *whether the entity is still
      publishable* - `inst-fd-gate-revalidation`
