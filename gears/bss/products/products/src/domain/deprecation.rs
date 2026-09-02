@@ -60,8 +60,8 @@
 //!   does not ship. Both rules and their probes are here so the act that
 //!   lands later consults one answer instead of inventing a second.
 //!
-//! @cpt-cf-bss-products-dod-deprecation-cascade
-//! @cpt-cf-bss-products-dod-deprecation-provenance
+//! @cpt-dod:cpt-cf-bss-products-dod-deprecation-cascade:p1
+//! @cpt-dod:cpt-cf-bss-products-dod-deprecation-provenance:p1
 //! @cpt-cf-bss-products-dod-provenance-reversal
 //! @cpt-cf-bss-products-dod-no-orphan
 

@@ -611,7 +611,7 @@ corrected in the same change, along with a count that predated `cloned_from` lan
 
 ### Deprecation with provenance
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-deprecation-provenance`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-deprecation-provenance`
 
 The system **MUST** stamp `deprecation_provenance` as `direct` on an operator act and `cascaded`
 on a parent-driven one, on the `published → deprecated` edge, and **MUST** emit the deprecation
@@ -629,7 +629,7 @@ the child the requirement says it must not.
 
 ### Deprecation cascade dispositions
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-deprecation-cascade`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-deprecation-cascade`
 
 The system **MUST** cascade a plain Product deprecation onto its children with a stated disposition
 per child state: `published` ⇒ deprecated `cascaded`; already-`deprecated` ⇒ **left untouched**;
