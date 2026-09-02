@@ -24,14 +24,14 @@
 //! respect: only the registered form can collect several violations in one
 //! phase. Every cross-row rule here is a single-condition refusal.
 //!
-//! The insertion site *is* the keying. The lead wires
-//! `.with_rule(Box::new(ParentPublishedRequired))` on the SKU publish
-//! re-validation pipeline, prefetching the parent's [`LifecycleState`]
-//! into [`PublishOrderingSubject`]. Until that line lands the rule type
-//! reaches no runtime.
+//! The insertion site *is* the keying. The door fills this slot as a
+//! **continuation** (`parent_must_be_published`) — `publish_revalidation_pipeline`
+//! is monomorphic in `PublishRevalidationSubject`, so
+//! [`ParentPublishedRequired`] cannot join it. Both fillings still share
+//! one function.
 //!
 //! @cpt-dod:cpt-cf-bss-products-dod-registered-validator-host:p1
-//! @cpt-cf-bss-products-dod-publish-ordering
+//! @cpt-dod:cpt-cf-bss-products-dod-publish-ordering:p1
 
 use bss_products_sdk::models::LifecycleState;
 

@@ -920,7 +920,7 @@ re-checked **at flip**, not only planned at confirmation.
 
 ### Publish ordering
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-publish-ordering`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-publish-ordering`
 
 A SKU publish under a non-`published` parent **MUST** fail `PARENT_NOT_PUBLISHED`, the validator
 registered on the SKU's **`→ published` target state** and not on the edge, so a re-publish re-runs
