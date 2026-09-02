@@ -1569,6 +1569,41 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   (the re-publish step).
 
 
+#### P-D-101 — The locale chain's default is the **tenant** default only; "resolves per brand" is struck
+
+- **Date**: 2026-09-02 (owner call, on strand A's `A-OWED-09`)
+- **Context**: `inst-av-resolve`'s step 3 read *"default-locale resolves per brand, falling back to
+  the tenant default"* — two inputs, and measured at `HEAD` **neither exists**. The feature's §7
+  row 6 already recorded the first: *"the per-brand default locale has no store."* The second is in
+  no row — **`ProductsConfig` carries no default-locale field at all**, `grep -i locale
+  src/config.rs` is empty. So `resolve_localized` is correct for whatever arrives and nothing can
+  produce what arrives; every caller supplies the locale as an argument no component mints.
+- **Decision**: **the default-locale is the tenant default, and the per-brand half is struck.** One
+  config value, added to `ProductsConfig` and validated at boot the way `freeze_timeout_hours` is.
+  The chain's shape is unchanged — `(locale, region, brand) → (locale, brand) → (default-locale,
+  brand) → global`; step 3's *coordinate* still carries the brand, because a value may be stored at
+  the tenant-default locale under a brand. What changes is only where the default-locale **value**
+  comes from.
+- **The reason is the row's own next sentence**: *"Totality is anchored on the resolution path, not
+  on the config value … the tenant default locale is ungoverned config with no re-validation, so
+  anchoring on it would un-total the chain for every already-published entity the moment it
+  changed."* A per-brand default is a **second** ungoverned config value under a step that cannot
+  change whether resolution succeeds — it only shortens the path, since step 4's global fallback is
+  what makes the chain total. Doubling that exposure for a shortcut is what this decision refuses.
+- **The arguments against, stated**: a per-brand default is a real product capability — a tenant
+  selling under two brands in two markets may want each brand's fallback language to differ — and
+  striking it removes that without a replacement. Accepted: the capability can return as a
+  **governed** per-brand value (a fourth coordinate kind in `products_attribute_value`, which needs
+  no new table) if a requirement asks for it, and it would then be re-validated rather than
+  ungoverned config. Nothing in the PRD asks for it today. The alternative of adding both inputs was
+  declined for the reason above; the alternative of leaving the resolver a pure function for
+  `08-read-models` to supply both inputs to was declined because it moves an unanswered question
+  into another slice rather than closing it.
+- **Propagated**: `design/02-taxonomy-attributes.md` `inst-av-resolve` (the struck clause, with this
+  id). **Owed**: `ProductsConfig.default_locale` — `config.rs` is no strand's, so the lead's; and
+  the feature's §7 **row 6**, whose question this answers, is strand A's file and that strand's to
+  strike. `dod-default-locale` and `dod-locale-resolver` stay unticked until the config field lands.
+
 #### P-D-100 — The well-known attribute seeds get **two** writers: a migration for tenants that exist at deploy, and a lazy read-through for every tenant after
 
 - **Date**: 2026-09-02 (owner call, on strand A's `A-OWED-04`)
