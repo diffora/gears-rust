@@ -222,7 +222,7 @@ use axum::http::StatusCode;
 use axum::http::header::ETAG;
 use axum::response::{IntoResponse, Response};
 use bss_products_sdk::models::{EntityKind, LifecycleState};
-use chrono::{DateTime, Duration, Utc};
+use chrono::{DateTime, Duration, SecondsFormat, Utc};
 use sea_orm::DbErr;
 use serde_json::{Map as JsonMap, Value as JsonValue};
 use toolkit::api::OpenApiRegistry;
@@ -259,7 +259,9 @@ use crate::domain::governance::{
 };
 use crate::domain::idempotency;
 use crate::domain::live_op::GovernedLiveOp;
-use crate::domain::retirement::{effective_at, eol_lockout, replaced_by_must_be_published};
+use crate::domain::retirement::{
+    effective_at, eol_lockout, publish_reannounces_retirement, replaced_by_must_be_published,
+};
 use crate::domain::rules::{
     PublishRevalidationSubject, SkuCodeStillPresent, SkuScopeColumnsStillParse,
 };
@@ -2988,6 +2990,11 @@ async fn announce_and_answer(
         ))))
     })?;
 
+    if published_version.is_some() {
+        reannounce_retirement_if_live(runner, outbox, inputs, &core, image.published_version)
+            .await?;
+    }
+
     let body = serde_json::to_value(SkuView::from(image.clone())).map_err(|e| {
         HeadActError::Db(DbError::Sea(DbErr::Custom(format!(
             "bss-products: render the head act's answer: {e}"
@@ -3010,6 +3017,50 @@ async fn announce_and_answer(
     Ok(MutationOutcome::Applied {
         internal_revision: image.internal_revision,
         body,
+    })
+}
+
+/// P-D-20 / P-D-48: a publish that moves the version while a live retire
+/// intent is in the lead window re-emits `SkuRetired` in this same
+/// transaction.
+async fn reannounce_retirement_if_live(
+    runner: &(impl toolkit_db::secure::DBRunner + Sync),
+    outbox: &crate::infra::broker::EventSink,
+    inputs: &HeadActInputs,
+    core: &events::EventBodyCore,
+    from_version: i64,
+) -> Result<(), HeadActError> {
+    let intents =
+        repo::find_live_retire_intents(runner, &inputs.scope, inputs.tenant_id, inputs.sku_id)
+            .await
+            .map_err(|e| HeadActError::from_repo(&e))?;
+    let Some(intent) = intents.into_iter().next() else {
+        return Ok(());
+    };
+    if !publish_reannounces_retirement(inputs.now, intent.created_at, intent.at) {
+        return Ok(());
+    }
+    let reason = intent.retirement_reason.unwrap_or_default();
+    events::enqueue_retired(
+        outbox,
+        runner,
+        inputs.sku_id,
+        events::SKU_RETIRED_PAYLOAD_TYPE,
+        events::RetiredEventBody {
+            core,
+            from_version,
+            reason,
+            replaced_by: None,
+            effective_at: intent.at.to_rfc3339_opts(SecondsFormat::Secs, true),
+            must_migrate_by: None,
+        },
+        inputs.actor_ref,
+    )
+    .await
+    .map_err(|e| {
+        HeadActError::Db(DbError::Sea(DbErr::Custom(format!(
+            "enqueue SkuRetired: {e}"
+        ))))
     })
 }
 
@@ -3922,9 +3973,11 @@ fn build_claim(
 /// # What this door does not build, and who owns each
 ///
 /// - **The retirement re-announcement** (`inst-fd-publish-reannounce`,
-///   **P-D-48**) needs a live retire intent to detect, and the
-///   `ScheduledTransition` that carries one is `04-lifecycle`'s and does not
-///   exist at this commit. Owed to **slice 04**.
+///   **P-D-48**): discharged. [`run_publish`] reads the live retire intent
+///   and, when the publish sits inside the lead window, enqueues `SkuRetired`
+///   with the new `fromVersion` in the same transaction.
+///
+///   @cpt-dod:cpt-cf-bss-products-dod-lead-window-reannounce:p1
 /// - **The corrected bucket-ii argument** (`inst-fd-publish-correction`,
 ///   **P-D-41**) is supplied only by slice **07**'s `CorrectionDoor`, which
 ///   has no caller here to hand one in. When 07 lands, its value must ride

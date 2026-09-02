@@ -19,7 +19,7 @@
 //! @cpt-dod:cpt-cf-bss-products-dod-flip-guard:p1
 //! @cpt-cf-bss-products-dod-replaced-by
 //! @cpt-cf-bss-products-dod-eol-lockout
-//! @cpt-cf-bss-products-dod-lead-window-reannounce
+//! @cpt-dod:cpt-cf-bss-products-dod-lead-window-reannounce:p1
 
 use chrono::{DateTime, Duration, Utc};
 use uuid::Uuid;
