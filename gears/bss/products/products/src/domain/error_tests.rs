@@ -47,6 +47,31 @@ fn every_variant_carries_its_design_set_wire_code() {
         ),
         (DomainError::ParentTerminal("p".into()), "PARENT_TERMINAL"),
         (
+            DomainError::ParentNotPublished("p".into()),
+            "PARENT_NOT_PUBLISHED",
+        ),
+        (
+            DomainError::RetirementPending("r".into()),
+            "RETIREMENT_PENDING",
+        ),
+        (
+            DomainError::ScheduleStaleApproval("s".into()),
+            "SCHEDULE_STALE_APPROVAL",
+        ),
+        (
+            DomainError::ReplacedByNotPublished("r".into()),
+            "REPLACED_BY_NOT_PUBLISHED",
+        ),
+        (
+            DomainError::RetirementLeadTime("e".into()),
+            "RETIREMENT_LEAD_TIME",
+        ),
+        (
+            DomainError::CascadeConfirmationRequired("c".into()),
+            "CASCADE_CONFIRMATION_REQUIRED",
+        ),
+        (DomainError::EolDisabled("e".into()), "EOL_DISABLED"),
+        (
             DomainError::IncompleteEntity("i".into()),
             "INCOMPLETE_ENTITY",
         ),
@@ -130,7 +155,7 @@ fn every_variant_carries_its_design_set_wire_code() {
     // roster short, and the roster is what the response map is built from.
     assert_eq!(
         cases.len(),
-        34,
+        41,
         "the Foundation owns fourteen raiseable codes and hosts two guests \
          (retention-erasure's ERASURE_UNKNOWN_ACTOR, P-D-64 keeping that \
          roster at one, and the clone door's CLONE_SOURCE_DISCARDED, \
@@ -143,8 +168,10 @@ fn every_variant_carries_its_design_set_wire_code() {
          BULK_OVERRIDE_UNACKNOWLEDGED and BULK_LIMIT, and reference-signal \
          the watermark door's four: PRODUCER_UNREGISTERED, \
          WATERMARK_REGRESSION, WATERMARK_CONFLICT and WATERMARK_FUTURE; \
-         PARENT_NOT_PUBLISHED is registered by the lifecycle feature and \
-         RETIREMENT_PENDING is declared by it; taxonomy-attributes declares \
+         PARENT_NOT_PUBLISHED, RETIREMENT_PENDING, SCHEDULE_STALE_APPROVAL, \
+         REPLACED_BY_NOT_PUBLISHED, RETIREMENT_LEAD_TIME, \
+         CASCADE_CONFIRMATION_REQUIRED and EOL_DISABLED are 04's seven \
+         (dod-lifecycle-errors, P-D-96); taxonomy-attributes declares \
          PRIMARY_CATEGORY_REQUIRED and STALE_LIVE_OP, the first registered publish validator \
          that belongs to neither 04 nor 05"
     );

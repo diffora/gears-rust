@@ -241,6 +241,23 @@ pub(crate) const PRODUCT_DEPRECATED_PAYLOAD_TYPE: &str = "ProductDeprecated";
 /// according to who drove the act.
 pub(crate) const SKU_DEPRECATED_PAYLOAD_TYPE: &str = "SkuDeprecated";
 
+/// `ProductUndeprecated` — 04's reversal of the deprecation pair. Not one
+/// of §4.5's eight; sits in `THE_LIFECYCLE_REST`.
+pub(crate) const PRODUCT_UNDEPRECATED_PAYLOAD_TYPE: &str = "ProductUndeprecated";
+
+/// `SkuUndeprecated` — [`PRODUCT_UNDEPRECATED_PAYLOAD_TYPE`]'s SKU sibling.
+pub(crate) const SKU_UNDEPRECATED_PAYLOAD_TYPE: &str = "SkuUndeprecated";
+
+/// `SkuRetired` — initiation, not the flip. Body is [`RetiredEventBody`].
+pub(crate) const SKU_RETIRED_PAYLOAD_TYPE: &str = "SkuRetired";
+
+/// `ProductRetired` — initiation. Row 5 (Product flip) is a different
+/// token and is not added.
+pub(crate) const PRODUCT_RETIRED_PAYLOAD_TYPE: &str = "ProductRetired";
+
+/// `SkuRetirementEffective` — the SKU flip. No Product analogue (row 5).
+pub(crate) const SKU_RETIREMENT_EFFECTIVE_PAYLOAD_TYPE: &str = "SkuRetirementEffective";
+
 /// `RecognizedUnitUpdated`'s payload type token — `design/03` §4's roster,
 /// the metering-unit set's own event, emitted **in the same transaction** as
 /// the membership mutation (`inst-rs-shape`). Not one of §4.5's eight and
@@ -291,7 +308,7 @@ pub(crate) const CATALOG_BULK_OPERATION_COMPLETED_PAYLOAD_TYPE: &str =
 /// **The version is per event, not per gear.** §4.5's own rule makes an added
 /// optional field a minor bump, so one event's schema may move while the
 /// others stand still; a single gear-wide version would force false bumps or
-/// hide a real one. All thirteen read `1.0.0` today because none has shipped a
+/// hide a real one. All eighteen read `1.0.0` today because none has shipped a
 /// second shape.
 pub(crate) const SCHEMA_REFS: &[(&str, &str)] = &[
     (
@@ -346,6 +363,23 @@ pub(crate) const SCHEMA_REFS: &[(&str, &str)] = &[
     (
         CATALOG_BULK_OPERATION_COMPLETED_PAYLOAD_TYPE,
         "bss-products.CatalogBulkOperationCompleted.v1.0.0",
+    ),
+    (
+        PRODUCT_UNDEPRECATED_PAYLOAD_TYPE,
+        "bss-products.ProductUndeprecated.v1.0.0",
+    ),
+    (
+        SKU_UNDEPRECATED_PAYLOAD_TYPE,
+        "bss-products.SkuUndeprecated.v1.0.0",
+    ),
+    (SKU_RETIRED_PAYLOAD_TYPE, "bss-products.SkuRetired.v1.0.0"),
+    (
+        PRODUCT_RETIRED_PAYLOAD_TYPE,
+        "bss-products.ProductRetired.v1.0.0",
+    ),
+    (
+        SKU_RETIREMENT_EFFECTIVE_PAYLOAD_TYPE,
+        "bss-products.SkuRetirementEffective.v1.0.0",
     ),
 ];
 
@@ -479,6 +513,38 @@ pub(crate) struct DeprecatedEventBody<'core> {
     /// `direct` or `cascaded` — the value written to the row in the very
     /// statement this event announces, so the two cannot disagree.
     pub provenance: &'static str,
+}
+
+/// A retirement-initiation body: the shared [`EventBodyCore`], plus the
+/// fields `design/04` puts on `SkuRetired` / `ProductRetired`. A third
+/// shape, not an overload of the core. `must_migrate_by` is always `None`
+/// in v1; the schema must round-trip that absence, not a null.
+///
+/// `replaced_by` is SKU-only. Product initiation leaves it `None`.
+/// `SkuRetirementEffective` reuses this shape; row 5 (Product flip) stays
+/// open and has no token here.
+#[allow(
+    dead_code,
+    reason = "the retirement enqueue lands with the door that emits these tokens"
+)]
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct RetiredEventBody<'core> {
+    /// The five fields every event of this gear carries.
+    #[serde(flatten)]
+    pub core: &'core EventBodyCore,
+    /// The published version the retirement is taken from.
+    pub from_version: i64,
+    /// Operator retirement text (**P-D-46**), not the runner's outcome.
+    pub reason: String,
+    /// Named replacement SKU. `None` on a Product initiation.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub replaced_by: Option<Uuid>,
+    /// RFC3339 UTC effective instant.
+    pub effective_at: String,
+    /// Always `None` in v1; omitted on the wire so absence round-trips.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub must_migrate_by: Option<String>,
 }
 
 /// Failures constructing or enqueuing an event. Never a `DomainError`: an

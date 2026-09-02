@@ -90,6 +90,37 @@ pub enum DomainError {
     #[error("parent is terminal: {0}")]
     ParentTerminal(String),
 
+    /// A SKU publish (or re-publish) under a live parent that is not
+    /// `published`. Owned slot: P-D-24 prices 409; P-D-96 admits the arm.
+    /// Does **not** name children (§7 row 27 / P-D-96).
+    #[error("parent is not published: {0}")]
+    ParentNotPublished(String),
+
+    /// Un-deprecation while a live retire intent exists on the subject or
+    /// on a child the reversal would revive (P-D-96).
+    #[error("retirement pending: {0}")]
+    RetirementPending(String),
+
+    /// Runner wrapping `STALE_REVISION` / `APPROVAL_REQUIRED`.
+    #[error("schedule stale approval: {0}")]
+    ScheduleStaleApproval(String),
+
+    /// `replacedBy` named a SKU that is not `published`.
+    #[error("replacedBy is not published: {0}")]
+    ReplacedByNotPublished(String),
+
+    /// Operator `effectiveAt` earlier than the configured lead.
+    #[error("retirement lead time: {0}")]
+    RetirementLeadTime(String),
+
+    /// Product retirement over live SKUs without cascade confirmation.
+    #[error("cascade confirmation required: {0}")]
+    CascadeConfirmationRequired(String),
+
+    /// `mustMigrateBy` while the v1 EOL flag is off.
+    #[error("EOL disabled: {0}")]
+    EolDisabled(String),
+
     /// A required field is absent at the state the entity is being moved to.
     #[error("incomplete entity: {0}")]
     IncompleteEntity(String),
@@ -391,6 +422,13 @@ impl DomainError {
             Self::WatermarkRegression(_) => "WATERMARK_REGRESSION",
             Self::WatermarkConflict(_) => "WATERMARK_CONFLICT",
             Self::WatermarkFuture(_) => "WATERMARK_FUTURE",
+            Self::ParentNotPublished(_) => "PARENT_NOT_PUBLISHED",
+            Self::RetirementPending(_) => "RETIREMENT_PENDING",
+            Self::ScheduleStaleApproval(_) => "SCHEDULE_STALE_APPROVAL",
+            Self::ReplacedByNotPublished(_) => "REPLACED_BY_NOT_PUBLISHED",
+            Self::RetirementLeadTime(_) => "RETIREMENT_LEAD_TIME",
+            Self::CascadeConfirmationRequired(_) => "CASCADE_CONFIRMATION_REQUIRED",
+            Self::EolDisabled(_) => "EOL_DISABLED",
         }
     }
 }
