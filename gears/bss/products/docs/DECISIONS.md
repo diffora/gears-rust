@@ -1631,6 +1631,19 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   **struck** with this entry named — neither is an open question any more. The predicate change
   lands in `domain::approval`'s host, which is **strand B's** to write, and the runner's call in
   `domain::activation`, which is **strand C's**; both are told, and neither is asked to decide it.
+- **Measured hours later, by strand C's first pass, and it makes this entry inert rather than
+  wrong.** No scheduling path writes a real record id. Both retire doors set
+  `approval_ref: Uuid::now_v7()` under an explicit comment — *"Host is NoRecord; mint a placeholder
+  so the `NOT NULL` column writes"* — and consume no approval in that transaction. So
+  `record_consumed && row_approval_ref == record_id` **cannot hold for any row that exists**, and
+  every scheduled flip refuses. That is the fail-closed direction and the predicate is safe, but it
+  authorizes nothing today, and **`dod-scheduled-publish-pin` cannot be ticked until a
+  consume-at-schedule act exists**. This entry does not decide who builds that; it records that
+  nothing in the seam works until someone does, so the DoD is not blocked on the strand that owns it.
+  The placeholder is also a hazard worth naming: a minted id sitting in a column a predicate reads
+  as authorization is one careless widening — `is_some()`, or "names any record" — away from being
+  the bearer token this entry exists to refuse. It should stop being a placeholder, not become a
+  trusted one.
 - **Owed**: the writer-count guard (discharged here, not registered). `inst-gv-one-shot` and
   `inst-fd-gate-mode-preauthorized` keep their wording — both speak of verifying without
   consuming, which is exactly what this predicate does — but `inst-fd-gate-mode-preauthorized`'s
