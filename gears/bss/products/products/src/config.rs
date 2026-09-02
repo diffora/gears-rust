@@ -32,6 +32,25 @@ pub const IDEMPOTENCY_RETENTION_CEILING_HOURS: u32 = 24 * 365 * 10;
 /// leaves headroom rather than making the fixture the bound.
 pub const BULK_MAX_ROWS_DEFAULT: u32 = 50_000;
 
+/// `TAXONOMY_LIMIT`'s depth ceiling — **interim, P-D-107 arm 1**. See
+/// [`ProductsConfig::taxonomy_max_depth`] for why eight.
+pub const TAXONOMY_MAX_DEPTH_DEFAULT: u32 = 8;
+
+/// `TAXONOMY_LIMIT`'s fan-out ceiling — **interim, P-D-107 arm 1**. See
+/// [`ProductsConfig::taxonomy_max_children_per_node`].
+pub const TAXONOMY_MAX_CHILDREN_DEFAULT: u32 = 1_000;
+
+/// `METADATA_LIMIT`'s key-count ceiling — **interim, P-D-107 arm 1**. The
+/// three metadata ceilings share one reason; see
+/// [`ProductsConfig::metadata_max_keys`].
+pub const METADATA_MAX_KEYS_DEFAULT: u32 = 50;
+
+/// `METADATA_LIMIT`'s key-length ceiling, in bytes — **interim, P-D-107 arm 1**.
+pub const METADATA_MAX_KEY_BYTES_DEFAULT: u32 = 128;
+
+/// `METADATA_LIMIT`'s value-length ceiling, in bytes — **interim, P-D-107 arm 1**.
+pub const METADATA_MAX_VALUE_BYTES_DEFAULT: u32 = 2_048;
+
 /// `design/07` §17.1's interim freshness threshold, in minutes.
 pub const REFERENCE_FRESHNESS_MINUTES_DEFAULT: u32 = 15;
 
@@ -192,6 +211,52 @@ pub struct ProductsConfig {
     /// the paragraph above refuses. If the capability is ever asked for, it
     /// returns as a governed fourth coordinate kind, re-validated.
     pub default_locale: String,
+
+    /// Maximum category-tree depth (`inst-tx-governed-op` step 3's first
+    /// operand, `TAXONOMY_LIMIT`). **Interim 8 — P-D-107 arm 1**, which the
+    /// design defers to the NFR workshop: `design/02` C3 makes both taxonomy
+    /// limits *"configured policies whose values PRD §7
+    /// `nfr-scale-extensibility` defers"*, so a number had to exist before
+    /// either `DoD` could be built.
+    ///
+    /// Eight because the walk runs **inside the write transaction** under the
+    /// per-tenant taxonomy writer lock (§3.4), so depth is what bounds that
+    /// lock's hold: real catalog taxonomies run four to six levels, and eight
+    /// leaves headroom without letting one re-parent hold the lock over an
+    /// unbounded chain.
+    pub taxonomy_max_depth: u32,
+
+    /// Maximum children of one category (`TAXONOMY_LIMIT`'s second operand).
+    /// **Interim 1000 — P-D-107 arm 1.**
+    ///
+    /// Anchored to the PRD's own sizing target the way
+    /// [`Self::bulk_max_rows_per_batch`] is: at *"≥ 10K SKUs per tenant"*
+    /// (PRD §7) a node admitting a thousand children still classifies that
+    /// catalogue two levels down, so the bound refuses nothing the stated
+    /// case needs, while it does bound one level's fan-out for the walk above.
+    pub taxonomy_max_children_per_node: u32,
+
+    /// Maximum keys in one entity's metadata map (`METADATA_LIMIT`'s first
+    /// operand). **Interim 50 — P-D-107 arm 1.**
+    ///
+    /// The three metadata caps share one reason: **P-D-06** puts this map
+    /// *outside* frozen version content, so nothing here is versioned, frozen
+    /// or rendered. The caps exist so the map cannot become a shadow content
+    /// store that escapes all three. Fifty keys, 128-byte keys and 2 KiB
+    /// values put the worst case near 106 KiB per entity — annotation-sized —
+    /// while one 2 KiB value still holds a URL, an owner, a ticket reference
+    /// or a short note comfortably.
+    pub metadata_max_keys: u32,
+
+    /// Maximum bytes in one metadata **key** (`METADATA_LIMIT`'s second
+    /// operand). **Interim 128 — P-D-107 arm 1**; see
+    /// [`Self::metadata_max_keys`] for the shared reason.
+    pub metadata_max_key_bytes: u32,
+
+    /// Maximum bytes in one metadata **value** (`METADATA_LIMIT`'s third
+    /// operand). **Interim 2048 — P-D-107 arm 1**; see
+    /// [`Self::metadata_max_keys`] for the shared reason.
+    pub metadata_max_value_bytes: u32,
 }
 
 impl Default for ProductsConfig {
@@ -209,6 +274,11 @@ impl Default for ProductsConfig {
             // Absent, not a guess. See the field's own doc: an unset
             // default locale skips step 3 and the chain stays total.
             default_locale: String::new(),
+            taxonomy_max_depth: TAXONOMY_MAX_DEPTH_DEFAULT,
+            taxonomy_max_children_per_node: TAXONOMY_MAX_CHILDREN_DEFAULT,
+            metadata_max_keys: METADATA_MAX_KEYS_DEFAULT,
+            metadata_max_key_bytes: METADATA_MAX_KEY_BYTES_DEFAULT,
+            metadata_max_value_bytes: METADATA_MAX_VALUE_BYTES_DEFAULT,
         }
     }
 }
@@ -279,6 +349,23 @@ impl ProductsConfig {
             return Err(
                 "reference_freshness_minutes = 0 makes every watermark stale on arrival".to_owned(),
             );
+        }
+        for (name, value) in [
+            ("taxonomy_max_depth", self.taxonomy_max_depth),
+            (
+                "taxonomy_max_children_per_node",
+                self.taxonomy_max_children_per_node,
+            ),
+            ("metadata_max_keys", self.metadata_max_keys),
+            ("metadata_max_key_bytes", self.metadata_max_key_bytes),
+            ("metadata_max_value_bytes", self.metadata_max_value_bytes),
+        ] {
+            if value == 0 {
+                return Err(format!(
+                    "{name} = 0 admits nothing at all: a cap of zero refuses the first category or \
+                     the first metadata key, so the door it guards can never succeed"
+                ));
+            }
         }
         if self.bulk_max_rows_per_batch == 0 {
             return Err("bulk_max_rows_per_batch = 0 admits no batch at all".to_owned());

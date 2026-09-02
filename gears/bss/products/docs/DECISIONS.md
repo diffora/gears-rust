@@ -1569,6 +1569,94 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   (the re-publish step).
 
 
+#### P-D-107 — The three answers `02`'s new doors need before they can be built
+
+- **Date**: 2026-09-03 (owner call, answering `features/taxonomy-attributes.md` §7 **rows 2, 14 and
+  19**; follows **P-D-106**, which gave those doors their routes)
+- **Context**: P-D-106 doored the taxonomy-op, attribute-definition and category live-value doors,
+  and `dod-metadata-door`'s own body confirms the route *"is buildable now that the door files are
+  granted"*. Three rows then stand directly in the path of building them — not behind them — so
+  they are answered together rather than discovered one at a time by whoever writes the doors.
+
+- **Arm 1 — row 2: the caps get interim numbers, in config.** `design/02` C3 makes both taxonomy
+  limits *"configured policies whose values PRD §7 `nfr-scale-extensibility` defers"*, and
+  `dod-metadata-door` requires *"configured caps on key count, key byte length and value byte
+  length"* enforced with `METADATA_LIMIT`. Deferred is not the same as absent: a rule with no
+  number is not a rule, and **two `DoD`s could not be built at all**. So five fields land in
+  `ProductsConfig`, following `bulk_max_rows_per_batch`'s idiom exactly — a doc that justifies the
+  number, a `*_DEFAULT` const, and a `validate()` arm refusing zero:
+  `taxonomy_max_depth` **8**, `taxonomy_max_children_per_node` **1000**, `metadata_max_keys`
+  **50**, `metadata_max_key_bytes` **128**, `metadata_max_value_bytes` **2048**.
+  Each is anchored rather than picked: depth bounds the **hold on the per-tenant taxonomy writer
+  lock**, since `inst-tx-governed-op` step 3 runs the `TaxonomyWalk` inside the write transaction;
+  fan-out is anchored to PRD §7's *"≥ 10K SKUs per tenant"* the way `bulk_max_rows_per_batch` is
+  anchored to the ten-thousand-SKU onboarding fixture; and the three metadata caps share one
+  reason — **P-D-06** puts that map outside frozen version content, so the caps exist so it cannot
+  become a shadow content store escaping versioning, freezing and rendering. Zero is refused at
+  boot because a ceiling of zero is not a limit but a closure.
+  **These are interim and say so in their own docs**, exactly as `reference_freshness_minutes`
+  carries *"interim 15 — P-D-87 arm 1"*. The NFR workshop overrides them by configuration and
+  needs no code change.
+
+- **Arm 2 — row 19: the four *value* rules run at the live-value door, and the three assignment
+  rules do not.** The row is right that the pipeline is registered on the entity draft-save door
+  while the category branch writes through a different one. Measured: `content_save_pipeline`
+  registers seven rules, of which `CategoryResolvable`, `CategoryNotRetired` and
+  `CategoryRoleConflict` are about **assigning categories to a Product** and have no operand at
+  all when the subject *is* a category. The four that do apply are
+  `AttributeDefinitionKnown`, `AttributeDefinitionActive`, `AttributeValueType` and
+  `AttributeScope` — so the defect the row names is real: a category value against a `deprecated`
+  definition would be admitted while the removal guard counts it as live.
+  **Plus one the entity door does not run**: `inst-av-category-branch` requires *"the global
+  default-locale value ... at the first write of a definition for that category"*, which is the
+  write-time analogue of the publish-time check. So the live-value door runs **four registered
+  rules and one write-time requirement**, and it is a fifth caller of the one registration list
+  rather than a second list.
+
+- **Arm 3 — row 14: last-write-wins per key is what the `DoD` specifies, and no counter is
+  added.** The row observes that metadata rides the entity's `If-Match`, bumps no version by
+  **P-D-06**, so the token never moves and a second write silently overwrites the first.
+  **Measured against the requirement rather than answered from the observation**:
+  `dod-metadata-door` asks for a per-key merge with `null` removing a key, the three caps, an
+  `ENTITY_TERMINAL` refusal and a reduce-from-cap test. It asks for **no** optimistic concurrency
+  — no token, no lost-update guarantee. Adding a counter column would be adding a requirement no
+  `DoD` carries, which is the one thing this programme keeps refusing to let a strand do, and it
+  would cost a migration on two head tables.
+  And the merge narrows the exposure to almost nothing: concurrent writes to **different** keys do
+  not conflict at all, because an absent key is left untouched. What remains is a same-key lost
+  update on an annotation map.
+  **So it is accepted and recorded, not closed.** If it must be closed, the donor is already in
+  this gear: **P-D-50** gave the category live-value door `products_category.mutation_seq`, an act
+  counter on the owning row, for this exact property — *"mutable on a published entity"* — and
+  `design/02` §6 had already noticed the two cases are parallel. The cost is a `metadata_seq` on
+  `products_product` **and** `products_sku`, which is why it is not paid on an observation with no
+  requirement behind it.
+
+- **The arguments against, stated.**
+  1. **Arm 1 puts five numbers in the register that the NFR workshop may overturn.** Accepted: they
+     are configuration, the docs call them interim, and the alternative was two unbuildable `DoD`s.
+     The sharper objection is that `taxonomy_max_depth = 8` is a **guess about catalogues**, not a
+     measurement — the lock-hold argument bounds it from above but nothing establishes eight rather
+     than six or twelve.
+  2. **Arm 2 makes the live-value door a caller of a list built for entity saves**, so a rule added
+     for entities silently reaches categories. That is the same trade `content_save_pipeline` was
+     created to make — one list so two doors cannot drift — and the counter-argument is that a
+     third subject now rides a pipeline whose subject type was designed for two.
+  3. **Arm 3 leaves a known lost update in the gear.** It is a real defect and it stays open. The
+     defence is only that the requirement does not ask for it and the exposure is one key, and that
+     is a weaker defence than a measurement.
+
+- **Not changed**: the caps' enforcement point (`METADATA_LIMIT` and `TAXONOMY_LIMIT` at their
+  doors), the seven-rule registration list, `dod-metadata-door`'s `p2` priority, and P-D-06's
+  exclusion of the map from version content.
+- **Propagated**: `features/taxonomy-attributes.md` §7 rows **2, 14 and 19**, and
+  `ProductsConfig` with its two tests. Row 2's taxonomy half and metadata half are answered
+  together since one arm covers both.
+- **Owed**: nothing. Arm 3's residue is a **recorded acceptance**, not a debt — it is written into
+  row 14's own cell so a later reader finds the reasoning and the donor rather than re-deriving
+  both.
+
+
 #### P-D-106 — `02`'s three doorless doors get one route family each, and the grant arrives with the door
 
 - **Date**: 2026-09-03 (owner call, answering `features/taxonomy-attributes.md` §7 **row 16** and

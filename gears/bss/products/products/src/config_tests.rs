@@ -191,3 +191,83 @@ fn an_untrimmed_default_locale_is_refused_at_boot() {
         "the trimmed form of the same value is admitted"
     );
 }
+
+/// **A cap of zero is refused at boot, for all five of P-D-107 arm 1's.**
+///
+/// The arm's own reason: a taxonomy or metadata ceiling of zero refuses the
+/// first category or the first key, so the door it guards can never succeed
+/// and the gear would boot into a state where `TAXONOMY_LIMIT` or
+/// `METADATA_LIMIT` is not a limit but a closure.
+///
+/// Each field is perturbed **on its own**, because one case covering five
+/// fields passes just as well if the guard reads the same field five times.
+#[test]
+fn a_zero_cap_is_refused_at_boot() {
+    ProductsConfig::default()
+        .validate()
+        .expect("the shipped defaults are admissible");
+
+    let cases = [
+        (
+            "taxonomy_max_depth",
+            ProductsConfig {
+                taxonomy_max_depth: 0,
+                ..ProductsConfig::default()
+            },
+        ),
+        (
+            "taxonomy_max_children_per_node",
+            ProductsConfig {
+                taxonomy_max_children_per_node: 0,
+                ..ProductsConfig::default()
+            },
+        ),
+        (
+            "metadata_max_keys",
+            ProductsConfig {
+                metadata_max_keys: 0,
+                ..ProductsConfig::default()
+            },
+        ),
+        (
+            "metadata_max_key_bytes",
+            ProductsConfig {
+                metadata_max_key_bytes: 0,
+                ..ProductsConfig::default()
+            },
+        ),
+        (
+            "metadata_max_value_bytes",
+            ProductsConfig {
+                metadata_max_value_bytes: 0,
+                ..ProductsConfig::default()
+            },
+        ),
+    ];
+    for (name, cfg) in cases {
+        let message = cfg
+            .validate()
+            .expect_err("a ceiling of zero must be refused at boot");
+        assert!(
+            message.contains(name),
+            "the refusal names the field that is wrong: {message}"
+        );
+    }
+}
+
+/// The five interim ceilings are the numbers P-D-107 arm 1 justified.
+///
+/// Pinned rather than left to the constants, for the reason a golden vector
+/// exists: the arm anchors each number to something stated — the writer lock's
+/// hold for depth, PRD §7's ten-thousand-SKU target for fan-out, and P-D-06's
+/// exclusion of the map from version content for the three metadata caps — so
+/// a silent change to one is a change to that reasoning.
+#[test]
+fn the_interim_ceilings_are_the_justified_numbers() {
+    let cfg = ProductsConfig::default();
+    assert_eq!(cfg.taxonomy_max_depth, 8);
+    assert_eq!(cfg.taxonomy_max_children_per_node, 1_000);
+    assert_eq!(cfg.metadata_max_keys, 50);
+    assert_eq!(cfg.metadata_max_key_bytes, 128);
+    assert_eq!(cfg.metadata_max_value_bytes, 2_048);
+}
