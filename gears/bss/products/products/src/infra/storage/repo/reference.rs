@@ -14,7 +14,9 @@ use uuid::Uuid;
 
 use crate::domain::states::ProducerState;
 use crate::infra::storage::RepoError;
-use crate::infra::storage::entity::{reference_member, reference_producer, reference_watermark};
+use crate::infra::storage::entity::{
+    correction_override, reference_member, reference_producer, reference_watermark,
+};
 
 use super::driver_failure;
 
@@ -332,4 +334,136 @@ pub async fn reference_member_exists(
         .await
         .map_err(|e| driver_failure(format!("read member {sku_id} of {producer}"), e))?;
     Ok(row.is_some())
+}
+
+/// One break-glass correction's evidence row, as the ceremony records it.
+#[derive(Debug, Clone)]
+pub struct NewCorrectionOverride {
+    /// The row's own id.
+    pub override_id: Uuid,
+    /// The SKU whose immutable field the ceremony admitted a write to.
+    pub sku_id: Uuid,
+    /// The field.
+    pub field: String,
+    /// The ceremony's mandatory reason.
+    pub reason: String,
+    /// Which arm admitted it, and that arm's evidence.
+    pub evidence: OverrideEvidence,
+    /// The `05` ceremony reference the audit row also carries.
+    pub ceremony_ref: Uuid,
+    /// The instant — the tripwire's operand.
+    pub recorded_at: DateTime<Utc>,
+}
+
+/// The admitting arm and its own evidence, as one value.
+///
+/// A sum type rather than two nullable fields, because the pair is what the
+/// migration's `CHECK` pins: arm (a) carries a snapshot and no target, arm
+/// (b) the reverse. Two `Option`s would let a caller build the row the
+/// database refuses, and the refusal would arrive as a driver error rather
+/// than as a type error.
+#[derive(Debug, Clone)]
+pub enum OverrideEvidence {
+    /// Arm (a): the per-producer unavailability snapshot, canonically
+    /// rendered.
+    ProducerUnavailable {
+        /// The rendered snapshot.
+        snapshot: String,
+    },
+    /// Arm (b): the target could not be resolved (P-D-16,
+    /// `inst-bc-unresolvable`).
+    UnresolvableTarget {
+        /// What could not be resolved.
+        target: String,
+    },
+}
+
+impl OverrideEvidence {
+    /// The `admitting_arm` value this evidence stores under.
+    const fn arm(&self) -> &'static str {
+        match self {
+            Self::ProducerUnavailable { .. } => "producer_unavailable",
+            Self::UnresolvableTarget { .. } => "unresolvable_target",
+        }
+    }
+}
+
+/// Record one break-glass correction override — append-only evidence
+/// (`dod-override-table`).
+///
+/// # Errors
+///
+/// [`RepoError::Driver`] on a storage failure, including the `CHECK` a
+/// hand-built row could still violate and the `FK` a SKU that does not
+/// exist would.
+pub async fn record_correction_override(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    new: NewCorrectionOverride,
+) -> Result<(), RepoError> {
+    let (snapshot, target) = match &new.evidence {
+        OverrideEvidence::ProducerUnavailable { snapshot } => (Some(snapshot.clone()), None),
+        OverrideEvidence::UnresolvableTarget { target } => (None, Some(target.clone())),
+    };
+    let model = correction_override::ActiveModel {
+        tenant_id: Set(tenant_id),
+        override_id: Set(new.override_id),
+        sku_id: Set(new.sku_id),
+        field: Set(new.field),
+        reason: Set(new.reason),
+        admitting_arm: Set(new.evidence.arm().to_owned()),
+        unavailability_snapshot: Set(snapshot),
+        unresolvable_target: Set(target),
+        ceremony_ref: Set(new.ceremony_ref),
+        recorded_at: Set(new.recorded_at),
+    };
+    correction_override::Entity::insert(model.clone())
+        .secure()
+        .scope_with_model(scope, &model)
+        .map_err(|e| driver_failure(format!("override scope of {tenant_id}"), e))?
+        .exec(runner)
+        .await
+        .map_err(|e| {
+            driver_failure(
+                format!("record correction override for sku {}", new.sku_id),
+                e,
+            )
+        })?;
+    Ok(())
+}
+
+/// The tripwire: **how many overrides this tenant recorded since `since`**
+/// (`dod-override-table`, `inst-bc-tripwire`).
+///
+/// # Why this is a query and not a column
+///
+/// The `DoD` is explicit that the counter *"MUST be a windowed count over
+/// this table"* and **must not** be a separate counter column or row:
+/// *"There is no second piece of state to drift from the evidence."* So the
+/// window is the caller's and the count is derived every time, which makes a
+/// disagreement between the number and the rows impossible rather than
+/// merely unlikely. `idx_products_correction_override_window` carries the
+/// probe.
+///
+/// # Errors
+///
+/// [`RepoError::Driver`] on a storage failure.
+pub async fn correction_overrides_since(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    since: DateTime<Utc>,
+) -> Result<u64, RepoError> {
+    correction_override::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(correction_override::Column::TenantId.eq(tenant_id))
+                .add(correction_override::Column::RecordedAt.gte(since)),
+        )
+        .count(runner)
+        .await
+        .map_err(|e| driver_failure(format!("count correction overrides of {tenant_id}"), e))
 }

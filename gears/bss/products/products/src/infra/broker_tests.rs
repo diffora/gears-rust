@@ -191,9 +191,11 @@ async fn enqueue_one(
             .await
             .unwrap_or_else(|e| panic!("{token} must enqueue through enqueue_published: {e}"));
     } else if token.ends_with("Deprecated") {
-        crate::infra::events::enqueue_deprecated(sink, conn, entity_id, token, &core, "direct", ACTOR)
-            .await
-            .unwrap_or_else(|e| panic!("{token} must enqueue through enqueue_deprecated: {e}"));
+        crate::infra::events::enqueue_deprecated(
+            sink, conn, entity_id, token, &core, "direct", ACTOR,
+        )
+        .await
+        .unwrap_or_else(|e| panic!("{token} must enqueue through enqueue_deprecated: {e}"));
     } else {
         crate::infra::events::enqueue(sink, conn, entity_id, token, &core, ACTOR)
             .await

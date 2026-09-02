@@ -515,7 +515,7 @@ of the predicate and the source of the `06-catalog-version` capture-store ride.
 
 ### The break-glass evidence store
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-override-table`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-override-table`
 
 The system **MUST** create `products_correction_override` carrying the SKU, the field, the
 **mandatory** reason (the ceremony's), **the admitting arm's evidence** — a per-producer

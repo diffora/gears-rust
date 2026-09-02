@@ -573,3 +573,72 @@ async fn a_stale_watermark_holds_the_sku_conservatively() {
     );
     assert!(verdict.referenced, "a stale producer never frees");
 }
+
+/// The accepted half of `dod-reference-audit`: every accepted act of this
+/// surface writes an audit row, not only every refusal.
+mod accepted_audit_tests {
+    use super::*;
+
+    /// Whether the audit plane carries a row for `action`.
+    ///
+    /// Asked per action rather than by reading the whole plane: the surface
+    /// writes several rows per case and a list assertion would pin an
+    /// ordering nothing promises.
+    async fn audited(dsn: &str, action: &str) -> bool {
+        crate::test_support::raw_string_opt(
+            dsn,
+            &format!(
+                "SELECT action AS v FROM products_audit_log WHERE action = '{action}' LIMIT 1"
+            ),
+        )
+        .await
+        .is_some()
+    }
+
+    /// **A registration, a watermark post and a retirement each leave a
+    /// row.**
+    ///
+    /// The accepted half is the one the investigation needs: ingestion emits
+    /// no broker event by design and the watermark row is overwritten in
+    /// place, so this row is the only record of what the producer claimed.
+    /// Before this change the surface audited refusals only, and every
+    /// assertion about it would have passed.
+    #[tokio::test]
+    async fn every_accepted_act_of_this_surface_is_audited() {
+        let harness = harness().await;
+        let response = post_json(
+            app(&harness),
+            "/bss-products/v1/reference-producers",
+            &serde_json::json!({ "producer": "pricing" }),
+        )
+        .await;
+        assert_eq!(response.status(), axum::http::StatusCode::CREATED);
+        assert!(
+            audited(&harness.dsn, "reference_producer_register").await,
+            "an accepted registration leaves a row"
+        );
+
+        let posted = post_json(
+            app(&harness),
+            "/bss-products/v1/reference-watermarks",
+            &watermark_body("pricing", anchor(), &[SKU]),
+        )
+        .await;
+        assert_eq!(posted.status(), axum::http::StatusCode::OK);
+        assert!(
+            audited(&harness.dsn, "reference_watermark_post").await,
+            "an accepted post leaves the only record of what the producer claimed"
+        );
+
+        let retired = post_empty(
+            app(&harness),
+            "/bss-products/v1/reference-producers/pricing/retirements",
+        )
+        .await;
+        assert_eq!(retired.status(), axum::http::StatusCode::OK);
+        assert!(
+            audited(&harness.dsn, "reference_producer_retire").await,
+            "an accepted retirement leaves a row"
+        );
+    }
+}

@@ -3407,3 +3407,116 @@ async fn clearing_a_product_code_writes_null_and_frees_the_code_for_another_prod
         "and the second Product holds it"
     );
 }
+
+/// The correction-override evidence and its tripwire (`dod-override-table`).
+mod correction_override_tests {
+    use super::super::{
+        NewCorrectionOverride, OverrideEvidence, correction_overrides_since,
+        record_correction_override,
+    };
+    use super::*;
+
+    async fn with_a_sku() -> DBProvider<DbError> {
+        let db = harness().await;
+        let conn = db.conn().expect("conn");
+        let scope = AccessScope::for_tenant(TENANT);
+        insert_product(&conn, &scope, new_product(PRODUCT, TENANT))
+            .await
+            .expect("seed the parent");
+        insert_sku(&conn, &scope, new_sku(SKU, TENANT, PRODUCT))
+            .await
+            .expect("seed the subject");
+        db
+    }
+
+    fn override_at(at: chrono::DateTime<Utc>) -> NewCorrectionOverride {
+        NewCorrectionOverride {
+            override_id: Uuid::new_v4(),
+            sku_id: SKU,
+            field: "sku_code".to_owned(),
+            reason: "the ceremony's".to_owned(),
+            evidence: OverrideEvidence::UnresolvableTarget {
+                target: "sku:missing".to_owned(),
+            },
+            ceremony_ref: Uuid::from_u128(0xce_01),
+            recorded_at: at,
+        }
+    }
+
+    /// **The tripwire is a windowed count over the rows, so it cannot drift
+    /// from them.**
+    ///
+    /// The `DoD` forbids a counter column or row: *"There is no second piece
+    /// of state to drift from the evidence."* This is what that buys — the
+    /// count changes because a row exists, and the window is the caller's.
+    #[tokio::test]
+    async fn the_tripwire_counts_the_window_and_nothing_else() {
+        let db = with_a_sku().await;
+        let conn = db.conn().expect("conn");
+        let scope = AccessScope::for_tenant(TENANT);
+        let t0 = at(10);
+
+        assert_eq!(
+            correction_overrides_since(&conn, &scope, TENANT, t0)
+                .await
+                .expect("count runs"),
+            0,
+            "no evidence, no tripwire"
+        );
+
+        for offset in [11, 12, 13] {
+            record_correction_override(&conn, &scope, TENANT, override_at(at(offset)))
+                .await
+                .expect("evidence is recorded");
+        }
+
+        assert_eq!(
+            correction_overrides_since(&conn, &scope, TENANT, t0)
+                .await
+                .expect("count runs"),
+            3
+        );
+        assert_eq!(
+            correction_overrides_since(&conn, &scope, TENANT, at(13))
+                .await
+                .expect("count runs"),
+            1,
+            "a narrower window counts fewer rows - the window is the caller's, not stored state"
+        );
+        assert_eq!(
+            correction_overrides_since(&conn, &scope, TENANT, at(23))
+                .await
+                .expect("count runs"),
+            0,
+            "a window past every row counts none - `at` takes an hour, so 23 is the late edge"
+        );
+    }
+
+    /// The arm's evidence round-trips into the column the `CHECK` pins for
+    /// it, and the other column stays null.
+    #[tokio::test]
+    async fn each_arm_stores_its_own_evidence_column() {
+        let db = with_a_sku().await;
+        let conn = db.conn().expect("conn");
+        let scope = AccessScope::for_tenant(TENANT);
+
+        let mut arm_a = override_at(at(11));
+        arm_a.evidence = OverrideEvidence::ProducerUnavailable {
+            snapshot: "{\"pricing\":\"stale\"}".to_owned(),
+        };
+        record_correction_override(&conn, &scope, TENANT, arm_a)
+            .await
+            .expect("arm (a) is admitted");
+        record_correction_override(&conn, &scope, TENANT, override_at(at(12)))
+            .await
+            .expect("arm (b) is admitted");
+
+        assert_eq!(
+            correction_overrides_since(&conn, &scope, TENANT, at(10))
+                .await
+                .expect("count runs"),
+            2,
+            "both arms are evidence, and both count"
+        );
+    }
+}

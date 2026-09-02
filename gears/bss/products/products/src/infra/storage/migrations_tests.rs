@@ -6717,3 +6717,156 @@ mod recognized_set_guard_tests {
         );
     }
 }
+
+/// `products_correction_override` — the evidence table's own guards
+/// (`dod-override-table`).
+///
+/// The module sits **after** its neighbour's closing brace, not anchored on
+/// its `mod` line: anchoring there splices the new item between the
+/// neighbour and the neighbour's doc, and three times in one session that
+/// stole a doc — once carrying a `DoD` marker onto the wrong module.
+mod correction_override_guard_tests {
+    use sea_orm::ConnectionTrait;
+    use sea_orm_migration::MigratorTrait;
+
+    use super::Migrator;
+
+    const TENANT: &str = "7e420000000000000000000000000000";
+    const PRODUCT: &str = "cc110000000000000000000000000001";
+    const SKU: &str = "cc220000000000000000000000000001";
+
+    async fn harness() -> sea_orm::DatabaseConnection {
+        let mut opts = sea_orm::ConnectOptions::new("sqlite::memory:");
+        opts.max_connections(1).min_connections(1);
+        let db = sea_orm::Database::connect(opts)
+            .await
+            .expect("connect in-memory sqlite");
+        Migrator::up(&db, None).await.expect("boot the chain");
+        for sql in [
+            format!(
+                "INSERT INTO products_product (product_id, tenant_id, brand_id, name, \
+                 name_normalized, product_code, lifecycle_state, internal_revision, \
+                 published_version, region_scope, brand_scope, created_by, created_at, \
+                 updated_at) VALUES (X'{PRODUCT}', X'{TENANT}', X'{PRODUCT}', 'P', 'p', NULL, \
+                 'draft', 1, 0, '', '', 'principal:a', '2026-09-02', '2026-09-02')"
+            ),
+            format!(
+                "INSERT INTO products_sku (sku_id, tenant_id, product_id, sku_code, \
+                 lifecycle_state, internal_revision, published_version, composition_pending, \
+                 region_scope, brand_scope, created_by, created_at, updated_at) \
+                 VALUES (X'{SKU}', X'{TENANT}', X'{PRODUCT}', 'S-1', 'draft', 1, 0, 0, '', '', \
+                 'principal:a', '2026-09-02', '2026-09-02')"
+            ),
+        ] {
+            exec(&db, &sql)
+                .await
+                .expect("the fixture writes are admitted");
+        }
+        db
+    }
+
+    async fn exec(db: &sea_orm::DatabaseConnection, sql: &str) -> Result<(), sea_orm::DbErr> {
+        db.execute_raw(sea_orm::Statement::from_string(
+            sea_orm::DatabaseBackend::Sqlite,
+            sql.to_owned(),
+        ))
+        .await
+        .map(|_| ())
+    }
+
+    fn insert(arm: &str, snapshot: &str, target: &str, reason: &str) -> String {
+        format!(
+            "INSERT INTO products_correction_override (tenant_id, override_id, sku_id, field, \
+             reason, admitting_arm, unavailability_snapshot, unresolvable_target, ceremony_ref, \
+             recorded_at) VALUES (X'{TENANT}', X'{}', X'{SKU}', 'sku_code', {reason}, \
+             '{arm}', {snapshot}, {target}, X'{TENANT}', '2026-09-02')",
+            uuid::Uuid::new_v4().simple()
+        )
+    }
+
+    /// **The arm and its evidence are pinned as a pair.** A row claiming arm
+    /// (a) while carrying arm (b)'s evidence is refused, and so is the
+    /// reverse — the defect a single nullable blob would admit silently.
+    #[tokio::test]
+    async fn each_arm_carries_only_its_own_evidence() {
+        let db = harness().await;
+
+        exec(
+            &db,
+            &insert(
+                "producer_unavailable",
+                "'{\"pricing\":\"stale\"}'",
+                "NULL",
+                "'ceremony'",
+            ),
+        )
+        .await
+        .expect("arm (a) with its snapshot is the admitted shape");
+        exec(
+            &db,
+            &insert("unresolvable_target", "NULL", "'sku:missing'", "'ceremony'"),
+        )
+        .await
+        .expect("arm (b) with its target is the admitted shape");
+
+        for (arm, snapshot, target) in [
+            ("producer_unavailable", "NULL", "NULL"),
+            ("producer_unavailable", "NULL", "'sku:missing'"),
+            ("unresolvable_target", "'{}'", "NULL"),
+            ("unresolvable_target", "'{}'", "'sku:missing'"),
+        ] {
+            exec(&db, &insert(arm, snapshot, target, "'ceremony'"))
+                .await
+                .expect_err(&format!(
+                    "{arm} with snapshot={snapshot} target={target} must be refused"
+                ));
+        }
+    }
+
+    /// The arm roster is closed, and the mandatory reason is mandatory.
+    #[tokio::test]
+    async fn the_arm_roster_is_closed_and_the_reason_is_required() {
+        let db = harness().await;
+        exec(
+            &db,
+            &insert("operator_said_so", "'{}'", "NULL", "'ceremony'"),
+        )
+        .await
+        .expect_err("an arm outside the pair is refused");
+        exec(&db, &insert("producer_unavailable", "'{}'", "NULL", "''"))
+            .await
+            .expect_err("an override with no stated reason is not evidence");
+    }
+
+    /// **Evidence admits no edit and no delete** — a wrong correction is a
+    /// new row, the way a mis-set identity is a new entity.
+    #[tokio::test]
+    async fn the_table_is_append_only_in_both_directions() {
+        let db = harness().await;
+        exec(
+            &db,
+            &insert("producer_unavailable", "'{}'", "NULL", "'ceremony'"),
+        )
+        .await
+        .expect("seed one row");
+
+        let err = exec(
+            &db,
+            "UPDATE products_correction_override SET reason = 'edited'",
+        )
+        .await
+        .expect_err("an UPDATE on evidence is refused");
+        assert!(
+            err.to_string().contains("UPDATE is not permitted"),
+            "got {err}"
+        );
+
+        let err = exec(&db, "DELETE FROM products_correction_override")
+            .await
+            .expect_err("a DELETE on evidence is refused");
+        assert!(
+            err.to_string().contains("DELETE is not permitted"),
+            "got {err}"
+        );
+    }
+}

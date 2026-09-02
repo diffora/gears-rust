@@ -44,6 +44,19 @@
 //!
 //! @cpt-dod:cpt-cf-bss-products-dod-watermark-door:p1
 //! @cpt-dod:cpt-cf-bss-products-dod-reference-predicate:p1
+//!
+//! # Why `dod-reference-audit` is reached and not claimed
+//!
+//! It obliges a row for *"every producer registration and retirement, every
+//! correction on either lane, and every watermark post — **accepted or
+//! refused**"*. Three of those four acts have doors here and all three now
+//! audit both outcomes. The **corrections** lane does not: its door,
+//! `POST /skus/{skuId}/corrections`, is declared by `design/07` and
+//! registered nowhere, so there is no act to audit and no ceremony
+//! reference to carry. The `DoD`'s join clause — the audit row carrying the
+//! same `ceremony_ref` the evidence table stores — arrives with that door.
+//!
+//! @cpt-cf-bss-products-dod-reference-audit
 
 use std::sync::Arc;
 
@@ -351,6 +364,160 @@ async fn reference_scope(
     }
 }
 
+/// What the post claimed, as the answer needs it — grouped for
+/// [`AcceptedAct`]'s reason: five loose operands, three of which a call site
+/// could transpose silently.
+struct PostedFacts<'a> {
+    /// The acting tenant.
+    tenant_id: Uuid,
+    /// The pseudonymous actor.
+    actor_ref: Uuid,
+    /// The producer, as the refusals name it.
+    subject: &'a str,
+    /// The instant the producer claimed.
+    watermark_at: DateTime<Utc>,
+    /// How many members the post carried.
+    member_count: usize,
+}
+
+/// Turn the watermark transaction's verdict into the caller's answer.
+///
+/// Lifted out of [`record_watermark`] because that function crossed clippy's
+/// `too_many_lines` floor when the accepted post gained its audit row — and
+/// because the verdict-to-answer mapping is a table, which reads better as
+/// one.
+async fn answer_watermark(
+    state: &ApiState,
+    scope: &AccessScope,
+    posted: PostedFacts<'_>,
+    verdict: WatermarkTxVerdict,
+) -> Result<WatermarkAck, CanonicalError> {
+    let PostedFacts {
+        tenant_id,
+        actor_ref,
+        subject,
+        watermark_at,
+        member_count,
+    } = posted;
+    match verdict {
+        WatermarkTxVerdict::Written => Ok(WatermarkAck {
+            watermark_at,
+            member_count,
+            replayed: false,
+        }),
+        WatermarkTxVerdict::Replayed => Ok(WatermarkAck {
+            watermark_at,
+            member_count,
+            replayed: true,
+        }),
+        WatermarkTxVerdict::Regression { stored_at } => {
+            let refusal = DomainError::WatermarkRegression(format!(
+                "watermark_at {watermark_at} is older than the stored {stored_at}"
+            ));
+            Err(refuse_reference(
+                state,
+                scope,
+                tenant_id,
+                actor_ref,
+                crate::authz::labels::REFERENCE_SIGNAL,
+                subject.to_owned(),
+                refusal,
+            )
+            .await)
+        }
+        WatermarkTxVerdict::Conflict => {
+            let refusal = DomainError::WatermarkConflict(format!(
+                "watermark_at {watermark_at} was already posted with a different set"
+            ));
+            Err(refuse_reference(
+                state,
+                scope,
+                tenant_id,
+                actor_ref,
+                crate::authz::labels::REFERENCE_SIGNAL,
+                subject.to_owned(),
+                refusal,
+            )
+            .await)
+        }
+    }
+}
+
+/// The five operands an accepted act's audit row needs, grouped because
+/// they always travel together and three are strings a call site could
+/// transpose without the compiler noticing.
+struct AcceptedAct<'a> {
+    /// The acting tenant.
+    tenant_id: Uuid,
+    /// The pseudonymous actor.
+    actor_ref: Uuid,
+    /// The `products_audit_log.action` token.
+    action: &'a str,
+    /// The subject kind the row records under.
+    label: &'static str,
+    /// The subject itself.
+    subject: String,
+}
+
+/// Write the audit row an **accepted** act of this surface owes
+/// (`dod-reference-audit`).
+///
+/// # Why every accepted act, and not only the refusals
+///
+/// The `DoD` obliges a row for *"every producer registration and retirement,
+/// every correction on either lane, and every watermark post — **accepted or
+/// refused**"*, and this surface had only the refusal half. The accepted
+/// half is the one the investigation needs: ingestion is audit-plane by
+/// design (`inst-ws-no-event` — *"watermarks arrive continuously and are
+/// queryable state, not domain history"*), so **no event records a post**,
+/// and the watermark table is overwritten in place. An accepted post that
+/// left no row would make the `WATERMARK_FUTURE` chain uninvestigable,
+/// because the row it overwrote was the only other record of what the
+/// producer claimed.
+///
+/// # It rides the caller's runner
+///
+/// Every caller passes the runner its own act ran on, so the evidence and
+/// the act commit together — a row written on a second connection could
+/// survive an act that rolled back, which is the failure an audit plane
+/// exists to not have.
+///
+/// # Errors
+///
+/// [`RepoError`] where the audit row could not be written. **The caller must
+/// not swallow it**: `01` §4.4 makes an unwritable audit row the act's own
+/// failure, answered `AUDIT_UNAVAILABLE`.
+async fn audit_accepted_act(
+    runner: &impl toolkit_db::secure::DBRunner,
+    scope: &AccessScope,
+    act: AcceptedAct<'_>,
+    now: DateTime<Utc>,
+) -> Result<(), crate::infra::storage::RepoError> {
+    let AcceptedAct {
+        tenant_id,
+        actor_ref,
+        action,
+        label,
+        subject,
+    } = act;
+    repo::write_keyed_act_audit(
+        runner,
+        scope,
+        repo::AuditCommon {
+            audit_id: Uuid::new_v4(),
+            tenant_id,
+            actor_ref,
+            action: action.to_owned(),
+            subject_kind: label.to_owned(),
+            reason: None,
+            correlation_id: None,
+            written_at: now,
+        },
+        subject,
+    )
+    .await
+}
+
 /// One audited refusal of the reference surface.
 async fn refuse_reference(
     state: &ApiState,
@@ -556,6 +723,27 @@ async fn record_watermark(
                     )
                     .await
                     .map_err(|e| toolkit_db::DbError::Sea(e.to_db_err()))?;
+                    // The accepted post's audit row, inside the same
+                    // serializable transaction as the write it records.
+                    // Ingestion emits NO broker event by design
+                    // (`inst-ws-no-event`) and the watermark row is
+                    // OVERWRITTEN in place, so this row is the only record
+                    // of what the producer claimed — without it the
+                    // `WATERMARK_FUTURE` chain is uninvestigable.
+                    audit_accepted_act(
+                        tx,
+                        &scope,
+                        AcceptedAct {
+                            tenant_id,
+                            actor_ref,
+                            action: "reference_watermark_post",
+                            label: crate::authz::labels::REFERENCE_PRODUCER,
+                            subject: producer.clone(),
+                        },
+                        now,
+                    )
+                    .await
+                    .map_err(|e| toolkit_db::DbError::Sea(e.to_db_err()))?;
                     Ok(WatermarkTxVerdict::Written)
                 })
             },
@@ -565,48 +753,19 @@ async fn record_watermark(
             repo_error_to_canonical(&crate::infra::storage::RepoError::Db(e.to_string()))
         })?;
 
-    match verdict {
-        WatermarkTxVerdict::Written => Ok(WatermarkAck {
+    answer_watermark(
+        state,
+        scope,
+        PostedFacts {
+            tenant_id,
+            actor_ref,
+            subject: &subject,
             watermark_at,
             member_count,
-            replayed: false,
-        }),
-        WatermarkTxVerdict::Replayed => Ok(WatermarkAck {
-            watermark_at,
-            member_count,
-            replayed: true,
-        }),
-        WatermarkTxVerdict::Regression { stored_at } => {
-            let refusal = DomainError::WatermarkRegression(format!(
-                "watermark_at {watermark_at} is older than the stored {stored_at}"
-            ));
-            Err(refuse_reference(
-                state,
-                scope,
-                tenant_id,
-                actor_ref,
-                crate::authz::labels::REFERENCE_SIGNAL,
-                subject,
-                refusal,
-            )
-            .await)
-        }
-        WatermarkTxVerdict::Conflict => {
-            let refusal = DomainError::WatermarkConflict(format!(
-                "watermark_at {watermark_at} was already posted with a different set"
-            ));
-            Err(refuse_reference(
-                state,
-                scope,
-                tenant_id,
-                actor_ref,
-                crate::authz::labels::REFERENCE_SIGNAL,
-                subject,
-                refusal,
-            )
-            .await)
-        }
-    }
+        },
+        verdict,
+    )
+    .await
 }
 
 /// What the watermark transaction decided — carried out of the closure so
@@ -724,6 +883,20 @@ async fn register_producer(
     repo::register_reference_producer(&conn, &scope, tenant_id, &producer, None, now)
         .await
         .map_err(|e| repo_error_to_canonical(&e))?;
+    audit_accepted_act(
+        &conn,
+        &scope,
+        AcceptedAct {
+            tenant_id,
+            actor_ref,
+            action: "reference_producer_register",
+            label: crate::authz::labels::REFERENCE_PRODUCER,
+            subject: producer.clone(),
+        },
+        now,
+    )
+    .await
+    .map_err(|e| repo_error_to_canonical(&e))?;
 
     Ok((
         StatusCode::CREATED,
@@ -793,6 +966,24 @@ async fn retire_producer(
                     repo::retire_reference_producer(tx, &scope, tenant_id, &producer)
                         .await
                         .map_err(|e| toolkit_db::DbError::Sea(e.to_db_err()))?;
+                    // Inside the retirement's own transaction: the retirement
+                    // clears the watermark and member rows too (P-D-87 arm
+                    // 2), so an audit row on a second connection could
+                    // outlive a rollback that put them back.
+                    audit_accepted_act(
+                        tx,
+                        &scope,
+                        AcceptedAct {
+                            tenant_id,
+                            actor_ref,
+                            action: "reference_producer_retire",
+                            label: crate::authz::labels::REFERENCE_PRODUCER,
+                            subject: producer.clone(),
+                        },
+                        now,
+                    )
+                    .await
+                    .map_err(|e| toolkit_db::DbError::Sea(e.to_db_err()))?;
                     Ok(())
                 })
             },

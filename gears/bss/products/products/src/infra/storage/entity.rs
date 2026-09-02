@@ -14,6 +14,7 @@ pub mod catalog_version_counter;
 pub mod catalog_version_entry;
 pub mod catalog_version_request;
 pub mod category;
+pub mod correction_override;
 pub mod entity_version;
 pub mod freeze_ack;
 pub mod freeze_participant;
