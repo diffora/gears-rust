@@ -1377,3 +1377,55 @@ const DOMAIN_ERROR_CODES: &[&str] = &[
     "PRIMARY_CATEGORY_REQUIRED",
     "STALE_LIVE_OP",
 ];
+
+/// **An unset tenant default skips step 3 rather than keying it on `""`.**
+///
+/// `ProductsConfig::default_locale`'s own doc states the behaviour — *"an
+/// unset default locale skips step 3 and resolution still succeeds"* — and
+/// running the step with `""` would key it on `("", "", brand)`, which is a
+/// brand-scoped locale-less value a caller can genuinely write. A reader with
+/// no configured default would then be handed that value **ahead of the
+/// global one**: a different answer, not a shorter path.
+///
+/// The paired control is the same fixture with a default configured, which
+/// must still reach step 3 — without it a resolver that skipped step 3
+/// unconditionally would pass this case.
+#[test]
+fn an_unset_tenant_default_skips_step_three() {
+    let values = vec![
+        coordinate("", "", "acme", "brand-scoped, locale-less"),
+        coordinate("", "", "", "global"),
+        coordinate(
+            TENANT_DEFAULT,
+            "",
+            "acme",
+            "the brand's default-locale value",
+        ),
+    ];
+
+    let unset = resolve_localized(
+        &LocaleRequest {
+            locale: "de-DE",
+            region: "",
+            brand: "acme",
+            tenant_default_locale: "",
+        },
+        &values,
+    )
+    .expect("resolution still succeeds");
+    assert_eq!(
+        (unset.value, unset.step),
+        ("global", ResolutionStep::Global),
+        "with no default configured the chain falls past step 3 to the global value"
+    );
+
+    let configured = resolve_localized(&ask("de-DE", "", "acme"), &values).expect("resolved");
+    assert_eq!(
+        (configured.value, configured.step),
+        (
+            "the brand's default-locale value",
+            ResolutionStep::DefaultLocaleAndBrand
+        ),
+        "the paired control: a configured default still reaches step 3"
+    );
+}

@@ -7262,3 +7262,94 @@ async fn a_non_localized_definition_does_not_hold_a_publish() {
         "a definition with no locale chain has no chain to make total"
     );
 }
+
+/// **A tenant with no roster gets the well-known five on its first content
+/// save, and can use one in the same request** (**P-D-104**).
+///
+/// The trigger site is the content-save path. This case seeds nothing itself:
+/// it names `displayName` on a tenant whose `products_attribute_definition` is
+/// empty, and the save both materialises the five and writes the value against
+/// one of them — in one transaction, which is what P-D-104 asks for. Without
+/// the seeding the same request would be refused `ATTRIBUTE_DEFINITION_UNKNOWN`.
+#[tokio::test]
+async fn a_first_content_save_seeds_the_well_known_five() {
+    let harness = harness().await;
+    let product_id = Uuid::now_v7();
+    seed_draft(&harness, product_id).await;
+
+    assert_eq!(
+        raw_i64(
+            &harness.dsn,
+            "SELECT COUNT(*) AS v FROM products_attribute_definition",
+        )
+        .await,
+        0,
+        "this case's own premise: the tenant has no vocabulary"
+    );
+
+    let response = save_at(
+        &harness,
+        product_id,
+        1,
+        &json!({ "attributes": [{ "key": "displayName", "value": "Fibre 500" }] }),
+    )
+    .await;
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "the definition did not exist when the request arrived, and the save \
+         seeds it before the rule that would otherwise refuse it as unknown"
+    );
+
+    assert_eq!(
+        raw_i64(
+            &harness.dsn,
+            "SELECT COUNT(*) AS v FROM products_attribute_definition \
+             WHERE seeded_by = 'registry'",
+        )
+        .await,
+        5,
+        "all five, marked registry"
+    );
+    assert_eq!(
+        raw_string_opt(
+            &harness.dsn,
+            "SELECT value AS v FROM products_attribute_value",
+        )
+        .await
+        .as_deref(),
+        Some("Fibre 500"),
+        "and the value the same request asked for"
+    );
+}
+
+/// **A save naming only `categories` seeds nothing.**
+///
+/// It cannot need a well-known definition, and seeding on it would put five
+/// rows down for an act with no use for them. The paired half of the case
+/// above: together they pin the trigger to *the writes that could need one*
+/// rather than to *any write*.
+#[tokio::test]
+async fn a_categories_only_save_seeds_no_definitions() {
+    let harness = harness().await;
+    let product_id = Uuid::now_v7();
+    seed_draft(&harness, product_id).await;
+    let category = seed_category(&harness, "active").await;
+
+    let filed = save_at(
+        &harness,
+        product_id,
+        1,
+        &json!({ "categories": [{ "categoryId": category, "role": "primary" }] }),
+    )
+    .await;
+    assert_eq!(filed.status(), StatusCode::OK);
+    assert_eq!(
+        raw_i64(
+            &harness.dsn,
+            "SELECT COUNT(*) AS v FROM products_attribute_definition",
+        )
+        .await,
+        0
+    );
+}

@@ -4870,6 +4870,55 @@ fn save_conflict(
 /// column — the parent's or a child's — that does not parse: that is stored
 /// data rather than a request value, so it takes the internal channel and a
 /// `500`, which is how the SKU side treats the identical breach.
+/// The tenant's definition roster, **seeding the well-known five first if it
+/// has none** (**P-D-104**).
+///
+/// # The trigger site, and why it is here
+///
+/// P-D-104 requires that *"the first write that could need a well-known
+/// definition seeds all five first, in that write's own transaction"*, and
+/// deliberately does not name the site. This is it: the content-save path, at
+/// the moment a payload names `attributes`. Three things recommend it.
+///
+/// It is a **write**. The read-through P-D-104 withdrew made a `GET` of the
+/// roster mutate, which breaks a read-only replica and bills the first reader
+/// for a write it did not ask for. Nothing on a read path reaches this.
+///
+/// It is the **first** such write. A save naming an attribute is the earliest
+/// act in the gear that can need a well-known definition: a create carries no
+/// attributes, and a publish only re-reads values that already exist — which
+/// implies their definitions do.
+///
+/// **The existence check is free on this path.** The door has to read the
+/// roster anyway, to resolve each named key for the subject, so the check is
+/// that read's own `is_empty()`. Only the empty case pays anything: five
+/// inserts and one re-read, once per tenant, ever. A tenant with a roster pays
+/// exactly what it paid before this existed.
+///
+/// A save naming only `categories` does **not** trigger it, because it cannot
+/// need a definition.
+///
+/// # Errors
+///
+/// [`HeadActError`] as the read or the seeding raises it.
+async fn well_known_roster(
+    runner: &(impl DBRunner + Sync),
+    inputs: &HeadActInputs,
+) -> Result<Vec<repo::AttributeDefinitionRecord>, HeadActError> {
+    let roster = repo::attribute_definitions(runner, &inputs.scope, inputs.tenant_id)
+        .await
+        .map_err(|e| HeadActError::from_repo(&e))?;
+    if !roster.is_empty() {
+        return Ok(roster);
+    }
+    repo::seed_well_known_definitions(runner, &inputs.scope, inputs.tenant_id, inputs.now)
+        .await
+        .map_err(|e| HeadActError::from_repo(&e))?;
+    repo::attribute_definitions(runner, &inputs.scope, inputs.tenant_id)
+        .await
+        .map_err(|e| HeadActError::from_repo(&e))
+}
+
 /// Group the entity's **stored** values by definition, for the publish-time
 /// default-locale rule.
 ///
@@ -4905,7 +4954,7 @@ async fn carried_definitions(
     if values.is_empty() {
         return Ok(PublishedContentSubject::default());
     }
-    let roster = repo::attribute_definitions(runner, &inputs.scope, inputs.tenant_id, inputs.now)
+    let roster = repo::attribute_definitions(runner, &inputs.scope, inputs.tenant_id)
         .await
         .map_err(|e| HeadActError::from_repo(&e))?;
 
@@ -4990,10 +5039,7 @@ async fn content_subject(
     }
 
     if let Some(writes) = payload.attributes.as_ref() {
-        let roster =
-            repo::attribute_definitions(runner, &inputs.scope, inputs.tenant_id, inputs.now)
-                .await
-                .map_err(|e| HeadActError::from_repo(&e))?;
+        let roster = well_known_roster(runner, inputs).await?;
         subject.values = writes
             .iter()
             .map(|write| ValueCandidate {

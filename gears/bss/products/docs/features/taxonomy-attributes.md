@@ -641,20 +641,30 @@ Category), `description` (localized), `imageUri` (a URI string, non-localized),
 `marketingFeatures` (a localized string list). A seeded definition **MUST** be deprecatable and
 **MUST NOT** be removable.
 
-**Blocked, and by more than §7 row 23 says.** The row records that *"seeded by migration, per tenant
-bootstrap"* names **two code paths**, and asks which writes for a tenant created after the
-migration. Measured at this commit, **neither path is available**: `migrations/` is not this
-strand's to write, and the gear carries **no tenant-bootstrap hook of any kind** — no
-tenant-created handler, no provisioning callback, nothing for a per-tenant seeder to hang off. So
-the row is not a choice between two mechanisms; it is a question with one mechanism forbidden to
-this strand and the other not built by anyone. Naming that is the deliverable, and no seeder is
-invented to get past it.
+**Answered by P-D-100 as amended by P-D-104, and built: one writer, on the first write that could
+need a seed.** This feature reported the DoD blocked because *"seeded by migration, per tenant
+bootstrap"* names two paths and neither was available — the migration was another owner's and the
+gear has no tenant-bootstrap hook. The owner's first call took that split; the second withdrew it
+on two measurements this feature had not made. The migration arm is **unbuildable**: seeding a
+per-tenant store needs a list of tenants, no gear's schema has a tenant registry, and **no
+migration in the workspace inserts a row at all**. And it was redundant, because the condition is
+*"this tenant has no seed rows"* and never *"this tenant is new"* — one writer always reached a
+pre-deploy tenant just as readily. The old-versus-new split read a distinction the condition never
+made, and this feature's own entry proposed it.
 
-**What does ship** is the roster itself — `domain::taxonomy::WELL_KNOWN_SEEDS`, the five keys in the
-order above with their localized flags, `REGISTRY_SEEDED_BY`, and `is_removable`, whose operand is
-the `seeded_by` marker's presence and which is probed in **both** directions so a guard refusing
-every removal cannot satisfy it. One definition site, so whichever path its owner picks does not
-mint a second copy of the list.
+**The trigger site is the content-save path**, at the moment a payload names `attributes` — a
+**write**, the earliest act that can need a well-known definition, and the one place where the
+existence check is free: the door must read the roster anyway to resolve each named key, so the
+check is that read's own `is_empty()`. Only the empty case pays, and only once per tenant. A save
+naming just `categories` triggers nothing, since it cannot need a definition. P-D-104 moved this
+off the read path deliberately: a lazy read-through makes a `GET` mutate, breaks a read-only
+replica, and bills the first reader for a write it did not ask for.
+
+`domain::taxonomy::WELL_KNOWN_SEEDS` is the single definition site — the roster, `REGISTRY_SEEDED_BY`
+and `is_removable`, the last probed in **both** directions so a guard refusing every removal cannot
+satisfy it. Seeding is idempotent by `uq_products_attribute_definition_key` and never re-materialises
+a definition an operator has deprecated, since the state flip is the only removal there is and they
+would otherwise have no way to say no.
 
 **One thing in it is this feature's proposal and not the design's.** The `DoD` names five keys and
 three **shapes** — a localized string, a URI string, a localized string list — and no **tokens**;

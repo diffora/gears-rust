@@ -1237,7 +1237,8 @@ pub struct LocaleRequest<'a> {
     pub region: &'a str,
     /// The reader's brand.
     pub brand: &'a str,
-    /// The tenant's configured default locale.
+    /// The tenant's configured default locale — `ProductsConfig::default_locale`
+    /// (**P-D-101**).
     ///
     /// **A preference, not the anchor.** `inst-av-resolve`'s item-37 note is
     /// explicit: *"Totality is anchored on the resolution path, not on the
@@ -1246,9 +1247,14 @@ pub struct LocaleRequest<'a> {
     /// already-published entity the moment it changed."* So this is consulted
     /// at step 3 and the chain still ends at the global coordinate.
     ///
-    /// The gear carries no configuration field for it, so every caller
-    /// supplies it and none can today. That absence is the resolver's, not
-    /// this type's, and it is reported rather than defaulted.
+    /// **`""` skips step 3 rather than keying it on the empty string**, which
+    /// the config field's own doc states: *"an unset default locale skips step
+    /// 3 and resolution still succeeds."* Running the step with `""` would key
+    /// it on `("", "", brand)` — a brand-scoped, locale-less value, which is a
+    /// real coordinate a caller can write and **not** the tenant default for
+    /// that brand. A reader with no configured default would then be handed
+    /// that value ahead of the global one, which is a different answer, not a
+    /// shorter path.
     pub tenant_default_locale: &'a str,
 }
 
@@ -1298,9 +1304,12 @@ pub struct Resolved<'v> {
 ///
 /// A reader with no brand looks for `brand: ""` at every step, so steps 3 and
 /// 4 coincide for it. That is not a bug and not a shortcut: the global
-/// coordinate **is** `(default-locale-less, region-less, brand-less)`, and a
+/// coordinate **is** `(locale-less, region-less, brand-less)`, and a
 /// brand-less reader whose tenant default matches nothing simply arrives one
 /// step early.
+///
+/// An empty **tenant default** is different in kind: it skips step 3 rather
+/// than keying it on `""` — see [`LocaleRequest::tenant_default_locale`].
 ///
 /// # `None` means the chain ran out
 ///
@@ -1329,7 +1338,14 @@ pub fn resolve_localized<'v>(
         ),
         (
             ResolutionStep::DefaultLocaleAndBrand,
-            at(request.tenant_default_locale, "", request.brand),
+            // Skipped, not keyed on `""`. See the field's own doc: an unset
+            // default has no key, and `("", "", brand)` is a coordinate that
+            // means something else.
+            if request.tenant_default_locale.is_empty() {
+                None
+            } else {
+                at(request.tenant_default_locale, "", request.brand)
+            },
         ),
         (ResolutionStep::Global, at("", "", "")),
     ];
