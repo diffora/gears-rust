@@ -79,9 +79,13 @@
 //!   correct marker per call site is Phase 4's, which owns the routes that
 //!   know which door they are). `ProductResource` is the default for exactly
 //!   the variants no other reasoning claims.
-//! - [`SkuResource`] — the two variants that **cannot** arise on a `Product`
-//!   door at all: `ParentTerminal` and `ScopeNotContained` are both raised
-//!   only by "Define a SKU"'s containment guard
+//! - [`SkuResource`] — the **three** variants that **cannot** arise on a
+//!   `Product` door at all: `ParentTerminal` and `ScopeNotContained` are both
+//!   raised only by "Define a SKU"'s containment guard, and
+//!   `ParentNotPublished` — `04-lifecycle`'s `inst-pc-ordering`, admitted as
+//!   an arm by **P-D-96** — is raised only by the SKU publish path's parent
+//!   guard, which is the same shape: a `Product` has no parent whose
+//!   publication could be missing
 //!   (`design/01-foundation.md` §2, `inst-fd-containment-parent-state` and
 //!   `inst-fd-containment-scope`) — a `Product` has no parent to check and no
 //!   containment to prove, so these two are unambiguously `SKU`-resource
@@ -288,7 +292,14 @@ impl From<DomainError> for CanonicalError {
             D::ParentTerminal(detail) => SkuResource::aborted(detail)
                 .with_reason("PARENT_TERMINAL")
                 .create(),
-            D::ParentNotPublished(detail) => aborted(detail, "PARENT_NOT_PUBLISHED"),
+            // `SkuResource` for the same reason as its sibling above, and
+            // **not** the generic `aborted` helper: the refusal is raised only
+            // by the SKU publish path's parent guard, so like `ParentTerminal`
+            // it cannot arise on a `Product` door at all. A `Product` has no
+            // parent whose publication could be missing.
+            D::ParentNotPublished(detail) => SkuResource::aborted(detail)
+                .with_reason("PARENT_NOT_PUBLISHED")
+                .create(),
             D::RetirementPending(detail) => aborted(detail, "RETIREMENT_PENDING"),
             D::ScheduleStaleApproval(detail) => aborted(detail, "SCHEDULE_STALE_APPROVAL"),
             D::ReplacedByNotPublished(detail) => {

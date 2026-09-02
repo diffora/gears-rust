@@ -4107,11 +4107,62 @@ async fn create_product_scoped(harness: &TestHarness, region_scope: &str) -> Uui
         StatusCode::CREATED,
         "the case's own premise: the parent it narrows was created"
     );
+    let etag = response
+        .headers()
+        .get(axum::http::header::ETAG)
+        .expect("a create answers an ETag")
+        .to_str()
+        .expect("the ETag is ASCII")
+        .to_owned();
     let view = json_body(response).await;
-    view["product_id"]
+    let product_id = view["product_id"]
         .as_str()
         .and_then(|id| Uuid::parse_str(id).ok())
-        .expect("the create view names the minted id")
+        .expect("the create view names the minted id");
+
+    // **The parent is published here, not left `draft`.** Every case built on
+    // this helper goes on to publish a *child* SKU, and `inst-pc-ordering`
+    // refuses a SKU publish under a non-`published` parent
+    // (`PARENT_NOT_PUBLISHED`, wired in `skus::run_publish` as P-D-97's
+    // continuation filling). Publishing the parent is what keeps each case's
+    // own premise — "a published child under this parent" — reachable.
+    //
+    // It costs these cases nothing: `region_scope` and `brand_scope` are
+    // `MaterialMutable` (bucket-iii), so the narrowing save each case makes
+    // afterwards is admissible on a published head and re-publishes as N+1.
+    // A stricter bucket would have made the narrowing itself impossible, which
+    // `domain::bucket`'s own note on these two columns spells out.
+    //
+    // The primary category comes first because `inst-tx-primary-at-publish`
+    // refuses a Product reaching `published` without one
+    // (`PRIMARY_CATEGORY_REQUIRED`); it is setup, not a property under test.
+    // The assignment is a direct insert and moves no `internal_revision`, so
+    // the create's own ETag is still the one the publish must pin.
+    assign_primary_category(harness, product_id).await;
+    product_head_act(harness, product_id, "publish", &etag).await;
+    product_id
+}
+
+/// A Product head act through the door, asserting the setup step landed —
+/// [`sku_head_act`]'s Product-side twin, and never the property under test.
+async fn product_head_act(harness: &TestHarness, product_id: Uuid, act: &str, if_match: &str) {
+    let response = both_doors_app_for(harness, TENANT)
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/bss-products/v1/products/{product_id}/{act}"))
+                .header(axum::http::header::IF_MATCH, if_match)
+                .extension(authed_ctx(TENANT))
+                .body(Body::empty())
+                .expect("build the Product head-act request"),
+        )
+        .await
+        .expect("the router answers");
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "the case's own premise: the parent reached the state its child acts under"
+    );
 }
 
 /// `POST /bss-products/v1/skus` through the real door, answering the minted

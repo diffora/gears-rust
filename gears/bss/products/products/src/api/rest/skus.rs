@@ -2852,11 +2852,16 @@ async fn classify_unmatched(
 /// [`HeadActError::Db`] on a storage failure, or on a stored scope column
 /// that no longer parses — a storage invariant violation rather than this
 /// request's fault.
+/// **Returns the parent row** so a caller needing a second fact about it —
+/// `run_publish`'s publish-ordering continuation — reads it once rather than
+/// twice in the same act. `run_save` drops the value: `inst-pc-ordering` is a
+/// rule about a SKU reaching `published`, and the draft plane edits freely
+/// under a parent that has not published yet.
 async fn recheck_parent_containment(
     runner: &(impl toolkit_db::secure::DBRunner + Sync),
     inputs: &HeadActInputs,
     head: &SkuRecord,
-) -> Result<(), HeadActError> {
+) -> Result<repo::ProductRecord, HeadActError> {
     let parent = repo::find_product(runner, &inputs.scope, inputs.tenant_id, head.product_id)
         .await
         .map_err(|e| HeadActError::from_repo(&e))?;
@@ -2927,7 +2932,7 @@ async fn recheck_parent_containment(
         return Err(HeadActError::Refused(domain_err));
     }
 
-    Ok(())
+    Ok(parent)
 }
 
 /// A failure that is this gear's own rather than any caller's:
@@ -3082,7 +3087,33 @@ async fn run_publish(
     // §4.1 puts ahead of the governance gate. Its operand is the parent row,
     // so it is a read rather than a registered rule; `recheck_parent_
     // containment`'s own doc argues both. --
-    recheck_parent_containment(runner, inputs, &head).await?;
+    let parent = recheck_parent_containment(runner, inputs, &head).await?;
+
+    // -- Phase 5 continued: `04-lifecycle`'s publish-ordering rule
+    // (`inst-pc-ordering`), as **P-D-97's continuation filling** — the operand
+    // is the parent row, so it is a read rather than a registered rule, and
+    // this is the position §4.1 asks for: after the pipeline, before the edge
+    // and the gate. The parent is already in hand from the containment
+    // re-check, so this costs no second read.
+    //
+    // Registered on the **target state**, not the edge (P-D-32): a re-publish
+    // re-runs it fail-closed. A **terminal** parent is not this refusal —
+    // `recheck_parent_containment` has already answered it `PARENT_TERMINAL`,
+    // which is exactly why `parent_must_be_published` admits a terminal state.
+    //
+    // The registered filling of the same rule, `ParentPublishedRequired`, is
+    // not wired here: `publish_revalidation_pipeline` is typed over
+    // `PublishRevalidationSubject` and a `ValidationPipeline` is monomorphic
+    // in its subject, so the rule's own `PublishOrderingSubject` cannot join
+    // it. Both fillings delegate to this one function, so they cannot
+    // diverge. --
+    if let Err(refusal) = crate::domain::lifecycle::parent_must_be_published(parent.lifecycle_state)
+    {
+        return Err(HeadActError::Refused(DomainError::ParentNotPublished(
+            refusal.detail,
+        )));
+    }
+
     // The meter recognition re-runs at publish with the head as its own
     // image: a first publish of a draft whose unit was deprecated since it
     // was authored is a NEW declaration by the PRD's reading, and this is

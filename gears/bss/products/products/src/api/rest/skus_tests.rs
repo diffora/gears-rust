@@ -394,9 +394,50 @@ async fn seed_live_claim(harness: &TestHarness, client_key: &str, payload_hash: 
 }
 
 /// Insert a parent Product directly through the repository (not through the
-/// Product door's own HTTP surface — this file's module doc explains why)
-/// and return its id.
+/// Product door's own HTTP surface — this file's module doc explains why),
+/// **move it to `published`**, and return its id.
+///
+/// # Why the seeded parent is published rather than left `draft`
+///
+/// `inst-pc-ordering` refuses a SKU publish under a non-`published` parent
+/// (`PARENT_NOT_PUBLISHED`, registered on the target state so a re-publish
+/// re-runs it fail-closed — **P-D-32**, wired in `run_publish` as P-D-97's
+/// continuation filling). Every case in this file that publishes its SKU
+/// therefore needs a published parent for **its own premise** to hold, and a
+/// `draft` parent would make those cases assert the new rule's refusal instead
+/// of the property each was written for.
+///
+/// The seed publishes rather than each case doing it, because a published
+/// parent is still a *live, unrestricted* parent — which is all the create and
+/// save cases ever needed of it — so one helper serves both. A case that
+/// genuinely needs a `draft` parent seeds with [`repo::insert_product`]
+/// directly and says why.
 async fn seed_parent(harness: &TestHarness, new: NewProduct) -> Uuid {
+    let scope = toolkit_db::secure::AccessScope::for_tenant(new.tenant_id);
+    let product_id = new.product_id;
+    // The insert's connection is scoped to this block: `step_parent_state`
+    // checks out its own, and holding two against the pinned provider is what
+    // the harness's single-connection pin exists to avoid.
+    {
+        let conn = harness
+            .db
+            .conn()
+            .expect("checkout the pinned production connection");
+        repo::insert_product(&conn, &scope, new)
+            .await
+            .expect("seed the parent Product");
+    }
+    step_parent_state(&harness.db, &scope, product_id, "published").await;
+    product_id
+}
+
+/// [`seed_parent`] without the publish step — a `draft` parent, for the two
+/// cases whose premise is about the parent itself rather than about the SKU:
+/// one drives it to `discarded` (an edge only a `draft` head has), and one
+/// seeds it in a **foreign tenant**, where `step_parent_state`'s freeze — whose
+/// `tenant_id` is this file's `TENANT` constant — would write the version row
+/// under the wrong tenant.
+async fn seed_draft_parent(harness: &TestHarness, new: NewProduct) -> Uuid {
     let conn = harness
         .db
         .conn()
@@ -557,8 +598,10 @@ async fn an_unresolvable_parent_is_refused_validation() {
 #[tokio::test]
 async fn a_parent_belonging_to_another_tenant_is_not_resolvable() {
     let harness = harness().await;
+    // A `draft` seed: the publishing seed's freeze writes its version row under
+    // this file's `TENANT`, which is the wrong tenant for a foreign parent.
     let foreign_parent =
-        seed_parent(&harness, new_parent_product(Uuid::now_v7(), OTHER_TENANT)).await;
+        seed_draft_parent(&harness, new_parent_product(Uuid::now_v7(), OTHER_TENANT)).await;
     let app = app_for(&harness, TENANT);
 
     let response = post_create_sku(
@@ -626,7 +669,9 @@ async fn a_retired_parent_is_refused_parent_terminal() {
 #[tokio::test]
 async fn a_discarded_parent_is_refused_parent_terminal() {
     let harness = harness().await;
-    let parent_id = seed_parent(&harness, new_parent_product(Uuid::now_v7(), TENANT)).await;
+    // A `draft` seed: `walk_parent_to("discarded")` below needs the edge only a
+    // `draft` head has, so this case cannot take the published seed.
+    let parent_id = seed_draft_parent(&harness, new_parent_product(Uuid::now_v7(), TENANT)).await;
     walk_parent_to(
         &harness.db,
         &toolkit_db::secure::AccessScope::for_tenant(TENANT),
@@ -1783,6 +1828,62 @@ async fn a_publish_on_a_terminal_head_is_refused_entity_terminal_and_audited() {
 /// written: no frozen row, no counter movement, no state flip
 /// (`inst-fd-gate-rejection`).
 ///
+/// A SKU publish under a parent that is live but not `published` is refused
+/// `PARENT_NOT_PUBLISHED` — `04-lifecycle`'s `inst-pc-ordering`, wired in
+/// `run_publish` as **P-D-97**'s continuation filling and admitted as a
+/// `DomainError` arm by **P-D-96**.
+///
+/// **The refusal, not the pass, is what needs the assertion**: every other
+/// publish case in this file takes [`seed_parent`]'s published parent, so
+/// without this case the rule could be deleted and the suite would stay
+/// green. A `draft` parent is the operand — a **terminal** one is
+/// `PARENT_TERMINAL`'s, which
+/// `a_discarded_parent_is_refused_parent_terminal` covers on the create door
+/// and `parent_must_be_published` deliberately admits.
+#[tokio::test]
+async fn a_publish_under_a_draft_parent_is_refused_parent_not_published() {
+    let harness = harness().await;
+    let parent_id = seed_draft_parent(&harness, new_parent_product(Uuid::now_v7(), TENANT)).await;
+    let (sku_id, etag) = seed_draft_sku(&harness, parent_id, "SKU-500").await;
+
+    let mut headers = axum::http::HeaderMap::new();
+    headers.insert(
+        axum::http::header::IF_MATCH,
+        etag.parse().expect("the ETag is a valid header value"),
+    );
+    let result = super::publish_sku_gated(
+        &api_state(&harness),
+        &flat_in_enforcer(TENANT),
+        &authed_ctx(TENANT),
+        &headers,
+        sku_id,
+        &(Arc::new(crate::domain::governance::NoMaterialityPolicyGate)
+            as Arc<dyn crate::domain::governance::GovernanceGate + Send + Sync>),
+        crate::domain::governance::GateMode::Gate,
+    )
+    .await;
+
+    let Err(refusal) = result else {
+        panic!("a draft parent must refuse the child's publish")
+    };
+    let response = refusal.into_response();
+    assert_eq!(
+        response.status(),
+        StatusCode::CONFLICT,
+        "P-D-24 prices PARENT_NOT_PUBLISHED at 409"
+    );
+    let view = body_json(response).await;
+    assert_eq!(view["context"]["reason"], json!("PARENT_NOT_PUBLISHED"));
+
+    assert_eq!(
+        frozen_versions_for(&harness.dsn, sku_id).await,
+        0,
+        "the refusal runs ahead of the freeze, so it writes nothing"
+    );
+    assert_eq!(head_version(&harness.dsn, sku_id).await, 0);
+    assert_eq!(head_revision(&harness.dsn, sku_id).await, 1);
+}
+
 /// Driven through `super::publish_sku_gated` with [`RefusingGate`] rather
 /// than through the router, because the router's host is
 /// `NoMaterialityPolicyGate` and it never refuses — see [`RefusingGate`]'s
