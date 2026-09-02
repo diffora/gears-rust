@@ -960,6 +960,16 @@ it wanted, and reporting a driver failure would send both to a 500. Its companio
 first probe unchanged. *"In the same transaction as the authorized act"* is **not** measurable
 here and is not claimed: this function opens no transaction, and the module says so.
 
+**P-D-105's arm consumes nothing, and the type is what holds that.** A mechanical stage answers
+`ApprovalDisposition::Verified`, whose `approval_to_consume()` is `None` by construction, so
+`inst-gv-one-shot`'s *"consuming nothing further"* is a property of the verdict rather than a rule
+each stage must remember. Asserted on the scheduled-flip arm as well as the ordinary one.
+
+**Still no tick**, and the blocker is unchanged: every door in the gear registers
+`NoMaterialityPolicyGate` (measured at `052666dba`), so no authorized act's transaction reaches
+`consume_approval`, and the DoD's probe — *"two publishes off one satisfied approval"* — has no
+publish to drive.
+
 **Implements**: `cpt-cf-bss-products-flow-gate`,
 `cpt-cf-bss-products-state-approval-record`
 
@@ -988,13 +998,29 @@ open one), so a stage naming a *different* consumed record at the same revision 
 the weakening §7 row 27 calls turning a terminal record into an unbounded bearer token. A paired
 probe asserts the two modes read **disjoint** states in both directions.
 
-**The tick is blocked on §7 row 27, which this build does not touch.** The predicate the host
-implements is the one the instruction states — *"this subject at this pinned revision"* — and a
-cascade leg's subject is a **child** entity while a bulk row's revision is its own, so both still
-fail by construction and the mode carries no plan-membership operand to fix that. Widening the
-predicate is exactly what row 27 forbids doing locally. The clause *"MUST NOT be reachable from any
-wire surface"* is unchanged and holds structurally: `GateMode` is reachable from no request DTO,
-header reader or query extractor, and the two routed handlers pass the `Gate` literal.
+**P-D-105 unblocked the scheduled and cascade half, and B7 built it.**
+`GatedAct::ScheduledFlip { row_approval_ref }` carries the decision's operand at the host's
+construction, and the arm checks **both** of P-D-105's conjuncts: the named record is `consumed`,
+**and** it is the record the flipped row pins in its own `approval_ref`. Subject and revision
+equality are dropped here and nowhere else — the governed arm still imposes both, and a probe
+asserts the same candidate that passes the flip is refused by it. The second conjunct holds by
+construction at the only production call site, since the runner sources the mode's id from that
+same column; it is expressed anyway, because it is the clause that separates this predicate from
+the bearer token, and an in-process caller that built the mode from anything else is refused. All
+three clauses were confirmed by perturbation.
+
+`repo::gate_candidate_by_id` is the operand's reader: `gate_candidates` filters by subject, and a
+cascade leg's record names the **parent**, so a query on the leg's own subject finds nothing. The
+two readers share one row-to-candidate conversion so they cannot drift.
+
+**The tick does not follow, and the reason is now narrow.** This DoD's third clause names three
+composite acts — *"a scheduled act, a cascade and a bulk batch"*. P-D-105's predicate and its
+writer-count guard are scoped to `insert_scheduled_transition`, so the **bulk** population is
+untouched: `products_bulk_batch.approval_ref` has the same shape, but its writers are not the
+counted three, so the decision's safety argument does not transfer for free. Extending the arm to
+it would be authoring, not implementing. The clause *"MUST NOT be reachable from any wire surface"*
+is unchanged and holds structurally: `GateMode` is reachable from no request DTO, header reader or
+query extractor, and the two routed handlers pass the `Gate` literal.
 
 **Implements**: `cpt-cf-bss-products-flow-gate`
 
