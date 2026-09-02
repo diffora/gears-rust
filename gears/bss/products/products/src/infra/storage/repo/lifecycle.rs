@@ -11,8 +11,11 @@
 
 use chrono::{DateTime, Utc};
 use sea_orm::ActiveValue::Set;
+use sea_orm::sea_query::Expr;
 use sea_orm::{ColumnTrait, Condition, EntityTrait};
-use toolkit_db::secure::{AccessScope, DBRunner, SecureEntityExt, SecureInsertExt};
+use toolkit_db::secure::{
+    AccessScope, DBRunner, SecureEntityExt, SecureInsertExt, SecureUpdateExt,
+};
 use uuid::Uuid;
 
 use crate::infra::storage::RepoError;
@@ -209,6 +212,172 @@ pub async fn find_deferred_retirement(
                 e,
             )
         })
+}
+
+/// Live retire intents for one entity (`pending`/`running`/`deferred`).
+///
+/// # Errors
+///
+/// [`RepoError`] on a storage or scope failure.
+pub async fn find_live_retire_intents(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    entity_id: Uuid,
+) -> Result<Vec<scheduled_transition::Model>, RepoError> {
+    scheduled_transition::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(scheduled_transition::Column::TenantId.eq(tenant_id))
+                .add(scheduled_transition::Column::EntityId.eq(entity_id))
+                .add(scheduled_transition::Column::Kind.eq("retire"))
+                .add(scheduled_transition::Column::State.is_in(["pending", "running", "deferred"])),
+        )
+        .all(runner)
+        .await
+        .map_err(|e| driver_failure(format!("live retire intents of {entity_id}"), e))
+}
+
+/// Atomic claim: `pending|deferred → running` when `at` is due.
+///
+/// # Errors
+///
+/// [`RepoError`] on a storage or scope failure.
+pub async fn claim_due_transition(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    transition_id: Uuid,
+    now: DateTime<Utc>,
+) -> Result<bool, RepoError> {
+    let result = scheduled_transition::Entity::update_many()
+        .secure()
+        .scope_with(scope)
+        .col_expr(scheduled_transition::Column::State, Expr::value("running"))
+        .col_expr(scheduled_transition::Column::ClaimedAt, Expr::value(now))
+        .col_expr(scheduled_transition::Column::UpdatedAt, Expr::value(now))
+        .filter(
+            Condition::all()
+                .add(scheduled_transition::Column::TenantId.eq(tenant_id))
+                .add(scheduled_transition::Column::TransitionId.eq(transition_id))
+                .add(scheduled_transition::Column::State.is_in(["pending", "deferred"]))
+                .add(scheduled_transition::Column::At.lte(now)),
+        )
+        .exec(runner)
+        .await
+        .map_err(|e| driver_failure(format!("claim scheduled transition {transition_id}"), e))?;
+    Ok(result.rows_affected == 1)
+}
+
+/// Finish a `running` row `applied|failed|deferred` with `outcome_reason`.
+///
+/// # Errors
+///
+/// [`RepoError`] on a storage or scope failure.
+pub async fn finish_scheduled_transition(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    transition_id: Uuid,
+    state: &str,
+    outcome_reason: Option<String>,
+    now: DateTime<Utc>,
+) -> Result<bool, RepoError> {
+    let result = scheduled_transition::Entity::update_many()
+        .secure()
+        .scope_with(scope)
+        .col_expr(scheduled_transition::Column::State, Expr::value(state))
+        .col_expr(
+            scheduled_transition::Column::OutcomeReason,
+            Expr::value(outcome_reason),
+        )
+        .col_expr(scheduled_transition::Column::UpdatedAt, Expr::value(now))
+        .filter(
+            Condition::all()
+                .add(scheduled_transition::Column::TenantId.eq(tenant_id))
+                .add(scheduled_transition::Column::TransitionId.eq(transition_id))
+                .add(scheduled_transition::Column::State.eq("running")),
+        )
+        .exec(runner)
+        .await
+        .map_err(|e| driver_failure(format!("finish scheduled transition {transition_id}"), e))?;
+    Ok(result.rows_affected == 1)
+}
+
+/// Supersede every live intent of one entity and kind.
+///
+/// # Errors
+///
+/// [`RepoError`] on a storage or scope failure.
+pub async fn supersede_live_intents(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    entity_id: Uuid,
+    kind: &str,
+    now: DateTime<Utc>,
+) -> Result<u64, RepoError> {
+    let result = scheduled_transition::Entity::update_many()
+        .secure()
+        .scope_with(scope)
+        .col_expr(
+            scheduled_transition::Column::State,
+            Expr::value("superseded"),
+        )
+        .col_expr(scheduled_transition::Column::UpdatedAt, Expr::value(now))
+        .filter(
+            Condition::all()
+                .add(scheduled_transition::Column::TenantId.eq(tenant_id))
+                .add(scheduled_transition::Column::EntityId.eq(entity_id))
+                .add(scheduled_transition::Column::Kind.eq(kind))
+                .add(scheduled_transition::Column::State.is_in(["pending", "running", "deferred"])),
+        )
+        .exec(runner)
+        .await
+        .map_err(|e| driver_failure(format!("supersede {kind} intents of {entity_id}"), e))?;
+    Ok(result.rows_affected)
+}
+
+/// Resolve a live deferred-retirement row. Never deletes.
+///
+/// # Errors
+///
+/// [`RepoError`] on a storage or scope failure.
+pub async fn resolve_deferred_retirement(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    product_id: Uuid,
+    cascade_ref: Uuid,
+    resolution: &str,
+    now: DateTime<Utc>,
+) -> Result<bool, RepoError> {
+    let result = deferred_retirement::Entity::update_many()
+        .secure()
+        .scope_with(scope)
+        .col_expr(deferred_retirement::Column::ResolvedAt, Expr::value(now))
+        .col_expr(
+            deferred_retirement::Column::Resolution,
+            Expr::value(resolution),
+        )
+        .filter(
+            Condition::all()
+                .add(deferred_retirement::Column::TenantId.eq(tenant_id))
+                .add(deferred_retirement::Column::ProductId.eq(product_id))
+                .add(deferred_retirement::Column::CascadeRef.eq(cascade_ref))
+                .add(deferred_retirement::Column::ResolvedAt.is_null()),
+        )
+        .exec(runner)
+        .await
+        .map_err(|e| {
+            driver_failure(
+                format!("resolve deferred retirement {product_id}/{cascade_ref}"),
+                e,
+            )
+        })?;
+    Ok(result.rows_affected == 1)
 }
 
 #[cfg(test)]

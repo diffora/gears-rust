@@ -808,7 +808,7 @@ obligation's storage half cannot be closed until they are answered.
 
 ### Retirement flip guard
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-flip-guard`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-flip-guard`
 
 At `effectiveAt` the flip **MUST** consult `07-reference-signal`'s predicate and **MUST** defer
 where it reads anything but **fresh-zero** — fresh > 0, stale, never-received, or the defensive
@@ -988,7 +988,7 @@ standing choice holds for `PARENT_NOT_PUBLISHED` too.
 
 ### Registered-validator host
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-registered-validator-host`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-registered-validator-host`
 
 This feature **MUST** fill `01-foundation`'s `RegisteredValidators` phase for the `→ published`
 target state, which the Foundation's own publish re-validation records as *"a real gap, not a
