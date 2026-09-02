@@ -49,8 +49,8 @@ use uuid::Uuid;
 use super::{TERMINAL_HEAD_STATES, driver_failure};
 use crate::domain::error::DomainError;
 use crate::domain::taxonomy::{
-    AssignmentRole, CategoryState, DefinitionState, RetireCensus, StaleCategoryToken,
-    TaxonomyMutation,
+    AssignmentRole, CategoryState, DefinitionState, REGISTRY_SEEDED_BY, RetireCensus,
+    StaleCategoryToken, TaxonomyMutation, WELL_KNOWN_SEEDS,
 };
 use crate::infra::storage::RepoError;
 use crate::infra::storage::entity::{
@@ -705,13 +705,62 @@ pub async fn attribute_definition_by_key(
     row.map(into_definition).transpose()
 }
 
-/// One tenant's whole definition roster, ordered by key.
+/// One tenant's whole definition roster, ordered by key — **seeding the
+/// well-known five on a tenant that has none** (**P-D-100**).
+///
+/// # The read-through, and why a read writes
+///
+/// `products_attribute_definition` is per-tenant, so
+/// `dod-well-known-seeds`' five are five rows **per tenant** rather than five
+/// rows in the database. A migration reaches the tenants that exist when it
+/// runs and never runs again, and the gear has **no tenant-bootstrap hook of
+/// any kind** to hang a per-tenant seeder off. P-D-100 therefore takes both
+/// writers over one roster: the migration is the lead's, and this is the other
+/// half — a tenant created after deploy gets its vocabulary the first time
+/// anything reads for it.
+///
+/// [`crate::domain::taxonomy::WELL_KNOWN_SEEDS`] stays the **only** definition
+/// site, so the two writers cannot disagree about what the roster contains.
+///
+/// # Empty is the trigger, not "the five are missing"
+///
+/// The seeding fires only on a roster that is **wholly empty**. A tenant that
+/// has deleted — or rather deprecated, since nothing deletes — one of the five
+/// is not re-seeded, because re-materialising a definition an operator
+/// deliberately moved out of the way would undo their act on every read. The
+/// migration and this path both answer the same question, *"has this tenant a
+/// vocabulary at all"*, and neither reconciles a partial one.
+///
+/// # It is idempotent under a race, and the index is what makes it so
+///
+/// Two concurrent first reads both see an empty roster and both insert.
+/// `uq_products_attribute_definition_key` admits one of each key, so the loser
+/// takes a conflict — swallowed here rather than raised, because a tenant
+/// whose seeds already exist is the outcome the caller wanted. The re-read
+/// after the write is what the caller receives, so it carries the winner's
+/// rows either way.
 ///
 /// # Errors
 ///
 /// [`RepoError`] on a storage or scope failure; [`RepoError::CorruptRow`] on
 /// a state outside the roster.
 pub async fn attribute_definitions(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    now: DateTime<Utc>,
+) -> Result<Vec<AttributeDefinitionRecord>, RepoError> {
+    let roster = read_definition_roster(runner, scope, tenant_id).await?;
+    if !roster.is_empty() {
+        return Ok(roster);
+    }
+    seed_well_known(runner, scope, tenant_id, now).await?;
+    read_definition_roster(runner, scope, tenant_id).await
+}
+
+/// The roster read itself, with no seeding — the half both
+/// [`attribute_definitions`] and its read-through call.
+async fn read_definition_roster(
     runner: &impl DBRunner,
     scope: &AccessScope,
     tenant_id: Uuid,
@@ -725,6 +774,51 @@ pub async fn attribute_definitions(
         .await
         .map_err(|e| driver_failure(format!("read the definition roster of {tenant_id}"), e))?;
     rows.into_iter().map(into_definition).collect()
+}
+
+/// Materialise [`crate::domain::taxonomy::WELL_KNOWN_SEEDS`] for one tenant.
+///
+/// Each row is inserted on its own so one key's conflict does not roll back
+/// the other four: under the race the doc above describes, the winner may have
+/// laid down some of the five before this caller reached them.
+///
+/// A conflict is swallowed and every other driver failure is raised — the
+/// distinction [`classify_category_write`] makes for the tree, on the same
+/// ground: this function does not widen a storage error into a success.
+async fn seed_well_known(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    now: DateTime<Utc>,
+) -> Result<(), RepoError> {
+    for seed in WELL_KNOWN_SEEDS {
+        let outcome = insert_attribute_definition(
+            runner,
+            scope,
+            NewAttributeDefinition {
+                tenant_id,
+                definition_id: Uuid::now_v7(),
+                key: seed.key,
+                value_type: seed.value_type,
+                localized: seed.localized,
+                region_scope: "",
+                brand_scope: "",
+                seeded_by: Some(REGISTRY_SEEDED_BY),
+            },
+            now,
+        )
+        .await;
+        if let Err(error) = outcome {
+            let message = error.to_string().to_ascii_lowercase();
+            let conflict = message.contains("unique constraint")
+                || message.contains("duplicate key")
+                || message.contains("uq_products_attribute_definition_key");
+            if !conflict {
+                return Err(error);
+            }
+        }
+    }
+    Ok(())
 }
 
 /// One state flip: the state the caller's `GovernedLiveOp` read, and the

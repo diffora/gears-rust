@@ -4177,7 +4177,7 @@ async fn sku_content_subject(
     head: &SkuRecord,
     writes: &[AttributeWrite],
 ) -> Result<ContentSaveSubject, HeadActError> {
-    let roster = repo::attribute_definitions(runner, &inputs.scope, inputs.tenant_id)
+    let roster = repo::attribute_definitions(runner, &inputs.scope, inputs.tenant_id, inputs.now)
         .await
         .map_err(|e| HeadActError::from_repo(&e))?;
     Ok(ContentSaveSubject {

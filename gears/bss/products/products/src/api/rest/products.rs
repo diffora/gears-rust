@@ -4905,7 +4905,7 @@ async fn carried_definitions(
     if values.is_empty() {
         return Ok(PublishedContentSubject::default());
     }
-    let roster = repo::attribute_definitions(runner, &inputs.scope, inputs.tenant_id)
+    let roster = repo::attribute_definitions(runner, &inputs.scope, inputs.tenant_id, inputs.now)
         .await
         .map_err(|e| HeadActError::from_repo(&e))?;
 
@@ -4990,9 +4990,10 @@ async fn content_subject(
     }
 
     if let Some(writes) = payload.attributes.as_ref() {
-        let roster = repo::attribute_definitions(runner, &inputs.scope, inputs.tenant_id)
-            .await
-            .map_err(|e| HeadActError::from_repo(&e))?;
+        let roster =
+            repo::attribute_definitions(runner, &inputs.scope, inputs.tenant_id, inputs.now)
+                .await
+                .map_err(|e| HeadActError::from_repo(&e))?;
         subject.values = writes
             .iter()
             .map(|write| ValueCandidate {

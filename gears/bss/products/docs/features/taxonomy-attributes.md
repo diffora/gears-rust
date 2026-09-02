@@ -1040,15 +1040,17 @@ It goes in the `-> published` pipeline and nowhere else, for the reason
 `inst-tx-primary-at-publish`'s sibling gives -- a rule in the shared pipeline would refuse a draft
 save the design admits.
 
-**§7 row 8, and why the rule is buildable anyway.** Row 8 asks what the global coordinate's key is,
-and observes that if it means all three coordinates absent then *"a default-locale value at the
-global coordinate"* names a coordinate carrying no locale. That naming **is** self-contradictory.
-The fork it implies is not live: `inst-av-resolve`'s item-37 note already refuses the other horn in
-as many words -- anchoring totality on the tenant default *"would un-total the chain for every
-already-published entity the moment it changed"* -- and P-D-88 arm 2 ships the spelling
-`("", "", "")`. So the rule demands a value at the shipped global coordinate, and what is left of
-row 8 is a **naming defect rather than a decision**. Registered, not asserted: the row stays open
-and this stays unticked.
+**§7 row 8 is answered and struck (P-D-102): the global coordinate is absent on all three axes.**
+This feature reported the row as a naming defect with both readings closed elsewhere, and the
+decision came out **larger** than that. Read in full, `inst-av-default-locale` said *"the
+default-locale value at the global **(brand-less)** coordinate"* — and that parenthetical is a
+third, live reading: brand absent, locale present and equal to the tenant default. It is settled on
+P-D-101's own argument, that such a value carries the locale which was default when it was written.
+`DefaultLocaleRequired` and `GLOBAL_COORDINATE` already had it right; the register entry that
+compressed the fork was the weaker artifact, and that is worth recording where the next reader will
+find it.
+
+**§7 row 1 still holds the tick**, and it is now the only thing that does.
 
 **The category half is the live-value door's** and lands with it -- see
 `dod-category-live-value-door`, whose route is undeclared (§7 row 16).
@@ -1081,14 +1083,13 @@ One case beyond the DoD's list, because it is the chain's one silent failure mod
 name a locale and a brand and no region, so both look for a value whose region is **absent**. A
 region-insensitive step 2 would hand an `eu` value to an `apac` reader.
 
-**Two things the DoD needs that do not exist**, and the tick waits on both. §7 row 6 is the first:
-*"the per-brand default locale has no store"*. `inst-av-resolve` says default-locale *"resolves per
-brand, falling back to the tenant default"*, so step 3 should consult a **per-brand** default
-locale before the tenant's; only the fallback half is built, because nothing stores the per-brand
-half. The second is smaller and is in no row: **the gear carries no configuration field for the
-tenant default locale either**, so every caller supplies it as an argument and none can. The
-resolver is correct for whatever arrives and nothing arrives -- the same shape `TaxonomyLimits`
-takes.
+**One thing the DoD needs that does not exist, and it is not what §7 row 6 asked.** That row is
+answered and struck (**P-D-101**): the default-locale is the **tenant** default only and *"resolves
+per brand"* is gone from `inst-av-resolve`, so the per-brand store the row wanted is no longer
+owed. What remains is the gap this feature found beside it and no row carried: **`ProductsConfig`
+has no `default_locale` field**, so the chain's one input has no source and every caller supplies
+it as an argument. The resolver is correct for whatever arrives and nothing arrives — the same
+shape `TaxonomyLimits` takes. `config.rs` is not this strand's; the DoD ticks when the field lands.
 
 **Implements**: `cpt-cf-bss-products-flow-attribute-values`
 
@@ -1267,17 +1268,34 @@ identifier, each element following the Foundation's field-ordering rule (P-D-29)
 **MUST** prove the rendering byte-identical across both engines, because
 `10-retention-erasure`'s restore drill compares those digests byte for byte.
 
-**Both renderers ship, and one of them exceeds this DoD's first sentence on purpose.**
-`assignment_collection` sorts by category id, which is total for that collection —
-`uq_products_product_category` admits one row per `(product, category)`. `value_collection` sorts by
-the **whole coordinate**, and §7 row 9 is why: *"Sorting by the attribute id orders groups, not
-rows, so two engines can serialize one content two ways — the failure the rule exists to prevent."*
+**Both renderers ship, and the whole-coordinate sort is the set's own rule — not an excess over
+it.** `assignment_collection` sorts by category id, total because
+`uq_products_product_category` admits one row per `(product, category)`. `value_collection` sorts
+by the **whole coordinate**, since an identifier sort orders groups and not rows.
 
-**The two sentences of this DoD contradict each other and only one can be built.** The first asks
-for a sort by *"the collection's own identifier"*; the second asks for a golden vector proving the
-rendering byte-identical across both engines. An identifier sort cannot deliver the second, so the
-total sort is taken and the divergence is registered — it is exactly the amendment row 9 says is
-owed to **P-D-29**'s owner, and the DoD stays unticked until that owner acts.
+**§7 row 9 is answered and struck (P-D-103), and this feature had the reasoning wrong.** It
+reported the sort as an excess over P-D-29's letter, owed an amendment in two documents — and
+checked only that those two documents say it in the same words. It did **not** grep the register
+for a rule already in force: **P-D-80** arm 1, *"keyed collections sort by their key"*, had
+generalized *"by the collection's own identifier"* to *"a keyed collection sorts by its own key
+rendering"* and simply never restated it for P-D-29's two collections. So the decision is a
+consistency fix, the code was already conformant, and the lesson is the entry's: grep the register
+for the rule before calling something an excess over it.
+
+**What holds the tick now is two concrete gaps, neither of them a question.**
+
+1. **The renderers have no caller.** `products::product_content` builds a frozen version's content
+   from head columns alone, so neither collection reaches `products_entity_version.content` today.
+   Adding them is a **`DIGEST_VERSION`** matter — `domain::canonical` states that *"the first
+   content change after deployment must bump"* and that the present non-bump is correct only
+   because **no stored row exists** — plus an entry in each entity's version-content roster
+   (`SKU_VERSION_CONTENT_ROSTER` and its Product twin). That is a larger decision than a wiring and
+   it is in no group of this strand's current assignment.
+2. **The golden vector is a pure-function pin, not a cross-engine one.** The rendering never
+   queries, so the only way an engine could change it is the **input order**, which is held against
+   every rotation and the reverse of the hard case. What the DoD asks for literally — bytes
+   compared across both engines — lives in `tests/postgres_golden_vector.rs`, which neither carries
+   these two collections nor is this strand's file.
 
 **No second serialization rule is minted.** `canonical::render_into` sorts every object's keys and
 preserves every array's order, recursively, so these functions owe the array order and nothing
@@ -1408,10 +1426,11 @@ false, and the three-lens review of 2026-08-31 measured it so. Every item below 
 Definition of Done in §5, and the DoD it blocks is stated so an implementer meets the question
 before the code rather than after.
 
-**Two of the twenty-four are now answered and struck in place — 3 and 7 — leaving twenty-two
-open.** **P-D-88** answered row 7 (the nullable-`UNIQUE` gap) and **P-D-93** row 3 (the
-`GovernedLiveOp` seam, whose premise had gone stale on three counts). Each was answered by a
-register entry, not here; the struck rows point at it.
+**Five of the twenty-four are now answered and struck in place — 3, 6, 7, 8 and 9 — leaving
+nineteen open.** **P-D-88** answered row 7 (the nullable-`UNIQUE` gap) and **P-D-93** row 3 (the
+`GovernedLiveOp` seam, whose premise had gone stale on three counts); **P-D-101**, **P-D-102** and
+**P-D-103** answered rows 6, 8 and 9 on 2026-09-02, from this feature's own owed register. Each was
+answered by a register entry, not here; the struck rows point at it.
 
 **Nothing else here is answered.** A FEATURE artifact records what its design set leaves open;
 it does not decide it.
@@ -1423,10 +1442,10 @@ it does not decide it.
 | 3 | ~~*(seam — see below)*~~ **Answered (owner call, 2026-09-01 — P-D-93): the row's premise is stale on three counts — 05's FEATURE artifact ships, its approval and decision stores ship with their guards, and the in-test approval double the row names as its obligation ships four times over. The envelope is buildable; what stays owed to 05's own door is a test that drives a live op through a REAL approval record.** | no DoD — resolved by P-D-93 | was this feature with 05; **closed** |
 | 4 | *(seam — see below)* | `dod-pii-write-block` | `10-retention-erasure` |
 | 5 | **Do 02 and 03 admit a `draft` head as a blocking reference?** This feature's removal operand is the non-terminal head, `03-sku-classification`'s is the non-terminal *published* head. **03's half is answered (P-D-89): its operand excludes `draft`, and the row is not a joint decision after all — each slice states its own operand and the divergence is registered on both sides. What is still open is THIS feature's half**: whether the wider operand is right for attribute definitions, whose values have no unit-style publish-time re-recognition to fall back on | `dod-definition-lifecycle` | this feature |
-| 6 | **The coordinate model admits combinations the resolver never visits, and the per-brand default locale has no store.** The chain's third step needs one; the only store named is the tenant default | `dod-locale-resolver` | this feature |
+| 6 | ~~**The coordinate model admits combinations the resolver never visits, and the per-brand default locale has no store.**~~ **Answered (owner call, 2026-09-02 — P-D-101): the default-locale is the *tenant* default only, and *"resolves per brand, falling back to"* is struck from `inst-av-resolve`.** The per-brand default had no store, and a second config value under a step that cannot change *whether* resolution succeeds doubles the exposure that row's own next sentence argues against. What remains is not this row's: `ProductsConfig` carries no `default_locale` field, so the chain's one input has no source and the DoD waits on that rather than on this question | no DoD — resolved by P-D-101 | was this feature; **closed** |
 | 7 | ~~**Both uniqueness guarantees are `UNIQUE` over nullable columns.**~~ **Answered (owner call, 2026-09-01 — P-D-88): roots take a partial `UNIQUE (tenant_id, name_normalized) WHERE parent_id IS NULL`, since a sentinel cannot satisfy the self-FK and `NULLS NOT DISTINCT` has no `SQLite` twin; the value coordinates ship `NOT NULL` with `''` as the stated absence (P-D-39's convention). Both probed on both engines.** Original text: `(tenant_id, parent_id, name_normalized)` does not constrain **root** categories, and the attribute-value tuple does not constrain the **global** coordinate — the one row `dod-default-locale` makes mandatory. The gear's answer elsewhere is NOT NULL with a stated absence value (P-D-39) | no DoD — resolved by P-D-88 | was this feature with the schema owner; **closed** |
-| 8 | **What is the `global` coordinate's key?** If it is keyed on the default locale it is anchored on the config value the §2 boundary argues against; if it means all three coordinates absent, "a default-locale value at the global coordinate" names a coordinate that carries no locale | `dod-default-locale`, `dod-locale-resolver` | this feature |
-| 9 | **The frozen-content sort key is not total for attribute values.** Sorting by the attribute id orders groups, not rows, so two engines can serialize one content two ways — the failure the rule exists to prevent. Amending it is a register change: P-D-29 and `01-foundation` §4.3 state it in the same words | `dod-version-content-rendering` | P-D-29's owner |
+| 8 | ~~**What is the `global` coordinate's key?**~~ **Answered (owner call, 2026-09-02 — P-D-102): absent on *all three* axes, `("", "", "")`.** The decision is **larger than this feature reported it**: the register entry called it a naming defect with both readings closed elsewhere, having read `inst-av-default-locale` as offering only the two this row names. Its full text says *"the default-locale value at the global **(brand-less)** coordinate"*, and that parenthetical is a third, live reading — brand absent, locale present and equal to the tenant default. It is settled on P-D-101's argument: such a value carries the locale that was default *when it was written*, so a config change leaves step 3 matching nothing. The code already had it right; the entry was the weaker artifact | no DoD — resolved by P-D-102 | was this feature; **closed** |
+| 9 | ~~**The frozen-content sort key is not total for attribute values.**~~ **Answered (owner call, 2026-09-02 — P-D-103): the attribute-value set sorts by its *whole coordinate*, and this is a consistency fix rather than an amendment.** **P-D-80** arm 1 — *"keyed collections sort by their key"* — had already generalized *"by the collection's own identifier"* to *"a keyed collection sorts by its own key rendering"*; it simply never restated the rule for P-D-29's two collections. So what ships **is** the set's rule. This feature reported it as an excess owed an amendment in two documents, having checked that those two documents say it in the same words and **not** having grepped the register for a generalization already in force | no DoD — resolved by P-D-103 | was P-D-29's owner; **closed** |
 | 10 | **Is definition removal a material op?** Removal is absent from the material-op enumeration while deprecation, the step before it, is in it. So §4's `inst-de-edge-remove` carries no approval condition while the re-listing edge does — the destructive edge is cheaper than the restorative one | `dod-definition-lifecycle`, `cpt-cf-bss-products-state-attribute-definition` | this feature |
 | 11 | **Does the type-change operand mean the same as the removal operand?** One rule states two: undefined "live values" for the type change, the defined non-terminal head for removal | `dod-definition-lifecycle` | this feature |
 | 12 | **Does the PRD carry a live-reference condition for attribute definitions?** The non-terminal-head operand was credited to the PRD and that attribution is struck; it is either inherited from 03 or design-introduced and owed a PRD amendment | `dod-definition-lifecycle` | the PRD owner with this feature |

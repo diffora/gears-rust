@@ -41,11 +41,12 @@ use super::{
     category_assignments, category_mutation_seq, category_parents, classify_assignment_write,
     definition_value_holders, delete_attribute_value, delete_metadata_key, delete_retired_category,
     flip_definition_state, insert_attribute_definition, insert_category, metadata_of,
-    rename_category, replace_category_assignments, retire_category, retire_census,
-    upsert_attribute_value, upsert_metadata, write_category_display_value,
+    read_definition_roster, rename_category, replace_category_assignments, retire_category,
+    retire_census, upsert_attribute_value, upsert_metadata, write_category_display_value,
 };
 use crate::domain::taxonomy::{
-    AssignmentRole, DefinitionState, definition_in_use_verdict, retire_verdict,
+    AssignmentRole, DefinitionState, REGISTRY_SEEDED_BY, WELL_KNOWN_SEEDS,
+    definition_in_use_verdict, retire_verdict,
 };
 use crate::infra::storage::RepoError;
 use crate::infra::storage::entity::product;
@@ -706,7 +707,7 @@ async fn the_roster_carries_tombstones_and_is_ordered_by_key() {
         .expect("flip zeta to a tombstone");
     }
 
-    let roster = attribute_definitions(&conn, &scope, TENANT)
+    let roster = attribute_definitions(&conn, &scope, TENANT, at(9))
         .await
         .expect("read the roster");
     assert_eq!(
@@ -1962,4 +1963,138 @@ async fn a_missing_category_answers_the_token_refusal_with_the_sentinel() {
     .expect("no storage failure")
     .expect_err("there is no such category");
     assert_eq!(refusal.found, -1, "the sentinel says the row is not there");
+}
+
+// -- The well-known seeds' read-through (**P-D-100**) --
+
+/// **A tenant with no roster gets the five on its first read**, marked
+/// `registry`, with `imageUri` non-localized.
+///
+/// The read-through is one of P-D-100's two writers; the migration is the
+/// other and is the lead's. `WELL_KNOWN_SEEDS` is the single definition site,
+/// so this asserts the rows against **it** rather than against a second list
+/// written here -- a literal roster in the test would be exactly the
+/// disagreement the single site exists to prevent.
+#[tokio::test]
+async fn an_empty_roster_is_seeded_on_first_read() {
+    let provider = harness().await;
+    let scope = AccessScope::for_tenant(TENANT);
+    let conn = provider.conn().expect("scoped connection");
+
+    assert!(
+        read_definition_roster(&conn, &scope, TENANT)
+            .await
+            .expect("read")
+            .is_empty(),
+        "this case's own premise: nothing is seeded yet"
+    );
+
+    let seeded = attribute_definitions(&conn, &scope, TENANT, at(9))
+        .await
+        .expect("the read-through seeds and re-reads");
+
+    assert_eq!(
+        seeded.iter().map(|d| d.key.as_str()).collect::<Vec<_>>(),
+        {
+            let mut keys: Vec<&str> = WELL_KNOWN_SEEDS.iter().map(|s| s.key).collect();
+            keys.sort_unstable();
+            keys
+        },
+        "the roster is WELL_KNOWN_SEEDS', ordered by key"
+    );
+    for definition in &seeded {
+        let seed = WELL_KNOWN_SEEDS
+            .iter()
+            .find(|s| s.key == definition.key)
+            .expect("every row came from the roster");
+        assert_eq!(definition.seeded_by.as_deref(), Some(REGISTRY_SEEDED_BY));
+        assert_eq!(definition.state, DefinitionState::Active);
+        assert_eq!(definition.localized, seed.localized, "{}", seed.key);
+        assert_eq!(definition.value_type, seed.value_type, "{}", seed.key);
+    }
+}
+
+/// **A second read seeds nothing more**, and a tenant that has deprecated one
+/// of the five does not get it back.
+///
+/// The trigger is a **wholly empty** roster. Re-materialising a definition an
+/// operator deliberately moved out of the way would undo their act on every
+/// read -- and since the flip is the only removal there is, that operator has
+/// no other way to say no.
+#[tokio::test]
+async fn the_read_through_fires_once_and_never_undoes_a_deprecation() {
+    let provider = harness().await;
+    let scope = AccessScope::for_tenant(TENANT);
+    let conn = provider.conn().expect("scoped connection");
+
+    let first = attribute_definitions(&conn, &scope, TENANT, at(9))
+        .await
+        .expect("seed");
+    assert_eq!(first.len(), WELL_KNOWN_SEEDS.len());
+
+    let display = first
+        .iter()
+        .find(|d| d.key == "displayName")
+        .expect("the roster carries it");
+    flip_definition_state(
+        &conn,
+        &scope,
+        TENANT,
+        display.definition_id,
+        DefinitionFlip {
+            expected: DefinitionState::Active,
+            to: DefinitionState::Deprecated,
+        },
+        at(10),
+    )
+    .await
+    .expect("the operator deprecates one");
+
+    let second = attribute_definitions(&conn, &scope, TENANT, at(11))
+        .await
+        .expect("read again");
+    assert_eq!(
+        second.len(),
+        WELL_KNOWN_SEEDS.len(),
+        "no sixth row: the read-through did not fire on a non-empty roster"
+    );
+    assert_eq!(
+        second
+            .iter()
+            .find(|d| d.key == "displayName")
+            .expect("still there")
+            .state,
+        DefinitionState::Deprecated,
+        "the operator's act stands"
+    );
+}
+
+/// **Each tenant is seeded for itself**, which is the whole reason a migration
+/// alone cannot do this: the rows are five *per tenant*, not five in the
+/// database.
+#[tokio::test]
+async fn the_seeds_are_per_tenant() {
+    let provider = harness().await;
+    let conn = provider.conn().expect("scoped connection");
+
+    attribute_definitions(&conn, &AccessScope::for_tenant(TENANT), TENANT, at(9))
+        .await
+        .expect("seed the first tenant");
+    assert!(
+        read_definition_roster(&conn, &AccessScope::for_tenant(OTHER_TENANT), OTHER_TENANT)
+            .await
+            .expect("read")
+            .is_empty(),
+        "seeding one tenant seeds no other"
+    );
+
+    let other = attribute_definitions(
+        &conn,
+        &AccessScope::for_tenant(OTHER_TENANT),
+        OTHER_TENANT,
+        at(9),
+    )
+    .await
+    .expect("seed the second tenant");
+    assert_eq!(other.len(), WELL_KNOWN_SEEDS.len());
 }
