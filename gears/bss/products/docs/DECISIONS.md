@@ -1569,6 +1569,39 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   (the re-publish step).
 
 
+#### P-D-100 — The well-known attribute seeds get **two** writers: a migration for tenants that exist at deploy, and a lazy read-through for every tenant after
+
+- **Date**: 2026-09-02 (owner call, on strand A's `A-OWED-04`)
+- **Context**: `products_attribute_definition` is **per-tenant** — `tenant_id` is in its key — so
+  `dod-well-known-seeds`' five definitions (`displayName`, `description`, `imageUri`,
+  `unitDisplayLabel`, `marketingFeatures`) are five rows **per tenant**, not five rows in the
+  database. They are not tenant data: they are the vocabulary a tenant needs before any product can
+  carry so much as a display name. The DoD asks for them *"per tenant bootstrap, by migration"* —
+  two paths in one phrase — and measured at `HEAD` only one of the two can exist:
+  - a migration reaches the tenants that exist when it runs, and never runs again;
+  - **the gear has no tenant-bootstrap hook of any kind** — no tenant-created handler, no
+    provisioning callback, nothing a per-tenant seeder could hang off. Verified in `gear.rs`.
+  So a tenant created after deploy gets no seeds, and `WELL_KNOWN_SEEDS` — which strand A shipped as
+  the single roster — has **zero callers** outside its own tests.
+- **Decision**: both writers, one roster. A **migration** seeds the tenants present when it runs,
+  and a **lazy read-through** on the definition-roster read materialises the five rows for a tenant
+  that has none. `domain::taxonomy::WELL_KNOWN_SEEDS` stays the only definition site, so the two
+  writers cannot disagree about the roster's content.
+- **The arguments against, stated**: two writers for one roster is the cost, and it is a real one —
+  a reader of either path has to know the other exists, and the read-through puts a conditional
+  write on a read path. The alternative — migration only — was declined because it leaves every
+  tenant created after deploy without a display name, and because it would make the DoD's own
+  *"per tenant bootstrap"* untrue, so the cheaper code costs a requirement edit instead. The third
+  option, a `gear.rs` bootstrap hook, is the cleanest single-writer shape and was declined for now
+  because the hook does not exist and inventing a tenant-lifecycle surface for five rows is a larger
+  decision than this one; if such a hook ever lands, the read-through is what it replaces, and this
+  entry is where to look.
+- **Propagated**: nothing normative. `dod-well-known-seeds`' own text already asks for both paths,
+  so this decision resolves it rather than amending it. **Owed**, and split: the **migration** is
+  the lead's — `migrations/` is no strand's — and the **read-through** is strand A's, in
+  `repo/taxonomy.rs`'s roster read, which that strand already owns. Neither is written yet, and the
+  DoD stays unticked until both are.
+
 #### P-D-99 — `04-lifecycle`'s four door shapes, each from the set's nearest precedent
 
 - **Date**: 2026-09-02 (owner call, the interface **P-D-98** deliberately left owed)
