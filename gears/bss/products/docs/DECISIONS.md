@@ -1569,6 +1569,45 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   (the re-publish step).
 
 
+#### P-D-103 — The frozen-content sort applies **P-D-80 arm 1** to P-D-29's two collections: the attribute-value set sorts by its whole coordinate
+
+- **Date**: 2026-09-02 (owner call, on strand A's `A-OWED-12`)
+- **Context**: `dod-version-content-rendering` carries two clauses that cannot both hold. It asks
+  for row collections *"sorted by the collection's own identifier"* (**P-D-29**, restated in
+  `01-foundation` §4.3 **in the same words** — verified) **and** for a golden vector proving the
+  rendering **byte-identical across both engines**. For the attribute-value set the identifier is
+  the definition id, which is **not unique per row**: one definition carries a value at every
+  locale, region and brand coordinate it is written at, so an identifier sort orders **groups, not
+  rows**, and the within-group order is the engine's. Two engines then hash one content two ways,
+  which is the byte-identity the second clause exists to establish — lost on the one collection
+  that most needs it. The category-assignment set is unaffected, its identifier being its row key.
+- **The register had already answered this, one collection over.** **P-D-80** arm 1 — titled, in
+  that entry's own heading, *"keyed collections sort by their key"* — generalized *"by the
+  collection's own identifier"* to **a keyed collection sorts by its own key rendering**, with the
+  manifest's entry rows by `(entity_kind, entity_id)` and its capture rows by `capture_kind` as its
+  examples, *"both being their stores' primary keys."* It never restated the rule for the two
+  collections P-D-29 had named.
+- **Decision**: **apply P-D-80 arm 1 to P-D-29's two collections.** The attribute-value set sorts by
+  its **whole coordinate** — definition, locale, region, brand — the table's own primary key, total
+  by construction; the category-assignment set is unchanged, since its key is its identifier.
+  This **amends P-D-29** and is a consistency fix rather than a new rule: strand A shipped it, and
+  its register recorded it as an excess over P-D-29's letter, which — measured against P-D-80 —
+  it is not.
+- **The arguments against, stated**: the amendment reaches a decision taken earlier and a slice that
+  is not the one that found it, which is the cost of every retroactive consistency fix; and a reader
+  of P-D-29 alone still sees "identifier" until they reach P-D-80 or this entry. Against that, the
+  alternative — sorting by the identifier as written and dropping the byte-identity claim — was
+  declined because it makes `10-retention-erasure`'s restore drill's digest comparison meaningless,
+  and that comparison is the whole reason the clause exists. Leaving both clauses standing was
+  declined because it leaves the set holding a requirement no implementation can satisfy.
+- **Propagated**: `design/01-foundation.md` §4.3 (the clause, with this id and P-D-80's). Amends
+  **P-D-29**; P-D-29's own text is left as written, per this register's convention that a later
+  entry amends rather than rewrites. **No code change**: `domain::taxonomy::value_collection` and
+  `assignment_collection` already sort this way. **Owed**: the feature's §7 **row 9**, whose
+  question this answers, is strand A's file and that strand's to strike; and
+  `design/02-taxonomy-attributes.md`'s own ordering sentence, which P-D-29 names as a propagation
+  target, should cite this entry when it is next opened.
+
 #### P-D-102 — The global coordinate is absent on **all three** axes; `inst-av-default-locale` loses both "default-locale value" and "(brand-less)"
 
 - **Date**: 2026-09-02 (owner call, on strand A's `A-OWED-10` — and **larger than that entry
