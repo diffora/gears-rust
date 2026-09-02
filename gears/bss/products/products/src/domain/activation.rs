@@ -234,12 +234,11 @@ pub fn classify_door_refusal(
 /// being flipped, never from a caller argument — that distinction is
 /// P-D-105's safety.
 ///
-/// Strand B owns host acceptance in `domain::approval`. B's
-/// `StoredApprovalGate` still matches subject + revision on
-/// `PreAuthorized`. This module therefore verifies the **pin the row
-/// carries** (P-D-105's description) and still calls `evaluate` so the
-/// runner is a real caller of the gate. Expect one adjustment when B
-/// lands the scheduled-flip arm.
+/// Strand B owns host acceptance in `domain::approval`. This module
+/// calls `evaluate` and admits only on [`GateVerdict::Authorized`].
+/// [`scheduled_pin_holds`] stays as the domain statement of P-D-105;
+/// it is not the admission decision. B's scheduled-flip arm is the
+/// one that can answer `Authorized` for a cascade leg.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PreAuthorizedCall {
     /// The approval pinned on the `ScheduledTransition` at scheduling.
@@ -287,14 +286,20 @@ pub fn scheduled_pin_holds(pin: &ScheduledActivation) -> bool {
     pin.record_consumed && pin.row_approval_ref == pin.record_id
 }
 
-/// Call the gate in `PreAuthorized` with the row's pin, then admit on
-/// [`scheduled_pin_holds`].
+/// Call the gate in `PreAuthorized` with the row's pin. Admission is the
+/// host's [`GateVerdict::Authorized`] only; [`scheduled_pin_holds`] is the
+/// domain statement of P-D-105 and is checked after a yes, never instead
+/// of one.
 ///
-/// A pin that does not verify finishes [`RunFinish::Failed`], not
-/// [`RunFinish::Deferred`]. Deferred is for a flip-guard that may clear
-/// and a transient dependency that may return. A consumed-record mismatch
-/// will not become true on the next poll, so retrying would hold a
-/// terminal defect open forever.
+/// A host [`GateVerdict::Refused`] finishes [`RunFinish::Deferred`] on
+/// the transient-dependency arm. Today's shipped host refuses every
+/// `PreAuthorized` call because B's scheduled-flip arm is not on the
+/// host yet — that refusal becomes a yes on a later poll, which is the
+/// argument for hold rather than terminal. After B lands, a refusal that
+/// persists spends the budget and fails, which is the right end for an
+/// approval that will not start authorizing. A pin mismatch after
+/// `Authorized` stays [`RunFinish::Failed`]: a consumed-record mismatch
+/// will not become true on the next poll.
 pub fn verify_activation_pin(
     gate: &dyn GovernanceGate,
     subject: GateSubject,
@@ -303,7 +308,13 @@ pub fn verify_activation_pin(
 ) -> RunFinish {
     let call = PreAuthorizedCall::from_row(pin.row_approval_ref);
     match gate.evaluate(subject, expected_revision, call.mode()) {
-        Ok(GateVerdict::Authorized(_) | GateVerdict::Refused { .. }) => {}
+        Ok(GateVerdict::Authorized(_)) => {}
+        Ok(GateVerdict::Refused { reason }) => {
+            return RunFinish::Deferred {
+                population: DeferralPopulation::TransientDependency,
+                reason: format!("activation gate refused: {reason}"),
+            };
+        }
         Err(error) => {
             return RunFinish::Failed {
                 reason: format!("activation gate host failed: {error}"),
