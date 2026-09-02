@@ -258,6 +258,38 @@ pub(crate) const PRODUCT_RETIRED_PAYLOAD_TYPE: &str = "ProductRetired";
 /// `SkuRetirementEffective` — the SKU flip. No Product analogue (row 5).
 pub(crate) const SKU_RETIREMENT_EFFECTIVE_PAYLOAD_TYPE: &str = "SkuRetirementEffective";
 
+/// The five taxonomy-tree acts (`dod-taxonomy-events`), all ordering on
+/// [`crate::infra::taxonomy::TAXONOMY_TREE_AGGREGATE`] — one aggregate per
+/// tenant, matching `inst-tc-writer-lock`'s per-tenant serialization. A
+/// per-node key would promise an ordering across nodes that nothing enforces.
+///
+/// **Declared, not yet emitted.** The taxonomy's doors have no REST routes
+/// (`features/taxonomy-attributes.md` §7 row 16), so nothing calls
+/// [`enqueue_body`] with these yet. They are declared with their
+/// [`SCHEMA_REFS`] entries anyway, together, because that pairing is the one
+/// an exhaustive `match` cannot enforce: a type added without its entry
+/// compiles clean, `schema_ref_for` answers `None`, and the act rolls back at
+/// runtime rather than at build time.
+pub(crate) const CATEGORY_CREATED_PAYLOAD_TYPE: &str = "CategoryCreated";
+/// See [`CATEGORY_CREATED_PAYLOAD_TYPE`].
+pub(crate) const CATEGORY_RENAMED_PAYLOAD_TYPE: &str = "CategoryRenamed";
+/// See [`CATEGORY_CREATED_PAYLOAD_TYPE`].
+pub(crate) const CATEGORY_REPARENTED_PAYLOAD_TYPE: &str = "CategoryReparented";
+/// See [`CATEGORY_CREATED_PAYLOAD_TYPE`].
+pub(crate) const CATEGORY_RETIRED_PAYLOAD_TYPE: &str = "CategoryRetired";
+/// See [`CATEGORY_CREATED_PAYLOAD_TYPE`].
+pub(crate) const CATEGORY_DELETED_PAYLOAD_TYPE: &str = "CategoryDeleted";
+
+/// The metadata map's act, ordering on the owning entity
+/// ([`crate::infra::taxonomy::metadata_aggregate`]): a metadata write takes no
+/// taxonomy lock and rides the entity row's own `If-Match`, so the entity is
+/// both the serialization the door provides and the key the event claims.
+///
+/// Declared and not yet emitted, for the reason above **and** one of its own:
+/// the metadata door is blocked on a grant pair that does not exist
+/// (`features/taxonomy-attributes.md`, `dod-metadata-door`).
+pub(crate) const METADATA_UPDATED_PAYLOAD_TYPE: &str = "MetadataUpdated";
+
 /// `RecognizedUnitUpdated`'s payload type token — `design/03` §4's roster,
 /// the metering-unit set's own event, emitted **in the same transaction** as
 /// the membership mutation (`inst-rs-shape`). Not one of §4.5's eight and
@@ -380,6 +412,30 @@ pub(crate) const SCHEMA_REFS: &[(&str, &str)] = &[
     (
         SKU_RETIREMENT_EFFECTIVE_PAYLOAD_TYPE,
         "bss-products.SkuRetirementEffective.v1.0.0",
+    ),
+    (
+        CATEGORY_CREATED_PAYLOAD_TYPE,
+        "bss-products.CategoryCreated.v1.0.0",
+    ),
+    (
+        CATEGORY_RENAMED_PAYLOAD_TYPE,
+        "bss-products.CategoryRenamed.v1.0.0",
+    ),
+    (
+        CATEGORY_REPARENTED_PAYLOAD_TYPE,
+        "bss-products.CategoryReparented.v1.0.0",
+    ),
+    (
+        CATEGORY_RETIRED_PAYLOAD_TYPE,
+        "bss-products.CategoryRetired.v1.0.0",
+    ),
+    (
+        CATEGORY_DELETED_PAYLOAD_TYPE,
+        "bss-products.CategoryDeleted.v1.0.0",
+    ),
+    (
+        METADATA_UPDATED_PAYLOAD_TYPE,
+        "bss-products.MetadataUpdated.v1.0.0",
     ),
 ];
 

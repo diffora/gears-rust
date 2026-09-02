@@ -7353,3 +7353,160 @@ async fn a_categories_only_save_seeds_no_definitions() {
         0
     );
 }
+
+/// A detector double that blocks any value containing `ssn`.
+///
+/// The registered host (`NoPiiPolicyDetector`) admits everything and says so,
+/// which is right until `10-retention-erasure` lands — and it means **no
+/// request through the router can produce `CONTENT_PII_BLOCKED`**. So this
+/// double is passed to `save_product_under_gate` directly, exactly as
+/// `RefusingGate` is passed to `discard_product_under_gate`.
+struct BlockingDetector;
+
+impl crate::domain::taxonomy::PiiDetector for BlockingDetector {
+    fn inspect(&self, _subject: &str, text: &str) -> crate::domain::taxonomy::PiiVerdict {
+        if text.contains("ssn") {
+            crate::domain::taxonomy::PiiVerdict::Blocked(
+                "matches a personal-data pattern".to_owned(),
+            )
+        } else {
+            crate::domain::taxonomy::PiiVerdict::Clean
+        }
+    }
+}
+
+/// **The door calls the PII hook, and its code reaches the wire as itself.**
+///
+/// Without this, `DomainError::ContentPiiBlocked` and its mapping arm would be
+/// reachable only from a unit test that constructs the variant by hand — which
+/// is the dead `match` arm `infra::error_mapping`'s own paragraph refuses. The
+/// hook has a production raiser; this is what proves the raiser is wired.
+///
+/// The refusal is a **422 architectural, 400 on the wire** carrying its own
+/// code, which is `design/02` §3.3's status for it. And nothing lands: the
+/// block runs before the roster read and before the head `UPDATE`, so a
+/// refused write neither seeds a tenant's vocabulary nor moves a revision.
+#[tokio::test]
+async fn the_save_door_calls_the_pii_block_and_the_code_reaches_the_wire() {
+    let harness = harness().await;
+    let product_id = Uuid::now_v7();
+    seed_draft(&harness, product_id).await;
+
+    let state = api_state(&harness);
+    let enforcer = flat_in_enforcer(TENANT);
+    let ctx = authed_ctx(TENANT);
+    let mut headers = axum::http::HeaderMap::new();
+    headers.insert(
+        axum::http::header::IF_MATCH,
+        if_match(1)
+            .parse()
+            .expect("the ETag is a valid header value"),
+    );
+
+    let gate: Arc<dyn GovernanceGate + Send + Sync> =
+        Arc::new(crate::domain::governance::NoMaterialityPolicyGate);
+    let detector: Arc<dyn crate::domain::taxonomy::PiiDetector + Send + Sync> =
+        Arc::new(BlockingDetector);
+    let request: super::SaveProductRequest = serde_json::from_value(json!({
+        "attributes": [{ "key": "description", "value": "contact ssn 000-00-0000" }]
+    }))
+    .expect("the body parses");
+
+    let refusal = super::save_product_under_gate(
+        &state,
+        &enforcer,
+        &ctx,
+        product_id,
+        &headers,
+        request,
+        &super::SaveHosts {
+            gate: &gate,
+            detector: &detector,
+        },
+    )
+    .await
+    .expect_err("the detector blocks, which proves the door asked it");
+
+    let response = refusal.into_response();
+    assert_eq!(
+        response.status(),
+        StatusCode::BAD_REQUEST,
+        "422 architectural, 400 on the wire"
+    );
+    let (code, _) = first_violation(response).await;
+    assert_eq!(
+        code, "CONTENT_PII_BLOCKED",
+        "the hook's own code, through the variant A8 added"
+    );
+
+    assert_eq!(
+        raw_i64(
+            &harness.dsn,
+            "SELECT COUNT(*) AS v FROM products_attribute_definition",
+        )
+        .await,
+        0,
+        "a blocked write must not seed the tenant's vocabulary on its way to being refused"
+    );
+    assert_eq!(
+        head_of(&harness, product_id).await.internal_revision,
+        1,
+        "and must move no revision"
+    );
+}
+
+/// **The paired control: the same door, the same detector, clean text.**
+///
+/// A hook wired to refuse unconditionally would pass the case above. This is
+/// the half that says the door still works.
+#[tokio::test]
+async fn the_same_door_and_detector_admit_clean_text() {
+    let harness = harness().await;
+    let product_id = Uuid::now_v7();
+    seed_draft(&harness, product_id).await;
+
+    let state = api_state(&harness);
+    let enforcer = flat_in_enforcer(TENANT);
+    let ctx = authed_ctx(TENANT);
+    let mut headers = axum::http::HeaderMap::new();
+    headers.insert(
+        axum::http::header::IF_MATCH,
+        if_match(1)
+            .parse()
+            .expect("the ETag is a valid header value"),
+    );
+
+    let gate: Arc<dyn GovernanceGate + Send + Sync> =
+        Arc::new(crate::domain::governance::NoMaterialityPolicyGate);
+    let detector: Arc<dyn crate::domain::taxonomy::PiiDetector + Send + Sync> =
+        Arc::new(BlockingDetector);
+    let request: super::SaveProductRequest = serde_json::from_value(json!({
+        "attributes": [{ "key": "description", "value": "a fast fibre line" }]
+    }))
+    .expect("the body parses");
+
+    super::save_product_under_gate(
+        &state,
+        &enforcer,
+        &ctx,
+        product_id,
+        &headers,
+        request,
+        &super::SaveHosts {
+            gate: &gate,
+            detector: &detector,
+        },
+    )
+    .await
+    .expect("clean text passes the same hook the case above refuses");
+
+    assert_eq!(
+        raw_i64(
+            &harness.dsn,
+            "SELECT COUNT(*) AS v FROM products_attribute_value",
+        )
+        .await,
+        1,
+        "and the value lands"
+    );
+}

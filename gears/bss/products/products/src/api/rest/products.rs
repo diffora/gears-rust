@@ -472,9 +472,9 @@ use crate::domain::rules::{
 };
 use crate::domain::taxonomy::{
     AssignmentCandidate, AssignmentRole, AttributeDefinitionKnownRule, CarriedDefinition,
-    CategoryRoleConflictRule, ContentPiiBlocked, ContentSaveSubject, LocalizedValue,
-    NoPiiPolicyDetector, PublishedContentSubject, ResolvedDefinition, ValueCandidate,
-    content_pii_block, content_save_pipeline, published_content_pipeline,
+    CategoryRoleConflictRule, ContentSaveSubject, LocalizedValue, NoPiiPolicyDetector, PiiDetector,
+    PublishedContentSubject, ResolvedDefinition, ValueCandidate, content_pii_block,
+    content_save_pipeline, published_content_pipeline,
 };
 use crate::domain::transition::{
     self, ApprovalInvalidation, ApprovalInvalidationHook as _, NoApprovalStoreHook,
@@ -5014,6 +5014,7 @@ async fn content_subject(
     inputs: &HeadActInputs,
     head: &ProductRecord,
     payload: &ContentSavePayload,
+    detector: &(dyn PiiDetector + Send + Sync),
 ) -> Result<ContentSaveSubject, HeadActError> {
     let mut subject = ContentSaveSubject {
         entity_region_scope: head.region_scope.clone(),
@@ -5050,20 +5051,15 @@ async fn content_subject(
         // and the day `10-retention-erasure` registers a real one this is the
         // line that changes. --
         for write in writes {
-            content_pii_block(
-                &NoPiiPolicyDetector,
-                &format!("attributes.{}", write.key),
-                &write.value,
-            )
-            .map_err(|blocked| {
-                let mut report = ValidationReport::new();
-                report.violate(
-                    ContentPiiBlocked::CODE,
-                    format!("attributes.{}", write.key),
-                    blocked.detail,
-                );
-                HeadActError::Refused(content_refusal(report))
-            })?;
+            content_pii_block(detector, &format!("attributes.{}", write.key), &write.value)
+                .map_err(|blocked| {
+                    // Raised as its own `DomainError`, not folded into a
+                    // `ValidationReport`: `design/02` §3.3 puts this code **outside**
+                    // the pipeline -- *"a code raised outside the pipeline needs no
+                    // phase status and gets none"* -- and the seven content rules that
+                    // do ride a report are the contrast, not the pattern.
+                    HeadActError::Refused(DomainError::ContentPiiBlocked(blocked.detail))
+                })?;
         }
 
         let roster = well_known_roster(runner, inputs).await?;
@@ -5410,6 +5406,7 @@ async fn run_save(
     inputs: &HeadActInputs,
     request: &SaveProductRequest,
     gate: &(dyn GovernanceGate + Send + Sync),
+    detector: &(dyn PiiDetector + Send + Sync),
     outbox: &crate::infra::broker::EventSink,
 ) -> Result<HeadActOutcome, HeadActError> {
     // -- Phase 1, idempotency: the claim, and the replay that ends the act
@@ -5489,7 +5486,7 @@ async fn run_save(
     // `run_publish` states: an act that is not legal at all must be refused as
     // illegal rather than answered with an approval question. --
     if !content.is_empty() {
-        let subject = content_subject(runner, inputs, &head, &content).await?;
+        let subject = content_subject(runner, inputs, &head, &content, detector).await?;
         if let Some((_phase, report)) = content_save_pipeline().run(&subject) {
             return Err(HeadActError::Refused(content_refusal(report)));
         }
@@ -5579,9 +5576,11 @@ async fn save_in_one_transaction(
     opened: &OpenedHeadDoor,
     request: SaveProductRequest,
     gate: &Arc<dyn GovernanceGate + Send + Sync>,
+    detector: &Arc<dyn PiiDetector + Send + Sync>,
 ) -> Result<HeadActOutcome, HeadActError> {
     let outbox = state.sink.clone();
     let gate = Arc::clone(gate);
+    let detector = Arc::clone(detector);
     let inputs = opened.act_inputs();
     state
         .db
@@ -5592,11 +5591,20 @@ async fn save_in_one_transaction(
             move |tx| {
                 let outbox = outbox.clone();
                 let gate = Arc::clone(&gate);
+                let detector = Arc::clone(&detector);
                 let inputs = inputs.clone();
                 let request = request.clone();
-                Box::pin(
-                    async move { run_save(tx, &inputs, &request, gate.as_ref(), &outbox).await },
-                )
+                Box::pin(async move {
+                    run_save(
+                        tx,
+                        &inputs,
+                        &request,
+                        gate.as_ref(),
+                        detector.as_ref(),
+                        &outbox,
+                    )
+                    .await
+                })
             },
         )
         .await
@@ -5631,9 +5639,31 @@ async fn save_product(
         product_id,
         &headers,
         request,
-        &(Arc::new(NoMaterialityPolicyGate) as Arc<dyn GovernanceGate + Send + Sync>),
+        // Both hosts are literals here for the reason `NoMaterialityPolicyGate`
+        // states: no wire input chooses one. A test reaches them by calling
+        // `save_product_under_gate` directly, which is how the gate doubles
+        // are driven too.
+        &SaveHosts {
+            gate: &(Arc::new(NoMaterialityPolicyGate) as Arc<dyn GovernanceGate + Send + Sync>),
+            detector: &(Arc::new(NoPiiPolicyDetector) as Arc<dyn PiiDetector + Send + Sync>),
+        },
     )
     .await
+}
+
+/// The two hosts a save spends, bundled.
+///
+/// One parameter rather than two because they are the same kind of thing —
+/// seams another slice fills, named at the wire handler as literals so no
+/// wire input chooses one — and because eight arguments is one past what
+/// `clippy::too_many_arguments` admits. Grouping the two that travel together
+/// is the fix that says something rather than the one that silences a lint.
+pub(crate) struct SaveHosts<'a> {
+    /// `05-governance`'s gate, or [`NoMaterialityPolicyGate`] until it lands.
+    pub gate: &'a Arc<dyn GovernanceGate + Send + Sync>,
+    /// `10-retention-erasure`'s PII detector, or
+    /// [`crate::domain::taxonomy::NoPiiPolicyDetector`] until it lands.
+    pub detector: &'a Arc<dyn PiiDetector + Send + Sync>,
 }
 
 /// The save door, with its governance host as an explicit argument —
@@ -5688,8 +5718,9 @@ async fn save_product_under_gate(
     product_id: Uuid,
     headers: &HeaderMap,
     request: SaveProductRequest,
-    gate: &Arc<dyn GovernanceGate + Send + Sync>,
+    hosts: &SaveHosts<'_>,
 ) -> Result<Response, CanonicalError> {
+    let (gate, detector) = (hosts.gate, hosts.detector);
     let act = HeadAct {
         authz_action: crate::authz::actions::WRITE,
         audit_action: SAVE_AUDIT_ACTION,
@@ -5719,7 +5750,7 @@ async fn save_product_under_gate(
         .await);
     }
 
-    let result = save_in_one_transaction(state, &opened, request, gate).await;
+    let result = save_in_one_transaction(state, &opened, request, gate, detector).await;
     answer_head_act(state, &opened, SAVE_AUDIT_ACTION, result).await
 }
 

@@ -366,6 +366,24 @@ pub enum DomainError {
     /// that frozen set reading fresh-zero.
     #[error("watermark in the future: {0}")]
     WatermarkFuture(String),
+
+    /// Operator free text refused by the content-PII write block
+    /// (`design/02` §3.3 `inst-av-pii-block`). 422 architectural, 400 on the
+    /// wire.
+    ///
+    /// **Raised outside the pipeline**, which is why it is a variant at all
+    /// and not a `ValidationReport` violation the way `02`'s seven content
+    /// rules are: §3.3 says *"a code raised outside the pipeline needs no
+    /// phase status and gets none"*, and `domain::taxonomy::content_pii_block`
+    /// is its single raiser — a free function every door that accepts operator
+    /// free text calls, in `01`, `04`, `05` and `07` as well as `02`.
+    ///
+    /// It is the **one** of slice `02`'s sixteen codes to gain a variant with
+    /// this feature: the other fifteen either reach the wire through
+    /// `Validation` carrying their own code, or have no raiser yet because
+    /// their door's route is undeclared (§7 row 16).
+    #[error("content blocked by the PII policy: {0}")]
+    ContentPiiBlocked(String),
 }
 
 impl DomainError {
@@ -429,6 +447,7 @@ impl DomainError {
             Self::RetirementLeadTime(_) => "RETIREMENT_LEAD_TIME",
             Self::CascadeConfirmationRequired(_) => "CASCADE_CONFIRMATION_REQUIRED",
             Self::EolDisabled(_) => "EOL_DISABLED",
+            Self::ContentPiiBlocked(_) => "CONTENT_PII_BLOCKED",
         }
     }
 }
