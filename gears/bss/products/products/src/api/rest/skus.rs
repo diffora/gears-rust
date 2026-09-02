@@ -222,7 +222,7 @@ use axum::http::StatusCode;
 use axum::http::header::ETAG;
 use axum::response::{IntoResponse, Response};
 use bss_products_sdk::models::{EntityKind, LifecycleState};
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration, Utc};
 use sea_orm::DbErr;
 use serde_json::{Map as JsonMap, Value as JsonValue};
 use toolkit::api::OpenApiRegistry;
@@ -245,21 +245,26 @@ use crate::domain::concurrency::InternalRevision;
 use crate::domain::containment::{
     EmptyScopeToken, ResolvedScope, ScopeContainment, ScopeInput, ScopePair,
 };
+use crate::domain::deprecation::{Provenance, stamp_for};
 use crate::domain::disposition::{self, CLONE_SUGGESTION_ATTEMPTS, SkuCloneSource};
 use crate::domain::error::DomainError;
 use crate::domain::governance::{
     ApprovalId, EntityRef, GateMode, GateSubject, GovernanceGate, NoMaterialityPolicyGate,
 };
 use crate::domain::idempotency;
+use crate::domain::live_op::GovernedLiveOp;
+use crate::domain::retirement::{effective_at, eol_lockout, replaced_by_must_be_published};
 use crate::domain::rules::{
     PublishRevalidationSubject, SkuCodeStillPresent, SkuScopeColumnsStillParse,
 };
 use crate::domain::transition::{self, ApprovalInvalidation, ApprovalInvalidationHook as _};
+use crate::domain::undeprecation::{BlockingIntent, refuse_if_live_retire_intents};
 use crate::domain::validation::{ValidationPipeline, ValidationReport};
 use crate::infra::events;
 use crate::infra::storage::RepoError;
 use crate::infra::storage::repo::{
-    self, NewEntityVersion, NewSku, RefusalSubject, SkuRecord, VersionedEntityKind,
+    self, NewEntityVersion, NewScheduledTransition, NewSku, RefusalSubject, SkuRecord,
+    VersionedEntityKind,
 };
 
 /// `OpenAPI` tag for the SKU surface's operations.
@@ -412,7 +417,11 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
         .register(router, openapi);
 
     let router = register_clone_route(router, openapi);
-    register_head_act_routes(router, openapi).layer(Extension(state))
+    let router = register_head_act_routes(router, openapi);
+    let router = register_deprecate_door(router, openapi);
+    let router = register_undeprecate_door(router, openapi);
+    let router = register_retire_door(router, openapi);
+    register_cancel_retire_door(router, openapi).layer(Extension(state))
 }
 
 /// Register the two head-act routes — `POST .../publish` and
@@ -523,6 +532,147 @@ fn register_head_act_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Ro
             StatusCode::OK,
             "The discarded SKU head, at its new revision.",
         )
+        .error_400(openapi)
+        .error_401(openapi)
+        .error_403(openapi)
+        .error_404(openapi)
+        .error_409(openapi)
+        .error_500(openapi)
+        .error_503(openapi)
+        .register(router, openapi)
+}
+
+fn register_deprecate_door(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
+    OperationBuilder::post("/bss-products/v1/skus/{id}/deprecate")
+        .operation_id("bss_products.deprecate_sku")
+        .summary("Deprecate a published SKU")
+        .description(
+            "Moves a `published` SKU to `deprecated`, stamping \
+             `deprecation_provenance = 'direct'` in the same statement as the state change, \
+             bumping `internal_revision` and enqueuing `SkuDeprecated` with the provenance \
+             in its payload. Empty body, the Product `/deprecate` door's twin. Any other \
+             starting state is refused `ILLEGAL_TRANSITION`; a `retired` or `discarded` \
+             head is refused `ENTITY_TERMINAL`. Gates on `sku x write`. Requires `If-Match`. \
+             Accepts an optional `Idempotency-Key`.",
+        )
+        .tag(TAG)
+        .authenticated()
+        .no_license_required()
+        .path_param("id", "The SKU to deprecate.")
+        .handler(deprecate_sku)
+        .json_response_with_schema::<SkuView>(openapi, StatusCode::OK, "The deprecated SKU head.")
+        .error_400(openapi)
+        .error_401(openapi)
+        .error_403(openapi)
+        .error_404(openapi)
+        .error_409(openapi)
+        .error_500(openapi)
+        .error_503(openapi)
+        .register(router, openapi)
+}
+
+fn register_undeprecate_door(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
+    OperationBuilder::post("/bss-products/v1/skus/{id}/undeprecate")
+        .operation_id("bss_products.undeprecate_sku")
+        .summary("Un-deprecate a SKU")
+        .description(
+            "Moves a `deprecated` SKU to `published`. Empty body; the two-person ceremony \
+             is the governance gate (`Gate` mode), not a payload. Refused `RETIREMENT_PENDING` \
+             while a live retire intent exists on the SKU. Gates on `sku x write`. \
+             Requires `If-Match`. Accepts an optional `Idempotency-Key`.",
+        )
+        .tag(TAG)
+        .authenticated()
+        .no_license_required()
+        .path_param("id", "The SKU to un-deprecate.")
+        .handler(undeprecate_sku)
+        .json_response_with_schema::<SkuView>(openapi, StatusCode::OK, "The published SKU head.")
+        .error_400(openapi)
+        .error_401(openapi)
+        .error_403(openapi)
+        .error_404(openapi)
+        .error_409(openapi)
+        .error_500(openapi)
+        .error_503(openapi)
+        .register(router, openapi)
+}
+
+/// `POST …/skus/{id}/retire` request — §3.3. Confirmation is a boolean
+/// (narrowest reading of `inst-rt-confirm`; the count pin is §6).
+#[derive(Debug, Clone)]
+#[toolkit_macros::api_dto(request)]
+pub struct RetireSkuRequest {
+    /// Operator reason. 02's PII hook is not in this crate; the field is
+    /// accepted so that hook has a home when 02 registers it.
+    pub reason: String,
+    /// Optional successor SKU.
+    pub replaced_by: Option<Uuid>,
+    /// Optional operator instant. Absent: now + interim lead (30 days).
+    pub effective_at: Option<DateTime<Utc>>,
+    /// Accepted so a supplied value raises `EOL_DISABLED`.
+    pub must_migrate_by: Option<DateTime<Utc>>,
+    /// Narrowest confirmation that lets the door exist.
+    pub confirmed: bool,
+}
+
+/// `POST …/skus/{id}/retire/cancel` — 02's envelope as it stands.
+#[derive(Debug, Clone)]
+#[toolkit_macros::api_dto(request)]
+pub struct CancelRetirementRequest {
+    /// Operation kind.
+    pub kind: String,
+    /// Target the approval pins.
+    pub target: String,
+    /// Canonical payload bytes.
+    pub payload: String,
+    /// Live-op pin: the intent state the caller read.
+    pub expected_state: String,
+}
+
+fn register_retire_door(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
+    OperationBuilder::post("/bss-products/v1/skus/{id}/retire")
+        .operation_id("bss_products.retire_sku")
+        .summary("Initiate SKU retirement")
+        .description(
+            "Forces the SKU `deprecated` if it is `published` (no re-stamp if it already \
+             is), records a retire `ScheduledTransition`, and answers the head. \
+             `confirmed` is required. `mustMigrateBy` is refused `EOL_DISABLED`. \
+             An `effectiveAt` earlier than now + 30 days is `RETIREMENT_LEAD_TIME`. \
+             Gates on `sku x write`. Requires `If-Match`.",
+        )
+        .tag(TAG)
+        .authenticated()
+        .no_license_required()
+        .path_param("id", "The SKU to retire.")
+        .json_request::<RetireSkuRequest>(openapi, "Retirement initiation.")
+        .handler(retire_sku)
+        .json_response_with_schema::<SkuView>(openapi, StatusCode::OK, "The SKU head.")
+        .error_400(openapi)
+        .error_401(openapi)
+        .error_403(openapi)
+        .error_404(openapi)
+        .error_409(openapi)
+        .error_500(openapi)
+        .error_503(openapi)
+        .register(router, openapi)
+}
+
+fn register_cancel_retire_door(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
+    OperationBuilder::post("/bss-products/v1/skus/{id}/retire/cancel")
+        .operation_id("bss_products.cancel_sku_retirement")
+        .summary("Cancel a live SKU retirement")
+        .description(
+            "Accepts 02's `GovernedLiveOp` envelope. The write lands at approval. \
+             Success is 202 with no body. Clears `replaced_by_sku_id` and supersedes \
+             the live retire intent. Gates on `sku x write`. Requires `If-Match`.",
+        )
+        .tag(TAG)
+        .authenticated()
+        .no_license_required()
+        .path_param("id", "The SKU whose retirement to cancel.")
+        .json_request::<CancelRetirementRequest>(openapi, "The live-op envelope.")
+        .handler(cancel_sku_retirement)
+        .no_content_response(StatusCode::ACCEPTED, "Accepted; no body.")
         .error_400(openapi)
         .error_401(openapi)
         .error_403(openapi)
@@ -1747,6 +1897,22 @@ fn discard_endpoint(sku_id: Uuid) -> String {
     format!("/bss-products/v1/skus/{sku_id}/discard")
 }
 
+fn undeprecate_endpoint(sku_id: Uuid) -> String {
+    format!("/bss-products/v1/skus/{sku_id}/undeprecate")
+}
+
+fn deprecate_endpoint(sku_id: Uuid) -> String {
+    format!("/bss-products/v1/skus/{sku_id}/deprecate")
+}
+
+fn retire_endpoint(sku_id: Uuid) -> String {
+    format!("/bss-products/v1/skus/{sku_id}/retire")
+}
+
+fn cancel_retire_endpoint(sku_id: Uuid) -> String {
+    format!("/bss-products/v1/skus/{sku_id}/retire/cancel")
+}
+
 /// The status a publish or a discard answers on success, and therefore the
 /// status a replay of one reproduces. One spelling, read by the response and
 /// by the stored answer alike, for `CREATE_RESPONSE_STATUS`'s own reason.
@@ -2079,6 +2245,14 @@ const PUBLISH_AUDIT_ACTION: &str = "publish";
 /// the audit vocabulary are two different sets, and [`open_act`] takes them
 /// as two arguments for that reason.
 const DISCARD_AUDIT_ACTION: &str = "discard";
+
+const UNDEPRECATE_AUDIT_ACTION: &str = "undeprecate";
+
+const DEPRECATE_AUDIT_ACTION: &str = "deprecate";
+
+const RETIRE_AUDIT_ACTION: &str = "retire";
+
+const CANCEL_RETIRE_AUDIT_ACTION: &str = "retire.cancel";
 
 /// Read the head a head act is about, under the act's own granted scope.
 ///
@@ -2439,6 +2613,76 @@ fn freeze_for(
 /// function. The two are one rule and must stay equal.
 fn bodiless_payload_digest() -> Vec<u8> {
     idempotency::payload_digest(&JsonValue::Object(JsonMap::new()))
+}
+
+fn retire_payload_digest(request: &RetireSkuRequest) -> Vec<u8> {
+    let mut map = JsonMap::new();
+    map.insert(
+        "reason".to_owned(),
+        JsonValue::String(request.reason.clone()),
+    );
+    map.insert("confirmed".to_owned(), JsonValue::Bool(request.confirmed));
+    if let Some(id) = request.replaced_by {
+        map.insert("replacedBy".to_owned(), JsonValue::String(id.to_string()));
+    }
+    if let Some(at) = request.effective_at {
+        map.insert("effectiveAt".to_owned(), JsonValue::String(at.to_rfc3339()));
+    }
+    if let Some(at) = request.must_migrate_by {
+        map.insert(
+            "mustMigrateBy".to_owned(),
+            JsonValue::String(at.to_rfc3339()),
+        );
+    }
+    idempotency::payload_digest(&JsonValue::Object(map))
+}
+
+pub(crate) fn cancel_payload_digest(request: &CancelRetirementRequest) -> Vec<u8> {
+    let mut map = JsonMap::new();
+    map.insert("kind".to_owned(), JsonValue::String(request.kind.clone()));
+    map.insert(
+        "target".to_owned(),
+        JsonValue::String(request.target.clone()),
+    );
+    map.insert(
+        "payload".to_owned(),
+        JsonValue::String(request.payload.clone()),
+    );
+    map.insert(
+        "expectedState".to_owned(),
+        JsonValue::String(request.expected_state.clone()),
+    );
+    idempotency::payload_digest(&JsonValue::Object(map))
+}
+
+/// Narrowest confirmation reading (`O-C-D6-CONFIRM`): a boolean. `false` is
+/// `VALIDATION`, not a lifecycle code.
+pub(crate) fn confirmation_must_hold(confirmed: bool) -> Result<(), DomainError> {
+    if confirmed {
+        return Ok(());
+    }
+    let mut report = ValidationReport::new();
+    report.violate(
+        "VALIDATION",
+        "confirmed",
+        "retirement confirmation is required",
+    );
+    Err(DomainError::Validation(report))
+}
+
+pub(crate) fn no_live_retire_intent() -> DomainError {
+    let mut report = ValidationReport::new();
+    report.violate(
+        "VALIDATION",
+        "retirement",
+        "no live retire intent to cancel",
+    );
+    DomainError::Validation(report)
+}
+
+/// Interim lead until `config.rs` is in grant. Hardcoded ≥ 30 days.
+pub(crate) fn interim_retirement_lead() -> Duration {
+    Duration::days(30)
 }
 
 /// What a head act's mutation transaction produced.
@@ -3528,6 +3772,33 @@ async fn answer_head_act(
     }
 }
 
+/// Cancel answers **202** with no body. [`answer_head_act`] always
+/// answers 200 + JSON for [`MutationOutcome::Applied`] — do not reuse it.
+async fn answer_cancel_act(
+    state: &ApiState,
+    act: &ActContext,
+    sku_id: Uuid,
+    subject_revision: i64,
+    outcome: Result<MutationOutcome, HeadActError>,
+) -> Result<Response, CanonicalError> {
+    match outcome {
+        Ok(MutationOutcome::Applied { .. } | MutationOutcome::Replay { .. }) => {
+            Ok(StatusCode::ACCEPTED.into_response())
+        }
+        Err(HeadActError::Refused(domain_err)) => Err(audit_act_refusal(
+            state,
+            act,
+            minted(sku_id, Some(subject_revision)),
+            domain_err,
+        )
+        .await),
+        Err(HeadActError::Vanished) => Err(sku_not_found(sku_id)),
+        Err(HeadActError::Db(db_error)) => Err(repo_error_to_canonical(&RepoError::Db(
+            db_error.to_string(),
+        ))),
+    }
+}
+
 /// Which refusal a [`repo::HeadWrite::Unmatched`] head write names, read off
 /// the head as it now stands.
 ///
@@ -3882,6 +4153,987 @@ async fn discard_sku_gated(
 
     let outcome = discard_in_one_transaction(state, &inputs, gate).await;
     answer_head_act(state, &act, sku_id, head.internal_revision, outcome).await
+}
+
+/// `POST /bss-products/v1/skus/{id}/undeprecate` — empty body.
+///
+/// Gate call: `gate.evaluate(GateSubject::entity_publish(EntityRef {
+/// tenant_id, entity_kind: Sku, entity_id }), InternalRevision::new(expected),
+/// GateMode::Gate)` after the edge and the live-intent guard, before the
+/// write. `NoMaterialityPolicyGate` authorizes under `Gate`.
+///
+/// # Errors
+///
+/// See [`undeprecate_sku_gated`].
+async fn undeprecate_sku(
+    Extension(state): Extension<Arc<ApiState>>,
+    Extension(enforcer): Extension<authz_resolver_sdk::PolicyEnforcer>,
+    extension_ctx: Option<Extension<SecurityContext>>,
+    headers: HeaderMap,
+    Path(sku_id): Path<Uuid>,
+) -> Result<Response, CanonicalError> {
+    let ctx = require_authenticated(extension_ctx)?;
+    undeprecate_sku_gated(
+        &state,
+        &enforcer,
+        &ctx,
+        &headers,
+        sku_id,
+        &(Arc::new(NoMaterialityPolicyGate) as Arc<dyn GovernanceGate + Send + Sync>),
+    )
+    .await
+}
+
+/// # Errors
+///
+/// The audited `VALIDATION`, `STALE_REVISION`, `ENTITY_TERMINAL`,
+/// `ILLEGAL_TRANSITION`, `RETIREMENT_PENDING`, `APPROVAL_REQUIRED` or
+/// idempotency refusal, the `404` a miss answers, or a `500`.
+async fn undeprecate_sku_gated(
+    state: &ApiState,
+    enforcer: &authz_resolver_sdk::PolicyEnforcer,
+    ctx: &SecurityContext,
+    headers: &HeaderMap,
+    sku_id: Uuid,
+    gate: &Arc<dyn GovernanceGate + Send + Sync>,
+) -> Result<Response, CanonicalError> {
+    let now = canonical::write_instant(Utc::now());
+    let act = open_act(
+        state,
+        enforcer,
+        ctx,
+        sku_id,
+        crate::authz::actions::WRITE,
+        UNDEPRECATE_AUDIT_ACTION,
+        now,
+    )
+    .await?;
+
+    let claim = match build_claim(
+        state,
+        headers,
+        undeprecate_endpoint(sku_id),
+        bodiless_payload_digest(),
+        now,
+    ) {
+        Ok(claim) => claim,
+        Err(refusal) => {
+            return Err(audit_act_refusal(state, &act, minted(sku_id, None), refusal).await);
+        }
+    };
+    let expected = match preconditions::if_match(headers) {
+        Ok(expected) => expected,
+        Err(refusal) => {
+            return Err(audit_act_refusal(state, &act, minted(sku_id, None), refusal).await);
+        }
+    };
+
+    let head = load_head(state, &act, sku_id).await?;
+    let inputs = HeadActInputs {
+        scope: act.scope.clone(),
+        tenant_id: act.tenant_id,
+        sku_id,
+        actor_ref: act.actor_ref,
+        expected: expected.get(),
+        now,
+        claim,
+    };
+
+    let outcome = undeprecate_in_one_transaction(state, &inputs, gate).await;
+    answer_head_act(state, &act, sku_id, head.internal_revision, outcome).await
+}
+
+/// `POST /bss-products/v1/skus/{id}/deprecate` — empty body,
+/// `inst-lc-deprecate` with provenance `direct`.
+///
+/// Gate call: `gate.evaluate(GateSubject::entity_publish(EntityRef {
+/// tenant_id, entity_kind: Sku, entity_id }), InternalRevision::new(expected),
+/// GateMode::Gate)` after the edge, before the write.
+///
+/// # Errors
+///
+/// See [`deprecate_sku_gated`].
+async fn deprecate_sku(
+    Extension(state): Extension<Arc<ApiState>>,
+    Extension(enforcer): Extension<authz_resolver_sdk::PolicyEnforcer>,
+    extension_ctx: Option<Extension<SecurityContext>>,
+    headers: HeaderMap,
+    Path(sku_id): Path<Uuid>,
+) -> Result<Response, CanonicalError> {
+    let ctx = require_authenticated(extension_ctx)?;
+    deprecate_sku_gated(
+        &state,
+        &enforcer,
+        &ctx,
+        &headers,
+        sku_id,
+        &(Arc::new(NoMaterialityPolicyGate) as Arc<dyn GovernanceGate + Send + Sync>),
+    )
+    .await
+}
+
+/// # Errors
+///
+/// The audited `VALIDATION`, `STALE_REVISION`, `ENTITY_TERMINAL`,
+/// `ILLEGAL_TRANSITION`, `APPROVAL_REQUIRED` or idempotency refusal, the
+/// `404` a miss answers, or a `500`.
+async fn deprecate_sku_gated(
+    state: &ApiState,
+    enforcer: &authz_resolver_sdk::PolicyEnforcer,
+    ctx: &SecurityContext,
+    headers: &HeaderMap,
+    sku_id: Uuid,
+    gate: &Arc<dyn GovernanceGate + Send + Sync>,
+) -> Result<Response, CanonicalError> {
+    let now = canonical::write_instant(Utc::now());
+    let act = open_act(
+        state,
+        enforcer,
+        ctx,
+        sku_id,
+        crate::authz::actions::WRITE,
+        DEPRECATE_AUDIT_ACTION,
+        now,
+    )
+    .await?;
+
+    let claim = match build_claim(
+        state,
+        headers,
+        deprecate_endpoint(sku_id),
+        bodiless_payload_digest(),
+        now,
+    ) {
+        Ok(claim) => claim,
+        Err(refusal) => {
+            return Err(audit_act_refusal(state, &act, minted(sku_id, None), refusal).await);
+        }
+    };
+    let expected = match preconditions::if_match(headers) {
+        Ok(expected) => expected,
+        Err(refusal) => {
+            return Err(audit_act_refusal(state, &act, minted(sku_id, None), refusal).await);
+        }
+    };
+
+    let head = load_head(state, &act, sku_id).await?;
+    let inputs = HeadActInputs {
+        scope: act.scope.clone(),
+        tenant_id: act.tenant_id,
+        sku_id,
+        actor_ref: act.actor_ref,
+        expected: expected.get(),
+        now,
+        claim,
+    };
+
+    let outcome = deprecate_in_one_transaction(state, &inputs, gate).await;
+    answer_head_act(state, &act, sku_id, head.internal_revision, outcome).await
+}
+
+async fn deprecate_in_one_transaction(
+    state: &ApiState,
+    inputs: &HeadActInputs,
+    gate: &Arc<dyn GovernanceGate + Send + Sync>,
+) -> Result<MutationOutcome, HeadActError> {
+    let outbox = state.sink.clone();
+    let gate = Arc::clone(gate);
+    let inputs = inputs.clone();
+    state
+        .db
+        .db()
+        .transaction_with_retry::<MutationOutcome, HeadActError, _, _>(
+            TxConfig::default(),
+            head_act_contention_db_err,
+            move |tx| {
+                let outbox = outbox.clone();
+                let gate = Arc::clone(&gate);
+                let inputs = inputs.clone();
+                Box::pin(async move { run_deprecate(tx, &inputs, gate.as_ref(), &outbox).await })
+            },
+        )
+        .await
+}
+
+async fn run_deprecate(
+    runner: &(impl toolkit_db::secure::DBRunner + Sync),
+    inputs: &HeadActInputs,
+    gate: &(dyn GovernanceGate + Send + Sync),
+    outbox: &crate::infra::broker::EventSink,
+) -> Result<MutationOutcome, HeadActError> {
+    if let Some(replay) = claim_for_head_act(runner, inputs).await? {
+        return Ok(replay);
+    }
+
+    let head = repo::find_sku(runner, &inputs.scope, inputs.tenant_id, inputs.sku_id)
+        .await
+        .map_err(|e| HeadActError::from_repo(&e))?
+        .ok_or(HeadActError::Vanished)?;
+
+    if head.internal_revision != inputs.expected {
+        return Err(HeadActError::Refused(DomainError::StaleRevision {
+            expected: inputs.expected,
+            found: head.internal_revision,
+        }));
+    }
+
+    let decision = transition::guard(head.lifecycle_state, LifecycleState::Deprecated)
+        .map_err(HeadActError::Refused)?;
+
+    let Some(stamp) =
+        stamp_for(head.lifecycle_state, Provenance::Direct).map_err(HeadActError::Refused)?
+    else {
+        return Err(HeadActError::Refused(DomainError::IllegalTransition {
+            from: head.lifecycle_state.as_str().to_owned(),
+            to: LifecycleState::Deprecated.as_str().to_owned(),
+        }));
+    };
+
+    let verdict = gate
+        .evaluate(
+            GateSubject::entity_publish(EntityRef {
+                tenant_id: inputs.tenant_id,
+                entity_kind: EntityKind::Sku,
+                entity_id: inputs.sku_id,
+            }),
+            InternalRevision::new(inputs.expected),
+            GateMode::Gate,
+        )
+        .map_err(|e| {
+            HeadActError::Db(DbError::Sea(DbErr::Custom(format!(
+                "bss-products: the governance gate host failed: {e}"
+            ))))
+        })?;
+    verdict
+        .into_authorization()
+        .map_err(HeadActError::Refused)?;
+
+    let written = repo::deprecate_sku_head(
+        runner,
+        &inputs.scope,
+        inputs.tenant_id,
+        inputs.sku_id,
+        inputs.expected,
+        stamp,
+        inputs.now,
+    )
+    .await
+    .map_err(|e| HeadActError::from_repo(&e))?;
+    if written == repo::HeadWrite::Unmatched {
+        return Err(classify_unmatched(runner, inputs, LifecycleState::Deprecated).await);
+    }
+
+    fire_invalidation_hook(runner, inputs, transition::invalidation_for(decision)).await?;
+
+    let image = repo::find_sku(runner, &inputs.scope, inputs.tenant_id, inputs.sku_id)
+        .await
+        .map_err(|e| HeadActError::from_repo(&e))?
+        .ok_or(HeadActError::Vanished)?;
+
+    let core = events::EventBodyCore {
+        tenant_id: inputs.tenant_id,
+        entity_kind: events::EntityKind::Sku.as_str(),
+        entity_id: inputs.sku_id,
+        internal_revision: image.internal_revision,
+        lifecycle_state: image.lifecycle_state.as_str(),
+    };
+    let provenance = image
+        .deprecation_provenance
+        .unwrap_or(Provenance::Direct)
+        .as_str();
+    events::enqueue_deprecated(
+        outbox,
+        runner,
+        inputs.sku_id,
+        events::SKU_DEPRECATED_PAYLOAD_TYPE,
+        &core,
+        provenance,
+        inputs.actor_ref,
+    )
+    .await
+    .map_err(|e| {
+        HeadActError::Db(DbError::Sea(DbErr::Custom(format!(
+            "enqueue SkuDeprecated: {e}"
+        ))))
+    })?;
+
+    let body = serde_json::to_value(SkuView::from(image.clone())).map_err(|e| {
+        HeadActError::Db(DbError::Sea(DbErr::Custom(format!(
+            "bss-products: render the deprecate answer: {e}"
+        ))))
+    })?;
+
+    if let Some(input) = inputs.claim.as_ref() {
+        record_idempotency_answer(
+            runner,
+            &inputs.scope,
+            inputs.tenant_id,
+            input,
+            ACT_RESPONSE_STATUS,
+            &body,
+        )
+        .await
+        .map_err(|e| HeadActError::from_repo(&e))?;
+    }
+
+    Ok(MutationOutcome::Applied {
+        internal_revision: image.internal_revision,
+        body,
+    })
+}
+
+async fn undeprecate_in_one_transaction(
+    state: &ApiState,
+    inputs: &HeadActInputs,
+    gate: &Arc<dyn GovernanceGate + Send + Sync>,
+) -> Result<MutationOutcome, HeadActError> {
+    let outbox = state.sink.clone();
+    let gate = Arc::clone(gate);
+    let inputs = inputs.clone();
+    state
+        .db
+        .db()
+        .transaction_with_retry::<MutationOutcome, HeadActError, _, _>(
+            TxConfig::default(),
+            head_act_contention_db_err,
+            move |tx| {
+                let outbox = outbox.clone();
+                let gate = Arc::clone(&gate);
+                let inputs = inputs.clone();
+                Box::pin(async move { run_undeprecate(tx, &inputs, gate.as_ref(), &outbox).await })
+            },
+        )
+        .await
+}
+
+async fn run_undeprecate(
+    runner: &(impl toolkit_db::secure::DBRunner + Sync),
+    inputs: &HeadActInputs,
+    gate: &(dyn GovernanceGate + Send + Sync),
+    outbox: &crate::infra::broker::EventSink,
+) -> Result<MutationOutcome, HeadActError> {
+    if let Some(replay) = claim_for_head_act(runner, inputs).await? {
+        return Ok(replay);
+    }
+
+    let head = repo::find_sku(runner, &inputs.scope, inputs.tenant_id, inputs.sku_id)
+        .await
+        .map_err(|e| HeadActError::from_repo(&e))?
+        .ok_or(HeadActError::Vanished)?;
+
+    if head.internal_revision != inputs.expected {
+        return Err(HeadActError::Refused(DomainError::StaleRevision {
+            expected: inputs.expected,
+            found: head.internal_revision,
+        }));
+    }
+
+    let decision = transition::guard(head.lifecycle_state, LifecycleState::Published)
+        .map_err(HeadActError::Refused)?;
+
+    let rows =
+        repo::find_live_retire_intents(runner, &inputs.scope, inputs.tenant_id, inputs.sku_id)
+            .await
+            .map_err(|e| HeadActError::from_repo(&e))?;
+    let intents: Vec<BlockingIntent> = rows
+        .into_iter()
+        .map(|row| BlockingIntent {
+            entity_id: row.entity_id,
+        })
+        .collect();
+    refuse_if_live_retire_intents(inputs.sku_id, &[], &intents)
+        .map_err(|refusal| HeadActError::Refused(refusal.into_domain_error()))?;
+
+    let verdict = gate
+        .evaluate(
+            GateSubject::entity_publish(EntityRef {
+                tenant_id: inputs.tenant_id,
+                entity_kind: EntityKind::Sku,
+                entity_id: inputs.sku_id,
+            }),
+            InternalRevision::new(inputs.expected),
+            GateMode::Gate,
+        )
+        .map_err(|e| {
+            HeadActError::Db(DbError::Sea(DbErr::Custom(format!(
+                "bss-products: the governance gate host failed: {e}"
+            ))))
+        })?;
+    verdict
+        .into_authorization()
+        .map_err(HeadActError::Refused)?;
+
+    let written = repo::undeprecate_sku_head(
+        runner,
+        &inputs.scope,
+        inputs.tenant_id,
+        inputs.sku_id,
+        inputs.expected,
+        None,
+        inputs.now,
+    )
+    .await
+    .map_err(|e| HeadActError::from_repo(&e))?;
+    if written == repo::HeadWrite::Unmatched {
+        return Err(classify_unmatched(runner, inputs, LifecycleState::Published).await);
+    }
+
+    fire_invalidation_hook(runner, inputs, transition::invalidation_for(decision)).await?;
+
+    let image = repo::find_sku(runner, &inputs.scope, inputs.tenant_id, inputs.sku_id)
+        .await
+        .map_err(|e| HeadActError::from_repo(&e))?
+        .ok_or(HeadActError::Vanished)?;
+
+    announce_and_answer(
+        runner,
+        outbox,
+        inputs,
+        &image,
+        (events::SKU_UNDEPRECATED_PAYLOAD_TYPE, None),
+    )
+    .await
+}
+
+/// `POST /bss-products/v1/skus/{id}/retire` — §3.3 body.
+///
+/// Gate call: `gate.evaluate(GateSubject::entity_publish(EntityRef {
+/// tenant_id, entity_kind: Sku, entity_id }), InternalRevision::new(expected),
+/// GateMode::Gate)` after the edge and domain refusals, before the write.
+/// `NoMaterialityPolicyGate` authorizes under `Gate`.
+///
+/// 02's content-PII write block has no callable hook in this crate; `reason`
+/// is accepted so the hook has a home. `enqueue_retired` is not in
+/// `events.rs` (forbidden); the row is persisted without a broker event.
+///
+/// # Errors
+///
+/// See [`retire_sku_gated`].
+async fn retire_sku(
+    Extension(state): Extension<Arc<ApiState>>,
+    Extension(enforcer): Extension<authz_resolver_sdk::PolicyEnforcer>,
+    extension_ctx: Option<Extension<SecurityContext>>,
+    headers: HeaderMap,
+    Path(sku_id): Path<Uuid>,
+    Json(request): Json<RetireSkuRequest>,
+) -> Result<Response, CanonicalError> {
+    let ctx = require_authenticated(extension_ctx)?;
+    retire_sku_gated(
+        &state,
+        &enforcer,
+        &ctx,
+        &headers,
+        sku_id,
+        request,
+        &(Arc::new(NoMaterialityPolicyGate) as Arc<dyn GovernanceGate + Send + Sync>),
+    )
+    .await
+}
+
+/// # Errors
+///
+/// The audited `VALIDATION`, `STALE_REVISION`, `ENTITY_TERMINAL`,
+/// `ILLEGAL_TRANSITION`, `RETIREMENT_PENDING`, `RETIREMENT_LEAD_TIME`,
+/// `REPLACED_BY_NOT_PUBLISHED`, `EOL_DISABLED`, `APPROVAL_REQUIRED` or
+/// idempotency refusal, the `404` a miss answers, or a `500`.
+async fn retire_sku_gated(
+    state: &ApiState,
+    enforcer: &authz_resolver_sdk::PolicyEnforcer,
+    ctx: &SecurityContext,
+    headers: &HeaderMap,
+    sku_id: Uuid,
+    request: RetireSkuRequest,
+    gate: &Arc<dyn GovernanceGate + Send + Sync>,
+) -> Result<Response, CanonicalError> {
+    let now = canonical::write_instant(Utc::now());
+    let act = open_act(
+        state,
+        enforcer,
+        ctx,
+        sku_id,
+        crate::authz::actions::WRITE,
+        RETIRE_AUDIT_ACTION,
+        now,
+    )
+    .await?;
+
+    let claim = match build_claim(
+        state,
+        headers,
+        retire_endpoint(sku_id),
+        retire_payload_digest(&request),
+        now,
+    ) {
+        Ok(claim) => claim,
+        Err(refusal) => {
+            return Err(audit_act_refusal(state, &act, minted(sku_id, None), refusal).await);
+        }
+    };
+    let expected = match preconditions::if_match(headers) {
+        Ok(expected) => expected,
+        Err(refusal) => {
+            return Err(audit_act_refusal(state, &act, minted(sku_id, None), refusal).await);
+        }
+    };
+
+    let head = load_head(state, &act, sku_id).await?;
+    let inputs = HeadActInputs {
+        scope: act.scope.clone(),
+        tenant_id: act.tenant_id,
+        sku_id,
+        actor_ref: act.actor_ref,
+        expected: expected.get(),
+        now,
+        claim,
+    };
+
+    let outcome = retire_in_one_transaction(state, &inputs, gate, request).await;
+    answer_head_act(state, &act, sku_id, head.internal_revision, outcome).await
+}
+
+async fn retire_in_one_transaction(
+    state: &ApiState,
+    inputs: &HeadActInputs,
+    gate: &Arc<dyn GovernanceGate + Send + Sync>,
+    request: RetireSkuRequest,
+) -> Result<MutationOutcome, HeadActError> {
+    let gate = Arc::clone(gate);
+    let inputs = inputs.clone();
+    state
+        .db
+        .db()
+        .transaction_with_retry::<MutationOutcome, HeadActError, _, _>(
+            TxConfig::default(),
+            head_act_contention_db_err,
+            move |tx| {
+                let gate = Arc::clone(&gate);
+                let inputs = inputs.clone();
+                let request = request.clone();
+                Box::pin(async move { run_retire(tx, &inputs, gate.as_ref(), &request).await })
+            },
+        )
+        .await
+}
+
+async fn run_retire(
+    runner: &(impl toolkit_db::secure::DBRunner + Sync),
+    inputs: &HeadActInputs,
+    gate: &(dyn GovernanceGate + Send + Sync),
+    request: &RetireSkuRequest,
+) -> Result<MutationOutcome, HeadActError> {
+    if let Some(replay) = claim_for_head_act(runner, inputs).await? {
+        return Ok(replay);
+    }
+
+    let head = repo::find_sku(runner, &inputs.scope, inputs.tenant_id, inputs.sku_id)
+        .await
+        .map_err(|e| HeadActError::from_repo(&e))?
+        .ok_or(HeadActError::Vanished)?;
+
+    if head.internal_revision != inputs.expected {
+        return Err(HeadActError::Refused(DomainError::StaleRevision {
+            expected: inputs.expected,
+            found: head.internal_revision,
+        }));
+    }
+
+    confirmation_must_hold(request.confirmed).map_err(HeadActError::Refused)?;
+
+    // 02's content-PII write block is not a callable hook in this crate.
+    // Do not invent CONTENT_PII_BLOCKED. Tests use clean reason text.
+
+    eol_lockout(false, request.must_migrate_by.is_some())
+        .map_err(|refusal| HeadActError::Refused(refusal.into_domain_error()))?;
+
+    let at = effective_at(inputs.now, interim_retirement_lead(), request.effective_at)
+        .map_err(|refusal| HeadActError::Refused(refusal.into_domain_error()))?;
+
+    if let Some(successor_id) = request.replaced_by {
+        let successor = repo::find_sku(runner, &inputs.scope, inputs.tenant_id, successor_id)
+            .await
+            .map_err(|e| HeadActError::from_repo(&e))?;
+        if successor.is_none() {
+            return Err(HeadActError::Refused(
+                crate::domain::lifecycle::LifecycleRefusal::replaced_by_not_published()
+                    .into_domain_error(),
+            ));
+        }
+        replaced_by_must_be_published(successor.map(|row| row.lifecycle_state))
+            .map_err(|refusal| HeadActError::Refused(refusal.into_domain_error()))?;
+    }
+
+    let rows =
+        repo::find_live_retire_intents(runner, &inputs.scope, inputs.tenant_id, inputs.sku_id)
+            .await
+            .map_err(|e| HeadActError::from_repo(&e))?;
+    let intents: Vec<BlockingIntent> = rows
+        .into_iter()
+        .map(|row| BlockingIntent {
+            entity_id: row.entity_id,
+        })
+        .collect();
+    refuse_if_live_retire_intents(inputs.sku_id, &[], &intents)
+        .map_err(|refusal| HeadActError::Refused(refusal.into_domain_error()))?;
+
+    let decision = transition::guard(head.lifecycle_state, LifecycleState::Deprecated)
+        .map_err(HeadActError::Refused)?;
+    let stamp =
+        stamp_for(head.lifecycle_state, Provenance::Direct).map_err(HeadActError::Refused)?;
+
+    let verdict = gate
+        .evaluate(
+            GateSubject::entity_publish(EntityRef {
+                tenant_id: inputs.tenant_id,
+                entity_kind: EntityKind::Sku,
+                entity_id: inputs.sku_id,
+            }),
+            InternalRevision::new(inputs.expected),
+            GateMode::Gate,
+        )
+        .map_err(|e| {
+            HeadActError::Db(DbError::Sea(DbErr::Custom(format!(
+                "bss-products: the governance gate host failed: {e}"
+            ))))
+        })?;
+    verdict
+        .into_authorization()
+        .map_err(HeadActError::Refused)?;
+
+    match stamp {
+        Some(provenance) => {
+            let written = repo::deprecate_sku_head_with_replacement(
+                runner,
+                &inputs.scope,
+                repo::SkuDeprecationWrite {
+                    tenant_id: inputs.tenant_id,
+                    sku_id: inputs.sku_id,
+                    expected_internal_revision: inputs.expected,
+                    provenance,
+                    replaced_by: request.replaced_by,
+                    now: inputs.now,
+                },
+            )
+            .await
+            .map_err(|e| HeadActError::from_repo(&e))?;
+            if written == repo::HeadWrite::Unmatched {
+                return Err(classify_unmatched(runner, inputs, LifecycleState::Deprecated).await);
+            }
+        }
+        None if request.replaced_by.is_some() => {
+            let written = repo::write_replaced_by(
+                runner,
+                &inputs.scope,
+                inputs.tenant_id,
+                inputs.sku_id,
+                inputs.expected,
+                request.replaced_by,
+                inputs.now,
+            )
+            .await
+            .map_err(|e| HeadActError::from_repo(&e))?;
+            if written == repo::HeadWrite::Unmatched {
+                return Err(classify_unmatched(runner, inputs, LifecycleState::Deprecated).await);
+            }
+        }
+        None => {}
+    }
+
+    repo::insert_scheduled_transition(
+        runner,
+        &inputs.scope,
+        &NewScheduledTransition {
+            transition_id: Uuid::now_v7(),
+            tenant_id: inputs.tenant_id,
+            entity_kind: "sku".to_owned(),
+            entity_id: inputs.sku_id,
+            kind: "retire".to_owned(),
+            at,
+            // Host is NoRecord; mint a placeholder so the NOT NULL column writes.
+            approval_ref: Uuid::now_v7(),
+            retirement_reason: Some(request.reason.clone()),
+            now: inputs.now,
+        },
+    )
+    .await
+    .map_err(|e| HeadActError::from_repo(&e))?;
+
+    fire_invalidation_hook(runner, inputs, transition::invalidation_for(decision)).await?;
+
+    let image = repo::find_sku(runner, &inputs.scope, inputs.tenant_id, inputs.sku_id)
+        .await
+        .map_err(|e| HeadActError::from_repo(&e))?
+        .ok_or(HeadActError::Vanished)?;
+
+    // `enqueue_retired` is absent from the forbidden `events.rs`. Do not
+    // enqueue a core-only `SkuRetired` and pretend the payload is complete.
+    answer_head_without_event(runner, inputs, &image).await
+}
+
+async fn answer_head_without_event(
+    runner: &(impl toolkit_db::secure::DBRunner + Sync),
+    inputs: &HeadActInputs,
+    image: &SkuRecord,
+) -> Result<MutationOutcome, HeadActError> {
+    let body = serde_json::to_value(SkuView::from(image.clone())).map_err(|e| {
+        HeadActError::Db(DbError::Sea(DbErr::Custom(format!(
+            "bss-products: render the retire answer: {e}"
+        ))))
+    })?;
+
+    if let Some(input) = inputs.claim.as_ref() {
+        record_idempotency_answer(
+            runner,
+            &inputs.scope,
+            inputs.tenant_id,
+            input,
+            ACT_RESPONSE_STATUS,
+            &body,
+        )
+        .await
+        .map_err(|e| HeadActError::from_repo(&e))?;
+    }
+
+    Ok(MutationOutcome::Applied {
+        internal_revision: image.internal_revision,
+        body,
+    })
+}
+
+/// `POST /bss-products/v1/skus/{id}/retire/cancel` — 02's envelope.
+///
+/// Gate call: `gate.evaluate(GateSubject::entity_publish(EntityRef {
+/// tenant_id, entity_kind: Sku, entity_id }), InternalRevision::new(expected),
+/// GateMode::Gate)` after the live-op pin, before the write.
+///
+/// # Errors
+///
+/// See [`cancel_sku_retirement_gated`].
+async fn cancel_sku_retirement(
+    Extension(state): Extension<Arc<ApiState>>,
+    Extension(enforcer): Extension<authz_resolver_sdk::PolicyEnforcer>,
+    extension_ctx: Option<Extension<SecurityContext>>,
+    headers: HeaderMap,
+    Path(sku_id): Path<Uuid>,
+    Json(request): Json<CancelRetirementRequest>,
+) -> Result<Response, CanonicalError> {
+    let ctx = require_authenticated(extension_ctx)?;
+    cancel_sku_retirement_gated(
+        &state,
+        &enforcer,
+        &ctx,
+        &headers,
+        sku_id,
+        request,
+        &(Arc::new(NoMaterialityPolicyGate) as Arc<dyn GovernanceGate + Send + Sync>),
+    )
+    .await
+}
+
+/// # Errors
+///
+/// The audited `VALIDATION`, `STALE_REVISION`, `STALE_LIVE_OP`,
+/// `APPROVAL_REQUIRED` or idempotency refusal, the `404`, or a `500`.
+async fn cancel_sku_retirement_gated(
+    state: &ApiState,
+    enforcer: &authz_resolver_sdk::PolicyEnforcer,
+    ctx: &SecurityContext,
+    headers: &HeaderMap,
+    sku_id: Uuid,
+    request: CancelRetirementRequest,
+    gate: &Arc<dyn GovernanceGate + Send + Sync>,
+) -> Result<Response, CanonicalError> {
+    let now = canonical::write_instant(Utc::now());
+    let act = open_act(
+        state,
+        enforcer,
+        ctx,
+        sku_id,
+        crate::authz::actions::WRITE,
+        CANCEL_RETIRE_AUDIT_ACTION,
+        now,
+    )
+    .await?;
+
+    let claim = match build_claim(
+        state,
+        headers,
+        cancel_retire_endpoint(sku_id),
+        cancel_payload_digest(&request),
+        now,
+    ) {
+        Ok(claim) => claim,
+        Err(refusal) => {
+            return Err(audit_act_refusal(state, &act, minted(sku_id, None), refusal).await);
+        }
+    };
+    let expected = match preconditions::if_match(headers) {
+        Ok(expected) => expected,
+        Err(refusal) => {
+            return Err(audit_act_refusal(state, &act, minted(sku_id, None), refusal).await);
+        }
+    };
+
+    let head = load_head(state, &act, sku_id).await?;
+    let inputs = HeadActInputs {
+        scope: act.scope.clone(),
+        tenant_id: act.tenant_id,
+        sku_id,
+        actor_ref: act.actor_ref,
+        expected: expected.get(),
+        now,
+        claim,
+    };
+
+    let outcome = cancel_retire_in_one_transaction(state, &inputs, gate, request).await;
+    answer_cancel_act(state, &act, sku_id, head.internal_revision, outcome).await
+}
+
+async fn cancel_retire_in_one_transaction(
+    state: &ApiState,
+    inputs: &HeadActInputs,
+    gate: &Arc<dyn GovernanceGate + Send + Sync>,
+    request: CancelRetirementRequest,
+) -> Result<MutationOutcome, HeadActError> {
+    let gate = Arc::clone(gate);
+    let inputs = inputs.clone();
+    state
+        .db
+        .db()
+        .transaction_with_retry::<MutationOutcome, HeadActError, _, _>(
+            TxConfig::default(),
+            head_act_contention_db_err,
+            move |tx| {
+                let gate = Arc::clone(&gate);
+                let inputs = inputs.clone();
+                let request = request.clone();
+                Box::pin(
+                    async move { run_cancel_retire(tx, &inputs, gate.as_ref(), &request).await },
+                )
+            },
+        )
+        .await
+}
+
+async fn run_cancel_retire(
+    runner: &(impl toolkit_db::secure::DBRunner + Sync),
+    inputs: &HeadActInputs,
+    gate: &(dyn GovernanceGate + Send + Sync),
+    request: &CancelRetirementRequest,
+) -> Result<MutationOutcome, HeadActError> {
+    if let Some(replay) = claim_for_head_act(runner, inputs).await? {
+        return Ok(replay);
+    }
+
+    let head = repo::find_sku(runner, &inputs.scope, inputs.tenant_id, inputs.sku_id)
+        .await
+        .map_err(|e| HeadActError::from_repo(&e))?
+        .ok_or(HeadActError::Vanished)?;
+
+    if head.internal_revision != inputs.expected {
+        return Err(HeadActError::Refused(DomainError::StaleRevision {
+            expected: inputs.expected,
+            found: head.internal_revision,
+        }));
+    }
+
+    let rows =
+        repo::find_live_retire_intents(runner, &inputs.scope, inputs.tenant_id, inputs.sku_id)
+            .await
+            .map_err(|e| HeadActError::from_repo(&e))?;
+    let Some(intent) = rows.into_iter().next() else {
+        return Err(HeadActError::Refused(no_live_retire_intent()));
+    };
+
+    let op = GovernedLiveOp {
+        kind: request.kind.clone(),
+        target: request.target.clone(),
+        payload: request.payload.clone(),
+        expected_state: request.expected_state.clone(),
+    };
+    op.apply(&intent.state, || Ok(()))
+        .map_err(HeadActError::Refused)?;
+
+    let verdict = gate
+        .evaluate(
+            GateSubject::entity_publish(EntityRef {
+                tenant_id: inputs.tenant_id,
+                entity_kind: EntityKind::Sku,
+                entity_id: inputs.sku_id,
+            }),
+            InternalRevision::new(inputs.expected),
+            GateMode::Gate,
+        )
+        .map_err(|e| {
+            HeadActError::Db(DbError::Sea(DbErr::Custom(format!(
+                "bss-products: the governance gate host failed: {e}"
+            ))))
+        })?;
+    verdict
+        .into_authorization()
+        .map_err(HeadActError::Refused)?;
+
+    repo::supersede_live_intents(
+        runner,
+        &inputs.scope,
+        inputs.tenant_id,
+        inputs.sku_id,
+        "retire",
+        inputs.now,
+    )
+    .await
+    .map_err(|e| HeadActError::from_repo(&e))?;
+
+    let written = repo::clear_replaced_by(
+        runner,
+        &inputs.scope,
+        inputs.tenant_id,
+        inputs.sku_id,
+        inputs.expected,
+        inputs.now,
+    )
+    .await
+    .map_err(|e| HeadActError::from_repo(&e))?;
+    let subject_revision = match written {
+        repo::HeadWrite::Applied => inputs.expected + 1,
+        repo::HeadWrite::Unmatched => inputs.expected,
+    };
+
+    repo::write_eventless_act_audit(
+        runner,
+        &inputs.scope,
+        repo::AuditCommon {
+            audit_id: Uuid::now_v7(),
+            tenant_id: inputs.tenant_id,
+            actor_ref: inputs.actor_ref,
+            action: CANCEL_RETIRE_AUDIT_ACTION.to_owned(),
+            subject_kind: crate::authz::labels::SKU.to_owned(),
+            reason: None,
+            correlation_id: None,
+            written_at: inputs.now,
+        },
+        inputs.sku_id,
+        Some(subject_revision),
+    )
+    .await
+    .map_err(|e| HeadActError::from_repo(&e))?;
+
+    if let Some(input) = inputs.claim.as_ref() {
+        record_idempotency_answer(
+            runner,
+            &inputs.scope,
+            inputs.tenant_id,
+            input,
+            StatusCode::ACCEPTED,
+            &JsonValue::Null,
+        )
+        .await
+        .map_err(|e| HeadActError::from_repo(&e))?;
+    }
+
+    Ok(MutationOutcome::Applied {
+        internal_revision: subject_revision,
+        body: JsonValue::Null,
+    })
 }
 
 /// The `products_audit_log.action` token every **save** refusal on this door

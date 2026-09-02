@@ -279,10 +279,45 @@ multiplies where the reuse does not.
 publish door in `PreAuthorized(approvalId)` mode, which is exactly the arrangement §2.4 described
 and the one case where it holds.
 
-**Owed**: each act's request shape — the retirement's `{reason, replacedBy?, effectiveAt,
-confirmation}` against §2's enumeration, and the cancel's, jointly with `02`. The `API:` lines on
-the affected DoDs belong to [`../features/lifecycle.md`](../features/lifecycle.md), that document's
-own to write.
+**Request shapes.** These are the inbound fields §2 already enumerates, written as the doors
+will parse them. They do not re-derive the acts. Every door takes the same `If-Match`
+precondition the shipped `/deprecate` and `/discard` doors take (`open_head_door`);
+cancel adds 02's live-op pin on top of that, not a second revision rule.
+The `API:` lines sit on the affected DoDs in
+[`../features/lifecycle.md`](../features/lifecycle.md).
+
+**Un-deprecate** (`POST …/{products|skus}/{id}/undeprecate`). **Empty body.**
+`inst-lc-undeprecate` enumerates no inbound field: the operands are the live retire intents
+the refusal names, and the two-person ceremony the gate already holds. A body that restated
+either would be a second source of truth. The precondition header is the only inbound
+beside the path id.
+
+**Deprecate a SKU directly** (`POST …/skus/{id}/deprecate`). **Empty body**, the Product
+`/deprecate` door's twin. `inst-lc-deprecate` records provenance `direct` from the operator
+act; there is no extra payload.
+
+**Initiate retirement, SKU** (`POST …/skus/{id}/retire`). JSON object:
+
+| Field | Required | Shape | Refusal if it fails |
+|---|---|---|---|
+| `reason` | yes | free-text string | `CONTENT_PII_BLOCKED` (02's write-block at this door) |
+| `replacedBy` | no | SKU id | `REPLACED_BY_NOT_PUBLISHED` when present and the named SKU is not `published` |
+| `effectiveAt` | no | RFC 3339 UTC instant | `RETIREMENT_LEAD_TIME` when present and earlier than now + the configured lead (interim ≥ 30 days). Absent: the door computes that instant. Both arms exist so the declared code has a raiser; §6's input-vs-computed question is not closed by this table. |
+| `mustMigrateBy` | no | RFC 3339 UTC instant | `EOL_DISABLED` when present. The field is **accepted so it can raise that code** — omitting it from the DTO would make a supplied value a parse error, not `EOL_DISABLED`. Absent is the v1 path (C3); the event schema still carries the empty slot. |
+| confirmation | yes | **not fixed here** | an unconfirmed request is not an initiation (`inst-rt-confirm`). How the count the operator *saw* reaches the wire is the §6 item below; three readings, none picked in this section. |
+
+**Initiate retirement, Product** (`POST …/products/{id}/retire`). The SKU object **plus**
+`cascadeConfirmed` (boolean). Absent or `false` is `CASCADE_CONFIRMATION_REQUIRED`
+(`inst-cp-plan`). That confirmation is the cascade-retire act, not the reference-count
+act: two instructions, two fields, and only this one is closed. The `CascadePlan` is
+computed at confirmation; one transaction, any failure rejects all.
+
+**Cancel a retirement** (`POST …/{products|skus}/{id}/retire/cancel`). **Still jointly
+owed with 02.** The door accepts 02's `GovernedLiveOp` envelope as that type stands
+(`kind`, `target`, `payload`, `expected_state` — `design/02` `inst-gl-envelope`). This
+slice adds no field and does not invent a cancel-specific payload. Success is **202**,
+no body, already in the table: the door accepts, the write lands at approval. The actor
+who performs the cancel stays in §6.
 
 ## 4. Data / Storage (normative shape; DDL in migrations)
 
@@ -405,6 +440,26 @@ pricing D-47 (joint contract), P-D-04 (containment residue).
   answering it here would be authoring, and the lead's P-D-96 mandate was the roster edit only.
   Owner: the lifecycle owner with `01-foundation` (the builder is 01's). *(Raised by the lead's
   2026-09-02 roster edit.)*
+- **How does the active-reference count the operator *saw* reach the retire
+  request?** `inst-rt-confirm` requires *"explicit confirmation with the active-reference count
+  shown"* (07's predicate, conservative states included). §3.3 requires confirmation and does
+  not pick its wire form. Three observably different readings:
+
+  1. The client reads the count; the payload **echoes** it; a changed count refuses (an
+     optimistic pin on a number, `If-Match` on the predicate). The contract enforces
+     "shown".
+  2. The door computes the count; the payload is only a boolean; "shown" is a UI
+     obligation the contract does not enforce.
+  3. Two-step: a dry-run returns the plan and the count, then confirm names what the
+     dry-run returned. A second door this section does not declare.
+
+  Interacts with 07 (the count includes conservative states) and with C4 (there is no
+  force-retire, so a pin that races is a refuse, not a override). **Recommended: 1** —
+  it is the only reading in which "shown" is a contract rather than a hope, and it
+  needs no second route. **Not picked here**: a door that must exist before 07's
+  predicate is a live operand will stand on the narrowest reading that lets it exist
+  (a boolean `confirmed`), and that posture is not a ruling. Owner: this slice with
+  07. *(Raised when §3.3 wrote the request shapes.)*
 - **Does a deferred cascade complete automatically or by an operator act, and who writes
   `resolution = children_cleared`?** Three mechanics are in play for one act: `inst-ar-failure` says
   `deferred` re-evaluates automatically, `inst-cp-deferred` says the parent is "resumable by an

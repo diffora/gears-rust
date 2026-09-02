@@ -6214,7 +6214,7 @@ mod deprecate_door_tests {
     use super::*;
 
     /// Seed one SKU under `parent_id`, contained in the parent's `eu` scope.
-    async fn seed_child(harness: &TestHarness, parent_id: Uuid, sku_code: &str) -> Uuid {
+    pub async fn seed_child(harness: &TestHarness, parent_id: Uuid, sku_code: &str) -> Uuid {
         let conn = harness
             .db
             .conn()
@@ -6251,7 +6251,7 @@ mod deprecate_door_tests {
     /// predicate P-D-34 pins admits it on no other terms. A fixture that
     /// wrote them in two statements would be refused by the trigger — so
     /// this helper is itself a probe of the pairing the door has to honour.
-    async fn force_child_state(harness: &TestHarness, sku_id: Uuid, sql_set: &str) {
+    pub async fn force_child_state(harness: &TestHarness, sku_id: Uuid, sql_set: &str) {
         let conn = Database::connect(&harness.dsn)
             .await
             .expect("open an auxiliary connection to shape the fixture");
@@ -6265,7 +6265,7 @@ mod deprecate_door_tests {
     }
 
     /// Publish a seeded child so the cascade has a `published` one to move.
-    async fn publish_child(harness: &TestHarness, sku_id: Uuid) {
+    pub async fn publish_child(harness: &TestHarness, sku_id: Uuid) {
         let conn = Database::connect(&harness.dsn)
             .await
             .expect("open an auxiliary connection to shape the fixture");
@@ -6292,7 +6292,7 @@ mod deprecate_door_tests {
         .await;
     }
 
-    async fn child_of(harness: &TestHarness, sku_id: Uuid) -> repo::SkuRecord {
+    pub async fn child_of(harness: &TestHarness, sku_id: Uuid) -> repo::SkuRecord {
         let conn = harness
             .db
             .conn()
@@ -6306,7 +6306,7 @@ mod deprecate_door_tests {
 
     /// Publish a seeded draft Product through its own door, so the
     /// deprecation acts on a head the gear itself produced.
-    async fn published_product(harness: &TestHarness) -> Uuid {
+    pub async fn published_product(harness: &TestHarness) -> Uuid {
         let product_id = Uuid::now_v7();
         seed_draft(harness, product_id).await;
         assign_primary_category(harness, product_id).await;
@@ -6684,5 +6684,438 @@ mod deprecate_door_tests {
             row.internal_revision + 1,
             "the pinned write is what makes pin-plus-one the committed value"
         );
+    }
+}
+
+mod undeprecate_door_tests {
+    use super::deprecate_door_tests::{
+        child_of, force_child_state, publish_child, published_product, seed_child,
+    };
+    use super::*;
+    use crate::domain::deprecation::Provenance;
+    use crate::infra::storage::repo::NewScheduledTransition;
+
+    async fn seed_retire_intent(harness: &TestHarness, entity_kind: &str, entity_id: Uuid) {
+        let conn = harness
+            .db
+            .conn()
+            .expect("checkout the pinned production connection");
+        let scope = toolkit_db::secure::AccessScope::for_tenant(TENANT);
+        repo::insert_scheduled_transition(
+            &conn,
+            &scope,
+            &NewScheduledTransition {
+                transition_id: Uuid::now_v7(),
+                tenant_id: TENANT,
+                entity_kind: entity_kind.to_owned(),
+                entity_id,
+                kind: "retire".to_owned(),
+                at: Utc.with_ymd_and_hms(2026, 12, 1, 0, 0, 0).unwrap(),
+                approval_ref: Uuid::now_v7(),
+                retirement_reason: Some("fixture".to_owned()),
+                now: Utc.with_ymd_and_hms(2026, 9, 2, 12, 0, 0).unwrap(),
+            },
+        )
+        .await
+        .expect("seed a live retire intent");
+    }
+
+    #[tokio::test]
+    async fn a_deprecated_product_undeprecates_and_announces() {
+        let harness = harness().await;
+        let product_id = published_product(&harness).await;
+        let deprecated = post_head_act(
+            app_for(&harness, TENANT),
+            TENANT,
+            product_id,
+            "deprecate",
+            &[("If-Match", &if_match(2))],
+        )
+        .await;
+        assert_eq!(deprecated.status(), StatusCode::OK);
+
+        let response = post_head_act(
+            app_for(&harness, TENANT),
+            TENANT,
+            product_id,
+            "undeprecate",
+            &[("If-Match", &if_match(3))],
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let head = head_of(&harness, product_id).await;
+        assert_eq!(head.lifecycle_state.as_str(), "published");
+        assert_eq!(head.deprecation_provenance, None);
+        assert_eq!(head.internal_revision, 4);
+
+        let announced = raw_i64(
+            &harness.dsn,
+            &format!(
+                "SELECT COUNT(*) AS v FROM {}_body WHERE payload_type = 'ProductUndeprecated'",
+                events::OUTBOX_TABLE_PREFIX
+            ),
+        )
+        .await;
+        assert_eq!(announced, 1);
+    }
+
+    #[tokio::test]
+    async fn only_cascaded_children_reverse() {
+        let harness = harness().await;
+        let product_id = published_product(&harness).await;
+
+        let cascaded = seed_child(&harness, product_id, "SKU-CASCADE").await;
+        publish_child(&harness, cascaded).await;
+
+        let direct = seed_child(&harness, product_id, "SKU-DIRECT").await;
+        publish_child(&harness, direct).await;
+        force_child_state(
+            &harness,
+            direct,
+            "lifecycle_state = 'deprecated', deprecation_provenance = 'direct'",
+        )
+        .await;
+
+        let deprecated = post_head_act(
+            app_for(&harness, TENANT),
+            TENANT,
+            product_id,
+            "deprecate",
+            &[("If-Match", &if_match(2))],
+        )
+        .await;
+        assert_eq!(deprecated.status(), StatusCode::OK);
+
+        let response = post_head_act(
+            app_for(&harness, TENANT),
+            TENANT,
+            product_id,
+            "undeprecate",
+            &[("If-Match", &if_match(3))],
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let revived = child_of(&harness, cascaded).await;
+        assert_eq!(revived.lifecycle_state.as_str(), "published");
+        assert_eq!(revived.deprecation_provenance, None);
+
+        let kept = child_of(&harness, direct).await;
+        assert_eq!(kept.lifecycle_state.as_str(), "deprecated");
+        assert_eq!(kept.deprecation_provenance, Some(Provenance::Direct));
+
+        let child_events = raw_i64(
+            &harness.dsn,
+            &format!(
+                "SELECT COUNT(*) AS v FROM {}_body WHERE payload_type = 'SkuUndeprecated'",
+                events::OUTBOX_TABLE_PREFIX
+            ),
+        )
+        .await;
+        assert_eq!(child_events, 1);
+    }
+
+    #[tokio::test]
+    async fn a_live_retire_intent_on_the_subject_is_retirement_pending() {
+        let harness = harness().await;
+        let product_id = published_product(&harness).await;
+        let deprecated = post_head_act(
+            app_for(&harness, TENANT),
+            TENANT,
+            product_id,
+            "deprecate",
+            &[("If-Match", &if_match(2))],
+        )
+        .await;
+        assert_eq!(deprecated.status(), StatusCode::OK);
+        seed_retire_intent(&harness, "product", product_id).await;
+
+        let refused = post_head_act(
+            app_for(&harness, TENANT),
+            TENANT,
+            product_id,
+            "undeprecate",
+            &[("If-Match", &if_match(3))],
+        )
+        .await;
+        assert_eq!(refused.status(), StatusCode::CONFLICT);
+        assert_eq!(
+            audit_error_code(&harness.dsn).await.as_deref(),
+            Some("RETIREMENT_PENDING")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_live_retire_intent_on_a_revived_child_is_retirement_pending() {
+        let harness = harness().await;
+        let product_id = published_product(&harness).await;
+        let child = seed_child(&harness, product_id, "SKU-HELD").await;
+        publish_child(&harness, child).await;
+
+        let deprecated = post_head_act(
+            app_for(&harness, TENANT),
+            TENANT,
+            product_id,
+            "deprecate",
+            &[("If-Match", &if_match(2))],
+        )
+        .await;
+        assert_eq!(deprecated.status(), StatusCode::OK);
+        seed_retire_intent(&harness, "sku", child).await;
+
+        let refused = post_head_act(
+            app_for(&harness, TENANT),
+            TENANT,
+            product_id,
+            "undeprecate",
+            &[("If-Match", &if_match(3))],
+        )
+        .await;
+        assert_eq!(refused.status(), StatusCode::CONFLICT);
+        assert_eq!(
+            audit_error_code(&harness.dsn).await.as_deref(),
+            Some("RETIREMENT_PENDING")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_published_product_is_illegal_transition() {
+        let harness = harness().await;
+        let product_id = published_product(&harness).await;
+        let refused = post_head_act(
+            app_for(&harness, TENANT),
+            TENANT,
+            product_id,
+            "undeprecate",
+            &[("If-Match", &if_match(2))],
+        )
+        .await;
+        assert_eq!(refused.status(), StatusCode::CONFLICT);
+    }
+}
+
+mod retire_door_tests {
+    use super::deprecate_door_tests::{child_of, publish_child, published_product, seed_child};
+    use super::*;
+
+    async fn post_json_act(
+        app: Router,
+        tenant: Uuid,
+        product_id: Uuid,
+        act: &str,
+        if_match: &str,
+        body: &serde_json::Value,
+    ) -> axum::http::Response<Body> {
+        app.oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/bss-products/v1/products/{product_id}/{act}"))
+                .header(axum::http::header::CONTENT_TYPE, "application/json")
+                .header(axum::http::header::IF_MATCH, if_match)
+                .extension(authed_ctx(tenant))
+                .body(Body::from(body.to_string()))
+                .expect("build the act request"),
+        )
+        .await
+        .expect("the router answers")
+    }
+
+    async fn live_intent_count(harness: &TestHarness, entity_id: Uuid) -> i64 {
+        raw_i64(
+            &harness.dsn,
+            &format!(
+                "SELECT COUNT(*) AS v FROM products_scheduled_transition \
+                 WHERE {} AND kind = 'retire' AND state IN ('pending','running','deferred')",
+                id_matches("entity_id", entity_id)
+            ),
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn a_published_product_retires_and_cascades() {
+        let harness = harness().await;
+        let product_id = published_product(&harness).await;
+        let child = seed_child(&harness, product_id, "SKU-RET-CHILD").await;
+        publish_child(&harness, child).await;
+
+        let response = post_json_act(
+            app_for(&harness, TENANT),
+            TENANT,
+            product_id,
+            "retire",
+            &if_match(2),
+            &json!({
+                "reason": "end of family",
+                "confirmed": true,
+                "cascade_confirmed": true
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let head = head_of(&harness, product_id).await;
+        assert_eq!(head.lifecycle_state.as_str(), "deprecated");
+        assert_eq!(live_intent_count(&harness, product_id).await, 1);
+
+        let child_head = child_of(&harness, child).await;
+        assert_eq!(child_head.lifecycle_state.as_str(), "deprecated");
+        assert_eq!(
+            child_head.deprecation_provenance,
+            Some(crate::domain::deprecation::Provenance::Cascaded)
+        );
+        assert_eq!(live_intent_count(&harness, child).await, 1);
+    }
+
+    #[tokio::test]
+    async fn missing_cascade_confirmation_is_refused() {
+        let harness = harness().await;
+        let product_id = published_product(&harness).await;
+        let child = seed_child(&harness, product_id, "SKU-NO-CASCADE").await;
+        publish_child(&harness, child).await;
+
+        let refused = post_json_act(
+            app_for(&harness, TENANT),
+            TENANT,
+            product_id,
+            "retire",
+            &if_match(2),
+            &json!({
+                "reason": "end of family",
+                "confirmed": true
+            }),
+        )
+        .await;
+        assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            audit_error_code(&harness.dsn).await.as_deref(),
+            Some("CASCADE_CONFIRMATION_REQUIRED")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_draft_child_is_auto_discarded() {
+        let harness = harness().await;
+        let product_id = published_product(&harness).await;
+        let draft = seed_child(&harness, product_id, "SKU-AUTO-DISC").await;
+
+        let response = post_json_act(
+            app_for(&harness, TENANT),
+            TENANT,
+            product_id,
+            "retire",
+            &if_match(2),
+            &json!({
+                "reason": "end of family",
+                "confirmed": true,
+                "cascade_confirmed": true
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let child_head = child_of(&harness, draft).await;
+        assert_eq!(child_head.lifecycle_state.as_str(), "discarded");
+    }
+
+    #[tokio::test]
+    async fn early_effective_at_is_retirement_lead_time() {
+        let harness = harness().await;
+        let product_id = published_product(&harness).await;
+        let refused = post_json_act(
+            app_for(&harness, TENANT),
+            TENANT,
+            product_id,
+            "retire",
+            &if_match(2),
+            &json!({
+                "reason": "end of family",
+                "confirmed": true,
+                "effective_at": "2020-01-01T00:00:00Z"
+            }),
+        )
+        .await;
+        assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            audit_error_code(&harness.dsn).await.as_deref(),
+            Some("RETIREMENT_LEAD_TIME")
+        );
+    }
+}
+
+mod cancel_retire_door_tests {
+    use super::deprecate_door_tests::published_product;
+    use super::*;
+
+    async fn post_json_act(
+        app: Router,
+        tenant: Uuid,
+        product_id: Uuid,
+        act: &str,
+        if_match: &str,
+        body: &serde_json::Value,
+    ) -> axum::http::Response<Body> {
+        app.oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/bss-products/v1/products/{product_id}/{act}"))
+                .header(axum::http::header::CONTENT_TYPE, "application/json")
+                .header(axum::http::header::IF_MATCH, if_match)
+                .extension(authed_ctx(tenant))
+                .body(Body::from(body.to_string()))
+                .expect("build the act request"),
+        )
+        .await
+        .expect("the router answers")
+    }
+
+    #[tokio::test]
+    async fn cancel_supersedes_and_lets_undeprecate_run() {
+        let harness = harness().await;
+        let product_id = published_product(&harness).await;
+        let retired = post_json_act(
+            app_for(&harness, TENANT),
+            TENANT,
+            product_id,
+            "retire",
+            &if_match(2),
+            &json!({
+                "reason": "end of family",
+                "confirmed": true
+            }),
+        )
+        .await;
+        assert_eq!(retired.status(), StatusCode::OK);
+
+        let cancelled = post_json_act(
+            app_for(&harness, TENANT),
+            TENANT,
+            product_id,
+            "retire/cancel",
+            &if_match(3),
+            &json!({
+                "kind": "product.retire.cancel",
+                "target": "product",
+                "payload": "{}",
+                "expected_state": "pending"
+            }),
+        )
+        .await;
+        assert_eq!(cancelled.status(), StatusCode::ACCEPTED);
+        assert_eq!(
+            audit_action(&harness.dsn).await.as_deref(),
+            Some("retire.cancel")
+        );
+
+        let revived = post_head_act(
+            app_for(&harness, TENANT),
+            TENANT,
+            product_id,
+            "undeprecate",
+            &[("If-Match", &if_match(3))],
+        )
+        .await;
+        assert_eq!(revived.status(), StatusCode::OK);
     }
 }

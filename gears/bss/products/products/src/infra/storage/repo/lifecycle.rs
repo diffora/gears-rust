@@ -18,11 +18,14 @@ use toolkit_db::secure::{
 };
 use uuid::Uuid;
 
-use crate::domain::activation::{ClaimLease, RunFinish};
-use crate::infra::storage::RepoError;
-use crate::infra::storage::entity::{deferred_retirement, scheduled_transition};
+use bss_products_sdk::models::LifecycleState;
 
-use super::driver_failure;
+use crate::domain::activation::{ClaimLease, RunFinish};
+use crate::domain::deprecation::Provenance;
+use crate::infra::storage::RepoError;
+use crate::infra::storage::entity::{deferred_retirement, product, scheduled_transition, sku};
+
+use super::{HeadWrite, driver_failure};
 
 /// Columns a new scheduled-transition row carries at insert.
 #[derive(Debug, Clone)]
@@ -436,6 +439,290 @@ pub async fn resolve_deferred_retirement(
             )
         })?;
     Ok(result.rows_affected == 1)
+}
+
+/// Deprecate one SKU head — `published → deprecated`, stamping
+/// `deprecation_provenance` in the same statement.
+///
+/// # Errors
+///
+/// [`RepoError::Driver`] on a storage failure. An inadmissible write is
+/// [`HeadWrite::Unmatched`].
+pub async fn deprecate_sku_head(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    sku_id: Uuid,
+    expected_internal_revision: i64,
+    provenance: Provenance,
+    now: DateTime<Utc>,
+) -> Result<HeadWrite, RepoError> {
+    let result = sku::Entity::update_many()
+        .secure()
+        .scope_with(scope)
+        .col_expr(
+            sku::Column::LifecycleState,
+            Expr::value(LifecycleState::Deprecated.as_str()),
+        )
+        .col_expr(
+            sku::Column::DeprecationProvenance,
+            Expr::value(provenance.as_str()),
+        )
+        .col_expr(
+            sku::Column::InternalRevision,
+            Expr::col(sku::Column::InternalRevision).add(Expr::val(1_i64)),
+        )
+        .col_expr(sku::Column::UpdatedAt, Expr::value(now))
+        .filter(
+            Condition::all()
+                .add(sku::Column::TenantId.eq(tenant_id))
+                .add(sku::Column::SkuId.eq(sku_id))
+                .add(sku::Column::InternalRevision.eq(expected_internal_revision))
+                .add(sku::Column::LifecycleState.eq(LifecycleState::Published.as_str())),
+        )
+        .exec(runner)
+        .await
+        .map_err(|e| driver_failure(format!("deprecate sku {sku_id}"), e))?;
+    if result.rows_affected == 0 {
+        return Ok(HeadWrite::Unmatched);
+    }
+    Ok(HeadWrite::Applied)
+}
+
+/// Un-deprecate one Product head — `deprecated → published`, clearing
+/// `deprecation_provenance` in the same statement (P-D-34).
+///
+/// # Errors
+///
+/// [`RepoError::Driver`] on a storage failure. An inadmissible write is
+/// [`HeadWrite::Unmatched`].
+pub async fn undeprecate_product_head(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    product_id: Uuid,
+    expected_internal_revision: i64,
+    now: DateTime<Utc>,
+) -> Result<HeadWrite, RepoError> {
+    let result = product::Entity::update_many()
+        .secure()
+        .scope_with(scope)
+        .col_expr(
+            product::Column::LifecycleState,
+            Expr::value(LifecycleState::Published.as_str()),
+        )
+        .col_expr(
+            product::Column::DeprecationProvenance,
+            Expr::value(Option::<String>::None),
+        )
+        .col_expr(
+            product::Column::InternalRevision,
+            Expr::col(product::Column::InternalRevision).add(Expr::val(1_i64)),
+        )
+        .col_expr(product::Column::UpdatedAt, Expr::value(now))
+        .filter(
+            Condition::all()
+                .add(product::Column::TenantId.eq(tenant_id))
+                .add(product::Column::ProductId.eq(product_id))
+                .add(product::Column::InternalRevision.eq(expected_internal_revision))
+                .add(product::Column::LifecycleState.eq(LifecycleState::Deprecated.as_str())),
+        )
+        .exec(runner)
+        .await
+        .map_err(|e| driver_failure(format!("undeprecate product {product_id}"), e))?;
+    if result.rows_affected == 0 {
+        return Ok(HeadWrite::Unmatched);
+    }
+    Ok(HeadWrite::Applied)
+}
+
+/// Un-deprecate one SKU head — `deprecated → published`, clearing
+/// provenance in the same statement. `required_provenance` pins the
+/// reversal operand: `Some(Cascaded)` for a parent-driven revival,
+/// `None` for an operator act (any stored provenance).
+///
+/// # Errors
+///
+/// [`RepoError::Driver`] on a storage failure. An inadmissible write is
+/// [`HeadWrite::Unmatched`].
+pub async fn undeprecate_sku_head(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    sku_id: Uuid,
+    expected_internal_revision: i64,
+    required_provenance: Option<Provenance>,
+    now: DateTime<Utc>,
+) -> Result<HeadWrite, RepoError> {
+    let mut filter = Condition::all()
+        .add(sku::Column::TenantId.eq(tenant_id))
+        .add(sku::Column::SkuId.eq(sku_id))
+        .add(sku::Column::InternalRevision.eq(expected_internal_revision))
+        .add(sku::Column::LifecycleState.eq(LifecycleState::Deprecated.as_str()));
+    if let Some(provenance) = required_provenance {
+        filter = filter.add(sku::Column::DeprecationProvenance.eq(provenance.as_str()));
+    }
+    let result = sku::Entity::update_many()
+        .secure()
+        .scope_with(scope)
+        .col_expr(
+            sku::Column::LifecycleState,
+            Expr::value(LifecycleState::Published.as_str()),
+        )
+        .col_expr(
+            sku::Column::DeprecationProvenance,
+            Expr::value(Option::<String>::None),
+        )
+        .col_expr(
+            sku::Column::InternalRevision,
+            Expr::col(sku::Column::InternalRevision).add(Expr::val(1_i64)),
+        )
+        .col_expr(sku::Column::UpdatedAt, Expr::value(now))
+        .filter(filter)
+        .exec(runner)
+        .await
+        .map_err(|e| driver_failure(format!("undeprecate sku {sku_id}"), e))?;
+    if result.rows_affected == 0 {
+        return Ok(HeadWrite::Unmatched);
+    }
+    Ok(HeadWrite::Applied)
+}
+
+/// Write `replaced_by_sku_id` on a retirement initiation that takes no
+/// edge — the SKU is already `deprecated`. Provenance is not touched
+/// (P-D-34).
+///
+/// # Errors
+///
+/// [`RepoError::Driver`] on a storage failure. An inadmissible write is
+/// [`HeadWrite::Unmatched`].
+pub async fn write_replaced_by(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    sku_id: Uuid,
+    expected_internal_revision: i64,
+    replaced_by: Option<Uuid>,
+    now: DateTime<Utc>,
+) -> Result<HeadWrite, RepoError> {
+    let result = sku::Entity::update_many()
+        .secure()
+        .scope_with(scope)
+        .col_expr(sku::Column::ReplacedBySkuId, Expr::value(replaced_by))
+        .col_expr(
+            sku::Column::InternalRevision,
+            Expr::col(sku::Column::InternalRevision).add(Expr::val(1_i64)),
+        )
+        .col_expr(sku::Column::UpdatedAt, Expr::value(now))
+        .filter(
+            Condition::all()
+                .add(sku::Column::TenantId.eq(tenant_id))
+                .add(sku::Column::SkuId.eq(sku_id))
+                .add(sku::Column::InternalRevision.eq(expected_internal_revision))
+                .add(sku::Column::LifecycleState.eq(LifecycleState::Deprecated.as_str())),
+        )
+        .exec(runner)
+        .await
+        .map_err(|e| driver_failure(format!("write replaced_by on sku {sku_id}"), e))?;
+    if result.rows_affected == 0 {
+        return Ok(HeadWrite::Unmatched);
+    }
+    Ok(HeadWrite::Applied)
+}
+
+/// Clear `replaced_by_sku_id` on the governed cancel (P-D-49).
+///
+/// # Errors
+///
+/// [`RepoError::Driver`] on a storage failure. An inadmissible write is
+/// [`HeadWrite::Unmatched`].
+pub async fn clear_replaced_by(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    sku_id: Uuid,
+    expected_internal_revision: i64,
+    now: DateTime<Utc>,
+) -> Result<HeadWrite, RepoError> {
+    write_replaced_by(
+        runner,
+        scope,
+        tenant_id,
+        sku_id,
+        expected_internal_revision,
+        None,
+        now,
+    )
+    .await
+}
+
+/// Operands for [`deprecate_sku_head_with_replacement`].
+#[derive(Debug, Clone, Copy)]
+pub struct SkuDeprecationWrite {
+    /// Tenant partition.
+    pub tenant_id: Uuid,
+    /// The SKU to force `deprecated`.
+    pub sku_id: Uuid,
+    /// Pinned revision.
+    pub expected_internal_revision: i64,
+    /// Provenance stamped in the same statement.
+    pub provenance: Provenance,
+    /// Optional successor.
+    pub replaced_by: Option<Uuid>,
+    /// Write clock.
+    pub now: DateTime<Utc>,
+}
+
+/// Stamp `replaced_by` in the same statement as a deprecation.
+///
+/// # Errors
+///
+/// [`RepoError::Driver`] on a storage failure. An inadmissible write is
+/// [`HeadWrite::Unmatched`].
+pub async fn deprecate_sku_head_with_replacement(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    write: SkuDeprecationWrite,
+) -> Result<HeadWrite, RepoError> {
+    let SkuDeprecationWrite {
+        tenant_id,
+        sku_id,
+        expected_internal_revision,
+        provenance,
+        replaced_by,
+        now,
+    } = write;
+    let result = sku::Entity::update_many()
+        .secure()
+        .scope_with(scope)
+        .col_expr(
+            sku::Column::LifecycleState,
+            Expr::value(LifecycleState::Deprecated.as_str()),
+        )
+        .col_expr(
+            sku::Column::DeprecationProvenance,
+            Expr::value(provenance.as_str()),
+        )
+        .col_expr(sku::Column::ReplacedBySkuId, Expr::value(replaced_by))
+        .col_expr(
+            sku::Column::InternalRevision,
+            Expr::col(sku::Column::InternalRevision).add(Expr::val(1_i64)),
+        )
+        .col_expr(sku::Column::UpdatedAt, Expr::value(now))
+        .filter(
+            Condition::all()
+                .add(sku::Column::TenantId.eq(tenant_id))
+                .add(sku::Column::SkuId.eq(sku_id))
+                .add(sku::Column::InternalRevision.eq(expected_internal_revision))
+                .add(sku::Column::LifecycleState.eq(LifecycleState::Published.as_str())),
+        )
+        .exec(runner)
+        .await
+        .map_err(|e| driver_failure(format!("deprecate sku {sku_id} with replacement"), e))?;
+    if result.rows_affected == 0 {
+        return Ok(HeadWrite::Unmatched);
+    }
+    Ok(HeadWrite::Applied)
 }
 
 #[cfg(test)]

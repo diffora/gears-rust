@@ -24,14 +24,14 @@
 //! respect: only the registered form can collect several violations in one
 //! phase. Every cross-row rule here is a single-condition refusal.
 //!
-//! The insertion site *is* the keying. The lead wires
-//! `.with_rule(Box::new(ParentPublishedRequired))` on the SKU publish
-//! re-validation pipeline, prefetching the parent's [`LifecycleState`]
-//! into [`PublishOrderingSubject`]. Until that line lands the rule type
-//! reaches no runtime.
+//! The insertion site *is* the keying. The door fills this slot as a
+//! **continuation** (`parent_must_be_published`) — `publish_revalidation_pipeline`
+//! is monomorphic in `PublishRevalidationSubject`, so
+//! [`ParentPublishedRequired`] cannot join it. Both fillings still share
+//! one function.
 //!
 //! @cpt-dod:cpt-cf-bss-products-dod-registered-validator-host:p1
-//! @cpt-cf-bss-products-dod-publish-ordering
+//! @cpt-dod:cpt-cf-bss-products-dod-publish-ordering:p1
 
 use bss_products_sdk::models::LifecycleState;
 
@@ -130,6 +130,29 @@ impl LifecycleRefusal {
         Self {
             code: Self::EOL_DISABLED,
             detail: "mustMigrateBy is refused while EOL is disabled".to_owned(),
+        }
+    }
+
+    /// Raise the matching [`DomainError`] arm. The six lifecycle arms are
+    /// constructed here so a door never matches the wire code as a string.
+    #[must_use]
+    pub fn into_domain_error(self) -> crate::domain::error::DomainError {
+        use crate::domain::error::DomainError;
+        match self.code {
+            Self::PARENT_NOT_PUBLISHED => DomainError::ParentNotPublished(self.detail),
+            Self::RETIREMENT_PENDING => DomainError::RetirementPending(self.detail),
+            Self::SCHEDULE_STALE_APPROVAL => DomainError::ScheduleStaleApproval(self.detail),
+            Self::REPLACED_BY_NOT_PUBLISHED => DomainError::ReplacedByNotPublished(self.detail),
+            Self::RETIREMENT_LEAD_TIME => DomainError::RetirementLeadTime(self.detail),
+            Self::CASCADE_CONFIRMATION_REQUIRED => {
+                DomainError::CascadeConfirmationRequired(self.detail)
+            }
+            Self::EOL_DISABLED => DomainError::EolDisabled(self.detail),
+            other => {
+                let mut report = crate::domain::validation::ValidationReport::new();
+                report.violate(other, "code", self.detail);
+                DomainError::Validation(report)
+            }
         }
     }
 }

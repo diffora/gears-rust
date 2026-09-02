@@ -96,3 +96,50 @@ fn both_fillings_agree_on_every_lifecycle_state() {
         }
     }
 }
+
+#[test]
+fn each_lifecycle_refusal_raises_its_domain_error_arm() {
+    use crate::domain::error::DomainError;
+
+    assert_eq!(
+        LifecycleRefusal::parent_not_published()
+            .into_domain_error()
+            .code(),
+        "PARENT_NOT_PUBLISHED"
+    );
+    assert_eq!(
+        LifecycleRefusal::retirement_pending(&["a"])
+            .into_domain_error()
+            .code(),
+        "RETIREMENT_PENDING"
+    );
+    assert_eq!(
+        LifecycleRefusal::schedule_stale_approval("x")
+            .into_domain_error()
+            .code(),
+        "SCHEDULE_STALE_APPROVAL"
+    );
+    assert_eq!(
+        LifecycleRefusal::replaced_by_not_published()
+            .into_domain_error()
+            .code(),
+        "REPLACED_BY_NOT_PUBLISHED"
+    );
+    assert_eq!(
+        LifecycleRefusal::retirement_lead_time()
+            .into_domain_error()
+            .code(),
+        "RETIREMENT_LEAD_TIME"
+    );
+    assert_eq!(
+        LifecycleRefusal::cascade_confirmation_required()
+            .into_domain_error()
+            .code(),
+        "CASCADE_CONFIRMATION_REQUIRED"
+    );
+    assert_eq!(
+        LifecycleRefusal::eol_disabled().into_domain_error().code(),
+        "EOL_DISABLED"
+    );
+    let _ = DomainError::RetirementPending(String::new());
+}

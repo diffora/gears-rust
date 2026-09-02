@@ -9,8 +9,8 @@
 //! The `DomainError` arm is a D7 patch; continuations return
 //! [`LifecycleRefusal`].
 //!
-//! @cpt-cf-bss-products-dod-undeprecation
-//! @cpt-cf-bss-products-dod-provenance-reversal
+//! @cpt-dod:cpt-cf-bss-products-dod-undeprecation:p1
+//! @cpt-dod:cpt-cf-bss-products-dod-provenance-reversal:p1
 
 use uuid::Uuid;
 
