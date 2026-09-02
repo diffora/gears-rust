@@ -1569,6 +1569,77 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   (the re-publish step).
 
 
+#### P-D-105 — `PreAuthorized` verifies the pin the row carries, not the subject the record names
+
+- **Date**: 2026-09-02 (owner call, answering `features/lifecycle.md` §7 **row 22** and
+  `features/governance.md` §7 **row 27** together — they are one question, raised independently in
+  two features, and each names the other)
+- **Context**: `05 inst-gv-materiality` puts materiality on the **initiating human act** and sends
+  the mechanical stages after it — *"the `effectiveAt` flip, cascade legs"* — back through the gate
+  *"only in 01's `PreAuthorized(approvalId)` mode, consuming nothing further"*. So the design
+  requires a leg to re-enter the gate; "legs are ungoverned effects" is not available.
+  But the shipped predicate cannot admit one, and the reason is structural rather than a bug.
+  Measured at `b844b2632`:
+  1. `products_approval` stores **one** subject (`subject_kind` + `subject_ref`) and **one**
+     revision (`internal_revision`). One record names one subject.
+  2. `products_scheduled_transition` carries `approval_ref` — *"the pinned slice-05 approval
+     snapshot, consumed at scheduling"* — and **no plan, parent or provenance column at all**.
+  3. `domain::approval`'s host requires the record be `consumed` **and** have authorized *this*
+     subject at *this* revision (`inst-fd-gate-mode-preauthorized`).
+  A cascade leg's row names the **child** in `entity_id` while its `approval_ref` names the
+  **parent's** record. It therefore fails (3) by construction, for every leg, always. A bulk row
+  fails the same way on its own revision.
+- **The answer both rows forbid, in their own words**: weakening the predicate to *"names a
+  consumed record"* turns a terminal, unrevocable record into *"an unbounded bearer token for any
+  subject in the tenant"*. That is not this decision, and the difference is measurable rather than
+  rhetorical — see the next clause.
+- **Decision**: at activation the predicate is **"the named record is `consumed`, and the row being
+  flipped names that record in its own `approval_ref`"**. The subject/revision equality is dropped
+  for a scheduled flip and kept nowhere else; a wire caller still gets `GateMode::Gate` and reaches
+  `PreAuthorized` from no route.
+- **Why this is not the bearer token, measured**: the forbidden version admits a **caller** that
+  names a consumed record. Here the operand is not caller-supplied at all — it is the stored
+  `approval_ref` of a row the caller cannot write. Traced the writers rather than the
+  registrations: `insert_scheduled_transition` has exactly **three** call sites —
+  `api/rest/products.rs` and `api/rest/skus.rs` in `run_retire`, both of which run
+  `GovernanceGate` before the write, and `api/rest/products.rs`'s `apply_cascade_plan`, which has
+  exactly **one** caller and it is that same gated `run_retire`. A record therefore admits exactly
+  the rows its own gated transaction wrote, and no others. `inst-cp-plan` already makes that
+  transaction atomic — *"one transaction and any failure rejects the whole mutation"* — so a
+  half-written plan cannot leave an admitting row behind either.
+- **The arguments against, stated.**
+  1. **The record stops being self-describing.** An auditor reading `products_approval` alone
+     cannot enumerate what a record authorized; the enumeration lives in the transition rows and
+     needs a join on `approval_ref`. Accepted, but it is a real loss and it is the same poverty
+     **O-B-04** complains about from the other side — that register entry is not settled by this
+     one.
+  2. **The safety is a code invariant, not a constraint.** Nothing in either schema stops a fourth,
+     ungated writer of `products_scheduled_transition` from being added, and the day one is, this
+     predicate silently *becomes* the bearer token. **So this decision owes a guard**, and the debt
+     is discharged in the same commit rather than registered: a test that counts the writers of
+     that table and fails when the count moves, naming this entry. A decision whose safety rests on
+     "there are three call sites" must make that a measured three.
+  3. **The alternative was a `cascade_parent_id` column**, which would make membership structural
+     instead of invariant-based. Rejected on cost against benefit: it needs a migration on a table
+     already in the chain, and it buys no authorization the row's existence does not already carry
+     — the row is written by the gated act either way, so the parent link would be audit
+     convenience bought at schema cost. If the guard in (2) ever fails for a reason that cannot be
+     fixed by re-gating the new writer, that is the signal to take this arm instead.
+  4. **One approval per leg** was the third arm. Rejected: it contradicts `inst-gv-one-shot`'s
+     single consumption and turns a human ceremony into N of them for a cascade over N children.
+- **Propagated**: `features/lifecycle.md` §7 row 22 and `features/governance.md` §7 row 27, both
+  **struck** with this entry named — neither is an open question any more. The predicate change
+  lands in `domain::approval`'s host, which is **strand B's** to write, and the runner's call in
+  `domain::activation`, which is **strand C's**; both are told, and neither is asked to decide it.
+- **Owed**: the writer-count guard (discharged here, not registered). `inst-gv-one-shot` and
+  `inst-fd-gate-mode-preauthorized` keep their wording — both speak of verifying without
+  consuming, which is exactly what this predicate does — but `inst-fd-gate-mode-preauthorized`'s
+  *"this subject at this revision"* clause now needs its scheduled-flip exception written in, and
+  that clause is `design/01-foundation.md`'s. **That is the one propagation this entry does not
+  discharge**, because 01 is the foundation slice and its §3 is not a strand's; it is the lead's
+  next documentation debt and is recorded here rather than left to be noticed.
+
+
 #### P-D-104 — The well-known seeds are written on a tenant's **first write**, and P-D-100's migration arm is withdrawn
 
 - **Date**: 2026-09-02 (owner call, **amending P-D-100** the same day, on two measurements that

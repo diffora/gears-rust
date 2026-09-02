@@ -149,3 +149,55 @@ fn the_guard_fires_on_what_shipped_and_not_on_alignment() {
         "a correctly continued literal carries no run at all"
     );
 }
+
+/// **P-D-105's safety is a count, so the count is measured.**
+///
+/// That entry drops `PreAuthorized`'s subject/revision equality for a scheduled
+/// flip and puts the authorization on the flipped row's stored `approval_ref`
+/// instead. Its whole argument that this is not *"an unbounded bearer token for
+/// any subject in the tenant"* — the phrase both `features/lifecycle.md` §7 row
+/// 22 and `features/governance.md` §7 row 27 use — is that **a caller cannot
+/// write such a row**: every writer of `products_scheduled_transition` runs the
+/// governance gate first.
+///
+/// Nothing in either schema enforces that. It is a code invariant, and the day a
+/// fourth, ungated writer appears the predicate silently *becomes* the bearer
+/// token, with no test failing and no reviewer prompted. So the invariant is
+/// counted here, and this test is the prompt.
+///
+/// # If this fails
+///
+/// A call site was added or removed. Do not just move the number. Establish that
+/// the new writer runs `GovernanceGate` before it writes — and if it cannot,
+/// P-D-105's argument 3 names the fallback: take the `cascade_parent_id` column
+/// it rejected, which makes membership structural instead of invariant-based.
+#[test]
+fn every_writer_of_a_scheduled_transition_is_counted_for_p_d_105() {
+    let mut sites = Vec::new();
+    for path in crate_sources() {
+        let text = std::fs::read_to_string(&path).expect("a readable crate source");
+        for (index, line) in text.lines().enumerate() {
+            let trimmed = line.trim_start();
+            // The declaration and doc mentions are not call sites.
+            if trimmed.starts_with("//") || trimmed.starts_with("pub async fn") {
+                continue;
+            }
+            if line.contains("insert_scheduled_transition(") {
+                let name = path
+                    .strip_prefix(std::path::Path::new(env!("CARGO_MANIFEST_DIR")))
+                    .unwrap_or(&path);
+                sites.push(format!("{}:{}", name.display(), index + 1));
+            }
+        }
+    }
+    sites.retain(|s| !s.contains("_tests.rs"));
+    assert_eq!(
+        sites.len(),
+        3,
+        "P-D-105 rests on there being exactly three gated writers of \
+         `products_scheduled_transition` — two in `run_retire` (Product and SKU) and one in \
+         `apply_cascade_plan`, whose only caller is that same gated function. Found:\n  {}\n\
+         Read this test's doc before changing the number.",
+        sites.join("\n  ")
+    );
+}
