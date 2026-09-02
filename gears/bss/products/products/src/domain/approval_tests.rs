@@ -1,13 +1,42 @@
 //! `domain::approval` — the ceremony's rules, each probed on the case whose
 //! absence would ship the defect its instruction names.
 
+use std::collections::BTreeSet;
+
 use uuid::Uuid;
 
 use super::{
-    AckPlacement, ApproverDiff, UnsatisfiablePredicate, ack_placement, decision_admitted,
-    describe_quorum, diff_basis_for, render_diff,
+    AckPlacement, ApproverDiff, ApproverRole, ApproverScopeVerdict, CastDecision,
+    DEFAULT_APPROVER_COUNT, PLATFORM_QUORUM_FLOOR, QuorumOutcome, UnsatisfiablePredicate,
+    ack_placement, approver_covers_subject, decision_admitted, describe_platform_quorum,
+    describe_quorum, diff_basis_for, evaluate_quorum, render_diff,
 };
+use crate::domain::containment::{ResolvedScope, ScopeDimension, ScopePair};
 use crate::domain::materiality::Materiality;
+
+/// A restricted scope from its members, so a probe reads as the set it means.
+fn restricted(values: &[&str]) -> ResolvedScope {
+    ResolvedScope::Restricted(
+        values
+            .iter()
+            .map(|v| (*v).to_owned())
+            .collect::<BTreeSet<_>>(),
+    )
+}
+
+/// A scope pair, region then brand.
+fn pair(region: ResolvedScope, brand: ResolvedScope) -> ScopePair {
+    ScopePair { region, brand }
+}
+
+/// One approval from `principal` holding `roles`.
+fn approves(principal: u128, roles: &[ApproverRole]) -> CastDecision {
+    CastDecision {
+        principal: Uuid::from_u128(principal),
+        approved: true,
+        roles: roles.to_vec(),
+    }
+}
 
 /// **`required = N` for a material change and `min(N, 1)` for a
 /// non-material one** — `inst-gv-materiality`'s two arms, over the whole
@@ -255,4 +284,346 @@ fn an_unreadable_basis_is_its_own_answer_not_a_first_publish() {
         }
         other => panic!("a pinned basis must not render as a first publish: {other:?}"),
     }
+}
+
+// ---------------------------------------------------------------------------
+// The platform floor (P-D-13), the evaluator (inst-gv-quorum) and the
+// approver-scope rule (inst-gv-scope).
+// ---------------------------------------------------------------------------
+
+/// **The writer §7 row 9 says does not exist.** A fixed 2 that no tenant
+/// configuration reaches.
+///
+/// Armed at `N = 0` on the other side: `describe_quorum` at zero answers a
+/// descriptor that closes on nobody, and the floor answers 2 for the same
+/// tenant. A probe at `N = 2` could not tell a fixed floor from a
+/// configurable one, which is why the comparison is drawn at zero.
+#[test]
+fn the_platform_floor_is_fixed_where_the_tenant_count_is_not() {
+    let floor = describe_platform_quorum();
+    assert_eq!(floor.required(), PLATFORM_QUORUM_FLOOR);
+    assert_eq!(
+        floor.required(),
+        2,
+        "P-D-13's two distinct platform principals"
+    );
+
+    // The same tenant, at the floor P-D-11 made reachable.
+    let tenant_at_zero = describe_quorum(Materiality::Material, 0, false);
+    assert_eq!(
+        tenant_at_zero.required(),
+        0,
+        "P-D-11: a tenant at N = 0 publishes approver-less by policy"
+    );
+    assert_eq!(
+        describe_platform_quorum().required(),
+        PLATFORM_QUORUM_FLOOR,
+        "and no tenant configuration reaches the platform ceremony: that is the whole of \
+         P-D-13's 'no tenant's configured N has standing'"
+    );
+}
+
+/// `quorumReduced` is **false** at the platform floor, and true is what a
+/// tenant ceremony below the default gets.
+///
+/// P-D-13 sets the marker *"when the effective count is below the
+/// retained-name default of 2"*. The floor is exactly that default, so the
+/// trail that says "two-person" is telling the truth and the marker is
+/// correctly silent — which is only meaningful next to a case where it fires.
+#[test]
+fn the_floor_is_not_a_reduced_quorum_and_a_one_person_tenant_is() {
+    assert!(
+        !describe_platform_quorum().quorum_reduced(),
+        "the floor IS the retained-name default, so nothing was reduced"
+    );
+    assert_eq!(
+        PLATFORM_QUORUM_FLOOR, DEFAULT_APPROVER_COUNT,
+        "same value, two facts"
+    );
+    assert!(
+        describe_quorum(Materiality::Material, 1, false).quorum_reduced(),
+        "a tenant ceremony at N = 1 is below the default and must say so"
+    );
+}
+
+/// The floor carries no finance predicate and records none unsatisfiable —
+/// "not applicable", not "could not be carried".
+#[test]
+fn the_floor_carries_no_finance_predicate_at_all() {
+    let floor = describe_platform_quorum();
+    assert!(!floor.finance_required());
+    assert_eq!(
+        floor.predicate_unsatisfiable(),
+        None,
+        "an elevation touches no finance-material field, so the predicate has no subject to \
+         be absent from, which is distinct from the N = 0 case that records the absence"
+    );
+    assert_eq!(
+        describe_quorum(Materiality::Material, 0, true).predicate_unsatisfiable(),
+        Some(UnsatisfiablePredicate::FinanceReviewer),
+        "the paired case that makes the assertion above mean something"
+    );
+}
+
+/// **One human holding both roles counts once** — C2's floor, at the
+/// evaluator rather than at the index, and the probe `dod-quorum-evaluator`
+/// names.
+///
+/// The same principal appears twice, once under each role, which is exactly
+/// the shape the index would refuse and a caller assembling the list itself
+/// would not.
+#[test]
+fn one_human_holding_both_roles_counts_once() {
+    let descriptor = describe_quorum(Materiality::Material, 2, false);
+    let both = [
+        approves(0xa1, &[ApproverRole::CatalogAdmin]),
+        approves(0xa1, &[ApproverRole::FinanceReviewer]),
+    ];
+    assert_eq!(
+        evaluate_quorum(
+            &descriptor,
+            &both,
+            &[ApproverRole::CatalogAdmin, ApproverRole::FinanceReviewer]
+        ),
+        QuorumOutcome::CountUnmet {
+            counted: 1,
+            required: 2
+        },
+        "two rows, one principal, one approver (C2)"
+    );
+
+    // The positive control: a second, different principal closes it.
+    let two = [
+        approves(0xa1, &[ApproverRole::CatalogAdmin]),
+        approves(0xa2, &[ApproverRole::CatalogAdmin]),
+    ];
+    assert_eq!(
+        evaluate_quorum(
+            &descriptor,
+            &two,
+            &[ApproverRole::CatalogAdmin, ApproverRole::FinanceReviewer]
+        ),
+        QuorumOutcome::Satisfied
+    );
+}
+
+/// **The finance predicate is satisfiable by that one principal only as one
+/// of the two** (`design/05` §5's second bullet).
+///
+/// The dual-role human supplies the lens; the count still needs a second
+/// body. Both halves are asserted, because a rule that let the lens stand in
+/// for the body would pass the first assertion alone.
+#[test]
+fn the_dual_role_human_supplies_the_lens_but_not_the_second_body() {
+    let descriptor = describe_quorum(Materiality::Material, 2, true);
+    assert!(descriptor.finance_required());
+
+    let lens_only = [approves(
+        0xb1,
+        &[ApproverRole::CatalogAdmin, ApproverRole::FinanceReviewer],
+    )];
+    assert_eq!(
+        evaluate_quorum(&descriptor, &lens_only, &[ApproverRole::CatalogAdmin]),
+        QuorumOutcome::CountUnmet {
+            counted: 1,
+            required: 2
+        },
+        "holding both roles does not buy the second signature"
+    );
+
+    let lens_and_body = [
+        approves(
+            0xb1,
+            &[ApproverRole::CatalogAdmin, ApproverRole::FinanceReviewer],
+        ),
+        approves(0xb2, &[ApproverRole::CatalogAdmin]),
+    ];
+    assert_eq!(
+        evaluate_quorum(&descriptor, &lens_and_body, &[ApproverRole::CatalogAdmin]),
+        QuorumOutcome::Satisfied,
+        "one of the two being the FinanceReviewer is what the predicate asks"
+    );
+}
+
+/// **Numerically met with the predicate unmet is its own answer** — L-2's
+/// `APPROVER_ROLE_REQUIRED` case, distinguished from a short count.
+#[test]
+fn a_met_count_with_no_finance_lens_is_the_role_refusal_not_a_short_count() {
+    let descriptor = describe_quorum(Materiality::Material, 2, true);
+    let no_lens = [
+        approves(0xc1, &[ApproverRole::CatalogAdmin]),
+        approves(0xc2, &[ApproverRole::CatalogAdmin]),
+    ];
+    assert_eq!(
+        evaluate_quorum(&descriptor, &no_lens, &[ApproverRole::CatalogAdmin]),
+        QuorumOutcome::RolePredicateUnmet { counted: 2 },
+        "the count is met and the lens is missing: a caller told 'not enough approvers' would \
+         add a third CatalogAdmin and fail again"
+    );
+}
+
+/// **A recorded `predicateUnsatisfiable` counts as met, and only at the count
+/// that records it.**
+///
+/// Armed at `N = 0` per the rule that a probe at `N = 2` cannot distinguish
+/// the arms: at zero the marker is set and no decision exists, and the
+/// descriptor is met by nobody. At `N >= 1` the marker is never recorded, so
+/// the discharge `inst-gv-quorum` forbids there is unreachable rather than
+/// merely unused — which is what the second half asserts.
+#[test]
+fn an_unsatisfiable_predicate_is_met_at_zero_and_unreachable_above_it() {
+    let at_zero = describe_quorum(Materiality::Material, 0, true);
+    assert_eq!(
+        at_zero.predicate_unsatisfiable(),
+        Some(UnsatisfiablePredicate::FinanceReviewer)
+    );
+    assert!(
+        !at_zero.finance_required(),
+        "the predicate is not SET at zero"
+    );
+    assert_eq!(
+        evaluate_quorum(&at_zero, &[], &[ApproverRole::CatalogAdmin]),
+        QuorumOutcome::Satisfied,
+        "the marker is the only discharge, and the descriptor closes on nobody"
+    );
+
+    // Above zero the marker cannot be recorded at all, so no evaluation can
+    // reach the discharge.
+    for n in 1_u32..=4 {
+        let above = describe_quorum(Materiality::Material, n, true);
+        assert_eq!(
+            above.predicate_unsatisfiable(),
+            None,
+            "at N = {n} the predicate binds and is never recorded unsatisfiable"
+        );
+        assert!(above.finance_required(), "at N = {n} the predicate is SET");
+    }
+}
+
+/// An approver holding none of the binding roles is not counted, and an empty
+/// binding set counts anyone.
+///
+/// The second half is §7 row 16 left open rather than answered: the caller
+/// names the set that binds, so a non-material change whose base set is
+/// undecided is expressed by passing none, not by this function guessing.
+#[test]
+fn an_ineligible_approver_is_not_counted_and_an_empty_base_set_counts_anyone() {
+    let descriptor = describe_quorum(Materiality::Material, 1, false);
+    let ineligible = [approves(0xd1, &[])];
+    assert_eq!(
+        evaluate_quorum(&descriptor, &ineligible, &[ApproverRole::CatalogAdmin]),
+        QuorumOutcome::CountUnmet {
+            counted: 0,
+            required: 1
+        },
+        "holding no named role is not an eligible approver, so it moves the count by nothing"
+    );
+    assert_eq!(
+        evaluate_quorum(&descriptor, &ineligible, &[]),
+        QuorumOutcome::Satisfied,
+        "an empty base set is 'any holder of approval x decide', row 16's other reading, \
+         expressed by the caller rather than chosen here"
+    );
+}
+
+/// A rejection never counts toward satisfaction.
+#[test]
+fn a_rejection_moves_no_count() {
+    let descriptor = describe_quorum(Materiality::Material, 1, false);
+    let rejected = [CastDecision {
+        principal: Uuid::from_u128(0xe1),
+        approved: false,
+        roles: vec![ApproverRole::CatalogAdmin],
+    }];
+    assert_eq!(
+        evaluate_quorum(&descriptor, &rejected, &[ApproverRole::CatalogAdmin]),
+        QuorumOutcome::CountUnmet {
+            counted: 0,
+            required: 1
+        }
+    );
+}
+
+/// **The claim set is the parent and the subject is the child.** All three of
+/// P-D-39's clauses, in the direction `inst-gv-scope` words them.
+///
+/// The transposed mapping is the defect this case exists to catch, and clause
+/// 2 is the only asymmetric one — so it is the assertion that would flip:
+/// under a transposition a restricted approver would cover an unrestricted
+/// subject.
+#[test]
+fn an_unrestricted_claim_set_covers_everything_and_the_reverse_does_not() {
+    // Clause 1: unrestricted claims cover every subject.
+    assert_eq!(
+        approver_covers_subject(
+            &pair(ResolvedScope::Unrestricted, ResolvedScope::Unrestricted),
+            &pair(restricted(&["eu"]), restricted(&["acme"])),
+        ),
+        ApproverScopeVerdict::Covered
+    );
+
+    // Clause 2, the asymmetric one: an unrestricted SUBJECT is covered only
+    // by an unrestricted claim set. Transpose the mapping and this passes.
+    match approver_covers_subject(
+        &pair(restricted(&["eu"]), ResolvedScope::Unrestricted),
+        &pair(ResolvedScope::Unrestricted, ResolvedScope::Unrestricted),
+    ) {
+        ApproverScopeVerdict::Exceeded {
+            dimension,
+            claimed,
+            subject,
+        } => {
+            assert_eq!(dimension, ScopeDimension::Region);
+            assert_eq!(claimed, restricted(&["eu"]), "the claims are the parent");
+            assert_eq!(
+                subject,
+                ResolvedScope::Unrestricted,
+                "the subject is the child, and an unrestricted child needs an unrestricted \
+                 parent"
+            );
+        }
+        ApproverScopeVerdict::Covered => panic!(
+            "a region-restricted approver covered a tenant-wide subject: the claim set and the \
+             subject scope are transposed"
+        ),
+    }
+
+    // Clause 3: ordinary subset between two non-empty sets, both ways.
+    assert_eq!(
+        approver_covers_subject(
+            &pair(restricted(&["eu", "apac"]), restricted(&["acme"])),
+            &pair(restricted(&["eu"]), restricted(&["acme"])),
+        ),
+        ApproverScopeVerdict::Covered,
+        "the in-scope control"
+    );
+    assert!(matches!(
+        approver_covers_subject(
+            &pair(restricted(&["eu"]), restricted(&["acme"])),
+            &pair(restricted(&["eu", "us"]), restricted(&["acme"])),
+        ),
+        ApproverScopeVerdict::Exceeded {
+            dimension: ScopeDimension::Region,
+            ..
+        }
+    ));
+}
+
+/// The brand dimension is judged independently, and the verdict names which
+/// one failed.
+///
+/// Without this case a rule that checked region twice would pass every
+/// assertion above.
+#[test]
+fn the_brand_dimension_is_judged_on_its_own_and_is_named() {
+    assert!(matches!(
+        approver_covers_subject(
+            &pair(ResolvedScope::Unrestricted, restricted(&["acme"])),
+            &pair(restricted(&["eu"]), restricted(&["globex"])),
+        ),
+        ApproverScopeVerdict::Exceeded {
+            dimension: ScopeDimension::Brand,
+            ..
+        }
+    ));
 }

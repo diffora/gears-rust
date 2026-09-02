@@ -619,6 +619,25 @@ The system **MUST** store the descriptor at submission and **MUST NOT** re-deriv
 finance predicate, `predicateUnsatisfiable`, `quorumReduced` and the override conditions. Deriving
 `configuredQuorum` from current policy would change a **pending** record when the tenant edits `N`.
 
+**Five of the six ship, and the missing writer for the sixth ceremony now exists.** `describe_quorum`
+stores `required`, `configuredQuorum`, the finance predicate, `predicateUnsatisfiable` and
+`quorumReduced`; the **override conditions** are the sixth name and wait on `dod-override-ceremony`'s
+missing operand, so the roster is five by declaration rather than by omission. Separately,
+`describe_platform_quorum` is the writer §7 row 9 says does not exist — *"`required` is defined only
+as `N` or `min(N, 1)` … **no writer can produce a fixed 2**"* — supplying **P-D-13**'s one
+non-`N`-governed site, cross-tenant break-glass elevation, at a fixed floor of two platform
+principals. It answers only the floor: whether that ceremony's record is an `ApprovalRecord`, and
+which row holds it, are row 9's other halves and are untouched, because a descriptor is a value that
+renders the same whichever row stores it. The probe is armed at **`N = 0`** on purpose — at `N = 2`
+a fixed floor and a configured count are indistinguishable.
+
+**What still blocks the tick**: the sixth name, plus §7 rows 15 and 39 on what `quorumReduced`
+means. **And one field this build had to read and no artifact defines**: what `configuredQuorum`
+carries for a ceremony no tenant configures. It carries the floor here, because `inst-gv-queue` puts
+the field on the wire and a card rendering the target tenant's `N` beside a platform ceremony would
+assert exactly the standing P-D-13 denies — but that is a reading, and it is registered rather than
+presented as the design's.
+
 **Implements**: `cpt-cf-bss-products-flow-submit`
 
 **Touches**:
@@ -634,6 +653,19 @@ leaving the descriptor satisfiable. Without that arm the descriptor demands a ro
 could hold and the gate refuses forever, which would re-block precisely the one-person tenant the
 quorum floor exists to unblock. At every `N ≥ 1` the predicate **MUST** bind, and a tenant that has
 designated no FinanceReviewer simply has an unapprovable change.
+
+**Both arms ship and are probed across `N = 0..4`; the operand does not.** `describe_quorum` sets
+the predicate at every `N >= 1` and records `predicateUnsatisfiable = finance_reviewer` at `N = 0`
+instead, leaving the descriptor satisfiable. **The tick is blocked on the two inputs neither the
+gear nor the donor has.** *Whether a change is finance-material* cannot be computed: the
+instruction names `taxCategory`, `glCode` and `PlanTier`, and none is a registered column in
+`domain::bucket`'s roster — they are 03's and 03 has not registered them — so a registry lookup
+would answer "not finance-material" for all three and `finance_material` is an argument.
+*Whether a principal holds FinanceReviewer* is §7 row 25. Measured 2026-09-02 against the donor as
+well: `gears/bss/pricing` resolves its own `FinanceReviewer` through the **grant**, which answers
+for the caller in front of it and cannot answer C1's question, which is about the roles a set of
+**already recorded** approvers held when they decided. So this is not the donor's shape declined;
+it is an operand neither gear has.
 
 **Implements**: `cpt-cf-bss-products-flow-submit`
 
@@ -693,6 +725,27 @@ visible as unmet-by-policy in the record and the inbox envelope — the only way
 be discharged, and never how one is discharged at `N ≥ 1`. A probe **MUST** prove one human holding
 both CatalogAdmin and FinanceReviewer counts **once**.
 
+**Built as `evaluate_quorum`, with the named probe and its companion.** One human appearing twice
+under two roles counts once, and a second distinct principal closes the record — the probe the DoD
+names, plus the positive control without which "counts once" is satisfied by an evaluator that
+counts nobody. Its companion is `design/05` §5's second bullet: the dual-role human supplies the
+finance lens but **not** the second body, asserted in both directions. A recorded
+`predicateUnsatisfiable` counts as met, and the probe is armed at `N = 0` **and** swept across
+`N = 1..4` to show the discharge `inst-gv-quorum` forbids above zero is unreachable rather than
+merely unused, the marker never being recorded there. A count met with the lens missing is its own
+answer (`RolePredicateUnmet`), not a short count — L-2's distinction, without which a caller told
+"not enough approvers" adds a third CatalogAdmin and fails again.
+
+**Three blockers on the tick, and one deliberate non-answer.** §7 row 25 — no surface carries a
+role, so `roles` is a per-decision operand carrying *what was true when the decision was made*,
+which is what a gate-time evaluation needs and what row 25 says the decision row does not store.
+§7 rows 11 and 31 — this function answers the **arithmetic** and takes no position on which
+transaction writes `state = satisfied`, nor on whether a record at `required = 0` is born
+satisfied. **The non-answer is §7 row 16**: C1 scopes its base role set to material changes and the
+descriptor carries no `Materiality`, so the binding set is a **call operand** and an empty one means
+"any holder of `approval x decide`" — the caller names which reading applies rather than this
+function choosing one and closing an open item from a signature.
+
 **Implements**: `cpt-cf-bss-products-flow-decide`
 
 **Touches**:
@@ -720,6 +773,23 @@ The system **MUST** refuse a decision whose approver's brand and region claims d
 subject's scope with `APPROVER_SCOPE_EXCEEDED`, and **MUST** audit it like any scope violation.
 Scope **MUST** be read with the Foundation's two boundaries: the columns are `NOT NULL` and the
 empty set means **unrestricted**. A paired in-scope control **MUST** exist.
+
+**Built as `approver_covers_subject`, and the mapping is the whole rule.** It does not
+re-implement containment — `domain::containment::contains` already carries P-D-39's three clauses
+— it names which side is which: **parent = the approver's claims, child = the subject's scope**.
+That is forced by the instruction's own wording, since *"an unrestricted subject scope is covered
+only by an unrestricted claim set"* is clause 2, the asymmetric one. Transposed, a
+region-restricted approver would cover a tenant-wide subject, which is the scope rule deleted
+rather than applied — so clause 2 is probed as the case that flips, with the paired in-scope
+control and a brand-dimension case without which a rule checking region twice would pass every
+other assertion.
+
+**Two blockers on the tick.** `APPROVER_SCOPE_EXCEEDED` is declared at 403 by §3.3 and **is not in
+`domain::error` at this commit** — two of the slice's six codes ship and four do not — so the
+refusal is carried as a value naming both scopes and the dimension that failed, and its
+registration is `dod-governance-errors`'. And the DoD's *"MUST audit it like any scope violation"*
+has a writer (`repo::write_refusal_audit`) and no caller, the decide door being undeclared (§7 row
+12). The approver's own claims are §7 row 25 again.
 
 **Implements**: `cpt-cf-bss-products-flow-decide`
 
