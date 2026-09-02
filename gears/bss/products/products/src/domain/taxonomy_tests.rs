@@ -1520,6 +1520,18 @@ fn the_default_host_admits_and_says_it_inspected_nothing() {
         !NO_PII_POLICY_REASON.contains("clean"),
         "and does not claim the text was found clean"
     );
+    // -- The one property no cargo gate can see. This constant is joined from
+    // wrapped source lines, and a `\`-continuation dropped in the join leaves
+    // the continuation's indentation inside the value -- which is what shipped
+    // here, twice, as six-space runs in the middle of a sentence an operator
+    // reads. `fmt` does not reformat string literals and `clippy` does not read
+    // their contents, so the assertion is the only place this can be caught. --
+    assert!(
+        !NO_PII_POLICY_REASON.contains("  "),
+        "no run of two spaces: the operator reads this string, and a doubled \
+         space here means a line-continuation's indentation was baked into the \
+         literal rather than stripped"
+    );
 }
 
 /// **`CONTENT_PII_BLOCKED` is one of the sixteen**, and the hook is its single

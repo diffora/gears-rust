@@ -1686,7 +1686,9 @@ pub trait PiiDetector: Send + Sync {
 /// audit row sees, so it states the **deviation** and not a justification. A
 /// sentence claiming the text was inspected and found clean would tell that
 /// operator something no code here established.
-pub const NO_PII_POLICY_REASON: &str = "no PII detector or allow-list is registered at this commit, so this host inspects nothing      and admits every string; this is a deviation owed to slice 10-retention-erasure, not a      finding that the text carries no personal data";
+pub const NO_PII_POLICY_REASON: &str = "no PII detector or allow-list is registered at this \
+     commit, so this host inspects nothing and admits every string; this is a deviation owed \
+     to slice 10-retention-erasure, not a finding that the text carries no personal data";
 
 /// The host the gear runs until `10-retention-erasure` registers a detector.
 ///
