@@ -842,6 +842,25 @@ that is retired (`CATEGORY_RETIRED`) and a category named both primary and secon
 rows **MUST** land inside the save door's transaction, and a rollback **MUST** leave neither the
 head update nor the assignment rows.
 
+**The three rules ship and none of them reaches a runtime, which is why this is not ticked.**
+`CategoryResolvableRule`, `CategoryNotRetiredRule` and `CategoryRoleConflictRule` implement
+`ValidationRule<ContentSaveSubject>` and are probed through a pipeline built **in the test module**.
+That mirror is not the door: registration is compile-time code, the `.with_rule` lines live at the
+doors, and **there is no content-save pipeline to add them to at this commit** — the gear has three
+pipelines, all publish-path, and the SKU save door runs none at all. A rule with no registration
+line is not done, and the lines are handed over rather than the box being ticked.
+
+**Two of the three refusals have no code**, which is §7 row 17's own list — the unresolvable
+category and the primary/secondary duplicate. Both raise the Foundation's declared `VALIDATION`
+rather than a seventeenth code minted here, and the violation's `subject` and `detail` are what tell
+them apart until row 17's owner acts. `CATEGORY_RETIRED` is one of the sixteen and is raised as
+itself.
+
+**The transaction half is measured on the half this strand owns**:
+`replace_category_assignments` takes the caller's runner and opens nothing, so a rolled-back save
+leaves no assignment row —
+`assignment_rows_roll_back_with_the_transaction_they_ride_in`. The head-update half is the door's.
+
 **Implements**: `cpt-cf-bss-products-flow-assign-categories`
 
 **Constraints**: `cpt-cf-bss-products-constraint-tenant-isolation`
@@ -895,6 +914,31 @@ removal operand. Removal **MUST** be a state flip to a tombstone and never a `DE
 removal refused while a non-terminal head carries a value, and removal **admitted** while only a
 frozen version carries one.
 
+**The machine and the operand ship; the routing does not.** `definition_edge` admits exactly §4's
+four edges — both re-listings included, `active → removed` excluded because
+`inst-de-deprecate-then-remove` puts deprecation between them — and every other pair, self-edges
+among them, is refused. `seeded_edge` holds `dod-well-known-seeds`' clause in **both** directions: a
+seed deprecates and re-lists and never removes, while an operator-added definition does remove, so
+a guard refusing every act on a seed fails as surely as one refusing none. Removal is a flip and
+this strand's store offers no delete for the table at all, beside the `BEFORE DELETE` trigger.
+
+**The named both-ways probe ships on its exact scenario.** `repo::definition_value_holders` reads
+the operand across the three tables `entity_kind` spans — non-terminal Products and SKUs, and
+`active` categories, the last because §6 records that the guard *"counts an active category as a
+value-carrying head"*. The Product is then walked `draft → published → deprecated → retired`
+through real edges, so a frozen version genuinely exists, and the census is empty at that end while
+the `products_attribute_value` row is asserted to still be there — without which a census answering
+empty because the *value* had vanished would pass while the rule went unmeasured.
+
+**What is not built, and it is not the machine.** The `GovernedLiveOp` routing the DoD's first
+clause requires needs `05`'s submit door, which has no route (05 §7 row 12) — the same blocker
+`dod-governed-live-op` carries — and the `attribute_definition × write` grant pair is undeclared
+(§7 row 16). Four §7 rows also hold this DoD's *operands* rather than its mechanism: rows 5, 10,
+11 and 12. Row 11 is the sharpest — the DoD states **two** operands in one sentence, an undefined
+*"live values"* for the type change and the defined non-terminal head for removal — so
+`definition_in_use_verdict` takes whatever census it is handed and judges it, and which census a
+type change should read stays that row's.
+
 **Implements**: `cpt-cf-bss-products-flow-attribute-definitions`,
 `cpt-cf-bss-products-state-attribute-definition`
 
@@ -912,6 +956,38 @@ The system **MUST** register save-door validators refusing an unknown definition
 whose type does not match the declared type (`ATTRIBUTE_TYPE_MISMATCH`), and coordinates outside
 either the definition's visibility scope or the entity's own scope
 (`ATTRIBUTE_SCOPE_VIOLATION`). Every refusal **MUST** carry a paired positive control.
+
+**All four rules ship with their controls; none reaches a runtime.** Same reason as
+`dod-assignment-validators`: there is no content-save pipeline at either door, so the four
+`.with_rule` lines have nowhere to go yet and the box stays unticked. Beyond the paired controls
+the DoD asks for, one case holds the property the shared phase makes possible: an unresolved
+definition raises **one** violation and not four, because every rule skips what it cannot judge.
+
+Three readings inside them are worth stating, because each could have gone the other way silently:
+
+- **A `removed` definition is refused as `ATTRIBUTE_DEFINITION_UNKNOWN`, not `_DEPRECATED`.** The
+  tombstone is a row that exists and is *outside the set* — `repo::recognized`'s own words for the
+  sibling roster. It keeps a terminal head's value resolving and admits no new write.
+- **A type token the gear does not know is not judged.** `ValueShape` maps the three tokens
+  `WELL_KNOWN_SEEDS` proposes and answers `None` for everything else; refusing an unmapped token
+  would close the feature to every operator-defined type, and `design/02` §6 owes the roster.
+- **§6's brand-less-global item is deferred, in the one direction that leaves both DoDs
+  satisfiable.** The item records that under a containment-only reading *"the write the publish
+  validator demands is the write the save validator refuses"*, so a brand-scoped entity could never
+  publish. `AttributeScopeRule` judges a coordinate **only where the payload names one**: `brand:
+  ""` is P-D-88 arm 2's absence, not a brand called empty-string, and there is nothing to contain.
+  Taken as forced rather than chosen, pinned by
+  `a_brand_less_global_value_survives_a_brand_scoped_entity`, and registered — if its owner decides
+  otherwise, that is the test which changes.
+
+Both scope columns are read through `ResolvedScope::parse`, so an **empty column is unrestricted**
+(P-D-39) rather than empty — the predicate written as membership alone would refuse every
+coordinate under nearly every definition in the gear — and a column that will not parse refuses
+rather than admits.
+
+**Untouched**: §7 row 19, which asks *which* of these run at the category live-value door. They are
+registered on the entity save door by construction here; the category branch writes through another
+one and that door is `dod-category-live-value-door`'s.
 
 **Implements**: `cpt-cf-bss-products-flow-attribute-values`
 

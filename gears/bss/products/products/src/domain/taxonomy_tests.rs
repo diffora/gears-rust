@@ -4,10 +4,16 @@
 use uuid::Uuid;
 
 use super::{
-    AssignmentRole, CategoryReferenced, DefinitionState, REGISTRY_SEEDED_BY, RetireCensus,
-    TaxonomyLimitExceeded, TaxonomyLimits, TaxonomyMutation, WELL_KNOWN_SEEDS, ancestors_of,
-    children_of, cycle_verdict, depth_of, is_removable, limit_verdict, retire_verdict,
+    AssignmentCandidate, AssignmentRole, AttributeDefinitionActiveRule,
+    AttributeDefinitionKnownRule, AttributeScopeRule, AttributeValueTypeRule,
+    CategoryNotRetiredRule, CategoryReferenced, CategoryResolvableRule, CategoryRoleConflictRule,
+    CategoryState, ContentSaveSubject, DefinitionInUse, DefinitionState, REGISTRY_SEEDED_BY,
+    ResolvedDefinition, RetireCensus, TaxonomyLimitExceeded, TaxonomyLimits, TaxonomyMutation,
+    ValueCandidate, ValueShape, WELL_KNOWN_SEEDS, ancestors_of, children_of, cycle_verdict,
+    definition_edge, definition_in_use_verdict, depth_of, is_removable, limit_verdict,
+    retire_verdict, seeded_edge,
 };
+use crate::domain::validation::ValidationPipeline;
 
 const A: Uuid = Uuid::from_u128(0xa1);
 const B: Uuid = Uuid::from_u128(0xb2);
@@ -433,4 +439,476 @@ fn only_an_operator_added_definition_is_removable() {
         is_removable(None),
         "an operator-added definition must be removable, or the rule refuses everything"
     );
+}
+
+// -- The content-save validators (`inst-av-validate`, `inst-tx-assign`). --
+
+/// The pipeline the **lead** must register at the save door, mirrored here.
+///
+/// This is a test-local copy, and saying so is the point: the rules below are
+/// proven to work **once registered**, and until the `.with_rule` lines land
+/// in `api/rest/products.rs` and `api/rest/skus.rs` no runtime reaches any of
+/// them. A green run here is not evidence the gear refuses anything -- that
+/// is §3.1's whole warning, and the report carries the exact lines.
+fn content_pipeline() -> ValidationPipeline<ContentSaveSubject> {
+    ValidationPipeline::new()
+        .with_rule(Box::new(CategoryResolvableRule))
+        .with_rule(Box::new(CategoryNotRetiredRule))
+        .with_rule(Box::new(CategoryRoleConflictRule))
+        .with_rule(Box::new(AttributeDefinitionKnownRule))
+        .with_rule(Box::new(AttributeDefinitionActiveRule))
+        .with_rule(Box::new(AttributeValueTypeRule))
+        .with_rule(Box::new(AttributeScopeRule))
+}
+
+/// Run the pipeline and answer the codes it raised, in order.
+fn codes(subject: &ContentSaveSubject) -> Vec<&'static str> {
+    content_pipeline()
+        .run(subject)
+        .map(|(_phase, report)| report.violations().iter().map(|v| v.code).collect())
+        .unwrap_or_default()
+}
+
+fn assignment(
+    id: Uuid,
+    role: AssignmentRole,
+    resolved: Option<CategoryState>,
+) -> AssignmentCandidate {
+    AssignmentCandidate {
+        category_id: id,
+        role,
+        resolved,
+    }
+}
+
+fn active_definition() -> ResolvedDefinition {
+    ResolvedDefinition {
+        state: DefinitionState::Active,
+        value_type: "localized_string".to_owned(),
+        localized: true,
+        region_scope: String::new(),
+        brand_scope: String::new(),
+    }
+}
+
+fn value(resolved: Option<ResolvedDefinition>) -> ValueCandidate {
+    ValueCandidate {
+        definition_key: "displayName".to_owned(),
+        locale: String::new(),
+        region: String::new(),
+        brand: String::new(),
+        value: "Fibre 500".to_owned(),
+        resolved,
+    }
+}
+
+/// **The positive control for the whole pipeline.**
+///
+/// Every refusal below is measured against this: a payload naming a live
+/// category and a live definition passes all seven rules. Without it, a rule
+/// set that refused unconditionally would satisfy each refusal case alone.
+#[test]
+fn a_clean_content_payload_passes_every_rule() {
+    let subject = ContentSaveSubject {
+        assignments: vec![assignment(
+            A,
+            AssignmentRole::Primary,
+            Some(CategoryState::Active),
+        )],
+        values: vec![value(Some(active_definition()))],
+        entity_region_scope: String::new(),
+        entity_brand_scope: String::new(),
+    };
+    assert!(
+        content_pipeline().run(&subject).is_none(),
+        "a clean payload must reach the store"
+    );
+}
+
+/// **An unresolvable category is refused**, and the code is the Foundation's
+/// generic because §7 row 17 records that this refusal has none of its own.
+#[test]
+fn an_unresolvable_category_is_refused_under_the_unassigned_code() {
+    let subject = ContentSaveSubject {
+        assignments: vec![assignment(A, AssignmentRole::Primary, None)],
+        ..ContentSaveSubject::default()
+    };
+    assert_eq!(codes(&subject), vec![CategoryResolvableRule::CODE]);
+    assert_eq!(
+        CategoryResolvableRule::CODE,
+        "VALIDATION",
+        "row 17 owes this refusal a code; until then it rides the declared generic"
+    );
+}
+
+/// **A retired category refuses a new assignment**, with its own declared
+/// code -- and an active one does not, which is the paired control.
+#[test]
+fn a_retired_category_refuses_a_new_assignment() {
+    let retired = ContentSaveSubject {
+        assignments: vec![assignment(
+            A,
+            AssignmentRole::Primary,
+            Some(CategoryState::Retired),
+        )],
+        ..ContentSaveSubject::default()
+    };
+    assert_eq!(codes(&retired), vec!["CATEGORY_RETIRED"]);
+
+    let active = ContentSaveSubject {
+        assignments: vec![assignment(
+            A,
+            AssignmentRole::Primary,
+            Some(CategoryState::Active),
+        )],
+        ..ContentSaveSubject::default()
+    };
+    assert!(codes(&active).is_empty(), "the paired positive control");
+}
+
+/// **One category named twice is refused once**, not twice.
+///
+/// The rule compares forward only. A naive pairwise scan would raise a
+/// violation from each side of the same pair and tell the operator about two
+/// problems where there is one.
+#[test]
+fn one_category_in_two_roles_raises_exactly_one_violation() {
+    let subject = ContentSaveSubject {
+        assignments: vec![
+            assignment(A, AssignmentRole::Primary, Some(CategoryState::Active)),
+            assignment(A, AssignmentRole::Secondary, Some(CategoryState::Active)),
+        ],
+        ..ContentSaveSubject::default()
+    };
+    assert_eq!(codes(&subject), vec![CategoryRoleConflictRule::CODE]);
+
+    let distinct = ContentSaveSubject {
+        assignments: vec![
+            assignment(A, AssignmentRole::Primary, Some(CategoryState::Active)),
+            assignment(B, AssignmentRole::Secondary, Some(CategoryState::Active)),
+        ],
+        ..ContentSaveSubject::default()
+    };
+    assert!(
+        codes(&distinct).is_empty(),
+        "two categories, two roles, no conflict"
+    );
+}
+
+/// **An unknown definition raises one violation and not four.**
+///
+/// All seven rules share `Phase::RegisteredValidators`, so they all run over
+/// the same payload and each must skip what it cannot judge. A type rule or a
+/// scope rule that read an unresolved definition would either panic or invent
+/// a verdict, and the operator would be told four things about one mistake.
+#[test]
+fn an_unresolved_definition_raises_one_violation_and_not_four() {
+    let subject = ContentSaveSubject {
+        values: vec![value(None)],
+        ..ContentSaveSubject::default()
+    };
+    assert_eq!(codes(&subject), vec!["ATTRIBUTE_DEFINITION_UNKNOWN"]);
+}
+
+/// **A `removed` definition is unknown, not deprecated.**
+///
+/// The tombstone exists as a row and is outside the set -- `repo::recognized`
+/// states the same rule for the sibling roster. It keeps a terminal head's
+/// value resolving and admits no new write, and the code says *not in the
+/// set* rather than *on its way out*.
+#[test]
+fn a_removed_definition_is_refused_as_unknown_and_a_deprecated_one_as_deprecated() {
+    for (state, expected) in [
+        (DefinitionState::Removed, "ATTRIBUTE_DEFINITION_UNKNOWN"),
+        (
+            DefinitionState::Deprecated,
+            "ATTRIBUTE_DEFINITION_DEPRECATED",
+        ),
+    ] {
+        let subject = ContentSaveSubject {
+            values: vec![value(Some(ResolvedDefinition {
+                state,
+                ..active_definition()
+            }))],
+            ..ContentSaveSubject::default()
+        };
+        assert_eq!(codes(&subject), vec![expected], "{state:?}");
+    }
+
+    let live = ContentSaveSubject {
+        values: vec![value(Some(active_definition()))],
+        ..ContentSaveSubject::default()
+    };
+    assert!(codes(&live).is_empty(), "the paired positive control");
+}
+
+/// **The three shapes, each refused and each admitted.**
+///
+/// `LocalizedString` constrains nothing, which is stated rather than left to
+/// be inferred from a missing case.
+#[test]
+fn each_known_value_shape_refuses_and_admits() {
+    for (value_type, good, bad) in [
+        ("uri_string", "https://cdn.example/a.png", "just a name"),
+        (
+            "localized_string_list",
+            r#"["fast","cheap"]"#,
+            "fast, cheap",
+        ),
+    ] {
+        for (candidate, should_pass) in [(good, true), (bad, false)] {
+            let subject = ContentSaveSubject {
+                values: vec![ValueCandidate {
+                    value: candidate.to_owned(),
+                    resolved: Some(ResolvedDefinition {
+                        value_type: value_type.to_owned(),
+                        ..active_definition()
+                    }),
+                    ..value(None)
+                }],
+                ..ContentSaveSubject::default()
+            };
+            assert_eq!(
+                codes(&subject).is_empty(),
+                should_pass,
+                "`{candidate}` against {value_type}"
+            );
+        }
+    }
+
+    assert!(
+        ValueShape::LocalizedString.admits(""),
+        "a localized string constrains nothing, including emptiness"
+    );
+}
+
+/// **An unmapped type token is not judged**, which is the honest reading of a
+/// roster `design/02` §6 has not decided.
+///
+/// The load-bearing half is that it is not *refused*: a fail-closed reading
+/// would make every operator-defined type unwritable, closing the feature to
+/// everything outside the five seeds.
+#[test]
+fn a_type_token_the_gear_does_not_know_is_not_judged() {
+    assert_eq!(ValueShape::of("something_nobody_declared"), None);
+    let subject = ContentSaveSubject {
+        assignments: Vec::new(),
+        values: vec![ValueCandidate {
+            value: "anything at all".to_owned(),
+            resolved: Some(ResolvedDefinition {
+                value_type: "something_nobody_declared".to_owned(),
+                ..active_definition()
+            }),
+            ..value(None)
+        }],
+        ..ContentSaveSubject::default()
+    };
+    assert!(codes(&subject).is_empty());
+}
+
+/// **An empty scope column is unrestricted, not empty** (P-D-39), on both the
+/// definition's side and the entity's.
+///
+/// This is the trap the handoff names: a containment predicate written as set
+/// membership alone hides every unrestricted row -- here it would refuse every
+/// coordinate under nearly every definition in the gear.
+#[test]
+fn an_empty_scope_column_admits_every_named_coordinate() {
+    let subject = ContentSaveSubject {
+        assignments: Vec::new(),
+        values: vec![ValueCandidate {
+            region: "apac".to_owned(),
+            brand: "acme".to_owned(),
+            resolved: Some(active_definition()),
+            ..value(None)
+        }],
+        entity_region_scope: String::new(),
+        entity_brand_scope: String::new(),
+    };
+    assert!(
+        codes(&subject).is_empty(),
+        "both scopes are unrestricted, so any coordinate is inside them"
+    );
+}
+
+/// **A named coordinate outside either scope is refused**, and the refusal
+/// says which side it failed.
+#[test]
+fn a_coordinate_outside_either_scope_is_refused() {
+    let outside_definition = ContentSaveSubject {
+        assignments: Vec::new(),
+        values: vec![ValueCandidate {
+            region: "apac".to_owned(),
+            resolved: Some(ResolvedDefinition {
+                region_scope: "eu".to_owned(),
+                ..active_definition()
+            }),
+            ..value(None)
+        }],
+        entity_region_scope: String::new(),
+        entity_brand_scope: String::new(),
+    };
+    assert_eq!(
+        codes(&outside_definition),
+        vec!["ATTRIBUTE_SCOPE_VIOLATION"]
+    );
+
+    let outside_entity = ContentSaveSubject {
+        assignments: Vec::new(),
+        values: vec![ValueCandidate {
+            region: "apac".to_owned(),
+            resolved: Some(active_definition()),
+            ..value(None)
+        }],
+        entity_region_scope: "eu".to_owned(),
+        entity_brand_scope: String::new(),
+    };
+    let report = content_pipeline()
+        .run(&outside_entity)
+        .expect("the entity's own scope refuses it");
+    assert_eq!(report.1.violations()[0].code, "ATTRIBUTE_SCOPE_VIOLATION");
+    assert!(
+        report.1.violations()[0]
+            .detail
+            .contains("entity's own scope"),
+        "the two sides are told apart: {:?}",
+        report.1.violations()[0]
+    );
+
+    let inside = ContentSaveSubject {
+        assignments: Vec::new(),
+        values: vec![ValueCandidate {
+            region: "eu".to_owned(),
+            resolved: Some(ResolvedDefinition {
+                region_scope: "eu,apac".to_owned(),
+                ..active_definition()
+            }),
+            ..value(None)
+        }],
+        entity_region_scope: "eu".to_owned(),
+        entity_brand_scope: String::new(),
+    };
+    assert!(codes(&inside).is_empty(), "the paired positive control");
+}
+
+/// **A brand-less coordinate survives a brand-scoped entity** -- `design/02`
+/// §6's open item, deferred in the only direction that leaves both `DoD`s
+/// satisfiable.
+///
+/// The item records that a containment-only reading makes *"the write the
+/// publish validator demands the write the save validator refuses"*, so a
+/// brand-scoped entity could never publish. This case pins the reading taken:
+/// `brand: ""` is P-D-88 arm 2's **absence**, not a brand named empty-string,
+/// and there is nothing to contain. If the owner decides otherwise, this is
+/// the test that has to change and the report says so.
+#[test]
+fn a_brand_less_global_value_survives_a_brand_scoped_entity() {
+    let subject = ContentSaveSubject {
+        assignments: Vec::new(),
+        values: vec![ValueCandidate {
+            brand: String::new(),
+            resolved: Some(ResolvedDefinition {
+                brand_scope: "acme".to_owned(),
+                ..active_definition()
+            }),
+            ..value(None)
+        }],
+        entity_region_scope: String::new(),
+        entity_brand_scope: "acme".to_owned(),
+    };
+    assert!(
+        codes(&subject).is_empty(),
+        "the global coordinate `dod-default-locale` makes mandatory must not be \
+         the one `dod-value-validators` refuses"
+    );
+}
+
+/// **A scope column that will not parse refuses rather than admits.**
+///
+/// `ResolvedScope::parse` rejects an empty token between separators, and a
+/// corrupt column is not an admission -- fail-closed is the gear's principle
+/// and this is the one branch where the two readings differ.
+#[test]
+fn an_unparseable_scope_column_refuses() {
+    let subject = ContentSaveSubject {
+        values: vec![ValueCandidate {
+            region: "eu".to_owned(),
+            resolved: Some(ResolvedDefinition {
+                region_scope: "eu,,apac".to_owned(),
+                ..active_definition()
+            }),
+            ..value(None)
+        }],
+        ..ContentSaveSubject::default()
+    };
+    assert_eq!(codes(&subject), vec!["ATTRIBUTE_SCOPE_VIOLATION"]);
+}
+
+// -- The definition state machine. --
+
+/// **Exactly four edges, and `active -> removed` is not one of them.**
+///
+/// `inst-de-deprecate-then-remove` puts deprecation between them so the
+/// destructive step cannot be reached in one act; both re-listings are
+/// declared because §4 declares them.
+#[test]
+fn the_definition_machine_admits_exactly_its_four_edges() {
+    use DefinitionState::{Active, Deprecated, Removed};
+    let admitted = [
+        (Active, Deprecated),
+        (Deprecated, Removed),
+        (Deprecated, Active),
+        (Removed, Active),
+    ];
+    for (from, to) in admitted {
+        definition_edge(from, to).unwrap_or_else(|e| panic!("{from:?} -> {to:?}: {e}"));
+    }
+    for from in [Active, Deprecated, Removed] {
+        for to in [Active, Deprecated, Removed] {
+            if admitted.contains(&(from, to)) {
+                continue;
+            }
+            let err = definition_edge(from, to)
+                .expect_err("every other pair, self-edges included, is refused");
+            assert_eq!(err.code(), "ILLEGAL_TRANSITION", "{from:?} -> {to:?}");
+        }
+    }
+    definition_edge(Active, Removed)
+        .expect_err("the destructive step is never reachable in one act");
+}
+
+/// **A seed is deprecatable and never removable** -- both halves, so a guard
+/// refusing every act on a seed fails as surely as one refusing none.
+#[test]
+fn a_seed_may_be_deprecated_and_never_removed() {
+    seeded_edge(Some(REGISTRY_SEEDED_BY), DefinitionState::Deprecated)
+        .expect("a seed is deprecatable");
+    seeded_edge(Some(REGISTRY_SEEDED_BY), DefinitionState::Active).expect("and re-listable");
+    let err = seeded_edge(Some(REGISTRY_SEEDED_BY), DefinitionState::Removed)
+        .expect_err("and never removable");
+    assert_eq!(err.code(), "ILLEGAL_FIELD_MUTATION");
+    seeded_edge(None, DefinitionState::Removed).expect("an operator-added definition IS removable");
+}
+
+/// **`DEFINITION_IN_USE` names its carriers and bounds the sample**, the same
+/// contract the retire guard's verdict carries.
+#[test]
+fn the_in_use_verdict_names_its_carriers() {
+    definition_in_use_verdict(&[], 3).expect("nothing carries it");
+
+    let held = definition_in_use_verdict(&["Fibre 500".to_owned()], 3).expect_err("held");
+    assert!(held.detail.contains("Fibre 500"), "{held:?}");
+    assert_eq!(DefinitionInUse::CODE, "DEFINITION_IN_USE");
+
+    let many = definition_in_use_verdict(
+        &[
+            "a".to_owned(),
+            "b".to_owned(),
+            "c".to_owned(),
+            "d".to_owned(),
+        ],
+        3,
+    )
+    .expect_err("held");
+    assert!(many.detail.contains("at least 3"), "{many:?}");
 }

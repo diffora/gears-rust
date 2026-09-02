@@ -38,18 +38,20 @@ use uuid::Uuid;
 use super::{
     AssignmentWrite, AttributeCoordinate, CategoryWrite, DefinitionFlip, NewAttributeDefinition,
     NewCategory, attribute_definition_by_key, attribute_definitions, attribute_values_of,
-    category_assignments, category_parents, classify_assignment_write, delete_attribute_value,
-    delete_metadata_key, delete_retired_category, flip_definition_state,
+    category_assignments, category_parents, classify_assignment_write, definition_value_holders,
+    delete_attribute_value, delete_metadata_key, delete_retired_category, flip_definition_state,
     insert_attribute_definition, insert_category, metadata_of, replace_category_assignments,
     retire_category, retire_census, upsert_attribute_value, upsert_metadata,
 };
-use crate::domain::taxonomy::{AssignmentRole, DefinitionState, retire_verdict};
+use crate::domain::taxonomy::{
+    AssignmentRole, DefinitionState, definition_in_use_verdict, retire_verdict,
+};
 use crate::infra::storage::RepoError;
 use crate::infra::storage::entity::product;
 use crate::infra::storage::migrations::Migrator;
 use crate::infra::storage::repo::{
-    NewEntityVersion, NewProduct, VersionedEntityKind, discard_product_head, insert_entity_version,
-    insert_product, publish_product_head,
+    NewEntityVersion, NewProduct, NewSku, VersionedEntityKind, discard_product_head,
+    insert_entity_version, insert_product, insert_sku, publish_product_head,
 };
 
 const TENANT: Uuid = Uuid::from_u128(0x7e_11);
@@ -1522,5 +1524,243 @@ async fn a_retired_child_clears_the_census_and_the_foreign_key_still_refuses() {
             .await
             .expect("and then the parent"),
         CategoryWrite::Applied
+    );
+}
+
+// -- The definition removal operand (`dod-definition-lifecycle`) --
+
+/// **The `DoD`'s both-ways probe, on its exact scenario.**
+///
+/// *"removal refused while a non-terminal head carries a value, and removal
+/// **admitted** while only a frozen version carries one"*. So the Product is
+/// walked all the way to `retired` through real edges -- published first, so a
+/// frozen version genuinely exists and carries the value -- and the census is
+/// read at each end.
+///
+/// The assertion that makes the second half a probe rather than a
+/// coincidence: the `products_attribute_value` row is read back and shown to
+/// still be there. A census that answered empty because the *value* had
+/// vanished would pass while the rule went unmeasured, which is the same trap
+/// the retire guard's own case carries.
+#[tokio::test]
+async fn a_terminal_heads_frozen_value_does_not_block_the_definitions_removal() {
+    let provider = harness().await;
+    let scope = AccessScope::for_tenant(TENANT);
+    seed_product_and_categories(&provider, &scope).await;
+    let conn = provider.conn().expect("scoped connection");
+    insert_attribute_definition(
+        &conn,
+        &scope,
+        definition(DEFINITION, TENANT, "colour"),
+        at(9),
+    )
+    .await
+    .expect("define");
+    upsert_attribute_value(
+        &conn,
+        &scope,
+        TENANT,
+        global(DEFINITION, PRODUCT),
+        "teal",
+        at(10),
+    )
+    .await
+    .expect("the head carries a value");
+
+    let live = definition_value_holders(&conn, &scope, TENANT, DEFINITION, 3)
+        .await
+        .expect("census");
+    assert_eq!(live.len(), 1, "a non-terminal head blocks the removal");
+    definition_in_use_verdict(&live, 3).expect_err("refused while it is live");
+
+    // published -> deprecated -> retired, so a frozen version exists and the
+    // head is terminal.
+    publish(&conn, &scope, PRODUCT).await;
+    move_head(&conn, &scope, PRODUCT, "deprecated", 3).await;
+    move_head(&conn, &scope, PRODUCT, "retired", 4).await;
+
+    let after = definition_value_holders(&conn, &scope, TENANT, DEFINITION, 3)
+        .await
+        .expect("census");
+    assert!(
+        after.is_empty(),
+        "only a frozen version carries it now, so the removal is admitted: {after:?}"
+    );
+    definition_in_use_verdict(&after, 3).expect("admitted");
+
+    assert_eq!(
+        attribute_values_of(&conn, &scope, TENANT, "product", PRODUCT)
+            .await
+            .expect("read the values")
+            .len(),
+        1,
+        "the value row is STILL THERE -- the census read the head's state, not \
+         the row's presence"
+    );
+}
+
+/// **A SKU carries values too, and the census counts it.**
+///
+/// The key is polymorphic and the census reads three tables; a version that
+/// read only `products_product` would answer *"unreferenced"* about every
+/// definition the catalog uses on SKUs alone, which is most of them.
+#[tokio::test]
+async fn a_non_terminal_sku_carrying_a_value_blocks_the_removal() {
+    let provider = harness().await;
+    let scope = AccessScope::for_tenant(TENANT);
+    seed_product_and_categories(&provider, &scope).await;
+    let conn = provider.conn().expect("scoped connection");
+    insert_attribute_definition(
+        &conn,
+        &scope,
+        definition(DEFINITION, TENANT, "colour"),
+        at(9),
+    )
+    .await
+    .expect("define");
+
+    let sku_id = Uuid::from_u128(0x5c_01);
+    insert_sku(
+        &conn,
+        &scope,
+        NewSku {
+            sku_id,
+            tenant_id: TENANT,
+            product_id: PRODUCT,
+            sku_code: "FIBRE-500-STD".to_owned(),
+            region_scope: String::new(),
+            brand_scope: String::new(),
+            created_by: "principal:author-1".to_owned(),
+            created_at: at(9),
+            cloned_from: None,
+            cloned_from_version: None,
+        },
+    )
+    .await
+    .expect("seed the sku");
+
+    upsert_attribute_value(
+        &conn,
+        &scope,
+        TENANT,
+        AttributeCoordinate {
+            entity_kind: "sku",
+            entity_id: sku_id,
+            ..global(DEFINITION, sku_id)
+        },
+        "teal",
+        at(10),
+    )
+    .await
+    .expect("the sku carries a value");
+
+    let census = definition_value_holders(&conn, &scope, TENANT, DEFINITION, 3)
+        .await
+        .expect("census");
+    assert_eq!(census, vec!["FIBRE-500-STD".to_owned()]);
+}
+
+/// **An active category carrying a value blocks; a retired one does not.**
+///
+/// A category has no lifecycle state, so there is no terminal reading
+/// available -- `design/02` §6 records that the removal guard *"counts an
+/// active category as a value-carrying head"*, and this pins that behaviour so
+/// a later reading of that row can see what it is changing.
+#[tokio::test]
+async fn an_active_category_carrying_a_value_blocks_the_removal() {
+    let provider = harness().await;
+    let scope = AccessScope::for_tenant(TENANT);
+    seed_product_and_categories(&provider, &scope).await;
+    let conn = provider.conn().expect("scoped connection");
+    insert_attribute_definition(
+        &conn,
+        &scope,
+        definition(DEFINITION, TENANT, "displayName"),
+        at(9),
+    )
+    .await
+    .expect("define");
+
+    upsert_attribute_value(
+        &conn,
+        &scope,
+        TENANT,
+        AttributeCoordinate {
+            entity_kind: "category",
+            entity_id: CATEGORY_A,
+            ..global(DEFINITION, CATEGORY_A)
+        },
+        "Connectivity",
+        at(10),
+    )
+    .await
+    .expect("the category carries a display value");
+
+    assert_eq!(
+        definition_value_holders(&conn, &scope, TENANT, DEFINITION, 3)
+            .await
+            .expect("census")
+            .len(),
+        1,
+        "an active category counts"
+    );
+
+    retire_category(&conn, &scope, TENANT, CATEGORY_A, at(11))
+        .await
+        .expect("retire it");
+
+    assert!(
+        definition_value_holders(&conn, &scope, TENANT, DEFINITION, 3)
+            .await
+            .expect("census")
+            .is_empty(),
+        "a retired category does not"
+    );
+}
+
+/// **Assignment rows roll back with the transaction they ride in.**
+///
+/// `dod-assignment-validators`: *"Assignment rows **MUST** land inside the
+/// save door's transaction, and a rollback **MUST** leave neither the head
+/// update nor the assignment rows."* This holds the half this strand owns --
+/// that the write takes the caller's runner and has no transaction of its
+/// own. The head-update half is the door's and is not measured here.
+#[tokio::test]
+async fn assignment_rows_roll_back_with_the_transaction_they_ride_in() {
+    let provider = harness().await;
+    let scope = AccessScope::for_tenant(TENANT);
+    seed_product_and_categories(&provider, &scope).await;
+    let scope_for_mutation = scope.clone();
+
+    let mutation = provider
+        .transaction(move |tx| {
+            Box::pin(async move {
+                replace_category_assignments(
+                    tx,
+                    &scope_for_mutation,
+                    TENANT,
+                    PRODUCT,
+                    &[(CATEGORY_A, AssignmentRole::Primary)],
+                    at(10),
+                )
+                .await
+                .map_err(|e| DbError::Other(anyhow::Error::msg(e.to_string())))?;
+
+                Err::<(), DbError>(DbError::Other(anyhow::Error::msg(
+                    "the save fails after its assignment write",
+                )))
+            })
+        })
+        .await;
+    assert!(mutation.is_err(), "the save must roll back");
+
+    let conn = provider.conn().expect("scoped connection");
+    assert!(
+        category_assignments(&conn, &scope, TENANT, PRODUCT)
+            .await
+            .expect("read the assignments")
+            .is_empty(),
+        "an assignment that survived its rolled-back save would file a Product \
+         under a category the save never committed"
     );
 }

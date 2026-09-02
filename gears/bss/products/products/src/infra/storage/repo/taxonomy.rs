@@ -48,10 +48,12 @@ use uuid::Uuid;
 
 use super::{TERMINAL_HEAD_STATES, driver_failure};
 use crate::domain::error::DomainError;
-use crate::domain::taxonomy::{AssignmentRole, DefinitionState, RetireCensus, TaxonomyMutation};
+use crate::domain::taxonomy::{
+    AssignmentRole, CategoryState, DefinitionState, RetireCensus, TaxonomyMutation,
+};
 use crate::infra::storage::RepoError;
 use crate::infra::storage::entity::{
-    attribute_definition, attribute_value, category, metadata, product, product_category,
+    attribute_definition, attribute_value, category, metadata, product, product_category, sku,
 };
 
 /// One new category, as the store needs it.
@@ -1216,7 +1218,10 @@ pub async fn retire_category(
     let result = category::Entity::update_many()
         .secure()
         .scope_with(scope)
-        .col_expr(category::Column::State, Expr::value("retired"))
+        .col_expr(
+            category::Column::State,
+            Expr::value(CategoryState::Retired.as_str()),
+        )
         .col_expr(
             category::Column::MutationSeq,
             Expr::col(category::Column::MutationSeq).add(1),
@@ -1264,12 +1269,121 @@ pub async fn delete_retired_category(
             Condition::all()
                 .add(category::Column::TenantId.eq(tenant_id))
                 .add(category::Column::CategoryId.eq(category_id))
-                .add(category::Column::State.eq("retired")),
+                .add(category::Column::State.eq(CategoryState::Retired.as_str())),
         )
         .exec(runner)
         .await
         .map_err(|e| driver_failure(format!("delete category {category_id}"), e))?;
     Ok(CategoryWrite::from_rows(result.rows_affected))
+}
+
+/// Everything still carrying a value for one definition -- the removal
+/// operand `dod-definition-lifecycle` defines.
+///
+/// # Three statements, because the key is polymorphic
+///
+/// `entity_kind` spans three tables, which is the same reason
+/// `products_attribute_value` carries no foreign key to the owning entity:
+/// *"Three kinds live in three tables, so no single FK can cover the
+/// coordinate"*. So this reads Products, SKUs and categories separately and
+/// concatenates. **A head created between two of the three reads is not
+/// seen** -- the window is real and is why the caller runs this inside the
+/// apply transaction of a human-paced, approved `GovernedLiveOp` rather than
+/// on a hot path.
+///
+/// # What counts, and what does not
+///
+/// - **Products and SKUs**: non-terminal heads only. `dod-definition-lifecycle`
+///   names the *"non-terminal head"* as the operand, and the `DoD`'s own probe
+///   requires removal be **admitted** while only a frozen version carries a
+///   value -- so a discarded or retired head's row must not block.
+/// - **Categories**: `active` ones count. A category has no lifecycle state
+///   and its values are the live state itself, so there is no terminal reading
+///   available; `design/02` §6 records that the removal guard *"counts an
+///   active category as a value-carrying head"*, which is what this does.
+///
+/// The `entity_kind` tokens are literals here rather than a parsed roster,
+/// because §7 row 20 is the live question of what that column admits and an
+/// enum would answer it. What this function claims is narrower and true
+/// whatever the roster becomes: *these three kinds*, read this way.
+///
+/// # Errors
+///
+/// [`RepoError`] on a storage or scope failure.
+pub async fn definition_value_holders(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    definition_id: Uuid,
+    sample: u64,
+) -> Result<Vec<String>, RepoError> {
+    let carriers = |kind: &str| {
+        sea_orm::sea_query::Query::select()
+            .column(attribute_value::Column::EntityId)
+            .from(attribute_value::Entity)
+            .and_where(Expr::col(attribute_value::Column::TenantId).eq(tenant_id))
+            .and_where(Expr::col(attribute_value::Column::DefinitionId).eq(definition_id))
+            .and_where(Expr::col(attribute_value::Column::EntityKind).eq(kind))
+            .to_owned()
+    };
+
+    let mut holders: Vec<String> = product::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(product::Column::TenantId.eq(tenant_id))
+                .add(product::Column::LifecycleState.is_not_in(TERMINAL_HEAD_STATES))
+                .add(Expr::col(product::Column::ProductId).in_subquery(carriers("product"))),
+        )
+        .order_by(product::Column::Name, sea_orm::Order::Asc)
+        .limit(sample + 1)
+        .all(runner)
+        .await
+        .map_err(|e| driver_failure(format!("product carriers of {definition_id}"), e))?
+        .into_iter()
+        .map(|row| row.name)
+        .collect();
+
+    holders.extend(
+        sku::Entity::find()
+            .secure()
+            .scope_with(scope)
+            .filter(
+                Condition::all()
+                    .add(sku::Column::TenantId.eq(tenant_id))
+                    .add(sku::Column::LifecycleState.is_not_in(TERMINAL_HEAD_STATES))
+                    .add(Expr::col(sku::Column::SkuId).in_subquery(carriers("sku"))),
+            )
+            .order_by(sku::Column::SkuCode, sea_orm::Order::Asc)
+            .limit(sample + 1)
+            .all(runner)
+            .await
+            .map_err(|e| driver_failure(format!("sku carriers of {definition_id}"), e))?
+            .into_iter()
+            .map(|row| row.sku_code),
+    );
+
+    holders.extend(
+        category::Entity::find()
+            .secure()
+            .scope_with(scope)
+            .filter(
+                Condition::all()
+                    .add(category::Column::TenantId.eq(tenant_id))
+                    .add(category::Column::State.eq(ACTIVE_CATEGORY_STATE))
+                    .add(Expr::col(category::Column::CategoryId).in_subquery(carriers("category"))),
+            )
+            .order_by(category::Column::Name, sea_orm::Order::Asc)
+            .limit(sample + 1)
+            .all(runner)
+            .await
+            .map_err(|e| driver_failure(format!("category carriers of {definition_id}"), e))?
+            .into_iter()
+            .map(|row| row.name),
+    );
+
+    Ok(holders)
 }
 
 #[cfg(test)]

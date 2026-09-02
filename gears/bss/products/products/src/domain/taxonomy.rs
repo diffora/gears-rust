@@ -72,7 +72,9 @@
 use toolkit_macros::domain_model;
 use uuid::Uuid;
 
+use crate::domain::containment::ResolvedScope;
 use crate::domain::error::DomainError;
+use crate::domain::validation::{Phase, ValidationReport, ValidationRule};
 
 /// Which taxonomy mutation is being judged.
 ///
@@ -547,6 +549,665 @@ pub const WELL_KNOWN_SEEDS: [WellKnownSeed; 5] = [
 #[must_use]
 pub const fn is_removable(seeded_by: Option<&str>) -> bool {
     seeded_by.is_none()
+}
+
+/// One category's stored state
+/// (`cpt-cf-bss-products-state-category`).
+///
+/// Two members and no edge back from [`Self::Retired`]: `inst-ce-terminal`
+/// makes physical deletion the retired node's own exit, and §4 records the
+/// absent `retired -> active` edge as an asymmetry rather than a gap. Parsed
+/// because `chk_products_category_state` closes the roster.
+#[domain_model]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum CategoryState {
+    /// Open to new assignment.
+    Active,
+    /// Closed to new assignment, awaiting deletion.
+    Retired,
+}
+
+impl CategoryState {
+    /// The stored spelling -- `chk_products_category_state`'s roster.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Active => "active",
+            Self::Retired => "retired",
+        }
+    }
+
+    /// Parse a stored value, `None` outside the roster. Fail-closed for the
+    /// reason [`AssignmentRole::parse`] gives.
+    #[must_use]
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "active" => Some(Self::Active),
+            "retired" => Some(Self::Retired),
+            _ => None,
+        }
+    }
+}
+
+// -- The content-save subject and its validators (`inst-av-validate`,
+//    `inst-tx-assign`) --
+//
+// `ValidationRule::evaluate` is **synchronous**, so a rule whose operand
+// lives in another table cannot fetch it. The door reads the fact and the
+// subject carries it -- exactly why `rules::PublishedTransitionSubject`
+// exists beside `CreateEntityCandidate` rather than extending it, and the
+// same reason applies here to a whole content payload.
+//
+// Every rule below is `Phase::RegisteredValidators`, following this slice's
+// own precedent (`rules::PrimaryCategoryRequired`) and that phase's own doc,
+// *"each feature's contributed rules, in registration order"*. One phase
+// means one rejection carrying every content violation, which is what a save
+// door wants: an operator fixing four fields should not need four round
+// trips. It also means each rule must skip what it cannot judge -- an
+// unresolved definition produces exactly one violation and not four, which
+// `an_unresolved_definition_raises_one_violation_and_not_four` holds.
+
+/// The definition state machine's four edges
+/// (`cpt-cf-bss-products-state-attribute-definition`, `inst-de-edge-*`).
+///
+/// Both re-listings are declared -- `deprecated -> active` and
+/// `removed -> active` -- because §4 declares them, and re-listing *"the same
+/// identity, which never changed"* is what makes the tombstone a tombstone
+/// rather than a grave.
+///
+/// `active -> removed` is **not** an edge: `inst-de-deprecate-then-remove`
+/// puts deprecation between them, so the destructive step cannot be reached
+/// in one act. Nor is any edge out of a state to itself: a no-op flip would
+/// consume a `GovernedLiveOp` and emit an event for nothing.
+///
+/// # Errors
+///
+/// [`DomainError::IllegalTransition`] for every pair outside the four.
+pub fn definition_edge(from: DefinitionState, to: DefinitionState) -> Result<(), DomainError> {
+    let admitted = matches!(
+        (from, to),
+        (DefinitionState::Active, DefinitionState::Deprecated)
+            | (
+                DefinitionState::Deprecated,
+                DefinitionState::Removed | DefinitionState::Active
+            )
+            | (DefinitionState::Removed, DefinitionState::Active)
+    );
+    if admitted {
+        return Ok(());
+    }
+    Err(DomainError::IllegalTransition {
+        from: from.as_str().to_owned(),
+        to: to.as_str().to_owned(),
+    })
+}
+
+/// A definition that cannot move because something still carries its values.
+///
+/// Carries the rendered detail; the wire code is [`Self::CODE`]. **Not a
+/// [`DomainError`]**, for the reason [`CategoryReferenced`] gives -- the
+/// variant does not exist at this commit and `dod-taxonomy-errors` is where
+/// it lands.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DefinitionInUse {
+    /// What still carries values, for a human reading the response.
+    pub detail: String,
+}
+
+impl DefinitionInUse {
+    /// The refusal code (`design/02` §3.3, 409).
+    pub const CODE: &'static str = "DEFINITION_IN_USE";
+}
+
+/// Judge one definition act against a census of what still carries its
+/// values.
+///
+/// # The census is the caller's, and which census is §7 row 11's question
+///
+/// `dod-definition-lifecycle` states **two** operands in one sentence:
+/// *"undefined 'live values'"* for a type change and *"the defined
+/// non-terminal head"* for removal -- which is exactly what row 11 asks
+/// about. This function therefore takes whatever census it is handed and
+/// judges it; it does not decide which one a given act should read. The
+/// removal operand is defined and `repo::definition_value_holders` reads it;
+/// the type change's is not, and pointing that function at a type change is
+/// the caller's act, not this one's.
+///
+/// # Errors
+///
+/// [`DefinitionInUse`] naming a sample of the holders.
+pub fn definition_in_use_verdict(holders: &[String], bound: usize) -> Result<(), DefinitionInUse> {
+    if holders.is_empty() {
+        return Ok(());
+    }
+    Err(DefinitionInUse {
+        detail: format!(
+            "the definition still has values on {} live carrier(s) ({})",
+            count_phrase(holders.len(), bound),
+            holders.join(", ")
+        ),
+    })
+}
+
+/// Whether a seeded definition may take the edge it is being asked to take.
+///
+/// `dod-well-known-seeds`: a seeded definition *"**MUST** be deprecatable and
+/// **MUST NOT** be removable"*. Both halves, so a guard refusing every act on
+/// a seed would fail this as surely as one refusing none.
+///
+/// # Errors
+///
+/// [`DomainError::IllegalFieldMutation`] on a seeded definition's removal.
+/// The variant is the Foundation's *"this field may not move"* refusal and is
+/// the nearest declared one: `design/02` §3.3 declares no code for a seeded
+/// removal, and the feature's §7 row 17 lists it among the four refusals that
+/// have none. Minting one would answer that row from a rule.
+pub fn seeded_edge(seeded_by: Option<&str>, to: DefinitionState) -> Result<(), DomainError> {
+    if to == DefinitionState::Removed && !is_removable(seeded_by) {
+        return Err(DomainError::IllegalFieldMutation(format!(
+            "a definition seeded by `{}` is deprecatable but never removable",
+            seeded_by.unwrap_or_default()
+        )));
+    }
+    Ok(())
+}
+
+/// One category assignment as the save door presents it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AssignmentCandidate {
+    /// The category the payload names.
+    pub category_id: Uuid,
+    /// The role it names it in.
+    pub role: AssignmentRole,
+    /// The category's state as the **door** read it; `None` where the tenant
+    /// has no such category. A rule cannot read this for itself.
+    pub resolved: Option<CategoryState>,
+}
+
+/// One attribute definition as the save door resolved it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ResolvedDefinition {
+    /// The stored state -- the set is `active` and `deprecated`; `removed` is
+    /// a tombstone **outside** it, which is `repo::recognized`'s own wording
+    /// for the sibling roster.
+    pub state: DefinitionState,
+    /// The declared type token. Open: see [`ValueShape::of`].
+    pub value_type: String,
+    /// Whether the definition takes locale coordinates.
+    pub localized: bool,
+    /// P-D-39 rendering -- `""` is **unrestricted**, not empty.
+    pub region_scope: String,
+    /// Same reading.
+    pub brand_scope: String,
+}
+
+/// One attribute value as the save door presents it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ValueCandidate {
+    /// The definition key the payload names -- what a refusal quotes back.
+    pub definition_key: String,
+    /// `""` is absent, not null (**P-D-88** arm 2).
+    pub locale: String,
+    /// `""` is absent.
+    pub region: String,
+    /// `""` is absent.
+    pub brand: String,
+    /// The value being written.
+    pub value: String,
+    /// The definition the door resolved, `None` where the tenant has none.
+    pub resolved: Option<ResolvedDefinition>,
+}
+
+/// What a content save presents to the registered validators.
+///
+/// Carries the entity's own two scope columns beside the payload because
+/// `inst-av-validate` judges a coordinate against *both* the definition's
+/// visibility scope **and** the entity's own.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ContentSaveSubject {
+    /// The whole assignment set the payload names. A replace, so this is the
+    /// set as it will stand, not a delta.
+    pub assignments: Vec<AssignmentCandidate>,
+    /// The values the payload writes.
+    pub values: Vec<ValueCandidate>,
+    /// The entity's stored `region_scope`. `""` is unrestricted.
+    pub entity_region_scope: String,
+    /// The entity's stored `brand_scope`. Same reading.
+    pub entity_brand_scope: String,
+}
+
+/// The three value shapes §4.2's seeds describe.
+///
+/// # The tokens are a proposal; the shapes are the design's words
+///
+/// `inst-av-validate` requires a value *"match the declared type"* and names
+/// no roster; §4.2 describes three shapes -- *"a localized string"*, *"a URI
+/// string"*, *"a localized string list"* -- and no tokens. So [`Self::of`]
+/// maps the three constants
+/// [`WELL_KNOWN_SEEDS`] proposes and answers `None` for everything else, and
+/// an unmapped token is **not judged**: the gear cannot decide whether a value
+/// matches a type whose meaning nothing states. That is the same posture
+/// [`TaxonomyLimits`] takes toward an unstated threshold, and for the same
+/// reason -- a rule with no operand must not invent one.
+#[domain_model]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum ValueShape {
+    /// Any string. Constrains nothing on its own; the `localized` flag is
+    /// what decides whether it takes coordinates.
+    LocalizedString,
+    /// An absolute URI: a scheme, a colon, and something after it.
+    UriString,
+    /// A JSON array of strings.
+    LocalizedStringList,
+}
+
+impl ValueShape {
+    /// Map a declared type token to a shape, `None` for a token the gear does
+    /// not know. See the type doc: the three tokens are this feature's
+    /// proposal and `design/02` §6 owes the roster.
+    #[must_use]
+    pub fn of(value_type: &str) -> Option<Self> {
+        match value_type {
+            "localized_string" => Some(Self::LocalizedString),
+            "uri_string" => Some(Self::UriString),
+            "localized_string_list" => Some(Self::LocalizedStringList),
+            _ => None,
+        }
+    }
+
+    /// Whether `value` has this shape.
+    #[must_use]
+    pub fn admits(self, value: &str) -> bool {
+        match self {
+            Self::LocalizedString => true,
+            // Scheme, colon, and a non-empty remainder. Deliberately not a
+            // URI crate: the check that matters here is that a caller did not
+            // put a display name in an image field, and a full RFC 3986 parse
+            // would refuse valid URIs this gear has no business judging.
+            Self::UriString => value.split_once(':').is_some_and(|(scheme, rest)| {
+                !scheme.is_empty()
+                    && !rest.is_empty()
+                    && scheme
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
+                    && scheme.starts_with(|c: char| c.is_ascii_alphabetic())
+            }),
+            Self::LocalizedStringList => serde_json::from_str::<Vec<String>>(value).is_ok(),
+        }
+    }
+}
+
+/// The generic code a refusal takes while its own is unassigned.
+///
+/// `design/02` §3.3 declares sixteen codes and the feature's §7 row 17 records
+/// that **four refusals in this feature have no code at all** -- among them
+/// the unresolvable category and the primary/secondary duplicate, both of
+/// which are rules below. Minting a seventeenth here would answer that row
+/// from a rule; raising the Foundation's declared generic keeps the refusal
+/// **reachable** and leaves the code to row 17's owner. The `subject` and
+/// `detail` a violation carries are what tells the two apart meanwhile.
+const UNASSIGNED_CODE: &str = "VALIDATION";
+
+/// A payload naming a category the tenant does not have.
+///
+/// @cpt-cf-bss-products-dod-assignment-validators
+///
+/// Raises [`UNASSIGNED_CODE`]: §7 row 17 lists *"the unresolvable category"*
+/// among the four refusals with no code of their own.
+pub struct CategoryResolvableRule;
+
+impl CategoryResolvableRule {
+    /// The code this rule raises. See [`UNASSIGNED_CODE`].
+    pub const CODE: &'static str = UNASSIGNED_CODE;
+}
+
+impl ValidationRule<ContentSaveSubject> for CategoryResolvableRule {
+    fn name(&self) -> &'static str {
+        "inst-tx-assign/resolvable"
+    }
+
+    fn phase(&self) -> Phase {
+        Phase::RegisteredValidators
+    }
+
+    fn evaluate(&self, subject: &ContentSaveSubject, report: &mut ValidationReport) {
+        for candidate in &subject.assignments {
+            if candidate.resolved.is_none() {
+                report.violate(
+                    Self::CODE,
+                    "categories",
+                    format!(
+                        "category {} does not exist in this tenant",
+                        candidate.category_id
+                    ),
+                );
+            }
+        }
+    }
+}
+
+/// A payload filing under a retired category.
+///
+/// @cpt-cf-bss-products-dod-assignment-validators
+///
+/// `inst-ce-edge-retire` closes a retired node *"to new assignment"*, so this
+/// judges the **payload's** set rather than the stored one: a set already
+/// containing the node keeps it, and only a save that names it again is
+/// refused. A rule reading the stored set instead would make every later save
+/// of an untouched Product fail the day one of its categories retired.
+pub struct CategoryNotRetiredRule;
+
+impl CategoryNotRetiredRule {
+    /// The refusal code (`design/02` §3.3, 422 architectural).
+    pub const CODE: &'static str = "CATEGORY_RETIRED";
+}
+
+impl ValidationRule<ContentSaveSubject> for CategoryNotRetiredRule {
+    fn name(&self) -> &'static str {
+        "inst-ce-edge-retire/no-new-assignment"
+    }
+
+    fn phase(&self) -> Phase {
+        Phase::RegisteredValidators
+    }
+
+    fn evaluate(&self, subject: &ContentSaveSubject, report: &mut ValidationReport) {
+        for candidate in &subject.assignments {
+            if candidate.resolved == Some(CategoryState::Retired) {
+                report.violate(
+                    Self::CODE,
+                    "categories",
+                    format!(
+                        "category {} is retired and is closed to new assignment",
+                        candidate.category_id
+                    ),
+                );
+            }
+        }
+    }
+}
+
+/// One category named twice in one payload.
+///
+/// @cpt-cf-bss-products-dod-assignment-validators
+///
+/// `uq_products_product_category` refuses this at the engine too, and the
+/// rule is not redundant: the index answers a driver conflict the door must
+/// translate, while this answers a per-field violation beside every other
+/// content violation in the same rejection. The `DoD` asks for the validator by
+/// name.
+///
+/// Raises [`UNASSIGNED_CODE`] -- §7 row 17's *"primary/secondary duplicate"*.
+pub struct CategoryRoleConflictRule;
+
+impl CategoryRoleConflictRule {
+    /// The code this rule raises. See [`UNASSIGNED_CODE`].
+    pub const CODE: &'static str = UNASSIGNED_CODE;
+}
+
+impl ValidationRule<ContentSaveSubject> for CategoryRoleConflictRule {
+    fn name(&self) -> &'static str {
+        "inst-tx-assign/one-role-per-category"
+    }
+
+    fn phase(&self) -> Phase {
+        Phase::RegisteredValidators
+    }
+
+    fn evaluate(&self, subject: &ContentSaveSubject, report: &mut ValidationReport) {
+        for (index, candidate) in subject.assignments.iter().enumerate() {
+            // Compare forward only, so one duplicated pair raises one
+            // violation rather than two mirror-image ones.
+            let duplicated = subject.assignments[index + 1..]
+                .iter()
+                .any(|other| other.category_id == candidate.category_id);
+            if duplicated {
+                report.violate(
+                    Self::CODE,
+                    "categories",
+                    format!(
+                        "category {} is named more than once; one product holds one category in \
+                         one role",
+                        candidate.category_id
+                    ),
+                );
+            }
+        }
+    }
+}
+
+/// A value against a definition outside the tenant's set.
+///
+/// @cpt-cf-bss-products-dod-value-validators
+///
+/// **A `removed` definition is refused here and not by
+/// [`AttributeDefinitionActiveRule`].** The tombstone is a row that exists and
+/// is *outside the set* -- `repo::recognized`'s own words for the sibling
+/// roster: *"the set is the `active` and `deprecated` rows; a `removed` row is
+/// a tombstone outside it"*. It survives so a value on a terminal head keeps
+/// **resolving**; it never admits a new **write**.
+pub struct AttributeDefinitionKnownRule;
+
+impl AttributeDefinitionKnownRule {
+    /// The refusal code (`design/02` §3.3).
+    pub const CODE: &'static str = "ATTRIBUTE_DEFINITION_UNKNOWN";
+}
+
+impl ValidationRule<ContentSaveSubject> for AttributeDefinitionKnownRule {
+    fn name(&self) -> &'static str {
+        "inst-av-validate/definition-known"
+    }
+
+    fn phase(&self) -> Phase {
+        Phase::RegisteredValidators
+    }
+
+    fn evaluate(&self, subject: &ContentSaveSubject, report: &mut ValidationReport) {
+        for candidate in &subject.values {
+            let outside = match candidate.resolved {
+                None => true,
+                Some(ref definition) => definition.state == DefinitionState::Removed,
+            };
+            if outside {
+                report.violate(
+                    Self::CODE,
+                    format!("attributes.{}", candidate.definition_key),
+                    format!(
+                        "`{}` is not a definition in this tenant's set",
+                        candidate.definition_key
+                    ),
+                );
+            }
+        }
+    }
+}
+
+/// A value against a deprecated definition.
+///
+/// @cpt-cf-bss-products-dod-value-validators
+///
+/// `inst-de-edge-deprecate`: new values are refused and existing ones keep
+/// resolving. So this judges the **write**, never the read.
+pub struct AttributeDefinitionActiveRule;
+
+impl AttributeDefinitionActiveRule {
+    /// The refusal code (`design/02` §3.3).
+    pub const CODE: &'static str = "ATTRIBUTE_DEFINITION_DEPRECATED";
+}
+
+impl ValidationRule<ContentSaveSubject> for AttributeDefinitionActiveRule {
+    fn name(&self) -> &'static str {
+        "inst-av-validate/definition-active"
+    }
+
+    fn phase(&self) -> Phase {
+        Phase::RegisteredValidators
+    }
+
+    fn evaluate(&self, subject: &ContentSaveSubject, report: &mut ValidationReport) {
+        for candidate in &subject.values {
+            if candidate
+                .resolved
+                .as_ref()
+                .is_some_and(|d| d.state == DefinitionState::Deprecated)
+            {
+                report.violate(
+                    Self::CODE,
+                    format!("attributes.{}", candidate.definition_key),
+                    format!(
+                        "`{}` is deprecated and admits no new values; existing ones keep resolving",
+                        candidate.definition_key
+                    ),
+                );
+            }
+        }
+    }
+}
+
+/// A value whose shape does not match its definition's declared type.
+///
+/// @cpt-cf-bss-products-dod-value-validators
+///
+/// **Inert for a type token the gear does not know**, which is every token
+/// outside [`ValueShape::of`]'s three -- see that method on why the roster is
+/// owed rather than closed here. A rule that refused an unmapped token would
+/// close the feature to every operator-defined type; one that admitted it
+/// silently would be indistinguishable from this, so the difference is
+/// stated rather than left to be inferred.
+pub struct AttributeValueTypeRule;
+
+impl AttributeValueTypeRule {
+    /// The refusal code (`design/02` §3.3).
+    pub const CODE: &'static str = "ATTRIBUTE_TYPE_MISMATCH";
+}
+
+impl ValidationRule<ContentSaveSubject> for AttributeValueTypeRule {
+    fn name(&self) -> &'static str {
+        "inst-av-validate/type-match"
+    }
+
+    fn phase(&self) -> Phase {
+        Phase::RegisteredValidators
+    }
+
+    fn evaluate(&self, subject: &ContentSaveSubject, report: &mut ValidationReport) {
+        for candidate in &subject.values {
+            let Some(ref definition) = candidate.resolved else {
+                continue;
+            };
+            let Some(shape) = ValueShape::of(&definition.value_type) else {
+                continue;
+            };
+            if !shape.admits(&candidate.value) {
+                report.violate(
+                    Self::CODE,
+                    format!("attributes.{}", candidate.definition_key),
+                    format!(
+                        "the value does not match `{}`'s declared type `{}`",
+                        candidate.definition_key, definition.value_type
+                    ),
+                );
+            }
+        }
+    }
+}
+
+/// A coordinate outside the definition's visibility scope or the entity's own.
+///
+/// @cpt-cf-bss-products-dod-value-validators
+///
+/// # The empty set is unrestricted, on both sides
+///
+/// **P-D-39.** A definition whose `brand_scope` is `""` is visible to every
+/// brand, not to none, and the same for the entity's columns. A predicate
+/// written as set membership alone would refuse every coordinate under every
+/// unrestricted row -- which is to say, under nearly all of them.
+///
+/// # An absent coordinate is not judged, and that is §6's open item, deferred
+///
+/// *"Does a brand-less global value survive the scope check on a
+/// brand-scoped entity?"* -- `design/02` §6, whose own text records that under
+/// a containment-only reading *"the write the publish validator demands is the
+/// write the save validator refuses"*, so a brand-scoped entity could never
+/// publish. This rule judges a coordinate **only where the payload names
+/// one**: `brand: ""` is the absence P-D-88 arm 2 spells, not a brand called
+/// empty-string, and there is nothing to contain. That is the one direction
+/// in which both `dod-value-validators` and `dod-default-locale` are
+/// satisfiable at once, so it is taken as forced rather than chosen -- and it
+/// is registered, because the owner may yet want the global value scoped some
+/// other way.
+pub struct AttributeScopeRule;
+
+impl AttributeScopeRule {
+    /// The refusal code (`design/02` §3.3).
+    pub const CODE: &'static str = "ATTRIBUTE_SCOPE_VIOLATION";
+
+    /// Whether `named` is admitted by a stored scope column.
+    ///
+    /// `""` on the column is unrestricted (P-D-39); `""` for the named
+    /// coordinate is *absent* and is not judged -- see the type doc.
+    fn admitted(named: &str, stored: &str) -> bool {
+        if named.is_empty() {
+            return true;
+        }
+        match ResolvedScope::parse(stored) {
+            Ok(ResolvedScope::Unrestricted) => true,
+            Ok(ResolvedScope::Restricted(values)) => values.contains(named),
+            // A column that will not parse is a corrupt row, not an
+            // admission: `ResolvedScope::parse` refuses an empty token
+            // between separators, and fail-closed is this gear's principle.
+            Err(_) => false,
+        }
+    }
+}
+
+impl ValidationRule<ContentSaveSubject> for AttributeScopeRule {
+    fn name(&self) -> &'static str {
+        "inst-av-validate/coordinate-scope"
+    }
+
+    fn phase(&self) -> Phase {
+        Phase::RegisteredValidators
+    }
+
+    fn evaluate(&self, subject: &ContentSaveSubject, report: &mut ValidationReport) {
+        for candidate in &subject.values {
+            let Some(ref definition) = candidate.resolved else {
+                continue;
+            };
+            for (axis, named, definition_scope, entity_scope) in [
+                (
+                    "region",
+                    candidate.region.as_str(),
+                    definition.region_scope.as_str(),
+                    subject.entity_region_scope.as_str(),
+                ),
+                (
+                    "brand",
+                    candidate.brand.as_str(),
+                    definition.brand_scope.as_str(),
+                    subject.entity_brand_scope.as_str(),
+                ),
+            ] {
+                if !Self::admitted(named, definition_scope) {
+                    report.violate(
+                        Self::CODE,
+                        format!("attributes.{}", candidate.definition_key),
+                        format!(
+                            "{axis} `{named}` is outside `{}`'s visibility scope",
+                            candidate.definition_key
+                        ),
+                    );
+                } else if !Self::admitted(named, entity_scope) {
+                    report.violate(
+                        Self::CODE,
+                        format!("attributes.{}", candidate.definition_key),
+                        format!("{axis} `{named}` is outside the entity's own scope"),
+                    );
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]
