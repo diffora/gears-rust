@@ -440,8 +440,18 @@ authored downstream of this document, in the order §3 establishes.
 
   - [ ] `p1` - `cpt-cf-bss-products-component-capability-handlers`
 
-- **API**: None of its own — lifecycle edges are driven through `01-foundation`'s publish and
-  transition doors, which run this feature's registered validators
+- **API**: **Doors of its own, for the acts; none for the edges** (**P-D-98**, which withdrew this
+  field's earlier "None of its own"). An **edge** driven by a registered validator or a phase
+  continuation needs no door — publish, save and discard host this feature's rules, which is why
+  `inst-pc-ordering` and the containment rules have no surface of their own. An **act** with its
+  own payload, confirmation and grant does: un-deprecation, a direct SKU deprecation, retirement
+  initiation for each kind, and the governed cancel of a `ScheduledTransition`. The exact paths,
+  verbs and payload shapes are owed to [`DESIGN.md`](./DESIGN.md)'s slice
+  [`design/04-lifecycle.md`](./design/04-lifecycle.md), which carries no interfaces section yet;
+  the cancel's shape is owed jointly with `02`, whose `GovernedLiveOp` envelope it rides.
+  **`publishAt` is not among them** — §2 has it drive the ordinary Foundation publish door in
+  `PreAuthorized(approvalId)` mode, which is the arrangement this field originally described and
+  the one case where it holds
 
 - **Sequences**:
 

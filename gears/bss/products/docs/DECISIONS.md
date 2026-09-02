@@ -1569,6 +1569,100 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   (the re-publish step).
 
 
+#### P-D-99 — `04-lifecycle`'s four door shapes, each from the set's nearest precedent
+
+- **Date**: 2026-09-02 (owner call, the interface **P-D-98** deliberately left owed)
+- **Context**: P-D-98 settled that the slice owns doors for its acts and named the acts; it left
+  the paths, verbs and success responses open because fixing them there would have authored the
+  interface inside a scoping decision. `design/04` carried no interfaces section at all. The set
+  already has a precedent for closing exactly this gap: **P-D-87** arm 3 fixed slice 07's three
+  door shapes *"each from the set's nearest precedent"*. Two precedents compete here — this gear's
+  own verb-suffixed act doors (`/publish`, `/discard`, `/deprecate`), and 07's sub-resource
+  retirement (`/reference-producers/{producer}/retirements`, **200**).
+- **Decision**, recorded normatively in `design/04` §3.3:
+  1. **Verb form, four routes**: `POST …/{products|skus}/{id}/undeprecate` (**200**, the head);
+     `POST …/skus/{id}/deprecate` (**200**, the head — the Product already has this door and the
+     SKU's absence is why `provenance = direct` had no operator path);
+     `POST …/{products|skus}/{id}/retire` (**200**, the head);
+     `POST …/{products|skus}/{id}/retire/cancel` (**202**, no body).
+  2. **The cancel is 202 because the ceremony is governed**, not for transport reasons:
+     `design/05` §3.2 `inst-mt-inputs` (d) registers 04's `ScheduledTransition` cancel ops material
+     and §3.3 makes the cancel a `GovernedLiveOp` subject kind, so the door accepts and the write
+     lands at approval — the shape and the status of 07's correction door.
+  3. **All four spend `product|sku × write`** (`crate::authz::actions::WRITE`), which is what the
+     shipped `/deprecate` and `/discard` spend; `/publish` keeps its own `actions::PUBLISH`. No
+     action is minted.
+  4. **`publishAt` gets no door**, per P-D-98.
+- **The arguments against, stated**: the sub-resource form would expose the minted
+  `ScheduledTransition` id, which the verb form does not — declined because the cancel addresses the
+  *entity*, whose one live retire intent per kind is already the §4 partial unique's guarantee, so
+  the id buys nothing the route needs, and a `/retirements` collection beside a `/deprecate` verb
+  would make the act set inconsistent. On arm 3: reusing `write` means a tenant's write grant now
+  also carries an irreversible act, and minting `actions::RETIRE` would let that grant be issued
+  narrowly — declined because irreversibility is guarded by the 05 gate's quorum, which is the
+  barrier the design set assigns to it, and because minting one action forces the same question of
+  `undeprecate` and of the cancel, so the decision multiplies where the reuse does not.
+- **Propagated**: `design/04-lifecycle.md` **new §3.3** with the table and both arguments.
+  **Owed**: each act's request shape — the retirement's `{reason, replacedBy?, effectiveAt,
+  confirmation}` against §2's own enumeration, and the cancel's, jointly with `02` whose
+  `GovernedLiveOp` envelope it rides; and the `API:` lines on the affected DoDs, which belong to
+  `features/lifecycle.md` and are that document's to write, not this register's.
+
+#### P-D-98 — `04-lifecycle` owns wire doors after all; `DECOMPOSITION` §2.4's "None of its own" is withdrawn
+
+- **Date**: 2026-09-02 (owner call, on the lead's measurement below)
+- **Context**: `DECOMPOSITION` §2.4 states the feature's API is *"None of its own — lifecycle edges
+  are driven through `01-foundation`'s publish and transition doors, which run this feature's
+  registered validators."* Measured at `HEAD`, that is not sufficient for the acts the slice
+  specifies. The shipped route set is `products`: create, read, patch, publish, discard, clone,
+  **deprecate**; `skus`: create, read, patch, publish, discard, clone. So:
+  - **`inst-lc-undeprecate`** (`deprecated → published`) has **no door on either kind**, though
+    `domain::transition`'s edge list admits the edge.
+  - **`inst-rt-initiate`** — retire a SKU, and retire a Product with its cascade — has **no door**,
+    while the act takes a payload the design enumerates (`reason` running 02's PII write block,
+    `replacedBy?`, `effectiveAt` against the lead-time policy) and requires *"explicit confirmation
+    with the active-reference count shown."* A payload-bearing, confirmed operator act is not a
+    validator on somebody else's door.
+  - **A direct SKU deprecation** has no door: `provenance = direct` is defined for an operator act,
+    and the only path to a deprecated SKU today is the cascade from the Product door.
+  - **The governed cancel** of a `ScheduledTransition` is *"its own explicit act"*; `design/05`
+    §3.2 already registers it — `inst-mt-inputs` (d) names *"04's `ScheduledTransition` cancel
+    ops"* as material, and §3.3 records that the cancel *"is a `GovernedLiveOp` subject kind on
+    `ApprovalRecord`."* The governance side is specified; the wire side is absent.
+  - **`publishAt` needs no door and is not in this decision.** §2's own words: it *"drives the
+    ordinary Foundation publish door in `PreAuthorized(approvalId)` mode"* — a field the activation
+    runner consumes, which is exactly the arrangement §2.4 describes and which does work.
+  Nineteen of the feature's twenty-six DoDs are open, and **ten of them wait on an act with no
+  wire surface**; the lead's sweep of 2026-09-02 found **zero** further door-side wiring available.
+- **Decision**: **`04-lifecycle` owns wire doors of its own, and §2.4's API field is withdrawn and
+  rewritten.** The four acts above each get a door on the kind that carries them; `publishAt`
+  keeps the arrangement it has. §2.4's *reasoning* survives in the narrower form it is actually
+  true of: an **edge** driven by a validator needs no door of its own, and that is why publish,
+  save and discard host this feature's rules rather than duplicating them — but an **act** with its
+  own payload, its own confirmation and its own grant is a door.
+- **The arguments against, stated**: the field was written deliberately, and this reverses it — the
+  decomposition's uniformity claim ("one feature per slice, twelve in total") is untouched, but its
+  API column is no longer "None" for the only feature that claimed it. The alternative considered
+  was folding the acts into `PATCH` as request modes, declined because a governed ceremony hidden
+  behind a payload field cannot carry its own authz action or its own OpenAPI response set, and
+  `design/05` already assigns the cancel its own grant. The second alternative — leaving the acts
+  without a wire surface in v1 and closing ten DoDs as out-of-scope — was declined because the PRD
+  enumerates retirement and un-deprecation as operator capabilities, not as internal mechanics.
+- **What this decision does NOT settle, and is owed**: the **exact paths, verbs and payload
+  shapes**. Naming them here would author the interface. They are owed to `design/04`, which
+  currently has no interfaces section at all, and each affected DoD's `Touches` then gains its
+  `API:` line in `features/lifecycle.md` — the feature's own file, so the lifecycle strand's edit
+  and not the lead's. The governed cancel's shape is owed **jointly with `02`**, since
+  `GovernedLiveOp` is that slice's envelope.
+- **Propagated**: `DECOMPOSITION.md` §2.4 (the API field, rewritten with this entry). **Not** the
+  three-site route census pricing has — products censuses differently, measured today:
+  `OperationBuilder` registers the route, `authz.rs` holds the action constants with doc lines
+  naming the routes that spend them, and `authz_tests.rs` asserts completeness over `labels::ALL`
+  rather than over routes, so doors added under the existing `product|sku` labels need no test
+  change. **Owed**: `design/04`'s interfaces section; the `features/lifecycle.md` `Touches` lines;
+  and whichever `authz.rs` actions the four acts spend — `PUBLISH` and `WRITE` exist, and whether a
+  retirement spends one of them or mints its own is part of the owed interface work.
+
 #### P-D-97 — `RegisteredValidators` is a phase **slot** with two admissible fillings; the trait does not widen
 
 - **Date**: 2026-09-02 (owner call with `04-lifecycle`, closing `features/lifecycle.md` §7 row 20 —

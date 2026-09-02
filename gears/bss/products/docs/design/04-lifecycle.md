@@ -22,6 +22,7 @@
 - [3. Processes / Business Logic](#3-processes--business-logic)
   - [3.1 The activation runner](#31-the-activation-runner)
   - [3.2 Error taxonomy (slice-owned codes)](#32-error-taxonomy-slice-owned-codes)
+  - [3.3 Wire doors (the acts; the edges keep riding 01's)](#33-wire-doors-the-acts-the-edges-keep-riding-01s)
 - [4. Data / Storage (normative shape; DDL in migrations)](#4-data--storage-normative-shape-ddl-in-migrations)
 - [5. Testing posture (slice-local)](#5-testing-posture-slice-local)
 - [6. Traces to / Risks & Open items](#6-traces-to--risks--open-items)
@@ -231,6 +232,57 @@ plan-price gear's rule (the `MUST NOT` being this gear's own choice, 01 §3.3): 
 carrying its code, and no endpoint may declare a 422 for an error **carrying a registry code** in `OpenAPI` (the framework layer is the exception — a `Json<T>` schema violation, which carries no registry code). Proposed per
 row and open to correction; the requirement is that every code carries one.
   Codes listed here for the response map but **declared elsewhere**: `PARENT_NOT_PUBLISHED` (slice 01), `SCOPE_NOT_CONTAINED` (slice 01) — the status is repeated, not a second declaration, so the one-declaration rule stands.*
+
+### 3.3 Wire doors (the acts; the edges keep riding 01's)
+
+- [ ] `p1` - **ID**: `cpt-cf-bss-products-contract-lifecycle-doors`
+
+**P-D-98** withdrew `DECOMPOSITION` §2.4's "None of its own": an **edge** driven by a registered
+validator or a phase continuation needs no door — which is why `inst-pc-ordering` and the
+containment rules have no surface and run inside 01's publish and save doors — but an **act** with
+its own payload, its own confirmation and its own grant does. **P-D-99** fixes the four below,
+each from the set's nearest precedent, the way **P-D-87** arm 3 fixed slice 07's three.
+
+| Act | Route | Success | Body | Instruction |
+|---|---|---|---|---|
+| Un-deprecate | `POST /bss-products/v1/{products\|skus}/{id}/undeprecate` | **200** | the head | `inst-lc-undeprecate` |
+| Deprecate a SKU directly | `POST /bss-products/v1/skus/{id}/deprecate` | **200** | the head | `inst-lc-deprecate` |
+| Initiate retirement | `POST /bss-products/v1/{products\|skus}/{id}/retire` | **200** | the head | `inst-rt-initiate` |
+| Cancel a retirement | `POST /bss-products/v1/{products\|skus}/{id}/retire/cancel` | **202** | none | `inst-lc-undeprecate` |
+
+**The verb form, not a sub-resource.** This gear's own act doors are verb-suffixed —
+`/publish`, `/discard`, `/deprecate` — and an operator meets one shape across every lifecycle act.
+Slice 07's producer retirement is a sub-resource (`/reference-producers/{producer}/retirements`,
+**200**) and was the competing precedent; it was declined because a `/retirements` collection here
+would leave `/deprecate` a verb beside it and make the set inconsistent for the sake of exposing a
+`ScheduledTransition` id the cancel does not need — the cancel addresses the **entity**, whose one
+live retire intent per kind is already the partial-unique's guarantee (§4).
+
+**The cancel answers 202, and the reason is the ceremony, not the transport.** It is a governed act:
+`design/05` §3.2 `inst-mt-inputs` (d) registers *"04's `ScheduledTransition` cancel ops"* material
+and §3.3 makes it a `GovernedLiveOp` subject kind on `ApprovalRecord`, so the door **accepts** and
+the write lands at approval — the same shape and the same status as slice 07's correction door
+(`POST /skus/{skuId}/corrections`, **202**, *"the door accepts, the write happens at approval"*).
+Its request shape is owed jointly with `02`, whose `GovernedLiveOp` envelope it rides.
+
+**Authz: all four spend `product|sku × write`.** That is what the shipped `/deprecate` and
+`/discard` doors spend (`crate::authz::actions::WRITE`); `/publish` alone has its own
+`actions::PUBLISH`. No new action is minted, and `authz_tests` — which asserts completeness over
+`labels::ALL` rather than over routes — needs no change. **The argument against, stated**: a
+tenant's `write` grant now also carries an irreversible act, and minting `actions::RETIRE` would
+let that grant be issued narrowly. Declined because the irreversibility is guarded by the 05 gate's
+quorum rather than by authz, which is the barrier the design set actually assigns to it, and
+because minting one action forces the same question of `undeprecate` and the cancel — the decision
+multiplies where the reuse does not.
+
+**`publishAt` gets no door**, and that is not an omission: §2 has it drive the ordinary Foundation
+publish door in `PreAuthorized(approvalId)` mode, which is exactly the arrangement §2.4 described
+and the one case where it holds.
+
+**Owed**: each act's request shape — the retirement's `{reason, replacedBy?, effectiveAt,
+confirmation}` against §2's enumeration, and the cancel's, jointly with `02`. The `API:` lines on
+the affected DoDs belong to [`../features/lifecycle.md`](../features/lifecycle.md), that document's
+own to write.
 
 ## 4. Data / Storage (normative shape; DDL in migrations)
 
