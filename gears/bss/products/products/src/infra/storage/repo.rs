@@ -2587,6 +2587,29 @@ pub struct ProductHeadSave {
     pub region_scope: Option<String>,
     /// Bucket iii, in both directions.
     pub brand_scope: Option<String>,
+    /// Whether the same act writes **`02`'s content rows** — a category
+    /// assignment set or an attribute value — beside this head.
+    ///
+    /// # It widens [`empty_save`]'s operand rather than bypassing its guard
+    ///
+    /// That guard's own words are *"no statement in this module bumps
+    /// `internal_revision` without writing a content column"*, and its reason
+    /// is that *"a bare bump is a write with no content that still invalidates
+    /// every `ETag` a client holds."* Both stand. What changed is where this
+    /// gear's content lives: when the guard was written the only content was
+    /// this table's columns, and `design/02` C2 now makes attribute values
+    /// **entity content** in as many words — *"they ride the owning entity's
+    /// internal revision, freeze into its published versions"*.
+    ///
+    /// So a save naming only `categories` is not a bare bump. It is a content
+    /// write whose content is in another table, and the revision **must** move:
+    /// values riding a revision that did not change would leave two different
+    /// content states sharing one `ETag`, which is the concurrency the ride
+    /// exists to give them.
+    ///
+    /// `false` by `Default`, so every caller that predates `02`'s content is
+    /// unchanged and the guard keeps refusing a genuinely empty save.
+    pub content_moved: bool,
 }
 
 impl ProductHeadSave {
@@ -2612,6 +2635,7 @@ impl ProductHeadSave {
             && self.name.is_none()
             && self.region_scope.is_none()
             && self.brand_scope.is_none()
+            && !self.content_moved
     }
 }
 
@@ -2637,6 +2661,29 @@ pub struct SkuHeadSave {
     pub metering_unit: Option<String>,
     /// Bucket ii: the declaration's other half, on identical terms.
     pub usage_type_ref: Option<String>,
+    /// Whether the same act writes **`02`'s content rows** — a category
+    /// assignment set or an attribute value — beside this head.
+    ///
+    /// # It widens [`empty_save`]'s operand rather than bypassing its guard
+    ///
+    /// That guard's own words are *"no statement in this module bumps
+    /// `internal_revision` without writing a content column"*, and its reason
+    /// is that *"a bare bump is a write with no content that still invalidates
+    /// every `ETag` a client holds."* Both stand. What changed is where this
+    /// gear's content lives: when the guard was written the only content was
+    /// this table's columns, and `design/02` C2 now makes attribute values
+    /// **entity content** in as many words — *"they ride the owning entity's
+    /// internal revision, freeze into its published versions"*.
+    ///
+    /// So a save naming only `categories` is not a bare bump. It is a content
+    /// write whose content is in another table, and the revision **must** move:
+    /// values riding a revision that did not change would leave two different
+    /// content states sharing one `ETag`, which is the concurrency the ride
+    /// exists to give them.
+    ///
+    /// `false` by `Default`, so every caller that predates `02`'s content is
+    /// unchanged and the guard keeps refusing a genuinely empty save.
+    pub content_moved: bool,
 }
 
 impl SkuHeadSave {
@@ -2661,6 +2708,7 @@ impl SkuHeadSave {
             && self.brand_scope.is_none()
             && self.metering_unit.is_none()
             && self.usage_type_ref.is_none()
+            && !self.content_moved
     }
 }
 

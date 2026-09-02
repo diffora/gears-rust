@@ -234,6 +234,12 @@ use toolkit_security::SecurityContext;
 use uuid::Uuid;
 
 use crate::api::rest::preconditions;
+// One parse for one wire shape: the `attributes` payload is identical at both
+// doors, and two spellings of it would be a second contract for one set of
+// rows. The Product door declares it; this one reuses it, the same direction
+// `products::check_children_stay_contained` reaches for `parent_scope_pair`
+// here.
+use crate::api::rest::products::{AttributeWrite, parse_attributes};
 use crate::api::rest::{
     ApiState, CREATE_RESPONSE_STATUS, ClaimVerdict, CreateOutcome, IdempotencyClaimInput,
     authz_error_to_canonical, claim_idempotency, contention_db_err, idempotency_key,
@@ -253,6 +259,10 @@ use crate::domain::governance::{
 use crate::domain::idempotency;
 use crate::domain::rules::{
     PublishRevalidationSubject, SkuCodeStillPresent, SkuScopeColumnsStillParse,
+};
+use crate::domain::taxonomy::{
+    AttributeDefinitionKnownRule, ContentSaveSubject, ResolvedDefinition, ValueCandidate,
+    content_save_pipeline,
 };
 use crate::domain::transition::{self, ApprovalInvalidation, ApprovalInvalidationHook as _};
 use crate::domain::validation::{ValidationPipeline, ValidationReport};
@@ -4125,11 +4135,142 @@ fn parse_sku_value(
 /// # Errors
 ///
 /// [`DomainError::Validation`] naming each malformed field.
+/// The **content** half of a SKU save: attribute values only.
+///
+/// A SKU carries **no category assignments** — `products_product_category` is
+/// keyed `(tenant_id, product_id, …)` and a SKU has no column in it. So this
+/// door owns one content key where the Product door owns two, and the
+/// asymmetry is the table's rather than a scheduling choice.
+///
+/// Everything else is the Product door's shape, deliberately: the wire form,
+/// the coordinate defaults, the `None`-versus-empty reading and the refusal
+/// wording. Two doors that spelled one payload two ways would be a second
+/// contract for the same rows.
+const SKU_CONTENT_SAVE_KEYS: [&str; 1] = ["attributes"];
+
+/// Parse the SKU content half.
+///
+/// # Errors
+///
+/// [`DomainError::Validation`] naming each malformed entry.
+fn parse_sku_content(request: &SaveSkuRequest) -> Result<Option<Vec<AttributeWrite>>, DomainError> {
+    let Some(raw) = request.fields.get("attributes") else {
+        return Ok(None);
+    };
+    parse_attributes(raw)
+        .map(Some)
+        .map_err(|detail| sku_shape_refusal(vec![("attributes".to_owned(), detail)]))
+}
+
+/// Build the subject the four value rules judge.
+///
+/// The Product door's twin, minus the assignment half. The definition roster
+/// is read whole for that door's reason: one statement inside the mutation
+/// transaction cannot disagree with itself the way one lookup per key can.
+///
+/// # Errors
+///
+/// [`HeadActError`] as the read raises it.
+async fn sku_content_subject(
+    runner: &(impl toolkit_db::secure::DBRunner + Sync),
+    inputs: &HeadActInputs,
+    head: &SkuRecord,
+    writes: &[AttributeWrite],
+) -> Result<ContentSaveSubject, HeadActError> {
+    let roster = repo::attribute_definitions(runner, &inputs.scope, inputs.tenant_id)
+        .await
+        .map_err(|e| HeadActError::from_repo(&e))?;
+    Ok(ContentSaveSubject {
+        assignments: Vec::new(),
+        values: writes
+            .iter()
+            .map(|write| ValueCandidate {
+                definition_key: write.key.clone(),
+                locale: write.locale.clone(),
+                region: write.region.clone(),
+                brand: write.brand.clone(),
+                value: write.value.clone(),
+                resolved: roster
+                    .iter()
+                    .find(|d| d.key == write.key)
+                    .map(|d| ResolvedDefinition {
+                        state: d.state,
+                        value_type: d.value_type.clone(),
+                        localized: d.localized,
+                        region_scope: d.region_scope.clone(),
+                        brand_scope: d.brand_scope.clone(),
+                    }),
+            })
+            .collect(),
+        entity_region_scope: head.region_scope.clone(),
+        entity_brand_scope: head.brand_scope.clone(),
+    })
+}
+
+/// The `entity_kind` a SKU's own attribute values carry.
+///
+/// A literal because §7 row 20 is the live question of what that column
+/// admits; an enum here would answer it from a door.
+const SKU_ENTITY_KIND: &str = "sku";
+
+/// Write the SKU's attribute values on the caller's transaction (**P-D-46**).
+///
+/// # Errors
+///
+/// [`HeadActError`] on a storage failure, or a refusal where the definition
+/// vanished between the pipeline's read and this write.
+async fn write_sku_content(
+    runner: &impl toolkit_db::secure::DBRunner,
+    inputs: &HeadActInputs,
+    writes: &[AttributeWrite],
+    now: DateTime<Utc>,
+) -> Result<(), HeadActError> {
+    for write in writes {
+        let definition =
+            repo::attribute_definition_by_key(runner, &inputs.scope, inputs.tenant_id, &write.key)
+                .await
+                .map_err(|e| HeadActError::from_repo(&e))?
+                .ok_or_else(|| {
+                    let mut report = ValidationReport::new();
+                    report.violate(
+                        AttributeDefinitionKnownRule::CODE,
+                        format!("attributes.{}", write.key),
+                        "the definition was removed while this save was in flight",
+                    );
+                    HeadActError::Refused(DomainError::Validation(report))
+                })?;
+        repo::upsert_attribute_value(
+            runner,
+            &inputs.scope,
+            inputs.tenant_id,
+            repo::AttributeCoordinate {
+                entity_kind: SKU_ENTITY_KIND,
+                entity_id: inputs.sku_id,
+                definition_id: definition.definition_id,
+                locale: &write.locale,
+                region: &write.region,
+                brand: &write.brand,
+            },
+            &write.value,
+            now,
+        )
+        .await
+        .map_err(|e| HeadActError::from_repo(&e))?;
+    }
+    Ok(())
+}
+
 fn parse_sku_save(request: &SaveSkuRequest) -> Result<SkuSaveFields, DomainError> {
     let mut parsed = Vec::new();
     let mut unrecognized = Vec::new();
     let mut violations = Vec::new();
     for (field, value) in &request.fields {
+        // The content half is `parse_sku_content`'s; see the Product door's
+        // own note on why these are skipped by name rather than given a
+        // `SkuSaveField` variant that would owe `column()` a column.
+        if SKU_CONTENT_SAVE_KEYS.contains(&field.as_str()) {
+            continue;
+        }
         match SkuSaveField::from_wire(field) {
             Some(known) => match parse_sku_value(known, value) {
                 Ok(parsed_value) => parsed.push((known, parsed_value)),
@@ -4558,12 +4699,28 @@ async fn run_save(
     // -- Phase 3, shape: the JSON types and the two scope parses, every
     // violation collected. --
     let (parsed, unrecognized) = parse_sku_save(request).map_err(HeadActError::Refused)?;
+    let content = parse_sku_content(request).map_err(HeadActError::Refused)?;
 
     // -- Phase 4, state: terminality — which reaches every head write and not
     // only a transition (`inst-fd-terminal`, P-D-25 widened by P-D-32) — then
     // bucket routing over the whole request before any column is written. --
     transition::check_head_write(head.lifecycle_state).map_err(HeadActError::Refused)?;
-    let save = route_sku_save(&head, parsed, &unrecognized)?;
+    let mut save = route_sku_save(&head, parsed, &unrecognized)?;
+    // `02`'s values ride this head's revision (C2), so a save naming only
+    // `attributes` still moves it. See `repo::SkuHeadSave::content_moved`.
+    save.content_moved = content.is_some();
+
+    // -- Phase 6, the registered-validators phase -- which this door did not
+    // have at all before group A6, while SKUs have carried attribute values
+    // since `02`'s tables landed. The four value rules run here, from the
+    // same `content_save_pipeline` the Product door runs: one list, so the
+    // two doors cannot drift. --
+    if let Some(writes) = content.as_ref() {
+        let subject = sku_content_subject(runner, inputs, &head, writes).await?;
+        if let Some((_phase, report)) = content_save_pipeline().run(&subject) {
+            return Err(HeadActError::Refused(DomainError::Validation(report)));
+        }
+    }
 
     // -- Phase 5, identity: containment against the parent as it now stands,
     // judged over the image this save would leave. --
@@ -4614,6 +4771,14 @@ async fn run_save(
     .map_err(|e| sku_save_conflict(&e))?;
     if written == repo::HeadWrite::Unmatched {
         return Err(classify_unmatched_save(runner, inputs, structural).await);
+    }
+
+    // -- `02`'s values, on this same transaction (**P-D-46**) and **after**
+    // the head `UPDATE` for the Product door's reason: that statement carries
+    // the precondition, the terminality filter and the bucket guard, so it is
+    // what decides whether the act happens at all. --
+    if let Some(writes) = content.as_ref() {
+        write_sku_content(runner, inputs, writes, inputs.now).await?;
     }
 
     // -- The approval-invalidation hook, which a save **fires**: see this

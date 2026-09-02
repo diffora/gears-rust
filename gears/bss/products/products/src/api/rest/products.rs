@@ -470,6 +470,11 @@ use crate::domain::name;
 use crate::domain::rules::{
     CreateEntityCandidate, NameShapeRule, PrimaryCategoryRequired, PublishedTransitionSubject,
 };
+use crate::domain::taxonomy::{
+    AssignmentCandidate, AssignmentRole, AttributeDefinitionKnownRule, CarriedDefinition,
+    CategoryRoleConflictRule, ContentSaveSubject, LocalizedValue, PublishedContentSubject,
+    ResolvedDefinition, ValueCandidate, content_save_pipeline, published_content_pipeline,
+};
 use crate::domain::transition::{
     self, ApprovalInvalidation, ApprovalInvalidationHook as _, NoApprovalStoreHook,
 };
@@ -3565,6 +3570,23 @@ async fn run_publish(
         return Err(HeadActError::Refused(transition_refusal(&report)));
     }
 
+    // -- The same phase, `02`'s other publish-time rule: every localized
+    // definition this entity carries values for must carry one at the global
+    // coordinate, or the fallback chain runs out for at least one brand
+    // (`inst-av-default-locale`). Its own pipeline rather than a rule on the
+    // one above, because its subject is the entity's **stored** values and
+    // `PublishedTransitionSubject` has no field for them -- the same reason
+    // that type exists beside `CreateEntityCandidate`.
+    //
+    // At publish and never at draft save: a partially-authored draft is
+    // legal, which is why this is here and not in `content_save_pipeline`. --
+    let carried = carried_definitions(runner, inputs, head.product_id).await?;
+    if !carried.carried.is_empty()
+        && let Some((_phase, report)) = published_content_pipeline().run(&carried)
+    {
+        return Err(HeadActError::Refused(DomainError::Validation(report)));
+    }
+
     // -- Phase 7, the governance gate, inside the door, in the mode this
     // act was entered under (`inst-fd-gate-mode`). `Gate` from every wire
     // surface; `PreAuthorized` only from an in-process caller, which is the
@@ -4121,6 +4143,174 @@ enum ProductSaveValue {
     BrandScope(String),
 }
 
+/// The **content** half of a save payload: rows in `02`'s tables, never
+/// columns on the head.
+///
+/// # Why this is not two more `ProductSaveField` variants
+///
+/// [`ProductSaveField::column`] maps every variant to a physical column of
+/// `products_product`, and `crate::domain::bucket`'s registry keys on that
+/// column. Category assignments and attribute values have **no column** —
+/// they are rows in `products_product_category` and
+/// `products_attribute_value` — so routing them through
+/// [`route_product_save`] would ask the bucket registry for a tag that cannot
+/// exist, and `bucket::classify` refuses an untagged column rather than
+/// defaulting. They are parsed apart and never enter the head save.
+///
+/// # `None` and `Some(empty)` are different acts
+///
+/// A payload that names no `categories` key leaves the assignment set alone;
+/// one that sends `"categories": []` **clears** it. Collapsing the two would
+/// make an unfiled Product unreachable through the door — a `PATCH` is a
+/// per-key merge and the empty list is the only way to say *"none"*.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct ContentSavePayload {
+    /// The whole assignment set, replace-shaped. `None` is *untouched*.
+    categories: Option<Vec<(Uuid, AssignmentRole)>>,
+    /// The values to write. `None` is *untouched*; an entry is an upsert at
+    /// its coordinate.
+    attributes: Option<Vec<AttributeWrite>>,
+}
+
+impl ContentSavePayload {
+    /// Whether the payload asks for any content write at all.
+    const fn is_empty(&self) -> bool {
+        self.categories.is_none() && self.attributes.is_none()
+    }
+}
+
+/// One attribute value the payload writes, keyed as the caller spelled it.
+///
+/// The definition is named by **key** rather than by id, because that is what
+/// an author knows and what every refusal quotes back
+/// (`ATTRIBUTE_DEFINITION_UNKNOWN` names the key). The door resolves it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AttributeWrite {
+    /// The tenant-unique definition key.
+    pub(crate) key: String,
+    /// `""` is absent, not null (**P-D-88** arm 2).
+    pub(crate) locale: String,
+    /// `""` is absent.
+    pub(crate) region: String,
+    /// `""` is absent.
+    pub(crate) brand: String,
+    /// The value.
+    pub(crate) value: String,
+}
+
+/// The two wire keys the content half owns.
+///
+/// Named once so [`parse_product_save`] can skip them without repeating the
+/// literals: a key this list forgets becomes an `unroutable_product_field`
+/// refusal, which is fail-closed and therefore safe, but silently drops a
+/// feature.
+const CONTENT_SAVE_KEYS: [&str; 2] = ["categories", "attributes"];
+
+/// Parse the content half, refusing anything it cannot read.
+///
+/// Every refusal here is `VALIDATION` with the field named, because the
+/// operand is the caller's own body — the same reasoning
+/// [`check_saved_shape`]'s doc gives for preferring it over
+/// `INCOMPLETE_ENTITY`.
+///
+/// # Errors
+///
+/// [`DomainError::Validation`] naming each malformed entry.
+fn parse_content_save(request: &SaveProductRequest) -> Result<ContentSavePayload, DomainError> {
+    let mut payload = ContentSavePayload::default();
+    let mut violations = Vec::new();
+
+    if let Some(raw) = request.fields.get("categories") {
+        match parse_categories(raw) {
+            Ok(set) => payload.categories = Some(set),
+            Err(detail) => violations.push(("categories".to_owned(), detail)),
+        }
+    }
+    if let Some(raw) = request.fields.get("attributes") {
+        match parse_attributes(raw) {
+            Ok(set) => payload.attributes = Some(set),
+            Err(detail) => violations.push(("attributes".to_owned(), detail)),
+        }
+    }
+
+    if violations.is_empty() {
+        Ok(payload)
+    } else {
+        Err(shape_refusal(violations))
+    }
+}
+
+/// `[{"categoryId": "…", "role": "primary"}, …]`.
+fn parse_categories(raw: &JsonValue) -> Result<Vec<(Uuid, AssignmentRole)>, String> {
+    let items = raw
+        .as_array()
+        .ok_or_else(|| "categories must be an array".to_owned())?;
+    let mut set = Vec::with_capacity(items.len());
+    for (index, item) in items.iter().enumerate() {
+        let object = item
+            .as_object()
+            .ok_or_else(|| format!("categories[{index}] must be an object"))?;
+        let id = object
+            .get("categoryId")
+            .and_then(JsonValue::as_str)
+            .ok_or_else(|| format!("categories[{index}].categoryId is required"))?;
+        let category_id = Uuid::parse_str(id)
+            .map_err(|_| format!("categories[{index}].categoryId is not a uuid"))?;
+        let role_text = object
+            .get("role")
+            .and_then(JsonValue::as_str)
+            .ok_or_else(|| format!("categories[{index}].role is required"))?;
+        // Parsed fail-closed: `uq_products_product_category_primary` is keyed
+        // on the literal `'primary'`, so a spelling the roster does not admit
+        // would write a row the index cannot see.
+        let role = AssignmentRole::parse(role_text)
+            .ok_or_else(|| format!("categories[{index}].role must be `primary` or `secondary`"))?;
+        set.push((category_id, role));
+    }
+    Ok(set)
+}
+
+/// `[{"key": "…", "value": "…", "locale"?: "…", "region"?: "…", "brand"?: "…"}, …]`.
+///
+/// The three coordinates default to `""`, which is P-D-88 arm 2's **absence**
+/// and the global coordinate's own spelling — so a payload naming only `key`
+/// and `value` writes the global value, which is the one
+/// `inst-av-default-locale` makes mandatory at publish.
+pub(crate) fn parse_attributes(raw: &JsonValue) -> Result<Vec<AttributeWrite>, String> {
+    let items = raw
+        .as_array()
+        .ok_or_else(|| "attributes must be an array".to_owned())?;
+    let mut set = Vec::with_capacity(items.len());
+    for (index, item) in items.iter().enumerate() {
+        let object = item
+            .as_object()
+            .ok_or_else(|| format!("attributes[{index}] must be an object"))?;
+        let coordinate = |name: &str| -> Result<String, String> {
+            match object.get(name) {
+                None | Some(JsonValue::Null) => Ok(String::new()),
+                Some(JsonValue::String(text)) => Ok(text.clone()),
+                Some(_) => Err(format!("attributes[{index}].{name} must be a string")),
+            }
+        };
+        set.push(AttributeWrite {
+            key: object
+                .get("key")
+                .and_then(JsonValue::as_str)
+                .ok_or_else(|| format!("attributes[{index}].key is required"))?
+                .to_owned(),
+            locale: coordinate("locale")?,
+            region: coordinate("region")?,
+            brand: coordinate("brand")?,
+            value: object
+                .get("value")
+                .and_then(JsonValue::as_str)
+                .ok_or_else(|| format!("attributes[{index}].value is required"))?
+                .to_owned(),
+        });
+    }
+    Ok(set)
+}
+
 /// The `Shape` phase's output: every recognized field with its parsed value,
 /// and every field name this door does not author.
 ///
@@ -4245,6 +4435,13 @@ fn parse_product_save(request: &SaveProductRequest) -> Result<ProductSaveFields,
     let mut unrecognized = Vec::new();
     let mut violations = Vec::new();
     for (field, value) in &request.fields {
+        // The content half is parsed by `parse_content_save` and must not be
+        // reported unroutable here. Skipped by name rather than by a second
+        // `from_wire` arm, because a `ProductSaveField` variant would owe
+        // `column()` a physical column and neither of these has one.
+        if CONTENT_SAVE_KEYS.contains(&field.as_str()) {
+            continue;
+        }
         match ProductSaveField::from_wire(field) {
             Some(known) => match parse_product_value(known, value) {
                 Ok(parsed_value) => parsed.push((known, parsed_value)),
@@ -4673,6 +4870,280 @@ fn save_conflict(
 /// column — the parent's or a child's — that does not parse: that is stored
 /// data rather than a request value, so it takes the internal channel and a
 /// `500`, which is how the SKU side treats the identical breach.
+/// Group the entity's **stored** values by definition, for the publish-time
+/// default-locale rule.
+///
+/// # Two reads and a join in memory, not a query per definition
+///
+/// The value rows come back in one statement and the roster in another, and
+/// the `localized` flag is read off the roster rather than off the value —
+/// a value row carries no flag, and a rule that inferred *localized* from
+/// *"this row names a locale"* would let an entity publish carrying one
+/// French value and no global one, which is exactly the gap the rule closes.
+///
+/// A definition the roster does not name is **skipped**: the value's own FK
+/// makes that unreachable through this gear, so treating it as a missing
+/// global value would refuse a publish for a row the door cannot explain.
+///
+/// # Errors
+///
+/// [`HeadActError`] as either read raises it.
+async fn carried_definitions(
+    runner: &(impl DBRunner + Sync),
+    inputs: &HeadActInputs,
+    entity_id: Uuid,
+) -> Result<PublishedContentSubject, HeadActError> {
+    let values = repo::attribute_values_of(
+        runner,
+        &inputs.scope,
+        inputs.tenant_id,
+        PRODUCT_ENTITY_KIND,
+        entity_id,
+    )
+    .await
+    .map_err(|e| HeadActError::from_repo(&e))?;
+    if values.is_empty() {
+        return Ok(PublishedContentSubject::default());
+    }
+    let roster = repo::attribute_definitions(runner, &inputs.scope, inputs.tenant_id)
+        .await
+        .map_err(|e| HeadActError::from_repo(&e))?;
+
+    let mut carried: Vec<CarriedDefinition> = Vec::new();
+    for row in values {
+        let Some(definition) = roster.iter().find(|d| d.definition_id == row.definition_id) else {
+            continue;
+        };
+        let coordinate = LocalizedValue {
+            locale: row.locale,
+            region: row.region,
+            brand: row.brand,
+            value: row.value,
+        };
+        match carried.iter_mut().find(|c| c.key == definition.key) {
+            Some(existing) => existing.values.push(coordinate),
+            None => carried.push(CarriedDefinition {
+                key: definition.key.clone(),
+                localized: definition.localized,
+                values: vec![coordinate],
+            }),
+        }
+    }
+    Ok(PublishedContentSubject { carried })
+}
+
+/// Build the subject the seven content rules judge, from the payload plus the
+/// facts a rule cannot fetch for itself.
+///
+/// `ValidationRule::evaluate` is synchronous — **P-D-97** arm 1 keeps it that
+/// way — so every cross-row operand is read here and carried. That is arm 2's
+/// first form, the shipped `PrimaryCategoryRequired` + `has_primary_category`
+/// pattern, with a **set** of facts where that example has one.
+///
+/// # Two reads, not two per entry
+///
+/// The named categories come back in one statement
+/// ([`repo::category_states`]); the definitions come back as the tenant's
+/// **whole roster** ([`repo::attribute_definitions`]) rather than one lookup
+/// per key. The roster is small — five seeds plus whatever an operator added —
+/// and one statement inside the mutation transaction cannot disagree with
+/// itself the way N statements can under a peer's flip.
+///
+/// # An unresolved name is carried, never dropped
+///
+/// A key or an id the tenant does not have arrives as `resolved: None`, which
+/// is what `CategoryResolvableRule` and `AttributeDefinitionKnownRule` refuse.
+/// Dropping it here would turn a refusal into a silent no-op — the exact shape
+/// `unroutable_product_field` exists to prevent on the head half.
+///
+/// # Errors
+///
+/// [`HeadActError`] as the two reads raise it.
+async fn content_subject(
+    runner: &(impl DBRunner + Sync),
+    inputs: &HeadActInputs,
+    head: &ProductRecord,
+    payload: &ContentSavePayload,
+) -> Result<ContentSaveSubject, HeadActError> {
+    let mut subject = ContentSaveSubject {
+        entity_region_scope: head.region_scope.clone(),
+        entity_brand_scope: head.brand_scope.clone(),
+        ..ContentSaveSubject::default()
+    };
+
+    if let Some(named) = payload.categories.as_ref() {
+        let ids: Vec<Uuid> = named.iter().map(|(id, _)| *id).collect();
+        let states = repo::category_states(runner, &inputs.scope, inputs.tenant_id, &ids)
+            .await
+            .map_err(|e| HeadActError::from_repo(&e))?;
+        subject.assignments = named
+            .iter()
+            .map(|(category_id, role)| AssignmentCandidate {
+                category_id: *category_id,
+                role: *role,
+                resolved: states
+                    .iter()
+                    .find(|(id, _)| id == category_id)
+                    .map(|(_, state)| *state),
+            })
+            .collect();
+    }
+
+    if let Some(writes) = payload.attributes.as_ref() {
+        let roster = repo::attribute_definitions(runner, &inputs.scope, inputs.tenant_id)
+            .await
+            .map_err(|e| HeadActError::from_repo(&e))?;
+        subject.values = writes
+            .iter()
+            .map(|write| ValueCandidate {
+                definition_key: write.key.clone(),
+                locale: write.locale.clone(),
+                region: write.region.clone(),
+                brand: write.brand.clone(),
+                value: write.value.clone(),
+                resolved: roster
+                    .iter()
+                    .find(|d| d.key == write.key)
+                    .map(|d| ResolvedDefinition {
+                        state: d.state,
+                        value_type: d.value_type.clone(),
+                        localized: d.localized,
+                        region_scope: d.region_scope.clone(),
+                        brand_scope: d.brand_scope.clone(),
+                    }),
+            })
+            .collect();
+    }
+
+    Ok(subject)
+}
+
+/// Turn a failing content rule into the door's refusal.
+///
+/// # The rule's own code reaches the wire, and no `DomainError` variant is
+/// needed for it
+///
+/// `infra::error_mapping`'s `Validation` arm renders **each violation's own
+/// `code`** as the precondition violation's `type`, so `CATEGORY_RETIRED` and
+/// its five siblings are attributed as themselves the moment they are raised
+/// here. Group A5 reported the opposite — that they would fall back to
+/// `INCOMPLETE_ENTITY` until twelve variants landed — and that was reasoning
+/// from `transition_refusal`'s ladder, which is the **publish** path.
+/// `a_content_rules_code_reaches_the_wire_without_a_domain_error_variant`
+/// holds the correction.
+///
+/// What still needs a variant is a code raised **outside** a report:
+/// `CATEGORY_REFERENCED`, `DEFINITION_IN_USE`, `STALE_CATEGORY_TOKEN` and
+/// `TAXONOMY_LIMIT`, whose producers return domain values rather than
+/// violations.
+///
+/// The report's per-field violations are carried whole rather than folded
+/// into a message: a save carries a body, so `VALIDATION`-class attribution
+/// naming the field is exactly right — [`revalidation_refusal`]'s doc argues
+/// the same point in the other direction for the bodiless publish.
+fn content_refusal(report: ValidationReport) -> DomainError {
+    DomainError::Validation(report)
+}
+
+/// Write the content rows this save names, on the caller's transaction.
+///
+/// **P-D-46**: they land in the same transaction as the head `UPDATE`, so a
+/// rolled-back save leaves neither. Nothing here opens one.
+///
+/// The assignment write is a **replace** and the value writes are upserts,
+/// which is the difference between the two collections' own semantics: the
+/// assignment set is the set, while a value payload is a per-coordinate merge
+/// (`inst-md-write`'s shape, and the reason `attributes: []` clears nothing).
+///
+/// # Errors
+///
+/// [`HeadActError`] on a storage failure, and on the two uniqueness conflicts
+/// [`repo::AssignmentWrite`] classifies — which reach the wire as `VALIDATION`
+/// for the reason [`content_refusal`] gives.
+async fn write_content_rows(
+    runner: &impl DBRunner,
+    inputs: &HeadActInputs,
+    payload: &ContentSavePayload,
+    now: DateTime<Utc>,
+) -> Result<(), HeadActError> {
+    if let Some(set) = payload.categories.as_ref() {
+        let written = repo::replace_category_assignments(
+            runner,
+            &inputs.scope,
+            inputs.tenant_id,
+            inputs.product_id,
+            set,
+            now,
+        )
+        .await
+        .map_err(|e| HeadActError::from_repo(&e))?;
+        if written != repo::AssignmentWrite::Applied {
+            let mut report = ValidationReport::new();
+            report.violate(
+                CategoryRoleConflictRule::CODE,
+                "categories",
+                match written {
+                    repo::AssignmentWrite::PrimaryConflict => {
+                        "a Product holds at most one primary category"
+                    }
+                    _ => "a Product holds one category in one role",
+                },
+            );
+            return Err(HeadActError::Refused(content_refusal(report)));
+        }
+    }
+
+    if let Some(writes) = payload.attributes.as_ref() {
+        for write in writes {
+            let definition = repo::attribute_definition_by_key(
+                runner,
+                &inputs.scope,
+                inputs.tenant_id,
+                &write.key,
+            )
+            .await
+            .map_err(|e| HeadActError::from_repo(&e))?
+            .ok_or_else(|| {
+                // The pipeline already refused an unknown key, so this
+                // is a peer removing the definition between the read
+                // and the write. It is a refusal and not a 500: the
+                // act was judged against a roster that has moved.
+                let mut report = ValidationReport::new();
+                report.violate(
+                    AttributeDefinitionKnownRule::CODE,
+                    format!("attributes.{}", write.key),
+                    "the definition was removed while this save was in flight",
+                );
+                HeadActError::Refused(content_refusal(report))
+            })?;
+            repo::upsert_attribute_value(
+                runner,
+                &inputs.scope,
+                inputs.tenant_id,
+                repo::AttributeCoordinate {
+                    entity_kind: PRODUCT_ENTITY_KIND,
+                    entity_id: inputs.product_id,
+                    definition_id: definition.definition_id,
+                    locale: &write.locale,
+                    region: &write.region,
+                    brand: &write.brand,
+                },
+                &write.value,
+                now,
+            )
+            .await
+            .map_err(|e| HeadActError::from_repo(&e))?;
+        }
+    }
+    Ok(())
+}
+
+/// The `entity_kind` a Product's own attribute values carry.
+///
+/// A literal because §7 row 20 is the live question of what that column
+/// admits; an enum here would answer it from a door.
+const PRODUCT_ENTITY_KIND: &str = "product";
+
 async fn check_children_stay_contained(
     runner: &(impl DBRunner + Sync),
     inputs: &HeadActInputs,
@@ -4909,13 +5380,18 @@ async fn run_save(
     // beside a bucket-i column on a published head, where the design
     // requires the run to stop at `shape` with `VALIDATION`. --
     let (parsed, unrecognized) = parse_product_save(request).map_err(HeadActError::Refused)?;
+    let content = parse_content_save(request).map_err(HeadActError::Refused)?;
     check_saved_shape(&head, &parsed).map_err(HeadActError::Refused)?;
 
     // -- Phase 4, state: terminality — which reaches every head write and
     // not only a transition (`inst-fd-terminal`, P-D-25 widened by
     // P-D-32) — then bucket routing over the whole request. --
     transition::check_head_write(head.lifecycle_state).map_err(HeadActError::Refused)?;
-    let save = route_product_save(&head, parsed, &unrecognized)?;
+    let mut save = route_product_save(&head, parsed, &unrecognized)?;
+    // `02`'s content rides this head's revision (C2), so a save naming only
+    // `categories` or `attributes` still moves it -- and `repo::empty_save`'s
+    // guard must see that as a content write rather than as a bare bump.
+    save.content_moved = !content.is_empty();
 
     // -- Phase 6, the registered-validators phase: `fr-parent-child-integrity`
     // over the Product's live children, judged against the image this save
@@ -4927,6 +5403,23 @@ async fn run_save(
     // rule's operand is a read of other rows. So it runs as that phase's
     // continuation, on this transaction. --
     check_children_stay_contained(runner, inputs, &head, &save).await?;
+
+    // -- The same phase, `02`'s half: the seven content rules over the
+    // assignments and values this payload names. A registered pipeline rather
+    // than a continuation, because every operand is a fact this door can
+    // prefetch (**P-D-97** arm 2's first form) -- so unlike the containment
+    // check above, these collect: one save answers one rejection carrying
+    // every content violation.
+    //
+    // It runs **before** the gate for `Phase::ordered()`'s reason, the one
+    // `run_publish` states: an act that is not legal at all must be refused as
+    // illegal rather than answered with an approval question. --
+    if !content.is_empty() {
+        let subject = content_subject(runner, inputs, &head, &content).await?;
+        if let Some((_phase, report)) = content_save_pipeline().run(&subject) {
+            return Err(HeadActError::Refused(content_refusal(report)));
+        }
+    }
 
     // -- Phase 7, the governance gate, in `Gate` mode: asked at every
     // mutating door and passing trivially where the act is ungated
@@ -4974,6 +5467,18 @@ async fn run_save(
     if write == HeadWrite::Unmatched {
         return Err(classify_unmatched_save(runner, inputs, structural).await);
     }
+
+    // -- `02`'s content rows, on this same transaction (**P-D-46**), so a
+    // rolled-back save leaves neither the head update nor them. **After** the
+    // head `UPDATE` and not before: the `UPDATE` carries the precondition, the
+    // terminality filter and the bucket guard in its own `WHERE`, so it is the
+    // statement that decides whether this act happens at all -- writing
+    // content first would put rows down for a save the head row then refuses.
+    //
+    // It is also why the head write stays exactly one statement: this adds
+    // rows to other tables and touches no column of `products_product`, so
+    // `inst-fd-transition-bump`'s "once" is untouched. --
+    write_content_rows(runner, inputs, &content, inputs.now).await?;
 
     // -- The approval-invalidation hook, which a save **fires**: see this
     // function's own doc for why the answer is not read off

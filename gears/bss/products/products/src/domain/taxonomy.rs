@@ -74,7 +74,7 @@ use uuid::Uuid;
 
 use crate::domain::containment::ResolvedScope;
 use crate::domain::error::DomainError;
-use crate::domain::validation::{Phase, ValidationReport, ValidationRule};
+use crate::domain::validation::{Phase, ValidationPipeline, ValidationReport, ValidationRule};
 
 /// Which taxonomy mutation is being judged.
 ///
@@ -1573,6 +1573,62 @@ pub fn value_collection(values: &[FrozenAttributeValue]) -> serde_json::Value {
             })
             .collect(),
     )
+}
+
+/// The seven content rules, registered — the **one** list both save doors run.
+///
+/// # Why the list lives here and not at each door
+///
+/// `domain::rules`' own doc gives the rule this follows: *"a feature ships its
+/// validators with its handler, and there is no runtime registry to fall out
+/// of step with the handler set."* The concern that sentence names is a
+/// **runtime** registry, and this is not one: it is compile-time code in the
+/// feature's own module, beside the seven rule types it registers, and a rule
+/// added without a line here is a rule with no caller — which is exactly the
+/// state `A-OWED-08` found sixteen of this feature's own in.
+///
+/// The alternative was a builder per door. Two doors need the identical seven,
+/// and the SKU door's list would have been the one to go stale: it is the door
+/// that runs **no** pipeline today, so nothing there would have reddened when
+/// an eighth rule landed on the Product side alone. One list cannot drift from
+/// itself.
+///
+/// **The counter-argument, stated:** registration is now one call away from
+/// the handler rather than in it, so a reader at the door sees
+/// `content_save_pipeline()` and not the seven names. That is the cost, and it
+/// is paid to remove a drift a second list would have made silent.
+///
+/// Every rule is [`Phase::RegisteredValidators`] — **P-D-97** arm 2's first
+/// form, a registered rule whose operands are facts the door prefetches, the
+/// shipped `PrimaryCategoryRequired` + `has_primary_category` pattern. One
+/// phase means one rejection carrying every content violation, so an operator
+/// fixing four fields makes one round trip.
+#[must_use]
+pub fn content_save_pipeline() -> ValidationPipeline<ContentSaveSubject> {
+    ValidationPipeline::new()
+        .with_rule(Box::new(CategoryResolvableRule))
+        .with_rule(Box::new(CategoryNotRetiredRule))
+        .with_rule(Box::new(CategoryRoleConflictRule))
+        .with_rule(Box::new(AttributeDefinitionKnownRule))
+        .with_rule(Box::new(AttributeDefinitionActiveRule))
+        .with_rule(Box::new(AttributeValueTypeRule))
+        .with_rule(Box::new(AttributeScopeRule))
+}
+
+/// The `-> published` content pipeline: the global-coordinate demand.
+///
+/// Separate from [`content_save_pipeline`] and from
+/// `products::published_transition_pipeline`, because its subject is neither
+/// of theirs — `inst-av-default-locale` judges the entity's **stored** values,
+/// which a save's payload does not carry and
+/// `rules::PublishedTransitionSubject` has no field for.
+///
+/// At publish and never at draft save, for the reason
+/// `rules::PrimaryCategoryRequired`'s doc gives about its sibling: a
+/// partially-authored draft is legal.
+#[must_use]
+pub fn published_content_pipeline() -> ValidationPipeline<PublishedContentSubject> {
+    ValidationPipeline::new().with_rule(Box::new(DefaultLocaleRequired))
 }
 
 /// The sixteen codes `design/02` §3.3 declares, as one roster.

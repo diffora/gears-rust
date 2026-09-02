@@ -4909,3 +4909,166 @@ mod meter_declaration_tests {
         );
     }
 }
+
+// ── The content save path (group A6) ──────────────────────────────────────
+//
+// **This door ran no validation pipeline at all before A6**, while SKUs have
+// carried attribute values since `02`'s tables landed. The four value rules
+// now run here from the same `content_save_pipeline` the Product door runs —
+// one list, so the two cannot drift — and the values land on the save's own
+// transaction.
+//
+// A SKU carries no category assignments: `products_product_category` is keyed
+// on `product_id` and a SKU has no column in it. So this door owns one content
+// key where the Product door owns two.
+
+/// Seed one attribute definition and answer nothing — the tests below name it
+/// by key, which is what the wire carries.
+async fn seed_sku_definition(harness: &TestHarness, key: &str, value_type: &str, state: &str) {
+    let conn = Database::connect(&harness.dsn)
+        .await
+        .expect("open an auxiliary connection to seed a definition");
+    conn.execute_unprepared(&format!(
+        "INSERT INTO products_attribute_definition \
+         (tenant_id, definition_id, key, value_type, localized, region_scope, brand_scope, \
+          state, seeded_by, created_at, updated_at) \
+         VALUES (X'{tenant}', X'{def}', '{key}', '{value_type}', 1, '', '', \
+          '{state}', NULL, '2026-09-02T00:00:00Z', '2026-09-02T00:00:00Z')",
+        tenant = TENANT.simple(),
+        def = Uuid::now_v7().simple(),
+    ))
+    .await
+    .expect("seed the definition");
+}
+
+/// **A SKU save naming attributes writes them**, on the same transaction as
+/// the head.
+///
+/// The head `UPDATE` carries only the revision bump here, because the payload
+/// names no head column — which `repo::SkuHeadSave::content_moved` is what
+/// admits. Before A6 that save was refused by `repo::empty_save` as *"a bare
+/// `internal_revision` bump"*, and the guard was right about bumps and wrong
+/// about this one: `design/02` C2 makes an attribute value **entity content**,
+/// so the revision must move or two content states share one `ETag`.
+#[tokio::test]
+async fn a_sku_save_naming_attributes_writes_them_and_bumps_once() {
+    let harness = harness().await;
+    let parent_id = seed_parent(&harness, new_parent_product(Uuid::now_v7(), TENANT)).await;
+    let (sku_id, etag) = seed_draft_sku(&harness, parent_id, "SKU-500").await;
+    seed_sku_definition(&harness, "displayName", "localized_string", "active").await;
+
+    let response = save_sku_at(
+        &harness,
+        sku_id,
+        &etag,
+        &json!({ "attributes": [{ "key": "displayName", "value": "Fibre 500 Standard" }] }),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+
+    assert_eq!(
+        raw_i64(
+            &harness.dsn,
+            "SELECT COUNT(*) AS v FROM products_attribute_value WHERE entity_kind = 'sku'",
+        )
+        .await,
+        1,
+        "the value landed under the `sku` entity kind"
+    );
+    assert_eq!(
+        raw_i64(
+            &harness.dsn,
+            &format!(
+                "SELECT internal_revision AS v FROM products_sku WHERE {}",
+                id_matches("sku_id", sku_id)
+            ),
+        )
+        .await,
+        2,
+        "a content-only save moves the revision the values ride, exactly once"
+    );
+}
+
+/// **The value rules refuse at this door too**, with the rule's own code.
+///
+/// The same four rules, the same codes, and the same wire shape as the Product
+/// door — because both doors run the one `content_save_pipeline`. A per-door
+/// list would have let this side keep passing an unknown key while the other
+/// refused it.
+#[tokio::test]
+async fn the_value_rules_refuse_at_the_sku_door_with_their_own_codes() {
+    let harness = harness().await;
+    let parent_id = seed_parent(&harness, new_parent_product(Uuid::now_v7(), TENANT)).await;
+    let (sku_id, etag) = seed_draft_sku(&harness, parent_id, "SKU-500").await;
+    seed_sku_definition(&harness, "oldName", "localized_string", "deprecated").await;
+
+    for (label, key, expected) in [
+        (
+            "unknown",
+            "nobodyDeclaredThis",
+            "ATTRIBUTE_DEFINITION_UNKNOWN",
+        ),
+        ("deprecated", "oldName", "ATTRIBUTE_DEFINITION_DEPRECATED"),
+    ] {
+        let response = save_sku_at(
+            &harness,
+            sku_id,
+            &etag,
+            &json!({ "attributes": [{ "key": key, "value": "x" }] }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{label}");
+        let view = body_json(response).await;
+        assert_eq!(
+            view["context"]["violations"][0]["type"],
+            json!(expected),
+            "{label}: the rule's own code reaches the wire, no DomainError variant needed"
+        );
+        assert_eq!(
+            raw_i64(
+                &harness.dsn,
+                "SELECT COUNT(*) AS v FROM products_attribute_value",
+            )
+            .await,
+            0,
+            "{label}: a refused save writes no value"
+        );
+    }
+}
+
+/// **A refused content save leaves the head untouched**, which is the half of
+/// `dod-assignment-validators`' transaction clause this door can hold: the
+/// pipeline runs before the head `UPDATE`, so a refusal costs no revision.
+#[tokio::test]
+async fn a_refused_sku_content_save_moves_no_revision() {
+    let harness = harness().await;
+    let parent_id = seed_parent(&harness, new_parent_product(Uuid::now_v7(), TENANT)).await;
+    let (sku_id, etag) = seed_draft_sku(&harness, parent_id, "SKU-500").await;
+
+    let refused = save_sku_at(
+        &harness,
+        sku_id,
+        &etag,
+        &json!({ "sku_code": "SKU-900", "attributes": [{ "key": "unknown", "value": "x" }] }),
+    )
+    .await;
+    assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
+
+    assert_eq!(
+        head_sku_code(&harness.dsn, sku_id).await.as_deref(),
+        Some("SKU-500"),
+        "the head field in the same request was not applied either"
+    );
+    assert_eq!(
+        raw_i64(
+            &harness.dsn,
+            &format!(
+                "SELECT internal_revision AS v FROM products_sku WHERE {}",
+                id_matches("sku_id", sku_id)
+            ),
+        )
+        .await,
+        1,
+        "and the revision did not move"
+    );
+}

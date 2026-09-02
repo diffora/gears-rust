@@ -842,13 +842,20 @@ that is retired (`CATEGORY_RETIRED`) and a category named both primary and secon
 rows **MUST** land inside the save door's transaction, and a rollback **MUST** leave neither the
 head update nor the assignment rows.
 
-**The three rules ship and none of them reaches a runtime, which is why this is not ticked.**
-`CategoryResolvableRule`, `CategoryNotRetiredRule` and `CategoryRoleConflictRule` implement
-`ValidationRule<ContentSaveSubject>` and are probed through a pipeline built **in the test module**.
-That mirror is not the door: registration is compile-time code, the `.with_rule` lines live at the
-doors, and **there is no content-save pipeline to add them to at this commit** — the gear has three
-pipelines, all publish-path, and the SKU save door runs none at all. A rule with no registration
-line is not done, and the lines are handed over rather than the box being ticked.
+**The three rules are registered and reach the wire** (group A6). `content_save_pipeline` is the
+one list both save doors run, and the Product door builds its subject from the payload plus two
+reads — each named category's state, and the tenant's definition roster. All three refusals are
+probed **through the door**, and each is shown to write no assignment row and move no head
+revision.
+
+The transaction clause holds end to end: the pipeline runs in the registered-validators phase
+before the gate, and `repo::replace_category_assignments` runs after the head `UPDATE` on the same
+transaction (**P-D-46**), so a refusal costs nothing and a rollback leaves neither.
+
+**Still not ticked, on §7 row 17.** Two of the three refusals — the unresolvable category and the
+primary/secondary duplicate — have no code of their own and ride the Foundation's `VALIDATION`.
+This DoD's own sentence names a code for one refusal only, so the row and the DoD may not be asking
+the same thing; that is registered rather than decided here, on the standard `A-OWED-02` set.
 
 **Two of the three refusals have no code**, which is §7 row 17's own list — the unresolvable
 category and the primary/secondary duplicate. Both raise the Foundation's declared `VALIDATION`
@@ -957,11 +964,22 @@ whose type does not match the declared type (`ATTRIBUTE_TYPE_MISMATCH`), and coo
 either the definition's visibility scope or the entity's own scope
 (`ATTRIBUTE_SCOPE_VIOLATION`). Every refusal **MUST** carry a paired positive control.
 
-**All four rules ship with their controls; none reaches a runtime.** Same reason as
-`dod-assignment-validators`: there is no content-save pipeline at either door, so the four
-`.with_rule` lines have nowhere to go yet and the box stays unticked. Beyond the paired controls
-the DoD asks for, one case holds the property the shared phase makes possible: an unresolved
-definition raises **one** violation and not four, because every rule skips what it cannot judge.
+**All four rules are registered at both doors** (group A6) — including the SKU save door, which
+ran **no pipeline at all** before it while SKUs have carried attribute values since `02`'s tables
+landed. One `content_save_pipeline` serves both, so the two lists cannot drift.
+
+**A rule's code reaches the wire as itself, and group A5 reported otherwise.** A5 said these codes
+would fall back to `INCOMPLETE_ENTITY` until twelve `DomainError` variants landed; that read
+`transition_refusal`'s ladder, which is the **publish** path. The save path is
+`DomainError::Validation`, whose mapping arm renders **each violation's own `code`** as the wire
+`type`. So all four are attributed today with no variant at all, which is measured at both doors.
+The consequence for §7 row 18: a pipeline violation renders through `failed_precondition`, the
+architectural 422 — so answering that row 409 would move these refusals **out** of the pipeline,
+which makes it a placement question and not only a status one.
+
+Beyond the paired controls the DoD asks for, one case holds the property the shared phase makes
+possible: an unresolved definition raises **one** violation and not four, because every rule skips
+what it cannot judge.
 
 Three readings inside them are worth stating, because each could have gone the other way silently:
 
@@ -1006,7 +1024,14 @@ refusing `DEFAULT_LOCALE_MISSING` at publish and not at draft save. Per-brand de
 values **MUST** be optional overrides. For a category the same demand **MUST** land at the first
 display-value write for that definition.
 
-**The rule ships; the registration and the category half do not.** `DefaultLocaleRequired` refuses
+**The rule is registered at the publish door** (group A6): `published_content_pipeline` runs in
+the `→ published` phase beside `inst-tx-primary-at-publish`, over the entity's **stored** values
+grouped by definition. Both directions are probed through the door — a localized definition with no
+global value refuses the publish naming `DEFAULT_LOCALE_MISSING`, and the same entity publishes the
+moment the global value lands. A non-localized definition holds no publish, which is the arm that
+keeps `imageUri` from refusing every entity that carries an image.
+
+**The category half does not ship.** `DefaultLocaleRequired` refuses
 a localized definition carrying values but none at the global coordinate, skips a non-localized one
 and one carrying nothing at all, and -- the case that matters -- is **not** satisfied by a value at
 `(default-locale, brand A)`. That is the whole reason per-brand values are *overrides*: a brand-B

@@ -6686,3 +6686,579 @@ mod deprecate_door_tests {
         );
     }
 }
+
+// ── The content save path (group A6) ──────────────────────────────────────
+//
+// Everything below drives the seven rules `domain::taxonomy` declares and the
+// two content writes the save door now performs. Before A6 none of it had a
+// caller: the pipeline existed, the rules were unit-tested, and **no request
+// could reach them** — which is what `A-OWED-08` measured and what these
+// cases exist to stop being true again.
+//
+// The whole suite stayed green at 835 when the pipeline landed, because no
+// fixture sends `categories` or `attributes`. A green run over an unexercised
+// path is the thing to distrust, not the thing to report.
+
+/// Seed one `active` category and answer its id.
+///
+/// Raw SQL on an auxiliary connection for the reason `assign_primary_category`
+/// gives: the taxonomy has no create door (§7 row 16 — three doors name no
+/// REST path), so there is nothing to POST to. The name carries the id
+/// because P-D-88's root index is `UNIQUE (tenant_id, name_normalized) WHERE
+/// parent_id IS NULL` and a fixed name collides on the second call.
+async fn seed_category(harness: &TestHarness, state: &str) -> Uuid {
+    let category_id = Uuid::now_v7();
+    let conn = Database::connect(&harness.dsn)
+        .await
+        .expect("open an auxiliary connection to seed a category");
+    conn.execute_unprepared(&format!(
+        "INSERT INTO products_category \
+         (tenant_id, category_id, parent_id, name, name_normalized, state, \
+          created_at, updated_at) \
+         VALUES (X'{tenant}', X'{cat}', NULL, 'Fixtures {cat}', 'fixtures {cat}', '{state}', \
+          '2026-09-02T00:00:00Z', '2026-09-02T00:00:00Z')",
+        tenant = TENANT.simple(),
+        cat = category_id.simple(),
+    ))
+    .await
+    .expect("seed the category");
+    category_id
+}
+
+/// Seed one attribute definition and answer its id.
+async fn seed_definition(
+    harness: &TestHarness,
+    key: &str,
+    value_type: &str,
+    state: &str,
+    region_scope: &str,
+) -> Uuid {
+    let definition_id = Uuid::now_v7();
+    let conn = Database::connect(&harness.dsn)
+        .await
+        .expect("open an auxiliary connection to seed a definition");
+    conn.execute_unprepared(&format!(
+        "INSERT INTO products_attribute_definition \
+         (tenant_id, definition_id, key, value_type, localized, region_scope, brand_scope, \
+          state, seeded_by, created_at, updated_at) \
+         VALUES (X'{tenant}', X'{def}', '{key}', '{value_type}', 1, '{region_scope}', '', \
+          '{state}', NULL, '2026-09-02T00:00:00Z', '2026-09-02T00:00:00Z')",
+        tenant = TENANT.simple(),
+        def = definition_id.simple(),
+    ))
+    .await
+    .expect("seed the definition");
+    definition_id
+}
+
+/// The `type` of the first violation a refusal carries, and its `subject`.
+async fn first_violation(response: axum::http::Response<Body>) -> (String, String) {
+    let view = json_body(response).await;
+    (
+        view["context"]["violations"][0]["type"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned(),
+        view["context"]["violations"][0]["subject"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned(),
+    )
+}
+
+/// How many assignment rows one Product holds.
+async fn assignment_count(harness: &TestHarness, product_id: Uuid) -> i64 {
+    raw_i64(
+        &harness.dsn,
+        &format!(
+            "SELECT COUNT(*) AS v FROM products_product_category WHERE {}",
+            id_matches("product_id", product_id)
+        ),
+    )
+    .await
+}
+
+/// **A save naming categories files them, and the rows are read back.**
+///
+/// The write is the one `dod-save-door` names and `A-OWED-08` found missing:
+/// before this, `products_product_category` had **no production writer at
+/// all**, so `has_primary_category` always answered `false` and
+/// `PrimaryCategoryRequired` closed the publish door for every Product.
+#[tokio::test]
+async fn a_save_naming_categories_files_them_in_the_same_transaction() {
+    let harness = harness().await;
+    let product_id = Uuid::now_v7();
+    seed_draft(&harness, product_id).await;
+    let primary = seed_category(&harness, "active").await;
+    let secondary = seed_category(&harness, "active").await;
+
+    let response = save_at(
+        &harness,
+        product_id,
+        1,
+        &json!({ "categories": [
+            { "categoryId": primary, "role": "primary" },
+            { "categoryId": secondary, "role": "secondary" },
+        ]}),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+
+    assert_eq!(assignment_count(&harness, product_id).await, 2);
+    assert_eq!(
+        raw_i64(
+            &harness.dsn,
+            &format!(
+                "SELECT COUNT(*) AS v FROM products_product_category \
+                 WHERE role = 'primary' AND {}",
+                id_matches("product_id", product_id)
+            ),
+        )
+        .await,
+        1,
+        "the primary landed as primary"
+    );
+    assert_eq!(
+        head_of(&harness, product_id).await.internal_revision,
+        2,
+        "the content write rides the head's single UPDATE and adds no second bump"
+    );
+}
+
+/// **A Product filed through the door can then be published**, which is the
+/// whole point and could not happen before A6.
+#[tokio::test]
+async fn a_product_filed_through_the_save_door_can_be_published() {
+    let harness = harness().await;
+    let product_id = Uuid::now_v7();
+    seed_draft(&harness, product_id).await;
+    let category = seed_category(&harness, "active").await;
+
+    let filed = save_at(
+        &harness,
+        product_id,
+        1,
+        &json!({ "categories": [{ "categoryId": category, "role": "primary" }] }),
+    )
+    .await;
+    assert_eq!(filed.status(), StatusCode::OK);
+
+    let published = post_head_act(
+        app_for(&harness, TENANT),
+        TENANT,
+        product_id,
+        "publish",
+        &[("If-Match", &if_match(2))],
+    )
+    .await;
+    assert_eq!(
+        published.status(),
+        StatusCode::OK,
+        "`inst-tx-primary-at-publish` is satisfied by an assignment the DOOR wrote, \
+         not by one a fixture inserted around it"
+    );
+}
+
+/// **An empty list clears the set; an absent key leaves it alone.**
+///
+/// A `PATCH` is a per-key merge, so the two must not collapse: without the
+/// empty-list arm an unfiled Product is unreachable through the door, and
+/// without the absent arm every save of a filed Product would unfile it.
+#[tokio::test]
+async fn an_empty_category_list_clears_and_an_absent_key_does_not() {
+    let harness = harness().await;
+    let product_id = Uuid::now_v7();
+    seed_draft(&harness, product_id).await;
+    let category = seed_category(&harness, "active").await;
+
+    save_at(
+        &harness,
+        product_id,
+        1,
+        &json!({ "categories": [{ "categoryId": category, "role": "primary" }] }),
+    )
+    .await;
+    assert_eq!(assignment_count(&harness, product_id).await, 1);
+
+    let untouched = save_at(&harness, product_id, 2, &json!({ "name": "Fibre 900" })).await;
+    assert_eq!(untouched.status(), StatusCode::OK);
+    assert_eq!(
+        assignment_count(&harness, product_id).await,
+        1,
+        "a save naming no `categories` key leaves the set alone"
+    );
+
+    let cleared = save_at(&harness, product_id, 3, &json!({ "categories": [] })).await;
+    assert_eq!(cleared.status(), StatusCode::OK);
+    assert_eq!(
+        assignment_count(&harness, product_id).await,
+        0,
+        "the empty list is the only way to say `none`"
+    );
+}
+
+/// **The three assignment refusals reach the wire**, each naming `categories`.
+#[tokio::test]
+async fn the_assignment_rules_refuse_through_the_door() {
+    let harness = harness().await;
+    let product_id = Uuid::now_v7();
+    seed_draft(&harness, product_id).await;
+    let live = seed_category(&harness, "active").await;
+    let retired = seed_category(&harness, "retired").await;
+
+    for (label, body) in [
+        (
+            "unresolvable",
+            json!({ "categories": [{ "categoryId": Uuid::now_v7(), "role": "primary" }] }),
+        ),
+        (
+            "retired",
+            json!({ "categories": [{ "categoryId": retired, "role": "primary" }] }),
+        ),
+        (
+            "one category twice",
+            json!({ "categories": [
+                { "categoryId": live, "role": "primary" },
+                { "categoryId": live, "role": "secondary" },
+            ]}),
+        ),
+    ] {
+        let response = save_at(&harness, product_id, 1, &body).await;
+        assert_eq!(
+            response.status(),
+            StatusCode::BAD_REQUEST,
+            "{label}: an architectural 422 reaches the wire as 400"
+        );
+        let (_, subject) = first_violation(response).await;
+        assert_eq!(subject, "categories", "{label}");
+        assert_eq!(
+            assignment_count(&harness, product_id).await,
+            0,
+            "{label}: a refused save writes no assignment"
+        );
+        assert_eq!(
+            head_of(&harness, product_id).await.internal_revision,
+            1,
+            "{label}: and moves no head revision either"
+        );
+    }
+}
+
+/// **The four value refusals reach the wire**, each naming its own key.
+#[tokio::test]
+async fn the_value_rules_refuse_through_the_door() {
+    let harness = harness().await;
+    let product_id = Uuid::now_v7();
+    seed_draft(&harness, product_id).await;
+    seed_definition(&harness, "displayName", "localized_string", "active", "").await;
+    seed_definition(&harness, "oldName", "localized_string", "deprecated", "").await;
+    seed_definition(&harness, "imageUri", "uri_string", "active", "").await;
+    seed_definition(&harness, "euOnly", "localized_string", "active", "eu").await;
+
+    for (label, key, extra) in [
+        ("unknown", "nobodyDeclaredThis", json!({})),
+        ("deprecated", "oldName", json!({})),
+        ("type mismatch", "imageUri", json!({})),
+        ("scope violation", "euOnly", json!({ "region": "apac" })),
+    ] {
+        let mut entry = json!({ "key": key, "value": "not a uri" });
+        if let (Some(target), Some(source)) = (entry.as_object_mut(), extra.as_object()) {
+            for (k, v) in source {
+                target.insert(k.clone(), v.clone());
+            }
+        }
+        let response = save_at(&harness, product_id, 1, &json!({ "attributes": [entry] })).await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{label}");
+        let (_, subject) = first_violation(response).await;
+        assert_eq!(subject, format!("attributes.{key}"), "{label}");
+        assert_eq!(
+            raw_i64(
+                &harness.dsn,
+                "SELECT COUNT(*) AS v FROM products_attribute_value",
+            )
+            .await,
+            0,
+            "{label}: a refused save writes no value"
+        );
+    }
+}
+
+/// **A clean value write lands at the coordinate the payload named**, and the
+/// three coordinates default to `""` — P-D-88 arm 2's absence, which is the
+/// global coordinate `inst-av-default-locale` makes mandatory at publish.
+#[tokio::test]
+async fn a_save_naming_attributes_writes_them_at_their_coordinates() {
+    let harness = harness().await;
+    let product_id = Uuid::now_v7();
+    seed_draft(&harness, product_id).await;
+    seed_definition(&harness, "displayName", "localized_string", "active", "").await;
+
+    let response = save_at(
+        &harness,
+        product_id,
+        1,
+        &json!({ "attributes": [
+            { "key": "displayName", "value": "Fibre 500" },
+            { "key": "displayName", "locale": "fr-FR", "value": "Fibre 500 FR" },
+        ]}),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+
+    assert_eq!(
+        raw_i64(
+            &harness.dsn,
+            "SELECT COUNT(*) AS v FROM products_attribute_value",
+        )
+        .await,
+        2,
+        "two coordinates, two rows"
+    );
+    assert_eq!(
+        raw_string_opt(
+            &harness.dsn,
+            "SELECT value AS v FROM products_attribute_value \
+             WHERE locale = '' AND region = '' AND brand = ''",
+        )
+        .await
+        .as_deref(),
+        Some("Fibre 500"),
+        "the global coordinate is three empty strings"
+    );
+}
+
+/// **A content rule's code reaches the wire as itself, with no `DomainError`
+/// variant — and this corrects what group A5 reported.**
+///
+/// A5 claimed the seven rules' codes would fall back to `INCOMPLETE_ENTITY`
+/// until `dod-taxonomy-errors` landed their twelve variants. That reasoning
+/// read `transition_refusal`'s ladder, which is the **publish** path. The save
+/// path is `DomainError::Validation`, and `infra::error_mapping`'s arm for it
+/// renders **each violation's own `code`** as the precondition violation's
+/// `type`. So a code raised through the pipeline is already attributed, and
+/// the six the rules raise need no variant at all.
+///
+/// What still needs one is a code raised **outside** a report, as a
+/// `DomainError` — `CATEGORY_REFERENCED`, `DEFINITION_IN_USE`,
+/// `STALE_CATEGORY_TOKEN`, `TAXONOMY_LIMIT`. A8 carries those four and not
+/// twelve.
+///
+/// **The consequence worth keeping**: §7 row 18 asks whether this code and
+/// `ATTRIBUTE_DEFINITION_DEPRECATED` are 409 rather than 422. A pipeline
+/// violation renders through `failed_precondition`, which is the architectural
+/// 422. If the API-contract owner answers 409, these two must leave the
+/// pipeline for a `DomainError` — so that row is not only a status question,
+/// it decides where the refusal is raised.
+#[tokio::test]
+async fn a_content_rules_code_reaches_the_wire_without_a_domain_error_variant() {
+    let harness = harness().await;
+    let product_id = Uuid::now_v7();
+    seed_draft(&harness, product_id).await;
+    let retired = seed_category(&harness, "retired").await;
+
+    let response = save_at(
+        &harness,
+        product_id,
+        1,
+        &json!({ "categories": [{ "categoryId": retired, "role": "primary" }] }),
+    )
+    .await;
+    assert_eq!(
+        response.status(),
+        StatusCode::BAD_REQUEST,
+        "an architectural 422 reaches the wire as 400"
+    );
+    let (code, subject) = first_violation(response).await;
+    assert_eq!(
+        (code.as_str(), subject.as_str()),
+        ("CATEGORY_RETIRED", "categories"),
+        "the rule's own code, not the generic one -- `DomainError` carries no \
+         CATEGORY_RETIRED variant and does not need to"
+    );
+
+    // The paired half: a code with no variant AND no report still cannot
+    // reach the wire as itself. `TAXONOMY_LIMIT` is declared and unraised, so
+    // nothing in the gear can produce it today.
+    assert!(
+        !crate::domain::taxonomy::TAXONOMY_ERROR_CODES.contains(&"NOT_A_CODE"),
+        "the roster is the sixteen and nothing else"
+    );
+}
+
+/// **A malformed content payload is a shape refusal, not a 500.**
+///
+/// The parse runs before every read, so a caller sending a string where an
+/// array belongs is told which field and never reaches the store.
+#[tokio::test]
+async fn a_malformed_content_payload_is_refused_by_shape() {
+    let harness = harness().await;
+    let product_id = Uuid::now_v7();
+    seed_draft(&harness, product_id).await;
+
+    for (body, field) in [
+        (json!({ "categories": "not an array" }), "categories"),
+        (json!({ "attributes": [{ "key": "x" }] }), "attributes"),
+        (
+            json!({ "categories": [{ "categoryId": "not-a-uuid", "role": "primary" }] }),
+            "categories",
+        ),
+        (
+            json!({ "categories": [{ "categoryId": Uuid::now_v7(), "role": "Primary" }] }),
+            "categories",
+        ),
+    ] {
+        let response = save_at(&harness, product_id, 1, &body).await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{body}");
+        let (code, subject) = first_violation(response).await;
+        assert_eq!(
+            (code.as_str(), subject.as_str()),
+            ("VALIDATION", field),
+            "{body}"
+        );
+    }
+}
+
+/// **The content keys are no longer unroutable**, and every other unknown key
+/// still is.
+///
+/// `parse_product_save` skips the two by name. A third key it forgets would
+/// be refused `unroutable_product_field`, which is fail-closed and safe — and
+/// silently featureless, which is why the negative half is asserted beside
+/// the positive.
+#[tokio::test]
+async fn the_content_keys_are_routable_and_nothing_else_new_is() {
+    let harness = harness().await;
+    let product_id = Uuid::now_v7();
+    seed_draft(&harness, product_id).await;
+
+    let admitted = save_at(&harness, product_id, 1, &json!({ "categories": [] })).await;
+    assert_eq!(admitted.status(), StatusCode::OK);
+
+    let refused = save_at(&harness, product_id, 2, &json!({ "metadata": {} })).await;
+    assert_eq!(
+        refused.status(),
+        StatusCode::CONFLICT,
+        "a key this door does not author is still refused, not silently dropped"
+    );
+}
+
+/// **A publish is refused when a localized definition carries no global
+/// value**, and admitted the moment one lands.
+///
+/// `inst-av-default-locale`, reached through the door for the first time.
+/// The refusal is the interesting direction and the admission is what proves
+/// it is not refusing everything: the same entity, one extra value, publishes.
+#[tokio::test]
+async fn a_publish_needs_the_global_value_for_every_localized_definition() {
+    let harness = harness().await;
+    let product_id = Uuid::now_v7();
+    seed_draft(&harness, product_id).await;
+    let category = seed_category(&harness, "active").await;
+    seed_definition(&harness, "displayName", "localized_string", "active", "").await;
+
+    // Filed, and carrying a French value with no global one.
+    let filed = save_at(
+        &harness,
+        product_id,
+        1,
+        &json!({
+            "categories": [{ "categoryId": category, "role": "primary" }],
+            "attributes": [{ "key": "displayName", "locale": "fr-FR", "value": "Fibre FR" }],
+        }),
+    )
+    .await;
+    assert_eq!(filed.status(), StatusCode::OK, "a draft may be incomplete");
+
+    let refused = post_head_act(
+        app_for(&harness, TENANT),
+        TENANT,
+        product_id,
+        "publish",
+        &[("If-Match", &if_match(2))],
+    )
+    .await;
+    assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
+    let (code, subject) = first_violation(refused).await;
+    assert_eq!(
+        (code.as_str(), subject.as_str()),
+        ("DEFAULT_LOCALE_MISSING", "attributes.displayName"),
+        "the fallback chain would run out for every brand"
+    );
+
+    // The global value lands, and the same entity publishes.
+    let completed = save_at(
+        &harness,
+        product_id,
+        2,
+        &json!({ "attributes": [{ "key": "displayName", "value": "Fibre" }] }),
+    )
+    .await;
+    assert_eq!(completed.status(), StatusCode::OK);
+
+    let published = post_head_act(
+        app_for(&harness, TENANT),
+        TENANT,
+        product_id,
+        "publish",
+        &[("If-Match", &if_match(3))],
+    )
+    .await;
+    assert_eq!(
+        published.status(),
+        StatusCode::OK,
+        "the paired control: the rule refuses a gap, not every publish"
+    );
+}
+
+/// **A non-localized definition does not need a global value**, so an entity
+/// carrying only an image URI still publishes.
+///
+/// Without this arm the rule would refuse every publish of an entity holding
+/// `imageUri`, which is one of the five seeds `dod-well-known-seeds` names.
+#[tokio::test]
+async fn a_non_localized_definition_does_not_hold_a_publish() {
+    let harness = harness().await;
+    let product_id = Uuid::now_v7();
+    seed_draft(&harness, product_id).await;
+    let category = seed_category(&harness, "active").await;
+    let conn = Database::connect(&harness.dsn)
+        .await
+        .expect("open an auxiliary connection");
+    conn.execute_unprepared(&format!(
+        "INSERT INTO products_attribute_definition \
+         (tenant_id, definition_id, key, value_type, localized, region_scope, brand_scope, \
+          state, seeded_by, created_at, updated_at) \
+         VALUES (X'{tenant}', X'{def}', 'imageUri', 'uri_string', 0, '', '', \
+          'active', 'registry', '2026-09-02T00:00:00Z', '2026-09-02T00:00:00Z')",
+        tenant = TENANT.simple(),
+        def = Uuid::now_v7().simple(),
+    ))
+    .await
+    .expect("seed the non-localized definition");
+
+    save_at(
+        &harness,
+        product_id,
+        1,
+        &json!({
+            "categories": [{ "categoryId": category, "role": "primary" }],
+            "attributes": [{ "key": "imageUri", "locale": "fr-FR",
+                             "value": "https://cdn.example/a.png" }],
+        }),
+    )
+    .await;
+
+    let published = post_head_act(
+        app_for(&harness, TENANT),
+        TENANT,
+        product_id,
+        "publish",
+        &[("If-Match", &if_match(2))],
+    )
+    .await;
+    assert_eq!(
+        published.status(),
+        StatusCode::OK,
+        "a definition with no locale chain has no chain to make total"
+    );
+}

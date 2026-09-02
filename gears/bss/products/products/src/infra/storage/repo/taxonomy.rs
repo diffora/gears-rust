@@ -443,6 +443,56 @@ pub async fn category_assignments(
         .collect()
 }
 
+/// The stored state of each named category, for the save door's subject.
+///
+/// Answers only the ids it was given, so a caller can tell *"this id resolved
+/// to nothing"* from *"this id resolved to a retired node"* — the two are
+/// different refusals (`CategoryResolvableRule` and `CategoryNotRetiredRule`)
+/// and a read that silently dropped the unresolvable ones would collapse them
+/// into one.
+///
+/// One statement for the whole set rather than one per id: a save naming four
+/// categories would otherwise take four round trips inside the mutation
+/// transaction, and the four could disagree with each other under a peer's
+/// retire.
+///
+/// # Errors
+///
+/// [`RepoError`] on a storage or scope failure; [`RepoError::CorruptRow`] on a
+/// `state` outside the roster the `CHECK` admits.
+pub async fn category_states(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    ids: &[Uuid],
+) -> Result<Vec<(Uuid, CategoryState)>, RepoError> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let rows = category::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(category::Column::TenantId.eq(tenant_id))
+                .add(category::Column::CategoryId.is_in(ids.to_vec())),
+        )
+        .all(runner)
+        .await
+        .map_err(|e| driver_failure(format!("states of {} categories", ids.len()), e))?;
+    rows.into_iter()
+        .map(|row| {
+            let state = CategoryState::parse(&row.state).ok_or_else(|| {
+                RepoError::CorruptRow(format!(
+                    "products_category.state `{}` on {}",
+                    row.state, row.category_id
+                ))
+            })?;
+            Ok((row.category_id, state))
+        })
+        .collect()
+}
+
 /// Name which assignment index refused a write, or `None` where the failure
 /// is not a uniqueness one.
 ///

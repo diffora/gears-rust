@@ -446,22 +446,15 @@ fn only_an_operator_added_definition_is_removable() {
 
 // -- The content-save validators (`inst-av-validate`, `inst-tx-assign`). --
 
-/// The pipeline the **lead** must register at the save door, mirrored here.
+/// The pipeline both save doors now run -- the real one, not a mirror.
 ///
-/// This is a test-local copy, and saying so is the point: the rules below are
-/// proven to work **once registered**, and until the `.with_rule` lines land
-/// in `api/rest/products.rs` and `api/rest/skus.rs` no runtime reaches any of
-/// them. A green run here is not evidence the gear refuses anything -- that
-/// is §3.1's whole warning, and the report carries the exact lines.
+/// Group A6 replaced the test-local copy that stood here. A mirror could pass
+/// while the doors registered a different list, which is precisely the drift
+/// `content_save_pipeline`'s own doc explains the single list exists to
+/// remove; a test asserting the mirror would have proved nothing about either
+/// door.
 fn content_pipeline() -> ValidationPipeline<ContentSaveSubject> {
-    ValidationPipeline::new()
-        .with_rule(Box::new(CategoryResolvableRule))
-        .with_rule(Box::new(CategoryNotRetiredRule))
-        .with_rule(Box::new(CategoryRoleConflictRule))
-        .with_rule(Box::new(AttributeDefinitionKnownRule))
-        .with_rule(Box::new(AttributeDefinitionActiveRule))
-        .with_rule(Box::new(AttributeValueTypeRule))
-        .with_rule(Box::new(AttributeScopeRule))
+    super::content_save_pipeline()
 }
 
 /// Run the pipeline and answer the codes it raised, in order.
@@ -1082,8 +1075,7 @@ fn carried(localized: bool, values: Vec<LocalizedValue>) -> PublishedContentSubj
 }
 
 fn publish_codes(subject: &PublishedContentSubject) -> Vec<&'static str> {
-    ValidationPipeline::new()
-        .with_rule(Box::new(DefaultLocaleRequired))
+    super::published_content_pipeline()
         .run(subject)
         .map(|(_phase, report)| report.violations().iter().map(|v| v.code).collect())
         .unwrap_or_default()
