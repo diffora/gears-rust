@@ -190,9 +190,10 @@ pub mod actions {
     /// the ceremony over it.
     pub const SUBMIT: &str = "submit";
     /// Decide action — casting one principal's verdict on an approval
-    /// (`inst-gv-decide`). Never implied by `submit`: an author who may open
-    /// a ceremony must not thereby be able to close it, which is the whole
-    /// point of C2's self-approval refusal.
+    /// (`inst-gv-self`, which opens *"`approval x decide` grant required"*).
+    /// Never implied by `submit`: an author who may open a ceremony must not
+    /// thereby be able to close it, which is the whole point of C2's
+    /// self-approval refusal — built in `domain::approval::decision_admitted`.
     pub const DECIDE: &str = "decide";
     /// Elevate action — opening a break-glass session (`inst-bg-open`).
     pub const ELEVATE: &str = "elevate";
