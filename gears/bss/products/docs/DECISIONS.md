@@ -1569,6 +1569,74 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   (the re-publish step).
 
 
+#### P-D-108 — The attribute-definition machine's three gaps: removal is material, the label is a value, and the kind set is closed
+
+- **Date**: 2026-09-03 (owner call, answering `features/taxonomy-attributes.md` §7 **rows 10, 13
+  and 20**). One entry because all three are the same machine and **row 13's answer needs row
+  20's operand**, so deciding them apart would decide 13 twice.
+
+- **Arm 1 — row 10: definition removal is material.** `inst-ad-governed` enumerates the material
+  changes as *"type change, visibility narrowing, deprecation"* and removal is absent, so §4's
+  `inst-de-edge-remove` carries no approval condition while the `removed → active` re-listing does:
+  **the destructive edge is cheaper than the restorative one.** That is an omission and not an
+  intent, on two pieces of the slice's own text. `inst-ad-deprecate-then-remove` routes removal
+  **and** the re-listing *"through the same `GovernedLiveOp`"* — one envelope cannot be material in
+  one direction only — and **P-D-47** makes removal *"the definition's `removed` state, never a
+  DELETE"*, so it is a state flip exactly as deprecation is, and `05 inst-mt-inputs` (d) registers
+  02's `GovernedLiveOp` kinds as material by that kind. Removal joins the enumeration.
+  *The argument against*: a stated list is being extended rather than read, and `inst-ad-governed`
+  is `p1`. Accepted, because the list as written prices the irreversible act below the reversible
+  one, and no requirement asks for that.
+
+- **Arm 2 — row 13: a definition's display label is an attribute value on the definition, keyed
+  `entity_kind = 'attribute_definition'`.** Measured: `products_attribute_definition` is
+  `(tenant_id, definition_id, key, value_type, localized, region_scope, brand_scope, state,
+  seeded_by, timestamps)` — **no label column at all**, so `inst-ad-governed`'s non-material
+  *"display-label edit"* has no target and the op is unspendable.
+  The label is **localized**, and this gear already owns a localized-value store, a resolver and a
+  fallback chain. `displayName` is one of `dod-well-known-seeds`' five, localized, and seeded
+  `registry` — so the label is written as that definition's value on the definition, and resolves
+  through the same chain every other display name uses. It is the **category branch's shape
+  applied one level up**: `inst-av-category-branch` already makes a category's display values
+  *"live-entity content"* because categories have no revisions or versions, and a definition has
+  neither either.
+  *The arguments against*: it is **self-referential** — a definition described by a definition —
+  and a reader looking for a label column will not find one. And it makes the removal guard
+  interesting: `displayName` is seeded, so it can never be removed while any definition carries a
+  label, which is a constraint arriving as a side effect rather than by decision. The alternative,
+  a `display_label` column, was rejected because a localized column needs either a second table or
+  a JSON map, and this gear refuses to invent a store it already has.
+
+- **Arm 3 — row 20: the admitted `entity_kind` set is closed at four, and the guard is tightened to
+  match.** Measured, and it is the opposite of what the design's wording implies:
+  `chk_products_attribute_value_entity_kind` reads **`CHECK (entity_kind <> '')`** on both engines —
+  an open complement admitting **any** non-empty string — while `products_metadata`'s own
+  constraint enumerates. So the set was never enumerated anywhere, and a typo'd kind writes
+  silently into the table `dod-attribute-value-table` calls authoritative.
+  The set is **`product`, `sku`, `category`, `attribute_definition`** — the first two from `02` C2,
+  the third because the table *"demonstrably admits `category`"* and `inst-av-category-branch`
+  requires it, the fourth by arm 2. And a **definition does not scope to entity kinds**: nothing in
+  the slice gives a definition a kind restriction, and inventing one would make arm 2 illegal by
+  construction on its first write.
+  *The argument against*: closing the set means every future slice that wants a fifth kind edits a
+  migration rather than adding a row, which is a real cost — paid because an open `<> ''` on this
+  table is a guard that cannot fail, and this gear's own lesson is that a whitelist worded in prose
+  with a complement in the constraint answers the wrong question.
+
+- **Not changed**: the five seeds, `seeded_by = 'registry'`, the deprecate-then-remove path,
+  P-D-47's tombstone reading, and the resolver's fallback chain. Arm 2 adds no store and arm 3 adds
+  no column.
+- **Propagated**: `features/taxonomy-attributes.md` §7 rows **10, 13 and 20**.
+- **Owed, and routed rather than left standing.** This entry decides; two pieces of implementation
+  ride with `02`'s door work and are named here so they are not rediscovered:
+  1. **`inst-ad-governed`'s enumeration** gains removal, and `05 inst-mt-inputs` (d) already covers
+     it by kind — a documentation edit in `design/02`.
+  2. **`chk_products_attribute_value_entity_kind` is tightened** to the four-value enumeration on
+     both engines. Migrations in this gear are **edited in place**, so this is one migration file
+     and its poison-row tests, not a repair migration. The `CorruptRow` case a closed set makes
+     testable is exactly what an open `<> ''` denied.
+
+
 #### P-D-107 — The three answers `02`'s new doors need before they can be built
 
 - **Date**: 2026-09-03 (owner call, answering `features/taxonomy-attributes.md` §7 **rows 2, 14 and
