@@ -568,7 +568,7 @@ filters has already spent the budget and already read what the caller may not se
 
 ### The per-state visibility contract
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-visibility`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-visibility`
 
 Five states, three surfaces, one rule each:
 
@@ -582,9 +582,12 @@ Five states, three surfaces, one rule each:
 
 **The contract is applied at query build.** A row a caller may not see is not fetched.
 
-**`retired`'s only surface is the history flow, which is `p2` while this contract is `p1`.** The
-two priorities disagree, and §7 carries it rather than this DoD resolving it: at `p1` alone,
-`retired` is excluded from browse and reachable nowhere.
+**`retired`'s only *browse-family* surface is the history flow, which is `p2` while this contract
+is `p1`** — and the `p1` cut is not therefore empty of it: **P-D-70 arm 4** (§7 row 14, resolved)
+makes `retired` retrievable at `p1` through the **by-id read under an explicit state opt-in**, never
+the default. The priority disagreement is real and §7 row 17 carries it, but the earlier reading of
+this paragraph — that at `p1` alone `retired` is *"reachable nowhere"* — was retired by that
+decision and contradicted this DoD's own `retired`/filtered-browse cell.
 
 **Implements**: `cpt-cf-bss-products-flow-browse`
 
@@ -771,7 +774,7 @@ practice until those rows exist, and §7 carries it.
 
 ### The four design-introduced names exist as named seams
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-read-seams`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-read-seams`
 
 `design/08` §1.7 introduces four names and each is addressable:
 
@@ -813,8 +816,11 @@ answer is *ontological*, this sweep and this DoD's rationale both reverse.
       `deprecated` flagged in default browse, excluded under `excludeDeprecated` **and served in
       history**; `published` present on all three. **Fifteen cases** — the enumeration above names
       all fifteen, and each absence is asserted beside a presence that proves the fixture could
-      reach the serving path. **The `retired`-in-history arm is blocked on §7 row 14**, the `p1`/`p2`
-      disagreement.
+      reach the serving path. **The `retired`-in-history arm's own route is `p2`** — row 14 is
+      resolved and freed this contract, so what remains is the timeline flow's priority (row 17),
+      not a blocker on the matrix. The matrix is asserted in
+      `domain::read_model::read_model_tests` over all four surfaces including P-D-70 arm 4's by-id
+      read, which is where the `p1` retrievability now lands.
 
 **Scope, at both layers**
 

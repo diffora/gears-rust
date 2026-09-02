@@ -15,6 +15,7 @@ pub mod idempotency;
 pub mod live_op;
 pub mod materiality;
 pub mod name;
+pub mod read_model;
 pub mod recognized;
 pub mod retention;
 pub mod rules;

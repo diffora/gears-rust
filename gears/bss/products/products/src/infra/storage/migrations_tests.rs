@@ -6917,3 +6917,298 @@ mod correction_override_guard_tests {
         );
     }
 }
+
+/// `products_read_entity` — the one table in this chain with **no guard**,
+/// and the oracle that says so (`dod-projection-table`, blocked by
+/// `features/read-models.md` §7 rows 2, 11 and 12, hence the bare marker on
+/// the migration).
+///
+/// The module sits after its neighbour's closing brace rather than being
+/// anchored on a `mod` line: anchoring there splices the new item between
+/// the neighbour and its own doc comment.
+mod read_entity_schema_tests {
+    use sea_orm::ConnectionTrait;
+    use sea_orm_migration::MigratorTrait;
+
+    use super::Migrator;
+
+    const TENANT: &str = "7e420000000000000000000000000000";
+    const ENTITY: &str = "dd110000000000000000000000000001";
+
+    async fn harness() -> sea_orm::DatabaseConnection {
+        let mut opts = sea_orm::ConnectOptions::new("sqlite::memory:");
+        opts.max_connections(1).min_connections(1);
+        let db = sea_orm::Database::connect(opts)
+            .await
+            .expect("connect in-memory sqlite");
+        Migrator::up(&db, None).await.expect("boot the chain");
+        db
+    }
+
+    async fn exec(db: &sea_orm::DatabaseConnection, sql: &str) -> Result<(), sea_orm::DbErr> {
+        db.execute_raw(sea_orm::Statement::from_string(
+            sea_orm::DatabaseBackend::Sqlite,
+            sql.to_owned(),
+        ))
+        .await
+        .map(|_| ())
+    }
+
+    fn insert(kind: &str, state: &str) -> String {
+        format!(
+            "INSERT INTO products_read_entity (tenant_id, entity_kind, entity_id, name, \
+             lifecycle_state, published_version, projected_at) VALUES (X'{TENANT}', '{kind}', \
+             X'{ENTITY}', 'N', '{state}', 1, '2026-09-02')"
+        )
+    }
+
+    /// The schema oracle, with its perturbation case.
+    #[tokio::test]
+    async fn the_read_entity_oracle_pins_its_roster_and_can_fail() {
+        let db = harness().await;
+        let roster =
+            super::governance_store_guard_tests::columns(&db, "products_read_entity").await;
+        assert_eq!(
+            roster,
+            vec![
+                "brand_scope",
+                "category_paths",
+                "composition_pending",
+                "deprecated",
+                "deprecation_provenance",
+                "display_attributes",
+                "entity_code",
+                "entity_id",
+                "entity_kind",
+                "lifecycle_state",
+                "metering_unit",
+                "name",
+                "plan_tier_label",
+                "projected_at",
+                "published_version",
+                "region_scope",
+                "replaced_by_sku_id",
+                "sellable",
+                "sku_type",
+                "tenant_id",
+            ],
+            "inst-ps-shape's list: identity, state and flags, C6's head-read fields, the scope \
+             operands, display, paths, the version"
+        );
+        assert_ne!(
+            roster,
+            super::governance_store_guard_tests::columns(&db, "products_metadata").await,
+            "two different tables must not compare equal"
+        );
+        assert!(
+            super::governance_store_guard_tests::columns(&db, "products_read_entity_nope")
+                .await
+                .is_empty()
+        );
+    }
+
+    /// **The state roster admits all five, including the two no surface
+    /// serves.** A `CHECK` narrowed to the served three would make the
+    /// projector unable to record a discard, and the row would then linger
+    /// as its last served state — served forever.
+    #[tokio::test]
+    async fn the_state_check_admits_every_state_the_projector_must_record() {
+        let db = harness().await;
+        for state in ["draft", "published", "deprecated", "retired", "discarded"] {
+            exec(&db, "DELETE FROM products_read_entity")
+                .await
+                .expect("the table admits a delete - it is rebuildable state, not records");
+            exec(&db, &insert("sku", state))
+                .await
+                .unwrap_or_else(|e| panic!("the projector must be able to record {state}: {e}"));
+        }
+        let err = exec(&db, &insert("sku", "archived"))
+            .await
+            .expect_err("a state outside the five is refused");
+        assert!(
+            err.to_string().contains("chk_products_read_entity_state"),
+            "the state CHECK is what refuses it: {err}"
+        );
+    }
+
+    /// **This table carries no append-only guard, and the absence is the
+    /// point** (§4: *"rebuildable state, not records"*). Asserted rather
+    /// than assumed, because every neighbour in this chain refuses both and
+    /// a reader copying one of them would break the rebuild path.
+    #[tokio::test]
+    async fn the_projection_admits_update_and_delete() {
+        let db = harness().await;
+        exec(&db, &insert("product", "published"))
+            .await
+            .expect("seed one row");
+        exec(
+            &db,
+            &format!(
+                "UPDATE products_read_entity SET lifecycle_state = 'deprecated', deprecated = 1 \
+                 WHERE tenant_id = X'{TENANT}' AND entity_id = X'{ENTITY}'"
+            ),
+        )
+        .await
+        .expect("a projector apply is an UPDATE, and nothing may refuse it");
+        exec(
+            &db,
+            &format!("DELETE FROM products_read_entity WHERE tenant_id = X'{TENANT}'"),
+        )
+        .await
+        .expect("a rebuild replaces content wholesale");
+    }
+
+    /// The entity-kind roster is the two the key addresses.
+    #[tokio::test]
+    async fn the_kind_roster_is_product_and_sku() {
+        let db = harness().await;
+        for kind in ["product", "sku"] {
+            exec(&db, "DELETE FROM products_read_entity")
+                .await
+                .expect("clear");
+            exec(&db, &insert(kind, "published"))
+                .await
+                .expect("both kinds are admitted");
+        }
+        let err = exec(&db, &insert("category", "published"))
+            .await
+            .expect_err("a third kind is refused");
+        assert!(
+            err.to_string().contains("chk_products_read_entity_kind"),
+            "{err}"
+        );
+    }
+}
+
+/// `products_read_stamp` — the `StalenessStamp`'s per-tenant row
+/// (**P-D-70** arm 6).
+mod read_stamp_schema_tests {
+    use sea_orm::ConnectionTrait;
+    use sea_orm_migration::MigratorTrait;
+
+    use super::Migrator;
+
+    const TENANT: &str = "7e420000000000000000000000000000";
+    const VERSION: &str = "ee110000000000000000000000000001";
+
+    async fn harness() -> sea_orm::DatabaseConnection {
+        let mut opts = sea_orm::ConnectOptions::new("sqlite::memory:");
+        opts.max_connections(1).min_connections(1);
+        let db = sea_orm::Database::connect(opts)
+            .await
+            .expect("connect in-memory sqlite");
+        Migrator::up(&db, None).await.expect("boot the chain");
+        db
+    }
+
+    async fn exec(db: &sea_orm::DatabaseConnection, sql: &str) -> Result<(), sea_orm::DbErr> {
+        db.execute_raw(sea_orm::Statement::from_string(
+            sea_orm::DatabaseBackend::Sqlite,
+            sql.to_owned(),
+        ))
+        .await
+        .map(|_| ())
+    }
+
+    /// The schema oracle, with its perturbation case.
+    #[tokio::test]
+    async fn the_read_stamp_oracle_pins_its_roster_and_can_fail() {
+        let db = harness().await;
+        let roster = super::governance_store_guard_tests::columns(&db, "products_read_stamp").await;
+        assert_eq!(
+            roster,
+            vec!["catalog_version_id", "projected_at", "tenant_id"],
+            "three columns: P-D-70 arm 6's last catalog_version_id and projectedAt, per tenant"
+        );
+        assert_ne!(
+            roster,
+            super::governance_store_guard_tests::columns(&db, "products_read_entity").await,
+            "two different tables must not compare equal"
+        );
+        assert!(
+            super::governance_store_guard_tests::columns(&db, "products_read_stamp_nope")
+                .await
+                .is_empty()
+        );
+    }
+
+    /// **One row per tenant**, and the key is `tenant_id` alone — which is
+    /// what lets the stamp be addressable with no projection row in
+    /// existence, the arm a duplicated column cannot answer.
+    #[tokio::test]
+    async fn the_stamp_is_one_row_per_tenant() {
+        let db = harness().await;
+        exec(
+            &db,
+            &format!(
+                "INSERT INTO products_read_stamp (tenant_id, catalog_version_id, projected_at) \
+                 VALUES (X'{TENANT}', X'{VERSION}', '2026-09-02')"
+            ),
+        )
+        .await
+        .expect("the first stamp lands");
+        let err = exec(
+            &db,
+            &format!(
+                "INSERT INTO products_read_stamp (tenant_id, catalog_version_id, projected_at) \
+                 VALUES (X'{TENANT}', NULL, '2026-09-03')"
+            ),
+        )
+        .await
+        .expect_err("a second row for one tenant is refused");
+        assert!(
+            err.to_string().to_ascii_lowercase().contains("unique")
+                || err.to_string().to_ascii_lowercase().contains("primary key"),
+            "the key is the floor: {err}"
+        );
+    }
+
+    /// **The anchorless arm**: a tenant with no published catalog version
+    /// stamps a real `projected_at` and a NULL version. A `NOT NULL` column
+    /// would force a sentinel, and §6 makes the distinction a probe —
+    /// absence must be distinguishable from a dropped stamp.
+    #[tokio::test]
+    async fn a_zero_version_tenant_stamps_with_a_null_anchor() {
+        let db = harness().await;
+        exec(
+            &db,
+            &format!(
+                "INSERT INTO products_read_stamp (tenant_id, catalog_version_id, projected_at) \
+                 VALUES (X'{TENANT}', NULL, '2026-09-02')"
+            ),
+        )
+        .await
+        .expect("the bootstrap of a zero-version tenant is an apply, and it stamps");
+    }
+
+    /// The row is overwritten on every apply — no guard, the rebuildable
+    /// family's exemption (`design/08` §4).
+    #[tokio::test]
+    async fn the_stamp_admits_update_and_delete() {
+        let db = harness().await;
+        exec(
+            &db,
+            &format!(
+                "INSERT INTO products_read_stamp (tenant_id, catalog_version_id, projected_at) \
+                 VALUES (X'{TENANT}', NULL, '2026-09-02')"
+            ),
+        )
+        .await
+        .expect("seed");
+        exec(
+            &db,
+            &format!(
+                "UPDATE products_read_stamp SET catalog_version_id = X'{VERSION}', \
+                 projected_at = '2026-09-03' WHERE tenant_id = X'{TENANT}'"
+            ),
+        )
+        .await
+        .expect("every apply overwrites the stamp, and nothing may refuse it");
+        exec(
+            &db,
+            &format!("DELETE FROM products_read_stamp WHERE tenant_id = X'{TENANT}'"),
+        )
+        .await
+        .expect("a rebuild replaces it");
+    }
+}
