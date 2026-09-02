@@ -770,6 +770,7 @@ pub async fn attribute_definitions(
 ///
 /// [`RepoError`] on any storage failure that is **not** the key conflict —
 /// this function does not widen a driver error into a success.
+/// @cpt-dod:cpt-cf-bss-products-dod-well-known-seeds:p1
 pub async fn seed_well_known_definitions(
     runner: &impl DBRunner,
     scope: &AccessScope,
