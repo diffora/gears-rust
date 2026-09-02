@@ -46,12 +46,12 @@ use toolkit_db::secure::{
 };
 use uuid::Uuid;
 
-use super::driver_failure;
+use super::{TERMINAL_HEAD_STATES, driver_failure};
 use crate::domain::error::DomainError;
-use crate::domain::taxonomy::{AssignmentRole, DefinitionState, TaxonomyMutation};
+use crate::domain::taxonomy::{AssignmentRole, DefinitionState, RetireCensus, TaxonomyMutation};
 use crate::infra::storage::RepoError;
 use crate::infra::storage::entity::{
-    attribute_definition, attribute_value, category, metadata, product_category,
+    attribute_definition, attribute_value, category, metadata, product, product_category,
 };
 
 /// One new category, as the store needs it.
@@ -1080,6 +1080,196 @@ pub async fn delete_metadata_key(
         .await
         .map_err(|e| driver_failure(format!("remove metadata {key} on {entity_id}"), e))?;
     Ok(result.rows_affected == 1)
+}
+
+// -- The retire and delete guard's census (`inst-tx-retire-guard`) --
+
+/// Read the census a retire or delete is judged against.
+///
+/// # The two reads are one statement each, and the join is a subquery
+///
+/// `dod-retire-delete-guard` requires the guard read *"the referencing
+/// Product's lifecycle state"* and **not** *"the mere presence of a
+/// `products_product_category` row"*. So the Product read is the outer query
+/// and the link table is a subquery inside it: the row that decides is the
+/// Product's, and a link row held by a discarded draft contributes nothing
+/// because its Product never enters the outer result.
+///
+/// Doing it as two round trips instead — link rows, then their Products —
+/// would be wrong in one direction and not the other. A Product **discarded**
+/// between the reads is harmless: the second read sees it terminal and the
+/// guard correctly lets the retire through. A Product **published** between
+/// them is not: its link row did not exist for the first read, so the guard
+/// would answer *"unreferenced"* about catalog that now references the node.
+/// One statement has no window.
+///
+/// # `sample + 1`
+///
+/// Each half is bounded at `sample + 1` so
+/// [`crate::domain::taxonomy::retire_verdict`] can say *"at least N"* without
+/// a second counting statement whose total could disagree with its own
+/// exemplars, which is the failure [`super::metering_unit_holders`] records
+/// on the sibling guard.
+///
+/// # The scope this reads under must be the tenant's whole scope
+///
+/// Both reads are scoped, as every read in this crate is. That is safe only
+/// because a narrower scope would hide holders and make the guard answer
+/// *"unreferenced"* about a node that is referenced — a fail-**open**
+/// direction, and the one direction a delete guard must not fail in. Every
+/// door in this gear builds `AccessScope::for_tenant`, so the scope is
+/// tenant-wide at every call site that exists; a future narrower scope would
+/// need this read exempted rather than merely reviewed.
+///
+/// # Errors
+///
+/// [`RepoError`] on a storage or scope failure.
+pub async fn retire_census(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    category_id: Uuid,
+    sample: u64,
+) -> Result<RetireCensus, RepoError> {
+    let holders_of_category = sea_orm::sea_query::Query::select()
+        .column(product_category::Column::ProductId)
+        .from(product_category::Entity)
+        .and_where(Expr::col(product_category::Column::TenantId).eq(tenant_id))
+        .and_where(Expr::col(product_category::Column::CategoryId).eq(category_id))
+        .to_owned();
+
+    let referencing_products: Vec<String> = product::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(product::Column::TenantId.eq(tenant_id))
+                .add(product::Column::LifecycleState.is_not_in(TERMINAL_HEAD_STATES))
+                .add(Expr::col(product::Column::ProductId).in_subquery(holders_of_category)),
+        )
+        .order_by(product::Column::Name, sea_orm::Order::Asc)
+        .limit(sample + 1)
+        .all(runner)
+        .await
+        .map_err(|e| driver_failure(format!("holders of category {category_id}"), e))?
+        .into_iter()
+        .map(|row| row.name)
+        .collect();
+
+    let active_children: Vec<String> = category::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(category::Column::TenantId.eq(tenant_id))
+                .add(category::Column::ParentId.eq(category_id))
+                .add(category::Column::State.eq(ACTIVE_CATEGORY_STATE)),
+        )
+        .order_by(category::Column::Name, sea_orm::Order::Asc)
+        .limit(sample + 1)
+        .all(runner)
+        .await
+        .map_err(|e| driver_failure(format!("children of category {category_id}"), e))?
+        .into_iter()
+        .map(|row| row.name)
+        .collect();
+
+    Ok(RetireCensus {
+        referencing_products,
+        active_children,
+        sample_bound: usize::try_from(sample).unwrap_or(usize::MAX),
+    })
+}
+
+/// The stored `active` token, the one half of
+/// `chk_products_category_state`'s two-value roster this module writes and
+/// filters on.
+///
+/// A literal rather than a parsed enum because the category machine has two
+/// states and no edge back from `retired` (`inst-ce-terminal`), so nothing
+/// here needs to reason over the roster — only to name the live half.
+const ACTIVE_CATEGORY_STATE: &str = "active";
+
+/// Flip one category to `retired`, pinned at `active`.
+///
+/// The pin is the same mechanism [`flip_definition_state`] uses: a peer that
+/// retired the node between the caller's census and this statement leaves
+/// `rows_affected = 0`, so the caller answers a staleness refusal rather than
+/// reporting a retire it did not perform. `mutation_seq` advances because a
+/// retire is an act on the row and P-D-50 counts acts.
+///
+/// **The guard is not here.** [`retire_census`] reads and
+/// [`crate::domain::taxonomy::retire_verdict`] judges; this statement writes
+/// what it is told, under the caller's lock.
+///
+/// # Errors
+///
+/// [`RepoError`] on a storage or scope failure. A vanished or already-retired
+/// node is `Ok(CategoryWrite::Unmatched)`.
+pub async fn retire_category(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    category_id: Uuid,
+    now: DateTime<Utc>,
+) -> Result<CategoryWrite, RepoError> {
+    let result = category::Entity::update_many()
+        .secure()
+        .scope_with(scope)
+        .col_expr(category::Column::State, Expr::value("retired"))
+        .col_expr(
+            category::Column::MutationSeq,
+            Expr::col(category::Column::MutationSeq).add(1),
+        )
+        .col_expr(category::Column::UpdatedAt, Expr::value(now))
+        .filter(
+            Condition::all()
+                .add(category::Column::TenantId.eq(tenant_id))
+                .add(category::Column::CategoryId.eq(category_id))
+                .add(category::Column::State.eq(ACTIVE_CATEGORY_STATE)),
+        )
+        .exec(runner)
+        .await
+        .map_err(|e| driver_failure(format!("retire category {category_id}"), e))?;
+    Ok(CategoryWrite::from_rows(result.rows_affected))
+}
+
+/// Delete one retired category row — the single physical removal this feature
+/// performs (`inst-ce-terminal`).
+///
+/// Filtered on `state = 'retired'`, so the machine's own order is physical:
+/// `active -> retired -> (row deleted)`, with no path that deletes a live
+/// node. The children half of *"retired + empty + unreferenced"* is also the
+/// parent foreign key's, which refuses the delete while any child row still
+/// points at it — including a **retired** child, which
+/// [`retire_census`] deliberately does not count. The two are not in conflict:
+/// the census decides whether the act is *admitted*, the FK decides whether it
+/// is *possible*, and a retired child makes it inadmissible to nobody and
+/// impossible to the engine. The caller retires and deletes depth-first.
+///
+/// # Errors
+///
+/// [`RepoError`] on a storage or scope failure, the parent FK's refusal
+/// included — a caller that skipped the census meets the engine instead.
+pub async fn delete_retired_category(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    category_id: Uuid,
+) -> Result<CategoryWrite, RepoError> {
+    let result = category::Entity::delete_many()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(category::Column::TenantId.eq(tenant_id))
+                .add(category::Column::CategoryId.eq(category_id))
+                .add(category::Column::State.eq("retired")),
+        )
+        .exec(runner)
+        .await
+        .map_err(|e| driver_failure(format!("delete category {category_id}"), e))?;
+    Ok(CategoryWrite::from_rows(result.rows_affected))
 }
 
 #[cfg(test)]

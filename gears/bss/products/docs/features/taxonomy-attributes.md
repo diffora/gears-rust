@@ -641,6 +641,27 @@ Category), `description` (localized), `imageUri` (a URI string, non-localized),
 `marketingFeatures` (a localized string list). A seeded definition **MUST** be deprecatable and
 **MUST NOT** be removable.
 
+**Blocked, and by more than §7 row 23 says.** The row records that *"seeded by migration, per tenant
+bootstrap"* names **two code paths**, and asks which writes for a tenant created after the
+migration. Measured at this commit, **neither path is available**: `migrations/` is not this
+strand's to write, and the gear carries **no tenant-bootstrap hook of any kind** — no
+tenant-created handler, no provisioning callback, nothing for a per-tenant seeder to hang off. So
+the row is not a choice between two mechanisms; it is a question with one mechanism forbidden to
+this strand and the other not built by anyone. Naming that is the deliverable, and no seeder is
+invented to get past it.
+
+**What does ship** is the roster itself — `domain::taxonomy::WELL_KNOWN_SEEDS`, the five keys in the
+order above with their localized flags, `REGISTRY_SEEDED_BY`, and `is_removable`, whose operand is
+the `seeded_by` marker's presence and which is probed in **both** directions so a guard refusing
+every removal cannot satisfy it. One definition site, so whichever path its owner picks does not
+mint a second copy of the list.
+
+**One thing in it is this feature's proposal and not the design's.** The `DoD` names five keys and
+three **shapes** — a localized string, a URI string, a localized string list — and no **tokens**;
+no document in the set enumerates `value_type`'s admitted values, the column being pinned to
+non-emptiness only on P-D-74's shape. The three constants are therefore carried in the owed
+register as a proposal, and nothing closes the set: the store's `value_type` is still a string.
+
 **Implements**: `cpt-cf-bss-products-flow-attribute-definitions`
 
 **Touches**:
@@ -666,13 +687,41 @@ which is the live-value door's precondition); and `apply` runs the check immedia
 mutation closure, so a stale op **cannot** write — asserted by observing the closure, because a
 check placed after the write would pass a naive test while having already written.
 
-**What is not built is submission to the `05` gate, and the reason was written down before this
-code existed.** `GovernanceGate::evaluate` takes an `EntityRef` and an `InternalRevision`; a
-category, a definition and a set member have neither — that absence is the very reason the envelope
-pins a *state* — so submitting one through today's contract means inventing a mapping from a live
-target to an entity ref. **P-D-93** recorded exactly this as its first residue: *"a live op whose
-subject is not an entity would need a second contract and this decision does not grant one"*. The
-half waits on `05`'s submit door (its §7 row 12, no route declared) or on that second contract.
+**What is not built is submission to the `05` gate — but the reason above was wrong, and a reader
+steered by it would build the wrong thing.** The struck paragraph said
+`GovernanceGate::evaluate` takes an `EntityRef`, that submitting therefore *"means inventing a
+mapping from a live target to an entity ref"*, and that **P-D-93** recorded this as its first
+residue. Measured at this commit, three of those are false:
+
+| The claim | What the code and the register say at `HEAD` |
+|---|---|
+| `evaluate` takes an `EntityRef` | It takes a **`GateSubject`**. `EntityRef` is one constructor of five |
+| a live target needs an invented mapping | `GateSubject::governed_live_op(tenant_id, target)` **is** the constructor, and `SubjectKind::GovernedLiveOp` is one of the five kinds — granted by **P-D-67 arm 4** on 2026-08-31, *"the gate's subject widens to the approval store's own pair"* |
+| P-D-93 recorded it as a residue | The sentence is in P-D-93's **arguments-against** paragraph, and it says *"**this decision** does not grant one"* — true of P-D-93, which granted nothing, while P-D-67 had |
+
+**P-D-93 is not the defect; carrying it forward was.** Its argument was *correct when written*:
+`043bca636` landed at 17:30 on 2026-09-01, and `evaluate` did still take an `EntityRef` at that
+moment. `f894378e9` built P-D-67 arm 4's grant — which that entry had itself deferred *"to the
+build"* — at **18:38 the same day**, sixty-eight minutes later. An arguments-against paragraph
+records a moment; this DoD quoted one as a standing reason and never re-measured it. The lesson is
+the citation's, not the register's.
+
+The subject seam is one call wide and is now probed
+(`domain::live_op_tests::the_envelopes_target_is_a_gate_subject_of_its_own_kind`, which asserts the
+live-op kind **against** the entity kind so the two cannot collapse into the very mapping the
+struck sentence imagined).
+
+**What genuinely remains, narrower and two-fold**: `evaluate`'s **`expected_revision`** operand,
+which a live row cannot supply — that absence being why this envelope pins a *state* — and which is
+`features/governance.md` §7 row 14, live; and **`05`'s submit door**, whose route is undeclared (05
+§7 row 12).
+
+**And one measurement of P-D-93's own does not reach here.** It released this DoD's §7 row partly
+on *"**four** doubles ship … and the door tests already turn on which one is passed"*. All four are
+private items in two `#[cfg(test)]` door modules with no `pub`, and `test_support` carries no gate
+double at all — so the apply path is proven against the closure it is handed, never against a gate,
+fake or real. That is recorded rather than used to re-hold the row: the row's other two
+measurements stand.
 
 **Implements**: `cpt-cf-bss-products-algo-governed-live`
 
@@ -706,6 +755,24 @@ a create or re-parent exceeds the configured maximum depth or maximum children p
 **MUST** be validated on the mutation path only, so a later limit decrease never invalidates
 existing structure.
 
+**The cycle half ships; the limit half is judged and unreachable, on §7 row 2.** `TaxonomyWalk` runs
+under the per-tenant writer lock in `infra::taxonomy::reparent_under_lock` — lock, then read, then
+judge, then write, an order whose whole point is that reading first would judge a chain a peer can
+still change. `domain::taxonomy::depth_of` and `children_of` measure off the **same** edge list the
+cycle rule reads, so the two cannot disagree, and both terminate on a tree that already contains a
+cycle. `limit_verdict` refuses above each threshold and names which, with the boundary case probed
+in both directions.
+
+`TaxonomyLimits` carries `Option` thresholds and **no `Default`**: row 2 records that these limits
+*"have no interim default anywhere"*, so `None` is not a policy of *unlimited* but the absence of a
+stated number, and nothing can acquire one by accident. Nothing configures it, so the judge is
+declared and unreachable — the honest shape for a rule whose operand is owed, and it means
+`TAXONOMY_LIMIT` is a code this feature declares and never raises.
+
+The third MUST is structural rather than tested at a door: `limit_verdict` takes what a mutation
+**would** make the tree and never the tree as it stands, so no reading of it judges existing rows,
+and a later limit decrease has nothing to invalidate.
+
 **Implements**: `cpt-cf-bss-products-algo-taxonomy-integrity`,
 `cpt-cf-bss-products-flow-manage-taxonomy`
 
@@ -735,6 +802,30 @@ category as primary or secondary, or while an active child exists, raising
 Product's lifecycle state and **MUST NOT** read the mere presence of a
 `products_product_category` row. A test **MUST** prove that a discarded draft holding a category
 link does not block the retire.
+
+**Built and probed; the tick waits on §7 row 21 and on the code's own absence.**
+`repo::retire_census` reads both halves and `domain::taxonomy::retire_verdict` judges them, the
+census taking the caller's read under the writer lock rather than fetching its own rows.
+
+The MUST that decides the shape is *"reads the Product's lifecycle state and **not** the mere
+presence of a `products_product_category` row"*, so the Product read is the **outer** query and the
+link table is a subquery inside it: a link row held by a discarded draft contributes nothing
+because its Product never enters the result. Two round trips would have been wrong in one
+direction — a Product **published** between them has a link row the first read never saw, and the
+guard would answer *"unreferenced"* about catalog that now references the node. One statement has
+no window.
+
+The named test ships and asserts the link row is **still there** afterwards, without which a census
+returning nothing because the assignment had vanished would pass while the rule went unmeasured.
+Beside it: one Product walked along its own admitted edges with the census re-read at each, so
+`draft`, `published` and `deprecated` block and `retired` and `discarded` do not; an active child
+blocks and a retired one does not; and the sample reads `bound + 1` so the refusal can say *"at
+least N"* without a second counting statement.
+
+**`CATEGORY_REFERENCED` has no `DomainError` variant at this commit** — it is one of twelve of this
+feature's sixteen codes still absent, which is `dod-taxonomy-errors`' work. So the verdict returns
+`domain::taxonomy::CategoryReferenced`, carrying the code as a constant and the sample in its
+detail, and the door maps it exactly as it maps `repo::AssignmentWrite`'s two conflicts.
 
 **Implements**: `cpt-cf-bss-products-flow-manage-taxonomy`,
 `cpt-cf-bss-products-state-category`

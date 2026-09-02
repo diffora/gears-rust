@@ -28,23 +28,29 @@
 #![allow(clippy::expect_used)]
 
 use chrono::{TimeZone, Utc};
-use sea_orm::ConnectionTrait as _;
+use sea_orm::sea_query::Expr;
+use sea_orm::{ColumnTrait as _, Condition, ConnectionTrait as _, EntityTrait as _};
 use sea_orm_migration::MigratorTrait as _;
-use toolkit_db::secure::AccessScope;
+use toolkit_db::secure::{AccessScope, SecureUpdateExt as _};
 use toolkit_db::{ConnectOpts, DBProvider, DbError, connect_db};
 use uuid::Uuid;
 
 use super::{
-    AssignmentWrite, AttributeCoordinate, DefinitionFlip, NewAttributeDefinition, NewCategory,
-    attribute_definition_by_key, attribute_definitions, attribute_values_of, category_assignments,
-    classify_assignment_write, delete_attribute_value, delete_metadata_key, flip_definition_state,
+    AssignmentWrite, AttributeCoordinate, CategoryWrite, DefinitionFlip, NewAttributeDefinition,
+    NewCategory, attribute_definition_by_key, attribute_definitions, attribute_values_of,
+    category_assignments, category_parents, classify_assignment_write, delete_attribute_value,
+    delete_metadata_key, delete_retired_category, flip_definition_state,
     insert_attribute_definition, insert_category, metadata_of, replace_category_assignments,
-    upsert_attribute_value, upsert_metadata,
+    retire_category, retire_census, upsert_attribute_value, upsert_metadata,
 };
-use crate::domain::taxonomy::{AssignmentRole, DefinitionState};
+use crate::domain::taxonomy::{AssignmentRole, DefinitionState, retire_verdict};
 use crate::infra::storage::RepoError;
+use crate::infra::storage::entity::product;
 use crate::infra::storage::migrations::Migrator;
-use crate::infra::storage::repo::{NewProduct, insert_product};
+use crate::infra::storage::repo::{
+    NewEntityVersion, NewProduct, VersionedEntityKind, discard_product_head, insert_entity_version,
+    insert_product, publish_product_head,
+};
 
 const TENANT: Uuid = Uuid::from_u128(0x7e_11);
 const OTHER_TENANT: Uuid = Uuid::from_u128(0x7e_22);
@@ -53,6 +59,7 @@ const PRODUCT: Uuid = Uuid::from_u128(0xf0_01);
 const CATEGORY_A: Uuid = Uuid::from_u128(0xca_01);
 const CATEGORY_B: Uuid = Uuid::from_u128(0xca_02);
 const DEFINITION: Uuid = Uuid::from_u128(0xde_01);
+const ACTOR: Uuid = Uuid::from_u128(0xac_01);
 const OTHER_DEFINITION: Uuid = Uuid::from_u128(0xde_02);
 
 /// A pinned one-connection in-memory `SQLite` pool, for the reason
@@ -1093,5 +1100,427 @@ async fn the_metadata_map_is_keyed_ordered_and_removable() {
             .expect("read")
             .len(),
         1
+    );
+}
+
+// -- The retire and delete guard (`inst-tx-retire-guard`) --
+
+/// Walk one Product to `published` through the repository's own writers, so
+/// the head-row guard judges the setup exactly as it judges a door's.
+///
+/// A hand-written `UPDATE` to `published` would have been shorter and wrong:
+/// the guard admits the edge without a `published_version` bump, so the row
+/// would sit in a state no door can produce -- `published` with
+/// `published_version = 0` -- and the census would then be probed against a
+/// head the gear cannot have.
+async fn publish(conn: &impl toolkit_db::secure::DBRunner, scope: &AccessScope, product_id: Uuid) {
+    insert_entity_version(
+        conn,
+        scope,
+        NewEntityVersion {
+            tenant_id: TENANT,
+            entity_kind: VersionedEntityKind::Product,
+            entity_id: product_id,
+            published_version: 1,
+            content: r#"{"name":"Fibre 500"}"#.to_owned(),
+            content_digest: (1..=32_u8).collect(),
+            digest_version: 7,
+            approval_ref: None,
+            actor_ref: ACTOR,
+            published_at: at(10),
+        },
+    )
+    .await
+    .expect("freeze version 1");
+    publish_product_head(conn, scope, TENANT, product_id, 1, at(10))
+        .await
+        .expect("publish the head");
+}
+
+/// Move a published head on, one admitted edge at a time.
+///
+/// `published -> deprecated -> retired` are the only two edges to the states
+/// the census must ignore, and each bumps `internal_revision` by exactly one
+/// because the guard refuses anything else.
+async fn move_head(
+    conn: &impl toolkit_db::secure::DBRunner,
+    scope: &AccessScope,
+    product_id: Uuid,
+    to: &str,
+    next_revision: i64,
+) {
+    let moved = product::Entity::update_many()
+        .secure()
+        .scope_with(scope)
+        .col_expr(product::Column::LifecycleState, Expr::value(to))
+        .col_expr(
+            product::Column::InternalRevision,
+            Expr::value(next_revision),
+        )
+        .col_expr(product::Column::UpdatedAt, Expr::value(at(11)))
+        .filter(
+            Condition::all()
+                .add(product::Column::TenantId.eq(TENANT))
+                .add(product::Column::ProductId.eq(product_id)),
+        )
+        .exec(conn)
+        .await
+        .expect("the guard admits this edge");
+    assert_eq!(moved.rows_affected, 1, "this helper's own premise");
+}
+
+/// Seed a second Product, file it under `CATEGORY_A`, and answer its id.
+async fn file_a_product_under_a(
+    conn: &impl toolkit_db::secure::DBRunner,
+    scope: &AccessScope,
+    product_id: Uuid,
+    name: &str,
+) {
+    let mut new = new_product(product_id, TENANT);
+    new.name = name.to_owned();
+    new.name_normalized = name.to_ascii_lowercase();
+    insert_product(conn, scope, new)
+        .await
+        .expect("seed the holder");
+    replace_category_assignments(
+        conn,
+        scope,
+        TENANT,
+        product_id,
+        &[(CATEGORY_A, AssignmentRole::Primary)],
+        at(10),
+    )
+    .await
+    .expect("file it");
+}
+
+/// **`dod-retire-delete-guard`'s named `MUST`: a discarded draft holding a
+/// link does not block the retire.**
+///
+/// And the assertion that makes it a probe rather than a coincidence: the
+/// link row is read back and shown to still be there. Without that, a census
+/// that returned nothing because the *assignment* had vanished would pass
+/// this case while the rule it exists to hold went unmeasured.
+#[tokio::test]
+async fn a_discarded_draft_holding_a_link_does_not_block_the_retire() {
+    let provider = harness().await;
+    let scope = AccessScope::for_tenant(TENANT);
+    seed_product_and_categories(&provider, &scope).await;
+    let conn = provider.conn().expect("scoped connection");
+
+    replace_category_assignments(
+        &conn,
+        &scope,
+        TENANT,
+        PRODUCT,
+        &[(CATEGORY_A, AssignmentRole::Primary)],
+        at(10),
+    )
+    .await
+    .expect("file the draft under the category");
+
+    // It blocks while it is a live draft -- the paired positive control,
+    // without which the refusal below could be a census that reads nothing.
+    let live = retire_census(&conn, &scope, TENANT, CATEGORY_A, 3)
+        .await
+        .expect("census");
+    assert_eq!(live.referencing_products.len(), 1, "a draft blocks");
+
+    // `expected_internal_revision` is 1: a freshly inserted draft is at
+    // revision 1 and the discard is its first act.
+    discard_product_head(&conn, &scope, TENANT, PRODUCT, 1, at(11))
+        .await
+        .expect("discard the draft");
+
+    let after = retire_census(&conn, &scope, TENANT, CATEGORY_A, 3)
+        .await
+        .expect("census");
+    assert!(
+        after.referencing_products.is_empty(),
+        "a discarded draft is terminal and must not block: {after:?}"
+    );
+    retire_verdict(&after).expect("the retire is admitted");
+
+    assert_eq!(
+        category_assignments(&conn, &scope, TENANT, PRODUCT)
+            .await
+            .expect("read the links")
+            .len(),
+        1,
+        "the link row is STILL THERE -- the guard read the Product's state, \
+         not the row's presence, which is the DoD's own distinction"
+    );
+}
+
+/// **Every non-terminal state blocks, and both terminal ones do not.**
+///
+/// One Product walked along its own admitted edges, the census re-read at
+/// each. Asserting the roster this way rather than against
+/// `TERMINAL_HEAD_STATES` is deliberate: the constant is what the statement
+/// filters on, so comparing the census to it would be comparing the code to
+/// itself.
+#[tokio::test]
+async fn the_census_counts_exactly_the_non_terminal_states() {
+    let provider = harness().await;
+    let scope = AccessScope::for_tenant(TENANT);
+    seed_product_and_categories(&provider, &scope).await;
+    let conn = provider.conn().expect("scoped connection");
+
+    replace_category_assignments(
+        &conn,
+        &scope,
+        TENANT,
+        PRODUCT,
+        &[(CATEGORY_A, AssignmentRole::Secondary)],
+        at(10),
+    )
+    .await
+    .expect("file it, in the SECONDARY role: the DoD says either role blocks");
+
+    let blocked = |c: &crate::domain::taxonomy::RetireCensus| !c.referencing_products.is_empty();
+
+    assert!(
+        blocked(
+            &retire_census(&conn, &scope, TENANT, CATEGORY_A, 3)
+                .await
+                .expect("census")
+        ),
+        "draft blocks"
+    );
+
+    publish(&conn, &scope, PRODUCT).await;
+    assert!(
+        blocked(
+            &retire_census(&conn, &scope, TENANT, CATEGORY_A, 3)
+                .await
+                .expect("census")
+        ),
+        "published blocks"
+    );
+
+    move_head(&conn, &scope, PRODUCT, "deprecated", 3).await;
+    assert!(
+        blocked(
+            &retire_census(&conn, &scope, TENANT, CATEGORY_A, 3)
+                .await
+                .expect("census")
+        ),
+        "deprecated blocks"
+    );
+
+    move_head(&conn, &scope, PRODUCT, "retired", 4).await;
+    assert!(
+        !blocked(
+            &retire_census(&conn, &scope, TENANT, CATEGORY_A, 3)
+                .await
+                .expect("census")
+        ),
+        "retired is terminal and must not block"
+    );
+}
+
+/// **An active child blocks; a retired one does not.**
+///
+/// `inst-ce-terminal` makes deletion a retired node's own exit, so a retired
+/// child is on its way out rather than in use. A guard counting every child
+/// would deadlock a depth-first retirement at its second step.
+#[tokio::test]
+async fn an_active_child_blocks_the_retire_and_a_retired_child_does_not() {
+    let provider = harness().await;
+    let scope = AccessScope::for_tenant(TENANT);
+    seed_product_and_categories(&provider, &scope).await;
+    let conn = provider.conn().expect("scoped connection");
+
+    let child = Uuid::from_u128(0xca_09);
+    insert_category(
+        &conn,
+        &scope,
+        NewCategory {
+            tenant_id: TENANT,
+            category_id: child,
+            parent_id: Some(CATEGORY_A),
+            name: "fibre",
+            name_normalized: "fibre",
+        },
+        at(9),
+    )
+    .await
+    .expect("insert the child")
+    .expect("the name is free");
+
+    let with_child = retire_census(&conn, &scope, TENANT, CATEGORY_A, 3)
+        .await
+        .expect("census");
+    assert_eq!(with_child.active_children, vec!["fibre".to_owned()]);
+    retire_verdict(&with_child).expect_err("an active child holds the parent");
+
+    assert_eq!(
+        retire_category(&conn, &scope, TENANT, child, at(10))
+            .await
+            .expect("retire the child"),
+        CategoryWrite::Applied
+    );
+
+    let after = retire_census(&conn, &scope, TENANT, CATEGORY_A, 3)
+        .await
+        .expect("census");
+    assert!(
+        after.active_children.is_empty(),
+        "a retired child does not block: {after:?}"
+    );
+    retire_verdict(&after).expect("the parent may now retire");
+}
+
+/// **The sample stops at `bound + 1`**, which is what lets the verdict say
+/// *"at least N"* without a second counting statement.
+#[tokio::test]
+async fn the_holder_sample_reads_one_past_its_bound() {
+    let provider = harness().await;
+    let scope = AccessScope::for_tenant(TENANT);
+    seed_product_and_categories(&provider, &scope).await;
+    let conn = provider.conn().expect("scoped connection");
+
+    for (n, id) in [0xf0_11, 0xf0_12, 0xf0_13, 0xf0_14].into_iter().enumerate() {
+        file_a_product_under_a(&conn, &scope, Uuid::from_u128(id), &format!("Holder {n}")).await;
+    }
+
+    let census = retire_census(&conn, &scope, TENANT, CATEGORY_A, 2)
+        .await
+        .expect("census");
+    assert_eq!(
+        census.referencing_products.len(),
+        3,
+        "bound 2 reads 3 rows, so the caller can tell 'two' from 'more than two'"
+    );
+    assert_eq!(census.sample_bound, 2);
+    let refusal = retire_verdict(&census).expect_err("held");
+    assert!(refusal.detail.contains("at least 2"), "{refusal:?}");
+}
+
+/// **The retire is pinned at `active`**, so a peer that retired the node
+/// between the caller's census and the write moves no second row, and the
+/// caller answers a staleness refusal rather than reporting an act it did not
+/// perform.
+#[tokio::test]
+async fn a_retire_is_pinned_at_active_and_the_second_one_matches_nothing() {
+    let provider = harness().await;
+    let scope = AccessScope::for_tenant(TENANT);
+    seed_product_and_categories(&provider, &scope).await;
+    let conn = provider.conn().expect("scoped connection");
+
+    assert_eq!(
+        retire_category(&conn, &scope, TENANT, CATEGORY_A, at(10))
+            .await
+            .expect("retire"),
+        CategoryWrite::Applied
+    );
+    assert_eq!(
+        retire_category(&conn, &scope, TENANT, CATEGORY_A, at(11))
+            .await
+            .expect("retire again"),
+        CategoryWrite::Unmatched,
+        "the pin is the state, so the second retire matches no row"
+    );
+}
+
+/// **Deletion is the retired node's exit and nothing else's.**
+///
+/// `inst-ce-terminal` performs the single physical row removal this feature
+/// owns, and only from `retired`. A delete filtered on the id alone would
+/// take a live node with the same call.
+#[tokio::test]
+async fn only_a_retired_category_can_be_deleted() {
+    let provider = harness().await;
+    let scope = AccessScope::for_tenant(TENANT);
+    seed_product_and_categories(&provider, &scope).await;
+    let conn = provider.conn().expect("scoped connection");
+
+    assert_eq!(
+        delete_retired_category(&conn, &scope, TENANT, CATEGORY_A)
+            .await
+            .expect("attempt the delete"),
+        CategoryWrite::Unmatched,
+        "an active node is not deletable"
+    );
+
+    retire_category(&conn, &scope, TENANT, CATEGORY_A, at(10))
+        .await
+        .expect("retire");
+    assert_eq!(
+        delete_retired_category(&conn, &scope, TENANT, CATEGORY_A)
+            .await
+            .expect("delete"),
+        CategoryWrite::Applied
+    );
+    assert!(
+        category_parents(&conn, &scope, TENANT)
+            .await
+            .expect("read the tree")
+            .iter()
+            .all(|(id, _)| *id != CATEGORY_A),
+        "the row is gone"
+    );
+}
+
+/// **The census and the parent foreign key are not the same guard**, and the
+/// module doc says so -- so it is measured rather than asserted.
+///
+/// A *retired* child does not appear in the census, so the verdict admits the
+/// parent's retire and delete. The FK still refuses the delete, because the
+/// child row points at the parent whatever state it is in. The two are
+/// consistent: the census decides whether the act is admitted, the engine
+/// decides whether it is possible, and the caller retires and deletes
+/// depth-first.
+#[tokio::test]
+async fn a_retired_child_clears_the_census_and_the_foreign_key_still_refuses() {
+    let provider = harness().await;
+    let scope = AccessScope::for_tenant(TENANT);
+    seed_product_and_categories(&provider, &scope).await;
+    let conn = provider.conn().expect("scoped connection");
+
+    let child = Uuid::from_u128(0xca_0a);
+    insert_category(
+        &conn,
+        &scope,
+        NewCategory {
+            tenant_id: TENANT,
+            category_id: child,
+            parent_id: Some(CATEGORY_A),
+            name: "fibre",
+            name_normalized: "fibre",
+        },
+        at(9),
+    )
+    .await
+    .expect("insert the child")
+    .expect("the name is free");
+    retire_category(&conn, &scope, TENANT, child, at(10))
+        .await
+        .expect("retire the child");
+
+    let census = retire_census(&conn, &scope, TENANT, CATEGORY_A, 3)
+        .await
+        .expect("census");
+    retire_verdict(&census).expect("a retired child does not hold the parent");
+
+    retire_category(&conn, &scope, TENANT, CATEGORY_A, at(11))
+        .await
+        .expect("the parent retires");
+
+    let refused = delete_retired_category(&conn, &scope, TENANT, CATEGORY_A).await;
+    assert!(
+        refused.is_err(),
+        "fk_products_category_parent refuses while the child row exists: {refused:?}"
+    );
+
+    // Depth-first, and then the parent goes.
+    delete_retired_category(&conn, &scope, TENANT, child)
+        .await
+        .expect("the child goes first");
+    assert_eq!(
+        delete_retired_category(&conn, &scope, TENANT, CATEGORY_A)
+            .await
+            .expect("and then the parent"),
+        CategoryWrite::Applied
     );
 }

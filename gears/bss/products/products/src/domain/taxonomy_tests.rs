@@ -3,7 +3,11 @@
 
 use uuid::Uuid;
 
-use super::{AssignmentRole, DefinitionState, TaxonomyMutation, ancestors_of, cycle_verdict};
+use super::{
+    AssignmentRole, CategoryReferenced, DefinitionState, REGISTRY_SEEDED_BY, RetireCensus,
+    TaxonomyLimitExceeded, TaxonomyLimits, TaxonomyMutation, WELL_KNOWN_SEEDS, ancestors_of,
+    children_of, cycle_verdict, depth_of, is_removable, limit_verdict, retire_verdict,
+};
 
 const A: Uuid = Uuid::from_u128(0xa1);
 const B: Uuid = Uuid::from_u128(0xb2);
@@ -195,4 +199,238 @@ fn the_category_states_are_not_definition_states() {
             assert_eq!(parsed, None, "`retired` is the category column's alone");
         }
     }
+}
+
+// -- Depth, children and the limits that have no number. --
+
+/// **Depth is derived from the same chain the cycle rule reads**, so the two
+/// cannot disagree — including on a tree that already contains a cycle, where
+/// the walk stops on the repeat and the depth is finite rather than a hang.
+#[test]
+fn depth_counts_edges_and_a_root_is_zero() {
+    assert_eq!(depth_of(A, &parent_of), 0, "a root sits at depth 0");
+    assert_eq!(depth_of(B, &parent_of), 1);
+    assert_eq!(depth_of(C, &parent_of), 2);
+    assert_eq!(
+        depth_of(D, &parent_of),
+        0,
+        "a node the map does not know is a root, not an error"
+    );
+
+    let looped = |id: Uuid| match id {
+        x if x == A => Some(B),
+        x if x == B => Some(A),
+        _ => None,
+    };
+    assert_eq!(
+        depth_of(A, &looped),
+        1,
+        "a pre-existing cycle terminates rather than counting forever"
+    );
+}
+
+/// **Children are counted off the same edge list**, and `None` counts the
+/// roots — the case a `parent_id`-equality count silently skips, both engines
+/// treating NULL as unequal to everything.
+#[test]
+fn children_are_counted_including_the_roots() {
+    let edges = vec![(A, None), (B, Some(A)), (C, Some(B)), (D, None)];
+    assert_eq!(children_of(Some(A), &edges), 1);
+    assert_eq!(children_of(Some(B), &edges), 1);
+    assert_eq!(children_of(Some(C), &edges), 0);
+    assert_eq!(
+        children_of(None, &edges),
+        2,
+        "the roots are a sibling set too, and the root-name index treats them as one"
+    );
+}
+
+/// **An unstated limit judges nothing.**
+///
+/// `None` is not "unlimited as policy" — it is that §7 row 2's owner has
+/// stated no threshold. The assertion that matters is that an absent limit
+/// cannot refuse: a guard with no number that refused would close the taxonomy
+/// entirely, which is the half of "either refuses everything or nothing" this
+/// rules out.
+#[test]
+fn an_unstated_limit_refuses_nothing() {
+    let unstated = TaxonomyLimits {
+        max_depth: None,
+        max_children: None,
+    };
+    for (depth, children) in [(0, 0), (1, 1), (u32::MAX, u32::MAX)] {
+        limit_verdict(depth, children, unstated)
+            .expect("no threshold is stated, so nothing can exceed one");
+    }
+}
+
+/// **Each limit refuses only above itself, and names which it was.**
+///
+/// The boundary is the load-bearing case: a guard written `>=` would refuse
+/// the last admitted node, and every test written with a value two past the
+/// limit would still pass.
+#[test]
+fn each_limit_refuses_above_itself_and_names_which() {
+    let limits = TaxonomyLimits {
+        max_depth: Some(3),
+        max_children: Some(2),
+    };
+
+    limit_verdict(3, 2, limits).expect("exactly at both limits is admitted");
+
+    let deep = limit_verdict(4, 2, limits).expect_err("one past max_depth");
+    assert_eq!(deep.limit, "max_depth");
+    assert_eq!((deep.allowed, deep.measured), (3, 4));
+
+    let wide = limit_verdict(3, 3, limits).expect_err("one past max_children");
+    assert_eq!(wide.limit, "max_children");
+    assert_eq!((wide.allowed, wide.measured), (2, 3));
+
+    assert_eq!(TaxonomyLimitExceeded::CODE, "TAXONOMY_LIMIT");
+}
+
+/// **One dimension configured does not make the other judge.**
+///
+/// Without this, a verdict written over a single `Option` pair — or one whose
+/// second arm read the first's threshold — would pass every case above.
+#[test]
+fn a_configured_depth_leaves_an_unstated_children_limit_alone() {
+    let depth_only = TaxonomyLimits {
+        max_depth: Some(1),
+        max_children: None,
+    };
+    limit_verdict(1, 10_000, depth_only).expect("children are not judged at all");
+    limit_verdict(2, 0, depth_only).expect_err("depth still is");
+
+    let children_only = TaxonomyLimits {
+        max_depth: None,
+        max_children: Some(1),
+    };
+    limit_verdict(10_000, 1, children_only).expect("depth is not judged at all");
+    limit_verdict(0, 2, children_only).expect_err("children still are");
+}
+
+// -- The retire and delete guard's verdict. --
+
+fn census(products: &[&str], children: &[&str], bound: usize) -> RetireCensus {
+    RetireCensus {
+        referencing_products: products.iter().map(|s| (*s).to_owned()).collect(),
+        active_children: children.iter().map(|s| (*s).to_owned()).collect(),
+        sample_bound: bound,
+    }
+}
+
+/// **An empty census admits the retire** — the positive control without which
+/// every refusal below could be a guard that refuses unconditionally.
+#[test]
+fn an_unreferenced_childless_category_may_retire() {
+    retire_verdict(&census(&[], &[], 3)).expect("nothing holds it");
+}
+
+/// **Either half alone refuses, and the refusal names the holders.**
+#[test]
+fn products_and_children_each_refuse_on_their_own() {
+    let by_products = retire_verdict(&census(&["Fibre 500"], &[], 3))
+        .expect_err("a non-terminal product holds it");
+    assert!(by_products.detail.contains("Fibre 500"), "{by_products:?}");
+    assert!(by_products.detail.contains("product"), "{by_products:?}");
+    assert!(
+        !by_products.detail.contains("child"),
+        "a clean children half must not be mentioned: {by_products:?}"
+    );
+
+    let by_children =
+        retire_verdict(&census(&[], &["Fibre"], 3)).expect_err("an active child holds it");
+    assert!(by_children.detail.contains("Fibre"), "{by_children:?}");
+    assert!(by_children.detail.contains("child"), "{by_children:?}");
+}
+
+/// **Both halves are reported in one refusal.**
+///
+/// An operator who clears the products only to meet the children next has
+/// been told half the truth twice. A guard returning the first blocker found
+/// would pass both cases above and fail this one.
+#[test]
+fn both_halves_are_named_in_one_refusal() {
+    let both = retire_verdict(&census(&["Fibre 500"], &["Fibre"], 3)).expect_err("both hold it");
+    assert!(both.detail.contains("Fibre 500"), "{both:?}");
+    assert!(both.detail.contains("child"), "{both:?}");
+    assert!(both.detail.contains("product"), "{both:?}");
+    assert_eq!(CategoryReferenced::CODE, "CATEGORY_REFERENCED");
+}
+
+/// **A sample that hit its bound says "at least".**
+///
+/// The caller reads `bound + 1` rows, so a sample longer than the bound is
+/// the signal that more exist. Reporting a bare count there would name a
+/// total the read never established.
+#[test]
+fn a_sample_at_its_bound_is_reported_as_at_least() {
+    let exact = retire_verdict(&census(&["a", "b"], &[], 3)).expect_err("two hold it");
+    assert!(
+        exact.detail.contains("2 non-terminal"),
+        "under the bound, the count is exact: {exact:?}"
+    );
+
+    let hit = retire_verdict(&census(&["a", "b", "c", "d"], &[], 3)).expect_err("four hold it");
+    assert!(
+        hit.detail.contains("at least 3"),
+        "the read is bound + 1, so four rows means more than three exist: {hit:?}"
+    );
+}
+
+// -- The well-known seeds. --
+
+/// **The roster is `dod-well-known-seeds`' five keys, with its localized
+/// flags.**
+///
+/// `imageUri` is the one non-localized seed, and it is the case a roster built
+/// by copying one entry four times would get wrong.
+#[test]
+fn the_seed_roster_is_the_dods_five_with_its_localized_flags() {
+    assert_eq!(
+        WELL_KNOWN_SEEDS.map(|s| s.key),
+        [
+            "displayName",
+            "description",
+            "imageUri",
+            "unitDisplayLabel",
+            "marketingFeatures"
+        ]
+    );
+    for seed in WELL_KNOWN_SEEDS {
+        assert_eq!(
+            seed.localized,
+            seed.key != "imageUri",
+            "{} is the DoD's only non-localized seed",
+            seed.key
+        );
+        assert!(
+            !seed.value_type.is_empty(),
+            "chk_products_attribute_definition_value_type pins non-emptiness"
+        );
+    }
+    assert_eq!(REGISTRY_SEEDED_BY, "registry");
+}
+
+/// **A seeded definition is not removable and an operator-added one is.**
+///
+/// The complement is the half that matters: §5's own trap is that a rule
+/// worded as a whitelist gets implemented as one, and a guard that refused
+/// every removal would satisfy the `DoD`'s sentence while breaking the roster
+/// it is not about.
+#[test]
+fn only_an_operator_added_definition_is_removable() {
+    assert!(
+        !is_removable(Some(REGISTRY_SEEDED_BY)),
+        "a registry seed must not be removable"
+    );
+    assert!(
+        !is_removable(Some("some-other-seeder")),
+        "the operand is the marker's presence, not its value"
+    );
+    assert!(
+        is_removable(None),
+        "an operator-added definition must be removable, or the rule refuses everything"
+    );
 }

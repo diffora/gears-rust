@@ -67,6 +67,26 @@
 //!
 //! So no test drives an envelope through a real approval record, and no
 //! reading of the green suite here should be taken for one.
+//!
+//! # Nor through a fake one, and that is newly measured
+//!
+//! **P-D-93** released this `DoD`'s §7 row on three measurements, the third
+//! being that *"**four** doubles ship — `RefusingGate`, `FailingGate`,
+//! `RecordingGate` and `CountingRefusingGate` — and the door tests already
+//! turn on which one is passed"*. They do ship, and all four are **private
+//! items in two `#[cfg(test)]` door modules** — `api::rest::products_tests`
+//! and `api::rest::skus_tests`, neither declared `pub` — while
+//! `crate::test_support` carries no gate double at all. So the remedy that
+//! measurement counted is reachable from the two doors and from nowhere else,
+//! this envelope's own test module included.
+//!
+//! That is not an argument for re-holding the `DoD`: the row's other two
+//! measurements stand, and the envelope is buildable. It is the reason the
+//! apply path here is proven **against the closure it is handed** rather than
+//! against a gate, and a reader who expects otherwise from P-D-93's third
+//! line should know where to look. Lifting one double into `test_support` is
+//! the one-file change that would close it, and that file is not this
+//! strand's.
 
 use crate::domain::error::DomainError;
 
