@@ -1569,6 +1569,48 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   (the re-publish step).
 
 
+#### P-D-104 — The well-known seeds are written on a tenant's **first write**, and P-D-100's migration arm is withdrawn
+
+- **Date**: 2026-09-02 (owner call, **amending P-D-100** the same day, on two measurements that
+  entry did not make)
+- **Context**: P-D-100 split the seeding into a migration for tenants present at deploy and a lazy
+  read-through for every tenant after. Both halves of that split were wrong.
+  1. **The migration arm is unbuildable.** The definition store is per-tenant, so seeding by
+     migration needs a list of tenants — and there is **no tenant registry in any gear's schema**.
+     Worse, measured across the workspace: **no migration in it inserts a row at all**; every one
+     creates tables, constraints and indexes and nothing else. The arm asked for a kind of migration
+     this codebase does not have.
+  2. **The migration arm is also redundant**, which is the part P-D-100 got backwards. The
+     read-through's condition is *"this tenant has no seed rows"*, **not** *"this tenant is new"*, so
+     it materialises them for a tenant that existed before deploy on that tenant's first read just
+     as readily. P-D-100 read the split as old-versus-new; the condition never distinguished them.
+  So one writer always sufficed — and the remaining question is which event it hangs off.
+- **The read path is the wrong event, and P-D-100 named the cost without following it.** A lazy
+  read-through means a `GET` of the definition roster **writes**. That breaks a read-only replica,
+  turns a read into a mutation for anything reasoning about transactions, and makes the first reader
+  of a tenant pay a write it did not ask for.
+- **Decision**: **the five seeds are written on the tenant's first write in this gear, inside that
+  write's own transaction**, and P-D-100's migration arm is withdrawn. Reads stay reads.
+  `domain::taxonomy::WELL_KNOWN_SEEDS` remains the only definition site.
+  **The exact trigger site is not fixed here** — the surfaces belong to the taxonomy strand, and
+  naming one from this register would author its interface. The rule is: the first write that could
+  need a well-known definition seeds them first, in one transaction, and a second such write finds
+  them present.
+- **This is what the DoD's own phrase asks for.** *"Per tenant bootstrap"* reads naturally as
+  *when a tenant starts using the gear*, not *when the database is migrated* — and the second
+  reading is the one that had no mechanism.
+- **The arguments against, stated**: a tenant that only ever reads now sees an empty roster.
+  Accepted, because a tenant that has written nothing has nothing to describe — the seeds exist to
+  carry a product's display name, and there is no product. And putting a conditional write on a
+  write path is not free either: the first write of a tenant's life carries five extra inserts, and
+  every such write pays one existence check. That check is one indexed read on a path that already
+  reads the roster, and it is on a write, where a write belongs.
+- **Propagated**: nothing normative — `dod-well-known-seeds`' own text already asks for per-tenant
+  bootstrap, and this settles how. Amends **P-D-100**, whose text is left as written per this
+  register's convention, with a pointer added to its entry. **Owed**, and no longer split: the whole
+  of it is the **taxonomy strand's**, since the trigger, the existence check and the insert all sit
+  on surfaces that strand owns. **The lead's migration half is withdrawn**, not deferred.
+
 #### P-D-103 — The frozen-content sort applies **P-D-80 arm 1** to P-D-29's two collections: the attribute-value set sorts by its whole coordinate
 
 - **Date**: 2026-09-02 (owner call, on strand A's `A-OWED-12`)
@@ -1688,6 +1730,13 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   strike. `dod-default-locale` and `dod-locale-resolver` stay unticked until the config field lands.
 
 #### P-D-100 — The well-known attribute seeds get **two** writers: a migration for tenants that exist at deploy, and a lazy read-through for every tenant after
+
+> **Amended the same day by P-D-104.** Both halves of this entry's split were wrong: the migration
+> arm is unbuildable (no tenant registry in any gear's schema, and no migration in the workspace
+> inserts a row at all) and it was redundant besides — the read-through's condition is *"this tenant
+> has no seed rows"*, not *"this tenant is new"*, so it covers pre-deploy tenants too. P-D-104 keeps
+> one writer and moves it off the read path onto the tenant's first **write**. Read that entry
+> before acting on this one.
 
 - **Date**: 2026-09-02 (owner call, on strand A's `A-OWED-04`)
 - **Context**: `products_attribute_definition` is **per-tenant** — `tenant_id` is in its key — so
