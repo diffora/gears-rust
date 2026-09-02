@@ -50,8 +50,8 @@ use uuid::Uuid;
 
 use super::{driver_failure, supersede_open_approval};
 use crate::domain::approval::{
-    AckPlacement, QuorumDescriptor, ack_placement, decision_admitted, describe_quorum,
-    descriptor_from_stored,
+    AckPlacement, ApprovalState, CandidateApproval, QuorumDescriptor, ack_placement,
+    decision_admitted, describe_quorum, descriptor_from_stored,
 };
 use crate::domain::error::DomainError;
 use crate::domain::governance::{ApprovalId, GateSubject};
@@ -620,6 +620,168 @@ pub async fn read_approval(
         .one(runner)
         .await
         .map_err(|e| driver_failure(format!("read approval {approval_id}"), e))
+}
+
+/// Spend a `satisfied` record: flip it `consumed`, once
+/// (`inst-gv-one-shot`, `inst-fd-publish-consume`; `dod-one-shot-consumption`).
+///
+/// # This function opens no transaction — `runner` MUST be the act's own
+///
+/// `inst-fd-publish-consume` requires the flip *"in the same transaction as
+/// the authorized act"*, and `inst-gv-one-shot` adds that *"a failed attempt
+/// consumes nothing"*. Neither is expressible here: this function writes one
+/// row, and it is the caller's transaction that makes the pair atomic. On a
+/// plain connection a committed consume followed by a failed act leaves a
+/// record spent for an act that never happened, which is the one-shot rule
+/// inverted.
+///
+/// # The one-shot is the `UPDATE`'s own predicate
+///
+/// `state = 'satisfied'` sits on the write, not merely on a preceding read,
+/// so two acts racing off one record produce exactly one
+/// [`Consumption::Spent`]. That is what makes the `DoD`'s *"two publishes off
+/// one satisfied approval, the second fails"* a property of the statement
+/// rather than of the order two callers happened to run in — and it is
+/// `supersede_open_approval`'s own lesson, whose first build put the
+/// predicate on the read alone and answered a 500 for a legal act.
+///
+/// Zero rows matched is [`Consumption::AlreadySpentOrClosed`] rather than an
+/// error, because the caller is the one that knows what to do with it: a
+/// second publish must refuse, while a `PreAuthorized` stage that raced a
+/// peer is looking at the answer it wanted. Reporting it as a driver failure
+/// would send both to a 500.
+///
+/// `finalized_at` is written with the state because
+/// `chk_products_approval_finalized` pins the pair on both dialects.
+///
+/// # Errors
+///
+/// [`RepoError`] on a storage or scope failure.
+pub async fn consume_approval(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    approval_id: ApprovalId,
+    now: DateTime<Utc>,
+) -> Result<Consumption, RepoError> {
+    let outcome = approval::Entity::update_many()
+        .secure()
+        .scope_with(scope)
+        .col_expr(approval::Column::State, Expr::value("consumed".to_owned()))
+        .col_expr(approval::Column::FinalizedAt, Expr::value(now))
+        .filter(
+            Condition::all()
+                .add(approval::Column::TenantId.eq(tenant_id))
+                .add(approval::Column::ApprovalId.eq(approval_id.get()))
+                // The one-shot, and it belongs on the write.
+                .add(approval::Column::State.eq("satisfied")),
+        )
+        .exec(runner)
+        .await
+        .map_err(|e| driver_failure(format!("consume approval {approval_id}"), e))?;
+    if outcome.rows_affected == 0 {
+        return Ok(Consumption::AlreadySpentOrClosed);
+    }
+    Ok(Consumption::Spent)
+}
+
+/// What a consume attempt found.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum Consumption {
+    /// This call spent the record. Exactly one caller ever sees this for a
+    /// given record.
+    Spent,
+    /// The record was not `satisfied` when the statement ran — already
+    /// `consumed`, or finalized `rejected`/`superseded` under the act.
+    AlreadySpentOrClosed,
+}
+
+/// Read the gate's candidate records for one subject
+/// (`domain::approval::StoredApprovalGate`'s operand, §7 row 28's first arm).
+///
+/// # Why every state, and not just `satisfied`
+///
+/// [`crate::domain::governance::GateMode::PreAuthorized`] names a **`consumed`**
+/// record, so a reader
+/// scoped to `satisfied` would make that mode unanswerable — which is how the
+/// mode came to have no call path at all. The host filters by state itself,
+/// and it is an exhaustive match over [`ApprovalState`], so a state added to
+/// the `CHECK` forces an arm there rather than being silently dropped here.
+///
+/// The rows are ordered newest-submission-first so a subject with a history
+/// of consumed records presents its most recent one first; the host matches
+/// on id and revision, so the order is a courtesy to a reader rather than
+/// part of any rule.
+///
+/// # Errors
+///
+/// [`RepoError`] on a storage or scope failure, and [`RepoError::CorruptRow`]
+/// for a `state` outside the `CHECK`'s roster — a row this gear wrote wrong,
+/// never a request-borne value.
+pub async fn gate_candidates(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    subject: &GateSubject,
+) -> Result<Vec<CandidateApproval>, RepoError> {
+    let rows = approval::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(approval::Column::TenantId.eq(subject.tenant_id))
+                .add(approval::Column::SubjectKind.eq(subject.kind.as_str()))
+                .add(approval::Column::SubjectRef.eq(subject.reference.clone())),
+        )
+        .order_by(approval::Column::SubmittedAt, sea_orm::Order::Desc)
+        .all(runner)
+        .await
+        .map_err(|e| driver_failure(format!("gate candidates for {}", subject.reference), e))?;
+
+    let mut candidates = Vec::with_capacity(rows.len());
+    for row in rows {
+        let state = ApprovalState::parse(&row.state).map_err(|token| {
+            RepoError::CorruptRow(format!(
+                "approval {} carries state {token}, which is outside \
+                 chk_products_approval_state's roster",
+                row.approval_id
+            ))
+        })?;
+        candidates.push(CandidateApproval {
+            approval_id: ApprovalId::new(row.approval_id),
+            subject: subject.clone(),
+            internal_revision: row.internal_revision,
+            state,
+            // "An acknowledgment was stored", on either of its two homes —
+            // the author's column at effective quorum zero, or any approver's
+            // decision row above it. The by-name half has no operand; see
+            // `CandidateApproval::override_acknowledged`.
+            override_acknowledged: row.author_override_ack.is_some()
+                || decision_ack_exists(runner, scope, subject.tenant_id, row.approval_id).await?,
+        });
+    }
+    Ok(candidates)
+}
+
+/// Whether any decision row on this record stored an acknowledgment.
+async fn decision_ack_exists(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    approval_id: Uuid,
+) -> Result<bool, RepoError> {
+    let found = approval_decision::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(approval_decision::Column::TenantId.eq(tenant_id))
+                .add(approval_decision::Column::ApprovalId.eq(approval_id))
+                .add(approval_decision::Column::OverrideAcknowledgments.is_not_null()),
+        )
+        .one(runner)
+        .await
+        .map_err(|e| driver_failure(format!("override acknowledgments of {approval_id}"), e))?;
+    Ok(found.is_some())
 }
 
 /// The pending queue, oldest first — the operand behind

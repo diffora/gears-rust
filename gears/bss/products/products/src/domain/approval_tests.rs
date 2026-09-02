@@ -11,8 +11,41 @@ use super::{
     ack_placement, approver_covers_subject, decision_admitted, describe_platform_quorum,
     describe_quorum, diff_basis_for, evaluate_quorum, render_diff,
 };
+use crate::domain::concurrency::InternalRevision;
 use crate::domain::containment::{ResolvedScope, ScopeDimension, ScopePair};
+use bss_products_sdk::models::EntityKind;
+
+use crate::domain::governance::{
+    ApprovalDisposition, ApprovalId, EntityRef, GateMode, GateSubject, GateVerdict,
+    GovernanceGate as _,
+};
 use crate::domain::materiality::Materiality;
+
+use super::{ApprovalState, CandidateApproval, StoredApprovalGate};
+
+const GATE_TENANT: Uuid = Uuid::from_u128(0x6a_11);
+const GATE_ENTITY: Uuid = Uuid::from_u128(0x6a_e1);
+
+/// The subject every host probe below asks about — the same shape all seven
+/// production call sites build.
+fn gate_subject() -> GateSubject {
+    GateSubject::entity_publish(EntityRef {
+        tenant_id: GATE_TENANT,
+        entity_kind: EntityKind::Product,
+        entity_id: GATE_ENTITY,
+    })
+}
+
+/// One candidate on [`gate_subject`] at `revision` in `state`.
+fn candidate(id: u128, revision: i64, state: ApprovalState) -> CandidateApproval {
+    CandidateApproval {
+        approval_id: ApprovalId::new(Uuid::from_u128(id)),
+        subject: gate_subject(),
+        internal_revision: revision,
+        state,
+        override_acknowledged: false,
+    }
+}
 
 /// A restricted scope from its members, so a probe reads as the set it means.
 fn restricted(values: &[&str]) -> ResolvedScope {
@@ -626,4 +659,274 @@ fn the_brand_dimension_is_judged_on_its_own_and_is_named() {
             ..
         }
     ));
+}
+
+// ---------------------------------------------------------------------------
+// The store-backed host (`dod-gate-host`, `dod-preauthorized-mode`).
+// ---------------------------------------------------------------------------
+
+/// **A save and a discard are authorized naming no record**, which is the
+/// arm §7 row 26 says a store-backed host cannot have.
+///
+/// Its reason is not `NoMaterialityPolicyGate`'s: that host records a
+/// deviation it cannot avoid, while this one states a fact — no ceremony
+/// applies to a save. The strings are asserted apart, because an operator
+/// reading an audit row is being told two different things.
+#[test]
+fn an_ungoverned_act_is_authorized_with_nothing_to_spend() {
+    let host = StoredApprovalGate::ungoverned();
+    let verdict = host
+        .evaluate(gate_subject(), InternalRevision::new(3), GateMode::Gate)
+        .expect("this host reads nothing and cannot fail to reach an answer");
+    match verdict {
+        GateVerdict::Authorized(authorization) => {
+            assert_eq!(authorization.disposition, ApprovalDisposition::NoRecord);
+            assert_eq!(
+                authorization.approval_to_consume(),
+                None,
+                "an ungoverned act spends nothing"
+            );
+            assert!(!authorization.uncomposed_bundle_override);
+            assert!(
+                authorization
+                    .reason
+                    .contains("no approval record is required"),
+                "{}",
+                authorization.reason
+            );
+            assert!(
+                !authorization.reason.contains("deviation"),
+                "this is not the no-policy host's deviation sentence: {}",
+                authorization.reason
+            );
+        }
+        GateVerdict::Refused { reason } => panic!(
+            "a store-backed host that refuses here refuses every save and discard in the gear \
+             (S7 row 26): {reason}"
+        ),
+    }
+}
+
+/// **A governed act with no record is refused** — the answer
+/// `inst-fd-gate-mode-gate` requires and `NoMaterialityPolicyGate`
+/// deliberately does not give.
+///
+/// Paired with the case above, this is the whole of what the construction
+/// operand buys: the same subject, the same revision, the same mode, two
+/// different correct answers.
+#[test]
+fn a_governed_act_with_no_record_is_refused_on_the_same_triple() {
+    let refused = StoredApprovalGate::governed(Vec::new())
+        .evaluate(gate_subject(), InternalRevision::new(3), GateMode::Gate)
+        .expect("a verdict, not a host failure");
+    assert!(
+        matches!(refused, GateVerdict::Refused { .. }),
+        "{refused:?}"
+    );
+
+    // The identical triple, the other construction: authorized.
+    assert!(matches!(
+        StoredApprovalGate::ungoverned()
+            .evaluate(gate_subject(), InternalRevision::new(3), GateMode::Gate)
+            .expect("a verdict"),
+        GateVerdict::Authorized(_)
+    ));
+}
+
+/// A `satisfied` record pinned to the door's expected revision authorizes and
+/// names the record **to consume**.
+#[test]
+fn a_satisfied_record_at_the_pinned_revision_is_spent() {
+    let host = StoredApprovalGate::governed(vec![candidate(0xf1, 3, ApprovalState::Satisfied)]);
+    let verdict = host
+        .evaluate(gate_subject(), InternalRevision::new(3), GateMode::Gate)
+        .expect("a verdict");
+    match verdict {
+        GateVerdict::Authorized(authorization) => assert_eq!(
+            authorization.approval_to_consume(),
+            Some(ApprovalId::new(Uuid::from_u128(0xf1))),
+            "Gate mode spends the record it found"
+        ),
+        GateVerdict::Refused { reason } => panic!("{reason}"),
+    }
+}
+
+/// **The revision is matched, not merely reported.** A record pinned to
+/// another revision is no record at all.
+///
+/// `inst-fd-publish-pin`: *"an approval is only usable against the exact
+/// revision it pinned"*, and the trait's own doc says a host with a record
+/// store *"matches on it rather than merely reporting it"*. Without this case
+/// a host ignoring the revision passes every other probe here.
+#[test]
+fn a_record_pinned_to_another_revision_does_not_authorize() {
+    let host = StoredApprovalGate::governed(vec![candidate(0xf2, 2, ApprovalState::Satisfied)]);
+    assert!(matches!(
+        host.evaluate(gate_subject(), InternalRevision::new(3), GateMode::Gate)
+            .expect("a verdict"),
+        GateVerdict::Refused { .. }
+    ));
+}
+
+/// Only a **`satisfied`** record authorizes under `Gate`. The other four
+/// states are swept, so a host matching on "any record" fails here rather
+/// than in production.
+#[test]
+fn no_state_but_satisfied_authorizes_under_gate() {
+    for state in [
+        ApprovalState::Pending,
+        ApprovalState::Consumed,
+        ApprovalState::Rejected,
+        ApprovalState::Superseded,
+    ] {
+        let host = StoredApprovalGate::governed(vec![candidate(0xf3, 3, state)]);
+        assert!(
+            matches!(
+                host.evaluate(gate_subject(), InternalRevision::new(3), GateMode::Gate)
+                    .expect("a verdict"),
+                GateVerdict::Refused { .. }
+            ),
+            "state {} must not authorize a Gate-mode act",
+            state.as_str()
+        );
+    }
+}
+
+/// **`PreAuthorized` verifies a `consumed` record and spends nothing**
+/// (`dod-preauthorized-mode`, `inst-gv-one-shot`).
+///
+/// The disposition is `Verified`, and `approval_to_consume()` answering
+/// `None` is what makes "nothing is consumed under `PreAuthorized`" a
+/// property of the type rather than a rule a door must remember.
+#[test]
+fn preauthorized_verifies_a_consumed_record_and_spends_nothing() {
+    let id = ApprovalId::new(Uuid::from_u128(0xf4));
+    let host = StoredApprovalGate::governed(vec![candidate(0xf4, 3, ApprovalState::Consumed)]);
+    let verdict = host
+        .evaluate(
+            gate_subject(),
+            InternalRevision::new(3),
+            GateMode::PreAuthorized(id),
+        )
+        .expect("a verdict");
+    match verdict {
+        GateVerdict::Authorized(authorization) => {
+            assert_eq!(authorization.disposition, ApprovalDisposition::Verified(id));
+            assert_eq!(
+                authorization.approval_to_consume(),
+                None,
+                "a PreAuthorized stage cannot spend a record even by accident"
+            );
+            assert_eq!(
+                authorization.approval_ref(),
+                Some(id),
+                "the column still records which approval stands behind the frozen version"
+            );
+        }
+        GateVerdict::Refused { reason } => panic!("{reason}"),
+    }
+}
+
+/// **`PreAuthorized` matches the named id, not just the shape.**
+///
+/// A subject may accumulate any number of `consumed` records — the partial
+/// UNIQUE bounds only the open one — so a stage naming some *other* consumed
+/// record of the same subject at the same revision must be refused. Weakening
+/// this to "names a consumed record" is what turns a terminal record into an
+/// unbounded bearer token (§7 row 27's own words).
+#[test]
+fn preauthorized_refuses_a_consumed_record_it_did_not_name() {
+    let host = StoredApprovalGate::governed(vec![candidate(0xf5, 3, ApprovalState::Consumed)]);
+    let refused = host
+        .evaluate(
+            gate_subject(),
+            InternalRevision::new(3),
+            GateMode::PreAuthorized(ApprovalId::new(Uuid::from_u128(0xf6))),
+        )
+        .expect("a verdict");
+    assert!(
+        matches!(refused, GateVerdict::Refused { .. }),
+        "{refused:?}"
+    );
+}
+
+/// A `satisfied` record does not answer a `PreAuthorized` stage, and a
+/// `consumed` one does not answer a `Gate` act. The two modes read disjoint
+/// states, and asserting both directions is what stops a host that ignores
+/// the mode.
+#[test]
+fn the_two_modes_read_disjoint_states() {
+    let id = ApprovalId::new(Uuid::from_u128(0xf7));
+    let satisfied =
+        StoredApprovalGate::governed(vec![candidate(0xf7, 3, ApprovalState::Satisfied)]);
+    assert!(matches!(
+        satisfied
+            .evaluate(
+                gate_subject(),
+                InternalRevision::new(3),
+                GateMode::PreAuthorized(id)
+            )
+            .expect("a verdict"),
+        GateVerdict::Refused { .. }
+    ));
+
+    let consumed = StoredApprovalGate::governed(vec![candidate(0xf7, 3, ApprovalState::Consumed)]);
+    assert!(matches!(
+        consumed
+            .evaluate(gate_subject(), InternalRevision::new(3), GateMode::Gate)
+            .expect("a verdict"),
+        GateVerdict::Refused { .. }
+    ));
+}
+
+/// The override acknowledgment crosses the seam and nothing else does.
+///
+/// `inst-fd-gate-verdict` fixes the payload at the record's id plus that one
+/// flag, so the flag is asserted to travel and to default `false` where no
+/// record authorized the act.
+#[test]
+fn the_override_acknowledgment_travels_and_defaults_false_with_no_record() {
+    let mut acked = candidate(0xf8, 3, ApprovalState::Satisfied);
+    acked.override_acknowledged = true;
+    match StoredApprovalGate::governed(vec![acked])
+        .evaluate(gate_subject(), InternalRevision::new(3), GateMode::Gate)
+        .expect("a verdict")
+    {
+        GateVerdict::Authorized(authorization) => {
+            assert!(authorization.uncomposed_bundle_override);
+        }
+        GateVerdict::Refused { reason } => panic!("{reason}"),
+    }
+
+    match StoredApprovalGate::ungoverned()
+        .evaluate(gate_subject(), InternalRevision::new(3), GateMode::Gate)
+        .expect("a verdict")
+    {
+        GateVerdict::Authorized(authorization) => assert!(
+            !authorization.uncomposed_bundle_override,
+            "an override nobody granted is not one the door may apply"
+        ),
+        GateVerdict::Refused { reason } => panic!("{reason}"),
+    }
+}
+
+/// Every stored state round-trips, and a token outside the roster is named
+/// rather than defaulted.
+#[test]
+fn the_state_roster_round_trips_and_refuses_an_unknown_token() {
+    for state in [
+        ApprovalState::Pending,
+        ApprovalState::Satisfied,
+        ApprovalState::Consumed,
+        ApprovalState::Rejected,
+        ApprovalState::Superseded,
+    ] {
+        assert_eq!(ApprovalState::parse(state.as_str()), Ok(state));
+    }
+    assert_eq!(
+        ApprovalState::parse("approved"),
+        Err("approved".to_owned()),
+        "a token outside chk_products_approval_state's roster is a row this gear wrote wrong, \
+         and the refusal names it"
+    );
 }

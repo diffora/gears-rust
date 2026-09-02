@@ -94,10 +94,14 @@ use toolkit_macros::domain_model;
 use uuid::Uuid;
 
 use crate::domain::canonical;
+use crate::domain::concurrency::InternalRevision;
 use crate::domain::containment::{
     ResolvedScope, ScopeContainment, ScopeDimension, ScopePair, contains,
 };
 use crate::domain::error::DomainError;
+use crate::domain::governance::{
+    ApprovalDisposition, ApprovalId, GateMode, GateSubject, GateVerdict, GovernanceGate,
+};
 use crate::domain::materiality::{DEFAULT_APPROVER_COUNT, Materiality};
 
 /// A mandatory predicate the descriptor could not carry at its own effective
@@ -791,6 +795,293 @@ pub enum ApproverScopeVerdict {
         /// The subject's scope on that dimension.
         subject: ResolvedScope,
     },
+}
+
+// ---------------------------------------------------------------------------
+// The store-backed gate host (`dod-gate-host`), over candidate records the
+// door loaded inside its own transaction.
+// ---------------------------------------------------------------------------
+
+/// One approval record as the gate needs to see it — a **domain** projection
+/// of the row, not the row.
+///
+/// The host lives in `domain`, which holds no connection and may not name a
+/// storage entity, so the door reads the row and hands this across. That is
+/// also what makes [`StoredApprovalGate`] a pure function of what its
+/// transaction already loaded, which is §7 row 28's first arm; see
+/// [`StoredApprovalGate`] for why the second arm was not available.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CandidateApproval {
+    /// The record's id.
+    pub approval_id: ApprovalId,
+    /// The subject it was submitted against, as the store stores it.
+    pub subject: GateSubject,
+    /// The revision the submission pinned.
+    pub internal_revision: i64,
+    /// The stored state token.
+    pub state: ApprovalState,
+    /// Whether the record carries an override acknowledgment — the verdict's
+    /// `composition_pending` operand.
+    ///
+    /// **This is "an acknowledgment was stored", not "the uncomposed-bundle
+    /// override specifically".** No artifact says where a subject's override
+    /// conditions are read from — `domain::validation`'s report carries no
+    /// such set and no type in `domain/` produces one — so the by-name half
+    /// of `dod-override-ceremony` has no operand and this flag cannot be
+    /// narrower than the storage it reads.
+    pub override_acknowledged: bool,
+}
+
+/// The five states `products_approval.state` admits.
+///
+/// A closed enum rather than the stored `&str`, so a host that grows a rule
+/// for one state is forced by the compiler to say what it does with the rest
+/// — the same property `SubjectKind` was given for the same reason.
+#[domain_model]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum ApprovalState {
+    /// Open, awaiting its quorum.
+    Pending,
+    /// The quorum is met; the record is spendable exactly once.
+    Satisfied,
+    /// Spent by an authorized act.
+    Consumed,
+    /// Finalized by a rejection.
+    Rejected,
+    /// Finalized by a frozen-content write on the subject.
+    Superseded,
+}
+
+impl ApprovalState {
+    /// Read a stored token back.
+    ///
+    /// # Errors
+    ///
+    /// The token, when it is outside the `CHECK`'s roster — a row this gear
+    /// wrote wrong rather than a request-borne value.
+    pub fn parse(stored: &str) -> Result<Self, String> {
+        match stored {
+            "pending" => Ok(Self::Pending),
+            "satisfied" => Ok(Self::Satisfied),
+            "consumed" => Ok(Self::Consumed),
+            "rejected" => Ok(Self::Rejected),
+            "superseded" => Ok(Self::Superseded),
+            other => Err(other.to_owned()),
+        }
+    }
+
+    /// The stored spelling.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Satisfied => "satisfied",
+            Self::Consumed => "consumed",
+            Self::Rejected => "rejected",
+            Self::Superseded => "superseded",
+        }
+    }
+}
+
+/// Whether the act being gated is one the ceremony governs at all.
+///
+/// # This is the operand §7 row 26 says the seam does not carry, moved to the
+/// host's construction
+///
+/// Measured at `HEAD` on 2026-09-02: **seven** production call sites reach
+/// `GovernanceGate::evaluate`, and on Product all four — `run_publish`,
+/// `run_deprecate`, `run_discard`, `run_save` — pass a **byte-identical**
+/// triple: `GateSubject::entity_publish(EntityRef { .. })`,
+/// `InternalRevision::new(inputs.expected)`, and `Gate` (`run_publish`
+/// through its `mode` argument, which the routed handler sets to `Gate`).
+/// SKU's three are the same shape. So nothing in `(subject, revision, mode)`
+/// separates a publish from a save, and a host judging on those three alone
+/// has exactly the two wrong answers row 26 names: refuse without a record
+/// and every save and discard in the gear is refused; authorize without one
+/// and the no-policy deviation survives on the publish path.
+///
+/// The seam cannot be widened from here — `domain/governance.rs` is
+/// `01-foundation`'s contract — so the operand rides **construction**
+/// instead, where the door already chooses what to load. That makes the
+/// missing information a **compile-time obligation**: a caller cannot build
+/// this host without saying which kind of act it is holding it for, so the
+/// ambiguity cannot be resolved silently at either default.
+#[domain_model]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum GatedAct {
+    /// A publish, a lifecycle transition, or any other act P-D-30 put the
+    /// gate phase on: a record is required and is spent.
+    Governed,
+    /// A save or a discard. `inst-gv-materiality` leaves `draft -> discarded`
+    /// *"ungated beyond its own authz"* (M-1) and a save is not a transition
+    /// at all, so no ceremony applies and no record is spent.
+    Ungoverned,
+}
+
+/// The gate host `dod-gate-host` obliges: `01-foundation`'s
+/// [`GovernanceGate`] over records the door already loaded.
+///
+/// # Why the candidates arrive at construction rather than through an async
+/// signature
+///
+/// `domain/governance.rs` states the choice and books it here: a store-backed
+/// host needs its candidate records *"either as an operand the door already
+/// loaded inside its transaction, or through an async widening of this
+/// signature. **That choice is slice 05's** … because guessing it wrong costs
+/// a signature change either way."* (§7 row 28.) The second arm is a change
+/// to `01`'s own trait, which this slice may not make, so the first is taken:
+/// this host holds what it was given and reads nothing.
+///
+/// **That is not merely the available arm; it is the one that keeps the host
+/// a pure function**, which is what lets every rule below be probed without a
+/// database and what keeps `evaluate`'s `Err` arm — reserved for *"a host
+/// that could not reach an answer"* — genuinely unreachable here.
+///
+/// # What it does not do, and why the `DoD` still does not tick
+///
+/// It is not **registered**. `dod-gate-host` requires the host to replace
+/// [`crate::domain::governance::NoMaterialityPolicyGate`], and that wiring is
+/// `gear.rs` and the doors'.
+/// More than a file boundary blocks it: until the door says which
+/// [`GatedAct`] each of its seven call sites is, wiring a store-backed host
+/// at all is the choice between row 26's two wrong answers.
+pub struct StoredApprovalGate {
+    act: GatedAct,
+    candidates: Vec<CandidateApproval>,
+}
+
+impl StoredApprovalGate {
+    /// A host for an act the ceremony governs, over the records the door
+    /// loaded for the subject.
+    ///
+    /// The list is what the transaction read; it is normally zero or one
+    /// records, because `uq_products_approval_open` admits one open record
+    /// per subject — but `consumed` records accumulate, and
+    /// [`GateMode::PreAuthorized`] names one of those, so the host takes a
+    /// list rather than an `Option` and does not assume the index's shape.
+    #[must_use]
+    pub fn governed(candidates: Vec<CandidateApproval>) -> Self {
+        Self {
+            act: GatedAct::Governed,
+            candidates,
+        }
+    }
+
+    /// A host for a save or a discard: no ceremony applies, nothing is spent.
+    ///
+    /// It takes no candidates because it reads none — a save's authorization
+    /// is the permission check that runs before the door, not this phase.
+    #[must_use]
+    pub const fn ungoverned() -> Self {
+        Self {
+            act: GatedAct::Ungoverned,
+            candidates: Vec::new(),
+        }
+    }
+
+    /// The record matching this subject at this pinned revision in the named
+    /// state, if the door loaded one.
+    fn matching(
+        &self,
+        subject: &GateSubject,
+        expected_revision: InternalRevision,
+        state: ApprovalState,
+    ) -> Option<&CandidateApproval> {
+        self.candidates.iter().find(|candidate| {
+            candidate.state == state
+                && candidate.subject == *subject
+                && candidate.internal_revision == expected_revision.get()
+        })
+    }
+}
+
+/// The reason [`StoredApprovalGate::ungoverned`] authorizes.
+///
+/// Named so the audit row, the probe and this argument read one sentence. It
+/// states what is true — no ceremony applies to this act — rather than
+/// [`NoMaterialityPolicyGate`]'s sentence, which records a deviation.
+const UNGOVERNED_REASON: &str = "this act is a save or a discard: inst-gv-materiality leaves draft -> discarded ungated \
+     beyond its own authz and a save is not a transition, so no approval record is required \
+     and none is spent";
+
+impl GovernanceGate for StoredApprovalGate {
+    /// # Errors
+    ///
+    /// Never. This host reads nothing — its candidates were loaded by the
+    /// door's own transaction before it was built — so it cannot fail to
+    /// reach an answer, and every `no` below is a verdict rather than a host
+    /// failure.
+    fn evaluate(
+        &self,
+        subject: GateSubject,
+        expected_revision: InternalRevision,
+        mode: GateMode,
+    ) -> Result<GateVerdict, DomainError> {
+        if self.act == GatedAct::Ungoverned {
+            return Ok(GateVerdict::authorized(
+                ApprovalDisposition::NoRecord,
+                false,
+                UNGOVERNED_REASON.to_owned(),
+            ));
+        }
+        let verdict = match mode {
+            // `inst-fd-gate-mode-gate`: a `satisfied`, non-superseded record
+            // pinned to the door's expected revision, and it is **spent**.
+            GateMode::Gate => self
+                .matching(&subject, expected_revision, ApprovalState::Satisfied)
+                .map_or_else(
+                    || GateVerdict::Refused {
+                        reason: format!(
+                            "no satisfied approval record for {} at revision {}",
+                            subject.reference,
+                            expected_revision.get()
+                        ),
+                    },
+                    |candidate| {
+                        GateVerdict::authorized(
+                            ApprovalDisposition::Consume(candidate.approval_id),
+                            candidate.override_acknowledged,
+                            format!(
+                                "approval {} is satisfied and pinned to revision {}",
+                                candidate.approval_id,
+                                expected_revision.get()
+                            ),
+                        )
+                    },
+                ),
+            // `inst-fd-gate-mode-preauthorized`: the named record must be
+            // **`consumed`** and must have authorized *this* subject at
+            // *this* revision, and nothing further is spent. The id is
+            // matched as well as the shape, so a stage naming some other
+            // consumed record of the same subject is refused.
+            GateMode::PreAuthorized(named) => self
+                .matching(&subject, expected_revision, ApprovalState::Consumed)
+                .filter(|candidate| candidate.approval_id == named)
+                .map_or_else(
+                    || GateVerdict::Refused {
+                        reason: format!(
+                            "approval {named} did not authorize {} at revision {}",
+                            subject.reference,
+                            expected_revision.get()
+                        ),
+                    },
+                    |candidate| {
+                        GateVerdict::authorized(
+                            ApprovalDisposition::Verified(candidate.approval_id),
+                            candidate.override_acknowledged,
+                            format!(
+                                "approval {} already authorized {} at revision {}; \
+                                 this stage consumes nothing further",
+                                candidate.approval_id,
+                                subject.reference,
+                                expected_revision.get()
+                            ),
+                        )
+                    },
+                ),
+        };
+        Ok(verdict)
+    }
 }
 
 #[cfg(test)]

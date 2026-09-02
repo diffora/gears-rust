@@ -890,6 +890,39 @@ that feature, **not** a second vocabulary declared here. The verdict
 override acknowledgment, **and nothing more** — the Foundation learns nothing about who approved,
 against which rule, in how many steps or when.
 
+**The host is built and is not registered, and the second half is blocked by more than a file
+boundary.** `domain::approval::StoredApprovalGate` implements the trait over candidate records the
+door loaded, minting no vocabulary: it returns `01`'s `GateVerdict`, `GateAuthorization` and
+`ApprovalDisposition` and declares none of its own. Item 28's choice is taken and taken the only way
+available — *"an operand the door already loaded inside its transaction"* rather than *"an async
+widening of this signature"*, because the widening is a change to `01`'s own trait in
+`domain/governance.rs`, which this slice may not make. Holding what it was given also keeps the host
+a pure function, so every rule is probed without a database and `evaluate`'s `Err` arm — reserved
+for a host that could not **reach** an answer — is genuinely unreachable.
+
+**Row 26 is right and its enumeration is wrong; both are measured.** The row reads *"Six production
+call sites pass `GateMode::Gate`: publish, discard and save on both entities"*. At `HEAD` on
+2026-09-02 there are **seven** `.evaluate(` call sites, and **five** pass the `GateMode::Gate`
+literal — `products::run_deprecate`, `run_discard`, `run_save`; `skus::run_discard`, `run_save`.
+The other two are `products::run_publish` and `skus::run_publish`, which pass their `mode`
+**argument** (P-D-30's), set to `Gate` by the routed handler. So the row names publish among the
+literal-passers, where it does not belong, and misses `run_deprecate`, a lifecycle transition it
+does not mention at all. The substance is **worse** than stated, not better: all four Product sites
+build a byte-identical triple — `GateSubject::entity_publish(EntityRef { .. })`,
+`InternalRevision::new(inputs.expected)`, `Gate` — so nothing in `(subject, revision, mode)`
+separates a publish from a save, a discard or a deprecate, and the mode does not either.
+
+**What the build does about it, and what is owed to `01`.** The act operand rides the host's
+**construction** — `StoredApprovalGate::governed(candidates)` or `::ungoverned()` — so a caller
+cannot build a host without saying which kind of act it holds it for, and row 26's two wrong
+answers stop being reachable by default. A paired probe drives the identical triple through both
+constructions and asserts two different correct answers. But **the doors must then choose at each of
+the seven sites**, and the doors are `01`'s. Named for the lead: either `GovernanceGate::evaluate`
+gains a fourth argument carrying that distinction, or each door constructs the host it needs. The
+first puts the operand where a host can be sure of it; the second needs no seam change and is what
+the built type is shaped for. **Until one is taken, wiring any store-backed host is a choice between
+refusing every save in the gear and preserving the no-policy deviation on the publish path.**
+
 **Implements**: `cpt-cf-bss-products-flow-gate`
 
 **Touches**:
@@ -902,6 +935,17 @@ against which rule, in how many steps or when.
 The system **MUST** flip a satisfied record `consumed` **in the same transaction as the authorized
 act**, and a failed attempt **MUST** consume nothing. A probe **MUST** drive two publishes off one
 satisfied approval and prove the second fails.
+
+**The flip had no writer and now does; the transaction half is the door's and is not claimed.**
+`repo::consume_approval` carries `state = 'satisfied'` on the **`UPDATE`**, not on a preceding read,
+so two acts racing off one record produce exactly one `Consumption::Spent` whatever order they ran
+in — the DoD's own probe, at the store. Zero rows matched answers
+`Consumption::AlreadySpentOrClosed` rather than an error, because the caller is what knows the
+meaning: a second publish must refuse while a `PreAuthorized` stage that raced a peer has the answer
+it wanted, and reporting a driver failure would send both to a 500. Its companion probe drives a
+**`pending`** record, without which a predicate that had drifted to "any state" would pass the
+first probe unchanged. *"In the same transaction as the authorized act"* is **not** measurable
+here and is not claimed: this function opens no transaction, and the module says so.
 
 **Implements**: `cpt-cf-bss-products-flow-gate`,
 `cpt-cf-bss-products-state-approval-record`
@@ -920,6 +964,25 @@ header, no query parameter — so its reuse is bounded by in-process callers rat
 A scheduled act, a cascade and a bulk batch are each **one composite act**, and their mechanical
 stages re-enter here rather than demanding a fresh record.
 
+**The mode's arm is built and `bulk_worker`'s outright refusal is retired by it.** The host answers
+a `PreAuthorized` stage naming a **`consumed`** record that pinned this subject at this revision,
+with `ApprovalDisposition::Verified` — so `approval_to_consume()` answers `None` and "nothing is
+consumed under `PreAuthorized`" is a property of the type rather than a rule a door must remember —
+while `approval_ref()` still answers the id, because a mechanical stage records which approval
+stands behind the frozen version even though it spends nothing. The id is matched as well as the
+shape: a subject accumulates any number of `consumed` records (the partial UNIQUE bounds only the
+open one), so a stage naming a *different* consumed record at the same revision is refused, which is
+the weakening §7 row 27 calls turning a terminal record into an unbounded bearer token. A paired
+probe asserts the two modes read **disjoint** states in both directions.
+
+**The tick is blocked on §7 row 27, which this build does not touch.** The predicate the host
+implements is the one the instruction states — *"this subject at this pinned revision"* — and a
+cascade leg's subject is a **child** entity while a bulk row's revision is its own, so both still
+fail by construction and the mode carries no plan-membership operand to fix that. Widening the
+predicate is exactly what row 27 forbids doing locally. The clause *"MUST NOT be reachable from any
+wire surface"* is unchanged and holds structurally: `GateMode` is reachable from no request DTO,
+header reader or query extractor, and the two routed handlers pass the `Gate` literal.
+
 **Implements**: `cpt-cf-bss-products-flow-gate`
 
 **Touches**:
@@ -934,6 +997,17 @@ signal reference as the authorizing principal, audited like any decision, with n
 and no exemption from the gate. The head **MUST** be clean: such a publish carries the flag and
 nothing else, and on a dirty head is **deferred, never refused**. The configured `N` **MUST** have
 no standing over it, the principal not being a tenant principal.
+
+**Nothing was built for this, deliberately.** The auto-satisfy edge is the one arm §4 row 1 gives a
+named writer — *"or, for a `system_signal` subject, at submission"*, in the same transaction — so
+unlike the human arm it is not blocked by row 11. It is blocked by row 14: *"the auto-satisfied
+`system_signal`'s 'signal reference as the authorizing principal' **has no column**, the decision
+key being `(approval_id, approver_principal)`"*, and `approver_principal` is a `Uuid` while a signal
+reference is textual. A writer that flipped the record `satisfied` while silently dropping its
+authorizer would produce a **directly consumable record with no recorded authority** — the exact
+shape that makes a gap untraceable, and worse than an unbuilt DoD. The other two clauses have no
+operand either: *"the head MUST be clean"* needs the head, and *"on a dirty head is deferred, never
+refused"* needs a defer mechanism no artifact declares.
 
 **Implements**: `cpt-cf-bss-products-flow-gate`
 
@@ -1244,7 +1318,7 @@ in it is a question about every other feature's gate.
 
 | 24 | **Which slice mints a grant pair when the owning slice names none?** The roster carries `scheduled_transition × write\|cancel\|read` and `product\|sku × discard` for doors that name no pair, while §3.2 asserts "Every door names its pair" and `12-consumer-contracts`' lint runs door-to-catalog only — so a catalog entry with no door is invisible to it in both directions. **This is the item the first draft dropped** | `dod-rbac-catalog` | the governance owner with 04, 08 and 12 |
 | 25** | **A principal's *role* is not on any surface the gear has.** `SecurityContext` exposes `subject_id`, `subject_type`, `subject_tenant_id`, `token_scopes` and `bearer_token` — no roles, no brand claim, no region claim — and `roles`/`role_` returns **zero** hits across the gear's source. Authorization is permission-based: `authz.rs` asks the policy point `(resource, action)` for the **current** caller and returns a query filter. There is no way to ask whether principal X holds role R, still less to ask it of a **past** approver at gate time. The cheapest place to hold the answer is the decision row, which today stores neither the roles nor the scope claims that were true when the decision was made | `dod-quorum-evaluator`, `dod-finance-predicate`, `dod-approver-scope`, `dod-decision-store` | this feature with the platform-identity owner |
-| 26** | **The gate is invoked on `save` and `discard`, and the trait gives the host no act operand.** Six production call sites pass `GateMode::Gate`: publish, discard and save on both entities, because the Foundation puts the phase at every mutating door and has it pass where the act is ungated. `evaluate(subject, expected_revision, mode)` carries no act. A store-backed host that refuses when no record exists **refuses every save and every discard in the gear**; a host that authorizes when none exists preserves the no-policy deviation **on the publish path**, which is a path to `published` that consumes no record | `dod-gate-host` | this feature with 01 |
+| 26** | **The gate is invoked on `save` and `discard`, and the trait gives the host no act operand.** *(The count and the enumeration were wrong and are corrected here; the substance is worse, not better. Measured 2026-09-02: **seven** `.evaluate(` call sites, of which **five** pass the `GateMode::Gate` literal — `products::run_deprecate`, `run_discard`, `run_save`; `skus::run_discard`, `run_save` — while `products::run_publish` and `skus::run_publish` pass their `mode` **argument**. So publish was named among the literal-passers where it does not belong, and `run_deprecate`, a lifecycle transition, was missed entirely. All four Product sites build a **byte-identical** triple, so nothing in `(subject, revision, mode)` separates the four acts.)* The Foundation puts the phase at every mutating door and has it pass where the act is ungated. `evaluate(subject, expected_revision, mode)` carries no act. A store-backed host that refuses when no record exists **refuses every save and every discard in the gear**; a host that authorizes when none exists preserves the no-policy deviation **on the publish path**, which is a path to `published` that consumes no record | `dod-gate-host` | this feature with 01 |
 | 27** | **`PreAuthorized`'s predicate cannot admit the composite acts this feature declares.** The mode verifies a consumed record "authorized **this subject** at **this pinned revision**", while a cascade leg's subject is a **child** entity and a bulk row's revision is its own. Both fail by construction, and the mode carries only an id with no plan-membership operand. Weakening the predicate to "names a consumed record" turns a terminal, unrevocable record into an unbounded bearer token for any subject in the tenant | `dod-preauthorized-mode`, `dod-one-shot-consumption` | this feature with 04 and 09 |
 | 28** | **The trait is deliberately synchronous, and the code handed this feature the choice.** `governance.rs` states it: a store-backed host needs its candidate records "either as an operand the door already loaded inside its transaction, or through an async widening of this signature. **That choice is slice 05's** … because guessing it wrong costs a signature change either way." `dod-gate-host`'s "MUST NOT mint a parallel vocabulary" read literally forbids that widening. **This is the one item that cannot be deferred past the first line of code** | `dod-gate-host`, `dod-one-shot-consumption` | this feature with 01 |
 | 29** | ~~**Four of the five subject kinds cannot cross the seam.**~~ **Answered (owner call, 2026-08-31 — P-D-67 arm 4): the gate's subject widens to the approval store's own pair, `(subject_kind, subject_ref)`**, with `EntityRef` remaining the constructor for the entity kinds — the store already fixed the vocabulary, so the seam expressing less than the store records was the defect. `features/catalog-version.md` §7 row 26 is the same seam from the other side, answered by the same arm; item 14's storage half is untouched. *Original text:* The seam's subject type is an entity reference whose kind enum is exactly `Product | Sku`. A `governed_live_op`, a `system_signal`, an `sku_correction` and a `bulk_batch` have no representation to hand `evaluate`, while `dod-system-signal` obliges the gate to admit one. Item 14 sees the storage half of this and misses the seam half | no DoD — **resolved by P-D-67**; `dod-gate-host`, `dod-system-signal` and `dod-approval-store` carry the widened seam | was this feature with 01; **closed** |

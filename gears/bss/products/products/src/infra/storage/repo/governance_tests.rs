@@ -70,10 +70,10 @@ use super::super::{
     supersede_open_approval,
 };
 use super::{
-    DecisionOutcome, DecisionVerdict, NewApproval, NewDecision, read_approval, record_decision,
-    submit_approval,
+    Consumption, DecisionOutcome, DecisionVerdict, NewApproval, NewDecision, consume_approval,
+    gate_candidates, read_approval, record_decision, submit_approval,
 };
-use crate::domain::approval::{ApproverDiff, diff_basis_for, render_diff};
+use crate::domain::approval::{ApprovalState, ApproverDiff, diff_basis_for, render_diff};
 use crate::domain::governance::{ApprovalId, EntityRef, GateSubject};
 use crate::domain::materiality::{
     MaterialAct, MaterialityEvaluator, MaterialityPolicy, Resolution,
@@ -641,5 +641,187 @@ async fn a_record_superseded_under_the_decision_refuses_rather_than_hitting_the_
     assert!(
         refused.to_string().contains("APPROVAL_SUPERSEDED"),
         "the refusal must be the declared 409 and not a trigger failure: {refused}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// One-shot consumption (`dod-one-shot-consumption`) and the host's operand.
+// ---------------------------------------------------------------------------
+
+/// Move `id` to `satisfied` by hand — no writer produces that state at this
+/// commit (§7 row 11) and `satisfied` is not terminal, so the append-only
+/// guard admits the setup write.
+async fn mark_satisfied(runner: &impl DBRunner, scope: &AccessScope, id: ApprovalId) {
+    approval::Entity::update_many()
+        .secure()
+        .scope_with(scope)
+        .col_expr(approval::Column::State, Expr::value("satisfied".to_owned()))
+        .filter(
+            Condition::all()
+                .add(approval::Column::TenantId.eq(TENANT))
+                .add(approval::Column::ApprovalId.eq(id.get())),
+        )
+        .exec(runner)
+        .await
+        .expect("satisfied is not terminal, so the setup write lands");
+}
+
+/// **Two acts off one satisfied record, and exactly one spends it** — the
+/// probe `dod-one-shot-consumption` names, at the store.
+///
+/// The one-shot is the `UPDATE`'s own `state = 'satisfied'` predicate, so the
+/// second call matches zero rows whatever order the two ran in. The
+/// door-level half of the `DoD` — *"in the same transaction as the authorized
+/// act"* — is not measurable here and is not claimed: this function opens no
+/// transaction.
+#[tokio::test]
+async fn one_satisfied_record_is_spent_exactly_once() {
+    let provider = harness().await;
+    let conn = provider.conn().expect("scoped connection");
+    let scope = AccessScope::for_tenant(TENANT);
+    let subject = subject();
+    seed_head(&conn, &scope, Some(PUBLISHED)).await;
+    let id = submit_one(&conn, &scope, &subject).await;
+    mark_satisfied(&conn, &scope, id).await;
+
+    assert_eq!(
+        consume_approval(&conn, &scope, TENANT, id, at(13))
+            .await
+            .expect("the first act spends it"),
+        Consumption::Spent
+    );
+    assert_eq!(
+        consume_approval(&conn, &scope, TENANT, id, at(14))
+            .await
+            .expect("the second act reads an answer, not a driver failure"),
+        Consumption::AlreadySpentOrClosed,
+        "a second publish off one approval must fail, and it must fail as a classified answer \
+         rather than on the append-only trigger"
+    );
+
+    let record = read_approval(&conn, &scope, TENANT, id)
+        .await
+        .expect("read runs")
+        .expect("the record exists");
+    assert_eq!(record.state, "consumed");
+    assert!(
+        record.finalized_at.is_some(),
+        "chk_products_approval_finalized pins the pair on both dialects"
+    );
+}
+
+/// A record that never reached `satisfied` is not spendable, and the refusal
+/// is the same classified answer rather than an error.
+///
+/// Without this case a `consume_approval` whose predicate had drifted to "any
+/// state" would pass the probe above — its first call would spend a `pending`
+/// record and its second would still find nothing.
+#[tokio::test]
+async fn a_pending_record_is_not_spendable() {
+    let provider = harness().await;
+    let conn = provider.conn().expect("scoped connection");
+    let scope = AccessScope::for_tenant(TENANT);
+    let subject = subject();
+    seed_head(&conn, &scope, Some(PUBLISHED)).await;
+    let id = submit_one(&conn, &scope, &subject).await;
+
+    assert_eq!(
+        consume_approval(&conn, &scope, TENANT, id, at(13))
+            .await
+            .expect("a verdict"),
+        Consumption::AlreadySpentOrClosed
+    );
+    assert_eq!(
+        read_approval(&conn, &scope, TENANT, id)
+            .await
+            .expect("read runs")
+            .expect("the record exists")
+            .state,
+        "pending",
+        "and nothing was written"
+    );
+}
+
+/// **`gate_candidates` carries every state, which is what makes
+/// `PreAuthorized` answerable at all.**
+///
+/// A reader scoped to `satisfied` would leave that mode with no operand,
+/// which is how it came to have no call path. Two records on one subject —
+/// one consumed, one open — and both are returned.
+#[tokio::test]
+async fn the_gates_operand_carries_consumed_records_too() {
+    let provider = harness().await;
+    let conn = provider.conn().expect("scoped connection");
+    let scope = AccessScope::for_tenant(TENANT);
+    let subject = subject();
+    seed_head(&conn, &scope, Some(PUBLISHED)).await;
+
+    let spent = submit_one(&conn, &scope, &subject).await;
+    mark_satisfied(&conn, &scope, spent).await;
+    consume_approval(&conn, &scope, TENANT, spent, at(13))
+        .await
+        .expect("spend it");
+    // The partial UNIQUE admits a second open record now that the first is
+    // terminal, which is the history `PreAuthorized` reads back.
+    let open = submit_one(&conn, &scope, &subject).await;
+
+    let candidates = gate_candidates(&conn, &scope, &subject)
+        .await
+        .expect("read the candidates");
+    assert_eq!(candidates.len(), 2, "both records, not just the open one");
+    let states: Vec<ApprovalState> = candidates.iter().map(|c| c.state).collect();
+    assert!(states.contains(&ApprovalState::Consumed), "{states:?}");
+    assert!(states.contains(&ApprovalState::Pending), "{states:?}");
+    assert!(
+        candidates.iter().any(|c| c.approval_id == spent),
+        "the consumed record is reachable by id, which is what PreAuthorized matches on"
+    );
+    assert!(candidates.iter().any(|c| c.approval_id == open));
+    assert!(
+        candidates.iter().all(|c| !c.override_acknowledged),
+        "no acknowledgment was stored on either record"
+    );
+}
+
+/// An acknowledgment stored on a decision row reaches the host's operand.
+///
+/// The flag is read off **both** homes — the author's column at effective
+/// quorum zero and any approver's decision row above it — so a reader that
+/// checked only the record column would answer `false` for every `N >= 1`
+/// override, which is the majority of them.
+#[tokio::test]
+async fn a_decision_rows_acknowledgment_reaches_the_operand() {
+    let provider = harness().await;
+    let conn = provider.conn().expect("scoped connection");
+    let scope = AccessScope::for_tenant(TENANT);
+    let subject = subject();
+    seed_head(&conn, &scope, Some(PUBLISHED)).await;
+    let id = submit_one(&conn, &scope, &subject).await;
+
+    record_decision(
+        &conn,
+        &scope,
+        NewDecision {
+            tenant_id: TENANT,
+            approval_id: id,
+            approver_principal: APPROVER,
+            verdict: DecisionVerdict::Approved,
+            reason: None,
+            override_acknowledgments: Some("uncomposed-bundle"),
+        },
+        APPROVER,
+        at(12),
+    )
+    .await
+    .expect("the approval with an acknowledgment lands");
+
+    let candidates = gate_candidates(&conn, &scope, &subject)
+        .await
+        .expect("read the candidates");
+    assert!(
+        candidates
+            .iter()
+            .any(|c| c.approval_id == id && c.override_acknowledged),
+        "the acknowledgment on the decision row must reach the verdict's operand"
     );
 }
