@@ -1154,6 +1154,28 @@ them into the Foundation's taxonomy, each carrying the RFC 9457 problem-response
 slice assigns it. No code carrying a registry code may reach the wire as a 422; the architectural
 422s **MUST** render as 400 carrying their code.
 
+**Declared: fourteen of sixteen. Registered: four.** The declaration half is a constant on the
+raising rule, and ten now carry one in `domain::taxonomy`; `PRIMARY_CATEGORY_REQUIRED` has had one
+in `domain::rules` since the Foundation. The two without a constant are `CONTENT_PII_BLOCKED` and
+`METADATA_LIMIT`, whose raisers are the PII hook and the metadata door and neither is this
+feature's to write. `TAXONOMY_ERROR_CODES` is the census beside them: a code named there with no
+raiser and a raiser with no entry both redden.
+
+**The registration half is twelve variants and twelve mapping arms in two files this strand does
+not edit**, and they are handed over as patches rather than applied. Until they land every one of
+the twelve reaches the wire as `INCOMPLETE_ENTITY` through `transition_refusal`'s ladder, which
+names only the codes the crate declares — so the codes are declared, refusals are reachable, and
+**attribution is not**. That is the gap, stated rather than implied, and
+`twelve_of_the_sixteen_codes_have_no_domain_error_variant_yet` is the counted gate that reddens
+when it closes.
+
+**A pre-existing shortfall found on the way**, reported rather than fixed here:
+`domain/error_tests.rs` asserts its roster is 34 while `DomainError` carries **44** variants, and
+its own comment says the roster is meant to be complete. Ten are absent, two of them this slice's
+own — `DuplicateCategoryName` and `TaxonomyCycle`. It is the same class `error_mapping_tests`
+records fixing on 2026-09-02 (*"It read 35 against 41 real variants"*): one file was corrected and
+its sibling was not.
+
 **Implements**: `cpt-cf-bss-products-algo-error-taxonomy`
 
 **Constraints**: `cpt-cf-bss-products-constraint-tenant-isolation`
@@ -1172,6 +1194,30 @@ Taxonomy events **MUST** order on `(tenant, category tree)` as one aggregate, ma
 single-writer discipline; metadata events **MUST** order on `(tenant, entity)`. Product and SKU
 attribute-value writes **MUST** emit no event of their own, and that absence **MUST** be recorded
 as an explicit no-event declaration.
+
+**The aggregates ship; the payload types are a patch; two of the eight are held.**
+`infra::taxonomy::TAXONOMY_TREE_AGGREGATE` is one sentinel per tenant for the five tree acts —
+matching `inst-tc-writer-lock`'s per-tenant serialization, since a per-node key would promise an
+ordering across nodes that nothing enforces — and `metadata_aggregate` is the owning entity, which
+is the ordering a metadata write's own `If-Match` actually provides. The sentinel carries UUID
+version `0` and every id this gear mints is v7, so it cannot collide with a category, a Product or
+a SKU; that is asserted rather than assumed.
+
+**`CategoryDisplayUpdated` and `AttributeDefinitionUpdated` get no aggregate here.** §7 row 15 asks
+which orders them and states why it is not a free choice — *"display writes do not take the taxonomy
+writer lock, so the tree key would claim a serialization the door does not provide"*. Giving them
+the tree key would be that claim, made from an infra module.
+
+**The no-event declaration is a named constant**, `ATTRIBUTE_VALUE_WRITES_EMIT_NO_EVENT`, so a
+census looking for what this feature announces finds the absence too. Its reason is C2: those
+values are entity content, so the act already announces itself as `ProductHeadSaved` /
+`SkuHeadSaved` and at publish as `ProductPublished` / `SkuPublished`; a second event would announce
+one act twice and give a consumer no way to tell an independent change from a component of one it
+has already seen.
+
+**Each payload type needs its own `SCHEMA_REFS` entry, and that is the half no `match` catches.** A
+type added without one compiles clean, `schema_ref_for` answers `None`, and the act rolls back at
+runtime rather than at build time. Both halves are in the patch; neither is applied.
 
 **Implements**: `cpt-cf-bss-products-flow-manage-taxonomy`,
 `cpt-cf-bss-products-flow-attribute-definitions`, `cpt-cf-bss-products-flow-metadata`
@@ -1195,6 +1241,30 @@ and the attribute-value set — **MUST** be rendered as JSON arrays sorted by th
 identifier, each element following the Foundation's field-ordering rule (P-D-29). A golden vector
 **MUST** prove the rendering byte-identical across both engines, because
 `10-retention-erasure`'s restore drill compares those digests byte for byte.
+
+**Both renderers ship, and one of them exceeds this DoD's first sentence on purpose.**
+`assignment_collection` sorts by category id, which is total for that collection —
+`uq_products_product_category` admits one row per `(product, category)`. `value_collection` sorts by
+the **whole coordinate**, and §7 row 9 is why: *"Sorting by the attribute id orders groups, not
+rows, so two engines can serialize one content two ways — the failure the rule exists to prevent."*
+
+**The two sentences of this DoD contradict each other and only one can be built.** The first asks
+for a sort by *"the collection's own identifier"*; the second asks for a golden vector proving the
+rendering byte-identical across both engines. An identifier sort cannot deliver the second, so the
+total sort is taken and the divergence is registered — it is exactly the amendment row 9 says is
+owed to **P-D-29**'s owner, and the DoD stays unticked until that owner acts.
+
+**No second serialization rule is minted.** `canonical::render_into` sorts every object's keys and
+preserves every array's order, recursively, so these functions owe the array order and nothing
+else; handing the result to `canonical_rendering` field-orders the elements by the one rule the
+gear has. `domain::canonical`'s own doc says the sort is owed *"**here**, rather than at its own
+call site"* — that sentence is about a generic array sort, while these two keys are slice-02's, so
+they live in slice 02's module and the tension is registered rather than resolved by an edit to a
+Foundation file this strand does not own.
+
+The probe is the permutation, not the fixture: four rows of **one** definition, rendered from every
+rotation and from the reverse, all byte-identical. A fixture using four *different* definitions
+would pass under the very sort row 9 says is wrong.
 
 **Implements**: `cpt-cf-bss-products-flow-assign-categories`,
 `cpt-cf-bss-products-flow-attribute-values`

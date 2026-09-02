@@ -1471,6 +1471,142 @@ impl StaleCategoryToken {
     pub const CODE: &'static str = "STALE_CATEGORY_TOKEN";
 }
 
+// -- Frozen version content (`dod-version-content-rendering`, **P-D-29**) --
+
+/// One attribute value as a frozen version renders it.
+///
+/// The definition and the coordinate travel together because the coordinate
+/// alone does not identify a row: `("", "", "")` is the global coordinate of
+/// **every** definition the entity carries.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FrozenAttributeValue {
+    /// Which definition the value answers to.
+    pub definition_id: Uuid,
+    /// The coordinate and the value.
+    pub coordinate: LocalizedValue,
+}
+
+/// Render the category-assignment set as a frozen version carries it.
+///
+/// # The sort key is the whole assignment, and that is more than the `DoD`
+/// says
+///
+/// `dod-version-content-rendering` asks for *"JSON arrays sorted by the
+/// collection's own identifier"*. For assignments the category id **is** an
+/// identifier — `uq_products_product_category` admits one row per
+/// `(product, category)` — so sorting by it is total and this collection
+/// needs no amendment. [`value_collection`] is the one that does.
+///
+/// # The element ordering is the Foundation's and is not repeated here
+///
+/// `canonical::render_into` sorts every object's keys and preserves every
+/// array's order, recursively. So this function owes the **array** order and
+/// nothing else: hand the result to
+/// [`crate::domain::canonical::canonical_rendering`] and the elements come
+/// out field-ordered by the one rule the gear has, with no second
+/// serialization rule minted here — which is what
+/// `canonical`'s module doc exists to prevent.
+#[must_use]
+pub fn assignment_collection(assignments: &[(Uuid, AssignmentRole)]) -> serde_json::Value {
+    let mut rows: Vec<&(Uuid, AssignmentRole)> = assignments.iter().collect();
+    rows.sort_unstable_by_key(|row| row.0);
+    serde_json::Value::Array(
+        rows.into_iter()
+            .map(|(category_id, role)| {
+                serde_json::json!({
+                    "categoryId": category_id.to_string(),
+                    "role": role.as_str(),
+                })
+            })
+            .collect(),
+    )
+}
+
+/// Render the attribute-value set as a frozen version carries it.
+///
+/// # The sort key is the whole coordinate, and §7 row 9 is why
+///
+/// The `DoD` and **P-D-29** both say *"sorted by the collection's own
+/// identifier"*. For this collection that identifier is the **definition
+/// id**, and row 9 measured what follows: *"Sorting by the attribute id
+/// orders groups, not rows, so two engines can serialize one content two ways
+/// — the failure the rule exists to prevent."* One definition carries as many
+/// rows as it has coordinates, so an identifier sort leaves their relative
+/// order to whatever the driver returned.
+///
+/// **So the sort here is the full coordinate** — definition, then locale,
+/// then region, then brand — which is the table's own primary key and is
+/// therefore total by construction. That **exceeds the letter of the `DoD`'s
+/// first sentence** and is exactly the amendment row 9 says is owed to
+/// P-D-29's owner. It is taken rather than deferred because the `DoD`'s
+/// *second* sentence requires a golden vector proving the rendering
+/// byte-identical across both engines, and an identifier sort cannot satisfy
+/// it: the two sentences contradict each other, and only one of them can be
+/// built. Registered, and the `DoD` stays unticked.
+#[must_use]
+pub fn value_collection(values: &[FrozenAttributeValue]) -> serde_json::Value {
+    let mut rows: Vec<&FrozenAttributeValue> = values.iter().collect();
+    rows.sort_unstable_by(|left, right| {
+        (
+            left.definition_id,
+            &left.coordinate.locale,
+            &left.coordinate.region,
+            &left.coordinate.brand,
+        )
+            .cmp(&(
+                right.definition_id,
+                &right.coordinate.locale,
+                &right.coordinate.region,
+                &right.coordinate.brand,
+            ))
+    });
+    serde_json::Value::Array(
+        rows.into_iter()
+            .map(|row| {
+                serde_json::json!({
+                    "definitionId": row.definition_id.to_string(),
+                    "locale": row.coordinate.locale,
+                    "region": row.coordinate.region,
+                    "brand": row.coordinate.brand,
+                    "value": row.coordinate.value,
+                })
+            })
+            .collect(),
+    )
+}
+
+/// The sixteen codes `design/02` §3.3 declares, as one roster.
+///
+/// # Why the roster exists rather than only the constants
+///
+/// `dod-taxonomy-errors` requires *"all sixteen"* be declared and registered.
+/// A constant on each raising rule is the declaration; nothing on its own is
+/// the **census**, and a code that is declared nowhere is invisible to every
+/// per-rule test. `the_sixteen_codes_are_all_reachable` reads this array
+/// against the constants and against `DomainError::code`, so a code named
+/// here with no raiser and a raiser with no entry here both redden.
+///
+/// The array is the design's list verbatim and in its order; it is **not** a
+/// claim that all sixteen are raiseable at this commit, which they are not.
+pub const TAXONOMY_ERROR_CODES: [&str; 16] = [
+    "DUPLICATE_CATEGORY_NAME",
+    "TAXONOMY_CYCLE",
+    "TAXONOMY_LIMIT",
+    "CATEGORY_REFERENCED",
+    "CATEGORY_RETIRED",
+    "ATTRIBUTE_DEFINITION_UNKNOWN",
+    "ATTRIBUTE_DEFINITION_DEPRECATED",
+    "DEFINITION_IN_USE",
+    "ATTRIBUTE_TYPE_MISMATCH",
+    "ATTRIBUTE_SCOPE_VIOLATION",
+    "DEFAULT_LOCALE_MISSING",
+    "PRIMARY_CATEGORY_REQUIRED",
+    "STALE_CATEGORY_TOKEN",
+    "CONTENT_PII_BLOCKED",
+    "METADATA_LIMIT",
+    "STALE_LIVE_OP",
+];
+
 #[cfg(test)]
 #[path = "taxonomy_tests.rs"]
 mod taxonomy_tests;

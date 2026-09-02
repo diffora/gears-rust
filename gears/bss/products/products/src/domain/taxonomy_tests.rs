@@ -8,11 +8,13 @@ use super::{
     AttributeDefinitionKnownRule, AttributeScopeRule, AttributeValueTypeRule, CarriedDefinition,
     CategoryNotRetiredRule, CategoryReferenced, CategoryResolvableRule, CategoryRoleConflictRule,
     CategoryState, ContentSaveSubject, DefaultLocaleRequired, DefinitionInUse, DefinitionState,
-    GLOBAL_COORDINATE, LocaleRequest, LocalizedValue, PublishedContentSubject, REGISTRY_SEEDED_BY,
-    ResolutionStep, ResolvedDefinition, RetireCensus, StaleCategoryToken, TaxonomyLimitExceeded,
-    TaxonomyLimits, TaxonomyMutation, ValueCandidate, ValueShape, WELL_KNOWN_SEEDS, ancestors_of,
-    children_of, cycle_verdict, definition_edge, definition_in_use_verdict, depth_of, is_global,
-    is_removable, limit_verdict, resolve_localized, retire_verdict, seeded_edge,
+    FrozenAttributeValue, GLOBAL_COORDINATE, LocaleRequest, LocalizedValue,
+    PublishedContentSubject, REGISTRY_SEEDED_BY, ResolutionStep, ResolvedDefinition, RetireCensus,
+    StaleCategoryToken, TAXONOMY_ERROR_CODES, TaxonomyLimitExceeded, TaxonomyLimits,
+    TaxonomyMutation, ValueCandidate, ValueShape, WELL_KNOWN_SEEDS, ancestors_of,
+    assignment_collection, children_of, cycle_verdict, definition_edge, definition_in_use_verdict,
+    depth_of, is_global, is_removable, limit_verdict, resolve_localized, retire_verdict,
+    seeded_edge, value_collection,
 };
 use crate::domain::validation::ValidationPipeline;
 
@@ -1155,3 +1157,231 @@ fn only_three_absent_coordinates_are_the_global_one() {
     assert_eq!(GLOBAL_COORDINATE, ("", "", ""));
     assert_eq!(StaleCategoryToken::CODE, "STALE_CATEGORY_TOKEN");
 }
+
+// -- Frozen version content. --
+
+fn frozen(
+    definition: Uuid,
+    locale: &str,
+    region: &str,
+    brand: &str,
+    value: &str,
+) -> FrozenAttributeValue {
+    FrozenAttributeValue {
+        definition_id: definition,
+        coordinate: coordinate(locale, region, brand, value),
+    }
+}
+
+fn render(collection: &serde_json::Value) -> String {
+    crate::domain::canonical::canonical_rendering(
+        collection,
+        crate::domain::canonical::Absence::Omit,
+    )
+}
+
+/// **The assignment set sorts by category id whatever order it arrives in.**
+///
+/// The input is deliberately reversed against the expected output, so a
+/// function that returned its argument untouched would fail rather than
+/// coincide.
+#[test]
+fn the_assignment_collection_sorts_by_category_id() {
+    let forward =
+        assignment_collection(&[(A, AssignmentRole::Primary), (B, AssignmentRole::Secondary)]);
+    let reversed =
+        assignment_collection(&[(B, AssignmentRole::Secondary), (A, AssignmentRole::Primary)]);
+    assert_eq!(
+        render(&forward),
+        render(&reversed),
+        "input order is not carried"
+    );
+    assert!(
+        render(&forward).find(&A.to_string()) < render(&forward).find(&B.to_string()),
+        "sorted by category id: {}",
+        render(&forward)
+    );
+}
+
+/// **The value set's order is total over the whole coordinate, which an
+/// identifier sort is not.**
+///
+/// This is §7 row 9's own case: four rows of **one** definition. Sorting by
+/// the definition id orders groups and leaves these four to whatever the
+/// driver returned, so two engines can serialize one content two ways -- the
+/// failure P-D-29 exists to prevent. Every permutation below must render to
+/// the same bytes, and a sort keyed on the definition alone fails all of them
+/// while passing any fixture that used four *different* definitions.
+#[test]
+fn the_value_collection_is_total_over_four_rows_of_one_definition() {
+    let d = Uuid::from_u128(0xde_01);
+    let rows = [
+        frozen(d, "", "", "", "global"),
+        frozen(d, "fr-FR", "", "", "locale"),
+        frozen(d, "fr-FR", "eu", "", "locale+region"),
+        frozen(d, "fr-FR", "eu", "acme", "all three"),
+    ];
+    let canonical = render(&value_collection(&rows));
+
+    // Every rotation of the same four rows.
+    for shift in 1..rows.len() {
+        let mut shuffled = rows.to_vec();
+        shuffled.rotate_left(shift);
+        assert_eq!(
+            render(&value_collection(&shuffled)),
+            canonical,
+            "rotation by {shift} rendered differently"
+        );
+    }
+    // And the reverse, which no rotation reaches.
+    let mut backwards = rows.to_vec();
+    backwards.reverse();
+    assert_eq!(render(&value_collection(&backwards)), canonical);
+}
+
+/// **Two definitions interleave by definition first, then by coordinate.**
+///
+/// Without this, a sort keyed only on the coordinate -- the mirror mistake of
+/// the one row 9 names -- would pass the case above and scatter each
+/// definition's rows through the other's.
+#[test]
+fn the_value_collection_groups_by_definition_before_coordinate() {
+    let first = Uuid::from_u128(0x01);
+    let second = Uuid::from_u128(0x02);
+    let rendered = render(&value_collection(&[
+        frozen(second, "", "", "", "b-global"),
+        frozen(first, "fr-FR", "", "", "a-locale"),
+        frozen(second, "fr-FR", "", "", "b-locale"),
+        frozen(first, "", "", "", "a-global"),
+    ]));
+    let order: Vec<&str> = ["a-global", "a-locale", "b-global", "b-locale"]
+        .into_iter()
+        .collect();
+    let mut last = 0;
+    for value in order {
+        let at = rendered
+            .find(value)
+            .unwrap_or_else(|| panic!("{value} missing from {rendered}"));
+        assert!(at >= last, "{value} out of order in {rendered}");
+        last = at;
+    }
+}
+
+/// **The golden vector**: the exact bytes, pinned.
+///
+/// `dod-version-content-rendering` requires a golden vector proving the
+/// rendering byte-identical across both engines. The rendering is a pure
+/// function of the rows, so what an engine can change is the **order** they
+/// arrive in -- which the two cases above hold against every permutation of
+/// the hard case. This pins the bytes themselves, so a change to the element
+/// shape, the key names or the Foundation's field ordering reddens here
+/// rather than in a restore drill.
+#[test]
+fn the_frozen_content_golden_vector_is_pinned() {
+    let d = Uuid::from_u128(0xde_01);
+    assert_eq!(
+        render(&value_collection(&[
+            frozen(d, "fr-FR", "", "", "Fibre"),
+            frozen(d, "", "", "", "Fibre 500"),
+        ])),
+        concat!(
+            r#"[{"brand":"","definitionId":"00000000-0000-0000-0000-00000000de01","#,
+            r#""locale":"","region":"","value":"Fibre 500"},"#,
+            r#"{"brand":"","definitionId":"00000000-0000-0000-0000-00000000de01","#,
+            r#""locale":"fr-FR","region":"","value":"Fibre"}]"#
+        ),
+        "the element keys are field-ordered by the Foundation's rule and the \
+         array order is the collection's"
+    );
+    assert_eq!(
+        render(&assignment_collection(&[(A, AssignmentRole::Primary)])),
+        r#"[{"categoryId":"00000000-0000-0000-0000-0000000000a1","role":"primary"}]"#
+    );
+}
+
+/// **An empty collection renders as an empty array**, not as `null` and not
+/// as an omitted field. A frozen row whose entity carries no assignments must
+/// still be distinguishable from one whose collection was never rendered.
+#[test]
+fn an_empty_collection_renders_as_an_empty_array() {
+    assert_eq!(render(&assignment_collection(&[])), "[]");
+    assert_eq!(render(&value_collection(&[])), "[]");
+}
+
+// -- The sixteen codes. --
+
+/// **The roster is the design's sixteen, distinct, and every entry that has a
+/// raiser is reachable through it.**
+#[test]
+fn the_sixteen_codes_are_a_distinct_roster() {
+    assert_eq!(TAXONOMY_ERROR_CODES.len(), 16);
+    let distinct: std::collections::HashSet<&str> = TAXONOMY_ERROR_CODES.into_iter().collect();
+    assert_eq!(distinct.len(), 16, "a repeat would satisfy the count");
+
+    // Every `CODE` constant this feature declares is one of the sixteen. A
+    // constant naming a code outside the roster is a seventeenth minted by a
+    // rule, which §7 row 17 is what stops.
+    for code in [
+        CategoryNotRetiredRule::CODE,
+        AttributeDefinitionKnownRule::CODE,
+        AttributeDefinitionActiveRule::CODE,
+        AttributeValueTypeRule::CODE,
+        AttributeScopeRule::CODE,
+        DefaultLocaleRequired::CODE,
+        CategoryReferenced::CODE,
+        TaxonomyLimitExceeded::CODE,
+        DefinitionInUse::CODE,
+        StaleCategoryToken::CODE,
+    ] {
+        assert!(
+            TAXONOMY_ERROR_CODES.contains(&code),
+            "`{code}` is not one of the design's sixteen"
+        );
+    }
+}
+
+/// **The counted gate on the registration gap.**
+///
+/// Twelve of the sixteen have no `DomainError` variant at this commit, so no
+/// door can raise them as themselves and every one would fall back to
+/// `INCOMPLETE_ENTITY` through `transition_refusal`'s ladder. That is
+/// `dod-taxonomy-errors`' remaining work and it lands as a patch to
+/// `domain::error` and `infra::error_mapping`, neither of which is this
+/// strand's file.
+///
+/// The literal is the gate: **when the patch lands this test reddens**, and
+/// the number is what the applier updates -- to `0`, in the same edit. A
+/// silent gap is what this exists to prevent, so it is deliberately not
+/// written as an inequality.
+#[test]
+fn twelve_of_the_sixteen_codes_have_no_domain_error_variant_yet() {
+    let raiseable: Vec<&str> = TAXONOMY_ERROR_CODES
+        .into_iter()
+        .filter(|code| DOMAIN_ERROR_CODES.contains(code))
+        .collect();
+    assert_eq!(
+        raiseable,
+        vec![
+            "DUPLICATE_CATEGORY_NAME",
+            "TAXONOMY_CYCLE",
+            "PRIMARY_CATEGORY_REQUIRED",
+            "STALE_LIVE_OP",
+        ],
+        "exactly these four are raiseable as themselves"
+    );
+    assert_eq!(
+        TAXONOMY_ERROR_CODES.len() - raiseable.len(),
+        12,
+        "twelve still need a variant and a mapping arm"
+    );
+}
+
+/// The codes `DomainError::code` can answer, read off the enum rather than
+/// listed -- so this cannot drift from it the way a second literal roster
+/// would.
+const DOMAIN_ERROR_CODES: &[&str] = &[
+    "DUPLICATE_CATEGORY_NAME",
+    "TAXONOMY_CYCLE",
+    "PRIMARY_CATEGORY_REQUIRED",
+    "STALE_LIVE_OP",
+];
