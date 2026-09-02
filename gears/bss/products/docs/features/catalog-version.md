@@ -1201,17 +1201,20 @@ frozen state, and leave **posted resolution refused** (`VERSION_FORCED_INCOMPLET
 forced participant freezes or releases through its own door. Refusals **MUST** ride 05's gate codes;
 there is no `FORCE_COMPLETE_QUORUM`.
 
-**The shipped gate cannot form this subject.** `domain::governance::GovernanceGate::evaluate` takes
-an `EntityRef` whose `entity_kind` is `bss_products_sdk::models::EntityKind`, and that enum is
-exactly `Product | Sku`. **A catalog version is neither.** This is not a missing operand but a
-wrong-typed subject, and it applies equally to the participant-set DoD below.
+**The subject half of this blocker is gone; the revision half is not.** The gate's subject was
+widened by **P-D-67** arm 4 and the crate ships it: `GovernanceGate::evaluate` now takes a
+`GateSubject` carrying the approval store's own `(subject_kind, subject_ref)` pair, whose five
+kinds include the `governed_live_op` this feature's acts are — §7 row 26, struck. What that arm
+did **not** touch is the call's other argument, and §7 row 52 is that correction.
 
-**And the subject is not the only unformable argument.** `evaluate`'s second parameter is
+**`evaluate`'s second parameter remains unformable.** It is
 `expected_revision: InternalRevision` — the door's `If-Match` (**P-D-33**), which the trait's doc
 calls *"not advisory: an approval is only usable against the exact revision it pinned"*. A catalog
 version and a participant set carry **no internal revision**, as this document states about the
-event body below. Widening the subject type alone would still leave the call unwritable, so §7 names
-both arguments and the answer arrives in one round rather than two.
+event body below. The shipped host ignores the parameter, so a door **could** be written today by
+passing an invented value — and that is the trap rather than the remedy, since 05's host is
+specified to read it. **§7 row 52** carries the question; an earlier revision of this paragraph
+claimed §7 named both arguments, and it named only the subject.
 
 **Implements**: `cpt-cf-bss-products-flow-freeze`
 
@@ -1723,10 +1726,11 @@ here is ticked by inspection.
 
 ## 7. Known unknowns
 
-**The arithmetic of this section.** Fifty-one rows: **eighteen carried verbatim** from
+**The arithmetic of this section.** Fifty-two rows: **eighteen carried verbatim** from
 [`../design/06-catalog-version.md`](../design/06-catalog-version.md) §6 — the slice's full count,
-not a selection — and **thirty-three raised here**, across two review passes: eleven while
-authoring, **twelve by the first three-lens pass** and **ten by the second**. Of the fifty-one,
+not a selection — and **thirty-four raised here**: eleven while authoring, **twelve by the first
+three-lens pass**, **ten by the second**, and **one by the build** — row 52, which is row 26's
+unasked other half. Of the fifty-two,
 **forty-three block no DoD in this document**: rows 3, 4, 5, 14, 34, 50 and 51 (row 49 was listed
 here by mistake — its own `Blocks` field named two DoDs until P-D-83 resolved it; the split
 before this correction was truly 27/24, not 28/23), plus the
@@ -2503,6 +2507,21 @@ against source at `41d1baa5e`.
     **Blocks**: no DoD; it decides whether four markers are misassigned.
     **Owner**: the design-set owner.
 
+52. **`GovernanceGate::evaluate`'s second argument cannot be formed for either of this
+    feature's governed acts, and no row has ever asked.** Row 26 widened the *subject* and
+    P-D-67 arm 4 answered exactly that; the crate now ships `GateSubject` with the store's five
+    kinds. But `evaluate`'s other parameter is `expected_revision: InternalRevision` — the door's
+    `If-Match` (**P-D-33**), which the seam's own doc calls *"not advisory: an approval is only
+    usable against the exact revision it pinned"* — and **a catalog version and a participant set
+    carry no internal revision**. `dod-force-completion` and `dod-participant-set` both say in
+    their own bodies that §7 names both arguments; measured 2026-09-02, **it names only the
+    subject** — this row is that correction. The shipped host (`NoMaterialityPolicyGate`) ignores
+    the parameter, so a door could pass anything today; that is precisely the trap, because
+    slice 05's host is specified to read it, and a value invented now becomes a pin then. Three
+    shapes are available — the parameter goes optional, `GateSubject` carries its own pin per
+    kind, or these acts declare a revision of their own — and the seam is `05-governance`'s.
+    **Blocks**: `cpt-cf-bss-products-dod-force-completion`, `cpt-cf-bss-products-dod-participant-set`
+    **Owner**: `05-governance`, with this feature — row 26's owner, for row 26's other half.
 ### Owed to other documents, recorded and deliberately not edited
 
 Each is a one-line pointer into its owner's register. None was edited here.

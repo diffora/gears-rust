@@ -296,14 +296,22 @@ pub async fn move_bulk_batch_state(
     batch_id: Uuid,
     from: BatchState,
     to: BatchState,
+    now: DateTime<Utc>,
 ) -> Result<bool, RepoError> {
-    let result = bulk_batch::Entity::update_many()
+    let mut statement = bulk_batch::Entity::update_many()
         .secure()
         .scope_with(scope)
         .col_expr(
             bulk_batch::Column::State,
             Expr::value(to.as_str().to_owned()),
-        )
+        );
+    // `terminal_at` is stamped by the edge that makes the row terminal, and
+    // by no other: the column's whole reading is "when this batch stopped",
+    // so a non-terminal edge writing it would date a batch still working.
+    if BatchState::TERMINAL.contains(&to) {
+        statement = statement.col_expr(bulk_batch::Column::TerminalAt, Expr::value(Some(now)));
+    }
+    let result = statement
         .filter(
             Condition::all()
                 .add(bulk_batch::Column::TenantId.eq(tenant_id))
@@ -409,6 +417,10 @@ pub async fn record_bulk_row_outcome(
             .col_expr(
                 bulk_row::Column::Code,
                 Expr::value(outcome.code.map(str::to_owned)),
+            )
+            .col_expr(
+                bulk_row::Column::Reason,
+                Expr::value(outcome.reason.map(str::to_owned)),
             );
     }
     update
@@ -439,6 +451,11 @@ pub struct BulkRowOutcome<'a> {
     pub disposition: Option<&'a str>,
     /// The owning feature's code, on a failure.
     pub code: Option<&'a str>,
+    /// A literal from the closed set the migration's `CHECK` pins — today
+    /// only `batch-abandoned` (**P-D-50**). **Never operator text**: this
+    /// feature writes no free-text reason anywhere, which is why `02`'s
+    /// content-PII enumeration no longer names it.
+    pub reason: Option<&'a str>,
     /// The instant the disposition landed.
     pub now: DateTime<Utc>,
 }

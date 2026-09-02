@@ -58,6 +58,26 @@
 //! attempt. A peer starting a second later reads the bumped attempt and its
 //! compare succeeds — **inside** the first pass, two workers staging one
 //! batch from two snapshots. P-D-54 calls `claimed_at` the claim's *lease*,
+//!
+//! # The two `DoD`s these edges reach, and why neither is claimed
+//!
+//! `dod-resume-abandon`: the **abandon** half ships whole — the
+//! `reported → abandoned` edge with its single entry, one path per row kind,
+//! the `batch-abandoned` literal — and is probed. Its **resume** half says
+//! *"a crash mid-commit resumes from the ledger"*, and the commit phase does
+//! not exist: `inst-bk-commit` requires each row to publish in
+//! `PreAuthorized(approvalId)` mode, which the shipped gate host refuses
+//! outright because no approval record store is registered. So the `DoD` is
+//! reached and not met.
+//!
+//! `dod-coalesced-event`: the summary, its CAS and the exactly-once
+//! guarantee ship and are falsified. What no document defines is the
+//! **ledger digest** the event must carry — §7 row 31 — and the covered set
+//! this executor renders is its own choice. A tick would claim an operand
+//! the set has not specified.
+//!
+//! @cpt-cf-bss-products-dod-resume-abandon
+//! @cpt-cf-bss-products-dod-coalesced-event
 //! and [`STAGE_LEASE`] is what makes that column readable rather than
 //! merely written: a batch claimed within the lease is not re-claimable,
 //! and one whose worker died becomes claimable when the lease lapses.
@@ -384,6 +404,7 @@ async fn stage_one_row(
                     entity_id: None,
                     disposition: Some("failed"),
                     code: Some(refusal.code()),
+                    reason: None,
                     now,
                 },
             )
@@ -497,6 +518,7 @@ pub(crate) async fn stage_next_batch(
         batch.batch_id,
         crate::domain::states::BatchState::Staging,
         crate::domain::states::BatchState::Reported,
+        now,
     )
     .await?;
 
@@ -518,6 +540,466 @@ pub(crate) async fn stage_next_batch(
 ///
 /// The last [`RepoError`] raised — only when EVERY tenant's pass failed,
 /// which is a whole-sweep fault rather than one tenant's.
+/// What an abandon did, in the readings the operator and the ledger need.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AbandonOutcome {
+    /// The batch was not in `reported`, so the edge did not fire and nothing
+    /// was touched. The `reported → abandoned` edge is the machine's only
+    /// entry to that state (P-D-69 arm 1), which is what keeps a committing
+    /// batch from being abandoned out from under its own row publishes.
+    NotReported,
+    /// The batch moved to `abandoned` and its rows were disposed of.
+    Abandoned {
+        /// Rows whose created draft was discarded.
+        discarded: usize,
+        /// Rows whose pending live-entity operation was dropped, never
+        /// applied.
+        dropped: usize,
+        /// Rows the ledger had already closed, or that staging never
+        /// materialised — nothing to undo either way.
+        untouched: usize,
+    },
+}
+
+/// Abandon a reported batch: the `reported → abandoned` edge, then each
+/// row's own path (`dod-resume-abandon`, `inst-bb-edge-abandon`).
+///
+/// # The edge fires first, and that ordering is the guard
+///
+/// The CAS runs before any row is touched, so a batch a peer already moved
+/// leaves this call as [`AbandonOutcome::NotReported`] having written
+/// nothing. Disposing rows first and flipping after would let two abandons
+/// both discard.
+///
+/// # No new door, and one path per row kind
+///
+/// Created drafts **discard** through the repository write the discard door
+/// itself uses — the same relationship staging has to the create door, which
+/// calls `infra::create` rather than its own HTTP surface. Pending
+/// live-entity operations are **dropped**: the ledger records the outcome and
+/// nothing is applied. **Update-as-draft rows would revert** through the
+/// ordinary save with the last frozen version's content; the import door
+/// mints only created drafts today, so no row of that kind can exist yet and
+/// `domain::batch::abandon_disposition` carries the arm rather than this
+/// executor pretending to exercise it.
+///
+/// # The reason is a literal
+///
+/// Every touched row records `batch-abandoned` (**P-D-50**) — a constant from
+/// the closed set the migration's `CHECK` pins, never operator text.
+///
+/// # Errors
+///
+/// [`RepoError`] as the reads and writes raise it.
+#[allow(
+    dead_code,
+    reason = "the trigger is 05's approval rejection, which does not ship"
+)]
+pub(crate) async fn abandon_batch(
+    ctx: &BulkWorkerContext,
+    tenant_id: Uuid,
+    batch_id: Uuid,
+    now: DateTime<Utc>,
+) -> Result<AbandonOutcome, RepoError> {
+    let scope = AccessScope::for_tenant(tenant_id);
+    let conn = ctx
+        .db
+        .conn()
+        .map_err(|e| RepoError::Db(format!("batch abandon connection: {e}")))?;
+
+    if !repo::move_bulk_batch_state(
+        &conn,
+        &scope,
+        tenant_id,
+        batch_id,
+        crate::domain::states::BatchState::Reported,
+        crate::domain::states::BatchState::Abandoned,
+        now,
+    )
+    .await?
+    {
+        return Ok(AbandonOutcome::NotReported);
+    }
+
+    let rows = repo::find_batch_rows(&conn, &scope, tenant_id, batch_id).await?;
+    let mut discarded = 0usize;
+    let mut dropped = 0usize;
+    let mut untouched = 0usize;
+    for row in rows {
+        match crate::domain::batch::abandon_disposition(
+            &row.entity_kind,
+            row.disposition.is_some(),
+            row.entity_id.is_some(),
+            false,
+        ) {
+            crate::domain::batch::AbandonDisposition::AlreadyTerminal => {
+                untouched += 1;
+                continue;
+            }
+            crate::domain::batch::AbandonDisposition::DiscardDraft => {
+                let Some(entity_id) = row.entity_id else {
+                    untouched += 1;
+                    continue;
+                };
+                // The staged draft is at revision 1 with `published_version
+                // = 0` — the discard write's own admitted shape. A row whose
+                // head moved under the batch answers `Unmatched`, and the
+                // ledger records the abandon regardless: the head is the
+                // operator's now, and re-discarding it is not this
+                // procedure's to force.
+                let write = match row.entity_kind.as_str() {
+                    "product" => {
+                        repo::discard_product_head(&conn, &scope, tenant_id, entity_id, 1, now)
+                            .await?
+                    }
+                    _ => {
+                        repo::discard_sku_head(&conn, &scope, tenant_id, entity_id, 1, now).await?
+                    }
+                };
+                if write == repo::HeadWrite::Applied {
+                    discarded += 1;
+                } else {
+                    untouched += 1;
+                }
+            }
+            crate::domain::batch::AbandonDisposition::DropPendingOp => dropped += 1,
+            crate::domain::batch::AbandonDisposition::RevertToPublished => {
+                // No import path mints one of these yet; counted as dropped
+                // rather than silently discarded, so a row kind arriving
+                // later cannot be swept into the wrong bucket unnoticed.
+                dropped += 1;
+            }
+        }
+        repo::record_bulk_row_outcome(
+            &conn,
+            &scope,
+            tenant_id,
+            batch_id,
+            &row.row_key,
+            BulkRowOutcome {
+                entity_id: None,
+                disposition: Some("no_op"),
+                code: None,
+                reason: Some(crate::domain::batch::ABANDON_REASON),
+                now,
+            },
+        )
+        .await?;
+    }
+
+    Ok(AbandonOutcome::Abandoned {
+        discarded,
+        dropped,
+        untouched,
+    })
+}
+
+/// The completion transaction's error channel: the repository's own error,
+/// or the driver failure the retry loop classifies.
+///
+/// A local type because `transaction_with_retry` requires `From<DbError>`
+/// and [`RepoError`] deliberately has no such impl — its `Db` arm carries a
+/// rendered string, and a blanket conversion would let any driver error in
+/// wearing that arm's meaning.
+enum CompleteTxError {
+    /// The repository's error, passed through.
+    Repo(RepoError),
+    /// The provider's own failure, before or around the statements.
+    Db(toolkit_db::DbError),
+}
+
+impl From<toolkit_db::DbError> for CompleteTxError {
+    fn from(error: toolkit_db::DbError) -> Self {
+        Self::Db(error)
+    }
+}
+
+impl From<RepoError> for CompleteTxError {
+    fn from(error: RepoError) -> Self {
+        Self::Repo(error)
+    }
+}
+
+impl From<CompleteTxError> for RepoError {
+    fn from(error: CompleteTxError) -> Self {
+        match error {
+            CompleteTxError::Repo(inner) => inner,
+            CompleteTxError::Db(inner) => {
+                Self::Db(format!("batch completion transaction: {inner}"))
+            }
+        }
+    }
+}
+
+/// What the completion edge did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CompleteOutcome {
+    /// The batch was not in `committing`, or a peer's CAS won — either way
+    /// this call flipped nothing and **emitted nothing**, which is where
+    /// "exactly one" comes from.
+    NotCommitting,
+    /// A row is still in flight, so the batch stays open.
+    RowsInFlight,
+    /// The batch completed and its single summary was enqueued in the same
+    /// transaction as the flip.
+    Completed {
+        /// The digest the summary carried.
+        ledger_digest: String,
+    },
+}
+
+/// Complete a committing batch: the `committing → completed` CAS **with the
+/// summary event inside it** (`inst-bb-edge-complete`, `dod-coalesced-event`).
+///
+/// # "Exactly one" is the CAS, not a convention
+///
+/// The transaction that flips the state is the transaction that emits. A
+/// re-claim after a lease expiry finds the state already flipped, its CAS
+/// matches no row, and it emits nothing — so the guarantee is structural
+/// rather than a rule a later step has to remember. A build that emitted
+/// after the flip would carry no such property.
+///
+/// # A batch with failed rows still completes
+///
+/// The precondition is that every row has reached a **terminal ledger
+/// state**, whatever the mix of `published`, `applied`, `no_op` and
+/// `failed`. Parts-succeeded is the honest end state, and a machine that
+/// refused it would hold the batch in `committing` forever, keeping the
+/// tenant's concurrency slot.
+///
+/// # What the digest covers, and what is open about it
+///
+/// `design/09` and the `DoD` both say *the ledger digest* and neither
+/// defines a computation. This one renders the ledger's own terminal facts —
+/// `(row_key, disposition, code, entity_id)` per row, sorted by `row_key` —
+/// through `domain::canonical`, the gear's single rendering rule, and takes
+/// its `content_digest`. That set is the ledger as a consumer can verify it:
+/// it excludes the staged payload (which a `no_op` row never applied) and
+/// the timestamps (which differ between a run and its replay). **The covered
+/// set is a choice this executor states rather than one a document makes**,
+/// and `features/bulk-promotion.md` §7 carries the question.
+///
+/// # Errors
+///
+/// [`RepoError`] as the reads and writes raise it; an events failure
+/// surfaces as [`RepoError::Db`], rolling the flip back with it.
+#[allow(
+    dead_code,
+    reason = "the commit phase it terminates is blocked on 05's gate host"
+)]
+pub(crate) async fn complete_batch(
+    ctx: &BulkWorkerContext,
+    tenant_id: Uuid,
+    batch_id: Uuid,
+    actor_ref: Uuid,
+    now: DateTime<Utc>,
+) -> Result<CompleteOutcome, RepoError> {
+    let scope = AccessScope::for_tenant(tenant_id);
+    let conn = ctx
+        .db
+        .conn()
+        .map_err(|e| RepoError::Db(format!("batch completion connection: {e}")))?;
+
+    let Some(batch) = repo::find_batch(&conn, &scope, tenant_id, batch_id).await? else {
+        return Ok(CompleteOutcome::NotCommitting);
+    };
+    if batch.state != crate::domain::states::BatchState::Committing {
+        return Ok(CompleteOutcome::NotCommitting);
+    }
+    let rows = repo::find_batch_rows(&conn, &scope, tenant_id, batch_id).await?;
+    let dispositions: Vec<Option<String>> = rows.iter().map(|r| r.disposition.clone()).collect();
+    if !crate::domain::batch::all_rows_terminal(&dispositions) {
+        return Ok(CompleteOutcome::RowsInFlight);
+    }
+
+    let ledger_digest = ledger_digest(&rows);
+    let counts = disposition_counts(&rows);
+    if flip_and_announce(
+        ctx,
+        tenant_id,
+        batch_id,
+        CompletionSummary {
+            batch_key: &batch.batch_key,
+            ledger_digest: &ledger_digest,
+            counts,
+        },
+        actor_ref,
+        now,
+    )
+    .await?
+    {
+        Ok(CompleteOutcome::Completed { ledger_digest })
+    } else {
+        Ok(CompleteOutcome::NotCommitting)
+    }
+}
+
+/// The three values the completion summary carries beyond the batch's own
+/// identity — grouped because they always travel together and two of the
+/// three are strings a call site could transpose without the compiler
+/// noticing (`HeadAct`'s own argument, one door over).
+struct CompletionSummary<'a> {
+    /// The import door's idempotency operand.
+    batch_key: &'a str,
+    /// The digest over the completed ledger.
+    ledger_digest: &'a str,
+    /// The per-disposition counts.
+    counts: crate::infra::events::BulkCompletedRows,
+}
+
+/// The CAS and the emission, in one transaction — **the whole of "exactly
+/// one"**.
+///
+/// Split from [`complete_batch`] so a probe can call it twice without the
+/// caller's state pre-check short-circuiting the second call. That matters:
+/// the pre-check is a fast path, and a test that only exercised it would go
+/// green against a build that emitted outside the CAS — which is exactly
+/// what a first revision of this suite did.
+///
+/// Answers whether this caller was the one that flipped. `false` means a
+/// peer won and **nothing was emitted here**.
+///
+/// # Errors
+///
+/// [`RepoError`] as the write and the enqueue raise them; an events failure
+/// rolls the flip back with it.
+#[allow(dead_code, reason = "reached only by `complete_batch` and its probe")]
+async fn flip_and_announce(
+    ctx: &BulkWorkerContext,
+    tenant_id: Uuid,
+    batch_id: Uuid,
+    summary: CompletionSummary<'_>,
+    actor_ref: Uuid,
+    now: DateTime<Utc>,
+) -> Result<bool, RepoError> {
+    let CompletionSummary {
+        batch_key,
+        ledger_digest,
+        counts,
+    } = summary;
+    let scope = AccessScope::for_tenant(tenant_id);
+    let sink = ctx.sink.clone();
+    let batch_key = batch_key.to_owned();
+    let digest = ledger_digest.to_owned();
+    ctx.db
+        .db()
+        .transaction_with_retry::<bool, CompleteTxError, _, _>(
+            toolkit_db::secure::TxConfig::default(),
+            |e: &CompleteTxError| match e {
+                CompleteTxError::Repo(RepoError::Driver { source, .. }) => Some(source),
+                CompleteTxError::Repo(_) | CompleteTxError::Db(_) => None,
+            },
+            move |tx| {
+                let sink = sink.clone();
+                let scope = scope.clone();
+                let batch_key = batch_key.clone();
+                let digest = digest.clone();
+                Box::pin(async move {
+                    if !repo::move_bulk_batch_state(
+                        tx,
+                        &scope,
+                        tenant_id,
+                        batch_id,
+                        crate::domain::states::BatchState::Committing,
+                        crate::domain::states::BatchState::Completed,
+                        now,
+                    )
+                    .await?
+                    {
+                        // A peer's CAS won. Nothing is emitted, which is the
+                        // whole of "exactly one".
+                        return Ok(false);
+                    }
+                    crate::infra::events::enqueue_bulk_completed(
+                        &sink,
+                        tx,
+                        crate::infra::events::CATALOG_BULK_OPERATION_COMPLETED_PAYLOAD_TYPE,
+                        crate::infra::events::BulkCompletedEventBody {
+                            tenant_id,
+                            batch_id,
+                            batch_key: &batch_key,
+                            ledger_digest: &digest,
+                            rows: counts,
+                        },
+                        actor_ref,
+                    )
+                    .await
+                    .map_err(|e| {
+                        CompleteTxError::Repo(RepoError::Db(format!("batch completion event: {e}")))
+                    })?;
+                    Ok(true)
+                })
+            },
+        )
+        .await
+        .map_err(RepoError::from)
+}
+
+/// The digest over a completed ledger — see [`complete_batch`] for what it
+/// covers and why that set.
+#[allow(dead_code, reason = "reached only by `complete_batch`")]
+fn ledger_digest(rows: &[repo::BulkRowRecord]) -> String {
+    let mut ordered: Vec<&repo::BulkRowRecord> = rows.iter().collect();
+    ordered.sort_by(|a, b| a.row_key.cmp(&b.row_key));
+    let rendered = JsonValue::Array(
+        ordered
+            .into_iter()
+            .map(|row| {
+                let mut entry = serde_json::Map::new();
+                entry.insert("row_key".to_owned(), JsonValue::String(row.row_key.clone()));
+                entry.insert(
+                    "disposition".to_owned(),
+                    row.disposition
+                        .clone()
+                        .map_or(JsonValue::Null, JsonValue::String),
+                );
+                entry.insert(
+                    "code".to_owned(),
+                    row.code.clone().map_or(JsonValue::Null, JsonValue::String),
+                );
+                entry.insert(
+                    "entity_id".to_owned(),
+                    row.entity_id
+                        .map_or(JsonValue::Null, |id| JsonValue::String(id.to_string())),
+                );
+                JsonValue::Object(entry)
+            })
+            .collect(),
+    );
+    let canonical = crate::domain::canonical::canonical_rendering(
+        &rendered,
+        crate::domain::canonical::Absence::Omit,
+    );
+    let digest = crate::domain::canonical::content_digest(&canonical);
+    digest
+        .iter()
+        .fold(String::with_capacity(digest.len() * 2), |mut hex, byte| {
+            hex.push(char::from_digit(u32::from(byte >> 4), 16).unwrap_or('0'));
+            hex.push(char::from_digit(u32::from(byte & 0x0f), 16).unwrap_or('0'));
+            hex
+        })
+}
+
+/// The summary's per-disposition counts, over the ledger's four terminal
+/// values.
+#[allow(dead_code, reason = "reached only by `complete_batch`")]
+fn disposition_counts(rows: &[repo::BulkRowRecord]) -> crate::infra::events::BulkCompletedRows {
+    let count = |want: &str| {
+        u32::try_from(
+            rows.iter()
+                .filter(|r| r.disposition.as_deref() == Some(want))
+                .count(),
+        )
+        .unwrap_or(u32::MAX)
+    };
+    crate::infra::events::BulkCompletedRows {
+        published: count("published"),
+        applied: count("applied"),
+        no_op: count("no_op"),
+        failed: count("failed"),
+    }
+}
+
 pub(crate) async fn sweep(
     ctx: &BulkWorkerContext,
     actor_ref: Uuid,

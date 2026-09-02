@@ -256,6 +256,20 @@ pub(crate) const RECOGNIZED_CODE_UPDATED_PAYLOAD_TYPE: &str = "RecognizedCodeUpd
 /// event by design.
 pub(crate) const PLAN_TIER_UPDATED_PAYLOAD_TYPE: &str = "PlanTierUpdated";
 
+/// `CatalogBulkOperationCompleted`'s payload type token — **slice 09's only
+/// event**, and the fourth declared roster.
+///
+/// `design/09`'s eight state-changing instructions carry an inline *no
+/// event* marker on 01's convention (**P-D-61**): a row's own act is
+/// announced by the 01 and 04 doors it drives, and the batch's history —
+/// the ledger, the `ChangeReport`, 05's approval record — is audit-plane
+/// (**P-D-21**). This one summary is the exception, and it is **additive**:
+/// what it coalesces is per-row progress noise, never a row's domain event,
+/// so `12`'s bookkeeping lint reads it as an addition to the register
+/// rather than as events withheld.
+pub(crate) const CATALOG_BULK_OPERATION_COMPLETED_PAYLOAD_TYPE: &str =
+    "CatalogBulkOperationCompleted";
+
 /// Every payload type this gear emits, paired with the **versioned schema
 /// reference** its envelope carries (P-D-01: *"versioned (semver) schema
 /// references — the broker-native equivalent of `dataschema`"*).
@@ -328,6 +342,10 @@ pub(crate) const SCHEMA_REFS: &[(&str, &str)] = &[
     (
         PLAN_TIER_UPDATED_PAYLOAD_TYPE,
         "bss-products.PlanTierUpdated.v1.0.0",
+    ),
+    (
+        CATALOG_BULK_OPERATION_COMPLETED_PAYLOAD_TYPE,
+        "bss-products.CatalogBulkOperationCompleted.v1.0.0",
     ),
 ];
 
@@ -542,6 +560,17 @@ pub(crate) enum EventsError {
     /// reference.
     #[error("{0} carries a set body and must be enqueued through enqueue_set_event")]
     SetEventNeedsSetBody(String),
+    /// A token that is not the batch summary reached
+    /// [`enqueue_bulk_completed`], whose batch-shaped body no other event
+    /// carries — the fifth arm of the entry points' fail-closed rule.
+    #[error(
+        "{0} is not the bulk completion summary and belongs to the entry point owning its body shape"
+    )]
+    NotABulkEvent(String),
+    /// The batch summary reached [`enqueue`], whose entity-shaped core
+    /// carries neither the batch id nor the digest.
+    #[error("{0} carries a batch body and must be enqueued through enqueue_bulk_completed")]
+    BulkEventNeedsBatchBody(String),
     /// The broker arm has no [`crate::infra::broker`] typed event for this
     /// payload type.
     ///
@@ -799,6 +828,11 @@ pub(crate) async fn enqueue(
             | PLAN_TIER_UPDATED_PAYLOAD_TYPE
     ) {
         return Err(EventsError::SetEventNeedsSetBody(payload_type.to_owned()));
+    }
+    if payload_type == CATALOG_BULK_OPERATION_COMPLETED_PAYLOAD_TYPE {
+        return Err(EventsError::BulkEventNeedsBatchBody(
+            payload_type.to_owned(),
+        ));
     }
     match sink {
         EventSink::Interim(outbox) => {
@@ -1063,6 +1097,98 @@ pub(crate) async fn enqueue_set_event(
             .map(|_| ())
             .map_err(EventsError::Broker)
         }
+    }
+}
+
+/// The batch-completion summary's body: which batch, and the digest over
+/// the ledger it completed.
+///
+/// Batch-shaped, like the set events are set-shaped: there is no entity id,
+/// no revision and no lifecycle state, because the subject is the batch.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct BulkCompletedEventBody<'a> {
+    /// The owning tenant.
+    pub tenant_id: Uuid,
+    /// The batch the summary closes — the subject.
+    pub batch_id: Uuid,
+    /// The import door's idempotency operand, echoed so a caller that only
+    /// holds its own key can match the summary to its request.
+    pub batch_key: &'a str,
+    /// The digest over the completed ledger. **What it covers is `§7`'s
+    /// open question**, not this type's: the design names *"the ledger
+    /// digest"* and defines no computation, so the producer states its
+    /// covered set and the register carries the question.
+    pub ledger_digest: &'a str,
+    /// How many rows the ledger closed, by the four terminal dispositions —
+    /// the summary a consumer would otherwise re-derive by reading the whole
+    /// ledger back.
+    pub rows: BulkCompletedRows,
+}
+
+/// The completion summary's per-disposition counts.
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct BulkCompletedRows {
+    /// Rows whose entity published.
+    pub published: u32,
+    /// Rows whose live-entity operation applied.
+    pub applied: u32,
+    /// Rows that were already in the requested state.
+    pub no_op: u32,
+    /// Rows that failed row-locally. **A batch with failed rows still
+    /// completes** — parts-succeeded is the honest end state.
+    pub failed: u32,
+}
+
+/// Enqueue the batch-completion summary — the fifth entry point, owning the
+/// batch-shaped body.
+///
+/// # Errors
+///
+/// [`EventsError::NotABulkEvent`] for any other token; otherwise as
+/// [`enqueue`].
+pub(crate) async fn enqueue_bulk_completed(
+    sink: &EventSink,
+    runner: &(impl DBRunner + Sync),
+    payload_type: &str,
+    body: BulkCompletedEventBody<'_>,
+    actor_ref: Uuid,
+) -> Result<(), EventsError> {
+    if payload_type != CATALOG_BULK_OPERATION_COMPLETED_PAYLOAD_TYPE {
+        return Err(EventsError::NotABulkEvent(payload_type.to_owned()));
+    }
+    match sink {
+        EventSink::Interim(outbox) => {
+            enqueue_body(
+                outbox,
+                runner,
+                body.tenant_id,
+                body.batch_id,
+                payload_type,
+                &body,
+                actor_ref,
+            )
+            .await
+        }
+        EventSink::Broker(producer) => producer
+            .enqueue(
+                runner,
+                broker::CatalogBulkOperationCompleted {
+                    tenant_id: body.tenant_id,
+                    batch_id: body.batch_id,
+                    batch_key: body.batch_key.to_owned(),
+                    ledger_digest: body.ledger_digest.to_owned(),
+                    published: body.rows.published,
+                    applied: body.rows.applied,
+                    no_op: body.rows.no_op,
+                    failed: body.rows.failed,
+                    actor_ref,
+                },
+            )
+            .await
+            .map(|_| ())
+            .map_err(EventsError::Broker),
     }
 }
 

@@ -62,6 +62,13 @@ const THE_SET_TRIO: &[&str] = &[
     "PlanTierUpdated",
 ];
 
+/// `09-bulk-promotion`'s single event, transcribed from **its** roster — a
+/// fourth list, separate for the reason the second and third are: `design/09`
+/// marks its other eight state-changing instructions *no event*, and folding
+/// this one into any sibling roster would make that deliberate silence
+/// uncountable.
+const THE_BULK_SUMMARY: &[&str] = &["CatalogBulkOperationCompleted"];
+
 fn core() -> EventBodyCore {
     EventBodyCore {
         tenant_id: Uuid::from_u128(0x7e_42),
@@ -102,11 +109,13 @@ fn every_declared_token_belongs_to_exactly_one_entry_point() {
     let published = ["ProductPublished", "SkuPublished"];
     let deprecated = THE_LIFECYCLE_PAIR;
     let set_events = THE_SET_TRIO;
+    let bulk = THE_BULK_SUMMARY;
 
     for (token, _) in SCHEMA_REFS {
         let owners = usize::from(published.contains(token))
             + usize::from(deprecated.contains(token))
-            + usize::from(set_events.contains(token));
+            + usize::from(set_events.contains(token))
+            + usize::from(bulk.contains(token));
         assert!(
             owners <= 1,
             "{token} is claimed by more than one entry point's guard"
@@ -153,18 +162,25 @@ fn the_schema_roster_names_exactly_the_declared_events() {
             "{event} is 03's set event and carries no schema reference"
         );
     }
+    for event in THE_BULK_SUMMARY {
+        assert!(
+            registered.contains(event),
+            "{event} is 09's only event and carries no schema reference"
+        );
+    }
     for token in &registered {
         assert!(
             THE_EIGHT.contains(token)
                 || THE_LIFECYCLE_PAIR.contains(token)
-                || THE_SET_TRIO.contains(token),
+                || THE_SET_TRIO.contains(token)
+                || THE_BULK_SUMMARY.contains(token),
             "{token} carries a schema reference and belongs to no declared roster: an \
              event no design document announces is a promise nothing backs"
         );
     }
     assert_eq!(
         registered.len(),
-        THE_EIGHT.len() + THE_LIFECYCLE_PAIR.len() + THE_SET_TRIO.len(),
+        THE_EIGHT.len() + THE_LIFECYCLE_PAIR.len() + THE_SET_TRIO.len() + THE_BULK_SUMMARY.len(),
         "the roster must carry each declared event exactly once"
     );
 }

@@ -1053,9 +1053,10 @@ raises no second one.
 
 ## 7. Known unknowns
 
-**The arithmetic of this section.** Twenty-nine rows: **eighteen carried verbatim** from
+**The arithmetic of this section.** Thirty-one rows: **eighteen carried verbatim** from
 [`../design/09-bulk-promotion.md`](../design/09-bulk-promotion.md) §6 — the slice's full count, not a
-selection — and **eleven raised by the three-lens review of this document**. The carried count is
+selection — and **thirteen raised here**: eleven by the three-lens review of this document, one by
+**P-D-86**'s staged-payload answer, and one by the build of the terminal edges. The carried count is
 built from an independent primitive: the number of `- ` line starts in that section, which is
 eighteen and agrees with both the split and the transcribed rows. A final subsection carries defects
 owed to other documents; those are not rows.
@@ -1403,6 +1404,17 @@ whether DECOMPOSITION's entity field is a listing convention or an ontological c
     **Blocks**: no DoD — **resolved by P-D-86**; `cpt-cf-bss-products-dod-stage-phase` is freed again.
     **Owner**: was this feature with `01-foundation`'s storage owner; **closed**.
 
+31. **What does "the ledger digest" cover?** `inst-bk-complete` and `dod-coalesced-event` both
+    require the completion summary to carry it, and **neither the design nor any decision defines a
+    computation** — no field set, no ordering, no rendering rule. The shipped executor renders the
+    ledger's own terminal facts — `(row_key, disposition, code, entity_id)` per row, sorted by
+    `row_key` — through `domain::canonical`, the gear's single rendering rule, and takes its
+    `content_digest`; it excludes the staged payload (a `no_op` row never applied it) and the
+    timestamps (which differ between a run and its replay). **That covered set is the executor's
+    choice, not a document's**, which is why `dod-coalesced-event` carries a bare marker rather
+    than a tick. A consumer verifying the digest needs the set pinned somewhere it can read.
+    **Blocks**: `cpt-cf-bss-products-dod-coalesced-event`
+    **Owner**: this feature with `12-consumer-contracts` — the verifying side is the consumer's.
 ### Owed to other documents, recorded and deliberately not edited
 
 - **`features/governance.md` §7 row 27 names this feature as a co-owner of a by-construction

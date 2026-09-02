@@ -141,6 +141,12 @@ pub(crate) const SKU_SUBJECT_TYPE: &str = "gts.cf.core.events.subject.v1~cf.bss.
 pub(crate) const RECOGNIZED_SET_SUBJECT_TYPE: &str =
     "gts.cf.core.events.subject.v1~cf.bss.products.recognized_set.v1";
 
+/// The subject type for the batch-completion summary — the subject is the
+/// batch id. Derived from `cf.bss.products.bulk.v1~`, the GTS type `05`
+/// §3.2's authz catalog declares for the bulk grants (P-D-94's derivation
+/// rule, applied a second time).
+pub(crate) const BULK_SUBJECT_TYPE: &str = "gts.cf.core.events.subject.v1~cf.bss.products.bulk.v1";
+
 /// §4.5's five body-core fields plus P-D-01's two payload-borne obligations, owned.
 ///
 /// Owned rather than borrowed because [`TypedEvent`] requires
@@ -388,6 +394,59 @@ set_event! {
     "gts.cf.core.events.event_type.v1~cf.bss.products.plan_tier_updated.v1"
 }
 
+/// The batch-completion summary as a typed event — slice 09's only one.
+///
+/// Its own declaration rather than a macro's expansion: no other event of
+/// this gear carries per-disposition counts, and a macro for a population
+/// of one would hide the shape rather than share it. The subject is the
+/// **batch**, so the subject type derives from
+/// `cf.bss.products.bulk.v1~` — the GTS type `05` §3.2's authz catalog
+/// already declares for `bulk × execute|read`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CatalogBulkOperationCompleted {
+    /// The owning tenant — the ordering key's first half.
+    pub tenant_id: Uuid,
+    /// The batch this summary closes, and the subject.
+    pub batch_id: Uuid,
+    /// The import door's idempotency operand.
+    pub batch_key: String,
+    /// The digest over the completed ledger.
+    pub ledger_digest: String,
+    /// Rows whose entity published.
+    pub published: u32,
+    /// Rows whose live-entity operation applied.
+    pub applied: u32,
+    /// Rows already in the requested state.
+    pub no_op: u32,
+    /// Rows that failed row-locally.
+    pub failed: u32,
+    /// The acting principal, pseudonymously.
+    pub actor_ref: Uuid,
+}
+
+impl TypedEvent for CatalogBulkOperationCompleted {
+    const TYPE_ID: &'static str =
+        "gts.cf.core.events.event_type.v1~cf.bss.products.catalog_bulk_operation_completed.v1";
+    const TOPIC: &'static str = TOPIC;
+    const SUBJECT_TYPE: &'static str = BULK_SUBJECT_TYPE;
+    const SOURCE: &'static str = SOURCE;
+
+    fn subject(&self) -> Cow<'_, str> {
+        Cow::Owned(self.batch_id.to_string())
+    }
+
+    /// The batch's tenant, not the producer's — the catalog events' own
+    /// override, for the same partitioning reason.
+    fn tenant_id(&self) -> Option<Uuid> {
+        Some(self.tenant_id)
+    }
+
+    fn trace_parent(&self) -> Option<Cow<'_, str>> {
+        crate::infra::events::traceparent().map(Cow::Owned)
+    }
+}
+
 catalog_event! {
     /// A Product row was created.
     ProductCreated,
@@ -541,6 +600,7 @@ async fn prepare_every_event_type(
     producer.prepare::<RecognizedUnitUpdated>().await?;
     producer.prepare::<RecognizedCodeUpdated>().await?;
     producer.prepare::<PlanTierUpdated>().await?;
+    producer.prepare::<CatalogBulkOperationCompleted>().await?;
     Ok(())
 }
 

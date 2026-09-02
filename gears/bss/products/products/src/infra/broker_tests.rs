@@ -6,10 +6,10 @@ use serde_json::Value;
 use uuid::Uuid;
 
 use super::{
-    CatalogEventCore, PRODUCT_SUBJECT_TYPE, PlanTierUpdated, ProductCreated, ProductDeprecated,
-    ProductDiscarded, ProductHeadSaved, ProductPublished, RecognizedCodeUpdated,
-    RecognizedUnitUpdated, SKU_SUBJECT_TYPE, SOURCE, SkuCreated, SkuDeprecated, SkuDiscarded,
-    SkuHeadSaved, SkuPublished, TOPIC,
+    CatalogBulkOperationCompleted, CatalogEventCore, PRODUCT_SUBJECT_TYPE, PlanTierUpdated,
+    ProductCreated, ProductDeprecated, ProductDiscarded, ProductHeadSaved, ProductPublished,
+    RecognizedCodeUpdated, RecognizedUnitUpdated, SKU_SUBJECT_TYPE, SOURCE, SkuCreated,
+    SkuDeprecated, SkuDiscarded, SkuHeadSaved, SkuPublished, TOPIC,
 };
 
 const TENANT: Uuid = Uuid::from_u128(0x7e_42);
@@ -112,6 +112,96 @@ const THE_LIFECYCLE_PAIR: &[(&str, &str, &str)] = &[
     ),
 ];
 
+/// Enqueue one declared event through **the entry point that owns its body
+/// shape**, and record the subject the read-back will find it by.
+///
+/// Lifted out of the round-trip case because that case crossed clippy's
+/// `too_many_lines` floor when the fifth entry point landed — and because
+/// the five-way routing is the thing under test, so it reads better named
+/// than inline.
+async fn enqueue_one(
+    sink: &crate::infra::broker::EventSink,
+    conn: &(impl toolkit_db::secure::DBRunner + Sync),
+    token: &str,
+    entity_id: Uuid,
+    expected: &mut Vec<(String, &'static str)>,
+    type_id: &'static str,
+) {
+    let core = crate::infra::events::EventBodyCore {
+        tenant_id: TENANT,
+        entity_kind: if token.starts_with("Sku") {
+            "sku"
+        } else {
+            "product"
+        },
+        entity_id,
+        internal_revision: 1,
+        lifecycle_state: "draft",
+    };
+    if token == "CatalogBulkOperationCompleted" {
+        crate::infra::events::enqueue_bulk_completed(
+            sink,
+            conn,
+            token,
+            crate::infra::events::BulkCompletedEventBody {
+                tenant_id: TENANT,
+                batch_id: entity_id,
+                batch_key: "batch-1",
+                ledger_digest: "sha256:0",
+                rows: crate::infra::events::BulkCompletedRows {
+                    published: 1,
+                    applied: 0,
+                    no_op: 0,
+                    failed: 0,
+                },
+            },
+            ACTOR,
+        )
+        .await
+        .unwrap_or_else(|e| panic!("{token} must enqueue through enqueue_bulk_completed: {e}"));
+        expected.push((entity_id.to_string(), type_id));
+        return;
+    }
+    if token.ends_with("Updated") {
+        // One distinct kind per member, because the subject IS the kind.
+        let set_kind = match token {
+            "RecognizedUnitUpdated" => "metering_unit",
+            "RecognizedCodeUpdated" => "tax_category",
+            _ => "plan_tier",
+        };
+        crate::infra::events::enqueue_set_event(
+            sink,
+            conn,
+            token,
+            crate::infra::events::SetEventBody {
+                tenant_id: TENANT,
+                set_kind,
+                member_code: "gib_month",
+                state: "active",
+            },
+            ACTOR,
+        )
+        .await
+        .unwrap_or_else(|e| panic!("{token} must enqueue through enqueue_set_event: {e}"));
+        expected.push((set_kind.to_owned(), type_id));
+        return;
+    }
+    if token.ends_with("Published") {
+        crate::infra::events::enqueue_published(sink, conn, entity_id, token, &core, 7, ACTOR)
+            .await
+            .unwrap_or_else(|e| panic!("{token} must enqueue through enqueue_published: {e}"));
+    } else if token.ends_with("Deprecated") {
+        crate::infra::events::enqueue_deprecated(sink, conn, entity_id, token, &core, "direct", ACTOR)
+            .await
+            .unwrap_or_else(|e| panic!("{token} must enqueue through enqueue_deprecated: {e}"));
+    } else {
+        crate::infra::events::enqueue(sink, conn, entity_id, token, &core, ACTOR)
+            .await
+            .unwrap_or_else(|e| panic!("{token} must enqueue through enqueue: {e}"));
+    }
+    expected.push((entity_id.to_string(), type_id));
+}
+
 /// The subject type every set event carries, transcribed.
 const TRANSCRIBED_SET_SUBJECT: &str =
     "gts.cf.core.events.subject.v1~cf.bss.products.recognized_set.v1";
@@ -136,12 +226,24 @@ const THE_SET_TRIO: &[(&str, &str, &str)] = &[
     ),
 ];
 
-/// Every event this gear declares: §4.5's eight, 04's pair, 03's trio.
+/// The subject type the batch summary carries, transcribed.
+const TRANSCRIBED_BULK_SUBJECT: &str = "gts.cf.core.events.subject.v1~cf.bss.products.bulk.v1";
+
+/// `09`'s single event — the fourth list, for the third's reason.
+const THE_BULK_SUMMARY: &[(&str, &str, &str)] = &[(
+    "CatalogBulkOperationCompleted",
+    "gts.cf.core.events.event_type.v1~cf.bss.products.catalog_bulk_operation_completed.v1",
+    TRANSCRIBED_BULK_SUBJECT,
+)];
+
+/// Every event this gear declares: §4.5's eight, 04's pair, 03's trio, 09's
+/// summary.
 fn every_declared_event() -> Vec<(&'static str, &'static str, &'static str)> {
     THE_EIGHT
         .iter()
         .chain(THE_LIFECYCLE_PAIR)
         .chain(THE_SET_TRIO)
+        .chain(THE_BULK_SUMMARY)
         .copied()
         .collect()
 }
@@ -213,6 +315,11 @@ fn declared() -> Vec<(&'static str, &'static str, &'static str)> {
             PlanTierUpdated::TYPE_ID,
             PlanTierUpdated::SUBJECT_TYPE,
             PlanTierUpdated::TOPIC,
+        ),
+        (
+            CatalogBulkOperationCompleted::TYPE_ID,
+            CatalogBulkOperationCompleted::SUBJECT_TYPE,
+            CatalogBulkOperationCompleted::TOPIC,
         ),
     ]
 }
@@ -621,65 +728,7 @@ async fn every_event_reaches_the_broker_under_its_own_type_id() {
     let roster = every_declared_event();
     for (token, type_id, _) in &roster {
         let entity_id = Uuid::now_v7();
-        let kind = if token.starts_with("Sku") {
-            "sku"
-        } else {
-            "product"
-        };
-        let core = events::EventBodyCore {
-            tenant_id: TENANT,
-            entity_kind: kind,
-            entity_id,
-            internal_revision: 1,
-            lifecycle_state: "draft",
-        };
-        if token.ends_with("Published") {
-            events::enqueue_published(&sink, &conn, entity_id, token, &core, 7, ACTOR)
-                .await
-                .unwrap_or_else(|e| panic!("{token} must enqueue through enqueue_published: {e}"));
-        } else if token.ends_with("Updated") {
-            // The fourth entry point: a set event's body is set-shaped, and
-            // every other `enqueue*` refuses these tokens by name — including
-            // `enqueue` itself, whose reciprocal guard landed with this
-            // review, so the interim sink can no longer take an entity core
-            // under a set token while the broker sink refuses it. One
-            // distinct kind per member, because the subject IS the kind.
-            let set_kind = match *token {
-                "RecognizedUnitUpdated" => "metering_unit",
-                "RecognizedCodeUpdated" => "tax_category",
-                _ => "plan_tier",
-            };
-            events::enqueue_set_event(
-                &sink,
-                &conn,
-                token,
-                events::SetEventBody {
-                    tenant_id: TENANT,
-                    set_kind,
-                    member_code: "gib_month",
-                    state: "active",
-                },
-                ACTOR,
-            )
-            .await
-            .unwrap_or_else(|e| panic!("{token} must enqueue through enqueue_set_event: {e}"));
-            expected.push((set_kind.to_owned(), type_id));
-            continue;
-        } else if token.ends_with("Deprecated") {
-            // The third entry point, and the branch is what proves the
-            // token guard is not decorative: routing a `*Deprecated`
-            // through `enqueue` above is refused, so a body reaching the
-            // broker without its provenance cannot arrive by a
-            // mis-routed call.
-            events::enqueue_deprecated(&sink, &conn, entity_id, token, &core, "direct", ACTOR)
-                .await
-                .unwrap_or_else(|e| panic!("{token} must enqueue through enqueue_deprecated: {e}"));
-        } else {
-            events::enqueue(&sink, &conn, entity_id, token, &core, ACTOR)
-                .await
-                .unwrap_or_else(|e| panic!("{token} must enqueue through enqueue: {e}"));
-        }
-        expected.push((entity_id.to_string(), type_id));
+        enqueue_one(&sink, &conn, token, entity_id, &mut expected, type_id).await;
     }
 
     // The leased processor delivers asynchronously, so the read-back polls
@@ -857,7 +906,7 @@ async fn the_outbox_half_of_the_propagation_budget_is_measured() {
     let provider = toolkit_db::DBProvider::<toolkit_db::DbError>::new(db);
     let conn = provider.conn().expect("checkout a connection");
     let entity_id = Uuid::now_v7();
-    let core = events::EventBodyCore {
+    let core = crate::infra::events::EventBodyCore {
         tenant_id: TENANT,
         entity_kind: "product",
         entity_id,
@@ -1066,14 +1115,14 @@ async fn the_dedup_and_ordering_keys_hold_across_a_real_redelivery() {
         (aggregate_a, "ProductHeadSaved", 2),
     ];
     for (arrived, (entity_id, token, revision)) in (1..=acts.len()).zip(acts) {
-        let core = events::EventBodyCore {
+        let core = crate::infra::events::EventBodyCore {
             tenant_id: TENANT,
             entity_kind: "product",
             entity_id: *entity_id,
             internal_revision: *revision,
             lifecycle_state: "draft",
         };
-        events::enqueue(&sink, &conn, *entity_id, token, &core, ACTOR)
+        crate::infra::events::enqueue(&sink, &conn, *entity_id, token, &core, ACTOR)
             .await
             .unwrap_or_else(|e| panic!("{token} must enqueue: {e}"));
         let mut seen = 0;

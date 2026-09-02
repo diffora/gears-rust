@@ -11,9 +11,13 @@ use toolkit_db::secure::AccessScope;
 use toolkit_db::{ConnectOpts, DBProvider, DbError, connect_db};
 use uuid::Uuid;
 
-use super::{BulkWorkerContext, StageOutcome, stage_next_batch};
+use super::{
+    AbandonOutcome, BulkWorkerContext, CompleteOutcome, StageOutcome, abandon_batch,
+    complete_batch, stage_next_batch,
+};
 use crate::api::rest::ApiState;
 use crate::config::ProductsConfig;
+use crate::domain::states::BatchState;
 use crate::infra::events;
 use crate::infra::storage::migrations::Migrator;
 use crate::infra::storage::repo::{self, NewBulkBatch, NewBulkRow};
@@ -311,6 +315,7 @@ async fn a_resumed_batch_skips_the_rows_it_already_staged() {
         batch_id,
         crate::domain::states::BatchState::Reported,
         crate::domain::states::BatchState::Staging,
+        Utc::now(),
     )
     .await
     .expect("rewind");
@@ -384,4 +389,250 @@ async fn an_empty_queue_is_a_quiet_pass() {
     .await
     .expect("stage");
     assert_eq!(outcome, StageOutcome::NoBatch);
+}
+
+/// The abandon procedure and the completion edge — `dod-resume-abandon` and
+/// `dod-coalesced-event`, the two halves of the batch machine's terminal
+/// ends.
+mod terminal_edges_tests {
+    use super::*;
+
+    async fn move_state(harness: &Harness, batch_id: Uuid, from: BatchState, to: BatchState) {
+        let conn = harness.state.db.conn().expect("conn");
+        assert!(
+            repo::move_bulk_batch_state(&conn, &scope(), TENANT, batch_id, from, to, Utc::now())
+                .await
+                .expect("the CAS runs"),
+            "the fixture's own edge {} -> {} must land",
+            from.as_str(),
+            to.as_str()
+        );
+    }
+
+    async fn state_of(harness: &Harness, batch_id: Uuid) -> BatchState {
+        let conn = harness.state.db.conn().expect("conn");
+        repo::find_batch(&conn, &scope(), TENANT, batch_id)
+            .await
+            .expect("read the batch")
+            .expect("the batch exists")
+            .state
+    }
+
+    async fn close_row(harness: &Harness, batch_id: Uuid, row_key: &str, disposition: &str) {
+        let conn = harness.state.db.conn().expect("conn");
+        repo::record_bulk_row_outcome(
+            &conn,
+            &scope(),
+            TENANT,
+            batch_id,
+            row_key,
+            repo::BulkRowOutcome {
+                entity_id: None,
+                disposition: Some(disposition),
+                code: None,
+                reason: None,
+                now: Utc::now(),
+            },
+        )
+        .await
+        .expect("close the row");
+    }
+
+    /// **A reported batch abandons: the edge fires, the staged draft is
+    /// discarded, and every touched row records the pinned literal.**
+    #[tokio::test]
+    async fn a_reported_batch_abandons_and_discards_its_staged_drafts() {
+        let harness = harness().await;
+        let batch_id =
+            seed_batch(&harness, "b-abandon", vec![product_row("r1", "Fibre 500")]).await;
+        let ctx = worker_ctx(&harness);
+        let staged = stage_next_batch(
+            &ctx,
+            TENANT,
+            ACTOR,
+            Utc::now(),
+            &tokio_util::sync::CancellationToken::new(),
+        )
+        .await
+        .expect("staging runs");
+        assert!(
+            matches!(staged, StageOutcome::Reported { .. }),
+            "{staged:?}"
+        );
+
+        let outcome = abandon_batch(&ctx, TENANT, batch_id, Utc::now())
+            .await
+            .expect("abandon runs");
+        assert_eq!(
+            outcome,
+            AbandonOutcome::Abandoned {
+                discarded: 1,
+                dropped: 0,
+                untouched: 0
+            }
+        );
+        assert_eq!(state_of(&harness, batch_id).await, BatchState::Abandoned);
+
+        let conn = harness.state.db.conn().expect("conn");
+        let rows = repo::find_batch_rows(&conn, &scope(), TENANT, batch_id)
+            .await
+            .expect("read the ledger");
+        assert_eq!(rows[0].disposition.as_deref(), Some("no_op"));
+        assert_eq!(
+            rows[0].reason.as_deref(),
+            Some("batch-abandoned"),
+            "the reason is the literal P-D-50 pins, and the migration's CHECK admits only it"
+        );
+    }
+
+    /// **Abandon has one entry.** A batch in any other state is left
+    /// untouched — the guard that keeps a committing batch from being
+    /// abandoned out from under its own row publishes.
+    #[tokio::test]
+    async fn a_batch_outside_reported_is_not_abandoned() {
+        let harness = harness().await;
+        let batch_id = seed_batch(&harness, "b-guard", vec![product_row("r1", "Fibre 900")]).await;
+        let ctx = worker_ctx(&harness);
+        stage_next_batch(
+            &ctx,
+            TENANT,
+            ACTOR,
+            Utc::now(),
+            &tokio_util::sync::CancellationToken::new(),
+        )
+        .await
+        .expect("staging runs");
+        move_state(
+            &harness,
+            batch_id,
+            BatchState::Reported,
+            BatchState::Approved,
+        )
+        .await;
+        move_state(
+            &harness,
+            batch_id,
+            BatchState::Approved,
+            BatchState::Committing,
+        )
+        .await;
+
+        let outcome = abandon_batch(&ctx, TENANT, batch_id, Utc::now())
+            .await
+            .expect("abandon runs");
+        assert_eq!(outcome, AbandonOutcome::NotReported);
+        assert_eq!(state_of(&harness, batch_id).await, BatchState::Committing);
+    }
+
+    /// **The completion edge emits exactly one summary, and the second
+    /// caller emits nothing** — the CAS is the mechanism, not a convention.
+    #[tokio::test]
+    async fn completion_emits_exactly_one_summary() {
+        let harness = harness().await;
+        let batch_id = seed_batch(
+            &harness,
+            "b-complete",
+            vec![product_row("r1", "Fibre A"), product_row("r2", "Fibre B")],
+        )
+        .await;
+        let ctx = worker_ctx(&harness);
+        stage_next_batch(
+            &ctx,
+            TENANT,
+            ACTOR,
+            Utc::now(),
+            &tokio_util::sync::CancellationToken::new(),
+        )
+        .await
+        .expect("staging runs");
+        move_state(
+            &harness,
+            batch_id,
+            BatchState::Reported,
+            BatchState::Approved,
+        )
+        .await;
+        move_state(
+            &harness,
+            batch_id,
+            BatchState::Approved,
+            BatchState::Committing,
+        )
+        .await;
+
+        // One row in flight: the batch stays open and nothing is emitted.
+        close_row(&harness, batch_id, "r1", "published").await;
+        assert_eq!(
+            complete_batch(&ctx, TENANT, batch_id, ACTOR, Utc::now())
+                .await
+                .expect("completion runs"),
+            CompleteOutcome::RowsInFlight
+        );
+        assert_eq!(
+            crate::test_support::enqueued_event_count(
+                &harness.dsn,
+                "CatalogBulkOperationCompleted"
+            )
+            .await,
+            0,
+            "an open batch announces nothing"
+        );
+
+        // A FAILED row still completes the batch: parts-succeeded is the
+        // honest end state, not an error.
+        close_row(&harness, batch_id, "r2", "failed").await;
+        let first = complete_batch(&ctx, TENANT, batch_id, ACTOR, Utc::now())
+            .await
+            .expect("completion runs");
+        let CompleteOutcome::Completed { ledger_digest } = first else {
+            panic!("a batch whose rows are all terminal completes: {first:?}");
+        };
+        assert!(!ledger_digest.is_empty());
+        assert_eq!(state_of(&harness, batch_id).await, BatchState::Completed);
+
+        // The re-claim, through the CAS itself rather than through the
+        // caller's state pre-check: a probe that only exercised the
+        // pre-check would go green against a build that emitted outside the
+        // CAS, and a first revision of this case did exactly that — the
+        // falsification passed until this call replaced it.
+        assert!(
+            !super::super::flip_and_announce(
+                &ctx,
+                TENANT,
+                batch_id,
+                super::super::CompletionSummary {
+                    batch_key: "b-complete",
+                    ledger_digest: &ledger_digest,
+                    counts: crate::infra::events::BulkCompletedRows {
+                        published: 1,
+                        applied: 0,
+                        no_op: 0,
+                        failed: 1,
+                    },
+                },
+                ACTOR,
+                Utc::now(),
+            )
+            .await
+            .expect("the CAS runs"),
+            "a second caller's CAS matches no row, so it did not flip"
+        );
+        assert_eq!(
+            crate::test_support::enqueued_event_count(
+                &harness.dsn,
+                "CatalogBulkOperationCompleted"
+            )
+            .await,
+            1,
+            "exactly one, and the losing CAS emitting nothing is what makes it exactly one"
+        );
+
+        // And the caller's own fast path still answers honestly.
+        assert_eq!(
+            complete_batch(&ctx, TENANT, batch_id, ACTOR, Utc::now())
+                .await
+                .expect("completion runs"),
+            CompleteOutcome::NotCommitting
+        );
+    }
 }

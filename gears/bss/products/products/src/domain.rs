@@ -1,6 +1,7 @@
 //! The gear's business logic: what a catalog entity is and what may be done to
 //! it, with no knowledge of transport or storage.
 
+pub mod batch;
 pub mod bucket;
 pub mod canonical;
 pub mod concurrency;

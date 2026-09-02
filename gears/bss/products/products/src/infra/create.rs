@@ -303,6 +303,7 @@ pub(crate) async fn insert_product_with_event(
                                 entity_id: Some(stamped_id),
                                 disposition: None,
                                 code: None,
+                                reason: None,
                                 now: stamp.now,
                             },
                         )
@@ -494,6 +495,7 @@ pub(crate) async fn insert_sku_with_event(
                                 entity_id: Some(stamped_id),
                                 disposition: None,
                                 code: None,
+                                reason: None,
                                 now: stamp.now,
                             },
                         )
