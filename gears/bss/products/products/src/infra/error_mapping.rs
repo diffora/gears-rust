@@ -51,15 +51,12 @@
 //! `the_products_owned_422_codes_stay_wire_400_by_design` in
 //! `error_mapping_tests.rs` exists to catch.**
 //!
-//! **Three codes the ladder line names are not this gear's to raise, and are
-//! not mapped here.** `PARENT_NOT_PUBLISHED` and `RETIREMENT_PENDING` are
-//! raised by slice `04-lifecycle`'s registered validators on the create door
-//! and the un-deprecation edge (§3.3's own text: "the operand is read by a
-//! slice-04 validator registered on this door, not by the Foundation"), and
-//! `CONTENT_PII_BLOCKED` is slice `02`'s content write-block. `DomainError`
-//! has no variant for any of the three — mapping a code this gear cannot
-//! raise would be a dead `match` arm, so the ladder line names them for
-//! completeness and this module does not.
+//! **One code the ladder line names is not this gear's to raise, and is
+//! not mapped here.** `CONTENT_PII_BLOCKED` is slice `02`'s content
+//! write-block. `DomainError` has no variant for it — mapping a code this
+//! gear cannot raise would be a dead `match` arm. `PARENT_NOT_PUBLISHED`
+//! and `RETIREMENT_PENDING` are 04's owned slots (P-D-96) and are mapped
+//! below, with the rest of that slice's seven.
 //!
 //! # Two resource markers, not one
 //!
@@ -291,6 +288,19 @@ impl From<DomainError> for CanonicalError {
             D::ParentTerminal(detail) => SkuResource::aborted(detail)
                 .with_reason("PARENT_TERMINAL")
                 .create(),
+            D::ParentNotPublished(detail) => aborted(detail, "PARENT_NOT_PUBLISHED"),
+            D::RetirementPending(detail) => aborted(detail, "RETIREMENT_PENDING"),
+            D::ScheduleStaleApproval(detail) => aborted(detail, "SCHEDULE_STALE_APPROVAL"),
+            D::ReplacedByNotPublished(detail) => {
+                precondition("replacedBy", &detail, "REPLACED_BY_NOT_PUBLISHED")
+            }
+            D::RetirementLeadTime(detail) => {
+                precondition("effectiveAt", &detail, "RETIREMENT_LEAD_TIME")
+            }
+            D::CascadeConfirmationRequired(detail) => {
+                precondition("cascade", &detail, "CASCADE_CONFIRMATION_REQUIRED")
+            }
+            D::EolDisabled(detail) => precondition("mustMigrateBy", &detail, "EOL_DISABLED"),
 
             // -- PermissionDenied (403) -- the governance gate's own
             // refusal, raised at every gated act (`design/01-foundation.md`

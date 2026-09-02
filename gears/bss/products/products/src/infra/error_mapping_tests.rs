@@ -51,6 +51,13 @@ fn declared_status_and_code(err: &DomainError) -> (u16, Option<&'static str>) {
         D::IllegalFieldMutation(_) => (409, Some("ILLEGAL_FIELD_MUTATION")),
         D::ScopeNotContained(_) => (400, Some("SCOPE_NOT_CONTAINED")),
         D::ParentTerminal(_) => (409, Some("PARENT_TERMINAL")),
+        D::ParentNotPublished(_) => (409, Some("PARENT_NOT_PUBLISHED")),
+        D::RetirementPending(_) => (409, Some("RETIREMENT_PENDING")),
+        D::ScheduleStaleApproval(_) => (409, Some("SCHEDULE_STALE_APPROVAL")),
+        D::ReplacedByNotPublished(_) => (400, Some("REPLACED_BY_NOT_PUBLISHED")),
+        D::RetirementLeadTime(_) => (400, Some("RETIREMENT_LEAD_TIME")),
+        D::CascadeConfirmationRequired(_) => (400, Some("CASCADE_CONFIRMATION_REQUIRED")),
+        D::EolDisabled(_) => (400, Some("EOL_DISABLED")),
         D::IncompleteEntity(_) => (400, Some("INCOMPLETE_ENTITY")),
         D::PrimaryCategoryRequired(_) => (400, Some("PRIMARY_CATEGORY_REQUIRED")),
         D::StaleLiveOp(_) => (409, Some("STALE_LIVE_OP")),
@@ -124,6 +131,13 @@ fn one_of_every_variant() -> Vec<DomainError> {
         D::IllegalFieldMutation(d()),
         D::ScopeNotContained(d()),
         D::ParentTerminal(d()),
+        D::ParentNotPublished(d()),
+        D::RetirementPending(d()),
+        D::ScheduleStaleApproval(d()),
+        D::ReplacedByNotPublished(d()),
+        D::RetirementLeadTime(d()),
+        D::CascadeConfirmationRequired(d()),
+        D::EolDisabled(d()),
         D::IncompleteEntity(d()),
         D::PrimaryCategoryRequired(d()),
         D::StaleLiveOp(d()),
@@ -178,7 +192,7 @@ fn one_of_every_variant() -> Vec<DomainError> {
 /// checked on any of them. Bumping the literal by one per added variant
 /// keeps a pre-existing shortfall forever; the only safe move is to
 /// re-derive it against the enum.
-const DOMAIN_ERROR_VARIANTS: usize = 44;
+const DOMAIN_ERROR_VARIANTS: usize = 51;
 
 /// Covers all 14 variants (§3.3's own count, `DomainError::code`'s own
 /// exhaustiveness note): every one lands on the status the design ladder

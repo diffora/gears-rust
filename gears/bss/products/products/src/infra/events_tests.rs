@@ -16,9 +16,9 @@ use uuid::Uuid;
 use super::{
     EntityKind, EventBodyCore, EventEnvelope, PARTITIONS, PRODUCT_CREATED_PAYLOAD_TYPE,
     PRODUCT_DISCARDED_PAYLOAD_TYPE, PRODUCT_HEAD_SAVED_PAYLOAD_TYPE,
-    PRODUCT_PUBLISHED_PAYLOAD_TYPE, PublishedEventBody, SCHEMA_REFS, SKU_CREATED_PAYLOAD_TYPE,
-    SKU_DISCARDED_PAYLOAD_TYPE, SKU_HEAD_SAVED_PAYLOAD_TYPE, SKU_PUBLISHED_PAYLOAD_TYPE,
-    partition_for, schema_ref_for,
+    PRODUCT_PUBLISHED_PAYLOAD_TYPE, PublishedEventBody, RetiredEventBody, SCHEMA_REFS,
+    SKU_CREATED_PAYLOAD_TYPE, SKU_DISCARDED_PAYLOAD_TYPE, SKU_HEAD_SAVED_PAYLOAD_TYPE,
+    SKU_PUBLISHED_PAYLOAD_TYPE, SKU_RETIRED_PAYLOAD_TYPE, partition_for, schema_ref_for,
 };
 
 /// §4.5's roster, written out here rather than read from the code under test.
@@ -47,12 +47,21 @@ const THE_EIGHT: &[&str] = &[
 /// longer be a transcription of one sentence, and a Foundation event dropped
 /// from §4.5 could be replaced by a lifecycle one with the count unchanged.
 ///
-/// The rest of 04's roster — `SkuUndeprecated`/`ProductUndeprecated`,
-/// `SkuRetired`/`ProductRetired` and `SkuRetirementEffective` — is **not**
-/// here, because no act emits any of them yet, and a schema reference for an
-/// event this gear does not emit is a promise a consumer contract would take
-/// at face value.
+/// The deprecation pair already ships. The rest of 04's roster sits in
+/// [`THE_LIFECYCLE_REST`], not here and not in [`THE_EIGHT`].
 const THE_LIFECYCLE_PAIR: &[&str] = &["ProductDeprecated", "SkuDeprecated"];
+
+/// 04's remaining five, transcribed from its Events roster. Deliberately
+/// not folded into [`THE_EIGHT`] or [`THE_LIFECYCLE_PAIR`]. Scheduling
+/// acts stay audit-plane: no `PublishScheduled` / `RetirementScheduled`.
+/// `ProductRetired` is the initiation event; no Product flip token (row 5).
+const THE_LIFECYCLE_REST: &[&str] = &[
+    "ProductUndeprecated",
+    "SkuUndeprecated",
+    "SkuRetired",
+    "ProductRetired",
+    "SkuRetirementEffective",
+];
 
 /// `03-sku-classification`'s set events, transcribed from **its** §4 roster —
 /// the third declared list, separate for the same reason as the second.
@@ -123,12 +132,13 @@ fn every_declared_token_belongs_to_exactly_one_entry_point() {
         // Zero owners is the core-only default: `enqueue` builds that shape,
         // so a token no specialised guard claims is legitimately its own.
         let core_only = owners == 0;
+        let rest = THE_LIFECYCLE_REST.contains(token);
         assert_eq!(
             core_only,
-            THE_EIGHT.contains(token) && !published.contains(token),
+            (THE_EIGHT.contains(token) && !published.contains(token)) || rest,
             "{token}: the core-only set must be exactly §4.5's eight minus the publish pair — \
              a declared token outside that partition reaches an entry point whose body shape it \
-             does not have"
+             does not have; 04's remaining five are registered ahead of their enqueue"
         );
     }
 }
@@ -156,6 +166,12 @@ fn the_schema_roster_names_exactly_the_declared_events() {
             "{event} is announced by 04 and carries no schema reference"
         );
     }
+    for event in THE_LIFECYCLE_REST {
+        assert!(
+            registered.contains(event),
+            "{event} is announced by 04 and carries no schema reference"
+        );
+    }
     for event in THE_SET_TRIO {
         assert!(
             registered.contains(event),
@@ -172,6 +188,7 @@ fn the_schema_roster_names_exactly_the_declared_events() {
         assert!(
             THE_EIGHT.contains(token)
                 || THE_LIFECYCLE_PAIR.contains(token)
+                || THE_LIFECYCLE_REST.contains(token)
                 || THE_SET_TRIO.contains(token)
                 || THE_BULK_SUMMARY.contains(token),
             "{token} carries a schema reference and belongs to no declared roster: an \
@@ -180,7 +197,11 @@ fn the_schema_roster_names_exactly_the_declared_events() {
     }
     assert_eq!(
         registered.len(),
-        THE_EIGHT.len() + THE_LIFECYCLE_PAIR.len() + THE_SET_TRIO.len() + THE_BULK_SUMMARY.len(),
+        THE_EIGHT.len()
+            + THE_LIFECYCLE_PAIR.len()
+            + THE_LIFECYCLE_REST.len()
+            + THE_SET_TRIO.len()
+            + THE_BULK_SUMMARY.len(),
         "the roster must carry each declared event exactly once"
     );
 }
@@ -331,6 +352,34 @@ fn a_publish_events_version_stays_flat_inside_the_body() {
         "the core's five must still be flat beside it"
     );
     assert_eq!(json["schemaRef"], "bss-products.ProductPublished.v1.0.0");
+}
+
+/// v1 retirement omits `mustMigrateBy` and a Product-side `replacedBy`.
+/// A null would not round-trip absence.
+#[test]
+fn a_retirement_body_omits_must_migrate_by_when_absent() {
+    let core = core();
+    let body = RetiredEventBody {
+        core: &core,
+        from_version: 3,
+        reason: "end of sale".to_owned(),
+        replaced_by: None,
+        effective_at: "2026-10-01T00:00:00Z".to_owned(),
+        must_migrate_by: None,
+    };
+    let json = rendered(&body, SKU_RETIRED_PAYLOAD_TYPE);
+    assert_eq!(json["data"]["fromVersion"], 3);
+    assert_eq!(json["data"]["reason"], "end of sale");
+    assert_eq!(json["data"]["effectiveAt"], "2026-10-01T00:00:00Z");
+    assert!(
+        json["data"].get("mustMigrateBy").is_none(),
+        "v1 must omit mustMigrateBy, not emit null"
+    );
+    assert!(
+        json["data"].get("replacedBy").is_none(),
+        "a Product initiation (and an unset SKU replacement) omit replacedBy"
+    );
+    assert_eq!(json["schemaRef"], "bss-products.SkuRetired.v1.0.0");
 }
 
 /// **`correlation_id` reads a real trace id back off the ambient span.**
