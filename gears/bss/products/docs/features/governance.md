@@ -578,6 +578,38 @@ record's diff still renders the original submission against the published versio
 written red first — a re-derived diff shows the draft against itself, which is the exact defect
 this rule exists to prevent.
 
+**The flagship probe is built, and the two probes that stood in for it each covered one half.**
+`repo::governance::governance_tests::the_superseded_records_diff_renders_the_submission_not_the_edited_head`
+drives the whole chain — freeze a published version, submit against it, **edit the head** through
+the save door's own write, run the door's own `supersede_open_approval`, read the record back, and
+render from it — with the basis content read off the frozen row and the head's post-edit name read
+off the head row rather than retyped. The red-first obligation was discharged by **perturbation**,
+each half separately, and the split is the measurement rather than a reading of the two names:
+
+| Perturbation | `approval_tests` renderer probe | `repo_tests` column probe | the probe above |
+|---|---|---|---|
+| `render_diff` stops reading its snapshot argument | red | **green** | red |
+| the store stops preserving the submitted bytes | **green** | red | red |
+
+So the renderer probe is narrow rather than empty — it does catch a renderer that drops its
+argument — but it has no head, no store and no supersession, and the `edited_head` local it names
+is passed to nothing. **That assertion has been removed rather than kept**: a non-falsifiable
+assertion in a probe is indistinguishable from a passing one, and the claim it reached for lives in
+the store probe where a head really moves. (Two earlier statements of this were themselves wrong —
+the body carried **four** assertions, not three, and the vacuous one was the fourth. The probe is
+now named for what it measures, `the_diff_renders_the_snapshot_it_was_handed`.) The column probe
+catches the
+store, but supersedes by a second *submission* rather than by a head edit and never renders a diff.
+Neither could see the defect the rule is about: a **caller** handing the live head over where the
+stored snapshot belongs. The probe above renders the live head a second time and asserts the two
+answers differ, so the positive assertion is not satisfiable by both.
+
+**The tick still does not follow, and the blocker is the first clause, not the probe.** This DoD
+opens *"MUST require the `approval × submit` grant"*; `authz.rs` mints
+`approval × submit` and **no door spends it** — §7 row 12, and §3.2 of the slice records the pair as
+having no route declared. The grant clause is unbuildable until that door lands, and wire doors are
+not this slice's to declare.
+
 **Implements**: `cpt-cf-bss-products-flow-submit`
 
 **Touches**:
@@ -591,6 +623,25 @@ The system **MUST** store the descriptor at submission and **MUST NOT** re-deriv
 `required` as the **effective** count, `configuredQuorum` as the `N` in force at submission, the
 finance predicate, `predicateUnsatisfiable`, `quorumReduced` and the override conditions. Deriving
 `configuredQuorum` from current policy would change a **pending** record when the tenant edits `N`.
+
+**Five of the six ship, and the missing writer for the sixth ceremony now exists.** `describe_quorum`
+stores `required`, `configuredQuorum`, the finance predicate, `predicateUnsatisfiable` and
+`quorumReduced`; the **override conditions** are the sixth name and wait on `dod-override-ceremony`'s
+missing operand, so the roster is five by declaration rather than by omission. Separately,
+`describe_platform_quorum` is the writer §7 row 9 says does not exist — *"`required` is defined only
+as `N` or `min(N, 1)` … **no writer can produce a fixed 2**"* — supplying **P-D-13**'s one
+non-`N`-governed site, cross-tenant break-glass elevation, at a fixed floor of two platform
+principals. It answers only the floor: whether that ceremony's record is an `ApprovalRecord`, and
+which row holds it, are row 9's other halves and are untouched, because a descriptor is a value that
+renders the same whichever row stores it. The probe is armed at **`N = 0`** on purpose — at `N = 2`
+a fixed floor and a configured count are indistinguishable.
+
+**What still blocks the tick**: the sixth name, plus §7 rows 15 and 39 on what `quorumReduced`
+means. **And one field this build had to read and no artifact defines**: what `configuredQuorum`
+carries for a ceremony no tenant configures. It carries the floor here, because `inst-gv-queue` puts
+the field on the wire and a card rendering the target tenant's `N` beside a platform ceremony would
+assert exactly the standing P-D-13 denies — but that is a reading, and it is registered rather than
+presented as the design's.
 
 **Implements**: `cpt-cf-bss-products-flow-submit`
 
@@ -607,6 +658,19 @@ leaving the descriptor satisfiable. Without that arm the descriptor demands a ro
 could hold and the gate refuses forever, which would re-block precisely the one-person tenant the
 quorum floor exists to unblock. At every `N ≥ 1` the predicate **MUST** bind, and a tenant that has
 designated no FinanceReviewer simply has an unapprovable change.
+
+**Both arms ship and are probed across `N = 0..4`; the operand does not.** `describe_quorum` sets
+the predicate at every `N >= 1` and records `predicateUnsatisfiable = finance_reviewer` at `N = 0`
+instead, leaving the descriptor satisfiable. **The tick is blocked on the two inputs neither the
+gear nor the donor has.** *Whether a change is finance-material* cannot be computed: the
+instruction names `taxCategory`, `glCode` and `PlanTier`, and none is a registered column in
+`domain::bucket`'s roster — they are 03's and 03 has not registered them — so a registry lookup
+would answer "not finance-material" for all three and `finance_material` is an argument.
+*Whether a principal holds FinanceReviewer* is §7 row 25. Measured 2026-09-02 against the donor as
+well: `gears/bss/pricing` resolves its own `FinanceReviewer` through the **grant**, which answers
+for the caller in front of it and cannot answer C1's question, which is about the roles a set of
+**already recorded** approvers held when they decided. So this is not the donor's shape declined;
+it is an operand neither gear has.
 
 **Implements**: `cpt-cf-bss-products-flow-submit`
 
@@ -666,6 +730,33 @@ visible as unmet-by-policy in the record and the inbox envelope — the only way
 be discharged, and never how one is discharged at `N ≥ 1`. A probe **MUST** prove one human holding
 both CatalogAdmin and FinanceReviewer counts **once**.
 
+**Built as `evaluate_quorum`, with the named probe and its companion.** One human appearing twice
+under two roles counts once, and a second distinct principal closes the record — the probe the DoD
+names, plus the positive control without which "counts once" is satisfied by an evaluator that
+counts nobody. Its companion is `design/05` §5's second bullet: the dual-role human supplies the
+finance lens but **not** the second body, asserted in both directions. A recorded
+`predicateUnsatisfiable` counts as met, and the probe is armed at `N = 0` **and** swept across
+`N = 1..4` to show the discharge `inst-gv-quorum` forbids above zero is unreachable rather than
+merely unused, the marker never being recorded there. A count met with the lens missing is its own
+answer (`RolePredicateUnmet`), not a short count — L-2's distinction, without which a caller told
+"not enough approvers" adds a third CatalogAdmin and fails again.
+
+**Three blockers on the tick, and one deliberate non-answer.** §7 row 25 — no surface carries a
+role, so `roles` is a per-decision operand carrying *what was true when the decision was made*,
+which is what a gate-time evaluation needs and what row 25 says the decision row does not store.
+§7 rows 11 and 31 — this function answers the **arithmetic** and takes no position on which
+transaction writes `state = satisfied`, nor on whether a record at `required = 0` is born
+satisfied. **The non-answer is §7 row 16**: C1 scopes its base role set to material changes and the
+descriptor carries no `Materiality`, so the binding set is a **call operand** — `BaseRoleSet::C1`'s
+pair, or `::AnyDecider` for row 16's other reading. It was a `&[ApproverRole]` whose **empty** value
+meant "anyone counts", and the 2026-09-02 review measured why that was wrong in two directions: the
+empty slice is the only value a caller can supply today (§7 row 25 again), so a *material* change
+closed on two principals holding neither C1 role; and the permissive reading was defended by citing
+row 16, which is scoped to **non-material** changes only. There is deliberately no narrowing
+variant — C8 says predicates *"narrow within the C1 base set and never replace it"* and that v1
+registers no extension point that could, and a caller passing `[CatalogAdmin]` alone dropped a
+FinanceReviewer-only approver together with the lens `inst-gv-finance-predicate` needs.
+
 **Implements**: `cpt-cf-bss-products-flow-decide`
 
 **Touches**:
@@ -694,6 +785,25 @@ subject's scope with `APPROVER_SCOPE_EXCEEDED`, and **MUST** audit it like any s
 Scope **MUST** be read with the Foundation's two boundaries: the columns are `NOT NULL` and the
 empty set means **unrestricted**. A paired in-scope control **MUST** exist.
 
+**Built as `approver_covers_subject`, and the mapping is the whole rule.** It does not
+re-implement containment — `domain::containment::contains` already carries P-D-39's three clauses
+— it names which side is which: **parent = the approver's claims, child = the subject's scope**.
+That is forced by the instruction's own wording, since *"an unrestricted subject scope is covered
+only by an unrestricted claim set"* is clause 2, the asymmetric one. Transposed, a
+region-restricted approver would cover a tenant-wide subject, which is the scope rule deleted
+rather than applied — so clause 2 is probed as the case that flips, with the paired in-scope
+control and a brand-dimension case without which a rule checking region twice would pass every
+other assertion.
+
+**Two blockers on the tick.** `APPROVER_SCOPE_EXCEEDED` is declared at 403 by §3.3 and **is not in
+`domain::error` at this commit** — two of the slice's six codes ship and four do not — so the
+refusal is carried as a value naming both scopes and the dimension that failed, and its
+registration is `dod-governance-errors`'. And the DoD's *"MUST audit it like any scope violation"*
+has a writer, `repo::write_refusal_audit` — which, corrected on re-measurement 2026-09-02, **does
+have a production caller**: `api/rest.rs`'s `audit_refusal_of_action_and_report`, reached from 30
+door sites. What is missing for *this* DoD is a decide door whose refusals ride it (§7 row 12), not
+the lane itself. The approver's own claims are §7 row 25 again.
+
 **Implements**: `cpt-cf-bss-products-flow-decide`
 
 **Touches**:
@@ -707,6 +817,36 @@ The system **MUST** require the `approval × decide` grant and refuse a caller w
 **before any row is appended**, **MUST** append one decision row per approver, refuse a decision on
 an already superseded record with `APPROVAL_SUPERSEDED`, finalize a rejection with its mandatory reason while
 leaving the subject unchanged, and emit `ApprovalDecided` on either verdict.
+
+**The finalization had no writer and now does.** `record_decision` appended the row, refused an
+unreasoned rejection, a second verdict from one principal, an author's own and a decision on a
+closed record — and then left the record `pending`, so a rejection changed nothing. `finalize_rejected`
+is §4 row 3's edge (`inst-ap-edge-reject`), flipping `pending -> rejected` and stamping
+`finalized_at` in the **same transaction as the decision row**; `chk_products_approval_finalized`
+pins that pair on both dialects, so a flip writing one without the other is refused by the engine.
+The probe asserts the head is untouched as well as the record finalized — a finalizer that also
+moved the subject would satisfy the first half alone — with the paired control that an **approval**
+finalizes nothing, without which a flip on either verdict would close every record on its first
+signature.
+
+**The `UPDATE` carries the open-state predicate, which is `supersede_open_approval`'s lesson applied
+rather than rediscovered.** That function's first build filtered by id alone with the predicate on
+the preceding read, so two concurrent writes both saw the open record and the loser met the
+append-only trigger — a **legal act answering 500**, found by three review lenses. Here zero rows
+matched is a **refusal** rather than that function's no-op, because a decision row has already been
+appended in this transaction and must roll back with it.
+
+**A rejection on a `satisfied` record is refused rather than appended-and-not-finalized.** §4 row 5
+closes the machine and admits no `satisfied -> rejected` edge; the alternative leaves a recorded
+rejection against a record the gate would still authorize. The paired control is that an approval in
+the same state is admitted, which makes the refusal about the edge and not the state. No writer
+produces `satisfied` at this commit (§7 row 11), so the probe writes it by hand — the shortcut
+`repo_tests` already takes for a state whose door is not this slice's.
+
+**Two clauses remain unbuildable, and neither is arithmetic.** The `approval x decide` grant must be
+refused *before any row is appended*, and there is no decide door to refuse at (§7 row 12); and
+`ApprovalDecided` **does not exist** in `infra/events.rs`, so "emit on either verdict" is a
+`dod-governance-events` patch. §7 row 17 (AC #26's third bullet) is also live against this DoD.
 
 **Implements**: `cpt-cf-bss-products-flow-decide`
 
@@ -729,6 +869,16 @@ home: a lane that publishes an override subject without one is a defect, not an 
 subject's own override conditions, and no artifact says where a subject's lint findings are read
 from — `domain::validation`'s report carries no override-condition set, so nothing today can tell
 an approver which findings they must name.
+
+**Re-measured 2026-09-02 and the claim holds.** `ValidationReport` carries `Violation`s and an audit
+code, and `OverrideCondition`, `LintFinding` and `AttentionCondition` return **zero** hits across
+`domain/`. So the storage is complete on both sides — `override_acknowledgments` on the decision row
+for `N >= 1`, `author_override_ack`/`author_override_ack_at` on the record at effective quorum zero,
+routed by `ack_placement` and refused by `submit_approval` at any other count — and the *operand* is
+what does not exist. An acknowledgment "by name" over a set nothing produces cannot be probed, so
+this DoD's remaining half is a blocked build rather than an unwritten one. Its third clause — *"the
+record MUST be the ceremony's only home: a lane that publishes an override subject without one is a
+defect"* — is an assertion about the publish lanes, which are `01`'s and `09`'s doors.
 
 **Implements**: `cpt-cf-bss-products-flow-decide`
 
@@ -753,6 +903,39 @@ that feature, **not** a second vocabulary declared here. The verdict
 override acknowledgment, **and nothing more** — the Foundation learns nothing about who approved,
 against which rule, in how many steps or when.
 
+**The host is built and is not registered, and the second half is blocked by more than a file
+boundary.** `domain::approval::StoredApprovalGate` implements the trait over candidate records the
+door loaded, minting no vocabulary: it returns `01`'s `GateVerdict`, `GateAuthorization` and
+`ApprovalDisposition` and declares none of its own. Item 28's choice is taken and taken the only way
+available — *"an operand the door already loaded inside its transaction"* rather than *"an async
+widening of this signature"*, because the widening is a change to `01`'s own trait in
+`domain/governance.rs`, which this slice may not make. Holding what it was given also keeps the host
+a pure function, so every rule is probed without a database and `evaluate`'s `Err` arm — reserved
+for a host that could not **reach** an answer — is genuinely unreachable.
+
+**Row 26 is right and its enumeration is wrong; both are measured.** The row reads *"Six production
+call sites pass `GateMode::Gate`: publish, discard and save on both entities"*. At `HEAD` on
+2026-09-02 there are **seven** `.evaluate(` call sites, and **five** pass the `GateMode::Gate`
+literal — `products::run_deprecate`, `run_discard`, `run_save`; `skus::run_discard`, `run_save`.
+The other two are `products::run_publish` and `skus::run_publish`, which pass their `mode`
+**argument** (P-D-30's), set to `Gate` by the routed handler. So the row names publish among the
+literal-passers, where it does not belong, and misses `run_deprecate`, a lifecycle transition it
+does not mention at all. The substance is **worse** than stated, not better: all four Product sites
+build a byte-identical triple — `GateSubject::entity_publish(EntityRef { .. })`,
+`InternalRevision::new(inputs.expected)`, `Gate` — so nothing in `(subject, revision, mode)`
+separates a publish from a save, a discard or a deprecate, and the mode does not either.
+
+**What the build does about it, and what is owed to `01`.** The act operand rides the host's
+**construction** — `StoredApprovalGate::governed(candidates)` or `::ungoverned()` — so a caller
+cannot build a host without saying which kind of act it holds it for, and row 26's two wrong
+answers stop being reachable by default. A paired probe drives the identical triple through both
+constructions and asserts two different correct answers. But **the doors must then choose at each of
+the seven sites**, and the doors are `01`'s. Named for the lead: either `GovernanceGate::evaluate`
+gains a fourth argument carrying that distinction, or each door constructs the host it needs. The
+first puts the operand where a host can be sure of it; the second needs no seam change and is what
+the built type is shaped for. **Until one is taken, wiring any store-backed host is a choice between
+refusing every save in the gear and preserving the no-policy deviation on the publish path.**
+
 **Implements**: `cpt-cf-bss-products-flow-gate`
 
 **Touches**:
@@ -765,6 +948,17 @@ against which rule, in how many steps or when.
 The system **MUST** flip a satisfied record `consumed` **in the same transaction as the authorized
 act**, and a failed attempt **MUST** consume nothing. A probe **MUST** drive two publishes off one
 satisfied approval and prove the second fails.
+
+**The flip had no writer and now does; the transaction half is the door's and is not claimed.**
+`repo::consume_approval` carries `state = 'satisfied'` on the **`UPDATE`**, not on a preceding read,
+so two acts racing off one record produce exactly one `Consumption::Spent` whatever order they ran
+in — the DoD's own probe, at the store. Zero rows matched answers
+`Consumption::AlreadySpentOrClosed` rather than an error, because the caller is what knows the
+meaning: a second publish must refuse while a `PreAuthorized` stage that raced a peer has the answer
+it wanted, and reporting a driver failure would send both to a 500. Its companion probe drives a
+**`pending`** record, without which a predicate that had drifted to "any state" would pass the
+first probe unchanged. *"In the same transaction as the authorized act"* is **not** measurable
+here and is not claimed: this function opens no transaction, and the module says so.
 
 **Implements**: `cpt-cf-bss-products-flow-gate`,
 `cpt-cf-bss-products-state-approval-record`
@@ -783,6 +977,25 @@ header, no query parameter — so its reuse is bounded by in-process callers rat
 A scheduled act, a cascade and a bulk batch are each **one composite act**, and their mechanical
 stages re-enter here rather than demanding a fresh record.
 
+**The mode's arm is built and `bulk_worker`'s outright refusal is retired by it.** The host answers
+a `PreAuthorized` stage naming a **`consumed`** record that pinned this subject at this revision,
+with `ApprovalDisposition::Verified` — so `approval_to_consume()` answers `None` and "nothing is
+consumed under `PreAuthorized`" is a property of the type rather than a rule a door must remember —
+while `approval_ref()` still answers the id, because a mechanical stage records which approval
+stands behind the frozen version even though it spends nothing. The id is matched as well as the
+shape: a subject accumulates any number of `consumed` records (the partial UNIQUE bounds only the
+open one), so a stage naming a *different* consumed record at the same revision is refused, which is
+the weakening §7 row 27 calls turning a terminal record into an unbounded bearer token. A paired
+probe asserts the two modes read **disjoint** states in both directions.
+
+**The tick is blocked on §7 row 27, which this build does not touch.** The predicate the host
+implements is the one the instruction states — *"this subject at this pinned revision"* — and a
+cascade leg's subject is a **child** entity while a bulk row's revision is its own, so both still
+fail by construction and the mode carries no plan-membership operand to fix that. Widening the
+predicate is exactly what row 27 forbids doing locally. The clause *"MUST NOT be reachable from any
+wire surface"* is unchanged and holds structurally: `GateMode` is reachable from no request DTO,
+header reader or query extractor, and the two routed handlers pass the `Gate` literal.
+
 **Implements**: `cpt-cf-bss-products-flow-gate`
 
 **Touches**:
@@ -797,6 +1010,17 @@ signal reference as the authorizing principal, audited like any decision, with n
 and no exemption from the gate. The head **MUST** be clean: such a publish carries the flag and
 nothing else, and on a dirty head is **deferred, never refused**. The configured `N` **MUST** have
 no standing over it, the principal not being a tenant principal.
+
+**Nothing was built for this, deliberately.** The auto-satisfy edge is the one arm §4 row 1 gives a
+named writer — *"or, for a `system_signal` subject, at submission"*, in the same transaction — so
+unlike the human arm it is not blocked by row 11. It is blocked by row 14: *"the auto-satisfied
+`system_signal`'s 'signal reference as the authorizing principal' **has no column**, the decision
+key being `(approval_id, approver_principal)`"*, and `approver_principal` is a `Uuid` while a signal
+reference is textual. A writer that flipped the record `satisfied` while silently dropping its
+authorizer would produce a **directly consumable record with no recorded authority** — the exact
+shape that makes a gap untraceable, and worse than an unbuilt DoD. The other two clauses have no
+operand either: *"the head MUST be clean"* needs the head, and *"on a dirty head is deferred, never
+refused"* needs a defer mechanism no artifact declares.
 
 **Implements**: `cpt-cf-bss-products-flow-gate`
 
@@ -838,14 +1062,31 @@ dispose of it — a catalog whose grants no door spends is exactly what rows 1 a
 earlier pass ticked this on the strength of that scope sentence alone, having read this §7 — **a
 table** — as empty; it is 23 rows.
 
-**Built as an extension, and the withholding is asserted too.** `authz.rs` now carries **fourteen**
-labels: `01`'s `product`/`sku`, `06`'s `catalog_version`, `09`'s `bulk`, `07`'s
-`reference_signal`/`reference_producer`, and this slice's four — `approval × submit|read|decide`,
-`materiality_policy × write`, `breakglass × elevate`, `audit × read|export`. The eleven rows owned
+**Built as an extension, and the withholding is asserted too.** `authz.rs` carries **sixteen**
+labels — measured 2026-09-02 — including `01`'s `product`/`sku`, `06`'s `catalog_version`, `09`'s
+`bulk`, `07`'s `reference_signal`/`reference_producer`, and this slice's four:
+`approval × submit|read|decide`, `materiality_policy × write`, `breakglass × elevate`,
+`audit × read|export`. The eleven rows owned
 by `02`, `03`, `04` and `10` are **absent by assertion**, not by omission: a test names each one
 with its owing slice and fails if it appears, because a grant declared with no owning door is a
 grant nobody can review — §6's own reason for counting them. Four of governance's own seven pairs
 are themselves routeless, and that is the DoD's stated scope: declared, they are countable.
+
+*This paragraph read "fourteen" until 2026-09-02, and that was **drift rather than a birth
+defect**: `labels::ALL` held exactly fourteen at `6b191a157`, the commit that wrote the sentence,
+and `recognized_set` and `plan_tier` landed after it. The distinction matters because the two need
+different fixes — a birth defect means the census was wrong, drift means only the number is.*
+
+**The catalog's census in this gear is not the three sites a reader may expect.** Measured at
+`HEAD`: `rest_authz` has **zero** occurrences anywhere in this gear, and `Route` has **zero** in
+`src/gts/`. Both belong to the **pricing** donor, which does carry
+`pricing/pricing/tests/rest_authz.rs`. What products has instead is a four-site roster, and the two
+tests that hold it together are what a partial edit would leave stale:
+`authz::labels::ALL`; `authz::resource_types`; `gts::permissions`' twenty-seven permission
+instances; and the pair of assertions
+`authz_tests::labels_all_carries_every_declared_label_in_order` and
+`gts::permissions::tests::catalog_resource_types_match_authz_labels_all`, which fail if any of the
+first three drifts from the others.
 
 **Implements**: `cpt-cf-bss-products-algo-rbac-catalog`
 
@@ -868,6 +1109,28 @@ prevent. **The fixed floor of two platform
 principals has no writer** (open item 9), and **the window's interim value and its no-renewal rule
 live only in the PRD's interim-policy table** (open item 22).
 
+**The session's writer is built, and the floor's descriptor writer landed with B2.**
+`repo::open_breakglass_session` writes the reason, the half-open window, the target tenant and
+exactly **one** approval path. The exclusivity is unrepresentable rather than guarded: `ApprovalPath`
+has no value that sets both columns or neither, which is what `chk_products_breakglass_path` enforces
+at the engine on both dialects — and the module deliberately restates **none** of the four `CHECK`s
+in Rust, because a second guard drifts from the schema. The probe that an empty reason is refused is
+therefore a probe that the schema *is* the guard. `describe_platform_quorum` (B2) supplies the fixed
+floor of two platform principals that row 9 said no writer could produce; row 9's other halves —
+whether that approval's record is an `ApprovalRecord`, and which row holds it — are untouched.
+
+**`discharge_posthoc_review`** closes P-D-68 arm 3's obligation with the second platform principal's
+late decision: no new door, no new grant, the `pending` predicate on the `UPDATE` so two reviewers
+racing produce one discharge, and nothing to discharge on a session that took the two-person path.
+
+**Three clauses have no operand.** *"MUST emit `BreakGlassElevated` alongside a distinct alert
+channel"* — neither the event type nor an alert channel exists in the gear. *"A failed alert
+emission MUST NOT leave a silent session"* — the remedy it names is a **recorded undelivered-alert
+obligation**, and `products_breakglass_session` has no column for one, so this cannot be built
+without a migration (which is not this slice's) or an invented stub. And the window's value is left
+to the caller rather than defaulted: its interim 4 hours and the no-renewal rule live only in the
+PRD's §17.1 table (row 22) and `inst-bg-open` states neither.
+
 **Implements**: `cpt-cf-bss-products-flow-breakglass`
 
 **Touches**:
@@ -882,6 +1145,20 @@ with no exception in v1, and **MUST** individually audit every elevated access w
 the reason and the correlation id — **the count asserted, not sampled**. **What an elevation
 changes about the authorization decision and the repository's tenant scoping is open item 18**: no
 rule states how a live session widens either.
+
+**Nothing was built for the refusal, and row 18 is why.** The refusal needs an enforcement point
+that reads a live session, and no rule says where in the pre-pipeline gate that operand is read or
+what it changes about `authz::access_scope`'s answer or `SecureORM`'s tenant scoping. Building one
+would author row 18 from a call site. `BREAKGLASS_WRITE_FORBIDDEN` is also absent from
+`domain::error` (`dod-governance-errors`' patch), so the refusal has no code even once it has a
+place to be raised.
+
+**The audit half has its writer and no caller.** `repo::write_elevated_read_audit` takes the session
+id and is probed at the row; the DoD's *"the count asserted, not sampled"* needs a lane that makes
+several elevated reads, and no door opens one. What this group can say is the scoping boundary it
+does exercise: the session is scoped by **`target_tenant`**, so a caller in another tenant's scope
+gets the same answer as one naming a session that does not exist — which is a probe, not a rule
+about how a live session widens anything.
 
 **Implements**: `cpt-cf-bss-products-flow-breakglass`
 
@@ -902,6 +1179,27 @@ has no such shape. **Item 19 was the producer question and P-D-68 closed it**: t
 previously named was a refused call, so an uncalled session never emits it and a session called ten times after expiry
 emits ten.
 
+**The CAS is built and the count is asserted over ten calls, not two.** `repo::admit_elevated_call`
+carries `expired_emitted = false` on the **`UPDATE`**, so ten post-expiry calls produce exactly one
+`emit_expired: true` — item 19's own number, answered. Two calls could not tell a CAS from a
+read-then-write that happened not to race, which is why the probe runs ten. **Expiry gates admission,
+not completion**: the judgement is a function of the window and the instant and touches nothing the
+call goes on to do.
+
+**The window's boundaries are swept rather than sampled.** `valid_from` itself is inside,
+`valid_until` itself is **outside** — the interval is `[from, until)`, and a closed one admits one
+call too many — and a call *before* `valid_from` is its own answer rather than an expiry, since
+folding it in would emit `BreakGlassExpired` for a session that has not begun. The
+inside-the-window admission is the positive control the acceptance criteria require, without which
+an inverted comparison passes every other criterion.
+
+**Two clauses remain.** `BREAKGLASS_EXPIRED` is not in `domain::error` and `BreakGlassExpired` is not
+in `infra/events.rs`, so the refusal's code and the emission itself are both `dod-governance-errors`'
+and `dod-governance-events`' patches — this function answers **who** emits and the emission has
+nothing to emit yet. And *"in the same transaction as that refusal"* is the caller's: this function
+opens none, and a committed flip beside a rolled-back refusal is the exactly-once guarantee
+inverted.
+
 **Implements**: `cpt-cf-bss-products-flow-breakglass`
 
 **Touches**:
@@ -919,6 +1217,19 @@ erasure forever; failing closed at the door is the only reach erasure has over t
 does not exist, so a **clean-text positive control is part of this obligation** — a stub that
 refuses every string would otherwise satisfy it.
 
+**Nothing was built, and both halves of the blocker are re-measured at `HEAD` (2026-09-02).** No PII
+detector, hook or stub exists anywhere in the crate — `CONTENT_PII_BLOCKED` appears only in
+`infra/error_mapping.rs`'s prose and is **not a declared code** — and the detector is
+`02-taxonomy-attributes`'/`10-retention-erasure`'s to ship. Writing a local stub would satisfy the
+obligation's letter while proving nothing, which is the trap this DoD already names.
+
+**And §7 row 35's premise is confirmed rather than merely carried.** The DoD obliges the hook on
+*"the submission reason, the rejection reason and the break-glass session reason"*, and
+`products_approval`'s column roster is fourteen wide with **no `reason` among them** — only
+`products_approval_decision.reason` and `products_breakglass_session.reason` exist. So this DoD names
+three reasons where two are storable. Which way that resolves — the submission carries no operator
+text, or the approval row owes a column — is row 35's owner call and is **not** taken here.
+
 **Implements**: `cpt-cf-bss-products-flow-submit`,
 `cpt-cf-bss-products-flow-decide`, `cpt-cf-bss-products-flow-breakglass`
 
@@ -934,6 +1245,23 @@ into the Foundation's taxonomy, each carrying its declared RFC 9457 status.
 `APPROVER_ROLE_REQUIRED` **MUST** be raised by the **gate** when the descriptor is numerically met
 and the role predicate is not; `APPROVAL_SUPERSEDED` **MUST** be raised at **decide**.
 `APPROVAL_REQUIRED` stays `01-foundation`'s.
+
+**Two of the six ship and three more are patched but unapplied; the sixth has no raising rule.**
+`SELF_APPROVAL_FORBIDDEN` (403) and `APPROVAL_SUPERSEDED` (409) are declared and mapped at `HEAD`.
+Strand B's patch adds `APPROVER_SCOPE_EXCEEDED`, `APPROVER_ROLE_REQUIRED` and `BREAKGLASS_EXPIRED`
+to `domain/error.rs` and `infra/error_mapping.rs` — both files are append-only shared planes this
+strand may not edit, so the patch is handed over rather than applied.
+
+**`BREAKGLASS_WRITE_FORBIDDEN` is deliberately left out.** This DoD says the codes are declared *"as
+constants **on their raising rules**"*, which is P-D-36's own principle, and **no rule raises this
+one**: §7 row 18 blocks the enforcement point, so nothing in the gear can produce it. Declaring it
+would ship a 403 with no producer — the exact finding the three-lens review of this group already
+made once, one wave earlier. The code lands with the rule, and the rule waits on row 18.
+
+**`APPROVER_ROLE_REQUIRED` is declared at §3.3's stated 403 and its status stays §7 row 13.** One
+mapping line changes if the owner rules 409. Its **raise path** is untouched and remains §7 row 30:
+`GateVerdict::into_authorization` maps every gate refusal to `APPROVAL_REQUIRED` by design, so a
+second gate code needs the verdict widened — a change to `01`'s type, not this slice's.
 
 **Implements**: `cpt-cf-bss-products-algo-governance-errors`
 
@@ -955,6 +1283,23 @@ no-event declaration.
 **Implements**: `cpt-cf-bss-products-flow-submit`,
 `cpt-cf-bss-products-flow-decide`, `cpt-cf-bss-products-flow-breakglass`
 
+**None of the three event types exists, and the patch reaches a fourth file.** `ApprovalDecided`,
+`BreakGlassElevated` and `BreakGlassExpired` are absent from `infra/events.rs` and
+`infra/broker.rs` alike. A new broker event needs **five** insertion points across **two** forbidden
+files: the payload-type token, the `SCHEMA_REFS` entry and a dispatch path in `infra/events.rs`, and
+the `TypedEvent` declaration plus its `producer.prepare::<T>()` registration in
+`infra/broker.rs`. The `SCHEMA_REFS` entry is the one an exhaustive `match` cannot enforce — a type
+added without it compiles clean and fails at enqueue.
+
+**What the patch stops short of, and why.** The three events fit neither existing enqueue path:
+`enqueue` builds a `CatalogEventCore` from an entity's core and `enqueue_set_event` wants a
+`set_kind`/`member_code`. A third path is needed, and **its body fixes what a governance event
+carries on the wire**, which `12-consumer-contracts` pins. The shape is sketched and named for that
+owner rather than settled here. The **no-event declaration** this DoD also requires — submissions
+and supersessions emit nothing, *asserted as set equality* — belongs beside the other slices' inline
+notes in `design/05` (a forbidden document) and in a door's test (which does not exist); both are
+named, neither invented.
+
 **Contract**: `cpt-cf-bss-products-contract-registry-events`
 
 **Touches**:
@@ -970,6 +1315,17 @@ declared to emit none. Audit **sealing is a platform capability and is deliberat
 here** — v1 ships completeness over a reserved, unwritten sealing seam, and tamper-evidence does
 not ship. Until that capability activates, immutability is the trigger whitelist on both engines
 and nothing cryptographic.
+
+**All three writers ship, and one of them already has a production caller.** Corrected on
+re-measurement 2026-09-02: an earlier revision of this paragraph said none did.
+`repo::write_refusal_audit` is called from `api/rest.rs`'s
+`audit_refusal_of_action_and_report`, which 30 door sites reach — so the refusal-audit lane is
+**live**, and what this DoD still owes is that *this feature's* refusals ride it, which needs the
+decide, submit and elevate doors (§7 row 12). `write_eventless_act_audit` and
+`write_elevated_read_audit` genuinely have no production caller. None of the three needs a
+shared-plane change, so this DoD needs **no patch** — it needs doors. The elevated-read writer takes the session id and
+is probed at the row; the DoD's *"the count asserted, not sampled"* needs a lane that makes several
+elevated reads, and none opens one. C7's sealing seam stays deliberately unwritten (§7 row 21*).
 
 **Implements**: `cpt-cf-bss-products-flow-decide`,
 `cpt-cf-bss-products-flow-breakglass`
@@ -1106,20 +1462,24 @@ in it is a question about every other feature's gate.
 | 23 | ~~**Is the approval hook's no-fire exception still worded for `draft→published` alone?**~~ **Closed on re-measurement 2026-08-31**: the slice's C3 already reads "except any transition that consumes an approval in the same transaction — `draft→published` … and every gated edge P-D-30 put the gate phase on", and cites P-D-34 three times. The §6 bullet is stale against its own constraint and is **owed a strike in the slice**; `dod-supersede` obliges C3's widened exception | no DoD — **resolved**: the owed strike in `design/05` §6 was filed by **P-D-68** on 2026-09-01, so `dod-supersede` is freed | was this feature; **closed** |
 
 | 24 | **Which slice mints a grant pair when the owning slice names none?** The roster carries `scheduled_transition × write\|cancel\|read` and `product\|sku × discard` for doors that name no pair, while §3.2 asserts "Every door names its pair" and `12-consumer-contracts`' lint runs door-to-catalog only — so a catalog entry with no door is invisible to it in both directions. **This is the item the first draft dropped** | `dod-rbac-catalog` | the governance owner with 04, 08 and 12 |
-| 25** | **A principal's *role* is not on any surface the gear has.** `SecurityContext` exposes `subject_id`, `subject_type`, `subject_tenant_id`, `token_scopes` and `bearer_token` — no roles, no brand claim, no region claim — and `roles`/`role_` returns **zero** hits across the gear's source. Authorization is permission-based: `authz.rs` asks the policy point `(resource, action)` for the **current** caller and returns a query filter. There is no way to ask whether principal X holds role R, still less to ask it of a **past** approver at gate time. The cheapest place to hold the answer is the decision row, which today stores neither the roles nor the scope claims that were true when the decision was made | `dod-quorum-evaluator`, `dod-finance-predicate`, `dod-approver-scope`, `dod-decision-store` | this feature with the platform-identity owner |
-| 26** | **The gate is invoked on `save` and `discard`, and the trait gives the host no act operand.** Six production call sites pass `GateMode::Gate`: publish, discard and save on both entities, because the Foundation puts the phase at every mutating door and has it pass where the act is ungated. `evaluate(subject, expected_revision, mode)` carries no act. A store-backed host that refuses when no record exists **refuses every save and every discard in the gear**; a host that authorizes when none exists preserves the no-policy deviation **on the publish path**, which is a path to `published` that consumes no record | `dod-gate-host` | this feature with 01 |
+| 25** | **A principal's *role* is not on any surface the gear has.** `SecurityContext` exposes `subject_id`, `subject_type`, `subject_tenant_id`, `token_scopes` and `bearer_token` — no roles, no brand claim, no region claim — and `roles`/`role_` returned **zero** hits across the gear's source when this row was written (a
+measurement now stale in both directions: it was already 6 files of prose at `d6cce574b`, and
+`domain::approval` has since added the first real identifiers — `ApproverRole` and
+`CastDecision::roles` — as the operand this row says nothing supplies. The row's substance is
+untouched: no *surface* carries a role, and the decision row stores none). Authorization is permission-based: `authz.rs` asks the policy point `(resource, action)` for the **current** caller and returns a query filter. There is no way to ask whether principal X holds role R, still less to ask it of a **past** approver at gate time. The cheapest place to hold the answer is the decision row, which today stores neither the roles nor the scope claims that were true when the decision was made | `dod-quorum-evaluator`, `dod-finance-predicate`, `dod-approver-scope`, `dod-decision-store` | this feature with the platform-identity owner |
+| 26** | **The gate is invoked on `save` and `discard`, and the trait gives the host no act operand.** *(The count and the enumeration were wrong and are corrected here; the substance is worse, not better. Measured 2026-09-02: **seven** `.evaluate(` call sites, of which **five** pass the `GateMode::Gate` literal — `products::run_deprecate`, `run_discard`, `run_save`; `skus::run_discard`, `run_save` — while `products::run_publish` and `skus::run_publish` pass their `mode` **argument**. So publish was named among the literal-passers where it does not belong, and `run_deprecate`, a lifecycle transition, was missed entirely. All four Product sites build a **byte-identical** triple, so nothing in `(subject, revision, mode)` separates the four acts.)* The Foundation puts the phase at every mutating door and has it pass where the act is ungated. `evaluate(subject, expected_revision, mode)` carries no act. A store-backed host that refuses when no record exists **refuses every save and every discard in the gear**; a host that authorizes when none exists preserves the no-policy deviation **on the publish path**, which is a path to `published` that consumes no record | `dod-gate-host` | this feature with 01 |
 | 27** | **`PreAuthorized`'s predicate cannot admit the composite acts this feature declares.** The mode verifies a consumed record "authorized **this subject** at **this pinned revision**", while a cascade leg's subject is a **child** entity and a bulk row's revision is its own. Both fail by construction, and the mode carries only an id with no plan-membership operand. Weakening the predicate to "names a consumed record" turns a terminal, unrevocable record into an unbounded bearer token for any subject in the tenant | `dod-preauthorized-mode`, `dod-one-shot-consumption` | this feature with 04 and 09 |
 | 28** | **The trait is deliberately synchronous, and the code handed this feature the choice.** `governance.rs` states it: a store-backed host needs its candidate records "either as an operand the door already loaded inside its transaction, or through an async widening of this signature. **That choice is slice 05's** … because guessing it wrong costs a signature change either way." `dod-gate-host`'s "MUST NOT mint a parallel vocabulary" read literally forbids that widening. **This is the one item that cannot be deferred past the first line of code** | `dod-gate-host`, `dod-one-shot-consumption` | this feature with 01 |
 | 29** | ~~**Four of the five subject kinds cannot cross the seam.**~~ **Answered (owner call, 2026-08-31 — P-D-67 arm 4): the gate's subject widens to the approval store's own pair, `(subject_kind, subject_ref)`**, with `EntityRef` remaining the constructor for the entity kinds — the store already fixed the vocabulary, so the seam expressing less than the store records was the defect. `features/catalog-version.md` §7 row 26 is the same seam from the other side, answered by the same arm; item 14's storage half is untouched. *Original text:* The seam's subject type is an entity reference whose kind enum is exactly `Product | Sku`. A `governed_live_op`, a `system_signal`, an `sku_correction` and a `bulk_batch` have no representation to hand `evaluate`, while `dod-system-signal` obliges the gate to admit one. Item 14 sees the storage half of this and misses the seam half | no DoD — **resolved by P-D-67**; `dod-gate-host`, `dod-system-signal` and `dod-approval-store` carry the widened seam | was this feature with 01; **closed** |
 | 30** | **`APPROVER_ROLE_REQUIRED` has no raise path.** The gate's only refusal channel maps every refusal to `APPROVAL_REQUIRED` through a single method that exists, in its own words, so "a door that matched on the verdict itself could choose another code". The other channel is contractually reserved for infrastructure failure. Raising a second gate code needs the verdict widened with a code — again against `dod-gate-host`'s no-parallel-vocabulary clause. **Item 13 debates this code's status while its raise path does not exist** | `dod-governance-errors`, `dod-gate-host` | this feature with 01 |
 | 31** | **A tenant at `N = 0` never reaches `satisfied`.** §4's only human arm fires when the descriptor is "met by distinct principals", and at `N = 0` no decision is ever recorded, so nothing meets anything; the only auto-satisfy arm is `system_signal`. The record stays `pending` and the gate, which answers yes only to a `satisfied` record, refuses forever — **re-blocking exactly the one-person tenant the quorum floor exists to unblock**. Item 11's alternative answer is no cheaper: evaluating satisfaction at gate time makes the consume flip run `pending → consumed`, an edge §4 row 5 forbids | `cpt-cf-bss-products-state-approval-record`, `dod-quorum-evaluator`, `dod-finance-predicate` | this feature |
-| 32** | **Two build obligations the code books to this feature and no DoD carries.** The entity-version migration says `approval_ref` "is nullable today, and the tightening is owed to slice 05 … to be applied **by editing this file in place**", together with whatever referential constraint this feature's own record table earns. And `authz.rs` records that registering its label type-schemas "is still owed" — the gear's `init` does not call it yet. Extending the catalog also touches the instance blocks, the label roster and a hardcoded three-action array that fails on the first `submit`, `decide` or `elevate` the catalog mints | `dod-approval-store`, `dod-rbac-catalog` | this feature with 01 |
+| 32** | **Two build obligations the code books to this feature and no DoD carries.** The entity-version migration says `approval_ref` "is nullable today, and the tightening is owed to slice 05 … to be applied **by editing this file in place**", together with whatever referential constraint this feature's own record table earns. And `authz.rs` records that registering its label type-schemas "is still owed" — **confirmed at `HEAD` 2026-09-02**: `authz_label_type_schemas()` exists and its only caller is `authz_tests.rs`, so no production path registers them. **The row's third clause is stale and is struck**: it read *"a hardcoded three-action array that fails on the first `submit`, `decide` or `elevate` the catalog mints"*, and there is **no such array in production code** — the actions are individual `&str` constants, `SUBMIT`, `DECIDE`, `ELEVATE` and `EXPORT` all exist, and the only three-element array is a local in one test (`authz_tests.rs`) asserting three specific names. The catalog has already minted all four actions and the suite is green, so whatever the clause described was overtaken by the extension it warned about | `dod-approval-store`, `dod-rbac-catalog` | this feature with 01 |
 | 33*** | **The materiality policy object has no store and no door.** `inst-mt-policy-material` makes it a `GovernedLiveOp` subject on its own pair `materiality_policy × write`, and `authz.rs` mints the pair — but `DESIGN.md` §3.5 gives this slice exactly `products_approval`, `products_approval_decision` and `products_breakglass_session`, and §3.2 of the design records `materiality_policy × write` as having **no route declared**. So the shipped `MaterialityPolicy` is a value with a default and a floor that nothing can persist or mutate, and the evaluator refuses every act until one is supplied. A fourth table or a `ProductsConfig` home is the choice, and both change what "in force at the submission instant" reads | `cpt-cf-bss-products-dod-materiality-policy` | this feature with the schema owner |
 | 34*** | **An unresolvable materiality input has no declared code.** `dod-materiality-evaluator` requires the act refused rather than defaulted, and the shipped refusal is a domain value (`MaterialityUnresolved`) because there is nothing to render: §3.3 names no code for it, and the gear's 503 set is **closed at three by name** — `AUDIT_UNAVAILABLE`, 08's `READ_MODEL_OVERLOADED`, 03's `USAGE_TYPE_UNAVAILABLE` (`design/01` §3.3, 12 `inst-cc-errors`) — so minting a fourth would make a closed roster consistent and wrong. The refusal reaches no wire until the submit door lands, which is when the code becomes load-bearing | `cpt-cf-bss-products-dod-governance-errors` | this feature with 12 |
 | 35*** | **`dod-pii-on-reasons` names a submission reason this feature does not store.** It obliges the hook on "the submission reason, the rejection reason and the break-glass session reason", and §4 gives `products_approval` **no reason column** — only `products_approval_decision.reason` and `products_breakglass_session.reason` exist. Either the submission carries no operator text (and the DoD names two reasons, not three) or the approval row owes a column | `cpt-cf-bss-products-dod-pii-on-reasons` | this feature with its storage owner |
 | 36*** | **Is the claim set an input of the materiality verdict at all?** `dod-materiality-evaluator` names it in the fail-closed clause — *"an unresolvable materiality policy, claim set or bucket registry **MUST** refuse the act"* — while `inst-mt-inputs` enumerates exactly four inputs and the claim set is none of them, and §2 puts the claims check in a **pre-pipeline authorization gate** with its own fail-closed channel. The shipped evaluator therefore requires it and decides nothing with it, which satisfies the clause's letter and nothing else. Either the DoD drops it, or the verdict becomes claims-sensitive and the design gains a fifth input | `cpt-cf-bss-products-dod-materiality-evaluator` | this feature with the platform-identity owner |
 | 37*** | **Two refusals the ceremony raises have no declared code.** §3.3's roster is closed at six, and neither a **second verdict from one principal** (C2's UNIQUE, read back) nor a **decision on a record that closes on no approver** (P-D-68 arm 1) is among them. Both ship on the repository's internal channel with a stated reason rather than an invented code, the same treatment row 34 records for the unresolvable input — so both answer a 500 where a classified refusal belongs | `cpt-cf-bss-products-dod-governance-errors` | this feature with 12 |
-| 38*** | **Which `subject_kind` does a materiality-policy mutation record carry?** `inst-mt-policy-material` makes the policy a `GovernedLiveOp` subject on its own pair, and §4's `CHECK` admits five kinds; row 33 records that the object has no store and no door. So `MaterialAct::PolicyMutation` has no settled subject, and nothing stops a caller pairing it with `entity_publish` — the store cross-checks the act against the subject kind for every other pair and cannot for this one | `cpt-cf-bss-products-dod-materiality-policy` | this feature |
+| 38*** | **Which `subject_kind` does a materiality-policy mutation record carry?** `inst-mt-policy-material` makes the policy a `GovernedLiveOp` subject on its own pair, and §4's `CHECK` admits five kinds; row 33 records that the object has no store and no door. So `MaterialAct::PolicyMutation` has no settled subject, and nothing stops a caller pairing it with `entity_publish`. **The row's second clause was false when written and is struck**: it read *"the store cross-checks the act against the subject kind for every other pair and cannot for this one"*, and `submit_approval` cross-checks **no** pair — measured 2026-09-02, it uses `subject.kind` once, to write the column, and `act` once, to take the verdict. So the exposure is the whole `MaterialAct`/`SubjectKind` product and not one cell of it, which makes the question larger rather than answered; whether the remedy is a store-side cross-check, a typed pairing, or nothing until row 33 gives the policy a subject at all is the owner's call | `cpt-cf-bss-products-dod-materiality-policy` | this feature |
 | 39*** | **Does `quorumReduced` mark an effective count below the retained-name default of 2, or a ceremony reduced by configuration?** The shipped descriptor implements the first — `required < 2` — so a non-material change at `N = 5` reads reduced. Row 15 holds the question open and frames the marker as one for the *reducible ceremonies*; nothing distinguishes reduced-by-configuration from reduced-by-non-materiality, and the descriptor carries no `Materiality` to tell them apart | `cpt-cf-bss-products-dod-quorum-descriptor` | this feature with P-D-13's owner |
 
 *Rows marked `**` were **raised by the 2026-08-31 review of this document**, not carried from the

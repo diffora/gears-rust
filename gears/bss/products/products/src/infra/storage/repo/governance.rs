@@ -39,24 +39,29 @@
 //! @cpt-cf-bss-products-dod-stored-snapshot
 //! @cpt-cf-bss-products-dod-self-approval
 
+use std::collections::BTreeSet;
+
 use chrono::{DateTime, Utc};
 use sea_orm::ActiveValue::Set;
+use sea_orm::sea_query::Expr;
 use sea_orm::{ColumnTrait, Condition, EntityTrait};
-use toolkit_db::secure::{AccessScope, DBRunner, SecureEntityExt, SecureInsertExt};
+use toolkit_db::secure::{
+    AccessScope, DBRunner, SecureEntityExt, SecureInsertExt, SecureUpdateExt,
+};
 use uuid::Uuid;
 
 use super::{driver_failure, supersede_open_approval};
 use crate::domain::approval::{
-    AckPlacement, QuorumDescriptor, ack_placement, decision_admitted, describe_quorum,
-    descriptor_from_stored,
+    AckPlacement, ApprovalState, CandidateApproval, QuorumDescriptor, ack_placement,
+    decision_admitted, describe_quorum, descriptor_from_stored,
 };
 use crate::domain::error::DomainError;
-use crate::domain::governance::{ApprovalId, GateSubject};
+use crate::domain::governance::{ApprovalId, GateSubject, SubjectKind};
 use crate::domain::materiality::{
     MaterialAct, Materiality, MaterialityEvaluator, MaterialityRefusal,
 };
 use crate::infra::storage::RepoError;
-use crate::infra::storage::entity::{approval, approval_decision};
+use crate::infra::storage::entity::{approval, approval_decision, breakglass_session};
 
 /// What a governance store write can answer.
 ///
@@ -330,6 +335,44 @@ impl DecisionVerdict {
 /// `acting_principal` is the symmetric move on the other side — the
 /// authenticated principal, asserted equal to the one the row will name.
 ///
+/// # This function opens no transaction — `runner` MUST be the door's own
+///
+/// It can write **twice**: the decision row, then the rejection's
+/// finalization. On a plain connection those are two autocommits, and a
+/// finalize that then matches zero rows leaves a committed rejection row
+/// against a record still open for a publish —
+/// `trg_products_approval_decision_frozen` refuses both `UPDATE` and
+/// `DELETE`, so it is uncorrectable. That is the state the `satisfied`
+/// refusal below exists to forbid, reached through the other door. Only one
+/// transaction makes the pair atomic, and the three sibling writers in this
+/// module carry the same heading.
+///
+/// # A rejection finalizes the record, in the same transaction as its row
+///
+/// `design/05` §2 rule 4: *"A rejection finalizes the record `rejected` with
+/// the reason; the subject stays as it was"*, and §4 row 3
+/// (`inst-ap-edge-reject`) gives the edge as `pending -> rejected`. Both
+/// writes ride the caller's transaction, so a rejection whose finalization
+/// fails appends no row either — the alternative leaves a rejection on file
+/// against a record still open for a publish.
+///
+/// **The subject is untouched**, which is the rule and not an omission: there
+/// is no `published -> draft` edge in this gear, so a first-publish draft
+/// stays `draft` and a published head keeps its pending edits unpublished.
+///
+/// # A rejection is refused on a `satisfied` record rather than silently not
+/// finalizing
+///
+/// §4 row 5 closes the machine — *"No transition other than those above is
+/// admitted"* — and there is no `satisfied -> rejected` edge. Appending the
+/// row without the flip would leave a recorded rejection against a record the
+/// gate would still authorize, so the fail-closed arm is to refuse the
+/// verdict. An **approval** on a `satisfied` record is admitted, because it
+/// adds a signature and moves no state. No writer produces `satisfied` at
+/// this commit (§7 row 11), so this arm is reachable only from a hand-written
+/// setup today — which is why the probe writes one rather than waiting for a
+/// door.
+///
 /// # Errors
 ///
 /// [`ApprovalStoreError::Refused`] with `SELF_APPROVAL_FORBIDDEN` (403) when
@@ -337,16 +380,17 @@ impl DecisionVerdict {
 /// `APPROVAL_SUPERSEDED` (409) when the record is no longer open.
 /// [`ApprovalStoreError::Repo`] on a storage or scope failure, on a
 /// `quorum_descriptor` this gear wrote wrong ([`RepoError::CorruptRow`]),
-/// and on the three refusals `design/05` §3.3 declares no code for — a
-/// principal mismatch, a decision on a record admitting none, and a second
-/// verdict from one principal.
+/// and on the four refusals `design/05` §3.3 declares no code for — a
+/// principal mismatch, a decision on a record admitting none, a second
+/// verdict from one principal, and a rejection of an already-`satisfied`
+/// record.
 pub async fn record_decision(
     runner: &impl DBRunner,
     scope: &AccessScope,
     new: NewDecision<'_>,
     acting_principal: Uuid,
     decided_at: DateTime<Utc>,
-) -> Result<(), ApprovalStoreError> {
+) -> Result<DecisionOutcome, ApprovalStoreError> {
     if acting_principal != new.approver_principal {
         return Err(ApprovalStoreError::Repo(RepoError::Db(format!(
             "principal {acting_principal} may not cast a verdict attributed to {}: one human, \
@@ -374,13 +418,33 @@ pub async fn record_decision(
     // A verdict on a closed ceremony cannot be taken back — the decision
     // table is append-only outright — so the state is checked before the
     // insert rather than left to a trigger that does not exist.
-    if !matches!(record.state.as_str(), "pending" | "satisfied") {
+    // Read through the closed roster rather than as a raw string: a token
+    // outside `chk_products_approval_state` is a row this gear wrote wrong,
+    // and reporting it as `APPROVAL_SUPERSEDED` would be a 409 asserting a
+    // supersession that never happened. `gate_candidates` reads the same
+    // column the same way.
+    let state = ApprovalState::parse(&record.state).map_err(|token| {
+        ApprovalStoreError::Repo(RepoError::CorruptRow(format!(
+            "approval {} carries state {token}, which is outside              chk_products_approval_state's roster",
+            new.approval_id
+        )))
+    })?;
+    if !matches!(state, ApprovalState::Pending | ApprovalState::Satisfied) {
         return Err(ApprovalStoreError::Refused(
             DomainError::ApprovalSuperseded(format!(
                 "approval {} is {}: a decision is admitted only while the record is open",
                 new.approval_id, record.state
             )),
         ));
+    }
+    // §4 row 5 admits no `satisfied -> rejected` edge, and a rejection row
+    // that finalized nothing would sit against a record the gate still
+    // authorizes. Refusing is the fail-closed arm; an approval here is fine.
+    if new.verdict == DecisionVerdict::Rejected && state == ApprovalState::Satisfied {
+        return Err(ApprovalStoreError::Repo(RepoError::Db(format!(
+            "approval {} is satisfied: design/05 section 4 admits no satisfied -> rejected edge,              so a rejection here would append a row that finalizes nothing and leave the record              authorizable",
+            new.approval_id
+        ))));
     }
     // A row this gear wrote wrong, not a statement that failed: the one
     // channel that separates the two is `CorruptRow`, and every other
@@ -431,6 +495,100 @@ pub async fn record_decision(
                 driver_failure(format!("record decision of {}", new.approval_id), e),
             ))
         })?;
+
+    if new.verdict == DecisionVerdict::Rejected {
+        finalize_rejected(runner, scope, new.tenant_id, new.approval_id, decided_at).await?;
+        return Ok(DecisionOutcome::Finalized);
+    }
+    Ok(DecisionOutcome::Appended)
+}
+
+/// What a recorded decision did to the record.
+///
+/// Returned rather than left for the caller to read back, because the door
+/// that emits `ApprovalDecided` needs to know which verdict it is announcing
+/// and a second read could see a peer's supersession instead.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum DecisionOutcome {
+    /// The row landed and the record stays open for further verdicts.
+    Appended,
+    /// The row landed and the record finalized `rejected` in the same
+    /// transaction (`inst-ap-edge-reject`).
+    Finalized,
+}
+
+/// Flip a `pending` record to `rejected`, stamping `finalized_at`.
+///
+/// # The open-state predicate is on the `UPDATE`, not only on the read above
+///
+/// This is `supersede_open_approval`'s lesson applied rather than
+/// rediscovered. That function's first build filtered by id alone, with the
+/// predicate sitting on the preceding read: two concurrent writes both saw
+/// the open record, the winner finalized it, and the loser met the
+/// append-only trigger — *a legal act answering 500*, found by three
+/// independent review lenses. Here the racer is a frozen-content write
+/// superseding the record between this function's caller reading it and this
+/// statement running. With the predicate on the write, the loser matches zero
+/// rows and says so.
+///
+/// **Zero rows is a refusal here, not a no-op**, which is where this differs
+/// from the supersede: there the write is legal whether or not a ceremony was
+/// open, so nothing-matched means "nothing was open". Here a decision row has
+/// **already been appended** in this transaction, so a record that moved out
+/// from under the flip would leave that row against an unfinalized record.
+/// The caller's transaction must roll both back.
+///
+/// **And the refusal is `APPROVAL_SUPERSEDED`, not a bare storage failure.**
+/// The only way to match zero rows is that the record left `pending` under
+/// the decision, which is exactly the fact the read-time guard a few lines
+/// earlier reports as the declared 409. An earlier revision answered
+/// `RepoError::Db` here, so the same fact detected one statement later became
+/// an unretryable 500 with no registry code — a legal act losing a race and
+/// being told the database broke.
+///
+/// `finalized_at` is written with the state because
+/// `chk_products_approval_finalized` pins the pair —
+/// `(state IN ('pending','satisfied')) = (finalized_at IS NULL)` — so a flip
+/// that set one without the other is refused by the engine on both dialects.
+///
+/// # Errors
+///
+/// [`ApprovalStoreError::Repo`] on a storage or scope failure, and when the
+/// record was no longer `pending` by the time the flip ran.
+async fn finalize_rejected(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    approval_id: ApprovalId,
+    now: DateTime<Utc>,
+) -> Result<(), ApprovalStoreError> {
+    let outcome = approval::Entity::update_many()
+        .secure()
+        .scope_with(scope)
+        .col_expr(approval::Column::State, Expr::value("rejected".to_owned()))
+        .col_expr(approval::Column::FinalizedAt, Expr::value(now))
+        .filter(
+            Condition::all()
+                .add(approval::Column::TenantId.eq(tenant_id))
+                .add(approval::Column::ApprovalId.eq(approval_id.get()))
+                // The predicate belongs HERE as well as on the read.
+                .add(approval::Column::State.eq("pending")),
+        )
+        .exec(runner)
+        .await
+        .map_err(|e| {
+            ApprovalStoreError::Repo(driver_failure(
+                format!("finalize rejection of {approval_id}"),
+                e,
+            ))
+        })?;
+    if outcome.rows_affected == 0 {
+        return Err(ApprovalStoreError::Refused(
+            DomainError::ApprovalSuperseded(format!(
+                "approval {approval_id} left the pending state before its rejection could                  finalize: the decision row appended in this transaction rolls back with it,                  and the record is closed either way"
+            )),
+        ));
+    }
     Ok(())
 }
 
@@ -442,9 +600,14 @@ pub async fn record_decision(
 /// caller's remedy is to retry, and a 500 would tell it the opposite.
 fn classify_submit_insert(approval_id: ApprovalId, error: RepoError) -> ApprovalStoreError {
     let message = error.to_string().to_ascii_lowercase();
-    if message.contains("unique constraint")
-        || message.contains("duplicate key")
-        || message.contains("uq_products_approval_open")
+    // **Matched on the open-approval index by name, not on "some uniqueness
+    // failed".** The table has a second uniqueness source — `PRIMARY KEY
+    // (tenant_id, approval_id)` — and a broad match reported a replayed
+    // `approval_id` as a lost supersede race, sending the caller into a retry
+    // that collides identically forever. The two dialects spell the index
+    // differently, so both spellings are named.
+    if message.contains("uq_products_approval_open")
+        || message.contains("products_approval.tenant_id, products_approval.subject_kind")
     {
         return ApprovalStoreError::Refused(DomainError::ApprovalSuperseded(format!(
             "a peer submission on this subject superseded the open record first, so {approval_id} \
@@ -499,6 +662,542 @@ pub async fn read_approval(
         .map_err(|e| driver_failure(format!("read approval {approval_id}"), e))
 }
 
+/// Spend a `satisfied` record: flip it `consumed`, once
+/// (`inst-gv-one-shot`, `inst-fd-publish-consume`; `dod-one-shot-consumption`).
+///
+/// # This function opens no transaction — `runner` MUST be the act's own
+///
+/// `inst-fd-publish-consume` requires the flip *"in the same transaction as
+/// the authorized act"*, and `inst-gv-one-shot` adds that *"a failed attempt
+/// consumes nothing"*. Neither is expressible here: this function writes one
+/// row, and it is the caller's transaction that makes the pair atomic. On a
+/// plain connection a committed consume followed by a failed act leaves a
+/// record spent for an act that never happened, which is the one-shot rule
+/// inverted.
+///
+/// # The one-shot is the `UPDATE`'s own predicate
+///
+/// `state = 'satisfied'` sits on the write, not merely on a preceding read,
+/// so two acts racing off one record produce exactly one
+/// [`Consumption::Spent`]. That is what makes the `DoD`'s *"two publishes off
+/// one satisfied approval, the second fails"* a property of the statement
+/// rather than of the order two callers happened to run in — and it is
+/// `supersede_open_approval`'s own lesson, whose first build put the
+/// predicate on the read alone and answered a 500 for a legal act.
+///
+/// Zero rows matched is [`Consumption::AlreadySpentOrClosed`] rather than an
+/// error, because the caller is the one that knows what to do with it: a
+/// second publish must refuse, while a `PreAuthorized` stage that raced a
+/// peer is looking at the answer it wanted. Reporting it as a driver failure
+/// would send both to a 500.
+///
+/// `finalized_at` is written with the state because
+/// `chk_products_approval_finalized` pins the pair on both dialects.
+///
+/// # Errors
+///
+/// [`RepoError`] on a storage or scope failure.
+pub async fn consume_approval(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    approval_id: ApprovalId,
+    now: DateTime<Utc>,
+) -> Result<Consumption, RepoError> {
+    let outcome = approval::Entity::update_many()
+        .secure()
+        .scope_with(scope)
+        .col_expr(approval::Column::State, Expr::value("consumed".to_owned()))
+        .col_expr(approval::Column::FinalizedAt, Expr::value(now))
+        .filter(
+            Condition::all()
+                .add(approval::Column::TenantId.eq(tenant_id))
+                .add(approval::Column::ApprovalId.eq(approval_id.get()))
+                // The one-shot, and it belongs on the write.
+                .add(approval::Column::State.eq("satisfied")),
+        )
+        .exec(runner)
+        .await
+        .map_err(|e| driver_failure(format!("consume approval {approval_id}"), e))?;
+    if outcome.rows_affected == 0 {
+        return Ok(Consumption::AlreadySpentOrClosed);
+    }
+    Ok(Consumption::Spent)
+}
+
+/// What a consume attempt found.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum Consumption {
+    /// This call spent the record. Exactly one caller ever sees this for a
+    /// given record.
+    Spent,
+    /// The record was not `satisfied` when the statement ran — already
+    /// `consumed`, or finalized `rejected`/`superseded` under the act.
+    AlreadySpentOrClosed,
+}
+
+/// Read the gate's candidate records for one subject
+/// (`domain::approval::StoredApprovalGate`'s operand, §7 row 28's first arm).
+///
+/// # Why every state, and not just `satisfied`
+///
+/// [`crate::domain::governance::GateMode::PreAuthorized`] names a **`consumed`**
+/// record, so a reader
+/// scoped to `satisfied` would make that mode unanswerable — which is how the
+/// mode came to have no call path at all. The host filters by state itself,
+/// and it is an exhaustive match over [`ApprovalState`], so a state added to
+/// the `CHECK` forces an arm there rather than being silently dropped here.
+///
+/// The rows are ordered newest-submission-first so a subject with a history
+/// of consumed records presents its most recent one first; the host matches
+/// on id and revision, so the order is a courtesy to a reader rather than
+/// part of any rule.
+///
+/// # Errors
+///
+/// [`RepoError`] on a storage or scope failure, and [`RepoError::CorruptRow`]
+/// for a `state` outside the `CHECK`'s roster — a row this gear wrote wrong,
+/// never a request-borne value.
+pub async fn gate_candidates(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    subject: &GateSubject,
+) -> Result<Vec<CandidateApproval>, RepoError> {
+    let rows = approval::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(approval::Column::TenantId.eq(subject.tenant_id))
+                .add(approval::Column::SubjectKind.eq(subject.kind.as_str()))
+                .add(approval::Column::SubjectRef.eq(subject.reference.clone())),
+        )
+        .order_by(approval::Column::SubmittedAt, sea_orm::Order::Desc)
+        .all(runner)
+        .await
+        .map_err(|e| driver_failure(format!("gate candidates for {}", subject.reference), e))?;
+
+    // **One query for the acknowledgments, not one per row.** An earlier
+    // revision called a point query inside the loop, so a subject with a long
+    // approval history cost one extra statement per candidate on every gated
+    // act — and above effective quorum zero, which is the normal case, every
+    // row took that branch.
+    let acknowledged =
+        approval_ids_with_decision_ack(runner, scope, subject.tenant_id, &rows).await?;
+
+    let mut candidates = Vec::with_capacity(rows.len());
+    for row in rows {
+        let state = ApprovalState::parse(&row.state).map_err(|token| {
+            RepoError::CorruptRow(format!(
+                "approval {} carries state {token}, which is outside                  chk_products_approval_state's roster",
+                row.approval_id
+            ))
+        })?;
+        // **The subject is built from the row's own columns, not stamped from
+        // the query.** An earlier revision cloned the queried subject onto
+        // every candidate, which made the host's `candidate.subject ==
+        // subject` guard a tautology — unfalsifiable today, and silently gone
+        // the moment a producer batches several subjects or loads by
+        // `approval_id` for the `PreAuthorized` path.
+        let kind = subject_kind_from_stored(&row.subject_kind).ok_or_else(|| {
+            RepoError::CorruptRow(format!(
+                "approval {} carries subject_kind {}, which is outside                  chk_products_approval_subject_kind's roster",
+                row.approval_id, row.subject_kind
+            ))
+        })?;
+        candidates.push(CandidateApproval {
+            approval_id: ApprovalId::new(row.approval_id),
+            subject: GateSubject {
+                tenant_id: row.tenant_id,
+                kind,
+                reference: row.subject_ref,
+            },
+            internal_revision: row.internal_revision,
+            state,
+            // "An acknowledgment was stored", on either of its two homes —
+            // the author's column at effective quorum zero, or any approver's
+            // decision row above it. The by-name half has no operand; see
+            // `CandidateApproval::override_acknowledged`.
+            override_acknowledged: stored_ack(row.author_override_ack.as_deref())
+                || acknowledged.contains(&row.approval_id),
+        });
+    }
+    Ok(candidates)
+}
+
+/// Read the stored `subject_kind` token back into the seam's own enum.
+///
+/// The seam declares [`SubjectKind`] and its `as_str`, and **no parser** —
+/// `domain/governance.rs` is `01-foundation`'s contract and this slice may not
+/// widen it, so the roster is re-spelled here. The duplication is stated
+/// rather than hidden: a sixth kind added to the `CHECK` and to `SubjectKind`
+/// compiles clean and is refused at this call as a corrupt row.
+fn subject_kind_from_stored(stored: &str) -> Option<SubjectKind> {
+    [
+        SubjectKind::EntityPublish,
+        SubjectKind::GovernedLiveOp,
+        SubjectKind::SystemSignal,
+        SubjectKind::SkuCorrection,
+        SubjectKind::BulkBatch,
+    ]
+    .into_iter()
+    .find(|kind| kind.as_str() == stored)
+}
+
+/// Whether a stored acknowledgment column holds an acknowledgment.
+///
+/// **Present and empty is not an acknowledgment.** Both columns are
+/// request-borne free text written verbatim, and neither carries a `<> ''`
+/// CHECK — while `subject_ref`, `content_snapshot`, `quorum_descriptor` and
+/// the elevation's `reason` all do on the same two tables. A reader testing
+/// NULL-ness alone let `Some("")` set the gate's override operand, which the
+/// publish door writes straight into `composition_pending`. The domain's own
+/// words for the flag are *"an acknowledgment **was stored**"*, and the empty
+/// string is exactly the value that makes those words false while a NULL test
+/// reads true.
+fn stored_ack(value: Option<&str>) -> bool {
+    value.is_some_and(|text| !text.trim().is_empty())
+}
+
+/// Which of `rows`' approvals carry at least one decision-row acknowledgment.
+///
+/// One `IN`-list query rather than a point query per row; see
+/// [`gate_candidates`].
+///
+/// # Errors
+///
+/// [`RepoError`] on a storage or scope failure.
+async fn approval_ids_with_decision_ack(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    rows: &[approval::Model],
+) -> Result<BTreeSet<Uuid>, RepoError> {
+    if rows.is_empty() {
+        return Ok(BTreeSet::new());
+    }
+    let ids: Vec<Uuid> = rows.iter().map(|row| row.approval_id).collect();
+    let found = approval_decision::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(approval_decision::Column::TenantId.eq(tenant_id))
+                .add(approval_decision::Column::ApprovalId.is_in(ids))
+                .add(approval_decision::Column::OverrideAcknowledgments.is_not_null()),
+        )
+        .all(runner)
+        .await
+        .map_err(|e| driver_failure(format!("override acknowledgments of {tenant_id}"), e))?;
+    Ok(found
+        .into_iter()
+        .filter(|row| stored_ack(row.override_acknowledgments.as_deref()))
+        .map(|row| row.approval_id)
+        .collect())
+}
+
+// ---------------------------------------------------------------------------
+// Break-glass: the elevation session's open, and the expiry that emits once
+// (`design/05` `inst-bg-open`, `inst-bg-expiry`; **P-D-68** arms 2 and 3).
+// ---------------------------------------------------------------------------
+
+/// Which of `inst-bg-open`'s two approval paths an elevation took.
+///
+/// **One ceremony, two timings** (**P-D-68** arm 3): rule 1's
+/// *"two-person-approved **or** post-hoc-reviewed"* is not two ceremonies but
+/// one whose second principal may arrive late. So the two arms are exclusive
+/// — `chk_products_breakglass_path` enforces that with
+/// `(two_person_approval_ref IS NULL) <> (posthoc_state IS NULL)` — and the
+/// post-hoc arm is discharged by that second principal's decision rather than
+/// by a new door.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum ApprovalPath {
+    /// The second platform principal approved **before** the session opened.
+    ///
+    /// The reference carries **no FK**: whether its referent is an
+    /// `ApprovalRecord` is `features/governance.md` §7 row 9, which P-D-68
+    /// arm 3 deliberately did not presuppose, and the precedent is this
+    /// gear's own `products_bulk_batch.approval_ref`.
+    TwoPerson(Uuid),
+    /// The obligation is recorded `pending` and the second principal reviews
+    /// after the fact.
+    PostHoc,
+}
+
+/// One elevation, as the store needs it.
+///
+/// A struct rather than six arguments because two pairs are mutually
+/// assignable and a transposition would compile: the `Uuid`s `session_id`,
+/// `principal` and `target_tenant`, and the two instants bounding the window.
+#[derive(Copy, Clone, Debug)]
+pub struct NewElevation {
+    /// The session's own id.
+    pub session_id: Uuid,
+    /// The acting platform principal, pseudonymous from birth.
+    pub principal: Uuid,
+    /// The tenant whose data the session reaches.
+    pub target_tenant: Uuid,
+    /// The window's start, inclusive.
+    pub valid_from: DateTime<Utc>,
+    /// The window's end, **exclusive** — the interval is half-open, because
+    /// expiry gates admission and an act admitted inside it finishes
+    /// (P-D-68 arm 2).
+    pub valid_until: DateTime<Utc>,
+    /// Which approval path was taken.
+    pub path: ApprovalPath,
+    /// When the session opened.
+    pub opened_at: DateTime<Utc>,
+}
+
+/// Open an elevation session (`inst-bg-open`).
+///
+/// # What the engine refuses, so this function does not restate it
+///
+/// The reason's presence is `chk_products_breakglass_reason` (`reason <> ''`),
+/// the window's ordering is `chk_products_breakglass_window`
+/// (`valid_until > valid_from`), the two paths' exclusivity is
+/// `chk_products_breakglass_path`, and the reviewed triple is
+/// `chk_products_breakglass_review` — all on **both** dialects. A guard here
+/// would be a second answer to a question the schema already answers, and the
+/// two could drift; what this function does is make the paths unrepresentable
+/// wrongly in the first place, via [`ApprovalPath`].
+///
+/// # What is deliberately absent
+///
+/// **The alert.** `dod-breakglass-open` requires `BreakGlassElevated` *"and a
+/// distinct alert channel"*, and *"a failed alert emission MUST NOT leave a
+/// silent session"* — either the elevation is refused or it opens carrying a
+/// recorded undelivered-alert obligation. Neither the event type nor an alert
+/// channel exists in the gear, and no column holds an undelivered-alert
+/// obligation, so this function opens the session and the obligation is
+/// `dod-governance-events`' patch plus a missing artifact. **The window's
+/// value is the caller's**: its interim 4 hours and the no-renewal rule live
+/// only in the PRD's §17.1 interim-policy table (§7 row 22), and
+/// `inst-bg-open` states neither, so nothing is defaulted here.
+///
+/// # Errors
+///
+/// [`RepoError`] on a storage or scope failure, including a `CHECK` this
+/// function does not pre-empt.
+pub async fn open_breakglass_session(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    new: NewElevation,
+    reason: &str,
+) -> Result<(), RepoError> {
+    let (two_person_approval_ref, posthoc_state) = match new.path {
+        ApprovalPath::TwoPerson(reference) => (Some(reference), None),
+        ApprovalPath::PostHoc => (None, Some("pending".to_owned())),
+    };
+    let model = breakglass_session::ActiveModel {
+        session_id: Set(new.session_id),
+        principal: Set(new.principal),
+        target_tenant: Set(new.target_tenant),
+        reason: Set(reason.to_owned()),
+        valid_from: Set(new.valid_from),
+        valid_until: Set(new.valid_until),
+        two_person_approval_ref: Set(two_person_approval_ref),
+        posthoc_state: Set(posthoc_state),
+        reviewed_by: Set(None),
+        reviewed_at: Set(None),
+        expired_emitted: Set(false),
+        opened_at: Set(new.opened_at),
+    };
+    breakglass_session::Entity::insert(model.clone())
+        .secure()
+        .scope_with_model(scope, &model)
+        .map_err(|e| driver_failure(format!("elevation scope of {}", new.target_tenant), e))?
+        .exec(runner)
+        .await
+        .map_err(|e| driver_failure(format!("open elevation {}", new.session_id), e))?;
+    Ok(())
+}
+
+/// Whether an elevated call is admitted, and who emits `BreakGlassExpired`.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum Elevation {
+    /// Inside the window. **Expiry gates admission, not completion**
+    /// (P-D-68 arm 2), so a call admitted here finishes even if the window
+    /// closes under it.
+    Admitted,
+    /// Before `valid_from`.
+    ///
+    /// Its own arm rather than folded into [`Self::Expired`], which would
+    /// emit `BreakGlassExpired` for a session that has not begun. Unreachable
+    /// while every caller opens with `valid_from = opened_at`, but the column
+    /// admits a future instant and a **total** function over the interval is
+    /// what stops a `<` silently becoming a `<=` at the other boundary.
+    NotYetValid,
+    /// Past the window: the call is refused `BREAKGLASS_EXPIRED`.
+    Expired {
+        /// `true` for **exactly one** caller per session — the winner of the
+        /// CAS on `expired_emitted`. A replay emits nothing, and a session
+        /// never called after expiry emits no event at all, its expiry being
+        /// a stored fact a gauge observes (P-D-68 arm 2, on P-D-54's and
+        /// P-D-59's mechanisms).
+        emit_expired: bool,
+    },
+}
+
+/// Judge an elevated call against its session's window, flipping the
+/// `expired_emitted` stamp for the one caller that emits (`inst-bg-expiry`,
+/// **P-D-68** arm 2).
+///
+/// # This function opens no transaction — `runner` MUST be the refusal's own
+///
+/// P-D-68 puts the CAS *"in the same transaction as that refusal"*. The flip
+/// here is one statement; only the caller's transaction makes it atomic with
+/// the refusal it accompanies, and a committed flip beside a rolled-back
+/// refusal is the exactly-once guarantee inverted — the event announced and
+/// the refusal never delivered.
+///
+/// # The CAS is the `UPDATE`'s own predicate
+///
+/// `expired_emitted = false` sits on the write. Ten calls after expiry
+/// therefore produce one `emit_expired: true` and nine `false`, whatever
+/// order they arrive in — which is the whole of what item 19 asked and P-D-68
+/// answered. Reading the column and then writing it would give ten emissions
+/// under contention, the defect the item names in its own words.
+///
+/// # Errors
+///
+/// [`RepoError`] on a storage or scope failure, and [`RepoError::Db`] when no
+/// session with that id is visible under `scope` — a caller naming a session
+/// of another tenant sees the same answer as one naming a session that does
+/// not exist, which is the tenant-scoping boundary and not an accident.
+pub async fn admit_elevated_call(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    session_id: Uuid,
+    now: DateTime<Utc>,
+) -> Result<Elevation, RepoError> {
+    let session = breakglass_session::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(Condition::all().add(breakglass_session::Column::SessionId.eq(session_id)))
+        .one(runner)
+        .await
+        .map_err(|e| driver_failure(format!("read elevation {session_id}"), e))?
+        .ok_or_else(|| RepoError::Db(format!("no elevation session {session_id} in scope")))?;
+
+    if now < session.valid_from {
+        return Ok(Elevation::NotYetValid);
+    }
+    // Half-open `[from, until)`: the instant `valid_until` is already outside.
+    if now < session.valid_until {
+        return Ok(Elevation::Admitted);
+    }
+
+    let flipped = breakglass_session::Entity::update_many()
+        .secure()
+        .scope_with(scope)
+        .col_expr(
+            breakglass_session::Column::ExpiredEmitted,
+            Expr::value(true),
+        )
+        .filter(
+            Condition::all()
+                .add(breakglass_session::Column::SessionId.eq(session_id))
+                // The CAS, and it belongs on the write.
+                .add(breakglass_session::Column::ExpiredEmitted.eq(false)),
+        )
+        .exec(runner)
+        .await
+        .map_err(|e| driver_failure(format!("expiry stamp of {session_id}"), e))?;
+    Ok(Elevation::Expired {
+        emit_expired: flipped.rows_affected == 1,
+    })
+}
+
+/// Discharge a `pending` post-hoc obligation with the **second** platform
+/// principal's late decision (**P-D-68** arm 3).
+///
+/// No new door and no new grant: this is the second principal of the *same*
+/// ceremony, arriving after the fact. The `pending` predicate is on the
+/// `UPDATE`, so two reviewers racing produce one discharge; zero rows now
+/// means only that the obligation was already discharged or the session took
+/// the two-person path, both of which are the caller's to interpret rather
+/// than errors — an absent or out-of-scope session is refused above instead
+/// of collapsing into the same `Ok(false)`.
+///
+/// # The reviewer must not be the principal who opened the session
+///
+/// `inst-bg-open`'s floor is *"two **distinct** platform principals"*, and on
+/// the post-hoc arm both of them are columns of one row — `principal` and
+/// `reviewed_by` — so nothing about §7 row 9 is presupposed by comparing
+/// them. An earlier revision compared nothing and took no acting principal,
+/// so the operator who opened a session could discharge their own obligation,
+/// and the row would stand permanently as a two-person ceremony performed by
+/// one human: the table is append-only evidence and `DELETE` is refused.
+///
+/// The two guards are the ones this module already applies to a decision, for
+/// the same reasons: `acting_principal` is asserted equal to the value the row
+/// will name, so a caller cannot attribute a review to somebody else; and the
+/// session's `principal` is **read from the row** rather than taken as an
+/// argument, because the row is the only authority on who opened it.
+///
+/// `reviewed_by` and `reviewed_at` are written with the state because
+/// `chk_products_breakglass_review` pins the triple on both dialects.
+///
+/// # Errors
+///
+/// [`RepoError`] on a storage or scope failure.
+pub async fn discharge_posthoc_review(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    session_id: Uuid,
+    reviewed_by: Uuid,
+    acting_principal: Uuid,
+    reviewed_at: DateTime<Utc>,
+) -> Result<bool, RepoError> {
+    if acting_principal != reviewed_by {
+        return Err(RepoError::Db(format!(
+            "principal {acting_principal} may not record a review attributed to {reviewed_by}:              the post-hoc arm's discharger is the second platform principal in person              (design/05 inst-bg-open, P-D-68 arm 3)"
+        )));
+    }
+    // Read first: the opener is a column of the row, and a session that is
+    // absent or out of scope must not answer the same `Ok(false)` as one
+    // already discharged.
+    let session = breakglass_session::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(Condition::all().add(breakglass_session::Column::SessionId.eq(session_id)))
+        .one(runner)
+        .await
+        .map_err(|e| driver_failure(format!("read elevation {session_id}"), e))?
+        .ok_or_else(|| RepoError::Db(format!("no elevation session {session_id} in scope")))?;
+    if session.principal == reviewed_by {
+        return Err(RepoError::Db(format!(
+            "principal {reviewed_by} opened elevation {session_id} and cannot be its own              post-hoc reviewer: inst-bg-open's floor is two DISTINCT platform principals, and              on this arm both are columns of one append-only row"
+        )));
+    }
+
+    let outcome = breakglass_session::Entity::update_many()
+        .secure()
+        .scope_with(scope)
+        .col_expr(
+            breakglass_session::Column::PosthocState,
+            Expr::value("reviewed".to_owned()),
+        )
+        .col_expr(
+            breakglass_session::Column::ReviewedBy,
+            Expr::value(reviewed_by),
+        )
+        .col_expr(
+            breakglass_session::Column::ReviewedAt,
+            Expr::value(reviewed_at),
+        )
+        .filter(
+            Condition::all()
+                .add(breakglass_session::Column::SessionId.eq(session_id))
+                .add(breakglass_session::Column::PosthocState.eq("pending")),
+        )
+        .exec(runner)
+        .await
+        .map_err(|e| driver_failure(format!("discharge review of {session_id}"), e))?;
+    Ok(outcome.rows_affected == 1)
+}
+
 /// The pending queue, oldest first — the operand behind
 /// `GET /bss-products/v1/approvals?state=pending` (`inst-gv-queue`), whose
 /// door is 05's to declare.
@@ -528,3 +1227,7 @@ pub async fn pending_approvals(
         .await
         .map_err(|e| driver_failure(format!("pending approvals of {tenant_id}"), e))
 }
+
+#[cfg(test)]
+#[path = "governance_tests.rs"]
+mod governance_tests;
