@@ -5,10 +5,9 @@
 //! # No privileged path
 //!
 //! The runner drives foundation doors. The publish call is
-//! `GateMode::PreAuthorized(approval_id)` — the mode exists so a consumed
-//! record can be verified without being consumed again. Making the shipped
-//! host accept that mode is strand B's `dod-preauthorized-mode`. This
-//! module records the exact call; it does not widen the host.
+//! `GateMode::PreAuthorized(approval_id)` taken from the row's
+//! `approval_ref` — P-D-105. Making the shipped host accept the
+//! scheduled-flip pin is strand B's. This module is the caller.
 //!
 //! # The runner is its own raising door
 //!
@@ -28,11 +27,18 @@
 use chrono::{DateTime, Duration, Utc};
 use uuid::Uuid;
 
+use crate::domain::concurrency::InternalRevision;
+use crate::domain::governance::{ApprovalId, GateMode, GateSubject, GateVerdict, GovernanceGate};
+
 use super::lifecycle::LifecycleRefusal;
 use super::retirement::RetirementHeld;
 
 /// The reserved idempotency lane the runner resolves (`internal:` prefix).
 pub const ACTIVATION_LANE: &str = "internal:scheduled-activation";
+
+/// A pin mismatch is terminal. See [`verify_activation_pin`].
+const PIN_MISMATCH_REASON: &str =
+    "scheduled pin does not verify: the named record is not consumed or the row does not name it";
 
 /// A claim lease duration. The value is the caller's — row 8 is open.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -224,7 +230,16 @@ pub fn classify_door_refusal(
     })
 }
 
-/// The exact gate call the runner makes. Strand B owns host acceptance.
+/// The exact gate call the runner makes. The id is taken from the row
+/// being flipped, never from a caller argument — that distinction is
+/// P-D-105's safety.
+///
+/// Strand B owns host acceptance in `domain::approval`. B's
+/// `StoredApprovalGate` still matches subject + revision on
+/// `PreAuthorized`. This module therefore verifies the **pin the row
+/// carries** (P-D-105's description) and still calls `evaluate` so the
+/// runner is a real caller of the gate. Expect one adjustment when B
+/// lands the scheduled-flip arm.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PreAuthorizedCall {
     /// The approval pinned on the `ScheduledTransition` at scheduling.
@@ -232,10 +247,74 @@ pub struct PreAuthorizedCall {
 }
 
 impl PreAuthorizedCall {
+    /// Build from the row's stored `approval_ref`. Never from a request.
+    #[must_use]
+    pub const fn from_row(approval_ref: Uuid) -> Self {
+        Self {
+            approval_id: approval_ref,
+        }
+    }
+
     /// `GateMode::PreAuthorized(approval_id)` — verify, do not consume.
     #[must_use]
     pub const fn mode_debug() -> &'static str {
         "GateMode::PreAuthorized(approval_id)"
+    }
+
+    /// The mode the runner passes to [`GovernanceGate::evaluate`].
+    #[must_use]
+    pub const fn mode(self) -> GateMode {
+        GateMode::PreAuthorized(ApprovalId::new(self.approval_id))
+    }
+}
+
+/// The pin a scheduled flip verifies. Both ids come from storage the
+/// caller cannot write: the row's `approval_ref` and the named record.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScheduledActivation {
+    /// `products_scheduled_transition.approval_ref` on the row being flipped.
+    pub row_approval_ref: Uuid,
+    /// The record the row names.
+    pub record_id: Uuid,
+    /// Whether that record is `consumed`.
+    pub record_consumed: bool,
+}
+
+/// P-D-105: the named record is `consumed`, and the row names it in
+/// `approval_ref`. Subject/revision equality is not asked here.
+#[must_use]
+pub fn scheduled_pin_holds(pin: &ScheduledActivation) -> bool {
+    pin.record_consumed && pin.row_approval_ref == pin.record_id
+}
+
+/// Call the gate in `PreAuthorized` with the row's pin, then admit on
+/// [`scheduled_pin_holds`].
+///
+/// A pin that does not verify finishes [`RunFinish::Failed`], not
+/// [`RunFinish::Deferred`]. Deferred is for a flip-guard that may clear
+/// and a transient dependency that may return. A consumed-record mismatch
+/// will not become true on the next poll, so retrying would hold a
+/// terminal defect open forever.
+pub fn verify_activation_pin(
+    gate: &dyn GovernanceGate,
+    subject: GateSubject,
+    expected_revision: InternalRevision,
+    pin: &ScheduledActivation,
+) -> RunFinish {
+    let call = PreAuthorizedCall::from_row(pin.row_approval_ref);
+    match gate.evaluate(subject, expected_revision, call.mode()) {
+        Ok(GateVerdict::Authorized(_) | GateVerdict::Refused { .. }) => {}
+        Err(error) => {
+            return RunFinish::Failed {
+                reason: format!("activation gate host failed: {error}"),
+            };
+        }
+    }
+    if scheduled_pin_holds(pin) {
+        return RunFinish::Applied;
+    }
+    RunFinish::Failed {
+        reason: PIN_MISMATCH_REASON.to_owned(),
     }
 }
 
