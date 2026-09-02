@@ -146,3 +146,48 @@ fn a_timeout_above_the_ceiling_is_a_boot_refusal() {
     let refused = cfg.validate().expect_err("the ceiling refuses");
     assert!(refused.contains("freeze_timeout_hours"));
 }
+
+/// An unset `default_locale` is admitted, and that is the property `Gear::init`
+/// depends on: it calls `config_or_default()` and then `validate()`, so a
+/// refusal on the default would make the gear un-bootable in every deployment
+/// that ships no config file — the measurement `require_broker`'s own doc
+/// records for its default.
+///
+/// **P-D-101**: the field shortens step 3 of the fallback chain and does not
+/// decide whether resolution succeeds — step 4's global fallback is what makes
+/// the chain total — so "absent" is a working value and not a hole.
+#[test]
+fn an_unset_default_locale_is_admitted_at_boot() {
+    let cfg = ProductsConfig::default();
+    assert_eq!(cfg.default_locale, "", "the default is absent, not a guess");
+    assert!(
+        cfg.validate().is_ok(),
+        "a config that ships no default_locale must still boot"
+    );
+}
+
+/// A non-empty but untrimmed value is refused, because no stored coordinate can
+/// ever match it: `products_attribute_value.locale` holds the token as written,
+/// so ` en` would make step 3 miss on every row while looking configured.
+///
+/// The locale's **shape** is deliberately not validated — no document in the
+/// set names a locale grammar — so this case pins the one failure the config
+/// layer can prove without inventing a vocabulary.
+#[test]
+fn an_untrimmed_default_locale_is_refused_at_boot() {
+    let mut cfg = ProductsConfig {
+        default_locale: " en".to_owned(),
+        ..ProductsConfig::default()
+    };
+    let refusal = cfg.validate().expect_err("an untrimmed locale is refused");
+    assert!(
+        refusal.contains("default_locale"),
+        "the refusal names the field: {refusal}"
+    );
+
+    cfg.default_locale = "en".to_owned();
+    assert!(
+        cfg.validate().is_ok(),
+        "the trimmed form of the same value is admitted"
+    );
+}

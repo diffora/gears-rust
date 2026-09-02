@@ -160,6 +160,38 @@ pub struct ProductsConfig {
     /// make this gear un-bootable everywhere today. The default is expected to
     /// invert the moment a provider exists.
     pub require_broker: bool,
+
+    /// The tenant's default locale — step 3 of `02`'s attribute-value fallback
+    /// chain (`design/02` `inst-av-resolve`, **P-D-101**).
+    ///
+    /// **Empty is admitted and means "no preference".** The chain is
+    /// `(locale, region, brand) → (locale, brand) → (default-locale, brand) →
+    /// global`, and `inst-av-resolve` anchors its **totality on step 4's global
+    /// fallback, deliberately not on this value**: an ungoverned config field
+    /// with no re-validation would un-total the chain for every
+    /// already-published entity the moment it changed. So an unset default
+    /// locale skips step 3 and resolution still succeeds — this field shortens
+    /// the path, it does not decide whether there is one.
+    ///
+    /// **That is also why [`ProductsConfig::validate`] does not refuse an empty
+    /// value**, though P-D-101 called for boot validation. `Gear::init` calls
+    /// `config_or_default()` and then `validate()`, so refusing the default
+    /// would make the gear un-bootable in every deployment that ships no
+    /// config — the same measurement `require_broker`'s doc above records for
+    /// its own default. What `validate` does refuse is a value that is
+    /// non-empty and untrimmed, because a stored coordinate can never match it.
+    ///
+    /// **The locale's shape is not validated**, and that is a boundary rather
+    /// than an omission: no document in the set names a locale grammar, and
+    /// inventing one here would put a vocabulary in the config layer that
+    /// `products_attribute_value`'s own `locale` column does not enforce.
+    ///
+    /// **P-D-101 struck the per-brand half.** There is deliberately no
+    /// `default_locale_per_brand`: a second ungoverned config value under a
+    /// step that cannot change whether resolution succeeds doubles the exposure
+    /// the paragraph above refuses. If the capability is ever asked for, it
+    /// returns as a governed fourth coordinate kind, re-validated.
+    pub default_locale: String,
 }
 
 impl Default for ProductsConfig {
@@ -174,6 +206,9 @@ impl Default for ProductsConfig {
             tripwire_max_overrides_per_30_days: TRIPWIRE_MAX_OVERRIDES_DEFAULT,
             breakglass_correction_enabled: false,
             require_broker: false,
+            // Absent, not a guess. See the field's own doc: an unset
+            // default locale skips step 3 and the chain stays total.
+            default_locale: String::new(),
         }
     }
 }
@@ -252,6 +287,14 @@ impl ProductsConfig {
             return Err(
                 "bulk_max_concurrent_batches_per_tenant = 0 admits no batch at all".to_owned(),
             );
+        }
+        if !self.default_locale.is_empty() && self.default_locale != self.default_locale.trim() {
+            return Err(format!(
+                "default_locale = `{}` carries leading or trailing whitespace; no stored \
+                 attribute-value coordinate can match it, so step 3 of the fallback chain \
+                 would silently never fire",
+                self.default_locale
+            ));
         }
         if self.freeze_timeout_hours > IDEMPOTENCY_RETENTION_CEILING_HOURS {
             return Err(format!(
