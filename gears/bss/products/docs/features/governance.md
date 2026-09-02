@@ -578,6 +578,33 @@ record's diff still renders the original submission against the published versio
 written red first — a re-derived diff shows the draft against itself, which is the exact defect
 this rule exists to prevent.
 
+**The flagship probe is built, and the two probes that stood in for it each covered one half.**
+`repo::governance::governance_tests::the_superseded_records_diff_renders_the_submission_not_the_edited_head`
+drives the whole chain — freeze a published version, submit against it, **edit the head** through
+the save door's own write, run the door's own `supersede_open_approval`, read the record back, and
+render from it — with the basis content read off the frozen row and the head's post-edit name read
+off the head row rather than retyped. The red-first obligation was discharged by **perturbation**,
+each half separately, and the split is the measurement rather than a reading of the two names:
+
+| Perturbation | `approval_tests` renderer probe | `repo_tests` column probe | the probe above |
+|---|---|---|---|
+| `render_diff` stops reading its snapshot argument | red | **green** | red |
+| the store stops preserving the submitted bytes | **green** | red | red |
+
+So the renderer probe is narrow rather than empty — it does catch a renderer that drops its
+argument — but it has no head, no store and no supersession, and the `edited_head` local it names
+is passed to nothing, so that one of its three assertions cannot fail. The column probe catches the
+store, but supersedes by a second *submission* rather than by a head edit and never renders a diff.
+Neither could see the defect the rule is about: a **caller** handing the live head over where the
+stored snapshot belongs. The probe above renders the live head a second time and asserts the two
+answers differ, so the positive assertion is not satisfiable by both.
+
+**The tick still does not follow, and the blocker is the first clause, not the probe.** This DoD
+opens *"MUST require the `approval × submit` grant"*; `authz.rs` mints
+`approval × submit` and **no door spends it** — §7 row 12, and §3.2 of the slice records the pair as
+having no route declared. The grant clause is unbuildable until that door lands, and wire doors are
+not this slice's to declare.
+
 **Implements**: `cpt-cf-bss-products-flow-submit`
 
 **Touches**:
@@ -1119,7 +1146,7 @@ in it is a question about every other feature's gate.
 | 35*** | **`dod-pii-on-reasons` names a submission reason this feature does not store.** It obliges the hook on "the submission reason, the rejection reason and the break-glass session reason", and §4 gives `products_approval` **no reason column** — only `products_approval_decision.reason` and `products_breakglass_session.reason` exist. Either the submission carries no operator text (and the DoD names two reasons, not three) or the approval row owes a column | `cpt-cf-bss-products-dod-pii-on-reasons` | this feature with its storage owner |
 | 36*** | **Is the claim set an input of the materiality verdict at all?** `dod-materiality-evaluator` names it in the fail-closed clause — *"an unresolvable materiality policy, claim set or bucket registry **MUST** refuse the act"* — while `inst-mt-inputs` enumerates exactly four inputs and the claim set is none of them, and §2 puts the claims check in a **pre-pipeline authorization gate** with its own fail-closed channel. The shipped evaluator therefore requires it and decides nothing with it, which satisfies the clause's letter and nothing else. Either the DoD drops it, or the verdict becomes claims-sensitive and the design gains a fifth input | `cpt-cf-bss-products-dod-materiality-evaluator` | this feature with the platform-identity owner |
 | 37*** | **Two refusals the ceremony raises have no declared code.** §3.3's roster is closed at six, and neither a **second verdict from one principal** (C2's UNIQUE, read back) nor a **decision on a record that closes on no approver** (P-D-68 arm 1) is among them. Both ship on the repository's internal channel with a stated reason rather than an invented code, the same treatment row 34 records for the unresolvable input — so both answer a 500 where a classified refusal belongs | `cpt-cf-bss-products-dod-governance-errors` | this feature with 12 |
-| 38*** | **Which `subject_kind` does a materiality-policy mutation record carry?** `inst-mt-policy-material` makes the policy a `GovernedLiveOp` subject on its own pair, and §4's `CHECK` admits five kinds; row 33 records that the object has no store and no door. So `MaterialAct::PolicyMutation` has no settled subject, and nothing stops a caller pairing it with `entity_publish` — the store cross-checks the act against the subject kind for every other pair and cannot for this one | `cpt-cf-bss-products-dod-materiality-policy` | this feature |
+| 38*** | **Which `subject_kind` does a materiality-policy mutation record carry?** `inst-mt-policy-material` makes the policy a `GovernedLiveOp` subject on its own pair, and §4's `CHECK` admits five kinds; row 33 records that the object has no store and no door. So `MaterialAct::PolicyMutation` has no settled subject, and nothing stops a caller pairing it with `entity_publish`. **The row's second clause was false when written and is struck**: it read *"the store cross-checks the act against the subject kind for every other pair and cannot for this one"*, and `submit_approval` cross-checks **no** pair — measured 2026-09-02, it uses `subject.kind` once, to write the column, and `act` once, to take the verdict. So the exposure is the whole `MaterialAct`/`SubjectKind` product and not one cell of it, which makes the question larger rather than answered; whether the remedy is a store-side cross-check, a typed pairing, or nothing until row 33 gives the policy a subject at all is the owner's call | `cpt-cf-bss-products-dod-materiality-policy` | this feature |
 | 39*** | **Does `quorumReduced` mark an effective count below the retained-name default of 2, or a ceremony reduced by configuration?** The shipped descriptor implements the first — `required < 2` — so a non-material change at `N = 5` reads reduced. Row 15 holds the question open and frames the marker as one for the *reducible ceremonies*; nothing distinguishes reduced-by-configuration from reduced-by-non-materiality, and the descriptor carries no `Materiality` to tell them apart | `cpt-cf-bss-products-dod-quorum-descriptor` | this feature with P-D-13's owner |
 
 *Rows marked `**` were **raised by the 2026-08-31 review of this document**, not carried from the

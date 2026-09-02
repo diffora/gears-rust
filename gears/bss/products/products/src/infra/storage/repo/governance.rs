@@ -528,3 +528,7 @@ pub async fn pending_approvals(
         .await
         .map_err(|e| driver_failure(format!("pending approvals of {tenant_id}"), e))
 }
+
+#[cfg(test)]
+#[path = "governance_tests.rs"]
+mod governance_tests;

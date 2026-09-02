@@ -179,13 +179,25 @@ fn a_first_publish_pins_no_diff_basis() {
     assert_eq!(diff_basis_for(Some(3)), Some(3));
 }
 
-/// **The flagship probe**: submit, edit the head, and the diff still renders
-/// the ORIGINAL submission against the published version.
+/// The renderer's half of `dod-stored-snapshot`: what
+/// [`render_diff`] does with the snapshot it is handed.
 ///
-/// The head's later content is passed to nothing — [`render_diff`] takes the
-/// stored snapshot and the basis content, and there is no third argument a
-/// re-derivation could arrive through. So the assertion is that the edited
-/// head's bytes appear nowhere in the rendered diff.
+/// **This is not the flagship probe, and calling it one was a defect in this
+/// comment.** §5's flagship is stateful — *"submit, edit the head, and the
+/// **superseded record's** diff still renders the original submission against
+/// the published version"* — and there is no head, no store and no
+/// supersession here. What this case does prove is real and narrow: a
+/// renderer that stopped reading its snapshot argument fails it. What it
+/// cannot see is a **store** that failed to preserve the submitted bytes, or
+/// a **caller** that handed the live head over in the snapshot's place; both
+/// need a record read back after a head edit, which is
+/// `infra::storage::repo::governance::governance_tests::the_superseded_records_diff_renders_the_submission_not_the_edited_head`.
+/// The split was measured by perturbing each half in turn.
+///
+/// The `edited_head` local below is passed to nothing, so the third
+/// assertion — that its bytes are absent from the diff — compares two
+/// literals this test wrote and cannot fail. It is kept as the statement of
+/// intent it is, with the load-bearing version in the store probe.
 #[test]
 fn the_diff_renders_the_stored_submission_not_the_edited_head() {
     let submitted = r#"{"name":"as submitted"}"#;
