@@ -518,8 +518,25 @@ rather than an application convention. The Foundation's entity tables **MUST NOT
 category columns.
 
 **The table ships and the tick does not, because §7 row 21 is about this FK.** Both keys, both
-uniqueness guarantees and the role roster are built and probed on both engines. What is unbuilt is
-the row's own subject: *"no referential action is stated"*. The shipped FK takes the default, which
+uniqueness guarantees and the role roster are built, and the **store over them ships with them** —
+`repo::replace_category_assignments` and `repo::category_assignments`, whole-set writes on the
+caller's runner so the save door can land them in its own transaction (P-D-46). At-most-one-primary
+is proven by writing two primaries and reading the index's refusal back, never by a prior read.
+
+**Where each guarantee is probed, corrected.** An earlier revision of this paragraph said all three
+were *"probed on both engines"*; measured at this commit, the Postgres side probes the **column
+roster only** (`tests/postgres_taxonomy_schema.rs`), while the role `CHECK`, the table-level
+`UNIQUE` and the partial primary index are probed on the `SQLite` mirror alone. The gap is one
+Postgres case, and it matters beyond bookkeeping: the two engines report a uniqueness refusal in
+**different shapes** — Postgres names the constraint, `SQLite` names the columns — so the store's
+classifier has an engine-specific branch that no executed statement here reaches. It is covered by
+a direct unit test over the classifier and is owed a Postgres probe.
+
+The DoD's last clause — *"The Foundation's entity tables **MUST NOT** gain inline category
+columns"* — stood asserted by nothing until this commit: it was stated in two module docs, and a
+doc comment refuses nothing. It is now read off the engine's own catalogue for both head tables.
+
+What is unbuilt is the row's own subject: *"no referential action is stated"*. The shipped FK takes the default, which
 refuses a category's deletion while **any** link row exists — including rows held by discarded and
 retired Products, which `inst-tx-retire-guard`'s "unreferenced" test does not count, reading the
 Product's lifecycle state and never the link row. So the DDL as written makes the guard's stated
@@ -543,6 +560,14 @@ The system **MUST** create `products_attribute_definition` with `definition_id`,
 `state` in `{active, deprecated, removed}`, a nullable `seeded_by` marker and timestamps. The
 `removed` value **MUST** be reachable only as a state flip; no migration or door may delete a row.
 
+**The roster and its store ship; the tick waits on §7 row 13.** `repo::insert_attribute_definition`,
+`attribute_definition_by_key`, `attribute_definitions` and `flip_definition_state` are built, the
+flip **pinned at the state the caller read** so a peer's move between read and write moves no row.
+The store offers no delete for this table at all, which is the DoD's own clause made structural
+beside the `BEFORE DELETE` trigger that enforces it on both engines. `value_type` stays a string
+in the store for the reason the migration gives: no document enumerates the admitted types, and an
+enum in the repository would answer that question from the storage layer.
+
 **Implements**: `cpt-cf-bss-products-flow-attribute-definitions`
 
 **Constraints**: `cpt-cf-bss-products-constraint-tenant-isolation`,
@@ -565,6 +590,16 @@ full coordinate tuple. **That constraint does not today constrain the mandatory 
 living in the frozen version rows. For category rows the table **MUST** be the live state itself,
 with no freeze-copy.
 
+**The store ships; the tick waits on §7 row 20.** `repo::upsert_attribute_value`,
+`attribute_values_of` and `delete_attribute_value` key on the whole seven-column coordinate, and
+the write is an upsert rather than a read-then-write so two authors racing on one coordinate
+produce one row instead of a conflict the door would have to translate. The read is ordered
+totally over the four coordinate columns, which is **that read's** determinism and answers nothing
+about row 9 — the frozen-content sort key is `01-foundation` §4.3's and P-D-29's, a different
+site. `entity_kind` is a `&str` through the store, since row 20 is exactly the question of what it
+admits; a `category` row is written and read back beside a `product` one, so the kind the row
+measures is demonstrably admitted.
+
 **Implements**: `cpt-cf-bss-products-flow-attribute-values`
 
 **Constraints**: `cpt-cf-bss-products-constraint-tenant-isolation`
@@ -580,6 +615,12 @@ with no freeze-copy.
 The system **MUST** create `products_metadata` keyed `(tenant_id, entity_kind, entity_id, key)`
 with a value and timestamps, on both engines. The table **MUST** sit outside frozen version
 content (P-D-06).
+
+**The store ships; the tick waits on §7 row 20, which this table shares with the value plane.**
+`repo::upsert_metadata`, `metadata_of` and `delete_metadata_key`. The upsert leaves `created_at`
+alone on an overwrite, so the column keeps meaning *when this key first appeared* rather than
+quietly becoming a second copy of `updated_at`. No cap is enforced here: `METADATA_LIMIT` is the
+door's and §7 row 2 records that neither the key count nor the value length has a value anywhere.
 
 **Implements**: `cpt-cf-bss-products-flow-metadata`
 

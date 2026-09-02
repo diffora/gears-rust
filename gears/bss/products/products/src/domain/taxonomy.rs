@@ -1,6 +1,8 @@
-//! `TaxonomyWalk` — the ancestor chain a re-parent is judged against
+//! The taxonomy's domain values: the ancestor chain a re-parent is judged
+//! against, and the two stored rosters its content tables key on
 //! (`design/02-taxonomy-attributes.md` §3.1 `inst-tx-walk`, §3.4
-//! `inst-tc-writer-lock`; `inst-tx-name-in-parent`).
+//! `inst-tc-writer-lock`; `inst-tx-name-in-parent`; §4.1's `role` and
+//! `state` columns).
 //!
 //! # The walk is a verdict over a chain the caller read, not a query
 //!
@@ -35,6 +37,23 @@
 //! threshold is a guard that either refuses everything or nothing, so the
 //! code is declared and unraised here, and `dod-taxonomy-walk` stays
 //! unticked on its own §7 row rather than on an invented number.
+//!
+//! # Two rosters are closed here and a third is deliberately not
+//!
+//! [`AssignmentRole`] and [`DefinitionState`] are parsed types because their
+//! DDL closes them — `chk_products_product_category_role` and
+//! `chk_products_attribute_definition_state` each carry an `IN (…)` list, and
+//! `dod-category-assignment-table` and `dod-attribute-definition-table` state
+//! the same two sets in prose. A column the engine constrains is a column the
+//! reader may parse fail-closed.
+//!
+//! **`entity_kind` and `value_type` get no type here, and that is the point.**
+//! Both ship pinned to non-emptiness only (P-D-74's shape), because §7 rows 20
+//! and 13 are the live questions *"what `entity_kind` values does each table
+//! admit"* and what a definition's type roster is. An enum here would answer
+//! them in code, which is the same authoring a `CHECK` would have been — the
+//! migrations refused it for that reason and so does this module. They stay
+//! `&str` through the repository until an owner closes the sets.
 //!
 //! @cpt-dod:cpt-cf-bss-products-dod-name-in-parent:p1
 //! @cpt-cf-bss-products-dod-taxonomy-walk
@@ -109,6 +128,107 @@ pub fn ancestors_of(start: Uuid, parent_of: &impl Fn(Uuid) -> Option<Uuid>) -> V
         match parent_of(at) {
             Some(parent) if !chain.contains(&parent) => at = parent,
             _ => return chain,
+        }
+    }
+}
+
+/// Which role a category assignment carries for one Product.
+///
+/// The roster is `chk_products_product_category_role`'s, and
+/// `dod-category-assignment-table` states it in prose. Parsed rather than
+/// carried as a string because the *at-most-one-primary* guarantee is a
+/// partial index keyed on this literal — a caller that spelled it
+/// `"Primary"` would write a second row the index does not see, which is the
+/// one failure the `DoD` says must be an index rather than a convention.
+#[domain_model]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum AssignmentRole {
+    /// The single primary assignment. Optional at draft and required at
+    /// publish (`inst-tx-primary-at-publish`); at most one per Product, by
+    /// `uq_products_product_category_primary`.
+    Primary,
+    /// Any additional assignment. Unbounded in number.
+    Secondary,
+}
+
+impl AssignmentRole {
+    /// The stored spelling — the migration's `CHECK` roster, verbatim.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Primary => "primary",
+            Self::Secondary => "secondary",
+        }
+    }
+
+    /// Parse a stored value, `None` outside the roster.
+    ///
+    /// Fail-closed: a row outside the two is a row the `CHECK` should have
+    /// refused, so the reader reports a corrupt row rather than guessing a
+    /// role. It is never a caller's mistake — a request-borne value is the
+    /// door's to validate.
+    #[must_use]
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "primary" => Some(Self::Primary),
+            "secondary" => Some(Self::Secondary),
+            _ => None,
+        }
+    }
+}
+
+/// One attribute definition's stored state
+/// (`cpt-cf-bss-products-state-attribute-definition`).
+///
+/// # Why this is not `domain::recognized::MemberState`
+///
+/// The two rosters spell the same three tokens today, and reusing 03's would
+/// still be wrong: `MemberState` carries `SetKind::delist_blocked` and
+/// `member_edge`, which bind it to 03's four sets, 03's three refusal codes
+/// and 03's `state-recognized-set` machine. This roster answers to §4's
+/// **attribute-definition** machine, whose edges differ — it declares both
+/// re-listings, and §7 row 10 asks whether its removal is a material op at
+/// all. Sharing the type would put 02's machine inside 03's, which is the
+/// redefinition [`crate::domain::live_op::GovernedLiveOp`] keeps its `kind`
+/// an open string to avoid, in the other direction.
+///
+/// The edges themselves are **not** here: this type is the stored roster the
+/// table reads back. `inst-de-edge-*` is `dod-definition-lifecycle`'s.
+#[domain_model]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum DefinitionState {
+    /// In the roster; admits new values.
+    Active,
+    /// In the roster; refuses new values, existing ones keep resolving.
+    Deprecated,
+    /// The tombstone. Reachable only as a flip — the table's own trigger
+    /// refuses every `DELETE` (P-D-47, `inst-de-no-delete`) — so a value on a
+    /// terminal head keeps resolving and no `products_attribute_value` row is
+    /// ever orphaned.
+    Removed,
+}
+
+impl DefinitionState {
+    /// The stored spelling — `chk_products_attribute_definition_state`'s
+    /// roster, verbatim.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Active => "active",
+            Self::Deprecated => "deprecated",
+            Self::Removed => "removed",
+        }
+    }
+
+    /// Parse a stored value, `None` outside the roster. Fail-closed for the
+    /// reason [`AssignmentRole::parse`] gives.
+    #[must_use]
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "active" => Some(Self::Active),
+            "deprecated" => Some(Self::Deprecated),
+            "removed" => Some(Self::Removed),
+            _ => None,
         }
     }
 }

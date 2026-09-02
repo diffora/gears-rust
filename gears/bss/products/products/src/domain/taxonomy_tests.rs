@@ -3,7 +3,7 @@
 
 use uuid::Uuid;
 
-use super::{TaxonomyMutation, ancestors_of, cycle_verdict};
+use super::{AssignmentRole, DefinitionState, TaxonomyMutation, ancestors_of, cycle_verdict};
 
 const A: Uuid = Uuid::from_u128(0xa1);
 const B: Uuid = Uuid::from_u128(0xb2);
@@ -77,7 +77,7 @@ fn a_node_under_itself_is_refused() {
 fn a_reparent_outside_the_subtree_is_admitted() {
     // `D` is unrelated: moving it under `C` closes no loop.
     cycle_verdict(D, &ancestors_of(C, &parent_of)).expect("an unrelated node may move anywhere");
-    // And moving `C` under `D` — a root with no chain of its own.
+    // And moving `C` under `D` -- a root with no chain of its own.
     cycle_verdict(C, &ancestors_of(D, &parent_of)).expect("a root parent closes nothing");
 }
 
@@ -92,5 +92,107 @@ fn every_mutation_rechecks_the_name_including_the_reparent() {
         TaxonomyMutation::Create,
     ] {
         assert!(m.rechecks_name(), "{m:?} must re-check name-in-parent");
+    }
+}
+
+// -- The two stored rosters. --
+
+/// **The role roster cannot drift from the `CHECK` that enforces it.**
+///
+/// `uq_products_product_category_primary` is a partial index keyed on the
+/// literal `'primary'`, so a spelling this type renders and the DDL does not
+/// admit would not merely fail a write — it would defeat the at-most-one
+/// guarantee `dod-category-assignment-table` says must be an index. The
+/// migration is read as text because its statement arrays are private, the
+/// same reach `migrations_tests` takes for the head tables.
+///
+/// **Both engines, counted.** The clause appears twice in that file — once in
+/// `PG_UP_STATEMENTS` and once in `SQLITE_UP_STATEMENTS` — and asserting
+/// presence alone would pass on a file that had lost the `SQLite` half.
+#[test]
+fn the_role_roster_matches_the_check_on_both_engines() {
+    const SOURCE: &str =
+        include_str!("../infra/storage/migrations/m20260901_000018_create_products_category.rs");
+    let clause = format!(
+        "role IN ('{}', '{}')",
+        AssignmentRole::Primary.as_str(),
+        AssignmentRole::Secondary.as_str()
+    );
+    assert_eq!(
+        SOURCE.matches(clause.as_str()).count(),
+        2,
+        "the role roster `{clause}` must be the CHECK on both engines"
+    );
+}
+
+/// **The definition-state roster cannot drift from its `CHECK`**, and the
+/// same both-engines count applies for the same reason.
+#[test]
+fn the_definition_state_roster_matches_the_check_on_both_engines() {
+    const SOURCE: &str =
+        include_str!("../infra/storage/migrations/m20260901_000019_create_products_attribute.rs");
+    let clause = format!(
+        "state IN ('{}', '{}', '{}')",
+        DefinitionState::Active.as_str(),
+        DefinitionState::Deprecated.as_str(),
+        DefinitionState::Removed.as_str()
+    );
+    assert_eq!(
+        SOURCE.matches(clause.as_str()).count(),
+        2,
+        "the definition-state roster `{clause}` must be the CHECK on both engines"
+    );
+}
+
+/// **Both rosters round-trip, and refuse everything outside themselves.**
+///
+/// The negative half is the load-bearing one: a `parse` written as a
+/// catch-all default would pass every positive case here and silently read a
+/// corrupt row as `Secondary` or `Active`. The near-misses are the ones a
+/// hand-written column would actually contain — a capitalised token, a
+/// neighbouring roster's value, the empty string.
+#[test]
+fn the_rosters_round_trip_and_refuse_everything_else() {
+    for role in [AssignmentRole::Primary, AssignmentRole::Secondary] {
+        assert_eq!(AssignmentRole::parse(role.as_str()), Some(role));
+    }
+    for outside in ["", "Primary", "PRIMARY", "primary ", "active", "main"] {
+        assert_eq!(
+            AssignmentRole::parse(outside),
+            None,
+            "`{outside}` is outside the role roster"
+        );
+    }
+
+    for state in [
+        DefinitionState::Active,
+        DefinitionState::Deprecated,
+        DefinitionState::Removed,
+    ] {
+        assert_eq!(DefinitionState::parse(state.as_str()), Some(state));
+    }
+    for outside in ["", "Active", "archived", "retired", "primary", "deleted"] {
+        assert_eq!(
+            DefinitionState::parse(outside),
+            None,
+            "`{outside}` is outside the definition-state roster"
+        );
+    }
+}
+
+/// **`retired` is the category roster's and never a definition's.** The two
+/// state columns sit two tables apart and both are `text`; a reader that
+/// accepted either roster's tokens would let a category state parse as a
+/// definition state. `retired` is the one token that makes the mistake
+/// silent, since it is a real value of the sibling column.
+#[test]
+fn the_category_states_are_not_definition_states() {
+    for category_state in ["active", "retired"] {
+        let parsed = DefinitionState::parse(category_state);
+        if category_state == "active" {
+            assert_eq!(parsed, Some(DefinitionState::Active), "the shared token");
+        } else {
+            assert_eq!(parsed, None, "`retired` is the category column's alone");
+        }
     }
 }
