@@ -7212,3 +7212,498 @@ mod read_stamp_schema_tests {
         .expect("a rebuild replaces it");
     }
 }
+
+/// `products_scheduled_transition` and `products_deferred_retirement` —
+/// the two lifecycle stores (`dod-scheduled-transition-store`,
+/// `dod-deferred-retirement-store`).
+mod lifecycle_store_schema_tests {
+    use sea_orm::ConnectionTrait;
+    use sea_orm_migration::MigratorTrait;
+
+    use super::Migrator;
+
+    const TENANT: &str = "7e420000000000000000000000000000";
+    const ENTITY: &str = "dd110000000000000000000000000001";
+    const TRANSITION: &str = "aa010000000000000000000000000001";
+    const TRANSITION2: &str = "aa010000000000000000000000000002";
+    const APPROVAL: &str = "bb020000000000000000000000000001";
+    const ACTOR: &str = "cc030000000000000000000000000001";
+    const PRODUCT: &str = "dd040000000000000000000000000001";
+
+    async fn harness() -> sea_orm::DatabaseConnection {
+        let mut opts = sea_orm::ConnectOptions::new("sqlite::memory:");
+        opts.max_connections(1).min_connections(1);
+        let db = sea_orm::Database::connect(opts)
+            .await
+            .expect("connect in-memory sqlite");
+        Migrator::up(&db, None).await.expect("boot the chain");
+        db
+    }
+
+    async fn exec(db: &sea_orm::DatabaseConnection, sql: &str) -> Result<(), sea_orm::DbErr> {
+        db.execute_raw(sea_orm::Statement::from_string(
+            sea_orm::DatabaseBackend::Sqlite,
+            sql.to_owned(),
+        ))
+        .await
+        .map(|_| ())
+    }
+
+    fn pending_row(id: &str) -> String {
+        format!(
+            "INSERT INTO products_scheduled_transition \
+             (transition_id, tenant_id, entity_kind, entity_id, kind, at, approval_ref, \
+              state, claimed_at, attempt, retirement_reason, outcome_reason, created_at, updated_at) \
+             VALUES (X'{id}', X'{TENANT}', 'sku', X'{ENTITY}', 'retire', '2026-10-01', \
+              X'{APPROVAL}', 'pending', NULL, 0, 'end of sale', NULL, '2026-09-02', '2026-09-02')"
+        )
+    }
+
+    /// Schema oracle for both tables, with the perturbation that proves it
+    /// can fail.
+    #[tokio::test]
+    async fn the_lifecycle_store_oracle_pins_both_rosters_and_can_fail() {
+        let db = harness().await;
+        let scheduled =
+            super::governance_store_guard_tests::columns(&db, "products_scheduled_transition")
+                .await;
+        assert_eq!(
+            scheduled,
+            vec![
+                "approval_ref",
+                "at",
+                "attempt",
+                "claimed_at",
+                "created_at",
+                "entity_id",
+                "entity_kind",
+                "kind",
+                "outcome_reason",
+                "retirement_reason",
+                "state",
+                "tenant_id",
+                "transition_id",
+                "updated_at",
+            ],
+            "scheduled_transition columns match design/04 section 4 and P-D-46's two reasons"
+        );
+
+        let deferred =
+            super::governance_store_guard_tests::columns(&db, "products_deferred_retirement").await;
+        assert_eq!(
+            deferred,
+            vec![
+                "cascade_ref",
+                "children_snapshot",
+                "created_at",
+                "created_by",
+                "product_id",
+                "resolution",
+                "resolved_at",
+                "tenant_id",
+            ],
+            "deferred_retirement columns match design/04 section 4"
+        );
+
+        assert_ne!(
+            scheduled, deferred,
+            "two different tables must not compare equal"
+        );
+        assert!(
+            super::governance_store_guard_tests::columns(&db, "products_scheduled_transition_nope")
+                .await
+                .is_empty()
+        );
+    }
+
+    /// Each CHECK is asserted **by name** — a subsumption claim about which
+    /// constraint fires has been measured false here before.
+    #[tokio::test]
+    async fn the_scheduled_transition_checks_fire_by_name() {
+        let db = harness().await;
+        let err = exec(
+            &db,
+            &format!(
+                "INSERT INTO products_scheduled_transition \
+                 (transition_id, tenant_id, entity_kind, entity_id, kind, at, approval_ref, \
+                  state, attempt, created_at, updated_at) \
+                 VALUES (X'{TRANSITION}', X'{TENANT}', 'bundle', X'{ENTITY}', 'retire', \
+                  '2026-10-01', X'{APPROVAL}', 'pending', 0, '2026-09-02', '2026-09-02')"
+            ),
+        )
+        .await
+        .expect_err("entity_kind roster");
+        assert!(
+            err.to_string()
+                .contains("chk_products_scheduled_transition_entity_kind"),
+            "{err}"
+        );
+
+        let err = exec(
+            &db,
+            &format!(
+                "INSERT INTO products_scheduled_transition \
+                 (transition_id, tenant_id, entity_kind, entity_id, kind, at, approval_ref, \
+                  state, attempt, created_at, updated_at) \
+                 VALUES (X'{TRANSITION}', X'{TENANT}', 'sku', X'{ENTITY}', 'clone', \
+                  '2026-10-01', X'{APPROVAL}', 'pending', 0, '2026-09-02', '2026-09-02')"
+            ),
+        )
+        .await
+        .expect_err("kind roster");
+        assert!(
+            err.to_string()
+                .contains("chk_products_scheduled_transition_kind"),
+            "{err}"
+        );
+
+        let err = exec(
+            &db,
+            &format!(
+                "INSERT INTO products_scheduled_transition \
+                 (transition_id, tenant_id, entity_kind, entity_id, kind, at, approval_ref, \
+                  state, attempt, created_at, updated_at) \
+                 VALUES (X'{TRANSITION}', X'{TENANT}', 'sku', X'{ENTITY}', 'retire', \
+                  '2026-10-01', X'{APPROVAL}', 'queued', 0, '2026-09-02', '2026-09-02')"
+            ),
+        )
+        .await
+        .expect_err("state roster");
+        assert!(
+            err.to_string()
+                .contains("chk_products_scheduled_transition_state"),
+            "{err}"
+        );
+
+        let err = exec(
+            &db,
+            &format!(
+                "INSERT INTO products_scheduled_transition \
+                 (transition_id, tenant_id, entity_kind, entity_id, kind, at, approval_ref, \
+                  state, attempt, created_at, updated_at) \
+                 VALUES (X'{TRANSITION}', X'{TENANT}', 'sku', X'{ENTITY}', 'retire', \
+                  '2026-10-01', X'{APPROVAL}', 'pending', -1, '2026-09-02', '2026-09-02')"
+            ),
+        )
+        .await
+        .expect_err("attempt floor");
+        assert!(
+            err.to_string()
+                .contains("chk_products_scheduled_transition_attempt"),
+            "{err}"
+        );
+    }
+
+    /// One live intent per entity per kind — the partial UNIQUE.
+    #[tokio::test]
+    async fn the_live_intent_partial_unique_admits_one_and_refuses_a_second() {
+        let db = harness().await;
+        exec(&db, &pending_row(TRANSITION))
+            .await
+            .expect("first live intent");
+        let err = exec(&db, &pending_row(TRANSITION2))
+            .await
+            .expect_err("second live intent");
+        let text = err.to_string();
+        assert!(
+            text.contains("UNIQUE constraint failed") && text.contains("entity_id"),
+            "the refusal must come from the partial UNIQUE: {err}"
+        );
+    }
+
+    /// A terminal row frees the live slot so a re-schedule can insert.
+    #[tokio::test]
+    async fn a_terminal_row_frees_the_live_slot_for_a_new_intent() {
+        let db = harness().await;
+        exec(&db, &pending_row(TRANSITION))
+            .await
+            .expect("live intent");
+        exec(
+            &db,
+            &format!(
+                "UPDATE products_scheduled_transition SET state = 'applied', \
+                 outcome_reason = 'done', updated_at = '2026-09-03' \
+                 WHERE transition_id = X'{TRANSITION}'"
+            ),
+        )
+        .await
+        .expect("finish to terminal");
+        exec(&db, &pending_row(TRANSITION2))
+            .await
+            .expect("a new live intent after the first finished");
+    }
+
+    /// Terminal rows are frozen; DELETE is refused.
+    #[tokio::test]
+    async fn a_terminal_scheduled_transition_refuses_update_and_delete() {
+        let db = harness().await;
+        exec(&db, &pending_row(TRANSITION)).await.expect("seed");
+        exec(
+            &db,
+            &format!(
+                "UPDATE products_scheduled_transition SET state = 'failed', \
+                 outcome_reason = 'stale', updated_at = '2026-09-03' \
+                 WHERE transition_id = X'{TRANSITION}'"
+            ),
+        )
+        .await
+        .expect("fail");
+        let err = exec(
+            &db,
+            &format!(
+                "UPDATE products_scheduled_transition SET outcome_reason = 'rewrite' \
+                 WHERE transition_id = X'{TRANSITION}'"
+            ),
+        )
+        .await
+        .expect_err("terminal is immutable");
+        assert!(
+            err.to_string().contains("terminal transition is immutable"),
+            "{err}"
+        );
+        let err = exec(
+            &db,
+            &format!(
+                "DELETE FROM products_scheduled_transition WHERE transition_id = X'{TRANSITION}'"
+            ),
+        )
+        .await
+        .expect_err("no delete");
+        assert!(err.to_string().contains("DELETE is not permitted"), "{err}");
+    }
+
+    /// The two reason columns are independent — finishing with an outcome
+    /// does not clear the operator's `retirement_reason`.
+    #[tokio::test]
+    async fn finishing_preserves_the_operator_retirement_reason() {
+        let db = harness().await;
+        exec(&db, &pending_row(TRANSITION)).await.expect("seed");
+        exec(
+            &db,
+            &format!(
+                "UPDATE products_scheduled_transition SET state = 'deferred', \
+                 outcome_reason = 'flip-guard hold', updated_at = '2026-09-03' \
+                 WHERE transition_id = X'{TRANSITION}'"
+            ),
+        )
+        .await
+        .expect("defer");
+        let row = db
+            .query_one_raw(sea_orm::Statement::from_string(
+                sea_orm::DatabaseBackend::Sqlite,
+                format!(
+                    "SELECT retirement_reason, outcome_reason FROM products_scheduled_transition \
+                     WHERE transition_id = X'{TRANSITION}'"
+                ),
+            ))
+            .await
+            .expect("query")
+            .expect("row");
+        assert_eq!(
+            row.try_get_by_index::<String>(0)
+                .expect("retirement_reason"),
+            "end of sale"
+        );
+        assert_eq!(
+            row.try_get_by_index::<String>(1).expect("outcome_reason"),
+            "flip-guard hold"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_deferred_retirement_checks_fire_by_name() {
+        let db = harness().await;
+        exec(&db, &pending_row(TRANSITION))
+            .await
+            .expect("parent intent for the FK");
+
+        let err = exec(
+            &db,
+            &format!(
+                "INSERT INTO products_deferred_retirement \
+                 (tenant_id, product_id, cascade_ref, children_snapshot, created_by, \
+                  resolved_at, resolution, created_at) \
+                 VALUES (X'{TENANT}', X'{PRODUCT}', X'{TRANSITION}', '', X'{ACTOR}', \
+                  NULL, NULL, '2026-09-02')"
+            ),
+        )
+        .await
+        .expect_err("empty snapshot");
+        assert!(
+            err.to_string()
+                .contains("chk_products_deferred_retirement_snapshot"),
+            "{err}"
+        );
+
+        let err = exec(
+            &db,
+            &format!(
+                "INSERT INTO products_deferred_retirement \
+                 (tenant_id, product_id, cascade_ref, children_snapshot, created_by, \
+                  resolved_at, resolution, created_at) \
+                 VALUES (X'{TENANT}', X'{PRODUCT}', X'{TRANSITION}', '[{{}}]', X'{ACTOR}', \
+                  NULL, 'mystery', '2026-09-02')"
+            ),
+        )
+        .await
+        .expect_err("resolution roster / pair");
+        let text = err.to_string();
+        assert!(
+            text.contains("chk_products_deferred_retirement_resolution")
+                || text.contains("chk_products_deferred_retirement_resolved_pair"),
+            "{err}"
+        );
+
+        let err = exec(
+            &db,
+            &format!(
+                "INSERT INTO products_deferred_retirement \
+                 (tenant_id, product_id, cascade_ref, children_snapshot, created_by, \
+                  resolved_at, resolution, created_at) \
+                 VALUES (X'{TENANT}', X'{PRODUCT}', X'{TRANSITION}', '[{{}}]', X'{ACTOR}', \
+                  '2026-09-03', NULL, '2026-09-02')"
+            ),
+        )
+        .await
+        .expect_err("resolved pair");
+        assert!(
+            err.to_string()
+                .contains("chk_products_deferred_retirement_resolved_pair"),
+            "{err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn one_live_deferral_per_product_and_resolve_frees_the_slot() {
+        let db = harness().await;
+        exec(&db, &pending_row(TRANSITION))
+            .await
+            .expect("first cascade intent");
+        // A second transition id for the second cascade after resolve.
+        exec(
+            &db,
+            &format!(
+                "INSERT INTO products_scheduled_transition \
+                 (transition_id, tenant_id, entity_kind, entity_id, kind, at, approval_ref, \
+                  state, attempt, retirement_reason, created_at, updated_at) \
+                 VALUES (X'{TRANSITION2}', X'{TENANT}', 'product', X'{PRODUCT}', 'retire', \
+                  '2026-11-01', X'{APPROVAL}', 'pending', 0, 'cascade', '2026-09-02', '2026-09-02')"
+            ),
+        )
+        .await
+        .expect("second cascade intent - different entity_id from the sku seed above");
+
+        // Re-seed: pending_row uses ENTITY (sku). For product cascade use PRODUCT.
+        // First live deferral:
+        exec(
+            &db,
+            &format!(
+                "INSERT INTO products_deferred_retirement \
+                 (tenant_id, product_id, cascade_ref, children_snapshot, created_by, created_at) \
+                 VALUES (X'{TENANT}', X'{PRODUCT}', X'{TRANSITION}', '[{{\"sku\":\"a\"}}]', \
+                  X'{ACTOR}', '2026-09-02')"
+            ),
+        )
+        .await
+        .expect("first live deferral");
+
+        // Need another transition for a colliding second live row — use a third id
+        // that references a real scheduled_transition. Finish first transition? FK only
+        // needs the row to exist. Insert a third transition:
+        let transition3 = "aa010000000000000000000000000003";
+        exec(
+            &db,
+            &format!(
+                "INSERT INTO products_scheduled_transition \
+                 (transition_id, tenant_id, entity_kind, entity_id, kind, at, approval_ref, \
+                  state, attempt, created_at, updated_at) \
+                 VALUES (X'{transition3}', X'{TENANT}', 'product', X'{PRODUCT}', 'retire', \
+                  '2026-12-01', X'{APPROVAL}', 'superseded', 0, '2026-09-02', '2026-09-02')"
+            ),
+        )
+        .await
+        .expect("placeholder terminal transition for FK");
+
+        let err = exec(
+            &db,
+            &format!(
+                "INSERT INTO products_deferred_retirement \
+                 (tenant_id, product_id, cascade_ref, children_snapshot, created_by, created_at) \
+                 VALUES (X'{TENANT}', X'{PRODUCT}', X'{transition3}', '[{{\"sku\":\"b\"}}]', \
+                  X'{ACTOR}', '2026-09-03')"
+            ),
+        )
+        .await
+        .expect_err("second live deferral");
+        let text = err.to_string();
+        assert!(
+            text.contains("UNIQUE constraint failed") && text.contains("product_id"),
+            "the refusal must come from the live partial UNIQUE: {err}"
+        );
+
+        exec(
+            &db,
+            &format!(
+                "UPDATE products_deferred_retirement \
+                 SET resolved_at = '2026-09-04', resolution = 'cascade_cancelled' \
+                 WHERE cascade_ref = X'{TRANSITION}'"
+            ),
+        )
+        .await
+        .expect("resolve frees the slot");
+
+        exec(
+            &db,
+            &format!(
+                "INSERT INTO products_deferred_retirement \
+                 (tenant_id, product_id, cascade_ref, children_snapshot, created_by, created_at) \
+                 VALUES (X'{TENANT}', X'{PRODUCT}', X'{TRANSITION2}', '[{{\"sku\":\"b\"}}]', \
+                  X'{ACTOR}', '2026-09-05')"
+            ),
+        )
+        .await
+        .expect("second cascade after resolve");
+    }
+
+    #[tokio::test]
+    async fn a_resolved_deferral_refuses_update_and_delete() {
+        let db = harness().await;
+        exec(&db, &pending_row(TRANSITION))
+            .await
+            .expect("parent intent");
+        exec(
+            &db,
+            &format!(
+                "INSERT INTO products_deferred_retirement \
+                 (tenant_id, product_id, cascade_ref, children_snapshot, created_by, \
+                  resolved_at, resolution, created_at) \
+                 VALUES (X'{TENANT}', X'{PRODUCT}', X'{TRANSITION}', '[{{}}]', X'{ACTOR}', \
+                  '2026-09-03', 'children_cleared', '2026-09-02')"
+            ),
+        )
+        .await
+        .expect("resolved row");
+        let err = exec(
+            &db,
+            &format!(
+                "UPDATE products_deferred_retirement SET resolution = 'cascade_cancelled' \
+                 WHERE cascade_ref = X'{TRANSITION}'"
+            ),
+        )
+        .await
+        .expect_err("resolved is immutable");
+        assert!(
+            err.to_string().contains("resolved deferral is immutable"),
+            "{err}"
+        );
+        let err = exec(
+            &db,
+            &format!(
+                "DELETE FROM products_deferred_retirement WHERE cascade_ref = X'{TRANSITION}'"
+            ),
+        )
+        .await
+        .expect_err("no delete");
+        assert!(err.to_string().contains("never deleted"), "{err}");
+    }
+}

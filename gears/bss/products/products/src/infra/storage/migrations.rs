@@ -40,6 +40,8 @@ mod m20260901_000021_create_products_recognized_set;
 mod m20260901_000022_create_products_correction_override;
 mod m20260901_000023_create_products_read_entity;
 mod m20260901_000024_create_products_read_stamp;
+mod m20260901_000025_create_products_scheduled_transition;
+mod m20260901_000026_create_products_deferred_retirement;
 
 use sea_orm::{ConnectionTrait, Statement};
 use sea_orm_migration::prelude::*;
@@ -132,6 +134,8 @@ impl MigratorTrait for Migrator {
             Box::new(m20260901_000022_create_products_correction_override::Migration),
             Box::new(m20260901_000023_create_products_read_entity::Migration),
             Box::new(m20260901_000024_create_products_read_stamp::Migration),
+            Box::new(m20260901_000025_create_products_scheduled_transition::Migration),
+            Box::new(m20260901_000026_create_products_deferred_retirement::Migration),
         ]
     }
 }

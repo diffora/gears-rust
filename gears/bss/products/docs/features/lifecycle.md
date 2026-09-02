@@ -75,10 +75,9 @@ feature's slot.
 
 **What the code does not give it is the keying.** `ValidationRule<S>` carries `name()`, `phase()`
 and `evaluate(&self, subject: &S, report)` — and no kind, transition, target-state or field-set
-operand. `01-foundation` hit the same wall twice and wrote down the reason: *"the pipeline is
-synchronous and judges the subject row alone, and this rule's operand is a read of other rows. So
-it runs as that phase's continuation, on this transaction."* Most of this feature's rules read
-other rows. See §7 row 20.
+operand. **P-D-97** settles that: the phase is a **slot** filled by a registered rule or a
+continuation; the "keying" is the insertion site. Most of this feature's rules read other rows and
+run as continuations. See §7 row 20 (closed).
 
 **This feature needs no sixth edge and no sixth state.** `ADMITTED_EDGES` is pinned at five by
 `transition_tests::the_five_admitted_edges_are_admitted`, whose message reads *"a sixth needs a
@@ -91,8 +90,7 @@ cascade *because* the floor admits no `draft → deprecated`. EOL is a feature f
 
 **Two shipped tests do go red, and both are registered rather than waved through.**
 `events_tests::THE_EIGHT` is an exact roster in both directions, so the first event this feature
-adds reddens it (§7 row 25); and the narrowing refusal's code is asserted by name, so declaring
-`SCOPE_NARROWING_BLOCKED` reddens that case too (§7 row 19).
+adds reddens it (§7 row 25).
 
 ### 1.2 Purpose
 
@@ -370,7 +368,8 @@ at flip**, not only planned at confirmation. Which act discharges a deferral, an
 - A child scope not provably a subset of its parent's — `SCOPE_NOT_CONTAINED`, declared in
   `01-foundation` and carrying its final semantics here
 - A scope-narrowing Product publish while any **non-terminal** child would fall outside the
-  narrowed scope — `SCOPE_NARROWING_BLOCKED`, the validator naming the falling-out children
+  narrowed scope — `SCOPE_NOT_CONTAINED` (P-D-96 withdrew `SCOPE_NARROWING_BLOCKED`; both
+  directions share one code so they cannot word one refusal two ways)
 
 **Boundary**: containment is **over restrictions**: the empty set means *unrestricted*, so an
 unrestricted parent contains every child and an unrestricted child is contained only by an
@@ -424,28 +423,28 @@ door to become — is this runner.
 
 **Output**: one canonical code carrying its declared RFC 9457 status
 
-This feature **declares seven** codes: `SCOPE_NARROWING_BLOCKED`, `RETIREMENT_LEAD_TIME`,
+This feature **declares six** codes: `RETIREMENT_LEAD_TIME`,
 `REPLACED_BY_NOT_PUBLISHED`, `SCHEDULE_STALE_APPROVAL`, `CASCADE_CONFIRMATION_REQUIRED`,
-`RETIREMENT_PENDING` and `EOL_DISABLED`. **Two** appear in its response map and are declared in
+`RETIREMENT_PENDING` and `EOL_DISABLED`. **`SCOPE_NARROWING_BLOCKED` is withdrawn (P-D-96).**
+**Two** appear in its response map and are declared in
 `01-foundation`: `PARENT_NOT_PUBLISHED` and `SCOPE_NOT_CONTAINED` — the status is repeated, not a
 second declaration. **Seven more** are cited from elsewhere and raised by their own owners:
 `APPROVAL_REQUIRED`, `CONTENT_PII_BLOCKED`, `ILLEGAL_TRANSITION`, `PARENT_TERMINAL`,
-`STALE_REVISION`, `STALE_VERSION`, `USAGE_TYPE_UNAVAILABLE`. Seven, two and seven make the sixteen
-distinct codes the slice names. **One more is raised by a §2 scenario and named by no slice**:
+`STALE_REVISION`, `STALE_VERSION`, `USAGE_TYPE_UNAVAILABLE`. Six, two and seven make the fifteen
+distinct codes the slice names after the withdrawal. **One more is raised by a §2 scenario and named by no slice**:
 `ENTITY_TERMINAL`, `01-foundation`'s refusal on a head write against a `retired` or `discarded`
-row, which reaches every act this feature drives and so belongs in the response map — seventeen in
+row, which reaches every act this feature drives and so belongs in the response map — sixteen in
 all.
 
 **Boundary**: the roster and every status are specified by
-`cpt-cf-bss-products-contract-lifecycle-errors`, which stays in the slice. `SCOPE_NARROWING_BLOCKED`,
+`cpt-cf-bss-products-contract-lifecycle-errors`, which stays in the slice.
 `SCHEDULE_STALE_APPROVAL`, `RETIREMENT_PENDING` and `PARENT_NOT_PUBLISHED` sit at 409;
 `CASCADE_CONFIRMATION_REQUIRED`, `EOL_DISABLED`, `SCOPE_NOT_CONTAINED`, `RETIREMENT_LEAD_TIME` and
 `REPLACED_BY_NOT_PUBLISHED` at 422 **architecturally**, reaching the wire as 400 carrying their
 code, no `CanonicalError` category rendering 422 absent a transport override this design set does
-not declare. **Two of the seven declared codes have a raise-path problem and both are carried, not
-resolved**: `SCOPE_NARROWING_BLOCKED` appears nowhere in the shipped crate while the check it names
-is built and raises `SCOPE_NOT_CONTAINED` (§7 row 19), and `RETIREMENT_LEAD_TIME` can never be
-raised if `effectiveAt` is computed rather than supplied (§7 row 14).
+not declare. **One of the six declared codes has a raise-path problem still carried**:
+`RETIREMENT_LEAD_TIME` can never be raised if `effectiveAt` is computed rather than supplied
+(§7 row 14). Narrowing's code question is closed (P-D-96).
 
 ## 4. States (CDSL)
 
@@ -506,15 +505,14 @@ reaches it transitively — its own operands are child lifecycle states, but the
 is guarded by that predicate — so both are testable only against a stub — and a stub that always answers fresh-zero passes the
 guard while proving nothing, which is why a **four-state negative control** is part of the
 obligation; `dod-undeprecation` and `dod-scheduled-publish-pin` need `05-governance`'s gate host and
-approval store, the existing `RecordingGate` double being the shape; `dod-registered-validator-host`
-cannot be asserted until §7 row 20 settles whether these rules are registered rules at all;
-`dod-lead-window-reannounce` fires through `01-foundation`'s publish door and needs that door's
+approval store, the existing `RecordingGate` double being the shape; `dod-registered-validator-host` fills the phase slot under **P-D-97** (registered rule or
+continuation); `dod-lead-window-reannounce` fires through `01-foundation`'s publish door and needs that door's
 harness; and `dod-lifecycle-events` depends on a broker payload shape this feature adds a
 third body to, and on a roster test that is exact in both directions (§7 row 25).
 
 ### Scheduled-transition store
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-scheduled-transition-store`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-scheduled-transition-store`
 
 The system **MUST** create `products_scheduled_transition` on both engines carrying `transition_id`
 (PK), `tenant_id`, `entity_kind`/`entity_id`, `kind ∈ {publish, retire}`, `at` (UTC), `approval_ref`,
@@ -538,7 +536,7 @@ engines with a perturbation case proving it can fail.
 
 ### Deferred-retirement store
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-deferred-retirement-store`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-deferred-retirement-store`
 
 The system **MUST** create `products_deferred_retirement` keyed
 `(tenant_id, product_id, cascade_ref)` — `cascade_ref` being the parent's `ScheduledTransition`
@@ -972,13 +970,13 @@ A scope-narrowing Product publish **MUST** fail closed while any **non-terminal*
 routine output of the auto-discard arm, so the wider operand would let one discarded draft block
 that Product's narrowing permanently.
 
-**Four shipped facts bear on this, and each is registered**, so the obligation cannot be written
-as new work until they settle: the check exists as `products::check_children_stay_contained` with
-the non-terminal operand already correct; it raises **`SCOPE_NOT_CONTAINED`** while
-`SCOPE_NARROWING_BLOCKED` occurs nowhere in the crate (§7 row 19); it runs on the **save** door and
-has no publish call site (§7 row 26); and its refusal **deliberately does not name the offending
-child**, on the stated ground that naming one would be a second wording of a shared message (§7 row
-27).
+**Four shipped facts bear on this, and each is registered**: the check exists as
+`products::check_children_stay_contained` with the non-terminal operand already correct; it raises
+**`SCOPE_NOT_CONTAINED`** — and **P-D-96 withdrew** the competing `SCOPE_NARROWING_BLOCKED`
+declaration so both directions keep one code; it runs on the **save** door and has no publish call
+site (§7 row 26); and its refusal **deliberately does not name the offending child**, on the stated
+ground that naming one would be a second wording of a shared message (§7 row 27) — and that
+standing choice holds for `PARENT_NOT_PUBLISHED` too.
 
 **Implements**: `cpt-cf-bss-products-flow-parent-child`
 
@@ -997,11 +995,15 @@ target state, which the Foundation's own publish re-validation records as *"a re
 passing phase"*. It **MUST NOT** mint a parallel validation vocabulary: the `ValidationRule` trait,
 the `Phase` enum and the pipeline are the Foundation's.
 
-**Whether this feature's rules can be registered rules at all is §7 rows 19 and 20**, and this
-obligation is the one that cannot be deferred past the first line of code. The trait carries no
-kind, transition, target-state or field-set operand, and the Foundation has already established
-that a rule whose operand reads other rows runs as a **phase continuation** rather than a
-registered rule — which is what every parent-child, retire-intent and flip-guard rule here does.
+**Whether this feature's rules can be registered rules at all was §7 row 20; it is
+closed as P-D-97.** `RegisteredValidators` is a phase **slot** with two admissible
+fillings: a registered `ValidationRule` where the operand is subject-local or a
+single fact the door can prefetch, **or** a **continuation** of that phase on the
+same transaction (the position §4.1 asks for). The trait does not widen. **Residue
+to honour**: a continuation raises a `DomainError` directly and does **not** append
+to a `ValidationReport`, so it refuses on the first finding rather than collecting
+several within its phase — every cross-row rule here is a single-condition refusal,
+so nothing is lost, but the two fillings are not interchangeable in every respect.
 
 **Implements**: `cpt-cf-bss-products-flow-parent-child`,
 `cpt-cf-bss-products-flow-deprecation`
@@ -1016,13 +1018,14 @@ registered rule — which is what every parent-child, retire-intent and flip-gua
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-lifecycle-errors`
 
-The system **MUST** declare seven codes — `SCOPE_NARROWING_BLOCKED`, `RETIREMENT_LEAD_TIME`,
+The system **MUST** declare six codes — `RETIREMENT_LEAD_TIME`,
 `REPLACED_BY_NOT_PUBLISHED`, `SCHEDULE_STALE_APPROVAL`, `CASCADE_CONFIRMATION_REQUIRED`,
 `RETIREMENT_PENDING`, `EOL_DISABLED` — each carrying its declared RFC 9457 status and each raised by
 **exactly one** rule. `PARENT_NOT_PUBLISHED` and `SCOPE_NOT_CONTAINED` appear in the response map
-carrying `01-foundation`'s declarations, repeated and not re-declared. **Two of the seven have a
-raise-path problem that this DoD MUST NOT paper over**: `SCOPE_NARROWING_BLOCKED` has no occurrence
-in the crate while its check is built raising another code (§7 row 19), and `RETIREMENT_LEAD_TIME`
+carrying `01-foundation`'s declarations, repeated and not re-declared. **`SCOPE_NARROWING_BLOCKED`
+is withdrawn (P-D-96)** — narrowing rides `SCOPE_NOT_CONTAINED`. **`PARENT_NOT_PUBLISHED` and
+`RETIREMENT_PENDING` are owned slots this feature fills in D7** (P-D-24 already prices the former
+at 409; the mapping paragraph already assigns both to 04). `RETIREMENT_LEAD_TIME`
 has no raiser at all if `effectiveAt` is computed (§7 row 14).
 
 **Implements**: `cpt-cf-bss-products-algo-lifecycle-errors`
@@ -1136,14 +1139,12 @@ governed cancels, deferrals and the `retirement_held` and `replacement_chain_bro
       `published` parent it is admitted; a re-publish re-runs the check fail-closed
 - [ ] An unrestricted parent contains every child; an unrestricted child is refused by a restricted
       parent; between two non-empty sets it is ordinary subset
-- [ ] A Product narrowing with one non-terminal child outside is refused **naming that child**;
-      one whose only outside child is `discarded` is admitted; a widening is always admitted
-- [ ] The narrowing refusal carries `SCOPE_NARROWING_BLOCKED` — which requires the shipped
-      save-door check to change its code, and cannot be asserted until §7 row 19 settles
-- [ ] Each of the seven declared codes is raised by exactly one rule and carries its declared
+- [ ] A Product narrowing with one non-terminal child outside is refused with
+      `SCOPE_NOT_CONTAINED` (P-D-96); one whose only outside child is `discarded` is admitted; a
+      widening is always admitted. The refusal does **not** name the offending child (§7 row 27)
+- [ ] Each of the six declared codes is raised by exactly one rule and carries its declared
       status, with a **positive control per code**: an act that is admitted where that same rule
       would have refused it —
-      `SCOPE_NARROWING_BLOCKED`: a widening publish is admitted;
       `RETIREMENT_LEAD_TIME`: an `effectiveAt` at exactly the configured lead is admitted;
       `REPLACED_BY_NOT_PUBLISHED`: a `published` successor is admitted;
       `SCHEDULE_STALE_APPROVAL`: an unedited scheduled entity activates;
@@ -1200,8 +1201,8 @@ idempotency migration names it, and `products_tests` claims on it. What no artif
 | 16 | **Does `leave-and-list` cover referenced children or only EOL-requiring ones?** The plan instruction scopes the arm to "children whose flip guard cannot clear — referenced SKUs"; the PRD and its AC both scope it to "EOL-requiring children left un-retired", and EOL is disabled in v1 — so **on the PRD's wording the arm has no v1 population at all** | `dod-cascade-plan` | the PRD owner, as a wording call |
 | 17 | **`inst-lc-terminal` restates a rule the slice's own §1.5 puts out of scope.** The row's whole content is terminality, which §1.5 assigns to `01-foundation`. The one-declaration rule is stated for error codes, not for instruction rows, so nothing says whether a restating row is a second declaration | — | the design-set owner |
 | 18 | **Pointer**: which slice declares `PARENT_NOT_PUBLISHED` is open in `01-foundation` §6. This feature asserts one arm — "named in 01, registered here" — and **the answer is not this feature's to give** | `dod-publish-ordering`, `dod-lifecycle-errors` | the owner of that open item |
-| 19** | **`SCOPE_NARROWING_BLOCKED` has no raiser, and the check it names is already built raising a different code.** `products::check_children_stay_contained` reads the non-terminal children of a Product against its post-save scope pair and refuses — with **`SCOPE_NOT_CONTAINED`**. `SCOPE_NARROWING_BLOCKED` occurs **zero** times in the crate and `DomainError` has no arm for it — and neither does `PARENT_NOT_PUBLISHED`, which `dod-publish-ordering` obliges on the same terms while the parent check that ships raises `PARENT_TERMINAL` only. Either this feature adds the code and changes the shipped door's refusal, or the declaration is withdrawn and the narrowing rides the containment code — which then carries two rules and one message | `dod-scope-narrowing`, `dod-lifecycle-errors` | this feature with 01 |
-| 20** | **The validation pipeline cannot key a rule the way this feature's rules are described.** `ValidationRule<S>` carries `name()`, `phase()` and `evaluate(&self, subject, report)` and **no kind, transition, target-state or field-set operand**, while the slice cites `01-foundation` §3.1 as "registered validators keyed by kind + transition/target-state/field-set" and the publish-ordering rule turns on being registered on the **target state** rather than the edge. Worse, `01-foundation` has already established the workaround and its cost: *"the pipeline is synchronous and judges the subject row alone, and this rule's operand is a read of other rows. So it runs as that phase's continuation."* **Every parent-child, retire-intent and flip-guard rule here reads other rows.** Either the trait widens — against `dod-registered-validator-host`'s no-parallel-vocabulary clause — or this feature's "registered validators" are phase continuations and the design's framing is wrong. **This is the one item that cannot be deferred past the first line of code** | `dod-registered-validator-host`, `dod-publish-ordering`, `dod-scope-narrowing`, `dod-scope-containment-final` | this feature with 01 |
+| 19** | ~~**`SCOPE_NARROWING_BLOCKED` has no raiser…**~~ **Closed 2026-09-02 as P-D-96**: `SCOPE_NARROWING_BLOCKED` is **withdrawn** (narrowing stays on `SCOPE_NOT_CONTAINED`); `PARENT_NOT_PUBLISHED` is **admitted** as an owned slot (P-D-24 already prices it at 409). `RETIREMENT_PENDING` is settled on the same terms and is this feature's (D7 arm). `features/reference-signal.md`'s copy of the withdrawn code is owed to `07` | `dod-scope-narrowing`, `dod-lifecycle-errors` — **freed** | was this feature with 01; **closed** |
+| 20** | ~~**The validation pipeline cannot key a rule…**~~ **Closed 2026-09-02 as P-D-97**: `RegisteredValidators` is a phase **slot** with two admissible fillings — a registered `ValidationRule` (subject-local or one door-prefetched fact) **or** a **continuation** of that phase on the same transaction, positioned where §4.1 asks. The trait does not widen; "keying" is the insertion site. **Residue**: a continuation raises a `DomainError` directly and does **not** collect into a `ValidationReport` — it refuses on the first finding | `dod-registered-validator-host`, `dod-publish-ordering`, `dod-scope-narrowing`, `dod-scope-containment-final` — **freed** | was this feature with 01; **closed** |
 | 21** | **What operand does this feature replace in the containment check?** The slice describes `SCOPE_NOT_CONTAINED`'s "final semantics" as registered here, replacing the operand inside `01-foundation`'s identity phase. But `domain::containment` **already implements the final restriction-based rule verbatim** — unrestricted parent contains every child, unrestricted child needs an unrestricted parent, ordinary subset between non-empty sets — wired at three call sites. If nothing is left to replace, the obligation is a no-op and the slice's C5 wording is stale | `dod-scope-containment-final` | this feature with 01 |
 | 22** | **`PreAuthorized` cannot admit a cascade leg.** The mode verifies a consumed record that authorized **this subject** at **this pinned revision**, while a cascade leg's subject is a **child** entity with its own revision, and the mode carries only an approval id with no plan-membership operand. The scheduled-publish flow needs the mode for the parent's own row and the cascade needs it for every leg. Weakening the predicate to "names a consumed record" turns a terminal record into a bearer token for any subject in the tenant. *(The same seam is `05-governance`'s row 27, raised there against that feature's own DoDs.)* | `dod-scheduled-publish-pin`, `dod-cascade-plan`, `dod-activation-runner` | this feature with 01 and 05 |
 | 23** | **Can a `deferred` row be superseded, and the slice says two things.** The claim instruction calls the re-claim to `running` *"the only exit that state has"*, while the cascade-plan instruction supersedes a child's **live** intents and the partial unique index counts `deferred` as live. Both cannot hold. §4 row 7 above records the edge as leaving "a live state" precisely because the source does not enumerate them | `cpt-cf-bss-products-state-scheduled-transition`, `dod-cascade-plan`, `dod-scheduled-transition-store` | this feature |
@@ -1221,12 +1222,9 @@ idempotency migration names it, and `products_tests` claims on it. What no artif
 | 37** | **Which declared code refuses the no-orphan flip?** `dod-no-orphan` obliges that no `published` SKU exist under a `retired` Product, re-checked at flip — and no code covers the refusal. `design/04` §3.2's slice-owned roster carries none for it, and `design/01` §3.3 scopes `PARENT_TERMINAL` to *"the parent's own state"* refusing a **child's** write — the reverse direction. The crate's `no_orphan_at_flip` (uncalled until the flip ships) raises `PARENT_TERMINAL` provisionally and says so in its own doc. Either the code is declared for this refusal, or the flip's slice mints one | `dod-no-orphan` | this feature with 01 — the code roster is split between them |
 
 *Rows marked `**` were raised by this document's own reading of the crate, not carried from the
-slice — seven before the three-lens review of this FEATURE, ten by it, one by the implementation
-of `inst-lc-deprecate`, and one by the lens pass over that implementation. **Two are blocking, and they are the same
-shape**: row 20, a mechanism the design set assumes and the code does not provide, which the
-Foundation has already worked around twice in the two places it needed to; and row 24, three of the
-four edges this feature owns having no admitted writer in any shipped door. Neither can be deferred
-past the first line of code, and both were invisible to a reading of the design set alone.*
+slice. **§7 rows 19 and 20 are closed** as P-D-96 and P-D-97 (2026-09-02). Row 24 — three of the
+four edges this feature owns having no admitted writer in any shipped door — remains load-bearing
+and was invisible to a reading of the design set alone.*
 
 ### Raised here rather than carried
 
