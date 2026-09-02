@@ -469,14 +469,35 @@ fn touched_verdict(
 ) -> Result<Materiality, MaterialityRefusal> {
     let mut verdict = Materiality::NonMaterial;
     for column in touched {
-        // **The registry runs first, always.** A `continue` on
-        // `names_field` here would let a tenant switch both fail-closed
+        // **The registry runs first, always.** Checking `names_field`
+        // before `classify` would let a tenant switch both fail-closed
         // refusals off for any column it lists: an untagged (misspelt)
         // column would stop raising `Registry`, and `metering_unit` would
         // stop raising `CorrectableTouch` — making L-1's
         // correction-door-only guarantee tenant-configurable. The policy's
         // set may raise a verdict; it may never skip a refusal.
         let class = bucket::classify(kind, column).map_err(MaterialityRefusal::Registry)?;
+
+        // Bucket ii refuses before anything promotes: a tenant's field set
+        // must not be able to make it an ordinary touch.
+        if class.bucket() == Some(FieldBucket::Correctable) {
+            return Err(MaterialityRefusal::CorrectableTouch((*column).to_owned()));
+        }
+
+        // **The union, and it is a union.** `names_field`'s contract is that
+        // a column in *either* the registry or the tenant's set is material,
+        // so the promotion runs for every non-refusing class — including the
+        // bucket-less ones (`CreateOnly`, the two outside-the-scheme
+        // classes). Scoping it to the `Immaterial` arm silently halved the
+        // quorum for a tenant that named, say, `deprecation_provenance`:
+        // `NonMaterial` gives `min(N, 1)` = one approver where the tenant
+        // asked for `N`. The registry still runs FIRST, which is the
+        // ordering the fail-closed arms need.
+        if policy.names_field(column) {
+            verdict = Materiality::Material;
+            continue;
+        }
+
         let Some(bucket) = class.bucket() else {
             // `CreateOnly` and the two outside-the-scheme classes: refused by
             // the head door's own guards, and no materiality verdict of
@@ -485,13 +506,11 @@ fn touched_verdict(
         };
         match bucket_bearing(bucket) {
             BucketBearing::Material => verdict = Materiality::Material,
-            BucketBearing::Immaterial => {
-                // Only now may the tenant's own field set promote it.
-                if policy.names_field(column) {
-                    verdict = Materiality::Material;
-                }
-            }
+            BucketBearing::Immaterial => {}
             BucketBearing::NotAnOrdinaryTouch => {
+                // Unreachable: the guard above returns first. Kept so the
+                // match stays exhaustive over the bearing, not over today's
+                // reachability.
                 return Err(MaterialityRefusal::CorrectableTouch((*column).to_owned()));
             }
         }

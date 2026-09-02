@@ -389,3 +389,44 @@ fn n_defaults_to_two_and_zero_is_reachable() {
         "the floor is reachable and nothing clamps it upward"
     );
 }
+
+/// **The policy's field set is a union with the registry, including the
+/// bucket-less columns.** `names_field`'s contract is that a column in
+/// *either* is material; scoping the promotion to the `Immaterial` arm
+/// dropped it for `CreateOnly` and the two outside-the-scheme classes, so a
+/// tenant naming `deprecation_provenance` got `min(N, 1)` — one approver —
+/// where it asked for `N`. Bucket ii is still refused first, which is the
+/// half the ordering exists for.
+#[test]
+fn the_policy_field_set_promotes_a_bucket_less_column_too() {
+    let claims = vec!["catalog-admin".to_owned()];
+    // `deprecation_provenance` is `Outside(Mechanical)` — it carries no
+    // bucket at all, so nothing in the registry can make it material.
+    let plain = MaterialityPolicy::default();
+    let ev = resolved(&plain, &claims);
+    assert_eq!(
+        ev.verdict(&MaterialAct::EntityPublish {
+            kind: EntityKind::Product,
+            touched: &["deprecation_provenance"],
+        })
+        .expect("a resolved policy"),
+        Materiality::NonMaterial,
+        "the registry alone makes it immaterial"
+    );
+
+    let named = MaterialityPolicy::new(
+        vec!["deprecation_provenance".to_owned()],
+        DEFAULT_AFFECTED_ENTITY_TRIGGER,
+        DEFAULT_APPROVER_COUNT,
+    );
+    let ev = resolved(&named, &claims);
+    assert_eq!(
+        ev.verdict(&MaterialAct::EntityPublish {
+            kind: EntityKind::Product,
+            touched: &["deprecation_provenance"],
+        })
+        .expect("a resolved policy"),
+        Materiality::Material,
+        "and the tenant's own set promotes it - the union, not a subset"
+    );
+}
