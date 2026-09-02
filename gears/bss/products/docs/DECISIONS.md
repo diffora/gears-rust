@@ -1569,6 +1569,44 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   (the re-publish step).
 
 
+#### P-D-95 — The by-key frozen-version reader is `01-foundation`'s, and waits for its first unblocked consumer
+
+- **Date**: 2026-09-02 (owner call, accepting the recommendation raised as strand C's `O-C-2`
+  while building `cpt-cf-bss-products-dod-staleness-stamp`)
+- **Context**: `infra::storage::repo` ships `latest_entity_version` — public, with three production
+  call sites in `api/rest/products.rs` and `api/rest/skus.rs` — and **no by-key read**. A by-key
+  read exists only as `find_frozen_version`, a test helper in `repo_tests.rs`. Two DoDs need
+  `(tenant, entity_kind, entity_id, published_version) → content`:
+  `cpt-cf-bss-products-dod-frozen-read-path` (`08`) and `cpt-cf-bss-products-dod-clone-read-surface`
+  (`11`). **Latest-only is the wrong coordinate for either**, because a `*Published` event carries a
+  specific `publishedVersion` and the projector must read *that* version, not whichever is newest.
+  **P-D-77** already settled the decoder half of this pair (`decode_rendering`, beside the
+  renderer); this is the reader half, which that decision did not reach.
+- **Decision**, two arms:
+  1. **The by-key reader is `01-foundation`'s**, named beside `latest_entity_version` in
+     `infra::storage::repo` — the same placement rule P-D-77 applied to the decoder, and for the
+     same reason: two consumers in different slices must not each grow their own read.
+  2. **It is promoted when its first consumer is unblocked, and not before.** Until then
+     `find_frozen_version` stays a test helper and neither DoD is ticked on the reader's account.
+     `dod-frozen-read-path` is open on `features/read-models.md` §7 **row 9** (projector posture
+     when a `*Published` event's frozen row has been collected) and §7 **row 19** (a published
+     entity rescoped without a version row); `dod-clone-read-surface` is open on clone's own rows.
+     A public reader landing first would make both DoDs *look* reachable while the questions that
+     actually block them stay open — a green reader papering over a design gap.
+- **The arguments against, stated**: the reader is a small and obviously-correct function, and
+  withholding it means the test helper and the eventual production function are written twice, with
+  a window in which they can disagree about the coordinate. That is accepted: the duplication is one
+  test-only helper against one future function, whereas the risk on the other side is a `p1` DoD
+  ticked on a reader whose consumers are still blocked. The alternative of promoting it now and
+  leaving both DoDs unticked was also declined — it would put a public repository function in the
+  crate's API with no caller, which is the shape this register has refused elsewhere.
+- **Propagated**: nothing normative. This decision constrains a code artifact and its timing; it
+  changes no design section and adds no instruction. The two registers that gate arm 2 —
+  `features/read-models.md` §7 rows 9 and 19, and `features/clone.md`'s own rows — are cited as
+  they stand and are **not** amended here, since neither row's question is what this decision
+  answers. **Owed**: when arm 2's condition is met, the promoting change updates
+  `design/01-foundation.md` §3.2's repository surface, and this entry is the site to check first.
+
 #### P-D-94 — The recognized-set events' broker identity: derived ids, the set kind as the subject
 
 - **Date**: 2026-09-01 (owner call, autonomous under the standing instruction —

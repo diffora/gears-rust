@@ -780,6 +780,7 @@ authored downstream of this document, in the order §3 establishes.
 
 - **Data**:
   - `products_read_entity`
+  - `products_read_stamp`
   - `products_read_delivery_state`
   - `products_read_deferred_intent`
   - `products_read_freeze_status`
