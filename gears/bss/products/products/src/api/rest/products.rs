@@ -4043,7 +4043,17 @@ async fn run_retire(
         .into_authorization()
         .map_err(HeadActError::Refused)?;
 
-    apply_cascade_plan(runner, inputs, sku_scope, &children, &request.reason, at).await?;
+    let approval_ref = Uuid::now_v7();
+    apply_cascade_plan(
+        runner,
+        inputs,
+        sku_scope,
+        &children,
+        &request.reason,
+        at,
+        approval_ref,
+    )
+    .await?;
 
     if let Some(provenance) = stamp {
         let write = repo::deprecate_product_head(
@@ -4072,7 +4082,7 @@ async fn run_retire(
             entity_id: inputs.product_id,
             kind: "retire".to_owned(),
             at,
-            approval_ref: Uuid::now_v7(),
+            approval_ref,
             retirement_reason: Some(request.reason.clone()),
             now: inputs.now,
         },
@@ -4092,6 +4102,7 @@ async fn apply_cascade_plan(
     children: &[SkuRecord],
     reason: &str,
     at: DateTime<Utc>,
+    approval_ref: Uuid,
 ) -> Result<(), HeadActError> {
     for child in children {
         let Some(arm) = arm_for(child.lifecycle_state, false) else {
@@ -4148,7 +4159,7 @@ async fn apply_cascade_plan(
                         entity_id: child.sku_id,
                         kind: "retire".to_owned(),
                         at,
-                        approval_ref: Uuid::now_v7(),
+                        approval_ref,
                         retirement_reason: Some(reason.to_owned()),
                         now: inputs.now,
                     },

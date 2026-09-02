@@ -6966,6 +6966,29 @@ mod retire_door_tests {
             Some(crate::domain::deprecation::Provenance::Cascaded)
         );
         assert_eq!(live_intent_count(&harness, child).await, 1);
+
+        let parent_pin = raw_string_opt(
+            &harness.dsn,
+            &format!(
+                "SELECT hex(approval_ref) AS v FROM products_scheduled_transition WHERE {}",
+                id_matches("entity_id", product_id)
+            ),
+        )
+        .await
+        .expect("the parent row carries a pin");
+        let child_pin = raw_string_opt(
+            &harness.dsn,
+            &format!(
+                "SELECT hex(approval_ref) AS v FROM products_scheduled_transition WHERE {}",
+                id_matches("entity_id", child)
+            ),
+        )
+        .await
+        .expect("the cascade leg carries a pin");
+        assert_eq!(
+            child_pin, parent_pin,
+            "P-D-105: the leg names the parent's record in approval_ref"
+        );
     }
 
     #[tokio::test]

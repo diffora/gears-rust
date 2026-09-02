@@ -10,7 +10,7 @@
 //! Row 16 (leave-and-list population) is the PRD owner's. The instruction
 //! scopes the arm to referenced children; that is the operand used here.
 //!
-//! @cpt-cf-bss-products-dod-cascade-plan
+//! @cpt-dod:cpt-cf-bss-products-dod-cascade-plan:p1
 //! @cpt-cf-bss-products-dod-cascade-parent-path
 //! @cpt-cf-bss-products-dod-deferred-intent
 
