@@ -1049,14 +1049,31 @@ dispose of it — a catalog whose grants no door spends is exactly what rows 1 a
 earlier pass ticked this on the strength of that scope sentence alone, having read this §7 — **a
 table** — as empty; it is 23 rows.
 
-**Built as an extension, and the withholding is asserted too.** `authz.rs` now carries **fourteen**
-labels: `01`'s `product`/`sku`, `06`'s `catalog_version`, `09`'s `bulk`, `07`'s
-`reference_signal`/`reference_producer`, and this slice's four — `approval × submit|read|decide`,
-`materiality_policy × write`, `breakglass × elevate`, `audit × read|export`. The eleven rows owned
+**Built as an extension, and the withholding is asserted too.** `authz.rs` carries **sixteen**
+labels — measured 2026-09-02 — including `01`'s `product`/`sku`, `06`'s `catalog_version`, `09`'s
+`bulk`, `07`'s `reference_signal`/`reference_producer`, and this slice's four:
+`approval × submit|read|decide`, `materiality_policy × write`, `breakglass × elevate`,
+`audit × read|export`. The eleven rows owned
 by `02`, `03`, `04` and `10` are **absent by assertion**, not by omission: a test names each one
 with its owing slice and fails if it appears, because a grant declared with no owning door is a
 grant nobody can review — §6's own reason for counting them. Four of governance's own seven pairs
 are themselves routeless, and that is the DoD's stated scope: declared, they are countable.
+
+*This paragraph read "fourteen" until 2026-09-02, and that was **drift rather than a birth
+defect**: `labels::ALL` held exactly fourteen at `6b191a157`, the commit that wrote the sentence,
+and `recognized_set` and `plan_tier` landed after it. The distinction matters because the two need
+different fixes — a birth defect means the census was wrong, drift means only the number is.*
+
+**The catalog's census in this gear is not the three sites a reader may expect.** Measured at
+`HEAD`: `rest_authz` has **zero** occurrences anywhere in this gear, and `Route` has **zero** in
+`src/gts/`. Both belong to the **pricing** donor, which does carry
+`pricing/pricing/tests/rest_authz.rs`. What products has instead is a four-site roster, and the two
+tests that hold it together are what a partial edit would leave stale:
+`authz::labels::ALL`; `authz::resource_types`; `gts::permissions`' twenty-seven permission
+instances; and the pair of assertions
+`authz_tests::labels_all_carries_every_declared_label_in_order` and
+`gts::permissions::tests::catalog_resource_types_match_authz_labels_all`, which fail if any of the
+first three drifts from the others.
 
 **Implements**: `cpt-cf-bss-products-algo-rbac-catalog`
 
@@ -1216,6 +1233,23 @@ into the Foundation's taxonomy, each carrying its declared RFC 9457 status.
 and the role predicate is not; `APPROVAL_SUPERSEDED` **MUST** be raised at **decide**.
 `APPROVAL_REQUIRED` stays `01-foundation`'s.
 
+**Two of the six ship and three more are patched but unapplied; the sixth has no raising rule.**
+`SELF_APPROVAL_FORBIDDEN` (403) and `APPROVAL_SUPERSEDED` (409) are declared and mapped at `HEAD`.
+Strand B's patch adds `APPROVER_SCOPE_EXCEEDED`, `APPROVER_ROLE_REQUIRED` and `BREAKGLASS_EXPIRED`
+to `domain/error.rs` and `infra/error_mapping.rs` — both files are append-only shared planes this
+strand may not edit, so the patch is handed over rather than applied.
+
+**`BREAKGLASS_WRITE_FORBIDDEN` is deliberately left out.** This DoD says the codes are declared *"as
+constants **on their raising rules**"*, which is P-D-36's own principle, and **no rule raises this
+one**: §7 row 18 blocks the enforcement point, so nothing in the gear can produce it. Declaring it
+would ship a 403 with no producer — the exact finding the three-lens review of this group already
+made once, one wave earlier. The code lands with the rule, and the rule waits on row 18.
+
+**`APPROVER_ROLE_REQUIRED` is declared at §3.3's stated 403 and its status stays §7 row 13.** One
+mapping line changes if the owner rules 409. Its **raise path** is untouched and remains §7 row 30:
+`GateVerdict::into_authorization` maps every gate refusal to `APPROVAL_REQUIRED` by design, so a
+second gate code needs the verdict widened — a change to `01`'s type, not this slice's.
+
 **Implements**: `cpt-cf-bss-products-algo-governance-errors`
 
 **Touches**:
@@ -1236,6 +1270,23 @@ no-event declaration.
 **Implements**: `cpt-cf-bss-products-flow-submit`,
 `cpt-cf-bss-products-flow-decide`, `cpt-cf-bss-products-flow-breakglass`
 
+**None of the three event types exists, and the patch reaches a fourth file.** `ApprovalDecided`,
+`BreakGlassElevated` and `BreakGlassExpired` are absent from `infra/events.rs` and
+`infra/broker.rs` alike. A new broker event needs **five** insertion points across **two** forbidden
+files: the payload-type token, the `SCHEMA_REFS` entry and a dispatch path in `infra/events.rs`, and
+the `TypedEvent` declaration plus its `producer.prepare::<T>()` registration in
+`infra/broker.rs`. The `SCHEMA_REFS` entry is the one an exhaustive `match` cannot enforce — a type
+added without it compiles clean and fails at enqueue.
+
+**What the patch stops short of, and why.** The three events fit neither existing enqueue path:
+`enqueue` builds a `CatalogEventCore` from an entity's core and `enqueue_set_event` wants a
+`set_kind`/`member_code`. A third path is needed, and **its body fixes what a governance event
+carries on the wire**, which `12-consumer-contracts` pins. The shape is sketched and named for that
+owner rather than settled here. The **no-event declaration** this DoD also requires — submissions
+and supersessions emit nothing, *asserted as set equality* — belongs beside the other slices' inline
+notes in `design/05` (a forbidden document) and in a door's test (which does not exist); both are
+named, neither invented.
+
 **Contract**: `cpt-cf-bss-products-contract-registry-events`
 
 **Touches**:
@@ -1251,6 +1302,14 @@ declared to emit none. Audit **sealing is a platform capability and is deliberat
 here** — v1 ships completeness over a reserved, unwritten sealing seam, and tamper-evidence does
 not ship. Until that capability activates, immutability is the trigger whitelist on both engines
 and nothing cryptographic.
+
+**All three writers ship and none has a caller.** `repo::write_refusal_audit`,
+`write_eventless_act_audit` and `write_elevated_read_audit` exist at `HEAD` and need no shared-plane
+change, so this DoD needs **no patch** — it needs doors. Every refusal this feature raises is
+carried as a domain value or a repository answer today, and the lane that would write its audit row
+is the decide, submit or elevate door (§7 row 12). The elevated-read writer takes the session id and
+is probed at the row; the DoD's *"the count asserted, not sampled"* needs a lane that makes several
+elevated reads, and none opens one. C7's sealing seam stays deliberately unwritten (§7 row 21*).
 
 **Implements**: `cpt-cf-bss-products-flow-decide`,
 `cpt-cf-bss-products-flow-breakglass`
@@ -1394,7 +1453,7 @@ in it is a question about every other feature's gate.
 | 29** | ~~**Four of the five subject kinds cannot cross the seam.**~~ **Answered (owner call, 2026-08-31 — P-D-67 arm 4): the gate's subject widens to the approval store's own pair, `(subject_kind, subject_ref)`**, with `EntityRef` remaining the constructor for the entity kinds — the store already fixed the vocabulary, so the seam expressing less than the store records was the defect. `features/catalog-version.md` §7 row 26 is the same seam from the other side, answered by the same arm; item 14's storage half is untouched. *Original text:* The seam's subject type is an entity reference whose kind enum is exactly `Product | Sku`. A `governed_live_op`, a `system_signal`, an `sku_correction` and a `bulk_batch` have no representation to hand `evaluate`, while `dod-system-signal` obliges the gate to admit one. Item 14 sees the storage half of this and misses the seam half | no DoD — **resolved by P-D-67**; `dod-gate-host`, `dod-system-signal` and `dod-approval-store` carry the widened seam | was this feature with 01; **closed** |
 | 30** | **`APPROVER_ROLE_REQUIRED` has no raise path.** The gate's only refusal channel maps every refusal to `APPROVAL_REQUIRED` through a single method that exists, in its own words, so "a door that matched on the verdict itself could choose another code". The other channel is contractually reserved for infrastructure failure. Raising a second gate code needs the verdict widened with a code — again against `dod-gate-host`'s no-parallel-vocabulary clause. **Item 13 debates this code's status while its raise path does not exist** | `dod-governance-errors`, `dod-gate-host` | this feature with 01 |
 | 31** | **A tenant at `N = 0` never reaches `satisfied`.** §4's only human arm fires when the descriptor is "met by distinct principals", and at `N = 0` no decision is ever recorded, so nothing meets anything; the only auto-satisfy arm is `system_signal`. The record stays `pending` and the gate, which answers yes only to a `satisfied` record, refuses forever — **re-blocking exactly the one-person tenant the quorum floor exists to unblock**. Item 11's alternative answer is no cheaper: evaluating satisfaction at gate time makes the consume flip run `pending → consumed`, an edge §4 row 5 forbids | `cpt-cf-bss-products-state-approval-record`, `dod-quorum-evaluator`, `dod-finance-predicate` | this feature |
-| 32** | **Two build obligations the code books to this feature and no DoD carries.** The entity-version migration says `approval_ref` "is nullable today, and the tightening is owed to slice 05 … to be applied **by editing this file in place**", together with whatever referential constraint this feature's own record table earns. And `authz.rs` records that registering its label type-schemas "is still owed" — the gear's `init` does not call it yet. Extending the catalog also touches the instance blocks, the label roster and a hardcoded three-action array that fails on the first `submit`, `decide` or `elevate` the catalog mints | `dod-approval-store`, `dod-rbac-catalog` | this feature with 01 |
+| 32** | **Two build obligations the code books to this feature and no DoD carries.** The entity-version migration says `approval_ref` "is nullable today, and the tightening is owed to slice 05 … to be applied **by editing this file in place**", together with whatever referential constraint this feature's own record table earns. And `authz.rs` records that registering its label type-schemas "is still owed" — **confirmed at `HEAD` 2026-09-02**: `authz_label_type_schemas()` exists and its only caller is `authz_tests.rs`, so no production path registers them. **The row's third clause is stale and is struck**: it read *"a hardcoded three-action array that fails on the first `submit`, `decide` or `elevate` the catalog mints"*, and there is **no such array in production code** — the actions are individual `&str` constants, `SUBMIT`, `DECIDE`, `ELEVATE` and `EXPORT` all exist, and the only three-element array is a local in one test (`authz_tests.rs`) asserting three specific names. The catalog has already minted all four actions and the suite is green, so whatever the clause described was overtaken by the extension it warned about | `dod-approval-store`, `dod-rbac-catalog` | this feature with 01 |
 | 33*** | **The materiality policy object has no store and no door.** `inst-mt-policy-material` makes it a `GovernedLiveOp` subject on its own pair `materiality_policy × write`, and `authz.rs` mints the pair — but `DESIGN.md` §3.5 gives this slice exactly `products_approval`, `products_approval_decision` and `products_breakglass_session`, and §3.2 of the design records `materiality_policy × write` as having **no route declared**. So the shipped `MaterialityPolicy` is a value with a default and a floor that nothing can persist or mutate, and the evaluator refuses every act until one is supplied. A fourth table or a `ProductsConfig` home is the choice, and both change what "in force at the submission instant" reads | `cpt-cf-bss-products-dod-materiality-policy` | this feature with the schema owner |
 | 34*** | **An unresolvable materiality input has no declared code.** `dod-materiality-evaluator` requires the act refused rather than defaulted, and the shipped refusal is a domain value (`MaterialityUnresolved`) because there is nothing to render: §3.3 names no code for it, and the gear's 503 set is **closed at three by name** — `AUDIT_UNAVAILABLE`, 08's `READ_MODEL_OVERLOADED`, 03's `USAGE_TYPE_UNAVAILABLE` (`design/01` §3.3, 12 `inst-cc-errors`) — so minting a fourth would make a closed roster consistent and wrong. The refusal reaches no wire until the submit door lands, which is when the code becomes load-bearing | `cpt-cf-bss-products-dod-governance-errors` | this feature with 12 |
 | 35*** | **`dod-pii-on-reasons` names a submission reason this feature does not store.** It obliges the hook on "the submission reason, the rejection reason and the break-glass session reason", and §4 gives `products_approval` **no reason column** — only `products_approval_decision.reason` and `products_breakglass_session.reason` exist. Either the submission carries no operator text (and the DoD names two reasons, not three) or the approval row owes a column | `cpt-cf-bss-products-dod-pii-on-reasons` | this feature with its storage owner |
