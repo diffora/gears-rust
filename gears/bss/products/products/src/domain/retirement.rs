@@ -16,7 +16,7 @@
 //! instant computes. That is a host, not a ruling.
 //!
 //! @cpt-cf-bss-products-dod-retirement-initiation
-//! @cpt-cf-bss-products-dod-flip-guard
+//! @cpt-dod:cpt-cf-bss-products-dod-flip-guard:p1
 //! @cpt-cf-bss-products-dod-replaced-by
 //! @cpt-cf-bss-products-dod-eol-lockout
 //! @cpt-cf-bss-products-dod-lead-window-reannounce

@@ -26,7 +26,7 @@
 //! rule type reaches no runtime.
 //!
 //! @cpt-dod:cpt-cf-bss-products-dod-registered-validator-host:p1
-//! @cpt-dod:cpt-cf-bss-products-dod-publish-ordering:p1
+//! @cpt-cf-bss-products-dod-publish-ordering
 
 use bss_products_sdk::models::LifecycleState;
 
