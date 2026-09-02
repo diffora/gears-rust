@@ -1,9 +1,15 @@
 use super::DomainError;
 use crate::domain::validation::ValidationReport;
 
-#[test]
-fn every_variant_carries_its_design_set_wire_code() {
-    let cases: Vec<(DomainError, &str)> = vec![
+/// One value of every `DomainError` variant, paired with the wire code
+/// `DomainError::code` must answer for it.
+///
+/// A function rather than a `let` inside the test, for the reason
+/// `infra::error_mapping_tests::declared_status_and_code` is one: the roster
+/// is long enough that holding it inline puts the test over
+/// `clippy::too_many_lines`, which this crate denies.
+fn wire_code_roster() -> Vec<(DomainError, &'static str)> {
+    vec![
         (
             DomainError::Validation(ValidationReport::new()),
             "VALIDATION",
@@ -147,15 +153,68 @@ fn every_variant_carries_its_design_set_wire_code() {
             "WATERMARK_CONFLICT",
         ),
         (DomainError::WatermarkFuture("s".into()), "WATERMARK_FUTURE"),
-    ];
+        // -- The ten this roster was short of, added 2026-09-02 on strand A's
+        // A-OWED-11. Measured `DomainError::code`'s arms against this array:
+        // 51 against 41, and the shortfall predates every strand's work. --
+        (
+            DomainError::MeterDeclarationIncomplete("m".into()),
+            "METER_DECLARATION_INCOMPLETE",
+        ),
+        (
+            DomainError::UnrecognizedUnit("u".into()),
+            "UNRECOGNIZED_UNIT",
+        ),
+        (DomainError::UnitDeprecated("u".into()), "UNIT_DEPRECATED"),
+        (
+            DomainError::UnitDelistBlocked("u".into()),
+            "UNIT_DELIST_BLOCKED",
+        ),
+        (
+            DomainError::PlanTierRetireBlocked("p".into()),
+            "PLAN_TIER_RETIRE_BLOCKED",
+        ),
+        (
+            DomainError::AccountingCodeDelistBlocked("a".into()),
+            "ACCOUNTING_CODE_DELIST_BLOCKED",
+        ),
+        (
+            DomainError::SelfApprovalForbidden("s".into()),
+            "SELF_APPROVAL_FORBIDDEN",
+        ),
+        (
+            DomainError::ApprovalSuperseded("a".into()),
+            "APPROVAL_SUPERSEDED",
+        ),
+        (
+            DomainError::DuplicateCategoryName("d".into()),
+            "DUPLICATE_CATEGORY_NAME",
+        ),
+        (DomainError::TaxonomyCycle("t".into()), "TAXONOMY_CYCLE"),
+    ]
+}
+
+#[test]
+fn every_variant_carries_its_design_set_wire_code() {
+    let cases = wire_code_roster();
     for (error, expected) in &cases {
         assert_eq!(error.code(), *expected, "wrong code for {error:?}");
     }
-    // The count is the guard: a variant added without a case here leaves the
-    // roster short, and the roster is what the response map is built from.
+    // The count is a guard, and the WEAKER of the two this enum has. Nothing
+    // ties this array to `DomainError` itself: adding a variant forces a
+    // `code()` arm, because that match is exhaustive, but it does not force a
+    // case here — which is how the roster sat **ten** short of the enum from
+    // before any strand's work until 2026-09-02 (strand A's A-OWED-11 measured
+    // it; the ten are marked in the array above).
+    //
+    // **The strong guard is `infra::error_mapping_tests`**: its
+    // `declared_status_and_code` is an exhaustive `match` over `DomainError`,
+    // so a new variant does not compile until it is handled there, and its
+    // `DOMAIN_ERROR_VARIANTS` pins the count. **That constant and this literal
+    // are the same number and must move together** — they disagreed 51 to 41
+    // until today. Read that file's own note before changing either.
     assert_eq!(
         cases.len(),
-        41,
+        51,
         "the Foundation owns fourteen raiseable codes and hosts two guests \
          (retention-erasure's ERASURE_UNKNOWN_ACTOR, P-D-64 keeping that \
          roster at one, and the clone door's CLONE_SOURCE_DISCARDED, \

@@ -192,6 +192,12 @@ fn one_of_every_variant() -> Vec<DomainError> {
 /// checked on any of them. Bumping the literal by one per added variant
 /// keeps a pre-existing shortfall forever; the only safe move is to
 /// re-derive it against the enum.
+/// **Paired with `domain::error_tests`'s own `cases.len()` literal.** The two
+/// count the same enum and must move together; they disagreed 51 to 41 until
+/// 2026-09-02, when strand A's A-OWED-11 measured the sibling ten short. This
+/// file's guard is the strong one — `declared_status_and_code`'s match is
+/// exhaustive, so a new variant does not compile until it is handled — and the
+/// sibling's is a roster nothing ties to the enum. Move both.
 const DOMAIN_ERROR_VARIANTS: usize = 51;
 
 /// Covers all 14 variants (§3.3's own count, `DomainError::code`'s own
