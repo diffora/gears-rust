@@ -579,20 +579,23 @@ async fn a_stale_watermark_holds_the_sku_conservatively() {
 mod accepted_audit_tests {
     use super::*;
 
-    /// Whether the audit plane carries a row for `action`.
+    /// How many audit rows the plane carries for `action`.
     ///
     /// Asked per action rather than by reading the whole plane: the surface
     /// writes several rows per case and a list assertion would pin an
     /// ordering nothing promises.
-    async fn audited(dsn: &str, action: &str) -> bool {
-        crate::test_support::raw_string_opt(
+    ///
+    /// **A count, not `raw_string_opt`.** That helper's `Option` is the
+    /// *column's* nullability and it panics on a missing row, so a
+    /// presence probe built on it can only answer `true` or panic — which
+    /// makes every assertion message below unreachable and a negative
+    /// control unwritable.
+    async fn audit_rows(dsn: &str, action: &str) -> i64 {
+        crate::test_support::raw_i64(
             dsn,
-            &format!(
-                "SELECT action AS v FROM products_audit_log WHERE action = '{action}' LIMIT 1"
-            ),
+            &format!("SELECT COUNT(*) AS v FROM products_audit_log WHERE action = '{action}'"),
         )
         .await
-        .is_some()
     }
 
     /// **A registration, a watermark post and a retirement each leave a
@@ -606,28 +609,72 @@ mod accepted_audit_tests {
     #[tokio::test]
     async fn every_accepted_act_of_this_surface_is_audited() {
         let harness = harness().await;
-        let response = post_json(
-            app(&harness),
-            "/bss-products/v1/reference-producers",
-            &serde_json::json!({ "producer": "pricing" }),
-        )
-        .await;
-        assert_eq!(response.status(), axum::http::StatusCode::CREATED);
-        assert!(
-            audited(&harness.dsn, "reference_producer_register").await,
-            "an accepted registration leaves a row"
+        // Two producers, because the retirement below must not be the
+        // last one: `PRODUCER_SET_EMPTY_FORBIDDEN` is declared and unbuilt,
+        // and a one-producer fixture would redden this *audit* probe the
+        // day that guard lands — a failure that reads as an audit
+        // regression rather than as a fixture needing a second producer.
+        for producer in ["pricing", "rating"] {
+            let response = post_json(
+                app(&harness),
+                "/bss-products/v1/reference-producers",
+                &serde_json::json!({ "producer": producer }),
+            )
+            .await;
+            assert_eq!(response.status(), axum::http::StatusCode::CREATED);
+        }
+        assert_eq!(
+            audit_rows(&harness.dsn, "reference_producer_register").await,
+            2,
+            "each accepted registration leaves its own row"
         );
 
+        // Bound once: `anchor()` is `now - 1min` and answers a NEW value on
+        // every call, so re-posting `anchor()` would be a *later* instant
+        // and take the write path instead of the replay's.
+        let at = anchor();
         let posted = post_json(
             app(&harness),
             "/bss-products/v1/reference-watermarks",
-            &watermark_body("pricing", anchor(), &[SKU]),
+            &watermark_body("pricing", at, &[SKU]),
         )
         .await;
         assert_eq!(posted.status(), axum::http::StatusCode::OK);
-        assert!(
-            audited(&harness.dsn, "reference_watermark_post").await,
+        assert_eq!(
+            audit_rows(&harness.dsn, "reference_watermark_post").await,
+            1,
             "an accepted post leaves the only record of what the producer claimed"
+        );
+        // The negative control the count makes writable: nothing has
+        // replayed yet, so the replay action carries no row. A presence
+        // probe that could only answer `true` could not assert this.
+        assert_eq!(
+            audit_rows(&harness.dsn, "reference_watermark_replay").await,
+            0,
+            "no replay has happened yet"
+        );
+
+        // **An admitted replay is an accepted post and owes its own row.**
+        // The same instant and the same set: the door answers 200 and
+        // changes nothing, and that is exactly the act a producer's retry
+        // loop repeats.
+        let replayed = post_json(
+            app(&harness),
+            "/bss-products/v1/reference-watermarks",
+            &watermark_body("pricing", at, &[SKU]),
+        )
+        .await;
+        assert_eq!(replayed.status(), axum::http::StatusCode::OK);
+        assert_eq!(
+            audit_rows(&harness.dsn, "reference_watermark_replay").await,
+            1,
+            "the replay is audited under its own action, so a producer that \
+             posted once is distinguishable from one that posted fifty times"
+        );
+        assert_eq!(
+            audit_rows(&harness.dsn, "reference_watermark_post").await,
+            1,
+            "and the replay did not file itself as a write"
         );
 
         let retired = post_empty(
@@ -636,8 +683,9 @@ mod accepted_audit_tests {
         )
         .await;
         assert_eq!(retired.status(), axum::http::StatusCode::OK);
-        assert!(
-            audited(&harness.dsn, "reference_producer_retire").await,
+        assert_eq!(
+            audit_rows(&harness.dsn, "reference_producer_retire").await,
+            1,
             "an accepted retirement leaves a row"
         );
     }

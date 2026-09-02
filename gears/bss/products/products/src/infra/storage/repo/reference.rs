@@ -349,7 +349,10 @@ pub struct NewCorrectionOverride {
     pub reason: String,
     /// Which arm admitted it, and that arm's evidence.
     pub evidence: OverrideEvidence,
-    /// The `05` ceremony reference the audit row also carries.
+    /// The `05` ceremony reference. The `DoD`'s join — an audit row
+    /// carrying the same value — is **owed on both sides**:
+    /// `products_audit_log` has no `ceremony_ref` column and the corrections
+    /// door that would write one does not ship.
     pub ceremony_ref: Uuid,
     /// The instant — the tripwire's operand.
     pub recorded_at: DateTime<Utc>,
@@ -393,9 +396,12 @@ impl OverrideEvidence {
 ///
 /// # Errors
 ///
-/// [`RepoError::Driver`] on a storage failure, including the `CHECK` a
-/// hand-built row could still violate and the `FK` a SKU that does not
-/// exist would.
+/// [`RepoError`] on a storage or scope failure — the file's own wording,
+/// because `driver_failure` answers [`RepoError::Db`] for a scope refusal
+/// and [`RepoError::Driver`] only for a driver error. A caller matching
+/// `Driver` alone would drop the tenant-containment arm. The storage failures
+/// include the `CHECK` a hand-built row could still violate and the `FK` a
+/// SKU that does not exist would.
 pub async fn record_correction_override(
     runner: &impl DBRunner,
     scope: &AccessScope,
@@ -443,12 +449,13 @@ pub async fn record_correction_override(
 /// *"There is no second piece of state to drift from the evidence."* So the
 /// window is the caller's and the count is derived every time, which makes a
 /// disagreement between the number and the rows impossible rather than
-/// merely unlikely. `idx_products_correction_override_window` carries the
-/// probe.
+/// merely unlikely. `idx_products_correction_override_window` serves the
+/// predicate — `(tenant_id, recorded_at)`, leading with the equality — so
+/// the count is an index range scan.
 ///
 /// # Errors
 ///
-/// [`RepoError::Driver`] on a storage failure.
+/// [`RepoError`] on a storage or scope failure.
 pub async fn correction_overrides_since(
     runner: &impl DBRunner,
     scope: &AccessScope,

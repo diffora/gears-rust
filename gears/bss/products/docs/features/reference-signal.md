@@ -1109,17 +1109,21 @@ here is ticked by inspection.
 
 ## 7. Known unknowns
 
-**The arithmetic of this section.** Thirty-three rows: **sixteen carried verbatim** from
+**The arithmetic of this section.** Thirty-eight rows: **sixteen carried verbatim** from
 [`../design/07-reference-signal.md`](../design/07-reference-signal.md) §6 — the slice's full count,
-not a selection — and **seventeen raised here**: five while authoring, from reading the crate, and
-twelve by the three-lens review of this document. Of the thirty-three, **eighteen block no DoD in this
-document** (rows 3, 4, 17, 31 and 33, plus row 27, which **P-D-59 resolved on 2026-08-31**, and
+not a selection — and **twenty-two raised here**: five while authoring, from reading the crate,
+twelve by the three-lens review of this document, and five (rows 34–38) by the three-lens review of
+commit `e939953ee`, each an operand or a contract the shipped code went looking for and could not
+find. Of the thirty-eight, **nineteen block no DoD in this
+document** (rows 3, 4, 17, 31, 33 and 38, plus row 27, which **P-D-59 resolved on 2026-08-31**, and
 rows 1, 13, 25, 26, 28, 29 and 30, which **P-D-71 resolved on 2026-09-01**, and rows 7, 12, 16, 19
 and 32, which **P-D-87 resolved** the same day, freeing `cpt-cf-bss-products-dod-reference-config`,
 `dod-producer-table` and `dod-watermark-door` — all kept in place
 rather than struck; row 32 was listed here before its own `Blocks` field named a DoD, and P-D-87
-made the listing true rather than leaving the two at odds); the other fifteen each name the DoD they
-block.
+made the listing true rather than leaving the two at odds); the other nineteen each name the DoD
+they block. **Rows 34–36 land on `dod-reference-audit` and row 35 also on
+`dod-reference-events`** — both were free of a live blocker before this pass, and both are now
+measurably blocked, which is what the crate found when it went to build them.
 
 **Carried, not answered.** A question is registered against **its owner's** register. Where the
 owner is another document, the row carries a one-line pointer and nothing more.
@@ -1536,6 +1540,64 @@ Five, all from reading the crate at `19a81a406`. Every quotation was byte-verifi
     (b), or arm (b) ships without its escalation.
     **Blocks**: no DoD; it decides whether one changes priority.
     **Owner**: the slice owner.
+
+34. **The retirement door's not-found refusal has no declared code, so it can carry no audit
+    row.** `dod-reference-audit` obliges a row for *"every producer registration and retirement …
+    **accepted or refused**"*, and `design/01` §4.4 scopes the class to *"every refusal a registry
+    door raises, not only the enumerated ones"*. Retiring a producer the tenant does not have is a
+    refusal, and §3.3 names no code for it — `PRODUCER_UNREGISTERED` is declared for **the
+    watermark door, on an unregistered poster** (§5's code table), so spending it here would be a
+    false attribution under 12's one-declaring-slice rule. An audit row's `error_code` is the
+    channel a consumer matches, so the refusal ships as a bare 404 with no row. Either the code
+    widens to the producer doors or a second one is minted.
+    **Blocks**: `cpt-cf-bss-products-dod-reference-audit`.
+    **Owner**: this feature with `12-consumer-contracts`. *(Raised by the three-lens review of
+    `e939953ee`; two lenses independently.)*
+
+35. **Does an act that emits a broker event still owe an audit row?** The two rows this surface
+    writes for registration and retirement are admissible today only because
+    `ReferenceProducerSetChanged` is emitted nowhere in the crate. `design/01` §4.4 under
+    **P-D-21** holds the table for *"only acts that emit no event"* and says a committed mutation
+    that does emit *"writes no row here; its outbox event is the record"* — while
+    `design/07` §3 and `dod-reference-events` require the membership ops to emit
+    `ReferenceProducerSetChanged` **and** audit. The day the event lands, one of the two must give,
+    and which decides whether these rows are removed.
+    **Blocks**: `cpt-cf-bss-products-dod-reference-audit`, `cpt-cf-bss-products-dod-reference-events`.
+    **Owner**: `01-foundation`'s owner with this feature. *(Raised by the three-lens review of
+    `e939953ee`; two lenses independently.)*
+
+36. **The audit side of the ceremony join has no column.** `dod-reference-audit` requires a
+    break-glass correction's row to *"carry the ceremony reference, the same value
+    `products_correction_override` stores, so the ceremony and the evidence are joinable from
+    either side"*. `products_audit_log`'s roster carries **no `ceremony_ref`** — its columns are
+    `audit_id`, `tenant_id`, `actor_ref`, `action`, `subject_kind`, `subject_id`,
+    `subject_revision`, `error_code`, `attempted_key`, `reason`, `correlation_id`, `written_at`,
+    `session_id`. So the join is owed on both sides, not just on the corrections door's. Whether
+    the value rides a new column or the existing `correlation_id` is the choice.
+    **Blocks**: `cpt-cf-bss-products-dod-reference-audit`.
+    **Owner**: `01-foundation`'s schema owner with this feature. *(Raised by the three-lens review
+    of `e939953ee`.)*
+
+37. **Is the tripwire's window edge inclusive?** The shipped count filters `recorded_at >= since`
+    and a probe pins that, but nothing normative says which: §5 gives only *"a windowed count over
+    this table"* and `design/07` C6 gives the rate as *"> 5 break-glass corrections / 30 days
+    (configured)"* with no edge rule. A rolling caller crossing a boundary gets a different answer
+    under `>` — at exactly six overrides thirty days apart, one reading escalates and the other
+    does not.
+    **Blocks**: `cpt-cf-bss-products-dod-tripwire`.
+    **Owner**: the tripwire's §17.1 owner. *(Raised by the three-lens review of `e939953ee`.)*
+
+38. **May a retention collector delete from `products_correction_override`, and which document
+    says?** `design/10` `inst-rt-gc` lists *"correction overrides (audit-grade, statutory max)"*
+    among the stores whose expiry candidates it computes; this table's guard refuses every
+    `DELETE` unconditionally. The chain holds **three shapes for one class**: the audit plane took
+    a row-image retention predicate (**P-D-34**), `products_catalog_version_entry` took an interim
+    message naming slice 10 as the future admitter, and `products_approval`,
+    `products_breakglass_session` and this table took a flat refusal. A collector reaching a
+    statutory-max row raises `P0001`, which is not retryable contention, so the sweep aborts and
+    takes its other candidates with it.
+    **Blocks**: no DoD here; it is `10-retention-erasure`'s to answer for the whole class.
+    **Owner**: `10-retention-erasure`'s owner. *(Raised by the three-lens review of `e939953ee`.)*
 
 ### Owed to other documents, recorded and deliberately not edited
 

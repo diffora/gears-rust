@@ -3410,10 +3410,36 @@ async fn clearing_a_product_code_writes_null_and_frees_the_code_for_another_prod
 
 /// The correction-override evidence and its tripwire (`dod-override-table`).
 mod correction_override_tests {
+    use sea_orm::{ColumnTrait, Condition, EntityTrait};
+    use toolkit_db::secure::{DBRunner, SecureEntityExt};
+
     use super::super::{
         NewCorrectionOverride, OverrideEvidence, correction_overrides_since,
         record_correction_override,
     };
+    use crate::infra::storage::entity::correction_override;
+
+    /// Read one evidence row back through the secure path the repository
+    /// itself uses — the only way gear code, test code included, reaches a
+    /// row (`DBRunner` is sealed).
+    async fn read_override(
+        runner: &impl DBRunner,
+        scope: &AccessScope,
+        override_id: Uuid,
+    ) -> correction_override::Model {
+        correction_override::Entity::find()
+            .secure()
+            .scope_with(scope)
+            .filter(
+                Condition::all()
+                    .add(correction_override::Column::TenantId.eq(TENANT))
+                    .add(correction_override::Column::OverrideId.eq(override_id)),
+            )
+            .one(runner)
+            .await
+            .expect("the read runs")
+            .expect("the row this test just wrote exists")
+    }
     use super::*;
 
     async fn with_a_sku() -> DBProvider<DbError> {
@@ -3494,6 +3520,14 @@ mod correction_override_tests {
 
     /// The arm's evidence round-trips into the column the `CHECK` pins for
     /// it, and the other column stays null.
+    ///
+    /// **Every column is read back, not just counted.** The `CHECK` already
+    /// refuses an arm/column swap, so a count proves only what the DDL
+    /// proves; what nothing else guards is a *value* mix-up inside the
+    /// admitted shape. Transposing `field` and `reason` in the writer keeps
+    /// both `CHECK`s satisfied (both are `<> ''`), keeps the count at two,
+    /// and records the corrected field as the justification on the one table
+    /// an auditor reads.
     #[tokio::test]
     async fn each_arm_stores_its_own_evidence_column() {
         let db = with_a_sku().await;
@@ -3501,13 +3535,22 @@ mod correction_override_tests {
         let scope = AccessScope::for_tenant(TENANT);
 
         let mut arm_a = override_at(at(11));
+        let unavailable_id = arm_a.override_id;
+        arm_a.field = "metering_unit".to_owned();
+        arm_a.reason = "the collector deleted the unit".to_owned();
         arm_a.evidence = OverrideEvidence::ProducerUnavailable {
             snapshot: "{\"pricing\":\"stale\"}".to_owned(),
         };
+        let ceremony_a = arm_a.ceremony_ref;
         record_correction_override(&conn, &scope, TENANT, arm_a)
             .await
             .expect("arm (a) is admitted");
-        record_correction_override(&conn, &scope, TENANT, override_at(at(12)))
+
+        let mut arm_b = override_at(at(12));
+        let unresolvable_id = arm_b.override_id;
+        arm_b.field = "usage_type_ref".to_owned();
+        arm_b.reason = "the target no longer resolves".to_owned();
+        record_correction_override(&conn, &scope, TENANT, arm_b)
             .await
             .expect("arm (b) is admitted");
 
@@ -3518,6 +3561,42 @@ mod correction_override_tests {
             2,
             "both arms are evidence, and both count"
         );
+
+        let row_a = read_override(&conn, &scope, unavailable_id).await;
+        assert_eq!(row_a.sku_id, SKU);
+        assert_eq!(
+            row_a.field, "metering_unit",
+            "the corrected field, not the reason"
+        );
+        assert_eq!(
+            row_a.reason, "the collector deleted the unit",
+            "the justification, not the field"
+        );
+        assert_eq!(row_a.admitting_arm, "producer_unavailable");
+        assert_eq!(
+            row_a.unavailability_snapshot.as_deref(),
+            Some("{\"pricing\":\"stale\"}"),
+            "arm (a)'s evidence lands in arm (a)'s column"
+        );
+        assert_eq!(
+            row_a.unresolvable_target, None,
+            "and the other column stays null"
+        );
+        assert_eq!(
+            row_a.ceremony_ref, ceremony_a,
+            "the ceremony reference is the caller's"
+        );
+
+        let row_b = read_override(&conn, &scope, unresolvable_id).await;
+        assert_eq!(row_b.field, "usage_type_ref");
+        assert_eq!(row_b.reason, "the target no longer resolves");
+        assert_eq!(row_b.admitting_arm, "unresolvable_target");
+        assert_eq!(
+            row_b.unresolvable_target.as_deref(),
+            Some("sku:missing"),
+            "arm (b)'s evidence lands in arm (b)'s column"
+        );
+        assert_eq!(row_b.unavailability_snapshot, None);
     }
 }
 

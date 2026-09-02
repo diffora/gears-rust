@@ -23,9 +23,16 @@
 //!
 //! # Append-only, unconditionally
 //!
-//! Evidential rows admit no `UPDATE` and no `DELETE` —
+//! Evidential rows admit no `UPDATE` and no `DELETE`. The `UPDATE` half is
 //! `m20260829_000007`'s unconditional shape rather than the head tables'
-//! whitelist, because there is no admitted edit at all. A correction that
+//! whitelist, because there is no admitted edit at all. The `DELETE` half is
+//! **this file's own choice, not a copy**: `m20260829_000007`'s `DELETE` arm
+//! is conditional, running P-D-40's referential predicate, and nothing here
+//! has a referencing table to predicate on. Which collector may ever delete
+//! from this table is registered as an open item — `10-retention-erasure`
+//! `inst-rt-gc` lists correction overrides among the stores whose expiry
+//! candidates it computes, and the audit plane resolved the same tension the
+//! other way with a row-image retention arm (P-D-34). A correction that
 //! turns out wrong is a **new** row, exactly as a mis-set identity is a new
 //! entity: the trail is the product.
 //!
@@ -35,17 +42,26 @@
 //! `tenant_id` is the scope column beside it — so a two-column FK matches no
 //! unique constraint and the migrator refuses its own DDL. The chain's own
 //! test caught it; `m20260829_000003`'s FK to `products_product` has the
-//! same single-column shape for the same reason. Tenant containment is the
-//! scope layer's, not this key's.
+//! same single-column shape for the same reason. Tenant containment is
+//! **the door's precondition, not the scope layer's**: a scope carrying
+//! `OWNER_TENANT_ID In [A]` validates `tenant_id` alone and says nothing
+//! about `sku_id`, so a writer must read the SKU under `(scope, tenant_id)`
+//! before recording evidence against it — the shape `api::rest::skus`'
+//! parent resolution already uses. Nothing writes this table yet; the
+//! precondition arrives with the corrections door.
 //!
 //! # `ceremony_ref` carries no FK
 //!
-//! The record it names is `05-governance`'s approval table, and the audit
-//! row's own `ceremony_ref` is the join from the other side
-//! (`dod-reference-audit`: *"so the ceremony and the evidence are joinable
-//! from either side"*). An FK would make this migration depend on a slice
-//! whose write path does not ship, which is the same landing
-//! `m20260901_000014`'s `approval_ref` already took.
+//! The record it names is `05-governance`'s approval table — which **does**
+//! ship as of `m20260901_000016`, with a key an FK could target, so the
+//! reason is not the one `m20260901_000014`'s `approval_ref` gave (*"the
+//! record it names is 05-governance's table, which does not ship"*). The
+//! reason here is the writer: no door records evidence yet, and an FK would
+//! block the first evidence row on 05's write path landing first. The
+//! `DoD`'s join — *"so the ceremony and the evidence are joinable from
+//! either side"* — is owed on the audit side too: `products_audit_log`'s
+//! roster carries no `ceremony_ref`, so the other half of the join arrives
+//! with the corrections door and a column on that table.
 //!
 //! # Backend differences
 //!

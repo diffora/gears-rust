@@ -6784,6 +6784,19 @@ mod correction_override_guard_tests {
         )
     }
 
+    /// The same insert with `field` as an operand, so
+    /// `chk_products_correction_override_field` has a probe. The helper
+    /// above pins `field` to a literal, which left that `CHECK` unguarded.
+    fn insert_with_field(field: &str) -> String {
+        format!(
+            "INSERT INTO products_correction_override (tenant_id, override_id, sku_id, field, \
+             reason, admitting_arm, unavailability_snapshot, unresolvable_target, ceremony_ref, \
+             recorded_at) VALUES (X'{TENANT}', X'{}', X'{SKU}', '{field}', 'the ceremony''s', \
+             'producer_unavailable', '{{}}', NULL, X'{TENANT}', '2026-09-02')",
+            uuid::Uuid::new_v4().simple()
+        )
+    }
+
     /// **The arm and its evidence are pinned as a pair.** A row claiming arm
     /// (a) while carrying arm (b)'s evidence is refused, and so is the
     /// reverse — the defect a single nullable blob would admit silently.
@@ -6823,19 +6836,53 @@ mod correction_override_guard_tests {
         }
     }
 
-    /// The arm roster is closed, and the mandatory reason is mandatory.
+    /// The arm roster is closed, the mandatory reason is mandatory, and the
+    /// field is too.
+    ///
+    /// **Each assertion names the constraint that fires**, which is what
+    /// stops the probe passing on a future unrelated refusal — and it is
+    /// also the only way to know which of two overlapping `CHECK`s did the
+    /// work: every disjunct of `chk_..._evidence` names one arm, so an
+    /// unknown arm violates that one too, and only the engine's declaration
+    /// order decides which is reported. Measured, it is `chk_..._arm`.
     #[tokio::test]
-    async fn the_arm_roster_is_closed_and_the_reason_is_required() {
+    async fn the_arm_roster_is_closed_and_the_reason_and_field_are_required() {
         let db = harness().await;
-        exec(
+        let err = exec(
             &db,
             &insert("operator_said_so", "'{}'", "NULL", "'ceremony'"),
         )
         .await
         .expect_err("an arm outside the pair is refused");
-        exec(&db, &insert("producer_unavailable", "'{}'", "NULL", "''"))
+        assert!(
+            err.to_string()
+                .contains("chk_products_correction_override_arm"),
+            "the arm roster is what refuses an unknown arm: {err}"
+        );
+
+        let err = exec(&db, &insert("producer_unavailable", "'{}'", "NULL", "''"))
             .await
             .expect_err("an override with no stated reason is not evidence");
+        assert!(
+            err.to_string()
+                .contains("chk_products_correction_override_reason"),
+            "the reason CHECK is what refuses it: {err}"
+        );
+
+        let err = exec(&db, &insert_with_field(""))
+            .await
+            .expect_err("an override naming no field records nothing");
+        assert!(
+            err.to_string()
+                .contains("chk_products_correction_override_field"),
+            "the field CHECK is what refuses it: {err}"
+        );
+
+        // The positive control: the same row with a real field lands, so
+        // none of the three above can be passing on an unrelated refusal.
+        exec(&db, &insert_with_field("metering_unit"))
+            .await
+            .expect("a named field is admitted");
     }
 
     /// **Evidence admits no edit and no delete** — a wrong correction is a

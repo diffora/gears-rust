@@ -49,12 +49,26 @@
 //!
 //! It obliges a row for *"every producer registration and retirement, every
 //! correction on either lane, and every watermark post — **accepted or
-//! refused**"*. Three of those four acts have doors here and all three now
-//! audit both outcomes. The **corrections** lane does not: its door,
-//! `POST /skus/{skuId}/corrections`, is declared by `design/07` and
-//! registered nowhere, so there is no act to audit and no ceremony
-//! reference to carry. The `DoD`'s join clause — the audit row carrying the
-//! same `ceremony_ref` the evidence table stores — arrives with that door.
+//! refused**"*. Three of those four acts have doors here, and what each
+//! covers is worth stating exactly, because "both outcomes" is not yet true
+//! of all three:
+//!
+//! - the **watermark post** audits both — every refusal through
+//!   [`refuse_reference`], and both accepted verdicts, the write and the
+//!   idempotent replay, under actions that tell them apart;
+//! - **registration** and **retirement** audit their accepted path;
+//! - the **retirement's not-found refusal** does **not**, and cannot yet:
+//!   §3.3 declares no code for it (`PRODUCER_UNREGISTERED` is scoped to the
+//!   watermark door, on an unregistered poster), and an audit row's
+//!   `error_code` is the channel a consumer matches. Registered as
+//!   `features/reference-signal.md` §7.
+//!
+//! The **corrections** lane has no door at all: `POST
+//! /bss-products/v1/skus/{skuId}/corrections` is declared by `design/07`
+//! §7 and registered nowhere, so there is no act to audit. The `DoD`'s join
+//! clause — the audit row carrying the same `ceremony_ref` the evidence
+//! table stores — needs both that door **and** a `ceremony_ref` column on
+//! `products_audit_log`, which §4.4's roster does not carry either.
 //!
 //! @cpt-cf-bss-products-dod-reference-audit
 
@@ -365,8 +379,9 @@ async fn reference_scope(
 }
 
 /// What the post claimed, as the answer needs it — grouped for
-/// [`AcceptedAct`]'s reason: five loose operands, three of which a call site
-/// could transpose silently.
+/// [`AcceptedAct`]'s reason: five loose operands, two of them same-typed
+/// `Uuid`s (`tenant_id` and `actor_ref`) that a call site could transpose
+/// silently.
 struct PostedFacts<'a> {
     /// The acting tenant.
     tenant_id: Uuid,
@@ -444,8 +459,11 @@ async fn answer_watermark(
 }
 
 /// The five operands an accepted act's audit row needs, grouped because
-/// they always travel together and three are strings a call site could
-/// transpose without the compiler noticing.
+/// they always travel together and because two pairs are mutually
+/// assignable: the `Uuid`s `tenant_id` and `actor_ref`, and the `&str`s
+/// `action` and `label`. `subject` is a `String` and cannot be swapped with
+/// either of the latter two, which is why the pairing rather than the count
+/// is what the grouping buys.
 struct AcceptedAct<'a> {
     /// The acting tenant.
     tenant_id: Uuid,
@@ -480,13 +498,19 @@ struct AcceptedAct<'a> {
 /// Every caller passes the runner its own act ran on, so the evidence and
 /// the act commit together — a row written on a second connection could
 /// survive an act that rolled back, which is the failure an audit plane
-/// exists to not have.
+/// exists to not have. `01` §4.4: a committed eventless act's row commits
+/// *"inside the guarded mutation's transaction"*, so *"the act and its
+/// record stand or fall together"*.
 ///
 /// # Errors
 ///
 /// [`RepoError`] where the audit row could not be written. **The caller must
-/// not swallow it**: `01` §4.4 makes an unwritable audit row the act's own
-/// failure, answered `AUDIT_UNAVAILABLE`.
+/// not swallow it**: the act's own transaction fails and the door answers
+/// its ordinary 500. There is **no** `AUDIT_UNAVAILABLE` on this path —
+/// P-D-34 carves that code out for a **refusal's** row and an elevated
+/// read's, and `repo::write_keyed_act_audit` says so in as many words: on
+/// the success path *"a write-time failure here is simply the mutation's own
+/// transaction failing"*.
 async fn audit_accepted_act(
     runner: &impl toolkit_db::secure::DBRunner,
     scope: &AccessScope,
@@ -702,11 +726,33 @@ async fn record_watermark(
                         if watermark_at == stored.watermark_at {
                             // P-D-71: the stored hash is what tells the
                             // admitted replay from the conflict.
-                            return Ok(if stored.set_hash == hash {
-                                WatermarkTxVerdict::Replayed
-                            } else {
-                                WatermarkTxVerdict::Conflict
-                            });
+                            if stored.set_hash != hash {
+                                return Ok(WatermarkTxVerdict::Conflict);
+                            }
+                            // An admitted replay is an **accepted** post and
+                            // owes its row: `dod-reference-audit` covers
+                            // "every watermark post — accepted or refused",
+                            // and the watermark row is overwritten in place,
+                            // so without this a producer that posted once is
+                            // indistinguishable from one that posted the
+                            // same instant fifty times. Its own action token
+                            // keeps it apart from the write, since the
+                            // replay changes nothing.
+                            audit_accepted_act(
+                                tx,
+                                &scope,
+                                AcceptedAct {
+                                    tenant_id,
+                                    actor_ref,
+                                    action: "reference_watermark_replay",
+                                    label: crate::authz::labels::REFERENCE_SIGNAL,
+                                    subject: producer.clone(),
+                                },
+                                now,
+                            )
+                            .await
+                            .map_err(|e| toolkit_db::DbError::Sea(e.to_db_err()))?;
+                            return Ok(WatermarkTxVerdict::Replayed);
                         }
                     }
                     repo::post_reference_watermark(
@@ -737,7 +783,12 @@ async fn record_watermark(
                             tenant_id,
                             actor_ref,
                             action: "reference_watermark_post",
-                            label: crate::authz::labels::REFERENCE_PRODUCER,
+                            // The door's own gate label, which is also what
+                            // all four of its refusals record under: one
+                            // act's two outcomes must answer one
+                            // `subject_kind` predicate, or "accepted or
+                            // refused" is unqueryable as a pair.
+                            label: crate::authz::labels::REFERENCE_SIGNAL,
                             subject: producer.clone(),
                         },
                         now,
@@ -875,28 +926,49 @@ async fn register_producer(
         .await);
     }
 
-    let conn = state.db.conn().map_err(|e| {
-        repo_error_to_canonical(&crate::infra::storage::RepoError::Db(format!(
-            "producer door connection: {e}"
-        )))
-    })?;
-    repo::register_reference_producer(&conn, &scope, tenant_id, &producer, None, now)
+    // One transaction, not two autocommit statements: `01` §4.4 has the
+    // act and its record stand or fall together, and a registration that
+    // committed while its audit row failed would leave a producer whose
+    // `never-received` verdict conservatively references every SKU in the
+    // tenant, with no row naming who caused it. The retirement door below
+    // takes the same shape for the same reason.
+    let scope_for_register = scope.clone();
+    let producer_for_register = producer.clone();
+    state
+        .db
+        .db()
+        .transaction_with_retry::<(), toolkit_db::DbError, _, _>(
+            toolkit_db::secure::TxConfig::default(),
+            crate::api::rest::contention_db_err,
+            move |tx| {
+                let scope = scope_for_register.clone();
+                let producer = producer_for_register.clone();
+                Box::pin(async move {
+                    repo::register_reference_producer(tx, &scope, tenant_id, &producer, None, now)
+                        .await
+                        .map_err(|e| toolkit_db::DbError::Sea(e.to_db_err()))?;
+                    audit_accepted_act(
+                        tx,
+                        &scope,
+                        AcceptedAct {
+                            tenant_id,
+                            actor_ref,
+                            action: "reference_producer_register",
+                            label: crate::authz::labels::REFERENCE_PRODUCER,
+                            subject: producer.clone(),
+                        },
+                        now,
+                    )
+                    .await
+                    .map_err(|e| toolkit_db::DbError::Sea(e.to_db_err()))?;
+                    Ok(())
+                })
+            },
+        )
         .await
-        .map_err(|e| repo_error_to_canonical(&e))?;
-    audit_accepted_act(
-        &conn,
-        &scope,
-        AcceptedAct {
-            tenant_id,
-            actor_ref,
-            action: "reference_producer_register",
-            label: crate::authz::labels::REFERENCE_PRODUCER,
-            subject: producer.clone(),
-        },
-        now,
-    )
-    .await
-    .map_err(|e| repo_error_to_canonical(&e))?;
+        .map_err(|e| {
+            repo_error_to_canonical(&crate::infra::storage::RepoError::Db(e.to_string()))
+        })?;
 
     Ok((
         StatusCode::CREATED,
