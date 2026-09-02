@@ -41,8 +41,11 @@
 
 use chrono::{DateTime, Utc};
 use sea_orm::ActiveValue::Set;
+use sea_orm::sea_query::Expr;
 use sea_orm::{ColumnTrait, Condition, EntityTrait};
-use toolkit_db::secure::{AccessScope, DBRunner, SecureEntityExt, SecureInsertExt};
+use toolkit_db::secure::{
+    AccessScope, DBRunner, SecureEntityExt, SecureInsertExt, SecureUpdateExt,
+};
 use uuid::Uuid;
 
 use super::{driver_failure, supersede_open_approval};
@@ -330,6 +333,32 @@ impl DecisionVerdict {
 /// `acting_principal` is the symmetric move on the other side — the
 /// authenticated principal, asserted equal to the one the row will name.
 ///
+/// # A rejection finalizes the record, in the same transaction as its row
+///
+/// `design/05` §2 rule 4: *"A rejection finalizes the record `rejected` with
+/// the reason; the subject stays as it was"*, and §4 row 3
+/// (`inst-ap-edge-reject`) gives the edge as `pending -> rejected`. Both
+/// writes ride the caller's transaction, so a rejection whose finalization
+/// fails appends no row either — the alternative leaves a rejection on file
+/// against a record still open for a publish.
+///
+/// **The subject is untouched**, which is the rule and not an omission: there
+/// is no `published -> draft` edge in this gear, so a first-publish draft
+/// stays `draft` and a published head keeps its pending edits unpublished.
+///
+/// # A rejection is refused on a `satisfied` record rather than silently not
+/// finalizing
+///
+/// §4 row 5 closes the machine — *"No transition other than those above is
+/// admitted"* — and there is no `satisfied -> rejected` edge. Appending the
+/// row without the flip would leave a recorded rejection against a record the
+/// gate would still authorize, so the fail-closed arm is to refuse the
+/// verdict. An **approval** on a `satisfied` record is admitted, because it
+/// adds a signature and moves no state. No writer produces `satisfied` at
+/// this commit (§7 row 11), so this arm is reachable only from a hand-written
+/// setup today — which is why the probe writes one rather than waiting for a
+/// door.
+///
 /// # Errors
 ///
 /// [`ApprovalStoreError::Refused`] with `SELF_APPROVAL_FORBIDDEN` (403) when
@@ -337,16 +366,17 @@ impl DecisionVerdict {
 /// `APPROVAL_SUPERSEDED` (409) when the record is no longer open.
 /// [`ApprovalStoreError::Repo`] on a storage or scope failure, on a
 /// `quorum_descriptor` this gear wrote wrong ([`RepoError::CorruptRow`]),
-/// and on the three refusals `design/05` §3.3 declares no code for — a
-/// principal mismatch, a decision on a record admitting none, and a second
-/// verdict from one principal.
+/// and on the four refusals `design/05` §3.3 declares no code for — a
+/// principal mismatch, a decision on a record admitting none, a second
+/// verdict from one principal, and a rejection of an already-`satisfied`
+/// record.
 pub async fn record_decision(
     runner: &impl DBRunner,
     scope: &AccessScope,
     new: NewDecision<'_>,
     acting_principal: Uuid,
     decided_at: DateTime<Utc>,
-) -> Result<(), ApprovalStoreError> {
+) -> Result<DecisionOutcome, ApprovalStoreError> {
     if acting_principal != new.approver_principal {
         return Err(ApprovalStoreError::Repo(RepoError::Db(format!(
             "principal {acting_principal} may not cast a verdict attributed to {}: one human, \
@@ -381,6 +411,15 @@ pub async fn record_decision(
                 new.approval_id, record.state
             )),
         ));
+    }
+    // §4 row 5 admits no `satisfied -> rejected` edge, and a rejection row
+    // that finalized nothing would sit against a record the gate still
+    // authorizes. Refusing is the fail-closed arm; an approval here is fine.
+    if new.verdict == DecisionVerdict::Rejected && record.state == "satisfied" {
+        return Err(ApprovalStoreError::Repo(RepoError::Db(format!(
+            "approval {} is satisfied: design/05 section 4 admits no satisfied -> rejected edge,              so a rejection here would append a row that finalizes nothing and leave the record              authorizable",
+            new.approval_id
+        ))));
     }
     // A row this gear wrote wrong, not a statement that failed: the one
     // channel that separates the two is `CorruptRow`, and every other
@@ -431,6 +470,90 @@ pub async fn record_decision(
                 driver_failure(format!("record decision of {}", new.approval_id), e),
             ))
         })?;
+
+    if new.verdict == DecisionVerdict::Rejected {
+        finalize_rejected(runner, scope, new.tenant_id, new.approval_id, decided_at).await?;
+        return Ok(DecisionOutcome::Finalized);
+    }
+    Ok(DecisionOutcome::Appended)
+}
+
+/// What a recorded decision did to the record.
+///
+/// Returned rather than left for the caller to read back, because the door
+/// that emits `ApprovalDecided` needs to know which verdict it is announcing
+/// and a second read could see a peer's supersession instead.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum DecisionOutcome {
+    /// The row landed and the record stays open for further verdicts.
+    Appended,
+    /// The row landed and the record finalized `rejected` in the same
+    /// transaction (`inst-ap-edge-reject`).
+    Finalized,
+}
+
+/// Flip a `pending` record to `rejected`, stamping `finalized_at`.
+///
+/// # The open-state predicate is on the `UPDATE`, not only on the read above
+///
+/// This is `supersede_open_approval`'s lesson applied rather than
+/// rediscovered. That function's first build filtered by id alone, with the
+/// predicate sitting on the preceding read: two concurrent writes both saw
+/// the open record, the winner finalized it, and the loser met the
+/// append-only trigger — *a legal act answering 500*, found by three
+/// independent review lenses. Here the racer is a frozen-content write
+/// superseding the record between this function's caller reading it and this
+/// statement running. With the predicate on the write, the loser matches zero
+/// rows and says so.
+///
+/// **Zero rows is a refusal here, not a no-op**, which is where this differs
+/// from the supersede: there the write is legal whether or not a ceremony was
+/// open, so nothing-matched means "nothing was open". Here a decision row has
+/// **already been appended** in this transaction, so a record that moved out
+/// from under the flip would leave that row against an unfinalized record.
+/// The caller's transaction must roll both back.
+///
+/// `finalized_at` is written with the state because
+/// `chk_products_approval_finalized` pins the pair —
+/// `(state IN ('pending','satisfied')) = (finalized_at IS NULL)` — so a flip
+/// that set one without the other is refused by the engine on both dialects.
+///
+/// # Errors
+///
+/// [`ApprovalStoreError::Repo`] on a storage or scope failure, and when the
+/// record was no longer `pending` by the time the flip ran.
+async fn finalize_rejected(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    approval_id: ApprovalId,
+    now: DateTime<Utc>,
+) -> Result<(), ApprovalStoreError> {
+    let outcome = approval::Entity::update_many()
+        .secure()
+        .scope_with(scope)
+        .col_expr(approval::Column::State, Expr::value("rejected".to_owned()))
+        .col_expr(approval::Column::FinalizedAt, Expr::value(now))
+        .filter(
+            Condition::all()
+                .add(approval::Column::TenantId.eq(tenant_id))
+                .add(approval::Column::ApprovalId.eq(approval_id.get()))
+                // The predicate belongs HERE as well as on the read.
+                .add(approval::Column::State.eq("pending")),
+        )
+        .exec(runner)
+        .await
+        .map_err(|e| {
+            ApprovalStoreError::Repo(driver_failure(
+                format!("finalize rejection of {approval_id}"),
+                e,
+            ))
+        })?;
+    if outcome.rows_affected == 0 {
+        return Err(ApprovalStoreError::Repo(RepoError::Db(format!(
+            "approval {approval_id} left the pending state before its rejection could finalize:              the decision row appended in this transaction must roll back with it"
+        ))));
+    }
     Ok(())
 }
 

@@ -805,6 +805,36 @@ The system **MUST** require the `approval × decide` grant and refuse a caller w
 an already superseded record with `APPROVAL_SUPERSEDED`, finalize a rejection with its mandatory reason while
 leaving the subject unchanged, and emit `ApprovalDecided` on either verdict.
 
+**The finalization had no writer and now does.** `record_decision` appended the row, refused an
+unreasoned rejection, a second verdict from one principal, an author's own and a decision on a
+closed record — and then left the record `pending`, so a rejection changed nothing. `finalize_rejected`
+is §4 row 3's edge (`inst-ap-edge-reject`), flipping `pending -> rejected` and stamping
+`finalized_at` in the **same transaction as the decision row**; `chk_products_approval_finalized`
+pins that pair on both dialects, so a flip writing one without the other is refused by the engine.
+The probe asserts the head is untouched as well as the record finalized — a finalizer that also
+moved the subject would satisfy the first half alone — with the paired control that an **approval**
+finalizes nothing, without which a flip on either verdict would close every record on its first
+signature.
+
+**The `UPDATE` carries the open-state predicate, which is `supersede_open_approval`'s lesson applied
+rather than rediscovered.** That function's first build filtered by id alone with the predicate on
+the preceding read, so two concurrent writes both saw the open record and the loser met the
+append-only trigger — a **legal act answering 500**, found by three review lenses. Here zero rows
+matched is a **refusal** rather than that function's no-op, because a decision row has already been
+appended in this transaction and must roll back with it.
+
+**A rejection on a `satisfied` record is refused rather than appended-and-not-finalized.** §4 row 5
+closes the machine and admits no `satisfied -> rejected` edge; the alternative leaves a recorded
+rejection against a record the gate would still authorize. The paired control is that an approval in
+the same state is admitted, which makes the refusal about the edge and not the state. No writer
+produces `satisfied` at this commit (§7 row 11), so the probe writes it by hand — the shortcut
+`repo_tests` already takes for a state whose door is not this slice's.
+
+**Two clauses remain unbuildable, and neither is arithmetic.** The `approval x decide` grant must be
+refused *before any row is appended*, and there is no decide door to refuse at (§7 row 12); and
+`ApprovalDecided` **does not exist** in `infra/events.rs`, so "emit on either verdict" is a
+`dod-governance-events` patch. §7 row 17 (AC #26's third bullet) is also live against this DoD.
+
 **Implements**: `cpt-cf-bss-products-flow-decide`
 
 **Touches**:
@@ -826,6 +856,16 @@ home: a lane that publishes an override subject without one is a defect, not an 
 subject's own override conditions, and no artifact says where a subject's lint findings are read
 from — `domain::validation`'s report carries no override-condition set, so nothing today can tell
 an approver which findings they must name.
+
+**Re-measured 2026-09-02 and the claim holds.** `ValidationReport` carries `Violation`s and an audit
+code, and `OverrideCondition`, `LintFinding` and `AttentionCondition` return **zero** hits across
+`domain/`. So the storage is complete on both sides — `override_acknowledgments` on the decision row
+for `N >= 1`, `author_override_ack`/`author_override_ack_at` on the record at effective quorum zero,
+routed by `ack_placement` and refused by `submit_approval` at any other count — and the *operand* is
+what does not exist. An acknowledgment "by name" over a set nothing produces cannot be probed, so
+this DoD's remaining half is a blocked build rather than an unwritten one. Its third clause — *"the
+record MUST be the ceremony's only home: a lane that publishes an override subject without one is a
+defect"* — is an assertion about the publish lanes, which are `01`'s and `09`'s doors.
 
 **Implements**: `cpt-cf-bss-products-flow-decide`
 

@@ -57,8 +57,10 @@
 #![allow(clippy::expect_used)]
 
 use chrono::{TimeZone as _, Utc};
+use sea_orm::sea_query::Expr;
+use sea_orm::{ColumnTrait as _, Condition, EntityTrait as _};
 use sea_orm_migration::MigratorTrait as _;
-use toolkit_db::secure::{AccessScope, DBRunner};
+use toolkit_db::secure::{AccessScope, DBRunner, SecureUpdateExt as _};
 use toolkit_db::{ConnectOpts, DBProvider, DbError, connect_db};
 use uuid::Uuid;
 
@@ -67,12 +69,16 @@ use super::super::{
     find_product, insert_entity_version, insert_product, latest_entity_version, save_product_head,
     supersede_open_approval,
 };
-use super::{NewApproval, read_approval, submit_approval};
+use super::{
+    DecisionOutcome, DecisionVerdict, NewApproval, NewDecision, read_approval, record_decision,
+    submit_approval,
+};
 use crate::domain::approval::{ApproverDiff, diff_basis_for, render_diff};
 use crate::domain::governance::{ApprovalId, EntityRef, GateSubject};
 use crate::domain::materiality::{
     MaterialAct, MaterialityEvaluator, MaterialityPolicy, Resolution,
 };
+use crate::infra::storage::entity::approval;
 use crate::infra::storage::migrations::Migrator;
 
 const TENANT: Uuid = Uuid::from_u128(0x9e_11);
@@ -80,6 +86,7 @@ const BRAND: Uuid = Uuid::from_u128(0x9e_b1);
 const PRODUCT: Uuid = Uuid::from_u128(0x9e_f0);
 const ACTOR: Uuid = Uuid::from_u128(0x9e_ac);
 const AUTHOR: Uuid = Uuid::from_u128(0x9e_a0);
+const APPROVER: Uuid = Uuid::from_u128(0x9e_a1);
 
 /// The content frozen at published version 1 — the diff's **basis**.
 const PUBLISHED: &str = r#"{"name":"Fibre 500","regionScope":"eu,apac"}"#;
@@ -391,5 +398,248 @@ async fn a_first_publish_record_renders_its_submission_against_no_basis() {
             submitted: SUBMITTED.to_owned(),
         },
         "the whole stored submission, against no basis, and never the head that moved after it"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The ceremony's finalization (`dod-decide`, `inst-ap-edge-reject`).
+// ---------------------------------------------------------------------------
+
+/// Submit one record against `subject` and answer its id.
+async fn submit_one(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    subject: &GateSubject,
+) -> ApprovalId {
+    let policy = MaterialityPolicy::default();
+    let claims = vec!["catalog-admin".to_owned()];
+    let evaluator =
+        MaterialityEvaluator::new(Resolution::Resolved(&policy), Resolution::Resolved(&claims));
+    let id = ApprovalId::new(Uuid::new_v4());
+    submit_approval(
+        runner,
+        scope,
+        submission(id, subject, SUBMITTED, diff_basis_for(Some(1)), evaluator),
+        at(11),
+    )
+    .await
+    .expect("the submission is stored");
+    id
+}
+
+fn decision(id: ApprovalId, verdict: DecisionVerdict, reason: Option<&str>) -> NewDecision<'_> {
+    NewDecision {
+        tenant_id: TENANT,
+        approval_id: id,
+        approver_principal: APPROVER,
+        verdict,
+        reason,
+        override_acknowledgments: None,
+    }
+}
+
+/// **A rejection finalizes the record and leaves the subject as it was**
+/// (`design/05` §2 rule 4, §4 row 3).
+///
+/// The head is asserted unchanged as well as the record finalized, because a
+/// finalizer that also touched the subject would satisfy the first half
+/// alone — and there is no `published -> draft` edge in this gear for it to
+/// use legally.
+#[tokio::test]
+async fn a_reasoned_rejection_finalizes_the_record_and_leaves_the_subject_alone() {
+    let provider = harness().await;
+    let conn = provider.conn().expect("scoped connection");
+    let scope = AccessScope::for_tenant(TENANT);
+    let subject = subject();
+    seed_head(&conn, &scope, Some(PUBLISHED)).await;
+    let id = submit_one(&conn, &scope, &subject).await;
+
+    let before = find_product(&conn, &scope, TENANT, PRODUCT)
+        .await
+        .expect("read the head")
+        .expect("the head row exists");
+
+    let outcome = record_decision(
+        &conn,
+        &scope,
+        decision(id, DecisionVerdict::Rejected, Some("the tier is wrong")),
+        APPROVER,
+        at(12),
+    )
+    .await
+    .expect("a reasoned rejection is admitted");
+    assert_eq!(outcome, DecisionOutcome::Finalized);
+
+    let record = read_approval(&conn, &scope, TENANT, id)
+        .await
+        .expect("read runs")
+        .expect("the record exists");
+    assert_eq!(record.state, "rejected");
+    assert!(
+        record.finalized_at.is_some(),
+        "chk_products_approval_finalized pins the pair: a terminal state with a NULL \
+         finalized_at is refused by the engine, so the flip must write both"
+    );
+
+    let after = find_product(&conn, &scope, TENANT, PRODUCT)
+        .await
+        .expect("read the head")
+        .expect("the head row exists");
+    assert_eq!(
+        after.lifecycle_state, before.lifecycle_state,
+        "the subject stays as it was"
+    );
+    assert_eq!(after.internal_revision, before.internal_revision);
+    assert_eq!(after.name, before.name);
+}
+
+/// **An approval finalizes nothing.** The record stays open for the second
+/// signature C1 asks for.
+///
+/// Without this case a finalizer that flipped on *either* verdict would pass
+/// the rejection probe and close every record on its first approval.
+#[tokio::test]
+async fn an_approval_leaves_the_record_open() {
+    let provider = harness().await;
+    let conn = provider.conn().expect("scoped connection");
+    let scope = AccessScope::for_tenant(TENANT);
+    let subject = subject();
+    seed_head(&conn, &scope, Some(PUBLISHED)).await;
+    let id = submit_one(&conn, &scope, &subject).await;
+
+    let outcome = record_decision(
+        &conn,
+        &scope,
+        decision(id, DecisionVerdict::Approved, None),
+        APPROVER,
+        at(12),
+    )
+    .await
+    .expect("an approval is admitted");
+    assert_eq!(outcome, DecisionOutcome::Appended);
+    assert_eq!(
+        read_approval(&conn, &scope, TENANT, id)
+            .await
+            .expect("read runs")
+            .expect("the record exists")
+            .state,
+        "pending",
+        "one signature of two closes nothing"
+    );
+}
+
+/// **A rejection on a `satisfied` record is refused, not silently
+/// unfinalized.**
+///
+/// §4 row 5 admits no `satisfied -> rejected` edge, and the alternative
+/// leaves a recorded rejection against a record the gate would still
+/// authorize. No writer produces `satisfied` at this commit (§7 row 11), so
+/// the state is written by hand here — the same shortcut `repo_tests` takes
+/// for a state whose door is not this slice's, and the migration's
+/// append-only guard permits it because `satisfied` is not terminal.
+///
+/// The paired control is that an **approval** in the same state is admitted,
+/// which is what makes the refusal about the edge rather than about the
+/// state.
+#[tokio::test]
+async fn a_rejection_of_a_satisfied_record_is_refused_and_an_approval_is_not() {
+    let provider = harness().await;
+    let conn = provider.conn().expect("scoped connection");
+    let scope = AccessScope::for_tenant(TENANT);
+    let subject = subject();
+    seed_head(&conn, &scope, Some(PUBLISHED)).await;
+    let id = submit_one(&conn, &scope, &subject).await;
+
+    approval::Entity::update_many()
+        .secure()
+        .scope_with(&scope)
+        .col_expr(approval::Column::State, Expr::value("satisfied".to_owned()))
+        .filter(
+            Condition::all()
+                .add(approval::Column::TenantId.eq(TENANT))
+                .add(approval::Column::ApprovalId.eq(id.get())),
+        )
+        .exec(&conn)
+        .await
+        .expect("the setup write lands: satisfied is not a terminal state");
+
+    let refused = record_decision(
+        &conn,
+        &scope,
+        decision(id, DecisionVerdict::Rejected, Some("too late")),
+        APPROVER,
+        at(12),
+    )
+    .await
+    .expect_err("no satisfied -> rejected edge exists");
+    assert!(
+        refused
+            .to_string()
+            .contains("no satisfied -> rejected edge"),
+        "{refused}"
+    );
+
+    // The control: the state is not what refuses, the edge is.
+    let outcome = record_decision(
+        &conn,
+        &scope,
+        decision(id, DecisionVerdict::Approved, None),
+        APPROVER,
+        at(12),
+    )
+    .await
+    .expect("an approval on a satisfied record adds a signature and moves no state");
+    assert_eq!(outcome, DecisionOutcome::Appended);
+    assert_eq!(
+        read_approval(&conn, &scope, TENANT, id)
+            .await
+            .expect("read runs")
+            .expect("the record exists")
+            .state,
+        "satisfied"
+    );
+}
+
+/// **The finalize carries the open-state predicate on its own `UPDATE`.**
+///
+/// The racer is a frozen-content write superseding the record between the
+/// caller's read and the flip. Driving it exactly: submit, supersede through
+/// the door's own writer, then finalize. `record_decision`'s own guard sees
+/// the superseded state first and refuses with `APPROVAL_SUPERSEDED`, so this
+/// case is the *reachable* half of the same defect class — the one that
+/// proves the refusal is a classified 409 and not the append-only trigger's
+/// 500, which is what `supersede_open_approval`'s first build answered for a
+/// legal act.
+#[tokio::test]
+async fn a_record_superseded_under_the_decision_refuses_rather_than_hitting_the_trigger() {
+    let provider = harness().await;
+    let conn = provider.conn().expect("scoped connection");
+    let scope = AccessScope::for_tenant(TENANT);
+    let subject = subject();
+    seed_head(&conn, &scope, Some(PUBLISHED)).await;
+    let id = submit_one(&conn, &scope, &subject).await;
+
+    edit_the_head(&conn, &scope, &subject).await;
+    assert_eq!(
+        read_approval(&conn, &scope, TENANT, id)
+            .await
+            .expect("read runs")
+            .expect("the record exists")
+            .state,
+        "superseded"
+    );
+
+    let refused = record_decision(
+        &conn,
+        &scope,
+        decision(id, DecisionVerdict::Rejected, Some("stale")),
+        APPROVER,
+        at(13),
+    )
+    .await
+    .expect_err("a decision is admitted only while the record is open");
+    assert!(
+        refused.to_string().contains("APPROVAL_SUPERSEDED"),
+        "the refusal must be the declared 409 and not a trigger failure: {refused}"
     );
 }
