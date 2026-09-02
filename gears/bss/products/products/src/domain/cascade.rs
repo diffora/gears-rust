@@ -10,7 +10,15 @@
 //! Row 16 (leave-and-list population) is the PRD owner's. The instruction
 //! scopes the arm to referenced children; that is the operand used here.
 //!
-//! @cpt-dod:cpt-cf-bss-products-dod-cascade-plan:p1
+//! @cpt-dod:cpt-cf-bss-products-dod-cascade-plan
+//!
+//! The marker is **bare on purpose**. The tick was withdrawn by the lead on
+//! 2026-09-02: eight live `features/lifecycle.md` §7 rows name this `DoD` in
+//! their `Blocks` column — 2, 3, 7, 9, 16, 23, 31 and 35 — and none was
+//! struck. Six of the eight are owned by this feature, so they are answerable
+//! here; row 31 is not, and P-D-105 explicitly did not reach it. A `:p1`
+//! marker is a done-claim and it arms this `DoD`'s `to_code` gate, so it goes
+//! back when the rows go, not before.
 //! @cpt-cf-bss-products-dod-cascade-parent-path
 //! @cpt-cf-bss-products-dod-deferred-intent
 

@@ -850,7 +850,7 @@ event schema for vN-compatible widening and **MUST** never be populated in v1, a
 
 ### Cascade plan
 
-- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-cascade-plan`
+- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-cascade-plan`
 
 A Product retirement over non-`retired` SKUs **MUST** require confirmed cascade-retire, refusing an
 unconfirmed request `CASCADE_CONFIRMATION_REQUIRED`. The plan computed at confirmation **MUST**
