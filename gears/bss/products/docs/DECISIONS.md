@@ -1631,6 +1631,15 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   **struck** with this entry named — neither is an open question any more. The predicate change
   lands in `domain::approval`'s host, which is **strand B's** to write, and the runner's call in
   `domain::activation`, which is **strand C's**; both are told, and neither is asked to decide it.
+- **Scoped to one table, measured by strand B (2026-09-02).** This entry's predicate and its
+  writer-count guard are about **`products_scheduled_transition`** and nothing else.
+  `products_bulk_batch.approval_ref` carries the same shape and the same role
+  (`Option<Uuid>`, the pinned approval for a batch), but its writer is `repo::insert_bulk_batch`
+  from `api/rest/bulk.rs` — **not** one of the three gated `insert_scheduled_transition` call sites
+  the safety argument rests on. So the argument **does not transfer to bulk**, and
+  `dod-preauthorized-mode`'s third clause — which names three composite acts — is blocked on that
+  and not on this entry. Extending the arm to a bulk row needs its own writer census and its own
+  decision; a strand doing it unasked would be authoring, and B correctly refused to.
 - **Measured hours later, by strand C's first pass, and it makes this entry inert rather than
   wrong.** No scheduling path writes a real record id. Both retire doors set
   `approval_ref: Uuid::now_v7()` under an explicit comment — *"Host is NoRecord; mint a placeholder

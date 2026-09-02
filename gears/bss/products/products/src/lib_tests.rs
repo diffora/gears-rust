@@ -165,6 +165,14 @@ fn the_guard_fires_on_what_shipped_and_not_on_alignment() {
 /// token, with no test failing and no reviewer prompted. So the invariant is
 /// counted here, and this test is the prompt.
 ///
+/// # What it does **not** cover
+///
+/// One table. `products_bulk_batch.approval_ref` has the same shape and the same
+/// role, and its writer — `repo::insert_bulk_batch` — is not counted here, because
+/// P-D-105's arm does not reach a bulk row and extending it there is an open
+/// decision. Do not read a green run of this test as "every pinned approval in the
+/// gear is written behind a gate". It says three sites, on one table.
+///
 /// # If this fails
 ///
 /// A call site was added or removed. Do not just move the number. Establish that
