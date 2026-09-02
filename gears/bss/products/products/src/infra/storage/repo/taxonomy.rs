@@ -49,7 +49,8 @@ use uuid::Uuid;
 use super::{TERMINAL_HEAD_STATES, driver_failure};
 use crate::domain::error::DomainError;
 use crate::domain::taxonomy::{
-    AssignmentRole, CategoryState, DefinitionState, RetireCensus, TaxonomyMutation,
+    AssignmentRole, CategoryState, DefinitionState, RetireCensus, StaleCategoryToken,
+    TaxonomyMutation,
 };
 use crate::infra::storage::RepoError;
 use crate::infra::storage::entity::{
@@ -1384,6 +1385,130 @@ pub async fn definition_value_holders(
     );
 
     Ok(holders)
+}
+
+// -- The category live-value door's store half (`inst-av-category-branch`,
+//    **P-D-50**) --
+
+/// Write one category display value under the row's act token.
+///
+/// # The token is spent by the same statement that advances it
+///
+/// **P-D-50** makes `products_category.mutation_seq` the door's `If-Match`
+/// operand and an **act counter**: it advances when a door commits an act on
+/// the row and for nothing else, because an approval subject built from an act
+/// identity must render the same subject on the approved retry. So the counter
+/// bump carries the caller's expected value in its own `WHERE` clause. A peer
+/// act between the caller's read and this statement leaves
+/// `rows_affected = 0`, and the caller answers
+/// [`crate::domain::taxonomy::StaleCategoryToken`] rather than absorbing the
+/// race — the read-then-write window a separate check would leave open is
+/// exactly what the token exists to close.
+///
+/// The value write runs **after** the token is won, on the caller's runner, so
+/// the pair is one transaction if the caller opened one. `inst-av-category-branch`
+/// requires the event in that same transaction too; this function does not
+/// enqueue it, because `infra::events` declares no `CategoryDisplayUpdated`
+/// payload type at this commit.
+///
+/// # Errors
+///
+/// [`RepoError`] on a storage or scope failure. A lost token is
+/// `Ok(Err(StaleCategoryToken))`, not an error: the act was judged and
+/// refused, which is a domain answer.
+pub async fn write_category_display_value(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    category_id: Uuid,
+    expected_seq: i64,
+    value: (Uuid, &str),
+    now: DateTime<Utc>,
+) -> Result<Result<i64, StaleCategoryToken>, RepoError> {
+    let (definition_id, text) = value;
+    let taken = category::Entity::update_many()
+        .secure()
+        .scope_with(scope)
+        .col_expr(
+            category::Column::MutationSeq,
+            Expr::col(category::Column::MutationSeq).add(1),
+        )
+        .col_expr(category::Column::UpdatedAt, Expr::value(now))
+        .filter(
+            Condition::all()
+                .add(category::Column::TenantId.eq(tenant_id))
+                .add(category::Column::CategoryId.eq(category_id))
+                .add(category::Column::MutationSeq.eq(expected_seq)),
+        )
+        .exec(runner)
+        .await
+        .map_err(|e| driver_failure(format!("category token of {category_id}"), e))?;
+
+    if taken.rows_affected == 0 {
+        // Read the row back to report what the token actually stands at. A
+        // vanished row answers the same refusal with the sentinel below: the
+        // caller's precondition did not hold either way, and a 404 is the
+        // door's to prefer once it re-reads.
+        let found = category_mutation_seq(runner, scope, tenant_id, category_id)
+            .await?
+            .unwrap_or(-1);
+        return Ok(Err(StaleCategoryToken {
+            expected: expected_seq,
+            found,
+        }));
+    }
+
+    upsert_attribute_value(
+        runner,
+        scope,
+        tenant_id,
+        AttributeCoordinate {
+            entity_kind: CATEGORY_ENTITY_KIND,
+            entity_id: category_id,
+            definition_id,
+            locale: "",
+            region: "",
+            brand: "",
+        },
+        text,
+        now,
+    )
+    .await?;
+
+    Ok(Ok(expected_seq + 1))
+}
+
+/// The `entity_kind` a category's own values carry.
+///
+/// A literal, not a parsed roster: §7 row 20 is the live question of what that
+/// column admits, and an enum would answer it. What this constant claims is
+/// only that *this* kind is spelled this way.
+const CATEGORY_ENTITY_KIND: &str = "category";
+
+/// Read one category's act counter — the token a door hands back as an
+/// `ETag`.
+///
+/// # Errors
+///
+/// [`RepoError`] on a storage or scope failure.
+pub async fn category_mutation_seq(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    category_id: Uuid,
+) -> Result<Option<i64>, RepoError> {
+    Ok(category::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(category::Column::TenantId.eq(tenant_id))
+                .add(category::Column::CategoryId.eq(category_id)),
+        )
+        .one(runner)
+        .await
+        .map_err(|e| driver_failure(format!("category seq of {category_id}"), e))?
+        .map(|row| row.mutation_seq))
 }
 
 #[cfg(test)]

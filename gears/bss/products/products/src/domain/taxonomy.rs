@@ -1210,6 +1210,267 @@ impl ValidationRule<ContentSaveSubject> for AttributeScopeRule {
     }
 }
 
+// -- The locale fallback chain (`inst-av-resolve`, `inst-av-default-locale`) --
+
+/// One stored value with its coordinate, as the resolver reads it.
+///
+/// The three coordinates carry P-D-88 arm 2's spelling: `""` is **absent**,
+/// not null and not a value named empty-string.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LocalizedValue {
+    /// `""` is absent.
+    pub locale: String,
+    /// `""` is absent.
+    pub region: String,
+    /// `""` is absent.
+    pub brand: String,
+    /// The value itself.
+    pub value: String,
+}
+
+/// What a reader is asking for.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct LocaleRequest<'a> {
+    /// The reader's locale.
+    pub locale: &'a str,
+    /// The reader's region.
+    pub region: &'a str,
+    /// The reader's brand.
+    pub brand: &'a str,
+    /// The tenant's configured default locale.
+    ///
+    /// **A preference, not the anchor.** `inst-av-resolve`'s item-37 note is
+    /// explicit: *"Totality is anchored on the resolution path, not on the
+    /// config value ... the tenant default locale is ungoverned config with no
+    /// re-validation, so anchoring on it would un-total the chain for every
+    /// already-published entity the moment it changed."* So this is consulted
+    /// at step 3 and the chain still ends at the global coordinate.
+    ///
+    /// The gear carries no configuration field for it, so every caller
+    /// supplies it and none can today. That absence is the resolver's, not
+    /// this type's, and it is reported rather than defaulted.
+    pub tenant_default_locale: &'a str,
+}
+
+/// Which step of `inst-av-resolve`'s chain answered.
+///
+/// Reported so a matrix fixture can assert **which** step resolved rather
+/// than only that something did — a resolver whose first step matched
+/// everything would satisfy a value-only assertion at every row of the
+/// matrix.
+#[domain_model]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum ResolutionStep {
+    /// `(locale, region, brand)` — the reader's exact coordinate.
+    Exact,
+    /// `(locale, brand)` — region dropped.
+    LocaleAndBrand,
+    /// `(default-locale, brand)` — the tenant preference, brand kept.
+    DefaultLocaleAndBrand,
+    /// `("", "", "")` — the global coordinate, which is what makes the chain
+    /// total for every brand.
+    Global,
+}
+
+/// A resolved value and the step that produced it.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct Resolved<'v> {
+    /// The value.
+    pub value: &'v str,
+    /// Which step answered.
+    pub step: ResolutionStep,
+}
+
+/// Walk `inst-av-resolve`'s chain over one definition's stored values.
+///
+/// `(locale, region, brand) -> (locale, brand) -> (default-locale, brand) ->
+/// global`, in that order, first hit wins.
+///
+/// # The chain drops `region` after the first step, and that is the design's
+///
+/// Steps 2 and 3 name only a locale and a brand, so both look for a value
+/// whose `region` is **absent** — a region-specific value is reachable only by
+/// a reader who names that region. Nothing in the chain widens a regional
+/// value to a neighbouring region, which is what a `region`-insensitive step 2
+/// would silently do.
+///
+/// # `""` in the request is a coordinate the reader did not name
+///
+/// A reader with no brand looks for `brand: ""` at every step, so steps 3 and
+/// 4 coincide for it. That is not a bug and not a shortcut: the global
+/// coordinate **is** `(default-locale-less, region-less, brand-less)`, and a
+/// brand-less reader whose tenant default matches nothing simply arrives one
+/// step early.
+///
+/// # `None` means the chain ran out
+///
+/// Which `inst-av-default-locale` exists to prevent, by requiring the global
+/// value at publish. This function reports the gap rather than inventing a
+/// value, so `dod-default-locale`'s validator is what keeps it unreachable.
+#[must_use]
+pub fn resolve_localized<'v>(
+    request: &LocaleRequest<'_>,
+    values: &'v [LocalizedValue],
+) -> Option<Resolved<'v>> {
+    let at = |locale: &str, region: &str, brand: &str| {
+        values
+            .iter()
+            .find(|v| v.locale == locale && v.region == region && v.brand == brand)
+            .map(|v| v.value.as_str())
+    };
+    let chain = [
+        (
+            ResolutionStep::Exact,
+            at(request.locale, request.region, request.brand),
+        ),
+        (
+            ResolutionStep::LocaleAndBrand,
+            at(request.locale, "", request.brand),
+        ),
+        (
+            ResolutionStep::DefaultLocaleAndBrand,
+            at(request.tenant_default_locale, "", request.brand),
+        ),
+        (ResolutionStep::Global, at("", "", "")),
+    ];
+    chain
+        .into_iter()
+        .find_map(|(step, hit)| hit.map(|value| Resolved { value, step }))
+}
+
+/// The global coordinate, spelled.
+///
+/// **P-D-88 arm 2** ships the three columns `NOT NULL` with `""` as the stated
+/// absence, so the global coordinate is `("", "", "")` and the `UNIQUE` over
+/// the tuple is total. That is the *spelling*; §6's row 8 asks what it
+/// **means** — see [`DefaultLocaleRequired`].
+pub const GLOBAL_COORDINATE: (&str, &str, &str) = ("", "", "");
+
+/// Whether a stored coordinate is the global one.
+#[must_use]
+pub fn is_global(value: &LocalizedValue) -> bool {
+    (
+        value.locale.as_str(),
+        value.region.as_str(),
+        value.brand.as_str(),
+    ) == GLOBAL_COORDINATE
+}
+
+/// One localized definition's values, as the publish door presents them.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CarriedDefinition {
+    /// The definition key, for the refusal to name.
+    pub key: String,
+    /// Whether the definition takes locale coordinates. A non-localized one
+    /// is not judged: it has no locale chain to make total.
+    pub localized: bool,
+    /// Every coordinate the entity carries for it.
+    pub values: Vec<LocalizedValue>,
+}
+
+/// What a `-> published` transition presents to the default-locale validator.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PublishedContentSubject {
+    /// One entry per definition the entity carries values for.
+    pub carried: Vec<CarriedDefinition>,
+}
+
+/// Every localized definition an entity carries values for must carry one at
+/// the global coordinate (`inst-av-default-locale`).
+///
+/// @cpt-cf-bss-products-dod-default-locale
+///
+/// # At publish, never at draft save
+///
+/// Registered in the `-> published` pipeline and nowhere else, for the reason
+/// `rules::PrimaryCategoryRequired`'s own doc gives about its sibling: a rule
+/// in the shared pipeline would refuse a draft save that the design admits.
+/// A partially-authored draft is legal; an entity reaching `published` with a
+/// fallback chain that can run out is not.
+///
+/// # Per-brand defaults are overrides, and this rule is what makes them safe
+///
+/// `inst-av-default-locale` calls them *"optional overrides"* and gives the
+/// reason: the global value is *"what makes the fallback chain total for
+/// **every** brand"*. So a value at `(default-locale, brand A)` satisfies
+/// nothing here — a brand-B reader never visits it, which is exactly the
+/// matrix case `dod-locale-resolver` requires.
+///
+/// # §6 row 8, and why this rule is buildable anyway
+///
+/// Row 8 asks what the global coordinate's key is, and notes that if it means
+/// all three coordinates absent then *"a default-locale value at the global
+/// coordinate"* names a coordinate carrying no locale. That naming is indeed
+/// self-contradictory. The **fork it implies is not live**, though:
+/// `inst-av-resolve`'s item-37 note already refuses the other horn in as many
+/// words — *"anchoring on [the tenant default locale] would un-total the chain
+/// for every already-published entity the moment it changed"* — and P-D-88 arm
+/// 2 ships the spelling `("", "", "")`. So this rule demands a value at the
+/// shipped global coordinate, and what is left of row 8 is a naming defect
+/// rather than a decision. That reading is registered, not asserted: the row
+/// stays open and this `DoD` stays unticked.
+pub struct DefaultLocaleRequired;
+
+impl DefaultLocaleRequired {
+    /// The refusal code (`design/02` §3.3, 422 architectural).
+    pub const CODE: &'static str = "DEFAULT_LOCALE_MISSING";
+}
+
+impl ValidationRule<PublishedContentSubject> for DefaultLocaleRequired {
+    fn name(&self) -> &'static str {
+        "inst-av-default-locale"
+    }
+
+    fn phase(&self) -> Phase {
+        Phase::RegisteredValidators
+    }
+
+    fn evaluate(&self, subject: &PublishedContentSubject, report: &mut ValidationReport) {
+        for definition in &subject.carried {
+            if !definition.localized || definition.values.is_empty() {
+                continue;
+            }
+            if !definition.values.iter().any(is_global) {
+                report.violate(
+                    Self::CODE,
+                    format!("attributes.{}", definition.key),
+                    format!(
+                        "`{}` carries localized values but none at the global coordinate, so the \
+                         fallback chain runs out for at least one brand",
+                        definition.key
+                    ),
+                );
+            }
+        }
+    }
+}
+
+/// The category live-value door's precondition mismatch
+/// (**P-D-50**, `inst-av-category-branch`).
+///
+/// Carries the two counters so a caller can re-fetch without a second read.
+/// **Not a [`DomainError`]**: `STALE_CATEGORY_TOKEN` has no variant at this
+/// commit, for the reason [`CategoryReferenced`] gives.
+///
+/// It is deliberately **neither** of its two neighbours: `STALE_REVISION` is
+/// the Foundation's entity-head code, which a live row cannot be stale
+/// against, and `STALE_LIVE_OP` is the envelope's own currency check. This is
+/// the door's `If-Match`, a third thing, and `design/02` §3.5 says so while
+/// introducing all three.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct StaleCategoryToken {
+    /// What the caller sent in `If-Match`.
+    pub expected: i64,
+    /// What the row carries now.
+    pub found: i64,
+}
+
+impl StaleCategoryToken {
+    /// The refusal code (`design/02` §3.3, **409** — the one code of this
+    /// feature's sixteen that §3.3 does not file at 422).
+    pub const CODE: &'static str = "STALE_CATEGORY_TOKEN";
+}
+
 #[cfg(test)]
 #[path = "taxonomy_tests.rs"]
 mod taxonomy_tests;

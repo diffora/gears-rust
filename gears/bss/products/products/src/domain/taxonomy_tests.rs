@@ -5,13 +5,14 @@ use uuid::Uuid;
 
 use super::{
     AssignmentCandidate, AssignmentRole, AttributeDefinitionActiveRule,
-    AttributeDefinitionKnownRule, AttributeScopeRule, AttributeValueTypeRule,
+    AttributeDefinitionKnownRule, AttributeScopeRule, AttributeValueTypeRule, CarriedDefinition,
     CategoryNotRetiredRule, CategoryReferenced, CategoryResolvableRule, CategoryRoleConflictRule,
-    CategoryState, ContentSaveSubject, DefinitionInUse, DefinitionState, REGISTRY_SEEDED_BY,
-    ResolvedDefinition, RetireCensus, TaxonomyLimitExceeded, TaxonomyLimits, TaxonomyMutation,
-    ValueCandidate, ValueShape, WELL_KNOWN_SEEDS, ancestors_of, children_of, cycle_verdict,
-    definition_edge, definition_in_use_verdict, depth_of, is_removable, limit_verdict,
-    retire_verdict, seeded_edge,
+    CategoryState, ContentSaveSubject, DefaultLocaleRequired, DefinitionInUse, DefinitionState,
+    GLOBAL_COORDINATE, LocaleRequest, LocalizedValue, PublishedContentSubject, REGISTRY_SEEDED_BY,
+    ResolutionStep, ResolvedDefinition, RetireCensus, StaleCategoryToken, TaxonomyLimitExceeded,
+    TaxonomyLimits, TaxonomyMutation, ValueCandidate, ValueShape, WELL_KNOWN_SEEDS, ancestors_of,
+    children_of, cycle_verdict, definition_edge, definition_in_use_verdict, depth_of, is_global,
+    is_removable, limit_verdict, resolve_localized, retire_verdict, seeded_edge,
 };
 use crate::domain::validation::ValidationPipeline;
 
@@ -911,4 +912,246 @@ fn the_in_use_verdict_names_its_carriers() {
     )
     .expect_err("held");
     assert!(many.detail.contains("at least 3"), "{many:?}");
+}
+
+// -- The locale fallback chain. --
+
+const TENANT_DEFAULT: &str = "en-GB";
+
+fn coordinate(locale: &str, region: &str, brand: &str, value: &str) -> LocalizedValue {
+    LocalizedValue {
+        locale: locale.to_owned(),
+        region: region.to_owned(),
+        brand: brand.to_owned(),
+        value: value.to_owned(),
+    }
+}
+
+/// The matrix fixture: one value at each step of the chain, plus a
+/// brand-A-only default so the brand-B case has something to miss.
+fn matrix() -> Vec<LocalizedValue> {
+    vec![
+        coordinate("fr-FR", "eu", "acme", "exact"),
+        coordinate("fr-FR", "", "acme", "locale+brand"),
+        coordinate(TENANT_DEFAULT, "", "acme", "default+brandA"),
+        coordinate("", "", "", "global"),
+    ]
+}
+
+fn ask<'a>(locale: &'a str, region: &'a str, brand: &'a str) -> LocaleRequest<'a> {
+    LocaleRequest {
+        locale,
+        region,
+        brand,
+        tenant_default_locale: TENANT_DEFAULT,
+    }
+}
+
+/// **Every step of `inst-av-resolve`'s chain, each reached by a reader that
+/// misses the ones above it.**
+///
+/// The step is asserted, not only the value: a resolver whose first step
+/// matched everything would satisfy a value-only assertion at every row here,
+/// and a chain with two steps collapsed would satisfy it at most of them.
+#[test]
+fn the_resolution_matrix_reaches_every_step() {
+    let values = matrix();
+    for (locale, region, brand, expected_value, expected_step) in [
+        ("fr-FR", "eu", "acme", "exact", ResolutionStep::Exact),
+        (
+            "fr-FR",
+            "apac",
+            "acme",
+            "locale+brand",
+            ResolutionStep::LocaleAndBrand,
+        ),
+        (
+            "de-DE",
+            "eu",
+            "acme",
+            "default+brandA",
+            ResolutionStep::DefaultLocaleAndBrand,
+        ),
+        ("de-DE", "eu", "beta", "global", ResolutionStep::Global),
+    ] {
+        let hit = resolve_localized(&ask(locale, region, brand), &values)
+            .unwrap_or_else(|| panic!("({locale}, {region}, {brand}) resolved to nothing"));
+        assert_eq!(
+            (hit.value, hit.step),
+            (expected_value, expected_step),
+            "({locale}, {region}, {brand})"
+        );
+    }
+}
+
+/// **The `DoD`'s named case: a brand-B reader against a value present only at
+/// `(default-locale, brand A)` resolves only through the global coordinate.**
+///
+/// This is why the per-brand default is an *override* and the global value is
+/// what makes the chain total. Both halves are asserted -- brand A does reach
+/// its own default, and brand B does not reach A's.
+#[test]
+fn a_brand_b_reader_never_reaches_brand_as_default_and_falls_to_global() {
+    let values = matrix();
+
+    let brand_a = resolve_localized(&ask("de-DE", "", "acme"), &values).expect("resolved");
+    assert_eq!(brand_a.step, ResolutionStep::DefaultLocaleAndBrand);
+    assert_eq!(brand_a.value, "default+brandA");
+
+    let brand_b = resolve_localized(&ask("de-DE", "", "beta"), &values).expect("resolved");
+    assert_eq!(
+        brand_b.step,
+        ResolutionStep::Global,
+        "brand B never visits brand A's default"
+    );
+    assert_eq!(brand_b.value, "global");
+}
+
+/// **A tenant-default change is non-retroactive.**
+///
+/// `inst-av-resolve`'s item-37 note is the claim: totality is anchored on the
+/// resolution path, not on the config value, *"so anchoring on it would
+/// un-total the chain for every already-published entity the moment it
+/// changed"*. Here the tenant default moves to a locale nothing is stored
+/// under. The reader that had been resolving at step 3 moves to step 4 -- the
+/// **step** changes, the resolution does not fail. That is the whole property,
+/// and it holds because the last step is the global coordinate rather than the
+/// config value.
+#[test]
+fn a_tenant_default_change_moves_a_step_and_never_un_resolves() {
+    let values = matrix();
+    let before = resolve_localized(&ask("de-DE", "", "acme"), &values).expect("resolved");
+    assert_eq!(before.step, ResolutionStep::DefaultLocaleAndBrand);
+
+    let after = resolve_localized(
+        &LocaleRequest {
+            locale: "de-DE",
+            region: "",
+            brand: "acme",
+            tenant_default_locale: "ja-JP",
+        },
+        &values,
+    )
+    .expect("still resolves");
+    assert_eq!(
+        after.step,
+        ResolutionStep::Global,
+        "the chain falls through to global rather than running out"
+    );
+}
+
+/// **A region-specific value is not widened to a neighbouring region.**
+///
+/// Steps 2 and 3 name only a locale and a brand, so both look for a value
+/// whose region is **absent**. A step 2 written region-insensitively would
+/// hand an `eu` value to an `apac` reader, which is the one silent way this
+/// chain can be wrong.
+#[test]
+fn a_regional_value_is_never_handed_to_another_region() {
+    let values = vec![
+        coordinate("fr-FR", "eu", "acme", "eu only"),
+        coordinate("", "", "", "global"),
+    ];
+    let hit = resolve_localized(&ask("fr-FR", "apac", "acme"), &values).expect("resolved");
+    assert_eq!(
+        (hit.value, hit.step),
+        ("global", ResolutionStep::Global),
+        "the eu value is reachable only by an eu reader"
+    );
+}
+
+/// **An empty set resolves to nothing** rather than to an invented value --
+/// the gap `dod-default-locale`'s validator exists to keep unreachable.
+#[test]
+fn a_definition_with_no_values_resolves_to_nothing() {
+    assert_eq!(resolve_localized(&ask("fr-FR", "eu", "acme"), &[]), None);
+}
+
+// -- The default-locale publish validator. --
+
+fn carried(localized: bool, values: Vec<LocalizedValue>) -> PublishedContentSubject {
+    PublishedContentSubject {
+        carried: vec![CarriedDefinition {
+            key: "displayName".to_owned(),
+            localized,
+            values,
+        }],
+    }
+}
+
+fn publish_codes(subject: &PublishedContentSubject) -> Vec<&'static str> {
+    ValidationPipeline::new()
+        .with_rule(Box::new(DefaultLocaleRequired))
+        .run(subject)
+        .map(|(_phase, report)| report.violations().iter().map(|v| v.code).collect())
+        .unwrap_or_default()
+}
+
+/// **A localized definition with values but none global is refused**, and one
+/// with a global value is admitted.
+#[test]
+fn a_localized_definition_needs_its_global_value_to_publish() {
+    let missing = carried(true, vec![coordinate("fr-FR", "", "", "Fibre")]);
+    assert_eq!(publish_codes(&missing), vec!["DEFAULT_LOCALE_MISSING"]);
+
+    let present = carried(
+        true,
+        vec![
+            coordinate("fr-FR", "", "", "Fibre"),
+            coordinate("", "", "", "Fibre"),
+        ],
+    );
+    assert!(publish_codes(&present).is_empty(), "the paired control");
+}
+
+/// **A per-brand default is an override and satisfies nothing.**
+///
+/// The rule's whole point: a value at `(default-locale, brand A)` leaves every
+/// other brand's chain able to run out, which the resolver matrix above
+/// measures from the reading side. A rule checking "any value with an empty
+/// region" would pass this and be wrong for every brand but A.
+#[test]
+fn a_per_brand_default_does_not_satisfy_the_global_requirement() {
+    let brand_only = carried(
+        true,
+        vec![coordinate(TENANT_DEFAULT, "", "acme", "brand A's default")],
+    );
+    assert_eq!(publish_codes(&brand_only), vec!["DEFAULT_LOCALE_MISSING"]);
+}
+
+/// **A non-localized definition is not judged, and neither is one carrying no
+/// values.**
+///
+/// `imageUri` has no locale chain to make total, and a definition the entity
+/// carries nothing for cannot have a gap. Without these two arms the rule
+/// would refuse every publish of an entity holding an image or holding a
+/// definition it has not authored yet.
+#[test]
+fn the_rule_skips_what_has_no_chain_to_make_total() {
+    assert!(
+        publish_codes(&carried(false, vec![coordinate("fr-FR", "", "", "x")])).is_empty(),
+        "a non-localized definition has no locale chain"
+    );
+    assert!(
+        publish_codes(&carried(true, Vec::new())).is_empty(),
+        "no values, no gap"
+    );
+}
+
+/// **`is_global` is the coordinate P-D-88 arm 2 spells, and nothing near it.**
+///
+/// A brand-scoped or region-scoped value is not the global one however few
+/// coordinates it names, which is the distinction the whole chain rests on.
+#[test]
+fn only_three_absent_coordinates_are_the_global_one() {
+    assert!(is_global(&coordinate("", "", "", "v")));
+    for near in [
+        coordinate("en-GB", "", "", "v"),
+        coordinate("", "eu", "", "v"),
+        coordinate("", "", "acme", "v"),
+    ] {
+        assert!(!is_global(&near), "{near:?} is not the global coordinate");
+    }
+    assert_eq!(GLOBAL_COORDINATE, ("", "", ""));
+    assert_eq!(StaleCategoryToken::CODE, "STALE_CATEGORY_TOKEN");
 }

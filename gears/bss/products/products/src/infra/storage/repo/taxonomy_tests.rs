@@ -38,10 +38,11 @@ use uuid::Uuid;
 use super::{
     AssignmentWrite, AttributeCoordinate, CategoryWrite, DefinitionFlip, NewAttributeDefinition,
     NewCategory, attribute_definition_by_key, attribute_definitions, attribute_values_of,
-    category_assignments, category_parents, classify_assignment_write, definition_value_holders,
-    delete_attribute_value, delete_metadata_key, delete_retired_category, flip_definition_state,
-    insert_attribute_definition, insert_category, metadata_of, replace_category_assignments,
-    retire_category, retire_census, upsert_attribute_value, upsert_metadata,
+    category_assignments, category_mutation_seq, category_parents, classify_assignment_write,
+    definition_value_holders, delete_attribute_value, delete_metadata_key, delete_retired_category,
+    flip_definition_state, insert_attribute_definition, insert_category, metadata_of,
+    rename_category, replace_category_assignments, retire_category, retire_census,
+    upsert_attribute_value, upsert_metadata, write_category_display_value,
 };
 use crate::domain::taxonomy::{
     AssignmentRole, DefinitionState, definition_in_use_verdict, retire_verdict,
@@ -1763,4 +1764,202 @@ async fn assignment_rows_roll_back_with_the_transaction_they_ride_in() {
         "an assignment that survived its rolled-back save would file a Product \
          under a category the save never committed"
     );
+}
+
+// -- The category live-value door's token (`inst-av-category-branch`, P-D-50) --
+
+/// **A held token writes the value and advances by exactly one.**
+#[tokio::test]
+async fn a_current_token_writes_the_display_value_and_advances_once() {
+    let provider = harness().await;
+    let scope = AccessScope::for_tenant(TENANT);
+    seed_product_and_categories(&provider, &scope).await;
+    let conn = provider.conn().expect("scoped connection");
+    insert_attribute_definition(
+        &conn,
+        &scope,
+        definition(DEFINITION, TENANT, "displayName"),
+        at(9),
+    )
+    .await
+    .expect("define");
+
+    let seq = category_mutation_seq(&conn, &scope, TENANT, CATEGORY_A)
+        .await
+        .expect("read the token")
+        .expect("the row exists");
+    assert_eq!(seq, 0, "a fresh category starts at zero");
+
+    let next = write_category_display_value(
+        &conn,
+        &scope,
+        TENANT,
+        CATEGORY_A,
+        seq,
+        (DEFINITION, "Connectivity"),
+        at(10),
+    )
+    .await
+    .expect("no storage failure")
+    .expect("the token was current");
+    assert_eq!(next, 1);
+    assert_eq!(
+        category_mutation_seq(&conn, &scope, TENANT, CATEGORY_A)
+            .await
+            .expect("read")
+            .expect("exists"),
+        1
+    );
+
+    let values = attribute_values_of(&conn, &scope, TENANT, "category", CATEGORY_A)
+        .await
+        .expect("read the values");
+    assert_eq!(values.len(), 1);
+    assert_eq!(values[0].value, "Connectivity");
+}
+
+/// **A stale token writes nothing -- and the value does not land.**
+///
+/// The negative half is the one that matters. A door that checked the token
+/// and then wrote regardless, or wrote first and checked after, would pass an
+/// assertion on the counter alone while the display value it was refusing had
+/// already been committed.
+#[tokio::test]
+async fn a_stale_token_refuses_and_leaves_no_value_behind() {
+    let provider = harness().await;
+    let scope = AccessScope::for_tenant(TENANT);
+    seed_product_and_categories(&provider, &scope).await;
+    let conn = provider.conn().expect("scoped connection");
+    insert_attribute_definition(
+        &conn,
+        &scope,
+        definition(DEFINITION, TENANT, "displayName"),
+        at(9),
+    )
+    .await
+    .expect("define");
+
+    // A peer act moves the row: a rename is an act and advances the counter.
+    rename_category(
+        &conn,
+        &scope,
+        TENANT,
+        CATEGORY_A,
+        "Connectivity",
+        "connectivity",
+        at(10),
+    )
+    .await
+    .expect("no storage failure")
+    .expect("the name is free");
+
+    // Our door still holds the token it read before the rename.
+    let refusal = write_category_display_value(
+        &conn,
+        &scope,
+        TENANT,
+        CATEGORY_A,
+        0,
+        (DEFINITION, "Connectivity"),
+        at(11),
+    )
+    .await
+    .expect("no storage failure")
+    .expect_err("the token is stale");
+    assert_eq!((refusal.expected, refusal.found), (0, 1));
+
+    assert!(
+        attribute_values_of(&conn, &scope, TENANT, "category", CATEGORY_A)
+            .await
+            .expect("read the values")
+            .is_empty(),
+        "a refused write must leave no value"
+    );
+    assert_eq!(
+        category_mutation_seq(&conn, &scope, TENANT, CATEGORY_A)
+            .await
+            .expect("read")
+            .expect("exists"),
+        1,
+        "and must not advance the counter either"
+    );
+}
+
+/// **The counter counts acts, not row writes** -- P-D-50's own words.
+///
+/// Writing a category's value through the plain store path leaves the counter
+/// alone; only the door's act advances it. Without this, a counter bumped by
+/// any write of any row would change under an approval subject built from an
+/// act identity, and the approved retry would render a different subject --
+/// which is the exact failure P-D-50 names.
+#[tokio::test]
+async fn a_non_door_row_write_does_not_advance_the_act_counter() {
+    let provider = harness().await;
+    let scope = AccessScope::for_tenant(TENANT);
+    seed_product_and_categories(&provider, &scope).await;
+    let conn = provider.conn().expect("scoped connection");
+    insert_attribute_definition(
+        &conn,
+        &scope,
+        definition(DEFINITION, TENANT, "displayName"),
+        at(9),
+    )
+    .await
+    .expect("define");
+
+    upsert_attribute_value(
+        &conn,
+        &scope,
+        TENANT,
+        AttributeCoordinate {
+            entity_kind: "category",
+            entity_id: CATEGORY_A,
+            ..global(DEFINITION, CATEGORY_A)
+        },
+        "written around the door",
+        at(10),
+    )
+    .await
+    .expect("write the value directly");
+
+    assert_eq!(
+        category_mutation_seq(&conn, &scope, TENANT, CATEGORY_A)
+            .await
+            .expect("read")
+            .expect("exists"),
+        0,
+        "the value moved and the act counter did not"
+    );
+}
+
+/// **A vanished row answers the same refusal**, with the sentinel counter so
+/// the door can tell it apart and prefer a 404 after re-reading.
+#[tokio::test]
+async fn a_missing_category_answers_the_token_refusal_with_the_sentinel() {
+    let provider = harness().await;
+    let scope = AccessScope::for_tenant(TENANT);
+    seed_product_and_categories(&provider, &scope).await;
+    let conn = provider.conn().expect("scoped connection");
+    insert_attribute_definition(
+        &conn,
+        &scope,
+        definition(DEFINITION, TENANT, "displayName"),
+        at(9),
+    )
+    .await
+    .expect("define");
+
+    let refusal = write_category_display_value(
+        &conn,
+        &scope,
+        TENANT,
+        Uuid::from_u128(0xca_ff),
+        0,
+        (DEFINITION, "Nothing"),
+        at(10),
+    )
+    .await
+    .expect("no storage failure")
+    .expect_err("there is no such category");
+    assert_eq!(refusal.found, -1, "the sentinel says the row is not there");
 }

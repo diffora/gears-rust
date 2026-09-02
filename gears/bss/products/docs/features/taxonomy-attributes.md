@@ -1006,6 +1006,28 @@ refusing `DEFAULT_LOCALE_MISSING` at publish and not at draft save. Per-brand de
 values **MUST** be optional overrides. For a category the same demand **MUST** land at the first
 display-value write for that definition.
 
+**The rule ships; the registration and the category half do not.** `DefaultLocaleRequired` refuses
+a localized definition carrying values but none at the global coordinate, skips a non-localized one
+and one carrying nothing at all, and -- the case that matters -- is **not** satisfied by a value at
+`(default-locale, brand A)`. That is the whole reason per-brand values are *overrides*: a brand-B
+reader never visits brand A's default, which the resolver's matrix measures from the reading side.
+It goes in the `-> published` pipeline and nowhere else, for the reason
+`inst-tx-primary-at-publish`'s sibling gives -- a rule in the shared pipeline would refuse a draft
+save the design admits.
+
+**§7 row 8, and why the rule is buildable anyway.** Row 8 asks what the global coordinate's key is,
+and observes that if it means all three coordinates absent then *"a default-locale value at the
+global coordinate"* names a coordinate carrying no locale. That naming **is** self-contradictory.
+The fork it implies is not live: `inst-av-resolve`'s item-37 note already refuses the other horn in
+as many words -- anchoring totality on the tenant default *"would un-total the chain for every
+already-published entity the moment it changed"* -- and P-D-88 arm 2 ships the spelling
+`("", "", "")`. So the rule demands a value at the shipped global coordinate, and what is left of
+row 8 is a **naming defect rather than a decision**. Registered, not asserted: the row stays open
+and this stays unticked.
+
+**The category half is the live-value door's** and lands with it -- see
+`dod-category-live-value-door`, whose route is undeclared (§7 row 16).
+
 **Implements**: `cpt-cf-bss-products-flow-attribute-values`
 
 **Touches**:
@@ -1021,6 +1043,27 @@ preference before the global step. A resolution-matrix fixture **MUST** cover ev
 including the brand-default and tenant-default fallbacks, and **MUST** include the case of a
 brand-B reader against a value present only at `(default-locale, brand A)`, which resolves only
 through the global coordinate. A test **MUST** prove a tenant-default change is non-retroactive.
+
+**The chain and its matrix ship.** `resolve_localized` walks the four steps and reports **which**
+one answered, so the matrix asserts the step and not only the value -- a resolver whose first step
+matched everything would satisfy a value-only assertion at every row of it. The DoD's named case is
+there: brand A reaches its own default, brand B does not and falls to global. So is the
+non-retroactivity proof, and it is the interesting one -- moving the tenant default to a locale
+nothing is stored under moves the reader from step 3 to step 4 and the resolution **does not
+fail**, which is `inst-av-resolve`'s item-37 claim made executable.
+
+One case beyond the DoD's list, because it is the chain's one silent failure mode: steps 2 and 3
+name a locale and a brand and no region, so both look for a value whose region is **absent**. A
+region-insensitive step 2 would hand an `eu` value to an `apac` reader.
+
+**Two things the DoD needs that do not exist**, and the tick waits on both. §7 row 6 is the first:
+*"the per-brand default locale has no store"*. `inst-av-resolve` says default-locale *"resolves per
+brand, falling back to the tenant default"*, so step 3 should consult a **per-brand** default
+locale before the tenant's; only the fallback half is built, because nothing stores the per-brand
+half. The second is smaller and is in no row: **the gear carries no configuration field for the
+tenant default locale either**, so every caller supplies it as an argument and none can. The
+resolver is correct for whatever arrives and nothing arrives -- the same shape `TaxonomyLimits`
+takes.
 
 **Implements**: `cpt-cf-bss-products-flow-attribute-values`
 
@@ -1038,6 +1081,27 @@ The system **MUST** provide a category live-value door taking `If-Match` on
 approval subject built from an act identity renders identically on the approved retry. The door
 **MUST** emit `CategoryDisplayUpdated` in the same transaction and **MUST** be classified
 non-material with an effective count of `min(N, 1)`.
+
+**The token ships; the door does not, and cannot here.** `repo::write_category_display_value`
+carries the caller's `If-Match` value **inside the counter bump's own `WHERE` clause**, so the
+token is spent by the same statement that advances it and no read-then-write window is left for a
+peer act to fit into. A lost token answers `domain::taxonomy::StaleCategoryToken` carrying both
+counters, and the probe asserts the negative that matters: on a refusal **no value lands** and the
+counter does not move. A door that checked the token and then wrote, or wrote and then checked,
+would pass a counter-only assertion while the display value it was refusing had already been
+committed.
+
+*"Counts acts, not row writes"* (**P-D-50**) is probed as its own case: writing a category's value
+through the plain store path leaves the counter alone. Without that, a counter advanced by any row
+write would change under an approval subject built from an act identity, and the approved retry
+would render a different subject -- the exact failure P-D-50 names.
+
+**What is not here, and none of it is this strand's.** The REST path and the grant pair are
+undeclared (§7 row 16); wire doors are the lead's; `CategoryDisplayUpdated` has no payload type in
+`infra::events` and no `SCHEMA_REFS` entry, so the *"same transaction"* clause has nothing to
+enqueue -- that is `dod-taxonomy-events`' patch; and the non-material classification with effective
+count `min(N, 1)` lives in the governance host, which this feature does not own.
+`STALE_CATEGORY_TOKEN` also has no `DomainError` variant yet, which is `dod-taxonomy-errors`'.
 
 **Implements**: `cpt-cf-bss-products-flow-attribute-values`
 
