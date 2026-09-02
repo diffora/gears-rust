@@ -915,10 +915,21 @@ against a restored copy; the cross-engine comparison is §5's golden vector):
   identical bytes.
 
 **A row collection inside the content** — the category-assignment set, the attribute-value set — is
-rendered as a **JSON array sorted by the collection's own identifier** (the category id, the
-attribute id), each element rendered by the same field rule (owner's call, 2026-08-27, P-D-29: the
-field rule orders fields and said nothing about rows, so two engines could have serialized the same
-content in two orders and 10's restore drill compares these digests byte-for-byte).
+rendered as a **JSON array sorted by the collection's own full row key** (the category id; the
+attribute value's whole coordinate — definition, locale, region, brand), each element rendered by
+the same field rule (owner's call, 2026-08-27, P-D-29: the field rule orders fields and said nothing
+about rows, so two engines could have serialized the same content in two orders and 10's restore
+drill compares these digests byte-for-byte).
+
+**P-D-103 applies P-D-80 arm 1 back to these two collections**, rather than widening anything: that
+decision already generalized *"by the collection's own identifier"* to **a keyed collection sorts by
+its own key rendering**, and gave the manifest's entry and capture rows as its examples — it simply
+never restated the rule for the two collections P-D-29 had named. Here it matters, because for one
+of the two the identifier is **not unique per row**: a definition id repeats across every locale,
+region and brand coordinate it carries a value at, so sorting by it orders **groups and not rows**
+and leaves the within-group order to the engine — losing exactly the byte-identity this clause
+exists to guarantee, on the collection that most needs it. The category-assignment set is
+unaffected: its identifier *is* its row key.
 
 **How far the rule reaches** — it is stated over **any named field set**, not only a version row's
 columns (owner's call, 2026-08-27, P-D-28). **A parsed request's named field set is the fields the

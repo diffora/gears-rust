@@ -1569,6 +1569,157 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   (the re-publish step).
 
 
+#### P-D-103 — The frozen-content sort applies **P-D-80 arm 1** to P-D-29's two collections: the attribute-value set sorts by its whole coordinate
+
+- **Date**: 2026-09-02 (owner call, on strand A's `A-OWED-12`)
+- **Context**: `dod-version-content-rendering` carries two clauses that cannot both hold. It asks
+  for row collections *"sorted by the collection's own identifier"* (**P-D-29**, restated in
+  `01-foundation` §4.3 **in the same words** — verified) **and** for a golden vector proving the
+  rendering **byte-identical across both engines**. For the attribute-value set the identifier is
+  the definition id, which is **not unique per row**: one definition carries a value at every
+  locale, region and brand coordinate it is written at, so an identifier sort orders **groups, not
+  rows**, and the within-group order is the engine's. Two engines then hash one content two ways,
+  which is the byte-identity the second clause exists to establish — lost on the one collection
+  that most needs it. The category-assignment set is unaffected, its identifier being its row key.
+- **The register had already answered this, one collection over.** **P-D-80** arm 1 — titled, in
+  that entry's own heading, *"keyed collections sort by their key"* — generalized *"by the
+  collection's own identifier"* to **a keyed collection sorts by its own key rendering**, with the
+  manifest's entry rows by `(entity_kind, entity_id)` and its capture rows by `capture_kind` as its
+  examples, *"both being their stores' primary keys."* It never restated the rule for the two
+  collections P-D-29 had named.
+- **Decision**: **apply P-D-80 arm 1 to P-D-29's two collections.** The attribute-value set sorts by
+  its **whole coordinate** — definition, locale, region, brand — the table's own primary key, total
+  by construction; the category-assignment set is unchanged, since its key is its identifier.
+  This **amends P-D-29** and is a consistency fix rather than a new rule: strand A shipped it, and
+  its register recorded it as an excess over P-D-29's letter, which — measured against P-D-80 —
+  it is not.
+- **The arguments against, stated**: the amendment reaches a decision taken earlier and a slice that
+  is not the one that found it, which is the cost of every retroactive consistency fix; and a reader
+  of P-D-29 alone still sees "identifier" until they reach P-D-80 or this entry. Against that, the
+  alternative — sorting by the identifier as written and dropping the byte-identity claim — was
+  declined because it makes `10-retention-erasure`'s restore drill's digest comparison meaningless,
+  and that comparison is the whole reason the clause exists. Leaving both clauses standing was
+  declined because it leaves the set holding a requirement no implementation can satisfy.
+- **Propagated**: `design/01-foundation.md` §4.3 (the clause, with this id and P-D-80's). Amends
+  **P-D-29**; P-D-29's own text is left as written, per this register's convention that a later
+  entry amends rather than rewrites. **No code change**: `domain::taxonomy::value_collection` and
+  `assignment_collection` already sort this way. **Owed**: the feature's §7 **row 9**, whose
+  question this answers, is strand A's file and that strand's to strike; and
+  `design/02-taxonomy-attributes.md`'s own ordering sentence, which P-D-29 names as a propagation
+  target, should cite this entry when it is next opened.
+
+#### P-D-102 — The global coordinate is absent on **all three** axes; `inst-av-default-locale` loses both "default-locale value" and "(brand-less)"
+
+- **Date**: 2026-09-02 (owner call, on strand A's `A-OWED-10` — and **larger than that entry
+  asked**, for the reason below)
+- **Context**: `A-OWED-10` reported §7 row 8 as *a naming defect, not a live fork*: both readings of
+  `global` were said to be closed elsewhere, leaving only the self-contradictory phrase *"a
+  default-locale value at the global coordinate"*, which names a coordinate carrying no locale. Read
+  in full, `inst-av-default-locale` says more than the entry quoted — *"the **default-locale value
+  at the global (brand-less) coordinate**"* — and that parenthetical is a **second, different**
+  reading: `global` as absent on the brand axis alone, with the locale present and equal to the
+  tenant default. The fork is therefore live, and the two readings ask a tenant for different
+  things:
+  - **all three absent** — a definition must carry a value with **no locale**, a language-independent
+    fallback;
+  - **brand-less only** — a definition must carry a value **at the default locale** with no brand.
+  **Strand A's code took the first and its own doc was more careful than its register**:
+  `GLOBAL_COORDINATE`'s comment says *"P-D-88 arm 2 ships the three columns `NOT NULL` with `""` as
+  the stated absence, so the global coordinate is `("", "", "")` … **That is the *spelling*; §6's row
+  8 asks what it *means***"*, and `DefaultLocaleRequired::evaluate` demands a value at all three
+  absent. The register compressed that into P-D-88 having settled the meaning; the code did not.
+- **Decision**: **the global coordinate is `("", "", "")` — absent on all three axes** — and
+  `inst-av-default-locale` loses both the phrase *"default-locale value"* and the parenthetical
+  *"(brand-less)"*.
+- **The reason is this row's own step 5, applied to a stored value.** A brand-less value at the
+  tenant default locale carries the locale that was default **when it was written**. A later config
+  change leaves step 3 looking for a locale no stored value matches, so the requirement stops
+  guaranteeing what it exists to guarantee — the same un-totalling `inst-av-resolve` refuses when it
+  says anchoring on the config value *"would un-total the chain for every already-published entity
+  the moment it changed"*, and **P-D-101** applied to the value's source. A locale-less value cannot
+  go stale that way. So the two decisions are one argument used twice: totality may not rest on a
+  value the config can invalidate.
+- **The arguments against, stated**: requiring a *localized* definition to carry a value with **no**
+  locale reads oddly — the brand-less reading is the more natural sentence, which is presumably how
+  it came to be written — and a tenant must now author one language-neutral value per localized
+  definition, which for `description` or `marketingFeatures` may mean choosing a house language and
+  storing it twice. Accepted: the alternative makes a published entity's compliance depend on a
+  config value nobody re-validates, and the cost of one extra stored value is bounded and visible
+  where the cost of a silently un-totalled chain is neither.
+- **Propagated**: `design/02-taxonomy-attributes.md` `inst-av-default-locale` (both strikes, with
+  this id). **No code change**: `GLOBAL_COORDINATE`, `is_global` and `DefaultLocaleRequired` already
+  encode this reading, and `a_brand_less_global_value_survives_a_brand_scoped_entity` pins its
+  neighbour (`A-OWED-07`). **Owed**: the feature's §7 **row 8**, whose question this answers, is
+  strand A's file and that strand's to strike.
+
+#### P-D-101 — The locale chain's default is the **tenant** default only; "resolves per brand" is struck
+
+- **Date**: 2026-09-02 (owner call, on strand A's `A-OWED-09`)
+- **Context**: `inst-av-resolve`'s step 3 read *"default-locale resolves per brand, falling back to
+  the tenant default"* — two inputs, and measured at `HEAD` **neither exists**. The feature's §7
+  row 6 already recorded the first: *"the per-brand default locale has no store."* The second is in
+  no row — **`ProductsConfig` carries no default-locale field at all**, `grep -i locale
+  src/config.rs` is empty. So `resolve_localized` is correct for whatever arrives and nothing can
+  produce what arrives; every caller supplies the locale as an argument no component mints.
+- **Decision**: **the default-locale is the tenant default, and the per-brand half is struck.** One
+  config value, added to `ProductsConfig` and validated at boot the way `freeze_timeout_hours` is.
+  The chain's shape is unchanged — `(locale, region, brand) → (locale, brand) → (default-locale,
+  brand) → global`; step 3's *coordinate* still carries the brand, because a value may be stored at
+  the tenant-default locale under a brand. What changes is only where the default-locale **value**
+  comes from.
+- **The reason is the row's own next sentence**: *"Totality is anchored on the resolution path, not
+  on the config value … the tenant default locale is ungoverned config with no re-validation, so
+  anchoring on it would un-total the chain for every already-published entity the moment it
+  changed."* A per-brand default is a **second** ungoverned config value under a step that cannot
+  change whether resolution succeeds — it only shortens the path, since step 4's global fallback is
+  what makes the chain total. Doubling that exposure for a shortcut is what this decision refuses.
+- **The arguments against, stated**: a per-brand default is a real product capability — a tenant
+  selling under two brands in two markets may want each brand's fallback language to differ — and
+  striking it removes that without a replacement. Accepted: the capability can return as a
+  **governed** per-brand value (a fourth coordinate kind in `products_attribute_value`, which needs
+  no new table) if a requirement asks for it, and it would then be re-validated rather than
+  ungoverned config. Nothing in the PRD asks for it today. The alternative of adding both inputs was
+  declined for the reason above; the alternative of leaving the resolver a pure function for
+  `08-read-models` to supply both inputs to was declined because it moves an unanswered question
+  into another slice rather than closing it.
+- **Propagated**: `design/02-taxonomy-attributes.md` `inst-av-resolve` (the struck clause, with this
+  id). **Owed**: `ProductsConfig.default_locale` — `config.rs` is no strand's, so the lead's; and
+  the feature's §7 **row 6**, whose question this answers, is strand A's file and that strand's to
+  strike. `dod-default-locale` and `dod-locale-resolver` stay unticked until the config field lands.
+
+#### P-D-100 — The well-known attribute seeds get **two** writers: a migration for tenants that exist at deploy, and a lazy read-through for every tenant after
+
+- **Date**: 2026-09-02 (owner call, on strand A's `A-OWED-04`)
+- **Context**: `products_attribute_definition` is **per-tenant** — `tenant_id` is in its key — so
+  `dod-well-known-seeds`' five definitions (`displayName`, `description`, `imageUri`,
+  `unitDisplayLabel`, `marketingFeatures`) are five rows **per tenant**, not five rows in the
+  database. They are not tenant data: they are the vocabulary a tenant needs before any product can
+  carry so much as a display name. The DoD asks for them *"per tenant bootstrap, by migration"* —
+  two paths in one phrase — and measured at `HEAD` only one of the two can exist:
+  - a migration reaches the tenants that exist when it runs, and never runs again;
+  - **the gear has no tenant-bootstrap hook of any kind** — no tenant-created handler, no
+    provisioning callback, nothing a per-tenant seeder could hang off. Verified in `gear.rs`.
+  So a tenant created after deploy gets no seeds, and `WELL_KNOWN_SEEDS` — which strand A shipped as
+  the single roster — has **zero callers** outside its own tests.
+- **Decision**: both writers, one roster. A **migration** seeds the tenants present when it runs,
+  and a **lazy read-through** on the definition-roster read materialises the five rows for a tenant
+  that has none. `domain::taxonomy::WELL_KNOWN_SEEDS` stays the only definition site, so the two
+  writers cannot disagree about the roster's content.
+- **The arguments against, stated**: two writers for one roster is the cost, and it is a real one —
+  a reader of either path has to know the other exists, and the read-through puts a conditional
+  write on a read path. The alternative — migration only — was declined because it leaves every
+  tenant created after deploy without a display name, and because it would make the DoD's own
+  *"per tenant bootstrap"* untrue, so the cheaper code costs a requirement edit instead. The third
+  option, a `gear.rs` bootstrap hook, is the cleanest single-writer shape and was declined for now
+  because the hook does not exist and inventing a tenant-lifecycle surface for five rows is a larger
+  decision than this one; if such a hook ever lands, the read-through is what it replaces, and this
+  entry is where to look.
+- **Propagated**: nothing normative. `dod-well-known-seeds`' own text already asks for both paths,
+  so this decision resolves it rather than amending it. **Owed**, and split: the **migration** is
+  the lead's — `migrations/` is no strand's — and the **read-through** is strand A's, in
+  `repo/taxonomy.rs`'s roster read, which that strand already owns. Neither is written yet, and the
+  DoD stays unticked until both are.
+
 #### P-D-99 — `04-lifecycle`'s four door shapes, each from the set's nearest precedent
 
 - **Date**: 2026-09-02 (owner call, the interface **P-D-98** deliberately left owed)
