@@ -158,6 +158,18 @@ pub enum DomainError {
     #[error("approval required: {0}")]
     ApprovalRequired(String),
 
+    /// The record's own submitter tried to decide it. Refused at every
+    /// `N >= 1`, **by principal and never by role** (`design/05` C2): a human
+    /// holding both `CatalogAdmin` and `FinanceReviewer` is still one
+    /// principal, and `products_approval_decision`'s
+    /// `UNIQUE (tenant_id, approval_id, approver_principal)` is the physical
+    /// floor under the same rule. 403 per `design/05` §3.3 — the caller may
+    /// not take this act, whatever the record's state.
+    ///
+    /// @cpt-dod:cpt-cf-bss-products-dod-self-approval:p1
+    #[error("self-approval forbidden: {0}")]
+    SelfApprovalForbidden(String),
+
     /// The erasure door's own refusal: the named principal resolves to no
     /// `actor_ref` in this tenant. The one code `10-retention-erasure` owns
     /// (P-D-64 kept the roster at one) — 422 architectural, reaching the wire
@@ -323,6 +335,7 @@ impl DomainError {
             Self::AccountingCodeDelistBlocked(_) => "ACCOUNTING_CODE_DELIST_BLOCKED",
             Self::PrimaryCategoryRequired(_) => "PRIMARY_CATEGORY_REQUIRED",
             Self::ApprovalRequired(_) => "APPROVAL_REQUIRED",
+            Self::SelfApprovalForbidden(_) => "SELF_APPROVAL_FORBIDDEN",
             Self::ErasureUnknownActor(_) => "ERASURE_UNKNOWN_ACTOR",
             Self::CloneSourceDiscarded(_) => "CLONE_SOURCE_DISCARDED",
             Self::RequestSourceUnknown(_) => "REQUEST_SOURCE_UNKNOWN",

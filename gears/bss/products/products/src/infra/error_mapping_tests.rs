@@ -64,6 +64,7 @@ fn declared_status_and_code(err: &DomainError) -> (u16, Option<&'static str>) {
         D::PlanTierRetireBlocked(_) => (409, Some("PLAN_TIER_RETIRE_BLOCKED")),
         D::AccountingCodeDelistBlocked(_) => (409, Some("ACCOUNTING_CODE_DELIST_BLOCKED")),
         D::ApprovalRequired(_) => (403, Some("APPROVAL_REQUIRED")),
+        D::SelfApprovalForbidden(_) => (403, Some("SELF_APPROVAL_FORBIDDEN")),
         D::ErasureUnknownActor(_) => (400, Some("ERASURE_UNKNOWN_ACTOR")),
         D::CloneSourceDiscarded(_) => (409, Some("CLONE_SOURCE_DISCARDED")),
         // FailedPrecondition renders 400 on the wire; the discriminator the
@@ -124,6 +125,7 @@ fn one_of_every_variant() -> Vec<DomainError> {
         D::PrimaryCategoryRequired(d()),
         D::StaleLiveOp(d()),
         D::ApprovalRequired(d()),
+        D::SelfApprovalForbidden(d()),
         D::ErasureUnknownActor(d()),
         D::CloneSourceDiscarded(d()),
         D::RequestSourceUnknown(d()),
@@ -152,7 +154,7 @@ fn one_of_every_variant() -> Vec<DomainError> {
 /// new variant makes that match fail to compile, and this makes the roster
 /// that is *missing* the value fail the case. Bump it in the same edit that
 /// adds the variant to both.
-const DOMAIN_ERROR_VARIANTS: usize = 34;
+const DOMAIN_ERROR_VARIANTS: usize = 35;
 
 /// Covers all 14 variants (§3.3's own count, `DomainError::code`'s own
 /// exhaustiveness note): every one lands on the status the design ladder

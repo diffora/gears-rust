@@ -1703,12 +1703,14 @@ pub async fn supersede_open_approval(
 }
 
 mod bulk;
+mod governance;
 mod increment;
 mod recognized;
 mod reference;
 mod versions;
 
 pub use bulk::*;
+pub use governance::*;
 pub use increment::*;
 pub use recognized::*;
 pub use reference::*;

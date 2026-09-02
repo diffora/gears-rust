@@ -1,6 +1,7 @@
 //! The gear's business logic: what a catalog entity is and what may be done to
 //! it, with no knowledge of transport or storage.
 
+pub mod approval;
 pub mod batch;
 pub mod bucket;
 pub mod canonical;
@@ -12,6 +13,7 @@ pub mod error;
 pub mod governance;
 pub mod idempotency;
 pub mod live_op;
+pub mod materiality;
 pub mod name;
 pub mod recognized;
 pub mod retention;

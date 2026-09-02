@@ -296,6 +296,12 @@ impl From<DomainError> for CanonicalError {
             // refusal, raised at every gated act (`design/01-foundation.md`
             // §3.1's `GovernanceGate` phase).
             D::ApprovalRequired(_detail) => denied("APPROVAL_REQUIRED"),
+            // The ceremony's own 403, on the same channel and for the same
+            // reason: the caller may not take this act whatever the record's
+            // state, so it is denied rather than aborted. `design/05` §3.3
+            // puts `SELF_APPROVAL_FORBIDDEN` in its 403 list beside
+            // `APPROVAL_REQUIRED`.
+            D::SelfApprovalForbidden(_detail) => denied("SELF_APPROVAL_FORBIDDEN"),
 
             // -- Architectural 422s (rendered 400, no transport override —
             // see the module doc's "The 422s here are architectural, not

@@ -532,7 +532,7 @@ earlier.
 
 ### Materiality evaluator
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-materiality-evaluator`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-materiality-evaluator`
 
 The system **MUST** decide materiality from the four declared inputs and **MUST** evaluate **once**,
 at submission, against the policy in force at that instant. **Every input fails closed**: an
@@ -674,7 +674,7 @@ both CatalogAdmin and FinanceReviewer counts **once**.
 
 ### Self-approval refusal
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-self-approval`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-self-approval`
 
 The system **MUST** refuse the author's own decision at every `N ≥ 1` with
 `SELF_APPROVAL_FORBIDDEN`, **by principal and never by role**, with a paired positive control
@@ -725,9 +725,10 @@ acknowledgment **in nullable `author_override_ack` / `author_override_ack_at` on
 synthetic decision row would break C2's one-principal-one-decision UNIQUE), and the record carries
 `quorumReduced`. The record **MUST** be the ceremony's only
 home: a lane that publishes an override subject without one is a defect, not an exemption.
-**Where the `N = 0` acknowledgment is stored is open item 10** — the only column for
-acknowledgments sits on the decision row, which demands an approver principal and a verdict the
-author does not have.
+**What is still owed is the operand, not the storage**: the acknowledgment is "by name" over the
+subject's own override conditions, and no artifact says where a subject's lint findings are read
+from — `domain::validation`'s report carries no override-condition set, so nothing today can tell
+an approver which findings they must name.
 
 **Implements**: `cpt-cf-bss-products-flow-decide`
 
@@ -1063,10 +1064,12 @@ and nothing cryptographic.
 ## 7. Known unknowns
 
 [`../design/05-governance.md`](../design/05-governance.md) §6 carries **23 open items**, and each is
-carried below with the DoD it blocks and its owner. The table has **32 rows**, and the arithmetic is
+carried below with the DoD it blocks and its owner. The table has **35 rows**, and the arithmetic is
 stated rather than left to a reader: §6's twenty-three are rows **1–20, 22, 23 and 24**; row **21\***
-comes from the slice's constraint C7 and not from §6; and rows **25–32**, marked `**`, were raised by
-the 2026-08-31 review of this document.
+comes from the slice's constraint C7 and not from §6; rows **25–32**, marked `**`, were raised by
+the 2026-08-31 review of this document; and rows **33–35**, marked `***`, were raised by the
+2026-09-02 build of the evaluator and the approval store, each by an operand the code could not
+find.
 
 The first version of this section also claimed twenty-three and was **right by coincidence**: it
 dropped §6's grant-minting item and substituted the sealing question, which lives in the slice's
@@ -1111,6 +1114,9 @@ in it is a question about every other feature's gate.
 | 30** | **`APPROVER_ROLE_REQUIRED` has no raise path.** The gate's only refusal channel maps every refusal to `APPROVAL_REQUIRED` through a single method that exists, in its own words, so "a door that matched on the verdict itself could choose another code". The other channel is contractually reserved for infrastructure failure. Raising a second gate code needs the verdict widened with a code — again against `dod-gate-host`'s no-parallel-vocabulary clause. **Item 13 debates this code's status while its raise path does not exist** | `dod-governance-errors`, `dod-gate-host` | this feature with 01 |
 | 31** | **A tenant at `N = 0` never reaches `satisfied`.** §4's only human arm fires when the descriptor is "met by distinct principals", and at `N = 0` no decision is ever recorded, so nothing meets anything; the only auto-satisfy arm is `system_signal`. The record stays `pending` and the gate, which answers yes only to a `satisfied` record, refuses forever — **re-blocking exactly the one-person tenant the quorum floor exists to unblock**. Item 11's alternative answer is no cheaper: evaluating satisfaction at gate time makes the consume flip run `pending → consumed`, an edge §4 row 5 forbids | `cpt-cf-bss-products-state-approval-record`, `dod-quorum-evaluator`, `dod-finance-predicate` | this feature |
 | 32** | **Two build obligations the code books to this feature and no DoD carries.** The entity-version migration says `approval_ref` "is nullable today, and the tightening is owed to slice 05 … to be applied **by editing this file in place**", together with whatever referential constraint this feature's own record table earns. And `authz.rs` records that registering its label type-schemas "is still owed" — the gear's `init` does not call it yet. Extending the catalog also touches the instance blocks, the label roster and a hardcoded three-action array that fails on the first `submit`, `decide` or `elevate` the catalog mints | `dod-approval-store`, `dod-rbac-catalog` | this feature with 01 |
+| 33*** | **The materiality policy object has no store and no door.** `inst-mt-policy-material` makes it a `GovernedLiveOp` subject on its own pair `materiality_policy × write`, and `authz.rs` mints the pair — but `DESIGN.md` §3.5 gives this slice exactly `products_approval`, `products_approval_decision` and `products_breakglass_session`, and §3.2 of the design records `materiality_policy × write` as having **no route declared**. So the shipped `MaterialityPolicy` is a value with a default and a floor that nothing can persist or mutate, and the evaluator refuses every act until one is supplied. A fourth table or a `ProductsConfig` home is the choice, and both change what "in force at the submission instant" reads | `cpt-cf-bss-products-dod-materiality-policy` | this feature with the schema owner |
+| 34*** | **An unresolvable materiality input has no declared code.** `dod-materiality-evaluator` requires the act refused rather than defaulted, and the shipped refusal is a domain value (`MaterialityUnresolved`) because there is nothing to render: §3.3 names no code for it, and the gear's 503 set is **closed at three by name** — `AUDIT_UNAVAILABLE`, 08's `READ_MODEL_OVERLOADED`, 03's `USAGE_TYPE_UNAVAILABLE` (`design/01` §4.4, 12 `inst-cc-errors`) — so minting a fourth would make a closed roster consistent and wrong. The refusal reaches no wire until the submit door lands, which is when the code becomes load-bearing | `cpt-cf-bss-products-dod-governance-errors` | this feature with 12 |
+| 35*** | **`dod-pii-on-reasons` names a submission reason this feature does not store.** It obliges the hook on "the submission reason, the rejection reason and the break-glass session reason", and §4 gives `products_approval` **no reason column** — only `products_approval_decision.reason` and `products_breakglass_session.reason` exist. Either the submission carries no operator text (and the DoD names two reasons, not three) or the approval row owes a column | `cpt-cf-bss-products-dod-pii-on-reasons` | this feature with its storage owner |
 
 *Rows marked `**` were **raised by the 2026-08-31 review of this document**, not carried from the
 slice. Eight of the nine come from reading the crate rather than the design set, and the three

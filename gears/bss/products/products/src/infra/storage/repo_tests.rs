@@ -3520,3 +3520,411 @@ mod correction_override_tests {
         );
     }
 }
+
+/// The approval store — the submit write, the decision write and the queue
+/// read (`dod-stored-snapshot`, `dod-self-approval`).
+mod approval_store_tests {
+    use super::super::{
+        DecisionVerdict, NewApproval, NewDecision, pending_approvals, read_approval,
+        record_decision, submit_approval,
+    };
+    use super::*;
+    use crate::domain::approval::{describe_quorum, descriptor_from_stored};
+    use crate::domain::governance::{ApprovalId, EntityRef, GateSubject};
+    use crate::domain::materiality::{
+        MaterialAct, Materiality, MaterialityEvaluator, MaterialityPolicy, Resolution,
+    };
+
+    /// A resolved claim set — the evaluator refuses without one, so every
+    /// probe below carries it.
+    fn claim_set() -> Vec<String> {
+        vec!["catalog-admin".to_owned()]
+    }
+
+    const AUTHOR: Uuid = Uuid::from_u128(0x9001);
+    const APPROVER: Uuid = Uuid::from_u128(0x9002);
+
+    fn subject() -> GateSubject {
+        GateSubject::entity_publish(EntityRef {
+            tenant_id: TENANT,
+            entity_kind: bss_products_sdk::models::EntityKind::Product,
+            entity_id: PRODUCT,
+        })
+    }
+
+    /// A material act, so every probe below judges the same way and the
+    /// count in the descriptor comes from `approver_count` alone.
+    const MATERIAL: MaterialAct<'static> = MaterialAct::PolicyMutation;
+
+    fn submission<'a>(
+        id: ApprovalId,
+        subject: &'a GateSubject,
+        content: &'a str,
+        basis: Option<i64>,
+        evaluator: MaterialityEvaluator<'a>,
+        approver_count: u32,
+    ) -> NewApproval<'a> {
+        NewApproval {
+            tenant_id: TENANT,
+            approval_id: id,
+            subject,
+            internal_revision: 1,
+            content_snapshot: content,
+            diff_basis: basis,
+            act: &MATERIAL,
+            evaluator,
+            finance_material: false,
+            approver_count,
+            submitter: AUTHOR,
+            author_override_ack: None,
+        }
+    }
+
+    /// **The submitted content and the descriptor are both stored**, and the
+    /// stored descriptor round-trips into the same value — so a reader takes
+    /// the record's own count rather than recomputing one.
+    #[tokio::test]
+    async fn a_submission_stores_its_snapshot_and_its_descriptor() {
+        let db = harness().await;
+        let conn = db.conn().expect("conn");
+        let scope = AccessScope::for_tenant(TENANT);
+        let subject = subject();
+        let policy = MaterialityPolicy::default();
+        let claims = claim_set();
+        let ev =
+            MaterialityEvaluator::new(Resolution::Resolved(&policy), Resolution::Resolved(&claims));
+        let id = ApprovalId::new(Uuid::new_v4());
+
+        let answered = submit_approval(
+            &conn,
+            &scope,
+            submission(id, &subject, r#"{"name":"as submitted"}"#, Some(7), ev, 2),
+            at(10),
+        )
+        .await
+        .expect("the submission is stored");
+        assert_eq!(
+            answered.materiality,
+            Materiality::Material,
+            "the store evaluated the act itself, at submission"
+        );
+
+        let row = read_approval(&conn, &scope, TENANT, id)
+            .await
+            .expect("read runs")
+            .expect("the row exists");
+        assert_eq!(row.content_snapshot, r#"{"name":"as submitted"}"#);
+        assert_eq!(row.diff_basis, Some(7));
+        assert_eq!(row.state, "pending");
+        assert_eq!(row.submitter, AUTHOR);
+        assert_eq!(row.author_override_ack, None);
+        assert_eq!(row.author_override_ack_at, None);
+        assert_eq!(
+            descriptor_from_stored(&row.quorum_descriptor).expect("the stored descriptor decodes"),
+            answered.descriptor,
+            "the descriptor round-trips: a reader never recomputes N"
+        );
+        assert_eq!(
+            answered.descriptor,
+            describe_quorum(Materiality::Material, 2, false),
+            "and it is the descriptor the N in force produces"
+        );
+    }
+
+    /// A first publish stores a NULL basis, which is the arm the `DoD` states
+    /// because filling it by convention would diff the draft against the
+    /// head.
+    #[tokio::test]
+    async fn a_first_publish_stores_a_null_basis() {
+        let db = harness().await;
+        let conn = db.conn().expect("conn");
+        let scope = AccessScope::for_tenant(TENANT);
+        let subject = subject();
+        let policy = MaterialityPolicy::default();
+        let claims = claim_set();
+        let ev =
+            MaterialityEvaluator::new(Resolution::Resolved(&policy), Resolution::Resolved(&claims));
+        let id = ApprovalId::new(Uuid::new_v4());
+        submit_approval(
+            &conn,
+            &scope,
+            submission(id, &subject, r#"{"name":"first"}"#, None, ev, 2),
+            at(10),
+        )
+        .await
+        .expect("the submission is stored");
+        assert_eq!(
+            read_approval(&conn, &scope, TENANT, id)
+                .await
+                .expect("read runs")
+                .expect("the row exists")
+                .diff_basis,
+            None,
+            "a real NULL, not a zero"
+        );
+    }
+
+    /// **The flagship probe, at the store**: submit, edit the head, submit
+    /// again — the superseded record still carries the ORIGINAL bytes.
+    ///
+    /// The head is not touched at all here, and that is the point: nothing
+    /// in the read path can reach it, so the first record's snapshot cannot
+    /// have been re-derived.
+    #[tokio::test]
+    async fn a_superseded_record_keeps_the_content_it_was_submitted_with() {
+        let db = harness().await;
+        let conn = db.conn().expect("conn");
+        let scope = AccessScope::for_tenant(TENANT);
+        let subject = subject();
+        let policy = MaterialityPolicy::default();
+        let claims = claim_set();
+        let ev =
+            MaterialityEvaluator::new(Resolution::Resolved(&policy), Resolution::Resolved(&claims));
+
+        let first = ApprovalId::new(Uuid::new_v4());
+        submit_approval(
+            &conn,
+            &scope,
+            submission(
+                first,
+                &subject,
+                r#"{"name":"as submitted"}"#,
+                Some(7),
+                ev,
+                2,
+            ),
+            at(10),
+        )
+        .await
+        .expect("the first submission is stored");
+
+        // The author edits and re-submits. L-4: the new submission
+        // supersedes the open one rather than being refused.
+        let second = ApprovalId::new(Uuid::new_v4());
+        submit_approval(
+            &conn,
+            &scope,
+            submission(second, &subject, r#"{"name":"edited"}"#, Some(7), ev, 2),
+            at(11),
+        )
+        .await
+        .expect("the second submission supersedes rather than colliding");
+
+        let superseded = read_approval(&conn, &scope, TENANT, first)
+            .await
+            .expect("read runs")
+            .expect("the row exists");
+        assert_eq!(
+            superseded.state, "superseded",
+            "L-4: a new submission explicitly supersedes the open one"
+        );
+        assert_eq!(
+            superseded.content_snapshot, r#"{"name":"as submitted"}"#,
+            "the superseded record renders the ORIGINAL submission, never the edit"
+        );
+        assert_eq!(
+            read_approval(&conn, &scope, TENANT, second)
+                .await
+                .expect("read runs")
+                .expect("the row exists")
+                .content_snapshot,
+            r#"{"name":"edited"}"#
+        );
+    }
+
+    /// **The author's own decision is refused at the store**, by principal.
+    #[tokio::test]
+    async fn the_author_cannot_decide_their_own_record() {
+        let db = harness().await;
+        let conn = db.conn().expect("conn");
+        let scope = AccessScope::for_tenant(TENANT);
+        let subject = subject();
+        let policy = MaterialityPolicy::default();
+        let claims = claim_set();
+        let ev =
+            MaterialityEvaluator::new(Resolution::Resolved(&policy), Resolution::Resolved(&claims));
+        let id = ApprovalId::new(Uuid::new_v4());
+        submit_approval(
+            &conn,
+            &scope,
+            submission(id, &subject, r#"{"name":"x"}"#, Some(1), ev, 2),
+            at(10),
+        )
+        .await
+        .expect("the submission is stored");
+
+        let err = record_decision(
+            &conn,
+            &scope,
+            NewDecision {
+                tenant_id: TENANT,
+                approval_id: id,
+                approver_principal: AUTHOR,
+                verdict: DecisionVerdict::Approved,
+                reason: None,
+                override_acknowledgments: None,
+            },
+            at(11),
+        )
+        .await
+        .expect_err("an author may never decide their own record");
+        assert!(
+            err.to_string().contains("SELF_APPROVAL_FORBIDDEN"),
+            "the refusal carries its code: {err}"
+        );
+
+        // The paired positive control: a different principal is admitted on
+        // the same record, so the refusal is the principal's and not the
+        // record's.
+        record_decision(
+            &conn,
+            &scope,
+            NewDecision {
+                tenant_id: TENANT,
+                approval_id: id,
+                approver_principal: APPROVER,
+                verdict: DecisionVerdict::Approved,
+                reason: Some("looks right"),
+                override_acknowledgments: None,
+            },
+            at(11),
+        )
+        .await
+        .expect("a distinct principal is admitted");
+    }
+
+    /// **One principal, one decision** — C2's UNIQUE, read back as the
+    /// refusal it is rather than as a supersession.
+    #[tokio::test]
+    async fn one_principal_decides_once_whatever_roles_they_hold() {
+        let db = harness().await;
+        let conn = db.conn().expect("conn");
+        let scope = AccessScope::for_tenant(TENANT);
+        let subject = subject();
+        let policy = MaterialityPolicy::default();
+        let claims = claim_set();
+        let ev =
+            MaterialityEvaluator::new(Resolution::Resolved(&policy), Resolution::Resolved(&claims));
+        let id = ApprovalId::new(Uuid::new_v4());
+        submit_approval(
+            &conn,
+            &scope,
+            submission(id, &subject, r#"{"name":"x"}"#, Some(1), ev, 2),
+            at(10),
+        )
+        .await
+        .expect("the submission is stored");
+
+        let decision = |verdict| NewDecision {
+            tenant_id: TENANT,
+            approval_id: id,
+            approver_principal: APPROVER,
+            verdict,
+            reason: None,
+            override_acknowledgments: None,
+        };
+        record_decision(&conn, &scope, decision(DecisionVerdict::Approved), at(11))
+            .await
+            .expect("the first verdict is cast");
+        let err = record_decision(&conn, &scope, decision(DecisionVerdict::Rejected), at(12))
+            .await
+            .expect_err("a second verdict from the same principal is refused");
+        assert!(
+            err.to_string().contains("one principal, one decision"),
+            "the refusal names C2's rule: {err}"
+        );
+    }
+
+    /// The author's acknowledgment is admitted **only** at effective quorum
+    /// zero, and refused above it — so it cannot become a second,
+    /// unpoliced acknowledgment channel.
+    #[tokio::test]
+    async fn the_author_acknowledgment_is_admitted_only_at_quorum_zero() {
+        let db = harness().await;
+        let conn = db.conn().expect("conn");
+        let scope = AccessScope::for_tenant(TENANT);
+        let subject = subject();
+        let policy = MaterialityPolicy::default();
+        let claims = claim_set();
+        let ev =
+            MaterialityEvaluator::new(Resolution::Resolved(&policy), Resolution::Resolved(&claims));
+        let mut supplied = submission(
+            ApprovalId::new(Uuid::new_v4()),
+            &subject,
+            r#"{"name":"x"}"#,
+            Some(1),
+            ev,
+            2,
+        );
+        supplied.author_override_ack = Some("lint:name-collision");
+        let err = submit_approval(&conn, &scope, supplied, at(10))
+            .await
+            .expect_err("above zero the acknowledgment rides the decision row");
+        assert!(
+            err.to_string().contains("effective quorum zero"),
+            "the refusal names the one admitted home: {err}"
+        );
+
+        let id = ApprovalId::new(Uuid::new_v4());
+        let mut at_zero = submission(id, &subject, r#"{"name":"x"}"#, Some(1), ev, 0);
+        at_zero.author_override_ack = Some("lint:name-collision");
+        submit_approval(&conn, &scope, at_zero, at(10))
+            .await
+            .expect("at N = 0 the author acknowledges on the record");
+        let row = read_approval(&conn, &scope, TENANT, id)
+            .await
+            .expect("read runs")
+            .expect("the row exists");
+        assert_eq!(
+            row.author_override_ack.as_deref(),
+            Some("lint:name-collision")
+        );
+        assert!(
+            row.author_override_ack_at.is_some(),
+            "the CHECK pins the pair: both columns or neither"
+        );
+    }
+
+    /// The queue read returns pending records oldest first and drops the
+    /// superseded one — `inst-gv-queue`'s operand.
+    #[tokio::test]
+    async fn the_pending_queue_is_oldest_first_and_carries_only_pending() {
+        let db = harness().await;
+        let conn = db.conn().expect("conn");
+        let scope = AccessScope::for_tenant(TENANT);
+        let subject = subject();
+        let policy = MaterialityPolicy::default();
+        let claims = claim_set();
+        let ev =
+            MaterialityEvaluator::new(Resolution::Resolved(&policy), Resolution::Resolved(&claims));
+
+        let first = ApprovalId::new(Uuid::new_v4());
+        submit_approval(
+            &conn,
+            &scope,
+            submission(first, &subject, r#"{"name":"one"}"#, Some(1), ev, 2),
+            at(10),
+        )
+        .await
+        .expect("stored");
+        let second = ApprovalId::new(Uuid::new_v4());
+        submit_approval(
+            &conn,
+            &scope,
+            submission(second, &subject, r#"{"name":"two"}"#, Some(1), ev, 2),
+            at(11),
+        )
+        .await
+        .expect("stored");
+
+        let queue = pending_approvals(&conn, &scope, TENANT)
+            .await
+            .expect("the queue reads");
+        assert_eq!(
+            queue.len(),
+            1,
+            "the superseded record left the queue, which is what the partial index is for"
+        );
+        assert_eq!(queue[0].approval_id, second.get());
+    }
+}
