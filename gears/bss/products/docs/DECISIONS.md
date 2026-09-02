@@ -1569,6 +1569,99 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   (the re-publish step).
 
 
+#### P-D-97 — `RegisteredValidators` is a phase **slot** with two admissible fillings; the trait does not widen
+
+- **Date**: 2026-09-02 (owner call with `04-lifecycle`, closing `features/lifecycle.md` §7 row 20 —
+  the row the FEATURE marks *"the one item that cannot be deferred past the first line of code"*)
+- **Context**: `design/01-foundation.md` §2 and §3.1 describe *"registered validators keyed by kind
+  + transition/target-state/field-set"*. The trait carries no such operand: `ValidationRule<S>` is
+  `name()`, `phase()`, `evaluate(&self, subject, report)`, and `ValidationPipeline::run(&self,
+  subject: &S)` is synchronous with no runner and no database. Every parent-child, retire-intent and
+  flip-guard rule in `04-lifecycle` reads **other rows**. Foundation has already met this and
+  answered it twice, in its own words — `api/rest/products.rs:4924` (*"the pipeline is synchronous
+  and judges the subject row alone, and this rule's operand is a read of other rows. So it runs as
+  that phase's continuation, on this transaction"*) and `api/rest/skus.rs:2809`, which adds the
+  position: *"a continuation of the same identity phase, immediately after the pipeline and before
+  the edge and the gate — **the position §4.1 asks for**"*. Meanwhile
+  `publish_revalidation_pipeline` registers only `SkuCodeStillPresent` and
+  `SkuScopeColumnsStillParse`, which is the *"real gap, not a passing phase"* foundation records.
+- **Decision**, three arms:
+  1. **The trait does not widen.** No `async`, no database context, no keying operand.
+  2. **A feature fills the `RegisteredValidators` phase in either of two ways**: a registered
+     `ValidationRule` where the operand is subject-local **or a single fact the door can prefetch**
+     (the shipped `PrimaryCategoryRequired` + `has_primary_category` pattern), **or** a
+     **continuation of that phase on the same transaction**, positioned immediately after the
+     pipeline and before the edge and the gate. Both are "filling the phase"; neither is a parallel
+     vocabulary, so `dod-registered-validator-host`'s no-second-vocabulary clause is satisfied.
+  3. **The "keying" is not a trait property — it is the insertion site.** Which door, which
+     pipeline, which position *is* the kind, the transition and the target state. §2 and §3.1's
+     wording describes a mechanism this crate does not have and is a **document defect to correct**,
+     not a design to implement.
+- **The residue, stated rather than smoothed**: a continuation raises a `DomainError` directly —
+  `scope_not_contained_domain_err` returns `DomainError::ScopeNotContained` — and does **not** append
+  to a `ValidationReport`. So it cannot collect several findings within its phase the way a
+  registered rule can; it refuses on the first. Every `04` cross-row rule is a single-condition
+  refusal, so nothing is lost today, but the feature doc must say this rather than imply the two
+  fillings are interchangeable in every respect.
+- **The arguments against, stated**: widening the trait would break the property its own doc names —
+  a rule *"never reads another rule's verdict, which is what makes registration order an ordering of
+  output rather than of logic."* A rule that reads rows can observe the effects of an earlier rule's
+  writes, so registration order would become an ordering of logic. That objection stands
+  independently of the fact that the trait's file is not `04`'s to edit. Prefetching everything into
+  a rich subject (the third option considered) was declined because the scan-shaped operands —
+  a Product's children, the flip guard's producers, a live retire intent — turn the subject into a
+  query result and leave the I/O at the door anyway.
+- **Propagated**: `design/01-foundation.md` §2 and §3.1 (the keying sentence),
+  `features/lifecycle.md` (`dod-registered-validator-host`'s framing, and §7 row 20 closes).
+  **Owed**: the §3.1 correction is `01-foundation`'s to write; `04` may not edit it.
+
+#### P-D-96 — Row 19's two codes get opposite answers: `SCOPE_NARROWING_BLOCKED` is withdrawn, `PARENT_NOT_PUBLISHED` is admitted
+
+- **Date**: 2026-09-02 (owner call with `04-lifecycle`, closing `features/lifecycle.md` §7 row 19)
+- **Context**: the row asks one question about two codes, and measurement at `HEAD` separates them.
+  `SCOPE_NARROWING_BLOCKED` occurs **zero** times in the crate and **zero** times in this register;
+  the shipped narrowing check, `check_children_stay_contained`, refuses with `SCOPE_NOT_CONTAINED`
+  (53 occurrences, with a `DomainError` arm). `PARENT_NOT_PUBLISHED` has no `DomainError` arm either
+  — but it is **already owned and already priced**: **P-D-24** assigns it **409, not 422**;
+  `infra/error_mapping.rs` states that it *"and `RETIREMENT_PENDING` are raised by slice
+  `04-lifecycle`'s registered validators … `DomainError` has no variant for any of the three —
+  mapping a code this gear cannot raise would be a dead `match` arm"*; and a **shipped test** in
+  `domain/error_tests.rs` asserts *"PARENT_NOT_PUBLISHED is registered by the lifecycle feature"*.
+- **Decision**, two arms:
+  1. **`SCOPE_NARROWING_BLOCKED` is withdrawn.** Narrowing rides `SCOPE_NOT_CONTAINED`. The decisive
+     reason is in the shipped code, not in the cost table: `skus.rs:2839` records that the parent
+     and child directions reach one module for both halves of the verdict *"so the two directions
+     cannot word one refusal two ways."* A second code is exactly the divergence that arrangement
+     exists to prevent, and a caller already learns the direction from which door answered.
+     Withdrawing retracts nothing, since no decision in this register names the code.
+  2. **`PARENT_NOT_PUBLISHED` is admitted** as a `DomainError` arm and its mapping, raised by `04`'s
+     validator on the create door and the un-deprecation edge. This is **not** a widening of the
+     closed refusal taxonomy: the code is declared, priced at 409 by P-D-24, assigned to `04` by
+     foundation's own seam, and asserted to `04` by a green test. The arm is the **filling of an
+     owned slot**. The load-bearing fact is that `is_terminal()` is
+     `matches!(self, Retired | Discarded)`, so a **`draft` or `deprecated` parent is not terminal** —
+     refusing it `PARENT_TERMINAL` would be a false claim about the parent's state, which is why
+     overloading the shipped code was refused.
+- **The arguments against, stated**: withdrawal costs three documents that name
+  `SCOPE_NARROWING_BLOCKED` — `design/04-lifecycle.md`, `features/lifecycle.md` and
+  **`features/reference-signal.md`**, a third slice the row itself did not mention — plus the
+  seven-code list and an acceptance criterion; each becomes a document defect to fix, and `07`'s
+  copy is not `04`'s to edit. Against arm 2: the gear gains a refusal code, and the create door's
+  deliberate choice not to name the offending children (§7 row 27) must hold for the new code too,
+  or the two refusals will diverge in what they disclose.
+- **The radius, measured and handed on**: the same `error_mapping.rs` paragraph names two
+  neighbours on identical terms. **`RETIREMENT_PENDING`** (3 code occurrences, 8 documents) is
+  `04`'s to declare and raise — same seam, same missing arm, and it is **inside this strand's
+  scope**, so it is settled here by the same reasoning rather than left to be rediscovered.
+  **`CONTENT_PII_BLOCKED`** (2 code occurrences, 14 documents) is slice **`02`**'s content
+  write-block and belongs to the taxonomy strand — it is **not** settled here, and is registered
+  as owed to that strand's owner.
+- **Propagated**: `features/lifecycle.md` (§7 row 19 closes; `dod-scope-narrowing` and
+  `dod-lifecycle-errors` re-worded), `design/04-lifecycle.md` (the withdrawn code),
+  `domain/error.rs` and `infra/error_mapping.rs` (the new arm, applied by the lead from `04`'s D7
+  patch). **Owed**: `features/reference-signal.md`'s copy of the withdrawn code, to `07`'s owner;
+  `CONTENT_PII_BLOCKED`, to `02`'s.
+
 #### P-D-95 — The by-key frozen-version reader is `01-foundation`'s, and waits for its first unblocked consumer
 
 - **Date**: 2026-09-02 (owner call, accepting the recommendation raised as strand C's `O-C-2`
