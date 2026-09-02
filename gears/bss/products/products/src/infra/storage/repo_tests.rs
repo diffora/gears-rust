@@ -3604,8 +3604,8 @@ mod correction_override_tests {
 /// read (`dod-stored-snapshot`, `dod-self-approval`).
 mod approval_store_tests {
     use super::super::{
-        DecisionVerdict, NewApproval, NewDecision, pending_approvals, read_approval,
-        record_decision, submit_approval,
+        ApprovalStoreError, DecisionVerdict, NewApproval, NewDecision, pending_approvals,
+        read_approval, record_decision, submit_approval,
     };
     use super::*;
     use crate::domain::approval::{describe_quorum, descriptor_from_stored};
@@ -3644,7 +3644,6 @@ mod approval_store_tests {
         approver_count: u32,
     ) -> NewApproval<'a> {
         NewApproval {
-            tenant_id: TENANT,
             approval_id: id,
             subject,
             internal_revision: 1,
@@ -3843,6 +3842,7 @@ mod approval_store_tests {
                 reason: None,
                 override_acknowledgments: None,
             },
+            AUTHOR,
             at(11),
         )
         .await
@@ -3866,6 +3866,7 @@ mod approval_store_tests {
                 reason: Some("looks right"),
                 override_acknowledgments: None,
             },
+            APPROVER,
             at(11),
         )
         .await
@@ -3894,20 +3895,35 @@ mod approval_store_tests {
         .await
         .expect("the submission is stored");
 
-        let decision = |verdict| NewDecision {
+        // A rejection carries a mandatory reason (design/05 §2), so the
+        // second call supplies one — otherwise it would be refused for that
+        // and the UNIQUE would go unprobed.
+        let decision = |verdict, reason| NewDecision {
             tenant_id: TENANT,
             approval_id: id,
             approver_principal: APPROVER,
             verdict,
-            reason: None,
+            reason,
             override_acknowledgments: None,
         };
-        record_decision(&conn, &scope, decision(DecisionVerdict::Approved), at(11))
-            .await
-            .expect("the first verdict is cast");
-        let err = record_decision(&conn, &scope, decision(DecisionVerdict::Rejected), at(12))
-            .await
-            .expect_err("a second verdict from the same principal is refused");
+        record_decision(
+            &conn,
+            &scope,
+            decision(DecisionVerdict::Approved, None),
+            APPROVER,
+            at(11),
+        )
+        .await
+        .expect("the first verdict is cast");
+        let err = record_decision(
+            &conn,
+            &scope,
+            decision(DecisionVerdict::Rejected, Some("on reflection")),
+            APPROVER,
+            at(12),
+        )
+        .await
+        .expect_err("a second verdict from the same principal is refused");
         assert!(
             err.to_string().contains("one principal, one decision"),
             "the refusal names C2's rule: {err}"
@@ -3964,10 +3980,13 @@ mod approval_store_tests {
         );
     }
 
-    /// The queue read returns pending records oldest first and drops the
-    /// superseded one — `inst-gv-queue`'s operand.
+    /// **A decision on a record that is no longer open is refused**
+    /// `APPROVAL_SUPERSEDED` (409). `products_approval_decision` is
+    /// append-only outright, so a verdict cast on a closed ceremony cannot
+    /// be taken back and any evaluator counting principals by `approval_id`
+    /// would count it.
     #[tokio::test]
-    async fn the_pending_queue_is_oldest_first_and_carries_only_pending() {
+    async fn a_decision_on_a_superseded_record_is_refused() {
         let db = harness().await;
         let conn = db.conn().expect("conn");
         let scope = AccessScope::for_tenant(TENANT);
@@ -3981,17 +4000,308 @@ mod approval_store_tests {
         submit_approval(
             &conn,
             &scope,
-            submission(first, &subject, r#"{"name":"one"}"#, Some(1), ev, 2),
+            submission(first, &subject, r#"{"name":"x"}"#, Some(1), ev, 2),
             at(10),
         )
         .await
         .expect("stored");
-        let second = ApprovalId::new(Uuid::new_v4());
+        // The author re-submits: the first record is superseded.
         submit_approval(
             &conn,
             &scope,
-            submission(second, &subject, r#"{"name":"two"}"#, Some(1), ev, 2),
+            submission(
+                ApprovalId::new(Uuid::new_v4()),
+                &subject,
+                r#"{"name":"y"}"#,
+                Some(1),
+                ev,
+                2,
+            ),
             at(11),
+        )
+        .await
+        .expect("stored");
+
+        let err = record_decision(
+            &conn,
+            &scope,
+            NewDecision {
+                tenant_id: TENANT,
+                approval_id: first,
+                approver_principal: APPROVER,
+                verdict: DecisionVerdict::Approved,
+                reason: None,
+                override_acknowledgments: None,
+            },
+            APPROVER,
+            at(12),
+        )
+        .await
+        .expect_err("a closed ceremony admits no verdict");
+        match err {
+            ApprovalStoreError::Refused(d) => assert_eq!(d.code(), "APPROVAL_SUPERSEDED"),
+            other @ ApprovalStoreError::Repo(_) => {
+                panic!("expected the declared 409, got {other}")
+            }
+        }
+    }
+
+    /// **A record that closes on no approver admits no decision row**
+    /// (P-D-68 arm 1) — the reason the author's acknowledgment gets a
+    /// column. `decision_admitted`'s `>= 1` guard is silent at zero by
+    /// construction, so this refusal is separate.
+    #[tokio::test]
+    async fn a_record_closing_on_no_approver_admits_no_decision() {
+        let db = harness().await;
+        let conn = db.conn().expect("conn");
+        let scope = AccessScope::for_tenant(TENANT);
+        let subject = subject();
+        let policy = MaterialityPolicy::default();
+        let claims = claim_set();
+        let ev =
+            MaterialityEvaluator::new(Resolution::Resolved(&policy), Resolution::Resolved(&claims));
+
+        let id = ApprovalId::new(Uuid::new_v4());
+        submit_approval(
+            &conn,
+            &scope,
+            submission(id, &subject, r#"{"name":"x"}"#, Some(1), ev, 0),
+            at(10),
+        )
+        .await
+        .expect("stored at N = 0");
+        for principal in [AUTHOR, APPROVER] {
+            let err = record_decision(
+                &conn,
+                &scope,
+                NewDecision {
+                    tenant_id: TENANT,
+                    approval_id: id,
+                    approver_principal: principal,
+                    verdict: DecisionVerdict::Approved,
+                    reason: None,
+                    override_acknowledgments: None,
+                },
+                principal,
+                at(11),
+            )
+            .await
+            .expect_err("at required = 0 no principal may decide, the author least of all");
+            assert!(err.to_string().contains("closes on no approver"), "{err}");
+        }
+    }
+
+    /// **A verdict may not be attributed to another principal.** Without
+    /// this an author holding `approval x decide` names a second principal
+    /// and satisfies C2's two-person invariant alone — on an append-only row.
+    #[tokio::test]
+    async fn a_verdict_cannot_be_attributed_to_someone_else() {
+        let db = harness().await;
+        let conn = db.conn().expect("conn");
+        let scope = AccessScope::for_tenant(TENANT);
+        let subject = subject();
+        let policy = MaterialityPolicy::default();
+        let claims = claim_set();
+        let ev =
+            MaterialityEvaluator::new(Resolution::Resolved(&policy), Resolution::Resolved(&claims));
+
+        let id = ApprovalId::new(Uuid::new_v4());
+        submit_approval(
+            &conn,
+            &scope,
+            submission(id, &subject, r#"{"name":"x"}"#, Some(1), ev, 2),
+            at(10),
+        )
+        .await
+        .expect("stored");
+        let err = record_decision(
+            &conn,
+            &scope,
+            NewDecision {
+                tenant_id: TENANT,
+                approval_id: id,
+                approver_principal: APPROVER,
+                verdict: DecisionVerdict::Approved,
+                reason: None,
+                override_acknowledgments: None,
+            },
+            AUTHOR,
+            at(11),
+        )
+        .await
+        .expect_err("the acting principal must be the one the row names");
+        assert!(err.to_string().contains("may not cast a verdict"), "{err}");
+    }
+
+    /// **A rejection carries a mandatory reason** (`design/05` §2). No
+    /// `CHECK` constrains the column, so the rule lives at the store or
+    /// nowhere — and an unreasoned rejection leaves the record's only
+    /// evidence silent about why.
+    #[tokio::test]
+    async fn an_unreasoned_rejection_is_refused() {
+        let db = harness().await;
+        let conn = db.conn().expect("conn");
+        let scope = AccessScope::for_tenant(TENANT);
+        let subject = subject();
+        let policy = MaterialityPolicy::default();
+        let claims = claim_set();
+        let ev =
+            MaterialityEvaluator::new(Resolution::Resolved(&policy), Resolution::Resolved(&claims));
+
+        let id = ApprovalId::new(Uuid::new_v4());
+        submit_approval(
+            &conn,
+            &scope,
+            submission(id, &subject, r#"{"name":"x"}"#, Some(1), ev, 2),
+            at(10),
+        )
+        .await
+        .expect("stored");
+        let reject = |reason| NewDecision {
+            tenant_id: TENANT,
+            approval_id: id,
+            approver_principal: APPROVER,
+            verdict: DecisionVerdict::Rejected,
+            reason,
+            override_acknowledgments: None,
+        };
+        let err = record_decision(&conn, &scope, reject(None), APPROVER, at(11))
+            .await
+            .expect_err("a rejection with no reason is refused");
+        assert!(err.to_string().contains("mandatory reason"), "{err}");
+        // The paired positive control: with a reason it lands, so the
+        // refusal above is the reason's absence and not the verdict.
+        record_decision(
+            &conn,
+            &scope,
+            reject(Some("the tier is wrong")),
+            APPROVER,
+            at(11),
+        )
+        .await
+        .expect("a reasoned rejection is admitted");
+    }
+
+    /// **The store evaluates the act it was handed**, and a non-material one
+    /// produces a different stored descriptor. Every other probe here
+    /// submits one act shape, so without this a `submit_approval` that
+    /// hardcoded `Materiality::Material` and dropped `finance_material`
+    /// would be green.
+    #[tokio::test]
+    async fn the_store_evaluates_the_act_and_reads_the_finance_flag() {
+        let db = harness().await;
+        let conn = db.conn().expect("conn");
+        let scope = AccessScope::for_tenant(TENANT);
+        let subject = subject();
+        let policy = MaterialityPolicy::default();
+        let claims = claim_set();
+        let ev =
+            MaterialityEvaluator::new(Resolution::Resolved(&policy), Resolution::Resolved(&claims));
+
+        // A batch act below the trigger is NON-material, so `required`
+        // becomes `min(N, 1) = 1` at `N = 3` rather than 3.
+        let small_batch = MaterialAct::BatchAct { affected: 1 };
+        let id = ApprovalId::new(Uuid::new_v4());
+        let mut sub = submission(id, &subject, r#"{"name":"x"}"#, Some(1), ev, 3);
+        sub.act = &small_batch;
+        let answered = submit_approval(&conn, &scope, sub, at(10))
+            .await
+            .expect("stored");
+        assert_eq!(
+            answered.materiality,
+            Materiality::NonMaterial,
+            "the store judged the act it was handed, not a constant"
+        );
+        assert_eq!(answered.descriptor.required(), 1);
+        assert_eq!(answered.descriptor.configured_quorum(), 3);
+
+        // And the finance flag reaches the descriptor.
+        let id = ApprovalId::new(Uuid::new_v4());
+        let mut sub = submission(id, &subject, r#"{"name":"y"}"#, Some(1), ev, 2);
+        sub.finance_material = true;
+        let answered = submit_approval(&conn, &scope, sub, at(11))
+            .await
+            .expect("stored");
+        assert!(
+            answered.descriptor.finance_required(),
+            "finance_material is read, not dropped"
+        );
+    }
+
+    /// **An unresolvable input refuses the submission**, so nothing is
+    /// stored — the fail-closed clause, at the store rather than only in the
+    /// domain module.
+    #[tokio::test]
+    async fn an_unresolvable_input_stores_nothing() {
+        let db = harness().await;
+        let conn = db.conn().expect("conn");
+        let scope = AccessScope::for_tenant(TENANT);
+        let subject = subject();
+        let claims = claim_set();
+        let ev = MaterialityEvaluator::new(Resolution::Unresolvable, Resolution::Resolved(&claims));
+        let id = ApprovalId::new(Uuid::new_v4());
+        let err = submit_approval(
+            &conn,
+            &scope,
+            submission(id, &subject, r#"{"name":"x"}"#, Some(1), ev, 2),
+            at(10),
+        )
+        .await
+        .expect_err("an absent policy refuses the act");
+        assert!(err.to_string().contains("materiality_policy"), "{err}");
+        assert!(
+            read_approval(&conn, &scope, TENANT, id)
+                .await
+                .expect("read runs")
+                .is_none(),
+            "the refusal stored nothing"
+        );
+    }
+
+    /// The queue read returns pending records **oldest first**, and a
+    /// superseded record leaves it — `inst-gv-queue`'s operand.
+    ///
+    /// **Two subjects, submitted out of order.** One subject holds one open
+    /// record, so a one-subject fixture leaves the queue one element long
+    /// and the ordering half unprobed: `Order::Desc`, or no `order_by` at
+    /// all, would pass. Two subjects also make the *filter* visible — a
+    /// superseded row leaves the queue because the read filters
+    /// `state = 'pending'`, not because of the partial UNIQUE, which
+    /// constrains writes and removes nothing from a read.
+    #[tokio::test]
+    async fn the_pending_queue_is_oldest_first_and_carries_only_pending() {
+        let db = harness().await;
+        let conn = db.conn().expect("conn");
+        let scope = AccessScope::for_tenant(TENANT);
+        let policy = MaterialityPolicy::default();
+        let claims = claim_set();
+        let ev =
+            MaterialityEvaluator::new(Resolution::Resolved(&policy), Resolution::Resolved(&claims));
+
+        let product = subject();
+        let sku = GateSubject::entity_publish(EntityRef {
+            tenant_id: TENANT,
+            entity_kind: bss_products_sdk::models::EntityKind::Sku,
+            entity_id: SKU,
+        });
+
+        // The LATER submission goes in FIRST, so an unordered read cannot
+        // pass by insertion accident.
+        let newer = ApprovalId::new(Uuid::new_v4());
+        submit_approval(
+            &conn,
+            &scope,
+            submission(newer, &sku, r#"{"name":"newer"}"#, Some(1), ev, 2),
+            at(14),
+        )
+        .await
+        .expect("stored");
+        let older = ApprovalId::new(Uuid::new_v4());
+        submit_approval(
+            &conn,
+            &scope,
+            submission(older, &product, r#"{"name":"older"}"#, Some(1), ev, 2),
+            at(10),
         )
         .await
         .expect("stored");
@@ -3999,11 +4309,28 @@ mod approval_store_tests {
         let queue = pending_approvals(&conn, &scope, TENANT)
             .await
             .expect("the queue reads");
-        assert_eq!(
-            queue.len(),
-            1,
-            "the superseded record left the queue, which is what the partial index is for"
+        assert_eq!(queue.len(), 2, "two subjects, two open records");
+        assert_eq!(queue[0].approval_id, older.get(), "oldest first");
+        assert_eq!(queue[1].approval_id, newer.get());
+
+        // Re-submitting on the older subject supersedes its record, and the
+        // superseded row leaves the queue.
+        let replacing = ApprovalId::new(Uuid::new_v4());
+        submit_approval(
+            &conn,
+            &scope,
+            submission(replacing, &product, r#"{"name":"re"}"#, Some(1), ev, 2),
+            at(15),
+        )
+        .await
+        .expect("a re-submission supersedes rather than colliding");
+        let queue = pending_approvals(&conn, &scope, TENANT)
+            .await
+            .expect("the queue reads");
+        assert_eq!(queue.len(), 2, "still one open record per subject");
+        assert!(
+            queue.iter().all(|r| r.approval_id != older.get()),
+            "the superseded record left the queue: the read filters state = 'pending'"
         );
-        assert_eq!(queue[0].approval_id, second.get());
     }
 }

@@ -65,6 +65,7 @@ fn declared_status_and_code(err: &DomainError) -> (u16, Option<&'static str>) {
         D::AccountingCodeDelistBlocked(_) => (409, Some("ACCOUNTING_CODE_DELIST_BLOCKED")),
         D::ApprovalRequired(_) => (403, Some("APPROVAL_REQUIRED")),
         D::SelfApprovalForbidden(_) => (403, Some("SELF_APPROVAL_FORBIDDEN")),
+        D::ApprovalSuperseded(_) => (409, Some("APPROVAL_SUPERSEDED")),
         D::ErasureUnknownActor(_) => (400, Some("ERASURE_UNKNOWN_ACTOR")),
         D::CloneSourceDiscarded(_) => (409, Some("CLONE_SOURCE_DISCARDED")),
         // FailedPrecondition renders 400 on the wire; the discriminator the
@@ -126,6 +127,17 @@ fn one_of_every_variant() -> Vec<DomainError> {
         D::StaleLiveOp(d()),
         D::ApprovalRequired(d()),
         D::SelfApprovalForbidden(d()),
+        D::ApprovalSuperseded(d()),
+        // The six 03 variants the roster never carried. Each has had an arm
+        // in `declared_status_and_code` since it landed, so the exhaustive
+        // match compiled and the *ladder* went unchecked for all six — the
+        // count below was wrong by six, not by one.
+        D::MeterDeclarationIncomplete(d()),
+        D::UnrecognizedUnit(d()),
+        D::UnitDeprecated(d()),
+        D::UnitDelistBlocked(d()),
+        D::PlanTierRetireBlocked(d()),
+        D::AccountingCodeDelistBlocked(d()),
         D::ErasureUnknownActor(d()),
         D::CloneSourceDiscarded(d()),
         D::RequestSourceUnknown(d()),
@@ -154,7 +166,15 @@ fn one_of_every_variant() -> Vec<DomainError> {
 /// new variant makes that match fail to compile, and this makes the roster
 /// that is *missing* the value fail the case. Bump it in the same edit that
 /// adds the variant to both.
-const DOMAIN_ERROR_VARIANTS: usize = 35;
+///
+/// **It read 35 against 41 real variants until 2026-09-02**, and the gap was
+/// invisible in exactly the way this constant exists to prevent: six
+/// `03`-owned variants had arms in [`declared_status_and_code`] — so the
+/// exhaustive match compiled — and no roster entry, so the ladder was never
+/// checked on any of them. Bumping the literal by one per added variant
+/// keeps a pre-existing shortfall forever; the only safe move is to
+/// re-derive it against the enum.
+const DOMAIN_ERROR_VARIANTS: usize = 42;
 
 /// Covers all 14 variants (§3.3's own count, `DomainError::code`'s own
 /// exhaustiveness note): every one lands on the status the design ladder

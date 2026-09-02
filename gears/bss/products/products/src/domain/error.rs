@@ -170,6 +170,19 @@ pub enum DomainError {
     #[error("self-approval forbidden: {0}")]
     SelfApprovalForbidden(String),
 
+    /// A decision arrived on a record that is no longer open. `design/05`
+    /// §2 puts it at **decide** — *"a decision arriving on a record already
+    /// `superseded` is refused"* — and §3.3 gives it **409**: the record's
+    /// current state refuses the act, which is the convention's own line
+    /// between 409 and 403.
+    ///
+    /// The refusal exists because `products_approval_decision` is
+    /// append-only outright: a verdict cast on a closed ceremony cannot be
+    /// removed, and any evaluator counting distinct principals by
+    /// `approval_id` would count it.
+    #[error("approval superseded: {0}")]
+    ApprovalSuperseded(String),
+
     /// The erasure door's own refusal: the named principal resolves to no
     /// `actor_ref` in this tenant. The one code `10-retention-erasure` owns
     /// (P-D-64 kept the roster at one) — 422 architectural, reaching the wire
@@ -336,6 +349,7 @@ impl DomainError {
             Self::PrimaryCategoryRequired(_) => "PRIMARY_CATEGORY_REQUIRED",
             Self::ApprovalRequired(_) => "APPROVAL_REQUIRED",
             Self::SelfApprovalForbidden(_) => "SELF_APPROVAL_FORBIDDEN",
+            Self::ApprovalSuperseded(_) => "APPROVAL_SUPERSEDED",
             Self::ErasureUnknownActor(_) => "ERASURE_UNKNOWN_ACTOR",
             Self::CloneSourceDiscarded(_) => "CLONE_SOURCE_DISCARDED",
             Self::RequestSourceUnknown(_) => "REQUEST_SOURCE_UNKNOWN",

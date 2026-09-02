@@ -6,12 +6,13 @@
 //!
 //! # Both stored values are computed once and never re-derived
 //!
-//! §4 makes `content_snapshot` and `quorum_descriptor` stored-at-submission
-//! for one measured reason each, and they are the same reason one field
-//! over. The snapshot: *"the diff shown to approvers is rendered from the
-//! STORED snapshot against the last published version, never re-derived from
-//! the live head"* — a re-derived diff shows the draft against itself, the
-//! pricing defect this rule was designed out of. The descriptor:
+//! Both are stored-at-submission for one measured reason each, and they are
+//! the same reason one field over. The snapshot's rule is **§2's
+//! `inst-gv-stored-snapshot`** (§4's own entry only restates the column):
+//! *"the diff shown to approvers is rendered from the STORED snapshot
+//! against the last published version, never re-derived from the live
+//! head"* — a re-derived diff shows the draft against itself, the pricing
+//! defect this rule was designed out of. The descriptor's is **§4's**:
 //! `configured_quorum` is the `N` in force at submission, so deriving it
 //! from current policy would change a **pending** record when the tenant
 //! edits `N`. A record that changes after the fact is not a record.
@@ -29,9 +30,10 @@
 //!
 //! # The self-approval refusal is by principal, and that is a physical floor
 //!
-//! C2 is *"one principal, one decision, whatever roles they hold"*, and
-//! `products_approval_decision`'s `UNIQUE (tenant_id, approval_id,
-//! approver_principal)` is that floor. [`decision_admitted`] adds the half a
+//! C2 reads *"Distinctness is by **principal**, never by role: one human
+//! holding both roles is one approver"*, and §4 calls
+//! `products_approval_decision`'s key *"C2's physical floor: one principal,
+//! one decision"*. [`decision_admitted`] adds the half a
 //! UNIQUE cannot express: the **author** is refused, at every `N >= 1`, by
 //! principal and never by role — a human holding both `CatalogAdmin` and
 //! `FinanceReviewer` is still one principal.
@@ -83,7 +85,23 @@ impl UnsatisfiablePredicate {
     }
 }
 
-/// The stored quorum descriptor — §4's own field set.
+/// The five §4 names the descriptor stores, in the order §4 gives them.
+///
+/// §4's set is **six** wide: `configuredQuorum`, the required count, the
+/// finance predicate, `predicateUnsatisfiable`, **override conditions** and
+/// `quorumReduced`. The sixth waits on `dod-override-ceremony`'s missing
+/// operand — no artifact says where a subject's lint findings are read from
+/// — so `dod-quorum-descriptor` stays unticked and this roster is five.
+const DESCRIPTOR_ROSTER: [&str; 5] = [
+    "configuredQuorum",
+    "required",
+    "financeRequired",
+    "predicateUnsatisfiable",
+    "quorumReduced",
+];
+
+/// The stored quorum descriptor — five of §4's six names; see
+/// [`DESCRIPTOR_ROSTER`] for the sixth.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct QuorumDescriptor {
     configured_quorum: u32,
@@ -146,7 +164,19 @@ impl QuorumDescriptor {
             },
         );
         map.insert("quorumReduced".to_owned(), self.quorum_reduced.into());
-        canonical::canonical_rendering(&JsonValue::Object(map), canonical::Absence::Omit)
+        // `Absence::Null` with the roster, not `Omit`: this is stored
+        // content with a **required** field set, and the reader errors on any
+        // missing member. Under `Omit` a sixth field added to the struct and
+        // forgotten here would render fine and fail at decode — every record
+        // written after the deploy unreadable while the older ones still
+        // work, which is the hardest shape to diagnose. Under the roster the
+        // forgotten member renders `null` and the reader names it at once.
+        canonical::canonical_rendering(
+            &JsonValue::Object(map),
+            canonical::Absence::Null {
+                roster: &DESCRIPTOR_ROSTER,
+            },
+        )
     }
 }
 
@@ -314,6 +344,23 @@ pub enum ApproverDiff {
         /// The content stored at submission.
         submitted: String,
     },
+    /// A record that **has** a published basis whose frozen content could
+    /// not be read.
+    ///
+    /// Its own arm, because collapsing it onto
+    /// [`Self::WholeContentAddition`] shows the approver a first publish for
+    /// a change that has a predecessor — they approve a diff they were never
+    /// shown, which is the class `dod-stored-snapshot` exists to prevent,
+    /// arriving through the unreadable-basis door rather than the
+    /// re-derivation one. A caller renders this as a refusal, never as a
+    /// diff.
+    BasisUnreadable {
+        /// The published version the diff should have rendered against.
+        basis: i64,
+        /// The content stored at submission, carried so the refusal can name
+        /// what was being approved.
+        submitted: String,
+    },
 }
 
 /// Render the approver's diff **from the stored copy**.
@@ -333,10 +380,15 @@ pub fn render_diff(
             submitted: stored_snapshot.to_owned(),
             basis_content: basis_content.to_owned(),
         },
-        // No basis, or a basis whose frozen content could not be read: both
-        // render as the whole-content addition. Inventing a basis from the
-        // head is the one thing this function must not do.
-        _ => ApproverDiff::WholeContentAddition {
+        // A pinned basis whose content could not be read is **not** a first
+        // publish, and saying so is the point of the third arm.
+        (Some(basis), None) => ApproverDiff::BasisUnreadable {
+            basis,
+            submitted: stored_snapshot.to_owned(),
+        },
+        // No basis at all: the first publish. Inventing one from the head is
+        // the one thing this function must not do.
+        (None, _) => ApproverDiff::WholeContentAddition {
             submitted: stored_snapshot.to_owned(),
         },
     }

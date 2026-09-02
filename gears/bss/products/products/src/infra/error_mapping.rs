@@ -302,6 +302,10 @@ impl From<DomainError> for CanonicalError {
             // puts `SELF_APPROVAL_FORBIDDEN` in its 403 list beside
             // `APPROVAL_REQUIRED`.
             D::SelfApprovalForbidden(_detail) => denied("SELF_APPROVAL_FORBIDDEN"),
+            // 409, not 403: `design/05` §3.3's convention puts **409** where
+            // the current state refuses the act and **403** where the caller
+            // may not take it. A superseded record is the first.
+            D::ApprovalSuperseded(detail) => aborted(detail, "APPROVAL_SUPERSEDED"),
 
             // -- Architectural 422s (rendered 400, no transport override —
             // see the module doc's "The 422s here are architectural, not

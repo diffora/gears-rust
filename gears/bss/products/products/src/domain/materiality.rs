@@ -24,14 +24,19 @@
 //! submitting transaction read and holds no resolver of its own. The
 //! *once* half is the submit path's:
 //! [`crate::infra::storage::repo::submit_approval`] is the only caller, and
-//! it stores the verdict in `quorum_descriptor` so no later reader
-//! re-evaluates.
+//! it stores the verdict's **effect** — the descriptor's counts — so no
+//! later reader re-evaluates. It does not store the verdict itself: the
+//! descriptor's five names carry no `Materiality`, and at `N <= 1` both
+//! verdicts render identically. A caller needing the verdict takes it from
+//! that call's answer.
 //!
 //! # Refusal is a domain type here, because the code taxonomy is closed
 //!
 //! The fail-closed arm has **no declared code**: the gear's 503 set is closed
 //! at three by name — `AUDIT_UNAVAILABLE`, 08's `READ_MODEL_OVERLOADED` and
-//! 03's `USAGE_TYPE_UNAVAILABLE` (`design/01-foundation.md` §4.4,
+//! 03's `USAGE_TYPE_UNAVAILABLE` (`design/01-foundation.md` §3.3, whose own
+//! line reads *"one of the gear's **three** 503s"*; the `§4.4` in that
+//! sentence points at where the audit-row rule lives, not at the census,
 //! `design/12-consumer-contracts.md` `inst-cc-errors`) — and 05 §3.3 names
 //! none for an unresolvable governance input. Minting a fourth would make a
 //! closed roster consistent and wrong, so the refusal is
@@ -67,6 +72,13 @@ pub const DEFAULT_APPROVER_COUNT: u32 = 2;
 /// `N`'s floor. **Zero is reachable** (P-D-11) and only by explicit
 /// configuration; it is safe by reason, evidence and tripwire rather than by
 /// a count, which is why nothing here clamps it upward.
+///
+/// It is deliberately **not** asserted in [`MaterialityPolicy::new`]: at
+/// zero, `approver_count >= APPROVER_COUNT_FLOOR` is a tautology for a
+/// `u32`, and an always-true guard reads as a constraint while enforcing
+/// nothing. The constant's job is to give the number one name, and
+/// `n_defaults_to_two_and_zero_is_reachable` is what reads it — a probe
+/// spelling the literal `0` would let the floor drift in prose.
 pub const APPROVER_COUNT_FLOOR: u32 = 0;
 
 /// The affected-entity trigger's interim value for batch acts
@@ -86,10 +98,11 @@ pub enum Materiality {
 
 /// Which of the evaluator's looked-up inputs could not be resolved.
 ///
-/// Named individually rather than collapsed into one message because the
-/// remedies differ: an absent policy is a provisioning gap, an absent claim
-/// set is an authentication one, and an untagged column is a registration
-/// bug in the slice that owns it.
+/// Named individually rather than collapsed into one message because the two
+/// remedies differ: an absent policy is a provisioning gap and an absent
+/// claim set is an authentication one. The registry's own failure is not a
+/// member here — an untagged column is a registration bug in the slice that
+/// owns it, and it arrives as [`MaterialityRefusal::Registry`].
 #[domain_model]
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum MaterialityInput {
@@ -225,10 +238,11 @@ pub enum EnumeratedOp {
 /// The `GovernedLiveOp` kinds their owning slice registered material
 /// (input (d), the H-1 fix).
 ///
-/// A closed roster of six, one per owning slice. A kind absent from it is
-/// **not** silently non-material: [`MaterialAct::LiveOp`] can only be built
-/// from a member, so an unregistered kind has no way to reach the evaluator
-/// at all.
+/// A closed roster of six, one per owning slice — and the roster, not the
+/// type, is what closes it: [`MaterialAct::LiveOp`] accepts any variant of
+/// this enum, so "an unregistered kind cannot reach the evaluator" holds
+/// only because every variant *is* registered. That is asserted rather than
+/// assumed; see [`Self::ALL`].
 #[domain_model]
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum MaterialLiveOp {
@@ -250,8 +264,13 @@ pub enum MaterialLiveOp {
 }
 
 impl MaterialLiveOp {
-    /// The whole roster, in slice order. Its length is asserted by a probe,
-    /// so a seventh kind cannot arrive without the census moving.
+    /// The whole roster, in slice order.
+    ///
+    /// **A seventh variant cannot land silently**: [`Self::owning_slice`] is
+    /// an exhaustive match, so a new kind forces an arm there, and
+    /// `every_variant_is_in_the_roster` matches every variant and asserts
+    /// `ALL` contains it. A `len()` assertion alone proves nothing — the
+    /// array's own type gives the length at compile time.
     pub const ALL: [Self; 6] = [
         Self::TaxonomyOp,
         Self::RecognizedSetOp,
@@ -300,8 +319,11 @@ pub enum MaterialAct<'a> {
     PolicyMutation,
 }
 
-/// The evaluator `inst-mt-inputs` names — *"Submission runs
-/// `MaterialityEvaluator` over the change set"*.
+/// The evaluator, over `inst-mt-inputs`' four declared inputs.
+///
+/// `inst-gv-materiality` is what names the act: *"Submission runs
+/// `MaterialityEvaluator` over the change set"*. `inst-mt-inputs` enumerates
+/// the inputs it runs over.
 ///
 /// It holds the two looked-up inputs as resolutions and nothing else: no
 /// resolver, no clock, no store handle. That is what makes
@@ -356,7 +378,7 @@ impl<'a> MaterialityEvaluator<'a> {
     ) -> Result<Materiality, MaterialityRefusal> {
         match act {
             MaterialAct::PolicyMutation | MaterialAct::LiveOp(_) => Ok(Materiality::Material),
-            MaterialAct::Enumerated(op) => Ok(enumerated_verdict(*op)),
+            MaterialAct::Enumerated(op) => enumerated_verdict(*op),
             MaterialAct::BatchAct { affected } => {
                 if *affected >= policy.affected_entity_trigger() {
                     Ok(Materiality::Material)
@@ -370,16 +392,28 @@ impl<'a> MaterialityEvaluator<'a> {
 }
 
 /// Input (b)'s verdict. The enumeration is the FR's exact one, so a
-/// transition to `draft` or `discarded` is outside it (M-1).
-const fn enumerated_verdict(op: EnumeratedOp) -> Materiality {
+/// transition to `draft` or `discarded` is outside it (M-1) — and outside
+/// means **refused, not non-material**.
+///
+/// `NonMaterial` is not "ungated": it feeds `required = min(N, 1)`, which is
+/// **one** approver at the default. Answering it for `draft → discarded`
+/// would mint a one-approver ceremony for the one transition M-1 leaves
+/// *"ungated beyond its own authz"*. The module refuses the same way it
+/// refuses a bucket-ii touch: an act that cannot arrive here does not get a
+/// verdict.
+fn enumerated_verdict(op: EnumeratedOp) -> Result<Materiality, MaterialityRefusal> {
     match op {
         EnumeratedOp::LifecycleTransition(to) => match to {
             LifecycleState::Published | LifecycleState::Deprecated | LifecycleState::Retired => {
-                Materiality::Material
+                Ok(Materiality::Material)
             }
-            LifecycleState::Draft | LifecycleState::Discarded => Materiality::NonMaterial,
+            LifecycleState::Draft | LifecycleState::Discarded => {
+                Err(MaterialityRefusal::OutsideTheEnumeration(to))
+            }
         },
-        EnumeratedOp::CategoryOp | EnumeratedOp::AttributeDefinitionChange => Materiality::Material,
+        EnumeratedOp::CategoryOp | EnumeratedOp::AttributeDefinitionChange => {
+            Ok(Materiality::Material)
+        }
     }
 }
 
@@ -435,10 +469,13 @@ fn touched_verdict(
 ) -> Result<Materiality, MaterialityRefusal> {
     let mut verdict = Materiality::NonMaterial;
     for column in touched {
-        if policy.names_field(column) {
-            verdict = Materiality::Material;
-            continue;
-        }
+        // **The registry runs first, always.** A `continue` on
+        // `names_field` here would let a tenant switch both fail-closed
+        // refusals off for any column it lists: an untagged (misspelt)
+        // column would stop raising `Registry`, and `metering_unit` would
+        // stop raising `CorrectableTouch` — making L-1's
+        // correction-door-only guarantee tenant-configurable. The policy's
+        // set may raise a verdict; it may never skip a refusal.
         let class = bucket::classify(kind, column).map_err(MaterialityRefusal::Registry)?;
         let Some(bucket) = class.bucket() else {
             // `CreateOnly` and the two outside-the-scheme classes: refused by
@@ -448,7 +485,12 @@ fn touched_verdict(
         };
         match bucket_bearing(bucket) {
             BucketBearing::Material => verdict = Materiality::Material,
-            BucketBearing::Immaterial => {}
+            BucketBearing::Immaterial => {
+                // Only now may the tenant's own field set promote it.
+                if policy.names_field(column) {
+                    verdict = Materiality::Material;
+                }
+            }
             BucketBearing::NotAnOrdinaryTouch => {
                 return Err(MaterialityRefusal::CorrectableTouch((*column).to_owned()));
             }
@@ -474,6 +516,14 @@ pub enum MaterialityRefusal {
          and the correction door after, never as an ordinary touch (L-1)"
     )]
     CorrectableTouch(String),
+    /// A lifecycle transition to a target the FR's enumeration excludes.
+    /// `draft → discarded` is ungated beyond its own authz (M-1), so it has
+    /// no verdict here — and `NonMaterial` would have given it a ceremony.
+    #[error(
+        "a transition to {0:?} is outside the FR's enumeration and ungated beyond its own authz \
+         (M-1): it has no materiality verdict"
+    )]
+    OutsideTheEnumeration(LifecycleState),
 }
 
 #[cfg(test)]

@@ -106,16 +106,16 @@ fn an_ordinary_change_carries_no_predicate() {
 fn the_stored_descriptor_is_canonical_and_names_all_five_fields() {
     let d = describe_quorum(Materiality::NonMaterial, 3, true);
     let stored = d.stored();
-    for name in [
-        "configuredQuorum",
-        "required",
-        "financeRequired",
-        "predicateUnsatisfiable",
-        "quorumReduced",
-    ] {
-        assert!(stored.contains(name), "{name} missing from {stored}");
-    }
-    assert_eq!(stored, d.stored(), "the rendering is stable");
+    // **The full literal, not `contains`.** `contains` passes for any
+    // ordering, and comparing a pure function's output to itself asserts
+    // nothing — so swapping the canonical renderer for `serde_json` (which
+    // under `preserve_order` emits insertion order) would pass both. The
+    // column is compared byte-for-byte, so the bytes are the assertion.
+    assert_eq!(
+        stored,
+        r#"{"configuredQuorum":3,"financeRequired":true,"predicateUnsatisfiable":null,"quorumReduced":true,"required":1}"#,
+        "sorted keys, an explicit null, and the five names section 4 gives"
+    );
 }
 
 /// **The author's own decision is refused at every `N >= 1`.** The whole
@@ -209,9 +209,7 @@ fn the_diff_renders_the_stored_submission_not_the_edited_head() {
                 "the edited head reached the diff: {edited_head}"
             );
         }
-        other @ ApproverDiff::WholeContentAddition { .. } => {
-            panic!("expected a diff against the published version, got {other:?}")
-        }
+        other => panic!("expected a diff against the published version, got {other:?}"),
     }
 }
 
@@ -228,11 +226,21 @@ fn a_first_publish_renders_a_whole_content_addition() {
     );
 }
 
-/// A basis pinned but its frozen content unreadable renders the addition
-/// too — never a basis invented from the head.
+/// **A pinned basis whose content could not be read is NOT a first
+/// publish.** Its own arm, because collapsing the two shows an approver a
+/// whole-content addition for a change that has a predecessor — they approve
+/// a diff they were never shown.
 #[test]
-fn an_unreadable_basis_does_not_become_the_head() {
-    let submitted = r#"{"name":"first"}"#;
-    let diff = render_diff(submitted, Some(4), None);
-    assert!(matches!(diff, ApproverDiff::WholeContentAddition { .. }));
+fn an_unreadable_basis_is_its_own_answer_not_a_first_publish() {
+    let submitted = r#"{"name":"x"}"#;
+    match render_diff(submitted, Some(4), None) {
+        ApproverDiff::BasisUnreadable {
+            basis,
+            submitted: s,
+        } => {
+            assert_eq!(basis, 4, "the basis is named, not discarded");
+            assert_eq!(s, submitted);
+        }
+        other => panic!("a pinned basis must not render as a first publish: {other:?}"),
+    }
 }

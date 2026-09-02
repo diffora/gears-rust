@@ -4,8 +4,8 @@
 use bss_products_sdk::models::{EntityKind, LifecycleState};
 
 use super::{
-    BucketBearing, DEFAULT_AFFECTED_ENTITY_TRIGGER, DEFAULT_APPROVER_COUNT, EnumeratedOp,
-    MaterialAct, MaterialLiveOp, Materiality, MaterialityEvaluator, MaterialityInput,
+    APPROVER_COUNT_FLOOR, BucketBearing, DEFAULT_AFFECTED_ENTITY_TRIGGER, DEFAULT_APPROVER_COUNT,
+    EnumeratedOp, MaterialAct, MaterialLiveOp, Materiality, MaterialityEvaluator, MaterialityInput,
     MaterialityPolicy, MaterialityRefusal, Resolution, bucket_bearing,
 };
 use crate::domain::bucket::FieldBucket;
@@ -174,12 +174,10 @@ fn a_bucket_ii_touch_is_refused_not_judged() {
 fn the_enumerated_transitions_are_the_prd_three() {
     let policy = MaterialityPolicy::default();
     let claims = vec!["catalog-admin".to_owned()];
-    for (to, expected) in [
-        (LifecycleState::Published, Materiality::Material),
-        (LifecycleState::Deprecated, Materiality::Material),
-        (LifecycleState::Retired, Materiality::Material),
-        (LifecycleState::Discarded, Materiality::NonMaterial),
-        (LifecycleState::Draft, Materiality::NonMaterial),
+    for to in [
+        LifecycleState::Published,
+        LifecycleState::Deprecated,
+        LifecycleState::Retired,
     ] {
         let ev = resolved(&policy, &claims);
         let verdict = ev
@@ -187,7 +185,24 @@ fn the_enumerated_transitions_are_the_prd_three() {
                 to,
             )))
             .expect("a resolved policy");
-        assert_eq!(verdict, expected, "transition to {to:?}");
+        assert_eq!(verdict, Materiality::Material, "transition to {to:?}");
+    }
+
+    // **The two outside the enumeration are refused, not judged.**
+    // `NonMaterial` feeds `required = min(N, 1)` — one approver at the
+    // default — so answering it for `draft -> discarded` would mint a
+    // ceremony for the one transition M-1 leaves ungated.
+    for to in [LifecycleState::Draft, LifecycleState::Discarded] {
+        let ev = resolved(&policy, &claims);
+        let err = ev
+            .verdict(&MaterialAct::Enumerated(EnumeratedOp::LifecycleTransition(
+                to,
+            )))
+            .expect_err("outside the FR's enumeration means no verdict, not a small one");
+        match err {
+            MaterialityRefusal::OutsideTheEnumeration(named) => assert_eq!(named, to),
+            other => panic!("expected the target named, got {other:?}"),
+        }
     }
 }
 
@@ -257,7 +272,19 @@ fn the_trigger_comes_from_the_policy_not_a_constant() {
 fn every_registered_live_op_kind_is_material_and_there_are_six() {
     let policy = MaterialityPolicy::default();
     let claims = vec!["catalog-admin".to_owned()];
-    assert_eq!(MaterialLiveOp::ALL.len(), 6);
+    // Every variant is in the roster, matched exhaustively — the assertion
+    // a `len()` cannot make, since the array's type gives its length at
+    // compile time. A seventh variant forces an arm here.
+    for kind in MaterialLiveOp::ALL {
+        match kind {
+            MaterialLiveOp::TaxonomyOp
+            | MaterialLiveOp::RecognizedSetOp
+            | MaterialLiveOp::ScheduledTransitionCancel
+            | MaterialLiveOp::FreezeParticipantOp
+            | MaterialLiveOp::ReferenceProducerOp
+            | MaterialLiveOp::PiiAllowListOp => {}
+        }
+    }
     let mut slices: Vec<&str> = MaterialLiveOp::ALL
         .iter()
         .map(|k| k.owning_slice())
@@ -303,12 +330,62 @@ fn the_policy_field_set_widens_the_registry() {
     );
 }
 
+/// **The policy's field set may raise a verdict; it may never switch a
+/// refusal off.** Both fail-closed arms re-asserted with the policy naming
+/// the very column under test — the interaction a `continue` on
+/// `names_field` silently removed, making L-1's correction-door-only
+/// guarantee tenant-configurable.
+#[test]
+fn the_policy_field_set_cannot_disable_a_refusal() {
+    let claims = vec!["catalog-admin".to_owned()];
+
+    let policy = MaterialityPolicy::new(
+        vec!["metering_unit".to_owned()],
+        DEFAULT_AFFECTED_ENTITY_TRIGGER,
+        DEFAULT_APPROVER_COUNT,
+    );
+    let ev = resolved(&policy, &claims);
+    let err = ev
+        .verdict(&MaterialAct::EntityPublish {
+            kind: EntityKind::Sku,
+            touched: &["metering_unit"],
+        })
+        .expect_err("a tenant's field set cannot make bucket ii an ordinary touch");
+    assert!(
+        matches!(err, MaterialityRefusal::CorrectableTouch(_)),
+        "{err:?}"
+    );
+
+    let policy = MaterialityPolicy::new(
+        vec!["no_such_column".to_owned()],
+        DEFAULT_AFFECTED_ENTITY_TRIGGER,
+        DEFAULT_APPROVER_COUNT,
+    );
+    let ev = resolved(&policy, &claims);
+    let err = ev
+        .verdict(&MaterialAct::EntityPublish {
+            kind: EntityKind::Product,
+            touched: &["no_such_column"],
+        })
+        .expect_err("a tenant's field set cannot register a column");
+    assert!(matches!(err, MaterialityRefusal::Registry(_)), "{err:?}");
+}
+
 /// `N`'s default is two and its floor is zero, reachable only by explicit
 /// configuration — nothing clamps a configured zero upward.
 #[test]
 fn n_defaults_to_two_and_zero_is_reachable() {
     assert_eq!(DEFAULT_APPROVER_COUNT, 2);
     assert_eq!(MaterialityPolicy::default().approver_count(), 2);
-    let floor = MaterialityPolicy::new(Vec::new(), DEFAULT_AFFECTED_ENTITY_TRIGGER, 0);
-    assert_eq!(floor.approver_count(), 0, "the floor is zero, not one");
+    assert_eq!(APPROVER_COUNT_FLOOR, 0);
+    let floor = MaterialityPolicy::new(
+        Vec::new(),
+        DEFAULT_AFFECTED_ENTITY_TRIGGER,
+        APPROVER_COUNT_FLOOR,
+    );
+    assert_eq!(
+        floor.approver_count(),
+        APPROVER_COUNT_FLOOR,
+        "the floor is reachable and nothing clamps it upward"
+    );
 }
