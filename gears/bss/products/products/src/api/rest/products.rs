@@ -806,31 +806,7 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
         .error_503(openapi)
         .register(router, openapi);
 
-    let router = OperationBuilder::patch("/bss-products/v1/products/{id}")
-        .operation_id("bss_products.save_product")
-        .summary("Save a Product head")
-        .description(
-            "Writes the named fields onto the Product head in one guarded UPDATE, bumps              `internal_revision` by one and enqueues `ProductHeadSaved`, and writes no              version row and moves no `published_version`, the head being the authoring              surface in every non-terminal state. Every field the body names is routed by its              field-mutability bucket before any of them is written, so a request naming one              refused field applies none of the others. Identity fields (`brand_id`,              `product_code`) are admitted only before first publish and refused              `ILLEGAL_FIELD_MUTATION` after it; `name`, `region_scope` and `brand_scope` are              admitted on any non-terminal head, published or not. A field no bucket registry              row names is refused `ILLEGAL_FIELD_MUTATION` rather than routed to a default.              Gates on `product x write` and requires `If-Match`: absent is `VALIDATION`,              stale is `STALE_REVISION`. A `retired` or `discarded` head is refused              `ENTITY_TERMINAL`. Accepts an optional `Idempotency-Key`, whose digest is taken              over this body.",
-        )
-        .tag(TAG)
-        .authenticated()
-        .no_license_required()
-        .path_param("id", "The Product to save.")
-        .json_request::<SaveProductRequest>(openapi, "The fields to write.")
-        .handler(save_product)
-        .json_response_with_schema::<ProductView>(
-            openapi,
-            StatusCode::OK,
-            "The saved Product head, at its new revision.",
-        )
-        .error_400(openapi)
-        .error_401(openapi)
-        .error_403(openapi)
-        .error_404(openapi)
-        .error_409(openapi)
-        .error_500(openapi)
-        .error_503(openapi)
-        .register(router, openapi);
+    let router = register_save_door(router, openapi);
 
     let router = OperationBuilder::post("/bss-products/v1/products/{id}/discard")
         .operation_id("bss_products.discard_product")
@@ -874,6 +850,57 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
 
 /// Register the deprecate door on `router`.
 ///
+/// The Product save door, lifted out of [`router`] for the reason
+/// [`register_deprecate_door`] was: that function crossed clippy's
+/// `too_many_lines` floor again, this time at 202, when this door's
+/// `.description` was re-wrapped with the `\` continuations its nine siblings
+/// already used — the literal had been hand-joined onto one 1,186-character
+/// line with thirteen runs of baked-in indentation inside it.
+///
+/// The save door is the right one to lift next: it is the largest block left
+/// inline, and its own doc below is where a reader asks what a `PATCH` may
+/// name.
+fn register_save_door(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
+    OperationBuilder::patch("/bss-products/v1/products/{id}")
+        .operation_id("bss_products.save_product")
+        .summary("Save a Product head")
+        .description(
+            "Writes the named fields onto the Product head in one guarded UPDATE, bumps \
+             `internal_revision` by one and enqueues `ProductHeadSaved`, and writes no \
+             version row and moves no `published_version`, the head being the authoring \
+             surface in every non-terminal state. Every field the body names is routed by its \
+             field-mutability bucket before any of them is written, so a request naming one \
+             refused field applies none of the others. Identity fields (`brand_id`, \
+             `product_code`) are admitted only before first publish and refused \
+             `ILLEGAL_FIELD_MUTATION` after it; `name`, `region_scope` and `brand_scope` are \
+             admitted on any non-terminal head, published or not. A field no bucket registry \
+             row names is refused `ILLEGAL_FIELD_MUTATION` rather than routed to a default. \
+             Gates on `product x write` and requires `If-Match`: absent is `VALIDATION`, \
+             stale is `STALE_REVISION`. A `retired` or `discarded` head is refused \
+             `ENTITY_TERMINAL`. Accepts an optional `Idempotency-Key`, whose digest is taken \
+             over this body.",
+        )
+        .tag(TAG)
+        .authenticated()
+        .no_license_required()
+        .path_param("id", "The Product to save.")
+        .json_request::<SaveProductRequest>(openapi, "The fields to write.")
+        .handler(save_product)
+        .json_response_with_schema::<ProductView>(
+            openapi,
+            StatusCode::OK,
+            "The saved Product head, at its new revision.",
+        )
+        .error_400(openapi)
+        .error_401(openapi)
+        .error_403(openapi)
+        .error_404(openapi)
+        .error_409(openapi)
+        .error_500(openapi)
+        .error_503(openapi)
+        .register(router, openapi)
+}
+
 /// Split out of [`router`] because that function crossed clippy's
 /// `too_many_lines` floor when this seventh registration landed, and the
 /// deprecate door is the right one to lift: it is the only span in this

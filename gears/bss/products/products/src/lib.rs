@@ -47,3 +47,9 @@ pub mod infra;
 /// why a test-support module earns its place in this crate in particular.
 #[cfg(test)]
 mod test_support;
+
+/// Crate-wide source hygiene, in the crate's own root because the class it
+/// guards is not any one module's.
+#[cfg(test)]
+#[path = "lib_tests.rs"]
+mod lib_tests;

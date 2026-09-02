@@ -425,7 +425,8 @@ pub async fn record_decision(
     // column the same way.
     let state = ApprovalState::parse(&record.state).map_err(|token| {
         ApprovalStoreError::Repo(RepoError::CorruptRow(format!(
-            "approval {} carries state {token}, which is outside              chk_products_approval_state's roster",
+            "approval {} carries state {token}, which is outside chk_products_approval_state's \
+             roster",
             new.approval_id
         )))
     })?;
@@ -442,7 +443,9 @@ pub async fn record_decision(
     // authorizes. Refusing is the fail-closed arm; an approval here is fine.
     if new.verdict == DecisionVerdict::Rejected && state == ApprovalState::Satisfied {
         return Err(ApprovalStoreError::Repo(RepoError::Db(format!(
-            "approval {} is satisfied: design/05 section 4 admits no satisfied -> rejected edge,              so a rejection here would append a row that finalizes nothing and leave the record              authorizable",
+            "approval {} is satisfied: design/05 section 4 admits no satisfied -> rejected \
+             edge, so a rejection here would append a row that finalizes nothing and leave \
+             the record authorizable",
             new.approval_id
         ))));
     }
@@ -585,7 +588,9 @@ async fn finalize_rejected(
     if outcome.rows_affected == 0 {
         return Err(ApprovalStoreError::Refused(
             DomainError::ApprovalSuperseded(format!(
-                "approval {approval_id} left the pending state before its rejection could                  finalize: the decision row appended in this transaction rolls back with it,                  and the record is closed either way"
+                "approval {approval_id} left the pending state before its rejection could \
+                 finalize: the decision row appended in this transaction rolls back with it, \
+                 and the record is closed either way"
             )),
         ));
     }
@@ -789,7 +794,8 @@ pub async fn gate_candidates(
     for row in rows {
         let state = ApprovalState::parse(&row.state).map_err(|token| {
             RepoError::CorruptRow(format!(
-                "approval {} carries state {token}, which is outside                  chk_products_approval_state's roster",
+                "approval {} carries state {token}, which is outside \
+                 chk_products_approval_state's roster",
                 row.approval_id
             ))
         })?;
@@ -801,7 +807,8 @@ pub async fn gate_candidates(
         // `approval_id` for the `PreAuthorized` path.
         let kind = subject_kind_from_stored(&row.subject_kind).ok_or_else(|| {
             RepoError::CorruptRow(format!(
-                "approval {} carries subject_kind {}, which is outside                  chk_products_approval_subject_kind's roster",
+                "approval {} carries subject_kind {}, which is outside \
+                 chk_products_approval_subject_kind's roster",
                 row.approval_id, row.subject_kind
             ))
         })?;
@@ -1152,7 +1159,9 @@ pub async fn discharge_posthoc_review(
 ) -> Result<bool, RepoError> {
     if acting_principal != reviewed_by {
         return Err(RepoError::Db(format!(
-            "principal {acting_principal} may not record a review attributed to {reviewed_by}:              the post-hoc arm's discharger is the second platform principal in person              (design/05 inst-bg-open, P-D-68 arm 3)"
+            "principal {acting_principal} may not record a review attributed to {reviewed_by}: \
+             the post-hoc arm's discharger is the second platform principal in person \
+             (design/05 inst-bg-open, P-D-68 arm 3)"
         )));
     }
     // Read first: the opener is a column of the row, and a session that is
@@ -1168,7 +1177,9 @@ pub async fn discharge_posthoc_review(
         .ok_or_else(|| RepoError::Db(format!("no elevation session {session_id} in scope")))?;
     if session.principal == reviewed_by {
         return Err(RepoError::Db(format!(
-            "principal {reviewed_by} opened elevation {session_id} and cannot be its own              post-hoc reviewer: inst-bg-open's floor is two DISTINCT platform principals, and              on this arm both are columns of one append-only row"
+            "principal {reviewed_by} opened elevation {session_id} and cannot be its own \
+             post-hoc reviewer: inst-bg-open's floor is two DISTINCT platform principals, and \
+             on this arm both are columns of one append-only row"
         )));
     }
 

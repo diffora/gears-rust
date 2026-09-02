@@ -2781,7 +2781,8 @@ async fn a_publish_whose_target_tenant_is_outside_the_compiled_scope_is_denied_a
         .to_owned();
     assert!(
         reason.contains("not authorized to write resources owned by tenant"),
-        "the reason names the cross-tenant target the membership assertion refused, not some          other denial: {reason}"
+        "the reason names the cross-tenant target the membership assertion refused, not some \
+         other denial: {reason}"
     );
 
     let error_code = raw_string_opt(
@@ -3201,7 +3202,8 @@ async fn a_publish_whose_parent_went_terminal_is_refused_parent_terminal() {
     assert_eq!(
         view["context"]["reason"],
         json!("PARENT_TERMINAL"),
-        "a retired parent is a terminal-parent refusal, not a containment one; the create door          words the same refusal the same way"
+        "a retired parent is a terminal-parent refusal, not a containment one; the create door \
+         words the same refusal the same way"
     );
     assert_eq!(
         frozen_versions_for(&harness.dsn, sku_id).await,
