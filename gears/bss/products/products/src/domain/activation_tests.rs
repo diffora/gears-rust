@@ -180,7 +180,7 @@ fn entity_subject(entity_id: Uuid) -> crate::domain::governance::GateSubject {
 }
 
 #[test]
-fn a_consumed_record_the_row_names_is_admitted_even_when_the_subject_is_a_child() {
+fn a_host_refusal_defers_even_when_the_row_pin_holds() {
     use crate::domain::approval::{ApprovalState, CandidateApproval, StoredApprovalGate};
     use crate::domain::concurrency::InternalRevision;
     use crate::domain::governance::{ApprovalId, GateMode, GateVerdict, GovernanceGate};
@@ -219,12 +219,58 @@ fn a_consumed_record_the_row_names_is_admitted_even_when_the_subject_is_a_child(
         "B's current host still matches subject + revision and refuses the leg"
     );
 
+    let GateVerdict::Refused { reason } = old else {
+        panic!("the host still refuses a child subject");
+    };
     let finish = verify_activation_pin(&host, child_subject, InternalRevision::new(1), &pin);
     assert_eq!(
         finish,
-        RunFinish::Applied,
-        "the runner admits on the pin the row carries"
+        RunFinish::Deferred {
+            population: DeferralPopulation::TransientDependency,
+            reason: format!("activation gate refused: {reason}"),
+        },
+        "a host Refused is a refusal; the local pin is a statement, not the admission"
     );
+}
+
+#[test]
+fn an_authorized_pin_that_holds_is_admitted() {
+    use crate::domain::concurrency::InternalRevision;
+    use crate::domain::error::DomainError;
+    use crate::domain::governance::{
+        ApprovalDisposition, ApprovalId, GateMode, GateVerdict, GovernanceGate,
+    };
+
+    struct AuthorizingGate;
+    impl GovernanceGate for AuthorizingGate {
+        fn evaluate(
+            &self,
+            _subject: crate::domain::governance::GateSubject,
+            _expected: InternalRevision,
+            _mode: GateMode,
+        ) -> Result<GateVerdict, DomainError> {
+            Ok(GateVerdict::authorized(
+                ApprovalDisposition::Verified(ApprovalId::new(Uuid::from_u128(0x41))),
+                false,
+                "authorized".to_owned(),
+            ))
+        }
+    }
+
+    let named = Uuid::from_u128(0x41);
+    let pin = ScheduledActivation {
+        row_approval_ref: named,
+        record_id: named,
+        record_consumed: true,
+    };
+    assert!(scheduled_pin_holds(&pin));
+    let finish = verify_activation_pin(
+        &AuthorizingGate,
+        entity_subject(Uuid::from_u128(0x42)),
+        InternalRevision::new(1),
+        &pin,
+    );
+    assert_eq!(finish, RunFinish::Applied);
 }
 
 #[test]

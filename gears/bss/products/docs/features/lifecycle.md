@@ -499,15 +499,14 @@ admitted, and no edge leaves a terminal state — a re-schedule after `applied` 
 ## 5. Definitions of Done
 
 **Twenty-six**, counted by `grep` on this file rather than from the plan that sized them.
-**Nineteen are separately testable.** Seven are not, and each names what it needs:
+**Twenty are separately testable.** Six are not, and each names what it needs:
 `dod-flip-guard` reads `07-reference-signal`'s predicate, which does not exist, and `dod-no-orphan`
 reaches it transitively — its own operands are child lifecycle states, but the flip it re-checks at
 is guarded by that predicate — so both are testable only against a stub — and a stub that always answers fresh-zero passes the
 guard while proving nothing, which is why a **four-state negative control** is part of the
 obligation; `dod-undeprecation` and `dod-scheduled-publish-pin` need `05-governance`'s gate host and
 approval store, the existing `RecordingGate` double being the shape; `dod-registered-validator-host` fills the phase slot under **P-D-97** (registered rule or
-continuation); `dod-lead-window-reannounce` fires through `01-foundation`'s publish door and needs that door's
-harness; and `dod-lifecycle-events` depends on a broker payload shape this feature adds a
+continuation); and `dod-lifecycle-events` depends on a broker payload shape this feature adds a
 third body to, and on a roster test that is exact in both directions (§7 row 25).
 
 ### Scheduled-transition store
@@ -769,7 +768,7 @@ touch the head, which no consumer reads.
 
 ### Lead-window re-announcement
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-lead-window-reannounce`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-lead-window-reannounce`
 
 The head **MUST** stay open to publishes for the whole lead window, and a publish that moves the
 version **MUST** re-emit the retirement event with the new `fromVersion`, the same `effectiveAt`

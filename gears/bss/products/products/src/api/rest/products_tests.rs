@@ -7043,6 +7043,93 @@ mod retire_door_tests {
     }
 
     #[tokio::test]
+    async fn a_publish_during_the_lead_window_reannounces_retirement() {
+        let harness = harness().await;
+        let product_id = published_product(&harness).await;
+        let retired = post_json_act(
+            app_for(&harness, TENANT),
+            TENANT,
+            product_id,
+            "retire",
+            &if_match(2),
+            &json!({
+                "reason": "end of family",
+                "confirmed": true
+            }),
+        )
+        .await;
+        assert_eq!(
+            retired.status(),
+            StatusCode::OK,
+            "initiation is the premise"
+        );
+
+        let conn = harness
+            .db
+            .conn()
+            .expect("checkout the pinned production connection");
+        let scope = toolkit_db::secure::AccessScope::for_tenant(TENANT);
+        let intent = repo::find_live_retire_intents(&conn, &scope, TENANT, product_id)
+            .await
+            .expect("the live intent is readable")
+            .into_iter()
+            .next()
+            .expect("retire wrote a live intent");
+        let announced_at = intent.at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+
+        let republished = post_head_act(
+            app_for(&harness, TENANT),
+            TENANT,
+            product_id,
+            "publish",
+            &[("If-Match", &if_match(3))],
+        )
+        .await;
+        assert_eq!(
+            republished.status(),
+            StatusCode::OK,
+            "the head stays open for the whole lead window"
+        );
+
+        let head = head_of(&harness, product_id).await;
+        assert_eq!(head.published_version, 2);
+        let body = enqueued_event_body(&harness.dsn, "ProductRetired").await;
+        assert_eq!(
+            body["fromVersion"],
+            json!(head.published_version),
+            "the re-announcement carries the new version, not the initiation's"
+        );
+        assert_eq!(body["effectiveAt"], json!(announced_at));
+        assert_eq!(body["reason"], json!("end of family"));
+        assert_eq!(body["entityId"], json!(product_id.to_string()));
+        assert_eq!(
+            enqueued_event_count(&harness.dsn, "ProductRetired").await,
+            1,
+            "initiation still emits none; this row is the re-announcement"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_publish_outside_any_window_emits_no_retirement() {
+        let harness = harness().await;
+        let product_id = published_product(&harness).await;
+        let republished = post_head_act(
+            app_for(&harness, TENANT),
+            TENANT,
+            product_id,
+            "publish",
+            &[("If-Match", &if_match(2))],
+        )
+        .await;
+        assert_eq!(republished.status(), StatusCode::OK);
+        assert_eq!(
+            enqueued_event_count(&harness.dsn, "ProductRetired").await,
+            0,
+            "no live retire intent, so the publish emits none"
+        );
+    }
+
+    #[tokio::test]
     async fn early_effective_at_is_retirement_lead_time() {
         let harness = harness().await;
         let product_id = published_product(&harness).await;

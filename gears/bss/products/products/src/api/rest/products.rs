@@ -255,14 +255,13 @@
 //! measurable reason:
 //!
 //! - **The retirement re-announcement** (`inst-fd-publish-reannounce`,
-//!   **P-D-48**): where the entity holds a live retire intent, the same
-//!   transaction must also enqueue `ProductRetired` with the new
-//!   `fromVersion`. A live retire intent **is** a pending-retirement
-//!   `ScheduledTransition`, which is `04-lifecycle`'s row and does not exist
-//!   at this commit — there is no table, no type and no reader for one, so
-//!   the condition this clause triggers on cannot be evaluated. Owed to
-//!   **slice 04**, and it lands as a second `events::enqueue` inside
-//!   [`publish_in_one_transaction`].
+//!   **P-D-48**): discharged. [`run_publish`] reads the live retire intent
+//!   through [`repo::find_live_retire_intents`] and, when the publish sits
+//!   inside the lead window, enqueues `ProductRetired` with the new
+//!   `fromVersion` in the same transaction. A publish outside any window
+//!   enqueues none.
+//!
+//!   @cpt-dod:cpt-cf-bss-products-dod-lead-window-reannounce:p1
 //! - **The corrected bucket-ii value** (`inst-fd-publish-correction`,
 //!   **P-D-41**): §4.2 admits a bucket-ii write only in the same statement as
 //!   a `published_version` bump, and the door that supplies one is **slice
@@ -428,7 +427,7 @@ use axum::http::HeaderMap;
 use axum::http::StatusCode;
 use axum::http::header::ETAG;
 use axum::response::{IntoResponse, Response};
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, SecondsFormat, Utc};
 use sea_orm::DbErr;
 use serde_json::{Map as JsonMap, Value as JsonValue};
 use toolkit::api::OpenApiRegistry;
@@ -472,7 +471,7 @@ use crate::domain::governance::{
 use crate::domain::idempotency;
 use crate::domain::live_op::GovernedLiveOp;
 use crate::domain::name;
-use crate::domain::retirement::{effective_at, eol_lockout};
+use crate::domain::retirement::{effective_at, eol_lockout, publish_reannounces_retirement};
 use crate::domain::rules::{
     CreateEntityCandidate, NameShapeRule, PrimaryCategoryRequired, PublishedTransitionSubject,
 };
@@ -2626,6 +2625,11 @@ async fn announce_and_answer(
     }
     .map_err(|e| HeadActError::from_storage(&e))?;
 
+    if matches!(announcement, Announcement::Published) {
+        reannounce_retirement_if_live(runner, outbox, inputs, &core, head.published_version)
+            .await?;
+    }
+
     let internal_revision = head.internal_revision;
     let body = serde_json::to_value(ProductView::from(head)).map_err(|e| {
         HeadActError::Db(DbError::Sea(DbErr::Custom(format!(
@@ -2650,6 +2654,47 @@ async fn announce_and_answer(
         internal_revision,
         body,
     })
+}
+
+/// P-D-20 / P-D-48: a publish that moves the version while a live retire
+/// intent is in the lead window re-emits `ProductRetired` in this same
+/// transaction. The read is the operand the door did not have when the
+/// clause was deferred to slice 04.
+async fn reannounce_retirement_if_live(
+    runner: &(impl DBRunner + Sync),
+    outbox: &crate::infra::broker::EventSink,
+    inputs: &HeadActInputs,
+    core: &events::EventBodyCore,
+    from_version: i64,
+) -> Result<(), HeadActError> {
+    let intents =
+        repo::find_live_retire_intents(runner, &inputs.scope, inputs.tenant_id, inputs.product_id)
+            .await
+            .map_err(|e| HeadActError::from_repo(&e))?;
+    let Some(intent) = intents.into_iter().next() else {
+        return Ok(());
+    };
+    if !publish_reannounces_retirement(inputs.now, intent.created_at, intent.at) {
+        return Ok(());
+    }
+    let reason = intent.retirement_reason.unwrap_or_default();
+    events::enqueue_retired(
+        outbox,
+        runner,
+        inputs.product_id,
+        events::PRODUCT_RETIRED_PAYLOAD_TYPE,
+        events::RetiredEventBody {
+            core,
+            from_version,
+            reason,
+            replaced_by: None,
+            effective_at: intent.at.to_rfc3339_opts(SecondsFormat::Secs, true),
+            must_migrate_by: None,
+        },
+        inputs.actor_ref,
+    )
+    .await
+    .map_err(|e| HeadActError::from_storage(&e))
 }
 
 /// Take the act's idempotency claim, if it carries one, on the mutation's

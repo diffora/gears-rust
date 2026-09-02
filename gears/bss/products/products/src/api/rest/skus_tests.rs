@@ -5193,6 +5193,87 @@ mod retire_door_tests {
     }
 
     #[tokio::test]
+    async fn a_publish_during_the_lead_window_reannounces_retirement() {
+        let harness = harness().await;
+        let (sku_id, rev) = published_sku(&harness, "SKU-REANNOUNCE").await;
+        let retired = post_retire(
+            app_for(&harness, TENANT),
+            TENANT,
+            sku_id,
+            &if_match_for(rev),
+            &retire_body(),
+        )
+        .await;
+        assert_eq!(
+            retired.status(),
+            StatusCode::OK,
+            "initiation is the premise"
+        );
+
+        let conn = harness
+            .db
+            .conn()
+            .expect("checkout the pinned production connection");
+        let scope = toolkit_db::secure::AccessScope::for_tenant(TENANT);
+        let intent = repo::find_live_retire_intents(&conn, &scope, TENANT, sku_id)
+            .await
+            .expect("the live intent is readable")
+            .into_iter()
+            .next()
+            .expect("retire wrote a live intent");
+        let announced_at = intent.at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+
+        let republished = post_publish(
+            app_for(&harness, TENANT),
+            TENANT,
+            sku_id,
+            Some(&if_match_for(rev + 1)),
+        )
+        .await;
+        assert_eq!(
+            republished.status(),
+            StatusCode::OK,
+            "the head stays open for the whole lead window"
+        );
+
+        let head = sku_of(&harness, sku_id).await;
+        assert_eq!(head.published_version, 2);
+        let body = enqueued_event_body(&harness.dsn, "SkuRetired").await;
+        assert_eq!(
+            body["fromVersion"],
+            json!(head.published_version),
+            "the re-announcement carries the new version, not the initiation's"
+        );
+        assert_eq!(body["effectiveAt"], json!(announced_at));
+        assert_eq!(body["reason"], json!("end of sale"));
+        assert_eq!(body["entityId"], json!(sku_id.to_string()));
+        assert_eq!(
+            enqueued_event_count(&harness.dsn, "SkuRetired").await,
+            1,
+            "initiation still emits none; this row is the re-announcement"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_publish_outside_any_window_emits_no_retirement() {
+        let harness = harness().await;
+        let (sku_id, rev) = published_sku(&harness, "SKU-NO-WINDOW").await;
+        let republished = post_publish(
+            app_for(&harness, TENANT),
+            TENANT,
+            sku_id,
+            Some(&if_match_for(rev)),
+        )
+        .await;
+        assert_eq!(republished.status(), StatusCode::OK);
+        assert_eq!(
+            enqueued_event_count(&harness.dsn, "SkuRetired").await,
+            0,
+            "no live retire intent, so the publish emits none"
+        );
+    }
+
+    #[tokio::test]
     async fn a_published_sku_retires_and_schedules() {
         let harness = harness().await;
         let (sku_id, rev) = published_sku(&harness, "SKU-RETIRE").await;

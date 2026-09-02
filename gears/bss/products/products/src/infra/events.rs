@@ -579,10 +579,6 @@ pub(crate) struct DeprecatedEventBody<'core> {
 /// `replaced_by` is SKU-only. Product initiation leaves it `None`.
 /// `SkuRetirementEffective` reuses this shape; row 5 (Product flip) stays
 /// open and has no token here.
-#[allow(
-    dead_code,
-    reason = "the retirement enqueue lands with the door that emits these tokens"
-)]
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct RetiredEventBody<'core> {
@@ -693,6 +689,17 @@ pub(crate) enum EventsError {
     /// carries neither the batch id nor the digest.
     #[error("{0} carries a batch body and must be enqueued through enqueue_bulk_completed")]
     BulkEventNeedsBatchBody(String),
+    /// A `*Retired` token reached [`enqueue`], whose core-only body would
+    /// drop `fromVersion`, `effectiveAt` and the rest of the initiation
+    /// payload. The same fail-closed rule as the deprecation pair.
+    #[error("{0} carries a retirement body and must be enqueued through enqueue_retired")]
+    RetirementNeedsBody(String),
+    /// A token that is not one of the two `*Retired` events reached
+    /// [`enqueue_retired`], which would attach fields no other event carries.
+    #[error(
+        "{0} carries no retirement payload and belongs to the entry point owning its body shape"
+    )]
+    NotARetirementEvent(String),
     /// The broker arm has no [`crate::infra::broker`] typed event for this
     /// payload type.
     ///
@@ -955,6 +962,12 @@ pub(crate) async fn enqueue(
         return Err(EventsError::BulkEventNeedsBatchBody(
             payload_type.to_owned(),
         ));
+    }
+    if matches!(
+        payload_type,
+        PRODUCT_RETIRED_PAYLOAD_TYPE | SKU_RETIRED_PAYLOAD_TYPE
+    ) {
+        return Err(EventsError::RetirementNeedsBody(payload_type.to_owned()));
     }
     match sink {
         EventSink::Interim(outbox) => {
@@ -1399,6 +1412,46 @@ pub(crate) async fn enqueue_published(
             .map(|_| ())
             .map_err(EventsError::Broker)
         }
+    }
+}
+
+/// Enqueue a `*Retired` event — [`enqueue`]'s twin for the initiation
+/// body (`fromVersion`, `effectiveAt`, the operator reason). The lead-window
+/// re-announcement uses this same entry: a new row, same identity, new
+/// `fromVersion`.
+///
+/// # Errors
+///
+/// [`EventsError::NotARetirementEvent`] for any other token; otherwise as
+/// [`enqueue`].
+pub(crate) async fn enqueue_retired(
+    sink: &EventSink,
+    runner: &(impl DBRunner + Sync),
+    aggregate_id: Uuid,
+    payload_type: &str,
+    body: RetiredEventBody<'_>,
+    actor_ref: Uuid,
+) -> Result<(), EventsError> {
+    if !matches!(
+        payload_type,
+        PRODUCT_RETIRED_PAYLOAD_TYPE | SKU_RETIRED_PAYLOAD_TYPE
+    ) {
+        return Err(EventsError::NotARetirementEvent(payload_type.to_owned()));
+    }
+    match sink {
+        EventSink::Interim(outbox) => {
+            enqueue_body(
+                outbox,
+                runner,
+                body.core.tenant_id,
+                aggregate_id,
+                payload_type,
+                &body,
+                actor_ref,
+            )
+            .await
+        }
+        EventSink::Broker(_) => Err(EventsError::NoTypedEvent(payload_type.to_owned())),
     }
 }
 
