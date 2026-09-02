@@ -1569,6 +1569,50 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   (the re-publish step).
 
 
+#### P-D-102 — The global coordinate is absent on **all three** axes; `inst-av-default-locale` loses both "default-locale value" and "(brand-less)"
+
+- **Date**: 2026-09-02 (owner call, on strand A's `A-OWED-10` — and **larger than that entry
+  asked**, for the reason below)
+- **Context**: `A-OWED-10` reported §7 row 8 as *a naming defect, not a live fork*: both readings of
+  `global` were said to be closed elsewhere, leaving only the self-contradictory phrase *"a
+  default-locale value at the global coordinate"*, which names a coordinate carrying no locale. Read
+  in full, `inst-av-default-locale` says more than the entry quoted — *"the **default-locale value
+  at the global (brand-less) coordinate**"* — and that parenthetical is a **second, different**
+  reading: `global` as absent on the brand axis alone, with the locale present and equal to the
+  tenant default. The fork is therefore live, and the two readings ask a tenant for different
+  things:
+  - **all three absent** — a definition must carry a value with **no locale**, a language-independent
+    fallback;
+  - **brand-less only** — a definition must carry a value **at the default locale** with no brand.
+  **Strand A's code took the first and its own doc was more careful than its register**:
+  `GLOBAL_COORDINATE`'s comment says *"P-D-88 arm 2 ships the three columns `NOT NULL` with `""` as
+  the stated absence, so the global coordinate is `("", "", "")` … **That is the *spelling*; §6's row
+  8 asks what it *means***"*, and `DefaultLocaleRequired::evaluate` demands a value at all three
+  absent. The register compressed that into P-D-88 having settled the meaning; the code did not.
+- **Decision**: **the global coordinate is `("", "", "")` — absent on all three axes** — and
+  `inst-av-default-locale` loses both the phrase *"default-locale value"* and the parenthetical
+  *"(brand-less)"*.
+- **The reason is this row's own step 5, applied to a stored value.** A brand-less value at the
+  tenant default locale carries the locale that was default **when it was written**. A later config
+  change leaves step 3 looking for a locale no stored value matches, so the requirement stops
+  guaranteeing what it exists to guarantee — the same un-totalling `inst-av-resolve` refuses when it
+  says anchoring on the config value *"would un-total the chain for every already-published entity
+  the moment it changed"*, and **P-D-101** applied to the value's source. A locale-less value cannot
+  go stale that way. So the two decisions are one argument used twice: totality may not rest on a
+  value the config can invalidate.
+- **The arguments against, stated**: requiring a *localized* definition to carry a value with **no**
+  locale reads oddly — the brand-less reading is the more natural sentence, which is presumably how
+  it came to be written — and a tenant must now author one language-neutral value per localized
+  definition, which for `description` or `marketingFeatures` may mean choosing a house language and
+  storing it twice. Accepted: the alternative makes a published entity's compliance depend on a
+  config value nobody re-validates, and the cost of one extra stored value is bounded and visible
+  where the cost of a silently un-totalled chain is neither.
+- **Propagated**: `design/02-taxonomy-attributes.md` `inst-av-default-locale` (both strikes, with
+  this id). **No code change**: `GLOBAL_COORDINATE`, `is_global` and `DefaultLocaleRequired` already
+  encode this reading, and `a_brand_less_global_value_survives_a_brand_scoped_entity` pins its
+  neighbour (`A-OWED-07`). **Owed**: the feature's §7 **row 8**, whose question this answers, is
+  strand A's file and that strand's to strike.
+
 #### P-D-101 — The locale chain's default is the **tenant** default only; "resolves per brand" is struck
 
 - **Date**: 2026-09-02 (owner call, on strand A's `A-OWED-09`)
