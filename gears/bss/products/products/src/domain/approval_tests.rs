@@ -6,10 +6,10 @@ use std::collections::BTreeSet;
 use uuid::Uuid;
 
 use super::{
-    AckPlacement, ApproverDiff, ApproverRole, ApproverScopeVerdict, CastDecision,
+    AckPlacement, ApproverDiff, ApproverRole, ApproverScopeVerdict, BaseRoleSet, CastDecision,
     DEFAULT_APPROVER_COUNT, PLATFORM_QUORUM_FLOOR, QuorumOutcome, UnsatisfiablePredicate,
     ack_placement, approver_covers_subject, decision_admitted, describe_platform_quorum,
-    describe_quorum, diff_basis_for, evaluate_quorum, render_diff,
+    describe_quorum, descriptor_from_stored, diff_basis_for, evaluate_quorum, render_diff,
 };
 use crate::domain::concurrency::InternalRevision;
 use crate::domain::containment::{ResolvedScope, ScopeDimension, ScopePair};
@@ -17,7 +17,7 @@ use bss_products_sdk::models::EntityKind;
 
 use crate::domain::governance::{
     ApprovalDisposition, ApprovalId, EntityRef, GateMode, GateSubject, GateVerdict,
-    GovernanceGate as _,
+    GovernanceGate as _, SubjectKind,
 };
 use crate::domain::materiality::Materiality;
 
@@ -61,6 +61,14 @@ fn restricted(values: &[&str]) -> ResolvedScope {
 fn pair(region: ResolvedScope, brand: ResolvedScope) -> ScopePair {
     ScopePair { region, brand }
 }
+
+/// The author of every record these probes evaluate — distinct from every
+/// approver, because C1's approvers are *"each distinct from the author"* and
+/// a fixture reusing one id could not tell the two rules apart.
+const SUBMITTER: Uuid = Uuid::from_u128(0x5b_11);
+
+/// C1's own base set, which is what binds a material change.
+const C1: BaseRoleSet = BaseRoleSet::CatalogAdminOrFinanceReviewer;
 
 /// One approval from `principal` holding `roles`.
 fn approves(principal: u128, roles: &[ApproverRole]) -> CastDecision {
@@ -256,17 +264,18 @@ fn a_first_publish_pins_no_diff_basis() {
 /// `infra::storage::repo::governance::governance_tests::the_superseded_records_diff_renders_the_submission_not_the_edited_head`.
 /// The split was measured by perturbing each half in turn.
 ///
-/// The `edited_head` local below is passed to nothing, so the third
-/// assertion — that its bytes are absent from the diff — compares two
-/// literals this test wrote and cannot fail. It is kept as the statement of
-/// intent it is, with the load-bearing version in the store probe.
+/// An earlier revision also asserted that an `edited_head` local's bytes were
+/// absent from the diff. That local was passed to nothing, so the assertion
+/// compared two literals this test wrote and **could not fail**; it is
+/// removed rather than kept as a statement of intent, because a
+/// non-falsifiable assertion in a probe is indistinguishable from a passing
+/// one. The claim it reached for lives in the store probe, where a head
+/// really moves. (An earlier revision of this comment also called the body's
+/// assertions three; there were four.)
 #[test]
-fn the_diff_renders_the_stored_submission_not_the_edited_head() {
+fn the_diff_renders_the_snapshot_it_was_handed() {
     let submitted = r#"{"name":"as submitted"}"#;
     let published = r#"{"name":"as published"}"#;
-    // The head moves after submission — this is the edit the pricing defect
-    // silently showed the approver.
-    let edited_head = r#"{"name":"edited after submission"}"#;
 
     let diff = render_diff(submitted, diff_basis_for(Some(7)), Some(published));
     match diff {
@@ -278,10 +287,6 @@ fn the_diff_renders_the_stored_submission_not_the_edited_head() {
             assert_eq!(basis, 7);
             assert_eq!(shown, submitted, "the approver sees what was submitted");
             assert_eq!(basis_content, published);
-            assert!(
-                !shown.contains("edited after submission"),
-                "the edited head reached the diff: {edited_head}"
-            );
         }
         other => panic!("expected a diff against the published version, got {other:?}"),
     }
@@ -348,12 +353,11 @@ fn the_platform_floor_is_fixed_where_the_tenant_count_is_not() {
         0,
         "P-D-11: a tenant at N = 0 publishes approver-less by policy"
     );
-    assert_eq!(
-        describe_platform_quorum().required(),
-        PLATFORM_QUORUM_FLOOR,
-        "and no tenant configuration reaches the platform ceremony: that is the whole of \
-         P-D-13's 'no tenant's configured N has standing'"
-    );
+    // No third assertion. An earlier revision repeated the first one after
+    // the `describe_quorum` call, under a message about tenant configuration
+    // having no standing — which that comparison cannot measure, both being
+    // pure functions over separate values. The standing is a property of the
+    // signature: `describe_platform_quorum` takes no tenant operand at all.
 }
 
 /// `quorumReduced` is **false** at the platform floor, and true is what a
@@ -413,11 +417,7 @@ fn one_human_holding_both_roles_counts_once() {
         approves(0xa1, &[ApproverRole::FinanceReviewer]),
     ];
     assert_eq!(
-        evaluate_quorum(
-            &descriptor,
-            &both,
-            &[ApproverRole::CatalogAdmin, ApproverRole::FinanceReviewer]
-        ),
+        evaluate_quorum(&descriptor, SUBMITTER, &both, C1),
         QuorumOutcome::CountUnmet {
             counted: 1,
             required: 2
@@ -431,11 +431,7 @@ fn one_human_holding_both_roles_counts_once() {
         approves(0xa2, &[ApproverRole::CatalogAdmin]),
     ];
     assert_eq!(
-        evaluate_quorum(
-            &descriptor,
-            &two,
-            &[ApproverRole::CatalogAdmin, ApproverRole::FinanceReviewer]
-        ),
+        evaluate_quorum(&descriptor, SUBMITTER, &two, C1),
         QuorumOutcome::Satisfied
     );
 }
@@ -456,7 +452,7 @@ fn the_dual_role_human_supplies_the_lens_but_not_the_second_body() {
         &[ApproverRole::CatalogAdmin, ApproverRole::FinanceReviewer],
     )];
     assert_eq!(
-        evaluate_quorum(&descriptor, &lens_only, &[ApproverRole::CatalogAdmin]),
+        evaluate_quorum(&descriptor, SUBMITTER, &lens_only, C1),
         QuorumOutcome::CountUnmet {
             counted: 1,
             required: 2
@@ -472,7 +468,7 @@ fn the_dual_role_human_supplies_the_lens_but_not_the_second_body() {
         approves(0xb2, &[ApproverRole::CatalogAdmin]),
     ];
     assert_eq!(
-        evaluate_quorum(&descriptor, &lens_and_body, &[ApproverRole::CatalogAdmin]),
+        evaluate_quorum(&descriptor, SUBMITTER, &lens_and_body, C1),
         QuorumOutcome::Satisfied,
         "one of the two being the FinanceReviewer is what the predicate asks"
     );
@@ -488,7 +484,7 @@ fn a_met_count_with_no_finance_lens_is_the_role_refusal_not_a_short_count() {
         approves(0xc2, &[ApproverRole::CatalogAdmin]),
     ];
     assert_eq!(
-        evaluate_quorum(&descriptor, &no_lens, &[ApproverRole::CatalogAdmin]),
+        evaluate_quorum(&descriptor, SUBMITTER, &no_lens, C1),
         QuorumOutcome::RolePredicateUnmet { counted: 2 },
         "the count is met and the lens is missing: a caller told 'not enough approvers' would \
          add a third CatalogAdmin and fail again"
@@ -515,7 +511,7 @@ fn an_unsatisfiable_predicate_is_met_at_zero_and_unreachable_above_it() {
         "the predicate is not SET at zero"
     );
     assert_eq!(
-        evaluate_quorum(&at_zero, &[], &[ApproverRole::CatalogAdmin]),
+        evaluate_quorum(&at_zero, SUBMITTER, &[], C1),
         QuorumOutcome::Satisfied,
         "the marker is the only discharge, and the descriptor closes on nobody"
     );
@@ -533,18 +529,20 @@ fn an_unsatisfiable_predicate_is_met_at_zero_and_unreachable_above_it() {
     }
 }
 
-/// An approver holding none of the binding roles is not counted, and an empty
-/// binding set counts anyone.
+/// An approver holding none of C1's roles is not counted, and the permissive
+/// reading has to be **named**.
 ///
-/// The second half is §7 row 16 left open rather than answered: the caller
-/// names the set that binds, so a non-material change whose base set is
-/// undecided is expressed by passing none, not by this function guessing.
+/// §7 row 16 is still left open rather than answered — but it is now named
+/// rather than defaulted, which is the fix. While the operand was a slice the
+/// empty one meant "anyone counts", and the empty slice is the only value a
+/// caller can supply today (§7 row 25), so a material change closed on two
+/// principals holding neither C1 role.
 #[test]
-fn an_ineligible_approver_is_not_counted_and_an_empty_base_set_counts_anyone() {
+fn an_ineligible_approver_is_not_counted_and_any_decider_must_be_named() {
     let descriptor = describe_quorum(Materiality::Material, 1, false);
     let ineligible = [approves(0xd1, &[])];
     assert_eq!(
-        evaluate_quorum(&descriptor, &ineligible, &[ApproverRole::CatalogAdmin]),
+        evaluate_quorum(&descriptor, SUBMITTER, &ineligible, C1),
         QuorumOutcome::CountUnmet {
             counted: 0,
             required: 1
@@ -552,7 +550,7 @@ fn an_ineligible_approver_is_not_counted_and_an_empty_base_set_counts_anyone() {
         "holding no named role is not an eligible approver, so it moves the count by nothing"
     );
     assert_eq!(
-        evaluate_quorum(&descriptor, &ineligible, &[]),
+        evaluate_quorum(&descriptor, SUBMITTER, &ineligible, BaseRoleSet::AnyDecider),
         QuorumOutcome::Satisfied,
         "an empty base set is 'any holder of approval x decide', row 16's other reading, \
          expressed by the caller rather than chosen here"
@@ -569,7 +567,7 @@ fn a_rejection_moves_no_count() {
         roles: vec![ApproverRole::CatalogAdmin],
     }];
     assert_eq!(
-        evaluate_quorum(&descriptor, &rejected, &[ApproverRole::CatalogAdmin]),
+        evaluate_quorum(&descriptor, SUBMITTER, &rejected, C1),
         QuorumOutcome::CountUnmet {
             counted: 0,
             required: 1
@@ -596,7 +594,9 @@ fn an_unrestricted_claim_set_covers_everything_and_the_reverse_does_not() {
     );
 
     // Clause 2, the asymmetric one: an unrestricted SUBJECT is covered only
-    // by an unrestricted claim set. Transpose the mapping and this passes.
+    // by an unrestricted claim set. Transpose the mapping and `contains`
+    // answers `Contained`, so the panic arm below fires and this case goes
+    // red — the only place in the suite that catches the inversion.
     match approver_covers_subject(
         &pair(restricted(&["eu"]), ResolvedScope::Unrestricted),
         &pair(ResolvedScope::Unrestricted, ResolvedScope::Unrestricted),
@@ -929,4 +929,314 @@ fn the_state_roster_round_trips_and_refuses_an_unknown_token() {
         "a token outside chk_products_approval_state's roster is a row this gear wrote wrong, \
          and the refusal names it"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Regressions for the four HIGH findings of the 2026-09-02 four-lens review,
+// plus the arms it measured as unexercised.
+// ---------------------------------------------------------------------------
+
+/// **The named record is found however the list is ordered** — the regression
+/// for the review's HIGH on `PreAuthorized`.
+///
+/// The named record is deliberately **not** first: `gate_candidates` orders
+/// newest-submission-first, so a subject with a history presents its most
+/// recent consumed record ahead of the one a mechanical stage names. While the
+/// id was a filter over `find`'s answer rather than part of its predicate, the
+/// newer record shadowed the named one and the stage was refused — which 04
+/// `inst-ar-failure` wraps into a terminal `SCHEDULE_STALE_APPROVAL`.
+#[test]
+fn preauthorized_finds_the_named_record_behind_a_newer_consumed_one() {
+    let named = ApprovalId::new(Uuid::from_u128(0x9b));
+    let host = StoredApprovalGate::governed(vec![
+        // The shadow: same subject, same revision, same state, different id.
+        candidate(0x9a, 3, ApprovalState::Consumed),
+        candidate(0x9b, 3, ApprovalState::Consumed),
+    ]);
+    match host
+        .evaluate(
+            gate_subject(),
+            InternalRevision::new(3),
+            GateMode::PreAuthorized(named),
+        )
+        .expect("a verdict")
+    {
+        GateVerdict::Authorized(authorization) => {
+            assert_eq!(
+                authorization.disposition,
+                ApprovalDisposition::Verified(named)
+            );
+            assert_eq!(authorization.approval_to_consume(), None);
+        }
+        GateVerdict::Refused { reason } => panic!(
+            "the named record is present, consumed, on this subject and at this revision, and \
+             was shadowed by a newer one: {reason}"
+        ),
+    }
+}
+
+/// **A record on another subject never authorizes**, in either mode — the
+/// guard `gate_candidates` had made a tautology by stamping the queried
+/// subject onto every candidate.
+///
+/// All three axes of `GateSubject` are perturbed one at a time, because a
+/// guard comparing only the reference would pass a cross-tenant record.
+#[test]
+fn a_candidate_on_another_subject_authorizes_nothing() {
+    let id = ApprovalId::new(Uuid::from_u128(0x9c));
+    let others = [
+        GateSubject {
+            tenant_id: Uuid::from_u128(0x6a_99),
+            kind: SubjectKind::EntityPublish,
+            reference: gate_subject().reference,
+        },
+        GateSubject {
+            tenant_id: GATE_TENANT,
+            kind: SubjectKind::BulkBatch,
+            reference: gate_subject().reference,
+        },
+        GateSubject {
+            tenant_id: GATE_TENANT,
+            kind: SubjectKind::EntityPublish,
+            reference: "product/00000000-0000-0000-0000-0000000000ff".to_owned(),
+        },
+    ];
+    for other in others {
+        for (state, mode) in [
+            (ApprovalState::Satisfied, GateMode::Gate),
+            (ApprovalState::Consumed, GateMode::PreAuthorized(id)),
+        ] {
+            let mut foreign = candidate(0x9c, 3, state);
+            foreign.subject = other.clone();
+            let host = StoredApprovalGate::governed(vec![foreign]);
+            assert!(
+                matches!(
+                    host.evaluate(gate_subject(), InternalRevision::new(3), mode)
+                        .expect("a verdict"),
+                    GateVerdict::Refused { .. }
+                ),
+                "a candidate on {other:?} must not authorize an act on {:?}",
+                gate_subject()
+            );
+        }
+    }
+}
+
+/// **`PreAuthorized` on an ungoverned host is refused, not authorized.**
+///
+/// The ungoverned arm used to return before the mode was read, so a stage
+/// naming any id at all — nonexistent, another tenant's — was authorized with
+/// `NoRecord`, verifying nothing and writing a NULL `approval_ref` for an act
+/// its caller declared pre-authorized. Paired with the `Gate` control, so the
+/// refusal is about the mode and not about the construction.
+#[test]
+fn an_ungoverned_host_refuses_a_preauthorized_stage() {
+    let host = StoredApprovalGate::ungoverned();
+    let refused = host
+        .evaluate(
+            gate_subject(),
+            InternalRevision::new(3),
+            GateMode::PreAuthorized(ApprovalId::new(Uuid::from_u128(0xdead))),
+        )
+        .expect("a verdict");
+    assert!(
+        matches!(refused, GateVerdict::Refused { .. }),
+        "{refused:?}"
+    );
+
+    assert!(matches!(
+        StoredApprovalGate::ungoverned()
+            .evaluate(gate_subject(), InternalRevision::new(3), GateMode::Gate)
+            .expect("a verdict"),
+        GateVerdict::Authorized(_)
+    ));
+}
+
+/// `PreAuthorized` over an empty candidate list refuses rather than panicking
+/// or authorizing.
+#[test]
+fn preauthorized_over_no_candidates_refuses() {
+    assert!(matches!(
+        StoredApprovalGate::governed(Vec::new())
+            .evaluate(
+                gate_subject(),
+                InternalRevision::new(3),
+                GateMode::PreAuthorized(ApprovalId::new(Uuid::from_u128(0x9d)))
+            )
+            .expect("a verdict"),
+        GateVerdict::Refused { .. }
+    ));
+}
+
+/// The override acknowledgment crosses the seam under `PreAuthorized` too.
+///
+/// Only the `Gate` arm was asserted, so a `PreAuthorized` arm that dropped
+/// the flag would have published a composite act's later stage without the
+/// `composition_pending` operand its initiating act carried.
+#[test]
+fn the_override_acknowledgment_travels_under_preauthorized() {
+    let id = ApprovalId::new(Uuid::from_u128(0x9e));
+    let mut acked = candidate(0x9e, 3, ApprovalState::Consumed);
+    acked.override_acknowledged = true;
+    match StoredApprovalGate::governed(vec![acked])
+        .evaluate(
+            gate_subject(),
+            InternalRevision::new(3),
+            GateMode::PreAuthorized(id),
+        )
+        .expect("a verdict")
+    {
+        GateVerdict::Authorized(authorization) => {
+            assert!(authorization.uncomposed_bundle_override);
+        }
+        GateVerdict::Refused { reason } => panic!("{reason}"),
+    }
+}
+
+/// **The author is not one of their own approvers** — C1's other half, at the
+/// evaluator.
+///
+/// `decision_admitted` refuses this at the write door, and the store's UNIQUE
+/// is `(approval_id, approver_principal)`, which does not exclude the
+/// submitter. So a caller assembling the list itself — the threat model the
+/// deduplication below already assumes — could close a record on its author
+/// alone. The paired control is that the same list with a different principal
+/// closes it.
+#[test]
+fn the_author_is_not_counted_among_their_own_approvers() {
+    let descriptor = describe_quorum(Materiality::Material, 1, false);
+    let authors_own = [CastDecision {
+        principal: SUBMITTER,
+        approved: true,
+        roles: vec![ApproverRole::CatalogAdmin],
+    }];
+    assert_eq!(
+        evaluate_quorum(&descriptor, SUBMITTER, &authors_own, C1),
+        QuorumOutcome::CountUnmet {
+            counted: 0,
+            required: 1
+        },
+        "C1's approvers are each distinct from the author, and this is where a caller-built \
+         list is held to it"
+    );
+    assert_eq!(
+        evaluate_quorum(
+            &descriptor,
+            SUBMITTER,
+            &[approves(0xaa, &[ApproverRole::CatalogAdmin])],
+            C1
+        ),
+        QuorumOutcome::Satisfied,
+        "the control: a different principal closes it"
+    );
+}
+
+/// **A `FinanceReviewer` counts as an ordinary approver under C1's pair.**
+///
+/// C1 reads "`CatalogAdmin` **or** `FinanceReviewer`", so a finance-only
+/// principal is a full approver and not merely the lens. While the operand was
+/// a slice, six probes passed `[CatalogAdmin]` alone — a narrowing C8 says v1
+/// does not register — and that dropped this principal together with the lens
+/// `inst-gv-finance-predicate` needs.
+#[test]
+fn a_finance_reviewer_is_a_full_approver_and_also_the_lens() {
+    let descriptor = describe_quorum(Materiality::Material, 2, true);
+    let pair = [
+        approves(0xba, &[ApproverRole::CatalogAdmin]),
+        approves(0xbb, &[ApproverRole::FinanceReviewer]),
+    ];
+    assert_eq!(
+        evaluate_quorum(&descriptor, SUBMITTER, &pair, C1),
+        QuorumOutcome::Satisfied,
+        "two eligible principals, one of them the mandated FinanceReviewer"
+    );
+}
+
+/// A **rejecting** `FinanceReviewer` supplies no lens.
+///
+/// The rejection guard sits before the lens read, and nothing exercised that
+/// order: the existing rejection probe used a `CatalogAdmin` on a descriptor
+/// with no finance predicate, so the lens read was never reached at all.
+#[test]
+fn a_rejecting_finance_reviewer_supplies_no_lens() {
+    let descriptor = describe_quorum(Materiality::Material, 1, true);
+    let decisions = [
+        CastDecision {
+            principal: Uuid::from_u128(0xca),
+            approved: false,
+            roles: vec![ApproverRole::FinanceReviewer],
+        },
+        approves(0xcb, &[ApproverRole::CatalogAdmin]),
+    ];
+    assert_eq!(
+        evaluate_quorum(&descriptor, SUBMITTER, &decisions, C1),
+        QuorumOutcome::RolePredicateUnmet { counted: 1 },
+        "a refused verdict is not a lens: the count is met by the CatalogAdmin and the \
+         predicate is not"
+    );
+}
+
+/// **`predicateUnsatisfiable`'s `Some` arm round-trips**, which nothing
+/// measured end to end.
+///
+/// Every `stored()` and round-trip probe used a descriptor whose predicate is
+/// `None`, so the one field P-D-11 minted was never rendered or decoded. Its
+/// stored spelling is asserted literally, because that string crosses a
+/// storage boundary and two engines.
+#[test]
+fn the_unsatisfiable_marker_round_trips_through_its_stored_spelling() {
+    let at_zero = describe_quorum(Materiality::Material, 0, true);
+    let stored = at_zero.stored();
+    assert!(
+        stored.contains(r#""predicateUnsatisfiable":"finance_reviewer""#),
+        "the marker's stored spelling is part of the contract: {stored}"
+    );
+    assert_eq!(
+        descriptor_from_stored(&stored).expect("a descriptor this gear wrote decodes"),
+        at_zero,
+        "the Some arm survives the round trip, not just the None one"
+    );
+}
+
+/// **The decode refuses a descriptor whose stored fields contradict**, which
+/// is what makes `evaluate_quorum`'s branch on `finance_required` alone sound.
+///
+/// Both invariants are derivable from the stored fields with no extra operand,
+/// and the second is the one that matters: a row recording the marker at a
+/// non-zero `required` would discharge the finance predicate at `N >= 1`,
+/// exactly the discharge `inst-gv-quorum` forbids.
+#[test]
+fn the_decode_refuses_a_contradictory_descriptor() {
+    let marker_above_zero = r#"{"configuredQuorum":2,"financeRequired":false,"predicateUnsatisfiable":"finance_reviewer","quorumReduced":false,"required":2}"#;
+    let err = descriptor_from_stored(marker_above_zero)
+        .expect_err("the marker is admitted only where the predicate has no subject");
+    assert!(err.contains("predicateUnsatisfiable"), "{err}");
+
+    let reduced_disagrees = r#"{"configuredQuorum":2,"financeRequired":false,"predicateUnsatisfiable":null,"quorumReduced":true,"required":2}"#;
+    let err = descriptor_from_stored(reduced_disagrees)
+        .expect_err("quorumReduced is set exactly below the retained-name default");
+    assert!(err.contains("quorumReduced"), "{err}");
+
+    // The control: a descriptor this gear actually writes decodes.
+    let honest = describe_quorum(Materiality::Material, 2, true);
+    assert_eq!(
+        descriptor_from_stored(&honest.stored()).expect("decodes"),
+        honest
+    );
+}
+
+/// When **both** dimensions fail the verdict names the region, and the
+/// ordering is pinned rather than incidental.
+#[test]
+fn both_dimensions_failing_reports_the_region() {
+    assert!(matches!(
+        approver_covers_subject(
+            &pair(restricted(&["eu"]), restricted(&["acme"])),
+            &pair(restricted(&["us"]), restricted(&["globex"])),
+        ),
+        ApproverScopeVerdict::Exceeded {
+            dimension: ScopeDimension::Region,
+            ..
+        }
+    ));
 }

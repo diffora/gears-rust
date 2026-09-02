@@ -75,7 +75,7 @@ use super::{
     gate_candidates, open_breakglass_session, read_approval, record_decision, submit_approval,
 };
 use crate::domain::approval::{ApprovalState, ApproverDiff, diff_basis_for, render_diff};
-use crate::domain::governance::{ApprovalId, EntityRef, GateSubject};
+use crate::domain::governance::{ApprovalId, EntityRef, GateSubject, SubjectKind};
 use crate::domain::materiality::{
     MaterialAct, MaterialityEvaluator, MaterialityPolicy, Resolution,
 };
@@ -938,8 +938,15 @@ async fn a_session_with_no_reason_is_refused_by_the_engine() {
 /// point, and the answer to item 19's *"a session called ten times after
 /// expiry emits ten"*.
 ///
-/// The count is asserted over ten calls rather than two, because two cannot
-/// tell a CAS from a read-then-write that happened not to race.
+/// **What ten calls prove, and what they do not.** They prove the stamp is
+/// consulted at all: without the `expired_emitted = false` predicate every
+/// call flips and emits, and the count reads ten. They do **not** distinguish
+/// a CAS from a guarded read-then-write — an earlier revision of this comment
+/// claimed they did. These are sequential `await`s on a single-connection
+/// harness, so nothing races, and a read-then-write survives ten calls exactly
+/// as it survives two. The concurrent property is the `UPDATE`'s own predicate
+/// and is unmeasurable here; ten is item 19's own number, kept because it is
+/// the shape the question was asked in.
 #[tokio::test]
 async fn ten_calls_past_the_window_emit_exactly_one_expiry() {
     let provider = harness().await;
@@ -1046,6 +1053,16 @@ async fn a_session_of_another_tenant_is_not_visible() {
         .await
         .expect_err("another tenant's scope sees no session");
     assert!(err.to_string().contains("no elevation session"), "{err}");
+
+    // The in-scope control, in this test rather than a sibling: without it a
+    // read broken for **every** scope passes here unchanged, and the probe
+    // would be measuring "the read fails" rather than "the read is scoped".
+    assert_eq!(
+        admit_elevated_call(&conn, &elevation_scope(), SESSION, at(13))
+            .await
+            .expect("the session's own scope sees it"),
+        Elevation::Admitted
+    );
 }
 
 /// **The post-hoc obligation is discharged once**, by the second platform
@@ -1061,15 +1078,29 @@ async fn the_posthoc_obligation_discharges_once_and_only_where_it_exists() {
         .expect("the session opens");
 
     assert!(
-        discharge_posthoc_review(&conn, &scope, SESSION, SECOND_PRINCIPAL, at(16))
-            .await
-            .expect("the discharge runs"),
+        discharge_posthoc_review(
+            &conn,
+            &scope,
+            SESSION,
+            SECOND_PRINCIPAL,
+            SECOND_PRINCIPAL,
+            at(16)
+        )
+        .await
+        .expect("the discharge runs"),
         "the second platform principal's late decision closes the obligation"
     );
     assert!(
-        !discharge_posthoc_review(&conn, &scope, SESSION, SECOND_PRINCIPAL, at(17))
-            .await
-            .expect("the second discharge runs"),
+        !discharge_posthoc_review(
+            &conn,
+            &scope,
+            SESSION,
+            SECOND_PRINCIPAL,
+            SECOND_PRINCIPAL,
+            at(17)
+        )
+        .await
+        .expect("the second discharge runs"),
         "two reviewers racing produce one discharge, and the loser is told so"
     );
     let row = breakglass_session::Entity::find()
@@ -1096,10 +1127,289 @@ async fn the_posthoc_obligation_discharges_once_and_only_where_it_exists() {
             &scope,
             Uuid::from_u128(0x9e_60),
             SECOND_PRINCIPAL,
+            SECOND_PRINCIPAL,
             at(16)
         )
         .await
         .expect("the discharge runs"),
         "a session approved before it opened has no post-hoc obligation to discharge"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Regressions for the 2026-09-02 four-lens review.
+// ---------------------------------------------------------------------------
+
+/// **The opener cannot be their own post-hoc reviewer** — the regression for
+/// the review's HIGH on `inst-bg-open`'s floor.
+///
+/// The floor is *"two **distinct** platform principals"*, and on the post-hoc
+/// arm both are columns of one row, so the comparison presupposes nothing
+/// about §7 row 9. While it was absent, the operator who opened a session
+/// could discharge their own obligation and the row stood — permanently,
+/// the table being append-only evidence — as a two-person ceremony performed
+/// by one human.
+///
+/// The paired control is that a genuinely second principal discharges it, so
+/// the refusal is about the identity and not about the call.
+#[tokio::test]
+async fn the_session_opener_cannot_discharge_their_own_obligation() {
+    let provider = harness().await;
+    let conn = provider.conn().expect("scoped connection");
+    let scope = elevation_scope();
+    open_breakglass_session(&conn, &scope, elevation(ApprovalPath::PostHoc), "incident")
+        .await
+        .expect("the session opens");
+
+    let refused = discharge_posthoc_review(&conn, &scope, SESSION, OPERATOR, OPERATOR, at(16))
+        .await
+        .expect_err("one principal may not be both halves of a two-person floor");
+    assert!(
+        refused.to_string().contains("cannot be its own"),
+        "{refused}"
+    );
+
+    // Still pending, and the second principal closes it.
+    assert!(
+        discharge_posthoc_review(
+            &conn,
+            &scope,
+            SESSION,
+            SECOND_PRINCIPAL,
+            SECOND_PRINCIPAL,
+            at(16)
+        )
+        .await
+        .expect("the discharge runs"),
+        "the refusal above left the obligation open for the principal who may close it"
+    );
+}
+
+/// A review may not be **attributed** to someone else, which is the same
+/// guard `record_decision` applies to a verdict and for the same reason: the
+/// row is append-only, so a misattribution is permanent.
+#[tokio::test]
+async fn a_review_cannot_be_attributed_to_another_principal() {
+    let provider = harness().await;
+    let conn = provider.conn().expect("scoped connection");
+    let scope = elevation_scope();
+    open_breakglass_session(&conn, &scope, elevation(ApprovalPath::PostHoc), "incident")
+        .await
+        .expect("the session opens");
+
+    let refused =
+        discharge_posthoc_review(&conn, &scope, SESSION, SECOND_PRINCIPAL, OPERATOR, at(16))
+            .await
+            .expect_err("the acting principal must be the one the row will name");
+    assert!(
+        refused.to_string().contains("may not record a review"),
+        "{refused}"
+    );
+}
+
+/// An absent or out-of-scope session is **refused**, not collapsed into the
+/// `Ok(false)` that means "already discharged".
+///
+/// A reviewer who typo'd the id, or whose scope names the wrong tenant, would
+/// otherwise be told there was nothing to discharge while the real
+/// obligation stayed `pending` and nothing said so.
+#[tokio::test]
+async fn discharging_an_unknown_session_is_refused_rather_than_answered_false() {
+    let provider = harness().await;
+    let conn = provider.conn().expect("scoped connection");
+    let scope = elevation_scope();
+    open_breakglass_session(&conn, &scope, elevation(ApprovalPath::PostHoc), "incident")
+        .await
+        .expect("the session opens");
+
+    let refused = discharge_posthoc_review(
+        &conn,
+        &scope,
+        Uuid::from_u128(0x9e_ff_ff),
+        SECOND_PRINCIPAL,
+        SECOND_PRINCIPAL,
+        at(16),
+    )
+    .await
+    .expect_err("no such session");
+    assert!(
+        refused.to_string().contains("no elevation session"),
+        "{refused}"
+    );
+}
+
+/// **The finalize's own open-state predicate**, probed directly.
+///
+/// Nothing measured it: `record_decision`'s read-time guard refuses a closed
+/// record first, so no path through the public surface reaches
+/// `finalize_rejected` with a record that is not `pending`, and deleting
+/// either the predicate or its zero-rows branch left the whole suite green.
+/// The function is private to this module's parent, so the probe calls it
+/// directly rather than inventing an interleaving the harness cannot produce.
+///
+/// The refusal is asserted to be the declared **409** rather than a storage
+/// failure — the same fact the read-time guard reports, one statement later.
+#[tokio::test]
+async fn the_finalize_refuses_a_record_that_left_pending_under_it() {
+    let provider = harness().await;
+    let conn = provider.conn().expect("scoped connection");
+    let scope = AccessScope::for_tenant(TENANT);
+    let subject = subject();
+    seed_head(&conn, &scope, Some(PUBLISHED)).await;
+    let id = submit_one(&conn, &scope, &subject).await;
+
+    // The racer, standing in for a frozen-content write that landed between
+    // the decision's read and its flip.
+    supersede_open_approval(&conn, &scope, TENANT, &subject, at(12))
+        .await
+        .expect("the supersede lands");
+
+    let refused = super::finalize_rejected(&conn, &scope, TENANT, id, at(13))
+        .await
+        .expect_err("the record is no longer pending");
+    assert!(
+        refused.to_string().contains("APPROVAL_SUPERSEDED"),
+        "the loser of the race is told the record closed, not that the database broke: \
+         {refused}"
+    );
+
+    // The control: against a pending record the same call succeeds.
+    let open = submit_one(&conn, &scope, &subject).await;
+    super::finalize_rejected(&conn, &scope, TENANT, open, at(14))
+        .await
+        .expect("a pending record finalizes");
+    assert_eq!(
+        read_approval(&conn, &scope, TENANT, open)
+            .await
+            .expect("read runs")
+            .expect("the record exists")
+            .state,
+        "rejected"
+    );
+}
+
+/// **The author's own acknowledgment home reaches the gate's operand.**
+///
+/// Only the decision-row home was probed, so deleting the
+/// `author_override_ack` half left the suite green — and that half is the one
+/// covering effective quorum zero, where P-D-68 arm 1 puts the author's
+/// acknowledgment.
+#[tokio::test]
+async fn the_authors_acknowledgment_reaches_the_operand() {
+    let provider = harness().await;
+    let conn = provider.conn().expect("scoped connection");
+    let scope = AccessScope::for_tenant(TENANT);
+    let subject = subject();
+    seed_head(&conn, &scope, Some(PUBLISHED)).await;
+
+    let policy = MaterialityPolicy::default();
+    let claims = vec!["catalog-admin".to_owned()];
+    let evaluator =
+        MaterialityEvaluator::new(Resolution::Resolved(&policy), Resolution::Resolved(&claims));
+    let id = ApprovalId::new(Uuid::new_v4());
+    let mut new = submission(id, &subject, SUBMITTED, diff_basis_for(Some(1)), evaluator);
+    // Effective quorum zero is the only count that admits the author's own
+    // acknowledgment (P-D-68 arm 1).
+    new.approver_count = 0;
+    new.author_override_ack = Some("uncomposed-bundle");
+    submit_approval(&conn, &scope, new, at(11))
+        .await
+        .expect("the submission is stored");
+
+    assert!(
+        gate_candidates(&conn, &scope, &subject)
+            .await
+            .expect("read the candidates")
+            .iter()
+            .any(|c| c.approval_id == id && c.override_acknowledged),
+        "the author's column is the other home of the acknowledgment and must reach the verdict"
+    );
+}
+
+/// **An empty acknowledgment is not an acknowledgment.**
+///
+/// Both columns are request-borne free text with no `<> ''` CHECK, while four
+/// neighbouring columns on the same two tables carry one. A reader testing
+/// NULL-ness alone let `Some("")` set the gate's override operand, which the
+/// publish door writes straight into `composition_pending` — clearing a flag
+/// nobody acknowledged.
+#[tokio::test]
+async fn an_empty_acknowledgment_does_not_set_the_operand() {
+    let provider = harness().await;
+    let conn = provider.conn().expect("scoped connection");
+    let scope = AccessScope::for_tenant(TENANT);
+    let subject = subject();
+    seed_head(&conn, &scope, Some(PUBLISHED)).await;
+    let id = submit_one(&conn, &scope, &subject).await;
+
+    record_decision(
+        &conn,
+        &scope,
+        NewDecision {
+            tenant_id: TENANT,
+            approval_id: id,
+            approver_principal: APPROVER,
+            verdict: DecisionVerdict::Approved,
+            reason: None,
+            override_acknowledgments: Some("   "),
+        },
+        APPROVER,
+        at(12),
+    )
+    .await
+    .expect("the row lands: no CHECK forbids the value, which is the point");
+
+    assert!(
+        gate_candidates(&conn, &scope, &subject)
+            .await
+            .expect("read the candidates")
+            .iter()
+            .all(|c| !c.override_acknowledged),
+        "an acknowledgment column holding only whitespace was not an acknowledgment"
+    );
+}
+
+/// **The stored `subject_kind` token round-trips, and an unknown one is
+/// refused** — the falsifiable half of building a candidate's subject from
+/// its own row.
+///
+/// # What cannot be probed here, said plainly
+///
+/// The host's `candidate.subject == subject` guard was a tautology while this
+/// module stamped the queried subject onto every row. Building it from the
+/// row instead makes the guard live — but **not against this producer**:
+/// `gate_candidates` filters on `(tenant_id, subject_kind, subject_ref)` in
+/// SQL, so every row it returns matches the query by construction, and an
+/// assertion that a candidate carries the queried subject is satisfied
+/// identically either way. A probe written that way was tried and measured
+/// **blind**: reverting to `subject.clone()` left it green.
+///
+/// The guard's value is against a producer that loads differently — a batch
+/// over several subjects, or a load by `approval_id` for the `PreAuthorized`
+/// path — and no test can reach that today. What *is* falsifiable is the
+/// parser the row-built subject needs, and a corrupt token cannot be inserted
+/// to exercise its refusal (`chk_products_approval_subject_kind` forbids it on
+/// both engines), so the parser is probed directly.
+#[test]
+fn the_stored_subject_kind_round_trips_and_an_unknown_token_is_refused() {
+    for kind in [
+        SubjectKind::EntityPublish,
+        SubjectKind::GovernedLiveOp,
+        SubjectKind::SystemSignal,
+        SubjectKind::SkuCorrection,
+        SubjectKind::BulkBatch,
+    ] {
+        assert_eq!(
+            super::subject_kind_from_stored(kind.as_str()),
+            Some(kind),
+            "the seam declares no parser for its own stored token, so this roster is a copy \
+             and has to be held to the original"
+        );
+    }
+    assert_eq!(
+        super::subject_kind_from_stored("entity_discard"),
+        None,
+        "a token outside chk_products_approval_subject_kind's roster is a row this gear wrote \
+         wrong, and gate_candidates answers CorruptRow for it"
     );
 }

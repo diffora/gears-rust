@@ -95,9 +95,7 @@ use uuid::Uuid;
 
 use crate::domain::canonical;
 use crate::domain::concurrency::InternalRevision;
-use crate::domain::containment::{
-    ResolvedScope, ScopeContainment, ScopeDimension, ScopePair, contains,
-};
+use crate::domain::containment::{ResolvedScope, ScopeContainment, ScopeDimension, ScopePair};
 use crate::domain::error::DomainError;
 use crate::domain::governance::{
     ApprovalDisposition, ApprovalId, GateMode, GateSubject, GateVerdict, GovernanceGate,
@@ -208,13 +206,20 @@ impl QuorumDescriptor {
             },
         );
         map.insert("quorumReduced".to_owned(), self.quorum_reduced.into());
-        // `Absence::Null` with the roster, not `Omit`: this is stored
-        // content with a **required** field set, and the reader errors on any
-        // missing member. Under `Omit` a sixth field added to the struct and
-        // forgotten here would render fine and fail at decode — every record
-        // written after the deploy unreadable while the older ones still
-        // work, which is the hardest shape to diagnose. Under the roster the
-        // forgotten member renders `null` and the reader names it at once.
+        // `Absence::Null` with the roster, not `Omit`, because this is
+        // stored content with a **required** field set: the reader errors on
+        // any missing member, and `null` says "this gear wrote no value"
+        // where an absent key says nothing at all.
+        //
+        // **It is not a guard against a forgotten field, and an earlier
+        // revision of this comment claimed it was.** Measured: under `Omit`
+        // the key is absent and `map.get(name)` answers `None`; under `Null`
+        // it renders `null` and `map.get(name).and_then(as_u64)` also answers
+        // `None`. Both reach the identical `Err` with the identical message
+        // at the identical call, so neither mode catches anything the other
+        // misses. The real compile-time guard on a sixth field is
+        // `descriptor_from_stored`'s struct literal, which must name it —
+        // nothing links `DESCRIPTOR_ROSTER` to the struct.
         canonical::canonical_rendering(
             &JsonValue::Object(map),
             canonical::Absence::Null {
@@ -264,13 +269,39 @@ pub fn descriptor_from_stored(stored: &str) -> Result<QuorumDescriptor, String> 
         }
         None => return Err("predicateUnsatisfiable is missing".to_owned()),
     };
-    Ok(QuorumDescriptor {
+    let descriptor = QuorumDescriptor {
         configured_quorum: count("configuredQuorum")?,
         required: count("required")?,
         finance_required: flag("financeRequired")?,
         predicate_unsatisfiable,
         quorum_reduced: flag("quorumReduced")?,
-    })
+    };
+    // **Two invariants derivable from the stored fields alone, checked here
+    // because every later reader assumes them.** Presence and type are not
+    // enough: a row reading `{required: 2, financeRequired: false,
+    // predicateUnsatisfiable: "finance_reviewer"}` decodes cleanly under a
+    // type check and then discharges the finance predicate at `N = 2` —
+    // exactly the discharge `inst-gv-quorum` says may never happen above
+    // zero. `evaluate_quorum` branches on `finance_required` alone, and it is
+    // sound to do so *because* this decode refuses the combination.
+    if descriptor.quorum_reduced != (descriptor.required < DEFAULT_APPROVER_COUNT) {
+        return Err(format!(
+            "quorumReduced is {} at required {}: the marker is set exactly when the effective \
+             count is below the retained-name default of {DEFAULT_APPROVER_COUNT} (P-D-13)",
+            descriptor.quorum_reduced, descriptor.required
+        ));
+    }
+    if descriptor.predicate_unsatisfiable.is_some()
+        && (descriptor.required != 0 || descriptor.finance_required)
+    {
+        return Err(format!(
+            "predicateUnsatisfiable is recorded at required {} with financeRequired {}: the \
+             marker is admitted only where the predicate has no subject, which is effective \
+             quorum zero with the predicate unset (inst-gv-finance-predicate)",
+            descriptor.required, descriptor.finance_required
+        ));
+    }
+    Ok(descriptor)
 }
 
 /// Build the descriptor from the verdict and the `N` in force.
@@ -293,11 +324,20 @@ pub fn describe_quorum(
     };
     // At `N = 0` the finance predicate has no subject: there are no
     // approvers to hold the role, so it is not set and the descriptor
-    // records the absence instead. Keying this on `required` rather than on
-    // `configured_quorum` is deliberate — a non-material change at `N = 3`
-    // closes on one approver, and that one approver must still be a
-    // FinanceReviewer.
-    let (finance_required, predicate_unsatisfiable) = match (finance_material, required) {
+    // records the absence instead.
+    //
+    // **Keyed on `configured_quorum`, because that is the operand the
+    // instruction names** — `inst-gv-finance-predicate` says *"when `N >= 1`"*
+    // and `inst-gv-quorum` *"no subject at the configured `N`"*. An earlier
+    // revision keyed on `required` and justified it with a case — a
+    // non-material change at `N = 3` — that both keys answer identically.
+    // They answer identically everywhere: `required` is `N` on the material
+    // arm and `min(N, 1)` on the other, so `required == 0` exactly when
+    // `N == 0` on both. The two operands are indistinguishable today, which
+    // is precisely why the one the design names is the one to read: if
+    // `required`'s formula ever gains a third arm, this rule must not move
+    // with it.
+    let (finance_required, predicate_unsatisfiable) = match (finance_material, configured_quorum) {
         (true, 0) => (false, Some(UnsatisfiablePredicate::FinanceReviewer)),
         (true, _) => (true, None),
         (false, _) => (false, None),
@@ -468,25 +508,6 @@ pub fn render_diff(
 /// would make a change to either silently move the other.
 pub const PLATFORM_QUORUM_FLOOR: u32 = 2;
 
-/// Which authority fixed a ceremony's approver count (**P-D-13**).
-///
-/// The distinction is the decision's own: it is not about *how many* but about
-/// **whose** principal acts, and that is what decides whether a tenant's
-/// configuration has standing at all.
-#[domain_model]
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub enum QuorumAuthority {
-    /// The tenant's configured `N`, per `inst-gv-materiality`. P-D-13's five
-    /// `N`-governed sites: freeze force-completion, the uncomposed-bundle
-    /// override, un-deprecation, the slice-07 correction door and the
-    /// slice-07 break-glass correction.
-    TenantPolicy,
-    /// A floor outside every tenant's `N`, because the acting principal is
-    /// not the tenant's. Cross-tenant break-glass elevation, and nothing else
-    /// in v1.
-    PlatformFloor,
-}
-
 /// The descriptor for a ceremony held to the platform floor
 /// ([`PLATFORM_QUORUM_FLOOR`], **P-D-13**).
 ///
@@ -534,7 +555,7 @@ pub fn describe_platform_quorum() -> QuorumDescriptor {
     }
 }
 
-/// The C1 base role set, by name.
+/// One of C1's two named roles.
 ///
 /// # No surface supplies this, and that is §7 row 25
 ///
@@ -579,6 +600,63 @@ impl ApproverRole {
         match self {
             Self::CatalogAdmin => "catalog_admin",
             Self::FinanceReviewer => "finance_reviewer",
+        }
+    }
+}
+
+/// Which base role set binds this ceremony's approvers.
+///
+/// # Why this is a type and not a slice
+///
+/// It was a `&[ApproverRole]`, and the empty slice meant *"any holder of
+/// `approval x decide` counts"*. Two measured problems, one defect:
+///
+/// - **The empty slice is the only value a real caller can supply.** §7 row 25
+///   measures that no surface in the gear carries a role at all, so a door
+///   assembling [`CastDecision`]s today has nothing to put in `roles` and
+///   nothing to put here — and the permissive reading was what "I have no
+///   data" silently resolved to. A material change closed on two principals
+///   holding neither C1 role.
+/// - **The permissive reading was defended with an open item that does not
+///   cover it.** §7 row 16 asks whether the base set binds the single approver
+///   of a **non-material** change. For a *material* one C1 is settled — *"each
+///   holding `CatalogAdmin` or `FinanceReviewer`"* — and admits no such reading.
+///
+/// So the two readings are named, neither is a default, and the open one has
+/// to be chosen out loud at the call site. There is deliberately **no**
+/// narrowing variant: C8 says role predicates *"narrow within the C1 base set
+/// and never replace it"* and that **v1 registers no extension point that
+/// could**, so a caller that could pass `[CatalogAdmin]` alone would be
+/// expressing a predicate v1 does not have — and would drop a
+/// FinanceReviewer-only approver together with the very lens
+/// `inst-gv-finance-predicate` needs.
+#[domain_model]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum BaseRoleSet {
+    /// C1's own pair. Every counted approver holds `CatalogAdmin` **or**
+    /// `FinanceReviewer`.
+    CatalogAdminOrFinanceReviewer,
+    /// §7 row 16's other reading: any holder of `approval x decide` closes
+    /// the ceremony. Open, so it is named rather than defaulted, and it is
+    /// **not** a legal reading for a material change.
+    AnyDecider,
+}
+
+impl BaseRoleSet {
+    /// Whether an approver holding `roles` is an eligible approver here.
+    fn admits(self, roles: &[ApproverRole]) -> bool {
+        match self {
+            // Spelled as a `matches!` over C1's two names rather than
+            // `!roles.is_empty()` so a third role added to [`ApproverRole`]
+            // is excluded until someone decides otherwise, instead of joining
+            // C1's pair by arriving.
+            Self::CatalogAdminOrFinanceReviewer => roles.iter().any(|role| {
+                matches!(
+                    role,
+                    ApproverRole::CatalogAdmin | ApproverRole::FinanceReviewer
+                )
+            }),
+            Self::AnyDecider => true,
         }
     }
 }
@@ -640,26 +718,40 @@ pub enum QuorumOutcome {
 /// batch read). A human holding both `CatalogAdmin` and `FinanceReviewer`
 /// counts **once** either way, which is C2's whole point.
 ///
+/// # The author is not an approver, and that is C1's other half
+///
+/// C1 is one sentence: *"`N` distinct approvers, **each distinct from the
+/// author**, each holding `CatalogAdmin` or `FinanceReviewer`"*. The write door
+/// refuses the author's own decision ([`decision_admitted`]) and the store's
+/// UNIQUE does not exclude the submitter, so this function takes the
+/// submitter for the same reason it deduplicates: to stay honest against a
+/// caller that assembled the list itself. Enforcing one half of that sentence
+/// here and not the other was the asymmetry.
+///
 /// # `base_roles` is a call operand, because §7 row 16 is open
 ///
-/// C1 scopes its CatalogAdmin-or-FinanceReviewer floor to **material**
-/// changes; a non-material change gets `min(N, 1)` and the descriptor carries
-/// no base role set — and no `Materiality` either, so this function cannot
-/// recover which applies. Row 16 asks exactly that: *"Does the base role set
-/// bind the single approver of a non-material change?"* Defaulting it either
-/// way here would answer an open item from a function signature, so the
-/// caller names the set that binds and an empty slice means "any holder of
-/// `approval x decide`".
+/// C1 scopes its base set to **material** changes; a non-material one gets
+/// `min(N, 1)` and the descriptor carries no base role set — and no
+/// `Materiality` either, so this function cannot recover which applies. Row
+/// 16 asks exactly that. Defaulting it either way here would answer an open
+/// item from a function signature, so the caller names it — see
+/// [`BaseRoleSet`] for why it is a type rather than a slice, and why the
+/// permissive reading is not a legal one for a material change.
 ///
-/// # `predicateUnsatisfiable` counts as met, and only that way
+/// # What discharges the finance predicate, and where that is enforced
 ///
 /// `inst-gv-quorum`: a recorded `predicateUnsatisfiable` *"counts as met for
-/// the evaluator while remaining visible as unmet-by-policy in the record and
-/// the inbox envelope; that is the only way it may be discharged, and it is
-/// never how a predicate is discharged at `N >= 1`"*. Since
-/// [`describe_quorum`] records the marker only at effective count 0, and this
-/// function reads the marker off the stored descriptor rather than
-/// recomputing it, the `N >= 1` half holds by construction.
+/// the evaluator … that is the only way it may be discharged, and it is never
+/// how a predicate is discharged at `N >= 1`"*.
+///
+/// **This function does not read the marker**, and an earlier revision of
+/// this doc said it did. It branches on `finance_required` alone. That is
+/// sound only because the marker and the flag cannot disagree:
+/// [`describe_quorum`] sets them together, and [`descriptor_from_stored`]
+/// **refuses** a row where `predicateUnsatisfiable` is recorded at a
+/// non-zero `required` or beside a set predicate. So the `N >= 1` half is
+/// held by the decode, not by a branch here — which is worth saying, because
+/// a reader looking for it in this function will not find it.
 ///
 /// # What this function does **not** decide
 ///
@@ -673,8 +765,9 @@ pub enum QuorumOutcome {
 #[must_use]
 pub fn evaluate_quorum(
     descriptor: &QuorumDescriptor,
+    submitter: Uuid,
     decisions: &[CastDecision],
-    base_roles: &[ApproverRole],
+    base_roles: BaseRoleSet,
 ) -> QuorumOutcome {
     let mut counted_principals: BTreeSet<Uuid> = BTreeSet::new();
     let mut finance_lens_held = false;
@@ -682,12 +775,17 @@ pub fn evaluate_quorum(
         if !decision.approved {
             continue;
         }
+        // C1's other half: an approver distinct from the author. The store
+        // cannot express this — its UNIQUE is `(approval_id,
+        // approver_principal)` and the submitter is a column of the other
+        // table — so it is a rule or it is nowhere.
+        if decision.principal == submitter {
+            continue;
+        }
         // C1's base set, where the caller says it binds. An approver holding
         // none of the named roles is not an eligible approver, so they do not
         // count toward the number either.
-        let eligible =
-            base_roles.is_empty() || decision.roles.iter().any(|role| base_roles.contains(role));
-        if !eligible {
+        if !base_roles.admits(&decision.roles) {
             continue;
         }
         // Newly counted or not, the finance lens is a property of the SET of
@@ -746,25 +844,29 @@ pub fn evaluate_quorum(
 /// failed.
 #[must_use]
 pub fn approver_covers_subject(claims: &ScopePair, subject: &ScopePair) -> ApproverScopeVerdict {
-    for (dimension, claim, subject_scope) in [
-        (ScopeDimension::Region, &claims.region, &subject.region),
-        (ScopeDimension::Brand, &claims.brand, &subject.brand),
-    ] {
-        // parent = claims, child = subject. See this function's doc.
-        if let ScopeContainment::NotContained {
+    // **`claims.check_containment(subject)`, not a second traversal.** An
+    // earlier revision walked the two dimensions here, which meant a third
+    // dimension added to `ScopePair` would compile clean at both sites and be
+    // silently unchecked at both. Delegating leaves one traversal in the
+    // crate, and the mapping — claims as the parent, the subject as the child
+    // — is this call and this call only.
+    match claims.check_containment(subject) {
+        // `check_containment`'s `Err` type is the whole verdict enum, so its
+        // `Contained` variant is reachable by the type and not by the
+        // function. Folded in with `Ok` rather than given its own arm: the
+        // two answers are the same answer, and spelling them apart would be
+        // a distinction the caller cannot act on.
+        Ok(()) | Err(ScopeContainment::Contained) => ApproverScopeVerdict::Covered,
+        Err(ScopeContainment::NotContained {
             dimension,
             parent,
             child,
-        } = contains(dimension, claim, subject_scope)
-        {
-            return ApproverScopeVerdict::Exceeded {
-                dimension,
-                claimed: parent,
-                subject: child,
-            };
-        }
+        }) => ApproverScopeVerdict::Exceeded {
+            dimension,
+            claimed: parent,
+            subject: child,
+        },
     }
-    ApproverScopeVerdict::Covered
 }
 
 /// The approver-scope verdict.
@@ -829,14 +931,33 @@ pub struct CandidateApproval {
     /// such set and no type in `domain/` produces one — so the by-name half
     /// of `dod-override-ceremony` has no operand and this flag cannot be
     /// narrower than the storage it reads.
+    ///
+    /// **The consequence at the seam is booked here because it is booked
+    /// nowhere else.** `inst-fd-gate-verdict` fixes this slot narrowly —
+    /// *"whether that record carried the **two-person uncomposed-bundle
+    /// override**"* — and the publish door writes `composition_pending`
+    /// straight from it. A record acknowledging some *other* lint finding
+    /// therefore reads as an uncomposed-bundle override. The widening is in
+    /// the safe direction (it is a superset, so a real override is never
+    /// missed, and an over-reported `composition_pending` flags a bundle as
+    /// pending composition rather than clearing one that is not), but it is a
+    /// false claim on the wire and it resolves only when
+    /// `dod-override-ceremony` gets its by-name operand.
     pub override_acknowledged: bool,
 }
 
 /// The five states `products_approval.state` admits.
 ///
-/// A closed enum rather than the stored `&str`, so a host that grows a rule
-/// for one state is forced by the compiler to say what it does with the rest
-/// — the same property `SubjectKind` was given for the same reason.
+/// A closed enum rather than the stored `&str`, so a **domain** reader that
+/// grows a rule for one state is forced by the compiler to say what it does
+/// with the rest — the same property `SubjectKind` was given for the same
+/// reason.
+///
+/// **Its radius stops at the domain boundary, and that is worth saying rather
+/// than leaving for a reader to discover.** Several `infra` sites still
+/// compare the raw stored tokens, so a sixth value added to
+/// `chk_products_approval_state` forces an arm here and reaches none of them.
+/// Migrating those is a change to files this slice does not own.
 #[domain_model]
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum ApprovalState {
@@ -980,17 +1101,28 @@ impl StoredApprovalGate {
     }
 
     /// The record matching this subject at this pinned revision in the named
-    /// state, if the door loaded one.
+    /// state — and, where `named` is set, that id and no other.
+    ///
+    /// **`named` is part of the predicate, not a filter over the answer.** An
+    /// earlier revision did `find(shape).filter(id == named)`, so the first
+    /// candidate of the right shape shadowed every other: a correctly-named
+    /// `consumed` record that was not first was refused. Two `consumed`
+    /// records can share a subject and a revision — `uq_products_approval_open`
+    /// constrains only `pending`/`satisfied` — so the order of the list was
+    /// load-bearing while this module's own doc called it *"a courtesy to a
+    /// reader"*.
     fn matching(
         &self,
         subject: &GateSubject,
         expected_revision: InternalRevision,
         state: ApprovalState,
+        named: Option<ApprovalId>,
     ) -> Option<&CandidateApproval> {
         self.candidates.iter().find(|candidate| {
             candidate.state == state
                 && candidate.subject == *subject
                 && candidate.internal_revision == expected_revision.get()
+                && named.is_none_or(|id| candidate.approval_id == id)
         })
     }
 }
@@ -1018,17 +1150,33 @@ impl GovernanceGate for StoredApprovalGate {
         mode: GateMode,
     ) -> Result<GateVerdict, DomainError> {
         if self.act == GatedAct::Ungoverned {
-            return Ok(GateVerdict::authorized(
-                ApprovalDisposition::NoRecord,
-                false,
-                UNGOVERNED_REASON.to_owned(),
-            ));
+            // **The mode is read even here.** An earlier revision returned
+            // before looking at it, so `PreAuthorized(id)` on an ungoverned
+            // host authorized with `NoRecord` — verifying nothing, discarding
+            // the named id, and writing a NULL `approval_ref` for an act
+            // whose caller declared it pre-authorized. A save or a discard
+            // spends and verifies no record, so naming one is a caller error
+            // rather than a ceremony, and refusing is the fail-closed arm.
+            return Ok(match mode {
+                GateMode::Gate => GateVerdict::authorized(
+                    ApprovalDisposition::NoRecord,
+                    false,
+                    UNGOVERNED_REASON.to_owned(),
+                ),
+                GateMode::PreAuthorized(named) => GateVerdict::Refused {
+                    reason: format!(
+                        "approval {named} was named on an ungoverned act: a save or a discard \
+                         verifies and consumes no record, so PreAuthorized has nothing to \
+                         verify here"
+                    ),
+                },
+            });
         }
         let verdict = match mode {
             // `inst-fd-gate-mode-gate`: a `satisfied`, non-superseded record
             // pinned to the door's expected revision, and it is **spent**.
             GateMode::Gate => self
-                .matching(&subject, expected_revision, ApprovalState::Satisfied)
+                .matching(&subject, expected_revision, ApprovalState::Satisfied, None)
                 .map_or_else(
                     || GateVerdict::Refused {
                         reason: format!(
@@ -1051,12 +1199,16 @@ impl GovernanceGate for StoredApprovalGate {
                 ),
             // `inst-fd-gate-mode-preauthorized`: the named record must be
             // **`consumed`** and must have authorized *this* subject at
-            // *this* revision, and nothing further is spent. The id is
-            // matched as well as the shape, so a stage naming some other
-            // consumed record of the same subject is refused.
+            // *this* revision, and nothing further is spent. The id is part
+            // of the predicate, so a stage naming some other consumed record
+            // of the same subject is refused however the list is ordered.
             GateMode::PreAuthorized(named) => self
-                .matching(&subject, expected_revision, ApprovalState::Consumed)
-                .filter(|candidate| candidate.approval_id == named)
+                .matching(
+                    &subject,
+                    expected_revision,
+                    ApprovalState::Consumed,
+                    Some(named),
+                )
                 .map_or_else(
                     || GateVerdict::Refused {
                         reason: format!(
