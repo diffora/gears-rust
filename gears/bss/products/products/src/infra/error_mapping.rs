@@ -306,6 +306,9 @@ impl From<DomainError> for CanonicalError {
             // the current state refuses the act and **403** where the caller
             // may not take it. A superseded record is the first.
             D::ApprovalSuperseded(detail) => aborted(detail, "APPROVAL_SUPERSEDED"),
+            // 409: the tree's current state refuses the name, and the index
+            // is what decided it (`02` §3.3).
+            D::DuplicateCategoryName(detail) => aborted(detail, "DUPLICATE_CATEGORY_NAME"),
 
             // -- Architectural 422s (rendered 400, no transport override —
             // see the module doc's "The 422s here are architectural, not
@@ -326,6 +329,10 @@ impl From<DomainError> for CanonicalError {
             D::ErasureUnknownActor(detail) => {
                 precondition("actor", &detail, "ERASURE_UNKNOWN_ACTOR")
             }
+            // The same architectural-422 class: a re-parent that would close
+            // a cycle is content the door cannot process, and the wire
+            // renders it 400 with the code as the discriminator.
+            D::TaxonomyCycle(detail) => precondition("parentId", &detail, "TAXONOMY_CYCLE"),
 
             // -- Unavailable (503) -- fail closed, retry later. See the
             // module doc for why this carries neither resource marker.

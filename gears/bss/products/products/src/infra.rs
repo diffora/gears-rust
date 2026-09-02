@@ -8,3 +8,4 @@ pub mod events;
 pub mod idempotency;
 pub mod increment;
 pub mod storage;
+pub mod taxonomy;

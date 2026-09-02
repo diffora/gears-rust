@@ -642,7 +642,7 @@ half waits on `05`'s submit door (its §7 row 12, no route declared) or on that 
 
 ### Taxonomy writer lock
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-taxonomy-writer-lock`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-taxonomy-writer-lock`
 
 The system **MUST** serialize taxonomy mutations per tenant behind a writer lock — a Postgres
 advisory lock, the write transaction on SQLite. A concurrency probe **MUST** exist in which two
@@ -673,7 +673,7 @@ existing structure.
 
 ### Name uniqueness within a parent
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-name-in-parent`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-name-in-parent`
 
 The system **MUST** decide the uniqueness race on the unique index rather than a read-then-write
 check, and **MUST** re-check on rename **and** on re-parent, refusing `DUPLICATE_CATEGORY_NAME`.

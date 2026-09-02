@@ -20,5 +20,6 @@ pub mod recognized;
 pub mod retention;
 pub mod rules;
 pub mod states;
+pub mod taxonomy;
 pub mod transition;
 pub mod validation;

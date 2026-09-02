@@ -1707,6 +1707,7 @@ mod governance;
 mod increment;
 mod recognized;
 mod reference;
+mod taxonomy;
 mod versions;
 
 pub use bulk::*;
@@ -1714,6 +1715,7 @@ pub use governance::*;
 pub use increment::*;
 pub use recognized::*;
 pub use reference::*;
+pub use taxonomy::*;
 pub use versions::*;
 
 /// Stamp the composite act's parent handle onto a `claimed` key (P-D-79).

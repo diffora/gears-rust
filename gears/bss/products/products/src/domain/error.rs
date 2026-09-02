@@ -170,6 +170,27 @@ pub enum DomainError {
     #[error("self-approval forbidden: {0}")]
     SelfApprovalForbidden(String),
 
+    /// Two categories would share a normalized name inside one parent. The
+    /// race is decided by `uq_products_category_name_in_parent` — and by
+    /// `uq_products_category_root_name` for the roots, a plain unique index
+    /// treating every `NULL` parent as distinct — never by a read-then-write
+    /// check (`02 inst-tx-name-in-parent`, 409).
+    ///
+    /// **Re-checked on rename AND on re-parent**: a re-parent carries the
+    /// node's existing name into a new sibling set, so it collides without
+    /// the name changing.
+    ///
+    /// @cpt-dod:cpt-cf-bss-products-dod-name-in-parent:p1
+    #[error("duplicate category name: {0}")]
+    DuplicateCategoryName(String),
+
+    /// A re-parent whose new ancestor chain contains the node itself
+    /// (`02 inst-tx-walk`). 422 architectural, reaching the wire as a 400
+    /// like every architectural 422 here — the request's content cannot be
+    /// processed, whatever the tree's current state.
+    #[error("taxonomy cycle: {0}")]
+    TaxonomyCycle(String),
+
     /// A decision arrived on a record that is no longer open. `design/05`
     /// §2 puts it at **decide** — *"a decision arriving on a record already
     /// `superseded` is refused"* — and §3.3 gives it **409**: the record's
@@ -350,6 +371,8 @@ impl DomainError {
             Self::ApprovalRequired(_) => "APPROVAL_REQUIRED",
             Self::SelfApprovalForbidden(_) => "SELF_APPROVAL_FORBIDDEN",
             Self::ApprovalSuperseded(_) => "APPROVAL_SUPERSEDED",
+            Self::DuplicateCategoryName(_) => "DUPLICATE_CATEGORY_NAME",
+            Self::TaxonomyCycle(_) => "TAXONOMY_CYCLE",
             Self::ErasureUnknownActor(_) => "ERASURE_UNKNOWN_ACTOR",
             Self::CloneSourceDiscarded(_) => "CLONE_SOURCE_DISCARDED",
             Self::RequestSourceUnknown(_) => "REQUEST_SOURCE_UNKNOWN",

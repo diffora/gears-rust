@@ -66,6 +66,8 @@ fn declared_status_and_code(err: &DomainError) -> (u16, Option<&'static str>) {
         D::ApprovalRequired(_) => (403, Some("APPROVAL_REQUIRED")),
         D::SelfApprovalForbidden(_) => (403, Some("SELF_APPROVAL_FORBIDDEN")),
         D::ApprovalSuperseded(_) => (409, Some("APPROVAL_SUPERSEDED")),
+        D::DuplicateCategoryName(_) => (409, Some("DUPLICATE_CATEGORY_NAME")),
+        D::TaxonomyCycle(_) => (400, Some("TAXONOMY_CYCLE")),
         D::ErasureUnknownActor(_) => (400, Some("ERASURE_UNKNOWN_ACTOR")),
         D::CloneSourceDiscarded(_) => (409, Some("CLONE_SOURCE_DISCARDED")),
         // FailedPrecondition renders 400 on the wire; the discriminator the
@@ -128,6 +130,8 @@ fn one_of_every_variant() -> Vec<DomainError> {
         D::ApprovalRequired(d()),
         D::SelfApprovalForbidden(d()),
         D::ApprovalSuperseded(d()),
+        D::DuplicateCategoryName(d()),
+        D::TaxonomyCycle(d()),
         // The six 03 variants the roster never carried. Each has had an arm
         // in `declared_status_and_code` since it landed, so the exhaustive
         // match compiled and the *ladder* went unchecked for all six — the
@@ -174,7 +178,7 @@ fn one_of_every_variant() -> Vec<DomainError> {
 /// checked on any of them. Bumping the literal by one per added variant
 /// keeps a pre-existing shortfall forever; the only safe move is to
 /// re-derive it against the enum.
-const DOMAIN_ERROR_VARIANTS: usize = 42;
+const DOMAIN_ERROR_VARIANTS: usize = 44;
 
 /// Covers all 14 variants (§3.3's own count, `DomainError::code`'s own
 /// exhaustiveness note): every one lands on the status the design ladder
