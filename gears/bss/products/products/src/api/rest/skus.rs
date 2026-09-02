@@ -264,7 +264,7 @@ use crate::domain::rules::{
     PublishRevalidationSubject, SkuCodeStillPresent, SkuScopeColumnsStillParse,
 };
 use crate::domain::taxonomy::{
-    AttributeDefinitionKnownRule, ContentPiiBlocked, ContentSaveSubject, NoPiiPolicyDetector,
+    AttributeDefinitionKnownRule, ContentSaveSubject, NoPiiPolicyDetector, PiiDetector,
     ResolvedDefinition, ValueCandidate, content_pii_block, content_save_pipeline,
 };
 use crate::domain::transition::{self, ApprovalInvalidation, ApprovalInvalidationHook as _};
@@ -5428,26 +5428,23 @@ async fn sku_content_subject(
     inputs: &HeadActInputs,
     head: &SkuRecord,
     writes: &[AttributeWrite],
+    detector: &(dyn PiiDetector + Send + Sync),
 ) -> Result<ContentSaveSubject, HeadActError> {
     // The content-PII write block, the SKU twin of the Product door's call
     // site. One hook, named at the call site; see `content_pii_block`. It runs
     // before the roster read, because a blocked write must not seed a tenant's
     // vocabulary on its way to being refused.
     for write in writes {
-        content_pii_block(
-            &NoPiiPolicyDetector,
-            &format!("attributes.{}", write.key),
-            &write.value,
-        )
-        .map_err(|blocked| {
-            let mut report = ValidationReport::new();
-            report.violate(
-                ContentPiiBlocked::CODE,
-                format!("attributes.{}", write.key),
-                blocked.detail,
-            );
-            HeadActError::Refused(DomainError::Validation(report))
-        })?;
+        content_pii_block(detector, &format!("attributes.{}", write.key), &write.value).map_err(
+            |blocked| {
+                // Raised as its own `DomainError`, not folded into a
+                // `ValidationReport`: `design/02` §3.3 puts this code **outside**
+                // the pipeline -- *"a code raised outside the pipeline needs no
+                // phase status and gets none"* -- and the seven content rules that
+                // do ride a report are the contrast, not the pattern.
+                HeadActError::Refused(DomainError::ContentPiiBlocked(blocked.detail))
+            },
+        )?;
     }
 
     // The same trigger site as the Product door's `well_known_roster`, and the
@@ -5958,6 +5955,7 @@ async fn run_save(
     inputs: &HeadActInputs,
     request: &SaveSkuRequest,
     gate: &(dyn GovernanceGate + Send + Sync),
+    detector: &(dyn PiiDetector + Send + Sync),
     outbox: &crate::infra::broker::EventSink,
 ) -> Result<MutationOutcome, HeadActError> {
     // -- Phase 1, idempotency: the claim, and the replay that ends the act
@@ -6001,7 +5999,7 @@ async fn run_save(
     // same `content_save_pipeline` the Product door runs: one list, so the
     // two doors cannot drift. --
     if let Some(writes) = content.as_ref() {
-        let subject = sku_content_subject(runner, inputs, &head, writes).await?;
+        let subject = sku_content_subject(runner, inputs, &head, writes, detector).await?;
         if let Some((_phase, report)) = content_save_pipeline().run(&subject) {
             return Err(HeadActError::Refused(DomainError::Validation(report)));
         }
@@ -6105,8 +6103,10 @@ async fn save_in_one_transaction(
     inputs: &HeadActInputs,
     request: SaveSkuRequest,
     gate: &Arc<dyn GovernanceGate + Send + Sync>,
+    detector: &Arc<dyn PiiDetector + Send + Sync>,
 ) -> Result<MutationOutcome, HeadActError> {
     let outbox = state.sink.clone();
+    let detector = Arc::clone(detector);
     let gate = Arc::clone(gate);
     let inputs = inputs.clone();
     state
@@ -6118,11 +6118,20 @@ async fn save_in_one_transaction(
             move |tx| {
                 let outbox = outbox.clone();
                 let gate = Arc::clone(&gate);
+                let detector = Arc::clone(&detector);
                 let inputs = inputs.clone();
                 let request = request.clone();
-                Box::pin(
-                    async move { run_save(tx, &inputs, &request, gate.as_ref(), &outbox).await },
-                )
+                Box::pin(async move {
+                    run_save(
+                        tx,
+                        &inputs,
+                        &request,
+                        gate.as_ref(),
+                        detector.as_ref(),
+                        &outbox,
+                    )
+                    .await
+                })
             },
         )
         .await
@@ -6277,7 +6286,11 @@ async fn save_sku_gated(
         claim,
     };
 
-    let outcome = save_in_one_transaction(state, &inputs, request, gate).await;
+    // The PII host is a literal for `NoMaterialityPolicyGate`'s reason: no
+    // wire input chooses one. `10-retention-erasure`'s detector replaces this
+    // line, and the Product door's twin carries the same note.
+    let detector: Arc<dyn PiiDetector + Send + Sync> = Arc::new(NoPiiPolicyDetector);
+    let outcome = save_in_one_transaction(state, &inputs, request, gate, &detector).await;
     answer_head_act(state, &act, sku_id, head.internal_revision, outcome).await
 }
 

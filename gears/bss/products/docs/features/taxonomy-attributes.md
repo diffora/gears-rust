@@ -1243,27 +1243,40 @@ them into the Foundation's taxonomy, each carrying the RFC 9457 problem-response
 slice assigns it. No code carrying a registry code may reach the wire as a 422; the architectural
 422s **MUST** render as 400 carrying their code.
 
-**Declared: fourteen of sixteen. Registered: four.** The declaration half is a constant on the
-raising rule, and ten now carry one in `domain::taxonomy`; `PRIMARY_CATEGORY_REQUIRED` has had one
-in `domain::rules` since the Foundation. The two without a constant are `CONTENT_PII_BLOCKED` and
-`METADATA_LIMIT`, whose raisers are the PII hook and the metadata door and neither is this
-feature's to write. `TAXONOMY_ERROR_CODES` is the census beside them: a code named there with no
-raiser and a raiser with no entry both redden.
+**Fifteen of sixteen are declared, and A6 corrected what *registration* means here.** A5 reported
+that all twelve missing codes needed a `DomainError` variant and would reach the wire as
+`INCOMPLETE_ENTITY` until they had one. That read `transition_refusal`'s ladder, which is the
+**publish** path. The save path is `DomainError::Validation`, and `infra::error_mapping`'s arm for
+it renders **each violation's own `code`** as the wire `type` — so a code raised through the
+pipeline is registered and attributed with no variant at all, and six of the twelve were never
+missing anything.
 
-**The registration half is twelve variants and twelve mapping arms in two files this strand does
-not edit**, and they are handed over as patches rather than applied. Until they land every one of
-the twelve reaches the wire as `INCOMPLETE_ENTITY` through `transition_refusal`'s ladder, which
-names only the codes the crate declares — so the codes are declared, refusals are reachable, and
-**attribution is not**. That is the gap, stated rather than implied, and
-`twelve_of_the_sixteen_codes_have_no_domain_error_variant_yet` is the counted gate that reddens
-when it closes.
+**One variant landed, not twelve**, and the rule is the one `infra::error_mapping` states for
+itself: *"mapping a code this gear cannot raise would be a dead `match` arm."* Measured at this
+commit, exactly one of the sixteen is raised outside a report by production code —
+`CONTENT_PII_BLOCKED`, whose hook both content-save doors now call. It gets
+`DomainError::ContentPiiBlocked`, a `code()` arm and a mapping arm at 422-architectural, and a door
+test that drives a detector double through `save_product_under_gate` so the arm is reachable rather
+than merely present.
 
-**A pre-existing shortfall found on the way**, reported rather than fixed here:
-`domain/error_tests.rs` asserts its roster is 34 while `DomainError` carries **44** variants, and
-its own comment says the roster is meant to be complete. Ten are absent, two of them this slice's
-own — `DuplicateCategoryName` and `TaxonomyCycle`. It is the same class `error_mapping_tests`
-records fixing on 2026-09-02 (*"It read 35 against 41 real variants"*): one file was corrected and
-its sibling was not.
+| Code | Where it stands |
+|---|---|
+| `DUPLICATE_CATEGORY_NAME`, `TAXONOMY_CYCLE`, `PRIMARY_CATEGORY_REQUIRED`, `STALE_LIVE_OP` | variant + arm, since before this feature |
+| `CATEGORY_RETIRED`, `ATTRIBUTE_DEFINITION_UNKNOWN`, `ATTRIBUTE_DEFINITION_DEPRECATED`, `ATTRIBUTE_TYPE_MISMATCH`, `ATTRIBUTE_SCOPE_VIOLATION`, `DEFAULT_LOCALE_MISSING` | **registered through the pipeline** — each reaches the wire carrying its own code, measured at both doors. No variant needed, and one would be unreachable |
+| `CONTENT_PII_BLOCKED` | **variant + arm, this group.** Raised outside the pipeline, as §3.3 requires |
+| `TAXONOMY_LIMIT`, `CATEGORY_REFERENCED`, `DEFINITION_IN_USE`, `STALE_CATEGORY_TOKEN` | judge and producer built; **no production caller**, because the taxonomy's three doors have no route (§7 row 16). A variant now would be the dead arm |
+| `METADATA_LIMIT` | no raiser and no number (§7 rows 2 and 18's neighbour); it lands with its door |
+
+**The counted rosters moved 51 → 52**, both of them: `error_mapping_tests`'
+`DOMAIN_ERROR_VARIANTS` and its `one_of_every_variant`, and `error_tests`' `wire_code_roster` with
+its literal. Re-derived against `DomainError::code`'s arms rather than bumped, which is what that
+file's own note asks for.
+
+**§7 row 18's consequence, now measurable.** A pipeline violation renders through
+`failed_precondition`, the architectural 422. So answering that row **409** for `CATEGORY_RETIRED`
+and `ATTRIBUTE_DEFINITION_DEPRECATED` would move those two refusals **out** of the pipeline and into
+variants of their own — it is a placement question, not only a status one. They stay at 422 and the
+row stays open.
 
 **Implements**: `cpt-cf-bss-products-algo-error-taxonomy`
 
@@ -1284,7 +1297,7 @@ single-writer discipline; metadata events **MUST** order on `(tenant, entity)`. 
 attribute-value writes **MUST** emit no event of their own, and that absence **MUST** be recorded
 as an explicit no-event declaration.
 
-**The aggregates ship; the payload types are a patch; two of the eight are held.**
+**The aggregates and the six payload types ship; two of the eight are held.**
 `infra::taxonomy::TAXONOMY_TREE_AGGREGATE` is one sentinel per tenant for the five tree acts —
 matching `inst-tc-writer-lock`'s per-tenant serialization, since a per-node key would promise an
 ordering across nodes that nothing enforces — and `metadata_aggregate` is the owning entity, which
@@ -1306,7 +1319,14 @@ has already seen.
 
 **Each payload type needs its own `SCHEMA_REFS` entry, and that is the half no `match` catches.** A
 type added without one compiles clean, `schema_ref_for` answers `None`, and the act rolls back at
-runtime rather than at build time. Both halves are in the patch; neither is applied.
+runtime rather than at build time. Both halves landed together for exactly that reason.
+
+**Declared ahead of their emitters, and the roster says so.** `events_tests` carries slice `02`'s
+six as `THE_TAXONOMY_SIX`, its own array beside `04`'s and `03`'s — folding them into `THE_EIGHT`
+would claim §4.5 announces them, and §4.5 announces eight. Nothing enqueues any of the six yet: the
+taxonomy's doors have no route (§7 row 16) and the metadata door is blocked on its grant pair. That
+array's own doc says **read six as six, not as a mislaid eight**, so a later reader does not go
+looking for the two row 15 holds.
 
 **Implements**: `cpt-cf-bss-products-flow-manage-taxonomy`,
 `cpt-cf-bss-products-flow-attribute-definitions`, `cpt-cf-bss-products-flow-metadata`

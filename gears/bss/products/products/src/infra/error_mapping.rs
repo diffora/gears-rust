@@ -354,6 +354,20 @@ impl From<DomainError> for CanonicalError {
             // a cycle is content the door cannot process, and the wire
             // renders it 400 with the code as the discriminator.
             D::TaxonomyCycle(detail) => precondition("parentId", &detail, "TAXONOMY_CYCLE"),
+            // Slice `02`'s content-PII block, the same architectural-422
+            // class: operator free text the door may not store is content it
+            // cannot process, and the wire renders it 400 with the code as
+            // the discriminator.
+            //
+            // **The only one of `02`'s sixteen codes with an arm here**, and
+            // the reason is where each is raised. The seven content rules
+            // raise into a `ValidationReport`, so the `Validation` arm above
+            // already renders each violation's own code and a second arm
+            // would be unreachable; the remaining codes have no raiser at all
+            // until their doors' routes are declared, and an arm for a code
+            // this gear cannot raise is the dead `match` arm this module's
+            // own paragraph on `PARENT_NOT_PUBLISHED` refuses.
+            D::ContentPiiBlocked(detail) => precondition("content", &detail, "CONTENT_PII_BLOCKED"),
 
             // -- Unavailable (503) -- fail closed, retry later. See the
             // module doc for why this carries neither resource marker.

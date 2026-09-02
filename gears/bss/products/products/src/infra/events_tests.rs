@@ -78,6 +78,30 @@ const THE_SET_TRIO: &[&str] = &[
 /// uncountable.
 const THE_BULK_SUMMARY: &[&str] = &["CatalogBulkOperationCompleted"];
 
+/// Slice `02`'s six (`dod-taxonomy-events`), its own list for the reason
+/// every list above is its own: folding them into [`THE_EIGHT`] would claim
+/// §4.5 announces them, and §4.5 announces eight.
+///
+/// **Six of eight.** The `DoD` names eight; `CategoryDisplayUpdated` and
+/// `AttributeDefinitionUpdated` are **deliberately absent** and stay so —
+/// `features/taxonomy-attributes.md` §7 row 15 asks which aggregate orders
+/// them and states why it is not a free choice: *"display writes do not take
+/// the taxonomy writer lock, so the tree key would claim a serialization the
+/// door does not provide"*. A payload type declared without an aggregate
+/// would leave that choice to whichever door emitted first, which is the
+/// choice the row reserves. Read six here as six, not as a mislaid eight.
+///
+/// All six are **registered ahead of their enqueue**, exactly as `04`'s
+/// remaining five are: the taxonomy's doors have no REST routes (§7 row 16).
+const THE_TAXONOMY_SIX: &[&str] = &[
+    "CategoryCreated",
+    "CategoryRenamed",
+    "CategoryReparented",
+    "CategoryRetired",
+    "CategoryDeleted",
+    "MetadataUpdated",
+];
+
 fn core() -> EventBodyCore {
     EventBodyCore {
         tenant_id: Uuid::from_u128(0x7e_42),
@@ -132,7 +156,7 @@ fn every_declared_token_belongs_to_exactly_one_entry_point() {
         // Zero owners is the core-only default: `enqueue` builds that shape,
         // so a token no specialised guard claims is legitimately its own.
         let core_only = owners == 0;
-        let rest = THE_LIFECYCLE_REST.contains(token);
+        let rest = THE_LIFECYCLE_REST.contains(token) || THE_TAXONOMY_SIX.contains(token);
         assert_eq!(
             core_only,
             (THE_EIGHT.contains(token) && !published.contains(token)) || rest,
@@ -184,13 +208,20 @@ fn the_schema_roster_names_exactly_the_declared_events() {
             "{event} is 09's only event and carries no schema reference"
         );
     }
+    for event in THE_TAXONOMY_SIX {
+        assert!(
+            registered.contains(event),
+            "{event} is 02's taxonomy event and carries no schema reference"
+        );
+    }
     for token in &registered {
         assert!(
             THE_EIGHT.contains(token)
                 || THE_LIFECYCLE_PAIR.contains(token)
                 || THE_LIFECYCLE_REST.contains(token)
                 || THE_SET_TRIO.contains(token)
-                || THE_BULK_SUMMARY.contains(token),
+                || THE_BULK_SUMMARY.contains(token)
+                || THE_TAXONOMY_SIX.contains(token),
             "{token} carries a schema reference and belongs to no declared roster: an \
              event no design document announces is a promise nothing backs"
         );
@@ -201,7 +232,8 @@ fn the_schema_roster_names_exactly_the_declared_events() {
             + THE_LIFECYCLE_PAIR.len()
             + THE_LIFECYCLE_REST.len()
             + THE_SET_TRIO.len()
-            + THE_BULK_SUMMARY.len(),
+            + THE_BULK_SUMMARY.len()
+            + THE_TAXONOMY_SIX.len(),
         "the roster must carry each declared event exactly once"
     );
 }
