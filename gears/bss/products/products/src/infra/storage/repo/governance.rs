@@ -832,6 +832,79 @@ pub async fn gate_candidates(
     Ok(candidates)
 }
 
+/// The gate's candidate for **one record, by id** — the operand a mechanical
+/// stage needs (**P-D-105**).
+///
+/// # Why the by-subject reader cannot serve this
+///
+/// [`gate_candidates`] filters on `(tenant_id, subject_kind, subject_ref)`.
+/// A cascade leg's row names the **child** while its `approval_ref` names the
+/// **parent's** record, so a query on the leg's own subject finds nothing.
+/// The scheduled flip's operand is the row's pin, so the lookup is by that id
+/// and the record's subject is carried as it is stored rather than matched —
+/// which is exactly the equality P-D-105 drops for this act and keeps
+/// everywhere else.
+///
+/// `None` where no such record is visible under `scope`, which the host then
+/// refuses: a row pinning an approval the tenant cannot see is not one this
+/// stage may act on.
+///
+/// # Errors
+///
+/// [`RepoError`] on a storage or scope failure, and [`RepoError::CorruptRow`]
+/// for a `state` or `subject_kind` outside its `CHECK`'s roster.
+pub async fn gate_candidate_by_id(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    approval_id: ApprovalId,
+) -> Result<Option<CandidateApproval>, RepoError> {
+    let Some(row) = read_approval(runner, scope, tenant_id, approval_id).await? else {
+        return Ok(None);
+    };
+    let acknowledged =
+        approval_ids_with_decision_ack(runner, scope, tenant_id, std::slice::from_ref(&row))
+            .await?;
+    Ok(Some(candidate_from_row(&row, &acknowledged)?))
+}
+
+/// One stored row as the gate sees it.
+///
+/// Shared by both readers so the two cannot drift on what a candidate carries
+/// — the subject built from the row's own columns, the state read through the
+/// closed roster, and the acknowledgment read from both of its homes.
+fn candidate_from_row(
+    row: &approval::Model,
+    acknowledged: &BTreeSet<Uuid>,
+) -> Result<CandidateApproval, RepoError> {
+    let state = ApprovalState::parse(&row.state).map_err(|token| {
+        RepoError::CorruptRow(format!(
+            "approval {} carries state {token}, which is outside \
+             chk_products_approval_state's roster",
+            row.approval_id
+        ))
+    })?;
+    let kind = subject_kind_from_stored(&row.subject_kind).ok_or_else(|| {
+        RepoError::CorruptRow(format!(
+            "approval {} carries subject_kind {}, which is outside \
+             chk_products_approval_subject_kind's roster",
+            row.approval_id, row.subject_kind
+        ))
+    })?;
+    Ok(CandidateApproval {
+        approval_id: ApprovalId::new(row.approval_id),
+        subject: GateSubject {
+            tenant_id: row.tenant_id,
+            kind,
+            reference: row.subject_ref.clone(),
+        },
+        internal_revision: row.internal_revision,
+        state,
+        override_acknowledged: stored_ack(row.author_override_ack.as_deref())
+            || acknowledged.contains(&row.approval_id),
+    })
+}
+
 /// Read the stored `subject_kind` token back into the seam's own enum.
 ///
 /// The seam declares [`SubjectKind`] and its `as_str`, and **no parser** —

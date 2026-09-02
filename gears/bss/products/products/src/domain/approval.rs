@@ -1037,6 +1037,36 @@ pub enum GatedAct {
     /// *"ungated beyond its own authz"* (M-1) and a save is not a transition
     /// at all, so no ceremony applies and no record is spent.
     Ungoverned,
+    /// The **mechanical stage** of a composite act — a scheduled
+    /// `effectiveAt` flip, or a cascade leg — carrying the `approval_ref` the
+    /// row being flipped stores (**P-D-105**).
+    ///
+    /// # Why the operand is the row and not the subject
+    ///
+    /// A cascade leg's row names the **child** in `entity_id` while its
+    /// `approval_ref` names the **parent's** record, and `products_approval`
+    /// stores one subject and one revision per record. So the ordinary
+    /// predicate — *"this subject at this pinned revision"* — fails for every
+    /// leg, always, by construction rather than by defect. P-D-105 drops
+    /// subject/revision equality **here and nowhere else** and puts the row's
+    /// own pin in its place.
+    ///
+    /// # Why this is not the bearer token §7 row 27 forbade
+    ///
+    /// That row forbids weakening the predicate to *"names a consumed
+    /// record"*, which admits a **caller** naming any consumed record in the
+    /// tenant. The operand here is not caller-supplied: it is the stored
+    /// `approval_ref` of a row the caller cannot write.
+    /// `insert_scheduled_transition` has exactly three call sites, all inside
+    /// a gated `run_retire`, and `lib_tests`'
+    /// `every_writer_of_a_scheduled_transition_is_counted_for_p_d_105` fails
+    /// if a fourth appears. **Do not add an ungated writer of that table**
+    /// — P-D-105's argument 3 names the fallback, and taking it is a decision
+    /// rather than an implementation.
+    ScheduledFlip {
+        /// The approval the row being flipped pins in its own `approval_ref`.
+        row_approval_ref: ApprovalId,
+    },
 }
 
 /// The gate host `dod-gate-host` obliges: `01-foundation`'s
@@ -1100,6 +1130,37 @@ impl StoredApprovalGate {
         }
     }
 
+    /// A host for the mechanical stage of a composite act (**P-D-105**), over
+    /// the record the row's own `approval_ref` pins.
+    ///
+    /// `row_approval_ref` **must** be read from the row being flipped. The
+    /// candidate is normally the single record
+    /// [`crate::infra::storage::repo::gate_candidate_by_id`] answers for that
+    /// id — not `gate_candidates`, which filters by subject and would find
+    /// nothing for a cascade leg, whose record names the parent.
+    #[must_use]
+    pub fn scheduled_flip(
+        candidates: Vec<CandidateApproval>,
+        row_approval_ref: ApprovalId,
+    ) -> Self {
+        Self {
+            act: GatedAct::ScheduledFlip { row_approval_ref },
+            candidates,
+        }
+    }
+
+    /// The record with this id in this state, wherever it sits in the list and
+    /// whatever subject it names.
+    ///
+    /// Deliberately **not** [`Self::matching`]: P-D-105 drops subject and
+    /// revision equality for a scheduled flip, so reusing that helper would
+    /// re-impose the two clauses the decision removed.
+    fn matching_by_id(&self, id: ApprovalId, state: ApprovalState) -> Option<&CandidateApproval> {
+        self.candidates
+            .iter()
+            .find(|candidate| candidate.state == state && candidate.approval_id == id)
+    }
+
     /// The record matching this subject at this pinned revision in the named
     /// state — and, where `named` is set, that id and no other.
     ///
@@ -1149,6 +1210,65 @@ impl GovernanceGate for StoredApprovalGate {
         expected_revision: InternalRevision,
         mode: GateMode,
     ) -> Result<GateVerdict, DomainError> {
+        if let GatedAct::ScheduledFlip { row_approval_ref } = self.act {
+            // **P-D-105's two conjuncts, both checked.** The named record must
+            // be `consumed`, *and* it must be the one the row being flipped
+            // pins. The runner sources the mode's id from that same column, so
+            // at the only production call site the second conjunct holds by
+            // construction — but it is the clause that separates this
+            // predicate from the bearer token, so it is expressed here rather
+            // than left as one caller's discipline. An in-process caller that
+            // built the mode from anything else is refused.
+            return Ok(match mode {
+                GateMode::PreAuthorized(named) if named == row_approval_ref => self
+                    .matching_by_id(named, ApprovalState::Consumed)
+                    .map_or_else(
+                        || GateVerdict::Refused {
+                            reason: format!(
+                                "approval {named} is pinned by the row being flipped but is not \
+                                 consumed: a mechanical stage re-enters on a finalized \
+                                 authorization, never on an open one"
+                            ),
+                        },
+                        |candidate| {
+                            GateVerdict::authorized(
+                                // `Verified`, so `approval_to_consume()`
+                                // answers `None` and `inst-gv-one-shot`'s
+                                // "consuming nothing further" is a property of
+                                // the type rather than a rule this stage has
+                                // to remember.
+                                ApprovalDisposition::Verified(candidate.approval_id),
+                                candidate.override_acknowledged,
+                                format!(
+                                    "approval {} is consumed and is the record this row pins in \
+                                     its own approval_ref (P-D-105); this stage consumes nothing \
+                                     further",
+                                    candidate.approval_id
+                                ),
+                            )
+                        },
+                    ),
+                GateMode::PreAuthorized(named) => GateVerdict::Refused {
+                    reason: format!(
+                        "approval {named} is not the record this row pins ({row_approval_ref}): \
+                         P-D-105's operand is the row's own approval_ref, and a stage naming \
+                         anything else is the caller-supplied id that decision refuses"
+                    ),
+                },
+                // A mechanical stage never demands a fresh ceremony: the gate
+                // phase ran on the initiating human act, and 04
+                // `inst-ar-failure` is what a runner forced through `Gate`
+                // meets — an already-consumed record and a terminal
+                // `SCHEDULE_STALE_APPROVAL`.
+                GateMode::Gate => GateVerdict::Refused {
+                    reason: format!(
+                        "this is the mechanical stage of a composite act pinned to approval \
+                         {row_approval_ref}: it re-enters in PreAuthorized and never demands a \
+                         satisfied record of its own (inst-gv-one-shot)"
+                    ),
+                },
+            });
+        }
         if self.act == GatedAct::Ungoverned {
             // **The mode is read even here.** An earlier revision returned
             // before looking at it, so `PreAuthorized(id)` on an ungoverned

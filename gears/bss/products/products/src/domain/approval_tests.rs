@@ -1240,3 +1240,171 @@ fn both_dimensions_failing_reports_the_region() {
         }
     ));
 }
+
+// ---------------------------------------------------------------------------
+// P-D-105: the scheduled flip's predicate.
+// ---------------------------------------------------------------------------
+
+/// **A cascade leg re-enters on the parent's record**, which the ordinary
+/// predicate refuses by construction.
+///
+/// The candidate names the **parent's** subject at the **parent's** revision,
+/// and the act being gated is the child's flip. Under the subject/revision
+/// clauses this is the case that always failed — for every leg, always — which
+/// is what §7 row 27 measured and P-D-105 struck.
+#[test]
+fn a_scheduled_flip_verifies_the_pin_across_a_different_subject_and_revision() {
+    let pinned = ApprovalId::new(Uuid::from_u128(0x105a));
+    // The parent's record: another subject, another revision, consumed.
+    let mut parents = candidate(0x105a, 7, ApprovalState::Consumed);
+    parents.subject = GateSubject {
+        tenant_id: GATE_TENANT,
+        kind: SubjectKind::EntityPublish,
+        reference: "product/00000000-0000-0000-0000-00000000dead".to_owned(),
+    };
+
+    let host = StoredApprovalGate::scheduled_flip(vec![parents], pinned);
+    match host
+        .evaluate(
+            // The leg's own subject and revision, neither matching the record.
+            gate_subject(),
+            InternalRevision::new(3),
+            GateMode::PreAuthorized(pinned),
+        )
+        .expect("a verdict")
+    {
+        GateVerdict::Authorized(authorization) => {
+            assert_eq!(
+                authorization.disposition,
+                ApprovalDisposition::Verified(pinned)
+            );
+            assert_eq!(
+                authorization.approval_to_consume(),
+                None,
+                "inst-gv-one-shot: a mechanical stage consumes nothing further, and the type is \
+                 what holds that rather than the door remembering it"
+            );
+            assert_eq!(authorization.approval_ref(), Some(pinned));
+        }
+        GateVerdict::Refused { reason } => panic!(
+            "P-D-105 drops subject and revision equality for a scheduled flip, and this is the \
+             leg that could never pass without it: {reason}"
+        ),
+    }
+
+    // The same candidate under the ordinary governed host still fails both
+    // clauses — the drop is scoped to this act and to no other.
+    assert!(matches!(
+        StoredApprovalGate::governed(vec![candidate(0x105a, 7, ApprovalState::Consumed)])
+            .evaluate(
+                gate_subject(),
+                InternalRevision::new(3),
+                GateMode::PreAuthorized(pinned)
+            )
+            .expect("a verdict"),
+        GateVerdict::Refused { .. }
+    ));
+}
+
+/// **The second conjunct: a stage naming anything but the row's own pin is
+/// refused.**
+///
+/// This is the clause that separates P-D-105's predicate from the bearer token
+/// §7 row 27 forbade. The runner sources the mode's id from the same column,
+/// so at the only production call site it holds by construction — which is why
+/// the mismatch has to be built deliberately here. It is falsifiable all the
+/// same: the host's inputs are two independent values, and dropping the
+/// comparison turns this green.
+#[test]
+fn a_scheduled_flip_refuses_a_record_the_row_does_not_pin() {
+    let pinned = ApprovalId::new(Uuid::from_u128(0x105b));
+    let other = ApprovalId::new(Uuid::from_u128(0x105c));
+    // Both records are consumed and present: only the pin separates them.
+    let host = StoredApprovalGate::scheduled_flip(
+        vec![
+            candidate(0x105b, 3, ApprovalState::Consumed),
+            candidate(0x105c, 3, ApprovalState::Consumed),
+        ],
+        pinned,
+    );
+    let refused = host
+        .evaluate(
+            gate_subject(),
+            InternalRevision::new(3),
+            GateMode::PreAuthorized(other),
+        )
+        .expect("a verdict");
+    assert!(
+        matches!(refused, GateVerdict::Refused { .. }),
+        "a consumed record the row does not pin is exactly the caller-supplied id P-D-105 \
+         refuses: {refused:?}"
+    );
+}
+
+/// **The first conjunct: the pinned record must be `consumed`.**
+///
+/// Every other state is swept, so a predicate that had drifted to "the row
+/// pins it" alone fails here rather than in production — a stage re-entering
+/// on a `pending` record would be acting on an authorization nobody granted.
+#[test]
+fn a_scheduled_flip_requires_the_pinned_record_to_be_consumed() {
+    let pinned = ApprovalId::new(Uuid::from_u128(0x105d));
+    for state in [
+        ApprovalState::Pending,
+        ApprovalState::Satisfied,
+        ApprovalState::Rejected,
+        ApprovalState::Superseded,
+    ] {
+        let host = StoredApprovalGate::scheduled_flip(vec![candidate(0x105d, 3, state)], pinned);
+        assert!(
+            matches!(
+                host.evaluate(
+                    gate_subject(),
+                    InternalRevision::new(3),
+                    GateMode::PreAuthorized(pinned)
+                )
+                .expect("a verdict"),
+                GateVerdict::Refused { .. }
+            ),
+            "state {} must not authorize a mechanical stage",
+            state.as_str()
+        );
+    }
+}
+
+/// A scheduled flip driven in `Gate` mode is refused rather than falling
+/// through to the ordinary predicate.
+///
+/// 04 `inst-ar-failure` is what a runner forced through `Gate` meets: an
+/// already-consumed record and a terminal `SCHEDULE_STALE_APPROVAL`. Refusing
+/// here says why, instead of reporting a missing satisfied record.
+#[test]
+fn a_scheduled_flip_never_demands_a_satisfied_record_of_its_own() {
+    let pinned = ApprovalId::new(Uuid::from_u128(0x105e));
+    let refused = StoredApprovalGate::scheduled_flip(
+        vec![candidate(0x105e, 3, ApprovalState::Consumed)],
+        pinned,
+    )
+    .evaluate(gate_subject(), InternalRevision::new(3), GateMode::Gate)
+    .expect("a verdict");
+    assert!(
+        matches!(refused, GateVerdict::Refused { .. }),
+        "{refused:?}"
+    );
+}
+
+/// A row pinning a record the tenant cannot see authorizes nothing.
+#[test]
+fn a_scheduled_flip_over_no_candidate_refuses() {
+    let pinned = ApprovalId::new(Uuid::from_u128(0x105f));
+    assert!(matches!(
+        StoredApprovalGate::scheduled_flip(Vec::new(), pinned)
+            .evaluate(
+                gate_subject(),
+                InternalRevision::new(3),
+                GateMode::PreAuthorized(pinned)
+            )
+            .expect("a verdict"),
+        GateVerdict::Refused { .. }
+    ));
+}

@@ -72,7 +72,8 @@ use super::super::{
 use super::{
     ApprovalPath, Consumption, DecisionOutcome, DecisionVerdict, Elevation, NewApproval,
     NewDecision, NewElevation, admit_elevated_call, consume_approval, discharge_posthoc_review,
-    gate_candidates, open_breakglass_session, read_approval, record_decision, submit_approval,
+    gate_candidate_by_id, gate_candidates, open_breakglass_session, read_approval, record_decision,
+    submit_approval,
 };
 use crate::domain::approval::{ApprovalState, ApproverDiff, diff_basis_for, render_diff};
 use crate::domain::governance::{ApprovalId, EntityRef, GateSubject, SubjectKind};
@@ -1411,5 +1412,80 @@ fn the_stored_subject_kind_round_trips_and_an_unknown_token_is_refused() {
         None,
         "a token outside chk_products_approval_subject_kind's roster is a row this gear wrote \
          wrong, and gate_candidates answers CorruptRow for it"
+    );
+}
+
+/// **The by-id reader answers a record the by-subject reader cannot find** —
+/// P-D-105's operand for a cascade leg.
+///
+/// The record is submitted against one subject; the query that a leg would
+/// make names a different one. `gate_candidates` on the leg's subject finds
+/// nothing, which is exactly why the mechanical stage needs a lookup by the
+/// row's pin — and the candidate it answers carries the record's **own**
+/// subject, which the host then does not compare.
+#[tokio::test]
+async fn the_by_id_reader_finds_what_the_by_subject_reader_cannot() {
+    let provider = harness().await;
+    let conn = provider.conn().expect("scoped connection");
+    let scope = AccessScope::for_tenant(TENANT);
+    let subject = subject();
+    seed_head(&conn, &scope, Some(PUBLISHED)).await;
+    let id = submit_one(&conn, &scope, &subject).await;
+
+    // A leg's own subject: same tenant, different entity.
+    let leg = GateSubject::entity_publish(EntityRef {
+        tenant_id: TENANT,
+        entity_kind: bss_products_sdk::models::EntityKind::Sku,
+        entity_id: Uuid::from_u128(0x9e_c1),
+    });
+    assert!(
+        gate_candidates(&conn, &scope, &leg)
+            .await
+            .expect("read the candidates")
+            .is_empty(),
+        "the by-subject reader cannot serve a leg whose record names the parent"
+    );
+
+    let found = gate_candidate_by_id(&conn, &scope, TENANT, id)
+        .await
+        .expect("read by id")
+        .expect("the record exists");
+    assert_eq!(found.approval_id, id);
+    assert_eq!(
+        found.subject.reference, subject.reference,
+        "the candidate carries the record's own subject, not the leg's"
+    );
+    assert_eq!(found.state, ApprovalState::Pending);
+}
+
+/// An id no record carries, and an id outside the caller's scope, both answer
+/// `None` rather than an error — the host refuses either way, and a row
+/// pinning an invisible approval is not one this stage may act on.
+#[tokio::test]
+async fn the_by_id_reader_answers_none_for_an_unknown_or_foreign_record() {
+    let provider = harness().await;
+    let conn = provider.conn().expect("scoped connection");
+    let scope = AccessScope::for_tenant(TENANT);
+    let subject = subject();
+    seed_head(&conn, &scope, Some(PUBLISHED)).await;
+    let id = submit_one(&conn, &scope, &subject).await;
+
+    assert!(
+        gate_candidate_by_id(
+            &conn,
+            &scope,
+            TENANT,
+            ApprovalId::new(Uuid::from_u128(0xdead))
+        )
+        .await
+        .expect("the read runs")
+        .is_none()
+    );
+    assert!(
+        gate_candidate_by_id(&conn, &scope, Uuid::from_u128(0x9e_22), id)
+            .await
+            .expect("the read runs")
+            .is_none(),
+        "another tenant's scope sees no record"
     );
 }
